@@ -1,0 +1,45 @@
+export type PlanName = "free" | "pro";
+export type Cadence = "daily" | "hourly";
+export type MonitorContentType = "auto" | "html" | "pdf";
+
+export type PlanLimits = {
+  name: PlanName;
+  label: string;
+  price: string;
+  monitors: number;
+  cadences: Cadence[];
+  historyDays: number;
+};
+
+export const planLimits: Record<PlanName, PlanLimits> = {
+  free: {
+    name: "free",
+    label: "Free",
+    price: "$0",
+    monitors: Number.MAX_SAFE_INTEGER,
+    cadences: ["daily"],
+    historyDays: 365,
+  },
+  pro: {
+    name: "pro",
+    label: "Free",
+    price: "$0",
+    monitors: Number.MAX_SAFE_INTEGER,
+    cadences: ["daily"],
+    historyDays: 365,
+  },
+};
+
+export function canUseCadence(plan: PlanName, cadence: Cadence) {
+  return planLimits[plan].cadences.includes(cadence);
+}
+
+export function nextCheckDate(cadence: Cadence, from = new Date()) {
+  const next = new Date(from);
+  if (cadence === "hourly") {
+    next.setHours(next.getHours() + 1);
+  } else {
+    next.setDate(next.getDate() + 1);
+  }
+  return next.toISOString();
+}

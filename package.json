@@ -1,26 +1,55 @@
 {
-  "name": "pageping",
+  "name": "awardping",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "verify": "npm run lint && npm run typecheck && npm test && npm run build",
+    "launch:check": "node scripts/check-private-beta.mjs",
+    "launch:smoke": "node scripts/smoke-private-beta.mjs",
+    "seed:shared-awards": "node scripts/seed-shared-awards.mjs",
+    "seed:organizations": "node scripts/seed-organizations.mjs",
+    "summary:backfill": "node scripts/backfill-award-summaries.mjs",
+    "cleanup:audit": "node scripts/audit-shared-source-coverage.mjs",
+    "cleanup:post-crawl-report": "node scripts/post-crawl-cleanup-report.mjs",
+    "cleanup:remove-dead-sources": "node scripts/post-crawl-cleanup-report.mjs --remove-safe=true",
+    "cleanup:source-backfill": "node scripts/backfill-low-coverage-award-sources.mjs",
+    "source:audit": "node scripts/audit-shared-source-coverage.mjs",
+    "source:backfill-low-coverage": "node scripts/backfill-low-coverage-award-sources.mjs",
+    "source:discover": "node scripts/find-official-sources-from-discovery-pages.mjs",
+    "source:import-directories": "node scripts/import-fellowship-directories.mjs",
+    "package:windows-worker": "node scripts/build-windows-worker-package.mjs",
+    "worker:local": "node scripts/run-local-source-worker.mjs",
+    "changes:backfill-details": "node scripts/backfill-change-details.mjs",
+    "source:broken-report": "node scripts/report-broken-sources.mjs"
   },
   "dependencies": {
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.106.1",
+    "cheerio": "^1.2.0",
+    "is-ip": "^5.0.1",
+    "lucide-react": "^1.16.0",
     "next": "16.2.6",
+    "pdf-parse": "^2.4.5",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "resend": "^6.12.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
+    "@types/node": "^20.19.41",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.7"
   }
 }

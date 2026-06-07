@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/check-monitors",
+      "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron/send-digests",
+      "schedule": "0 13 * * *"
+    }
+  ]
+}

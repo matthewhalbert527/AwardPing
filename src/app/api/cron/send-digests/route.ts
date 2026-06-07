@@ -1,0 +1,68 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
+import type { Json } from "@/lib/database.types";
+import { errorMessage, finishJobRun, startJobRun } from "@/lib/job-runs";
+import { runDailyDigestDeliveries } from "@/lib/monitor-runner";
+import { runPublicUpdateDigestDeliveries } from "@/lib/public-updates";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
+
+export async function GET(request: NextRequest) {
+  const auth = request.headers.get("authorization") || "";
+  const secret = request.headers.get("x-cron-secret") || "";
+
+  if (!appConfig.cronSecret || (auth !== `Bearer ${appConfig.cronSecret}` && secret !== appConfig.cronSecret)) {
+    return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
+  }
+
+  if (!hasSupabaseAdminConfig()) {
+    return NextResponse.json(
+      { error: "Supabase service role is not configured." },
+      { status: 503 },
+    );
+  }
+
+  let runId: string | null = null;
+  try {
+    runId = await startJobRun("send-digests");
+    const officeResults = await runDailyDigestDeliveries();
+    const publicResult = await runPublicUpdateDigestDeliveries().catch((error) => ({
+      digestKey: new Date().toISOString().slice(0, 10),
+      sent: 0,
+      failed: 1,
+      skipped: false,
+      reason: errorMessage(error),
+    }));
+    const processedCount =
+      officeResults.length + publicResult.sent + publicResult.failed;
+    const publicDigestMetadata = JSON.parse(JSON.stringify(publicResult)) as Json;
+    await finishJobRun(runId, {
+      status: "succeeded",
+      processedCount,
+      metadata: {
+        officeResultCount: officeResults.length,
+        publicDigest: publicDigestMetadata,
+      },
+    });
+
+    return NextResponse.json({
+      ok: true,
+      runId,
+      delivered: processedCount,
+      officeResults,
+      publicResult,
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    if (runId) {
+      await finishJobRun(runId, {
+        status: "failed",
+        processedCount: 0,
+        error: message,
+      }).catch(() => undefined);
+    }
+
+    return NextResponse.json({ ok: false, runId, error: message }, { status: 500 });
+  }
+}
