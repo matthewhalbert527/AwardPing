@@ -267,7 +267,8 @@ function Copy-AppFiles {
       $SourceRoot,
       $AppDir,
       "/E",
-      "/XD", "node_modules", ".next", ".git", ".vercel", "dist",
+      "/XD", "node_modules", ".next", ".git", ".vercel", "dist", "reports", "tmp",
+      "AwardPingVisualSnapshots", "visual-snapshots", "visual-snapshot-archive",
       "/XF", ".env*", "*.tsbuildinfo", ".DS_Store",
       "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS"
     )
@@ -279,7 +280,18 @@ function Copy-AppFiles {
   }
 
   Get-ChildItem -Path $SourceRoot -Force | Where-Object {
-    $_.Name -notin @("node_modules", ".next", ".git", ".vercel", "dist") -and
+    $_.Name -notin @(
+      "node_modules",
+      ".next",
+      ".git",
+      ".vercel",
+      "dist",
+      "reports",
+      "tmp",
+      "AwardPingVisualSnapshots",
+      "visual-snapshots",
+      "visual-snapshot-archive"
+    ) -and
     $_.Name -notlike ".env*" -and
     $_.Name -notlike "*.tsbuildinfo" -and
     $_.Name -ne ".DS_Store"
@@ -625,9 +637,40 @@ function Install-Dependencies {
 
   Write-Step "Installing npm dependencies"
   Set-Location $AppDir
-  & npm ci --omit=dev
-  if ($LASTEXITCODE -ne 0) {
-    throw "npm install failed."
+
+  $nodeModules = Join-Path $AppDir "node_modules"
+  for ($attempt = 1; $attempt -le 2; $attempt += 1) {
+    Remove-DirectoryWithRetry -Path $nodeModules
+    & npm ci --omit=dev
+    if ($LASTEXITCODE -eq 0) {
+      return
+    }
+
+    if ($attempt -lt 2) {
+      Write-Host "npm install failed; retrying after a clean dependency removal." -ForegroundColor Yellow
+    }
+  }
+
+  throw "npm install failed."
+}
+
+function Remove-DirectoryWithRetry {
+  param([string]$Path)
+
+  if (-not (Test-Path $Path)) {
+    return
+  }
+
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    try {
+      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+      return
+    } catch {
+      if ($attempt -eq 5) {
+        throw
+      }
+      Start-Sleep -Milliseconds (500 * $attempt)
+    }
   }
 }
 

@@ -5,6 +5,7 @@ import { BrandLogo } from "@/components/brand-logo";
 import { getCurrentUser, getUserProfile } from "@/lib/auth";
 import { getOfficeContext } from "@/lib/offices";
 import Link from "next/link";
+import { Suspense } from "react";
 
 export default async function DashboardLayout({
   children,
@@ -30,7 +31,9 @@ export default async function DashboardLayout({
             </Link>
 
             <div className="dashboard-header-nav-wrap">
-              <DashboardNav />
+              <Suspense fallback={<div className="dashboard-nav" aria-hidden="true" />}>
+                <DashboardNav />
+              </Suspense>
             </div>
 
             <div className="dashboard-header-actions">

@@ -19,6 +19,9 @@ const excludedNames = new Set([
   "docs",
   "installer",
   "node_modules",
+  "AwardPingVisualSnapshots",
+  "visual-snapshots",
+  "visual-snapshot-archive",
   ".DS_Store",
   ".branches",
   ".temp",
@@ -175,6 +178,42 @@ function writePackageLaunchers() {
   );
 }
 
+function createZipArchive() {
+  const zip = spawnSync("zip", ["-qr", zipPath, packageName], {
+    cwd: distDir,
+    stdio: "inherit",
+  });
+
+  if (zip.status === 0) return;
+
+  if (process.platform !== "win32") {
+    if (zip.error) console.error(zip.error.message);
+    process.exit(zip.status || 1);
+  }
+
+  console.log("zip command was not available; using PowerShell Compress-Archive.");
+  const powershell = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      `Compress-Archive -LiteralPath ${powerShellString(stageDir)} -DestinationPath ${powerShellString(zipPath)} -Force`,
+    ],
+    { stdio: "inherit" },
+  );
+
+  if (powershell.status !== 0) {
+    if (powershell.error) console.error(powershell.error.message);
+    process.exit(powershell.status || 1);
+  }
+}
+
+function powerShellString(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
 rmSync(stageDir, { recursive: true, force: true });
 rmSync(zipPath, { force: true });
 mkdirSync(stageDir, { recursive: true });
@@ -201,15 +240,7 @@ cpSync(join(root, "docs"), join(stageDir, "docs"), {
 });
 
 writePackageLaunchers();
-
-const zip = spawnSync("zip", ["-qr", zipPath, packageName], {
-  cwd: distDir,
-  stdio: "inherit",
-});
-
-if (zip.status !== 0) {
-  process.exit(zip.status || 1);
-}
+createZipArchive();
 
 if (!existsSync(zipPath)) {
   console.error("Package zip was not created.");
