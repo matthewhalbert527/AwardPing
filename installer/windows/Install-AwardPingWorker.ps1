@@ -475,6 +475,97 @@ pause
 
   Set-Content -Path $dailyCheckPath -Value $dailyCheckContent -Encoding ASCII
 
+  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+  $visualRunContent = @"
+param(
+  [int]`$Limit = 20000,
+  [switch]`$All,
+  [int]`$DomainDelayMs = 1500
+)
+
+`$ErrorActionPreference = "Stop"
+`$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
+`$AppDir = Join-Path `$InstallRoot "app"
+`$LogDir = Join-Path `$InstallRoot "logs"
+`$LockPath = Join-Path `$InstallRoot "visual-worker.lock"
+New-Item -ItemType Directory -Force -Path `$LogDir | Out-Null
+
+function Test-VisualLockActive {
+  param([string]`$Path)
+
+  if (-not (Test-Path `$Path)) {
+    return `$false
+  }
+
+  try {
+    `$raw = Get-Content -Path `$Path -Raw -ErrorAction Stop
+    `$match = [regex]::Match(`$raw, "pid=(\d+)")
+    if (`$match.Success) {
+      `$workerPid = [int]`$match.Groups[1].Value
+      `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
+      if (`$process -and (
+        `$process.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+        `$process.CommandLine -like "*source:visual-snapshots*"
+      )) {
+        return `$true
+      }
+    }
+  } catch {
+    Write-Host "Could not inspect visual worker lock; treating it as stale."
+  }
+
+  Write-Host "Removing stale AwardPing visual worker lock."
+  Remove-Item -Path `$Path -Force -ErrorAction SilentlyContinue
+  return `$false
+}
+
+if (Test-VisualLockActive -Path `$LockPath) {
+  Write-Host "AwardPing visual snapshot worker is already running. Skipping this launch."
+  exit 0
+}
+
+`$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+`$logPath = Join-Path `$LogDir "awardping-visual-snapshots-`$stamp.log"
+
+Set-Location `$AppDir
+`$workerArgs = @(
+  "run",
+  "source:visual-snapshots",
+  "--",
+  "--env",
+  ".env.worker.local",
+  "--limit",
+  [string]`$Limit,
+  "--domain-delay-ms",
+  [string]`$DomainDelayMs
+)
+if (`$All) { `$workerArgs += "--all=true" }
+
+Write-Host "Running AwardPing visual snapshot worker. Log: `$logPath"
+Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o)" -Encoding ASCII
+try {
+  & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath
+  `$exitCode = `$LASTEXITCODE
+} finally {
+  Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
+}
+exit `$exitCode
+"@
+
+  Set-Content -Path $visualRunScript -Value $visualRunContent -Encoding UTF8
+
+  $visualCheckPath = Join-Path $InstallRoot "3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat"
+  $visualCheckContent = @"
+@echo off
+echo Running AwardPing visual snapshot check now.
+echo This captures screenshots and normalized visible text under D:\AwardPingVisualSnapshots.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000
+echo.
+pause
+"@
+
+  Set-Content -Path $visualCheckPath -Value $visualCheckContent -Encoding ASCII
+
   $logsPath = Join-Path $InstallRoot "OPEN-LOGS.bat"
   $logsContent = @"
 @echo off
@@ -494,12 +585,16 @@ param(
 `$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
 `$statePath = Join-Path `$InstallRoot "update-state.json"
 `$workerLock = Join-Path `$InstallRoot "worker.lock"
+`$visualWorkerLock = Join-Path `$InstallRoot "visual-worker.lock"
 `$tempRoot = Join-Path `$env:TEMP ("AwardPingWorkerUpdate-" + [guid]::NewGuid().ToString("N"))
 `$zipPath = Join-Path `$tempRoot "awardping-worker-windows.zip"
 `$extractPath = Join-Path `$tempRoot "extracted"
 
 function Test-WorkerLockActive {
-  param([string]`$Path)
+  param(
+    [string]`$Path,
+    [string[]]`$CommandLinePatterns
+  )
 
   if (-not (Test-Path `$Path)) {
     return `$false
@@ -511,8 +606,12 @@ function Test-WorkerLockActive {
     if (`$match.Success) {
       `$workerPid = [int]`$match.Groups[1].Value
       `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
-      if (`$process -and `$process.CommandLine -like "*Run-AwardPingWorker.ps1*") {
-        return `$true
+      if (`$process) {
+        foreach (`$pattern in `$CommandLinePatterns) {
+          if (`$process.CommandLine -like `$pattern) {
+            return `$true
+          }
+        }
       }
     }
   } catch {
@@ -525,8 +624,10 @@ function Test-WorkerLockActive {
 }
 
 try {
-  if ((Test-WorkerLockActive -Path `$workerLock) -and -not `$Force) {
-    Write-Host "AwardPing worker appears to be running. Skipping update until the next updater run."
+  `$sourceWorkerActive = Test-WorkerLockActive -Path `$workerLock -CommandLinePatterns @("*Run-AwardPingWorker.ps1*")
+  `$visualWorkerActive = Test-WorkerLockActive -Path `$visualWorkerLock -CommandLinePatterns @("*Run-AwardPingVisualSnapshots.ps1*", "*source:visual-snapshots*")
+  if ((`$sourceWorkerActive -or `$visualWorkerActive) -and -not `$Force) {
+    Write-Host "An AwardPing worker appears to be running. Skipping update until the next updater run."
     exit 0
   }
 
@@ -625,6 +726,10 @@ Use:
 2-RUN-HOURLY-CHECK-NOW.bat
   Runs one normal scheduled-style check immediately.
 
+3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
+  Runs the disk-backed visual screenshot/text checker across all source pages.
+  The daily scheduled visual task uses the same runner.
+
 OPEN-LOGS.bat
   Opens crawler logs.
 "@
@@ -699,6 +804,19 @@ function Register-UpdaterTask {
   Write-Host "Scheduled task created: $taskName every 30 minutes"
 }
 
+function Register-VisualSnapshotTask {
+  param([string]$InstallRoot)
+
+  Write-Step "Creating AwardPing visual snapshot task"
+  $taskName = "AwardPing Visual Snapshot Worker"
+  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 20000"
+  $trigger = New-ScheduledTaskTrigger -Daily -At 2am
+  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
+  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC." -Force | Out-Null
+  Write-Host "Scheduled task created: $taskName daily at 2:00 AM"
+}
+
 $packageRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 $payloadRoot = Join-Path $packageRoot "runner-files"
 if (Test-Path (Join-Path $payloadRoot "package.json")) {
@@ -755,6 +873,7 @@ Write-UninstallScript -InstallRoot $InstallRoot
 Write-LauncherScripts -InstallRoot $InstallRoot -RunScript $runScript
 Install-Dependencies -AppDir $appDir
 Register-UpdaterTask -InstallRoot $InstallRoot
+Register-VisualSnapshotTask -InstallRoot $InstallRoot
 
 if ((-not $UpdateOnly) -and $createSchedule) {
   Register-WorkerTask -RunScript $runScript
