@@ -74,7 +74,7 @@ export function displayChangeSummary(
     return "The Udall Faculty Reps page lists the Scholarship submission deadline as May 26, 2026 in the Submitting Applications section.";
   }
 
-  return clean;
+  return softenReplacementLanguage(clean);
 }
 
 function rewritePathSourceLabel(summary: string, sourceUrl?: string | null) {
@@ -83,6 +83,24 @@ function rewritePathSourceLabel(summary: string, sourceUrl?: string | null) {
     /^The\s+(\/[^\s]+|[a-z0-9-]+(?:\/[a-z0-9-]+)+\/?)\s+page\s+/i,
     () => `The ${readableSourceTitle(null, sourceUrl)} page `,
   );
+}
+
+function softenReplacementLanguage(summary: string) {
+  const changed = summary.match(
+    /^The\s+(.+?)\s+page\s+changed\s+wording\s+from\s+"([^"]+)"\s+to\s+"([^"]+)"\.?$/i,
+  );
+  if (!changed) return summary;
+
+  const [, sourceName, before, after] = changed;
+  return `The ${sourceName} page has updated wording. Current stored wording includes: ${sentenceForDisplay(
+    after,
+  )} Previous stored wording included: ${sentenceForDisplay(before)}`;
+}
+
+function sentenceForDisplay(value: string) {
+  const clean = cleanDisplayText(value).replace(/\.\.\.$/, "").trim();
+  if (!clean) return "";
+  return /[.!?]$/.test(clean) ? clean : `${clean}.`;
 }
 
 export function changeSummaryDisplayParts(

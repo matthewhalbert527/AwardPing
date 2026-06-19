@@ -25,7 +25,7 @@ export default async function DashboardLayout({
       <header className="dashboard-header">
         <div className="dashboard-header-shell">
           <div className="dashboard-header-bar">
-            <Link href="/" className="brand-link dashboard-brand-link">
+            <Link href="/" className="brand-link dashboard-brand-link" aria-label="AwardPing home">
               <BrandLogo />
             </Link>
 

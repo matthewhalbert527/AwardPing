@@ -13,6 +13,7 @@ import {
   ExternalLink,
   Plus,
   Search,
+  X,
 } from "lucide-react";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
@@ -118,6 +119,7 @@ export function AwardDiscoveryWorkspace({
   }, [alphabeticalAwards, query]);
   const searchQuery = query.trim();
   const showSearchResults = searchOpen && searchQuery.length > 0;
+  const browseHiddenBySearch = showSearchResults;
 
   async function trackSharedAward(award: SharedAwardCard) {
     if (!isAuthenticated) return;
@@ -461,63 +463,85 @@ export function AwardDiscoveryWorkspace({
           </div>
 
           {showSearchResults && (
-            <div
-              id="award-search-results"
-              className="award-search-results"
-              role="listbox"
-              aria-label="Matching awards"
-              tabIndex={-1}
-            >
-              {matches.map((award) => (
+            <div className="award-search-panel">
+              <div className="award-search-panel-header">
+                <p>
+                  {matches.length === 0
+                    ? "No matches"
+                    : `${matches.length} matching award${matches.length === 1 ? "" : "s"}`}
+                </p>
                 <button
-                  className={`award-search-option ${
-                    selectedAwardId === award.id ? "award-search-option-active" : ""
-                  }`}
-                  key={award.id}
+                  className="award-search-clear"
                   type="button"
-                  role="option"
-                  aria-selected={selectedAwardId === award.id}
-                  onMouseDown={(event) => {
-                    event.preventDefault();
-                    setQuery(award.name);
-                    showAwardInBrowse(award);
+                  onClick={() => {
+                    setQuery("");
+                    setSearchOpen(false);
                   }}
                 >
-                  <span className="award-search-option-title">{award.name}</span>
-                  {searchResultMetaText(award) && (
-                    <span className="award-search-option-meta">{searchResultMetaText(award)}</span>
-                  )}
+                  <X size={14} aria-hidden="true" />
+                  Clear
                 </button>
-              ))}
-              {matches.length === 0 && (
-                <p className="award-search-empty">
-                  No matching database award yet.
-                </p>
-              )}
+              </div>
+              <div
+                id="award-search-results"
+                className="award-search-results"
+                role="listbox"
+                aria-label="Matching awards"
+                tabIndex={-1}
+              >
+                {matches.map((award) => (
+                  <button
+                    className={`award-search-option ${
+                      selectedAwardId === award.id ? "award-search-option-active" : ""
+                    }`}
+                    key={award.id}
+                    type="button"
+                    role="option"
+                    aria-selected={selectedAwardId === award.id}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      setQuery(award.name);
+                      showAwardInBrowse(award);
+                    }}
+                  >
+                    <span className="award-search-option-title">{award.name}</span>
+                    {searchResultMetaText(award) && (
+                      <span className="award-search-option-meta">{searchResultMetaText(award)}</span>
+                    )}
+                  </button>
+                ))}
+                {matches.length === 0 && (
+                  <p className="award-search-empty">
+                    No matching database award yet.
+                  </p>
+                )}
+              </div>
             </div>
           )}
         </div>
 
-        <div className="mt-4 flex flex-col gap-3 border-t border-[var(--line)] pt-4 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="dashboard-label">Alphabetical browse</p>
-            <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-              Use the A-Z list when search is not the fastest path.
-            </p>
+        {!browseHiddenBySearch && (
+          <div className="mt-4 flex flex-col gap-3 border-t border-[var(--line)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="dashboard-label">Alphabetical browse</p>
+              <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
+                Use the A-Z list when search is not the fastest path.
+              </p>
+            </div>
+            <button
+              className="button-secondary"
+              type="button"
+              onClick={() => setBrowseOpen((current) => !current)}
+              aria-expanded={browseOpen}
+            >
+              {browseOpen ? <ChevronUp size={17} aria-hidden="true" /> : <ChevronDown size={17} aria-hidden="true" />}
+              {browseOpen ? "Hide browse" : "Browse all"}
+            </button>
           </div>
-          <button
-            className="button-secondary"
-            type="button"
-            onClick={() => setBrowseOpen((current) => !current)}
-            aria-expanded={browseOpen}
-          >
-            {browseOpen ? <ChevronUp size={17} aria-hidden="true" /> : <ChevronDown size={17} aria-hidden="true" />}
-            {browseOpen ? "Hide browse" : "Browse all"}
-          </button>
-        </div>
+        )}
       </section>
 
-      {browseOpen && (
+      {!browseHiddenBySearch && browseOpen && (
         <section className="grid min-w-0 gap-3" aria-label="Browse all awards">
           {renderBrowseControls("top")}
 

@@ -531,7 +531,7 @@ function defaultTracked(source: SourcePageTreeSource) {
 function formatCadence(cadence: string | null | undefined) {
   if (!cadence) return null;
   if (cadence === "daily") return "Daily";
-  if (cadence === "hourly") return "Every 90 minutes";
+  if (cadence === "hourly") return "Hourly";
   return titleCase(cadence.replace(/[-_]+/g, " "));
 }
 

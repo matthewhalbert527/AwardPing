@@ -95,6 +95,149 @@ describe("structured change details", () => {
     expect(isMeaningfulChangeDetails(details)).toBe(false);
   });
 
+  it("treats top jump-link prefixes before FAQ headings as scrape noise", () => {
+    const previous =
+      "For a full database of postgraduate courses available at the University of Cambridge, please visit this website - Course Directory | Postgraduate Study. Applications Does Gates Cambridge provide funding for the University of Cambridge application fee? Unfortunately, Gates Cambridge does not provide funding to cover the cost of the application fee for the University of Cambridge.";
+    const next =
+      "For a full database of postgraduate courses available at the University of Cambridge, please visit this website - Course Directory | Postgraduate Study. Top Applications Does Gates Cambridge provide funding for the University of Cambridge application fee? Unfortunately, Gates Cambridge does not provide funding to cover the cost of the application fee for the University of Cambridge.";
+
+    const details = buildHeuristicChangeDetails({
+      previousSample: previous,
+      nextText: next,
+      source: {
+        source_title: "Frequently Asked Questions",
+        source_url: "https://www.gatescambridge.org/apply/frequently-asked-questions/",
+        page_type: "application",
+      },
+      generatedAt: "2026-06-08T20:40:00.000Z",
+    });
+
+    expect(details.quality_flags).toContain("raw_scrape_signal");
+    expect(details.is_alert_worthy).toBe(false);
+    expect(details.reader_summary).toBe("No award-relevant wording changed in the stored excerpt.");
+  });
+
+  it("treats source access recovery as scrape noise instead of added award text", () => {
+    const previous =
+      "FEHLER 403: Zugriff verboten ERROR 403: Access Denied Der Bereich, in dem die angeforderte Seite liegt, ist fuer das Internet gesperrt. The access to this directory/page is restricted HTTP/1.1 200 OK Server: Apache.";
+    const next =
+      "Research Proposal Information for Postdoc Applicants The Berlin Program funds recent postdocs, i.e. applicants whose Ph.D. was conferred in the last two calendar years or will be conferred before the fellowship would begin. An application for a postdoc fellowship may involve launching a new research project.";
+
+    const details = buildHeuristicChangeDetails({
+      previousSample: previous,
+      nextText: next,
+      source: {
+        source_title: "Research Proposal",
+        source_url: "https://www.fu-berlin.de/en/sites/bprogram/application/Research-Proposal/index.html",
+        page_type: "application",
+      },
+      generatedAt: "2026-06-09T15:35:00.000Z",
+    });
+
+    expect(details.quality_flags).toContain("source_access_error");
+    expect(details.is_alert_worthy).toBe(false);
+    expect(details.before).toBeNull();
+    expect(details.after).toBeNull();
+    expect(details.reader_summary).toBe("No award-relevant wording changed in the stored excerpt.");
+  });
+
+  it("treats longer recrawled excerpts as sample expansion when the old compact text is a prefix", () => {
+    const truncatedBlock =
+      "Skip to main content The Harry S. Truman Scholarship Foundation Apply Sample Application Materials PREPARATION OF MATERIALS AND NOTIFICATION OF STATUSOnly on-line submissions will be accepted. The Foundation will not accept printed materials. Applicants should:Respond precisely to the application questions. Confine responses to the spaces provided. In Items 2 and 3, list your activities in descending order of significance or importance (e.g., start with the one that you believe has been your most substantial contribution).Use ";
+    const previous = truncatedBlock.repeat(4);
+    const next =
+      previous
+        .replaceAll("STATUSOnly", "STATUS Only")
+        .replaceAll("should:Respond", "should: Respond")
+        .replaceAll(").Use", "). Use") +
+      "Items 7-10 and 14 reveal values, interests, and motivation for a career in public service. Provide statistical data to put the issue in context and to support your recommendations. The deadline for submission of this application to the Foundation is 11:59 pm in your time zone on February 2, 2027.";
+
+    const details = buildHeuristicChangeDetails({
+      previousSample: previous,
+      nextText: next,
+      source: {
+        source_title: "Truman Scholarship - Deadline",
+        page_type: "deadline",
+      },
+      generatedAt: "2026-06-11T16:10:00.000Z",
+    });
+
+    expect(details.quality_flags).toContain("sample_expansion");
+    expect(details.is_alert_worthy).toBe(false);
+    expect(details.after).toBeNull();
+    expect(details.reader_summary).toBe("No award-relevant wording changed in the stored excerpt.");
+  });
+
+  it("treats shorter compact-prefix recrawls as sample expansion too", () => {
+    const previous =
+      "Program overview Student internships provide paid research experience. Eligibility Applicants must be enrolled in an accredited undergraduate or graduate program and be available for the listed appointment period.";
+    const continuation =
+      " Learn about the Department of Energy Vulnerability Disclosure Program and additional applicant resources, notices, and reporting channels.";
+
+    const details = buildHeuristicChangeDetails({
+      previousSample: previous.repeat(3),
+      nextText: previous.repeat(3) + continuation,
+      source: {
+        source_title: "Student Internships",
+        page_type: "application",
+      },
+      generatedAt: "2026-06-11T16:08:00.000Z",
+    });
+
+    expect(details.quality_flags).toContain("sample_expansion");
+    expect(details.is_alert_worthy).toBe(false);
+  });
+
+  it("keeps Ph.D. and i.e. abbreviations inside one changed sentence", () => {
+    const previous =
+      "Research Proposal Applicants should describe their research methods and explain why Berlin is important to the project.";
+    const next =
+      "Research Proposal Applicants should describe their research methods and explain why Berlin is important to the project. Information for Postdoc Applicants The Berlin Program funds recent postdocs, i.e. applicants whose Ph.D. was conferred in the last two calendar years or will be conferred before the fellowship would begin.";
+
+    const details = buildHeuristicChangeDetails({
+      previousSample: previous,
+      nextText: next,
+      source: {
+        source_title: "Research Proposal",
+        page_type: "application",
+      },
+      generatedAt: "2026-06-09T15:35:00.000Z",
+    });
+
+    expect(details.structured_diff.added_text[0]).toContain(
+      "i.e. applicants whose Ph.D. was conferred",
+    );
+    expect(details.after).toContain("whose Ph.D. was conferred");
+    expect(details.after).not.toMatch(/whose Ph\.D\.$/);
+  });
+
+  it("treats invalid AI JSON details as non-meaningful until regenerated", () => {
+    const details = {
+      reader_summary: "The deadline moved to April 15, 2026.",
+      before: "Applications close April 1, 2026.",
+      after: "Applications close April 15, 2026.",
+      section: "Deadlines",
+      change_type: "deadline",
+      advisor_impact: "Update advising calendars.",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: [],
+        removed_text: [],
+        likely_section: "Deadlines",
+        page_type: "deadline",
+        date_changes: ["Added April 15, 2026"],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {},
+      quality_flags: ["ai_invalid_json"],
+      generated_at: "2026-06-08T20:40:00.000Z",
+    };
+
+    expect(isMeaningfulChangeDetails(details)).toBe(false);
+  });
+
   it("treats identical truncated before and after snippets as non-meaningful", () => {
     const details = {
       reader_summary:

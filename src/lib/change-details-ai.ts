@@ -204,11 +204,15 @@ const systemPrompt = [
   "Return valid JSON only. Do not include markdown.",
   "Use only facts visible in the provided previous excerpt, new excerpt, and structured diff.",
   "Ignore navigation, footers, social links, CTAs, testimonials, unrelated programs, and raw scrape artifacts.",
+  "If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false.",
   "If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text.",
   "Reject vague page-update language and raw scrape signals such as LEARN MORE.",
   "Required top-level keys: reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence.",
   "Use null for unknown before/after/section/advisor_impact.",
   "Set is_alert_worthy=false when no concrete award-relevant fact changed.",
+  "Make reader_summary a clear one- or two-sentence explanation for a scholarship advisor.",
+  "For broad content rotations, describe the category of content that changed and explicitly say whether deadlines, eligibility, funding, or application requirements changed.",
+  "For concrete award changes, state the practical before/after meaning instead of dumping raw scraped text.",
   "Confidence must be low, medium, or high.",
 ].join(" ");
 
@@ -249,7 +253,7 @@ function userPrompt(
     "",
     `New excerpt:\n${input.nextText.slice(0, promptChars)}`,
     "",
-    "Return one JSON object. The reader_summary must be a direct explanation of the changed fact, not a scrape fragment.",
+    "Return one JSON object. The reader_summary must be a direct explanation of the changed fact, not a scrape fragment or a word-level diff.",
   ].join("\n");
 }
 

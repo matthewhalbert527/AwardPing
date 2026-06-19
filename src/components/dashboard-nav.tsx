@@ -3,11 +3,13 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
+  Inbox,
   ListChecks,
   SearchCheck,
 } from "lucide-react";
 
 const links = [
+  { href: "/dashboard", label: "Updates", icon: Inbox, section: "updates" },
   { href: "/dashboard/awards", label: "Database", icon: SearchCheck, section: "database" },
   { href: "/dashboard/awards?view=watchlist", label: "Watchlist", icon: ListChecks, section: "watchlist" },
 ];
@@ -45,10 +47,9 @@ function currentDashboardSection(
     return searchParams.get("view") === "watchlist" ? "watchlist" : "database";
   }
 
-  if (pathname === "/dashboard") {
-    if (searchParams.get("view") === "subscribe") return "watchlist";
-    return searchParams.get("scope") === "all" ? "database" : "watchlist";
+  if (pathname === "/dashboard" || pathname.startsWith("/dashboard/updates")) {
+    return "updates";
   }
 
-  return "database";
+  return "updates";
 }

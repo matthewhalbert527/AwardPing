@@ -4,7 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 
 const features = [
   "Unlimited award page monitors",
-  "90-minute scheduled checks",
+  "Hourly scheduled checks",
   "Email alerts",
   "Update history for follow-up",
   "Find exact official award pages",

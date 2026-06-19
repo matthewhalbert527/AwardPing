@@ -165,6 +165,16 @@ describe("change summary filtering", () => {
     );
   });
 
+  it("does not present stored before and after snippets as a direct replacement", () => {
+    expect(
+      displayChangeSummary(
+        'The Research Proposal page changed wording from "Applicants whose Ph. D. was conferred in the last two years." to "Applicants whose Ph. D. was conferred in the last two calendar years.".',
+      ),
+    ).toBe(
+      "The Research Proposal page has updated wording. Current stored wording includes: Applicants whose Ph.D. was conferred in the last two calendar years. Previous stored wording included: Applicants whose Ph.D. was conferred in the last two years.",
+    );
+  });
+
   it("does not split application source names into a standalone The paragraph", () => {
     const parts = changeSummaryDisplayParts(
       "The Application Overview page added the following wording: Please check this page in July 2026 for more information. Why Apply for the Rhodes Scholarship?",

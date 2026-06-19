@@ -62,9 +62,12 @@ Useful options:
 npm run worker:local -- --env .env.worker.local --limit 500 --max-subpages 8 --structure-rescan-days 7
 npm run worker:local -- --env .env.worker.local --award "Udall" --deep-crawl=true --include-not-due=true --force-structure=true --limit 75 --max-subpages 24 --crawl-depth 2
 npm run worker:local -- --env .env.worker.local --limit 25 --ai=false
+npm run worker:local -- --env .env.worker.local --baseline-refresh=true --include-not-due=true --baseline-started-at 2026-06-11T16:30:00.000Z --limit 5000 --ai=false
 ```
 
 The worker checks page content every 60 minutes by default and refreshes each award's source-page list weekly so rearranged application, deadline, eligibility, FAQ, and PDF pages can be picked up. AI summaries use `GEMINI_API_KEY` or `OPENAI_API_KEY` when present and fall back to deterministic summaries when neither is configured. Each run writes a `local_worker_runs` record so `/dashboard/ops` can show checked, changed, discovered, failed, and AI provider counts.
+
+Use `--baseline-refresh=true` only for intentional slate resets. It fetches active sources, writes the current snapshot, advances each source's `last_hash`, and does not create change-event alerts for that pass. For large catalogs, pass the same `--baseline-started-at` timestamp to every batch; sources already refreshed after that timestamp are skipped, so the reset can resume cleanly.
 
 To create a Windows installer package for the PC:
 

@@ -56,16 +56,16 @@ export default async function Home() {
     <div className="page-shell">
       <SiteHeader />
       <main>
-        <section className="mx-auto max-w-6xl px-5 pb-16 pt-20 lg:pb-20 lg:pt-28">
+        <section className="mx-auto max-w-6xl px-5 pb-10 pt-12 lg:pb-12 lg:pt-16">
           <div className="mx-auto max-w-5xl text-center">
-            <h1 className="text-5xl font-black leading-[0.94] md:text-7xl lg:text-8xl">
+            <h1 className="text-4xl font-black leading-[0.98] md:text-6xl lg:text-7xl">
               Never miss an <span className="home-hero-emphasis">update.</span>
             </h1>
-            <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)]">
+            <p className="mx-auto mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
               AwardPing checks official nationally competitive award pages for
               deadline, eligibility, application instruction, and PDF updates.
             </p>
-            <div className="mt-8 flex flex-col justify-center gap-3 sm:flex-row">
+            <div className="mt-6 flex flex-col justify-center gap-3 sm:flex-row">
               <Link className="button-primary" href={user ? "/dashboard" : "/signup"}>
                 {user ? "Open dashboard" : "Sign up for free"}
                 <ArrowRight size={17} aria-hidden="true" />
@@ -103,7 +103,7 @@ export default async function Home() {
               {
                 icon: Bell,
                 title: "Advisor-ready alerts",
-                text: "90-minute scheduled checks are included for free, with simple update history for follow-up.",
+                text: "Hourly scheduled checks are included for free, with simple update history for follow-up.",
               },
             ].map((item, index) => {
               const Icon = item.icon;

@@ -42,7 +42,7 @@ export function ChangeEvidencePanel({
 
   return (
     <details className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
-      <summary>Update details</summary>
+      <summary>View change explanation</summary>
       <div className="change-evidence-body">
         {storedHighlightUrl ? (
           <a
@@ -52,7 +52,7 @@ export function ChangeEvidencePanel({
             rel="noreferrer"
           >
             <ExternalLink size={14} aria-hidden="true" />
-            Open highlighted version
+            Open full change explanation
           </a>
         ) : evidence.highlightedUrl ? (
           <a
@@ -62,7 +62,7 @@ export function ChangeEvidencePanel({
             rel="noreferrer"
           >
             <ExternalLink size={14} aria-hidden="true" />
-            Open highlighted official page
+            Open matched official-page text
           </a>
         ) : null}
 
@@ -77,12 +77,28 @@ export function ChangeEvidencePanel({
             </div>
           )}
 
+          {(evidence.descriptionSourceLabel ||
+            evidence.changeTypeLabel ||
+            evidence.sectionLabel ||
+            evidence.confidenceLabel) && (
+            <div className="change-evidence-meta">
+              {evidence.descriptionSourceLabel && <span>{evidence.descriptionSourceLabel}</span>}
+              {evidence.changeTypeLabel && <span>{evidence.changeTypeLabel}</span>}
+              {evidence.sectionLabel && <span>{evidence.sectionLabel}</span>}
+              {evidence.confidenceLabel && <span>{evidence.confidenceLabel}</span>}
+            </div>
+          )}
+
+          {evidence.relationshipNote && (
+            <p className="change-evidence-note">{evidence.relationshipNote}</p>
+          )}
+
           {evidence.hasStructuredEvidence || evidence.hasSnapshotEvidence ? (
             <div className="change-evidence-grid">
               <section>
-                <h5>After / new text</h5>
-                {evidence.addedSnippets.length > 0 && !evidence.hasStructuredEvidence ? (
-                  evidence.addedSnippets.map((snippet) => (
+                <h5>Current wording</h5>
+                {evidence.currentSnippets.length > 0 ? (
+                  evidence.currentSnippets.map((snippet) => (
                     <mark className="change-evidence-added" key={snippet}>
                       {snippet}
                     </mark>
@@ -94,9 +110,9 @@ export function ChangeEvidencePanel({
                 )}
               </section>
               <section>
-                <h5>Before</h5>
-                {evidence.removedSnippets.length > 0 && !evidence.hasStructuredEvidence ? (
-                  evidence.removedSnippets.map((snippet) => (
+                <h5>Previous wording</h5>
+                {evidence.previousSnippets.length > 0 ? (
+                  evidence.previousSnippets.map((snippet) => (
                     <mark className="change-evidence-removed" key={snippet}>
                       {snippet}
                     </mark>
@@ -104,7 +120,7 @@ export function ChangeEvidencePanel({
                 ) : evidence.beforeSnippet ? (
                   <mark className="change-evidence-removed">{evidence.beforeSnippet}</mark>
                 ) : (
-                  <p>No previous snapshot text was stored for this exact item.</p>
+                  <p>No reliable previous wording was isolated for this exact item.</p>
                 )}
               </section>
             </div>
@@ -167,13 +183,13 @@ export function ChangeEvidencePanel({
 
         {storedHighlightUrl ? (
           <p className="change-evidence-note">
-            Highlighted versions use AwardPing&apos;s stored snapshot text, so they still work when
-            the official page has changed again.
+            Full explanations use AwardPing&apos;s stored snapshot text, so they still work when the
+            official page has changed again.
           </p>
         ) : evidence.highlightedUrl ? (
           <p className="change-evidence-note">
-            Highlighted official-page links depend on the current site still containing the changed
-            text and may not work on PDFs or heavily scripted pages.
+            Matched official-page links depend on the current site still containing the changed text
+            and may not work on PDFs or heavily scripted pages.
           </p>
         ) : null}
       </div>

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink, Sparkles } from "lucide-react";
 import { SetupNotice } from "@/components/setup-notice";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
@@ -52,7 +52,15 @@ export default async function HighlightPage({ params }: Props) {
   }
 
   const { kind, id } = await params;
-  const change = await loadChange(kind, id);
+  if (kind !== "shared" && kind !== "office") notFound();
+
+  let change: HighlightChange | null;
+  try {
+    change = await loadChange(kind, id);
+  } catch (error) {
+    logHighlightLoadIssue("highlight page load failed", error);
+    return <HighlightLoadIssue backHref={kind === "office" ? "/dashboard" : "/award-directory"} />;
+  }
   if (!change) notFound();
 
   const evidence = buildChangeEvidence({
@@ -63,11 +71,11 @@ export default async function HighlightPage({ params }: Props) {
     previousTextSample: change.previousTextSample,
     newTextSample: change.newTextSample,
   });
-  const afterCandidates = evidence.hasStructuredEvidence
-    ? uniqueCandidates([evidence.afterSnippet])
+  const afterCandidates = evidence.hasStructuredEvidence && evidence.currentSnippets.length > 0
+    ? uniqueCandidates(evidence.currentSnippets)
     : uniqueCandidates([evidence.afterSnippet, ...evidence.addedSnippets]);
-  const beforeCandidates = evidence.hasStructuredEvidence
-    ? uniqueCandidates([evidence.beforeSnippet])
+  const beforeCandidates = evidence.hasStructuredEvidence && evidence.previousSnippets.length > 0
+    ? uniqueCandidates(evidence.previousSnippets)
     : uniqueCandidates([evidence.beforeSnippet, ...evidence.removedSnippets]);
   const showAfterSnapshot = evidence.hasSnapshotEvidence && Boolean(normalizeSnapshotText(change.newTextSample || ""));
   const showBeforeSnapshot =
@@ -88,81 +96,214 @@ export default async function HighlightPage({ params }: Props) {
     afterCandidates.length > 0;
   const showBeforePanel = showBeforeSnapshot && !suppressContextOnlyBeforeSnapshot;
   const snapshotPanelCount = [showAfterSnapshot, showBeforePanel].filter(Boolean).length;
+  const hasSupportingExcerpts =
+    evidence.currentSnippets.length > 0 || evidence.previousSnippets.length > 0;
 
   return (
     <div className="page-shell">
       <SiteHeader />
       <main className="highlight-page mx-auto max-w-6xl px-5 py-12">
         <div className="highlight-page-header">
-          <Link className="button-secondary" href={change.backHref}>
+          <Link className="button-secondary highlight-back-link" href={change.backHref}>
             <ArrowLeft size={16} aria-hidden="true" />
             Back
           </Link>
           <div>
-            <span className="badge">Highlighted evidence</span>
+            <span className="badge">Change explanation</span>
             <h1>{change.title}</h1>
             <p>
-              AwardPing is showing the stored snapshot text from the update, with the detected
-              before/after wording highlighted. The official page may have changed again since this
-              capture.
+              AwardPing summarizes the stored before and after evidence so broad page edits are
+              easier to understand. Supporting excerpts show the text behind the description.
             </p>
           </div>
         </div>
 
         <section className="highlight-source-bar">
-          <div>
+          <div className="highlight-source-main">
             <h2>Source</h2>
             <p>{readableSourceTitle(change.sourceTitle || "Official source page", change.sourceUrl)}</p>
-            {change.sourcePageType && <span>{pageTypeLabel(change.sourcePageType)}</span>}
-            <span>Detected {formatDate(change.detectedAt)}</span>
+            <div className="highlight-source-meta">
+              {change.sourcePageType && <span>{pageTypeLabel(change.sourcePageType)}</span>}
+              <span>Detected {formatDate(change.detectedAt)}</span>
+            </div>
           </div>
           {change.sourceUrl && (
-            <a href={change.sourceUrl} target="_blank" rel="noreferrer">
+            <a className="highlight-source-action" href={change.sourceUrl} target="_blank" rel="noreferrer">
               <ExternalLink size={15} aria-hidden="true" />
               Open current official page
             </a>
           )}
         </section>
 
-        <section className="highlight-summary-panel">
+        <section className="highlight-summary-panel highlight-description-panel">
+          <div className="highlight-description-kicker">
+            <Sparkles size={16} aria-hidden="true" />
+            <span>{evidence.descriptionSourceLabel || "Change description"}</span>
+          </div>
           <h2>What changed</h2>
-          <p>{evidence.summarySnippet || displayChangeSummary(change.summary, change.sourceUrl, change.changeDetails)}</p>
-          {evidence.advisorImpact && <p className="highlight-note">{evidence.advisorImpact}</p>}
+          <p className="highlight-description-copy">
+            {evidence.summarySnippet ||
+              displayChangeSummary(change.summary, change.sourceUrl, change.changeDetails)}
+          </p>
+          {(evidence.changeTypeLabel || evidence.sectionLabel || evidence.confidenceLabel) && (
+            <div className="highlight-description-meta">
+              {evidence.changeTypeLabel && (
+                <span>
+                  <strong>Type</strong>
+                  {evidence.changeTypeLabel}
+                </span>
+              )}
+              {evidence.sectionLabel && (
+                <span>
+                  <strong>Section</strong>
+                  {evidence.sectionLabel}
+                </span>
+              )}
+              {evidence.confidenceLabel && (
+                <span>
+                  <strong>Confidence</strong>
+                  {evidence.confidenceLabel}
+                </span>
+              )}
+            </div>
+          )}
+          {evidence.relationshipNote && (
+            <p className="highlight-note highlight-caution-note">{evidence.relationshipNote}</p>
+          )}
+          {evidence.advisorImpact && (
+            <p className="highlight-note highlight-advisor-note">{evidence.advisorImpact}</p>
+          )}
         </section>
 
-        {evidence.hasSnapshotEvidence && snapshotPanelCount > 0 ? (
-          <div
-            className={`highlight-snapshot-grid${
-              snapshotPanelCount === 1 ? " highlight-snapshot-grid-single" : ""
-            }`}
-          >
-            {showAfterSnapshot && (
-              <HighlightedSnapshot
-                title="After / new text"
-                text={change.newTextSample}
-                candidates={afterCandidates}
+        {hasSupportingExcerpts && (
+          <section className="highlight-summary-panel highlight-excerpts-panel">
+            <div className="highlight-section-intro">
+              <h2>Supporting excerpts</h2>
+              <p>
+                These are the stored snippets AwardPing used to produce the description. They are
+                evidence excerpts, not a promise that every changed word is marked.
+              </p>
+            </div>
+            <div className="highlight-excerpt-grid">
+              <SupportingExcerptList
+                title="Current wording"
+                snippets={evidence.currentSnippets}
                 variant="added"
+                emptyText="No current wording was isolated in the stored excerpt."
               />
-            )}
-            {showBeforePanel && (
-              <HighlightedSnapshot
-                title="Before"
-                text={change.previousTextSample}
-                candidates={beforeCandidates}
+              <SupportingExcerptList
+                title="Previous wording"
+                snippets={evidence.previousSnippets}
                 variant="removed"
-                marker={beforeInsertionMarker}
+                emptyText="No reliable previous wording was isolated for this item."
               />
-            )}
-          </div>
+            </div>
+          </section>
+        )}
+
+        {evidence.hasSnapshotEvidence && snapshotPanelCount > 0 ? (
+          <>
+            <div className="highlight-section-intro highlight-snapshot-intro">
+              <h2>Stored snapshot context</h2>
+              <p>
+                Exact marks appear only when a stored snippet can be placed in the snapshot text.
+                The description above is the primary explanation.
+              </p>
+            </div>
+            <div
+              className={`highlight-snapshot-grid${
+                snapshotPanelCount === 1 ? " highlight-snapshot-grid-single" : ""
+              }`}
+            >
+              {showAfterSnapshot && (
+                <HighlightedSnapshot
+                  title={showBeforePanel ? "Current stored snapshot" : "Stored snapshot text"}
+                  text={change.newTextSample}
+                  candidates={afterCandidates}
+                  variant="added"
+                />
+              )}
+              {showBeforePanel && (
+                <HighlightedSnapshot
+                  title="Previous stored snapshot"
+                  text={change.previousTextSample}
+                  candidates={beforeCandidates}
+                  variant="removed"
+                  marker={beforeInsertionMarker}
+                />
+              )}
+            </div>
+          </>
         ) : (
-          <section className="highlight-summary-panel">
+          <section className="highlight-summary-panel highlight-status-panel">
             <h2>Evidence status</h2>
             <p>
-              AwardPing did not isolate a reliable before/after snippet for this update. The stored
-              comparison was likely affected by an older shortened sample, so no text is highlighted.
+              No reliable before/after snippet was isolated for this update. The stored comparison
+              was likely affected by an older shortened sample, so this page avoids highlighting
+              unrelated text.
             </p>
           </section>
         )}
+
+        {suppressContextOnlyBeforeSnapshot && (
+          <section className="highlight-summary-panel highlight-status-panel">
+            <h2>Evidence status</h2>
+            <p>
+              A previous snapshot exists, but AwardPing did not isolate reliable previous wording
+              for this exact item. The text shown above is wording present in the later stored
+              snapshot, not proof of a direct replacement.
+            </p>
+          </section>
+        )}
+      </main>
+      <SiteFooter />
+    </div>
+  );
+}
+
+function SupportingExcerptList({
+  title,
+  snippets,
+  variant,
+  emptyText,
+}: {
+  title: string;
+  snippets: string[];
+  variant: "added" | "removed";
+  emptyText: string;
+}) {
+  return (
+    <section className={`highlight-excerpt-list highlight-excerpt-list-${variant}`}>
+      <h3>{title}</h3>
+      {snippets.length > 0 ? (
+        <ul>
+          {snippets.map((snippet) => (
+            <li key={snippet}>{snippet}</li>
+          ))}
+        </ul>
+      ) : (
+        <p>{emptyText}</p>
+      )}
+    </section>
+  );
+}
+
+function HighlightLoadIssue({ backHref }: { backHref: string }) {
+  return (
+    <div className="page-shell">
+      <SiteHeader />
+      <main className="highlight-page mx-auto max-w-4xl px-5 py-12">
+        <Link className="button-secondary highlight-back-link" href={backHref}>
+          <ArrowLeft size={16} aria-hidden="true" />
+          Back
+        </Link>
+        <section className="highlight-summary-panel highlight-status-panel">
+          <h1 className="text-3xl font-black text-[var(--brand-dark)]">Highlight unavailable</h1>
+          <p>
+            AwardPing could not load the stored evidence for this update right now. The source page
+            may still be available from the award record, and this view can be retried later.
+          </p>
+        </section>
       </main>
       <SiteFooter />
     </div>
@@ -306,22 +447,38 @@ async function fetchOfficeSnapshotSamples(
 
 async function withRetry<Result>(label: string, fn: () => PromiseLike<Result>) {
   let lastError: unknown;
+  const attempts = 2;
 
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const result = await fn();
+      const result = await withQueryTimeout(label, fn());
       const queryError = resultError(result);
       if (queryError) throw queryError;
       return result;
     } catch (error) {
       lastError = error;
-      if (attempt === 3) break;
-      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+      if (attempt === attempts) break;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 350));
     }
   }
 
-  console.error(`${label} failed`, lastError);
+  logHighlightLoadIssue(`${label} failed`, lastError);
   throw lastError;
+}
+
+function withQueryTimeout<Result>(label: string, query: PromiseLike<Result>) {
+  return Promise.race([
+    query,
+    new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error(`${label} timed out`)), 5000);
+    }),
+  ]);
+}
+
+function logHighlightLoadIssue(message: string, error: unknown) {
+  if (process.env.NODE_ENV === "production") {
+    console.error(message, error);
+  }
 }
 
 

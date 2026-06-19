@@ -11,6 +11,12 @@ export function cleanDisplayText(value: string | null | undefined) {
     .replace(/\s*;\s*/g, "; ")
     .replace(/\s+([.,;:!?])/g, "$1")
     .replace(/([.!?])\s*-\s*(?=The\b)/g, "$1 ")
+    .replace(/\bM\.\s*D\./g, "M.D.")
+    .replace(/\bPh\.\s*D\./gi, "Ph.D.")
+    .replace(/\bU\.\s*S\./g, "U.S.")
+    .replace(/\bU\.\s*K\./g, "U.K.")
+    .replace(/\bi\.\s*e\./gi, "i.e.")
+    .replace(/\be\.\s*g\./gi, "e.g.")
     .replace(/\s+/g, " ")
     .trim();
 }

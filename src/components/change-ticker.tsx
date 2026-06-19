@@ -15,7 +15,7 @@ export function ChangeTicker({ items }: { items: ChangeTickerItem[] }) {
   const loopItems = [...tickerItems, ...tickerItems];
 
   return (
-    <section className="mx-auto max-w-6xl px-5 pb-16">
+    <section className="mx-auto max-w-6xl px-5 pb-12">
       <div className="change-ticker-shell">
         <div className="change-ticker-copy">
           <h2 className="flex items-center gap-3 text-4xl font-black">

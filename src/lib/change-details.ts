@@ -350,10 +350,9 @@ function readerSummaryFromDiff(input: {
   const amountText = input.diff.amount_changes[0]?.replace(/^(Added|Removed)\s+/i, "");
 
   if (input.after && input.before) {
-    return `The ${sourceName} page changed wording from "${truncateForReader(
-      input.before,
-      140,
-    )}" to "${truncateForReader(input.after, 170)}".`;
+    return `The ${sourceName} page has updated wording. Current stored wording includes: ${sentenceForReader(
+      truncateForReader(input.after, 170),
+    )} Previous stored wording included: ${sentenceForReader(truncateForReader(input.before, 140))}`;
   }
 
   if (input.after) {
@@ -457,6 +456,12 @@ function qualityFlagsForDiff(input: {
   const changedText = [...input.addedText, ...input.removedText].join(" ");
   const flags: string[] = [];
   if (!input.previousClean) flags.push("no_previous_snapshot");
+  if (
+    looksLikeSourceAccessError(input.previousClean) ||
+    looksLikeSourceAccessError(input.nextClean)
+  ) {
+    flags.push("source_access_error");
+  }
   if (input.sampleExpansion) flags.push("sample_expansion");
   if (hasRawScrapeSignals(changedText)) flags.push("raw_scrape_signal");
   if (looksLikeOrphanPunctuation(changedText)) flags.push("orphan_punctuation");
@@ -522,6 +527,8 @@ function qualityFlagsForDetails(details: ChangeDetails) {
 function isAlertWorthyFromFlags(flags: string[]) {
   return !flags.some((flag) =>
     [
+      "ai_invalid_json",
+      "source_access_error",
       "raw_scrape_signal",
       "orphan_punctuation",
       "vague_summary",
@@ -690,10 +697,31 @@ function changedSentences(previousText: string, nextText: string, mode: "added" 
 }
 
 function sentenceCandidates(text: string) {
-  return normalizeChangeText(text)
-    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+  return splitChangeSentences(normalizeChangeText(text))
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length >= 25 && sentence.length <= 520);
+}
+
+function splitChangeSentences(text: string) {
+  return protectSentenceAbbreviations(text)
+    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+    .map(restoreSentenceAbbreviations);
+}
+
+const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
+
+function protectSentenceAbbreviations(value: string) {
+  return value
+    .replace(/\bM\.\s*D\./g, `M${sentenceDotPlaceholder}D${sentenceDotPlaceholder}`)
+    .replace(/\bPh\.\s*D\./gi, `Ph${sentenceDotPlaceholder}D${sentenceDotPlaceholder}`)
+    .replace(/\bU\.\s*S\./g, `U${sentenceDotPlaceholder}S${sentenceDotPlaceholder}`)
+    .replace(/\bU\.\s*K\./g, `U${sentenceDotPlaceholder}K${sentenceDotPlaceholder}`)
+    .replace(/\bi\.\s*e\./gi, `i${sentenceDotPlaceholder}e${sentenceDotPlaceholder}`)
+    .replace(/\be\.\s*g\./gi, `e${sentenceDotPlaceholder}g${sentenceDotPlaceholder}`);
+}
+
+function restoreSentenceAbbreviations(value: string) {
+  return value.replaceAll(sentenceDotPlaceholder, ".");
 }
 
 function sentenceKey(sentence: string) {
@@ -908,11 +936,14 @@ function normalizeChangeText(value: string) {
 }
 
 function isLikelySampleExpansion(previousText: string, nextText: string) {
-  if (previousText.length < 1800 || nextText.length <= previousText.length + 80) {
+  if (previousText.length < 500 || nextText.length <= previousText.length + 80) {
     return false;
   }
 
   if (nextText.startsWith(previousText)) return true;
+  if (compactSentenceKey(nextText).startsWith(compactSentenceKey(previousText))) {
+    return true;
+  }
   if (!endsLikeTruncatedSample(previousText)) return false;
 
   for (const length of [180, 140, 100, 70]) {
@@ -942,15 +973,43 @@ function truncateForReader(value: string, maxLength: number) {
   return `${truncated.slice(0, boundary > maxLength * 0.65 ? boundary : maxLength).trim()}...`;
 }
 
+function sentenceForReader(value: string) {
+  const clean = normalizeChangeText(value).replace(/\.\.\.$/, "").trim();
+  if (!clean) return "";
+  return /[.!?]$/.test(clean) ? clean : `${clean}.`;
+}
+
 function hasRawScrapeSignals(value: string) {
   return (
+    looksLikeSourceAccessError(value) ||
     hasRawMarkupSignals(value) ||
     hasSeoInstrumentationSignals(value) ||
+    hasJumpLinkHeadingPrefixSignals(value) ||
     /\b(learn more|read more|click here|skip to|main menu|toggle menu|toggle page navigation|search menu|read current issue|cart|dismiss|login|copyright|privacy policy|all rights reserved|facebook|instagram|x\.com|twitter|linkedin|youtube|subscribe|newsletter)\b/i.test(
       value,
     ) ||
     hasNavigationBoilerplate(value) ||
     hasStorefrontBoilerplate(value)
+  );
+}
+
+function looksLikeSourceAccessError(value: string) {
+  const clean = normalizeChangeText(value);
+  if (!clean) return false;
+  return (
+    /\b(?:fehler|error)\s*(?:401|403|404|410|429|50[0-4])\b/i.test(clean) ||
+    /\b(access denied|zugriff verboten|forbidden|not found|page not found|service unavailable|too many requests)\b/i.test(
+      clean,
+    ) ||
+    /\bthe access to this directory\/page is restricted\b/i.test(clean) ||
+    /\bHTTP\/1\.1\s+(?:401|403|404|410|429|50[0-4])\b/i.test(clean)
+  );
+}
+
+function hasJumpLinkHeadingPrefixSignals(value: string) {
+  const clean = normalizeChangeText(value);
+  return /\bTop\s+(?:Applications?|The Selection Process|Selection Process|Eligibility|Requirements?|Deadlines?|Timeline|FAQs?|Funding|References?|Courses?)\b/.test(
+    clean,
   );
 }
 
@@ -1023,6 +1082,7 @@ function isHistoricalRecipientOrMarketingText(value: string) {
 
 function isPersistentQualityFlag(flag: string) {
   return [
+    "ai_invalid_json",
     "no_previous_snapshot",
     "sample_expansion",
     "raw_scrape_signal",

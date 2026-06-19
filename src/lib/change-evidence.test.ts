@@ -66,10 +66,141 @@ describe("change evidence", () => {
     });
 
     expect(evidence.hasStructuredEvidence).toBe(true);
+    expect(evidence.currentSnippets).toEqual(["Applications close April 15, 2026."]);
+    expect(evidence.previousSnippets).toEqual(["Applications close April 1, 2026."]);
+    expect(evidence.changeTypeLabel).toBe("Date");
+    expect(evidence.sectionLabel).toBe("Deadlines");
+    expect(evidence.confidenceLabel).toBe("High confidence");
+    expect(evidence.descriptionSourceLabel).toBe("Generated description");
     expect(evidence.summarySnippet).toBe("The deadline moved to April 15, 2026.");
     expect(evidence.beforeSnippet).toBe("Applications close April 1, 2026.");
     expect(evidence.afterSnippet).toBe("Applications close April 15, 2026.");
     expect(evidence.advisorImpact).toBe("Update advising calendars.");
+  });
+
+  it("does not present unrelated structured snippets as direct replacements", () => {
+    const before =
+      "Congratulations to the approximately 315 U.S. undergraduate and graduate students selected for the 2026 Critical Language Scholarship (CLS) Program. February 17, 2026 CLS Alumni Highlight: Sam Bowden Sam Bowden, a 2024 CLS Russian Program participant in Tbilisi, Georgia, leveraged his personal and academic interests in Russian language, literature, and geopolitics to build meaningful international connections and launch a career in foreign policy. His experiences with CLS helped bridge the gap.";
+    const after =
+      "Portuguese Russian Swahili Applicants Eligibility Language Levels and Prerequisites Selection Criteria Participation Requirements Search for an Advisor Applicant Resources. Jun 03, 2026 AI in Action International Alumni Seminar The U.S. Department of State's CLS Program invites alumni to apply for the AI in Action International Alumni Seminar. May 29, 2026 2026 CLS Alumni Ambassador Forum.";
+
+    const evidence = buildChangeEvidence({
+      sourceUrl: "https://clscholarship.org/",
+      sourceTitle: "Critical Language Scholarship",
+      summary:
+        "The Critical Language Scholarship page changed wording from a Sam Bowden alumni profile to an AI in Action alumni seminar announcement.",
+      previousTextSample: before,
+      newTextSample: after,
+      changeDetails: {
+        reader_summary:
+          "The Critical Language Scholarship page changed wording from a Sam Bowden alumni profile to an AI in Action alumni seminar announcement.",
+        before:
+          "Sam Bowden, a 2024 CLS Russian Program participant in Tbilisi, Georgia, leveraged his personal and academic interests in Russian language, literature, and geopolitics to build meaningful international connections and launch a career in foreign policy.",
+        after:
+          "The U.S. Department of State's CLS Program invites alumni to apply for the AI in Action International Alumni Seminar.",
+        section: "Alumni",
+        change_type: "new_text",
+        advisor_impact: "Review applicant instructions for any needed office-facing updates.",
+        is_alert_worthy: true,
+        confidence: "medium",
+        structured_diff: {
+          added_text: [
+            "The U.S. Department of State's CLS Program invites alumni to apply for the AI in Action International Alumni Seminar.",
+          ],
+          removed_text: [
+            "Sam Bowden, a 2024 CLS Russian Program participant in Tbilisi, Georgia, leveraged his personal and academic interests in Russian language, literature, and geopolitics to build meaningful international connections and launch a career in foreign policy.",
+          ],
+          likely_section: "Alumni",
+          page_type: "other",
+          date_changes: [],
+          amount_changes: [],
+          noise_flags: [],
+        },
+        source: { source_title: "Critical Language Scholarship", page_type: "other" },
+        quality_flags: [],
+        generated_at: "2026-06-08T19:34:00.000Z",
+      },
+    });
+
+    expect(evidence.hasStructuredEvidence).toBe(true);
+    expect(evidence.hasSnapshotEvidence).toBe(true);
+    expect(evidence.afterSnippet).toBe(
+      "The U.S. Department of State's CLS Program invites alumni to apply for the AI in Action International Alumni Seminar.",
+    );
+    expect(evidence.beforeSnippet).toBeNull();
+    expect(evidence.currentSnippets).toEqual([
+      "The U.S. Department of State's CLS Program invites alumni to apply for the AI in Action International Alumni Seminar.",
+    ]);
+    expect(evidence.previousSnippets).toEqual([
+      "Sam Bowden, a 2024 CLS Russian Program participant in Tbilisi, Georgia, leveraged his personal and academic interests in Russian language, literature, and geopolitics to build meaningful international connections and launch a career in foreign policy.",
+    ]);
+    expect(evidence.summaryLabel).toBe("Detected change");
+    expect(evidence.summarySnippet).toBe(
+      "The Critical Language Scholarship page changed wording from a Sam Bowden alumni profile to an AI in Action alumni seminar announcement.",
+    );
+    expect(evidence.relationshipNote).toBe(
+      "The stored added and removed text appears in different parts of the page, so this update is not shown as a direct replacement.",
+    );
+    expect(evidence.advisorImpact).toBeNull();
+  });
+
+  it("keeps multiple structured supporting excerpts for profile and roster rotations", () => {
+    const evidence = buildChangeEvidence({
+      sourceUrl: "https://pdsoros.org/guidance-for-recommenders/",
+      sourceTitle: "Guidance For Recommenders",
+      summary:
+        "The Guidance For Recommenders page refreshed profile, testimonial, or roster content; no application requirements, deadlines, eligibility, or funding text changed.",
+      previousTextSample:
+        "For technical issues, contact support. Featured Fellows Safia Zyla MIP, Stanford University Safia Zyla is an immigrant from Ethiopia. Fellowship awarded in 2025 to support work towards an MIP in International Policy at Stanford University Corinna Zygourakis Assistant Professor, Department of Neurosurgery at Stanford University School of Medicine Corinna Zygourakis is the child of immigrants from Greece.",
+      newTextSample:
+        "For technical issues, contact support. Featured Fellows Anbinh Phan Director of Global Government Affairs, Walmart Anbinh Phan is an immigrant from Malaysia. Fellowship awarded in 2007 to support work towards a JD in Law at Georgetown University Edward Pham Deputy Director, ViRx@Stanford, Stanford Biosecurity and Pandemic Preparedness Initiative Edward Pham is an immigrant from Viet Nam.",
+      changeDetails: {
+        reader_summary:
+          "The Guidance For Recommenders page refreshed profile, testimonial, or roster content; no application requirements, deadlines, eligibility, or funding text changed.",
+        before:
+          "Featured Fellows Safia Zyla MIP, Stanford University Safia Zyla is an immigrant from Ethiopia.",
+        after:
+          "Featured Fellows Anbinh Phan Director of Global Government Affairs, Walmart Anbinh Phan is an immigrant from Malaysia.",
+        section: "Guidance For Recommenders",
+        change_type: "content_update",
+        advisor_impact:
+          "No applicant-facing action is likely needed unless this page is used in promotional or reference materials.",
+        is_alert_worthy: true,
+        confidence: "medium",
+        structured_diff: {
+          added_text: [
+            "Featured Fellows Anbinh Phan Director of Global Government Affairs, Walmart Anbinh Phan is an immigrant from Malaysia.",
+          ],
+          removed_text: [
+            "Featured Fellows Safia Zyla MIP, Stanford University Safia Zyla is an immigrant from Ethiopia.",
+            "Fellowship awarded in 2025 to support work towards an MIP in International Policy at Stanford University Corinna Zygourakis Assistant Professor, Department of Neurosurgery at Stanford University School of Medicine Corinna Zygourakis is the child of immigrants from Greece.",
+          ],
+          likely_section: "Guidance For Recommenders",
+          page_type: "application",
+          date_changes: [],
+          amount_changes: [],
+          noise_flags: [],
+        },
+        source: { source_title: "Guidance For Recommenders", page_type: "application" },
+        quality_flags: ["profile_testimonial_change"],
+        generated_at: "2026-06-17T10:24:31.456Z",
+        generation_provider: "gemini",
+        generation_status: "generated",
+        generation_model: "gemini-2.5-flash-lite",
+      },
+    });
+
+    expect(evidence.descriptionSourceLabel).toBe("AI-generated description");
+    expect(evidence.changeTypeLabel).toBe("Content");
+    expect(evidence.confidenceLabel).toBe("Medium confidence");
+    expect(evidence.currentSnippets).toEqual([
+      "Featured Fellows Anbinh Phan Director of Global Government Affairs, Walmart Anbinh Phan is an immigrant from Malaysia.",
+      "Fellowship awarded in 2007 to support work towards a JD in Law at Georgetown University Edward Pham Deputy Director, Vi Rx@Stanford, Stanford Biosecurity and Pandemic Preparedness Initiative Edward Pham is an immigrant from Viet Nam.",
+    ]);
+    expect(evidence.previousSnippets).toEqual([
+      "Featured Fellows Safia Zyla MIP, Stanford University Safia Zyla is an immigrant from Ethiopia.",
+      "Fellowship awarded in 2025 to support work towards an MIP in International Policy at Stanford University Corinna Zygourakis Assistant Professor, Department of Neurosurgery at Stanford University School of Medicine Corinna Zygourakis is the child of immigrants from Greece.",
+    ]);
   });
 
   it("repairs missing sentence spacing in structured snippets", () => {

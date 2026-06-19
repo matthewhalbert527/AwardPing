@@ -8,6 +8,7 @@ import * as cheerio from "cheerio";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const summaryPromptChars = 12_000;
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, args.env) : resolve(root, ".env.local");
@@ -46,7 +47,13 @@ const sourceUrlFilter = args["source-url"] || env.LOCAL_WORKER_SOURCE_URL || "";
 const refreshExistingSamplesOnly =
   args["refresh-existing-samples-only"] === "true" ||
   env.LOCAL_WORKER_REFRESH_EXISTING_SAMPLES_ONLY === "true";
-const discoverSubpages = !refreshExistingSamplesOnly && args["discover-subpages"] !== "false";
+const baselineRefresh =
+  args["baseline-refresh"] === "true" ||
+  args["reset-baseline"] === "true" ||
+  env.LOCAL_WORKER_BASELINE_REFRESH === "true";
+const baselineStartedAt = args["baseline-started-at"] || env.LOCAL_WORKER_BASELINE_STARTED_AT || "";
+const discoverSubpages =
+  !refreshExistingSamplesOnly && !baselineRefresh && args["discover-subpages"] !== "false";
 const includeNotDue =
   deepCrawl || args.all === "true" || args["include-not-due"] === "true";
 const forceStructureRescan =
@@ -114,9 +121,11 @@ const stats = {
   aiProvider: aiSummaries ? aiSummaryProvider : "none",
   mode: refreshExistingSamplesOnly
     ? "refresh-existing-samples"
-    : deepCrawl
-      ? "deep-crawl"
-      : "scheduled",
+    : baselineRefresh
+      ? "baseline-refresh"
+      : deepCrawl
+        ? "deep-crawl"
+        : "scheduled",
 };
 
 let workerRunId = null;
@@ -297,6 +306,8 @@ function workerOutput(ok) {
     sourceIdFilter: sourceIdFilter || null,
     sourceUrlFilter: sourceUrlFilter || null,
     refreshExistingSamplesOnly,
+    baselineRefresh,
+    baselineStartedAt: baselineStartedAt || null,
     delayMs,
     sourceTimeoutMs,
   };
@@ -308,9 +319,11 @@ async function startWorkerRun() {
     .insert({
       worker_name: refreshExistingSamplesOnly
         ? "local-source-worker-refresh-samples"
-        : deepCrawl
-          ? "local-source-worker-deep-crawl"
-          : "local-source-worker",
+        : baselineRefresh
+          ? "local-source-worker-baseline-refresh"
+          : deepCrawl
+            ? "local-source-worker-deep-crawl"
+            : "local-source-worker",
       status: "running",
       ai_provider: stats.aiProvider,
     })
@@ -390,7 +403,7 @@ async function loadSources(pageLimit) {
 }
 
 async function processSourcePageRequests() {
-  if (refreshExistingSamplesOnly) return 0;
+  if (refreshExistingSamplesOnly || baselineRefresh) return 0;
 
   const { data, error } = await supabase
     .from("source_page_requests")
@@ -540,6 +553,10 @@ function buildSourcesQuery() {
     query = query.lte("next_check_at", new Date().toISOString());
   }
 
+  if (baselineRefresh && baselineStartedAt.trim()) {
+    query = query.or(`last_checked_at.is.null,last_checked_at.lt.${baselineStartedAt.trim()}`);
+  }
+
   if (awardFilter.trim()) {
     query = query.ilike("shared_awards.name", `%${escapeLike(awardFilter.trim())}%`);
   }
@@ -662,6 +679,19 @@ async function checkSharedSource(source) {
     }
 
     const content = await fetchExtractedContent(source.url, contentTypeForPage(source.page_type, source.url));
+    if (looksLikeSourceAccessErrorPage(content.text)) {
+      throw new Error("Source returned an access, missing, or error page instead of award content.");
+    }
+    if (looksLikeBrokenDynamicPage(content.text)) {
+      throw new Error("Source returned a dynamic loading or CSS error page instead of award content.");
+    }
+    if (looksLikeNonContentStubPage(source, content.text)) {
+      throw new Error("Source returned a sitemap or non-content stub instead of award content.");
+    }
+    if (looksLikeLoginWallPage(content.text)) {
+      throw new Error("Source returned a login page instead of award content.");
+    }
+
     const sourceForContent = await maybeImproveSourceTitle(source, content);
     throwIfRecoverableCrash(source);
     const discoveryOnly = isInstitutionalDiscoveryUrl(source.url);
@@ -718,6 +748,33 @@ async function checkSharedSource(source) {
             `SKIP    ${source.shared_awards?.name || source.title} | current hash differs; leaving for normal change processing`,
           );
         }
+      }
+
+      return { ok: true, links: [] };
+    }
+
+    if (baselineRefresh) {
+      const newSnapshot = await upsertSharedSnapshot(sourceForContent, content);
+      await supabase
+        .from("shared_award_sources")
+        .update({
+          title: sourceForContent.title,
+          last_hash: content.hash,
+          last_checked_at: new Date().toISOString(),
+          next_check_at: nextCheckDate(),
+          consecutive_failures: 0,
+          last_error: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", source.id);
+
+      const previousLength = previousSnapshot?.text_sample?.length || 0;
+      const changed = Boolean(previousHash && previousHash !== content.hash);
+      const action = changed ? "BASELINE" : content.sample.length > previousLength ? "REFRESH" : "OK";
+      if (markSourceOutcome(source, "unchanged")) {
+        console.log(
+          `${action} ${source.shared_awards?.name || source.title} | snapshot ${newSnapshot?.id || "unknown"} | chars ${previousLength} -> ${content.sample.length}`,
+        );
       }
 
       return { ok: true, links: [] };
@@ -1517,10 +1574,29 @@ function firstTextMatch(text, patterns) {
 }
 
 function sentenceCandidates(text) {
-  return normalizeText(text)
-    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+  return splitChangeSentences(normalizeText(text))
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length >= 35 && sentence.length <= 320);
+}
+
+function splitChangeSentences(text) {
+  return protectSentenceAbbreviations(text)
+    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+    .map(restoreSentenceAbbreviations);
+}
+
+function protectSentenceAbbreviations(value) {
+  return String(value || "")
+    .replace(/\bM\.\s*D\./g, "M" + sentenceDotPlaceholder + "D" + sentenceDotPlaceholder)
+    .replace(/\bPh\.\s*D\./gi, "Ph" + sentenceDotPlaceholder + "D" + sentenceDotPlaceholder)
+    .replace(/\bU\.\s*S\./g, "U" + sentenceDotPlaceholder + "S" + sentenceDotPlaceholder)
+    .replace(/\bU\.\s*K\./g, "U" + sentenceDotPlaceholder + "K" + sentenceDotPlaceholder)
+    .replace(/\bi\.\s*e\./gi, "i" + sentenceDotPlaceholder + "e" + sentenceDotPlaceholder)
+    .replace(/\be\.\s*g\./gi, "e" + sentenceDotPlaceholder + "g" + sentenceDotPlaceholder);
+}
+
+function restoreSentenceAbbreviations(value) {
+  return value.replaceAll(sentenceDotPlaceholder, ".");
 }
 
 function sentenceKey(sentence) {
@@ -1727,6 +1803,9 @@ function buildWorkerStructuredDiff(source, previousSample, nextText) {
   const changedText = [...addedText, ...removedText].join(" ");
 
   if (!previousClean) noiseFlags.push("no_previous_snapshot");
+  if (looksLikeSourceAccessError(previousClean) || looksLikeSourceAccessError(nextClean)) {
+    noiseFlags.push("source_access_error");
+  }
   if (sampleExpansion) noiseFlags.push("sample_expansion");
   if (hasRawScrapeSignals(changedText)) noiseFlags.push("raw_scrape_signal");
   if (looksLikeOrphanPunctuation(changedText)) noiseFlags.push("orphan_punctuation");
@@ -1868,11 +1947,15 @@ function structuredChangeSystemPrompt() {
     "Return valid JSON only, with no markdown.",
     "Use only facts visible in the previous excerpt, new excerpt, and structured diff.",
     "Ignore navigation, footers, social links, CTAs, testimonials, unrelated programs, and raw scrape artifacts.",
+    "If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false.",
     "If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text.",
     "Reject raw scrape signals such as LEARN MORE and vague page-update language.",
     "Required keys: reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence.",
     "Use null for unknown before, after, section, or advisor_impact.",
     "Set is_alert_worthy=false when no concrete award-relevant fact changed.",
+    "Make reader_summary a clear one- or two-sentence explanation for a scholarship advisor.",
+    "For broad content rotations, describe the category of content that changed and explicitly say whether deadlines, eligibility, funding, or application requirements changed.",
+    "For concrete award changes, state the practical before/after meaning instead of dumping raw scraped text.",
     "confidence must be low, medium, or high.",
   ].join(" ");
 }
@@ -1905,7 +1988,7 @@ function structuredChangeUserPrompt(source, previousSample, nextText, fallback) 
     "",
     "New excerpt:\n" + nextText.slice(0, summaryPromptChars),
     "",
-    "Return one JSON object. The reader_summary must explain the changed fact directly.",
+    "Return one JSON object. The reader_summary must explain the changed fact directly, not as a scrape fragment or word-level diff.",
   ].join("\n");
 }
 
@@ -2011,7 +2094,7 @@ function workerQualityFlags(details) {
 
 function hasHardQualityFlag(flags) {
   return flags.some((flag) =>
-    ["raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change"].includes(flag),
+    ["ai_invalid_json", "source_access_error", "raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change"].includes(flag),
   );
 }
 
@@ -2310,11 +2393,89 @@ function normalizeWorkerConfidence(value) {
 
 function hasRawScrapeSignals(value) {
   return (
+    looksLikeSourceAccessError(value) ||
     hasRawMarkupSignals(value) ||
     hasSeoInstrumentationSignals(value) ||
+    hasJumpLinkHeadingPrefixSignals(value) ||
     /\b(learn more|read more|click here|skip to|main menu|toggle menu|toggle page navigation|search menu|read current issue|cart|dismiss|login|copyright|privacy policy|all rights reserved|facebook|instagram|x\.com|twitter|linkedin|youtube|subscribe|newsletter)\b/i.test(String(value || "")) ||
     hasNavigationBoilerplate(value) ||
     hasStorefrontBoilerplate(value)
+  );
+}
+
+function looksLikeSourceAccessError(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+  return (
+    /\b(?:fehler|error)\s*(?:401|403|404|410|429|50[0-4])\b/i.test(clean) ||
+    /\b(access denied|zugriff verboten|forbidden|not found|page not found|service unavailable|too many requests)\b/i.test(clean) ||
+    /\bthe access to this directory\/page is restricted\b/i.test(clean) ||
+    /\bHTTP\/1\.1\s+(?:401|403|404|410|429|50[0-4])\b/i.test(clean)
+  );
+}
+
+function looksLikeSourceAccessErrorPage(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+
+  const firstChunk = clean.slice(0, 1800);
+  const pageErrorSignal =
+    /\b(?:fehler|error)\s*(?:401|403|404|410|429|50[0-4])\b/i.test(firstChunk) ||
+    /\bHTTP\/1\.1\s+(?:401|403|404|410|429|50[0-4])\b/i.test(firstChunk) ||
+    /\b(access denied|zugriff verboten|forbidden|page not found|service unavailable|too many requests)\b/i.test(firstChunk) ||
+    /^.{0,160}\bnot found\b/i.test(firstChunk) ||
+    /\bthe access to this directory\/page is restricted\b/i.test(firstChunk);
+
+  return (
+    pageErrorSignal &&
+    (clean.length < 4000 ||
+      /^(?:error|fehler|access denied|zugriff verboten|forbidden|not found|page not found|service unavailable|too many requests)\b/i.test(
+        firstChunk,
+      ) ||
+      /\bthe access to this directory\/page is restricted\b/i.test(firstChunk))
+  );
+}
+
+function looksLikeBrokenDynamicPage(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+  return (
+    clean.length <= 500 &&
+    (/\bloading\b.*\bsorry to interrupt\b.*\bcss error\b.*\brefresh\b/i.test(clean) ||
+      /\bplease enable javascript\b/i.test(clean) ||
+      /\bchecking your browser before accessing\b/i.test(clean))
+  );
+}
+
+function looksLikeNonContentStubPage(source, value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+
+  const sourceLabel = `${source?.title || ""} ${source?.url || ""}`;
+  return (
+    (String(source?.page_type || "").toLowerCase() === "pdf" && clean.length < 120) ||
+    /^(?:--\s*\d+\s+of\s+\d+\s*--\s*)+$/i.test(clean) ||
+    (clean.length < 500 && /\b(site\s*map|sitemap)\b/i.test(sourceLabel))
+  );
+}
+
+function looksLikeLoginWallPage(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean || clean.length > 1800) return false;
+
+  return (
+    /\b(login|log in|sign in|password|forgot your password|two-factor authentication|2FA|saved usernames?)\b/i.test(
+      clean,
+    ) &&
+    /\b(email|username)\b/i.test(clean) &&
+    /\bpassword\b/i.test(clean)
+  );
+}
+
+function hasJumpLinkHeadingPrefixSignals(value) {
+  const clean = normalizeText(String(value || ""));
+  return /\bTop\s+(?:Applications?|The Selection Process|Selection Process|Eligibility|Requirements?|Deadlines?|Timeline|FAQs?|Funding|References?|Courses?)\b/.test(
+    clean,
   );
 }
 
@@ -2610,8 +2771,9 @@ function normalizeText(text) {
 }
 
 function isLikelySampleExpansion(previousText, nextText) {
-  if (previousText.length < 1800 || nextText.length <= previousText.length + 80) return false;
+  if (previousText.length < 500 || nextText.length <= previousText.length + 80) return false;
   if (nextText.startsWith(previousText)) return true;
+  if (compactSentenceKey(nextText).startsWith(compactSentenceKey(previousText))) return true;
   if (!endsLikeTruncatedSample(previousText)) return false;
 
   for (const length of [180, 140, 100, 70]) {
@@ -2761,6 +2923,7 @@ function isHardBlockedOfficialSourceUrl(value) {
     if (cmsAdminHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
     return (
+      /\/(?:[^/]*sitemap[^/]*|site-map[^/]*)(?:\.(?:xml|pdf|html?))?$/i.test(lowerPath) ||
       /\/(wp-login\.php|login|signin|sign-in|cart|donate|privacy|terms|terms-of-use|terms-of-service|termsofuse|jobregister)\b/i.test(lowerPath) ||
       /\/(sign-up|signup|subscribe|newsletter)\b/i.test(lowerPath) ||
       /\/portal\/user\/u_login\.php/i.test(lowerPath) ||
@@ -2782,6 +2945,7 @@ function isClearlyNonAwardSourceUrl(value) {
     if (cmsAdminHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
     return (
+      /\/(?:[^/]*sitemap[^/]*|site-map[^/]*)(?:\.(?:xml|pdf|html?))?$/i.test(lowerPath) ||
       /\/(wp-login\.php|login|signin|sign-in|cart|donate|privacy|terms|terms-of-use|terms-of-service|termsofuse|jobregister)\b/i.test(lowerPath) ||
       /\/(sign-up|signup|subscribe|newsletter)\b/i.test(lowerPath) ||
       /\/portal\/user\/u_login\.php/i.test(lowerPath) ||

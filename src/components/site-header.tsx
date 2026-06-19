@@ -11,7 +11,7 @@ export async function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 px-4 pt-4">
       <div className="mx-auto flex max-w-6xl items-center justify-between rounded-full border border-[var(--line)] bg-white/[0.86] px-4 py-3 shadow-[0_18px_55px_rgba(22,34,74,0.09)] backdrop-blur-xl">
-        <Link href="/" className="brand-link">
+        <Link href="/" className="brand-link" aria-label="AwardPing home">
           <BrandLogo />
         </Link>
 

@@ -22,20 +22,20 @@ export default async function UpdatesPage({ searchParams }: Props) {
     <div className="page-shell">
       <SiteHeader />
       <main>
-        <section className="mx-auto grid max-w-6xl gap-10 px-5 py-16 lg:grid-cols-[0.9fr_1.1fr]">
+        <section className="mx-auto grid max-w-6xl gap-6 px-5 py-10 lg:grid-cols-[0.82fr_1.18fr] lg:items-start lg:py-14">
           <div>
             <span className="badge">
               <BellRing size={15} aria-hidden="true" />
               Daily updates
             </span>
-            <h1 className="mt-5 text-5xl font-black leading-tight">
-              Public award-page updates, once per useful day.
+            <h1 className="mt-4 text-4xl font-black leading-tight md:text-5xl">
+              Useful award updates by email.
             </h1>
-            <p className="mt-5 text-lg leading-8 text-[var(--muted)]">
+            <p className="mt-3 text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
               Get a daily email only when AwardPing detects useful changes on
               public nationally competitive award source pages. Quiet days stay quiet.
             </p>
-            <div className="mt-6 grid gap-3 text-sm font-bold text-[#30384a]">
+            <div className="mt-4 grid gap-2 text-sm font-bold text-[#30384a]">
               {[
                 "Double opt-in confirmation before mail starts",
                 "Official source-page changes, not product marketing",

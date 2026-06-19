@@ -160,10 +160,31 @@ function changedSentences(previousText: string, nextText: string, mode: "added" 
 }
 
 function sentenceCandidates(text: string) {
-  return normalizeText(text)
-    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+  return splitChangeSentences(normalizeText(text))
     .map((sentence) => sentence.trim())
     .filter((sentence) => sentence.length >= 35 && sentence.length <= 320);
+}
+
+function splitChangeSentences(text: string) {
+  return protectSentenceAbbreviations(text)
+    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+    .map(restoreSentenceAbbreviations);
+}
+
+const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
+
+function protectSentenceAbbreviations(value: string) {
+  return value
+    .replace(/\bM\.\s*D\./g, `M${sentenceDotPlaceholder}D${sentenceDotPlaceholder}`)
+    .replace(/\bPh\.\s*D\./gi, `Ph${sentenceDotPlaceholder}D${sentenceDotPlaceholder}`)
+    .replace(/\bU\.\s*S\./g, `U${sentenceDotPlaceholder}S${sentenceDotPlaceholder}`)
+    .replace(/\bU\.\s*K\./g, `U${sentenceDotPlaceholder}K${sentenceDotPlaceholder}`)
+    .replace(/\bi\.\s*e\./gi, `i${sentenceDotPlaceholder}e${sentenceDotPlaceholder}`)
+    .replace(/\be\.\s*g\./gi, `e${sentenceDotPlaceholder}g${sentenceDotPlaceholder}`);
+}
+
+function restoreSentenceAbbreviations(value: string) {
+  return value.replaceAll(sentenceDotPlaceholder, ".");
 }
 
 function sentenceKey(sentence: string) {
@@ -283,11 +304,14 @@ function normalizeText(value: string) {
 }
 
 function isLikelySampleExpansion(previousText: string, nextText: string) {
-  if (previousText.length < 1800 || nextText.length <= previousText.length + 80) {
+  if (previousText.length < 500 || nextText.length <= previousText.length + 80) {
     return false;
   }
 
   if (nextText.startsWith(previousText)) return true;
+  if (compactSentenceKey(nextText).startsWith(compactSentenceKey(previousText))) {
+    return true;
+  }
   if (!endsLikeTruncatedSample(previousText)) return false;
 
   for (const length of [180, 140, 100, 70]) {

@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, args.env) : resolve(root, ".env.local");
 const env = { ...loadEnvFile(envPath), ...process.env };
@@ -262,6 +263,11 @@ function buildChangeDetails(previousText, nextText, context, fallbackSummary) {
   const addedAmounts = [...nextAmounts].filter((amount) => !previousAmounts.has(amount));
   const removedAmounts = [...previousAmounts].filter((amount) => !nextAmounts.has(amount));
   const sampleExpansion = isLikelySampleExpansion(previousClean, nextClean);
+  const noiseFlags = [];
+  if (sampleExpansion) noiseFlags.push("sample_expansion");
+  if (looksLikeSourceAccessError(previousClean) || looksLikeSourceAccessError(nextClean)) {
+    noiseFlags.push("source_access_error");
+  }
   const structuredDiff = {
     added_text: addedText,
     removed_text: removedText,
@@ -269,7 +275,7 @@ function buildChangeDetails(previousText, nextText, context, fallbackSummary) {
     page_type: context.page_type || null,
     date_changes: [...addedDates.map((date) => "Added " + date), ...removedDates.map((date) => "Removed " + date)],
     amount_changes: [...addedAmounts.map((amount) => "Added " + amount), ...removedAmounts.map((amount) => "Removed " + amount)],
-    noise_flags: sampleExpansion ? ["sample_expansion"] : [],
+    noise_flags: noiseFlags,
   };
   const before = removedText[0] || null;
   const after = addedText[0] || null;
@@ -403,7 +409,7 @@ function normalizeAiDetails(text, fallback, context, provider, model) {
 }
 
 function systemPrompt() {
-  return "You summarize official award webpage changes for scholarship advisors. Return valid JSON only with keys reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence. Use null when unknown. Use only provided excerpts and structured diff. If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text. Reject raw scrape signals such as LEARN MORE, orphan punctuation, vague page-updated wording, and changes with no concrete award-relevant fact.";
+  return "You summarize official award webpage changes for scholarship advisors. Return valid JSON only with keys reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence. Use null when unknown. Use only provided excerpts and structured diff. If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false. If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text. Make reader_summary a clear one- or two-sentence explanation for a scholarship advisor. For broad content rotations, describe the category of content that changed and explicitly say whether deadlines, eligibility, funding, or application requirements changed. For concrete award changes, state the practical before/after meaning instead of dumping raw scraped text. Reject raw scrape signals such as LEARN MORE, orphan punctuation, vague page-updated wording, and changes with no concrete award-relevant fact.";
 }
 
 function userPrompt(previousText, nextText, context, fallback) {
@@ -416,6 +422,7 @@ function userPrompt(previousText, nextText, context, fallback) {
     "Fallback: " + JSON.stringify({ reader_summary: fallback.reader_summary, before: fallback.before, after: fallback.after, section: fallback.section, change_type: fallback.change_type, advisor_impact: fallback.advisor_impact, is_alert_worthy: fallback.is_alert_worthy, confidence: fallback.confidence }),
     "Previous excerpt:\n" + previousText.slice(0, 12000),
     "New excerpt:\n" + nextText.slice(0, 12000),
+    "Return one JSON object. The reader_summary must explain the changed fact directly, not as a scrape fragment or word-level diff.",
   ].join("\n\n");
 }
 
@@ -434,7 +441,7 @@ function qualityFlags(summary, before, after, diff) {
 }
 
 function hasHardQualityFlag(flags) {
-  return flags.some((flag) => ["raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change"].includes(flag));
+  return flags.some((flag) => ["ai_invalid_json", "source_access_error", "raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change"].includes(flag));
 }
 
 function hasIndistinctTruncatedSnippets(before, after) {
@@ -628,7 +635,27 @@ function dedupeText(values) {
 }
 
 function sentenceCandidates(text) {
-  return normalizeText(text).split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/).map((sentence) => sentence.trim()).filter((sentence) => sentence.length >= 25 && sentence.length <= 520);
+  return splitChangeSentences(normalizeText(text)).map((sentence) => sentence.trim()).filter((sentence) => sentence.length >= 25 && sentence.length <= 520);
+}
+
+function splitChangeSentences(text) {
+  return protectSentenceAbbreviations(text)
+    .split(/(?<=[.!?])\s+|(?<=:)\s+(?=[A-Z0-9])/)
+    .map(restoreSentenceAbbreviations);
+}
+
+function protectSentenceAbbreviations(value) {
+  return String(value || "")
+    .replace(/\bM\.\s*D\./g, "M" + sentenceDotPlaceholder + "D" + sentenceDotPlaceholder)
+    .replace(/\bPh\.\s*D\./gi, "Ph" + sentenceDotPlaceholder + "D" + sentenceDotPlaceholder)
+    .replace(/\bU\.\s*S\./g, "U" + sentenceDotPlaceholder + "S" + sentenceDotPlaceholder)
+    .replace(/\bU\.\s*K\./g, "U" + sentenceDotPlaceholder + "K" + sentenceDotPlaceholder)
+    .replace(/\bi\.\s*e\./gi, "i" + sentenceDotPlaceholder + "e" + sentenceDotPlaceholder)
+    .replace(/\be\.\s*g\./gi, "e" + sentenceDotPlaceholder + "g" + sentenceDotPlaceholder);
+}
+
+function restoreSentenceAbbreviations(value) {
+  return value.replaceAll(sentenceDotPlaceholder, ".");
 }
 
 function sentenceKey(sentence) {
@@ -910,11 +937,31 @@ function normalizeText(value) {
 
 function hasRawScrapeSignals(value) {
   return (
+    looksLikeSourceAccessError(value) ||
     hasRawMarkupSignals(value) ||
     hasSeoInstrumentationSignals(value) ||
+    hasJumpLinkHeadingPrefixSignals(value) ||
     /\b(learn more|read more|click here|skip to|main menu|toggle menu|toggle page navigation|search menu|read current issue|cart|dismiss|login|copyright|privacy policy|all rights reserved|facebook|instagram|x\.com|twitter|linkedin|youtube|subscribe|newsletter)\b/i.test(String(value || "")) ||
     hasNavigationBoilerplate(value) ||
     hasStorefrontBoilerplate(value)
+  );
+}
+
+function looksLikeSourceAccessError(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+  return (
+    /\b(?:fehler|error)\s*(?:401|403|404|410|429|50[0-4])\b/i.test(clean) ||
+    /\b(access denied|zugriff verboten|forbidden|not found|page not found|service unavailable|too many requests)\b/i.test(clean) ||
+    /\bthe access to this directory\/page is restricted\b/i.test(clean) ||
+    /\bHTTP\/1\.1\s+(?:401|403|404|410|429|50[0-4])\b/i.test(clean)
+  );
+}
+
+function hasJumpLinkHeadingPrefixSignals(value) {
+  const clean = normalizeText(String(value || ""));
+  return /\bTop\s+(?:Applications?|The Selection Process|Selection Process|Eligibility|Requirements?|Deadlines?|Timeline|FAQs?|Funding|References?|Courses?)\b/.test(
+    clean,
   );
 }
 
@@ -984,8 +1031,9 @@ function isHistoricalRecipientOrMarketingText(value) {
 }
 
 function isLikelySampleExpansion(previousText, nextText) {
-  if (previousText.length < 1800 || nextText.length <= previousText.length + 80) return false;
+  if (previousText.length < 500 || nextText.length <= previousText.length + 80) return false;
   if (nextText.startsWith(previousText)) return true;
+  if (compactSentenceKey(nextText).startsWith(compactSentenceKey(previousText))) return true;
   if (!endsLikeTruncatedSample(previousText)) return false;
   for (const length of [180, 140, 100, 70]) {
     const tail = previousText.slice(-length).trim();

@@ -34,20 +34,25 @@ describe("ChangeEvidencePanel", () => {
           source: {},
           quality_flags: [],
           generated_at: "2026-05-28T20:00:00.000Z",
+          generation_provider: "gemini",
+          generation_status: "generated",
+          generation_model: "gemini-2.5-flash-lite",
         },
         detectedAt: "2026-05-27T20:00:00.000Z",
       }),
     );
 
-    expect(html).toContain("<summary>Update details</summary>");
+    expect(html).toContain("<summary>View change explanation</summary>");
     expect(html).toContain("What changed");
     expect(html).toContain("Source");
     expect(html).toContain("Applications open on September 10, 2025.");
-    expect(html).toContain("After / new text");
-    expect(html).toContain("Before");
+    expect(html).toContain("Current wording");
+    expect(html).toContain("Previous wording");
+    expect(html).toContain("AI-generated description");
+    expect(html).toContain("High confidence");
     expect(html).toContain("Application page");
     expect(html).toContain("Deadline");
-    expect(html).toContain("Open highlighted version");
+    expect(html).toContain("Open full change explanation");
     expect(html).toContain("/highlight/shared/change-1");
     expect(html).not.toContain("Source details");
     expect(html).not.toContain("<dt>Status</dt>");
