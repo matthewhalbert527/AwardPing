@@ -21,6 +21,8 @@ npm run dev
 
 The app can render without environment variables, but auth, persistence, email, and AI discovery require Supabase, Resend, Tavily, and either Gemini or OpenAI keys.
 
+Set `AWARDPING_ADMIN_EMAILS` to a comma-separated list of owner login emails to enable the private `/dashboard/admin` background scan page.
+
 For local development, `npx supabase start` applies the migrations and prints the local Project URL plus publishable/secret keys. Put those local values in `.env.local`, then restart `npm run dev`.
 
 ## Supabase Setup

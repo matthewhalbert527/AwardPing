@@ -137,7 +137,7 @@ async function runOnce() {
   let workerRunId = null;
 
   try {
-    workerRunId = await startWorkerRun();
+    workerRunId = await startWorkerRun(report);
     const sources = await loadSources(limit);
     const launched = await launchBrowser();
     browser = launched.browser;
@@ -1061,7 +1061,7 @@ async function loadSources(pageLimit) {
   return data || [];
 }
 
-async function startWorkerRun() {
+async function startWorkerRun(report) {
   const { data, error } = await supabase
     .from("local_worker_runs")
     .insert({
@@ -1070,11 +1070,15 @@ async function startWorkerRun() {
         : "local-visual-snapshot-worker",
       status: "running",
       ai_provider: aiProvider,
+      metadata: visualWorkerMetadata(report),
     })
     .select("id")
     .maybeSingle();
 
   if (error) {
+    if (isMissingMetadataColumnError(error)) {
+      return startWorkerRunWithoutMetadata();
+    }
     console.log(`WORKER RUN LOG DISABLED | ${describeSupabaseError(error, "record visual worker run")}`);
     return null;
   }
@@ -1096,6 +1100,53 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
       discovered_count: 0,
       failed_count: report.failed,
       error: errorMessageValue ? errorMessageValue.slice(0, 1000) : null,
+      metadata: visualWorkerMetadata(report),
+      finished_at: new Date().toISOString(),
+    })
+    .eq("id", runId);
+
+  if (error) {
+    if (isMissingMetadataColumnError(error)) {
+      await finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, report);
+      return;
+    }
+    console.log(`WORKER RUN LOG FAILED | ${error.message}`);
+  }
+}
+
+async function startWorkerRunWithoutMetadata() {
+  const { data, error } = await supabase
+    .from("local_worker_runs")
+    .insert({
+      worker_name: baselineRefresh
+        ? "local-visual-snapshot-worker-baseline-refresh"
+        : "local-visual-snapshot-worker",
+      status: "running",
+      ai_provider: aiProvider,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    console.log(`WORKER RUN LOG DISABLED | ${describeSupabaseError(error, "record visual worker run")}`);
+    return null;
+  }
+
+  return data?.id || null;
+}
+
+async function finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, report) {
+  const { error } = await supabase
+    .from("local_worker_runs")
+    .update({
+      status,
+      checked_count: report.checked,
+      changed_count: report.ai_true_changes,
+      unchanged_count: report.unchanged,
+      initial_count: report.baselined,
+      discovered_count: 0,
+      failed_count: report.failed,
+      error: errorMessageValue ? errorMessageValue.slice(0, 1000) : null,
       finished_at: new Date().toISOString(),
     })
     .eq("id", runId);
@@ -1103,6 +1154,42 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
   if (error) {
     console.log(`WORKER RUN LOG FAILED | ${error.message}`);
   }
+}
+
+function visualWorkerMetadata(report) {
+  return {
+    kind: "visual_snapshot",
+    archive_root: report.archive_root,
+    ai_model: report.ai_model,
+    options: report.options,
+    counts: {
+      candidate_changes: report.candidate_changes,
+      ai_true_changes: report.ai_true_changes,
+      ai_rejected: report.ai_rejected,
+      text_only_ignored: report.text_only_ignored,
+      deterministic_noise: report.deterministic_noise,
+      visual_noise: report.visual_noise,
+      review: report.review,
+      skipped_pdf: report.skipped_pdf,
+      promoted: report.promoted,
+    },
+    gemini_usage: report.gemini_usage,
+    paths: {
+      saved_changes: report.saved_change_paths.slice(0, 20),
+      review: report.review_paths.slice(0, 20),
+      rejected: report.rejected_paths.slice(0, 20),
+    },
+    errors: report.errors.slice(0, 20),
+  };
+}
+
+function isMissingMetadataColumnError(error) {
+  const message = `${error?.message || ""} ${error?.details || ""} ${error?.hint || ""}`.toLowerCase();
+  return (
+    error?.code === "PGRST204" ||
+    error?.code === "42703" ||
+    (message.includes("metadata") && (message.includes("column") || message.includes("schema cache")))
+  );
 }
 
 async function launchBrowser() {

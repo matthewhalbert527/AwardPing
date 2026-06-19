@@ -2,7 +2,7 @@ import { DashboardNav } from "@/components/dashboard-nav";
 import { OfficeSwitcher } from "@/components/office-switcher";
 import { ProfileMenu } from "@/components/profile-menu";
 import { BrandLogo } from "@/components/brand-logo";
-import { getCurrentUser, getUserProfile } from "@/lib/auth";
+import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { getOfficeContext } from "@/lib/offices";
 import Link from "next/link";
 import { Suspense } from "react";
@@ -15,6 +15,7 @@ export default async function DashboardLayout({
   const user = await getCurrentUser();
   const profile = user ? await getUserProfile(user.id) : null;
   const officeContext = user ? await getOfficeContext(user) : null;
+  const isSiteAdmin = isSiteAdminEmail(user?.email);
   const officeOptions =
     officeContext?.memberships.map((membership) => ({
       officeId: membership.officeId,
@@ -32,7 +33,7 @@ export default async function DashboardLayout({
 
             <div className="dashboard-header-nav-wrap">
               <Suspense fallback={<div className="dashboard-nav" aria-hidden="true" />}>
-                <DashboardNav />
+                <DashboardNav isSiteAdmin={isSiteAdmin} />
               </Suspense>
             </div>
 

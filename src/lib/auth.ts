@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { hasSupabaseConfig } from "@/lib/config";
+import { appConfig, hasSupabaseConfig } from "@/lib/config";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function getCurrentUser() {
@@ -38,4 +38,9 @@ export async function getUserProfile(userId: string) {
     .maybeSingle();
 
   return data;
+}
+
+export function isSiteAdminEmail(email?: string | null) {
+  if (!email || appConfig.adminEmails.length === 0) return false;
+  return appConfig.adminEmails.includes(email.trim().toLowerCase());
 }

@@ -22,6 +22,7 @@ export const appConfig = {
     "gemini-2.5-flash-lite",
   openaiApiKey: process.env.OPENAI_API_KEY || "",
   openaiDiscoveryModel: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini",
+  adminEmails: emailListFromEnv("AWARDPING_ADMIN_EMAILS"),
   discoveryDailyUserLimit: numberFromEnv("DISCOVERY_DAILY_USER_LIMIT", 10),
   discoveryDailyIpLimit: numberFromEnv("DISCOVERY_DAILY_IP_LIMIT", 30),
   discoveryDailyGlobalLimit: numberFromEnv("DISCOVERY_DAILY_GLOBAL_LIMIT", 100),
@@ -42,4 +43,11 @@ export function hasSupabaseAdminConfig() {
 function numberFromEnv(key: string, fallback: number) {
   const value = Number(process.env[key]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function emailListFromEnv(key: string) {
+  return (process.env[key] || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
 }

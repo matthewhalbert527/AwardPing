@@ -28,6 +28,7 @@
 *.orig
 reports/
 tmp/
+tmp-next-dev-*.log
 AwardPingVisualSnapshots/
 visual-snapshots/
 visual-snapshot-archive/

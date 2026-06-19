@@ -501,6 +501,7 @@ export type Database = {
           discovered_count: number;
           failed_count: number;
           error: string | null;
+          metadata: Json;
           started_at: string;
           finished_at: string | null;
         };
@@ -516,6 +517,7 @@ export type Database = {
           discovered_count?: number;
           failed_count?: number;
           error?: string | null;
+          metadata?: Json;
           started_at?: string;
           finished_at?: string | null;
         };
@@ -529,6 +531,7 @@ export type Database = {
           discovered_count?: number;
           failed_count?: number;
           error?: string | null;
+          metadata?: Json;
           finished_at?: string | null;
         };
         Relationships: [];

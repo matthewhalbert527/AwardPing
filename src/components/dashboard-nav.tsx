@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
+  Activity,
   Inbox,
   ListChecks,
   SearchCheck,
@@ -14,14 +15,17 @@ const links = [
   { href: "/dashboard/awards?view=watchlist", label: "Watchlist", icon: ListChecks, section: "watchlist" },
 ];
 
-export function DashboardNav() {
+const adminLink = { href: "/dashboard/admin", label: "Admin", icon: Activity, section: "admin" };
+
+export function DashboardNav({ isSiteAdmin = false }: { isSiteAdmin?: boolean }) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const activeSection = currentDashboardSection(pathname, searchParams);
+  const visibleLinks = isSiteAdmin ? [...links, adminLink] : links;
 
   return (
     <nav className="dashboard-nav" aria-label="Dashboard navigation">
-      {links.map((link) => {
+      {visibleLinks.map((link) => {
         const Icon = link.icon;
         const active = activeSection === link.section;
         return (
@@ -49,6 +53,10 @@ function currentDashboardSection(
 
   if (pathname === "/dashboard" || pathname.startsWith("/dashboard/updates")) {
     return "updates";
+  }
+
+  if (pathname.startsWith("/dashboard/admin") || pathname.startsWith("/dashboard/ops")) {
+    return "admin";
   }
 
   return "updates";
