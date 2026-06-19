@@ -453,29 +453,6 @@ function Write-LauncherScripts {
     [string]$RunScript
   )
 
-  $deepCrawlPath = Join-Path $InstallRoot "1-RUN-DEEP-CRAWL-AGAIN.bat"
-  $deepCrawlContent = @"
-@echo off
-echo Running AwardPing full source expansion crawl.
-echo This searches known award pages for official subpages and can take a while.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$RunScript" -DeepCrawl -Limit 20000 -MaxSubpages 24 -CrawlDepth 2 -IncludeFailed
-echo.
-pause
-"@
-
-  Set-Content -Path $deepCrawlPath -Value $deepCrawlContent -Encoding ASCII
-
-  $dailyCheckPath = Join-Path $InstallRoot "2-RUN-HOURLY-CHECK-NOW.bat"
-  $dailyCheckContent = @"
-@echo off
-echo Running one scheduled-style AwardPing source check now.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$RunScript"
-echo.
-pause
-"@
-
-  Set-Content -Path $dailyCheckPath -Value $dailyCheckContent -Encoding ASCII
-
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
   $visualRunContent = @"
 param(
@@ -566,6 +543,57 @@ pause
 "@
 
   Set-Content -Path $visualCheckPath -Value $visualCheckContent -Encoding ASCII
+
+  $usageScriptPath = Join-Path $InstallRoot "Show-AwardPingGeminiUsage.ps1"
+  $usageScriptContent = @"
+`$ErrorActionPreference = "Stop"
+`$UsageDir = "D:\AwardPingVisualSnapshots\usage"
+`$SummaryPath = Join-Path `$UsageDir "gemini-usage-current.json"
+
+if (-not (Test-Path `$SummaryPath)) {
+  Write-Host "No AwardPing Gemini usage records yet."
+  Write-Host "Gemini usage is recorded only when the visual checker finds a screenshot change and asks Gemini to review it."
+  Write-Host "Usage folder: `$UsageDir"
+  exit 0
+}
+
+`$summary = Get-Content -Path `$SummaryPath -Raw | ConvertFrom-Json
+`$month = `$summary.month_total
+
+Write-Host "AwardPing Gemini usage"
+Write-Host "Month: `$(`$summary.month)"
+Write-Host "Updated: `$(`$summary.updated_at)"
+Write-Host ""
+Write-Host "Month calls: `$(`$month.calls)"
+Write-Host "Month tokens: `$(`$month.total_tokens)"
+Write-Host "Prompt tokens: `$(`$month.prompt_tokens)"
+Write-Host "Output tokens: `$(`$month.candidates_tokens)"
+if (`$summary.monthly_token_budget) {
+  Write-Host ("Monthly budget: {0} tokens ({1:N2}% used)" -f `$summary.monthly_token_budget, `$month.percent_of_budget)
+} else {
+  Write-Host "Monthly budget: not set. Set AWARDPING_GEMINI_MONTHLY_TOKEN_BUDGET in .env.worker.local to show percent used."
+}
+Write-Host ""
+Write-Host "Daily usage:"
+`$summary.daily |
+  Sort-Object date -Descending |
+  Select-Object -First 31 @{Name="Date";Expression={`$_.date}}, @{Name="Calls";Expression={`$_.calls}}, @{Name="Tokens";Expression={`$_.total_tokens}}, @{Name="Prompt";Expression={`$_.prompt_tokens}}, @{Name="Output";Expression={`$_.candidates_tokens}} |
+  Format-Table -AutoSize
+Write-Host ""
+Write-Host "Raw usage folder: `$UsageDir"
+"@
+
+  Set-Content -Path $usageScriptPath -Value $usageScriptContent -Encoding UTF8
+
+  $usageBatPath = Join-Path $InstallRoot "4-SHOW-GEMINI-USAGE.bat"
+  $usageBatContent = @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$usageScriptPath"
+echo.
+pause
+"@
+
+  Set-Content -Path $usageBatPath -Value $usageBatContent -Encoding ASCII
 
   $logsPath = Join-Path $InstallRoot "OPEN-LOGS.bat"
   $logsContent = @"
@@ -721,15 +749,12 @@ Use:
   The installed auto-update task checks the same URL every 30 minutes.
   If a crawl or scheduled check is running, the updater skips that cycle and tries again later.
 
-1-RUN-DEEP-CRAWL-AGAIN.bat
-  Runs the full source expansion crawl.
-
-2-RUN-HOURLY-CHECK-NOW.bat
-  Runs one normal scheduled-style check immediately.
-
 3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
-  Runs the disk-backed visual screenshot/text checker across all source pages.
+  Runs the disk-backed visual screenshot checker across all source pages.
   The daily scheduled visual task uses the same runner.
+
+4-SHOW-GEMINI-USAGE.bat
+  Shows AwardPing Gemini usage recorded by this PC, grouped by day and month.
 
 OPEN-LOGS.bat
   Opens crawler logs.
@@ -793,17 +818,32 @@ function Register-WorkerTask {
 }
 
 function Remove-LegacySourceTask {
+  param([string]$InstallRoot)
+
   Write-Step "Removing legacy hourly source worker task"
   $taskName = "AwardPing Local Source Worker"
   $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  if (-not $task) {
+  if ($task) {
+    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Host "Removed legacy scheduled task: $taskName"
+  } else {
     Write-Host "Legacy scheduled task is not present: $taskName"
-    return
   }
 
-  Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-  Write-Host "Removed legacy scheduled task: $taskName"
+  foreach ($fileName in @(
+    "1-RUN-DEEP-CRAWL-AGAIN.bat",
+    "2-RUN-90-MINUTE-CHECK-NOW.bat",
+    "2-RUN-HOURLY-CHECK-NOW.bat",
+    "RUN-DAILY-CHECK-NOW.bat",
+    "RUN-DEEP-CRAWL-ALL.bat"
+  )) {
+    $legacyPath = Join-Path $InstallRoot $fileName
+    if (Test-Path $legacyPath) {
+      Remove-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
+      Write-Host "Removed legacy launcher: $fileName"
+    }
+  }
 }
 
 function Register-UpdaterTask {
@@ -889,7 +929,7 @@ Write-UninstallScript -InstallRoot $InstallRoot
 Write-LauncherScripts -InstallRoot $InstallRoot -RunScript $runScript
 Install-Dependencies -AppDir $appDir
 Register-UpdaterTask -InstallRoot $InstallRoot
-Remove-LegacySourceTask
+Remove-LegacySourceTask -InstallRoot $InstallRoot
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
 
 if ((-not $UpdateOnly) -and $runTest) {

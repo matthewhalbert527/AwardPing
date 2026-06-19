@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
 import {
+  appendFileSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -48,6 +49,10 @@ const thumbWidth = positiveInt(args["thumb-width"], 900);
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
+const geminiMonthlyTokenBudget = nonNegativeInt(
+  args["gemini-monthly-token-budget"] || env.AWARDPING_GEMINI_MONTHLY_TOKEN_BUDGET,
+  0,
+);
 const aiProvider = selectAiProvider(requestedAiProvider, {
   gemini: env.GEMINI_API_KEY,
   openai: env.OPENAI_API_KEY,
@@ -116,6 +121,15 @@ async function runOnce() {
     skipped_pdf: 0,
     failed: 0,
     promoted: 0,
+    gemini_usage: {
+      calls: 0,
+      prompt_tokens: 0,
+      candidates_tokens: 0,
+      total_tokens: 0,
+      thoughts_tokens: 0,
+      cached_content_tokens: 0,
+      monthly_token_budget: geminiMonthlyTokenBudget || null,
+    },
     errors: [],
     saved_change_paths: [],
     review_paths: [],
@@ -238,7 +252,12 @@ async function processSource(source, context, browserMeta, report) {
     error: errorMessage(error),
     provider: aiProvider,
     model: aiModel,
+    usage: error.aiUsage || null,
   }));
+
+  if (aiReview.provider === "gemini" && aiReview.usage) {
+    recordGeminiUsage(report, source, capture, aiReview);
+  }
 
   if (!aiReview.ok) {
     if (reviewOnAiFailure) {
@@ -597,12 +616,23 @@ async function reviewWithGemini(input) {
 
   if (!response.ok) throw new Error(`Gemini HTTP ${response.status}`);
   const data = await response.json();
+  const usage = normalizeGeminiUsage(data.usageMetadata);
+  const rawText = extractGeminiText(data);
+  let result = null;
+  try {
+    result = normalizeAiReview(rawText);
+  } catch (error) {
+    error.aiUsage = usage;
+    throw error;
+  }
+
   return {
     ok: true,
     provider: "gemini",
     model: aiModel,
-    raw_text: extractGeminiText(data),
-    result: normalizeAiReview(extractGeminiText(data)),
+    usage,
+    raw_text: rawText,
+    result,
   };
 }
 
@@ -1199,10 +1229,128 @@ function ensureArchiveDirectories() {
     join(archiveRoot, "changes"),
     join(archiveRoot, "review"),
     join(archiveRoot, "rejected"),
+    join(archiveRoot, "usage"),
     join(root, "reports"),
   ]) {
     mkdirSync(dir, { recursive: true });
   }
+}
+
+function recordGeminiUsage(report, source, capture, aiReview) {
+  const usage = aiReview.usage || normalizeGeminiUsage(null);
+  report.gemini_usage.calls += 1;
+  report.gemini_usage.prompt_tokens += usage.prompt_tokens;
+  report.gemini_usage.candidates_tokens += usage.candidates_tokens;
+  report.gemini_usage.total_tokens += usage.total_tokens;
+  report.gemini_usage.thoughts_tokens += usage.thoughts_tokens;
+  report.gemini_usage.cached_content_tokens += usage.cached_content_tokens;
+
+  const usedAt = new Date().toISOString();
+  const record = {
+    used_at: usedAt,
+    date: usedAt.slice(0, 10),
+    month: usedAt.slice(0, 7),
+    provider: "gemini",
+    model: aiReview.model,
+    source_id: source.id,
+    award_name: source.shared_awards?.name || null,
+    source_title: source.title || null,
+    source_url: source.url,
+    capture_path: toArchiveRelative(capture.dir),
+    usage,
+  };
+  const summary = appendGeminiUsageRecord(record);
+  const today = summary.daily.find((day) => day.date === record.date);
+  console.log(
+    [
+      "GEMINI_USAGE",
+      `call_tokens=${usage.total_tokens}`,
+      `today_tokens=${today?.total_tokens || 0}`,
+      `month_tokens=${summary.month_total.total_tokens}`,
+      summary.monthly_token_budget
+        ? `month_budget_pct=${summary.month_total.percent_of_budget?.toFixed(2)}`
+        : "month_budget_pct=not_set",
+    ].join(" "),
+  );
+}
+
+function appendGeminiUsageRecord(record) {
+  const usageDir = join(archiveRoot, "usage");
+  mkdirSync(usageDir, { recursive: true });
+  const monthPath = join(usageDir, `gemini-usage-${record.month}.jsonl`);
+  appendFileSync(monthPath, `${JSON.stringify(record)}\n`, "utf8");
+
+  const summary = summarizeGeminiUsageMonth(monthPath, record.month);
+  const summaryPath = join(usageDir, `gemini-usage-${record.month}-summary.json`);
+  writeFileSync(summaryPath, JSON.stringify(summary, null, 2), "utf8");
+  writeFileSync(join(usageDir, "gemini-usage-current.json"), JSON.stringify(summary, null, 2), "utf8");
+  return summary;
+}
+
+function summarizeGeminiUsageMonth(monthPath, month) {
+  const daily = new Map();
+  const monthTotal = emptyGeminiUsageTotal();
+
+  if (existsSync(monthPath)) {
+    for (const line of readFileSync(monthPath, "utf8").split(/\r?\n/)) {
+      if (!line.trim()) continue;
+      let record = null;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (record.provider !== "gemini" || record.month !== month) continue;
+      const usage = normalizeGeminiUsage(record.usage);
+      const date = record.date || String(record.used_at || "").slice(0, 10) || "unknown";
+      if (!daily.has(date)) daily.set(date, emptyGeminiUsageTotal());
+      addGeminiUsage(daily.get(date), usage);
+      addGeminiUsage(monthTotal, usage);
+    }
+  }
+
+  const budget = geminiMonthlyTokenBudget || null;
+  addBudgetPercent(monthTotal, budget);
+  const dailyRows = [...daily.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([date, total]) => {
+      addBudgetPercent(total, budget);
+      return { date, ...total };
+    });
+
+  return {
+    provider: "gemini",
+    month,
+    updated_at: new Date().toISOString(),
+    monthly_token_budget: budget,
+    month_total: monthTotal,
+    daily: dailyRows,
+    raw_records_path: toArchiveRelative(monthPath),
+  };
+}
+
+function emptyGeminiUsageTotal() {
+  return {
+    calls: 0,
+    prompt_tokens: 0,
+    candidates_tokens: 0,
+    total_tokens: 0,
+    thoughts_tokens: 0,
+    cached_content_tokens: 0,
+  };
+}
+
+function addGeminiUsage(total, usage) {
+  total.calls += 1;
+  total.prompt_tokens += usage.prompt_tokens;
+  total.candidates_tokens += usage.candidates_tokens;
+  total.total_tokens += usage.total_tokens;
+  total.thoughts_tokens += usage.thoughts_tokens;
+  total.cached_content_tokens += usage.cached_content_tokens;
+}
+
+function addBudgetPercent(total, budget) {
+  total.percent_of_budget = budget ? (total.total_tokens / budget) * 100 : null;
 }
 
 function baselinePathForSource(sourceId) {
@@ -1505,6 +1653,27 @@ function extractGeminiText(data) {
     .map((part) => part?.text || "")
     .join(" ")
     .trim();
+}
+
+function normalizeGeminiUsage(metadata) {
+  const promptTokens = nonNegativeInt(metadata?.promptTokenCount ?? metadata?.prompt_tokens, 0);
+  const candidatesTokens = nonNegativeInt(
+    metadata?.candidatesTokenCount ?? metadata?.candidates_tokens,
+    0,
+  );
+  const thoughtsTokens = nonNegativeInt(metadata?.thoughtsTokenCount ?? metadata?.thoughts_tokens, 0);
+  const cachedContentTokens = nonNegativeInt(
+    metadata?.cachedContentTokenCount ?? metadata?.cached_content_tokens,
+    0,
+  );
+  const fallbackTotal = promptTokens + candidatesTokens + thoughtsTokens;
+  return {
+    prompt_tokens: promptTokens,
+    candidates_tokens: candidatesTokens,
+    total_tokens: nonNegativeInt(metadata?.totalTokenCount ?? metadata?.total_tokens, fallbackTotal),
+    thoughts_tokens: thoughtsTokens,
+    cached_content_tokens: cachedContentTokens,
+  };
 }
 
 function extractResponseText(data) {
