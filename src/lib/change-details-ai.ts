@@ -205,6 +205,7 @@ const systemPrompt = [
   "Use only facts visible in the provided previous excerpt, new excerpt, and structured diff.",
   "Ignore navigation, footers, social links, CTAs, testimonials, unrelated programs, and raw scrape artifacts.",
   "If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false.",
+  "If the only change is a news, press, alumni-highlight, or shared-from item about a recipient, finalist, or student being selected for an award, set is_alert_worthy=false.",
   "If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text.",
   "Reject vague page-update language and raw scrape signals such as LEARN MORE.",
   "Required top-level keys: reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence.",

@@ -1810,6 +1810,19 @@ function buildWorkerStructuredDiff(source, previousSample, nextText) {
   if (hasRawScrapeSignals(changedText)) noiseFlags.push("raw_scrape_signal");
   if (looksLikeOrphanPunctuation(changedText)) noiseFlags.push("orphan_punctuation");
   if (
+    looksLikeWorkerRecipientNewsOrPressChange({
+      changedText,
+      previousText: previousClean,
+      nextText: nextClean,
+      addedDates,
+      removedDates,
+      addedAmounts,
+      removedAmounts,
+    })
+  ) {
+    noiseFlags.push("recipient_news_change");
+  }
+  if (
     !addedText.length &&
     !removedText.length &&
     !addedDates.length &&
@@ -1948,6 +1961,7 @@ function structuredChangeSystemPrompt() {
     "Use only facts visible in the previous excerpt, new excerpt, and structured diff.",
     "Ignore navigation, footers, social links, CTAs, testimonials, unrelated programs, and raw scrape artifacts.",
     "If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false.",
+    "If the only change is a news, press, alumni-highlight, or shared-from item about a recipient, finalist, or student being selected for an award, set is_alert_worthy=false.",
     "If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text.",
     "Reject raw scrape signals such as LEARN MORE and vague page-update language.",
     "Required keys: reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence.",
@@ -2080,6 +2094,34 @@ function workerQualityFlags(details) {
     flags.push("context_only_change");
   }
   if (
+    looksLikeWorkerRecipientNewsOrPressChange({
+      changedText: [
+        details.before,
+        details.after,
+        ...(details.structured_diff?.added_text || []),
+        ...(details.structured_diff?.removed_text || []),
+      ]
+        .filter(Boolean)
+        .join(" "),
+      previousText: (details.structured_diff?.removed_text || []).join(" "),
+      nextText: (details.structured_diff?.added_text || []).join(" "),
+      addedDates: (details.structured_diff?.date_changes || []).filter((change) =>
+        /^Added\s+/i.test(change),
+      ),
+      removedDates: (details.structured_diff?.date_changes || []).filter((change) =>
+        /^Removed\s+/i.test(change),
+      ),
+      addedAmounts: (details.structured_diff?.amount_changes || []).filter((change) =>
+        /^Added\s+/i.test(change),
+      ),
+      removedAmounts: (details.structured_diff?.amount_changes || []).filter((change) =>
+        /^Removed\s+/i.test(change),
+      ),
+    })
+  ) {
+    flags.push("recipient_news_change");
+  }
+  if (
     !details.before &&
     !details.after &&
     !details.structured_diff?.date_changes?.length &&
@@ -2094,7 +2136,7 @@ function workerQualityFlags(details) {
 
 function hasHardQualityFlag(flags) {
   return flags.some((flag) =>
-    ["ai_invalid_json", "source_access_error", "raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change"].includes(flag),
+    ["ai_invalid_json", "source_access_error", "raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change", "recipient_news_change"].includes(flag),
   );
 }
 
@@ -2334,6 +2376,46 @@ function looksLikeWorkerProfileOrTestimonialRotationText(value) {
 
 function hasWorkerApplicationRequirementSignal(value) {
   return /\b(deadline|due|applications?\s+(?:open|close|due)|apply by|submit(?:ted)? by|eligib(?:le|ility)|must submit|required|requirements?|recommendation|transcript|essay|interview|tuition|stipend|award amount|funding amount|citizenship|gpa)\b/i.test(value);
+}
+
+function looksLikeWorkerRecipientNewsOrPressChange(input) {
+  if (
+    input.addedDates?.length ||
+    input.removedDates?.length ||
+    input.addedAmounts?.length ||
+    input.removedAmounts?.length
+  ) {
+    return false;
+  }
+  if (hasWorkerApplicationRequirementSignal(input.changedText || "")) return false;
+
+  const changedClean = normalizeText(String(input.changedText || ""));
+  if (
+    changedClean &&
+    !looksLikeWorkerRecipientNewsOrPressText(changedClean) &&
+    !/\b(department of state scholarship|(?:his|her|their) language skills?|work on (?:his|her|their) language skills?|travel to|will spend)\b/i.test(changedClean)
+  ) {
+    return false;
+  }
+
+  return looksLikeWorkerRecipientNewsOrPressText(
+    `${input.changedText || ""} ${input.previousText || ""} ${input.nextText || ""}`,
+  );
+}
+
+function looksLikeWorkerRecipientNewsOrPressText(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+
+  const pressSignals = /\b(latest news|news|press release|in the press|shared from|alumni highlight|student profile|recipient profile)\b/i.test(clean);
+  const recipientSignals = /\b(selected for|selected as|has been selected for|named finalist|named a finalist|receives? federal help|students? awarded scholarships?|awarded scholarships? to study abroad|will spend (?:the summer|two months)|competitive pool|one of \d+ students selected|class of|['’]\d{2})\b/i.test(clean);
+  const awardSignals = /\b(scholarship|fellowship|award|program|department of state)\b/i.test(clean);
+  const personOrInstitutionSignals = /\b(student|senior|alumni|alumna|alumnus|university|college|school|cohort|finalist|recipient)\b/i.test(clean);
+
+  return (
+    (pressSignals && awardSignals && (recipientSignals || personOrInstitutionSignals)) ||
+    (recipientSignals && awardSignals && personOrInstitutionSignals)
+  );
 }
 
 function inferWorkerSection(text, source) {
@@ -2796,8 +2878,10 @@ function endsLikeTruncatedSample(value) {
 }
 
 function isNewsOrMarketingText(value) {
-  return /\b(latest news|news|blog|story|stories|read more|published|press release|past recipients?|received the .* award|receives the .* award|photo by|getty images)\b/i.test(
-    value,
+  return (
+    /\b(latest news|news|blog|story|stories|read more|published|press release|past recipients?|received the .* award|receives the .* award|photo by|getty images)\b/i.test(
+      value,
+    ) || looksLikeWorkerRecipientNewsOrPressText(value)
   );
 }
 

@@ -84,6 +84,7 @@ const hardQualityFlags = new Set([
   "indistinct_truncated_snippet",
   "format_only_change",
   "context_only_change",
+  "recipient_news_change",
 ]);
 
 console.log(

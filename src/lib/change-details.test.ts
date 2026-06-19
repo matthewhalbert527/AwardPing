@@ -141,6 +141,74 @@ describe("structured change details", () => {
     expect(details.reader_summary).toBe("No award-relevant wording changed in the stored excerpt.");
   });
 
+  it("rejects homepage press carousel recipient churn as non-alert-worthy", () => {
+    const previous =
+      "CLS Alumni Highlight: Addison Miller Addison Miller, a 2024 CLS Chinese Program participant in New Taipei City, Taiwan, leveraged her experience to shape her path toward a career in international and comparative education. In 2026... February 17, 2026 CLS in the Press Dairen Castro '28 selected for Critical Language Scholarship to study Arabic in Morocco Dairen Castro '28 has been selected for the 2026 U.S. Department of State Critical Language Scholarship (CLS) program. Castro was one of 315 students selected from a competitive pool of more than 4,500 applicants and will continue the longstanding tradition of Carls participating in the program. Shared from Carleton College, June 01, 2026 Five Students Awarded Scholarships to Study Abroad.";
+    const next =
+      "CLS Alumni Highlight: Addison Miller Addison Miller, a 2024 CLS Chinese Program participant in New Taipei City, Taiwan, leveraged her experience to shape her path toward a career in international and comparative education. In 2026... February 17, 2026 CLS in the Press Winthrop Senior Receives Federal Help to Travel to Japan Winthrop University senior Levi Becht will spend two months this summer in Japan on a U.S. Department of State scholarship to work on his language skills. Shared from , June 16, 2026 Dairen Castro '28 selected for Critical Language Scholarship to study Arabic in Morocco Dairen Castro '28 has been selected for the 2026 U.S. Department of State Critical Language Scholarship (CLS) program. Shared from Carleton College, June 01, 2026 Five Students Awarded Scholarships to Study Abroad.";
+
+    const details = buildHeuristicChangeDetails({
+      previousSample: previous,
+      nextText: next,
+      source: {
+        award_name: "Critical Language Scholarships Program",
+        source_title: "Critical Language Scholarships Program",
+        source_url: "https://clscholarship.org/",
+        page_type: "homepage",
+      },
+      generatedAt: "2026-06-19T11:51:51.483Z",
+    });
+
+    expect(details.quality_flags).toContain("recipient_news_change");
+    expect(details.is_alert_worthy).toBe(false);
+    expect(details.change_type).toBe("noise");
+    expect(details.before).toBeNull();
+    expect(details.after).toBeNull();
+    expect(details.reader_summary).toBe("No award-relevant wording changed in the stored excerpt.");
+  });
+
+  it("treats stored recipient press-carousel details without the new flag as non-meaningful", () => {
+    const details = {
+      after: "Department of State scholarship to work on his language skills.",
+      before:
+        "In 2026... February 17, 2026 CLS in the Press Dairen Castro '28 selected for Critical Language Scholarship to study Arabic in Morocco Dairen Castro '28 has been selected for the 2026 U.S.",
+      source: {
+        page_type: "homepage",
+        award_name: "Critical Language Scholarships Program",
+        source_url: "https://clscholarship.org/",
+        source_title: "Critical Language Scholarships Program",
+      },
+      section: "Critical Language Scholarships Program",
+      confidence: "medium",
+      change_type: "new_text",
+      generated_at: "2026-06-19T11:51:51.483Z",
+      quality_flags: [],
+      advisor_impact: "Review applicant instructions for any needed office-facing updates.",
+      reader_summary:
+        "The Critical Language Scholarships Program page added the following wording: Department of State scholarship to work on his language skills. Shared from , June 16, 2026 Dairen Castro '28 selected for Critical Language Scholarship to study Arabic in Morocco Dairen Castro '28 has been selected for the 2026 U.S.",
+      is_alert_worthy: true,
+      structured_diff: {
+        page_type: "homepage",
+        added_text: [
+          "Department of State scholarship to work on his language skills.",
+          "Shared from , June 16, 2026 Dairen Castro '28 selected for Critical Language Scholarship to study Arabic in Morocco Dairen Castro '28 has been selected for the 2026 U.S.",
+        ],
+        noise_flags: [],
+        date_changes: [],
+        removed_text: [
+          "In 2026... February 17, 2026 CLS in the Press Dairen Castro '28 selected for Critical Language Scholarship to study Arabic in Morocco Dairen Castro '28 has been selected for the 2026 U.S.",
+        ],
+        amount_changes: [],
+        likely_section: "Critical Language Scholarships Program",
+      },
+      generation_model: "gemini-2.5-flash",
+      generation_status: "fallback",
+      generation_provider: "gemini",
+    };
+
+    expect(isMeaningfulChangeDetails(details)).toBe(false);
+  });
+
   it("treats longer recrawled excerpts as sample expansion when the old compact text is a prefix", () => {
     const truncatedBlock =
       "Skip to main content The Harry S. Truman Scholarship Foundation Apply Sample Application Materials PREPARATION OF MATERIALS AND NOTIFICATION OF STATUSOnly on-line submissions will be accepted. The Foundation will not accept printed materials. Applicants should:Respond precisely to the application questions. Confine responses to the spaces provided. In Items 2 and 3, list your activities in descending order of significance or importance (e.g., start with the one that you believe has been your most substantial contribution).Use ";

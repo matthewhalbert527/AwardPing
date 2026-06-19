@@ -469,6 +469,19 @@ function qualityFlagsForDiff(input: {
     flags.push("profile_testimonial_change");
   }
   if (
+    looksLikeRecipientNewsOrPressChange({
+      changedText,
+      previousText: input.previousClean,
+      nextText: input.nextClean,
+      addedDates: input.addedDates,
+      removedDates: input.removedDates,
+      addedAmounts: input.addedAmounts,
+      removedAmounts: input.removedAmounts,
+    })
+  ) {
+    flags.push("recipient_news_change");
+  }
+  if (
     !input.addedText.length &&
     !input.removedText.length &&
     !input.addedDates.length &&
@@ -512,6 +525,34 @@ function qualityFlagsForDetails(details: ChangeDetails) {
     flags.push("profile_testimonial_change");
   }
   if (
+    looksLikeRecipientNewsOrPressChange({
+      changedText: [
+        details.before,
+        details.after,
+        ...details.structured_diff.added_text,
+        ...details.structured_diff.removed_text,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      previousText: details.structured_diff.removed_text.join(" "),
+      nextText: details.structured_diff.added_text.join(" "),
+      addedDates: details.structured_diff.date_changes.filter((change) =>
+        /^Added\s+/i.test(change),
+      ),
+      removedDates: details.structured_diff.date_changes.filter((change) =>
+        /^Removed\s+/i.test(change),
+      ),
+      addedAmounts: details.structured_diff.amount_changes.filter((change) =>
+        /^Added\s+/i.test(change),
+      ),
+      removedAmounts: details.structured_diff.amount_changes.filter((change) =>
+        /^Removed\s+/i.test(change),
+      ),
+    })
+  ) {
+    flags.push("recipient_news_change");
+  }
+  if (
     !details.before &&
     !details.after &&
     !details.structured_diff.date_changes.length &&
@@ -538,6 +579,7 @@ function isAlertWorthyFromFlags(flags: string[]) {
       "indistinct_truncated_snippet",
       "format_only_change",
       "context_only_change",
+      "recipient_news_change",
     ].includes(flag),
   );
 }
@@ -668,6 +710,67 @@ function looksLikeProfileOrTestimonialRotationText(value: string) {
     );
 
   return personSignals && (quoteSignals || storySignals || rosterSignals || stateFellowSignals);
+}
+
+function looksLikeRecipientNewsOrPressChange(input: {
+  changedText: string;
+  previousText: string;
+  nextText: string;
+  addedDates: string[];
+  removedDates: string[];
+  addedAmounts: string[];
+  removedAmounts: string[];
+}) {
+  if (
+    input.addedDates.length ||
+    input.removedDates.length ||
+    input.addedAmounts.length ||
+    input.removedAmounts.length
+  ) {
+    return false;
+  }
+  if (hasApplicationRequirementSignal(input.changedText)) return false;
+
+  const changedClean = normalizeChangeText(input.changedText);
+  if (
+    changedClean &&
+    !looksLikeRecipientNewsOrPressText(changedClean) &&
+    !/\b(department of state scholarship|(?:his|her|their) language skills?|work on (?:his|her|their) language skills?|travel to|will spend)\b/i.test(
+      changedClean,
+    )
+  ) {
+    return false;
+  }
+
+  return looksLikeRecipientNewsOrPressText(
+    `${input.changedText} ${input.previousText} ${input.nextText}`,
+  );
+}
+
+function looksLikeRecipientNewsOrPressText(value: string) {
+  const clean = normalizeChangeText(value);
+  if (!clean) return false;
+
+  const pressSignals =
+    /\b(latest news|news|press release|in the press|shared from|alumni highlight|student profile|recipient profile)\b/i.test(
+      clean,
+    );
+  const recipientSignals =
+    /\b(selected for|selected as|has been selected for|named finalist|named a finalist|receives? federal help|students? awarded scholarships?|awarded scholarships? to study abroad|will spend (?:the summer|two months)|competitive pool|one of \d+ students selected|class of|['’]\d{2})\b/i.test(
+      clean,
+    );
+  const awardSignals = /\b(scholarship|fellowship|award|program|department of state)\b/i.test(
+    clean,
+  );
+  const personOrInstitutionSignals =
+    /\b(student|senior|alumni|alumna|alumnus|university|college|school|cohort|finalist|recipient)\b/i.test(
+      clean,
+    );
+
+  return (
+    (pressSignals && awardSignals && (recipientSignals || personOrInstitutionSignals)) ||
+    (recipientSignals && awardSignals && personOrInstitutionSignals)
+  );
 }
 
 function hasApplicationRequirementSignal(value: string) {
@@ -1075,8 +1178,10 @@ function hasNavigationBoilerplate(value: string) {
 }
 
 function isHistoricalRecipientOrMarketingText(value: string) {
-  return /\b(past recipients?|recipient profiles?|latest news|press release|received the .* award|receives the .* award|photo by|getty images|new york, new york)\b/i.test(
-    value,
+  return (
+    /\b(past recipients?|recipient profiles?|latest news|press release|received the .* award|receives the .* award|photo by|getty images|new york, new york)\b/i.test(
+      value,
+    ) || looksLikeRecipientNewsOrPressText(value)
   );
 }
 
@@ -1089,6 +1194,7 @@ function isPersistentQualityFlag(flag: string) {
     "orphan_punctuation",
     "indistinct_truncated_snippet",
     "format_only_change",
+    "recipient_news_change",
   ].includes(flag);
 }
 

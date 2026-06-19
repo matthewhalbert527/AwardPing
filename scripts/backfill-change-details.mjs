@@ -263,10 +263,24 @@ function buildChangeDetails(previousText, nextText, context, fallbackSummary) {
   const addedAmounts = [...nextAmounts].filter((amount) => !previousAmounts.has(amount));
   const removedAmounts = [...previousAmounts].filter((amount) => !nextAmounts.has(amount));
   const sampleExpansion = isLikelySampleExpansion(previousClean, nextClean);
+  const changedText = [...addedText, ...removedText].join(" ");
   const noiseFlags = [];
   if (sampleExpansion) noiseFlags.push("sample_expansion");
   if (looksLikeSourceAccessError(previousClean) || looksLikeSourceAccessError(nextClean)) {
     noiseFlags.push("source_access_error");
+  }
+  if (
+    looksLikeRecipientNewsOrPressChange({
+      changedText,
+      previousText: previousClean,
+      nextText: nextClean,
+      addedDates,
+      removedDates,
+      addedAmounts,
+      removedAmounts,
+    })
+  ) {
+    noiseFlags.push("recipient_news_change");
   }
   const structuredDiff = {
     added_text: addedText,
@@ -409,7 +423,7 @@ function normalizeAiDetails(text, fallback, context, provider, model) {
 }
 
 function systemPrompt() {
-  return "You summarize official award webpage changes for scholarship advisors. Return valid JSON only with keys reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence. Use null when unknown. Use only provided excerpts and structured diff. If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false. If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text. Make reader_summary a clear one- or two-sentence explanation for a scholarship advisor. For broad content rotations, describe the category of content that changed and explicitly say whether deadlines, eligibility, funding, or application requirements changed. For concrete award changes, state the practical before/after meaning instead of dumping raw scraped text. Reject raw scrape signals such as LEARN MORE, orphan punctuation, vague page-updated wording, and changes with no concrete award-relevant fact.";
+  return "You summarize official award webpage changes for scholarship advisors. Return valid JSON only with keys reader_summary, before, after, section, change_type, advisor_impact, is_alert_worthy, confidence. Use null when unknown. Use only provided excerpts and structured diff. If either excerpt is an error, access denied, forbidden, not found, or other source access page, set is_alert_worthy=false. If the only change is a news, press, alumni-highlight, or shared-from item about a recipient, finalist, or student being selected for an award, set is_alert_worthy=false. If the only change is rotating testimonials, fellows, recipients, speaker bios, staff/team rosters, or profile/story text, keep it as a low-impact content_update and summarize the category of content that changed instead of quoting the text. Make reader_summary a clear one- or two-sentence explanation for a scholarship advisor. For broad content rotations, describe the category of content that changed and explicitly say whether deadlines, eligibility, funding, or application requirements changed. For concrete award changes, state the practical before/after meaning instead of dumping raw scraped text. Reject raw scrape signals such as LEARN MORE, orphan punctuation, vague page-updated wording, and changes with no concrete award-relevant fact.";
 }
 
 function userPrompt(previousText, nextText, context, fallback) {
@@ -435,13 +449,28 @@ function qualityFlags(summary, before, after, diff) {
   if (hasIndistinctTruncatedSnippets(before, after)) flags.push("indistinct_truncated_snippet");
   if (hasFormatOnlySnippetChange(before, after)) flags.push("format_only_change");
   if (hasContextOnlySnippetChange(before, after, diff)) flags.push("context_only_change");
+  if (
+    looksLikeRecipientNewsOrPressChange({
+      changedText: [before, after, ...(diff.added_text || []), ...(diff.removed_text || [])]
+        .filter(Boolean)
+        .join(" "),
+      previousText: (diff.removed_text || []).join(" "),
+      nextText: (diff.added_text || []).join(" "),
+      addedDates: (diff.date_changes || []).filter((change) => /^Added\s+/i.test(change)),
+      removedDates: (diff.date_changes || []).filter((change) => /^Removed\s+/i.test(change)),
+      addedAmounts: (diff.amount_changes || []).filter((change) => /^Added\s+/i.test(change)),
+      removedAmounts: (diff.amount_changes || []).filter((change) => /^Removed\s+/i.test(change)),
+    })
+  ) {
+    flags.push("recipient_news_change");
+  }
   if (!before && !after && !diff.date_changes.length && !diff.amount_changes.length) flags.push("no_actual_changed_fact");
   if (hasUnsupportedStructuredFact(before, after, diff)) flags.push("unsupported_structured_fact");
   return [...new Set(flags)];
 }
 
 function hasHardQualityFlag(flags) {
-  return flags.some((flag) => ["ai_invalid_json", "source_access_error", "raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change"].includes(flag));
+  return flags.some((flag) => ["ai_invalid_json", "source_access_error", "raw_scrape_signal", "orphan_punctuation", "vague_summary", "no_actual_changed_fact", "sample_expansion", "unsupported_structured_fact", "indistinct_truncated_snippet", "format_only_change", "context_only_change", "recipient_news_change"].includes(flag));
 }
 
 function hasIndistinctTruncatedSnippets(before, after) {
@@ -475,6 +504,46 @@ function looksLikeIncompletePrefixSnippet(value) {
 function hasApplicationRequirementSignal(value) {
   return /\b(deadline|due|applications?\s+(?:open|close|due)|apply by|submit(?:ted)? by|eligib(?:le|ility)|must submit|required|requirements?|recommendation|transcript|essay|interview|tuition|stipend|award amount|funding amount|citizenship|gpa)\b/i.test(
     String(value || ""),
+  );
+}
+
+function looksLikeRecipientNewsOrPressChange(input) {
+  if (
+    input.addedDates?.length ||
+    input.removedDates?.length ||
+    input.addedAmounts?.length ||
+    input.removedAmounts?.length
+  ) {
+    return false;
+  }
+  if (hasApplicationRequirementSignal(input.changedText)) return false;
+
+  const changedClean = normalizeText(String(input.changedText || ""));
+  if (
+    changedClean &&
+    !looksLikeRecipientNewsOrPressText(changedClean) &&
+    !/\b(department of state scholarship|(?:his|her|their) language skills?|work on (?:his|her|their) language skills?|travel to|will spend)\b/i.test(changedClean)
+  ) {
+    return false;
+  }
+
+  return looksLikeRecipientNewsOrPressText(
+    `${input.changedText || ""} ${input.previousText || ""} ${input.nextText || ""}`,
+  );
+}
+
+function looksLikeRecipientNewsOrPressText(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return false;
+
+  const pressSignals = /\b(latest news|news|press release|in the press|shared from|alumni highlight|student profile|recipient profile)\b/i.test(clean);
+  const recipientSignals = /\b(selected for|selected as|has been selected for|named finalist|named a finalist|receives? federal help|students? awarded scholarships?|awarded scholarships? to study abroad|will spend (?:the summer|two months)|competitive pool|one of \d+ students selected|class of|['’]\d{2})\b/i.test(clean);
+  const awardSignals = /\b(scholarship|fellowship|award|program|department of state)\b/i.test(clean);
+  const personOrInstitutionSignals = /\b(student|senior|alumni|alumna|alumnus|university|college|school|cohort|finalist|recipient)\b/i.test(clean);
+
+  return (
+    (pressSignals && awardSignals && (recipientSignals || personOrInstitutionSignals)) ||
+    (recipientSignals && awardSignals && personOrInstitutionSignals)
   );
 }
 
@@ -1027,7 +1096,10 @@ function hasNavigationBoilerplate(value) {
 }
 
 function isHistoricalRecipientOrMarketingText(value) {
-  return /\b(past recipients?|recipient profiles?|latest news|press release|received the .* award|receives the .* award|photo by|getty images|new york, new york)\b/i.test(String(value || ""));
+  return (
+    /\b(past recipients?|recipient profiles?|latest news|press release|received the .* award|receives the .* award|photo by|getty images|new york, new york)\b/i.test(String(value || "")) ||
+    looksLikeRecipientNewsOrPressText(value)
+  );
 }
 
 function isLikelySampleExpansion(previousText, nextText) {
