@@ -432,7 +432,8 @@ function Write-UninstallScript {
 `$ErrorActionPreference = "Stop"
 `$taskNames = @(
   "AwardPing Local Source Worker",
-  "AwardPing Local Worker Auto Update"
+  "AwardPing Local Worker Auto Update",
+  "AwardPing Visual Snapshot Worker"
 )
 
 foreach (`$taskName in `$taskNames) {
@@ -791,6 +792,20 @@ function Register-WorkerTask {
   Write-Host "Scheduled task created: $taskName every 60 minutes"
 }
 
+function Remove-LegacySourceTask {
+  Write-Step "Removing legacy hourly source worker task"
+  $taskName = "AwardPing Local Source Worker"
+  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  if (-not $task) {
+    Write-Host "Legacy scheduled task is not present: $taskName"
+    return
+  }
+
+  Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+  Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+  Write-Host "Removed legacy scheduled task: $taskName"
+}
+
 function Register-UpdaterTask {
   param([string]$InstallRoot)
 
@@ -843,6 +858,8 @@ if ($UpdateOnly) {
 $appDir = Join-Path $InstallRoot "app"
 $envPath = Join-Path $appDir ".env.worker.local"
 $logDir = Join-Path $InstallRoot "logs"
+$runTest = $false
+$runDeepCrawl = $false
 
 if ($UpdateOnly -and -not (Test-Path $envPath)) {
   throw "Update-only mode did not find $envPath. Run 1-INSTALL-AND-RUN-DEEP-CRAWL.bat first."
@@ -862,9 +879,8 @@ if ($UpdateOnly) {
   $pageLimit = [int](Read-Default "Pages to check per scheduled run" "500")
   $supabaseServiceRoleKey = Read-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl
   $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
-  $createSchedule = Read-YesNo "Create a Windows Scheduled Task that runs every 60 minutes?" $true
-  $runTest = Read-YesNo "Run a one-page test after install?" $true
-  $runDeepCrawl = $RunInitialDeepCrawl -or (Read-YesNo "Run the full initial source expansion crawl now? This is the search that expands awards beyond 1-2 pages." $true)
+  $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
+  Write-Host "Only the daily visual screenshot checker will be scheduled. The legacy hourly source/text worker will be removed."
   Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey -PageLimit $pageLimit
 }
 
@@ -873,17 +889,15 @@ Write-UninstallScript -InstallRoot $InstallRoot
 Write-LauncherScripts -InstallRoot $InstallRoot -RunScript $runScript
 Install-Dependencies -AppDir $appDir
 Register-UpdaterTask -InstallRoot $InstallRoot
+Remove-LegacySourceTask
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
 
-if ((-not $UpdateOnly) -and $createSchedule) {
-  Register-WorkerTask -RunScript $runScript
-}
-
 if ((-not $UpdateOnly) -and $runTest) {
-  Write-Step "Running one-page worker test"
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runScript -Limit 1 -NoDiscoverSubpages
+  Write-Step "Running one-page visual snapshot test"
+  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $visualRunScript -All -Limit 1
   if ($LASTEXITCODE -ne 0) {
-    throw "The one-page test failed. Check logs under $logDir."
+    throw "The one-page visual snapshot test failed. Check logs under $logDir."
   }
 }
 
@@ -900,8 +914,6 @@ if ((-not $UpdateOnly) -and $runDeepCrawl) {
 
 Write-Step "Done"
 Write-Host "Installed at: $InstallRoot"
-Write-Host "Run manually any time with:"
-Write-Host "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runScript`""
-Write-Host "Run the source expansion crawl with:"
-Write-Host "`"$InstallRoot\1-RUN-DEEP-CRAWL-AGAIN.bat`""
+Write-Host "Run the daily screenshot checker manually with:"
+Write-Host "`"$InstallRoot\3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat`""
 Write-Host "Logs are in: $logDir"

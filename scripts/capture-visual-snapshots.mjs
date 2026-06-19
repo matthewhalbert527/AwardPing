@@ -109,6 +109,7 @@ async function runOnce() {
     candidate_changes: 0,
     ai_true_changes: 0,
     ai_rejected: 0,
+    text_only_ignored: 0,
     deterministic_noise: 0,
     visual_noise: 0,
     review: 0,
@@ -200,28 +201,29 @@ async function processSource(source, context, browserMeta, report) {
     );
   }
 
-  if (capture.text_hash === baseline.text_hash && capture.image_hash === baseline.image_hash) {
-    report.unchanged += 1;
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
-    console.log(`UNCHANGED ${sourceLabel(source)}`);
-    return;
-  }
+  const screenshotChanged = capture.image_hash !== baseline.image_hash;
+  const textChanged = capture.text_hash !== baseline.text_hash;
 
-  if (capture.text_hash === baseline.text_hash && capture.image_hash !== baseline.image_hash) {
-    report.visual_noise += 1;
+  if (!screenshotChanged) {
+    report.unchanged += 1;
+    if (textChanged) {
+      report.text_only_ignored += 1;
+      console.log(`UNCHANGED screenshot_match_text_diff_ignored ${sourceLabel(source)}`);
+    } else {
+      console.log(`UNCHANGED ${sourceLabel(source)}`);
+    }
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
-    console.log(`NOISE likely_visual_noise ${sourceLabel(source)}`);
     return;
   }
 
   const diff = buildDiffSummary(previous.text, capture.text, source);
-  const deterministic = classifyDeterministicChange(diff, source);
-  if (deterministic.classification === "likely_noise") {
-    report.deterministic_noise += 1;
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
-    console.log(`NOISE ${deterministic.reason} ${sourceLabel(source)}`);
-    return;
-  }
+  const deterministic = textChanged
+    ? classifyDeterministicChange(diff, source)
+    : {
+        classification: "visual_candidate",
+        reason: "screenshot_hash_changed_without_normalized_text_change",
+        candidate_change: true,
+      };
 
   report.candidate_changes += 1;
   const aiReview = await reviewCandidateWithAi({
@@ -676,6 +678,8 @@ function aiUserPrompt({ source, baseline, previous, capture, diff, deterministic
       files: capture.files,
       hidden_noise_counts: capture.hidden_noise_counts,
     }),
+    "",
+    "Screenshot comparison is the primary signal. The two attached images are the previous thumbnail and the new thumbnail. Normalized text is secondary context and may be incomplete or noisy.",
     "",
     "Deterministic classification:",
     JSON.stringify(deterministic),
@@ -1746,11 +1750,12 @@ canvas[data-live],
 `;
 
 const aiSystemPrompt = [
-  "You are judging official award webpage changes for scholarship advisors.",
+  "You are judging official award webpage screenshot changes for scholarship advisors.",
   "Return valid strict JSON only. Do not include markdown.",
-  "Mark is_true_change=true only when a concrete award-relevant fact changed.",
+  "Compare the two attached screenshot thumbnails first. Use normalized text only as secondary context because it can be incomplete or noisy.",
+  "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
   "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
-  "Reject cookie banners, carousels, ads, newsletter popups, date-only changes, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+  "Reject cookie banners, carousels, ads, newsletter popups, current-date or last-updated-only changes, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
   "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",
   "advisor_impact should say what an advising office might need to check or update.",
