@@ -744,9 +744,8 @@ $InstallRoot
 
 Use:
 0-UPDATE-FROM-WEBSITE.bat
-  Downloads the latest runner from awardping.com and updates this install without re-entering keys.
-  The installed auto-update task checks the same URL every 30 minutes.
-  If a crawl or scheduled check is running, the updater skips that cycle and tries again later.
+  Manually downloads the latest runner from awardping.com and updates this install without re-entering keys.
+  If the daily visual check is running, the updater skips and you can run it again later.
 
 3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
   Runs the disk-backed visual screenshot checker across all source pages.
@@ -819,15 +818,16 @@ function Register-WorkerTask {
 function Remove-LegacySourceTask {
   param([string]$InstallRoot)
 
-  Write-Step "Removing legacy hourly source worker task"
-  $taskName = "AwardPing Local Source Worker"
-  $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-  if ($task) {
-    Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    Write-Host "Removed legacy scheduled task: $taskName"
-  } else {
-    Write-Host "Legacy scheduled task is not present: $taskName"
+  Write-Step "Removing legacy scheduled tasks"
+  foreach ($taskName in @("AwardPing Local Source Worker", "AwardPing Local Worker Auto Update")) {
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) {
+      Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+      Write-Host "Removed legacy scheduled task: $taskName"
+    } else {
+      Write-Host "Legacy scheduled task is not present: $taskName"
+    }
   }
 
   foreach ($fileName in @(
@@ -843,19 +843,6 @@ function Remove-LegacySourceTask {
       Write-Host "Removed legacy launcher: $fileName"
     }
   }
-}
-
-function Register-UpdaterTask {
-  param([string]$InstallRoot)
-
-  Write-Step "Creating AwardPing auto-update task"
-  $taskName = "AwardPing Local Worker Auto Update"
-  $updateScript = Join-Path $InstallRoot "Update-AwardPingWorkerFromWeb.ps1"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$updateScript`""
-  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Checks awardping.com for updated AwardPing local worker packages every 30 minutes." -Force | Out-Null
-  Write-Host "Scheduled task created: $taskName every 30 minutes"
 }
 
 function Register-VisualSnapshotTask {
@@ -927,7 +914,6 @@ $runScript = Write-RunScript -InstallRoot $InstallRoot -DefaultLimit $pageLimit
 Write-UninstallScript -InstallRoot $InstallRoot
 Write-LauncherScripts -InstallRoot $InstallRoot -RunScript $runScript
 Install-Dependencies -AppDir $appDir
-Register-UpdaterTask -InstallRoot $InstallRoot
 Remove-LegacySourceTask -InstallRoot $InstallRoot
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
 
