@@ -49,10 +49,6 @@ const thumbWidth = positiveInt(args["thumb-width"], 900);
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
-const geminiMonthlyTokenBudget = nonNegativeInt(
-  args["gemini-monthly-token-budget"] || env.AWARDPING_GEMINI_MONTHLY_TOKEN_BUDGET,
-  0,
-);
 const aiProvider = selectAiProvider(requestedAiProvider, {
   gemini: env.GEMINI_API_KEY,
   openai: env.OPENAI_API_KEY,
@@ -128,7 +124,7 @@ async function runOnce() {
       total_tokens: 0,
       thoughts_tokens: 0,
       cached_content_tokens: 0,
-      monthly_token_budget: geminiMonthlyTokenBudget || null,
+      note: "Gemini API responses include token usage but not AI Studio dollar spend. Use Google AI Studio Spend for account spend/cap dollars.",
     },
     errors: [],
     saved_change_paths: [],
@@ -1267,9 +1263,7 @@ function recordGeminiUsage(report, source, capture, aiReview) {
       `call_tokens=${usage.total_tokens}`,
       `today_tokens=${today?.total_tokens || 0}`,
       `month_tokens=${summary.month_total.total_tokens}`,
-      summary.monthly_token_budget
-        ? `month_budget_pct=${summary.month_total.percent_of_budget?.toFixed(2)}`
-        : "month_budget_pct=not_set",
+      "account_spend_source=google_ai_studio_spend",
     ].join(" "),
   );
 }
@@ -1309,20 +1303,16 @@ function summarizeGeminiUsageMonth(monthPath, month) {
     }
   }
 
-  const budget = geminiMonthlyTokenBudget || null;
-  addBudgetPercent(monthTotal, budget);
   const dailyRows = [...daily.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([date, total]) => {
-      addBudgetPercent(total, budget);
-      return { date, ...total };
-    });
+    .map(([date, total]) => ({ date, ...total }));
 
   return {
     provider: "gemini",
     month,
     updated_at: new Date().toISOString(),
-    monthly_token_budget: budget,
+    account_spend_source: "Google AI Studio Spend page",
+    note: "This file tracks AwardPing Gemini API calls and tokens. Exact dollar spend/cap usage is shown in Google AI Studio and may lag by up to 24 hours.",
     month_total: monthTotal,
     daily: dailyRows,
     raw_records_path: toArchiveRelative(monthPath),
@@ -1347,10 +1337,6 @@ function addGeminiUsage(total, usage) {
   total.total_tokens += usage.total_tokens;
   total.thoughts_tokens += usage.thoughts_tokens;
   total.cached_content_tokens += usage.cached_content_tokens;
-}
-
-function addBudgetPercent(total, budget) {
-  total.percent_of_budget = budget ? (total.total_tokens / budget) * 100 : null;
 }
 
 function baselinePathForSource(sourceId) {

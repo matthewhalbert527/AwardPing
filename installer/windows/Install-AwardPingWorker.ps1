@@ -553,6 +553,7 @@ pause
 if (-not (Test-Path `$SummaryPath)) {
   Write-Host "No AwardPing Gemini usage records yet."
   Write-Host "Gemini usage is recorded only when the visual checker finds a screenshot change and asks Gemini to review it."
+  Write-Host "Dollar spend/cap is shown in Google AI Studio > Spend; the Gemini API response does not return account dollar spend."
   Write-Host "Usage folder: `$UsageDir"
   exit 0
 }
@@ -568,11 +569,9 @@ Write-Host "Month calls: `$(`$month.calls)"
 Write-Host "Month tokens: `$(`$month.total_tokens)"
 Write-Host "Prompt tokens: `$(`$month.prompt_tokens)"
 Write-Host "Output tokens: `$(`$month.candidates_tokens)"
-if (`$summary.monthly_token_budget) {
-  Write-Host ("Monthly budget: {0} tokens ({1:N2}% used)" -f `$summary.monthly_token_budget, `$month.percent_of_budget)
-} else {
-  Write-Host "Monthly budget: not set. Set AWARDPING_GEMINI_MONTHLY_TOKEN_BUDGET in .env.worker.local to show percent used."
-}
+Write-Host ""
+Write-Host "Dollar spend/cap: check Google AI Studio > Spend. The Gemini API response does not return account dollar spend."
+Write-Host "AI Studio cost information may take up to 24 hours to update."
 Write-Host ""
 Write-Host "Daily usage:"
 `$summary.daily |
