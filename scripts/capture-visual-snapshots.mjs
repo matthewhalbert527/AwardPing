@@ -1033,6 +1033,27 @@ function classifyDeterministicChange(diff, source) {
 }
 
 async function loadSources(pageLimit) {
+  const pageSize = Math.min(1_000, pageLimit);
+  const sources = [];
+
+  for (let from = 0; sources.length < pageLimit; from += pageSize) {
+    const to = Math.min(from + pageSize - 1, pageLimit - 1);
+    const { data, error } = await buildSourcesQuery().range(from, to);
+
+    if (error) throw new Error(describeSupabaseError(error, "load shared award sources"));
+
+    const page = data || [];
+    sources.push(...page);
+
+    if (page.length < to - from + 1) {
+      break;
+    }
+  }
+
+  return sources.slice(0, pageLimit);
+}
+
+function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
@@ -1056,9 +1077,7 @@ async function loadSources(pageLimit) {
     query = query.ilike("shared_awards.name", `%${escapeLike(awardFilter)}%`);
   }
 
-  const { data, error } = await query;
-  if (error) throw new Error(describeSupabaseError(error, "load shared award sources"));
-  return data || [];
+  return query;
 }
 
 async function startWorkerRun(report) {

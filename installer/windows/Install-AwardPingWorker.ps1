@@ -596,10 +596,14 @@ function Read-JsonIfExists {
 }
 
 `$running = Get-CimInstance Win32_Process | Where-Object {
-  `$_.CommandLine -and (
-    `$_.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
-    `$_.CommandLine -like "*source:visual-snapshots*" -or
-    `$_.CommandLine -like "*capture-visual-snapshots.mjs*"
+  `$cmd = `$_.CommandLine
+  `$cmd -and
+  `$cmd -notlike "*Show-AwardPingVisualStatus.ps1*" -and
+  `$cmd -notlike "*Get-CimInstance Win32_Process*" -and
+  (
+    `$cmd -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+    `$cmd -like "*source:visual-snapshots*" -or
+    `$cmd -like "*capture-visual-snapshots.mjs*"
   )
 }
 `$lockText = if (Test-Path `$LockPath) { Get-Content -Path `$LockPath -Raw -ErrorAction SilentlyContinue } else { "" }
