@@ -49,6 +49,7 @@ const thumbWidth = positiveInt(args["thumb-width"], 900);
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
+const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
 const aiProvider = selectAiProvider(requestedAiProvider, {
   gemini: env.GEMINI_API_KEY,
   openai: env.OPENAI_API_KEY,
@@ -103,6 +104,7 @@ async function runOnce() {
       timeout_ms: timeoutMs,
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
+      max_sources_per_browser: maxSourcesPerBrowser,
     },
     checked: 0,
     baselined: 0,
@@ -134,14 +136,31 @@ async function runOnce() {
 
   let browser = null;
   let context = null;
+  let browserMeta = null;
+  let sourcesSinceBrowserStart = 0;
   let workerRunId = null;
+
+  async function restartBrowser(reason) {
+    await context?.close().catch(() => null);
+    await browser?.close().catch(() => null);
+    context = null;
+    browser = null;
+
+    const launched = await launchBrowser();
+    browser = launched.browser;
+    browserMeta = launched.browserMeta;
+    context = await createBrowserContext(browser);
+    sourcesSinceBrowserStart = 0;
+
+    if (reason) {
+      console.log(`BROWSER restarted ${reason}`);
+    }
+  }
 
   try {
     workerRunId = await startWorkerRun(report);
     const sources = await loadSources(limit);
-    const launched = await launchBrowser();
-    browser = launched.browser;
-    context = await createBrowserContext(browser);
+    await restartBrowser("initial");
 
     for (const source of sources) {
       if (isPdfSource(source)) {
@@ -150,18 +169,39 @@ async function runOnce() {
         continue;
       }
 
-      try {
-        await waitForDomain(source.url);
-        await processSource(source, context, launched.browserMeta, report);
-      } catch (error) {
-        report.failed += 1;
-        const message = errorMessage(error);
-        report.errors.push({
-          source_id: source.id,
-          source_url: source.url,
-          message,
-        });
-        console.log(`FAILED ${message} ${sourceLabel(source)}`);
+      if (sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
+        await restartBrowser(`after_${sourcesSinceBrowserStart}_sources`);
+      }
+
+      let retriedAfterBrowserRestart = false;
+      while (true) {
+        try {
+          await waitForDomain(source.url);
+          await processSource(source, context, browserMeta, report);
+          sourcesSinceBrowserStart += 1;
+          break;
+        } catch (error) {
+          if (!retriedAfterBrowserRestart && isBrowserClosedError(error)) {
+            console.log(`BROWSER closed ${sourceLabel(source)} | ${errorMessage(error)}`);
+            await restartBrowser("after_closed_context");
+            retriedAfterBrowserRestart = true;
+            continue;
+          }
+
+          report.failed += 1;
+          const message = errorMessage(error);
+          report.errors.push({
+            source_id: source.id,
+            source_url: source.url,
+            message,
+          });
+          console.log(`FAILED ${message} ${sourceLabel(source)}`);
+
+          if (isBrowserClosedError(error)) {
+            await restartBrowser("after_failed_closed_context");
+          }
+          break;
+        }
       }
     }
 
@@ -1956,6 +1996,17 @@ function errorMessage(error) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) return String(error.message);
   return String(error || "Unknown error");
+}
+
+function isBrowserClosedError(error) {
+  const message = errorMessage(error).toLowerCase();
+  return (
+    message.includes("target page, context or browser has been closed") ||
+    message.includes("browser context was closed") ||
+    message.includes("browser has been closed") ||
+    message.includes("context has been closed") ||
+    message.includes("target closed")
+  );
 }
 
 const noiseKeywords = [
