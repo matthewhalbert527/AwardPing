@@ -1061,8 +1061,7 @@ function buildSourcesQuery() {
     )
     .eq("shared_awards.status", "active")
     .order("next_check_at", { ascending: true })
-    .order("created_at", { ascending: true })
-    .limit(pageLimit);
+    .order("created_at", { ascending: true });
 
   if (!includeNotDue) {
     query = query.lte("next_check_at", new Date().toISOString());
