@@ -30,6 +30,10 @@ const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 const archiveRoot = resolve(
   String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || args["archive-dir"] || defaultArchiveRoot),
 );
+const brokenSourcesDir = join(archiveRoot, "broken-sources");
+const brokenSourcesCurrentPath = join(brokenSourcesDir, "broken-sources-current.json");
+const brokenSourcesJsonlPath = join(brokenSourcesDir, "broken-sources-events.jsonl");
+const brokenSourcesCsvPath = join(brokenSourcesDir, "broken-sources-current.csv");
 const limit = positiveInt(args.limit, 25);
 const includeNotDue = boolArg(args.all, false) || boolArg(args["include-not-due"], false);
 const sourceIdFilter = cleanText(args["source-id"]);
@@ -219,6 +223,9 @@ async function runOnce() {
             source_id: source.id,
             source_url: source.url,
             message,
+          });
+          await recordBrokenSourceFailure(source, message).catch((recordError) => {
+            console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
           });
           console.log(`FAILED ${message} ${sourceLabel(source)}`);
 
@@ -602,6 +609,9 @@ async function captureSource(source, context, browserMeta) {
       waitUntil: "domcontentloaded",
       timeout: timeoutMs,
     });
+    if (response && response.status() >= 400) {
+      throw new Error(`Page load failed with HTTP ${response.status()} ${response.statusText()}`);
+    }
     await page.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
     await page.evaluate(() => document.fonts?.ready).catch(() => null);
     if (delayMs > 0) await page.waitForTimeout(delayMs);
@@ -1469,6 +1479,149 @@ function visualWorkerMetadata(report) {
     },
     errors: report.errors.slice(0, 20),
   };
+}
+
+async function recordBrokenSourceFailure(source, message) {
+  mkdirSync(brokenSourcesDir, { recursive: true });
+
+  const parsed = parseHttpStatusFromMessage(message);
+  const probe = parsed.status_code ? null : await probeHttpStatus(source.url).catch((error) => ({
+    status_code: null,
+    status_text: null,
+    final_url: null,
+    content_type: null,
+    content_length: null,
+    probe_error: errorMessage(error),
+  }));
+  const statusCode = parsed.status_code || probe?.status_code || null;
+  const now = new Date().toISOString();
+  const key = `${source.id}|${source.url}`;
+  const current = readJsonIfExists(brokenSourcesCurrentPath) || {};
+  const previous = current[key] || null;
+  const record = {
+    key,
+    first_seen_at: previous?.first_seen_at || now,
+    last_seen_at: now,
+    seen_count: (previous?.seen_count || 0) + 1,
+    status_code: statusCode,
+    status_text: parsed.status_text || probe?.status_text || null,
+    failure_type: failureTypeFromMessage(message, statusCode),
+    source_id: source.id,
+    shared_award_id: source.shared_award_id,
+    award_name: source.shared_awards?.name || null,
+    source_title: source.title || null,
+    source_url: source.url,
+    final_url: probe?.final_url || null,
+    page_type: source.page_type || null,
+    error_message: message,
+    content_type: probe?.content_type || null,
+    content_length: probe?.content_length || null,
+    probe_error: probe?.probe_error || null,
+  };
+
+  current[key] = record;
+  writeFileSync(brokenSourcesCurrentPath, JSON.stringify(current, null, 2), "utf8");
+  appendFileSync(brokenSourcesJsonlPath, `${JSON.stringify(record)}\n`, "utf8");
+  writeBrokenSourcesCsv(Object.values(current));
+  console.log(`BROKEN_SOURCE recorded status=${statusCode || "unknown"} ${sourceLabel(source)}`);
+}
+
+function parseHttpStatusFromMessage(message) {
+  const match = String(message || "").match(/\bHTTP\s+(\d{3})(?:\s+([^\n\r]+))?/i);
+  return {
+    status_code: match ? Number(match[1]) : null,
+    status_text: match?.[2] ? match[2].trim() : null,
+  };
+}
+
+function failureTypeFromMessage(message, statusCode) {
+  const lower = String(message || "").toLowerCase();
+  if (statusCode === 404 || lower.includes("http 404")) return "http_404";
+  if (statusCode) return `http_${statusCode}`;
+  if (lower.includes("err_http_response_code_failure")) return "http_response_failure";
+  if (lower.includes("timeout")) return "timeout";
+  if (lower.includes("pdf download failed")) return "pdf_download_failed";
+  if (lower.includes("net::err_name_not_resolved")) return "dns_error";
+  if (lower.includes("net::err_connection")) return "connection_error";
+  return "capture_failure";
+}
+
+async function probeHttpStatus(url) {
+  const first = await fetchProbe(url, "HEAD");
+  if (first.status_code && first.status_code !== 405) return first;
+  return fetchProbe(url, "GET");
+}
+
+async function fetchProbe(url, method) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.min(15_000, sourceTimeoutMs));
+  const headers = {
+    "User-Agent": crawlerUserAgent,
+    Accept: "text/html,application/pdf,application/octet-stream,*/*;q=0.5",
+  };
+  if (method === "GET") {
+    headers.Range = "bytes=0-0";
+  }
+
+  try {
+    const response = await fetch(url, {
+      method,
+      redirect: "follow",
+      signal: controller.signal,
+      headers,
+    });
+
+    return {
+      status_code: response.status || null,
+      status_text: response.statusText || null,
+      final_url: response.url || url,
+      content_type: response.headers.get("content-type") || null,
+      content_length: numericHeader(response.headers.get("content-length")),
+      probe_error: null,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function numericHeader(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function writeBrokenSourcesCsv(records) {
+  const headers = [
+    "first_seen_at",
+    "last_seen_at",
+    "seen_count",
+    "status_code",
+    "status_text",
+    "failure_type",
+    "award_name",
+    "source_title",
+    "source_url",
+    "final_url",
+    "page_type",
+    "source_id",
+    "shared_award_id",
+    "error_message",
+    "content_type",
+    "content_length",
+    "probe_error",
+  ];
+  const rows = records
+    .slice()
+    .sort((left, right) => String(right.last_seen_at).localeCompare(String(left.last_seen_at)))
+    .map((record) => headers.map((header) => csvEscape(record[header])));
+  const csv = [headers.map(csvEscape), ...rows].map((row) => row.join(",")).join("\n");
+  writeFileSync(brokenSourcesCsvPath, `${csv}\n`, "utf8");
+}
+
+function csvEscape(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  if (/[",\r\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`;
+  return text;
 }
 
 function isMissingMetadataColumnError(error) {
