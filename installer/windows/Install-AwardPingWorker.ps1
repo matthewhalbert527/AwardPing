@@ -461,6 +461,7 @@ param(
   [switch]`$BaselineRefresh,
   [switch]`$PdfOnly,
   [switch]`$WebOnly,
+  [switch]`$SkipExistingBaseline,
   [int]`$DomainDelayMs = 1500
 )
 
@@ -526,6 +527,7 @@ if (`$All) { `$workerArgs += "--all=true" }
 if (`$BaselineRefresh) { `$workerArgs += "--baseline-refresh=true" }
 if (`$PdfOnly) { `$workerArgs += "--pdf-only=true" }
 if (`$WebOnly) { `$workerArgs += "--web-only=true" }
+if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
 
 if (`$BaselineRefresh) {
   Write-Host "Running AwardPing visual baseline refresh. Log: `$logPath"

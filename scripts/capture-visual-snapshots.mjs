@@ -41,6 +41,7 @@ const baselineRefresh = boolArg(args["baseline-refresh"], false);
 const promote = boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
+const skipExistingBaseline = boolArg(args["skip-existing-baseline"], false);
 const keepUnchanged = boolArg(args["keep-unchanged"], false);
 const keepRejected = boolArg(args["keep-rejected"], false);
 const reviewOnAiFailure = boolArg(args["review-on-ai-failure"], true);
@@ -50,6 +51,7 @@ const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
+const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
@@ -100,6 +102,7 @@ async function runOnce() {
       promote,
       pdf_only: pdfOnly,
       web_only: webOnly,
+      skip_existing_baseline: skipExistingBaseline,
       keep_unchanged: keepUnchanged,
       keep_rejected: keepRejected,
       review_on_ai_failure: reviewOnAiFailure,
@@ -108,6 +111,7 @@ async function runOnce() {
       jpeg_quality: jpegQuality,
       thumb_width: thumbWidth,
       timeout_ms: timeoutMs,
+      source_timeout_ms: sourceTimeoutMs,
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
       max_sources_per_browser: maxSourcesPerBrowser,
@@ -179,6 +183,10 @@ async function runOnce() {
       if (webOnly && pdfSource) {
         continue;
       }
+      if (baselineRefresh && skipExistingBaseline && existsSync(baselinePathForSource(source.id))) {
+        console.log(`SKIP existing_baseline ${sourceLabel(source)}`);
+        continue;
+      }
 
       if (!pdfSource && !context) {
         await restartBrowser("initial");
@@ -190,11 +198,15 @@ async function runOnce() {
       while (true) {
         try {
           await waitForDomain(source.url);
-          await processSource(source, context, browserMeta, report);
+          await withTimeout(
+            processSource(source, context, browserMeta, report),
+            sourceTimeoutMs,
+            `source hard timeout after ${sourceTimeoutMs}ms`,
+          );
           sourcesSinceBrowserStart += 1;
           break;
         } catch (error) {
-          if (!retriedAfterBrowserRestart && isBrowserClosedError(error)) {
+          if (!retriedAfterBrowserRestart && (isBrowserClosedError(error) || isSourceTimeoutError(error))) {
             console.log(`BROWSER closed ${sourceLabel(source)} | ${errorMessage(error)}`);
             await restartBrowser("after_closed_context");
             retriedAfterBrowserRestart = true;
@@ -210,7 +222,7 @@ async function runOnce() {
           });
           console.log(`FAILED ${message} ${sourceLabel(source)}`);
 
-          if (isBrowserClosedError(error)) {
+          if (isBrowserClosedError(error) || isSourceTimeoutError(error)) {
             await restartBrowser("after_failed_closed_context");
           }
           break;
@@ -2210,10 +2222,39 @@ function sleep(milliseconds) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, milliseconds));
 }
 
+function withTimeout(promise, milliseconds, message) {
+  let timeout = null;
+  let timedOut = false;
+  const guarded = promise
+    .catch((error) => {
+      if (timedOut) return null;
+      throw error;
+    })
+    .finally(() => {
+      if (timeout) clearTimeout(timeout);
+    });
+
+  return Promise.race([
+    guarded,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        const error = new Error(message);
+        error.code = "AWARDPING_SOURCE_TIMEOUT";
+        reject(error);
+      }, milliseconds);
+    }),
+  ]);
+}
+
 function errorMessage(error) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) return String(error.message);
   return String(error || "Unknown error");
+}
+
+function isSourceTimeoutError(error) {
+  return error?.code === "AWARDPING_SOURCE_TIMEOUT";
 }
 
 function isBrowserClosedError(error) {
