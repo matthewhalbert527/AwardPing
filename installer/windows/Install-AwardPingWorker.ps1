@@ -459,6 +459,8 @@ param(
   [int]`$Limit = 20000,
   [switch]`$All,
   [switch]`$BaselineRefresh,
+  [switch]`$PdfOnly,
+  [switch]`$WebOnly,
   [int]`$DomainDelayMs = 1500
 )
 
@@ -522,6 +524,8 @@ Set-Location `$AppDir
 )
 if (`$All) { `$workerArgs += "--all=true" }
 if (`$BaselineRefresh) { `$workerArgs += "--baseline-refresh=true" }
+if (`$PdfOnly) { `$workerArgs += "--pdf-only=true" }
+if (`$WebOnly) { `$workerArgs += "--web-only=true" }
 
 if (`$BaselineRefresh) {
   Write-Host "Running AwardPing visual baseline refresh. Log: `$logPath"
@@ -563,6 +567,18 @@ pause
 "@
 
   Set-Content -Path $visualBaselinePath -Value $visualBaselineContent -Encoding ASCII
+
+  $pdfBaselinePath = Join-Path $InstallRoot "7-RUN-PDF-BASELINE-REFRESH-NOW.bat"
+  $pdfBaselineContent = @"
+@echo off
+echo Running AwardPing PDF baseline refresh now.
+echo This downloads PDF sources and compares future runs by PDF file hash.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000 -BaselineRefresh -PdfOnly
+echo.
+pause
+"@
+
+  Set-Content -Path $pdfBaselinePath -Value $pdfBaselineContent -Encoding ASCII
 
   $visualStatusScriptPath = Join-Path $InstallRoot "Show-AwardPingVisualStatus.ps1"
   $visualStatusScriptContent = @"
@@ -615,7 +631,7 @@ function Read-JsonIfExists {
 `$reportPath = if (`$reportLine) { `$reportLine.Line -replace "^REPORT\s+", "" } else { "" }
 `$report = Read-JsonIfExists -Path `$reportPath
 
-if (-not `$report -and (Test-Path `$ReportDir)) {
+if (-not `$running -and -not `$report -and (Test-Path `$ReportDir)) {
   `$latestReport = Get-ChildItem -Path `$ReportDir -Filter "visual-snapshot-run-*.json" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
@@ -641,6 +657,7 @@ if (`$latestLog) {
   Write-Host "Log updated: `$(`$latestLog.LastWriteTime)"
   Write-Host "Baselines: `$(Count-Matches `$lines '^BASELINE ')"
   Write-Host "Unchanged: `$(Count-Matches `$lines '^UNCHANGED')"
+  Write-Host "PDF checked: `$(Count-Matches `$lines '^BASELINE PDF |^UNCHANGED pdf_|^REVIEW pdf_')"
   Write-Host "PDF skipped: `$(Count-Matches `$lines '^NOISE skipped_pdf ')"
   Write-Host "Failed: `$(Count-Matches `$lines '^FAILED ')"
   Write-Host "Candidate changes: `$(Count-Matches `$lines '^AI TRUE|^AI REJECTED|^REVIEW ')"
@@ -665,6 +682,11 @@ if (`$report) {
   Write-Host "Review: `$(`$report.review)"
   Write-Host "Failed: `$(`$report.failed)"
   Write-Host "PDF skipped: `$(`$report.skipped_pdf)"
+  if (`$null -ne `$report.pdf_checked) {
+    Write-Host "PDF checked: `$(`$report.pdf_checked)"
+    Write-Host "PDF changed: `$(`$report.pdf_changed)"
+    Write-Host "PDF unchanged: `$(`$report.pdf_unchanged)"
+  }
   if (`$report.gemini_usage) {
     Write-Host "Gemini calls: `$(`$report.gemini_usage.calls)"
     Write-Host "Gemini tokens: `$(`$report.gemini_usage.total_tokens)"
@@ -1097,6 +1119,8 @@ Write-Host "Run the daily screenshot checker manually with:"
 Write-Host "`"$InstallRoot\3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat`""
 Write-Host "Run a fresh visual baseline refresh with:"
 Write-Host "`"$InstallRoot\5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat`""
+Write-Host "Run a fresh PDF-only baseline refresh with:"
+Write-Host "`"$InstallRoot\7-RUN-PDF-BASELINE-REFRESH-NOW.bat`""
 Write-Host "Check visual worker status with:"
 Write-Host "`"$InstallRoot\6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`""
 Write-Host "Logs are in: $logDir"

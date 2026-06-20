@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -38,6 +39,8 @@ const continuous = boolArg(args.continuous, false);
 const intervalMinutes = positiveInt(args["interval-minutes"], 60);
 const baselineRefresh = boolArg(args["baseline-refresh"], false);
 const promote = boolArg(args.promote, true);
+const pdfOnly = boolArg(args["pdf-only"], false);
+const webOnly = boolArg(args["web-only"], false);
 const keepUnchanged = boolArg(args["keep-unchanged"], false);
 const keepRejected = boolArg(args["keep-rejected"], false);
 const reviewOnAiFailure = boolArg(args["review-on-ai-failure"], true);
@@ -50,6 +53,7 @@ const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
+const maxPdfBytes = positiveInt(args["max-pdf-mb"], 50) * 1024 * 1024;
 const aiProvider = selectAiProvider(requestedAiProvider, {
   gemini: env.GEMINI_API_KEY,
   openai: env.OPENAI_API_KEY,
@@ -94,6 +98,8 @@ async function runOnce() {
       award: awardFilter || null,
       baseline_refresh: baselineRefresh,
       promote,
+      pdf_only: pdfOnly,
+      web_only: webOnly,
       keep_unchanged: keepUnchanged,
       keep_rejected: keepRejected,
       review_on_ai_failure: reviewOnAiFailure,
@@ -105,6 +111,7 @@ async function runOnce() {
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
       max_sources_per_browser: maxSourcesPerBrowser,
+      max_pdf_bytes: maxPdfBytes,
     },
     checked: 0,
     baselined: 0,
@@ -119,6 +126,9 @@ async function runOnce() {
     skipped_pdf: 0,
     failed: 0,
     promoted: 0,
+    pdf_checked: 0,
+    pdf_unchanged: 0,
+    pdf_changed: 0,
     gemini_usage: {
       calls: 0,
       prompt_tokens: 0,
@@ -160,16 +170,19 @@ async function runOnce() {
   try {
     workerRunId = await startWorkerRun(report);
     const sources = await loadSources(limit);
-    await restartBrowser("initial");
 
     for (const source of sources) {
-      if (isPdfSource(source)) {
-        report.skipped_pdf += 1;
-        console.log(`NOISE skipped_pdf ${sourceLabel(source)}`);
+      const pdfSource = isPdfSource(source);
+      if (pdfOnly && !pdfSource) {
+        continue;
+      }
+      if (webOnly && pdfSource) {
         continue;
       }
 
-      if (sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
+      if (!pdfSource && !context) {
+        await restartBrowser("initial");
+      } else if (!pdfSource && sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
         await restartBrowser(`after_${sourcesSinceBrowserStart}_sources`);
       }
 
@@ -228,8 +241,14 @@ async function runOnce() {
 }
 
 async function processSource(source, context, browserMeta, report) {
-  const capture = await captureSource(source, context, browserMeta);
+  const pdfSource = isPdfSource(source);
+  const capture = pdfSource
+    ? await capturePdfSource(source)
+    : await captureSource(source, context, browserMeta);
   report.checked += 1;
+  if (capture.kind === "pdf") {
+    report.pdf_checked += 1;
+  }
 
   const baselinePath = baselinePathForSource(source.id);
   const baseline = readJsonIfExists(baselinePath);
@@ -240,7 +259,7 @@ async function processSource(source, context, browserMeta, report) {
       previous_baseline: baseline || null,
     });
     report.baselined += 1;
-    console.log(`BASELINE ${sourceLabel(source)}`);
+    console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
     return;
   }
 
@@ -249,6 +268,11 @@ async function processSource(source, context, browserMeta, report) {
     throw new Error(
       `Baseline exists but evidence is missing (${previous.missing.join(", ")}). Rerun with --baseline-refresh=true after confirming the source.`,
     );
+  }
+
+  if (capture.kind === "pdf" || previous.kind === "pdf") {
+    processPdfComparison(source, baseline, previous, capture, report);
+    return;
   }
 
   const screenshotChanged = capture.image_hash !== baseline.image_hash;
@@ -374,6 +398,177 @@ async function processSource(source, context, browserMeta, report) {
     removeGeneratedCaptureDir(capture.dir);
   }
   console.log(`AI REJECTED ${aiReview.result.noise_reason || "not award-relevant"} ${sourceLabel(source)}`);
+}
+
+function processPdfComparison(source, baseline, previous, capture, report) {
+  const previousHash = baseline.file_hash || baseline.image_hash;
+  const fileChanged = capture.file_hash !== previousHash;
+  const textChanged = capture.text_hash !== baseline.text_hash;
+
+  if (!fileChanged) {
+    report.unchanged += 1;
+    report.pdf_unchanged += 1;
+    console.log(textChanged ? `UNCHANGED pdf_file_match_text_diff_ignored ${sourceLabel(source)}` : `UNCHANGED pdf_file_match ${sourceLabel(source)}`);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    return;
+  }
+
+  const diff = buildDiffSummary(previous.text || "", capture.text || "", source);
+  const deterministic = {
+    classification: "candidate_change",
+    reason: "pdf_file_hash_changed",
+    candidate_change: true,
+    previous_file_hash: previousHash || null,
+    new_file_hash: capture.file_hash,
+    previous_file_bytes: baseline.file_bytes || previous.meta?.file_bytes || null,
+    new_file_bytes: capture.file_bytes,
+  };
+  const reviewPath = saveReviewRecord({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic,
+    reason: "pdf_file_hash_changed",
+    aiReview: {
+      provider: "none",
+      model: null,
+      result: null,
+      error: null,
+    },
+  });
+
+  report.candidate_changes += 1;
+  report.review += 1;
+  report.pdf_changed += 1;
+  report.review_paths.push(toArchiveRelative(reviewPath));
+
+  if (promote) {
+    writeBaseline(source, capture, {
+      reason: "pdf_file_hash_changed",
+      previous_baseline_capture: baseline.capture || null,
+    });
+    report.promoted += 1;
+  }
+
+  console.log(`REVIEW pdf_changed ${sourceLabel(source)}`);
+}
+
+async function capturePdfSource(source) {
+  const capturedAt = new Date().toISOString();
+  const captureStamp = timestampForPath(capturedAt);
+  const sourceDir = join(archiveRoot, "sources", source.id);
+  const captureDir = join(sourceDir, "captures", captureStamp);
+  mkdirSync(captureDir, { recursive: true });
+
+  const pdfPath = join(captureDir, "document.pdf");
+  const textPath = join(captureDir, "text.txt");
+  const metaPath = join(captureDir, "meta.json");
+  const download = await fetchPdfSource(source.url);
+  const fileHash = hashBuffer(download.buffer);
+  const extracted = await extractPdfText(download.buffer);
+  const text = normalizeVisibleText(extracted.text || "");
+  const textHash = hashText(text);
+
+  writeFileSync(pdfPath, download.buffer);
+  writeFileSync(textPath, `${text}\n`, "utf8");
+
+  const meta = {
+    version: 1,
+    kind: "pdf",
+    source: sourceMetadata(source),
+    captured_at: capturedAt,
+    final_url: download.finalUrl,
+    status_code: download.status,
+    status_text: download.statusText,
+    content_type: download.contentType,
+    file_hash: fileHash,
+    image_hash: fileHash,
+    text_hash: textHash,
+    text_length: text.length,
+    file_bytes: download.buffer.length,
+    page_title: source.title || null,
+    page_count: extracted.pageCount,
+    pdf_text_error: extracted.error,
+    files: {
+      pdf: toArchiveRelative(pdfPath),
+      text: toArchiveRelative(textPath),
+      meta: toArchiveRelative(metaPath),
+    },
+  };
+
+  writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+
+  return {
+    ...meta,
+    dir: captureDir,
+    pdf_path: pdfPath,
+    text_path: textPath,
+    meta_path: metaPath,
+    text,
+  };
+}
+
+async function fetchPdfSource(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      redirect: "follow",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": crawlerUserAgent,
+        Accept: "application/pdf,application/octet-stream,text/html;q=0.8,*/*;q=0.5",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`PDF download failed with HTTP ${response.status} ${response.statusText}`.trim());
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > maxPdfBytes) {
+      throw new Error(`PDF is too large (${contentLength} bytes; limit ${maxPdfBytes} bytes)`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length > maxPdfBytes) {
+      throw new Error(`PDF is too large (${buffer.length} bytes; limit ${maxPdfBytes} bytes)`);
+    }
+
+    return {
+      buffer,
+      finalUrl: response.url || url,
+      status: response.status,
+      statusText: response.statusText,
+      contentType: response.headers.get("content-type") || null,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function extractPdfText(buffer) {
+  let parser = null;
+  try {
+    parser = new PDFParse({ data: new Uint8Array(buffer) });
+    const result = await parser.getText();
+    return {
+      text: result.text || "",
+      pageCount: result.total || null,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      text: "",
+      pageCount: null,
+      error: errorMessage(error),
+    };
+  } finally {
+    await parser?.destroy().catch(() => null);
+  }
 }
 
 async function captureSource(source, context, browserMeta) {
@@ -790,10 +985,12 @@ function saveTrueChange({ source, baseline, previous, capture, diff, determinist
     previous_hashes: {
       text_hash: baseline.text_hash,
       image_hash: baseline.image_hash,
+      file_hash: baseline.file_hash || null,
     },
     new_hashes: {
       text_hash: capture.text_hash,
       image_hash: capture.image_hash,
+      file_hash: capture.file_hash || null,
     },
     deterministic_classification: deterministic,
     deterministic_diff: diff,
@@ -829,10 +1026,12 @@ function saveReviewRecord({ source, baseline, previous, capture, diff, determini
         previous_hashes: {
           text_hash: baseline.text_hash,
           image_hash: baseline.image_hash,
+          file_hash: baseline.file_hash || null,
         },
         new_hashes: {
           text_hash: capture.text_hash,
           image_hash: capture.image_hash,
+          file_hash: capture.file_hash || null,
         },
         deterministic_classification: deterministic,
         deterministic_diff: diff,
@@ -867,10 +1066,12 @@ function saveRejectedRecord({ source, baseline, previous, capture, diff, determi
         previous_hashes: {
           text_hash: baseline.text_hash,
           image_hash: baseline.image_hash,
+          file_hash: baseline.file_hash || null,
         },
         new_hashes: {
           text_hash: capture.text_hash,
           image_hash: capture.image_hash,
+          file_hash: capture.file_hash || null,
         },
         deterministic_classification: deterministic,
         deterministic_diff: diff,
@@ -893,20 +1094,24 @@ function saveRejectedRecord({ source, baseline, previous, capture, diff, determi
 }
 
 function copyEvidenceFiles(targetDir, previous, capture) {
-  const files = {
-    previous_page: join(targetDir, "previous-page.jpg"),
-    new_page: join(targetDir, "new-page.jpg"),
-    previous_thumb: join(targetDir, "previous-thumb.jpg"),
-    new_thumb: join(targetDir, "new-thumb.jpg"),
-    previous_text: join(targetDir, "previous-text.txt"),
-    new_text: join(targetDir, "new-text.txt"),
+  const files = {};
+  const copyIfPresent = (key, sourcePath, targetName) => {
+    if (!sourcePath || !existsSync(sourcePath)) return;
+    files[key] = join(targetDir, targetName);
+    copyFileSync(sourcePath, files[key]);
   };
-  copyFileSync(previous.pagePath, files.previous_page);
-  copyFileSync(capture.page_path, files.new_page);
-  copyFileSync(previous.thumbPath, files.previous_thumb);
-  copyFileSync(capture.thumb_path, files.new_thumb);
-  copyFileSync(previous.textPath, files.previous_text);
-  copyFileSync(capture.text_path, files.new_text);
+
+  copyIfPresent("previous_page", previous.pagePath, "previous-page.jpg");
+  copyIfPresent("new_page", capture.page_path, "new-page.jpg");
+  copyIfPresent("previous_thumb", previous.thumbPath, "previous-thumb.jpg");
+  copyIfPresent("new_thumb", capture.thumb_path, "new-thumb.jpg");
+  copyIfPresent("previous_pdf", previous.pdfPath, "previous-document.pdf");
+  copyIfPresent("new_pdf", capture.pdf_path, "new-document.pdf");
+  copyIfPresent("previous_text", previous.textPath, "previous-text.txt");
+  copyIfPresent("new_text", capture.text_path, "new-text.txt");
+  copyIfPresent("previous_meta", previous.metaPath, "previous-meta.json");
+  copyIfPresent("new_meta", capture.meta_path, "new-meta.json");
+
   return Object.fromEntries(
     Object.entries(files).map(([key, value]) => [key, toArchiveRelative(value)]),
   );
@@ -917,19 +1122,23 @@ function writeBaseline(source, capture, details) {
   mkdirSync(dirname(baselinePath), { recursive: true });
   const baseline = {
     version: 1,
+    kind: capture.kind || "webpage",
     source: sourceMetadata(source),
     captured_at: capture.captured_at,
     final_url: capture.final_url,
     page_title: capture.page_title,
     text_hash: capture.text_hash,
     image_hash: capture.image_hash,
+    file_hash: capture.file_hash || null,
+    file_bytes: capture.file_bytes || null,
     text_length: capture.text_length,
     dimensions: capture.dimensions,
     hidden_noise_counts: capture.hidden_noise_counts,
     capture: {
       dir: toArchiveRelative(capture.dir),
-      page: toArchiveRelative(capture.page_path),
-      thumb: toArchiveRelative(capture.thumb_path),
+      page: capture.page_path ? toArchiveRelative(capture.page_path) : null,
+      thumb: capture.thumb_path ? toArchiveRelative(capture.thumb_path) : null,
+      pdf: capture.pdf_path ? toArchiveRelative(capture.pdf_path) : null,
       text: toArchiveRelative(capture.text_path),
       meta: toArchiveRelative(capture.meta_path),
     },
@@ -943,6 +1152,7 @@ function writeBaseline(source, capture, details) {
             captured_at: details.previous_baseline.captured_at || null,
             text_hash: details.previous_baseline.text_hash || null,
             image_hash: details.previous_baseline.image_hash || null,
+            file_hash: details.previous_baseline.file_hash || null,
             capture: details.previous_baseline.capture || null,
           }
         : null,
@@ -954,17 +1164,22 @@ function writeBaseline(source, capture, details) {
 
 function readBaselineEvidence(baseline) {
   const capture = baseline.capture || {};
+  const kind = baseline.kind || (capture.pdf ? "pdf" : "webpage");
   const paths = {
-    pagePath: fromArchiveRelative(capture.page),
-    thumbPath: fromArchiveRelative(capture.thumb),
+    pagePath: capture.page ? fromArchiveRelative(capture.page) : null,
+    thumbPath: capture.thumb ? fromArchiveRelative(capture.thumb) : null,
+    pdfPath: capture.pdf ? fromArchiveRelative(capture.pdf) : null,
     textPath: fromArchiveRelative(capture.text),
     metaPath: fromArchiveRelative(capture.meta),
   };
-  const missing = Object.values(paths).filter((value) => !value || !existsSync(value));
+  const requiredPaths =
+    kind === "pdf" ? [paths.pdfPath, paths.textPath, paths.metaPath] : [paths.pagePath, paths.thumbPath, paths.textPath, paths.metaPath];
+  const missing = requiredPaths.filter((value) => !value || !existsSync(value));
   if (missing.length) return { ok: false, missing };
 
   return {
     ok: true,
+    kind,
     ...paths,
     text: readFileSync(paths.textPath, "utf8"),
     meta: readJsonIfExists(paths.metaPath),
@@ -1229,6 +1444,9 @@ function visualWorkerMetadata(report) {
       visual_noise: report.visual_noise,
       review: report.review,
       skipped_pdf: report.skipped_pdf,
+      pdf_checked: report.pdf_checked,
+      pdf_unchanged: report.pdf_unchanged,
+      pdf_changed: report.pdf_changed,
       promoted: report.promoted,
     },
     gemini_usage: report.gemini_usage,
