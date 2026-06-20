@@ -458,6 +458,7 @@ function Write-LauncherScripts {
 param(
   [int]`$Limit = 20000,
   [switch]`$All,
+  [switch]`$BaselineRefresh,
   [int]`$DomainDelayMs = 1500
 )
 
@@ -503,7 +504,9 @@ if (Test-VisualLockActive -Path `$LockPath) {
 }
 
 `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-`$logPath = Join-Path `$LogDir "awardping-visual-snapshots-`$stamp.log"
+`$mode = if (`$BaselineRefresh) { "baseline-refresh" } else { "snapshots" }
+`$logPrefix = if (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
+`$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
 
 Set-Location `$AppDir
 `$workerArgs = @(
@@ -518,9 +521,14 @@ Set-Location `$AppDir
   [string]`$DomainDelayMs
 )
 if (`$All) { `$workerArgs += "--all=true" }
+if (`$BaselineRefresh) { `$workerArgs += "--baseline-refresh=true" }
 
-Write-Host "Running AwardPing visual snapshot worker. Log: `$logPath"
-Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o)" -Encoding ASCII
+if (`$BaselineRefresh) {
+  Write-Host "Running AwardPing visual baseline refresh. Log: `$logPath"
+} else {
+  Write-Host "Running AwardPing visual snapshot worker. Log: `$logPath"
+}
+Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode log=`$logPath" -Encoding ASCII
 try {
   & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath
   `$exitCode = `$LASTEXITCODE
@@ -543,6 +551,142 @@ pause
 "@
 
   Set-Content -Path $visualCheckPath -Value $visualCheckContent -Encoding ASCII
+
+  $visualBaselinePath = Join-Path $InstallRoot "5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat"
+  $visualBaselineContent = @"
+@echo off
+echo Running AwardPing visual baseline refresh now.
+echo This replaces screenshot baselines so the next scheduled run can compare against them.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000 -BaselineRefresh
+echo.
+pause
+"@
+
+  Set-Content -Path $visualBaselinePath -Value $visualBaselineContent -Encoding ASCII
+
+  $visualStatusScriptPath = Join-Path $InstallRoot "Show-AwardPingVisualStatus.ps1"
+  $visualStatusScriptContent = @"
+`$ErrorActionPreference = "Stop"
+`$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
+`$LogDir = Join-Path `$InstallRoot "logs"
+`$LockPath = Join-Path `$InstallRoot "visual-worker.lock"
+`$ReportDir = Join-Path `$InstallRoot "app\reports"
+
+function Count-Matches {
+  param(
+    [string[]]`$Lines,
+    [string]`$Pattern
+  )
+
+  return (`$Lines | Select-String -Pattern `$Pattern | Measure-Object).Count
+}
+
+function Read-JsonIfExists {
+  param([string]`$Path)
+
+  if (-not `$Path -or -not (Test-Path `$Path)) {
+    return `$null
+  }
+
+  try {
+    return Get-Content -Path `$Path -Raw | ConvertFrom-Json
+  } catch {
+    return `$null
+  }
+}
+
+`$running = Get-CimInstance Win32_Process | Where-Object {
+  `$_.CommandLine -and (
+    `$_.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+    `$_.CommandLine -like "*source:visual-snapshots*" -or
+    `$_.CommandLine -like "*capture-visual-snapshots.mjs*"
+  )
+}
+`$lockText = if (Test-Path `$LockPath) { Get-Content -Path `$LockPath -Raw -ErrorAction SilentlyContinue } else { "" }
+`$latestLog = Get-ChildItem -Path `$LogDir -Filter "awardping-visual*.log" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+`$lines = if (`$latestLog) { Get-Content -Path `$latestLog.FullName -ErrorAction SilentlyContinue } else { @() }
+`$reportLine = `$lines | Select-String -Pattern "^REPORT " | Select-Object -Last 1
+`$reportPath = if (`$reportLine) { `$reportLine.Line -replace "^REPORT\s+", "" } else { "" }
+`$report = Read-JsonIfExists -Path `$reportPath
+
+if (-not `$report -and (Test-Path `$ReportDir)) {
+  `$latestReport = Get-ChildItem -Path `$ReportDir -Filter "visual-snapshot-run-*.json" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if (`$latestReport) {
+    `$report = Read-JsonIfExists -Path `$latestReport.FullName
+    `$reportPath = `$latestReport.FullName
+  }
+}
+
+Write-Host "AwardPing visual snapshot status"
+Write-Host ""
+Write-Host "Running: `$([bool]`$running)"
+if (`$running) {
+  Write-Host "Process IDs: `$((`$running | Select-Object -ExpandProperty ProcessId) -join ', ')"
+}
+if (`$lockText) {
+  Write-Host "Lock: `$(`$lockText.Trim())"
+}
+Write-Host ""
+
+if (`$latestLog) {
+  Write-Host "Latest log: `$(`$latestLog.FullName)"
+  Write-Host "Log updated: `$(`$latestLog.LastWriteTime)"
+  Write-Host "Baselines: `$(Count-Matches `$lines '^BASELINE ')"
+  Write-Host "Unchanged: `$(Count-Matches `$lines '^UNCHANGED')"
+  Write-Host "PDF skipped: `$(Count-Matches `$lines '^NOISE skipped_pdf ')"
+  Write-Host "Failed: `$(Count-Matches `$lines '^FAILED ')"
+  Write-Host "Candidate changes: `$(Count-Matches `$lines '^AI TRUE|^AI REJECTED|^REVIEW ')"
+  Write-Host ""
+  Write-Host "Last log line:"
+  Write-Host (`$lines | Select-Object -Last 1)
+} else {
+  Write-Host "No visual snapshot logs found."
+}
+
+Write-Host ""
+if (`$report) {
+  Write-Host "Latest report: `$reportPath"
+  Write-Host "Status: `$(`$report.status)"
+  Write-Host "Started: `$(`$report.started_at)"
+  Write-Host "Finished: `$(`$report.finished_at)"
+  Write-Host "Checked: `$(`$report.checked)"
+  Write-Host "Baselined: `$(`$report.baselined)"
+  Write-Host "Unchanged: `$(`$report.unchanged)"
+  Write-Host "AI true changes: `$(`$report.ai_true_changes)"
+  Write-Host "AI rejected: `$(`$report.ai_rejected)"
+  Write-Host "Review: `$(`$report.review)"
+  Write-Host "Failed: `$(`$report.failed)"
+  Write-Host "PDF skipped: `$(`$report.skipped_pdf)"
+  if (`$report.gemini_usage) {
+    Write-Host "Gemini calls: `$(`$report.gemini_usage.calls)"
+    Write-Host "Gemini tokens: `$(`$report.gemini_usage.total_tokens)"
+  }
+}
+
+Write-Host ""
+`$taskInfo = Get-ScheduledTaskInfo -TaskName "AwardPing Visual Snapshot Worker" -ErrorAction SilentlyContinue
+if (`$taskInfo) {
+  Write-Host "Scheduled task next run: `$(`$taskInfo.NextRunTime)"
+  Write-Host "Scheduled task last run: `$(`$taskInfo.LastRunTime)"
+  Write-Host "Scheduled task last result: `$(`$taskInfo.LastTaskResult)"
+}
+"@
+
+  Set-Content -Path $visualStatusScriptPath -Value $visualStatusScriptContent -Encoding UTF8
+
+  $visualStatusBatPath = Join-Path $InstallRoot "6-SHOW-VISUAL-SNAPSHOT-STATUS.bat"
+  $visualStatusBatContent = @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualStatusScriptPath"
+echo.
+pause
+"@
+
+  Set-Content -Path $visualStatusBatPath -Value $visualStatusBatContent -Encoding ASCII
 
   $usageScriptPath = Join-Path $InstallRoot "Show-AwardPingGeminiUsage.ps1"
   $usageScriptContent = @"
@@ -754,6 +898,12 @@ Use:
 4-SHOW-GEMINI-USAGE.bat
   Shows AwardPing Gemini usage recorded by this PC, grouped by day and month.
 
+5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat
+  Replaces screenshot baselines across all source pages so the next scheduled run can compare against a fresh baseline.
+
+6-SHOW-VISUAL-SNAPSHOT-STATUS.bat
+  Shows whether the visual worker is running, live log counts, the latest report, and the next scheduled run.
+
 OPEN-LOGS.bat
   Opens crawler logs.
 "@
@@ -941,4 +1091,8 @@ Write-Step "Done"
 Write-Host "Installed at: $InstallRoot"
 Write-Host "Run the daily screenshot checker manually with:"
 Write-Host "`"$InstallRoot\3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat`""
+Write-Host "Run a fresh visual baseline refresh with:"
+Write-Host "`"$InstallRoot\5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat`""
+Write-Host "Check visual worker status with:"
+Write-Host "`"$InstallRoot\6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`""
 Write-Host "Logs are in: $logDir"
