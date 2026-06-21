@@ -5,6 +5,7 @@ import { workflowStatusAfterSourceChange } from "@/lib/award-workflow";
 import { recordSharedAwardSourceCheck } from "@/lib/shared-award-history";
 import { nextCheckDate } from "@/lib/plans";
 import { sendChangeAlertEmail, sendDailyDigestEmail } from "@/lib/email";
+import { personalDataLookupHash } from "@/lib/personal-data";
 import type { Database, Json } from "@/lib/database.types";
 
 type Monitor = Database["public"]["Tables"]["monitors"]["Row"];
@@ -134,6 +135,7 @@ export async function runSingleMonitorCheck(monitor: Monitor) {
         for (const member of immediateMembers) {
           const recipient = member.email;
           if (!recipient) continue;
+          const recipientHash = personalDataLookupHash(recipient);
 
           try {
             await sendChangeAlertEmail({
@@ -150,7 +152,8 @@ export async function runSingleMonitorCheck(monitor: Monitor) {
               change_event_id: event.id,
               user_id: member.user_id,
               delivery_type: "immediate",
-              recipient,
+              recipient: null,
+              recipient_hash: recipientHash,
               status: "sent",
             });
 
@@ -162,7 +165,8 @@ export async function runSingleMonitorCheck(monitor: Monitor) {
               change_event_id: event.id,
               user_id: member.user_id,
               delivery_type: "immediate",
-              recipient,
+              recipient: null,
+              recipient_hash: recipientHash,
               status: "failed",
               error:
                 emailError instanceof Error
@@ -306,6 +310,7 @@ export async function runDailyDigestDeliveries() {
 
     for (const member of members || []) {
       if (!member.email) continue;
+      const recipientHash = personalDataLookupHash(member.email);
 
       const undelivered = await filterDigestChangesForMember(
         member,
@@ -327,7 +332,6 @@ export async function runDailyDigestDeliveries() {
           })),
         });
 
-        const recipient = member.email;
         await supabase.from("alert_deliveries").insert(
           undelivered.map((change) => ({
             office_id: office.id,
@@ -336,7 +340,8 @@ export async function runDailyDigestDeliveries() {
             user_id: member.user_id,
             delivery_type: "digest",
             digest_key: digestKey,
-            recipient,
+            recipient: null,
+            recipient_hash: recipientHash,
             status: "sent",
           })),
         );
@@ -349,7 +354,8 @@ export async function runDailyDigestDeliveries() {
           user_id: member.user_id,
           delivery_type: "digest",
           digest_key: digestKey,
-          recipient: member.email,
+          recipient: null,
+          recipient_hash: recipientHash,
           status: "failed",
           error: error instanceof Error ? error.message : "Digest email failed.",
         });

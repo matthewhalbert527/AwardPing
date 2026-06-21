@@ -64,7 +64,7 @@ const processors = [
   },
   {
     title: "Supabase",
-    text: "Stores account, office, watchlist, and monitored source data.",
+    text: "Stores account, office, watchlist, and monitored source data. Supabase Auth stores password hashes, not raw passwords.",
   },
   {
     title: "Resend",
@@ -94,7 +94,7 @@ const allowlistNote = [
   "Education / Reference / Productivity / Business",
   "",
   "Security notes:",
-  "HTTPS only. Hosted on Vercel. No executable downloads, browser extensions, third-party ads, crypto mining, financial-data collection, or tech-support pop-ups.",
+  "HTTPS only. Passwords are handled by Supabase Auth as non-reversible hashes. Selected subscriber/profile fields use application-level encryption. No executable downloads, browser extensions, third-party ads, crypto mining, financial-data collection, or tech-support pop-ups.",
   "",
   "Contact:",
   "https://awardping.com/contact",

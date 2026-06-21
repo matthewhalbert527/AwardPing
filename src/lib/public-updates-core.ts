@@ -36,7 +36,6 @@ export type PublicDigestDelivery = {
 
 export type PublicUnsubscribeTokenSubscriber = {
   id: string;
-  email: string;
   created_at: string;
 };
 
@@ -67,7 +66,7 @@ export function createPublicUnsubscribeToken(
   secret: string,
 ) {
   const key = secret || fallbackTokenSecret;
-  const payload = `${subscriber.id}:${subscriber.email}:${subscriber.created_at}:unsubscribe`;
+  const payload = `${subscriber.id}:${subscriber.created_at}:unsubscribe`;
   const signature = crypto.createHmac("sha256", key).update(payload).digest("base64url");
 
   return `${subscriber.id}.${signature}`;

@@ -8,6 +8,7 @@ export const appConfig = {
   alertFromEmail: process.env.ALERT_FROM_EMAIL || "AwardPing <alerts@example.com>",
   contactToEmail: process.env.CONTACT_TO_EMAIL || "",
   cronSecret: process.env.CRON_SECRET || "",
+  dataEncryptionKey: process.env.APP_DATA_ENCRYPTION_KEY || "",
   tavilyApiKey: process.env.TAVILY_API_KEY || "",
   aiProvider: process.env.AI_PROVIDER || "auto",
   geminiApiKey: process.env.GEMINI_API_KEY || "",

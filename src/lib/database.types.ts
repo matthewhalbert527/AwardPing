@@ -180,6 +180,7 @@ export type Database = {
           confidence?: number;
           reason?: string | null;
           source?: "seed" | "user" | "admin";
+          submitted_by_user_id?: string | null;
           last_hash?: string | null;
           last_checked_at?: string | null;
           next_check_at?: string;
@@ -376,7 +377,9 @@ export type Database = {
       public_update_subscribers: {
         Row: {
           id: string;
-          email: string;
+          email: string | null;
+          email_hash: string | null;
+          email_encrypted: string | null;
           status: PublicUpdateSubscriberStatus;
           confirmation_token_hash: string | null;
           unsubscribe_token_hash: string;
@@ -389,7 +392,9 @@ export type Database = {
         };
         Insert: {
           id?: string;
-          email: string;
+          email?: string | null;
+          email_hash?: string | null;
+          email_encrypted?: string | null;
           status?: PublicUpdateSubscriberStatus;
           confirmation_token_hash?: string | null;
           unsubscribe_token_hash: string;
@@ -401,7 +406,9 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
-          email?: string;
+          email?: string | null;
+          email_hash?: string | null;
+          email_encrypted?: string | null;
           status?: PublicUpdateSubscriberStatus;
           confirmation_token_hash?: string | null;
           unsubscribe_token_hash?: string;
@@ -419,7 +426,8 @@ export type Database = {
           subscriber_id: string;
           digest_key: string;
           change_event_ids: string[];
-          recipient: string;
+          recipient: string | null;
+          recipient_hash: string | null;
           status: PublicUpdateDeliveryStatus;
           error: string | null;
           sent_at: string;
@@ -430,7 +438,8 @@ export type Database = {
           subscriber_id: string;
           digest_key: string;
           change_event_ids?: string[];
-          recipient: string;
+          recipient?: string | null;
+          recipient_hash?: string | null;
           status: PublicUpdateDeliveryStatus;
           error?: string | null;
           sent_at?: string;
@@ -720,23 +729,32 @@ export type Database = {
         Row: {
           id: string;
           email: string | null;
+          email_hash: string | null;
           full_name: string | null;
           organization: string | null;
+          full_name_encrypted: string | null;
+          organization_encrypted: string | null;
           created_at: string;
           updated_at: string;
         };
         Insert: {
           id: string;
           email?: string | null;
+          email_hash?: string | null;
           full_name?: string | null;
           organization?: string | null;
+          full_name_encrypted?: string | null;
+          organization_encrypted?: string | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           email?: string | null;
+          email_hash?: string | null;
           full_name?: string | null;
           organization?: string | null;
+          full_name_encrypted?: string | null;
+          organization_encrypted?: string | null;
           updated_at?: string;
         };
         Relationships: [];
@@ -925,7 +943,8 @@ export type Database = {
           channel: string;
           delivery_type: "immediate" | "digest";
           digest_key: string | null;
-          recipient: string;
+          recipient: string | null;
+          recipient_hash: string | null;
           status: string;
           error: string | null;
           created_at: string;
@@ -938,7 +957,8 @@ export type Database = {
           channel?: string;
           delivery_type?: "immediate" | "digest";
           digest_key?: string | null;
-          recipient: string;
+          recipient?: string | null;
+          recipient_hash?: string | null;
           status: string;
           error?: string | null;
         };
@@ -975,6 +995,36 @@ export type Database = {
           created_at?: string;
         };
         Update: never;
+        Relationships: [];
+      };
+      privacy_requests: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          email_hash: string | null;
+          request_type: "export" | "delete";
+          status: "pending" | "completed" | "failed";
+          details: Json;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          email_hash?: string | null;
+          request_type: "export" | "delete";
+          status?: "pending" | "completed" | "failed";
+          details?: Json;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          user_id?: string | null;
+          email_hash?: string | null;
+          status?: "pending" | "completed" | "failed";
+          details?: Json;
+          completed_at?: string | null;
+        };
         Relationships: [];
       };
     };
