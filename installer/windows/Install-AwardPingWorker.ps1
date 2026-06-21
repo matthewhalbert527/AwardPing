@@ -328,6 +328,12 @@ LOCAL_WORKER_DEEP_CRAWL_DEPTH=2
 LOCAL_WORKER_STRUCTURE_RESCAN_DAYS=7
 LOCAL_WORKER_AI_SUMMARIES=true
 LOCAL_WORKER_AI_PROVIDER=auto
+
+AWARDPING_R2_SNAPSHOT_SYNC=false
+R2_BUCKET=awardping-snapshots
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
 "@
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
@@ -355,6 +361,13 @@ function Update-ExistingEnvFileDefaults {
     "LOCAL_WORKER_AI_SUMMARIES" = "true"
     "LOCAL_WORKER_AI_PROVIDER" = "auto"
   }
+  $missingDefaults = [ordered]@{
+    "AWARDPING_R2_SNAPSHOT_SYNC" = "false"
+    "R2_BUCKET" = "awardping-snapshots"
+    "R2_ACCOUNT_ID" = ""
+    "R2_ACCESS_KEY_ID" = ""
+    "R2_SECRET_ACCESS_KEY" = ""
+  }
 
   foreach ($key in $updates.Keys) {
     $value = $updates[$key]
@@ -363,6 +376,13 @@ function Update-ExistingEnvFileDefaults {
       $content = [regex]::Replace($content, $pattern, "$key=$value")
     } else {
       $content = $content.TrimEnd() + "`r`n$key=$value`r`n"
+    }
+  }
+
+  foreach ($key in $missingDefaults.Keys) {
+    $pattern = "(?m)^$([regex]::Escape($key))=.*$"
+    if ($content -notmatch $pattern) {
+      $content = $content.TrimEnd() + "`r`n$key=$($missingDefaults[$key])`r`n"
     }
   }
 
@@ -454,13 +474,14 @@ function Write-LauncherScripts {
   )
 
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
-  $visualRunContent = @"
+$visualRunContent = @"
 param(
-  [int]`$Limit = 20000,
+  [int]`$Limit = 50000,
   [switch]`$All,
   [switch]`$BaselineRefresh,
   [switch]`$PdfOnly,
   [switch]`$WebOnly,
+  [switch]`$CompleteMissingBaselines,
   [switch]`$SkipExistingBaseline,
   [int]`$DomainDelayMs = 1500
 )
@@ -507,8 +528,8 @@ if (Test-VisualLockActive -Path `$LockPath) {
 }
 
 `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-`$mode = if (`$BaselineRefresh) { "baseline-refresh" } else { "snapshots" }
-`$logPrefix = if (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
+`$mode = if (`$CompleteMissingBaselines) { "complete-missing-baselines" } elseif (`$BaselineRefresh) { "baseline-refresh" } else { "snapshots" }
+`$logPrefix = if (`$CompleteMissingBaselines) { "awardping-visual-complete-baselines" } elseif (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
 `$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
 
 Set-Location `$AppDir
@@ -527,9 +548,15 @@ if (`$All) { `$workerArgs += "--all=true" }
 if (`$BaselineRefresh) { `$workerArgs += "--baseline-refresh=true" }
 if (`$PdfOnly) { `$workerArgs += "--pdf-only=true" }
 if (`$WebOnly) { `$workerArgs += "--web-only=true" }
+if (`$CompleteMissingBaselines) {
+  `$workerArgs += "--complete-missing-baselines=true"
+  `$workerArgs += "--skip-existing-baseline=true"
+}
 if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
 
-if (`$BaselineRefresh) {
+if (`$CompleteMissingBaselines) {
+  Write-Host "Running AwardPing missing visual baseline completion. Log: `$logPath"
+} elseif (`$BaselineRefresh) {
   Write-Host "Running AwardPing visual baseline refresh. Log: `$logPath"
 } else {
   Write-Host "Running AwardPing visual snapshot worker. Log: `$logPath"
@@ -581,6 +608,18 @@ pause
 "@
 
   Set-Content -Path $pdfBaselinePath -Value $pdfBaselineContent -Encoding ASCII
+
+  $completeBaselinePath = Join-Path $InstallRoot "8-COMPLETE-MISSING-VISUAL-BASELINES-NOW.bat"
+  $completeBaselineContent = @"
+@echo off
+echo Completing missing AwardPing visual baselines now.
+echo Existing baselines will be skipped so this only works on pages that still need a baseline.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 50000 -CompleteMissingBaselines
+echo.
+pause
+"@
+
+  Set-Content -Path $completeBaselinePath -Value $completeBaselineContent -Encoding ASCII
 
   $visualStatusScriptPath = Join-Path $InstallRoot "Show-AwardPingVisualStatus.ps1"
   $visualStatusScriptContent = @"
@@ -683,6 +722,9 @@ if (`$report) {
   Write-Host "AI rejected: `$(`$report.ai_rejected)"
   Write-Host "Review: `$(`$report.review)"
   Write-Host "Failed: `$(`$report.failed)"
+  if (`$null -ne `$report.skipped_existing_baseline) {
+    Write-Host "Skipped existing baselines: `$(`$report.skipped_existing_baseline)"
+  }
   Write-Host "PDF skipped: `$(`$report.skipped_pdf)"
   if (`$null -ne `$report.pdf_checked) {
     Write-Host "PDF checked: `$(`$report.pdf_checked)"
@@ -692,6 +734,12 @@ if (`$report) {
   if (`$report.gemini_usage) {
     Write-Host "Gemini calls: `$(`$report.gemini_usage.calls)"
     Write-Host "Gemini tokens: `$(`$report.gemini_usage.total_tokens)"
+  }
+  if (`$report.baseline_coverage_start) {
+    Write-Host "Baseline coverage start: existing `$(`$report.baseline_coverage_start.existing_baselines) / `$(`$report.baseline_coverage_start.loaded_sources); missing `$(`$report.baseline_coverage_start.missing_baselines); actionable missing `$(`$report.baseline_coverage_start.actionable_missing_baselines); known broken missing `$(`$report.baseline_coverage_start.known_broken_missing_baselines)"
+  }
+  if (`$report.baseline_coverage_finish) {
+    Write-Host "Baseline coverage finish: existing `$(`$report.baseline_coverage_finish.existing_baselines) / `$(`$report.baseline_coverage_finish.loaded_sources); missing `$(`$report.baseline_coverage_finish.missing_baselines); actionable missing `$(`$report.baseline_coverage_finish.actionable_missing_baselines); known broken missing `$(`$report.baseline_coverage_finish.known_broken_missing_baselines)"
   }
 }
 
@@ -774,151 +822,12 @@ explorer.exe "$InstallRoot\logs"
 
   Set-Content -Path $logsPath -Value $logsContent -Encoding ASCII
 
-  $webUpdateScript = Join-Path $InstallRoot "Update-AwardPingWorkerFromWeb.ps1"
-  $webUpdateContent = @"
-param(
-  [string]`$PackageUrl = "https://awardping.com/awardping-worker-windows.zip",
-  [switch]`$Force
-)
-
-`$ErrorActionPreference = "Stop"
-`$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$statePath = Join-Path `$InstallRoot "update-state.json"
-`$workerLock = Join-Path `$InstallRoot "worker.lock"
-`$visualWorkerLock = Join-Path `$InstallRoot "visual-worker.lock"
-`$tempRoot = Join-Path `$env:TEMP ("AwardPingWorkerUpdate-" + [guid]::NewGuid().ToString("N"))
-`$zipPath = Join-Path `$tempRoot "awardping-worker-windows.zip"
-`$extractPath = Join-Path `$tempRoot "extracted"
-
-function Test-WorkerLockActive {
-  param(
-    [string]`$Path,
-    [string[]]`$CommandLinePatterns
-  )
-
-  if (-not (Test-Path `$Path)) {
-    return `$false
-  }
-
-  try {
-    `$raw = Get-Content -Path `$Path -Raw -ErrorAction Stop
-    `$match = [regex]::Match(`$raw, "pid=(\d+)")
-    if (`$match.Success) {
-      `$workerPid = [int]`$match.Groups[1].Value
-      `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
-      if (`$process) {
-        foreach (`$pattern in `$CommandLinePatterns) {
-          if (`$process.CommandLine -like `$pattern) {
-            return `$true
-          }
-        }
-      }
-    }
-  } catch {
-    Write-Host "Could not inspect worker lock; treating it as stale."
-  }
-
-  Write-Host "Removing stale AwardPing worker lock."
-  Remove-Item -Path `$Path -Force -ErrorAction SilentlyContinue
-  return `$false
-}
-
-try {
-  `$sourceWorkerActive = Test-WorkerLockActive -Path `$workerLock -CommandLinePatterns @("*Run-AwardPingWorker.ps1*")
-  `$visualWorkerActive = Test-WorkerLockActive -Path `$visualWorkerLock -CommandLinePatterns @("*Run-AwardPingVisualSnapshots.ps1*", "*source:visual-snapshots*")
-  if ((`$sourceWorkerActive -or `$visualWorkerActive) -and -not `$Force) {
-    Write-Host "An AwardPing worker appears to be running. Skipping update until the next updater run."
-    exit 0
-  }
-
-  `$remoteKey = `$null
-  try {
-    `$head = Invoke-WebRequest -Method Head -Uri `$PackageUrl -UseBasicParsing
-    `$etag = `$head.Headers["ETag"]
-    `$lastModified = `$head.Headers["Last-Modified"]
-    `$contentLength = `$head.Headers["Content-Length"]
-    `$remoteParts = @(`$etag, `$lastModified, `$contentLength) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]`$_) }
-    if (`$remoteParts.Count -gt 0) {
-      `$remoteKey = `$remoteParts -join "|"
-    }
-  } catch {
-    Write-Host "Could not read update metadata; continuing with a normal download check."
-  }
-
-  if (`$remoteKey -and (Test-Path `$statePath) -and -not `$Force) {
-    try {
-      `$state = Get-Content -Path `$statePath -Raw | ConvertFrom-Json
-      if (`$state.remoteKey -eq `$remoteKey) {
-        Write-Host "AwardPing runner is already current."
-        exit 0
-      }
-    } catch {
-      Write-Host "Existing update state could not be read; refreshing runner."
-    }
-  }
-
-  New-Item -ItemType Directory -Force -Path `$tempRoot, `$extractPath | Out-Null
-  Write-Host "Downloading latest AwardPing runner package..."
-  Invoke-WebRequest -Uri `$PackageUrl -OutFile `$zipPath -UseBasicParsing
-  if (-not `$remoteKey) {
-    `$remoteKey = (Get-FileHash -Path `$zipPath -Algorithm SHA256).Hash
-  }
-
-  Write-Host "Extracting update package..."
-  Expand-Archive -Path `$zipPath -DestinationPath `$extractPath -Force
-
-  `$installer = Get-ChildItem -Path `$extractPath -Recurse -Filter "Install-AwardPingWorker.ps1" | Select-Object -First 1
-  if (-not `$installer) {
-    throw "Downloaded package did not contain Install-AwardPingWorker.ps1."
-  }
-
-  Write-Host "Applying update. Existing keys will be kept."
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$installer.FullName -InstallRoot `$InstallRoot -UpdateOnly
-  if (`$LASTEXITCODE -ne 0) {
-    throw "AwardPing update failed with exit code `$LASTEXITCODE."
-  }
-
-  if (`$remoteKey) {
-    [pscustomobject]@{
-      packageUrl = `$PackageUrl
-      remoteKey = `$remoteKey
-      updatedAt = (Get-Date).ToString("o")
-    } | ConvertTo-Json | Set-Content -Path `$statePath -Encoding UTF8
-  }
-
-  Write-Host "AwardPing runner update complete." -ForegroundColor Green
-} finally {
-  if (Test-Path `$tempRoot) {
-    Remove-Item -Path `$tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
-}
-"@
-
-  Set-Content -Path $webUpdateScript -Value $webUpdateContent -Encoding UTF8
-
-  $webUpdateBatPath = Join-Path $InstallRoot "0-UPDATE-FROM-WEBSITE.bat"
-  $webUpdateBatContent = @"
-@echo off
-echo Updating AwardPing runner from awardping.com.
-echo This keeps your existing Supabase and Gemini keys.
-echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$webUpdateScript"
-echo.
-pause
-"@
-
-  Set-Content -Path $webUpdateBatPath -Value $webUpdateBatContent -Encoding ASCII
-
   $readmePath = Join-Path $InstallRoot "README-INSTALLED-RUNNER.txt"
   $readmeContent = @"
 AwardPing runner is installed here:
 $InstallRoot
 
 Use:
-0-UPDATE-FROM-WEBSITE.bat
-  Manually downloads the latest runner from awardping.com and updates this install without re-entering keys.
-  If the daily visual check is running, the updater skips and you can run it again later.
-
 3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
   Runs the disk-backed visual screenshot checker across all source pages.
   The daily scheduled visual task uses the same runner.
@@ -1029,11 +938,13 @@ function Register-VisualSnapshotTask {
   Write-Step "Creating AwardPing visual snapshot task"
   $taskName = "AwardPing Visual Snapshot Worker"
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 20000"
-  $trigger = New-ScheduledTaskTrigger -Daily -At 2am
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000"
+  $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
   $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
+  $settings.DisallowStartIfOnBatteries = $false
+  $settings.StopIfGoingOnBatteries = $false
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC." -Force | Out-Null
-  Write-Host "Scheduled task created: $taskName daily at 2:00 AM"
+  Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
 }
 
 $packageRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")

@@ -23,6 +23,12 @@ export const appConfig = {
     "gemini-2.5-flash-lite",
   openaiApiKey: process.env.OPENAI_API_KEY || "",
   openaiDiscoveryModel: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini",
+  r2AccountId: process.env.R2_ACCOUNT_ID || "",
+  r2Endpoint: process.env.R2_ENDPOINT || "",
+  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || "",
+  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
+  r2Bucket: process.env.R2_BUCKET || "awardping-snapshots",
+  r2SignedUrlTtlSeconds: numberFromEnv("R2_SIGNED_URL_TTL_SECONDS", 900),
   adminEmails: emailListFromEnv("AWARDPING_ADMIN_EMAILS"),
   discoveryDailyUserLimit: numberFromEnv("DISCOVERY_DAILY_USER_LIMIT", 10),
   discoveryDailyIpLimit: numberFromEnv("DISCOVERY_DAILY_IP_LIMIT", 30),
@@ -38,6 +44,15 @@ export function hasSupabaseAdminConfig() {
     appConfig.supabaseUrl &&
       appConfig.supabaseAnonKey &&
       appConfig.supabaseServiceRoleKey,
+  );
+}
+
+export function hasR2Config() {
+  return Boolean(
+    appConfig.r2Bucket &&
+      appConfig.r2AccessKeyId &&
+      appConfig.r2SecretAccessKey &&
+      (appConfig.r2Endpoint || appConfig.r2AccountId),
   );
 }
 

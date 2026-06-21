@@ -71,13 +71,10 @@ The worker checks page content every 60 minutes by default and refreshes each aw
 
 Use `--baseline-refresh=true` only for intentional slate resets. It fetches active sources, writes the current snapshot, advances each source's `last_hash`, and does not create change-event alerts for that pass. For large catalogs, pass the same `--baseline-started-at` timestamp to every batch; sources already refreshed after that timestamp are skipped, so the reset can resume cleanly.
 
-To create a Windows installer package for the PC:
-
-```bash
-npm run package:windows-worker
-```
-
-Move `dist/awardping-worker-windows.zip` to the PC, extract it, and double-click `1-INSTALL-AND-RUN-DEEP-CRAWL.bat`. Full instructions are in `docs/local-pc-worker-installer.md`.
+The Windows worker now lives on the crawler PC directly. Make code changes in
+this repo, copy the changed worker files into `%LOCALAPPDATA%\AwardPingWorker\app`
+when needed, then deploy Vercel and push Git. The old hosted worker zip updater
+has been retired.
 
 ## Private Beta Launch
 

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "npm run package:windows-worker && next build",
+    "build": "next build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "start": "next start",
@@ -24,7 +24,6 @@
     "source:discover": "node scripts/find-official-sources-from-discovery-pages.mjs",
     "source:import-directories": "node scripts/import-fellowship-directories.mjs",
     "source:visual-snapshots": "node scripts/capture-visual-snapshots.mjs",
-    "package:windows-worker": "node scripts/build-windows-worker-package.mjs",
     "worker:local": "node scripts/run-local-source-worker.mjs",
     "changes:backfill-details": "node scripts/backfill-change-details.mjs",
     "updates:squash": "node scripts/squash-update-bugs.mjs",
@@ -34,6 +33,8 @@
     "privacy:backfill": "node scripts/backfill-encrypted-personal-data.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1073.0",
+    "@aws-sdk/s3-request-presigner": "^3.1073.0",
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.1",
     "cheerio": "^1.2.0",

@@ -235,6 +235,64 @@ export type Database = {
         };
         Relationships: [];
       };
+      shared_award_source_visual_snapshots: {
+        Row: {
+          shared_award_source_id: string;
+          shared_award_id: string;
+          source_url: string;
+          source_title: string | null;
+          source_page_type: AwardPageType | null;
+          kind: "webpage" | "pdf";
+          bucket: string;
+          latest_captured_at: string | null;
+          latest_object_keys: Json;
+          latest_hashes: Json;
+          latest_metadata: Json;
+          previous_captured_at: string | null;
+          previous_object_keys: Json;
+          previous_hashes: Json;
+          previous_metadata: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          shared_award_source_id: string;
+          shared_award_id: string;
+          source_url: string;
+          source_title?: string | null;
+          source_page_type?: AwardPageType | null;
+          kind?: "webpage" | "pdf";
+          bucket: string;
+          latest_captured_at?: string | null;
+          latest_object_keys?: Json;
+          latest_hashes?: Json;
+          latest_metadata?: Json;
+          previous_captured_at?: string | null;
+          previous_object_keys?: Json;
+          previous_hashes?: Json;
+          previous_metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          shared_award_id?: string;
+          source_url?: string;
+          source_title?: string | null;
+          source_page_type?: AwardPageType | null;
+          kind?: "webpage" | "pdf";
+          bucket?: string;
+          latest_captured_at?: string | null;
+          latest_object_keys?: Json;
+          latest_hashes?: Json;
+          latest_metadata?: Json;
+          previous_captured_at?: string | null;
+          previous_object_keys?: Json;
+          previous_hashes?: Json;
+          previous_metadata?: Json;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
       shared_award_change_events: {
         Row: {
           id: string;

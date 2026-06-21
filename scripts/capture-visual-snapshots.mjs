@@ -10,6 +10,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import {
+  CopyObjectCommand,
+  DeleteObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
@@ -45,7 +52,10 @@ const baselineRefresh = boolArg(args["baseline-refresh"], false);
 const promote = boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
+const completeMissingBaselines = boolArg(args["complete-missing-baselines"], false);
+const prioritizeMissingBaselines = boolArg(args["prioritize-missing-baselines"], true);
 const skipExistingBaseline = boolArg(args["skip-existing-baseline"], false);
+const skipExistingBaselineEffective = skipExistingBaseline || completeMissingBaselines;
 const keepUnchanged = boolArg(args["keep-unchanged"], false);
 const keepRejected = boolArg(args["keep-rejected"], false);
 const reviewOnAiFailure = boolArg(args["review-on-ai-failure"], true);
@@ -60,13 +70,41 @@ const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
 const maxPdfBytes = positiveInt(args["max-pdf-mb"], 50) * 1024 * 1024;
+const r2BackfillBaselines = boolArg(args["r2-backfill-baselines"], false);
+const r2BackfillFast = boolArg(args["r2-backfill-fast"], true);
+const r2BackfillSkipExisting = boolArg(args["r2-backfill-skip-existing"], true);
+const r2BackfillConcurrency = boundedInt(args["r2-backfill-concurrency"], 12, 1, 32);
+const r2SnapshotSync = boolArg(
+  args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
+  r2BackfillBaselines,
+);
+const r2Bucket = String(args["r2-bucket"] || env.R2_BUCKET || "awardping-snapshots").trim();
+const r2AccountId = cleanText(args["r2-account-id"] || env.R2_ACCOUNT_ID);
+const r2Endpoint = cleanText(
+  args["r2-endpoint"] ||
+    env.R2_ENDPOINT ||
+    (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : ""),
+);
+const r2AccessKeyId = cleanText(args["r2-access-key-id"] || env.R2_ACCESS_KEY_ID);
+const r2SecretAccessKey = cleanText(args["r2-secret-access-key"] || env.R2_SECRET_ACCESS_KEY);
 const aiProvider = selectAiProvider(requestedAiProvider, {
   gemini: env.GEMINI_API_KEY,
   openai: env.OPENAI_API_KEY,
 });
 const aiModel = modelForProvider(aiProvider);
 let supabase = null;
+let r2Client = null;
 const hostLastFetchAt = new Map();
+let knownBrokenSourceIds = null;
+let lastBaselineCoverageProgressUpdateAt = 0;
+let lastBaselineCoverageProgressProcessed = 0;
+const r2SnapshotSlots = [
+  { name: "page", fileName: "page.jpg", contentType: "image/jpeg" },
+  { name: "thumb", fileName: "thumb.jpg", contentType: "image/jpeg" },
+  { name: "pdf", fileName: "document.pdf", contentType: "application/pdf" },
+  { name: "text", fileName: "text.txt", contentType: "text/plain; charset=utf-8" },
+  { name: "meta", fileName: "meta.json", contentType: "application/json; charset=utf-8" },
+];
 const crawlerUserAgent =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 AwardPingVisualSnapshot/1.0 (+https://awardping.com/contact)";
 
@@ -77,6 +115,13 @@ if (!supabaseUrl || !serviceRoleKey) {
 
 if (!aiProvider) {
   console.error(missingAiMessage(requestedAiProvider));
+  process.exit(1);
+}
+
+if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)) {
+  console.error(
+    "R2 snapshot sync is enabled, but R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.",
+  );
   process.exit(1);
 }
 
@@ -106,6 +151,8 @@ async function runOnce() {
       promote,
       pdf_only: pdfOnly,
       web_only: webOnly,
+      complete_missing_baselines: completeMissingBaselines,
+      prioritize_missing_baselines: prioritizeMissingBaselines,
       skip_existing_baseline: skipExistingBaseline,
       keep_unchanged: keepUnchanged,
       keep_rejected: keepRejected,
@@ -120,6 +167,12 @@ async function runOnce() {
       domain_delay_ms: domainDelayMs,
       max_sources_per_browser: maxSourcesPerBrowser,
       max_pdf_bytes: maxPdfBytes,
+      r2_backfill_baselines: r2BackfillBaselines,
+      r2_backfill_fast: r2BackfillFast,
+      r2_backfill_skip_existing: r2BackfillSkipExisting,
+      r2_backfill_concurrency: r2BackfillConcurrency,
+      r2_snapshot_sync: r2SnapshotSync,
+      r2_bucket: r2SnapshotSync ? r2Bucket : null,
     },
     checked: 0,
     baselined: 0,
@@ -131,12 +184,17 @@ async function runOnce() {
     deterministic_noise: 0,
     visual_noise: 0,
     review: 0,
+    skipped_existing_baseline: 0,
     skipped_pdf: 0,
     failed: 0,
     promoted: 0,
     pdf_checked: 0,
     pdf_unchanged: 0,
     pdf_changed: 0,
+    r2_uploaded: 0,
+    r2_rotated: 0,
+    r2_failed: 0,
+    r2_skipped_existing: 0,
     gemini_usage: {
       calls: 0,
       prompt_tokens: 0,
@@ -177,7 +235,29 @@ async function runOnce() {
 
   try {
     workerRunId = await startWorkerRun(report);
-    const sources = await loadSources(limit);
+    let sources = await loadSources(limit);
+    const coverageSources = sources;
+    report.baseline_coverage_start = summarizeBaselineCoverage(coverageSources);
+    console.log(formatBaselineCoverage("BASELINE_COVERAGE start", report.baseline_coverage_start));
+    await updateWorkerRunMetadata(workerRunId, report);
+
+    if (r2BackfillBaselines) {
+      await backfillR2Baselines(sources, workerRunId, report, coverageSources);
+      report.status = "succeeded";
+      report.baseline_coverage_finish = summarizeBaselineCoverage(await loadSources(limit));
+      console.log(formatBaselineCoverage("BASELINE_COVERAGE finish", report.baseline_coverage_finish));
+      await finishWorkerRun(workerRunId, "succeeded", null, report);
+      return;
+    }
+
+    if (prioritizeMissingBaselines || completeMissingBaselines) {
+      sources = orderSourcesForBaselineCoverage(sources);
+    }
+
+    if (completeMissingBaselines) {
+      sources = sources.filter((source) => !hasBaselineForSource(source));
+      console.log(`BASELINE_COMPLETION targets=${sources.length}`);
+    }
 
     for (const source of sources) {
       const pdfSource = isPdfSource(source);
@@ -187,7 +267,8 @@ async function runOnce() {
       if (webOnly && pdfSource) {
         continue;
       }
-      if (baselineRefresh && skipExistingBaseline && existsSync(baselinePathForSource(source.id))) {
+      if (skipExistingBaselineEffective && hasBaselineForSource(source)) {
+        report.skipped_existing_baseline += 1;
         console.log(`SKIP existing_baseline ${sourceLabel(source)}`);
         continue;
       }
@@ -235,9 +316,13 @@ async function runOnce() {
           break;
         }
       }
+
+      await maybeUpdateBaselineCoverageProgress(workerRunId, report, coverageSources);
     }
 
     report.status = "succeeded";
+    report.baseline_coverage_finish = summarizeBaselineCoverage(await loadSources(limit));
+    console.log(formatBaselineCoverage("BASELINE_COVERAGE finish", report.baseline_coverage_finish));
     await finishWorkerRun(workerRunId, "succeeded", null, report);
   } catch (error) {
     report.status = "failed";
@@ -256,6 +341,73 @@ async function runOnce() {
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
     console.log(`REPORT ${reportPath}`);
+  }
+}
+
+async function backfillR2Baselines(sources, workerRunId, report, coverageSources) {
+  const targets = orderSourcesForBaselineCoverage(sources).filter((source) => {
+    const pdfSource = isPdfSource(source);
+    if (pdfOnly && !pdfSource) return false;
+    if (webOnly && pdfSource) return false;
+    return hasBaselineForSource(source);
+  });
+  const existingR2SourceIds = r2BackfillSkipExisting
+    ? await loadExistingR2SnapshotSourceIds(targets.map((source) => source.id))
+    : new Set();
+  const pendingTargets = targets.filter((source) => !existingR2SourceIds.has(source.id));
+  report.r2_skipped_existing += targets.length - pendingTargets.length;
+  console.log(
+    `R2_BASELINE_BACKFILL targets=${targets.length} pending=${pendingTargets.length} skipped_existing=${targets.length - pendingTargets.length} concurrency=${r2BackfillConcurrency} fast=${r2BackfillFast}`,
+  );
+
+  let completed = 0;
+  await runConcurrent(pendingTargets, r2BackfillConcurrency, async (source) => {
+    await backfillOneR2Baseline(source, report);
+    completed += 1;
+    if (completed === pendingTargets.length || completed % 25 === 0) {
+      console.log(
+        `R2_BASELINE_BACKFILL progress completed=${completed}/${pendingTargets.length} uploaded=${report.r2_uploaded} failed=${report.r2_failed}`,
+      );
+      await maybeUpdateBaselineCoverageProgress(workerRunId, report, coverageSources);
+    }
+  });
+}
+
+async function backfillOneR2Baseline(source, report) {
+  const baseline = readJsonIfExists(baselinePathForSource(source.id));
+  const capture = captureFromBaseline(baseline);
+  if (!capture) {
+    report.failed += 1;
+    const message = "Baseline exists but could not be loaded for R2 backfill.";
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message,
+    });
+    console.log(`R2 BACKFILL FAILED ${message} ${sourceLabel(source)}`);
+    return;
+  }
+
+  report.checked += 1;
+  if (capture.kind === "pdf") report.pdf_checked += 1;
+
+  try {
+    const result =
+      r2BackfillFast && r2BackfillSkipExisting
+        ? await syncR2BackfillLatestOnly(source, capture)
+        : await syncR2SnapshotPair(source, capture);
+    report.r2_uploaded += result.uploaded;
+    report.r2_rotated += result.rotated;
+    console.log(`R2 BACKFILL uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
+  } catch (error) {
+    report.r2_failed += 1;
+    const message = `R2 baseline backfill failed: ${errorMessage(error)}`;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message,
+    });
+    console.log(`R2 BACKFILL FAILED ${message} ${sourceLabel(source)}`);
   }
 }
 
@@ -278,6 +430,7 @@ async function processSource(source, context, browserMeta, report) {
       previous_baseline: baseline || null,
     });
     report.baselined += 1;
+    await maybeSyncR2Snapshot(source, capture, report);
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
     return;
   }
@@ -290,7 +443,7 @@ async function processSource(source, context, browserMeta, report) {
   }
 
   if (capture.kind === "pdf" || previous.kind === "pdf") {
-    processPdfComparison(source, baseline, previous, capture, report);
+    await processPdfComparison(source, baseline, previous, capture, report);
     return;
   }
 
@@ -395,6 +548,7 @@ async function processSource(source, context, browserMeta, report) {
         previous_baseline_capture: baseline.capture || null,
       });
       report.promoted += 1;
+      await maybeSyncR2Snapshot(source, capture, report);
     }
 
     console.log(`AI TRUE ${aiReview.result.reader_summary || sourceLabel(source)}`);
@@ -419,7 +573,7 @@ async function processSource(source, context, browserMeta, report) {
   console.log(`AI REJECTED ${aiReview.result.noise_reason || "not award-relevant"} ${sourceLabel(source)}`);
 }
 
-function processPdfComparison(source, baseline, previous, capture, report) {
+async function processPdfComparison(source, baseline, previous, capture, report) {
   const previousHash = baseline.file_hash || baseline.image_hash;
   const fileChanged = capture.file_hash !== previousHash;
   const textChanged = capture.text_hash !== baseline.text_hash;
@@ -469,6 +623,7 @@ function processPdfComparison(source, baseline, previous, capture, report) {
       previous_baseline_capture: baseline.capture || null,
     });
     report.promoted += 1;
+    await maybeSyncR2Snapshot(source, capture, report);
   }
 
   console.log(`REVIEW pdf_changed ${sourceLabel(source)}`);
@@ -687,6 +842,303 @@ async function captureSource(source, context, browserMeta) {
   } finally {
     await page.close().catch(() => null);
   }
+}
+
+async function maybeSyncR2Snapshot(source, capture, report) {
+  if (!r2SnapshotSync) return;
+
+  try {
+    const result = await syncR2SnapshotPair(source, capture);
+    report.r2_uploaded += result.uploaded;
+    report.r2_rotated += result.rotated;
+    console.log(`R2 SNAPSHOT uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
+  } catch (error) {
+    report.r2_failed += 1;
+    const message = `R2 snapshot sync failed: ${errorMessage(error)}`;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message,
+    });
+    console.log(`R2 FAILED ${message} ${sourceLabel(source)}`);
+  }
+}
+
+async function syncR2SnapshotPair(source, capture) {
+  const client = getR2Client();
+  const existingRecord = await loadR2SnapshotRecord(source.id);
+  const rotatedKeys = await rotateR2LatestToPrevious(client, source.id);
+  const latestFiles = captureR2Files(capture);
+  const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
+  await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
+
+  const existingLatestKeys = jsonObjectOrEmpty(existingRecord?.latest_object_keys);
+  const previousObjectKeys = Object.keys(rotatedKeys).length
+    ? Object.keys(existingLatestKeys).length
+      ? existingLatestKeys
+      : rotatedKeys
+    : {};
+  const previousHashes = Object.keys(rotatedKeys).length
+    ? jsonObjectOrEmpty(existingRecord?.latest_hashes)
+    : {};
+  const previousMetadata = Object.keys(rotatedKeys).length
+    ? jsonObjectOrEmpty(existingRecord?.latest_metadata)
+    : {};
+
+  await upsertR2SnapshotRecord(source, capture, {
+    latestKeys,
+    previousObjectKeys,
+    previousHashes,
+    previousMetadata,
+    previousCapturedAt: Object.keys(rotatedKeys).length
+      ? existingRecord?.latest_captured_at || null
+      : null,
+  });
+
+  return {
+    uploaded: Object.keys(latestKeys).length,
+    rotated: Object.keys(rotatedKeys).length,
+  };
+}
+
+async function syncR2BackfillLatestOnly(source, capture) {
+  const client = getR2Client();
+  const latestFiles = captureR2Files(capture);
+  const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
+
+  await upsertR2SnapshotRecord(source, capture, {
+    latestKeys,
+    previousObjectKeys: {},
+    previousHashes: {},
+    previousMetadata: {},
+    previousCapturedAt: null,
+  });
+
+  return {
+    uploaded: Object.keys(latestKeys).length,
+    rotated: 0,
+  };
+}
+
+function getR2Client() {
+  if (!r2Client) {
+    r2Client = new S3Client({
+      region: "auto",
+      endpoint: r2Endpoint,
+      forcePathStyle: true,
+      credentials: {
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+  }
+
+  return r2Client;
+}
+
+async function loadExistingR2SnapshotSourceIds(sourceIds) {
+  const existing = new Set();
+  const chunkSize = 500;
+
+  for (let index = 0; index < sourceIds.length; index += chunkSize) {
+    const chunk = sourceIds.slice(index, index + chunkSize);
+    const { data, error } = await supabase
+      .from("shared_award_source_visual_snapshots")
+      .select("shared_award_source_id, latest_object_keys")
+      .in("shared_award_source_id", chunk);
+
+    if (error) {
+      throw new Error(describeSupabaseError(error, "load existing R2 visual snapshot records"));
+    }
+
+    for (const row of data || []) {
+      if (Object.keys(jsonObjectOrEmpty(row.latest_object_keys)).length) {
+        existing.add(row.shared_award_source_id);
+      }
+    }
+  }
+
+  return existing;
+}
+
+async function loadR2SnapshotRecord(sourceId) {
+  const { data, error } = await supabase
+    .from("shared_award_source_visual_snapshots")
+    .select(
+      "latest_captured_at, latest_object_keys, latest_hashes, latest_metadata",
+    )
+    .eq("shared_award_source_id", sourceId)
+    .maybeSingle();
+
+  if (error) throw new Error(describeSupabaseError(error, "load R2 visual snapshot record"));
+  return data || null;
+}
+
+async function rotateR2LatestToPrevious(client, sourceId) {
+  const rotatedKeys = {};
+
+  for (const slot of r2SnapshotSlots) {
+    const latestKey = r2SnapshotKey(sourceId, "latest", slot.fileName);
+    const previousKey = r2SnapshotKey(sourceId, "previous", slot.fileName);
+
+    if (await r2ObjectExists(client, latestKey)) {
+      await client.send(
+        new CopyObjectCommand({
+          Bucket: r2Bucket,
+          CopySource: `${r2Bucket}/${latestKey}`,
+          Key: previousKey,
+          ContentType: slot.contentType,
+          MetadataDirective: "COPY",
+        }),
+      );
+      rotatedKeys[slot.name] = previousKey;
+    } else {
+      await deleteR2Object(client, previousKey);
+    }
+  }
+
+  return rotatedKeys;
+}
+
+async function uploadR2CaptureFiles(client, sourceId, files) {
+  const uploaded = await Promise.all(files.map(async (file) => {
+    const key = r2SnapshotKey(sourceId, "latest", file.fileName);
+    await client.send(
+      new PutObjectCommand({
+        Bucket: r2Bucket,
+        Key: key,
+        Body: readFileSync(file.path),
+        ContentType: file.contentType,
+      }),
+    );
+    return [file.name, key];
+  }));
+
+  return Object.fromEntries(uploaded);
+}
+
+async function deleteR2LatestObjectsNotInCapture(client, sourceId, latestKeys) {
+  const activeFileNames = new Set(
+    Object.values(latestKeys).map((key) => String(key).split("/").pop()),
+  );
+
+  for (const slot of r2SnapshotSlots) {
+    if (activeFileNames.has(slot.fileName)) continue;
+    await deleteR2Object(client, r2SnapshotKey(sourceId, "latest", slot.fileName));
+  }
+}
+
+async function r2ObjectExists(client, key) {
+  try {
+    await client.send(
+      new HeadObjectCommand({
+        Bucket: r2Bucket,
+        Key: key,
+      }),
+    );
+    return true;
+  } catch (error) {
+    if (isR2NotFoundError(error)) return false;
+    throw error;
+  }
+}
+
+async function deleteR2Object(client, key) {
+  try {
+    await client.send(
+      new DeleteObjectCommand({
+        Bucket: r2Bucket,
+        Key: key,
+      }),
+    );
+  } catch (error) {
+    if (!isR2NotFoundError(error)) throw error;
+  }
+}
+
+async function upsertR2SnapshotRecord(source, capture, snapshot) {
+  const { error } = await supabase
+    .from("shared_award_source_visual_snapshots")
+    .upsert(
+      {
+        shared_award_source_id: source.id,
+        shared_award_id: source.shared_award_id,
+        source_url: source.url,
+        source_title: source.title || null,
+        source_page_type: source.page_type || null,
+        kind: capture.kind || "webpage",
+        bucket: r2Bucket,
+        latest_captured_at: capture.captured_at,
+        latest_object_keys: snapshot.latestKeys,
+        latest_hashes: r2CaptureHashes(capture),
+        latest_metadata: r2CaptureMetadata(capture),
+        previous_captured_at: snapshot.previousCapturedAt,
+        previous_object_keys: snapshot.previousObjectKeys,
+        previous_hashes: snapshot.previousHashes,
+        previous_metadata: snapshot.previousMetadata,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "shared_award_source_id" },
+    );
+
+  if (error) throw new Error(describeSupabaseError(error, "upsert R2 visual snapshot record"));
+}
+
+function captureR2Files(capture) {
+  const files = [];
+  const addIfPresent = (name, fileName, path, contentType) => {
+    if (!path || !existsSync(path)) return;
+    files.push({ name, fileName, path, contentType });
+  };
+
+  addIfPresent("page", "page.jpg", capture.page_path, "image/jpeg");
+  addIfPresent("thumb", "thumb.jpg", capture.thumb_path, "image/jpeg");
+  addIfPresent("pdf", "document.pdf", capture.pdf_path, "application/pdf");
+  addIfPresent("text", "text.txt", capture.text_path, "text/plain; charset=utf-8");
+  addIfPresent("meta", "meta.json", capture.meta_path, "application/json; charset=utf-8");
+
+  return files;
+}
+
+function r2CaptureHashes(capture) {
+  return {
+    image_hash: capture.image_hash || null,
+    text_hash: capture.text_hash || null,
+    file_hash: capture.file_hash || null,
+  };
+}
+
+function r2CaptureMetadata(capture) {
+  return {
+    final_url: capture.final_url || null,
+    page_title: capture.page_title || null,
+    status_code: capture.status_code || null,
+    status_text: capture.status_text || null,
+    content_type: capture.content_type || null,
+    text_length: capture.text_length || 0,
+    file_bytes: capture.file_bytes || null,
+    page_bytes: capture.page_bytes || null,
+    thumb_bytes: capture.thumb_bytes || null,
+    dimensions: capture.dimensions || null,
+    page_count: capture.page_count || null,
+    pdf_text_error: capture.pdf_text_error || null,
+  };
+}
+
+function r2SnapshotKey(sourceId, version, fileName) {
+  return `visual-snapshots/sources/${sourceId}/${version}/${fileName}`;
+}
+
+function jsonObjectOrEmpty(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function isR2NotFoundError(error) {
+  return (
+    error?.$metadata?.httpStatusCode === 404 ||
+    error?.name === "NotFound" ||
+    error?.Code === "NoSuchKey"
+  );
 }
 
 async function createThumbnail(context, pageBuffer) {
@@ -1208,6 +1660,35 @@ function readBaselineEvidence(baseline) {
   };
 }
 
+function captureFromBaseline(baseline) {
+  if (!baseline) return null;
+  const evidence = readBaselineEvidence(baseline);
+  if (!evidence.ok) return null;
+
+  const meta = evidence.meta || {};
+  return {
+    ...meta,
+    kind: evidence.kind,
+    dir: baseline.capture?.dir ? fromArchiveRelative(baseline.capture.dir) : dirname(evidence.metaPath),
+    page_path: evidence.pagePath,
+    thumb_path: evidence.thumbPath,
+    pdf_path: evidence.pdfPath,
+    text_path: evidence.textPath,
+    meta_path: evidence.metaPath,
+    text: evidence.text,
+    captured_at: baseline.captured_at || meta.captured_at || null,
+    final_url: baseline.final_url || meta.final_url || null,
+    page_title: baseline.page_title || meta.page_title || null,
+    text_hash: baseline.text_hash || meta.text_hash || null,
+    image_hash: baseline.image_hash || meta.image_hash || baseline.file_hash || null,
+    file_hash: baseline.file_hash || meta.file_hash || null,
+    file_bytes: baseline.file_bytes || meta.file_bytes || null,
+    text_length: baseline.text_length || meta.text_length || 0,
+    dimensions: baseline.dimensions || meta.dimensions || null,
+    hidden_noise_counts: baseline.hidden_noise_counts || meta.hidden_noise_counts || null,
+  };
+}
+
 function buildDiffSummary(previousText, nextText, source) {
   const previousClean = normalizeVisibleText(previousText);
   const nextClean = normalizeVisibleText(nextText);
@@ -1330,11 +1811,79 @@ async function loadSources(pageLimit) {
   return sources.slice(0, pageLimit);
 }
 
+function hasBaselineForSource(source) {
+  return existsSync(baselinePathForSource(source.id));
+}
+
+function orderSourcesForBaselineCoverage(sources) {
+  return [...sources].sort((left, right) => {
+    const leftPriority = baselineCoveragePriority(left);
+    const rightPriority = baselineCoveragePriority(right);
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+    return sourceSortKey(left).localeCompare(sourceSortKey(right));
+  });
+}
+
+function summarizeBaselineCoverage(sources) {
+  let existing = 0;
+  let knownBrokenMissing = 0;
+  for (const source of sources) {
+    if (hasBaselineForSource(source)) {
+      existing += 1;
+    } else if (isKnownBrokenSource(source)) {
+      knownBrokenMissing += 1;
+    }
+  }
+  const missing = Math.max(0, sources.length - existing);
+  return {
+    loaded_sources: sources.length,
+    existing_baselines: existing,
+    missing_baselines: missing,
+    actionable_missing_baselines: Math.max(0, missing - knownBrokenMissing),
+    known_broken_missing_baselines: knownBrokenMissing,
+  };
+}
+
+function formatBaselineCoverage(label, coverage) {
+  return `${label} loaded=${coverage.loaded_sources} existing=${coverage.existing_baselines} missing=${coverage.missing_baselines} actionable_missing=${coverage.actionable_missing_baselines} known_broken_missing=${coverage.known_broken_missing_baselines}`;
+}
+
+function baselineCoveragePriority(source) {
+  if (!hasBaselineForSource(source) && !isKnownBrokenSource(source)) return 0;
+  if (hasBaselineForSource(source)) return 1;
+  return 2;
+}
+
+function isKnownBrokenSource(source) {
+  return getKnownBrokenSourceIds().has(source.id);
+}
+
+function getKnownBrokenSourceIds() {
+  if (knownBrokenSourceIds) return knownBrokenSourceIds;
+  knownBrokenSourceIds = new Set();
+  const current = readJsonIfExists(brokenSourcesCurrentPath) || {};
+  for (const record of Object.values(current)) {
+    if (record?.source_id) knownBrokenSourceIds.add(record.source_id);
+  }
+  return knownBrokenSourceIds;
+}
+
+function sourceSortKey(source) {
+  return [
+    source.next_check_at || "",
+    source.created_at || "",
+    source.shared_awards?.name || "",
+    source.title || "",
+    source.url || "",
+    source.id || "",
+  ].join("\t");
+}
+
 function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, page_type, last_checked_at, next_check_at, shared_awards!inner(id, name, status)",
+      "id, shared_award_id, url, title, page_type, last_checked_at, next_check_at, created_at, shared_awards!inner(id, name, status)",
     )
     .eq("shared_awards.status", "active")
     .order("next_check_at", { ascending: true })
@@ -1360,9 +1909,7 @@ async function startWorkerRun(report) {
   const { data, error } = await supabase
     .from("local_worker_runs")
     .insert({
-      worker_name: baselineRefresh
-        ? "local-visual-snapshot-worker-baseline-refresh"
-        : "local-visual-snapshot-worker",
+      worker_name: visualWorkerName(),
       status: "running",
       ai_provider: aiProvider,
       metadata: visualWorkerMetadata(report),
@@ -1409,13 +1956,45 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
   }
 }
 
+async function maybeUpdateBaselineCoverageProgress(runId, report, sources) {
+  if (!runId || !sources.length) return;
+
+  const processed =
+    report.checked + report.failed + report.skipped_existing_baseline + report.skipped_pdf;
+  if (processed <= 0) return;
+
+  const nowMs = Date.now();
+  const processedDelta = processed - lastBaselineCoverageProgressProcessed;
+  const elapsedMs = nowMs - lastBaselineCoverageProgressUpdateAt;
+  if (processedDelta < 25 && elapsedMs < 60_000) return;
+
+  lastBaselineCoverageProgressProcessed = processed;
+  lastBaselineCoverageProgressUpdateAt = nowMs;
+  report.baseline_coverage_progress = summarizeBaselineCoverage(sources);
+  console.log(formatBaselineCoverage("BASELINE_COVERAGE progress", report.baseline_coverage_progress));
+  await updateWorkerRunMetadata(runId, report);
+}
+
+async function updateWorkerRunMetadata(runId, report) {
+  if (!runId) return;
+
+  const { error } = await supabase
+    .from("local_worker_runs")
+    .update({
+      metadata: visualWorkerMetadata(report),
+    })
+    .eq("id", runId);
+
+  if (error && !isMissingMetadataColumnError(error)) {
+    console.log(`WORKER RUN METADATA UPDATE FAILED | ${error.message}`);
+  }
+}
+
 async function startWorkerRunWithoutMetadata() {
   const { data, error } = await supabase
     .from("local_worker_runs")
     .insert({
-      worker_name: baselineRefresh
-        ? "local-visual-snapshot-worker-baseline-refresh"
-        : "local-visual-snapshot-worker",
+      worker_name: visualWorkerName(),
       status: "running",
       ai_provider: aiProvider,
     })
@@ -1465,11 +2044,21 @@ function visualWorkerMetadata(report) {
       deterministic_noise: report.deterministic_noise,
       visual_noise: report.visual_noise,
       review: report.review,
+      skipped_existing_baseline: report.skipped_existing_baseline,
       skipped_pdf: report.skipped_pdf,
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
       promoted: report.promoted,
+      r2_uploaded: report.r2_uploaded,
+      r2_rotated: report.r2_rotated,
+      r2_failed: report.r2_failed,
+      r2_skipped_existing: report.r2_skipped_existing,
+    },
+    baseline_coverage: {
+      start: report.baseline_coverage_start || null,
+      progress: report.baseline_coverage_progress || null,
+      finish: report.baseline_coverage_finish || null,
     },
     gemini_usage: report.gemini_usage,
     paths: {
@@ -1479,6 +2068,13 @@ function visualWorkerMetadata(report) {
     },
     errors: report.errors.slice(0, 20),
   };
+}
+
+function visualWorkerName() {
+  if (r2BackfillBaselines) return "local-visual-snapshot-worker-r2-backfill";
+  if (completeMissingBaselines) return "local-visual-snapshot-worker-baseline-completion";
+  if (baselineRefresh) return "local-visual-snapshot-worker-baseline-refresh";
+  return "local-visual-snapshot-worker";
 }
 
 async function recordBrokenSourceFailure(source, message) {
@@ -1520,6 +2116,9 @@ async function recordBrokenSourceFailure(source, message) {
   };
 
   current[key] = record;
+  if (knownBrokenSourceIds) {
+    knownBrokenSourceIds.add(source.id);
+  }
   writeFileSync(brokenSourcesCurrentPath, JSON.stringify(current, null, 2), "utf8");
   appendFileSync(brokenSourcesJsonlPath, `${JSON.stringify(record)}\n`, "utf8");
   writeBrokenSourcesCsv(Object.values(current));
@@ -2327,6 +2926,21 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+async function runConcurrent(items, concurrency, task) {
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= items.length) return;
+      await task(items[index], index);
+    }
+  });
+
+  await Promise.all(workers);
 }
 
 function loadEnvFile(path) {

@@ -1,6 +1,4 @@
-# AwardPing Local PC Worker Installer
-
-Use this package on the Windows PC that will crawl award pages.
+# AwardPing Local PC Worker
 
 ## What It Does
 
@@ -17,13 +15,18 @@ Use this package on the Windows PC that will crawl award pages.
 
 ## Windows Install
 
-1. Copy `awardping-worker-windows.zip` to the PC.
-2. Extract the zip.
-3. Double-click `1-INSTALL-AND-RUN-DEEP-CRAWL.bat`.
-4. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
+Run the installer directly from this repo on the crawler PC:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1"
+```
+
+Then:
+
+1. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
    key when prompted.
-5. Paste the Gemini API key when prompted.
-6. Accept the hourly Scheduled Task when prompted.
+2. Paste the Gemini API key when prompted.
+3. Accept the Scheduled Task when prompted.
 
 For a setup without immediately starting the full crawl, double-click:
 
@@ -31,9 +34,9 @@ For a setup without immediately starting the full crawl, double-click:
 2-INSTALL-ONLY.bat
 ```
 
-The normal first-run choice is `1-INSTALL-AND-RUN-DEEP-CRAWL.bat`. It installs
-the worker, then starts the source expansion crawl after the one-page validation.
-The `runner-files` folder is just the internal app package used by the installer.
+The old hosted `awardping-worker-windows.zip` updater has been retired. Update
+the worker by editing this repo and copying changed worker files into
+`%LOCALAPPDATA%\AwardPingWorker\app` on this PC.
 
 The Supabase key must be an elevated AwardPing project key from Supabase Project
 Settings -> API. Use either the legacy JWT `service_role` key or a newer

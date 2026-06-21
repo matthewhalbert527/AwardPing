@@ -3,6 +3,7 @@
 .next
 .vercel
 dist
+public/awardping-worker-windows.zip
 node_modules
 reports
 tmp
