@@ -26,6 +26,8 @@ export function SiteFooter() {
           </p>
           <div className="mt-3 flex flex-col gap-2 text-sm font-semibold text-[var(--foreground)]">
             <Link href="/contact">Contact</Link>
+            <Link href="/security">Security</Link>
+            <Link href="/privacy">Privacy</Link>
           </div>
         </div>
       </div>

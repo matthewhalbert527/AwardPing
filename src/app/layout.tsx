@@ -14,12 +14,23 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"),
+  applicationName: "AwardPing",
   title: {
     default: "AwardPing - Nationally Competitive Award Monitor",
     template: "%s | AwardPing",
   },
   description:
     "Monitor nationally competitive award pages for deadline, eligibility, application, and PDF updates.",
+  keywords: [
+    "AwardPing",
+    "nationally competitive awards",
+    "fellowship advising",
+    "scholarship updates",
+    "award page monitoring",
+    "education technology",
+  ],
+  creator: "AwardPing",
+  publisher: "AwardPing",
   openGraph: {
     title: "AwardPing - Nationally Competitive Award Monitor",
     description:

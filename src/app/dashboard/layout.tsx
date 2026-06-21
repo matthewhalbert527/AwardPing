@@ -1,11 +1,12 @@
+import { Suspense } from "react";
+import Link from "next/link";
+import { Activity, Inbox, ListChecks, SearchCheck } from "lucide-react";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { OfficeSwitcher } from "@/components/office-switcher";
 import { ProfileMenu } from "@/components/profile-menu";
 import { BrandLogo } from "@/components/brand-logo";
 import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { getOfficeContext } from "@/lib/offices";
-import Link from "next/link";
-import { Suspense } from "react";
 
 export default async function DashboardLayout({
   children,
@@ -32,7 +33,7 @@ export default async function DashboardLayout({
             </Link>
 
             <div className="dashboard-header-nav-wrap">
-              <Suspense fallback={<div className="dashboard-nav" aria-hidden="true" />}>
+              <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
                 <DashboardNav isSiteAdmin={isSiteAdmin} />
               </Suspense>
             </div>
@@ -52,5 +53,36 @@ export default async function DashboardLayout({
 
       <main className="dashboard-content">{children}</main>
     </div>
+  );
+}
+
+function DashboardNavFallback({ isSiteAdmin }: { isSiteAdmin: boolean }) {
+  return (
+    <nav className="dashboard-nav" aria-label="Dashboard navigation">
+      <Link
+        className="dashboard-nav-link dashboard-nav-link-updates dashboard-nav-link-active"
+        href="/dashboard"
+      >
+        <Inbox size={16} aria-hidden="true" />
+        Updates
+      </Link>
+      <Link className="dashboard-nav-link dashboard-nav-link-database" href="/dashboard/awards">
+        <SearchCheck size={16} aria-hidden="true" />
+        Database
+      </Link>
+      <Link
+        className="dashboard-nav-link dashboard-nav-link-watchlist"
+        href="/dashboard/awards?view=watchlist"
+      >
+        <ListChecks size={16} aria-hidden="true" />
+        Watchlist
+      </Link>
+      {isSiteAdmin && (
+        <Link className="dashboard-nav-link dashboard-nav-link-admin" href="/dashboard/admin">
+          <Activity size={16} aria-hidden="true" />
+          Admin
+        </Link>
+      )}
+    </nav>
   );
 }
