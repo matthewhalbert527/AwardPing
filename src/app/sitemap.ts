@@ -3,7 +3,16 @@ import { seoPages } from "@/lib/seo-pages";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
-  const staticRoutes = ["", "/login", "/signup", "/award-directory", "/updates", "/contact"];
+  const staticRoutes = [
+    "",
+    "/login",
+    "/signup",
+    "/award-directory",
+    "/updates",
+    "/contact",
+    "/security",
+    "/privacy",
+  ];
 
   return [
     ...staticRoutes.map((route) => ({

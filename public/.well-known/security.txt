@@ -1,0 +1,5 @@
+Contact: https://awardping.com/contact
+Policy: https://awardping.com/security
+Preferred-Languages: en
+Canonical: https://awardping.com/.well-known/security.txt
+Expires: 2027-06-21T00:00:00.000Z
