@@ -726,6 +726,7 @@ function AwardInlineDetails({
               canManage={isAuthenticated && canManage}
               busyId={trackingAwardId}
               getSourceTracked={(source) => Boolean(source.tracked)}
+              showSnapshotActions={isAuthenticated}
               onTrackSources={(sources, label, actionId) =>
                 onTrackSources(award, sources, label, actionId)
               }

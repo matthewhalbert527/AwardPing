@@ -7,7 +7,7 @@ import {
   appConfig,
 } from "@/lib/config";
 import type { Json } from "@/lib/database.types";
-import { canManageOffice, getOfficeContext } from "@/lib/offices";
+import { getOfficeContext } from "@/lib/offices";
 import { createR2SignedReadUrl, getR2Bucket } from "@/lib/r2";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -93,28 +93,27 @@ async function canViewSnapshot(
   if (isSiteAdminEmail(user.email)) return true;
 
   const officeContext = await getOfficeContext(user);
-  if (!officeContext || !canManageOffice(officeContext.current.role)) return false;
+  if (!officeContext) return false;
 
   const admin = createSupabaseAdminClient();
-  const [{ data: awardRows, error: awardError }, { data: sourceRows, error: sourceError }] =
+  const [{ data: awardRow, error: awardError }, { data: sourceRow, error: sourceError }] =
     await Promise.all([
       admin
-        .from("awards")
+        .from("shared_awards")
         .select("id")
-        .eq("office_id", officeContext.current.officeId)
-        .eq("shared_award_id", sharedAwardId)
+        .eq("id", sharedAwardId)
         .eq("status", "active")
-        .limit(1),
+        .maybeSingle(),
       admin
-        .from("award_sources")
+        .from("shared_award_sources")
         .select("id")
-        .eq("office_id", officeContext.current.officeId)
-        .eq("shared_award_source_id", sharedAwardSourceId)
-        .limit(1),
+        .eq("id", sharedAwardSourceId)
+        .eq("shared_award_id", sharedAwardId)
+        .maybeSingle(),
     ]);
 
   if (awardError || sourceError) return false;
-  return Boolean((awardRows || []).length || (sourceRows || []).length);
+  return Boolean(awardRow && sourceRow);
 }
 
 async function createSignedSnapshotObjects(value: Json) {

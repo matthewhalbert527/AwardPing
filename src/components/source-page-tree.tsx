@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
+import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 import { pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
 import { readableSourceTitle } from "@/lib/display-text";
 import { buildSourceTree, type SourceTreeNode, type SourceTreeSource } from "@/lib/source-tree";
@@ -50,6 +51,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   onTrackSources,
   onUntrackSources,
   renderSourceActions,
+  showSnapshotActions = true,
 }: {
   sources: T[];
   canManage?: boolean;
@@ -59,6 +61,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   onTrackSources?: (sources: T[], label: string, actionId: string) => void;
   onUntrackSources?: (sources: T[], label: string, actionId: string) => void;
   renderSourceActions?: (source: T) => ReactNode;
+  showSnapshotActions?: boolean;
 }) {
   const tree = useMemo(() => buildSourceTree(sources), [sources]);
   const expandableIds = useMemo(() => collectExpandableIds(tree), [tree]);
@@ -146,6 +149,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
           onTrackSources,
           onUntrackSources,
           renderSourceActions,
+          showSnapshotActions,
           toggleNode,
           toggleSource,
         }),
@@ -165,6 +169,7 @@ function renderNode<T extends SourcePageTreeSource>({
   onTrackSources,
   onUntrackSources,
   renderSourceActions,
+  showSnapshotActions,
   toggleNode,
   toggleSource,
 }: {
@@ -178,6 +183,7 @@ function renderNode<T extends SourcePageTreeSource>({
   onTrackSources?: (sources: T[], label: string, actionId: string) => void;
   onUntrackSources?: (sources: T[], label: string, actionId: string) => void;
   renderSourceActions?: (source: T) => ReactNode;
+  showSnapshotActions: boolean;
   toggleNode: (nodeId: string) => void;
   toggleSource: (sourceId: string) => void;
 }) {
@@ -202,6 +208,7 @@ function renderNode<T extends SourcePageTreeSource>({
             onUntrackSources,
           })
         }
+        showSnapshotActions={showSnapshotActions}
         source={source}
         toggleSource={toggleSource}
       />
@@ -261,6 +268,7 @@ function renderNode<T extends SourcePageTreeSource>({
                   onUntrackSources,
                 })
               }
+              showSnapshotActions={showSnapshotActions}
               source={source}
               toggleSource={toggleSource}
             />
@@ -277,6 +285,7 @@ function renderNode<T extends SourcePageTreeSource>({
               onTrackSources,
               onUntrackSources,
               renderSourceActions,
+              showSnapshotActions,
               toggleNode,
               toggleSource,
             }),
@@ -322,17 +331,22 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   depth,
   open,
   renderSourceActions,
+  showSnapshotActions,
   toggleSource,
 }: {
   source: T;
   depth: number;
   open: boolean;
   renderSourceActions?: (source: T) => ReactNode;
+  showSnapshotActions: boolean;
   toggleSource: (sourceId: string) => void;
 }) {
   const title = readableSourceTitle(source.title, source.url);
   const latestChanges = source.latestChanges || [];
   const latestChange = latestChanges[0] || null;
+  const rowActions = renderSourceActions?.(source);
+  const snapshotSourceId =
+    source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
   const checkedLabel = source.lastCheckedAt
     ? new Date(source.lastCheckedAt).toLocaleString()
     : "Not checked yet";
@@ -421,7 +435,19 @@ function SourcePageRow<T extends SourcePageTreeSource>({
           )}
         </div>
 
-        {renderSourceActions?.(source)}
+        {(showSnapshotActions || rowActions) && (
+          <div className="source-tree-row-actions">
+            {showSnapshotActions && snapshotSourceId && (
+              <SourceSnapshotViewerButton
+                sourceId={snapshotSourceId}
+                sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
+                sourceTitle={title}
+                sourceUrl={source.url}
+              />
+            )}
+            {rowActions}
+          </div>
+        )}
       </div>
     </div>
   );
