@@ -211,6 +211,7 @@ async function runOnce() {
     skipped_existing_baseline: 0,
     skipped_pdf: 0,
     capture_behavior_refreshed: 0,
+    blocked_page_captures: 0,
     failed: 0,
     promoted: 0,
     pdf_checked: 0,
@@ -878,6 +879,19 @@ async function captureSource(source, context, browserMeta, report) {
     }));
     const rawText = await page.evaluate(() => document.body?.innerText || "");
     const text = normalizeVisibleText(rawText);
+    const invalidCapture = classifyInvalidPageCapture({
+      status: response?.status() || null,
+      finalUrl,
+      pageTitle,
+      text,
+      dimensions,
+    });
+    if (invalidCapture) {
+      if (report) report.blocked_page_captures += 1;
+      throw new Error(
+        `Invalid capture page: ${invalidCapture.type} HTTP ${response?.status() || "unknown"} final_url=${finalUrl} title=${pageTitle || "untitled"} sample=${invalidCapture.sample}`,
+      );
+    }
     const textHash = hashText(text);
     const pageBuffer = await page.screenshot({
       path: pagePath,
@@ -1109,6 +1123,43 @@ async function expandPageForSnapshot(page) {
       error: errorMessage(error),
     };
   }
+}
+
+function classifyInvalidPageCapture({ status, finalUrl, pageTitle, text, dimensions }) {
+  const sample = truncate(text || "", 260);
+  const haystack = [finalUrl, pageTitle, sample].filter(Boolean).join(" ").toLowerCase();
+  const lowContent = normalizeText(text).length < 120;
+  const viewportOnlyPage =
+    dimensions?.scroll_height &&
+    dimensions?.viewport_height &&
+    dimensions.scroll_height <= dimensions.viewport_height + 80;
+
+  if (
+    haystack.includes("/.well-known/sgcaptcha/") ||
+    haystack.includes("robot challenge screen") ||
+    haystack.includes("checking the site connection security") ||
+    haystack.includes("checking if the site connection is secure") ||
+    haystack.includes("requires cookies to be enabled") ||
+    haystack.includes("enable cookies") ||
+    (haystack.includes("captcha") && /verify|challenge|security|human|robot/.test(haystack)) ||
+    (haystack.includes("verify you are human") && haystack.includes("security"))
+  ) {
+    return { type: "security_challenge", sample };
+  }
+
+  if (
+    status === 404 ||
+    /\b(404|page not found|not found|this page doesn't exist|this page does not exist)\b/i.test(haystack) ||
+    (lowContent && viewportOnlyPage && /\b(error|not found|unavailable)\b/i.test(haystack))
+  ) {
+    return { type: "soft_404", sample };
+  }
+
+  if (lowContent && viewportOnlyPage && /\b(access denied|forbidden|blocked|permission denied)\b/i.test(haystack)) {
+    return { type: "access_blocked", sample };
+  }
+
+  return null;
 }
 
 async function discoverPdfLinksOnPage(page, source) {
@@ -2465,6 +2516,7 @@ function visualWorkerMetadata(report) {
       skipped_existing_baseline: report.skipped_existing_baseline,
       skipped_pdf: report.skipped_pdf,
       capture_behavior_refreshed: report.capture_behavior_refreshed,
+      blocked_page_captures: report.blocked_page_captures,
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
@@ -2558,6 +2610,9 @@ function parseHttpStatusFromMessage(message) {
 function failureTypeFromMessage(message, statusCode) {
   const lower = String(message || "").toLowerCase();
   if (statusCode === 404 || lower.includes("http 404")) return "http_404";
+  if (lower.includes("security_challenge") || lower.includes("robot challenge")) return "security_challenge";
+  if (lower.includes("soft_404") || lower.includes("page not found")) return "soft_404";
+  if (lower.includes("access_blocked") || lower.includes("access denied")) return "access_blocked";
   if (statusCode) return `http_${statusCode}`;
   if (lower.includes("err_http_response_code_failure")) return "http_response_failure";
   if (lower.includes("timeout")) return "timeout";
