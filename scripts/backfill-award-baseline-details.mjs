@@ -300,21 +300,27 @@ async function loadSourcesByAward(awardIds) {
   const grouped = new Map();
   for (const awardId of awardIds) grouped.set(awardId, []);
 
+  const pageSize = 1_000;
   for (const chunk of chunks(awardIds, 500)) {
-    const { data, error } = await supabase
-      .from("shared_award_sources")
-      .select(
-        "id, shared_award_id, url, title, page_type, confidence, last_checked_at, last_error, created_at",
-      )
-      .in("shared_award_id", chunk)
-      .order("page_type", { ascending: true })
-      .order("created_at", { ascending: true });
+    for (let from = 0; ; from += pageSize) {
+      const { data, error } = await supabase
+        .from("shared_award_sources")
+        .select(
+          "id, shared_award_id, url, title, page_type, confidence, last_checked_at, last_error, created_at",
+        )
+        .in("shared_award_id", chunk)
+        .order("page_type", { ascending: true })
+        .order("created_at", { ascending: true })
+        .range(from, from + pageSize - 1);
 
-    if (error) throw new Error(describeSupabaseError(error, "load shared award sources"));
+      if (error) throw new Error(describeSupabaseError(error, "load shared award sources"));
 
-    for (const source of data || []) {
-      if (!grouped.has(source.shared_award_id)) grouped.set(source.shared_award_id, []);
-      grouped.get(source.shared_award_id).push(source);
+      const page = data || [];
+      for (const source of page) {
+        if (!grouped.has(source.shared_award_id)) grouped.set(source.shared_award_id, []);
+        grouped.get(source.shared_award_id).push(source);
+      }
+      if (page.length < pageSize) break;
     }
   }
 
