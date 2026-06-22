@@ -1,6 +1,7 @@
 param(
   [string]$InstallRoot = "",
   [int]$Limit = 50000,
+  [int]$BatchLimit = 250,
   [int]$IntervalMinutes = 5,
   [switch]$Install
 )
@@ -52,7 +53,7 @@ function Install-WatchdogTask {
   $taskName = "AwardPing Baseline Completion Watchdog"
   $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Limit $Limit"
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Limit $Limit -BatchLimit $BatchLimit"
   $trigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -73,7 +74,7 @@ function Install-WatchdogTask {
     -Description "Restarts AwardPing missing visual baseline completion if it stops before actionable baseline coverage is complete." `
     -Force | Out-Null
 
-  Write-WatchdogLog "installed task=$taskName interval_minutes=$IntervalMinutes install_root=$InstallRoot"
+  Write-WatchdogLog "installed task=$taskName interval_minutes=$IntervalMinutes install_root=$InstallRoot batch_limit=$BatchLimit"
 }
 
 function Test-ProcessMatches {
@@ -91,6 +92,41 @@ function Test-ProcessMatches {
     if ($commandLine -like $pattern) {
       return $true
     }
+  }
+
+  return $false
+}
+
+function Test-ProcessHasVisualWorkerAncestor {
+  param(
+    [object]$Process,
+    [hashtable]$ProcessesById
+  )
+
+  $current = $Process
+  $visited = @{}
+  $runScriptPattern = "*$RunScript*"
+
+  while ($current) {
+    if ($visited.ContainsKey($current.ProcessId)) {
+      return $false
+    }
+    $visited[$current.ProcessId] = $true
+
+    $commandLine = [string]$current.CommandLine
+    if (
+      -not [string]::IsNullOrWhiteSpace($commandLine) -and
+      $commandLine -like $runScriptPattern -and
+      $commandLine -like "*-CompleteMissingBaselines*"
+    ) {
+      return $true
+    }
+
+    if (-not $current.ParentProcessId -or -not $ProcessesById.ContainsKey($current.ParentProcessId)) {
+      return $false
+    }
+
+    $current = $ProcessesById[$current.ParentProcessId]
   }
 
   return $false
@@ -123,10 +159,16 @@ function Test-VisualWorkerActive {
   }
 
   $currentPid = $PID
-  $activeProcess = Get-CimInstance Win32_Process -Filter "name = 'node.exe' OR name = 'powershell.exe' OR name = 'cmd.exe'" |
+  $processes = @(Get-CimInstance Win32_Process -Filter "name = 'node.exe' OR name = 'powershell.exe' OR name = 'cmd.exe'")
+  $processesById = @{}
+  foreach ($process in $processes) {
+    $processesById[$process.ProcessId] = $process
+  }
+
+  $activeProcess = $processes |
     Where-Object {
       $_.ProcessId -ne $currentPid -and
-      (Test-ProcessMatches -Process $_ -Patterns $patterns)
+      (Test-ProcessHasVisualWorkerAncestor -Process $_ -ProcessesById $processesById)
     } |
     Select-Object -First 1
 
@@ -195,7 +237,9 @@ function Start-BaselineCompletion {
     "-All",
     "-Limit",
     [string]$Limit,
-    "-CompleteMissingBaselines"
+    "-CompleteMissingBaselines",
+    "-CompleteMissingBatchLimit",
+    [string]$BatchLimit
   )
 
   $process = Start-Process `
@@ -205,7 +249,7 @@ function Start-BaselineCompletion {
     -WindowStyle Hidden `
     -PassThru
 
-  Write-WatchdogLog "restarted_baseline_completion pid=$($process.Id) limit=$Limit"
+  Write-WatchdogLog "restarted_baseline_completion pid=$($process.Id) limit=$Limit batch_limit=$BatchLimit"
 }
 
 if ($Install) {

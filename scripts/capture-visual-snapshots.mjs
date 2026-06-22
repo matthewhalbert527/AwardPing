@@ -53,6 +53,9 @@ const promote = boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
 const completeMissingBaselines = boolArg(args["complete-missing-baselines"], false);
+const completeMissingBatchLimit = completeMissingBaselines
+  ? positiveInt(args["complete-missing-batch-limit"] || env.AWARDPING_COMPLETE_MISSING_BATCH_LIMIT, 250)
+  : 0;
 const prioritizeMissingBaselines = boolArg(args["prioritize-missing-baselines"], true);
 const skipExistingBaseline = boolArg(args["skip-existing-baseline"], false);
 const skipExistingBaselineEffective = skipExistingBaseline || completeMissingBaselines;
@@ -68,6 +71,7 @@ const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
+const heartbeatMinutes = positiveInt(args["heartbeat-minutes"] || env.AWARDPING_WORKER_HEARTBEAT_MINUTES, 5);
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
 const maxPdfBytes = positiveInt(args["max-pdf-mb"], 50) * 1024 * 1024;
 const r2BackfillBaselines = boolArg(args["r2-backfill-baselines"], false);
@@ -125,6 +129,23 @@ if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAc
   process.exit(1);
 }
 
+process.on("uncaughtException", (error) => {
+  console.error(`UNCAUGHT ${errorMessage(error)}`);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error(`UNHANDLED_REJECTION ${errorMessage(reason)}`);
+  process.exit(1);
+});
+
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => {
+    console.error(`SIGNAL ${signal}`);
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  });
+}
+
 supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
 
 async function runOnce() {
@@ -152,6 +173,7 @@ async function runOnce() {
       pdf_only: pdfOnly,
       web_only: webOnly,
       complete_missing_baselines: completeMissingBaselines,
+      complete_missing_batch_limit: completeMissingBatchLimit || null,
       prioritize_missing_baselines: prioritizeMissingBaselines,
       skip_existing_baseline: skipExistingBaseline,
       keep_unchanged: keepUnchanged,
@@ -210,6 +232,7 @@ async function runOnce() {
     rejected_paths: [],
   };
 
+  const heartbeat = startRunHeartbeat(report);
   let browser = null;
   let context = null;
   let browserMeta = null;
@@ -256,7 +279,18 @@ async function runOnce() {
 
     if (completeMissingBaselines) {
       sources = sources.filter((source) => !hasBaselineForSource(source));
-      console.log(`BASELINE_COMPLETION targets=${sources.length}`);
+      const totalMissingTargets = sources.length;
+      if (completeMissingBatchLimit && sources.length > completeMissingBatchLimit) {
+        sources = sources.slice(0, completeMissingBatchLimit);
+      }
+      report.baseline_completion = {
+        total_missing_targets: totalMissingTargets,
+        batch_targets: sources.length,
+        batch_limit: completeMissingBatchLimit || null,
+      };
+      console.log(
+        `BASELINE_COMPLETION targets=${sources.length} total_missing_targets=${totalMissingTargets} batch_limit=${completeMissingBatchLimit || "all"}`,
+      );
     }
 
     for (const source of sources) {
@@ -337,11 +371,32 @@ async function runOnce() {
   } finally {
     await context?.close().catch(() => null);
     await browser?.close().catch(() => null);
+    clearInterval(heartbeat);
     report.finished_at = new Date().toISOString();
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
     console.log(`REPORT ${reportPath}`);
   }
+}
+
+function startRunHeartbeat(report) {
+  const intervalMs = heartbeatMinutes * 60 * 1000;
+  const startedAtMs = Date.now();
+  const timer = setInterval(() => {
+    const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
+    const processed =
+      report.checked + report.failed + report.skipped_existing_baseline + report.skipped_pdf;
+    const coverage = report.baseline_coverage_progress || report.baseline_coverage_start || null;
+    const coverageText = coverage
+      ? ` coverage_existing=${coverage.existing} coverage_actionable_missing=${coverage.actionable_missing}`
+      : "";
+    console.log(
+      `HEARTBEAT elapsed_minutes=${elapsedMinutes} status=${report.status} processed=${processed} checked=${report.checked} failed=${report.failed} baselined=${report.baselined} unchanged=${report.unchanged} ai_true_changes=${report.ai_true_changes} r2_uploaded=${report.r2_uploaded} r2_failed=${report.r2_failed}${coverageText}`,
+    );
+  }, intervalMs);
+
+  timer.unref?.();
+  return timer;
 }
 
 async function backfillR2Baselines(sources, workerRunId, report, coverageSources) {

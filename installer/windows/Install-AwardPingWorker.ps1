@@ -409,7 +409,8 @@ param(
   [switch]`$WebOnly,
   [switch]`$CompleteMissingBaselines,
   [switch]`$SkipExistingBaseline,
-  [int]`$DomainDelayMs = 1500
+  [int]`$DomainDelayMs = 1500,
+  [int]`$CompleteMissingBatchLimit = 250
 )
 
 `$ErrorActionPreference = "Stop"
@@ -477,6 +478,8 @@ if (`$WebOnly) { `$workerArgs += "--web-only=true" }
 if (`$CompleteMissingBaselines) {
   `$workerArgs += "--complete-missing-baselines=true"
   `$workerArgs += "--skip-existing-baseline=true"
+  `$workerArgs += "--complete-missing-batch-limit"
+  `$workerArgs += [string]`$CompleteMissingBatchLimit
 }
 if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
 
@@ -488,9 +491,15 @@ if (`$CompleteMissingBaselines) {
   Write-Host "Running AwardPing visual snapshot worker. Log: `$logPath"
 }
 Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode log=`$logPath" -Encoding ASCII
+`$exitCode = 1
+Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
 try {
-  & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath
+  & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath -Append
   `$exitCode = `$LASTEXITCODE
+  Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
+} catch {
+  Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
+  throw
 } finally {
   Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
 }
@@ -540,7 +549,7 @@ pause
 @echo off
 echo Completing missing AwardPing visual baselines now.
 echo Existing baselines will be skipped so this only works on pages that still need a baseline.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 50000 -CompleteMissingBaselines
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 50000 -CompleteMissingBaselines -CompleteMissingBatchLimit 250
 echo.
 pause
 "@
