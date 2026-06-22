@@ -25,6 +25,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
+const captureBehaviorVersion = 2;
+const captureBehaviorName = "expand-details-without-summary-toggle";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -208,6 +210,7 @@ async function runOnce() {
     review: 0,
     skipped_existing_baseline: 0,
     skipped_pdf: 0,
+    capture_behavior_refreshed: 0,
     failed: 0,
     promoted: 0,
     pdf_checked: 0,
@@ -494,6 +497,19 @@ async function processSource(source, context, browserMeta, report) {
     report.baselined += 1;
     await maybeSyncR2Snapshot(source, capture, report);
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
+    return;
+  }
+
+  if (needsCaptureBehaviorRefresh(baseline, capture)) {
+    writeBaseline(source, capture, {
+      reason: "capture_behavior_refresh",
+      previous_baseline: baseline || null,
+    });
+    report.capture_behavior_refreshed += 1;
+    await maybeSyncR2Snapshot(source, capture, report);
+    console.log(
+      `BASELINE capture_behavior_refresh from=${baseline.capture_behavior_version || 0} to=${captureBehaviorVersion} ${sourceLabel(source)}`,
+    );
     return;
   }
 
@@ -877,6 +893,9 @@ async function captureSource(source, context, browserMeta, report) {
 
     const meta = {
       version: 1,
+      kind: "webpage",
+      capture_behavior_version: captureBehaviorVersion,
+      capture_behavior_name: captureBehaviorName,
       source: sourceMetadata(source),
       captured_at: capturedAt,
       final_url: finalUrl,
@@ -1986,6 +2005,8 @@ function writeBaseline(source, capture, details) {
   const baseline = {
     version: 1,
     kind: capture.kind || "webpage",
+    capture_behavior_version: capture.kind === "pdf" ? null : captureBehaviorVersion,
+    capture_behavior_name: capture.kind === "pdf" ? null : captureBehaviorName,
     source: sourceMetadata(source),
     captured_at: capture.captured_at,
     final_url: capture.final_url,
@@ -2202,6 +2223,14 @@ async function loadSources(pageLimit) {
 
 function hasBaselineForSource(source) {
   return existsSync(baselinePathForSource(source.id));
+}
+
+function needsCaptureBehaviorRefresh(baseline, capture) {
+  const baselineKind = baseline.kind || (baseline.capture?.pdf ? "pdf" : "webpage");
+  const captureKind = capture.kind || "webpage";
+  if (baselineKind === "pdf" || captureKind === "pdf") return false;
+  const baselineVersion = Number(baseline.capture_behavior_version || 0);
+  return !Number.isFinite(baselineVersion) || baselineVersion < captureBehaviorVersion;
 }
 
 function orderSourcesForBaselineCoverage(sources) {
@@ -2435,6 +2464,7 @@ function visualWorkerMetadata(report) {
       review: report.review,
       skipped_existing_baseline: report.skipped_existing_baseline,
       skipped_pdf: report.skipped_pdf,
+      capture_behavior_refreshed: report.capture_behavior_refreshed,
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
