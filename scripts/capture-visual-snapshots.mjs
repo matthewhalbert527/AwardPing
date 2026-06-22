@@ -71,6 +71,7 @@ const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
+const pageReadyTimeoutMs = positiveInt(args["page-ready-timeout-ms"] || env.AWARDPING_PAGE_READY_TIMEOUT_MS, 15_000);
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const heartbeatMinutes = positiveInt(args["heartbeat-minutes"] || env.AWARDPING_WORKER_HEARTBEAT_MINUTES, 5);
@@ -186,6 +187,7 @@ async function runOnce() {
       jpeg_quality: jpegQuality,
       thumb_width: thumbWidth,
       timeout_ms: timeoutMs,
+      page_ready_timeout_ms: pageReadyTimeoutMs,
       source_timeout_ms: sourceTimeoutMs,
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
@@ -212,6 +214,9 @@ async function runOnce() {
     skipped_pdf: 0,
     capture_behavior_refreshed: 0,
     blocked_page_captures: 0,
+    page_ready_waits: 0,
+    page_ready_timeouts: 0,
+    page_ready_wait_ms: 0,
     failed: 0,
     promoted: 0,
     pdf_checked: 0,
@@ -849,6 +854,12 @@ async function captureSource(source, context, browserMeta, report) {
     await page.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
     await page.evaluate(() => document.fonts?.ready).catch(() => null);
     if (delayMs > 0) await page.waitForTimeout(delayMs);
+    const pageReadiness = await waitForMeaningfulPageContent(page);
+    if (report) {
+      if (pageReadiness.waited_ms > 0) report.page_ready_waits += 1;
+      if (pageReadiness.timed_out) report.page_ready_timeouts += 1;
+      report.page_ready_wait_ms += pageReadiness.waited_ms;
+    }
     await page.addStyleTag({ content: stableCaptureCss }).catch(() => null);
     const hiddenNoise = await hideNoiseElements(page);
     const expanded = await expandPageForSnapshot(page);
@@ -924,6 +935,7 @@ async function captureSource(source, context, browserMeta, report) {
       dimensions,
       browser: browserMeta,
       hidden_noise_counts: hiddenNoise,
+      page_readiness: pageReadiness,
       expanded_content: expanded,
       discovered_pdf_links: discoveredPdfLinks.slice(0, 20),
       files: {
@@ -1123,6 +1135,78 @@ async function expandPageForSnapshot(page) {
       error: errorMessage(error),
     };
   }
+}
+
+async function waitForMeaningfulPageContent(page) {
+  const startedAt = Date.now();
+  const before = await pageReadinessSnapshot(page);
+  const minTextLength = 500;
+
+  if (before.text_length >= minTextLength && before.ready_state === "complete") {
+    return {
+      waited_ms: 0,
+      timed_out: false,
+      before,
+      after: before,
+    };
+  }
+
+  let timedOut = false;
+  await page
+    .waitForFunction(
+      ({ minTextLength: requiredTextLength }) => {
+        const text = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+        if (text.length >= requiredTextLength) return true;
+        const mainText = [...document.querySelectorAll("main, article, [role='main'], #content, .content")]
+          .map((element) => element.innerText || element.textContent || "")
+          .join(" ")
+          .replace(/\s+/g, " ")
+          .trim();
+        return mainText.length >= requiredTextLength;
+      },
+      { minTextLength },
+      { timeout: pageReadyTimeoutMs, polling: 500 },
+    )
+    .catch(() => {
+      timedOut = true;
+    });
+
+  await page.waitForLoadState("networkidle", { timeout: Math.min(5_000, timeoutMs) }).catch(() => null);
+  await page.waitForTimeout(250).catch(() => null);
+  const after = await pageReadinessSnapshot(page);
+
+  return {
+    waited_ms: Date.now() - startedAt,
+    timed_out: timedOut && after.text_length < minTextLength,
+    before,
+    after,
+  };
+}
+
+async function pageReadinessSnapshot(page) {
+  return page
+    .evaluate(() => {
+      const text = (document.body?.innerText || "").replace(/\s+/g, " ").trim();
+      return {
+        ready_state: document.readyState,
+        text_length: text.length,
+        link_count: document.links.length,
+        image_count: document.images.length,
+        script_count: document.scripts.length,
+        scroll_height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0),
+        title: document.title || "",
+      };
+    })
+    .catch((error) => ({
+      ready_state: "unknown",
+      text_length: 0,
+      link_count: 0,
+      image_count: 0,
+      script_count: 0,
+      scroll_height: 0,
+      title: "",
+      error: errorMessage(error),
+    }));
 }
 
 function classifyInvalidPageCapture({ status, finalUrl, pageTitle, text, dimensions }) {
@@ -1699,11 +1783,6 @@ async function hideNoiseElements(page) {
       ["ad", "[id='ad'], [class='ad'], [id*='advertisement' i], [class*='advertisement' i], [id*='ad-banner' i], [class*='ad-banner' i]"],
       ["ads", "[id*='ads' i], [class*='ads' i], [id*='google_ads' i], [class*='google_ads' i]"],
       ["sponsor", "[id*='sponsor' i], [class*='sponsor' i]"],
-      ["carousel", "[id*='carousel' i], [class*='carousel' i]"],
-      ["slider", "[id*='slider' i], [class*='slider' i]"],
-      ["swiper", "[id*='swiper' i], [class*='swiper' i]"],
-      ["slick", "[id*='slick' i], [class*='slick' i]"],
-      ["marquee", "marquee, [id*='marquee' i], [class*='marquee' i]"],
       ["dismissible-alert", "[class*='alert' i][class*='dismiss' i], [role='alert'][aria-live]"],
       ["sticky-social-share", "[id*='social-share' i], [class*='social-share' i], [id*='sharebar' i], [class*='sharebar' i]"],
     ];
@@ -1720,11 +1799,17 @@ async function hideNoiseElements(page) {
       if (!keywords.some((keyword) => signal.includes(keyword))) continue;
       const style = window.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
+      const dynamicContent =
+        /\b(carousel|slider|swiper|slick|marquee)\b/i.test(signal) ||
+        /(?:^|[-_\s])(carousel|slider|swiper|slick|marquee)(?:$|[-_\s])/i.test(signal);
+      const noisySignal =
+        /(cookie|consent|gdpr|popup|modal|newsletter|subscribe|intercom|drift|crisp|chatbot|chat|advertisement|ad-banner|social-share|sharebar)/i.test(signal);
+      if (dynamicContent && !noisySignal) continue;
       const overlayLike =
         style.position === "fixed" ||
         style.position === "sticky" ||
-        rect.width * rect.height < window.innerWidth * window.innerHeight * 0.35 ||
-        /(cookie|consent|gdpr|popup|modal|newsletter|subscribe|intercom|drift|crisp|chatbot|chat|advertisement|ad-banner|carousel|slider|swiper|slick|marquee|social-share|sharebar)/i.test(signal);
+        (noisySignal && rect.width * rect.height < window.innerWidth * window.innerHeight * 0.35) ||
+        noisySignal;
       if (overlayLike) hide(element, "keyword-noise");
     }
 
@@ -2517,6 +2602,9 @@ function visualWorkerMetadata(report) {
       skipped_pdf: report.skipped_pdf,
       capture_behavior_refreshed: report.capture_behavior_refreshed,
       blocked_page_captures: report.blocked_page_captures,
+      page_ready_waits: report.page_ready_waits,
+      page_ready_timeouts: report.page_ready_timeouts,
+      page_ready_wait_ms: report.page_ready_wait_ms,
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
