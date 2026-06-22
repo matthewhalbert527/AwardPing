@@ -478,6 +478,7 @@ if (`$WebOnly) { `$workerArgs += "--web-only=true" }
 if (`$CompleteMissingBaselines) {
   `$workerArgs += "--complete-missing-baselines=true"
   `$workerArgs += "--skip-existing-baseline=true"
+  `$workerArgs += "--extract-baseline-info=false"
   `$workerArgs += "--complete-missing-batch-limit"
   `$workerArgs += [string]`$CompleteMissingBatchLimit
 }

@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
@@ -14,15 +13,6 @@ import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type LocalWorkerRun = AwardPingDatabase["public"]["Tables"]["local_worker_runs"]["Row"];
-type JobRun = AwardPingDatabase["public"]["Tables"]["job_runs"]["Row"];
-
-type SourceRequest = {
-  id: string;
-  award_name: string;
-  homepage_url: string;
-  status: string;
-  created_at: string;
-};
 
 type BaselineCoverage = {
   loadedSources: number;
@@ -47,10 +37,10 @@ export default async function AdminPage() {
       <AdminShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Background scans</h1>
+          <h1 className="mt-4 text-3xl font-black">Screenshot scans</h1>
           <p className="mt-2 text-[var(--muted)]">
-            Supabase service-role access is not configured for this deployment, so global scan
-            details cannot be loaded.
+            Supabase service-role access is not configured for this deployment, so scan details
+            cannot be loaded.
           </p>
         </div>
       </AdminShell>
@@ -58,80 +48,56 @@ export default async function AdminPage() {
   }
 
   const admin = createSupabaseAdminClient();
-  const now = new Date();
-  const nowIso = now.toISOString();
-
   const [
     { data: workerRunRows, error: workerRunError },
-    { data: jobRunRows, error: jobRunError },
-    { count: sharedSourceCount },
-    { count: checkedSourceCount },
-    { count: dueSourceCount },
-    { count: failedSourceCount },
-    { count: pendingRequestCount },
-    { data: sourceRequestRows },
+    { count: sharedSourceCount, error: sharedSourceError },
+    { count: visualSnapshotRecordCount, error: visualSnapshotRecordError },
   ] = await Promise.all([
     admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(30),
-    admin.from("job_runs").select("*").order("started_at", { ascending: false }).limit(12),
     admin.from("shared_award_sources").select("*", { count: "exact", head: true }),
     admin
-      .from("shared_award_sources")
-      .select("*", { count: "exact", head: true })
-      .not("last_checked_at", "is", null),
-    admin
-      .from("shared_award_sources")
-      .select("*", { count: "exact", head: true })
-      .lte("next_check_at", nowIso),
-    admin
-      .from("shared_award_sources")
-      .select("*", { count: "exact", head: true })
-      .not("last_error", "is", null),
-    admin
-      .from("source_page_requests")
-      .select("*", { count: "exact", head: true })
-      .in("status", ["pending", "queued"]),
-    admin
-      .from("source_page_requests")
-      .select("id, award_name, homepage_url, status, created_at")
-      .in("status", ["pending", "queued"])
-      .order("created_at", { ascending: true })
-      .limit(8),
+      .from("shared_award_source_visual_snapshots")
+      .select("*", { count: "exact", head: true }),
   ]);
 
   const workerRuns = (workerRunRows || []) as LocalWorkerRun[];
-  const jobRuns = (jobRunRows || []) as JobRun[];
-  const sourceRequests = (sourceRequestRows || []) as SourceRequest[];
   const visualRuns = workerRuns.filter((run) => run.worker_name.includes("visual-snapshot"));
   const latestVisualRun = visualRuns[0] || null;
   const latestVisualMetadata = latestVisualRun ? metadataObject(latestVisualRun.metadata) : {};
-  const latestVisualCounts = objectValue(latestVisualMetadata.counts);
+  const latestPipeline = objectValue(latestVisualMetadata.visual_pipeline);
+  const latestExtraction = objectValue(latestPipeline.extraction);
+  const latestComparison = objectValue(latestPipeline.comparison);
+  const latestPublishing = objectValue(latestPipeline.publishing);
+  const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
-  const sourceCoverage = percent(checkedSourceCount || 0, sharedSourceCount || 0);
   const baselineCoveragePercent = latestBaselineCoverage
     ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
     : 0;
+  const pipelineErrors = [
+    workerRunError?.message,
+    sharedSourceError?.message,
+    visualSnapshotRecordError?.message,
+  ].filter(Boolean);
 
   return (
     <AdminShell>
       <div className="mb-8">
         <span className="badge">Admin</span>
-        <h1 className="mt-4 text-4xl font-black">Background scans</h1>
+        <h1 className="mt-4 text-4xl font-black">Screenshot scans</h1>
         <p className="mt-2 max-w-3xl text-[var(--muted)]">
-          Owner-only status for the local visual snapshot worker, screenshot baselines, source
-          inventory, scheduled website jobs, and submitted page requests.
+          Owner-only status for the daily local worker that captures screenshots, extracts baseline
+          award facts, compares against the previous snapshot, and publishes meaningful updates.
         </p>
       </div>
 
-      {(workerRunError || jobRunError) && (
+      {pipelineErrors.length > 0 && (
         <section className="mb-6 card border-[var(--brand-pink)] p-5">
           <div className="flex items-start gap-3">
             <AlertTriangle size={18} aria-hidden="true" />
             <div>
-              <h2 className="font-black">Some admin data could not be loaded</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                {[workerRunError?.message, jobRunError?.message].filter(Boolean).join(" ")}
-              </p>
+              <h2 className="font-black">Some scan data could not be loaded</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">{pipelineErrors.join(" ")}</p>
             </div>
           </div>
         </section>
@@ -140,54 +106,51 @@ export default async function AdminPage() {
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           icon={Eye}
-          label="Latest visual run"
+          label="Daily worker"
           value={latestVisualRun ? statusLabel(latestVisualRun.status) : "None"}
           detail={latestVisualRun ? formatDate(latestVisualRun.started_at) : "No run logged"}
           attention={latestVisualRun?.status === "failed"}
         />
         <MetricCard
           icon={Database}
-          label="Visual baselines"
+          label="Screenshot baselines"
           value={
             latestBaselineCoverage
               ? `${formatNumber(latestBaselineCoverage.existingBaselines)} / ${formatNumber(latestBaselineCoverage.loadedSources)}`
-              : latestVisualRun
-                ? formatNumber(latestVisualRun.initial_count)
-                : "0"
+              : formatNumber(visualSnapshotRecordCount || 0)
           }
           detail={
             latestBaselineCoverage
-              ? `${percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)}% complete; ${formatNumber(latestBaselineCoverage.actionableMissingBaselines)} actionable missing`
-              : latestVisualRun
-                ? `${formatNumber(latestVisualRun.checked_count)} checked in latest run`
-                : "Waiting for first run"
+              ? `${baselineCoveragePercent}% complete; ${formatNumber(latestBaselineCoverage.actionableMissingBaselines)} actionable missing`
+              : `${formatNumber(visualSnapshotRecordCount || 0)} sources indexed in R2`
           }
         />
         <MetricCard
           icon={Sparkles}
-          label="Gemini calls"
-          value={numberFromObject(latestGeminiUsage, "calls")}
-          detail={`${formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} local tokens recorded`}
+          label="Gemini CLI calls"
+          value={numberFromObject(latestGeminiCliUsage, "calls")}
+          detail={`${formatNumber(numberFromObject(latestGeminiCliUsage, "successes"))} succeeded, ${formatNumber(numberFromObject(latestGeminiCliUsage, "failures"))} failed`}
         />
         <MetricCard
-          icon={Clock3}
-          label="Page requests waiting"
-          value={pendingRequestCount || 0}
-          detail="Submitted award pages waiting for review"
+          icon={Activity}
+          label="Published updates"
+          value={numberFromObject(latestPublishing, "published_updates")}
+          detail={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} meaningful changes in latest run`}
+          attention={numberFromObject(latestPublishing, "failed") > 0}
         />
       </section>
 
-      <section className="mt-6 grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">
+      <section className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
         <div className="card p-6">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
                 <Eye size={18} aria-hidden="true" />
-                <h2 className="text-2xl font-black">Visual snapshot worker</h2>
+                <h2 className="text-2xl font-black">Daily screenshot pipeline</h2>
               </div>
               <p className="mt-2 text-sm text-[var(--muted)]">
-                Daily screenshot comparisons are reported from the local PC worker. Full image
-                archives stay on the worker machine.
+                One local PC worker runs the full workflow. Gemini is only used for new baseline
+                fact extraction and pages/PDFs that already look different.
               </p>
             </div>
             <StatusPill status={latestVisualRun?.status || "running"} />
@@ -195,20 +158,42 @@ export default async function AdminPage() {
 
           <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <MiniStat label="Checked" value={latestVisualRun?.checked_count || 0} />
+            <MiniStat label="Baselined" value={latestVisualRun?.initial_count || 0} />
             <MiniStat label="Unchanged" value={latestVisualRun?.unchanged_count || 0} />
-            <MiniStat label="True changes" value={latestVisualRun?.changed_count || 0} />
             <MiniStat label="Failed" value={latestVisualRun?.failed_count || 0} attention />
-            <MiniStat label="PDF skipped" value={numberFromObject(latestVisualCounts, "skipped_pdf")} />
-            <MiniStat label="AI rejected" value={numberFromObject(latestVisualCounts, "ai_rejected")} />
-            <MiniStat label="Needs review" value={numberFromObject(latestVisualCounts, "review")} />
-            <MiniStat label="Text-only ignored" value={numberFromObject(latestVisualCounts, "text_only_ignored")} />
-            {latestBaselineCoverage && (
-              <>
-                <MiniStat label="Existing baselines" value={latestBaselineCoverage.existingBaselines} />
-                <MiniStat label="Actionable missing" value={latestBaselineCoverage.actionableMissingBaselines} attention={latestBaselineCoverage.actionableMissingBaselines > 0} />
-                <MiniStat label="Known broken missing" value={latestBaselineCoverage.knownBrokenMissingBaselines} attention={latestBaselineCoverage.knownBrokenMissingBaselines > 0} />
-              </>
-            )}
+            <MiniStat label="Facts extracted" value={numberFromObject(latestExtraction, "extracted")} />
+            <MiniStat label="Candidates" value={numberFromObject(latestComparison, "candidates")} />
+            <MiniStat label="Interpreted" value={numberFromObject(latestComparison, "interpreted")} />
+            <MiniStat label="Published" value={numberFromObject(latestPublishing, "published_updates")} />
+          </div>
+
+          <div className="mt-5 grid gap-3">
+            <PipelineRow
+              icon={Eye}
+              title="1. Capture screenshots and PDFs"
+              detail={`Checked ${formatNumber(latestVisualRun?.checked_count || 0)}, baselined ${formatNumber(latestVisualRun?.initial_count || 0)}, failed ${formatNumber(latestVisualRun?.failed_count || 0)}.`}
+              status={latestVisualRun ? statusLabel(latestVisualRun.status) : "Waiting"}
+            />
+            <PipelineRow
+              icon={Sparkles}
+              title="2. Extract baseline facts"
+              detail={`Extracted ${formatNumber(numberFromObject(latestExtraction, "extracted"))}, backfilled ${formatNumber(numberFromObject(latestExtraction, "backfilled"))}, failed ${formatNumber(numberFromObject(latestExtraction, "failed"))}.`}
+              status={booleanFromObject(latestExtraction, "enabled") ? "On" : "Off"}
+              attention={numberFromObject(latestExtraction, "failed") > 0}
+            />
+            <PipelineRow
+              icon={Activity}
+              title="3. Compare and interpret differences"
+              detail={`Candidates ${formatNumber(numberFromObject(latestComparison, "candidates"))}, interpreted ${formatNumber(numberFromObject(latestComparison, "interpreted"))}, review ${formatNumber(numberFromObject(latestComparison, "review"))}.`}
+              status={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} true`}
+            />
+            <PipelineRow
+              icon={Database}
+              title="4. Publish meaningful updates"
+              detail={`Published ${formatNumber(numberFromObject(latestPublishing, "published_updates"))}, duplicates ignored ${formatNumber(numberFromObject(latestPublishing, "duplicate_updates"))}, failed ${formatNumber(numberFromObject(latestPublishing, "failed"))}.`}
+              status={numberFromObject(latestPublishing, "failed") > 0 ? "Needs attention" : "Ready"}
+              attention={numberFromObject(latestPublishing, "failed") > 0}
+            />
           </div>
 
           <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
@@ -218,13 +203,15 @@ export default async function AdminPage() {
                 <Detail label="Started" value={formatDate(latestVisualRun.started_at)} />
                 <Detail label="Finished" value={latestVisualRun.finished_at ? formatDate(latestVisualRun.finished_at) : "Still running"} />
                 <Detail label="AI provider" value={latestVisualRun.ai_provider || "none"} />
+                <Detail label="AI model" value={stringFromObject(latestVisualMetadata, "ai_model") || "none"} />
                 <Detail label="Archive root" value={stringFromObject(latestVisualMetadata, "archive_root") || "Local worker default"} />
-                <Detail label="Gemini prompt tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "prompt_tokens"))} />
-                <Detail label="Gemini candidate tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "candidates_tokens"))} />
+                <Detail label="Gemini API tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} />
+                <Detail label="Gemini CLI image files" value={formatNumber(numberFromObject(latestGeminiCliUsage, "image_files"))} />
+                <Detail label="Gemini CLI elapsed" value={`${formatNumber(numberFromObject(latestGeminiCliUsage, "elapsed_ms"))} ms`} />
               </dl>
             ) : (
               <p className="mt-3 text-sm text-[var(--muted)]">
-                No visual worker run has been recorded in Supabase yet.
+                No screenshot worker run has been recorded in Supabase yet.
               </p>
             )}
           </div>
@@ -233,14 +220,13 @@ export default async function AdminPage() {
         <div className="card p-6">
           <div className="flex items-center gap-2">
             <Database size={18} aria-hidden="true" />
-            <h2 className="text-2xl font-black">Source inventory</h2>
+            <h2 className="text-2xl font-black">Snapshot coverage</h2>
           </div>
           <div className="mt-5 grid gap-3">
-            <MiniStat label="Catalog source rows" value={sharedSourceCount || 0} />
-            <MiniStat label="Active visual sources" value={latestBaselineCoverage?.loadedSources || sharedSourceCount || 0} />
-            <MiniStat label="Database checked once" value={checkedSourceCount || 0} />
-            <MiniStat label="Due now" value={dueSourceCount || 0} attention={Boolean(dueSourceCount)} />
-            <MiniStat label="With errors" value={failedSourceCount || 0} attention={Boolean(failedSourceCount)} />
+            <MiniStat label="Catalog source pages" value={sharedSourceCount || 0} />
+            <MiniStat label="R2 snapshot rows" value={visualSnapshotRecordCount || 0} />
+            <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
+            <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
           </div>
           {latestBaselineCoverage && (
             <ProgressBar
@@ -250,63 +236,15 @@ export default async function AdminPage() {
               detail={`${formatNumber(latestBaselineCoverage.existingBaselines)} baselined, ${formatNumber(latestBaselineCoverage.missingBaselines)} still missing`}
             />
           )}
-          <ProgressBar
-            className="mt-5"
-            label="Database source-check coverage"
-            value={sourceCoverage}
-            detail={`${formatNumber(checkedSourceCount || 0)} of ${formatNumber(sharedSourceCount || 0)} source rows have any database check history`}
-            muted
-          />
           <p className="mt-4 text-sm text-[var(--muted)]">
-            Database source checks can be complete before local screenshot baselines are complete.
-            Use screenshot baseline coverage for the baseline scrape status.
+            This baseline number is based on the local screenshot archive, not the retired text
+            checker. Broken links are separated so they do not hide actionable missing screenshots.
           </p>
         </div>
       </section>
 
-      <section className="mt-6 grid gap-6 xl:grid-cols-[1fr_1fr]">
-        <RecentRuns runs={workerRuns} />
-        <WebsiteScheduledJobs runs={jobRuns} />
-      </section>
-
-      <section className="mt-6 card p-6">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-2xl font-black">Page requests waiting</h2>
-            <p className="mt-1 text-sm text-[var(--muted)]">
-              {formatNumber(pendingRequestCount || 0)} submitted award page
-              {(pendingRequestCount || 0) === 1 ? "" : "s"} waiting for review.
-              These are not part of the screenshot baseline scrape.
-            </p>
-          </div>
-          <Link href="/dashboard/awards?view=request" className="button-secondary">
-            Review sources
-          </Link>
-        </div>
-        <div className="mt-5 grid gap-3">
-          {sourceRequests.map((request) => (
-            <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={request.id}>
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <p className="font-black">{request.award_name}</p>
-                  <a
-                    className="mt-1 block truncate text-sm font-semibold text-[var(--brand)] underline"
-                    href={request.homepage_url}
-                    rel="noreferrer"
-                    target="_blank"
-                  >
-                    {request.homepage_url}
-                  </a>
-                </div>
-                <span className="badge capitalize">{request.status}</span>
-              </div>
-              <p className="mt-2 text-sm text-[var(--muted)]">Requested {formatDate(request.created_at)}</p>
-            </div>
-          ))}
-          {sourceRequests.length === 0 && (
-            <p className="text-sm text-[var(--muted)]">No submitted page requests are waiting right now.</p>
-          )}
-        </div>
+      <section className="mt-6">
+        <RecentRuns runs={visualRuns.length ? visualRuns : workerRuns} />
       </section>
     </AdminShell>
   );
@@ -321,7 +259,7 @@ function AdminAccessDenied({ configured }: { configured: boolean }) {
     <AdminShell>
       <div className="card p-6">
         <span className="badge">Admin</span>
-        <h1 className="mt-4 text-3xl font-black">Background scans</h1>
+        <h1 className="mt-4 text-3xl font-black">Screenshot scans</h1>
         <p className="mt-2 text-[var(--muted)]">
           This page is limited to AwardPing site admins
           {configured ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}
@@ -373,21 +311,46 @@ function MiniStat({
   );
 }
 
+function PipelineRow({
+  icon: Icon,
+  title,
+  detail,
+  status,
+  attention = false,
+}: {
+  icon: typeof Activity;
+  title: string;
+  detail: string;
+  status: string;
+  attention?: boolean;
+}) {
+  return (
+    <div className={`rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4 ${attention ? "border-[var(--brand-pink)]" : ""}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <Icon className="mt-1 shrink-0" size={18} aria-hidden="true" />
+          <div className="min-w-0">
+            <p className="font-black">{title}</p>
+            <p className="mt-1 text-sm text-[var(--muted)]">{detail}</p>
+          </div>
+        </div>
+        <span className={attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>{status}</span>
+      </div>
+    </div>
+  );
+}
+
 function ProgressBar({
   label,
   value,
   detail,
   className = "",
-  muted = false,
 }: {
   label: string;
   value: number;
   detail: string;
   className?: string;
-  muted?: boolean;
 }) {
-  const fillClass = muted ? "bg-[var(--muted)]" : "bg-[var(--brand)]";
-
   return (
     <div className={className}>
       <div className="flex items-center justify-between gap-3 text-sm font-bold text-[var(--muted)]">
@@ -395,7 +358,7 @@ function ProgressBar({
         <span>{value}%</span>
       </div>
       <div className="mt-2 h-3 overflow-hidden rounded-full bg-[var(--brand-blue-soft)]">
-        <div className={`h-full rounded-full ${fillClass}`} style={{ width: `${value}%` }} />
+        <div className="h-full rounded-full bg-[var(--brand)]" style={{ width: `${value}%` }} />
       </div>
       <p className="mt-2 text-sm font-semibold text-[var(--muted)]">{detail}</p>
     </div>
@@ -415,8 +378,8 @@ function RecentRuns({ runs }: { runs: LocalWorkerRun[] }) {
   return (
     <section className="card p-6">
       <div className="flex items-center gap-2">
-        <Activity size={18} aria-hidden="true" />
-        <h2 className="text-2xl font-black">Recent worker runs</h2>
+        <Clock3 size={18} aria-hidden="true" />
+        <h2 className="text-2xl font-black">Recent screenshot runs</h2>
       </div>
       <div className="mt-5 grid gap-3">
         {runs.slice(0, 10).map((run) => (
@@ -438,43 +401,7 @@ function RecentRuns({ runs }: { runs: LocalWorkerRun[] }) {
             {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
           </div>
         ))}
-        {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No worker runs recorded.</p>}
-      </div>
-    </section>
-  );
-}
-
-function WebsiteScheduledJobs({ runs }: { runs: JobRun[] }) {
-  return (
-    <section className="card p-6">
-      <div className="flex items-center gap-2">
-        <Clock3 size={18} aria-hidden="true" />
-        <h2 className="text-2xl font-black">Website scheduled jobs</h2>
-      </div>
-      <p className="mt-2 text-sm text-[var(--muted)]">
-        These are automatic website tasks, like regular monitor checks and email digests. They are
-        separate from the local PC screenshot worker.
-      </p>
-      <div className="mt-5 grid gap-3">
-        {runs.map((run) => (
-          <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={run.id}>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="font-black">{jobRunLabel(run.job_name)}</p>
-                <p className="text-sm text-[var(--muted)]">
-                  Started {formatDate(run.started_at)}
-                  {run.finished_at ? `, finished ${formatDate(run.finished_at)}` : ""}
-                </p>
-              </div>
-              <StatusPill status={run.status} />
-            </div>
-            <p className="mt-2 text-sm text-[var(--muted)]">
-              Processed {formatNumber(run.processed_count)}
-            </p>
-            {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
-          </div>
-        ))}
-        {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No scheduled website jobs recorded.</p>}
+        {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No screenshot runs recorded.</p>}
       </div>
     </section>
   );
@@ -499,10 +426,6 @@ function workerRunLabel(value: string) {
     .replace(/^local-/, "")
     .replaceAll("-", " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function jobRunLabel(value: string) {
-  return value === "send-digests" ? "Send email digests" : "Check regular monitors";
 }
 
 function formatDate(value: string) {
@@ -531,6 +454,10 @@ function objectValue(value: unknown): Record<string, unknown> {
 function numberFromObject(value: Record<string, unknown>, key: string) {
   const number = Number(value[key]);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+}
+
+function booleanFromObject(value: Record<string, unknown>, key: string) {
+  return value[key] === true;
 }
 
 function stringFromObject(value: Record<string, unknown>, key: string) {

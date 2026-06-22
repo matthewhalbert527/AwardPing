@@ -19,6 +19,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
+import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -50,6 +51,10 @@ const sourceUrlFilter = cleanText(args["source-url"]);
 const awardFilter = cleanText(args.award);
 const continuous = boolArg(args.continuous, false);
 const intervalMinutes = positiveInt(args["interval-minutes"], 60);
+const visualSourceCheckMinutes = positiveInt(
+  args["visual-source-check-minutes"] || env.AWARDPING_VISUAL_SOURCE_CHECK_MINUTES,
+  24 * 60,
+);
 const baselineRefresh = boolArg(args["baseline-refresh"], false);
 const promote = boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
@@ -65,6 +70,22 @@ const keepUnchanged = boolArg(args["keep-unchanged"], false);
 const keepRejected = boolArg(args["keep-rejected"], false);
 const reviewOnAiFailure = boolArg(args["review-on-ai-failure"], true);
 const requestedAiProvider = String(args["ai-provider"] || env.AI_PROVIDER || "auto").toLowerCase();
+const defaultGeminiCliPath = env.LOCALAPPDATA
+  ? join(env.LOCALAPPDATA, "agy", "bin", "agy.exe")
+  : "agy";
+const geminiCliPath = cleanText(
+  args["gemini-cli-path"] || env.AWARDPING_GEMINI_CLI_PATH || env.GEMINI_CLI_PATH || defaultGeminiCliPath,
+);
+const geminiCliModel = cleanText(
+  args["gemini-cli-model"] || env.AWARDPING_GEMINI_CLI_MODEL || "Gemini 3.5 Flash (Low)",
+);
+const geminiCliWorkspaceRoot = resolve(
+  String(args["gemini-cli-workspace"] || env.AWARDPING_GEMINI_CLI_WORKSPACE || join(archiveRoot, "gemini-cli-workspace")),
+);
+const geminiCliTimeoutMs = positiveInt(args["gemini-cli-timeout-ms"] || env.AWARDPING_GEMINI_CLI_TIMEOUT_MS, 120_000);
+const geminiCliMaxCalls = nonNegativeInt(args["gemini-cli-max-calls"] || env.AWARDPING_GEMINI_CLI_MAX_CALLS, 0);
+const extractBaselineInfo = boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
+const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
 const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
@@ -97,6 +118,7 @@ const r2SecretAccessKey = cleanText(args["r2-secret-access-key"] || env.R2_SECRE
 const aiProvider = selectAiProvider(requestedAiProvider, {
   gemini: env.GEMINI_API_KEY,
   openai: env.OPENAI_API_KEY,
+  geminiCli: geminiCliPath,
 });
 const aiModel = modelForProvider(aiProvider);
 let supabase = null;
@@ -189,6 +211,7 @@ async function runOnce() {
       timeout_ms: timeoutMs,
       page_ready_timeout_ms: pageReadyTimeoutMs,
       source_timeout_ms: sourceTimeoutMs,
+      visual_source_check_minutes: visualSourceCheckMinutes,
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
       max_sources_per_browser: maxSourcesPerBrowser,
@@ -199,6 +222,11 @@ async function runOnce() {
       r2_backfill_concurrency: r2BackfillConcurrency,
       r2_snapshot_sync: r2SnapshotSync,
       r2_bucket: r2SnapshotSync ? r2Bucket : null,
+      gemini_cli_path: aiProvider === "gemini-cli" ? geminiCliPath : null,
+      gemini_cli_model: aiProvider === "gemini-cli" ? geminiCliModel : null,
+      gemini_cli_max_calls: geminiCliMaxCalls || null,
+      extract_baseline_info: extractBaselineInfo,
+      backfill_baseline_info: backfillBaselineInfo,
     },
     checked: 0,
     baselined: 0,
@@ -229,6 +257,14 @@ async function runOnce() {
     r2_rotated: 0,
     r2_failed: 0,
     r2_skipped_existing: 0,
+    baseline_facts_extracted: 0,
+    baseline_facts_failed: 0,
+    baseline_facts_skipped: 0,
+    baseline_facts_backfilled: 0,
+    visual_interpreted: 0,
+    published_updates: 0,
+    publish_duplicates: 0,
+    publish_failed: 0,
     gemini_usage: {
       calls: 0,
       prompt_tokens: 0,
@@ -237,6 +273,17 @@ async function runOnce() {
       thoughts_tokens: 0,
       cached_content_tokens: 0,
       note: "Gemini API responses include token usage but not AI Studio dollar spend. Use Google AI Studio Spend for account spend/cap dollars.",
+    },
+    gemini_cli_usage: {
+      calls: 0,
+      successes: 0,
+      failures: 0,
+      image_files: 0,
+      view_file_calls: 0,
+      stream_calls: 0,
+      elapsed_ms: 0,
+      model: aiProvider === "gemini-cli" ? geminiCliModel : null,
+      note: "Gemini CLI / Antigravity does not expose exact token or account quota usage in worker logs. Check the Gemini account usage page for the account-level monthly allowance.",
     },
     errors: [],
     saved_change_paths: [],
@@ -357,6 +404,9 @@ async function runOnce() {
           });
           await recordBrokenSourceFailure(source, message).catch((recordError) => {
             console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
+          });
+          await markSharedSourceVisualCheckFailed(source, message).catch((recordError) => {
+            console.log(`SOURCE_STATUS_UPDATE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
           });
           console.log(`FAILED ${message} ${sourceLabel(source)}`);
 
@@ -496,23 +546,35 @@ async function processSource(source, context, browserMeta, report) {
   const baseline = readJsonIfExists(baselinePath);
 
   if (!baseline || baselineRefresh) {
+    await maybeExtractBaselineFacts(source, capture, report, {
+      reason: baseline ? "baseline_refresh" : "initial_baseline",
+    });
     writeBaseline(source, capture, {
       reason: baseline ? "baseline_refresh" : "initial_baseline",
       previous_baseline: baseline || null,
+      baseline_facts: capture.baseline_facts || null,
+      baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
     report.baselined += 1;
     await maybeSyncR2Snapshot(source, capture, report);
+    await markSharedSourceVisualCheckSucceeded(source, capture);
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
     return;
   }
 
   if (needsCaptureBehaviorRefresh(baseline, capture)) {
+    await maybeExtractBaselineFacts(source, capture, report, {
+      reason: "capture_behavior_refresh",
+    });
     writeBaseline(source, capture, {
       reason: "capture_behavior_refresh",
       previous_baseline: baseline || null,
+      baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
+      baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
     report.capture_behavior_refreshed += 1;
     await maybeSyncR2Snapshot(source, capture, report);
+    await markSharedSourceVisualCheckSucceeded(source, capture);
     console.log(
       `BASELINE capture_behavior_refresh from=${baseline.capture_behavior_version || 0} to=${captureBehaviorVersion} ${sourceLabel(source)}`,
     );
@@ -536,13 +598,31 @@ async function processSource(source, context, browserMeta, report) {
 
   if (!screenshotChanged) {
     report.unchanged += 1;
+    let baselineUpdatedForFacts = false;
+    if (backfillBaselineInfo && !baselineHasFacts(baseline)) {
+      await maybeExtractBaselineFacts(source, capture, report, {
+        reason: "baseline_facts_backfill",
+      });
+      if (capture.baseline_facts) {
+        writeBaseline(source, capture, {
+          reason: "baseline_facts_backfill",
+          previous_baseline: baseline || null,
+          baseline_facts: capture.baseline_facts,
+          baseline_facts_metadata: capture.baseline_facts_metadata || null,
+        });
+        baselineUpdatedForFacts = true;
+        report.baseline_facts_backfilled += 1;
+        await maybeSyncR2Snapshot(source, capture, report);
+      }
+    }
+    await markSharedSourceVisualCheckSucceeded(source, capture);
     if (textChanged) {
       report.text_only_ignored += 1;
       console.log(`UNCHANGED screenshot_match_text_diff_ignored ${sourceLabel(source)}`);
     } else {
       console.log(`UNCHANGED ${sourceLabel(source)}`);
     }
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    if (!keepUnchanged && !baselineUpdatedForFacts) removeGeneratedCaptureDir(capture.dir);
     return;
   }
 
@@ -556,6 +636,26 @@ async function processSource(source, context, browserMeta, report) {
       };
 
   report.candidate_changes += 1;
+  await reviewAndApplyCandidateChange({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic,
+    report,
+  });
+}
+
+async function reviewAndApplyCandidateChange({
+  source,
+  baseline,
+  previous,
+  capture,
+  diff,
+  deterministic,
+  report,
+}) {
   const aiReview = await reviewCandidateWithAi({
     source,
     baseline,
@@ -563,17 +663,17 @@ async function processSource(source, context, browserMeta, report) {
     capture,
     diff,
     deterministic,
+    report,
   }).catch((error) => ({
     ok: false,
     error: errorMessage(error),
     provider: aiProvider,
     model: aiModel,
-    usage: error.aiUsage || null,
+    usage: error.aiUsage || error.geminiCliUsage || null,
+    raw_text: error.geminiCliRawText || null,
   }));
 
-  if (aiReview.provider === "gemini" && aiReview.usage) {
-    recordGeminiUsage(report, source, capture, aiReview);
-  }
+  recordAiReviewUsage(report, source, capture, aiReview);
 
   if (!aiReview.ok) {
     if (reviewOnAiFailure) {
@@ -589,11 +689,24 @@ async function processSource(source, context, browserMeta, report) {
       });
       report.review += 1;
       report.review_paths.push(toArchiveRelative(reviewPath));
+      await markSharedSourceVisualCheckSucceeded(source, capture);
       console.log(`REVIEW ai_failure ${sourceLabel(source)}`);
-    } else if (!keepUnchanged) {
-      removeGeneratedCaptureDir(capture.dir);
+    } else {
+      await markSharedSourceVisualCheckSucceeded(source, capture);
+      if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     }
     return;
+  }
+
+  report.visual_interpreted += 1;
+
+  if (aiReview.result.updated_baseline_facts) {
+    attachBaselineFactsToCapture(capture, aiReview.result.updated_baseline_facts, {
+      reason: "change_interpretation",
+      provider: aiReview.provider,
+      model: aiReview.model,
+      analysis_path: aiReview.analysis_path || null,
+    });
   }
 
   if (aiReview.result.confidence === "low") {
@@ -609,6 +722,7 @@ async function processSource(source, context, browserMeta, report) {
     });
     report.review += 1;
     report.review_paths.push(toArchiveRelative(reviewPath));
+    await markSharedSourceVisualCheckSucceeded(source, capture);
     console.log(`REVIEW low_confidence ${sourceLabel(source)}`);
     return;
   }
@@ -626,20 +740,33 @@ async function processSource(source, context, browserMeta, report) {
     report.ai_true_changes += 1;
     report.saved_change_paths.push(toArchiveRelative(changePath));
 
+    await publishVisualChangeEvent({
+      source,
+      baseline,
+      previous,
+      capture,
+      aiReview,
+      report,
+    });
+
     if (promote) {
       writeBaseline(source, capture, {
         reason: "ai_approved_true_change",
         previous_baseline_capture: baseline.capture || null,
+        baseline_facts: capture.baseline_facts || null,
+        baseline_facts_metadata: capture.baseline_facts_metadata || null,
       });
       report.promoted += 1;
       await maybeSyncR2Snapshot(source, capture, report);
     }
 
+    await markSharedSourceVisualCheckSucceeded(source, capture);
     console.log(`AI TRUE ${aiReview.result.reader_summary || sourceLabel(source)}`);
     return;
   }
 
   report.ai_rejected += 1;
+  await markSharedSourceVisualCheckSucceeded(source, capture);
   if (keepRejected) {
     const rejectedPath = saveRejectedRecord({
       source,
@@ -665,6 +792,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   if (!fileChanged) {
     report.unchanged += 1;
     report.pdf_unchanged += 1;
+    await markSharedSourceVisualCheckSucceeded(source, capture);
     console.log(textChanged ? `UNCHANGED pdf_file_match_text_diff_ignored ${sourceLabel(source)}` : `UNCHANGED pdf_file_match ${sourceLabel(source)}`);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     return;
@@ -680,6 +808,23 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     previous_file_bytes: baseline.file_bytes || previous.meta?.file_bytes || null,
     new_file_bytes: capture.file_bytes,
   };
+
+  report.candidate_changes += 1;
+  report.pdf_changed += 1;
+
+  if (aiProvider === "gemini-cli") {
+    await reviewAndApplyCandidateChange({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic,
+      report,
+    });
+    return;
+  }
+
   const reviewPath = saveReviewRecord({
     source,
     baseline,
@@ -696,9 +841,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     },
   });
 
-  report.candidate_changes += 1;
   report.review += 1;
-  report.pdf_changed += 1;
   report.review_paths.push(toArchiveRelative(reviewPath));
 
   if (promote) {
@@ -709,6 +852,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     report.promoted += 1;
     await maybeSyncR2Snapshot(source, capture, report);
   }
+  await markSharedSourceVisualCheckSucceeded(source, capture);
 
   console.log(`REVIEW pdf_changed ${sourceLabel(source)}`);
 }
@@ -1407,6 +1551,154 @@ async function maybeSyncR2Snapshot(source, capture, report) {
   }
 }
 
+async function publishVisualChangeEvent({ source, baseline, previous, capture, aiReview, report }) {
+  const detectedAt = new Date().toISOString();
+
+  try {
+    const previousSnapshot = await upsertSharedVisualSnapshot({
+      source,
+      hash: visualHashForBaseline(baseline),
+      text: previous.text || "",
+      capture: previous,
+      createdAt: baseline.captured_at || detectedAt,
+    });
+    const newSnapshot = await upsertSharedVisualSnapshot({
+      source,
+      hash: visualHashForCapture(capture),
+      text: capture.text || "",
+      capture,
+      createdAt: capture.captured_at || detectedAt,
+    });
+    const changeDetails = aiReview.result.change_details || visualChangeDetailsFromReview({
+      source,
+      diff: {},
+      aiReview,
+    });
+    const { data, error } = await supabase
+      .from("shared_award_change_events")
+      .upsert(
+        {
+          shared_award_id: source.shared_award_id,
+          shared_award_source_id: source.id,
+          source_url: source.url,
+          source_title: source.title || null,
+          source_page_type: source.page_type || null,
+          previous_snapshot_id: previousSnapshot?.id || null,
+          new_snapshot_id: newSnapshot?.id || null,
+          previous_hash: visualHashForBaseline(baseline),
+          new_hash: visualHashForCapture(capture),
+          summary: aiReview.result.reader_summary || changeDetails.reader_summary,
+          change_details: changeDetails,
+          detected_at: detectedAt,
+        },
+        {
+          onConflict: "shared_award_id,source_url,previous_hash,new_hash",
+          ignoreDuplicates: true,
+        },
+      )
+      .select("id")
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (data?.id) {
+      report.published_updates += 1;
+      console.log(`PUBLISHED visual_update id=${data.id} ${sourceLabel(source)}`);
+    } else {
+      report.publish_duplicates += 1;
+      console.log(`PUBLISHED duplicate_ignored ${sourceLabel(source)}`);
+    }
+  } catch (error) {
+    report.publish_failed += 1;
+    const message = `Visual change publish failed: ${errorMessage(error)}`;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message,
+    });
+    console.log(`PUBLISH FAILED ${message} ${sourceLabel(source)}`);
+  }
+}
+
+async function upsertSharedVisualSnapshot({ source, hash, text, capture, createdAt }) {
+  const cleanHash = cleanText(hash);
+  if (!cleanHash) return null;
+
+  const sample = visualSnapshotTextSample(text);
+  const row = {
+    shared_award_id: source.shared_award_id,
+    shared_award_source_id: source.id,
+    source_url: source.url,
+    source_title: source.title || null,
+    source_page_type: source.page_type || null,
+    hash: cleanHash,
+    text_sample: sample,
+    byte_length: Buffer.byteLength(String(text || ""), "utf8"),
+    status_code: capture.status_code || capture.meta?.status_code || null,
+    content_type: capture.content_type || capture.meta?.content_type || `visual-snapshot/${capture.kind || "webpage"}`,
+    created_at: createdAt,
+  };
+
+  const { data, error } = await supabase
+    .from("shared_award_source_snapshots")
+    .upsert(row, {
+      onConflict: "shared_award_id,source_url,hash",
+      ignoreDuplicates: true,
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (data?.id) return data;
+
+  const { data: existing, error: existingError } = await supabase
+    .from("shared_award_source_snapshots")
+    .select("id")
+    .eq("shared_award_id", source.shared_award_id)
+    .eq("source_url", source.url)
+    .eq("hash", cleanHash)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) throw existingError;
+  return existing || null;
+}
+
+async function markSharedSourceVisualCheckSucceeded(source, capture) {
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from("shared_award_sources")
+    .update({
+      last_hash: visualHashForCapture(capture),
+      last_checked_at: now,
+      next_check_at: nextVisualSourceCheckDate(),
+      consecutive_failures: 0,
+      last_error: null,
+      updated_at: now,
+    })
+    .eq("id", source.id);
+
+  if (error) throw error;
+}
+
+async function markSharedSourceVisualCheckFailed(source, message) {
+  const now = new Date().toISOString();
+  const failures = nonNegativeInt(source.consecutive_failures, 0) + 1;
+  const { error } = await supabase
+    .from("shared_award_sources")
+    .update({
+      last_checked_at: now,
+      next_check_at: nextVisualSourceCheckDate(),
+      consecutive_failures: failures,
+      last_error: truncate(message, 1000),
+      updated_at: now,
+    })
+    .eq("id", source.id);
+
+  if (error) throw error;
+}
+
 async function syncR2SnapshotPair(source, capture) {
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
@@ -1665,6 +1957,8 @@ function r2CaptureMetadata(capture) {
     dimensions: capture.dimensions || null,
     page_count: capture.page_count || null,
     pdf_text_error: capture.pdf_text_error || null,
+    baseline_facts: capture.baseline_facts || null,
+    baseline_facts_metadata: capture.baseline_facts_metadata || null,
   };
 }
 
@@ -1825,9 +2119,42 @@ async function hideNoiseElements(page) {
 }
 
 async function reviewCandidateWithAi(input) {
+  if (aiProvider === "gemini-cli") return reviewWithGeminiCli(input);
+  if (input.capture.kind === "pdf" || input.previous.kind === "pdf") {
+    throw new Error("PDF visual review requires --ai-provider=gemini-cli.");
+  }
   if (aiProvider === "gemini") return reviewWithGemini(input);
   if (aiProvider === "openai") return reviewWithOpenAI(input);
   throw new Error("No AI provider is available.");
+}
+
+async function reviewWithGeminiCli(input) {
+  ensureGeminiCliCallAvailable(input.report, "change_interpretation");
+  const analysis = await runGeminiCliJsonAnalysis({
+    cliPath: geminiCliPath,
+    model: geminiCliModel,
+    workspaceRoot: geminiCliWorkspaceRoot,
+    timeoutMs: geminiCliTimeoutMs,
+    runId: `diff-${timestampForPath(input.capture.captured_at)}-${input.source.id}`,
+    prompt: geminiCliDiffPrompt(input),
+    filePaths: geminiCliDiffFiles(input),
+  });
+  const result = normalizeAiReview(analysis.result, {
+    source: input.source,
+    diff: input.diff,
+    provider: "gemini",
+    model: geminiCliModel,
+  });
+
+  return {
+    ok: true,
+    provider: "gemini-cli",
+    model: geminiCliModel,
+    usage: analysis.usage,
+    raw_text: analysis.raw_text,
+    analysis_path: analysis.transcript_path || analysis.log_path,
+    result,
+  };
 }
 
 async function reviewWithGemini(input) {
@@ -1928,6 +2255,161 @@ async function reviewWithOpenAI(input) {
     raw_text: extractResponseText(data),
     result: normalizeAiReview(extractResponseText(data)),
   };
+}
+
+async function maybeExtractBaselineFacts(source, capture, report, options = {}) {
+  if (!extractBaselineInfo || aiProvider !== "gemini-cli") return null;
+  if (!geminiCliCallAvailable(report)) {
+    report.baseline_facts_skipped += 1;
+    console.log(`FACTS SKIP gemini_cli_cap ${sourceLabel(source)}`);
+    return null;
+  }
+
+  try {
+    ensureGeminiCliCallAvailable(report, "baseline_facts");
+    const analysis = await runGeminiCliJsonAnalysis({
+      cliPath: geminiCliPath,
+      model: geminiCliModel,
+      workspaceRoot: geminiCliWorkspaceRoot,
+      timeoutMs: geminiCliTimeoutMs,
+      runId: `facts-${timestampForPath(capture.captured_at)}-${source.id}`,
+      prompt: geminiCliBaselineFactsPrompt(source, capture, options.reason || "baseline"),
+      filePaths: geminiCliBaselineFactFiles(capture),
+    });
+    recordGeminiCliUsage(report, source, capture, analysis, "baseline_facts");
+    attachBaselineFactsToCapture(capture, analysis.result, {
+      reason: options.reason || "baseline",
+      provider: "gemini-cli",
+      model: geminiCliModel,
+      analysis_path: analysis.transcript_path || analysis.log_path,
+      prompt_path: analysis.prompt_path,
+    });
+    report.baseline_facts_extracted += 1;
+    console.log(`FACTS extracted confidence=${capture.baseline_facts?.confidence || "unknown"} ${sourceLabel(source)}`);
+    return capture.baseline_facts;
+  } catch (error) {
+    if (error.geminiCliUsage) {
+      recordGeminiCliUsage(report, source, capture, { usage: error.geminiCliUsage }, "baseline_facts");
+    }
+    report.baseline_facts_failed += 1;
+    const message = `Baseline facts extraction failed: ${errorMessage(error)}`;
+    capture.baseline_facts_metadata = {
+      status: "failed",
+      reason: options.reason || "baseline",
+      provider: "gemini-cli",
+      model: geminiCliModel,
+      error: truncate(message, 800),
+      extracted_at: new Date().toISOString(),
+    };
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message,
+    });
+    console.log(`FACTS FAILED ${message} ${sourceLabel(source)}`);
+    return null;
+  }
+}
+
+function geminiCliBaselineFactsPrompt(source, capture, reason) {
+  return [
+    "You are extracting baseline award information for AwardPing from a captured official source page.",
+    "Use the screenshot image when one is provided. Use the normalized visible text as supporting context.",
+    "Extract only facts that are visible or directly supported. Do not guess missing dates, amounts, or requirements.",
+    "Return compact JSON with these keys:",
+    "{status, award_name, page_purpose, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, confidence, quality_flags}",
+    "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes.",
+    "Use null for unknown deadline/opening_date/page_purpose. confidence must be low, medium, or high.",
+    "",
+    `Reason: ${reason}`,
+    `Award name: ${source.shared_awards?.name || "Unknown award"}`,
+    `Source title: ${source.title || "Unknown source"}`,
+    `Source URL: ${source.url}`,
+    `Page type: ${source.page_type || "unknown"}`,
+    `Capture kind: ${capture.kind || "webpage"}`,
+    "",
+    "Capture metadata:",
+    JSON.stringify({
+      captured_at: capture.captured_at,
+      final_url: capture.final_url,
+      page_title: capture.page_title,
+      status_code: capture.status_code || null,
+      content_type: capture.content_type || null,
+      page_count: capture.page_count || null,
+      text_length: capture.text_length || 0,
+      dimensions: capture.dimensions || null,
+    }),
+    "",
+    "Normalized visible text excerpt:",
+    String(capture.text || "").slice(0, promptChars),
+  ].join("\n");
+}
+
+function geminiCliDiffPrompt({ source, baseline, previous, capture, diff, deterministic }) {
+  const hasImages = geminiCliDiffFiles({ previous, capture }).length > 0;
+  return [
+    "You are judging official award source changes for scholarship advisors.",
+    hasImages
+      ? "Compare the two provided screenshot thumbnails first: previous then new. Use normalized text only as secondary context."
+      : "This source is a PDF or has no screenshot image. Compare the extracted previous and new text carefully.",
+    "Return strict compact JSON only with these keys:",
+    "{is_true_change, noise_reason, reader_summary, advisor_impact, changed_section, confidence, before, after, change_type, structured_diff, quality_flags, updated_baseline_facts}",
+    "is_true_change must be true only for concrete award-relevant changes: deadlines, opening/closing dates, eligibility, requirements, nomination/recommendation instructions, documents/PDF/guidelines, award amount/funding, or application instructions.",
+    "Reject cookie banners, carousels, ads, current-date-only changes, font/reflow/lazy-image changes, navigation/footer/sidebar changes, social widgets, recipient/news churn, unrelated research/news pages, and access/security/404 pages.",
+    "reader_summary should be one or two plain-English advisor-facing sentences when true; otherwise null.",
+    "advisor_impact should say what an advising office might need to check or update when true; otherwise null.",
+    "confidence must be low, medium, or high. If confidence is low, set is_true_change=false.",
+    "structured_diff should include arrays: added_text, removed_text, date_changes, amount_changes, noise_flags, plus likely_section and page_type.",
+    "updated_baseline_facts should use the same baseline facts shape when the new page clearly exposes requirements/deadlines/etc.; otherwise null.",
+    "",
+    `Award name: ${source.shared_awards?.name || "Unknown award"}`,
+    `Source title: ${source.title || "Unknown source"}`,
+    `Source URL: ${source.url}`,
+    `Page type: ${source.page_type || "unknown"}`,
+    "",
+    "Previous baseline metadata:",
+    JSON.stringify({
+      captured_at: baseline.captured_at,
+      final_url: baseline.final_url,
+      page_title: baseline.page_title,
+      text_hash: baseline.text_hash,
+      image_hash: baseline.image_hash,
+      file_hash: baseline.file_hash || null,
+      capture: baseline.capture,
+    }),
+    "",
+    "New capture metadata:",
+    JSON.stringify({
+      captured_at: capture.captured_at,
+      final_url: capture.final_url,
+      page_title: capture.page_title,
+      text_hash: capture.text_hash,
+      image_hash: capture.image_hash,
+      file_hash: capture.file_hash || null,
+      hidden_noise_counts: capture.hidden_noise_counts,
+      page_count: capture.page_count || null,
+    }),
+    "",
+    "Deterministic classification:",
+    JSON.stringify(deterministic),
+    "",
+    "Deterministic text/PDF diff summary:",
+    JSON.stringify(diff),
+    "",
+    "Previous normalized text excerpt:",
+    String(previous.text || "").slice(0, promptChars),
+    "",
+    "New normalized text excerpt:",
+    String(capture.text || "").slice(0, promptChars),
+  ].join("\n");
+}
+
+function geminiCliDiffFiles({ previous, capture }) {
+  return [previous.thumbPath, capture.thumb_path].filter(Boolean);
+}
+
+function geminiCliBaselineFactFiles(capture) {
+  return [capture.thumb_path].filter(Boolean);
 }
 
 function aiUserPrompt({ source, baseline, previous, capture, diff, deterministic }) {
@@ -2177,6 +2659,8 @@ function writeBaseline(source, capture, details) {
           }
         : null,
       previous_baseline_capture: details.previous_baseline_capture || null,
+      baseline_facts: details.baseline_facts || capture.baseline_facts || null,
+      baseline_facts_metadata: details.baseline_facts_metadata || capture.baseline_facts_metadata || null,
     },
   };
   writeFileSync(baselinePath, JSON.stringify(baseline, null, 2), "utf8");
@@ -2232,6 +2716,9 @@ function captureFromBaseline(baseline) {
     text_length: baseline.text_length || meta.text_length || 0,
     dimensions: baseline.dimensions || meta.dimensions || null,
     hidden_noise_counts: baseline.hidden_noise_counts || meta.hidden_noise_counts || null,
+    baseline_facts: baseline.summary_metadata?.baseline_facts || meta.baseline_facts || null,
+    baseline_facts_metadata:
+      baseline.summary_metadata?.baseline_facts_metadata || meta.baseline_facts_metadata || null,
   };
 }
 
@@ -2437,7 +2924,7 @@ function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, page_type, last_checked_at, next_check_at, created_at, shared_awards!inner(id, name, status)",
+      "id, shared_award_id, url, title, page_type, last_checked_at, next_check_at, consecutive_failures, created_at, shared_awards!inner(id, name, status)",
     )
     .eq("shared_awards.status", "active")
     .order("next_check_at", { ascending: true })
@@ -2616,6 +3103,14 @@ function visualWorkerMetadata(report) {
       r2_rotated: report.r2_rotated,
       r2_failed: report.r2_failed,
       r2_skipped_existing: report.r2_skipped_existing,
+      baseline_facts_extracted: report.baseline_facts_extracted,
+      baseline_facts_failed: report.baseline_facts_failed,
+      baseline_facts_skipped: report.baseline_facts_skipped,
+      baseline_facts_backfilled: report.baseline_facts_backfilled,
+      visual_interpreted: report.visual_interpreted,
+      published_updates: report.published_updates,
+      publish_duplicates: report.publish_duplicates,
+      publish_failed: report.publish_failed,
     },
     baseline_coverage: {
       start: report.baseline_coverage_start || null,
@@ -2623,6 +3118,36 @@ function visualWorkerMetadata(report) {
       finish: report.baseline_coverage_finish || null,
     },
     gemini_usage: report.gemini_usage,
+    gemini_cli_usage: report.gemini_cli_usage,
+    visual_pipeline: {
+      capture: {
+        checked: report.checked,
+        baselined: report.baselined,
+        unchanged: report.unchanged,
+        failed: report.failed,
+      },
+      extraction: {
+        enabled: extractBaselineInfo && aiProvider === "gemini-cli",
+        backfill_enabled: backfillBaselineInfo,
+        extracted: report.baseline_facts_extracted,
+        failed: report.baseline_facts_failed,
+        skipped: report.baseline_facts_skipped,
+        backfilled: report.baseline_facts_backfilled,
+      },
+      comparison: {
+        candidates: report.candidate_changes,
+        interpreted: report.visual_interpreted,
+        true_changes: report.ai_true_changes,
+        rejected: report.ai_rejected,
+        review: report.review,
+      },
+      publishing: {
+        promoted: report.promoted,
+        published_updates: report.published_updates,
+        duplicate_updates: report.publish_duplicates,
+        failed: report.publish_failed,
+      },
+    },
     paths: {
       saved_changes: report.saved_change_paths.slice(0, 20),
       review: report.review_paths.slice(0, 20),
@@ -2960,6 +3485,98 @@ function recordGeminiUsage(report, source, capture, aiReview) {
   );
 }
 
+function recordAiReviewUsage(report, source, capture, aiReview) {
+  if (aiReview.provider === "gemini" && aiReview.usage) {
+    recordGeminiUsage(report, source, capture, aiReview);
+    return;
+  }
+  if (aiReview.provider === "gemini-cli" && aiReview.usage) {
+    recordGeminiCliUsage(report, source, capture, aiReview, "change_interpretation");
+  }
+}
+
+function recordGeminiCliUsage(report, source, capture, analysis, kind) {
+  const usage = analysis.usage || {};
+  report.gemini_cli_usage.calls += 1;
+  if (usage.success !== false) report.gemini_cli_usage.successes += 1;
+  else report.gemini_cli_usage.failures += 1;
+  report.gemini_cli_usage.image_files += nonNegativeInt(usage.image_files, 0);
+  report.gemini_cli_usage.view_file_calls += nonNegativeInt(usage.view_file_calls, 0);
+  report.gemini_cli_usage.stream_calls += nonNegativeInt(usage.stream_calls, 0);
+  report.gemini_cli_usage.elapsed_ms += nonNegativeInt(usage.elapsed_ms, 0);
+
+  const month = new Date().toISOString().slice(0, 7);
+  const monthPath = join(archiveRoot, "usage", `gemini-cli-${month}.jsonl`);
+  mkdirSync(dirname(monthPath), { recursive: true });
+  appendFileSync(
+    monthPath,
+    `${JSON.stringify({
+      provider: "gemini-cli",
+      kind,
+      model: geminiCliModel,
+      source_id: source?.id || null,
+      shared_award_id: source?.shared_award_id || null,
+      source_url: source?.url || null,
+      capture_kind: capture?.kind || null,
+      capture_hash: capture ? visualHashForCapture(capture) : null,
+      usage,
+      recorded_at: new Date().toISOString(),
+      note: "CLI usage does not include account quota or token totals.",
+    })}\n`,
+    "utf8",
+  );
+}
+
+function geminiCliCallAvailable(report) {
+  if (aiProvider !== "gemini-cli") return false;
+  if (!geminiCliMaxCalls) return true;
+  return report.gemini_cli_usage.calls < geminiCliMaxCalls;
+}
+
+function ensureGeminiCliCallAvailable(report, kind) {
+  if (geminiCliCallAvailable(report)) return;
+  throw new Error(
+    `Gemini CLI call cap reached before ${kind}. Increase AWARDPING_GEMINI_CLI_MAX_CALLS or set it to 0 for no cap.`,
+  );
+}
+
+function attachBaselineFactsToCapture(capture, value, metadata = {}) {
+  const facts = normalizeBaselineFacts(value);
+  capture.baseline_facts = facts;
+  capture.baseline_facts_metadata = {
+    status: "succeeded",
+    reason: metadata.reason || null,
+    provider: metadata.provider || "gemini-cli",
+    model: metadata.model || geminiCliModel,
+    analysis_path: metadata.analysis_path || null,
+    prompt_path: metadata.prompt_path || null,
+    extracted_at: new Date().toISOString(),
+    snapshot_hash: visualHashForCapture(capture),
+  };
+}
+
+function normalizeBaselineFacts(value) {
+  const parsed = jsonObjectOrEmpty(value);
+  return {
+    status: cleanSlug(parsed.status) || "succeeded",
+    award_name: cleanNullable(parsed.award_name),
+    page_purpose: cleanNullable(parsed.page_purpose),
+    deadline: cleanNullable(parsed.deadline || parsed.deadline_date),
+    opening_date: cleanNullable(parsed.opening_date || parsed.opens_at || parsed.application_opens),
+    award_amounts: stringArray(parsed.award_amounts || parsed.amounts || parsed.funding).slice(0, 12),
+    eligibility: stringArray(parsed.eligibility).slice(0, 20),
+    requirements: stringArray(parsed.requirements).slice(0, 24),
+    application_materials: stringArray(parsed.application_materials || parsed.materials).slice(0, 20),
+    how_to_apply: stringArray(parsed.how_to_apply || parsed.application_instructions).slice(0, 20),
+    important_dates: stringArray(parsed.important_dates || parsed.dates).slice(0, 16),
+    documents: stringArray(parsed.documents || parsed.pdfs || parsed.pdf_links).slice(0, 20),
+    contacts: stringArray(parsed.contacts || parsed.contact_info).slice(0, 12),
+    notes: stringArray(parsed.notes).slice(0, 12),
+    confidence: normalizeConfidence(parsed.confidence) || "low",
+    quality_flags: stringArray(parsed.quality_flags).map(cleanSlug).filter(Boolean).slice(0, 20),
+  };
+}
+
 function appendGeminiUsageRecord(record) {
   const usageDir = join(archiveRoot, "usage");
   mkdirSync(usageDir, { recursive: true });
@@ -3278,33 +3895,137 @@ function looksLikeSourceAccessError(value) {
   );
 }
 
-function normalizeAiReview(text) {
-  const parsed = parseJsonObject(text);
+function visualChangeDetailsFromReview({ source, diff, aiReview, parsed = null }) {
+  const result = aiReview?.result || {};
+  const structuredDiff = normalizeVisualStructuredDiff(
+    jsonObjectOrEmpty(parsed?.structured_diff || result.structured_diff),
+    diff,
+    source,
+  );
+  const isAlertWorthy = Boolean(result.is_true_change);
+  return {
+    reader_summary:
+      cleanNullable(result.reader_summary) ||
+      (isAlertWorthy ? "A visual award source change was detected." : "No award-relevant visual change was detected."),
+    before: cleanNullable(result.before || parsed?.before),
+    after: cleanNullable(result.after || parsed?.after),
+    section: cleanNullable(result.changed_section || parsed?.section || structuredDiff.likely_section),
+    change_type: cleanSlug(result.change_type || parsed?.change_type) || inferVisualChangeType(parsed || result, diff),
+    advisor_impact: cleanNullable(result.advisor_impact),
+    is_alert_worthy: isAlertWorthy,
+    confidence: normalizeConfidence(result.confidence) || "low",
+    structured_diff: structuredDiff,
+    source: {
+      award_name: source?.shared_awards?.name || null,
+      source_title: source?.title || null,
+      source_url: source?.url || null,
+      page_type: source?.page_type || null,
+    },
+    quality_flags: unique([
+      "visual_snapshot_comparison",
+      ...stringArray(result.quality_flags || parsed?.quality_flags).map(cleanSlug),
+      ...structuredDiff.noise_flags,
+    ]).filter(Boolean),
+    generated_at: new Date().toISOString(),
+    generation_provider: aiReview?.provider === "openai" ? "openai" : "gemini",
+    generation_status: isAlertWorthy ? "generated" : "rejected",
+    generation_model: aiReview?.model || aiModel,
+  };
+}
+
+function normalizeVisualStructuredDiff(value, fallbackDiff = {}, source = null) {
+  return {
+    added_text: stringArray(value.added_text).length
+      ? stringArray(value.added_text).slice(0, 8)
+      : stringArray(fallbackDiff.added_text).slice(0, 8),
+    removed_text: stringArray(value.removed_text).length
+      ? stringArray(value.removed_text).slice(0, 8)
+      : stringArray(fallbackDiff.removed_text).slice(0, 8),
+    likely_section: cleanNullable(value.likely_section) || fallbackDiff.likely_section || inferSection(source?.title || ""),
+    page_type: cleanNullable(value.page_type) || source?.page_type || fallbackDiff.page_type || null,
+    date_changes: stringArray(value.date_changes).length
+      ? stringArray(value.date_changes).slice(0, 8)
+      : stringArray(fallbackDiff.date_changes).slice(0, 8),
+    amount_changes: stringArray(value.amount_changes).length
+      ? stringArray(value.amount_changes).slice(0, 8)
+      : stringArray(fallbackDiff.amount_changes).slice(0, 8),
+    noise_flags: unique(stringArray(value.noise_flags).map(cleanSlug).filter(Boolean)).slice(0, 20),
+  };
+}
+
+function inferVisualChangeType(parsed, diff = {}) {
+  const haystack = normalizeText(
+    [
+      parsed?.change_type,
+      parsed?.changed_section,
+      parsed?.reader_summary,
+      parsed?.advisor_impact,
+      ...(diff?.date_changes || []),
+      ...(diff?.amount_changes || []),
+      ...(diff?.added_text || []),
+      ...(diff?.removed_text || []),
+    ].join(" "),
+  ).toLowerCase();
+  if (/\b(deadline|date|opens?|closes?|due)\b/.test(haystack)) return "deadline";
+  if (/\b(amount|funding|stipend|tuition|grant|award amount)\b/.test(haystack)) return "funding";
+  if (/\b(eligible|eligibility|citizenship|gpa)\b/.test(haystack)) return "eligibility";
+  if (/\b(apply|application|submit|submission|recommendation|transcript|essay|nomination)\b/.test(haystack)) return "application";
+  if (/\b(pdf|document|guide|guideline|instruction)\b/.test(haystack)) return "document";
+  return "other";
+}
+
+function normalizeAiReview(text, context = {}) {
+  const parsed = typeof text === "string" ? parseJsonObject(text) : jsonObjectOrEmpty(text);
   if (!parsed) throw new Error("AI returned invalid JSON.");
-  const confidence = String(parsed.confidence || "").toLowerCase();
-  if (!["low", "medium", "high"].includes(confidence)) {
+  const confidence = normalizeConfidence(parsed.confidence);
+  if (!confidence) {
     throw new Error("AI JSON is missing confidence.");
   }
 
-  if (typeof parsed.is_true_change !== "boolean") {
+  const isTrueChange =
+    typeof parsed.is_true_change === "boolean"
+      ? parsed.is_true_change
+      : typeof parsed.is_alert_worthy === "boolean"
+        ? parsed.is_alert_worthy
+        : null;
+
+  if (typeof isTrueChange !== "boolean") {
     throw new Error("AI JSON is missing is_true_change.");
   }
 
   if (
-    parsed.is_true_change &&
+    isTrueChange &&
     (!cleanNullable(parsed.reader_summary) || !cleanNullable(parsed.advisor_impact))
   ) {
     throw new Error("AI approved a true change without reader_summary or advisor_impact.");
   }
 
-  return {
-    is_true_change: parsed.is_true_change,
+  const result = {
+    is_true_change: isTrueChange,
     noise_reason: cleanNullable(parsed.noise_reason),
     reader_summary: cleanNullable(parsed.reader_summary),
     advisor_impact: cleanNullable(parsed.advisor_impact),
     changed_section: cleanNullable(parsed.changed_section),
     confidence,
+    before: cleanNullable(parsed.before),
+    after: cleanNullable(parsed.after),
+    change_type: cleanSlug(parsed.change_type) || inferVisualChangeType(parsed, context.diff),
+    updated_baseline_facts: jsonObjectOrNull(parsed.updated_baseline_facts),
+    quality_flags: stringArray(parsed.quality_flags).map(cleanSlug).filter(Boolean),
   };
+
+  result.change_details = visualChangeDetailsFromReview({
+    source: context.source,
+    diff: context.diff,
+    aiReview: {
+      provider: context.provider || "gemini",
+      model: context.model || aiModel,
+      result,
+    },
+    parsed,
+  });
+
+  return result;
 }
 
 function parseJsonObject(text) {
@@ -3365,15 +4086,20 @@ function extractResponseText(data) {
 
 function selectAiProvider(requestedProvider, keys) {
   const requested = String(requestedProvider || "auto").toLowerCase();
+  if (["gemini-cli", "antigravity", "agy"].includes(requested)) return keys.geminiCli ? "gemini-cli" : null;
   if (requested === "gemini") return keys.gemini ? "gemini" : null;
   if (requested === "openai") return keys.openai ? "openai" : null;
   if (requested !== "auto") return null;
   if (keys.gemini) return "gemini";
   if (keys.openai) return "openai";
+  if (keys.geminiCli) return "gemini-cli";
   return null;
 }
 
 function missingAiMessage(requestedProvider) {
+  if (["gemini-cli", "antigravity", "agy"].includes(requestedProvider)) {
+    return "AWARDPING_GEMINI_CLI_PATH must point to agy.exe when --ai-provider=gemini-cli. AI review is mandatory; refusing to run.";
+  }
   if (requestedProvider === "gemini") {
     return "GEMINI_API_KEY is required when --ai-provider=gemini. AI review is mandatory; refusing to run.";
   }
@@ -3386,6 +4112,7 @@ function missingAiMessage(requestedProvider) {
 function modelForProvider(provider) {
   if (provider === "gemini") return env.GEMINI_SUMMARY_MODEL || env.GEMINI_MODEL || "gemini-2.5-flash-lite";
   if (provider === "openai") return env.OPENAI_SUMMARY_MODEL || env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini";
+  if (provider === "gemini-cli") return geminiCliModel;
   return null;
 }
 
@@ -3445,6 +4172,34 @@ function cleanNullable(value) {
   return clean || null;
 }
 
+function cleanSlug(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function stringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => cleanText(item)).filter(Boolean);
+  }
+  const clean = cleanText(value);
+  return clean ? [clean] : [];
+}
+
+function normalizeConfidence(value) {
+  const clean = cleanSlug(value);
+  if (clean === "low" || clean === "medium" || clean === "high") return clean;
+  return null;
+}
+
+function jsonObjectOrNull(value) {
+  const object = jsonObjectOrEmpty(value);
+  return Object.keys(object).length ? object : null;
+}
+
 function truncate(value, maxLength) {
   const clean = normalizeText(value);
   if (clean.length <= maxLength) return clean;
@@ -3469,6 +4224,32 @@ function dedupeText(values) {
 
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
+}
+
+function visualHashForCapture(capture) {
+  const hash = capture?.file_hash || capture?.image_hash || capture?.text_hash || "";
+  return hash ? `visual:${hash}` : "";
+}
+
+function visualHashForBaseline(baseline) {
+  const hash = baseline?.file_hash || baseline?.image_hash || baseline?.text_hash || "";
+  return hash ? `visual:${hash}` : "";
+}
+
+function visualSnapshotTextSample(text) {
+  const clean = normalizeVisibleText(text || "");
+  return truncate(clean || "Visual snapshot captured; no readable text was extracted.", 5000);
+}
+
+function baselineHasFacts(baseline) {
+  return Boolean(
+    baseline?.summary_metadata?.baseline_facts &&
+      baseline.summary_metadata.baseline_facts_metadata?.status !== "failed",
+  );
+}
+
+function nextVisualSourceCheckDate() {
+  return new Date(Date.now() + visualSourceCheckMinutes * 60 * 1000).toISOString();
 }
 
 function escapeLike(value) {
