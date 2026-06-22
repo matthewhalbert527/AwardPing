@@ -196,7 +196,8 @@ function Get-BaselineCompletionStatus {
   }
 
   $result.LatestLog = $latestLog.FullName
-  $tail = Get-Content -Path $latestLog.FullName -Tail 400 -ErrorAction SilentlyContinue
+  $tail = Get-Content -Path $latestLog.FullName -Tail 400 -ErrorAction SilentlyContinue |
+    ForEach-Object { ([string]$_) -replace "`0", "" }
   $finishLine = $tail |
     Where-Object { $_ -match "BASELINE_COVERAGE finish loaded=\d+ existing=\d+ missing=\d+ actionable_missing=\d+ known_broken_missing=\d+" } |
     Select-Object -Last 1

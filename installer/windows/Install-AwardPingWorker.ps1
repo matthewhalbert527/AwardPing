@@ -494,7 +494,11 @@ Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mo
 `$exitCode = 1
 Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
 try {
-  & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath -Append
+  & npm @workerArgs *>&1 | ForEach-Object {
+    `$line = [string]`$_
+    Write-Host `$line
+    Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+  }
   `$exitCode = `$LASTEXITCODE
   Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
 } catch {

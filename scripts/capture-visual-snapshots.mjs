@@ -278,18 +278,22 @@ async function runOnce() {
     }
 
     if (completeMissingBaselines) {
-      sources = sources.filter((source) => !hasBaselineForSource(source));
-      const totalMissingTargets = sources.length;
+      const missingTargets = sources.filter((source) => !hasBaselineForSource(source));
+      sources = missingTargets.filter((source) => !isKnownBrokenSource(source));
+      const totalMissingTargets = missingTargets.length;
+      const knownBrokenMissingTargets = totalMissingTargets - sources.length;
       if (completeMissingBatchLimit && sources.length > completeMissingBatchLimit) {
         sources = sources.slice(0, completeMissingBatchLimit);
       }
       report.baseline_completion = {
         total_missing_targets: totalMissingTargets,
+        actionable_missing_targets: totalMissingTargets - knownBrokenMissingTargets,
+        known_broken_missing_targets: knownBrokenMissingTargets,
         batch_targets: sources.length,
         batch_limit: completeMissingBatchLimit || null,
       };
       console.log(
-        `BASELINE_COMPLETION targets=${sources.length} total_missing_targets=${totalMissingTargets} batch_limit=${completeMissingBatchLimit || "all"}`,
+        `BASELINE_COMPLETION targets=${sources.length} total_missing_targets=${totalMissingTargets} actionable_missing_targets=${totalMissingTargets - knownBrokenMissingTargets} known_broken_missing_targets=${knownBrokenMissingTargets} batch_limit=${completeMissingBatchLimit || "all"}`,
       );
     }
 
@@ -3086,6 +3090,7 @@ function isBrowserClosedError(error) {
     message.includes("browser context was closed") ||
     message.includes("browser has been closed") ||
     message.includes("context has been closed") ||
+    message.includes("other side closed") ||
     message.includes("target closed")
   );
 }
