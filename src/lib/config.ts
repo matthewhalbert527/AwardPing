@@ -23,11 +23,11 @@ export const appConfig = {
     "gemini-2.5-flash-lite",
   openaiApiKey: process.env.OPENAI_API_KEY || "",
   openaiDiscoveryModel: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini",
-  r2AccountId: process.env.R2_ACCOUNT_ID || "",
-  r2Endpoint: process.env.R2_ENDPOINT || "",
-  r2AccessKeyId: process.env.R2_ACCESS_KEY_ID || "",
-  r2SecretAccessKey: process.env.R2_SECRET_ACCESS_KEY || "",
-  r2Bucket: process.env.R2_BUCKET || "awardping-snapshots",
+  r2AccountId: textFromEnv("R2_ACCOUNT_ID"),
+  r2Endpoint: textFromEnv("R2_ENDPOINT"),
+  r2AccessKeyId: textFromEnv("R2_ACCESS_KEY_ID"),
+  r2SecretAccessKey: textFromEnv("R2_SECRET_ACCESS_KEY"),
+  r2Bucket: textFromEnv("R2_BUCKET", "awardping-snapshots"),
   r2SignedUrlTtlSeconds: numberFromEnv("R2_SIGNED_URL_TTL_SECONDS", 900),
   adminEmails: emailListFromEnv("AWARDPING_ADMIN_EMAILS"),
   discoveryDailyUserLimit: numberFromEnv("DISCOVERY_DAILY_USER_LIMIT", 10),
@@ -59,6 +59,10 @@ export function hasR2Config() {
 function numberFromEnv(key: string, fallback: number) {
   const value = Number(process.env[key]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function textFromEnv(key: string, fallback = "") {
+  return (process.env[key] || fallback).replace(/^\uFEFF/, "").trim();
 }
 
 function emailListFromEnv(key: string) {
