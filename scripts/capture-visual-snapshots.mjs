@@ -970,6 +970,7 @@ async function expandPageForSnapshot(page) {
         if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
 
         const tag = element.tagName.toLowerCase();
+        if (tag === "summary") return false;
         const href = element.getAttribute("href") || "";
         if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
           return false;
@@ -990,6 +991,13 @@ async function expandPageForSnapshot(page) {
           /\b(faq|question|answer|expand|show|more|details|eligib|requirement|application|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?)\b/i.test(signal);
 
         return Boolean(explicit && contentRelevant);
+      }
+
+      function openClosedDetails() {
+        for (const details of document.querySelectorAll("details:not([open])")) {
+          details.setAttribute("open", "");
+          counts.details_opened += 1;
+        }
       }
 
       function panelTargetsFor(element) {
@@ -1026,16 +1034,13 @@ async function expandPageForSnapshot(page) {
         if (before) counts.panels_forced_open += 1;
       }
 
-      for (const details of document.querySelectorAll("details:not([open])")) {
-        details.setAttribute("open", "");
-        counts.details_opened += 1;
-      }
+      openClosedDetails();
 
       for (let pass = 0; pass < 3; pass += 1) {
         counts.passes += 1;
         const controls = [
           ...document.querySelectorAll(
-            "button, [role='button'], summary, a[data-toggle], a[data-bs-toggle], button[data-toggle], button[data-bs-toggle]",
+            "button, [role='button'], a[data-toggle], a[data-bs-toggle], button[data-toggle], button[data-bs-toggle]",
           ),
         ].filter(isSafeExpandableControl);
 
@@ -1066,8 +1071,11 @@ async function expandPageForSnapshot(page) {
           forcePanelOpen(panel);
         }
 
+        openClosedDetails();
         await delay(180);
       }
+
+      openClosedDetails();
 
       return counts;
     });
