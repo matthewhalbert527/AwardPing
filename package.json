@@ -24,7 +24,6 @@
     "source:discover": "node scripts/find-official-sources-from-discovery-pages.mjs",
     "source:import-directories": "node scripts/import-fellowship-directories.mjs",
     "source:visual-snapshots": "node scripts/capture-visual-snapshots.mjs",
-    "worker:local": "node scripts/run-local-source-worker.mjs",
     "changes:backfill-details": "node scripts/backfill-change-details.mjs",
     "updates:squash": "node scripts/squash-update-bugs.mjs",
     "updates:squash:apply": "node scripts/squash-update-bugs.mjs --apply=true",

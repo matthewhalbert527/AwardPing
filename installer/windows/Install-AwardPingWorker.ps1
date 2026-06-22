@@ -1,7 +1,6 @@
 param(
   [string]$InstallRoot = "$env:LOCALAPPDATA\AwardPingWorker",
   [string]$SupabaseUrl = "https://zploenljxkqzyxcmbyec.supabase.co",
-  [switch]$RunInitialDeepCrawl,
   [switch]$UpdateOnly
 )
 
@@ -305,8 +304,7 @@ function Write-EnvFile {
     [string]$Path,
     [string]$SupabaseUrl,
     [string]$SupabaseServiceRoleKey,
-    [string]$GeminiApiKey,
-    [int]$PageLimit
+    [string]$GeminiApiKey
   )
 
   Write-Step "Writing local worker environment"
@@ -319,15 +317,6 @@ GEMINI_API_KEY=$GeminiApiKey
 GEMINI_MODEL=gemini-2.5-flash
 GEMINI_DISCOVERY_MODEL=gemini-2.5-flash-lite
 GEMINI_SUMMARY_MODEL=gemini-2.5-flash
-
-LOCAL_WORKER_PAGE_LIMIT=$PageLimit
-LOCAL_WORKER_CHECK_INTERVAL_MINUTES=60
-LOCAL_WORKER_MAX_SUBPAGES_PER_SOURCE=10
-LOCAL_WORKER_DEEP_CRAWL_MAX_SUBPAGES_PER_SOURCE=24
-LOCAL_WORKER_DEEP_CRAWL_DEPTH=2
-LOCAL_WORKER_STRUCTURE_RESCAN_DAYS=7
-LOCAL_WORKER_AI_SUMMARIES=true
-LOCAL_WORKER_AI_PROVIDER=auto
 
 AWARDPING_R2_SNAPSHOT_SYNC=false
 R2_BUCKET=awardping-snapshots
@@ -353,13 +342,6 @@ function Update-ExistingEnvFileDefaults {
     "GEMINI_MODEL" = "gemini-2.5-flash"
     "GEMINI_DISCOVERY_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash"
-    "LOCAL_WORKER_CHECK_INTERVAL_MINUTES" = "60"
-    "LOCAL_WORKER_MAX_SUBPAGES_PER_SOURCE" = "10"
-    "LOCAL_WORKER_DEEP_CRAWL_MAX_SUBPAGES_PER_SOURCE" = "24"
-    "LOCAL_WORKER_DEEP_CRAWL_DEPTH" = "2"
-    "LOCAL_WORKER_STRUCTURE_RESCAN_DAYS" = "7"
-    "LOCAL_WORKER_AI_SUMMARIES" = "true"
-    "LOCAL_WORKER_AI_PROVIDER" = "auto"
   }
   $missingDefaults = [ordered]@{
     "AWARDPING_R2_SNAPSHOT_SYNC" = "false"
@@ -390,60 +372,6 @@ function Update-ExistingEnvFileDefaults {
   Write-Host "Summary model set to gemini-2.5-flash; discovery model kept on gemini-2.5-flash-lite."
 }
 
-function Write-RunScript {
-  param(
-    [string]$InstallRoot,
-    [int]$DefaultLimit
-  )
-
-  $scriptPath = Join-Path $InstallRoot "Run-AwardPingWorker.ps1"
-  $content = @"
-param(
-  [int]`$Limit = $DefaultLimit,
-  [string]`$Award = "",
-  [switch]`$DeepCrawl,
-  [switch]`$NoAi,
-  [switch]`$NoDiscoverSubpages,
-  [switch]`$IncludeFailed,
-  [int]`$MaxSubpages = 0,
-  [int]`$CrawlDepth = 0
-)
-
-`$ErrorActionPreference = "Stop"
-`$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$AppDir = Join-Path `$InstallRoot "app"
-`$LogDir = Join-Path `$InstallRoot "logs"
-`$LockPath = Join-Path `$InstallRoot "worker.lock"
-New-Item -ItemType Directory -Force -Path `$LogDir | Out-Null
-
-`$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-`$logPath = Join-Path `$LogDir "awardping-worker-`$stamp.log"
-
-Set-Location `$AppDir
-`$workerArgs = @("run", "worker:local", "--", "--env", ".env.worker.local", "--limit", [string]`$Limit)
-if (`$Award) { `$workerArgs += @("--award", `$Award) }
-if (`$DeepCrawl) { `$workerArgs += @("--deep-crawl=true", "--include-not-due=true", "--force-structure=true") }
-if (`$NoAi) { `$workerArgs += "--ai=false" }
-if (`$NoDiscoverSubpages) { `$workerArgs += "--discover-subpages=false" }
-if (`$IncludeFailed) { `$workerArgs += "--include-failed=true" }
-if (`$MaxSubpages -gt 0) { `$workerArgs += @("--max-subpages", [string]`$MaxSubpages) }
-if (`$CrawlDepth -gt 0) { `$workerArgs += @("--crawl-depth", [string]`$CrawlDepth) }
-
-Write-Host "Running AwardPing worker. Log: `$logPath"
-Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o)" -Encoding ASCII
-try {
-  & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath
-  `$exitCode = `$LASTEXITCODE
-} finally {
-  Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
-}
-exit `$exitCode
-"@
-
-  Set-Content -Path $scriptPath -Value $content -Encoding UTF8
-  return $scriptPath
-}
-
 function Write-UninstallScript {
   param([string]$InstallRoot)
 
@@ -453,7 +381,8 @@ function Write-UninstallScript {
 `$taskNames = @(
   "AwardPing Local Source Worker",
   "AwardPing Local Worker Auto Update",
-  "AwardPing Visual Snapshot Worker"
+  "AwardPing Visual Snapshot Worker",
+  "AwardPing Baseline Completion Watchdog"
 )
 
 foreach (`$taskName in `$taskNames) {
@@ -468,10 +397,7 @@ Write-Host "$InstallRoot"
 }
 
 function Write-LauncherScripts {
-  param(
-    [string]$InstallRoot,
-    [string]$RunScript
-  )
+  param([string]$InstallRoot)
 
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
 $visualRunContent = @"
@@ -890,18 +816,6 @@ function Remove-DirectoryWithRetry {
   }
 }
 
-function Register-WorkerTask {
-  param([string]$RunScript)
-
-  Write-Step "Creating Windows Scheduled Task"
-  $taskName = "AwardPing Local Source Worker"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$RunScript`""
-  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 60) -RepetitionDuration (New-TimeSpan -Days 3650)
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Checks AwardPing shared award source pages from this PC every 60 minutes." -Force | Out-Null
-  Write-Host "Scheduled task created: $taskName every 60 minutes"
-}
-
 function Remove-LegacySourceTask {
   param([string]$InstallRoot)
 
@@ -918,6 +832,8 @@ function Remove-LegacySourceTask {
   }
 
   foreach ($fileName in @(
+    "Run-AwardPingWorker.ps1",
+    "worker.lock",
     "1-RUN-DEEP-CRAWL-AGAIN.bat",
     "2-RUN-90-MINUTE-CHECK-NOW.bat",
     "2-RUN-HOURLY-CHECK-NOW.bat",
@@ -929,6 +845,12 @@ function Remove-LegacySourceTask {
       Remove-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
       Write-Host "Removed legacy launcher: $fileName"
     }
+  }
+
+  $legacyWorkerScript = Join-Path $InstallRoot "app\scripts\run-local-source-worker.mjs"
+  if (Test-Path $legacyWorkerScript) {
+    Remove-Item -LiteralPath $legacyWorkerScript -Force -ErrorAction SilentlyContinue
+    Write-Host "Removed legacy source/text worker script from installed app."
   }
 }
 
@@ -974,10 +896,9 @@ $appDir = Join-Path $InstallRoot "app"
 $envPath = Join-Path $appDir ".env.worker.local"
 $logDir = Join-Path $InstallRoot "logs"
 $runTest = $false
-$runDeepCrawl = $false
 
 if ($UpdateOnly -and -not (Test-Path $envPath)) {
-  throw "Update-only mode did not find $envPath. Run 1-INSTALL-AND-RUN-DEEP-CRAWL.bat first."
+  throw "Update-only mode did not find $envPath. Run the installer first."
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
@@ -989,19 +910,16 @@ Copy-AppFiles -SourceRoot $sourceRoot -AppDir $appDir
 if ($UpdateOnly) {
   Write-Host "Update-only mode: keeping existing keys and scheduled task settings, then refreshing worker defaults."
   Update-ExistingEnvFileDefaults -Path $envPath
-  $pageLimit = 500
 } else {
-  $pageLimit = [int](Read-Default "Pages to check per scheduled run" "500")
   $supabaseServiceRoleKey = Read-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl
   $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
   $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
   Write-Host "Only the daily visual screenshot checker will be scheduled. The legacy hourly source/text worker will be removed."
-  Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey -PageLimit $pageLimit
+  Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey
 }
 
-$runScript = Write-RunScript -InstallRoot $InstallRoot -DefaultLimit $pageLimit
 Write-UninstallScript -InstallRoot $InstallRoot
-Write-LauncherScripts -InstallRoot $InstallRoot -RunScript $runScript
+Write-LauncherScripts -InstallRoot $InstallRoot
 Install-Dependencies -AppDir $appDir
 Remove-LegacySourceTask -InstallRoot $InstallRoot
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
@@ -1012,17 +930,6 @@ if ((-not $UpdateOnly) -and $runTest) {
   & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $visualRunScript -All -Limit 1
   if ($LASTEXITCODE -ne 0) {
     throw "The one-page visual snapshot test failed. Check logs under $logDir."
-  }
-}
-
-if ((-not $UpdateOnly) -and $runDeepCrawl) {
-  Write-Step "Running full initial source expansion crawl"
-  Write-Host "This searches award pages for official subpages. It may run for a long time."
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runScript -DeepCrawl -Limit 20000 -MaxSubpages 24 -CrawlDepth 2 -IncludeFailed
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "The initial deep crawl stopped early, but the runner is installed." -ForegroundColor Yellow
-    Write-Host "Check logs under: $logDir" -ForegroundColor Yellow
-    Write-Host "You can continue later with: $InstallRoot\1-RUN-DEEP-CRAWL-AGAIN.bat" -ForegroundColor Yellow
   }
 }
 

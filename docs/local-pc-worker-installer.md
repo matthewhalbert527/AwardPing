@@ -7,11 +7,9 @@
 - Prompts for the Supabase `service_role` key and Gemini API key.
 - Writes those values to `.env.worker.local` on the PC.
 - Installs npm dependencies.
-- Runs a one-page test.
-- Can immediately run the full initial source expansion crawl that searches for
-  official subpages across awards.
-- Optionally creates a Windows Scheduled Task named `AwardPing Local Source Worker`
-  that runs every 60 minutes.
+- Runs a one-page visual snapshot test.
+- Creates a Windows Scheduled Task named `AwardPing Visual Snapshot Worker`
+  that runs the screenshot/PDF checker daily.
 
 ## Windows Install
 
@@ -27,12 +25,6 @@ Then:
    key when prompted.
 2. Paste the Gemini API key when prompted.
 3. Accept the Scheduled Task when prompted.
-
-For a setup without immediately starting the full crawl, double-click:
-
-```text
-2-INSTALL-ONLY.bat
-```
 
 The old hosted `awardping-worker-windows.zip` updater has been retired. Update
 the worker by editing this repo and copying changed worker files into
@@ -63,35 +55,16 @@ local `.env.worker.local` file because the worker needs them to run.
 
 ## Manual Run
 
-After install, double-click this from the extracted package or from
-`%LOCALAPPDATA%\AwardPingWorker` to expand all awards:
+To run the visual screenshot/PDF checker immediately, double-click:
 
 ```text
-3-RUN-DEEP-CRAWL-AGAIN.bat
-```
-
-That is equivalent to:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingWorker.ps1" -DeepCrawl -Limit 20000 -MaxSubpages 24 -CrawlDepth 2
-```
-
-To run the scheduled-style hourly check immediately, double-click:
-
-```text
-4-RUN-HOURLY-CHECK-NOW.bat
+3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
 ```
 
 Or run this in PowerShell:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingWorker.ps1" -Limit 1
-```
-
-To do a targeted deep crawl for one award, run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingWorker.ps1" -Award "Udall" -DeepCrawl -Limit 75 -MaxSubpages 24 -CrawlDepth 2
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingVisualSnapshots.ps1" -All -Limit 50000
 ```
 
 Logs are written to:
