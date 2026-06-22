@@ -38,6 +38,20 @@ The old hosted `awardping-worker-windows.zip` updater has been retired. Update
 the worker by editing this repo and copying changed worker files into
 `%LOCALAPPDATA%\AwardPingWorker\app` on this PC.
 
+## Baseline Completion Watchdog
+
+While backfilling missing visual baselines, install the watchdog from this repo:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Watch-AwardPingBaselineCompletion.ps1" -InstallRoot "$env:LOCALAPPDATA\AwardPingWorker" -Install
+```
+
+That creates a Windows Scheduled Task named
+`AwardPing Baseline Completion Watchdog`. It checks every five minutes and
+restarts `Run-AwardPingVisualSnapshots.ps1 -CompleteMissingBaselines` if the
+baseline-completion worker stopped before actionable missing baselines reached
+zero.
+
 The Supabase key must be an elevated AwardPing project key from Supabase Project
 Settings -> API. Use either the legacy JWT `service_role` key or a newer
 `sb_secret_...` secret key. It is not the Gemini API key, Vercel key,
