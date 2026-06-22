@@ -213,6 +213,9 @@ async function runOnce() {
     pdf_checked: 0,
     pdf_unchanged: 0,
     pdf_changed: 0,
+    expanded_controls: 0,
+    discovered_pdf_candidates: 0,
+    discovered_pdf_sources: 0,
     r2_uploaded: 0,
     r2_rotated: 0,
     r2_failed: 0,
@@ -474,7 +477,7 @@ async function processSource(source, context, browserMeta, report) {
   const pdfSource = isPdfSource(source);
   const capture = pdfSource
     ? await capturePdfSource(source)
-    : await captureSource(source, context, browserMeta);
+    : await captureSource(source, context, browserMeta, report);
   report.checked += 1;
   if (capture.kind === "pdf") {
     report.pdf_checked += 1;
@@ -804,7 +807,7 @@ async function extractPdfText(buffer) {
   }
 }
 
-async function captureSource(source, context, browserMeta) {
+async function captureSource(source, context, browserMeta, report) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
   const sourceDir = join(archiveRoot, "sources", source.id);
@@ -831,6 +834,13 @@ async function captureSource(source, context, browserMeta) {
     if (delayMs > 0) await page.waitForTimeout(delayMs);
     await page.addStyleTag({ content: stableCaptureCss }).catch(() => null);
     const hiddenNoise = await hideNoiseElements(page);
+    const expanded = await expandPageForSnapshot(page);
+    if (report) {
+      report.expanded_controls +=
+        (expanded?.details_opened || 0) +
+        (expanded?.controls_clicked || 0) +
+        (expanded?.panels_forced_open || 0);
+    }
     await page.evaluate(() => {
       for (const video of document.querySelectorAll("video")) {
         video.pause?.();
@@ -838,6 +848,8 @@ async function captureSource(source, context, browserMeta) {
       }
     }).catch(() => null);
     await page.waitForTimeout(250).catch(() => null);
+    const discoveredPdfLinks = await discoverPdfLinksOnPage(page, source);
+    await maybeRecordDiscoveredPdfSources(source, discoveredPdfLinks, expanded, report);
 
     const pageTitle = await page.title().catch(() => "");
     const finalUrl = page.url();
@@ -879,6 +891,8 @@ async function captureSource(source, context, browserMeta) {
       dimensions,
       browser: browserMeta,
       hidden_noise_counts: hiddenNoise,
+      expanded_content: expanded,
+      discovered_pdf_links: discoveredPdfLinks.slice(0, 20),
       files: {
         page: toArchiveRelative(pagePath),
         thumb: toArchiveRelative(thumbPath),
@@ -900,6 +914,314 @@ async function captureSource(source, context, browserMeta) {
     };
   } finally {
     await page.close().catch(() => null);
+  }
+}
+
+async function expandPageForSnapshot(page) {
+  try {
+    const result = await page.evaluate(async () => {
+      const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+      const clickedKeys = new Set();
+      const counts = {
+        details_opened: 0,
+        controls_clicked: 0,
+        panels_forced_open: 0,
+        passes: 0,
+      };
+
+      function textOf(element) {
+        return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+      }
+
+      function signalFor(element) {
+        return [
+          element.id,
+          element.className,
+          element.getAttribute("aria-label"),
+          element.getAttribute("aria-controls"),
+          element.getAttribute("data-target"),
+          element.getAttribute("data-bs-target"),
+          element.getAttribute("data-toggle"),
+          element.getAttribute("data-bs-toggle"),
+          element.getAttribute("href"),
+          textOf(element),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+      }
+
+      function isVisible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0
+        );
+      }
+
+      function isSafeExpandableControl(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        if (!isVisible(element)) return false;
+        if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
+
+        const tag = element.tagName.toLowerCase();
+        const href = element.getAttribute("href") || "";
+        if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
+          return false;
+        }
+
+        const signal = signalFor(element);
+        if (/(menu|nav|navbar|search|login|log in|sign in|subscribe|newsletter|share|print|donate|cart|next|previous|prev|facebook|twitter|linkedin|instagram)/i.test(signal)) {
+          return false;
+        }
+
+        const explicit =
+          element.getAttribute("aria-expanded") === "false" ||
+          /\bcollapse\b/.test(signal) ||
+          /\baccordion\b/.test(signal) ||
+          element.closest(".accordion, [class*='faq' i], [id*='faq' i]");
+
+        const contentRelevant =
+          /\b(faq|question|answer|expand|show|more|details|eligib|requirement|application|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?)\b/i.test(signal);
+
+        return Boolean(explicit && contentRelevant);
+      }
+
+      function panelTargetsFor(element) {
+        const selectors = [];
+        for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
+          const value = element.getAttribute(attr);
+          if (!value) continue;
+          for (const token of value.split(/\s+/).filter(Boolean)) {
+            if (token.startsWith("#") && token.length > 1) selectors.push(token);
+            else if (/^[A-Za-z][\w:-]*$/.test(token)) selectors.push(`#${CSS.escape(token)}`);
+          }
+        }
+        return selectors.flatMap((selector) => {
+          try {
+            return [...document.querySelectorAll(selector)];
+          } catch {
+            return [];
+          }
+        });
+      }
+
+      function forcePanelOpen(panel) {
+        if (!(panel instanceof HTMLElement)) return;
+        const before = panel.getAttribute("hidden") !== null || window.getComputedStyle(panel).display === "none";
+        panel.hidden = false;
+        panel.removeAttribute("hidden");
+        panel.setAttribute("aria-hidden", "false");
+        panel.classList.add("show", "open", "active");
+        panel.style.setProperty("display", "block", "important");
+        panel.style.setProperty("height", "auto", "important");
+        panel.style.setProperty("max-height", "none", "important");
+        panel.style.setProperty("visibility", "visible", "important");
+        panel.style.setProperty("opacity", "1", "important");
+        if (before) counts.panels_forced_open += 1;
+      }
+
+      for (const details of document.querySelectorAll("details:not([open])")) {
+        details.setAttribute("open", "");
+        counts.details_opened += 1;
+      }
+
+      for (let pass = 0; pass < 3; pass += 1) {
+        counts.passes += 1;
+        const controls = [
+          ...document.querySelectorAll(
+            "button, [role='button'], summary, a[data-toggle], a[data-bs-toggle], button[data-toggle], button[data-bs-toggle]",
+          ),
+        ].filter(isSafeExpandableControl);
+
+        for (const control of controls.slice(0, 120)) {
+          const key = `${control.tagName}:${signalFor(control).slice(0, 220)}`;
+          if (clickedKeys.has(key)) continue;
+          clickedKeys.add(key);
+
+          const beforeExpanded = control.getAttribute("aria-expanded");
+          try {
+            control.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+            control.click();
+            control.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+            counts.controls_clicked += 1;
+          } catch {
+            // Continue opening other panels even if one control is custom and throws.
+          }
+
+          if (beforeExpanded === "false") control.setAttribute("aria-expanded", "true");
+          for (const panel of panelTargetsFor(control)) {
+            forcePanelOpen(panel);
+          }
+        }
+
+        for (const panel of document.querySelectorAll(
+          ".accordion-collapse:not(.show), .collapse:not(.show), [class*='faq' i] [hidden], [class*='accordion' i] [hidden]",
+        )) {
+          forcePanelOpen(panel);
+        }
+
+        await delay(180);
+      }
+
+      return counts;
+    });
+    await page.waitForTimeout(350).catch(() => null);
+    return result;
+  } catch (error) {
+    return {
+      details_opened: 0,
+      controls_clicked: 0,
+      panels_forced_open: 0,
+      passes: 0,
+      error: errorMessage(error),
+    };
+  }
+}
+
+async function discoverPdfLinksOnPage(page, source) {
+  const rawLinks = await page
+    .evaluate(() =>
+      [...document.querySelectorAll("a[href]")].map((link) => ({
+        href: link.getAttribute("href") || "",
+        text: (link.innerText || link.textContent || "").replace(/\s+/g, " ").trim(),
+        title: link.getAttribute("title") || "",
+        ariaLabel: link.getAttribute("aria-label") || "",
+        download: link.getAttribute("download") || "",
+      })),
+    )
+    .catch(() => []);
+
+  const seen = new Set();
+  const candidates = [];
+
+  for (const link of rawLinks) {
+    const url = normalizeDiscoveredUrl(link.href, source.url);
+    if (!url || seen.has(url)) continue;
+    const signal = [url, link.text, link.title, link.ariaLabel, link.download]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    const pdfUrl = isPdfLikeUrl(url);
+    const pdfText = /\bpdf\b/.test(signal);
+    const documentSignal =
+      /\b(application|guidelines?|instructions?|materials?|form|document|download)\b/.test(signal) &&
+      /(\/files?\/|\/uploads?\/|\/documents?\/|\/media\/|download|attachment|pdf)/.test(signal);
+
+    if (!pdfUrl && !pdfText && !documentSignal) continue;
+    seen.add(url);
+    candidates.push({
+      url,
+      title: readablePdfLinkTitle(link, source),
+      link_text: link.text || null,
+      reason: pdfUrl ? "pdf_url" : pdfText ? "pdf_link_text" : "document_link_signal",
+    });
+  }
+
+  return candidates.slice(0, 25);
+}
+
+async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, report) {
+  if (!pdfLinks.length) return;
+  if (report) report.discovered_pdf_candidates += pdfLinks.length;
+
+  const urls = [...new Set(pdfLinks.map((link) => link.url))];
+  const { data: existing, error: existingError } = await supabase
+    .from("shared_award_sources")
+    .select("url")
+    .eq("shared_award_id", source.shared_award_id)
+    .in("url", urls);
+
+  if (existingError) {
+    if (report) {
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message: `PDF source discovery lookup failed: ${existingError.message}`,
+      });
+    }
+    return;
+  }
+
+  const existingUrls = new Set((existing || []).map((row) => row.url));
+  const rows = pdfLinks
+    .filter((link) => !existingUrls.has(link.url))
+    .map((link) => ({
+      shared_award_id: source.shared_award_id,
+      url: link.url,
+      title: link.title,
+      page_type: "pdf",
+      confidence: 0.8,
+      reason: [
+        "Found by the visual snapshot worker after expanding page content.",
+        `Parent source: ${source.url}`,
+        `Signal: ${link.reason}`,
+        expanded?.controls_clicked ? `Expanded controls: ${expanded.controls_clicked}` : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      source: "seed",
+      next_check_at: new Date().toISOString(),
+    }));
+
+  if (!rows.length) return;
+
+  const { data, error } = await supabase
+    .from("shared_award_sources")
+    .upsert(rows, { onConflict: "shared_award_id,url", ignoreDuplicates: true })
+    .select("id,url");
+
+  if (error) {
+    if (report) {
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message: `PDF source discovery insert failed: ${error.message}`,
+      });
+    }
+    return;
+  }
+
+  const inserted = data?.length || rows.length;
+  if (report) report.discovered_pdf_sources += inserted;
+  console.log(`DISCOVERED PDF SOURCES inserted=${inserted} parent=${sourceLabel(source)}`);
+}
+
+function normalizeDiscoveredUrl(value, baseUrl) {
+  if (!value || value.startsWith("mailto:") || value.startsWith("tel:")) return null;
+  try {
+    const parsed = new URL(value, baseUrl);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isPdfLikeUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return /\.pdf$/i.test(parsed.pathname) || /\.pdf(?:$|[?&=/])/i.test(`${parsed.pathname}${parsed.search}`);
+  } catch {
+    return /\.pdf(?:$|[?#])/i.test(String(value || ""));
+  }
+}
+
+function readablePdfLinkTitle(link, source) {
+  const text = cleanText(link.text || link.title || link.ariaLabel || link.download);
+  if (text) return text.slice(0, 180);
+  try {
+    const parsed = new URL(link.href, source.url);
+    const fileName = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || "PDF document");
+    return fileName.replace(/[-_]+/g, " ").replace(/\.pdf$/i, "").slice(0, 180) || "PDF document";
+  } catch {
+    return "PDF document";
   }
 }
 
@@ -1998,7 +2320,7 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
       initial_count: report.baselined,
-      discovered_count: 0,
+      discovered_count: report.discovered_pdf_sources,
       failed_count: report.failed,
       error: errorMessageValue ? errorMessageValue.slice(0, 1000) : null,
       metadata: visualWorkerMetadata(report),
@@ -2077,7 +2399,7 @@ async function finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, 
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
       initial_count: report.baselined,
-      discovered_count: 0,
+      discovered_count: report.discovered_pdf_sources,
       failed_count: report.failed,
       error: errorMessageValue ? errorMessageValue.slice(0, 1000) : null,
       finished_at: new Date().toISOString(),
@@ -2108,6 +2430,9 @@ function visualWorkerMetadata(report) {
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
+      expanded_controls: report.expanded_controls,
+      discovered_pdf_candidates: report.discovered_pdf_candidates,
+      discovered_pdf_sources: report.discovered_pdf_sources,
       promoted: report.promoted,
       r2_uploaded: report.r2_uploaded,
       r2_rotated: report.r2_rotated,
