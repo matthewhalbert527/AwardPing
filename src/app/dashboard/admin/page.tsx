@@ -62,13 +62,20 @@ export default async function AdminPage() {
 
   const workerRuns = (workerRunRows || []) as LocalWorkerRun[];
   const visualRuns = workerRuns.filter((run) => run.worker_name.includes("visual-snapshot"));
+  const detailRuns = workerRuns.filter((run) => run.worker_name.includes("award-baseline-detail"));
   const latestVisualRun = visualRuns[0] || null;
+  const latestDetailRun = detailRuns[0] || null;
   const latestVisualMetadata = latestVisualRun ? metadataObject(latestVisualRun.metadata) : {};
+  const latestDetailMetadata = latestDetailRun ? metadataObject(latestDetailRun.metadata) : {};
   const latestPipeline = objectValue(latestVisualMetadata.visual_pipeline);
+  const latestDetailPipeline = objectValue(latestDetailMetadata.detail_pipeline);
   const latestExtraction = objectValue(latestPipeline.extraction);
   const latestComparison = objectValue(latestPipeline.comparison);
   const latestPublishing = objectValue(latestPipeline.publishing);
+  const latestDetailExtraction = objectValue(latestDetailPipeline.extraction);
+  const latestDetailPublishing = objectValue(latestDetailPipeline.publishing);
   const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
+  const latestDetailGeminiCliUsage = objectValue(latestDetailMetadata.gemini_cli_usage);
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
   const baselineCoveragePercent = latestBaselineCoverage
@@ -103,7 +110,7 @@ export default async function AdminPage() {
         </section>
       )}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard
           icon={Eye}
           label="Daily worker"
@@ -130,6 +137,17 @@ export default async function AdminPage() {
           label="Gemini CLI calls"
           value={numberFromObject(latestGeminiCliUsage, "calls")}
           detail={`${formatNumber(numberFromObject(latestGeminiCliUsage, "successes"))} succeeded, ${formatNumber(numberFromObject(latestGeminiCliUsage, "failures"))} failed`}
+        />
+        <MetricCard
+          icon={Sparkles}
+          label="Award details"
+          value={latestDetailRun ? statusLabel(latestDetailRun.status) : "None"}
+          detail={
+            latestDetailRun
+              ? `${formatNumber(numberFromObject(latestDetailExtraction, "extracted"))} extracted, ${formatNumber(numberFromObject(latestDetailPublishing, "applied"))} applied`
+              : "No detail run logged"
+          }
+          attention={latestDetailRun?.status === "failed"}
         />
         <MetricCard
           icon={Activity}
@@ -215,6 +233,34 @@ export default async function AdminPage() {
               </p>
             )}
           </div>
+
+          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+            <h3 className="font-black">Baseline award details</h3>
+            {latestDetailRun ? (
+              <>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <MiniStat label="Awards checked" value={latestDetailRun.checked_count || 0} />
+                  <MiniStat label="Details extracted" value={numberFromObject(latestDetailExtraction, "extracted")} />
+                  <MiniStat label="Website summaries applied" value={numberFromObject(latestDetailPublishing, "applied")} />
+                  <MiniStat
+                    label="No baseline yet"
+                    value={numberFromObject(latestDetailExtraction, "no_baseline")}
+                    attention={numberFromObject(latestDetailExtraction, "no_baseline") > 0}
+                  />
+                </div>
+                <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
+                  <Detail label="Started" value={formatDate(latestDetailRun.started_at)} />
+                  <Detail label="Finished" value={latestDetailRun.finished_at ? formatDate(latestDetailRun.finished_at) : "Still running"} />
+                  <Detail label="AI model" value={stringFromObject(latestDetailMetadata, "ai_model") || "Gemini CLI"} />
+                  <Detail label="Gemini CLI calls" value={formatNumber(numberFromObject(latestDetailGeminiCliUsage, "calls"))} />
+                </dl>
+              </>
+            ) : (
+              <p className="mt-3 text-sm text-[var(--muted)]">
+                No baseline award-detail run has been recorded yet.
+              </p>
+            )}
+          </div>
         </div>
 
         <div className="card p-6">
@@ -244,7 +290,11 @@ export default async function AdminPage() {
       </section>
 
       <section className="mt-6">
-        <RecentRuns runs={visualRuns.length ? visualRuns : workerRuns} />
+        <RecentRuns runs={visualRuns.length ? visualRuns : workerRuns} title="Recent screenshot runs" />
+      </section>
+
+      <section className="mt-6">
+        <RecentRuns runs={detailRuns} title="Recent award detail runs" />
       </section>
     </AdminShell>
   );
@@ -374,12 +424,12 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
-function RecentRuns({ runs }: { runs: LocalWorkerRun[] }) {
+function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) {
   return (
     <section className="card p-6">
       <div className="flex items-center gap-2">
         <Clock3 size={18} aria-hidden="true" />
-        <h2 className="text-2xl font-black">Recent screenshot runs</h2>
+        <h2 className="text-2xl font-black">{title}</h2>
       </div>
       <div className="mt-5 grid gap-3">
         {runs.slice(0, 10).map((run) => (
@@ -401,7 +451,7 @@ function RecentRuns({ runs }: { runs: LocalWorkerRun[] }) {
             {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
           </div>
         ))}
-        {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No screenshot runs recorded.</p>}
+        {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No runs recorded.</p>}
       </div>
     </section>
   );

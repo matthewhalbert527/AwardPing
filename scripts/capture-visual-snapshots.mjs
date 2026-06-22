@@ -77,7 +77,7 @@ const geminiCliPath = cleanText(
   args["gemini-cli-path"] || env.AWARDPING_GEMINI_CLI_PATH || env.GEMINI_CLI_PATH || defaultGeminiCliPath,
 );
 const geminiCliModel = cleanText(
-  args["gemini-cli-model"] || env.AWARDPING_GEMINI_CLI_MODEL || "Gemini 3.5 Flash (Low)",
+  args["gemini-cli-model"] || env.AWARDPING_GEMINI_CLI_MODEL || "Gemini 3.1 Pro (Low)",
 );
 const geminiCliWorkspaceRoot = resolve(
   String(args["gemini-cli-workspace"] || env.AWARDPING_GEMINI_CLI_WORKSPACE || join(archiveRoot, "gemini-cli-workspace")),

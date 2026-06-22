@@ -7,7 +7,7 @@ import { SetupNotice } from "@/components/setup-notice";
 import { TrackSharedAwardButton } from "@/components/track-shared-award-button";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { requireUser } from "@/lib/auth";
-import { displayAwardSummary } from "@/lib/award-summary";
+import { awardBaselineSummaryParts, displayAwardSummary } from "@/lib/award-summary";
 import {
   dedupeChangeSummaries,
   displayChangeSummary,
@@ -97,6 +97,7 @@ export default async function SharedAwardDetailPage({ params }: Params) {
   );
   const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
   const awardSummary = displayAwardSummary(award.summary);
+  const awardSummaryParts = awardBaselineSummaryParts(award.summary);
 
   return (
     <div>
@@ -113,7 +114,9 @@ export default async function SharedAwardDetailPage({ params }: Params) {
             {tracked && <span className="badge">On watchlist</span>}
           </div>
           <h1 className="dashboard-page-title mt-4">{award.name}</h1>
-          {awardSummary && (
+          {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
+            <AwardBaselineDetails parts={awardSummaryParts} />
+          ) : awardSummary && (
             <p className="mt-3 max-w-3xl leading-7 text-[var(--muted)]">{awardSummary}</p>
           )}
           {displayHomepage && (
@@ -231,6 +234,29 @@ export default async function SharedAwardDetailPage({ params }: Params) {
           </div>
         </div>
       </section>
+    </div>
+  );
+}
+
+function AwardBaselineDetails({
+  parts,
+}: {
+  parts: {
+    overview: string | null;
+    facts: Array<{ label: string; value: string }>;
+  };
+}) {
+  return (
+    <div className="mt-4 max-w-4xl rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+      {parts.overview && <p className="leading-7 text-[var(--muted)]">{parts.overview}</p>}
+      <dl className={`${parts.overview ? "mt-4" : ""} grid gap-3 md:grid-cols-2`}>
+        {parts.facts.map((fact) => (
+          <div className="rounded-xl border border-[var(--line)] bg-white p-3" key={fact.label}>
+            <dt className="text-xs font-black uppercase text-[var(--muted)]">{fact.label}</dt>
+            <dd className="mt-1 text-sm font-semibold leading-6 text-[var(--foreground)]">{fact.value}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }

@@ -63,6 +63,7 @@ export async function runGeminiCliJsonAnalysis(input) {
   const dbExtraction = conversationDbPath ? extractResultFromConversationDb(conversationDbPath) : null;
   const rawText = finalPlannerResponse(transcript) || execution.stdout.trim() || dbExtraction?.rawText || "";
   const result = parseJsonObject(rawText);
+  const modelResolution = readModelResolution(logPath, execution.stdout, execution.stderr);
   const usage = {
     calls: 1,
     success: execution.exitCode === 0 && Boolean(result),
@@ -77,10 +78,20 @@ export async function runGeminiCliJsonAnalysis(input) {
     ),
     elapsed_ms: Date.now() - startedAt,
     exit_code: execution.exitCode,
+    requested_model: input.model,
+    resolved_model: modelResolution.resolvedModel || null,
+    model_resolution_failed: modelResolution.failed,
   };
 
   if (execution.exitCode !== 0) {
     throw new Error(`Gemini CLI exited ${execution.exitCode}: ${tail(execution.stderr || execution.stdout, 1200)}`);
+  }
+  if (modelResolution.failed) {
+    const error = new Error(
+      `Gemini CLI did not recognize model "${input.model}" and resolved to "${modelResolution.resolvedModel || "unknown"}". Choose an exact Antigravity model label before running analysis.`,
+    );
+    error.geminiCliUsage = usage;
+    throw error;
   }
   if (!result) {
     const error = new Error(`Gemini CLI returned invalid JSON: ${tail(rawText || execution.stdout || execution.stderr, 1200)}`);
@@ -169,6 +180,20 @@ function findTranscriptPath(logPath, stdout, stderr) {
   return null;
 }
 
+function readModelResolution(logPath, stdout, stderr) {
+  const text = [logPath, stdout, stderr]
+    .filter(Boolean)
+    .map((value) => (existsSync(value) ? readFileSync(value, "utf8") : String(value)))
+    .join("\n");
+  const labels = [...text.matchAll(/Propagating selected model override to backend: label="([^"]+)"/g)]
+    .map((match) => match[1])
+    .filter(Boolean);
+  return {
+    failed: /Failed to resolve model flag/i.test(text),
+    resolvedModel: labels.at(-1) || null,
+  };
+}
+
 function findConversationDbPath(logPath, stdout, stderr) {
   const home = process.env.USERPROFILE || "";
   for (const value of [logPath, stdout, stderr].filter(Boolean)) {
@@ -192,7 +217,10 @@ function extractResultFromConversationDb(path) {
     return null;
   }
 
-  const candidates = parseJsonObjects(text).filter(isLikelyModelResult);
+  const candidates = [
+    ...parseJsonObjects(text),
+    ...parseLikelyJsonFragments(text),
+  ].filter(isLikelyModelResult);
   const selected = candidates.at(-1);
   if (!selected) {
     return {
@@ -237,18 +265,36 @@ function parseJsonObjects(text) {
         if (depth === 0) {
           const rawText = text.slice(start, index + 1);
           if (rawText.length <= 250_000) {
-            try {
-              const parsed = JSON.parse(rawText);
+            const parsed = parseJsonCandidate(rawText);
+            if (parsed) {
               if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                results.push({ rawText, parsed });
+                results.push({ rawText: sanitizeJsonCandidate(rawText), parsed });
               }
-            } catch {
-              // Keep scanning; protobuf blobs contain plenty of non-JSON brace spans.
             }
           }
           start = index;
           break;
         }
+      }
+    }
+  }
+  return results;
+}
+
+function parseLikelyJsonFragments(text) {
+  const results = [];
+  const startPattern = /\{\s*"(?:status|summary|deadline|is_true_change|reviews|page_purpose)"/g;
+  let match = null;
+  while ((match = startPattern.exec(text))) {
+    const start = match.index;
+    const maxEnd = Math.min(text.length, start + 250_000);
+    for (let end = start; end < maxEnd; end += 1) {
+      if (text[end] !== "}") continue;
+      const rawText = text.slice(start, end + 1);
+      const parsed = parseJsonCandidate(rawText);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        results.push({ rawText: sanitizeJsonCandidate(rawText), parsed });
+        break;
       }
     }
   }
@@ -267,6 +313,8 @@ function isLikelyModelResult(candidate) {
     Object.prototype.hasOwnProperty.call(value, "requirements") ||
     Object.prototype.hasOwnProperty.call(value, "eligibility") ||
     Object.prototype.hasOwnProperty.call(value, "award_amounts") ||
+    (Object.prototype.hasOwnProperty.call(value, "summary") &&
+      Object.prototype.hasOwnProperty.call(value, "confidence")) ||
     Object.prototype.hasOwnProperty.call(value, "page_purpose")
   );
 }
@@ -316,21 +364,35 @@ function countViewFileActions(text) {
 }
 
 function parseJsonObject(text) {
-  const clean = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  const clean = sanitizeJsonCandidate(String(text || ""))
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
   if (!clean) return null;
-  try {
-    const parsed = JSON.parse(clean);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    const match = clean.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+  const parsed = parseJsonCandidate(clean);
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+
+  const match = clean.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  const matched = parseJsonCandidate(match[0]);
+  return matched && typeof matched === "object" && !Array.isArray(matched) ? matched : null;
+}
+
+function parseJsonCandidate(value) {
+  for (const candidate of [String(value || ""), sanitizeJsonCandidate(value)]) {
     try {
-      const parsed = JSON.parse(match[0]);
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+      return JSON.parse(candidate);
     } catch {
-      return null;
+      // Keep scanning; protobuf blobs can inject non-JSON bytes into otherwise valid text.
     }
   }
+  return null;
+}
+
+function sanitizeJsonCandidate(value) {
+  return String(value || "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, "")
+    .replace(/,\s*([}\]])/g, "$1");
 }
 
 function safePathSegment(value) {

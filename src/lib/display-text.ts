@@ -1,5 +1,11 @@
 export function cleanDisplayText(value: string | null | undefined) {
   return String(value || "")
+    .replace(/â€™|â€˜/g, "'")
+    .replace(/â€œ|â€/g, '"')
+    .replace(/â€“|â€”/g, "-")
+    .replace(/Â©/g, "(c)")
+    .replace(/Â·/g, "-")
+    .replace(/Â/g, "")
     .replace(/([a-z])([A-Z])/g, "$1 $2")
     .replace(/([A-Za-z])(\d)/g, "$1 $2")
     .replace(/(\d)([A-Za-z])/g, "$1 $2")
