@@ -24,6 +24,7 @@
     "source:discover": "node scripts/find-official-sources-from-discovery-pages.mjs",
     "source:import-directories": "node scripts/import-fellowship-directories.mjs",
     "source:visual-snapshots": "node scripts/capture-visual-snapshots.mjs",
+    "source:baseline-facts": "node scripts/backfill-baseline-facts.mjs",
     "award:baseline-details": "node scripts/backfill-award-baseline-details.mjs",
     "changes:backfill-details": "node scripts/backfill-change-details.mjs",
     "updates:squash": "node scripts/squash-update-bugs.mjs",
