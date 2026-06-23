@@ -89,4 +89,50 @@ describe("SourcePageTree", () => {
     expect(html).toContain("January 29, 2026");
     expect(html).toContain("gemini-2.5-flash-lite");
   });
+
+  it("starts split source branches collapsed while keeping the detail panel ready", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "citizenship",
+            title: "Citizenship",
+            displayTitle: "Citizenship",
+            pageDescription: "Citizenship requirements.",
+            url: "https://example.edu/scholarship/eligibility/citizenship",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Eligibility",
+                award_relevance: "primary",
+              },
+            },
+            latestChanges: [],
+          },
+          {
+            id: "standing",
+            title: "Academic standing",
+            displayTitle: "Academic standing",
+            pageDescription: "Academic standing requirements.",
+            url: "https://example.edu/scholarship/eligibility/standing",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Eligibility",
+                award_relevance: "primary",
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("source-tree-split");
+    expect(html).toContain("aria-expanded=\"false\"");
+    expect(html).toContain("Eligibility");
+    expect(html).toContain("Academic standing requirements.");
+    expect(html).not.toContain("Citizenship requirements.");
+  });
 });

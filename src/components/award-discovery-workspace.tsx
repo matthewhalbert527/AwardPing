@@ -61,7 +61,6 @@ export function AwardDiscoveryWorkspace({
 }) {
   const awards = sharedAwards;
   const [query, setQuery] = useState("");
-  const [selectedAwardId, setSelectedAwardId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(true);
   const [selectedLetter, setSelectedLetter] = useState("A");
@@ -113,23 +112,6 @@ export function AwardDiscoveryWorkspace({
     setSelectedLetter(letter);
     setLetterPageIndex(0);
     setSearchOpen(false);
-  }
-
-  function showAwardInBrowse(award: SharedAwardCard) {
-    const initial = awardInitial(award.name);
-    const awardsForLetter = alphabeticalAwards.filter(
-      (candidate) => awardInitial(candidate.name) === initial,
-    );
-    const awardIndex = Math.max(
-      0,
-      awardsForLetter.findIndex((candidate) => candidate.id === award.id),
-    );
-
-    setSelectedLetter(initial);
-    setLetterPageIndex(Math.floor(awardIndex / pageSize));
-    setSelectedAwardId(award.id);
-    setSearchOpen(false);
-    setBrowseOpen(true);
   }
 
   function renderBrowseControls(position: "top" | "bottom") {
@@ -261,7 +243,6 @@ export function AwardDiscoveryWorkspace({
               onChange={(event) => {
                 const nextQuery = event.target.value;
                 setQuery(nextQuery);
-                setSelectedAwardId("");
                 setSearchOpen(nextQuery.trim().length > 0);
               }}
             />
@@ -295,25 +276,19 @@ export function AwardDiscoveryWorkspace({
                 tabIndex={-1}
               >
                 {matches.map((award) => (
-                  <button
-                    className={`award-search-option ${
-                      selectedAwardId === award.id ? "award-search-option-active" : ""
-                    }`}
+                  <Link
+                    className="award-search-option"
+                    href={`/dashboard/awards/${award.id}`}
                     key={award.id}
-                    type="button"
                     role="option"
-                    aria-selected={selectedAwardId === award.id}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      setQuery(award.name);
-                      showAwardInBrowse(award);
-                    }}
+                    aria-selected={false}
+                    onClick={() => setSearchOpen(false)}
                   >
                     <span className="award-search-option-title">{award.name}</span>
                     {searchResultMetaText(award) && (
                       <span className="award-search-option-meta">{searchResultMetaText(award)}</span>
                     )}
-                  </button>
+                  </Link>
                 ))}
                 {matches.length === 0 && (
                   <p className="award-search-empty">

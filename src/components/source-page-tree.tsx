@@ -73,9 +73,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   const tree = useMemo(() => buildSourceTree(sources), [sources]);
   const expandableIds = useMemo(() => collectExpandableIds(tree), [tree]);
   const flatSources = useMemo(() => flattenTreeSources(tree), [tree]);
-  const [openNodes, setOpenNodes] = useState<Set<string>>(() =>
-    layout === "split" ? new Set(expandableIds.nodeIds) : new Set(),
-  );
+  const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set());
   const [openSources, setOpenSources] = useState<Set<string>>(() => new Set());
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
     () => flatSources[0]?.id || null,
