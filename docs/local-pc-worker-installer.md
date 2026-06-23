@@ -44,6 +44,22 @@ restarts `Run-AwardPingVisualSnapshots.ps1 -CompleteMissingBaselines` if the
 baseline-completion worker stopped before actionable missing baselines reached
 zero.
 
+## Baseline Page-Info Watchdog
+
+While backfilling Gemini page information from saved screenshots/PDFs, install
+the page-info watchdog from this repo:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Watch-AwardPingBaselineFacts.ps1" -InstallRoot "$env:LOCALAPPDATA\AwardPingWorker" -Install
+```
+
+That creates a Windows Scheduled Task named
+`AwardPing Baseline Facts Watchdog`. It checks every five minutes and restarts
+`Run-AwardPingBaselineFacts.ps1` if the Gemini page-info extraction stopped
+before all local baselines have facts. It skips pages already extracted. If the
+daily Gemini API cost cap is reached, it pauses for the rest of the day instead
+of immediately restarting and spending past the cap.
+
 The Supabase key must be an elevated AwardPing project key from Supabase Project
 Settings -> API. Use either the legacy JWT `service_role` key or a newer
 `sb_secret_...` secret key. It is not the Gemini API key, Vercel key,

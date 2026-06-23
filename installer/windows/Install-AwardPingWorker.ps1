@@ -392,7 +392,8 @@ function Write-UninstallScript {
   "AwardPing Local Source Worker",
   "AwardPing Local Worker Auto Update",
   "AwardPing Visual Snapshot Worker",
-  "AwardPing Baseline Completion Watchdog"
+  "AwardPing Baseline Completion Watchdog",
+  "AwardPing Baseline Facts Watchdog"
 )
 
 foreach (`$taskName in `$taskNames) {

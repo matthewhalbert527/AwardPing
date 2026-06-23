@@ -106,6 +106,7 @@ async function runOnce() {
     skipped_existing: 0,
     skipped_ineligible: 0,
     failed: 0,
+    stop_reason: null,
     gemini_cli_usage: {
       calls: 0,
       successes: 0,
@@ -142,6 +143,7 @@ async function runOnce() {
     for (const target of targets) {
       if (report.checked >= limit) break;
       if (geminiCliMaxCalls && totalAiCalls(report) >= geminiCliMaxCalls) {
+        report.stop_reason = "ai_call_cap_reached";
         console.log("BASELINE_FACTS cap_reached");
         break;
       }
@@ -150,6 +152,7 @@ async function runOnce() {
         geminiApiDailyCostCapUsd > 0 &&
         report.gemini_usage.estimated_cost_usd >= geminiApiDailyCostCapUsd
       ) {
+        report.stop_reason = "gemini_api_cost_cap_reached";
         console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
         break;
       }
@@ -730,6 +733,7 @@ function workerMetadata(report) {
     gemini_cli_usage: report.gemini_cli_usage,
     saved_sources: report.saved_sources.slice(-20),
     errors: report.errors.slice(-20),
+    stop_reason: report.stop_reason,
   };
 }
 
