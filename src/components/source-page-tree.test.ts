@@ -87,7 +87,8 @@ describe("SourcePageTree", () => {
     expect(html).toContain("Eligibility rules for the scholarship.");
     expect(html).toContain("Citizenship");
     expect(html).toContain("January 29, 2026");
-    expect(html).toContain("gemini-2.5-flash-lite");
+    expect(html).toContain("Page outline updated");
+    expect(html).not.toContain("gemini-2.5-flash-lite");
   });
 
   it("starts split source branches collapsed while keeping the detail panel ready", () => {

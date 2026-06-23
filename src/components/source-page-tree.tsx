@@ -680,8 +680,7 @@ function SourcePageOutline<T extends SourcePageTreeSource>({
 
       {generatedAt && (
         <p className="mt-3 text-xs font-bold uppercase text-[var(--muted)]">
-          Page outline scanned {formatDate(generatedAt)}
-          {source.pageMetadataModel ? ` with ${source.pageMetadataModel}` : ""}
+          Page outline updated {formatDate(generatedAt)}
         </p>
       )}
     </section>
@@ -801,7 +800,7 @@ function branchStatus<T extends SourcePageTreeSource>(
   }
 
   if (needsScanCount > 0) {
-    parts.push(`${needsScanCount} needs scan`);
+    parts.push(`${needsScanCount} details pending`);
   }
 
   if (trackedCount > 0) {
@@ -876,7 +875,7 @@ function sourceRowStatus(
   if (source.lastError) return "Needs review";
   if (latestChange) return "Changed";
   if (source.pageMetadata || source.pageDescription || source.displayTitle) return "Unchanged";
-  return "Needs scan";
+  return "Details pending";
 }
 
 function sectionRows(value: unknown) {

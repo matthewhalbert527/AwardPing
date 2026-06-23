@@ -100,15 +100,15 @@ export default async function SharedAwardDetailPage({ params }: Params) {
   const awardSummaryParts = awardBaselineSummaryParts(award.summary);
 
   return (
-    <div>
+    <div className="award-detail-page">
       <Link className="button-secondary" href="/dashboard/awards">
         <ArrowLeft size={16} aria-hidden="true" />
         Back to find awards
       </Link>
 
-      <div className="mt-8 grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <section className="award-detail-hero">
         <div className="min-w-0">
-          <div className="flex flex-wrap gap-2">
+          <div className="award-detail-badges">
             <span className="badge">{officialSources.length} source pages</span>
             <span className="badge">{officialChanges.length} recorded updates</span>
             {tracked && <span className="badge">On watchlist</span>}
@@ -117,11 +117,11 @@ export default async function SharedAwardDetailPage({ params }: Params) {
           {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
             <AwardBaselineDetails parts={awardSummaryParts} />
           ) : awardSummary && (
-            <p className="mt-3 max-w-3xl leading-7 text-[var(--muted)]">{awardSummary}</p>
+            <p className="award-detail-summary-copy">{awardSummary}</p>
           )}
           {displayHomepage && (
             <a
-              className="mt-3 inline-flex max-w-full items-center gap-2 truncate text-sm font-bold text-[var(--brand)] underline"
+              className="award-detail-homepage"
               href={displayHomepage}
               rel="noreferrer"
               target="_blank"
@@ -131,7 +131,7 @@ export default async function SharedAwardDetailPage({ params }: Params) {
             </a>
           )}
         </div>
-        <div className="dashboard-panel dashboard-panel-pad">
+        <aside className="dashboard-panel dashboard-panel-pad award-detail-watchlist">
           <h2 className="dashboard-panel-title">Watchlist</h2>
           <p className="dashboard-panel-copy">
             You can view this history without adding it. Add it when your office
@@ -144,17 +144,22 @@ export default async function SharedAwardDetailPage({ params }: Params) {
               canManage={canManageOffice(officeContext.current.role)}
             />
           </div>
-        </div>
-      </div>
+        </aside>
+      </section>
 
-      <section className="mt-8 grid min-w-0 gap-6">
-        <div className="dashboard-panel dashboard-panel-pad min-w-0">
-          <h2 className="dashboard-panel-title">Page outline</h2>
-          <p className="dashboard-panel-copy">
-            Official source pages are grouped into a readable outline with source snapshots,
-            page sections, and recent changes.
-          </p>
-          <div className="dashboard-list">
+      <section className="award-detail-workspace">
+        <div className="dashboard-panel dashboard-panel-pad award-detail-panel award-detail-outline-panel">
+          <div className="award-detail-panel-header">
+            <div>
+              <h2 className="dashboard-panel-title">Page outline</h2>
+              <p className="dashboard-panel-copy">
+                Official source pages are grouped into a readable outline with snapshots,
+                page sections, and recent changes.
+              </p>
+            </div>
+            <span className="badge">{officialSources.length} pages</span>
+          </div>
+          <div className="award-detail-tree-frame">
             <SourcePageTree
               layout="split"
               sources={officialSources.map((source) => ({
@@ -189,15 +194,19 @@ export default async function SharedAwardDetailPage({ params }: Params) {
           </div>
         </div>
 
-        <div className="dashboard-panel dashboard-panel-pad min-w-0">
-          <h2 className="dashboard-panel-title">Update history</h2>
-          <p className="dashboard-panel-copy">
-            This history stays with the shared award, including updates found
-            before your office added it to the watchlist.
-          </p>
-          <div className="dashboard-list">
+        <div className="dashboard-panel dashboard-panel-pad award-detail-panel award-detail-updates-panel">
+          <div className="award-detail-panel-header">
+            <div>
+              <h2 className="dashboard-panel-title">Update history</h2>
+              <p className="dashboard-panel-copy">
+                Shared award updates, including changes found before your office added it.
+              </p>
+            </div>
+            <span className="badge">{officialChanges.length} updates</span>
+          </div>
+          <div className="award-detail-update-list">
             {officialChanges.map((change) => (
-              <article className="dashboard-list-item min-w-0" key={change.id}>
+              <article className="dashboard-list-item award-detail-update" key={change.id}>
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="font-black">{change.source_title || "Shared source page"}</p>
                   <span className="badge">{formatDate(change.detected_at)}</span>
@@ -253,13 +262,13 @@ function AwardBaselineDetails({
   };
 }) {
   return (
-    <div className="mt-4 max-w-4xl rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
-      {parts.overview && <p className="leading-7 text-[var(--muted)]">{parts.overview}</p>}
-      <dl className={`${parts.overview ? "mt-4" : ""} grid gap-3 md:grid-cols-2`}>
+    <div className="award-detail-facts">
+      {parts.overview && <p className="award-detail-summary-copy">{parts.overview}</p>}
+      <dl className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}>
         {parts.facts.map((fact) => (
-          <div className="rounded-xl border border-[var(--line)] bg-white p-3" key={fact.label}>
-            <dt className="text-xs font-black uppercase text-[var(--muted)]">{fact.label}</dt>
-            <dd className="mt-1 text-sm font-semibold leading-6 text-[var(--foreground)]">{fact.value}</dd>
+          <div className="award-detail-fact" key={fact.label}>
+            <dt>{fact.label}</dt>
+            <dd>{fact.value}</dd>
           </div>
         ))}
       </dl>

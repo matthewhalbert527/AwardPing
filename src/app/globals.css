@@ -1249,6 +1249,239 @@ a {
   padding: 0.95rem;
 }
 
+.dashboard-content:has(.award-detail-page) {
+  max-width: 90rem;
+}
+
+.award-detail-page {
+  display: grid;
+  gap: 1.15rem;
+}
+
+.award-detail-hero {
+  display: grid;
+  min-width: 0;
+  align-items: start;
+  gap: 1rem;
+  margin-top: 1.35rem;
+}
+
+.award-detail-badges,
+.award-detail-panel-header {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.award-detail-badges {
+  justify-content: flex-start;
+}
+
+.award-detail-summary-copy {
+  max-width: 66rem;
+  margin-top: 0.75rem;
+  color: var(--muted);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.62;
+}
+
+.award-detail-homepage {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.85rem;
+  color: var(--brand);
+  font-size: 0.9rem;
+  font-weight: 850;
+  text-decoration: underline;
+}
+
+.award-detail-homepage svg {
+  flex: 0 0 auto;
+}
+
+.award-detail-homepage span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.award-detail-watchlist {
+  border-radius: 0.5rem;
+}
+
+.award-detail-facts {
+  max-height: 18rem;
+  max-width: 72rem;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  border: 1px solid rgba(223, 229, 242, 0.95);
+  border-radius: 0.5rem;
+  background: rgba(248, 251, 255, 0.88);
+  margin-top: 1rem;
+  padding: 1rem;
+}
+
+.award-detail-facts .award-detail-summary-copy {
+  margin-top: 0;
+}
+
+.award-detail-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 0.62rem;
+}
+
+.award-detail-fact-grid-spaced {
+  margin-top: 0.9rem;
+}
+
+.award-detail-fact {
+  min-width: 0;
+  border: 1px solid rgba(223, 229, 242, 0.95);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.92);
+  padding: 0.75rem;
+}
+
+.award-detail-fact dt {
+  color: #5b6576;
+  font-size: 0.68rem;
+  font-weight: 950;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.award-detail-fact dd {
+  margin-top: 0.3rem;
+  color: var(--foreground);
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.48;
+}
+
+.award-detail-workspace {
+  display: grid;
+  gap: 1rem;
+}
+
+.award-detail-panel {
+  min-width: 0;
+  border-radius: 0.5rem;
+}
+
+.award-detail-tree-frame {
+  min-height: 0;
+  margin-top: 1rem;
+}
+
+.award-detail-page .source-tree-split {
+  grid-template-columns: minmax(16rem, 0.52fr) minmax(0, 1fr);
+  max-height: 39rem;
+  overflow: hidden;
+}
+
+.award-detail-page .source-tree-list,
+.award-detail-page .source-tree-detail-panel {
+  max-height: 39rem;
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.award-detail-page .source-tree-list {
+  padding-right: 0.2rem;
+}
+
+.award-detail-page .source-tree-controls {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  justify-content: flex-start;
+  border-bottom: 1px solid rgba(223, 229, 242, 0.75);
+  background: rgba(255, 255, 255, 0.96);
+  padding-bottom: 0.5rem;
+}
+
+.award-detail-page .source-tree-branch,
+.award-detail-page .source-tree-source,
+.award-detail-page .source-tree-detail-panel,
+.award-detail-page .source-tree-page-outline,
+.award-detail-page .source-tree-update {
+  border-radius: 0.5rem;
+}
+
+.award-detail-page .source-tree-source.dashboard-list-item {
+  padding: 0.72rem;
+}
+
+.award-detail-page .source-tree-branch {
+  background: rgba(248, 251, 255, 0.94);
+}
+
+.award-detail-page .source-tree-detail-panel {
+  align-content: start;
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.award-detail-page .source-tree-outline-sections {
+  max-height: 13rem;
+  overflow: auto;
+  padding-right: 0.15rem;
+}
+
+.award-detail-page .source-tree-fact-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  max-height: 15rem;
+  overflow: auto;
+  padding-right: 0.15rem;
+}
+
+.award-detail-update-list {
+  display: grid;
+  max-height: 34rem;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding-right: 0.2rem;
+}
+
+.award-detail-update {
+  border-radius: 0.5rem;
+  padding: 0.85rem;
+}
+
+@media (min-width: 900px) {
+  .award-detail-hero {
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 21rem);
+  }
+}
+
+@media (max-width: 880px) {
+  .award-detail-page .source-tree-split {
+    grid-template-columns: 1fr;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .award-detail-page .source-tree-list,
+  .award-detail-page .source-tree-detail-panel,
+  .award-detail-update-list {
+    max-height: 32rem;
+  }
+
+  .award-detail-page .source-tree-detail-panel {
+    order: -1;
+  }
+}
+
 .update-row {
   align-items: start;
 }
