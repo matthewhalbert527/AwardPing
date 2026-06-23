@@ -400,7 +400,11 @@ async function runOnce() {
     if (webOnly && pdfSource) {
       return;
     }
-    if (skipExistingBaselineEffective && hasBaselineForSource(source)) {
+    if (
+      skipExistingBaselineEffective &&
+      hasBaselineForSource(source) &&
+      !needsPublishedSnapshotRepair(source)
+    ) {
       report.skipped_existing_baseline += 1;
       console.log(`SKIP existing_baseline ${sourceLabel(source)}`);
       return;
@@ -490,7 +494,7 @@ async function runOnce() {
     }
 
     if (completeMissingBaselines) {
-      const missingTargets = sources.filter((source) => !hasBaselineForSource(source));
+      const missingTargets = sources.filter((source) => needsMissingBaselineCompletion(source));
       sources = missingTargets.filter((source) => !isKnownBrokenSource(source));
       const totalMissingTargets = missingTargets.length;
       const knownBrokenMissingTargets = totalMissingTargets - sources.length;
@@ -3141,6 +3145,14 @@ async function loadSources(pageLimit) {
 
 function hasBaselineForSource(source) {
   return existsSync(baselinePathForSource(source.id));
+}
+
+function needsMissingBaselineCompletion(source) {
+  return !hasBaselineForSource(source) || needsPublishedSnapshotRepair(source);
+}
+
+function needsPublishedSnapshotRepair(source) {
+  return r2SnapshotSync && r2RepairMissingSnapshots && !existingR2SnapshotSourceIds.has(source.id);
 }
 
 function needsCaptureBehaviorRefresh(baseline, capture) {

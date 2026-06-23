@@ -28,6 +28,7 @@ $LogDir = Join-Path $InstallRoot "logs"
 $WatchdogLog = Join-Path $LogDir "awardping-baseline-watchdog.log"
 $VisualLockPath = Join-Path $InstallRoot "visual-worker.lock"
 $RunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+$CoverageScript = Join-Path $InstallRoot "app\scripts\read-visual-snapshot-coverage.mjs"
 
 function Write-WatchdogLog {
   param([string]$Message)
@@ -168,15 +169,75 @@ function Test-VisualWorkerActive {
   $activeProcess = $processes |
     Where-Object {
       $_.ProcessId -ne $currentPid -and
-      (Test-ProcessHasVisualWorkerAncestor -Process $_ -ProcessesById $processesById)
+      (
+        (Test-ProcessMatches -Process $_ -Patterns $patterns) -or
+        (Test-ProcessHasVisualWorkerAncestor -Process $_ -ProcessesById $processesById)
+      )
     } |
     Select-Object -First 1
 
   return [bool]$activeProcess
 }
 
+function Get-DatabaseBaselineCompletionStatus {
+  $result = [ordered]@{
+    Available = $false
+    Error = $null
+    Source = "database"
+    Complete = $false
+    Loaded = $null
+    Existing = $null
+    Missing = $null
+    ActionableMissing = $null
+    KnownBrokenMissing = $null
+  }
+
+  if (-not (Test-Path -LiteralPath $CoverageScript)) {
+    $result.Error = "Missing coverage script: $CoverageScript"
+    return [pscustomobject]$result
+  }
+
+  try {
+    $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+    $raw = & $nodePath $CoverageScript --env .env.worker.local --limit $Limit 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+      $result.Error = "Coverage script exited with code $exitCode"
+      return [pscustomobject]$result
+    }
+
+    $text = ($raw | ForEach-Object { [string]$_ }) -join "`n"
+    $jsonLine = (($text -split "`n") | Where-Object { $_.Trim().StartsWith("{") } | Select-Object -Last 1)
+    if (-not $jsonLine) {
+      $result.Error = "Coverage script returned no JSON"
+      return [pscustomobject]$result
+    }
+
+    $parsed = $jsonLine | ConvertFrom-Json
+    if (-not $parsed.available) {
+      $result.Error = if ($parsed.error) { [string]$parsed.error } else { "Coverage script unavailable" }
+      return [pscustomobject]$result
+    }
+
+    $result.Available = $true
+    $result.Complete = [bool]$parsed.complete
+    $result.Loaded = [int]$parsed.sourceCount
+    $result.Existing = [int]$parsed.snapshotSourceCount
+    $result.Missing = [int]$parsed.missingCount
+    $result.ActionableMissing = [int]$parsed.actionableMissingCount
+    $result.KnownBrokenMissing = [int]$parsed.knownBrokenMissingCount
+    return [pscustomobject]$result
+  } catch {
+    $result.Error = $_.Exception.Message
+    return [pscustomobject]$result
+  }
+}
+
 function Get-BaselineCompletionStatus {
   $result = [ordered]@{
+    Source = "log"
+    DatabaseAvailable = $false
+    DatabaseError = $null
     Complete = $false
     LatestLog = $null
     FinishLine = $null
@@ -186,6 +247,21 @@ function Get-BaselineCompletionStatus {
     ActionableMissing = $null
     KnownBrokenMissing = $null
   }
+
+  $databaseStatus = Get-DatabaseBaselineCompletionStatus
+  if ($databaseStatus.Available) {
+    $result.Source = "database"
+    $result.DatabaseAvailable = $true
+    $result.Complete = $databaseStatus.Complete
+    $result.Loaded = $databaseStatus.Loaded
+    $result.Existing = $databaseStatus.Existing
+    $result.Missing = $databaseStatus.Missing
+    $result.ActionableMissing = $databaseStatus.ActionableMissing
+    $result.KnownBrokenMissing = $databaseStatus.KnownBrokenMissing
+    return [pscustomobject]$result
+  }
+
+  $result.DatabaseError = $databaseStatus.Error
 
   $latestLog = Get-ChildItem -Path $LogDir -Filter "awardping-visual-complete-baselines-*.log" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending |
@@ -272,15 +348,15 @@ if ($Install) {
 
 $status = Get-BaselineCompletionStatus
 if ($status.Complete) {
-  Write-WatchdogLog "complete actionable_missing=0 latest_log=$($status.LatestLog)"
+  Write-WatchdogLog "complete source=$($status.Source) loaded=$($status.Loaded) existing=$($status.Existing) missing=$($status.Missing) actionable_missing=0 known_broken_missing=$($status.KnownBrokenMissing) latest_log=$($status.LatestLog)"
   Disable-WatchdogTask -Reason "baseline_complete"
   exit 0
 }
 
 if (Test-VisualWorkerActive) {
-  Write-WatchdogLog "active no_restart latest_log=$($status.LatestLog) actionable_missing=$($status.ActionableMissing)"
+  Write-WatchdogLog "active no_restart source=$($status.Source) loaded=$($status.Loaded) existing=$($status.Existing) missing=$($status.Missing) actionable_missing=$($status.ActionableMissing) known_broken_missing=$($status.KnownBrokenMissing) latest_log=$($status.LatestLog) db_error=$($status.DatabaseError)"
   exit 0
 }
 
-Write-WatchdogLog "inactive_incomplete restarting latest_log=$($status.LatestLog) actionable_missing=$($status.ActionableMissing)"
+Write-WatchdogLog "inactive_incomplete restarting source=$($status.Source) loaded=$($status.Loaded) existing=$($status.Existing) missing=$($status.Missing) actionable_missing=$($status.ActionableMissing) known_broken_missing=$($status.KnownBrokenMissing) latest_log=$($status.LatestLog) db_error=$($status.DatabaseError)"
 Start-BaselineCompletion
