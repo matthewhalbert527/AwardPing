@@ -23,6 +23,13 @@ type BaselineCoverage = {
   knownBrokenMissingBaselines: number;
 };
 
+type BaselinePace = {
+  completedThisRun: number;
+  pagesPerHour: number;
+  etaLabel: string;
+  elapsedLabel: string;
+};
+
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
@@ -90,11 +97,16 @@ export default async function AdminPage() {
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
   const latestGeminiApiHealth = geminiApiHealth(latestGeminiUsage, latestOptions);
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
+  const renderedAt = new Date().toISOString();
+  const latestBaselinePace = baselinePaceFromMetadata(
+    latestVisualRun,
+    latestVisualMetadata,
+    renderedAt,
+  );
   const baselineCoveragePercent = latestBaselineCoverage
     ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
     : 0;
   const latestVisualStage = visualRunStage(latestVisualRun, latestVisualMetadata);
-  const renderedAt = new Date().toISOString();
   const pipelineErrors = [
     workerRunError?.message,
     sharedSourceError?.message,
@@ -377,13 +389,19 @@ export default async function AdminPage() {
             <MiniStat label="R2 snapshot rows" value={visualSnapshotRecordCount || 0} />
             <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
             <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
+            <MiniStat label="Done this run" value={latestBaselinePace?.completedThisRun || 0} />
+            <MiniStat
+              label="Baseline rate"
+              value={latestBaselinePace ? `${formatNumber(Math.round(latestBaselinePace.pagesPerHour))}/hr` : "Waiting"}
+            />
+            <MiniStat label="Estimated remaining" value={latestBaselinePace?.etaLabel || "Waiting"} />
           </div>
           {latestBaselineCoverage && (
             <ProgressBar
               className="mt-5"
               label="Screenshot baseline coverage"
               value={baselineCoveragePercent}
-              detail={`${formatNumber(latestBaselineCoverage.existingBaselines)} baselined, ${formatNumber(latestBaselineCoverage.missingBaselines)} still missing`}
+              detail={`${formatNumber(latestBaselineCoverage.existingBaselines)} baselined, ${formatNumber(latestBaselineCoverage.missingBaselines)} still missing${latestBaselinePace ? `; ${latestBaselinePace.completedThisRun} added in ${latestBaselinePace.elapsedLabel}` : ""}`}
             />
           )}
           <p className="mt-4 text-sm text-[var(--muted)]">
@@ -717,6 +735,54 @@ function percent(value: number, total: number) {
   return Math.min(100, Math.max(0, Math.round((value / total) * 100)));
 }
 
+function baselinePaceFromMetadata(
+  run: LocalWorkerRun | null,
+  metadata: Record<string, unknown>,
+  nowIso: string,
+): BaselinePace | null {
+  if (!run) return null;
+
+  const coverage = objectValue(metadata.baseline_coverage);
+  const start = baselineCoverageFromObject(objectValue(coverage.start));
+  const current = baselineCoverageFromMetadata(metadata);
+  if (!start || !current) return null;
+
+  const startedAtMs = new Date(run.started_at).getTime();
+  const nowMs = new Date(nowIso).getTime();
+  const elapsedHours = (nowMs - startedAtMs) / 3_600_000;
+  if (!Number.isFinite(elapsedHours) || elapsedHours <= 0) return null;
+
+  const completedThisRun = Math.max(0, current.existingBaselines - start.existingBaselines);
+  if (completedThisRun <= 0) return null;
+
+  const pagesPerHour = completedThisRun / elapsedHours;
+  const remainingHours =
+    pagesPerHour > 0 ? current.actionableMissingBaselines / pagesPerHour : null;
+
+  return {
+    completedThisRun,
+    pagesPerHour,
+    etaLabel: remainingHours === null ? "Unknown" : formatDurationHours(remainingHours),
+    elapsedLabel: formatDurationHours(elapsedHours),
+  };
+}
+
+function formatDurationHours(hours: number) {
+  if (!Number.isFinite(hours) || hours < 0) return "Unknown";
+  if (hours < 1) {
+    return `${Math.max(1, Math.round(hours * 60))}m`;
+  }
+
+  const wholeHours = Math.floor(hours);
+  const minutes = Math.round((hours - wholeHours) * 60);
+  if (wholeHours >= 24) {
+    const days = Math.floor(wholeHours / 24);
+    const remainderHours = wholeHours % 24;
+    return remainderHours > 0 ? `${days}d ${remainderHours}h` : `${days}d`;
+  }
+  return minutes > 0 ? `${wholeHours}h ${minutes}m` : `${wholeHours}h`;
+}
+
 function metadataObject(value: Json | undefined): Record<string, unknown> {
   return objectValue(value);
 }
@@ -753,6 +819,10 @@ function baselineCoverageFromMetadata(metadata: Record<string, unknown>): Baseli
   const start = objectValue(coverage.start);
   const selected =
     Object.keys(finish).length > 0 ? finish : Object.keys(progress).length > 0 ? progress : start;
+  return baselineCoverageFromObject(selected);
+}
+
+function baselineCoverageFromObject(selected: Record<string, unknown>): BaselineCoverage | null {
   const loadedSources = numberFromObject(selected, "loaded_sources");
   if (loadedSources <= 0) return null;
 
