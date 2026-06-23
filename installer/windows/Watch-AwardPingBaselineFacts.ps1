@@ -332,6 +332,22 @@ function Start-AwardFactsAggregate {
   Write-WatchdogLog "started_award_facts_aggregate reason=$Reason pid=$($process.Id) stdout=$outLog stderr=$errLog"
 }
 
+function Get-ProgressAggregateStatusKey {
+  param([object]$Status)
+
+  if (-not $Status) {
+    return $null
+  }
+
+  $processed = [int]$Status.Processed
+  if ($processed -lt 500) {
+    return $null
+  }
+
+  $bucket = [Math]::Floor($processed / 500)
+  return "$($Status.LatestReport)|progress_bucket=$bucket"
+}
+
 if ($Install) {
   Install-WatchdogTask
   exit 0
@@ -361,6 +377,10 @@ if ($status.PausedForCostCapToday) {
 }
 
 if (Test-BaselineFactsWorkerActive) {
+  $progressAggregateStatusKey = Get-ProgressAggregateStatusKey -Status $status
+  if ($progressAggregateStatusKey) {
+    Start-AwardFactsAggregate -Reason "baseline_facts_progress" -StatusKey $progressAggregateStatusKey
+  }
   Write-WatchdogLog "active no_restart source=$($status.Source) latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed)"
   exit 0
 }
