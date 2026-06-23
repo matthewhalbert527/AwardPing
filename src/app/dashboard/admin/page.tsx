@@ -59,11 +59,16 @@ export default async function AdminPage() {
   const [
     { data: workerRunRows, error: workerRunError },
     { count: sharedSourceCount, error: sharedSourceError },
+    { count: activeSharedSourceCount, error: activeSharedSourceError },
     { count: sourceMetadataCount, error: sourceMetadataError },
     { count: visualSnapshotRecordCount, error: visualSnapshotRecordError },
   ] = await Promise.all([
     admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(30),
     admin.from("shared_award_sources").select("*", { count: "exact", head: true }),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active"),
     admin
       .from("shared_award_sources")
       .select("*", { count: "exact", head: true })
@@ -147,6 +152,10 @@ export default async function AdminPage() {
     latestVisualMetadata,
     renderedAt,
   );
+  const activeSourceTotal = activeSharedSourceCount || sharedSourceCount || 0;
+  const publishedSnapshotCount = visualSnapshotRecordCount || 0;
+  const publishedSnapshotMissing = Math.max(0, activeSourceTotal - publishedSnapshotCount);
+  const publishedSnapshotPercent = percent(publishedSnapshotCount, activeSourceTotal);
   const baselineCoveragePercent = latestBaselineCoverage
     ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
     : 0;
@@ -154,6 +163,7 @@ export default async function AdminPage() {
   const pipelineErrors = [
     workerRunError?.message,
     sharedSourceError?.message,
+    activeSharedSourceError?.message,
     sourceMetadataError?.message,
     visualSnapshotRecordError?.message,
   ].filter(Boolean);
@@ -206,9 +216,10 @@ export default async function AdminPage() {
           }
           detail={
             latestBaselineCoverage
-              ? `${baselineCoveragePercent}% complete; ${formatNumber(latestBaselineCoverage.actionableMissingBaselines)} actionable missing`
-              : `${formatNumber(visualSnapshotRecordCount || 0)} sources indexed in R2`
+              ? `${baselineCoveragePercent}% local; ${formatNumber(publishedSnapshotMissing)} unpublished to R2`
+              : `${formatNumber(publishedSnapshotCount)} sources indexed in R2`
           }
+          attention={publishedSnapshotMissing > 0}
         />
         <MetricCard
           icon={Sparkles}
@@ -326,11 +337,14 @@ export default async function AdminPage() {
                 <MiniStat label="Skipped existing" value={numberFromObject(latestCounts, "r2_skipped_existing")} />
                 <MiniStat label="Repaired missing" value={numberFromObject(latestCounts, "r2_repaired_missing")} />
                 <MiniStat label="Known missing" value={numberFromObject(latestCounts, "r2_known_missing")} attention={numberFromObject(latestCounts, "r2_known_missing") > 0} />
+                <MiniStat label="Published rows" value={publishedSnapshotCount} />
+                <MiniStat label="Unpublished active" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
               </div>
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
                 <Detail label="R2 sync" value={booleanFromObject(latestOptions, "r2_snapshot_sync") ? "On" : "Off"} />
                 <Detail label="Repair missing" value={booleanFromObject(latestOptions, "r2_repair_missing_snapshots") ? "On" : "Off"} />
                 <Detail label="Bucket" value={stringFromObject(latestOptions, "r2_bucket") || "Not set"} />
+                <Detail label="R2 coverage" value={`${publishedSnapshotPercent}% of active sources`} />
               </dl>
             </div>
 
@@ -438,8 +452,10 @@ export default async function AdminPage() {
           </div>
           <div className="mt-5 grid gap-3">
             <MiniStat label="Catalog source pages" value={sharedSourceCount || 0} />
+            <MiniStat label="Active source pages" value={activeSourceTotal} />
             <MiniStat label="Page outlines scanned" value={`${formatNumber(sourceMetadataCount || 0)} (${sourceMetadataPercent}%)`} />
-            <MiniStat label="R2 snapshot rows" value={visualSnapshotRecordCount || 0} />
+            <MiniStat label="R2 snapshot rows" value={publishedSnapshotCount} />
+            <MiniStat label="Unpublished active" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
             <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
             <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
             <MiniStat label="Done this run" value={latestBaselinePace?.completedThisRun || 0} />
@@ -458,8 +474,9 @@ export default async function AdminPage() {
             />
           )}
           <p className="mt-4 text-sm text-[var(--muted)]">
-            This baseline number is based on the local screenshot archive, not the retired text
-            checker. Broken links are separated so they do not hide actionable missing screenshots.
+            Local baseline coverage tracks screenshots on this PC. R2 coverage tracks screenshots
+            that are published for website viewing. Broken links are separated so they do not hide
+            actionable missing screenshots.
           </p>
         </div>
       </section>
