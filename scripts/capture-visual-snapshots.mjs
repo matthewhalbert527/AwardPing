@@ -3280,7 +3280,9 @@ async function startWorkerRun(report) {
     return null;
   }
 
-  return data?.id || null;
+  const runId = data?.id || null;
+  await markSupersededVisualWorkerRuns(runId);
+  return runId;
 }
 
 async function finishWorkerRun(runId, status, errorMessageValue, report) {
@@ -3361,7 +3363,52 @@ async function startWorkerRunWithoutMetadata() {
     return null;
   }
 
-  return data?.id || null;
+  const runId = data?.id || null;
+  await markSupersededVisualWorkerRuns(runId);
+  return runId;
+}
+
+async function markSupersededVisualWorkerRuns(currentRunId) {
+  if (!currentRunId || !supabase) return;
+
+  const { data, error } = await supabase
+    .from("local_worker_runs")
+    .select("id,metadata")
+    .eq("worker_name", visualWorkerName())
+    .eq("status", "running")
+    .neq("id", currentRunId)
+    .limit(25);
+
+  if (error) {
+    console.log(`STALE_RUN_SCAN_FAILED | ${describeSupabaseError(error, "scan stale visual worker runs")}`);
+    return;
+  }
+
+  for (const row of data || []) {
+    const metadata = jsonObjectOrEmpty(row.metadata);
+    const staleMetadata = {
+      ...metadata,
+      stale_marked_at: new Date().toISOString(),
+      stale_reason: "Superseded by a newer local visual snapshot worker run after the launcher restarted.",
+      superseded_by_run_id: currentRunId,
+    };
+    const { error: updateError } = await supabase
+      .from("local_worker_runs")
+      .update({
+        status: "failed",
+        error: "Superseded by a newer local visual snapshot worker run after restart.",
+        finished_at: new Date().toISOString(),
+        metadata: staleMetadata,
+      })
+      .eq("id", row.id)
+      .eq("status", "running");
+
+    if (updateError) {
+      console.log(`STALE_RUN_MARK_FAILED id=${row.id} | ${describeSupabaseError(updateError, "mark stale visual worker run")}`);
+    } else {
+      console.log(`STALE_RUN_MARKED id=${row.id} superseded_by=${currentRunId}`);
+    }
+  }
 }
 
 async function finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, report) {
