@@ -75,40 +75,61 @@ export default async function AdminPage() {
 
   const workerRuns = (workerRunRows || []) as LocalWorkerRun[];
   const visualRuns = workerRuns.filter((run) => run.worker_name.includes("visual-snapshot"));
-  const detailRuns = workerRuns.filter(
-    (run) =>
-      run.worker_name.includes("award-baseline-detail") ||
-      run.worker_name.includes("baseline-facts"),
+  const pageInfoRuns = workerRuns.filter((run) => run.worker_name.includes("baseline-facts"));
+  const awardDetailRuns = workerRuns.filter((run) =>
+    run.worker_name.includes("award-baseline-detail"),
   );
   const latestVisualRun = visualRuns[0] || null;
-  const latestDetailRun = detailRuns[0] || null;
+  const latestPageInfoRun = pageInfoRuns[0] || null;
+  const latestAwardDetailRun = awardDetailRuns[0] || null;
   const latestVisualMetadata = latestVisualRun ? metadataObject(latestVisualRun.metadata) : {};
-  const latestDetailMetadata = latestDetailRun ? metadataObject(latestDetailRun.metadata) : {};
+  const latestPageInfoMetadata = latestPageInfoRun
+    ? metadataObject(latestPageInfoRun.metadata)
+    : {};
+  const latestAwardDetailMetadata = latestAwardDetailRun
+    ? metadataObject(latestAwardDetailRun.metadata)
+    : {};
   const latestCounts = objectValue(latestVisualMetadata.counts);
-  const latestDetailCounts = objectValue(latestDetailMetadata.counts);
+  const latestPageInfoCounts = objectValue(latestPageInfoMetadata.counts);
+  const latestAwardDetailCounts = objectValue(latestAwardDetailMetadata.counts);
   const latestOptions = objectValue(latestVisualMetadata.options);
-  const latestDetailOptions = objectValue(latestDetailMetadata.options);
+  const latestPageInfoOptions = latestPageInfoRun
+    ? objectValue(latestPageInfoMetadata.options)
+    : latestOptions;
+  const latestAwardDetailOptions = objectValue(latestAwardDetailMetadata.options);
   const latestPipeline = objectValue(latestVisualMetadata.visual_pipeline);
-  const latestDetailPipeline = effectiveDetailPipeline(latestDetailMetadata);
+  const latestPageInfoPipeline = latestPageInfoRun
+    ? effectiveDetailPipeline(latestPageInfoMetadata)
+    : latestPipeline;
+  const latestAwardDetailPipeline = effectiveDetailPipeline(latestAwardDetailMetadata);
   const latestCapture = objectValue(latestPipeline.capture);
-  const latestExtraction = objectValue(latestPipeline.extraction);
   const latestComparison = objectValue(latestPipeline.comparison);
   const latestPublishing = objectValue(latestPipeline.publishing);
-  const latestDetailExtraction = objectValue(latestDetailPipeline.extraction);
-  const latestDetailPublishing = objectValue(latestDetailPipeline.publishing);
+  const latestPageInfoExtraction = objectValue(latestPageInfoPipeline.extraction);
+  const latestAwardDetailExtraction = objectValue(latestAwardDetailPipeline.extraction);
+  const latestAwardDetailPublishing = objectValue(latestAwardDetailPipeline.publishing);
+  const latestPageInfoStatusRun = latestPageInfoRun || latestVisualRun;
   const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
-  const latestDetailGeminiCliUsage = objectValue(latestDetailMetadata.gemini_cli_usage);
+  const latestPageInfoGeminiCliUsage = latestPageInfoRun
+    ? objectValue(latestPageInfoMetadata.gemini_cli_usage)
+    : latestGeminiCliUsage;
+  const latestAwardDetailGeminiCliUsage = objectValue(
+    latestAwardDetailMetadata.gemini_cli_usage,
+  );
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
-  const latestDetailGeminiUsage = objectValue(latestDetailMetadata.gemini_usage);
-  const latestPageInfoExtraction = latestDetailRun ? latestDetailExtraction : latestExtraction;
-  const latestPageInfoOptions = latestDetailRun ? latestDetailOptions : latestOptions;
-  const latestPageInfoGeminiUsage = latestDetailRun ? latestDetailGeminiUsage : latestGeminiUsage;
-  const latestPageInfoGeminiCliUsage = latestDetailRun ? latestDetailGeminiCliUsage : latestGeminiCliUsage;
-  const latestPageInfoRun = latestDetailRun || latestVisualRun;
+  const latestPageInfoGeminiUsage = latestPageInfoRun
+    ? objectValue(latestPageInfoMetadata.gemini_usage)
+    : latestGeminiUsage;
+  const latestAwardDetailGeminiUsage = objectValue(latestAwardDetailMetadata.gemini_usage);
   const latestPageInfoApplied =
-    numberFromObject(latestDetailPublishing, "applied") ||
-    numberFromObject(latestDetailCounts, "applied") ||
-    latestDetailRun?.changed_count ||
+    numberFromObject(latestPageInfoExtraction, "backfilled") ||
+    numberFromObject(latestPageInfoCounts, "applied") ||
+    latestPageInfoRun?.changed_count ||
+    0;
+  const latestAwardDetailApplied =
+    numberFromObject(latestAwardDetailPublishing, "applied") ||
+    numberFromObject(latestAwardDetailCounts, "applied") ||
+    latestAwardDetailRun?.changed_count ||
     0;
   const latestGeminiApiHealth = geminiApiHealth(latestGeminiUsage, latestOptions);
   const latestPageInfoGeminiApiHealth = geminiApiHealth(
@@ -192,9 +213,9 @@ export default async function AdminPage() {
         <MetricCard
           icon={Sparkles}
           label="Gemini API calls"
-          value={numberFromObject(latestGeminiUsage, "calls")}
-          detail={latestGeminiApiHealth.metricDetail}
-          attention={latestGeminiApiHealth.attention}
+          value={numberFromObject(latestPageInfoGeminiUsage, "calls")}
+          detail={latestPageInfoGeminiApiHealth.metricDetail}
+          attention={latestPageInfoGeminiApiHealth.attention}
         />
         <MetricCard
           icon={Database}
@@ -206,13 +227,13 @@ export default async function AdminPage() {
         <MetricCard
           icon={Sparkles}
           label="Award details"
-          value={latestDetailRun ? statusLabel(latestDetailRun.status) : "None"}
+          value={latestAwardDetailRun ? statusLabel(latestAwardDetailRun.status) : "None"}
           detail={
-            latestDetailRun
-              ? `${formatNumber(numberFromObject(latestDetailExtraction, "extracted"))} extracted, ${formatNumber(latestPageInfoApplied)} applied`
+            latestAwardDetailRun
+              ? `${formatNumber(numberFromObject(latestAwardDetailExtraction, "extracted"))} extracted, ${formatNumber(latestAwardDetailApplied)} applied`
               : "No detail run logged"
           }
-          attention={latestDetailRun?.status === "failed"}
+          attention={latestAwardDetailRun?.status === "failed"}
         />
         <MetricCard
           icon={Activity}
@@ -269,7 +290,8 @@ export default async function AdminPage() {
                 geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) ||
                 geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)
                   ? "Cap reached"
-                  : latestPageInfoRun?.status === "running" || booleanFromObject(latestPageInfoExtraction, "enabled")
+                  : latestPageInfoStatusRun?.status === "running" ||
+                      booleanFromObject(latestPageInfoExtraction, "enabled")
                     ? "On"
                     : "Off"
               }
@@ -321,9 +343,9 @@ export default async function AdminPage() {
                 <MiniStat label="Applied" value={latestPageInfoApplied} />
               </div>
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
-                <Detail label="Provider" value={latestPageInfoRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
-                <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestDetailMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
-                <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestDetailRun?.status === "running" ? "On" : "Off"} />
+                <Detail label="Provider" value={latestPageInfoStatusRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
+                <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestPageInfoMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
+                <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestPageInfoStatusRun?.status === "running" ? "On" : "Off"} />
                 <Detail label="API status" value={latestPageInfoGeminiApiHealth.label} />
                 <Detail label="API calls" value={formatNumber(numberFromObject(latestPageInfoGeminiUsage, "calls"))} />
                 <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
@@ -375,30 +397,30 @@ export default async function AdminPage() {
 
           <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
             <h3 className="font-black">Baseline award details</h3>
-            {latestDetailRun ? (
+            {latestAwardDetailRun ? (
               <>
                 <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <MiniStat label="Awards checked" value={latestDetailRun.checked_count || 0} />
-                  <MiniStat label="Skipped existing" value={numberFromObject(latestDetailCounts, "skipped_existing")} />
-                  <MiniStat label="Details extracted" value={numberFromObject(latestDetailExtraction, "extracted")} />
-                  <MiniStat label="Website summaries applied" value={latestPageInfoApplied} />
+                  <MiniStat label="Awards checked" value={latestAwardDetailRun.checked_count || 0} />
+                  <MiniStat label="Skipped existing" value={numberFromObject(latestAwardDetailCounts, "skipped_existing")} />
+                  <MiniStat label="Details extracted" value={numberFromObject(latestAwardDetailExtraction, "extracted")} />
+                  <MiniStat label="Website summaries applied" value={latestAwardDetailApplied} />
                   <MiniStat
                     label="No baseline yet"
-                    value={numberFromObject(latestDetailExtraction, "no_baseline")}
-                    attention={numberFromObject(latestDetailExtraction, "no_baseline") > 0}
+                    value={numberFromObject(latestAwardDetailExtraction, "no_baseline")}
+                    attention={numberFromObject(latestAwardDetailExtraction, "no_baseline") > 0}
                   />
                 </div>
                 <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
-                  <Detail label="Started" value={formatDate(latestDetailRun.started_at)} />
-                  <Detail label="Finished" value={latestDetailRun.finished_at ? formatDate(latestDetailRun.finished_at) : "Still running"} />
-                  <Detail label="AI model" value={stringFromObject(latestDetailMetadata, "ai_model") || "Gemini CLI"} />
-                  <Detail label="Gemini API calls" value={formatNumber(numberFromObject(latestDetailGeminiUsage, "calls"))} />
-                  <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestDetailGeminiUsage, "estimated_cost_usd"))}`} />
-                  <Detail label="Gemini CLI calls" value={formatNumber(numberFromObject(latestDetailGeminiCliUsage, "calls"))} />
-                  <Detail label="Call cap" value={formatCap(latestDetailOptions)} />
-                  <Detail label="API cost cap" value={formatApiCostCap(latestDetailOptions)} />
-                  <Detail label="Safe models" value={formatSafeModels(latestDetailOptions)} />
-                  <Detail label="Unsafe override" value={booleanFromObject(latestDetailOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
+                  <Detail label="Started" value={formatDate(latestAwardDetailRun.started_at)} />
+                  <Detail label="Finished" value={latestAwardDetailRun.finished_at ? formatDate(latestAwardDetailRun.finished_at) : "Still running"} />
+                  <Detail label="AI model" value={stringFromObject(latestAwardDetailMetadata, "ai_model") || "Source page facts"} />
+                  <Detail label="Gemini API calls" value={formatNumber(numberFromObject(latestAwardDetailGeminiUsage, "calls"))} />
+                  <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestAwardDetailGeminiUsage, "estimated_cost_usd"))}`} />
+                  <Detail label="Gemini CLI calls" value={formatNumber(numberFromObject(latestAwardDetailGeminiCliUsage, "calls"))} />
+                  <Detail label="Call cap" value={formatCap(latestAwardDetailOptions)} />
+                  <Detail label="API cost cap" value={formatApiCostCap(latestAwardDetailOptions)} />
+                  <Detail label="Safe models" value={formatSafeModels(latestAwardDetailOptions)} />
+                  <Detail label="Unsafe override" value={booleanFromObject(latestAwardDetailOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
                 </dl>
               </>
             ) : (
@@ -447,7 +469,11 @@ export default async function AdminPage() {
       </section>
 
       <section className="mt-6">
-        <RecentRuns runs={detailRuns} title="Recent award detail runs" />
+        <RecentRuns runs={pageInfoRuns} title="Recent page information runs" />
+      </section>
+
+      <section className="mt-6">
+        <RecentRuns runs={awardDetailRuns} title="Recent award detail runs" />
       </section>
     </AdminShell>
   );
@@ -586,14 +612,7 @@ function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) 
       </div>
       <div className="mt-5 grid gap-3">
         {runs.slice(0, 10).map((run) => {
-          const metadata = metadataObject(run.metadata);
-          const pipeline = objectValue(metadata.visual_pipeline);
-          const capture = objectValue(pipeline.capture);
-          const comparison = objectValue(pipeline.comparison);
-          const checked = numberFromObject(capture, "checked") || run.checked_count || 0;
-          const baselined = numberFromObject(capture, "baselined") || run.initial_count || 0;
-          const changed = numberFromObject(comparison, "true_changes") || run.changed_count || 0;
-          const failed = numberFromObject(capture, "failed") || run.failed_count || 0;
+          const metrics = workerRunMetrics(run);
           return (
             <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={run.id}>
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -607,8 +626,9 @@ function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) 
                 <StatusPill status={run.status} />
               </div>
               <p className="mt-2 text-sm text-[var(--muted)]">
-                Checked {formatNumber(checked)}, baselined {formatNumber(baselined)}, changed{" "}
-                {formatNumber(changed)}, failed {formatNumber(failed)}
+                Checked {formatNumber(metrics.checked)}, {metrics.secondaryLabel}{" "}
+                {formatNumber(metrics.secondaryValue)}, {metrics.tertiaryLabel}{" "}
+                {formatNumber(metrics.tertiaryValue)}, failed {formatNumber(metrics.failed)}
               </p>
               {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
             </div>
@@ -618,6 +638,62 @@ function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) 
       </div>
     </section>
   );
+}
+
+function workerRunMetrics(run: LocalWorkerRun) {
+  const metadata = metadataObject(run.metadata);
+  const counts = objectValue(metadata.counts);
+
+  if (run.worker_name.includes("baseline-facts")) {
+    const pipeline = effectiveDetailPipeline(metadata);
+    const extraction = objectValue(pipeline.extraction);
+    return {
+      checked: numberFromObject(counts, "checked") || run.checked_count || 0,
+      secondaryLabel: "extracted",
+      secondaryValue: numberFromObject(extraction, "extracted") || run.initial_count || 0,
+      tertiaryLabel: "applied",
+      tertiaryValue:
+        numberFromObject(extraction, "backfilled") ||
+        numberFromObject(counts, "applied") ||
+        run.changed_count ||
+        0,
+      failed: numberFromObject(extraction, "failed") || run.failed_count || 0,
+    };
+  }
+
+  if (run.worker_name.includes("award-baseline-detail")) {
+    const pipeline = effectiveDetailPipeline(metadata);
+    const extraction = objectValue(pipeline.extraction);
+    const publishing = objectValue(pipeline.publishing);
+    return {
+      checked:
+        numberFromObject(extraction, "checked") ||
+        numberFromObject(counts, "checked") ||
+        run.checked_count ||
+        0,
+      secondaryLabel: "extracted",
+      secondaryValue: numberFromObject(extraction, "extracted") || run.initial_count || 0,
+      tertiaryLabel: "applied",
+      tertiaryValue:
+        numberFromObject(publishing, "applied") ||
+        numberFromObject(counts, "applied") ||
+        run.changed_count ||
+        0,
+      failed: numberFromObject(extraction, "failed") || run.failed_count || 0,
+    };
+  }
+
+  const pipeline = objectValue(metadata.visual_pipeline);
+  const capture = objectValue(pipeline.capture);
+  const comparison = objectValue(pipeline.comparison);
+  return {
+    checked: numberFromObject(capture, "checked") || run.checked_count || 0,
+    secondaryLabel: "baselined",
+    secondaryValue: numberFromObject(capture, "baselined") || run.initial_count || 0,
+    tertiaryLabel: "changed",
+    tertiaryValue: numberFromObject(comparison, "true_changes") || run.changed_count || 0,
+    failed: numberFromObject(capture, "failed") || run.failed_count || 0,
+  };
 }
 
 function StatusPill({ status }: { status: "running" | "succeeded" | "failed" }) {
