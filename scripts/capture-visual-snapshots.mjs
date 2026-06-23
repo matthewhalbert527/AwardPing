@@ -3319,6 +3319,12 @@ async function updateWorkerRunMetadata(runId, report) {
   const { error } = await supabase
     .from("local_worker_runs")
     .update({
+      checked_count: report.checked,
+      changed_count: report.ai_true_changes,
+      unchanged_count: report.unchanged,
+      initial_count: report.baselined,
+      discovered_count: report.discovered_pdf_sources,
+      failed_count: report.failed,
       metadata: visualWorkerMetadata(report),
     })
     .eq("id", runId);
