@@ -46,4 +46,47 @@ describe("SourcePageTree", () => {
     expect(html).not.toContain("https://agbell.org/financial-aid/</span>");
     expect(html).not.toContain("&gt;/&lt;");
   });
+
+  it("renders a split outline with selected page details", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "eligibility",
+            title: "Eligibility",
+            displayTitle: "Eligibility",
+            pageDescription: "Eligibility rules for the scholarship.",
+            url: "https://example.edu/scholarship/eligibility",
+            pageType: "eligibility",
+            pageMetadataGeneratedAt: "2026-06-23T15:00:00.000Z",
+            pageMetadataModel: "gemini-2.5-flash-lite",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Eligibility",
+                award_relevance: "primary",
+                deadline: "January 29, 2026",
+                eligibility: ["Sophomores and juniors"],
+                sections: [
+                  {
+                    title: "Citizenship",
+                    description: "Applicants must meet citizenship requirements.",
+                    status: "unchanged",
+                  },
+                ],
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("source-tree-split");
+    expect(html).toContain("source-tree-detail-panel");
+    expect(html).toContain("Eligibility rules for the scholarship.");
+    expect(html).toContain("Citizenship");
+    expect(html).toContain("January 29, 2026");
+    expect(html).toContain("gemini-2.5-flash-lite");
+  });
 });

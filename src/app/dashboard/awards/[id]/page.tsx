@@ -147,15 +147,16 @@ export default async function SharedAwardDetailPage({ params }: Params) {
         </div>
       </div>
 
-      <section className="mt-8 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
+      <section className="mt-8 grid min-w-0 gap-6">
         <div className="dashboard-panel dashboard-panel-pad min-w-0">
-          <h2 className="dashboard-panel-title">Sites checked</h2>
+          <h2 className="dashboard-panel-title">Page outline</h2>
           <p className="dashboard-panel-copy">
-            Official source pages are grouped by site so you can review the source structure
-            without a long flat list.
+            Official source pages are grouped into a readable outline with source snapshots,
+            page sections, and recent changes.
           </p>
           <div className="dashboard-list">
             <SourcePageTree
+              layout="split"
               sources={officialSources.map((source) => ({
                 id: source.id,
                 title: source.title,
