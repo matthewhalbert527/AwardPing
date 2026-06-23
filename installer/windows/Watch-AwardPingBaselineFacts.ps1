@@ -31,6 +31,8 @@ $WatchdogLog = Join-Path $LogDir "awardping-baseline-facts-watchdog.log"
 $RunScript = Join-Path $InstallRoot "Run-AwardPingBaselineFacts.ps1"
 $AppReportsDir = Join-Path $InstallRoot "app\reports"
 $LockPath = Join-Path $InstallRoot "baseline-facts-worker.lock"
+$AggregateScript = Join-Path $InstallRoot "app\scripts\aggregate-award-baseline-facts.mjs"
+$AggregateMarkerPath = Join-Path $LogDir "awardping-award-facts-aggregate.marker"
 
 function Write-WatchdogLog {
   param([string]$Message)
@@ -245,6 +247,49 @@ function Start-BaselineFacts {
   Write-WatchdogLog "restarted_baseline_facts pid=$($process.Id) limit=$Limit model=$Model max_calls=$MaxCalls cost_cap_usd=$CostCapUsd"
 }
 
+function Start-AwardFactsAggregate {
+  param(
+    [string]$Reason,
+    [string]$StatusKey
+  )
+
+  $marker = "$Reason|$StatusKey"
+  if ((Test-Path -LiteralPath $AggregateMarkerPath) -and (Get-Content -LiteralPath $AggregateMarkerPath -Raw -ErrorAction SilentlyContinue).Trim() -eq $marker) {
+    Write-WatchdogLog "aggregate_already_started reason=$Reason status_key=$StatusKey"
+    return
+  }
+
+  if (-not (Test-Path -LiteralPath $AggregateScript)) {
+    Write-WatchdogLog "aggregate_missing reason=$Reason path=$AggregateScript"
+    return
+  }
+
+  $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+  $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $outLog = Join-Path $LogDir "awardping-award-facts-aggregate-$stamp.log"
+  $errLog = Join-Path $LogDir "awardping-award-facts-aggregate-$stamp.err.log"
+  $arguments = @(
+    $AggregateScript,
+    "--env",
+    ".env.worker.local",
+    "--limit=all",
+    "--apply=true",
+    "--force=false"
+  )
+
+  $process = Start-Process `
+    -FilePath $nodePath `
+    -ArgumentList $arguments `
+    -WorkingDirectory (Join-Path $InstallRoot "app") `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput $outLog `
+    -RedirectStandardError $errLog `
+    -PassThru
+
+  Set-Content -LiteralPath $AggregateMarkerPath -Value $marker -Encoding ASCII
+  Write-WatchdogLog "started_award_facts_aggregate reason=$Reason pid=$($process.Id) stdout=$outLog stderr=$errLog"
+}
+
 if ($Install) {
   Install-WatchdogTask
   exit 0
@@ -253,11 +298,13 @@ if ($Install) {
 $status = Get-BaselineFactsStatus
 if ($status.Complete) {
   Write-WatchdogLog "complete latest_report=$($status.LatestReport) loaded=$($status.Loaded) processed=$($status.Processed) failed=$($status.Failed)"
+  Start-AwardFactsAggregate -Reason "baseline_facts_complete" -StatusKey $status.LatestReport
   exit 0
 }
 
 if ($status.PausedForCostCapToday) {
   Write-WatchdogLog "paused_cost_cap_today latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed)"
+  Start-AwardFactsAggregate -Reason "baseline_facts_cost_cap" -StatusKey $status.LatestReport
   exit 0
 }
 

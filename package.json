@@ -26,6 +26,7 @@
     "source:visual-snapshots": "node scripts/capture-visual-snapshots.mjs",
     "source:baseline-facts": "node scripts/backfill-baseline-facts.mjs",
     "award:baseline-details": "node scripts/backfill-award-baseline-details.mjs",
+    "award:baseline-facts-aggregate": "node scripts/aggregate-award-baseline-facts.mjs",
     "changes:backfill-details": "node scripts/backfill-change-details.mjs",
     "updates:squash": "node scripts/squash-update-bugs.mjs",
     "updates:squash:apply": "node scripts/squash-update-bugs.mjs --apply=true",
