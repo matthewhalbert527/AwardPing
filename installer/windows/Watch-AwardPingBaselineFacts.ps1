@@ -31,6 +31,7 @@ $WatchdogLog = Join-Path $LogDir "awardping-baseline-facts-watchdog.log"
 $RunScript = Join-Path $InstallRoot "Run-AwardPingBaselineFacts.ps1"
 $AppReportsDir = Join-Path $InstallRoot "app\reports"
 $LockPath = Join-Path $InstallRoot "baseline-facts-worker.lock"
+$DatabaseStatusScript = Join-Path $InstallRoot "app\scripts\read-baseline-facts-status.mjs"
 $AggregateScript = Join-Path $InstallRoot "app\scripts\aggregate-award-baseline-facts.mjs"
 $AggregateMarkerPath = Join-Path $LogDir "awardping-award-facts-aggregate.marker"
 
@@ -165,7 +166,9 @@ function Get-IntProperty {
 
 function Get-BaselineFactsStatus {
   $result = [ordered]@{
+    Source = "local_report"
     Complete = $false
+    Drained = $false
     PausedForCostCapToday = $false
     LatestReport = $null
     Loaded = 0
@@ -209,11 +212,50 @@ function Get-BaselineFactsStatus {
   $result.Failed = $failed
   $result.StopReason = $stopReason
   $result.Complete = $loaded -gt 0 -and $processed -ge $loaded -and $failed -eq 0
+  $result.Drained = $loaded -gt 0 -and ($processed + $failed) -ge $loaded
   $result.PausedForCostCapToday =
     $stopReason -eq "gemini_api_cost_cap_reached" -and
     $startedDay -eq $today
 
   return [pscustomobject]$result
+}
+
+function Get-BaselineFactsStatusFromDatabase {
+  if (-not (Test-Path -LiteralPath $DatabaseStatusScript)) {
+    return $null
+  }
+
+  try {
+    $nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+    $raw = & $nodePath $DatabaseStatusScript "--env" ".env.worker.local" 2>$null
+    if (-not $raw) {
+      return $null
+    }
+
+    $status = ($raw -join "`n") | ConvertFrom-Json
+    if (-not $status.available) {
+      Write-WatchdogLog "database_status_unavailable message=$($status.error)"
+      return $null
+    }
+
+    return [pscustomobject]([ordered]@{
+      Source = "database"
+      Complete = [bool]$status.complete
+      Drained = [bool]$status.drained
+      PausedForCostCapToday = [bool]$status.pausedForCostCapToday
+      LatestReport = [string]$status.latestReport
+      Loaded = [int]$status.loaded
+      Processed = [int]$status.processed
+      Extracted = [int]$status.extracted
+      SkippedExisting = [int]$status.skippedExisting
+      SkippedIneligible = [int]$status.skippedIneligible
+      Failed = [int]$status.failed
+      StopReason = [string]$status.stopReason
+    })
+  } catch {
+    Write-WatchdogLog "database_status_failed message=$($_.Exception.Message)"
+    return $null
+  }
 }
 
 function Start-BaselineFacts {
@@ -295,23 +337,33 @@ if ($Install) {
   exit 0
 }
 
-$status = Get-BaselineFactsStatus
+$status = Get-BaselineFactsStatusFromDatabase
+if (-not $status) {
+  $status = Get-BaselineFactsStatus
+}
+
 if ($status.Complete) {
-  Write-WatchdogLog "complete latest_report=$($status.LatestReport) loaded=$($status.Loaded) processed=$($status.Processed) failed=$($status.Failed)"
+  Write-WatchdogLog "complete source=$($status.Source) latest_report=$($status.LatestReport) loaded=$($status.Loaded) processed=$($status.Processed) failed=$($status.Failed)"
   Start-AwardFactsAggregate -Reason "baseline_facts_complete" -StatusKey $status.LatestReport
   exit 0
 }
 
+if ($status.Drained) {
+  Write-WatchdogLog "drained_with_failures source=$($status.Source) latest_report=$($status.LatestReport) loaded=$($status.Loaded) processed=$($status.Processed) failed=$($status.Failed)"
+  Start-AwardFactsAggregate -Reason "baseline_facts_drained" -StatusKey "$($status.LatestReport)|failed=$($status.Failed)"
+  exit 0
+}
+
 if ($status.PausedForCostCapToday) {
-  Write-WatchdogLog "paused_cost_cap_today latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed)"
+  Write-WatchdogLog "paused_cost_cap_today source=$($status.Source) latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed)"
   Start-AwardFactsAggregate -Reason "baseline_facts_cost_cap" -StatusKey $status.LatestReport
   exit 0
 }
 
 if (Test-BaselineFactsWorkerActive) {
-  Write-WatchdogLog "active no_restart latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed)"
+  Write-WatchdogLog "active no_restart source=$($status.Source) latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed)"
   exit 0
 }
 
-Write-WatchdogLog "inactive_incomplete restarting latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed) stop_reason=$($status.StopReason)"
+Write-WatchdogLog "inactive_incomplete restarting source=$($status.Source) latest_report=$($status.LatestReport) processed=$($status.Processed)/$($status.Loaded) failed=$($status.Failed) stop_reason=$($status.StopReason)"
 Start-BaselineFacts
