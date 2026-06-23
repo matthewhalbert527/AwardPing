@@ -522,10 +522,16 @@ try {
       Start-Sleep -Seconds `$waitSeconds
     }
 
-    & `$nodePath @workerArgs *>&1 | ForEach-Object {
-      `$line = [string]`$_
-      Write-Host `$line
-      Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+    `$previousErrorActionPreference = `$ErrorActionPreference
+    `$ErrorActionPreference = "Continue"
+    try {
+      & `$nodePath @workerArgs 2>&1 | ForEach-Object {
+        `$line = [string]`$_
+        Write-Host `$line
+        Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+      }
+    } finally {
+      `$ErrorActionPreference = `$previousErrorActionPreference
     }
     `$exitCode = `$LASTEXITCODE
     Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT attempt=`$attempt exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8

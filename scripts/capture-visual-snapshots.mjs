@@ -188,7 +188,7 @@ if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAc
 
 process.on("uncaughtException", (error) => {
   if (isBrowserClosedError(error)) {
-    console.error(`NONFATAL_BROWSER_CLOSED ${errorMessage(error)}`);
+    console.log(`NONFATAL_BROWSER_CLOSED ${errorMessage(error)}`);
     return;
   }
   console.error(`UNCAUGHT ${errorMessage(error)}`);
@@ -197,7 +197,7 @@ process.on("uncaughtException", (error) => {
 
 process.on("unhandledRejection", (reason) => {
   if (isBrowserClosedError(reason)) {
-    console.error(`NONFATAL_BROWSER_CLOSED_REJECTION ${errorMessage(reason)}`);
+    console.log(`NONFATAL_BROWSER_CLOSED_REJECTION ${errorMessage(reason)}`);
     return;
   }
   console.error(`UNHANDLED_REJECTION ${errorMessage(reason)}`);
