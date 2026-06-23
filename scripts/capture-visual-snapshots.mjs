@@ -2368,42 +2368,30 @@ async function reviewWithGeminiCli(input) {
 async function reviewWithGemini(input) {
   ensureGeminiApiCallAvailable(input.report, "change_interpretation");
   const imageParts = geminiInlineImageParts([input.previous.thumbPath, input.capture.thumb_path]);
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      aiModel,
-    )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: aiSystemPrompt }] },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: aiUserPrompt(input) },
-              ...imageParts,
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 900,
-          responseMimeType: "application/json",
-          responseSchema: aiResponseSchema,
+  const data = await generateGeminiContentJson({
+    model: aiModel,
+    requestBody: {
+      systemInstruction: { parts: [{ text: aiSystemPrompt }] },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: aiUserPrompt(input) },
+            ...imageParts,
+          ],
         },
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 900,
+        responseMimeType: "application/json",
+        responseSchema: aiResponseSchema,
+      },
     },
-  );
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const message = geminiHttpErrorMessage(response.status, body);
-    recordGeminiApiError(input.report, "change_interpretation", response.status, body, message);
-    throw new Error(message);
-  }
-  const data = await response.json();
+    requestTimeoutMs: timeoutMs,
+    report: input.report,
+    kind: "change_interpretation",
+  });
   const usage = normalizeGeminiUsage(data.usageMetadata);
   const rawText = extractGeminiText(data);
   let result = null;
@@ -2529,42 +2517,30 @@ async function maybeExtractBaselineFacts(source, capture, report, options = {}) 
 
 async function extractBaselineFactsWithGemini(source, capture, report, reason) {
   ensureGeminiApiCallAvailable(report, "baseline_facts");
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      aiModel,
-    )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: baselineFactsSystemPrompt }] },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              { text: geminiCliBaselineFactsPrompt(source, capture, reason) },
-              ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 1100,
-          responseMimeType: "application/json",
-          responseSchema: baselineFactsResponseSchema,
+  const data = await generateGeminiContentJson({
+    model: aiModel,
+    requestBody: {
+      systemInstruction: { parts: [{ text: baselineFactsSystemPrompt }] },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: geminiCliBaselineFactsPrompt(source, capture, reason) },
+            ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
+          ],
         },
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 1100,
+        responseMimeType: "application/json",
+        responseSchema: baselineFactsResponseSchema,
+      },
     },
-  );
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const message = geminiHttpErrorMessage(response.status, body);
-    recordGeminiApiError(report, "baseline_facts", response.status, body, message);
-    throw new Error(message);
-  }
-  const data = await response.json();
+    requestTimeoutMs: timeoutMs,
+    report,
+    kind: "baseline_facts",
+  });
   const usage = normalizeGeminiUsage(data.usageMetadata);
   const rawText = extractGeminiText(data);
   let result = null;
@@ -2934,6 +2910,7 @@ function copyEvidenceFiles(targetDir, previous, capture) {
 function writeBaseline(source, capture, details) {
   const baselinePath = baselinePathForSource(source.id);
   mkdirSync(dirname(baselinePath), { recursive: true });
+  const existingSummary = readJsonIfExists(baselinePath)?.summary_metadata || {};
   const baseline = {
     version: 1,
     kind: capture.kind || "webpage",
@@ -2973,8 +2950,12 @@ function writeBaseline(source, capture, details) {
           }
         : null,
       previous_baseline_capture: details.previous_baseline_capture || null,
-      baseline_facts: details.baseline_facts || capture.baseline_facts || null,
-      baseline_facts_metadata: details.baseline_facts_metadata || capture.baseline_facts_metadata || null,
+      baseline_facts: details.baseline_facts || capture.baseline_facts || existingSummary.baseline_facts || null,
+      baseline_facts_metadata:
+        details.baseline_facts_metadata ||
+        capture.baseline_facts_metadata ||
+        existingSummary.baseline_facts_metadata ||
+        null,
     },
   };
   writeFileSync(baselinePath, JSON.stringify(baseline, null, 2), "utf8");
@@ -3896,6 +3877,56 @@ function recordGeminiApiError(report, kind, httpStatus, body, message) {
   };
 }
 
+async function generateGeminiContentJson({
+  model,
+  requestBody,
+  requestTimeoutMs,
+  report,
+  kind,
+}) {
+  const maxAttempts = 4;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model,
+  )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+      const body = await response.text().catch(() => "");
+
+      if (response.ok) {
+        return JSON.parse(body);
+      }
+
+      const message = geminiHttpErrorMessage(response.status, body);
+      if (attempt < maxAttempts && isRetryableGeminiApiFailure(response.status, body)) {
+        const waitMs = 1_500 * attempt;
+        console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 240)}`);
+        await sleep(waitMs);
+        continue;
+      }
+
+      recordGeminiApiError(report, kind, response.status, body, message);
+      throw new Error(message);
+    } catch (error) {
+      if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
+        const waitMs = 1_500 * attempt;
+        console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(errorMessage(error), 240)}`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error(`Gemini API failed after ${maxAttempts} attempts.`);
+}
+
 function geminiHttpErrorMessage(httpStatus, body) {
   const parsed = parseJsonObject(body) || {};
   const providerMessage = cleanNullable(jsonObjectOrEmpty(parsed.error).message);
@@ -3906,6 +3937,18 @@ function geminiHttpErrorMessage(httpStatus, body) {
 function isGeminiBillingBlocked(httpStatus, message) {
   const clean = String(message || "").toLowerCase();
   return httpStatus === 429 && /\b(prepay|prepayment|credits?\s+are\s+depleted|billing|resource_exhausted)\b/.test(clean);
+}
+
+function isRetryableGeminiApiFailure(httpStatus, body) {
+  const parsed = parseJsonObject(body) || {};
+  const message = cleanNullable(jsonObjectOrEmpty(parsed.error).message) || body;
+  if (isGeminiBillingBlocked(httpStatus, message)) return false;
+  return httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+}
+
+function isRetryableGeminiNetworkFailure(error) {
+  const message = errorMessage(error).toLowerCase();
+  return /\b(timeout|temporar|econnreset|socket|network|fetch failed|tls|ssl|unavailable)\b/.test(message);
 }
 
 function recordAiReviewUsage(report, source, capture, aiReview) {

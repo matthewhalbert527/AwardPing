@@ -369,45 +369,34 @@ function geminiCliBaselineFactFiles(capture) {
 }
 
 async function runGeminiApiBaselineFactsAnalysis(source, capture) {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      geminiApiModel,
-    )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [
-            {
-              text: "Extract a clean source-page outline for AwardPing scholarship advisors. Return strict JSON only. Every source page needs a readable display_title and short page_description, even if it is only a contact page, FAQ, PDF, portal, news page, or unclear page. Extract only facts directly supported by the screenshot, PDF text, or normalized text.",
-            },
-          ],
-        },
-        contents: [
+  const data = await generateGeminiContentJson({
+    model: geminiApiModel,
+    requestBody: {
+      systemInstruction: {
+        parts: [
           {
-            role: "user",
-            parts: [
-              { text: geminiCliBaselineFactsPrompt(source, capture, "baseline_facts_backfill") },
-              ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
-            ],
+            text: "Extract a clean source-page outline for AwardPing scholarship advisors. Return strict JSON only. Every source page needs a readable display_title and short page_description, even if it is only a contact page, FAQ, PDF, portal, news page, or unclear page. Extract only facts directly supported by the screenshot, PDF text, or normalized text.",
           },
         ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 1100,
-          responseMimeType: "application/json",
+      },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: geminiCliBaselineFactsPrompt(source, capture, "baseline_facts_backfill") },
+            ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
+          ],
         },
-      }),
-      signal: AbortSignal.timeout(geminiCliTimeoutMs),
+      ],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 1100,
+        responseMimeType: "application/json",
+      },
     },
-  );
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Gemini HTTP ${response.status}: ${truncate(body, 800)}`);
-  }
-  const data = await response.json();
+    requestTimeoutMs: geminiCliTimeoutMs,
+    kind: "baseline_facts",
+  });
   const rawText = extractGeminiText(data);
   const parsed = parseJsonObject(rawText);
   if (!parsed) throw new Error("Gemini API returned invalid JSON.");
@@ -418,6 +407,77 @@ async function runGeminiApiBaselineFactsAnalysis(source, capture) {
     raw_text: rawText,
     usage: normalizeGeminiUsage(data.usageMetadata),
   };
+}
+
+async function generateGeminiContentJson({ model, requestBody, requestTimeoutMs, kind }) {
+  const maxAttempts = 4;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    model,
+  )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+      const body = await response.text().catch(() => "");
+
+      if (response.ok) {
+        return JSON.parse(body);
+      }
+
+      const message = geminiHttpErrorMessage(response.status, body);
+      if (attempt < maxAttempts && isRetryableGeminiApiFailure(response.status, body)) {
+        const waitMs = 1_500 * attempt;
+        console.log(
+          `GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 240)}`,
+        );
+        await sleep(waitMs);
+        continue;
+      }
+
+      throw new Error(message);
+    } catch (error) {
+      if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
+        const waitMs = 1_500 * attempt;
+        console.log(
+          `GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(errorMessage(error), 240)}`,
+        );
+        await sleep(waitMs);
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  throw new Error(`Gemini API failed after ${maxAttempts} attempts.`);
+}
+
+function geminiHttpErrorMessage(httpStatus, body) {
+  const parsed = parseJsonObject(body) || {};
+  const providerMessage = cleanNullable(jsonObjectOrEmpty(parsed.error).message);
+  const message = providerMessage || truncate(body, 800) || "Gemini API request failed.";
+  return `Gemini HTTP ${httpStatus}: ${truncate(message, 800)}`;
+}
+
+function isGeminiBillingBlocked(httpStatus, message) {
+  const clean = String(message || "").toLowerCase();
+  return httpStatus === 429 && /\b(prepay|prepayment|credits?\s+are\s+depleted|billing|resource_exhausted)\b/.test(clean);
+}
+
+function isRetryableGeminiApiFailure(httpStatus, body) {
+  const parsed = parseJsonObject(body) || {};
+  const message = cleanNullable(jsonObjectOrEmpty(parsed.error).message) || body;
+  if (isGeminiBillingBlocked(httpStatus, message)) return false;
+  return httpStatus === 408 || httpStatus === 429 || httpStatus >= 500;
+}
+
+function isRetryableGeminiNetworkFailure(error) {
+  const message = errorMessage(error).toLowerCase();
+  return /\b(timeout|temporar|econnreset|socket|network|fetch failed|tls|ssl|unavailable)\b/.test(message);
 }
 
 async function applyFactsToSupabaseSource(source, facts, metadata, capture) {
@@ -460,8 +520,8 @@ function applyFactsToBaseline(baselinePath, baseline, facts, metadata) {
     ...(baseline.summary_metadata || {}),
     reason: baseline.summary_metadata?.reason || "baseline_facts_batch_test",
     updated_at: new Date().toISOString(),
-    ai_provider: "gemini-cli",
-    ai_model: geminiCliModel,
+    ai_provider: metadata.provider || aiProvider,
+    ai_model: metadata.model || (aiProvider === "gemini" ? geminiApiModel : geminiCliModel),
     baseline_facts: facts,
     baseline_facts_metadata: metadata,
   };
@@ -955,6 +1015,10 @@ function errorMessage(error) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) return String(error.message);
   return String(error || "Unknown error");
+}
+
+function sleep(milliseconds) {
+  return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
 await runOnce().catch((error) => {
