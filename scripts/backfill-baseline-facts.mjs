@@ -372,44 +372,65 @@ function geminiCliBaselineFactFiles(capture) {
 }
 
 async function runGeminiApiBaselineFactsAnalysis(source, capture) {
-  const data = await generateGeminiContentJson({
-    model: geminiApiModel,
-    requestBody: {
-      systemInstruction: {
-        parts: [
-          {
-            text: "Extract a clean source-page outline for AwardPing scholarship advisors. Return strict JSON only. Every source page needs a readable display_title and short page_description, even if it is only a contact page, FAQ, PDF, portal, news page, or unclear page. Extract only facts directly supported by the screenshot, PDF text, or normalized text.",
-          },
-        ],
-      },
-      contents: [
-        {
-          role: "user",
+  const maxJsonAttempts = 3;
+  let retryUsage = emptyGeminiUsage();
+
+  for (let attempt = 1; attempt <= maxJsonAttempts; attempt += 1) {
+    const data = await generateGeminiContentJson({
+      model: geminiApiModel,
+      requestBody: {
+        systemInstruction: {
           parts: [
-            { text: geminiCliBaselineFactsPrompt(source, capture, "baseline_facts_backfill") },
-            ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
+            {
+              text: "Extract a clean source-page outline for AwardPing scholarship advisors. Return strict JSON only. Every source page needs a readable display_title and short page_description, even if it is only a contact page, FAQ, PDF, portal, news page, or unclear page. Extract only facts directly supported by the screenshot, PDF text, or normalized text.",
+            },
           ],
         },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 1100,
-        responseMimeType: "application/json",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: geminiCliBaselineFactsPrompt(source, capture, "baseline_facts_backfill") },
+              ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1100,
+          responseMimeType: "application/json",
+        },
       },
-    },
-    requestTimeoutMs: geminiCliTimeoutMs,
-    kind: "baseline_facts",
-  });
-  const rawText = extractGeminiText(data);
-  const parsed = parseJsonObject(rawText);
-  if (!parsed) throw new Error("Gemini API returned invalid JSON.");
-  return {
-    provider: "gemini",
-    model: geminiApiModel,
-    result: parsed,
-    raw_text: rawText,
-    usage: normalizeGeminiUsage(data.usageMetadata),
-  };
+      requestTimeoutMs: geminiCliTimeoutMs,
+      kind: "baseline_facts",
+    });
+    const usage = normalizeGeminiUsage(data.usageMetadata);
+    const rawText = extractGeminiText(data);
+    const parsed = parseJsonObject(rawText);
+    if (parsed) {
+      return {
+        provider: "gemini",
+        model: geminiApiModel,
+        result: parsed,
+        raw_text: rawText,
+        usage: addGeminiUsage(retryUsage, usage),
+      };
+    }
+
+    retryUsage = addGeminiUsage(retryUsage, usage);
+    if (attempt < maxJsonAttempts) {
+      const waitMs = 1_000 * attempt;
+      console.log(
+        `GEMINI_RETRY kind=baseline_facts_json attempt=${attempt}/${maxJsonAttempts} wait_ms=${waitMs} message=invalid_json raw=${truncate(rawText, 160)}`,
+      );
+      await sleep(waitMs);
+      continue;
+    }
+
+    throw new Error(`Gemini API returned invalid JSON: ${truncate(rawText, 500) || "empty response"}`);
+  }
+
+  throw new Error(`Gemini API returned invalid JSON after ${maxJsonAttempts} attempts.`);
 }
 
 async function generateGeminiContentJson({ model, requestBody, requestTimeoutMs, kind }) {
@@ -895,6 +916,28 @@ function normalizeGeminiUsage(metadata) {
     total_tokens: nonNegativeInt(metadata?.totalTokenCount ?? metadata?.total_tokens, fallbackTotal),
     thoughts_tokens: thoughtsTokens,
     cached_content_tokens: cachedContentTokens,
+  };
+}
+
+function emptyGeminiUsage() {
+  return {
+    prompt_tokens: 0,
+    candidates_tokens: 0,
+    total_tokens: 0,
+    thoughts_tokens: 0,
+    cached_content_tokens: 0,
+  };
+}
+
+function addGeminiUsage(left, right) {
+  return {
+    prompt_tokens: nonNegativeInt(left?.prompt_tokens, 0) + nonNegativeInt(right?.prompt_tokens, 0),
+    candidates_tokens:
+      nonNegativeInt(left?.candidates_tokens, 0) + nonNegativeInt(right?.candidates_tokens, 0),
+    total_tokens: nonNegativeInt(left?.total_tokens, 0) + nonNegativeInt(right?.total_tokens, 0),
+    thoughts_tokens: nonNegativeInt(left?.thoughts_tokens, 0) + nonNegativeInt(right?.thoughts_tokens, 0),
+    cached_content_tokens:
+      nonNegativeInt(left?.cached_content_tokens, 0) + nonNegativeInt(right?.cached_content_tokens, 0),
   };
 }
 
