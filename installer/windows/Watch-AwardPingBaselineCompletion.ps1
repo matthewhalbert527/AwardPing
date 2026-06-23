@@ -53,7 +53,7 @@ function Install-WatchdogTask {
   $taskName = "AwardPing Baseline Completion Watchdog"
   $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Limit $Limit -BatchLimit $BatchLimit"
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Limit $Limit -BatchLimit $BatchLimit"
   $trigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -65,6 +65,7 @@ function Install-WatchdogTask {
     -ExecutionTimeLimit (New-TimeSpan -Minutes ([Math]::Max(2, $IntervalMinutes - 1)))
   $settings.DisallowStartIfOnBatteries = $false
   $settings.StopIfGoingOnBatteries = $false
+  $settings.Hidden = $true
 
   Register-ScheduledTask `
     -TaskName $taskName `

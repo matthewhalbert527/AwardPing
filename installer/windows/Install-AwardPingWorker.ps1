@@ -874,11 +874,12 @@ function Register-VisualSnapshotTask {
   Write-Step "Creating AwardPing visual snapshot task"
   $taskName = "AwardPing Visual Snapshot Worker"
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000"
+  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000"
   $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
   $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
   $settings.DisallowStartIfOnBatteries = $false
   $settings.StopIfGoingOnBatteries = $false
+  $settings.Hidden = $true
   Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC." -Force | Out-Null
   Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
 }
