@@ -75,7 +75,11 @@ export default async function AdminPage() {
 
   const workerRuns = (workerRunRows || []) as LocalWorkerRun[];
   const visualRuns = workerRuns.filter((run) => run.worker_name.includes("visual-snapshot"));
-  const detailRuns = workerRuns.filter((run) => run.worker_name.includes("award-baseline-detail"));
+  const detailRuns = workerRuns.filter(
+    (run) =>
+      run.worker_name.includes("award-baseline-detail") ||
+      run.worker_name.includes("baseline-facts"),
+  );
   const latestVisualRun = visualRuns[0] || null;
   const latestDetailRun = detailRuns[0] || null;
   const latestVisualMetadata = latestVisualRun ? metadataObject(latestVisualRun.metadata) : {};
@@ -85,7 +89,7 @@ export default async function AdminPage() {
   const latestOptions = objectValue(latestVisualMetadata.options);
   const latestDetailOptions = objectValue(latestDetailMetadata.options);
   const latestPipeline = objectValue(latestVisualMetadata.visual_pipeline);
-  const latestDetailPipeline = objectValue(latestDetailMetadata.detail_pipeline);
+  const latestDetailPipeline = effectiveDetailPipeline(latestDetailMetadata);
   const latestCapture = objectValue(latestPipeline.capture);
   const latestExtraction = objectValue(latestPipeline.extraction);
   const latestComparison = objectValue(latestPipeline.comparison);
@@ -95,7 +99,26 @@ export default async function AdminPage() {
   const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
   const latestDetailGeminiCliUsage = objectValue(latestDetailMetadata.gemini_cli_usage);
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
+  const latestDetailGeminiUsage = objectValue(latestDetailMetadata.gemini_usage);
+  const latestPageInfoExtraction = latestDetailRun ? latestDetailExtraction : latestExtraction;
+  const latestPageInfoOptions = latestDetailRun ? latestDetailOptions : latestOptions;
+  const latestPageInfoGeminiUsage = latestDetailRun ? latestDetailGeminiUsage : latestGeminiUsage;
+  const latestPageInfoGeminiCliUsage = latestDetailRun ? latestDetailGeminiCliUsage : latestGeminiCliUsage;
+  const latestPageInfoRun = latestDetailRun || latestVisualRun;
+  const latestPageInfoApplied =
+    numberFromObject(latestDetailPublishing, "applied") ||
+    numberFromObject(latestDetailCounts, "applied") ||
+    latestDetailRun?.changed_count ||
+    0;
   const latestGeminiApiHealth = geminiApiHealth(latestGeminiUsage, latestOptions);
+  const latestPageInfoGeminiApiHealth = geminiApiHealth(
+    latestPageInfoGeminiUsage,
+    latestPageInfoOptions,
+  );
+  const latestVisualChecked = numberFromObject(latestCapture, "checked") || latestVisualRun?.checked_count || 0;
+  const latestVisualBaselined = numberFromObject(latestCapture, "baselined") || latestVisualRun?.initial_count || 0;
+  const latestVisualUnchanged = numberFromObject(latestCapture, "unchanged") || latestVisualRun?.unchanged_count || 0;
+  const latestVisualFailed = numberFromObject(latestCapture, "failed") || latestVisualRun?.failed_count || 0;
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
   const renderedAt = new Date().toISOString();
   const latestBaselinePace = baselinePaceFromMetadata(
@@ -186,7 +209,7 @@ export default async function AdminPage() {
           value={latestDetailRun ? statusLabel(latestDetailRun.status) : "None"}
           detail={
             latestDetailRun
-              ? `${formatNumber(numberFromObject(latestDetailExtraction, "extracted"))} extracted, ${formatNumber(numberFromObject(latestDetailPublishing, "applied"))} applied`
+              ? `${formatNumber(numberFromObject(latestDetailExtraction, "extracted"))} extracted, ${formatNumber(latestPageInfoApplied)} applied`
               : "No detail run logged"
           }
           attention={latestDetailRun?.status === "failed"}
@@ -217,12 +240,12 @@ export default async function AdminPage() {
           </div>
 
           <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <MiniStat label="Checked" value={numberFromObject(latestCapture, "checked") || latestVisualRun?.checked_count || 0} />
-            <MiniStat label="Baselined" value={numberFromObject(latestCapture, "baselined") || latestVisualRun?.initial_count || 0} />
-            <MiniStat label="Unchanged" value={numberFromObject(latestCapture, "unchanged") || latestVisualRun?.unchanged_count || 0} />
-            <MiniStat label="Failed" value={numberFromObject(latestCapture, "failed") || latestVisualRun?.failed_count || 0} attention />
-            <MiniStat label="Facts extracted" value={numberFromObject(latestExtraction, "extracted")} />
-            <MiniStat label="Facts skipped" value={numberFromObject(latestExtraction, "skipped")} attention={geminiCapReached(latestOptions, latestGeminiCliUsage)} />
+            <MiniStat label="Checked" value={latestVisualChecked} />
+            <MiniStat label="Baselined" value={latestVisualBaselined} />
+            <MiniStat label="Unchanged" value={latestVisualUnchanged} />
+            <MiniStat label="Failed" value={latestVisualFailed} attention />
+            <MiniStat label="Facts extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
+            <MiniStat label="Facts skipped" value={numberFromObject(latestPageInfoExtraction, "skipped")} attention={geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) || geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)} />
             <MiniStat label="Candidates" value={numberFromObject(latestComparison, "candidates")} />
             <MiniStat label="Interpreted" value={numberFromObject(latestComparison, "interpreted")} />
             <MiniStat label="Published" value={numberFromObject(latestPublishing, "published_updates")} />
@@ -235,21 +258,26 @@ export default async function AdminPage() {
             <PipelineRow
               icon={Eye}
               title="1. Capture screenshots and PDFs"
-              detail={`Checked ${formatNumber(latestVisualRun?.checked_count || 0)}, baselined ${formatNumber(latestVisualRun?.initial_count || 0)}, failed ${formatNumber(latestVisualRun?.failed_count || 0)}.`}
+              detail={`Checked ${formatNumber(latestVisualChecked)}, baselined ${formatNumber(latestVisualBaselined)}, failed ${formatNumber(latestVisualFailed)}.`}
               status={latestVisualRun ? statusLabel(latestVisualRun.status) : "Waiting"}
             />
             <PipelineRow
               icon={Sparkles}
               title="2. Scan pages for award information"
-              detail={`Extracted ${formatNumber(numberFromObject(latestExtraction, "extracted"))}, backfilled ${formatNumber(numberFromObject(latestExtraction, "backfilled"))}, failed ${formatNumber(numberFromObject(latestExtraction, "failed"))}.`}
+              detail={`Extracted ${formatNumber(numberFromObject(latestPageInfoExtraction, "extracted"))}, applied ${formatNumber(latestPageInfoApplied)}, failed ${formatNumber(numberFromObject(latestPageInfoExtraction, "failed"))}.`}
               status={
-                geminiApiCapReached(latestOptions, latestGeminiUsage) || geminiCapReached(latestOptions, latestGeminiCliUsage)
+                geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) ||
+                geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)
                   ? "Cap reached"
-                  : booleanFromObject(latestExtraction, "enabled")
+                  : latestPageInfoRun?.status === "running" || booleanFromObject(latestPageInfoExtraction, "enabled")
                     ? "On"
                     : "Off"
               }
-              attention={numberFromObject(latestExtraction, "failed") > 0 || geminiCapReached(latestOptions, latestGeminiCliUsage)}
+              attention={
+                numberFromObject(latestPageInfoExtraction, "failed") > 0 ||
+                geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) ||
+                geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)
+              }
             />
             <PipelineRow
               icon={Activity}
@@ -287,22 +315,22 @@ export default async function AdminPage() {
             <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
               <h3 className="font-black">Page information scan</h3>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                <MiniStat label="Extracted" value={numberFromObject(latestExtraction, "extracted")} />
-                <MiniStat label="Skipped" value={numberFromObject(latestExtraction, "skipped")} attention={geminiApiCapReached(latestOptions, latestGeminiUsage) || geminiCapReached(latestOptions, latestGeminiCliUsage)} />
-                <MiniStat label="Failed" value={numberFromObject(latestExtraction, "failed")} attention={numberFromObject(latestExtraction, "failed") > 0} />
-                <MiniStat label="Backfilled" value={numberFromObject(latestExtraction, "backfilled")} />
+                <MiniStat label="Extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
+                <MiniStat label="Skipped" value={numberFromObject(latestPageInfoExtraction, "skipped")} attention={geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) || geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)} />
+                <MiniStat label="Failed" value={numberFromObject(latestPageInfoExtraction, "failed")} attention={numberFromObject(latestPageInfoExtraction, "failed") > 0} />
+                <MiniStat label="Applied" value={latestPageInfoApplied} />
               </div>
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
-                <Detail label="Provider" value={latestVisualRun?.ai_provider || stringFromObject(latestExtraction, "provider") || "None"} />
-                <Detail label="Model" value={stringFromObject(latestExtraction, "model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
-                <Detail label="Daily page scan" value={booleanFromObject(latestOptions, "extract_baseline_info") ? "On" : "Off"} />
-                <Detail label="API status" value={latestGeminiApiHealth.label} />
-                <Detail label="API calls" value={formatNumber(numberFromObject(latestGeminiUsage, "calls"))} />
-                <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestGeminiUsage, "estimated_cost_usd"))}`} />
-                <Detail label="API cost cap" value={formatApiCostCap(latestOptions)} />
-                <Detail label="CLI call cap" value={formatCap(latestOptions)} />
-                {latestGeminiApiHealth.errorDetail && (
-                  <Detail label="Last API error" value={latestGeminiApiHealth.errorDetail} />
+                <Detail label="Provider" value={latestPageInfoRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
+                <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestDetailMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
+                <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestDetailRun?.status === "running" ? "On" : "Off"} />
+                <Detail label="API status" value={latestPageInfoGeminiApiHealth.label} />
+                <Detail label="API calls" value={formatNumber(numberFromObject(latestPageInfoGeminiUsage, "calls"))} />
+                <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
+                <Detail label="API cost cap" value={formatApiCostCap(latestPageInfoOptions)} />
+                <Detail label="CLI call cap" value={formatCap(latestPageInfoOptions)} />
+                {latestPageInfoGeminiApiHealth.errorDetail && (
+                  <Detail label="Last API error" value={latestPageInfoGeminiApiHealth.errorDetail} />
                 )}
               </dl>
             </div>
@@ -353,7 +381,7 @@ export default async function AdminPage() {
                   <MiniStat label="Awards checked" value={latestDetailRun.checked_count || 0} />
                   <MiniStat label="Skipped existing" value={numberFromObject(latestDetailCounts, "skipped_existing")} />
                   <MiniStat label="Details extracted" value={numberFromObject(latestDetailExtraction, "extracted")} />
-                  <MiniStat label="Website summaries applied" value={numberFromObject(latestDetailPublishing, "applied")} />
+                  <MiniStat label="Website summaries applied" value={latestPageInfoApplied} />
                   <MiniStat
                     label="No baseline yet"
                     value={numberFromObject(latestDetailExtraction, "no_baseline")}
@@ -364,8 +392,11 @@ export default async function AdminPage() {
                   <Detail label="Started" value={formatDate(latestDetailRun.started_at)} />
                   <Detail label="Finished" value={latestDetailRun.finished_at ? formatDate(latestDetailRun.finished_at) : "Still running"} />
                   <Detail label="AI model" value={stringFromObject(latestDetailMetadata, "ai_model") || "Gemini CLI"} />
+                  <Detail label="Gemini API calls" value={formatNumber(numberFromObject(latestDetailGeminiUsage, "calls"))} />
+                  <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestDetailGeminiUsage, "estimated_cost_usd"))}`} />
                   <Detail label="Gemini CLI calls" value={formatNumber(numberFromObject(latestDetailGeminiCliUsage, "calls"))} />
                   <Detail label="Call cap" value={formatCap(latestDetailOptions)} />
+                  <Detail label="API cost cap" value={formatApiCostCap(latestDetailOptions)} />
                   <Detail label="Safe models" value={formatSafeModels(latestDetailOptions)} />
                   <Detail label="Unsafe override" value={booleanFromObject(latestDetailOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
                 </dl>
@@ -554,25 +585,35 @@ function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) 
         <h2 className="text-2xl font-black">{title}</h2>
       </div>
       <div className="mt-5 grid gap-3">
-        {runs.slice(0, 10).map((run) => (
-          <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={run.id}>
-            <div className="flex flex-wrap items-start justify-between gap-3">
-              <div>
-                <p className="font-black">{workerRunLabel(run.worker_name)}</p>
-                <p className="text-sm text-[var(--muted)]">
-                  {formatDate(run.started_at)}
-                  {run.finished_at ? `, finished ${formatDate(run.finished_at)}` : ""}
-                </p>
+        {runs.slice(0, 10).map((run) => {
+          const metadata = metadataObject(run.metadata);
+          const pipeline = objectValue(metadata.visual_pipeline);
+          const capture = objectValue(pipeline.capture);
+          const comparison = objectValue(pipeline.comparison);
+          const checked = numberFromObject(capture, "checked") || run.checked_count || 0;
+          const baselined = numberFromObject(capture, "baselined") || run.initial_count || 0;
+          const changed = numberFromObject(comparison, "true_changes") || run.changed_count || 0;
+          const failed = numberFromObject(capture, "failed") || run.failed_count || 0;
+          return (
+            <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={run.id}>
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-black">{workerRunLabel(run.worker_name)}</p>
+                  <p className="text-sm text-[var(--muted)]">
+                    {formatDate(run.started_at)}
+                    {run.finished_at ? `, finished ${formatDate(run.finished_at)}` : ""}
+                  </p>
+                </div>
+                <StatusPill status={run.status} />
               </div>
-              <StatusPill status={run.status} />
+              <p className="mt-2 text-sm text-[var(--muted)]">
+                Checked {formatNumber(checked)}, baselined {formatNumber(baselined)}, changed{" "}
+                {formatNumber(changed)}, failed {formatNumber(failed)}
+              </p>
+              {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
             </div>
-            <p className="mt-2 text-sm text-[var(--muted)]">
-              Checked {formatNumber(run.checked_count)}, baselined {formatNumber(run.initial_count)}, changed{" "}
-              {formatNumber(run.changed_count)}, failed {formatNumber(run.failed_count)}
-            </p>
-            {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
-          </div>
-        ))}
+          );
+        })}
         {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No runs recorded.</p>}
       </div>
     </section>
@@ -591,6 +632,12 @@ function statusLabel(status: string) {
   if (status === "succeeded") return "Succeeded";
   if (status === "failed") return "Failed";
   return "Running";
+}
+
+function effectiveDetailPipeline(metadata: Record<string, unknown>) {
+  const detailPipeline = objectValue(metadata.detail_pipeline);
+  if (Object.keys(detailPipeline).length > 0) return detailPipeline;
+  return objectValue(metadata.visual_pipeline);
 }
 
 function visualRunStage(run: LocalWorkerRun | null, metadata: Record<string, unknown>) {
