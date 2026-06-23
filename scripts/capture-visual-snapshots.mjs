@@ -128,6 +128,10 @@ const r2BackfillFast = boolArg(args["r2-backfill-fast"], true);
 const r2BackfillSkipExisting = boolArg(args["r2-backfill-skip-existing"], true);
 const r2BackfillConcurrency = boundedInt(args["r2-backfill-concurrency"], 12, 1, 32);
 const r2OperationRetries = boundedInt(args["r2-operation-retries"] || env.AWARDPING_R2_OPERATION_RETRIES, 3, 0, 8);
+const r2RepairMissingSnapshots = boolArg(
+  args["r2-repair-missing-snapshots"] ?? env.AWARDPING_R2_REPAIR_MISSING_SNAPSHOTS,
+  true,
+);
 const r2SnapshotSync = boolArg(
   args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
   r2BackfillBaselines,
@@ -151,6 +155,7 @@ let supabase = null;
 let r2Client = null;
 const hostLastFetchAt = new Map();
 const hostWaitQueues = new Map();
+let existingR2SnapshotSourceIds = new Set();
 let knownBrokenSourceIds = null;
 let lastBaselineCoverageProgressUpdateAt = 0;
 let lastBaselineCoverageProgressProcessed = 0;
@@ -249,6 +254,7 @@ async function runOnce() {
       r2_backfill_skip_existing: r2BackfillSkipExisting,
       r2_backfill_concurrency: r2BackfillConcurrency,
       r2_operation_retries: r2OperationRetries,
+      r2_repair_missing_snapshots: r2RepairMissingSnapshots,
       r2_snapshot_sync: r2SnapshotSync,
       r2_bucket: r2SnapshotSync ? r2Bucket : null,
       gemini_cli_path: aiProvider === "gemini-cli" ? geminiCliPath : null,
@@ -291,6 +297,9 @@ async function runOnce() {
     r2_rotated: 0,
     r2_failed: 0,
     r2_skipped_existing: 0,
+    r2_repaired_missing: 0,
+    r2_known_existing: 0,
+    r2_known_missing: 0,
     baseline_facts_extracted: 0,
     baseline_facts_failed: 0,
     baseline_facts_skipped: 0,
@@ -449,6 +458,14 @@ async function runOnce() {
     coverageSources = sources;
     report.baseline_coverage_start = summarizeBaselineCoverage(coverageSources);
     console.log(formatBaselineCoverage("BASELINE_COVERAGE start", report.baseline_coverage_start));
+    if (r2SnapshotSync && r2RepairMissingSnapshots) {
+      existingR2SnapshotSourceIds = await loadExistingR2SnapshotSourceIds(sources.map((source) => source.id));
+      report.r2_known_existing = existingR2SnapshotSourceIds.size;
+      report.r2_known_missing = Math.max(0, sources.length - existingR2SnapshotSourceIds.size);
+      console.log(
+        `R2_REPAIR_SCAN loaded=${sources.length} existing=${report.r2_known_existing} missing=${report.r2_known_missing}`,
+      );
+    }
     await updateWorkerRunMetadata(workerRunId, report);
 
     if (r2BackfillBaselines) {
@@ -689,6 +706,7 @@ async function processSource(source, context, browserMeta, report) {
         await maybeSyncR2Snapshot(source, capture, report);
       }
     }
+    await maybeRepairMissingR2Snapshot(source, capture, report);
     await markSharedSourceVisualCheckSucceeded(source, capture);
     if (textChanged) {
       report.text_only_ignored += 1;
@@ -874,6 +892,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   if (!fileChanged) {
     report.unchanged += 1;
     report.pdf_unchanged += 1;
+    await maybeRepairMissingR2Snapshot(source, capture, report);
     await markSharedSourceVisualCheckSucceeded(source, capture);
     console.log(textChanged ? `UNCHANGED pdf_file_match_text_diff_ignored ${sourceLabel(source)}` : `UNCHANGED pdf_file_match ${sourceLabel(source)}`);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
@@ -1620,7 +1639,9 @@ async function maybeSyncR2Snapshot(source, capture, report) {
     const result = await syncR2SnapshotPair(source, capture);
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
+    existingR2SnapshotSourceIds.add(source.id);
     console.log(`R2 SNAPSHOT uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
+    return true;
   } catch (error) {
     report.r2_failed += 1;
     const message = `R2 snapshot sync failed: ${errorMessage(error)}`;
@@ -1630,7 +1651,20 @@ async function maybeSyncR2Snapshot(source, capture, report) {
       message,
     });
     console.log(`R2 FAILED ${message} ${sourceLabel(source)}`);
+    return false;
   }
+}
+
+async function maybeRepairMissingR2Snapshot(source, capture, report) {
+  if (!r2SnapshotSync || !r2RepairMissingSnapshots) return false;
+  if (existingR2SnapshotSourceIds.has(source.id)) return false;
+
+  const repaired = await maybeSyncR2Snapshot(source, capture, report);
+  if (repaired) {
+    report.r2_repaired_missing += 1;
+    console.log(`R2 REPAIRED missing_snapshot ${sourceLabel(source)}`);
+  }
+  return repaired;
 }
 
 async function publishVisualChangeEvent({ source, baseline, previous, capture, aiReview, report }) {
@@ -3371,6 +3405,9 @@ function visualWorkerMetadata(report) {
       r2_rotated: report.r2_rotated,
       r2_failed: report.r2_failed,
       r2_skipped_existing: report.r2_skipped_existing,
+      r2_repaired_missing: report.r2_repaired_missing,
+      r2_known_existing: report.r2_known_existing,
+      r2_known_missing: report.r2_known_missing,
       baseline_facts_extracted: report.baseline_facts_extracted,
       baseline_facts_failed: report.baseline_facts_failed,
       baseline_facts_skipped: report.baseline_facts_skipped,

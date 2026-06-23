@@ -261,9 +261,12 @@ export default async function AdminPage() {
                 <MiniStat label="Rotated objects" value={numberFromObject(latestCounts, "r2_rotated")} />
                 <MiniStat label="Upload failures" value={numberFromObject(latestCounts, "r2_failed")} attention={numberFromObject(latestCounts, "r2_failed") > 0} />
                 <MiniStat label="Skipped existing" value={numberFromObject(latestCounts, "r2_skipped_existing")} />
+                <MiniStat label="Repaired missing" value={numberFromObject(latestCounts, "r2_repaired_missing")} />
+                <MiniStat label="Known missing" value={numberFromObject(latestCounts, "r2_known_missing")} attention={numberFromObject(latestCounts, "r2_known_missing") > 0} />
               </div>
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
                 <Detail label="R2 sync" value={booleanFromObject(latestOptions, "r2_snapshot_sync") ? "On" : "Off"} />
+                <Detail label="Repair missing" value={booleanFromObject(latestOptions, "r2_repair_missing_snapshots") ? "On" : "Off"} />
                 <Detail label="Bucket" value={stringFromObject(latestOptions, "r2_bucket") || "Not set"} />
               </dl>
             </div>
