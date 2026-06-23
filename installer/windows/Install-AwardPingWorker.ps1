@@ -421,6 +421,7 @@ param(
   [switch]`$SkipExistingBaseline,
   [int]`$DomainDelayMs = 1500,
   [int]`$WebConcurrency = 4,
+  [int]`$MaxRestarts = 3,
   [int]`$CompleteMissingBatchLimit = 250
 )
 
@@ -512,13 +513,23 @@ Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mo
 `$exitCode = 1
 Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
 try {
-  & `$nodePath @workerArgs *>&1 | ForEach-Object {
-    `$line = [string]`$_
-    Write-Host `$line
-    Add-Content -Path `$logPath -Value `$line -Encoding UTF8
-  }
-  `$exitCode = `$LASTEXITCODE
-  Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
+  `$attempt = 0
+  do {
+    `$attempt += 1
+    if (`$attempt -gt 1) {
+      `$waitSeconds = [Math]::Min(60, 10 * `$attempt)
+      Add-Content -Path `$logPath -Value "VISUAL_WORKER_RESTART attempt=`$attempt max_restarts=`$MaxRestarts wait_seconds=`$waitSeconds started=`$(Get-Date -Format o)" -Encoding UTF8
+      Start-Sleep -Seconds `$waitSeconds
+    }
+
+    & `$nodePath @workerArgs *>&1 | ForEach-Object {
+      `$line = [string]`$_
+      Write-Host `$line
+      Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+    }
+    `$exitCode = `$LASTEXITCODE
+    Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT attempt=`$attempt exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
+  } while (`$exitCode -ne 0 -and `$attempt -le `$MaxRestarts)
 } catch {
   Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
   throw
