@@ -143,6 +143,11 @@ export type Database = {
           shared_award_id: string;
           url: string;
           title: string;
+          display_title: string | null;
+          page_description: string | null;
+          page_metadata: Json;
+          page_metadata_generated_at: string | null;
+          page_metadata_model: string | null;
           page_type: AwardPageType;
           confidence: number;
           reason: string | null;
@@ -161,6 +166,11 @@ export type Database = {
           shared_award_id: string;
           url: string;
           title: string;
+          display_title?: string | null;
+          page_description?: string | null;
+          page_metadata?: Json;
+          page_metadata_generated_at?: string | null;
+          page_metadata_model?: string | null;
           page_type?: AwardPageType;
           confidence?: number;
           reason?: string | null;
@@ -176,6 +186,11 @@ export type Database = {
         };
         Update: {
           title?: string;
+          display_title?: string | null;
+          page_description?: string | null;
+          page_metadata?: Json;
+          page_metadata_generated_at?: string | null;
+          page_metadata_model?: string | null;
           page_type?: AwardPageType;
           confidence?: number;
           reason?: string | null;

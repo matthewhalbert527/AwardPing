@@ -7,6 +7,11 @@ export type MergeableWatchlistSource = {
   monitorId: string | null;
   monitorSharedAwardSourceId?: string | null;
   title: string;
+  displayTitle?: string | null;
+  pageDescription?: string | null;
+  pageMetadata?: unknown;
+  pageMetadataGeneratedAt?: string | null;
+  pageMetadataModel?: string | null;
   url: string;
   pageType: AwardPageType | null;
   status: "active" | "paused" | "error" | "untracked";
@@ -47,6 +52,15 @@ function mergeWatchlistSources<T extends MergeableWatchlistSource>(
       next.monitorSharedAwardSourceId ??
       null,
     title: bestTitle(existing.title, next.title),
+    displayTitle: shared?.displayTitle || existing.displayTitle || next.displayTitle || null,
+    pageDescription: shared?.pageDescription || existing.pageDescription || next.pageDescription || null,
+    pageMetadata: shared?.pageMetadata || existing.pageMetadata || next.pageMetadata || null,
+    pageMetadataGeneratedAt:
+      shared?.pageMetadataGeneratedAt ||
+      existing.pageMetadataGeneratedAt ||
+      next.pageMetadataGeneratedAt ||
+      null,
+    pageMetadataModel: shared?.pageMetadataModel || existing.pageMetadataModel || next.pageMetadataModel || null,
     url: preferredUrl(existing.url, next.url),
     pageType: bestPageType(existing.pageType, next.pageType),
     status: tracked?.status || existing.status || next.status,

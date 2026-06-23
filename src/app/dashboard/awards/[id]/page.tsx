@@ -159,6 +159,11 @@ export default async function SharedAwardDetailPage({ params }: Params) {
               sources={officialSources.map((source) => ({
                 id: source.id,
                 title: source.title,
+                displayTitle: source.display_title,
+                pageDescription: source.page_description,
+                pageMetadata: source.page_metadata,
+                pageMetadataGeneratedAt: source.page_metadata_generated_at,
+                pageMetadataModel: source.page_metadata_model,
                 url: source.url,
                 pageType: source.page_type,
                 lastCheckedAt: source.last_checked_at,

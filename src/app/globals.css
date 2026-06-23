@@ -1650,6 +1650,51 @@ a {
   padding-top: 0.8rem;
 }
 
+.source-tree-page-outline {
+  border: 1px solid rgba(223, 229, 242, 0.9);
+  border-radius: 0.85rem;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 0.8rem;
+}
+
+.source-tree-outline-sections {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.source-tree-outline-section {
+  border-left: 3px solid var(--brand-blue-soft);
+  padding-left: 0.75rem;
+}
+
+.source-tree-fact-grid {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+}
+
+.source-tree-fact {
+  border: 1px solid rgba(223, 229, 242, 0.8);
+  border-radius: 0.7rem;
+  background: #fff;
+  padding: 0.7rem;
+}
+
+.source-tree-fact dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 950;
+  text-transform: uppercase;
+}
+
+.source-tree-fact dd {
+  margin-top: 0.25rem;
+  font-size: 0.88rem;
+  font-weight: 750;
+  line-height: 1.5;
+}
+
 .source-tree-update {
   border: 1px solid rgba(223, 229, 242, 0.9);
   border-radius: 0.85rem;

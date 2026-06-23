@@ -33,6 +33,11 @@ export type SourcePageTreeChange = {
 export type SourcePageTreeSource = SourceTreeSource & {
   sharedAwardSourceId?: string | null;
   monitorId?: string | null;
+  displayTitle?: string | null;
+  pageDescription?: string | null;
+  pageMetadata?: unknown;
+  pageMetadataGeneratedAt?: string | null;
+  pageMetadataModel?: string | null;
   pageType: AwardPageType | null;
   status?: "active" | "paused" | "error" | "untracked";
   cadence?: string | null;
@@ -341,9 +346,11 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   showSnapshotActions: boolean;
   toggleSource: (sourceId: string) => void;
 }) {
-  const title = readableSourceTitle(source.title, source.url);
+  const outline = sourceOutline(source);
+  const title = outline.displayTitle || readableSourceTitle(source.title, source.url);
   const latestChanges = source.latestChanges || [];
   const latestChange = latestChanges[0] || null;
+  const rowStatus = sourceRowStatus(source, latestChange);
   const rowActions = renderSourceActions?.(source);
   const snapshotSourceId =
     source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
@@ -372,10 +379,18 @@ function SourcePageRow<T extends SourcePageTreeSource>({
               )}
               <span>{title}</span>
             </button>
+            <span className={rowStatus === "Changed" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {rowStatus}
+            </span>
           </div>
           <p className="mt-1 text-xs font-bold uppercase text-[var(--muted)]">
             {sourceMeta(source)}
           </p>
+          {outline.description && (
+            <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
+              {outline.description}
+            </p>
+          )}
           <a
             className="mt-2 block truncate text-sm font-semibold text-[var(--brand)] underline"
             href={source.url}
@@ -393,6 +408,7 @@ function SourcePageRow<T extends SourcePageTreeSource>({
           </div>
           {open && (
             <div className="source-tree-update-panel">
+              <SourcePageOutline source={source} outline={outline} />
               {latestChanges.length > 0 ? (
                 latestChanges.slice(0, 2).map((change) => (
                   <article className="source-tree-update" key={change.id}>
@@ -428,7 +444,7 @@ function SourcePageRow<T extends SourcePageTreeSource>({
                 ))
               ) : (
                 <p className="change-evidence-note">
-                  No text updates have been recorded for this source page yet.
+                  No screenshot updates have been recorded for this source page yet.
                 </p>
               )}
             </div>
@@ -450,6 +466,74 @@ function SourcePageRow<T extends SourcePageTreeSource>({
         )}
       </div>
     </div>
+  );
+}
+
+function SourcePageOutline<T extends SourcePageTreeSource>({
+  source,
+  outline,
+}: {
+  source: T;
+  outline: SourceOutline;
+}) {
+  const facts = outline.facts;
+  const factRows = sourceFactRows(facts);
+  const sections = outline.sections.slice(0, 8);
+  const generatedAt = source.pageMetadataGeneratedAt || outline.metadataGeneratedAt;
+  const confidence = cleanString(facts.confidence);
+
+  if (!outline.hasMetadata && !outline.description) return null;
+
+  return (
+    <section className="source-tree-page-outline">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="badge">{outline.category || "Source page"}</span>
+        <span className="badge">{relevanceLabel(outline.relevance)}</span>
+        {confidence && <span className="badge">Confidence: {titleCase(confidence)}</span>}
+      </div>
+
+      {outline.description && (
+        <p className="mt-3 text-sm font-semibold leading-6 text-[var(--muted)]">
+          {outline.description}
+        </p>
+      )}
+
+      {sections.length > 0 && (
+        <div className="source-tree-outline-sections">
+          {sections.map((section, index) => (
+            <div className="source-tree-outline-section" key={`${section.title}-${index}`}>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <p className="min-w-0 font-black">{section.title}</p>
+                <span className={section.status === "needs_review" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+                  {sectionStatusLabel(section.status)}
+                </span>
+              </div>
+              {section.description && (
+                <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{section.description}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {factRows.length > 0 && (
+        <dl className="source-tree-fact-grid">
+          {factRows.map((fact) => (
+            <div className="source-tree-fact" key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
+      {generatedAt && (
+        <p className="mt-3 text-xs font-bold uppercase text-[var(--muted)]">
+          Page outline scanned {formatDate(generatedAt)}
+          {source.pageMetadataModel ? ` with ${source.pageMetadataModel}` : ""}
+        </p>
+      )}
+    </section>
   );
 }
 
@@ -535,6 +619,117 @@ function branchStatus<T extends SourcePageTreeSource>(
   }
 
   return parts.join(" · ");
+}
+
+type SourceOutline = {
+  displayTitle: string | null;
+  description: string | null;
+  category: string | null;
+  relevance: string | null;
+  metadataGeneratedAt: string | null;
+  facts: Record<string, unknown>;
+  sections: Array<{ title: string; description: string; status: string }>;
+  hasMetadata: boolean;
+};
+
+function sourceOutline(source: SourcePageTreeSource): SourceOutline {
+  const metadata = objectValue(source.pageMetadata);
+  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts || source.pageMetadata);
+  const displayTitle =
+    cleanString(source.displayTitle) ||
+    cleanString(facts.display_title) ||
+    cleanString(facts.page_title) ||
+    null;
+  const description =
+    cleanString(source.pageDescription) ||
+    cleanString(facts.page_description) ||
+    cleanString(facts.page_purpose) ||
+    cleanString(arrayValue(facts.notes)[0]) ||
+    null;
+
+  return {
+    displayTitle,
+    description,
+    category: cleanString(facts.page_category) || (source.pageType ? pageTypeLabel(source.pageType) : null),
+    relevance: cleanString(facts.award_relevance),
+    metadataGeneratedAt:
+      cleanString(source.pageMetadataGeneratedAt) ||
+      cleanString(metadata.generated_at) ||
+      cleanString(metadata.baseline_facts_metadata && objectValue(metadata.baseline_facts_metadata).extracted_at),
+    facts,
+    sections: sectionRows(facts.sections),
+    hasMetadata: Object.keys(metadata).length > 0 || Object.keys(facts).length > 0,
+  };
+}
+
+function sourceFactRows(facts: Record<string, unknown>) {
+  const rows = [
+    { label: "Deadline", value: cleanString(facts.deadline) },
+    { label: "Opening Date", value: cleanString(facts.opening_date) },
+    { label: "Award Amount", value: joinArray(facts.award_amounts) },
+    { label: "Eligibility", value: joinArray(facts.eligibility) },
+    { label: "Requirements", value: joinArray(facts.requirements) },
+    { label: "Materials", value: joinArray(facts.application_materials) },
+    { label: "How To Apply", value: joinArray(facts.how_to_apply) },
+    { label: "Important Dates", value: joinArray(facts.important_dates) },
+    { label: "Documents", value: joinArray(facts.documents) },
+    { label: "Contact", value: joinArray(facts.contacts) },
+  ];
+
+  return rows.filter((row): row is { label: string; value: string } => Boolean(row.value));
+}
+
+function sourceRowStatus(
+  source: SourcePageTreeSource,
+  latestChange: SourcePageTreeChange | null,
+) {
+  if (source.lastError) return "Needs review";
+  if (latestChange) return "Changed";
+  if (source.pageMetadata || source.pageDescription || source.displayTitle) return "Unchanged";
+  return "Needs scan";
+}
+
+function sectionRows(value: unknown) {
+  return arrayValue(value)
+    .map((item) => {
+      const object = objectValue(item);
+      const title = cleanString(object.title || object.name || object.label) || cleanString(item);
+      const description = cleanString(object.description || object.summary || object.detail) || "";
+      const status = cleanString(object.status) || "unchanged";
+      return title ? { title, description, status } : null;
+    })
+    .filter((item): item is { title: string; description: string; status: string } => Boolean(item));
+}
+
+function relevanceLabel(value: string | null) {
+  if (value === "primary") return "Primary source";
+  if (value === "supporting") return "Supporting source";
+  if (value === "unrelated") return "Unrelated";
+  return "Needs review";
+}
+
+function sectionStatusLabel(value: string) {
+  if (value === "needs_review") return "Needs review";
+  return titleCase(value.replace(/[-_]+/g, " "));
+}
+
+function joinArray(value: unknown) {
+  const values = arrayValue(value).map(cleanString).filter(Boolean);
+  return values.length ? values.slice(0, 4).join("; ") : "";
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function cleanString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function sourceMeta(source: SourcePageTreeSource) {

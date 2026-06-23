@@ -30,6 +30,11 @@ export type WatchlistSource = {
   monitorId: string | null;
   monitorSharedAwardSourceId?: string | null;
   title: string;
+  displayTitle?: string | null;
+  pageDescription?: string | null;
+  pageMetadata?: unknown;
+  pageMetadataGeneratedAt?: string | null;
+  pageMetadataModel?: string | null;
   url: string;
   pageType: AwardPageType | null;
   status: "active" | "paused" | "error" | "untracked";

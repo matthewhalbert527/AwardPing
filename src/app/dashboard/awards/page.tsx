@@ -37,7 +37,18 @@ type SharedAwardDirectoryRow = Pick<SharedAwardRow, "id" | "name" | "official_ho
 type TrackedOfficeAwardRow = Pick<OfficeAwardRow, "id" | "shared_award_id">;
 type SharedSourceDirectoryRow = Pick<
   SharedSourceRow,
-  "id" | "shared_award_id" | "url" | "title" | "page_type" | "last_checked_at" | "last_error"
+  | "id"
+  | "shared_award_id"
+  | "url"
+  | "title"
+  | "display_title"
+  | "page_description"
+  | "page_metadata"
+  | "page_metadata_generated_at"
+  | "page_metadata_model"
+  | "page_type"
+  | "last_checked_at"
+  | "last_error"
 >;
 
 export default async function DashboardAwardsPage({ searchParams }: Props) {
@@ -175,7 +186,7 @@ async function fetchSharedSourcesForAwards(
 
   const { data } = await supabase
     .from("shared_award_sources")
-    .select("id, shared_award_id, url, title, page_type, last_checked_at, last_error")
+    .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, last_error")
     .in("shared_award_id", ids)
     .order("created_at", { ascending: true });
 
@@ -275,6 +286,11 @@ function buildWatchlistGroups(
         monitorId: null,
         monitorSharedAwardSourceId: null,
         title: source.title,
+        displayTitle: source.display_title,
+        pageDescription: source.page_description,
+        pageMetadata: source.page_metadata,
+        pageMetadataGeneratedAt: source.page_metadata_generated_at,
+        pageMetadataModel: source.page_metadata_model,
         url: source.url,
         pageType: source.page_type,
         status: "untracked",

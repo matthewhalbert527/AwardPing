@@ -312,11 +312,12 @@ function Write-EnvFile {
 NEXT_PUBLIC_SUPABASE_URL=$SupabaseUrl
 SUPABASE_SERVICE_ROLE_KEY=$SupabaseServiceRoleKey
 
-AI_PROVIDER=auto
+AI_PROVIDER=gemini
 GEMINI_API_KEY=$GeminiApiKey
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-2.5-flash-lite
 GEMINI_DISCOVERY_MODEL=gemini-2.5-flash-lite
-GEMINI_SUMMARY_MODEL=gemini-2.5-flash
+GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
+AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=10
 
 AWARDPING_R2_SNAPSHOT_SYNC=false
 R2_BUCKET=awardping-snapshots
@@ -338,12 +339,13 @@ function Update-ExistingEnvFileDefaults {
   Write-Step "Refreshing local worker defaults"
   $content = Get-Content -Path $Path -Raw
   $updates = [ordered]@{
-    "AI_PROVIDER" = "auto"
-    "GEMINI_MODEL" = "gemini-2.5-flash"
+    "AI_PROVIDER" = "gemini"
+    "GEMINI_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_DISCOVERY_MODEL" = "gemini-2.5-flash-lite"
-    "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash"
+    "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash-lite"
   }
   $missingDefaults = [ordered]@{
+    "AWARDPING_GEMINI_API_DAILY_COST_CAP_USD" = "10"
     "AWARDPING_R2_SNAPSHOT_SYNC" = "false"
     "R2_BUCKET" = "awardping-snapshots"
     "R2_ACCOUNT_ID" = ""
@@ -369,7 +371,7 @@ function Update-ExistingEnvFileDefaults {
   }
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
-  Write-Host "Summary model set to gemini-2.5-flash; discovery model kept on gemini-2.5-flash-lite."
+  Write-Host "Gemini API defaults set to gemini-2.5-flash-lite with an AwardPing estimated daily cost cap."
 }
 
 function Write-UninstallScript {

@@ -52,10 +52,15 @@ export default async function AdminPage() {
   const [
     { data: workerRunRows, error: workerRunError },
     { count: sharedSourceCount, error: sharedSourceError },
+    { count: sourceMetadataCount, error: sourceMetadataError },
     { count: visualSnapshotRecordCount, error: visualSnapshotRecordError },
   ] = await Promise.all([
     admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(30),
     admin.from("shared_award_sources").select("*", { count: "exact", head: true }),
+    admin
+      .from("shared_award_sources")
+      .select("*", { count: "exact", head: true })
+      .not("page_metadata_generated_at", "is", null),
     admin
       .from("shared_award_source_visual_snapshots")
       .select("*", { count: "exact", head: true }),
@@ -92,8 +97,10 @@ export default async function AdminPage() {
   const pipelineErrors = [
     workerRunError?.message,
     sharedSourceError?.message,
+    sourceMetadataError?.message,
     visualSnapshotRecordError?.message,
   ].filter(Boolean);
+  const sourceMetadataPercent = percent(sourceMetadataCount || 0, sharedSourceCount || 0);
 
   return (
     <AdminShell>
@@ -148,10 +155,10 @@ export default async function AdminPage() {
         />
         <MetricCard
           icon={Sparkles}
-          label="Gemini CLI calls"
-          value={numberFromObject(latestGeminiCliUsage, "calls")}
-          detail={`${formatNumber(numberFromObject(latestGeminiCliUsage, "successes"))} succeeded, cap ${formatCap(latestOptions)}`}
-          attention={geminiCapReached(latestOptions, latestGeminiCliUsage)}
+          label="Gemini API calls"
+          value={numberFromObject(latestGeminiUsage, "calls")}
+          detail={`~$${formatUsd(numberFromObjectFloat(latestGeminiUsage, "estimated_cost_usd"))} estimated, cap ${formatApiCostCap(latestOptions)}`}
+          attention={geminiApiCapReached(latestOptions, latestGeminiUsage)}
         />
         <MetricCard
           icon={Database}
@@ -265,15 +272,17 @@ export default async function AdminPage() {
               <h3 className="font-black">Page information scan</h3>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <MiniStat label="Extracted" value={numberFromObject(latestExtraction, "extracted")} />
-                <MiniStat label="Skipped" value={numberFromObject(latestExtraction, "skipped")} attention={geminiCapReached(latestOptions, latestGeminiCliUsage)} />
+                <MiniStat label="Skipped" value={numberFromObject(latestExtraction, "skipped")} attention={geminiApiCapReached(latestOptions, latestGeminiUsage) || geminiCapReached(latestOptions, latestGeminiCliUsage)} />
                 <MiniStat label="Failed" value={numberFromObject(latestExtraction, "failed")} attention={numberFromObject(latestExtraction, "failed") > 0} />
                 <MiniStat label="Backfilled" value={numberFromObject(latestExtraction, "backfilled")} />
               </div>
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
-                <Detail label="Model" value={stringFromObject(latestGeminiCliUsage, "model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
-                <Detail label="Call cap" value={formatCap(latestOptions)} />
-                <Detail label="Safe models" value={formatSafeModels(latestOptions)} />
-                <Detail label="Unsafe override" value={booleanFromObject(latestOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
+                <Detail label="Provider" value={latestVisualRun?.ai_provider || stringFromObject(latestExtraction, "provider") || "None"} />
+                <Detail label="Model" value={stringFromObject(latestExtraction, "model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
+                <Detail label="API calls" value={formatNumber(numberFromObject(latestGeminiUsage, "calls"))} />
+                <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestGeminiUsage, "estimated_cost_usd"))}`} />
+                <Detail label="API cost cap" value={formatApiCostCap(latestOptions)} />
+                <Detail label="CLI call cap" value={formatCap(latestOptions)} />
               </dl>
             </div>
           </div>
@@ -353,6 +362,7 @@ export default async function AdminPage() {
           </div>
           <div className="mt-5 grid gap-3">
             <MiniStat label="Catalog source pages" value={sharedSourceCount || 0} />
+            <MiniStat label="Page outlines scanned" value={`${formatNumber(sourceMetadataCount || 0)} (${sourceMetadataPercent}%)`} />
             <MiniStat label="R2 snapshot rows" value={visualSnapshotRecordCount || 0} />
             <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
             <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
@@ -565,8 +575,9 @@ function visualRunStage(run: LocalWorkerRun | null, metadata: Record<string, unk
   const publishing = objectValue(pipeline.publishing);
   const options = objectValue(metadata.options);
   const geminiCliUsage = objectValue(metadata.gemini_cli_usage);
+  const geminiUsage = objectValue(metadata.gemini_usage);
 
-  if (geminiCapReached(options, geminiCliUsage)) {
+  if (geminiApiCapReached(options, geminiUsage) || geminiCapReached(options, geminiCliUsage)) {
     return "Running: screenshots and R2, Gemini cap reached";
   }
   if (numberFromObject(extraction, "extracted") > 0) {
@@ -587,9 +598,23 @@ function geminiCapReached(options: Record<string, unknown>, usage: Record<string
   return numberFromObject(usage, "calls") >= cap;
 }
 
+function geminiApiCapReached(options: Record<string, unknown>, usage: Record<string, unknown>) {
+  const callCap = numberFromObject(options, "gemini_api_max_calls");
+  const costCap = numberFromObjectFloat(options, "gemini_api_daily_cost_cap_usd");
+  const callsReached = callCap > 0 && numberFromObject(usage, "calls") >= callCap;
+  const costReached =
+    costCap > 0 && numberFromObjectFloat(usage, "estimated_cost_usd") >= costCap;
+  return callsReached || costReached;
+}
+
 function formatCap(options: Record<string, unknown>) {
   const cap = numberFromObject(options, "gemini_cli_max_calls");
   return cap > 0 ? formatNumber(cap) : "No cap";
+}
+
+function formatApiCostCap(options: Record<string, unknown>) {
+  const cap = numberFromObjectFloat(options, "gemini_api_daily_cost_cap_usd");
+  return cap > 0 ? `$${formatUsd(cap)}` : "No cap";
 }
 
 function formatSafeModels(options: Record<string, unknown>) {
@@ -617,6 +642,13 @@ function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
 }
 
+function formatUsd(value: number) {
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: value >= 1 ? 2 : 4,
+    maximumFractionDigits: 4,
+  });
+}
+
 function percent(value: number, total: number) {
   if (total <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((value / total) * 100)));
@@ -635,6 +667,11 @@ function objectValue(value: unknown): Record<string, unknown> {
 function numberFromObject(value: Record<string, unknown>, key: string) {
   const number = Number(value[key]);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
+}
+
+function numberFromObjectFloat(value: Record<string, unknown>, key: string) {
+  const number = Number(value[key]);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
 function booleanFromObject(value: Record<string, unknown>, key: string) {

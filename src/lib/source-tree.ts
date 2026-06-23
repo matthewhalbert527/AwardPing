@@ -4,6 +4,7 @@ import { cleanDisplayText, formatPathSegment, readableSourceTitle } from "@/lib/
 export type SourceTreeSource = {
   id: string;
   title: string;
+  displayTitle?: string | null;
   url: string;
   pageType?: AwardPageType | null;
 };
@@ -159,7 +160,7 @@ function categoryLabelForSource(source: SourceTreeSource) {
 
 function sourceLeafLabel(source: SourceTreeSource, url: URL) {
   const filename = url.pathname.split("/").filter(Boolean).at(-1);
-  const clean = readableSourceTitle(source.title, source.url)
+  const clean = readableSourceTitle(source.displayTitle || source.title, source.url)
     .replace(/\bdownload\b/gi, "")
     .replace(/\s+/g, " ")
     .replace(/\s+([.,;:])/g, "$1")

@@ -92,6 +92,17 @@ const allowUnsafeGeminiCliModel = boolArg(
   args["allow-unsafe-gemini-cli-model"] ?? env.AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL,
   false,
 );
+const geminiApiMaxCalls = nonNegativeInt(
+  args["gemini-api-max-calls"] || env.AWARDPING_GEMINI_API_MAX_CALLS,
+  0,
+);
+const geminiApiDailyCostCapUsd = nonNegativeNumber(
+  args["gemini-api-daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
+  10,
+);
+const geminiApiPricingMode = cleanSlug(
+  args["gemini-api-pricing-mode"] || env.AWARDPING_GEMINI_API_PRICING_MODE || "standard",
+) || "standard";
 const extractBaselineInfo = boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
 const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
@@ -235,6 +246,9 @@ async function runOnce() {
       gemini_cli_safe_models: aiProvider === "gemini-cli" ? geminiCliSafeModels : [],
       allow_unsafe_gemini_cli_model: allowUnsafeGeminiCliModel,
       gemini_cli_max_calls: geminiCliMaxCalls || null,
+      gemini_api_max_calls: aiProvider === "gemini" ? geminiApiMaxCalls || null : null,
+      gemini_api_daily_cost_cap_usd: aiProvider === "gemini" ? geminiApiDailyCostCapUsd : null,
+      gemini_api_pricing_mode: aiProvider === "gemini" ? geminiApiPricingMode : null,
       extract_baseline_info: extractBaselineInfo,
       backfill_baseline_info: backfillBaselineInfo,
     },
@@ -282,6 +296,10 @@ async function runOnce() {
       total_tokens: 0,
       thoughts_tokens: 0,
       cached_content_tokens: 0,
+      estimated_cost_usd: 0,
+      max_calls: aiProvider === "gemini" ? geminiApiMaxCalls || null : null,
+      daily_cost_cap_usd: aiProvider === "gemini" ? geminiApiDailyCostCapUsd : null,
+      pricing_mode: aiProvider === "gemini" ? geminiApiPricingMode : null,
       note: "Gemini API responses include token usage but not AI Studio dollar spend. Use Google AI Studio Spend for account spend/cap dollars.",
     },
     gemini_cli_usage: {
@@ -646,6 +664,14 @@ async function processSource(source, context, browserMeta, report) {
       };
 
   report.candidate_changes += 1;
+  if (!deterministic.candidate_change) {
+    report.deterministic_noise += 1;
+    await markSharedSourceVisualCheckSucceeded(source, capture);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(`NOISE deterministic ${deterministic.reason || "local_diff_rejected"} ${sourceLabel(source)}`);
+    return;
+  }
+
   await reviewAndApplyCandidateChange({
     source,
     baseline,
@@ -822,7 +848,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   report.candidate_changes += 1;
   report.pdf_changed += 1;
 
-  if (aiProvider === "gemini-cli") {
+  if (["gemini-cli", "gemini", "openai"].includes(aiProvider)) {
     await reviewAndApplyCandidateChange({
       source,
       baseline,
@@ -1685,6 +1711,7 @@ async function markSharedSourceVisualCheckSucceeded(source, capture) {
       next_check_at: nextVisualSourceCheckDate(),
       consecutive_failures: 0,
       last_error: null,
+      ...sourcePageMetadataUpdate(source, capture),
       updated_at: now,
     })
     .eq("id", source.id);
@@ -1707,6 +1734,41 @@ async function markSharedSourceVisualCheckFailed(source, message) {
     .eq("id", source.id);
 
   if (error) throw error;
+}
+
+function sourcePageMetadataUpdate(source, capture) {
+  const facts = capture?.baseline_facts ? normalizeBaselineFacts(capture.baseline_facts) : null;
+  if (!facts) return {};
+
+  const metadata = capture.baseline_facts_metadata || {};
+  const generatedAt = metadata.extracted_at || new Date().toISOString();
+  const displayTitle = facts.display_title || cleanNullable(capture.page_title) || cleanNullable(source.title);
+  const description =
+    facts.page_description ||
+    facts.page_purpose ||
+    facts.notes[0] ||
+    facts.sections[0]?.description ||
+    null;
+
+  return {
+    display_title: displayTitle,
+    page_description: description ? truncate(description, 500) : null,
+    page_metadata: {
+      version: 1,
+      kind: "source_page_outline",
+      provider: metadata.provider || aiProvider,
+      model: metadata.model || aiModel,
+      generated_at: generatedAt,
+      snapshot_hash: metadata.snapshot_hash || visualHashForCapture(capture),
+      capture_kind: capture.kind || "webpage",
+      final_url: capture.final_url || null,
+      page_title: capture.page_title || null,
+      baseline_facts: facts,
+      baseline_facts_metadata: metadata,
+    },
+    page_metadata_generated_at: generatedAt,
+    page_metadata_model: metadata.model || aiModel,
+  };
 }
 
 async function syncR2SnapshotPair(source, capture) {
@@ -2130,9 +2192,6 @@ async function hideNoiseElements(page) {
 
 async function reviewCandidateWithAi(input) {
   if (aiProvider === "gemini-cli") return reviewWithGeminiCli(input);
-  if (input.capture.kind === "pdf" || input.previous.kind === "pdf") {
-    throw new Error("PDF visual review requires --ai-provider=gemini-cli.");
-  }
   if (aiProvider === "gemini") return reviewWithGemini(input);
   if (aiProvider === "openai") return reviewWithOpenAI(input);
   throw new Error("No AI provider is available.");
@@ -2170,8 +2229,8 @@ async function reviewWithGeminiCli(input) {
 }
 
 async function reviewWithGemini(input) {
-  const previousThumb = readFileSync(input.previous.thumbPath).toString("base64");
-  const newThumb = readFileSync(input.capture.thumb_path).toString("base64");
+  ensureGeminiApiCallAvailable(input.report, "change_interpretation");
+  const imageParts = geminiInlineImageParts([input.previous.thumbPath, input.capture.thumb_path]);
   const response = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       aiModel,
@@ -2186,8 +2245,7 @@ async function reviewWithGemini(input) {
             role: "user",
             parts: [
               { text: aiUserPrompt(input) },
-              { inlineData: { mimeType: "image/jpeg", data: previousThumb } },
-              { inlineData: { mimeType: "image/jpeg", data: newThumb } },
+              ...imageParts,
             ],
           },
         ],
@@ -2202,13 +2260,21 @@ async function reviewWithGemini(input) {
     },
   );
 
-  if (!response.ok) throw new Error(`Gemini HTTP ${response.status}`);
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Gemini HTTP ${response.status}: ${truncate(body, 800)}`);
+  }
   const data = await response.json();
   const usage = normalizeGeminiUsage(data.usageMetadata);
   const rawText = extractGeminiText(data);
   let result = null;
   try {
-    result = normalizeAiReview(rawText);
+    result = normalizeAiReview(rawText, {
+      source: input.source,
+      diff: input.diff,
+      provider: "gemini",
+      model: aiModel,
+    });
   } catch (error) {
     error.aiUsage = usage;
     throw error;
@@ -2225,8 +2291,7 @@ async function reviewWithGemini(input) {
 }
 
 async function reviewWithOpenAI(input) {
-  const previousThumb = readFileSync(input.previous.thumbPath).toString("base64");
-  const newThumb = readFileSync(input.capture.thumb_path).toString("base64");
+  const imageContent = openAiImageContent([input.previous.thumbPath, input.capture.thumb_path]);
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -2241,14 +2306,7 @@ async function reviewWithOpenAI(input) {
           role: "user",
           content: [
             { type: "input_text", text: aiUserPrompt(input) },
-            {
-              type: "input_image",
-              image_url: `data:image/jpeg;base64,${previousThumb}`,
-            },
-            {
-              type: "input_image",
-              image_url: `data:image/jpeg;base64,${newThumb}`,
-            },
+            ...imageContent,
           ],
         },
       ],
@@ -2260,43 +2318,45 @@ async function reviewWithOpenAI(input) {
 
   if (!response.ok) throw new Error(`OpenAI HTTP ${response.status}`);
   const data = await response.json();
+  const rawText = extractResponseText(data);
   return {
     ok: true,
     provider: "openai",
     model: aiModel,
-    raw_text: extractResponseText(data),
-    result: normalizeAiReview(extractResponseText(data)),
+    raw_text: rawText,
+    result: normalizeAiReview(rawText, {
+      source: input.source,
+      diff: input.diff,
+      provider: "openai",
+      model: aiModel,
+    }),
   };
 }
 
 async function maybeExtractBaselineFacts(source, capture, report, options = {}) {
-  if (!extractBaselineInfo || aiProvider !== "gemini-cli") return null;
-  if (!geminiCliCallAvailable(report)) {
-    report.baseline_facts_skipped += 1;
-    console.log(`FACTS SKIP gemini_cli_cap ${sourceLabel(source)}`);
-    return null;
-  }
+  if (!extractBaselineInfo) return null;
 
   try {
-    ensureGeminiCliCallAvailable(report, "baseline_facts");
-    const analysis = await runGeminiCliJsonAnalysis({
-      cliPath: geminiCliPath,
-      model: geminiCliModel,
-      workspaceRoot: geminiCliWorkspaceRoot,
-      timeoutMs: geminiCliTimeoutMs,
-      safeModels: geminiCliSafeModels,
-      allowUnsafeModel: allowUnsafeGeminiCliModel,
-      runId: `facts-${timestampForPath(capture.captured_at)}-${source.id}`,
-      prompt: geminiCliBaselineFactsPrompt(source, capture, options.reason || "baseline"),
-      filePaths: geminiCliBaselineFactFiles(capture),
-    });
-    recordGeminiCliUsage(report, source, capture, analysis, "baseline_facts");
+    const reason = options.reason || "baseline";
+    const analysis =
+      aiProvider === "gemini"
+        ? await extractBaselineFactsWithGemini(source, capture, report, reason)
+        : aiProvider === "gemini-cli"
+          ? await extractBaselineFactsWithGeminiCli(source, capture, report, reason)
+          : null;
+
+    if (!analysis) {
+      report.baseline_facts_skipped += 1;
+      console.log(`FACTS SKIP provider=${aiProvider || "none"} ${sourceLabel(source)}`);
+      return null;
+    }
+
     attachBaselineFactsToCapture(capture, analysis.result, {
-      reason: options.reason || "baseline",
-      provider: "gemini-cli",
-      model: geminiCliModel,
-      analysis_path: analysis.transcript_path || analysis.log_path,
-      prompt_path: analysis.prompt_path,
+      reason,
+      provider: analysis.provider,
+      model: analysis.model,
+      analysis_path: analysis.analysis_path || null,
+      prompt_path: analysis.prompt_path || null,
     });
     report.baseline_facts_extracted += 1;
     console.log(`FACTS extracted confidence=${capture.baseline_facts?.confidence || "unknown"} ${sourceLabel(source)}`);
@@ -2305,13 +2365,16 @@ async function maybeExtractBaselineFacts(source, capture, report, options = {}) 
     if (error.geminiCliUsage) {
       recordGeminiCliUsage(report, source, capture, { usage: error.geminiCliUsage }, "baseline_facts");
     }
+    if (error.aiUsage) {
+      recordGeminiUsage(report, source, capture, { model: aiModel, usage: error.aiUsage }, "baseline_facts");
+    }
     report.baseline_facts_failed += 1;
     const message = `Baseline facts extraction failed: ${errorMessage(error)}`;
     capture.baseline_facts_metadata = {
       status: "failed",
       reason: options.reason || "baseline",
-      provider: "gemini-cli",
-      model: geminiCliModel,
+      provider: aiProvider,
+      model: aiModel,
       error: truncate(message, 800),
       extracted_at: new Date().toISOString(),
     };
@@ -2325,15 +2388,107 @@ async function maybeExtractBaselineFacts(source, capture, report, options = {}) 
   }
 }
 
+async function extractBaselineFactsWithGemini(source, capture, report, reason) {
+  ensureGeminiApiCallAvailable(report, "baseline_facts");
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      aiModel,
+    )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: baselineFactsSystemPrompt }] },
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: geminiCliBaselineFactsPrompt(source, capture, reason) },
+              ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          maxOutputTokens: 1100,
+          responseMimeType: "application/json",
+          responseSchema: baselineFactsResponseSchema,
+        },
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Gemini HTTP ${response.status}: ${truncate(body, 800)}`);
+  }
+  const data = await response.json();
+  const usage = normalizeGeminiUsage(data.usageMetadata);
+  const rawText = extractGeminiText(data);
+  let result = null;
+  try {
+    result = normalizeBaselineFacts(parseJsonObject(rawText) || rawText);
+  } catch (error) {
+    error.aiUsage = usage;
+    throw error;
+  }
+
+  const analysis = {
+    provider: "gemini",
+    model: aiModel,
+    usage,
+    raw_text: rawText,
+    result,
+  };
+  recordGeminiUsage(report, source, capture, analysis, "baseline_facts");
+  return analysis;
+}
+
+async function extractBaselineFactsWithGeminiCli(source, capture, report, reason) {
+  if (!geminiCliCallAvailable(report)) {
+    report.baseline_facts_skipped += 1;
+    console.log(`FACTS SKIP gemini_cli_cap ${sourceLabel(source)}`);
+    return null;
+  }
+
+  ensureGeminiCliCallAvailable(report, "baseline_facts");
+  const analysis = await runGeminiCliJsonAnalysis({
+    cliPath: geminiCliPath,
+    model: geminiCliModel,
+    workspaceRoot: geminiCliWorkspaceRoot,
+    timeoutMs: geminiCliTimeoutMs,
+    safeModels: geminiCliSafeModels,
+    allowUnsafeModel: allowUnsafeGeminiCliModel,
+    runId: `facts-${timestampForPath(capture.captured_at)}-${source.id}`,
+    prompt: geminiCliBaselineFactsPrompt(source, capture, reason),
+    filePaths: geminiCliBaselineFactFiles(capture),
+  });
+  recordGeminiCliUsage(report, source, capture, analysis, "baseline_facts");
+
+  return {
+    provider: "gemini-cli",
+    model: geminiCliModel,
+    usage: analysis.usage,
+    raw_text: analysis.raw_text,
+    analysis_path: analysis.transcript_path || analysis.log_path,
+    prompt_path: analysis.prompt_path,
+    result: analysis.result,
+  };
+}
+
 function geminiCliBaselineFactsPrompt(source, capture, reason) {
   return [
-    "You are extracting baseline award information for AwardPing from a captured official source page.",
-    "Use the screenshot image when one is provided. Use the normalized visible text as supporting context.",
+    "You are extracting baseline page information for AwardPing from a captured official source page.",
+    "Use the screenshot image when one is provided. Use the normalized visible text or PDF text as supporting context.",
+    "Create a clean readable display_title and a short page_description for this exact source page, even when it is not an eligibility, deadline, or application page.",
     "Extract only facts that are visible or directly supported. Do not guess missing dates, amounts, or requirements.",
     "Return compact JSON with these keys:",
-    "{status, award_name, page_purpose, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, confidence, quality_flags}",
-    "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes.",
-    "Use null for unknown deadline/opening_date/page_purpose. confidence must be low, medium, or high.",
+    "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
+    "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections.",
+    "sections should list 0 to 8 visible scholarship concepts or page areas with {title, description, status}. Use status unchanged for baseline sections.",
+    "award_relevance must be primary, supporting, unclear, or unrelated. confidence must be low, medium, or high.",
+    "Use null for unknown deadline/opening_date/page_purpose.",
     "",
     `Reason: ${reason}`,
     `Award name: ${source.shared_awards?.name || "Unknown award"}`,
@@ -2454,7 +2609,9 @@ function aiUserPrompt({ source, baseline, previous, capture, diff, deterministic
       hidden_noise_counts: capture.hidden_noise_counts,
     }),
     "",
-    "Screenshot comparison is the primary signal. The two attached images are the previous thumbnail and the new thumbnail. Normalized text is secondary context and may be incomplete or noisy.",
+    previous.thumbPath && capture.thumb_path
+      ? "Screenshot comparison is the primary signal. The two attached images are the previous thumbnail and the new thumbnail. Normalized text is secondary context and may be incomplete or noisy."
+      : "No comparable screenshot thumbnails are attached. Compare the extracted previous and new text carefully, which may come from a PDF or other non-screenshot source.",
     "",
     "Deterministic classification:",
     JSON.stringify(deterministic),
@@ -2463,17 +2620,19 @@ function aiUserPrompt({ source, baseline, previous, capture, diff, deterministic
     JSON.stringify(diff),
     "",
     "Previous normalized text excerpt:",
-    previous.text.slice(0, promptChars),
+    String(previous.text || "").slice(0, promptChars),
     "",
     "New normalized text excerpt:",
-    capture.text.slice(0, promptChars),
+    String(capture.text || "").slice(0, promptChars),
     "",
     "Full screenshot paths for local human review:",
     JSON.stringify({
-      previous_page: toArchiveRelative(previous.pagePath),
-      new_page: toArchiveRelative(capture.page_path),
-      previous_thumb: toArchiveRelative(previous.thumbPath),
-      new_thumb: toArchiveRelative(capture.thumb_path),
+      previous_page: previous.pagePath ? toArchiveRelative(previous.pagePath) : null,
+      new_page: capture.page_path ? toArchiveRelative(capture.page_path) : null,
+      previous_thumb: previous.thumbPath ? toArchiveRelative(previous.thumbPath) : null,
+      new_thumb: capture.thumb_path ? toArchiveRelative(capture.thumb_path) : null,
+      previous_pdf: previous.pdfPath ? toArchiveRelative(previous.pdfPath) : null,
+      new_pdf: capture.pdf_path ? toArchiveRelative(capture.pdf_path) : null,
     }),
     "",
     "Return one strict JSON object only.",
@@ -2938,7 +3097,7 @@ function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, page_type, last_checked_at, next_check_at, consecutive_failures, created_at, shared_awards!inner(id, name, status)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, created_at, shared_awards!inner(id, name, status)",
     )
     .eq("shared_awards.status", "active")
     .order("next_check_at", { ascending: true })
@@ -3141,7 +3300,9 @@ function visualWorkerMetadata(report) {
         failed: report.failed,
       },
       extraction: {
-        enabled: extractBaselineInfo && aiProvider === "gemini-cli",
+        enabled: extractBaselineInfo && ["gemini", "gemini-cli"].includes(aiProvider),
+        provider: aiProvider,
+        model: aiModel,
         backfill_enabled: backfillBaselineInfo,
         extracted: report.baseline_facts_extracted,
         failed: report.baseline_facts_failed,
@@ -3463,14 +3624,18 @@ function ensureArchiveDirectories() {
   }
 }
 
-function recordGeminiUsage(report, source, capture, aiReview) {
+function recordGeminiUsage(report, source, capture, aiReview, kind = "change_interpretation") {
   const usage = aiReview.usage || normalizeGeminiUsage(null);
+  const estimatedCostUsd = estimateGeminiCostUsd(aiReview.model || aiModel, usage);
   report.gemini_usage.calls += 1;
   report.gemini_usage.prompt_tokens += usage.prompt_tokens;
   report.gemini_usage.candidates_tokens += usage.candidates_tokens;
   report.gemini_usage.total_tokens += usage.total_tokens;
   report.gemini_usage.thoughts_tokens += usage.thoughts_tokens;
   report.gemini_usage.cached_content_tokens += usage.cached_content_tokens;
+  report.gemini_usage.estimated_cost_usd = roundUsd(
+    (report.gemini_usage.estimated_cost_usd || 0) + estimatedCostUsd,
+  );
 
   const usedAt = new Date().toISOString();
   const record = {
@@ -3478,6 +3643,7 @@ function recordGeminiUsage(report, source, capture, aiReview) {
     date: usedAt.slice(0, 10),
     month: usedAt.slice(0, 7),
     provider: "gemini",
+    kind,
     model: aiReview.model,
     source_id: source.id,
     award_name: source.shared_awards?.name || null,
@@ -3485,15 +3651,21 @@ function recordGeminiUsage(report, source, capture, aiReview) {
     source_url: source.url,
     capture_path: toArchiveRelative(capture.dir),
     usage,
+    estimated_cost_usd: estimatedCostUsd,
+    pricing_mode: geminiApiPricingMode,
   };
   const summary = appendGeminiUsageRecord(record);
   const today = summary.daily.find((day) => day.date === record.date);
   console.log(
     [
       "GEMINI_USAGE",
+      `kind=${kind}`,
       `call_tokens=${usage.total_tokens}`,
+      `call_estimated_usd=${estimatedCostUsd.toFixed(6)}`,
       `today_tokens=${today?.total_tokens || 0}`,
+      `today_estimated_usd=${(today?.estimated_cost_usd || 0).toFixed(6)}`,
       `month_tokens=${summary.month_total.total_tokens}`,
+      `month_estimated_usd=${summary.month_total.estimated_cost_usd.toFixed(6)}`,
       "account_spend_source=google_ai_studio_spend",
     ].join(" "),
   );
@@ -3501,7 +3673,7 @@ function recordGeminiUsage(report, source, capture, aiReview) {
 
 function recordAiReviewUsage(report, source, capture, aiReview) {
   if (aiReview.provider === "gemini" && aiReview.usage) {
-    recordGeminiUsage(report, source, capture, aiReview);
+    recordGeminiUsage(report, source, capture, aiReview, "change_interpretation");
     return;
   }
   if (aiReview.provider === "gemini-cli" && aiReview.usage) {
@@ -3554,14 +3726,35 @@ function ensureGeminiCliCallAvailable(report, kind) {
   );
 }
 
+function geminiApiCallAvailable(report) {
+  if (aiProvider !== "gemini") return false;
+  if (geminiApiMaxCalls && report.gemini_usage.calls >= geminiApiMaxCalls) return false;
+  if (
+    geminiApiDailyCostCapUsd > 0 &&
+    nonNegativeNumber(report.gemini_usage.estimated_cost_usd, 0) >= geminiApiDailyCostCapUsd
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function ensureGeminiApiCallAvailable(report, kind) {
+  if (geminiApiCallAvailable(report)) return;
+  const calls = report.gemini_usage.calls || 0;
+  const cost = nonNegativeNumber(report.gemini_usage.estimated_cost_usd, 0);
+  throw new Error(
+    `Gemini API cap reached before ${kind}. calls=${calls}/${geminiApiMaxCalls || "unlimited"} estimated_usd=${cost.toFixed(4)}/${geminiApiDailyCostCapUsd || "unlimited"}.`,
+  );
+}
+
 function attachBaselineFactsToCapture(capture, value, metadata = {}) {
   const facts = normalizeBaselineFacts(value);
   capture.baseline_facts = facts;
   capture.baseline_facts_metadata = {
     status: "succeeded",
     reason: metadata.reason || null,
-    provider: metadata.provider || "gemini-cli",
-    model: metadata.model || geminiCliModel,
+    provider: metadata.provider || aiProvider,
+    model: metadata.model || aiModel,
     analysis_path: metadata.analysis_path || null,
     prompt_path: metadata.prompt_path || null,
     extracted_at: new Date().toISOString(),
@@ -3573,8 +3766,12 @@ function normalizeBaselineFacts(value) {
   const parsed = jsonObjectOrEmpty(value);
   return {
     status: cleanSlug(parsed.status) || "succeeded",
+    display_title: cleanNullable(parsed.display_title || parsed.page_title || parsed.title),
+    page_description: cleanNullable(parsed.page_description || parsed.short_description || parsed.description),
+    page_category: cleanNullable(parsed.page_category || parsed.category),
     award_name: cleanNullable(parsed.award_name),
     page_purpose: cleanNullable(parsed.page_purpose),
+    award_relevance: normalizeAwardRelevance(parsed.award_relevance || parsed.relevance),
     deadline: cleanNullable(parsed.deadline || parsed.deadline_date),
     opening_date: cleanNullable(parsed.opening_date || parsed.opens_at || parsed.application_opens),
     award_amounts: stringArray(parsed.award_amounts || parsed.amounts || parsed.funding).slice(0, 12),
@@ -3586,6 +3783,7 @@ function normalizeBaselineFacts(value) {
     documents: stringArray(parsed.documents || parsed.pdfs || parsed.pdf_links).slice(0, 20),
     contacts: stringArray(parsed.contacts || parsed.contact_info).slice(0, 12),
     notes: stringArray(parsed.notes).slice(0, 12),
+    sections: sectionArray(parsed.sections || parsed.page_sections || parsed.outline).slice(0, 12),
     confidence: normalizeConfidence(parsed.confidence) || "low",
     quality_flags: stringArray(parsed.quality_flags).map(cleanSlug).filter(Boolean).slice(0, 20),
   };
@@ -3622,7 +3820,13 @@ function summarizeGeminiUsageMonth(monthPath, month) {
       const date = record.date || String(record.used_at || "").slice(0, 10) || "unknown";
       if (!daily.has(date)) daily.set(date, emptyGeminiUsageTotal());
       addGeminiUsage(daily.get(date), usage);
+      daily.get(date).estimated_cost_usd = roundUsd(
+        daily.get(date).estimated_cost_usd + nonNegativeNumber(record.estimated_cost_usd, 0),
+      );
       addGeminiUsage(monthTotal, usage);
+      monthTotal.estimated_cost_usd = roundUsd(
+        monthTotal.estimated_cost_usd + nonNegativeNumber(record.estimated_cost_usd, 0),
+      );
     }
   }
 
@@ -3650,6 +3854,7 @@ function emptyGeminiUsageTotal() {
     total_tokens: 0,
     thoughts_tokens: 0,
     cached_content_tokens: 0,
+    estimated_cost_usd: 0,
   };
 }
 
@@ -3660,6 +3865,55 @@ function addGeminiUsage(total, usage) {
   total.total_tokens += usage.total_tokens;
   total.thoughts_tokens += usage.thoughts_tokens;
   total.cached_content_tokens += usage.cached_content_tokens;
+}
+
+function geminiInlineImageParts(filePaths) {
+  return filePaths
+    .filter((filePath) => filePath && existsSync(filePath))
+    .map((filePath) => ({
+      inlineData: {
+        mimeType: imageMimeType(filePath),
+        data: readFileSync(filePath).toString("base64"),
+      },
+    }));
+}
+
+function openAiImageContent(filePaths) {
+  return filePaths
+    .filter((filePath) => filePath && existsSync(filePath))
+    .map((filePath) => ({
+      type: "input_image",
+      image_url: `data:${imageMimeType(filePath)};base64,${readFileSync(filePath).toString("base64")}`,
+    }));
+}
+
+function imageMimeType(filePath) {
+  if (/\.png$/i.test(filePath)) return "image/png";
+  if (/\.webp$/i.test(filePath)) return "image/webp";
+  return "image/jpeg";
+}
+
+function estimateGeminiCostUsd(model, usage) {
+  const rates = geminiPricePerMillion(model);
+  const inputTokens = usage.prompt_tokens || 0;
+  const outputTokens = (usage.candidates_tokens || 0) + (usage.thoughts_tokens || 0);
+  return roundUsd((inputTokens / 1_000_000) * rates.input + (outputTokens / 1_000_000) * rates.output);
+}
+
+function geminiPricePerMillion(model) {
+  const name = String(model || "").toLowerCase();
+  const batch = geminiApiPricingMode === "batch" || geminiApiPricingMode === "flex";
+  if (name.includes("flash-lite")) {
+    return batch ? { input: 0.05, output: 0.2 } : { input: 0.1, output: 0.4 };
+  }
+  if (name.includes("2.5-flash")) {
+    return batch ? { input: 0.15, output: 1.25 } : { input: 0.3, output: 2.5 };
+  }
+  return batch ? { input: 0.5, output: 2.5 } : { input: 1, output: 5 };
+}
+
+function roundUsd(value) {
+  return Math.round(nonNegativeNumber(value, 0) * 1_000_000) / 1_000_000;
 }
 
 function baselinePathForSource(sourceId) {
@@ -3697,6 +3951,10 @@ function sourceMetadata(source) {
     shared_award_id: source.shared_award_id,
     award_name: source.shared_awards?.name || null,
     title: source.title || null,
+    display_title: source.display_title || null,
+    page_description: source.page_description || null,
+    page_metadata_generated_at: source.page_metadata_generated_at || null,
+    page_metadata_model: source.page_metadata_model || null,
     url: source.url,
     page_type: source.page_type || null,
     last_checked_at: source.last_checked_at || null,
@@ -4124,7 +4382,14 @@ function missingAiMessage(requestedProvider) {
 }
 
 function modelForProvider(provider) {
-  if (provider === "gemini") return env.GEMINI_SUMMARY_MODEL || env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+  if (provider === "gemini") {
+    return (
+      env.AWARDPING_VISUAL_GEMINI_MODEL ||
+      env.GEMINI_MODEL ||
+      env.GEMINI_SUMMARY_MODEL ||
+      "gemini-2.5-flash-lite"
+    );
+  }
   if (provider === "openai") return env.OPENAI_SUMMARY_MODEL || env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini";
   if (provider === "gemini-cli") return geminiCliModel;
   return null;
@@ -4203,10 +4468,45 @@ function stringArray(value) {
   return clean ? [clean] : [];
 }
 
+function sectionArray(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        const title = cleanText(item);
+        return title ? { title, description: "", status: "unchanged" } : null;
+      }
+      const title = cleanText(item.title || item.name || item.label);
+      const description = cleanText(item.description || item.summary || item.detail);
+      const status = normalizeSectionStatus(item.status);
+      if (!title && !description) return null;
+      return {
+        title: title || "Section",
+        description,
+        status,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeSectionStatus(value) {
+  const clean = cleanSlug(value);
+  if (["changed", "new", "removed", "unchanged"].includes(clean)) return clean;
+  if (clean === "needs_review" || clean === "review") return "needs_review";
+  return "unchanged";
+}
+
 function normalizeConfidence(value) {
   const clean = cleanSlug(value);
   if (clean === "low" || clean === "medium" || clean === "high") return clean;
   return null;
+}
+
+function normalizeAwardRelevance(value) {
+  const clean = cleanSlug(value);
+  if (["primary", "supporting", "unclear", "unrelated"].includes(clean)) return clean;
+  if (clean === "relevant") return "primary";
+  return "unclear";
 }
 
 function jsonObjectOrNull(value) {
@@ -4349,6 +4649,11 @@ function nonNegativeInt(value, fallback) {
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
 }
 
+function nonNegativeNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
 function boundedInt(value, fallback, min, max) {
   const number = positiveInt(value, fallback);
   return Math.min(max, Math.max(min, number));
@@ -4459,7 +4764,8 @@ canvas[data-live],
 const aiSystemPrompt = [
   "You are judging official award webpage screenshot changes for scholarship advisors.",
   "Return valid strict JSON only. Do not include markdown.",
-  "Compare the two attached screenshot thumbnails first. Use normalized text only as secondary context because it can be incomplete or noisy.",
+  "Compare the two attached screenshot thumbnails first when images are provided. For PDFs or image-free inputs, compare the extracted previous and new text carefully.",
+  "Use normalized text as secondary context for screenshots because it can be incomplete or noisy.",
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
   "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
   "Reject cookie banners, carousels, ads, newsletter popups, current-date or last-updated-only changes, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
@@ -4472,6 +4778,15 @@ const aiSystemPrompt = [
   "confidence must be low, medium, or high.",
 ].join(" ");
 
+const baselineFactsSystemPrompt = [
+  "You are extracting a clean source-page outline for AwardPing scholarship advisors.",
+  "Return valid strict JSON only. Do not include markdown.",
+  "Every source page needs a readable display_title and a short page_description, even if the page is only a contact page, FAQ page, PDF, portal page, news page, or unclear/unrelated page.",
+  "Extract only facts that are visible or directly supported by the screenshot, PDF text, or normalized page text.",
+  "Do not guess missing dates, amounts, eligibility, or requirements.",
+  "Descriptions should be concise and useful in a page outline.",
+].join(" ");
+
 const aiResponseSchema = {
   type: "object",
   properties: {
@@ -4481,6 +4796,24 @@ const aiResponseSchema = {
     advisor_impact: { type: "string", nullable: true },
     changed_section: { type: "string", nullable: true },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
+    before: { type: "string", nullable: true },
+    after: { type: "string", nullable: true },
+    change_type: { type: "string", nullable: true },
+    structured_diff: {
+      type: "object",
+      nullable: true,
+      properties: {
+        added_text: { type: "array", items: { type: "string" } },
+        removed_text: { type: "array", items: { type: "string" } },
+        date_changes: { type: "array", items: { type: "string" } },
+        amount_changes: { type: "array", items: { type: "string" } },
+        noise_flags: { type: "array", items: { type: "string" } },
+        likely_section: { type: "string", nullable: true },
+        page_type: { type: "string", nullable: true },
+      },
+    },
+    quality_flags: { type: "array", items: { type: "string" } },
+    updated_baseline_facts: { type: "object", nullable: true },
   },
   required: [
     "is_true_change",
@@ -4489,6 +4822,67 @@ const aiResponseSchema = {
     "advisor_impact",
     "changed_section",
     "confidence",
+  ],
+};
+
+const baselineFactsResponseSchema = {
+  type: "object",
+  properties: {
+    status: { type: "string" },
+    display_title: { type: "string" },
+    page_description: { type: "string" },
+    page_category: { type: "string" },
+    award_name: { type: "string", nullable: true },
+    page_purpose: { type: "string", nullable: true },
+    award_relevance: { type: "string", enum: ["primary", "supporting", "unclear", "unrelated"] },
+    deadline: { type: "string", nullable: true },
+    opening_date: { type: "string", nullable: true },
+    award_amounts: { type: "array", items: { type: "string" } },
+    eligibility: { type: "array", items: { type: "string" } },
+    requirements: { type: "array", items: { type: "string" } },
+    application_materials: { type: "array", items: { type: "string" } },
+    how_to_apply: { type: "array", items: { type: "string" } },
+    important_dates: { type: "array", items: { type: "string" } },
+    documents: { type: "array", items: { type: "string" } },
+    contacts: { type: "array", items: { type: "string" } },
+    notes: { type: "array", items: { type: "string" } },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+          status: { type: "string", enum: ["unchanged", "needs_review", "new", "changed", "removed"] },
+        },
+        required: ["title", "description", "status"],
+      },
+    },
+    confidence: { type: "string", enum: ["low", "medium", "high"] },
+    quality_flags: { type: "array", items: { type: "string" } },
+  },
+  required: [
+    "status",
+    "display_title",
+    "page_description",
+    "page_category",
+    "award_name",
+    "page_purpose",
+    "award_relevance",
+    "deadline",
+    "opening_date",
+    "award_amounts",
+    "eligibility",
+    "requirements",
+    "application_materials",
+    "how_to_apply",
+    "important_dates",
+    "documents",
+    "contacts",
+    "notes",
+    "sections",
+    "confidence",
+    "quality_flags",
   ],
 };
 
