@@ -88,6 +88,7 @@ export default async function AdminPage() {
   const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
   const latestDetailGeminiCliUsage = objectValue(latestDetailMetadata.gemini_cli_usage);
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
+  const latestGeminiApiHealth = geminiApiHealth(latestGeminiUsage, latestOptions);
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
   const baselineCoveragePercent = latestBaselineCoverage
     ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
@@ -157,8 +158,8 @@ export default async function AdminPage() {
           icon={Sparkles}
           label="Gemini API calls"
           value={numberFromObject(latestGeminiUsage, "calls")}
-          detail={`~$${formatUsd(numberFromObjectFloat(latestGeminiUsage, "estimated_cost_usd"))} estimated, cap ${formatApiCostCap(latestOptions)}`}
-          attention={geminiApiCapReached(latestOptions, latestGeminiUsage)}
+          detail={latestGeminiApiHealth.metricDetail}
+          attention={latestGeminiApiHealth.attention}
         />
         <MetricCard
           icon={Database}
@@ -283,10 +284,14 @@ export default async function AdminPage() {
                 <Detail label="Provider" value={latestVisualRun?.ai_provider || stringFromObject(latestExtraction, "provider") || "None"} />
                 <Detail label="Model" value={stringFromObject(latestExtraction, "model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
                 <Detail label="Daily page scan" value={booleanFromObject(latestOptions, "extract_baseline_info") ? "On" : "Off"} />
+                <Detail label="API status" value={latestGeminiApiHealth.label} />
                 <Detail label="API calls" value={formatNumber(numberFromObject(latestGeminiUsage, "calls"))} />
                 <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestGeminiUsage, "estimated_cost_usd"))}`} />
                 <Detail label="API cost cap" value={formatApiCostCap(latestOptions)} />
                 <Detail label="CLI call cap" value={formatCap(latestOptions)} />
+                {latestGeminiApiHealth.errorDetail && (
+                  <Detail label="Last API error" value={latestGeminiApiHealth.errorDetail} />
+                )}
               </dl>
             </div>
           </div>
@@ -316,6 +321,7 @@ export default async function AdminPage() {
                 <Detail label="Current stage" value={latestVisualStage} />
                 <Detail label="Archive root" value={stringFromObject(latestVisualMetadata, "archive_root") || "Local worker default"} />
                 <Detail label="Web workers" value={formatNumber(numberFromObject(latestOptions, "web_concurrency") || 1)} />
+                <Detail label="Gemini API status" value={latestGeminiApiHealth.label} />
                 <Detail label="Gemini API tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} />
                 <Detail label="Gemini CLI image files" value={formatNumber(numberFromObject(latestGeminiCliUsage, "image_files"))} />
                 <Detail label="Gemini CLI elapsed" value={`${formatNumber(numberFromObject(latestGeminiCliUsage, "elapsed_ms"))} ms`} />
@@ -582,6 +588,9 @@ function visualRunStage(run: LocalWorkerRun | null, metadata: Record<string, unk
   const geminiCliUsage = objectValue(metadata.gemini_cli_usage);
   const geminiUsage = objectValue(metadata.gemini_usage);
 
+  if (geminiApiHealth(geminiUsage, options).blocked) {
+    return "Running: screenshots and R2, Gemini API billing blocked";
+  }
   if (geminiApiCapReached(options, geminiUsage) || geminiCapReached(options, geminiCliUsage)) {
     return "Running: screenshots and R2, Gemini cap reached";
   }
@@ -610,6 +619,55 @@ function geminiApiCapReached(options: Record<string, unknown>, usage: Record<str
   const costReached =
     costCap > 0 && numberFromObjectFloat(usage, "estimated_cost_usd") >= costCap;
   return callsReached || costReached;
+}
+
+function geminiApiHealth(usage: Record<string, unknown>, options: Record<string, unknown>) {
+  const lastError = objectValue(usage.last_error);
+  const status = stringFromObject(usage, "status");
+  const blocked = status === "blocked" || lastError.blocked === true;
+  const capReached = geminiApiCapReached(options, usage);
+  const estimatedCost = `~$${formatUsd(numberFromObjectFloat(usage, "estimated_cost_usd"))} estimated`;
+  const cap = `cap ${formatApiCostCap(options)}`;
+  const errorMessage = stringFromObject(lastError, "message");
+  const errorDetail = errorMessage
+    ? `${stringFromObject(lastError, "provider_status") || `HTTP ${formatNumber(numberFromObject(lastError, "http_status"))}`}: ${errorMessage}`
+    : "";
+
+  if (blocked) {
+    return {
+      label: "Blocked: API billing/prepay",
+      metricDetail: `${estimatedCost}, ${cap}; API billing needs attention`,
+      errorDetail,
+      attention: true,
+      blocked: true,
+    };
+  }
+  if (capReached) {
+    return {
+      label: "Cap reached",
+      metricDetail: `${estimatedCost}, ${cap}; worker will skip extra Gemini calls`,
+      errorDetail,
+      attention: true,
+      blocked: false,
+    };
+  }
+  if (status === "error") {
+    return {
+      label: "Last call failed",
+      metricDetail: `${estimatedCost}, ${cap}; check last API error`,
+      errorDetail,
+      attention: true,
+      blocked: false,
+    };
+  }
+
+  return {
+    label: numberFromObject(usage, "calls") > 0 ? "Ready" : "Ready, no calls this run",
+    metricDetail: `${estimatedCost}, ${cap}`,
+    errorDetail,
+    attention: false,
+    blocked: false,
+  };
 }
 
 function formatCap(options: Record<string, unknown>) {

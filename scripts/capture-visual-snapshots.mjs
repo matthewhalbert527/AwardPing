@@ -2399,7 +2399,9 @@ async function reviewWithGemini(input) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Gemini HTTP ${response.status}: ${truncate(body, 800)}`);
+    const message = geminiHttpErrorMessage(response.status, body);
+    recordGeminiApiError(input.report, "change_interpretation", response.status, body, message);
+    throw new Error(message);
   }
   const data = await response.json();
   const usage = normalizeGeminiUsage(data.usageMetadata);
@@ -2558,7 +2560,9 @@ async function extractBaselineFactsWithGemini(source, capture, report, reason) {
 
   if (!response.ok) {
     const body = await response.text().catch(() => "");
-    throw new Error(`Gemini HTTP ${response.status}: ${truncate(body, 800)}`);
+    const message = geminiHttpErrorMessage(response.status, body);
+    recordGeminiApiError(report, "baseline_facts", response.status, body, message);
+    throw new Error(message);
   }
   const data = await response.json();
   const usage = normalizeGeminiUsage(data.usageMetadata);
@@ -3790,6 +3794,8 @@ function recordGeminiUsage(report, source, capture, aiReview, kind = "change_int
   report.gemini_usage.estimated_cost_usd = roundUsd(
     (report.gemini_usage.estimated_cost_usd || 0) + estimatedCostUsd,
   );
+  report.gemini_usage.status = "ready";
+  report.gemini_usage.last_success_at = new Date().toISOString();
 
   const usedAt = new Date().toISOString();
   const record = {
@@ -3823,6 +3829,36 @@ function recordGeminiUsage(report, source, capture, aiReview, kind = "change_int
       "account_spend_source=google_ai_studio_spend",
     ].join(" "),
   );
+}
+
+function recordGeminiApiError(report, kind, httpStatus, body, message) {
+  if (!report?.gemini_usage) return;
+  const parsed = parseJsonObject(body) || {};
+  const error = jsonObjectOrEmpty(parsed.error);
+  const providerMessage = cleanNullable(error.message) || cleanNullable(message) || "Gemini API request failed.";
+  const blocked = isGeminiBillingBlocked(httpStatus, providerMessage);
+  report.gemini_usage.status = blocked ? "blocked" : "error";
+  report.gemini_usage.last_error = {
+    kind,
+    model: aiModel,
+    http_status: httpStatus,
+    provider_status: cleanNullable(error.status),
+    message: truncate(providerMessage, 500),
+    blocked,
+    checked_at: new Date().toISOString(),
+  };
+}
+
+function geminiHttpErrorMessage(httpStatus, body) {
+  const parsed = parseJsonObject(body) || {};
+  const providerMessage = cleanNullable(jsonObjectOrEmpty(parsed.error).message);
+  const message = providerMessage || truncate(body, 800) || "Gemini API request failed.";
+  return `Gemini HTTP ${httpStatus}: ${truncate(message, 800)}`;
+}
+
+function isGeminiBillingBlocked(httpStatus, message) {
+  const clean = String(message || "").toLowerCase();
+  return httpStatus === 429 && /\b(prepay|prepayment|credits?\s+are\s+depleted|billing|resource_exhausted)\b/.test(clean);
 }
 
 function recordAiReviewUsage(report, source, capture, aiReview) {
