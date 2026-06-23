@@ -116,11 +116,18 @@ const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const heartbeatMinutes = positiveInt(args["heartbeat-minutes"] || env.AWARDPING_WORKER_HEARTBEAT_MINUTES, 5);
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
+const visualWebConcurrency = boundedInt(
+  args["web-concurrency"] || env.AWARDPING_VISUAL_WEB_CONCURRENCY,
+  1,
+  1,
+  8,
+);
 const maxPdfBytes = positiveInt(args["max-pdf-mb"], 50) * 1024 * 1024;
 const r2BackfillBaselines = boolArg(args["r2-backfill-baselines"], false);
 const r2BackfillFast = boolArg(args["r2-backfill-fast"], true);
 const r2BackfillSkipExisting = boolArg(args["r2-backfill-skip-existing"], true);
 const r2BackfillConcurrency = boundedInt(args["r2-backfill-concurrency"], 12, 1, 32);
+const r2OperationRetries = boundedInt(args["r2-operation-retries"] || env.AWARDPING_R2_OPERATION_RETRIES, 3, 0, 8);
 const r2SnapshotSync = boolArg(
   args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
   r2BackfillBaselines,
@@ -143,6 +150,7 @@ const aiModel = modelForProvider(aiProvider);
 let supabase = null;
 let r2Client = null;
 const hostLastFetchAt = new Map();
+const hostWaitQueues = new Map();
 let knownBrokenSourceIds = null;
 let lastBaselineCoverageProgressUpdateAt = 0;
 let lastBaselineCoverageProgressProcessed = 0;
@@ -234,11 +242,13 @@ async function runOnce() {
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
       max_sources_per_browser: maxSourcesPerBrowser,
+      web_concurrency: visualWebConcurrency,
       max_pdf_bytes: maxPdfBytes,
       r2_backfill_baselines: r2BackfillBaselines,
       r2_backfill_fast: r2BackfillFast,
       r2_backfill_skip_existing: r2BackfillSkipExisting,
       r2_backfill_concurrency: r2BackfillConcurrency,
+      r2_operation_retries: r2OperationRetries,
       r2_snapshot_sync: r2SnapshotSync,
       r2_bucket: r2SnapshotSync ? r2Bucket : null,
       gemini_cli_path: aiProvider === "gemini-cli" ? geminiCliPath : null,
@@ -320,33 +330,123 @@ async function runOnce() {
   };
 
   const heartbeat = startRunHeartbeat(report);
-  let browser = null;
-  let context = null;
-  let browserMeta = null;
-  let sourcesSinceBrowserStart = 0;
+  const browserStates = new Set();
+  const browserStatesByWorker = new Map();
   let workerRunId = null;
+  let coverageSources = [];
 
-  async function restartBrowser(reason) {
-    await context?.close().catch(() => null);
-    await browser?.close().catch(() => null);
-    context = null;
-    browser = null;
+  function browserStateForWorker(workerIndex) {
+    const key = Number.isFinite(workerIndex) ? workerIndex : 0;
+    if (!browserStatesByWorker.has(key)) {
+      const state = {
+        workerIndex: key,
+        browser: null,
+        context: null,
+        browserMeta: null,
+        sourcesSinceBrowserStart: 0,
+      };
+      browserStatesByWorker.set(key, state);
+      browserStates.add(state);
+    }
+    return browserStatesByWorker.get(key);
+  }
+
+  async function closeBrowserState(state) {
+    await state.context?.close().catch(() => null);
+    await state.browser?.close().catch(() => null);
+    state.context = null;
+    state.browser = null;
+    state.browserMeta = null;
+    state.sourcesSinceBrowserStart = 0;
+  }
+
+  async function restartBrowser(state, reason) {
+    await closeBrowserState(state);
 
     const launched = await launchBrowser();
-    browser = launched.browser;
-    browserMeta = launched.browserMeta;
-    context = await createBrowserContext(browser);
-    sourcesSinceBrowserStart = 0;
+    state.browser = launched.browser;
+    state.browserMeta = launched.browserMeta;
+    state.context = await createBrowserContext(state.browser);
+    state.sourcesSinceBrowserStart = 0;
 
     if (reason) {
-      console.log(`BROWSER restarted ${reason}`);
+      console.log(`BROWSER worker=${state.workerIndex} restarted ${reason}`);
     }
+  }
+
+  async function processQueuedSource(source, workerIndex = 0) {
+    const state = browserStateForWorker(workerIndex);
+    const pdfSource = isPdfSource(source);
+    if (pdfOnly && !pdfSource) {
+      return;
+    }
+    if (webOnly && pdfSource) {
+      return;
+    }
+    if (skipExistingBaselineEffective && hasBaselineForSource(source)) {
+      report.skipped_existing_baseline += 1;
+      console.log(`SKIP existing_baseline ${sourceLabel(source)}`);
+      return;
+    }
+
+    if (!pdfSource && !state.context) {
+      await restartBrowser(state, "initial");
+    } else if (!pdfSource && state.sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
+      await restartBrowser(state, `after_${state.sourcesSinceBrowserStart}_sources`);
+    }
+
+    let retriedAfterBrowserRestart = false;
+    while (true) {
+      try {
+        await waitForDomain(source.url);
+        await withTimeout(
+          processSource(source, state.context, state.browserMeta, report),
+          sourceTimeoutMs,
+          `source hard timeout after ${sourceTimeoutMs}ms`,
+        );
+        if (!pdfSource) state.sourcesSinceBrowserStart += 1;
+        break;
+      } catch (error) {
+        if (
+          !pdfSource &&
+          !retriedAfterBrowserRestart &&
+          (isBrowserClosedError(error) || isSourceTimeoutError(error))
+        ) {
+          console.log(`BROWSER closed ${sourceLabel(source)} | ${errorMessage(error)}`);
+          await restartBrowser(state, "after_closed_context");
+          retriedAfterBrowserRestart = true;
+          continue;
+        }
+
+        report.failed += 1;
+        const message = errorMessage(error);
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          message,
+        });
+        await recordBrokenSourceFailure(source, message).catch((recordError) => {
+          console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
+        });
+        await markSharedSourceVisualCheckFailed(source, message).catch((recordError) => {
+          console.log(`SOURCE_STATUS_UPDATE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
+        });
+        console.log(`FAILED ${message} ${sourceLabel(source)}`);
+
+        if (!pdfSource && (isBrowserClosedError(error) || isSourceTimeoutError(error))) {
+          await restartBrowser(state, "after_failed_closed_context");
+        }
+        break;
+      }
+    }
+
+    await maybeUpdateBaselineCoverageProgress(workerRunId, report, coverageSources);
   }
 
   try {
     workerRunId = await startWorkerRun(report);
     let sources = await loadSources(limit);
-    const coverageSources = sources;
+    coverageSources = sources;
     report.baseline_coverage_start = summarizeBaselineCoverage(coverageSources);
     console.log(formatBaselineCoverage("BASELINE_COVERAGE start", report.baseline_coverage_start));
     await updateWorkerRunMetadata(workerRunId, report);
@@ -384,68 +484,15 @@ async function runOnce() {
       );
     }
 
-    for (const source of sources) {
-      const pdfSource = isPdfSource(source);
-      if (pdfOnly && !pdfSource) {
-        continue;
+    if (visualWebConcurrency > 1) {
+      console.log(`WEB_CONCURRENCY workers=${visualWebConcurrency} domain_delay_ms=${domainDelayMs}`);
+      await runConcurrent(sources, visualWebConcurrency, async (source, _index, workerIndex) => {
+        await processQueuedSource(source, workerIndex);
+      });
+    } else {
+      for (const source of sources) {
+        await processQueuedSource(source, 0);
       }
-      if (webOnly && pdfSource) {
-        continue;
-      }
-      if (skipExistingBaselineEffective && hasBaselineForSource(source)) {
-        report.skipped_existing_baseline += 1;
-        console.log(`SKIP existing_baseline ${sourceLabel(source)}`);
-        continue;
-      }
-
-      if (!pdfSource && !context) {
-        await restartBrowser("initial");
-      } else if (!pdfSource && sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
-        await restartBrowser(`after_${sourcesSinceBrowserStart}_sources`);
-      }
-
-      let retriedAfterBrowserRestart = false;
-      while (true) {
-        try {
-          await waitForDomain(source.url);
-          await withTimeout(
-            processSource(source, context, browserMeta, report),
-            sourceTimeoutMs,
-            `source hard timeout after ${sourceTimeoutMs}ms`,
-          );
-          sourcesSinceBrowserStart += 1;
-          break;
-        } catch (error) {
-          if (!retriedAfterBrowserRestart && (isBrowserClosedError(error) || isSourceTimeoutError(error))) {
-            console.log(`BROWSER closed ${sourceLabel(source)} | ${errorMessage(error)}`);
-            await restartBrowser("after_closed_context");
-            retriedAfterBrowserRestart = true;
-            continue;
-          }
-
-          report.failed += 1;
-          const message = errorMessage(error);
-          report.errors.push({
-            source_id: source.id,
-            source_url: source.url,
-            message,
-          });
-          await recordBrokenSourceFailure(source, message).catch((recordError) => {
-            console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
-          });
-          await markSharedSourceVisualCheckFailed(source, message).catch((recordError) => {
-            console.log(`SOURCE_STATUS_UPDATE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
-          });
-          console.log(`FAILED ${message} ${sourceLabel(source)}`);
-
-          if (isBrowserClosedError(error) || isSourceTimeoutError(error)) {
-            await restartBrowser("after_failed_closed_context");
-          }
-          break;
-        }
-      }
-
-      await maybeUpdateBaselineCoverageProgress(workerRunId, report, coverageSources);
     }
 
     report.status = "succeeded";
@@ -463,8 +510,7 @@ async function runOnce() {
     await finishWorkerRun(workerRunId, "failed", errorMessage(error), report);
     throw error;
   } finally {
-    await context?.close().catch(() => null);
-    await browser?.close().catch(() => null);
+    await Promise.all([...browserStates].map((state) => closeBrowserState(state)));
     clearInterval(heartbeat);
     report.finished_at = new Date().toISOString();
     mkdirSync(dirname(reportPath), { recursive: true });
@@ -482,7 +528,7 @@ function startRunHeartbeat(report) {
       report.checked + report.failed + report.skipped_existing_baseline + report.skipped_pdf;
     const coverage = report.baseline_coverage_progress || report.baseline_coverage_start || null;
     const coverageText = coverage
-      ? ` coverage_existing=${coverage.existing} coverage_actionable_missing=${coverage.actionable_missing}`
+      ? ` coverage_existing=${coverage.existing_baselines} coverage_actionable_missing=${coverage.actionable_missing_baselines}`
       : "";
     console.log(
       `HEARTBEAT elapsed_minutes=${elapsedMinutes} status=${report.status} processed=${processed} checked=${report.checked} failed=${report.failed} baselined=${report.baselined} unchanged=${report.unchanged} ai_true_changes=${report.ai_true_changes} r2_uploaded=${report.r2_uploaded} r2_failed=${report.r2_failed}${coverageText}`,
@@ -1889,14 +1935,16 @@ async function rotateR2LatestToPrevious(client, sourceId) {
     const previousKey = r2SnapshotKey(sourceId, "previous", slot.fileName);
 
     if (await r2ObjectExists(client, latestKey)) {
-      await client.send(
-        new CopyObjectCommand({
+      await sendR2Command(
+        client,
+        () => new CopyObjectCommand({
           Bucket: r2Bucket,
           CopySource: `${r2Bucket}/${latestKey}`,
           Key: previousKey,
           ContentType: slot.contentType,
           MetadataDirective: "COPY",
         }),
+        `copy ${latestKey}`,
       );
       rotatedKeys[slot.name] = previousKey;
     } else {
@@ -1910,13 +1958,15 @@ async function rotateR2LatestToPrevious(client, sourceId) {
 async function uploadR2CaptureFiles(client, sourceId, files) {
   const uploaded = await Promise.all(files.map(async (file) => {
     const key = r2SnapshotKey(sourceId, "latest", file.fileName);
-    await client.send(
-      new PutObjectCommand({
+    await sendR2Command(
+      client,
+      () => new PutObjectCommand({
         Bucket: r2Bucket,
         Key: key,
         Body: readFileSync(file.path),
         ContentType: file.contentType,
       }),
+      `put ${key}`,
     );
     return [file.name, key];
   }));
@@ -1937,11 +1987,13 @@ async function deleteR2LatestObjectsNotInCapture(client, sourceId, latestKeys) {
 
 async function r2ObjectExists(client, key) {
   try {
-    await client.send(
-      new HeadObjectCommand({
+    await sendR2Command(
+      client,
+      () => new HeadObjectCommand({
         Bucket: r2Bucket,
         Key: key,
       }),
+      `head ${key}`,
     );
     return true;
   } catch (error) {
@@ -1952,11 +2004,13 @@ async function r2ObjectExists(client, key) {
 
 async function deleteR2Object(client, key) {
   try {
-    await client.send(
-      new DeleteObjectCommand({
+    await sendR2Command(
+      client,
+      () => new DeleteObjectCommand({
         Bucket: r2Bucket,
         Key: key,
       }),
+      `delete ${key}`,
     );
   } catch (error) {
     if (!isR2NotFoundError(error)) throw error;
@@ -2048,6 +2102,47 @@ function isR2NotFoundError(error) {
     error?.name === "NotFound" ||
     error?.Code === "NoSuchKey"
   );
+}
+
+async function sendR2Command(client, createCommand, label) {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await client.send(createCommand());
+    } catch (error) {
+      attempt += 1;
+      if (attempt > r2OperationRetries || !isTransientR2Error(error)) {
+        throw error;
+      }
+
+      const waitMs = Math.min(10_000, 500 * 2 ** (attempt - 1));
+      console.log(`R2 RETRY attempt=${attempt}/${r2OperationRetries} wait_ms=${waitMs} op=${label} message=${errorMessage(error)}`);
+      await sleep(waitMs);
+    }
+  }
+}
+
+function isTransientR2Error(error) {
+  if (isR2NotFoundError(error)) return false;
+  const status = Number(error?.$metadata?.httpStatusCode || error?.statusCode || 0);
+  if ([408, 429, 500, 502, 503, 504].includes(status)) return true;
+
+  const name = String(error?.name || error?.code || "").toLowerCase();
+  if (["timeout_error", "timeout", "throttling", "slowdown", "requesttimeout"].includes(name)) {
+    return true;
+  }
+
+  const message = errorMessage(error).toLowerCase();
+  return [
+    "bad record mac",
+    "econnreset",
+    "etimedout",
+    "socket hang up",
+    "tls",
+    "ssl",
+    "network",
+    "temporarily unavailable",
+  ].some((part) => message.includes(part));
 }
 
 async function createThumbnail(context, pageBuffer) {
@@ -3602,12 +3697,26 @@ async function waitForDomain(value) {
     return;
   }
 
-  const previous = hostLastFetchAt.get(hostname) || 0;
-  const elapsed = Date.now() - previous;
-  if (elapsed < domainDelayMs) {
-    await sleep(domainDelayMs - elapsed);
-  }
-  hostLastFetchAt.set(hostname, Date.now());
+  const previousQueue = hostWaitQueues.get(hostname) || Promise.resolve();
+  let nextQueue;
+  nextQueue = previousQueue
+    .catch(() => null)
+    .then(async () => {
+      const previous = hostLastFetchAt.get(hostname) || 0;
+      const elapsed = Date.now() - previous;
+      if (elapsed < domainDelayMs) {
+        await sleep(domainDelayMs - elapsed);
+      }
+      hostLastFetchAt.set(hostname, Date.now());
+    })
+    .finally(() => {
+      if (hostWaitQueues.get(hostname) === nextQueue) {
+        hostWaitQueues.delete(hostname);
+      }
+    });
+
+  hostWaitQueues.set(hostname, nextQueue);
+  await nextQueue;
 }
 
 function ensureArchiveDirectories() {
@@ -4591,12 +4700,12 @@ function parseArgs(values) {
 async function runConcurrent(items, concurrency, task) {
   let nextIndex = 0;
   const workerCount = Math.min(concurrency, items.length);
-  const workers = Array.from({ length: workerCount }, async () => {
+  const workers = Array.from({ length: workerCount }, async (_unused, workerIndex) => {
     while (true) {
       const index = nextIndex;
       nextIndex += 1;
       if (index >= items.length) return;
-      await task(items[index], index);
+      await task(items[index], index, workerIndex);
     }
   });
 

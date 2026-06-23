@@ -196,8 +196,8 @@ export default async function AdminPage() {
                 <h2 className="text-2xl font-black">Daily screenshot pipeline</h2>
               </div>
               <p className="mt-2 text-sm text-[var(--muted)]">
-                One local PC worker runs the full workflow. Gemini is only used for new baseline
-                fact extraction and pages/PDFs that already look different.
+                One local PC worker captures screenshots and PDFs. Gemini is used for separate
+                page-information backfills and pages/PDFs that already look different.
               </p>
             </div>
             <StatusPill status={latestVisualRun?.status || "running"} />
@@ -230,7 +230,7 @@ export default async function AdminPage() {
               title="2. Scan pages for award information"
               detail={`Extracted ${formatNumber(numberFromObject(latestExtraction, "extracted"))}, backfilled ${formatNumber(numberFromObject(latestExtraction, "backfilled"))}, failed ${formatNumber(numberFromObject(latestExtraction, "failed"))}.`}
               status={
-                geminiCapReached(latestOptions, latestGeminiCliUsage)
+                geminiApiCapReached(latestOptions, latestGeminiUsage) || geminiCapReached(latestOptions, latestGeminiCliUsage)
                   ? "Cap reached"
                   : booleanFromObject(latestExtraction, "enabled")
                     ? "On"
@@ -279,6 +279,7 @@ export default async function AdminPage() {
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
                 <Detail label="Provider" value={latestVisualRun?.ai_provider || stringFromObject(latestExtraction, "provider") || "None"} />
                 <Detail label="Model" value={stringFromObject(latestExtraction, "model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
+                <Detail label="Daily page scan" value={booleanFromObject(latestOptions, "extract_baseline_info") ? "On" : "Off"} />
                 <Detail label="API calls" value={formatNumber(numberFromObject(latestGeminiUsage, "calls"))} />
                 <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestGeminiUsage, "estimated_cost_usd"))}`} />
                 <Detail label="API cost cap" value={formatApiCostCap(latestOptions)} />
@@ -311,6 +312,7 @@ export default async function AdminPage() {
                 <Detail label="AI model" value={stringFromObject(latestVisualMetadata, "ai_model") || "none"} />
                 <Detail label="Current stage" value={latestVisualStage} />
                 <Detail label="Archive root" value={stringFromObject(latestVisualMetadata, "archive_root") || "Local worker default"} />
+                <Detail label="Web workers" value={formatNumber(numberFromObject(latestOptions, "web_concurrency") || 1)} />
                 <Detail label="Gemini API tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} />
                 <Detail label="Gemini CLI image files" value={formatNumber(numberFromObject(latestGeminiCliUsage, "image_files"))} />
                 <Detail label="Gemini CLI elapsed" value={`${formatNumber(numberFromObject(latestGeminiCliUsage, "elapsed_ms"))} ms`} />
