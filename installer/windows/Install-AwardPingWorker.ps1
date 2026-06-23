@@ -468,11 +468,14 @@ if (Test-VisualLockActive -Path `$LockPath) {
 `$logPrefix = if (`$CompleteMissingBaselines) { "awardping-visual-complete-baselines" } elseif (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
 `$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
 
-Set-Location `$AppDir
+`$nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+`$workerScript = Join-Path `$AppDir "scripts\capture-visual-snapshots.mjs"
+if (-not (Test-Path -LiteralPath `$workerScript)) {
+  throw "Missing AwardPing visual snapshot worker script: `$workerScript"
+}
+
 `$workerArgs = @(
-  "run",
-  "source:visual-snapshots",
-  "--",
+  `$workerScript,
   "--env",
   ".env.worker.local",
   "--limit",
@@ -506,18 +509,36 @@ if (`$CompleteMissingBaselines) {
 Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode log=`$logPath" -Encoding ASCII
 `$exitCode = 1
 Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
+`$stdoutPath = Join-Path `$LogDir "`$logPrefix-`$stamp.stdout.tmp"
+`$stderrPath = Join-Path `$LogDir "`$logPrefix-`$stamp.stderr.tmp"
 try {
-  & npm @workerArgs *>&1 | ForEach-Object {
-    `$line = [string]`$_
-    Write-Host `$line
-    Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+  `$startInfo = @{
+    FilePath = `$nodePath
+    ArgumentList = `$workerArgs
+    WorkingDirectory = `$AppDir
+    WindowStyle = "Hidden"
+    RedirectStandardOutput = `$stdoutPath
+    RedirectStandardError = `$stderrPath
+    Wait = `$true
+    PassThru = `$true
   }
-  `$exitCode = `$LASTEXITCODE
+  `$process = Start-Process @startInfo
+
+  if (Test-Path -LiteralPath `$stdoutPath) {
+    Get-Content -LiteralPath `$stdoutPath -ErrorAction SilentlyContinue |
+      Add-Content -Path `$logPath -Encoding UTF8
+  }
+  if (Test-Path -LiteralPath `$stderrPath) {
+    Get-Content -LiteralPath `$stderrPath -ErrorAction SilentlyContinue |
+      Add-Content -Path `$logPath -Encoding UTF8
+  }
+  `$exitCode = `$process.ExitCode
   Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
 } catch {
   Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
   throw
 } finally {
+  Remove-Item -Path `$stdoutPath, `$stderrPath -Force -ErrorAction SilentlyContinue
   Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
 }
 exit `$exitCode
