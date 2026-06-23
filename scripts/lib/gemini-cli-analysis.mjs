@@ -8,6 +8,10 @@ export async function runGeminiCliJsonAnalysis(input) {
   if (looksLikeFilePath(cliPath) && !existsSync(cliPath)) {
     throw new Error(`Gemini CLI executable not found: ${cliPath}`);
   }
+  assertAllowedGeminiCliModel(input.model, {
+    allowUnsafeModel: input.allowUnsafeModel,
+    safeModels: input.safeModels,
+  });
 
   const startedAt = Date.now();
   const workspaceDir = resolve(input.workspaceRoot, safePathSegment(input.runId || `analysis-${startedAt}`));
@@ -116,6 +120,29 @@ export async function runGeminiCliJsonAnalysis(input) {
     stdout: tail(execution.stdout, 4000),
     stderr: tail(execution.stderr, 4000),
   };
+}
+
+function assertAllowedGeminiCliModel(model, options = {}) {
+  if (options.allowUnsafeModel) return;
+
+  const requested = normalizeModelLabel(model);
+  const safeModels = (options.safeModels && options.safeModels.length ? options.safeModels : ["Gemini 3.5 Flash (Low)"])
+    .map(normalizeModelLabel)
+    .filter(Boolean);
+
+  if (safeModels.includes(requested)) return;
+
+  throw new Error(
+    [
+      `Gemini CLI model "${model || "unknown"}" is not in the AwardPing safe model list.`,
+      `Allowed by default: ${safeModels.join(", ") || "none"}.`,
+      "Use AWARDPING_SAFE_GEMINI_CLI_MODELS to add exact low-cost labels, or AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL=true for a deliberate manual override.",
+    ].join(" "),
+  );
+}
+
+function normalizeModelLabel(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function runProcess(command, args, options) {

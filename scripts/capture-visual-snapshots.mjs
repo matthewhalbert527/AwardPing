@@ -83,7 +83,15 @@ const geminiCliWorkspaceRoot = resolve(
   String(args["gemini-cli-workspace"] || env.AWARDPING_GEMINI_CLI_WORKSPACE || join(archiveRoot, "gemini-cli-workspace")),
 );
 const geminiCliTimeoutMs = positiveInt(args["gemini-cli-timeout-ms"] || env.AWARDPING_GEMINI_CLI_TIMEOUT_MS, 120_000);
-const geminiCliMaxCalls = nonNegativeInt(args["gemini-cli-max-calls"] || env.AWARDPING_GEMINI_CLI_MAX_CALLS, 50);
+const geminiCliMaxCalls = nonNegativeInt(args["gemini-cli-max-calls"] || env.AWARDPING_GEMINI_CLI_MAX_CALLS, 100);
+const geminiCliSafeModels = listArg(
+  args["gemini-cli-safe-models"] || env.AWARDPING_SAFE_GEMINI_CLI_MODELS,
+  ["Gemini 3.5 Flash (Low)"],
+);
+const allowUnsafeGeminiCliModel = boolArg(
+  args["allow-unsafe-gemini-cli-model"] ?? env.AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL,
+  false,
+);
 const extractBaselineInfo = boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
 const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
@@ -224,6 +232,8 @@ async function runOnce() {
       r2_bucket: r2SnapshotSync ? r2Bucket : null,
       gemini_cli_path: aiProvider === "gemini-cli" ? geminiCliPath : null,
       gemini_cli_model: aiProvider === "gemini-cli" ? geminiCliModel : null,
+      gemini_cli_safe_models: aiProvider === "gemini-cli" ? geminiCliSafeModels : [],
+      allow_unsafe_gemini_cli_model: allowUnsafeGeminiCliModel,
       gemini_cli_max_calls: geminiCliMaxCalls || null,
       extract_baseline_info: extractBaselineInfo,
       backfill_baseline_info: backfillBaselineInfo,
@@ -2135,6 +2145,8 @@ async function reviewWithGeminiCli(input) {
     model: geminiCliModel,
     workspaceRoot: geminiCliWorkspaceRoot,
     timeoutMs: geminiCliTimeoutMs,
+    safeModels: geminiCliSafeModels,
+    allowUnsafeModel: allowUnsafeGeminiCliModel,
     runId: `diff-${timestampForPath(input.capture.captured_at)}-${input.source.id}`,
     prompt: geminiCliDiffPrompt(input),
     filePaths: geminiCliDiffFiles(input),
@@ -2272,6 +2284,8 @@ async function maybeExtractBaselineFacts(source, capture, report, options = {}) 
       model: geminiCliModel,
       workspaceRoot: geminiCliWorkspaceRoot,
       timeoutMs: geminiCliTimeoutMs,
+      safeModels: geminiCliSafeModels,
+      allowUnsafeModel: allowUnsafeGeminiCliModel,
       runId: `facts-${timestampForPath(capture.captured_at)}-${source.id}`,
       prompt: geminiCliBaselineFactsPrompt(source, capture, options.reason || "baseline"),
       filePaths: geminiCliBaselineFactFiles(capture),
@@ -4314,6 +4328,15 @@ function boolArg(value, fallback) {
   if (["true", "1", "yes", "y"].includes(normalized)) return true;
   if (["false", "0", "no", "n"].includes(normalized)) return false;
   return fallback;
+}
+
+function listArg(value, fallback = []) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (Array.isArray(value)) return value.map((item) => cleanText(item)).filter(Boolean);
+  return String(value)
+    .split(",")
+    .map((item) => cleanText(item))
+    .filter(Boolean);
 }
 
 function positiveInt(value, fallback) {

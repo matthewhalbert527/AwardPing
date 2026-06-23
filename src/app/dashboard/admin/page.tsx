@@ -71,6 +71,7 @@ export default async function AdminPage() {
   const latestCounts = objectValue(latestVisualMetadata.counts);
   const latestDetailCounts = objectValue(latestDetailMetadata.counts);
   const latestOptions = objectValue(latestVisualMetadata.options);
+  const latestDetailOptions = objectValue(latestDetailMetadata.options);
   const latestPipeline = objectValue(latestVisualMetadata.visual_pipeline);
   const latestDetailPipeline = objectValue(latestDetailMetadata.detail_pipeline);
   const latestCapture = objectValue(latestPipeline.capture);
@@ -271,6 +272,8 @@ export default async function AdminPage() {
               <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
                 <Detail label="Model" value={stringFromObject(latestGeminiCliUsage, "model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
                 <Detail label="Call cap" value={formatCap(latestOptions)} />
+                <Detail label="Safe models" value={formatSafeModels(latestOptions)} />
+                <Detail label="Unsafe override" value={booleanFromObject(latestOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
               </dl>
             </div>
           </div>
@@ -330,7 +333,9 @@ export default async function AdminPage() {
                   <Detail label="Finished" value={latestDetailRun.finished_at ? formatDate(latestDetailRun.finished_at) : "Still running"} />
                   <Detail label="AI model" value={stringFromObject(latestDetailMetadata, "ai_model") || "Gemini CLI"} />
                   <Detail label="Gemini CLI calls" value={formatNumber(numberFromObject(latestDetailGeminiCliUsage, "calls"))} />
-                  <Detail label="Call cap" value={formatCap(objectValue(latestDetailMetadata.options))} />
+                  <Detail label="Call cap" value={formatCap(latestDetailOptions)} />
+                  <Detail label="Safe models" value={formatSafeModels(latestDetailOptions)} />
+                  <Detail label="Unsafe override" value={booleanFromObject(latestDetailOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
                 </dl>
               </>
             ) : (
@@ -585,6 +590,16 @@ function geminiCapReached(options: Record<string, unknown>, usage: Record<string
 function formatCap(options: Record<string, unknown>) {
   const cap = numberFromObject(options, "gemini_cli_max_calls");
   return cap > 0 ? formatNumber(cap) : "No cap";
+}
+
+function formatSafeModels(options: Record<string, unknown>) {
+  const raw = options.gemini_cli_safe_models;
+  if (Array.isArray(raw)) {
+    const labels = raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return labels.length > 0 ? labels.join(", ") : "Not logged";
+  }
+  if (typeof raw === "string" && raw.trim()) return raw;
+  return "Not logged";
 }
 
 function workerRunLabel(value: string) {

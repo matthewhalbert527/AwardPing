@@ -52,7 +52,15 @@ const geminiCliTimeoutMs = positiveInt(
 );
 const geminiCliMaxCalls = nonNegativeInt(
   args["gemini-cli-max-calls"] || args["max-calls"] || env.AWARDPING_AWARD_DETAIL_GEMINI_CLI_MAX_CALLS,
-  50,
+  150,
+);
+const geminiCliSafeModels = listArg(
+  args["gemini-cli-safe-models"] || env.AWARDPING_SAFE_GEMINI_CLI_MODELS,
+  ["Gemini 3.5 Flash (Low)"],
+);
+const allowUnsafeGeminiCliModel = boolArg(
+  args["allow-unsafe-gemini-cli-model"] ?? env.AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL,
+  false,
 );
 const limit = limitArg(args.limit, "all");
 const awardIdFilter = cleanText(args["award-id"]);
@@ -103,6 +111,8 @@ async function runOnce() {
       force,
       skip_existing: skipExisting,
       gemini_cli_model: geminiCliModel,
+      gemini_cli_safe_models: geminiCliSafeModels,
+      allow_unsafe_gemini_cli_model: allowUnsafeGeminiCliModel,
       gemini_cli_max_calls: geminiCliMaxCalls || null,
       source_images_per_award: sourceImagesPerAward,
       max_sources_per_award: maxSourcesPerAward,
@@ -174,6 +184,8 @@ async function runOnce() {
           model: geminiCliModel,
           workspaceRoot: geminiCliWorkspaceRoot,
           timeoutMs: geminiCliTimeoutMs,
+          safeModels: geminiCliSafeModels,
+          allowUnsafeModel: allowUnsafeGeminiCliModel,
           runId: `award-${safePathSegment(award.id)}-${runStamp}`,
           prompt: awardDetailPrompt(award, evidence),
           filePaths: evidence.imagePaths,
@@ -785,6 +797,15 @@ function boolArg(value, fallback) {
   if (["true", "1", "yes", "y"].includes(normalized)) return true;
   if (["false", "0", "no", "n"].includes(normalized)) return false;
   return fallback;
+}
+
+function listArg(value, fallback = []) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (Array.isArray(value)) return value.map((item) => cleanText(item)).filter(Boolean);
+  return String(value)
+    .split(",")
+    .map((item) => cleanText(item))
+    .filter(Boolean);
 }
 
 function limitArg(value, fallback) {
