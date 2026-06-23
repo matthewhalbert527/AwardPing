@@ -159,6 +159,9 @@ export default async function AdminPage() {
   const baselineCoveragePercent = latestBaselineCoverage
     ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
     : 0;
+  const localBaselineLabel = latestBaselineCoverage
+    ? `${formatNumber(latestBaselineCoverage.existingBaselines)} of ${formatNumber(latestBaselineCoverage.loadedSources)} local`
+    : `${formatNumber(publishedSnapshotCount)} sources indexed in R2`;
   const latestVisualStage = visualRunStage(latestVisualRun, latestVisualMetadata);
   const pipelineErrors = [
     workerRunError?.message,
@@ -171,15 +174,15 @@ export default async function AdminPage() {
 
   return (
     <AdminShell>
-      <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+      <div className="admin-page-header">
         <div>
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-4xl font-black">Screenshot scans</h1>
-          <p className="mt-2 max-w-3xl text-[var(--muted)]">
+          <h1 className="admin-page-title">Screenshot scans</h1>
+          <p className="admin-page-copy">
             Owner-only status for the daily local worker that captures screenshots, stores snapshots
             in R2, scans pages for award information, compares changes, and publishes meaningful updates.
           </p>
-          <p className="mt-2 text-sm font-semibold text-[var(--muted)]">
+          <p className="admin-page-timestamp">
             Page data refreshed {formatDate(renderedAt)}.
           </p>
         </div>
@@ -198,7 +201,7 @@ export default async function AdminPage() {
         </section>
       )}
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+      <section className="admin-metric-grid">
         <MetricCard
           icon={Eye}
           label="Daily worker"
@@ -209,29 +212,25 @@ export default async function AdminPage() {
         <MetricCard
           icon={Database}
           label="Screenshot baselines"
-          value={
-            latestBaselineCoverage
-              ? `${formatNumber(latestBaselineCoverage.existingBaselines)} / ${formatNumber(latestBaselineCoverage.loadedSources)}`
-              : formatNumber(visualSnapshotRecordCount || 0)
-          }
+          value={latestBaselineCoverage ? `${baselineCoveragePercent}%` : formatNumber(visualSnapshotRecordCount || 0)}
           detail={
             latestBaselineCoverage
-              ? `${baselineCoveragePercent}% local; ${formatNumber(publishedSnapshotMissing)} unpublished to R2`
-              : `${formatNumber(publishedSnapshotCount)} sources indexed in R2`
+              ? `${localBaselineLabel}; ${formatNumber(publishedSnapshotMissing)} unpublished to R2`
+              : localBaselineLabel
           }
           attention={publishedSnapshotMissing > 0}
         />
         <MetricCard
           icon={Sparkles}
           label="Gemini API calls"
-          value={numberFromObject(latestPageInfoGeminiUsage, "calls")}
+          value={formatNumber(numberFromObject(latestPageInfoGeminiUsage, "calls"))}
           detail={latestPageInfoGeminiApiHealth.metricDetail}
           attention={latestPageInfoGeminiApiHealth.attention}
         />
         <MetricCard
           icon={Database}
           label="R2 uploads"
-          value={numberFromObject(latestCounts, "r2_uploaded")}
+          value={formatNumber(numberFromObject(latestCounts, "r2_uploaded"))}
           detail={`${formatNumber(numberFromObject(latestCounts, "r2_rotated"))} rotated, ${formatNumber(numberFromObject(latestCounts, "r2_failed"))} failed`}
           attention={numberFromObject(latestCounts, "r2_failed") > 0}
         />
@@ -249,14 +248,14 @@ export default async function AdminPage() {
         <MetricCard
           icon={Activity}
           label="Published updates"
-          value={numberFromObject(latestPublishing, "published_updates")}
+          value={formatNumber(numberFromObject(latestPublishing, "published_updates"))}
           detail={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} meaningful changes in latest run`}
           attention={numberFromObject(latestPublishing, "failed") > 0}
         />
       </section>
 
       <section className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <div className="card p-6">
+        <div className="card admin-section-card">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2">
@@ -271,11 +270,11 @@ export default async function AdminPage() {
             <StatusPill status={latestVisualRun?.status || "running"} />
           </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="admin-stat-grid admin-stat-grid-wide">
             <MiniStat label="Checked" value={latestVisualChecked} />
             <MiniStat label="Baselined" value={latestVisualBaselined} />
             <MiniStat label="Unchanged" value={latestVisualUnchanged} />
-            <MiniStat label="Failed" value={latestVisualFailed} attention />
+            <MiniStat label="Failed" value={latestVisualFailed} attention={latestVisualFailed > 0} />
             <MiniStat label="Facts extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
             <MiniStat label="Facts skipped" value={numberFromObject(latestPageInfoExtraction, "skipped")} attention={geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) || geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)} />
             <MiniStat label="Candidates" value={numberFromObject(latestComparison, "candidates")} />
@@ -286,7 +285,7 @@ export default async function AdminPage() {
             <MiniStat label="Expanded controls" value={numberFromObject(latestCounts, "expanded_controls")} />
           </div>
 
-          <div className="mt-5 grid gap-3">
+          <div className="admin-flow-list">
             <PipelineRow
               icon={Eye}
               title="1. Capture screenshots and PDFs"
@@ -328,9 +327,9 @@ export default async function AdminPage() {
           </div>
 
           <div className="mt-5 grid gap-4 xl:grid-cols-2">
-            <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+            <div className="admin-subpanel">
               <h3 className="font-black">R2 snapshot storage</h3>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="admin-stat-grid admin-stat-grid-tight">
                 <MiniStat label="Uploaded objects" value={numberFromObject(latestCounts, "r2_uploaded")} />
                 <MiniStat label="Rotated objects" value={numberFromObject(latestCounts, "r2_rotated")} />
                 <MiniStat label="Upload failures" value={numberFromObject(latestCounts, "r2_failed")} attention={numberFromObject(latestCounts, "r2_failed") > 0} />
@@ -340,7 +339,7 @@ export default async function AdminPage() {
                 <MiniStat label="Published rows" value={publishedSnapshotCount} />
                 <MiniStat label="Unpublished active" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
               </div>
-              <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
+              <dl className="admin-detail-grid">
                 <Detail label="R2 sync" value={booleanFromObject(latestOptions, "r2_snapshot_sync") ? "On" : "Off"} />
                 <Detail label="Repair missing" value={booleanFromObject(latestOptions, "r2_repair_missing_snapshots") ? "On" : "Off"} />
                 <Detail label="Bucket" value={stringFromObject(latestOptions, "r2_bucket") || "Not set"} />
@@ -348,15 +347,15 @@ export default async function AdminPage() {
               </dl>
             </div>
 
-            <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+            <div className="admin-subpanel">
               <h3 className="font-black">Page information scan</h3>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="admin-stat-grid admin-stat-grid-tight">
                 <MiniStat label="Extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
                 <MiniStat label="Skipped" value={numberFromObject(latestPageInfoExtraction, "skipped")} attention={geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) || geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)} />
                 <MiniStat label="Failed" value={numberFromObject(latestPageInfoExtraction, "failed")} attention={numberFromObject(latestPageInfoExtraction, "failed") > 0} />
                 <MiniStat label="Applied" value={latestPageInfoApplied} />
               </div>
-              <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
+              <dl className="admin-detail-grid">
                 <Detail label="Provider" value={latestPageInfoStatusRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
                 <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestPageInfoMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
                 <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestPageInfoStatusRun?.status === "running" ? "On" : "Off"} />
@@ -372,9 +371,9 @@ export default async function AdminPage() {
             </div>
           </div>
 
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+          <div className="admin-subpanel">
             <h3 className="font-black">Screenshot behavior checks</h3>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="admin-stat-grid admin-stat-grid-wide">
               <MiniStat label="Refreshed captures" value={numberFromObject(latestCounts, "capture_behavior_refreshed")} />
               <MiniStat label="Expanded controls" value={numberFromObject(latestCounts, "expanded_controls")} />
               <MiniStat label="Discovered PDFs" value={numberFromObject(latestCounts, "discovered_pdf_sources")} />
@@ -386,10 +385,10 @@ export default async function AdminPage() {
             </div>
           </div>
 
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+          <div className="admin-subpanel">
             <h3 className="font-black">Latest run detail</h3>
             {latestVisualRun ? (
-              <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
+              <dl className="admin-detail-grid admin-detail-grid-wide">
                 <Detail label="Started" value={formatDate(latestVisualRun.started_at)} />
                 <Detail label="Finished" value={latestVisualRun.finished_at ? formatDate(latestVisualRun.finished_at) : "Still running"} />
                 <Detail label="AI provider" value={latestVisualRun.ai_provider || "none"} />
@@ -409,11 +408,11 @@ export default async function AdminPage() {
             )}
           </div>
 
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4">
+          <div className="admin-subpanel">
             <h3 className="font-black">Baseline award details</h3>
             {latestAwardDetailRun ? (
               <>
-                <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="admin-stat-grid admin-stat-grid-wide">
                   <MiniStat label="Awards checked" value={latestAwardDetailRun.checked_count || 0} />
                   <MiniStat label="Skipped existing" value={numberFromObject(latestAwardDetailCounts, "skipped_existing")} />
                   <MiniStat label="Details extracted" value={numberFromObject(latestAwardDetailExtraction, "extracted")} />
@@ -424,7 +423,7 @@ export default async function AdminPage() {
                     attention={numberFromObject(latestAwardDetailExtraction, "no_baseline") > 0}
                   />
                 </div>
-                <dl className="mt-3 grid gap-3 text-sm text-[var(--muted)] sm:grid-cols-2">
+                <dl className="admin-detail-grid admin-detail-grid-wide">
                   <Detail label="Started" value={formatDate(latestAwardDetailRun.started_at)} />
                   <Detail label="Finished" value={latestAwardDetailRun.finished_at ? formatDate(latestAwardDetailRun.finished_at) : "Still running"} />
                   <Detail label="AI model" value={stringFromObject(latestAwardDetailMetadata, "ai_model") || "Source page facts"} />
@@ -445,12 +444,12 @@ export default async function AdminPage() {
           </div>
         </div>
 
-        <div className="card p-6">
+        <div className="card admin-section-card admin-side-card">
           <div className="flex items-center gap-2">
             <Database size={18} aria-hidden="true" />
             <h2 className="text-2xl font-black">Snapshot coverage</h2>
           </div>
-          <div className="mt-5 grid gap-3">
+          <div className="admin-stat-grid admin-stat-grid-side">
             <MiniStat label="Catalog source pages" value={sharedSourceCount || 0} />
             <MiniStat label="Active source pages" value={activeSourceTotal} />
             <MiniStat label="Page outlines scanned" value={`${formatNumber(sourceMetadataCount || 0)} (${sourceMetadataPercent}%)`} />
@@ -497,7 +496,7 @@ export default async function AdminPage() {
 }
 
 function AdminShell({ children }: { children: React.ReactNode }) {
-  return <div className="mx-auto max-w-7xl">{children}</div>;
+  return <div className="admin-page mx-auto w-full max-w-[90rem]">{children}</div>;
 }
 
 function AdminAccessDenied({ configured }: { configured: boolean }) {
@@ -524,18 +523,18 @@ function MetricCard({
 }: {
   icon: typeof Activity;
   label: string;
-  value: string | number;
+  value: React.ReactNode;
   detail: string;
   attention?: boolean;
 }) {
   return (
-    <div className={`dashboard-metric-card ${attention ? "dashboard-metric-card-attention" : ""}`}>
-      <div className="flex items-center justify-between gap-3">
-        <p className="dashboard-metric-label">{label}</p>
-        <Icon size={18} aria-hidden="true" />
+    <div className={`admin-metric-card ${attention ? "admin-metric-card-attention" : ""}`}>
+      <div className="admin-metric-head">
+        <p className="admin-metric-label">{label}</p>
+        <Icon size={17} aria-hidden="true" />
       </div>
-      <p className="dashboard-metric-value">{value}</p>
-      <p className="mt-2 text-sm font-semibold text-[var(--muted)]">{detail}</p>
+      <p className="admin-metric-value">{value}</p>
+      <p className="admin-metric-detail">{detail}</p>
     </div>
   );
 }
@@ -550,9 +549,9 @@ function MiniStat({
   attention?: boolean;
 }) {
   return (
-    <div className={`rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4 ${attention ? "border-[var(--brand-pink)]" : ""}`}>
-      <p className="text-xs font-black uppercase text-[var(--muted)]">{label}</p>
-      <p className="mt-2 text-2xl font-black">{typeof value === "number" ? formatNumber(value) : value}</p>
+    <div className={`admin-mini-stat ${attention ? "admin-mini-stat-attention" : ""}`}>
+      <p className="admin-mini-stat-label">{label}</p>
+      <p className="admin-mini-stat-value">{typeof value === "number" ? formatNumber(value) : value}</p>
     </div>
   );
 }
@@ -571,7 +570,7 @@ function PipelineRow({
   attention?: boolean;
 }) {
   return (
-    <div className={`rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4 ${attention ? "border-[var(--brand-pink)]" : ""}`}>
+    <div className={`admin-pipeline-row ${attention ? "admin-pipeline-row-attention" : ""}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-start gap-3">
           <Icon className="mt-1 shrink-0" size={18} aria-hidden="true" />
@@ -613,16 +612,16 @@ function ProgressBar({
 
 function Detail({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0">
-      <dt className="text-xs font-black uppercase">{label}</dt>
-      <dd className="mt-1 break-words font-semibold text-[var(--foreground)]">{value}</dd>
+    <div className="admin-detail-item">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }
 
 function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) {
   return (
-    <section className="card p-6">
+    <section className="card admin-section-card">
       <div className="flex items-center gap-2">
         <Clock3 size={18} aria-hidden="true" />
         <h2 className="text-2xl font-black">{title}</h2>
@@ -631,7 +630,7 @@ function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) 
         {runs.slice(0, 10).map((run) => {
           const metrics = workerRunMetrics(run);
           return (
-            <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={run.id}>
+            <div className="admin-run-row" key={run.id}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <p className="font-black">{workerRunLabel(run.worker_name)}</p>
