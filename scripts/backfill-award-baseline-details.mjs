@@ -37,7 +37,7 @@ const geminiCliModel = cleanText(
     args["gemini-cli-model"] ||
     env.AWARDPING_AWARD_DETAIL_GEMINI_CLI_MODEL ||
     env.AWARDPING_GEMINI_CLI_MODEL ||
-    "Gemini 3.1 Pro (Low)",
+    "Gemini 3.5 Flash (Low)",
 );
 const geminiCliWorkspaceRoot = resolve(
   String(
@@ -52,7 +52,7 @@ const geminiCliTimeoutMs = positiveInt(
 );
 const geminiCliMaxCalls = nonNegativeInt(
   args["gemini-cli-max-calls"] || args["max-calls"] || env.AWARDPING_AWARD_DETAIL_GEMINI_CLI_MAX_CALLS,
-  250,
+  50,
 );
 const limit = limitArg(args.limit, "all");
 const awardIdFilter = cleanText(args["award-id"]);
