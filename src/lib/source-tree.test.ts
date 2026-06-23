@@ -186,4 +186,53 @@ describe("source tree grouping", () => {
       "Guidelines Parent Infant 2025 1",
     ]);
   });
+
+  it("uses extracted display titles instead of noisy URL path leaves", () => {
+    const tree = buildSourceTree([
+      {
+        id: "hench",
+        title: "hench.htm",
+        displayTitle: "Hench Postdoctoral Fellowship",
+        url: "http://www.americanantiquarian.org/hench.htm",
+        pageType: "other",
+      },
+    ]);
+
+    expect(tree.map((node) => node.label)).toEqual(["Hench Postdoctoral Fellowship"]);
+    expect(tree.map((node) => node.label)).not.toContain("Hench Htm");
+  });
+
+  it("groups extracted page categories into scholarship concepts", () => {
+    const tree = buildSourceTree([
+      {
+        id: "citizenship",
+        title: "Citizenship",
+        displayTitle: "Citizenship",
+        url: "https://example.edu/scholarship/eligibility/citizenship",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts: {
+            page_category: "Eligibility",
+          },
+        },
+      },
+      {
+        id: "campus-deadline",
+        title: "Campus deadline",
+        displayTitle: "Campus deadline",
+        url: "https://example.edu/scholarship/dates/campus",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts: {
+            page_category: "Deadlines",
+          },
+        },
+      },
+    ]);
+
+    const eligibility = tree.find((node) => node.label === "Eligibility");
+    const deadlines = tree.find((node) => node.label === "Deadlines");
+    expect(eligibility?.children.map((node) => node.label)).toEqual(["Citizenship"]);
+    expect(deadlines?.children.map((node) => node.label)).toEqual(["Campus deadline"]);
+  });
 });

@@ -5,6 +5,7 @@ export type SourceTreeSource = {
   id: string;
   title: string;
   displayTitle?: string | null;
+  pageMetadata?: unknown;
   url: string;
   pageType?: AwardPageType | null;
 };
@@ -130,6 +131,15 @@ function sourceLabelsForTree(source: SourceTreeSource, url: URL) {
     return sameLabel(category, leafLabel) ? [category] : [category, leafLabel];
   }
 
+  const titleCategory = categoryLabelFromText(leafLabel);
+  if (titleCategory) {
+    return sameLabel(titleCategory, leafLabel) ? [titleCategory] : [titleCategory, leafLabel];
+  }
+
+  if (hasUsefulProvidedTitle(source)) {
+    return [leafLabel];
+  }
+
   const pathLabels = meaningfulPathLabelsForUrl(url);
   if (pathLabels.length === 0) return [leafLabel];
   if (pathLabels.length === 1) return [pathLabels[0]];
@@ -150,11 +160,39 @@ function meaningfulPathLabelsForUrl(url: URL) {
 }
 
 function categoryLabelForSource(source: SourceTreeSource) {
+  const metadataCategory = categoryLabelFromText(pageCategoryFromMetadata(source.pageMetadata));
+  if (metadataCategory) return metadataCategory;
   if (source.pageType === "application") return "Application";
   if (source.pageType === "deadline") return "Deadlines";
   if (source.pageType === "eligibility") return "Eligibility";
   if (source.pageType === "requirements") return "Requirements";
   if (source.pageType === "faq") return "FAQ";
+  return null;
+}
+
+function pageCategoryFromMetadata(value: unknown) {
+  const metadata = objectValue(value);
+  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts || value);
+  return cleanText(facts.page_category);
+}
+
+function categoryLabelFromText(value: string | null) {
+  const clean = normalizeLabel(value || "");
+  if (!clean) return null;
+  if (/^(overview|about|homepage|home)$/.test(clean)) return "Overview";
+  if (/eligib|citizen|gpa|academicstanding|fieldofstudy/.test(clean)) return "Eligibility";
+  if (/deadline|duedate|importantdate|timeline/.test(clean)) return "Deadlines";
+  if (/awardamount|amount|funding|stipend|benefit/.test(clean)) return "Award Amount";
+  if (/material|document|essay|transcript|recommendation|letter/.test(clean)) return "Application Materials";
+  if (
+    /^(apply|howtoapply|application|applicationportal|applicationinstructions|nomination|submit)$/.test(clean) ||
+    /howtoapply|application(instructions?|portal|process)|nominationinstructions?/.test(clean)
+  ) {
+    return "How to Apply";
+  }
+  if (/selection|criteria|review|evaluation/.test(clean)) return "Selection Criteria";
+  if (/contact|links?/.test(clean)) return "Contact / Links";
+  if (/faq|question/.test(clean)) return "FAQ";
   return null;
 }
 
@@ -178,6 +216,19 @@ function sourceLeafLabel(source: SourceTreeSource, url: URL) {
   }
 
   return filename ? formatPathSegment(filename) : "Source page";
+}
+
+function hasUsefulProvidedTitle(source: SourceTreeSource) {
+  const clean = readableSourceTitle(source.displayTitle || source.title, source.url)
+    .replace(/\s+/g, " ")
+    .trim();
+  return Boolean(
+    clean &&
+      !/^source page$/i.test(clean) &&
+      !/^homepage$/i.test(clean) &&
+      !/^download$/i.test(clean) &&
+      !/^(learn more|read more|click here|here|apply|view|open|details?|information)$/i.test(clean),
+  );
 }
 
 function isPdfSource(source: SourceTreeSource, url: URL) {
@@ -221,6 +272,16 @@ function formatHost(hostname: string) {
 
 function cleanTitle(title: string) {
   return cleanDisplayText(title) || "Source page";
+}
+
+function cleanText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function slugify(value: string) {
