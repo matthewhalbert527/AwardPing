@@ -1,7 +1,7 @@
 param(
   [int]$Limit = 50000,
   [int]$MaxCalls = 50000,
-  [string]$Model = "gemini-3.1-flash-lite",
+  [string]$Model = "gemini-2.5-flash-lite",
   [decimal]$CostCapUsd = 10,
   [int]$MaxRestarts = 3,
   [switch]$Force
