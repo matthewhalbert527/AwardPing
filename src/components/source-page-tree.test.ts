@@ -135,4 +135,52 @@ describe("SourcePageTree", () => {
     expect(html).toContain("Academic standing requirements.");
     expect(html).not.toContain("Citizenship requirements.");
   });
+
+  it("summarizes branch-level page status counts", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "deadline",
+            title: "Deadline",
+            displayTitle: "Deadline",
+            url: "https://example.edu/scholarship/dates/deadline",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Deadlines",
+              },
+            },
+            latestChanges: [
+              {
+                id: "change-1",
+                sourceTitle: "Deadline",
+                sourceUrl: "https://example.edu/scholarship/dates/deadline",
+                sourcePageType: "deadline",
+                summary: "The campus deadline moved later.",
+                detectedAt: "2026-06-23T15:00:00.000Z",
+              },
+            ],
+          },
+          {
+            id: "calendar",
+            title: "Calendar",
+            displayTitle: "Calendar",
+            url: "https://example.edu/scholarship/dates/calendar",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Deadlines",
+              },
+            },
+            lastError: "Capture timed out.",
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("2 pages / 1 changed / 1 needs review");
+  });
 });

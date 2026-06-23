@@ -780,7 +780,29 @@ function branchStatus<T extends SourcePageTreeSource>(
   getSourceTracked: (source: T) => boolean,
 ) {
   const trackedCount = sources.filter(getSourceTracked).length;
+  const changedCount = sources.filter((source) => (source.latestChanges || []).length > 0).length;
+  const needsReviewCount = sources.filter((source) => Boolean(source.lastError)).length;
+  const needsScanCount = sources.filter(
+    (source) =>
+      !source.lastError &&
+      !(source.latestChanges || []).length &&
+      !source.pageMetadata &&
+      !source.pageDescription &&
+      !source.displayTitle,
+  ).length;
   const parts = [`${sources.length} page${sources.length === 1 ? "" : "s"}`];
+
+  if (changedCount > 0) {
+    parts.push(`${changedCount} changed`);
+  }
+
+  if (needsReviewCount > 0) {
+    parts.push(`${needsReviewCount} needs review`);
+  }
+
+  if (needsScanCount > 0) {
+    parts.push(`${needsScanCount} needs scan`);
+  }
 
   if (trackedCount > 0) {
     parts.push(`${trackedCount} tracked`);
