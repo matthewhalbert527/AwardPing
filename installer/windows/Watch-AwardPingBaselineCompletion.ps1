@@ -35,7 +35,6 @@ function Write-WatchdogLog {
   New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
   $line = "{0} {1}" -f (Get-Date -Format "o"), $Message
   Add-Content -Path $WatchdogLog -Value $line -Encoding UTF8
-  Write-Host $line
 }
 
 function Install-WatchdogTask {
@@ -254,6 +253,18 @@ function Start-BaselineCompletion {
   Write-WatchdogLog "restarted_baseline_completion pid=$($process.Id) limit=$Limit batch_limit=$BatchLimit"
 }
 
+function Disable-WatchdogTask {
+  param([string]$Reason)
+
+  $taskName = "AwardPing Baseline Completion Watchdog"
+  try {
+    Disable-ScheduledTask -TaskName $taskName -ErrorAction Stop | Out-Null
+    Write-WatchdogLog "disabled task=$taskName reason=$Reason"
+  } catch {
+    Write-WatchdogLog "disable_failed task=$taskName reason=$Reason message=$($_.Exception.Message)"
+  }
+}
+
 if ($Install) {
   Install-WatchdogTask
   exit 0
@@ -262,6 +273,7 @@ if ($Install) {
 $status = Get-BaselineCompletionStatus
 if ($status.Complete) {
   Write-WatchdogLog "complete actionable_missing=0 latest_log=$($status.LatestLog)"
+  Disable-WatchdogTask -Reason "baseline_complete"
   exit 0
 }
 
