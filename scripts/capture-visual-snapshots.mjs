@@ -4201,7 +4201,13 @@ function estimateGeminiCostUsd(model, usage) {
 function geminiPricePerMillion(model) {
   const name = String(model || "").toLowerCase();
   const batch = geminiApiPricingMode === "batch" || geminiApiPricingMode === "flex";
-  if (name.includes("flash-lite")) {
+  if (name.includes("3.1-flash-lite")) {
+    return batch ? { input: 0.125, output: 0.75 } : { input: 0.25, output: 1.5 };
+  }
+  if (name.includes("3-flash") || name.includes("3.1-flash")) {
+    return batch ? { input: 0.25, output: 1.5 } : { input: 0.5, output: 3 };
+  }
+  if (name.includes("2.5-flash-lite")) {
     return batch ? { input: 0.05, output: 0.2 } : { input: 0.1, output: 0.4 };
   }
   if (name.includes("2.5-flash")) {

@@ -959,12 +959,20 @@ function imageMimeType(filePath) {
 }
 
 function estimateGeminiCostUsd(model, usage) {
-  const rates = String(model || "").toLowerCase().includes("flash-lite")
-    ? { input: 0.1, output: 0.4 }
-    : { input: 0.3, output: 2.5 };
+  const rates = geminiPricePerMillion(model);
   const inputTokens = usage.prompt_tokens || 0;
   const outputTokens = (usage.candidates_tokens || 0) + (usage.thoughts_tokens || 0);
   return roundUsd((inputTokens / 1_000_000) * rates.input + (outputTokens / 1_000_000) * rates.output);
+}
+
+function geminiPricePerMillion(model) {
+  const name = String(model || "").toLowerCase();
+  if (name.includes("3.1-flash-lite")) return { input: 0.25, output: 1.5 };
+  if (name.includes("3-flash") || name.includes("3.1-flash")) return { input: 0.5, output: 3 };
+  if (name.includes("2.5-flash-lite")) return { input: 0.1, output: 0.4 };
+  if (name.includes("2.5-flash")) return { input: 0.3, output: 2.5 };
+  if (name.includes("flash-lite")) return { input: 0.1, output: 0.4 };
+  return { input: 0.3, output: 2.5 };
 }
 
 function roundUsd(value) {
