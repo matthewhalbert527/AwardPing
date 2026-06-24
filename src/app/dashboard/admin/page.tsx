@@ -6,7 +6,6 @@ import {
   Eye,
   Sparkles,
 } from "lucide-react";
-import { AdminAutoRefresh } from "@/components/admin-auto-refresh";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
@@ -272,7 +271,6 @@ export default async function AdminPage() {
             Page data refreshed {formatDate(renderedAt)}.
           </p>
         </div>
-        <AdminAutoRefresh intervalSeconds={30} />
       </div>
 
       {pipelineErrors.length > 0 && (
