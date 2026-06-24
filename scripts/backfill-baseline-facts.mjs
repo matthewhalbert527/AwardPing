@@ -1006,8 +1006,6 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
         page_title: capture.page_title || null,
         baseline_facts_rejected: true,
         rejection_reason: reason,
-        rejected_display_title: facts.display_title || null,
-        rejected_award_name: facts.award_name || null,
         quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
       },
       page_metadata_generated_at: metadata.extracted_at,

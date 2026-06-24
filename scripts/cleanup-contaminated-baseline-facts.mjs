@@ -48,7 +48,6 @@ if (apply) {
           page_title: metadata.page_title || source.title || null,
           baseline_facts_rejected: true,
           rejection_reason: "cleanup_contaminated_baseline_facts",
-          rejected_display_title: source.display_title || null,
           cleaned_at: new Date().toISOString(),
         },
         page_metadata_generated_at: new Date().toISOString(),
