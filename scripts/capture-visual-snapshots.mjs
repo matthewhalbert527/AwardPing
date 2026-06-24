@@ -1648,16 +1648,43 @@ function isRelevantDiscoveredPdfLink(link, url, source) {
     .join(" ");
 
   if (isBoilerplatePdfLink(haystack)) return false;
-  if (link.inBoilerplateRegion && !hasAwardRelevantTerms(haystack)) return false;
+  if (isLikelyDiscoveredPdfSpillover(haystack)) return false;
+
+  const hasRelevantDiscoveryTerms = hasPdfDiscoveryRelevantTerms(haystack);
+  if (link.inBoilerplateRegion && !hasRelevantDiscoveryTerms) return false;
 
   const awardTokens = distinctiveAwardTokens(`${awardName} ${sourceTitle}`);
-  const matchesAwardToken = awardTokens.some((token) => haystack.toLowerCase().includes(token));
+  const matchingAwardTokens = awardTokens.filter((token) =>
+    haystack.toLowerCase().includes(token),
+  );
+  const matchesAwardTokens =
+    matchingAwardTokens.length >= Math.min(2, Math.max(1, awardTokens.length));
 
-  if (matchesAwardToken) return true;
-  if (hasAwardRelevantTerms(haystack)) return true;
+  if (matchesAwardTokens) return true;
+  if (hasRelevantDiscoveryTerms) return true;
   if (source.page_type === "application" || source.page_type === "requirements") return true;
 
   return false;
+}
+
+function hasPdfDiscoveryRelevantTerms(value) {
+  return /\b(deadline|due date|applications?\s+(?:open|close|due)|opens?|closes?|apply|application|eligible|eligibility|requirements?|recommendations?|nomination|nominations?|transcripts?|essays?|interviews?|funding|stipend|tuition|award amount|amount awarded|guidelines?|instructions?|materials?|selection|submit|submission|citizenship|gpa|portal)\b/i.test(
+    String(value || ""),
+  );
+}
+
+function isLikelyDiscoveredPdfSpillover(value) {
+  const clean = String(value || "").toLowerCase();
+  return (
+    /\b(research reports?|reports? of former fellows?|former fellows?|feedback on fellowship|successful fellows?|program procedure|annual reports?|newsletter|leaflet|poster)\b/i.test(clean) ||
+    /\/file\/storage\/reports(?:_ippan)?\//i.test(clean) ||
+    /\/file\/storage\/general\//i.test(clean) ||
+    /\/file\/storage\/j-fellow_summer/i.test(clean) ||
+    /\/file\/storage\/j-fellow\/j-summer\//i.test(clean) ||
+    /\/english\/e-(?:summer|inv|le|grants|lindau|chukaku)\//i.test(clean) ||
+    /\/file\/storage\/(?:e-inv|j-invi|j-lindau)\//i.test(clean) ||
+    /\bguideline_20(?:2[0-5])\//i.test(clean)
+  );
 }
 
 function isBoilerplatePdfLink(value) {
@@ -1685,7 +1712,13 @@ function distinctiveAwardTokens(value) {
     "association",
     "american",
     "international",
+    "japan",
+    "japanese",
+    "jsps",
+    "postdoctoral",
     "research",
+    "short",
+    "term",
   ]);
   return String(value || "")
     .toLowerCase()
