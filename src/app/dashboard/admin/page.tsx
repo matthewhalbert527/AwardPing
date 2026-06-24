@@ -1,3 +1,4 @@
+import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
@@ -9,6 +10,7 @@ import {
 import { AdminAutoRefresh } from "@/components/admin-auto-refresh";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
+import { loadAdminPageIssues, type AdminPageIssue } from "@/lib/admin-page-issues";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -122,6 +124,7 @@ export default async function AdminPage() {
   ]);
 
   const workerRuns = (workerRunRows || []) as LocalWorkerRun[];
+  const pageIssueReview = await loadAdminPageIssues(admin, workerRuns);
   const visualRuns = workerRuns.filter((run) => run.worker_name.includes("visual-snapshot"));
   const pageInfoRuns = workerRuns.filter((run) => run.worker_name.includes("baseline-facts"));
   const awardDetailRuns = workerRuns.filter((run) =>
@@ -236,6 +239,8 @@ export default async function AdminPage() {
     ? `${formatNumber(latestBaselineCoverage.existingBaselines)} of ${formatNumber(latestBaselineCoverage.loadedSources)} local`
     : `${formatNumber(publishedSnapshotCount)} sources indexed in R2`;
   const latestVisualStage = visualRunStage(latestVisualRun, latestVisualMetadata);
+  const pageIssueSummary = pageIssueReview.summary;
+  const topPageIssues = pageIssueReview.issues.slice(0, 6);
   const pipelineErrors = [
     workerRunError?.message,
     sharedSourceError?.message,
@@ -248,6 +253,7 @@ export default async function AdminPage() {
     checkedSharedSource7dError?.message,
     latestCheckedSourceError?.message,
     visualSnapshotRecordError?.message,
+    ...pageIssueReview.loadErrors,
   ].filter(Boolean);
   const sourceMetadataPercent = percent(sourceMetadataCount || 0, sharedSourceCount || 0);
 
@@ -324,6 +330,43 @@ export default async function AdminPage() {
           detail={`${formatNumber(checkedSource24h)} checked in 24h; latest ${latestSourceCheckedAt ? formatDate(latestSourceCheckedAt) : "never"}`}
           attention={checkedSourceNever > 0}
         />
+        <MetricCard
+          icon={AlertTriangle}
+          label="Page issues"
+          value={formatNumber(pageIssueSummary.queueTotal)}
+          detail={`${formatNumber(pageIssueSummary.persistentSourceErrors)} repeated failures; ${formatNumber(pageIssueSummary.recentWorkerPageErrors)} recent worker page errors`}
+          attention={pageIssueSummary.queueTotal > 0 || pageIssueSummary.recentWorkerPageErrors > 0}
+        />
+      </section>
+
+      <section className="card admin-section-card admin-issue-panel">
+        <div className="admin-panel-heading">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={18} aria-hidden="true" />
+            <h2>Page issue review</h2>
+          </div>
+          <Link className="button button-secondary" href="/dashboard/admin/issues">
+            Open full queue
+          </Link>
+        </div>
+        <div className="admin-stat-grid admin-stat-grid-compact">
+          <MiniStat label="Source errors" value={pageIssueSummary.sourceErrors} attention={pageIssueSummary.sourceErrors > 0} />
+          <MiniStat label="Repeated failures" value={pageIssueSummary.persistentSourceErrors} attention={pageIssueSummary.persistentSourceErrors > 0} />
+          <MiniStat label="Award detail errors" value={pageIssueSummary.awardStructureErrors} attention={pageIssueSummary.awardStructureErrors > 0} />
+          <MiniStat label="Missing snapshots" value={pageIssueSummary.missingSnapshots} attention={pageIssueSummary.missingSnapshots > 0} />
+          <MiniStat label="Missing page info" value={pageIssueSummary.missingPageInfo} attention={pageIssueSummary.missingPageInfo > 0} />
+        </div>
+        {topPageIssues.length > 0 ? (
+          <div className="admin-issue-list admin-issue-list-compact">
+            {topPageIssues.map((issue) => (
+              <CompactIssueRow issue={issue} key={issue.key} />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 text-sm font-semibold text-[var(--muted)]">
+            No active page issues are currently reported.
+          </p>
+        )}
       </section>
 
       <section className="admin-dashboard-grid">
@@ -679,6 +722,31 @@ function PipelineRow({
         <span className={attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>{status}</span>
       </div>
     </div>
+  );
+}
+
+function CompactIssueRow({ issue }: { issue: AdminPageIssue }) {
+  return (
+    <article className={`admin-issue-row admin-issue-row-${issue.severity}`}>
+      <div className="min-w-0">
+        <div className="admin-issue-meta">
+          <span className={`admin-severity-pill admin-severity-pill-${issue.severity}`}>
+            {issue.severity}
+          </span>
+          <span>{issue.area}</span>
+          <span>{issue.label}</span>
+          {issue.failures > 0 && <span>{formatNumber(issue.failures)} failures</span>}
+        </div>
+        <h3>{issue.awardName}</h3>
+        <p className="admin-issue-source">{issue.sourceTitle}</p>
+        <p className="admin-issue-message">{issue.message}</p>
+      </div>
+      {issue.awardId && (
+        <Link className="admin-issue-link" href={`/dashboard/awards/${issue.awardId}`}>
+          Open
+        </Link>
+      )}
+    </article>
   );
 }
 
