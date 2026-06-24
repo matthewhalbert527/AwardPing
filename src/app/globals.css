@@ -850,6 +850,16 @@ a {
   flex: 0 0 auto;
 }
 
+.dashboard-nav-admin-menu::after {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 49;
+  width: max(100%, 10.75rem);
+  height: 0.7rem;
+  content: "";
+}
+
 .dashboard-nav-caret {
   margin-left: -0.16rem;
   transition: transform 150ms ease;
