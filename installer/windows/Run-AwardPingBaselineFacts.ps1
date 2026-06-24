@@ -2,6 +2,10 @@ param(
   [int]$Limit = 50000,
   [int]$MaxCalls = 50000,
   [string]$Model = "gemini-2.5-flash-lite",
+  [string]$BatchMode = "batch",
+  [int]$BatchMaxRequests = 250,
+  [int]$BatchParallelJobs = 4,
+  [int]$BatchPollSeconds = 30,
   [decimal]$CostCapUsd = 10,
   [int]$MaxRestarts = 3,
   [switch]$Force
@@ -62,6 +66,10 @@ $workerArgs = @(
   ".env.worker.local",
   "--ai-provider=gemini",
   "--model=$Model",
+  "--gemini-api-mode=$BatchMode",
+  "--gemini-batch-max-requests=$BatchMaxRequests",
+  "--gemini-batch-parallel-jobs=$BatchParallelJobs",
+  "--gemini-batch-poll-seconds=$BatchPollSeconds",
   "--limit=$Limit",
   "--max-calls=$MaxCalls",
   "--gemini-api-daily-cost-cap-usd=$CostCapUsd"
@@ -71,9 +79,9 @@ if ($Force) {
 }
 
 Write-Host "Running AwardPing baseline page-info extraction. Log: $logPath"
-Set-Content -Path $LockPath -Value "pid=$PID started=$(Get-Date -Format o) log=$logPath model=$Model limit=$Limit max_calls=$MaxCalls cost_cap_usd=$CostCapUsd" -Encoding ASCII
+Set-Content -Path $LockPath -Value "pid=$PID started=$(Get-Date -Format o) log=$logPath model=$Model mode=$BatchMode limit=$Limit max_calls=$MaxCalls cost_cap_usd=$CostCapUsd batch_max_requests=$BatchMaxRequests batch_parallel_jobs=$BatchParallelJobs" -Encoding ASCII
 $exitCode = 1
-Set-Content -Path $logPath -Value "BASELINE_FACTS_WORKER_START pid=$PID started=$(Get-Date -Format o) limit=$Limit max_calls=$MaxCalls model=$Model cost_cap_usd=$CostCapUsd force=$Force" -Encoding UTF8
+Set-Content -Path $logPath -Value "BASELINE_FACTS_WORKER_START pid=$PID started=$(Get-Date -Format o) limit=$Limit max_calls=$MaxCalls model=$Model mode=$BatchMode cost_cap_usd=$CostCapUsd batch_max_requests=$BatchMaxRequests batch_parallel_jobs=$BatchParallelJobs force=$Force" -Encoding UTF8
 try {
   $attempt = 0
   do {

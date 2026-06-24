@@ -3,6 +3,11 @@ param(
   [int]$Limit = 50000,
   [int]$MaxCalls = 50000,
   [string]$Model = "gemini-2.5-flash-lite",
+  [string]$BatchMode = "batch",
+  [int]$BatchMaxRequests = 250,
+  [int]$BatchParallelJobs = 4,
+  [int]$BatchPollSeconds = 30,
+  [int]$DirectCatchupThreshold = 1000,
   [decimal]$CostCapUsd = 10,
   [int]$IntervalMinutes = 5,
   [switch]$Install
@@ -67,7 +72,7 @@ function Install-WatchdogTask {
   $taskName = "AwardPing Baseline Facts Watchdog"
   $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Limit $Limit -MaxCalls $MaxCalls -Model `"$Model`" -CostCapUsd $CostCapUsd"
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Limit $Limit -MaxCalls $MaxCalls -Model `"$Model`" -BatchMode `"$BatchMode`" -BatchMaxRequests $BatchMaxRequests -BatchParallelJobs $BatchParallelJobs -BatchPollSeconds $BatchPollSeconds -DirectCatchupThreshold $DirectCatchupThreshold -CostCapUsd $CostCapUsd"
   $trigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -89,7 +94,7 @@ function Install-WatchdogTask {
     -Description "Restarts AwardPing Gemini baseline page-info extraction if it stops before source-page facts are complete." `
     -Force | Out-Null
 
-  Write-WatchdogLog "installed task=$taskName interval_minutes=$IntervalMinutes install_root=$InstallRoot model=$Model max_calls=$MaxCalls cost_cap_usd=$CostCapUsd"
+  Write-WatchdogLog "installed task=$taskName interval_minutes=$IntervalMinutes install_root=$InstallRoot model=$Model mode=$BatchMode max_calls=$MaxCalls cost_cap_usd=$CostCapUsd batch_max_requests=$BatchMaxRequests batch_parallel_jobs=$BatchParallelJobs direct_catchup_threshold=$DirectCatchupThreshold"
 }
 
 function Test-BaselineFactsWorkerActive {
@@ -263,6 +268,7 @@ function Start-BaselineFacts {
     throw "Missing baseline-facts runner script: $RunScript"
   }
 
+  $effectiveBatchMode = Get-RestartBatchMode -Status $status
   $arguments = @(
     "-NoProfile",
     "-ExecutionPolicy",
@@ -275,6 +281,14 @@ function Start-BaselineFacts {
     [string]$MaxCalls,
     "-Model",
     $Model,
+    "-BatchMode",
+    $effectiveBatchMode,
+    "-BatchMaxRequests",
+    [string]$BatchMaxRequests,
+    "-BatchParallelJobs",
+    [string]$BatchParallelJobs,
+    "-BatchPollSeconds",
+    [string]$BatchPollSeconds,
     "-CostCapUsd",
     [string]$CostCapUsd
   )
@@ -286,7 +300,19 @@ function Start-BaselineFacts {
     -WindowStyle Hidden `
     -PassThru
 
-  Write-WatchdogLog "restarted_baseline_facts pid=$($process.Id) limit=$Limit model=$Model max_calls=$MaxCalls cost_cap_usd=$CostCapUsd"
+  Write-WatchdogLog "restarted_baseline_facts pid=$($process.Id) limit=$Limit model=$Model mode=$effectiveBatchMode configured_mode=$BatchMode max_calls=$MaxCalls cost_cap_usd=$CostCapUsd batch_max_requests=$BatchMaxRequests batch_parallel_jobs=$BatchParallelJobs"
+}
+
+function Get-RestartBatchMode {
+  param([object]$Status)
+
+  $loaded = if ($Status) { [int]$Status.Loaded } else { 0 }
+  $processed = if ($Status) { [int]$Status.Processed } else { 0 }
+  $remaining = [Math]::Max(0, $loaded - $processed)
+  if ($BatchMode -eq "batch" -and $remaining -gt $DirectCatchupThreshold) {
+    return "immediate"
+  }
+  return $BatchMode
 }
 
 function Start-AwardFactsAggregate {
