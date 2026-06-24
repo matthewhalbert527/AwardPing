@@ -1648,7 +1648,7 @@ function isRelevantDiscoveredPdfLink(link, url, source) {
     .join(" ");
 
   if (isBoilerplatePdfLink(haystack)) return false;
-  if (isLikelyDiscoveredPdfSpillover(haystack)) return false;
+  if (isLikelyDiscoveredPdfSpillover(haystack, source)) return false;
 
   const hasRelevantDiscoveryTerms = hasPdfDiscoveryRelevantTerms(haystack);
   if (link.inBoilerplateRegion && !hasRelevantDiscoveryTerms) return false;
@@ -1673,15 +1673,23 @@ function hasPdfDiscoveryRelevantTerms(value) {
   );
 }
 
-function isLikelyDiscoveredPdfSpillover(value) {
+function isLikelyDiscoveredPdfSpillover(value, source = null) {
   const clean = String(value || "").toLowerCase();
-  return (
-    /\b(research reports?|reports? of former fellows?|former fellows?|feedback on fellowship|successful fellows?|program procedure|annual reports?|newsletter|leaflet|poster)\b/i.test(clean) ||
-    /\/file\/storage\/reports(?:_ippan)?\//i.test(clean) ||
-    /\/file\/storage\/general\//i.test(clean) ||
+  const awardContext = `${source?.shared_awards?.name || ""} ${source?.title || ""}`.toLowerCase();
+  const isJspsSummerAward = /\bjsps\b/.test(awardContext) && /\bsummer\b/.test(awardContext);
+  const isJspsSummerPath =
     /\/file\/storage\/j-fellow_summer/i.test(clean) ||
     /\/file\/storage\/j-fellow\/j-summer\//i.test(clean) ||
-    /\/english\/e-(?:summer|inv|le|grants|lindau|chukaku)\//i.test(clean) ||
+    /\/english\/e-summer\//i.test(clean);
+
+  return (
+    /\b(research reports?|reports? of former fellows?|former fellows?|feedback on fellowship|successful fellows?|program procedure|annual reports?|newsletter|leaflet|poster)\b/i.test(clean) ||
+    /\/faq_j\d+\.pdf/i.test(clean) ||
+    /\bjapanese[_\s-]*faq\b/i.test(clean) ||
+    /\/file\/storage\/reports(?:_ippan)?\//i.test(clean) ||
+    /\/file\/storage\/general\//i.test(clean) ||
+    (!isJspsSummerAward && isJspsSummerPath) ||
+    /\/english\/e-(?:inv|le|grants|lindau|chukaku)\//i.test(clean) ||
     /\/file\/storage\/(?:e-inv|j-invi|j-lindau)\//i.test(clean) ||
     /\bguideline_20(?:2[0-5])\//i.test(clean)
   );
@@ -1798,6 +1806,12 @@ function normalizeDiscoveredUrl(value, baseUrl) {
   try {
     const parsed = new URL(value, baseUrl);
     if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    if (
+      parsed.protocol === "http:" &&
+      parsed.hostname.replace(/^www\./i, "").toLowerCase() === "jspsusa.org"
+    ) {
+      parsed.protocol = "https:";
+    }
     parsed.hash = "";
     return parsed.toString();
   } catch {
