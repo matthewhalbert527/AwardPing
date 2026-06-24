@@ -317,6 +317,7 @@ GEMINI_API_KEY=$GeminiApiKey
 GEMINI_MODEL=gemini-2.5-flash-lite
 GEMINI_DISCOVERY_MODEL=gemini-2.5-flash-lite
 GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
+AWARDPING_VISUAL_GEMINI_MODEL=gemini-2.5-flash-lite
 AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=10
 AWARDPING_VISUAL_WEB_CONCURRENCY=4
 AWARDPING_EXTRACT_BASELINE_INFO=false
@@ -347,6 +348,7 @@ function Update-ExistingEnvFileDefaults {
     "GEMINI_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_DISCOVERY_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash-lite"
+    "AWARDPING_VISUAL_GEMINI_MODEL" = "gemini-2.5-flash-lite"
   }
   $missingDefaults = [ordered]@{
     "AWARDPING_GEMINI_API_DAILY_COST_CAP_USD" = "10"
@@ -497,6 +499,7 @@ if (`$WebOnly) { `$workerArgs += "--web-only=true" }
 if (`$CompleteMissingBaselines) {
   `$workerArgs += "--complete-missing-baselines=true"
   `$workerArgs += "--skip-existing-baseline=true"
+  `$workerArgs += "--baseline-refresh=true"
   `$workerArgs += "--extract-baseline-info=false"
   `$workerArgs += "--complete-missing-batch-limit"
   `$workerArgs += [string]`$CompleteMissingBatchLimit
