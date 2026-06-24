@@ -1516,7 +1516,7 @@ a {
   cursor: pointer;
   list-style: none;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.8rem;
 }
 
@@ -1525,6 +1525,8 @@ a {
 }
 
 .award-detail-history summary span:last-child {
+  margin-left: 0.15rem;
+  margin-right: auto;
   color: #5b6576;
   font-size: 0.9rem;
   font-weight: 850;
@@ -1532,6 +1534,7 @@ a {
 
 .award-detail-history summary::after {
   content: "+";
+  margin-left: auto;
   color: #13294b;
   font-size: 1.4rem;
   font-weight: 750;

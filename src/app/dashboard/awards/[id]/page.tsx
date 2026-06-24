@@ -252,17 +252,23 @@ function AwardBaselineDetails({
     facts: Array<{ label: string; value: string }>;
   };
 }) {
+  const visibleFacts = parts.facts.filter(
+    (fact) => fact.label.toLowerCase() !== "baseline detail confidence",
+  );
+
   return (
     <div className="award-detail-facts">
       {parts.overview && <p className="award-detail-summary-copy">{parts.overview}</p>}
-      <dl className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}>
-        {parts.facts.map((fact) => (
-          <div className="award-detail-fact" key={fact.label}>
-            <dt>{fact.label}</dt>
-            <dd>{fact.value}</dd>
-          </div>
-        ))}
-      </dl>
+      {visibleFacts.length > 0 && (
+        <dl className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}>
+          {visibleFacts.map((fact) => (
+            <div className="award-detail-fact" key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
     </div>
   );
 }
