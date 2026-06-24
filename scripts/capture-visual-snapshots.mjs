@@ -1680,7 +1680,8 @@ function isLikelyDiscoveredPdfSpillover(value, source = null) {
   const isJspsSummerPath =
     /\/file\/storage\/j-fellow_summer/i.test(clean) ||
     /\/file\/storage\/j-fellow\/j-summer\//i.test(clean) ||
-    /\/english\/e-summer\//i.test(clean);
+    /\/english\/e-summer\//i.test(clean) ||
+    /\bsummer[-_\s]*program\b/i.test(clean);
 
   return (
     /\b(research reports?|reports? of former fellows?|former fellows?|feedback on fellowship|successful fellows?|program procedure|annual reports?|newsletter|leaflet|poster)\b/i.test(clean) ||
