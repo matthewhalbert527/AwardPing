@@ -23,6 +23,7 @@
     "source:backfill-low-coverage": "node scripts/backfill-low-coverage-award-sources.mjs",
     "source:discover": "node scripts/find-official-sources-from-discovery-pages.mjs",
     "source:import-directories": "node scripts/import-fellowship-directories.mjs",
+    "source:reconcile-listings": "node scripts/reconcile-listing-opportunities.mjs",
     "source:visual-snapshots": "node scripts/capture-visual-snapshots.mjs",
     "source:baseline-facts": "node scripts/backfill-baseline-facts.mjs",
     "award:baseline-details": "node scripts/backfill-award-baseline-details.mjs",

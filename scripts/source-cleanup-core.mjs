@@ -17,6 +17,8 @@ const hardNonAwardPath =
 const listingPath = /\/(news|events|calendar|tag|category)\b/i;
 const trackingQuery = /[?&](share|replytocom|utm_|fbclid|gclid|redirect_to=)/i;
 const nonMonitorableAsset = /\.(jpg|jpeg|png|gif|webp|svg|zip|ics|mp4|mp3|doc|docx|xls|xlsx|ppt|pptx)$/i;
+const boilerplatePdfSource =
+  /\b(login instructions?|log in|sign in|conflict of interest|coi|code of conduct|privacy policy|terms of use|bylaws?|annual report|tax form|form 990|media kit|press kit|brand guidelines?|sponsorship prospectus|advertising|invoice|receipt)\b/i;
 const awardRelatedText = /(scholar|fellow|award|grant|program|apply|application|deadline|eligib)/i;
 const protectedOfficialSourcePageTypes = new Set([
   "homepage",
@@ -228,6 +230,7 @@ export function nonAwardReason(value, title = "", pageType = null) {
     if (cmsAdminHosts.has(host)) return "cms_admin_host";
     if (hardNonAwardPath.test(url.pathname)) return "generic_non_award_path";
     if (trackingQuery.test(full)) return "tracking_or_redirect_query";
+    if (String(pageType || "").toLowerCase() === "pdf" && boilerplatePdfSource.test(lower)) return "boilerplate_pdf";
     if (protectedOfficialSourcePageTypes.has(String(pageType || "").toLowerCase())) return null;
     if (listingPath.test(url.pathname) && !awardRelatedText.test(lower)) return "generic_listing_path";
     if (nonMonitorableAsset.test(url.pathname)) return "non_monitorable_asset";

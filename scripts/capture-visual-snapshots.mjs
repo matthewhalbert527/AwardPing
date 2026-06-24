@@ -1512,6 +1512,35 @@ async function discoverPdfLinksOnPage(page, source) {
         title: link.getAttribute("title") || "",
         ariaLabel: link.getAttribute("aria-label") || "",
         download: link.getAttribute("download") || "",
+        contextText: (
+          link.closest("article, section, li, tr, p, div")?.innerText ||
+          link.parentElement?.innerText ||
+          ""
+        )
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 1200),
+        inBoilerplateRegion: Boolean(
+          link.closest(
+            [
+              "header",
+              "footer",
+              "nav",
+              "aside",
+              "[role='navigation']",
+              "[role='contentinfo']",
+              ".header",
+              ".footer",
+              ".site-header",
+              ".site-footer",
+              ".navbar",
+              ".navigation",
+              ".menu",
+              ".mobile-menu",
+              ".sidebar",
+            ].join(","),
+          ),
+        ),
       })),
     )
     .catch(() => []);
@@ -1533,6 +1562,7 @@ async function discoverPdfLinksOnPage(page, source) {
       /(\/files?\/|\/uploads?\/|\/documents?\/|\/media\/|download|attachment|pdf)/.test(signal);
 
     if (!pdfUrl && !pdfText && !documentSignal) continue;
+    if (!isRelevantDiscoveredPdfLink(link, url, source)) continue;
     seen.add(url);
     candidates.push({
       url,
@@ -1543,6 +1573,69 @@ async function discoverPdfLinksOnPage(page, source) {
   }
 
   return candidates.slice(0, 25);
+}
+
+function isRelevantDiscoveredPdfLink(link, url, source) {
+  const awardName = source.shared_awards?.name || "";
+  const sourceTitle = source.title || "";
+  const title = readablePdfLinkTitle(link, source);
+  const haystack = [
+    url,
+    title,
+    link.text,
+    link.title,
+    link.ariaLabel,
+    link.download,
+    link.contextText,
+  ]
+    .filter(Boolean)
+    .join(" ");
+
+  if (isBoilerplatePdfLink(haystack)) return false;
+  if (link.inBoilerplateRegion && !hasAwardRelevantTerms(haystack)) return false;
+
+  const awardTokens = distinctiveAwardTokens(`${awardName} ${sourceTitle}`);
+  const matchesAwardToken = awardTokens.some((token) => haystack.toLowerCase().includes(token));
+
+  if (matchesAwardToken) return true;
+  if (hasAwardRelevantTerms(haystack)) return true;
+  if (source.page_type === "application" || source.page_type === "requirements") return true;
+
+  return false;
+}
+
+function isBoilerplatePdfLink(value) {
+  return /\b(login instructions?|log in|sign in|conflict of interest|coi|code of conduct|privacy policy|terms of use|bylaws?|annual report|tax form|form 990|media kit|press kit|brand guidelines?|sponsorship prospectus|advertising|invoice|receipt)\b/i.test(
+    String(value || ""),
+  );
+}
+
+function distinctiveAwardTokens(value) {
+  const stop = new Set([
+    "award",
+    "awards",
+    "fellow",
+    "fellowship",
+    "fellowships",
+    "grant",
+    "grants",
+    "program",
+    "programs",
+    "scholar",
+    "scholarship",
+    "scholarships",
+    "student",
+    "students",
+    "association",
+    "american",
+    "international",
+    "research",
+  ]);
+  return String(value || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 4 && !stop.has(token))
+    .slice(0, 10);
 }
 
 async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, report) {

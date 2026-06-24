@@ -99,4 +99,18 @@ describe("post-crawl source cleanup classification", () => {
 
     expect(actionFor(rows, "deadline")?.action).toBe(cleanupActions.noAction);
   });
+
+  it("removes obvious boilerplate PDFs even though PDFs are protected source types", () => {
+    const rows = [
+      source({
+        id: "login-pdf",
+        url: "https://example.org/wp-content/uploads/Login-Instructions.pdf",
+        title: "Login Instructions",
+        page_type: "pdf",
+      }),
+      source({ id: "good", url: "https://example.org/current", title: "Current award page" }),
+    ];
+
+    expect(actionFor(rows, "login-pdf")?.action).toBe(cleanupActions.safeToRemove);
+  });
 });
