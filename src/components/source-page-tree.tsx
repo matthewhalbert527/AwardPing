@@ -15,8 +15,12 @@ import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 import { pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
-import { readableSourceTitle } from "@/lib/display-text";
-import { buildSourceTree, type SourceTreeNode, type SourceTreeSource } from "@/lib/source-tree";
+import {
+  buildSourceTree,
+  sourceTreeSourceLabel,
+  type SourceTreeNode,
+  type SourceTreeSource,
+} from "@/lib/source-tree";
 
 export type SourcePageTreeChange = {
   id: string;
@@ -370,7 +374,7 @@ function renderDefaultSourceActions<T extends SourcePageTreeSource>({
     <BranchActions
       actionId={source.id}
       busyId={busyId}
-      label={readableSourceTitle(source.title, source.url)}
+      label={sourceTreeSourceLabel(source)}
       onTrackSources={onTrackSources}
       onUntrackSources={onUntrackSources}
       sources={[source]}
@@ -401,7 +405,7 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   onSelectSource?: (sourceId: string) => void;
 }) {
   const outline = sourceOutline(source);
-  const title = outline.displayTitle || readableSourceTitle(source.title, source.url);
+  const title = outline.displayTitle || sourceTreeSourceLabel(source);
   const latestChanges = source.latestChanges || [];
   const latestChange = latestChanges[0] || null;
   const rowStatus = sourceRowStatus(source, latestChange);
@@ -515,7 +519,7 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
   }
 
   const outline = sourceOutline(source);
-  const title = outline.displayTitle || readableSourceTitle(source.title, source.url);
+  const title = outline.displayTitle || sourceTreeSourceLabel(source);
   const latestChanges = source.latestChanges || [];
   const rowStatus = sourceRowStatus(source, latestChanges[0] || null);
   const rowActions = renderSourceActions?.(source);

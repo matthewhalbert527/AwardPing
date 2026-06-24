@@ -61,6 +61,10 @@ export function buildSourceTree<T extends SourceTreeSource>(
   return finalizeNodes(root.children);
 }
 
+export function sourceTreeSourceLabel(source: SourceTreeSource) {
+  return sourceLeafLabel(source, safeUrl(source.url));
+}
+
 function getOrCreateChild<T extends SourceTreeSource>(
   parent: MutableSourceTreeNode<T>,
   key: string,

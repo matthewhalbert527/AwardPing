@@ -247,6 +247,26 @@ describe("SourcePageTree", () => {
     expect(html).not.toContain("grants-and-awards");
     expect(html).not.toContain("uploads/2024/file");
   });
+
+  it("uses cleaned PDF labels in visible source detail titles", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "sample-proposal",
+            title: "this successful proposal",
+            url: "https://asianstudies.org/uploads/Lee-Jung-Joon-Korea-Conference-Workshop-Grant-Application.pdf",
+            pageType: "pdf",
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Lee Jung Joon Korea Conference Workshop Grant Application");
+    expect(html).not.toContain("this successful proposal");
+  });
 });
 
 function treeLabelsText(tree: ReturnType<typeof buildSourceTree>) {
