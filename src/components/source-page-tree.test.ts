@@ -216,6 +216,13 @@ describe("SourcePageTree", () => {
         },
         latestChanges: [],
       },
+      {
+        id: "sample-proposal",
+        title: "this successful proposal",
+        url: "https://asianstudies.org/uploads/Lee-Jung-Joon-Korea-Conference-Workshop-Grant-Application.pdf",
+        pageType: "pdf" as const,
+        latestChanges: [],
+      },
     ];
     const treeLabels = treeLabelsText(buildSourceTree(sources, { groupByHost: false }));
     const html = renderToStaticMarkup(
@@ -227,10 +234,12 @@ describe("SourcePageTree", () => {
 
     expect(treeLabels).toContain("NEAC Korean Studies Grant Portal");
     expect(treeLabels).toContain("Korean Studies Grant Guidelines PDF");
+    expect(treeLabels).toContain("Lee Jung Joon Korea Conference Workshop Grant Application");
     expect(treeLabels).not.toContain("asian-studies.org");
     expect(treeLabels).not.toContain("asianstudies.org");
     expect(treeLabels).not.toContain("grants-and-awards");
     expect(treeLabels).not.toContain("uploads/2024/file");
+    expect(treeLabels).not.toContain("this successful proposal");
     expect(html).toContain("How to Apply");
     expect(html).toContain("Application Materials");
     expect(html).not.toContain("asian-studies.org");

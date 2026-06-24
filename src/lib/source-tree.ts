@@ -221,6 +221,7 @@ function categoryLabelFromText(value: string | null) {
 
 function sourceLeafLabel(source: SourceTreeSource, url: URL | null) {
   const filename = url?.pathname.split("/").filter(Boolean).at(-1);
+  const fileLabel = filename ? formatPathSegment(filename) : "";
   const clean = readableSourceTitle(displayTitleFromSource(source), source.url)
     .replace(/\bdownload\b/gi, "")
     .replace(/\s+/g, " ")
@@ -235,14 +236,21 @@ function sourceLeafLabel(source: SourceTreeSource, url: URL | null) {
     !/^download$/i.test(clean) &&
     !(url && isPdfSource(source, url) && isGenericDocumentTitle(clean))
   ) {
+    if (url && isPdfSource(source, url) && shouldPreferPdfFilename(clean) && fileLabel) {
+      return fileLabel;
+    }
     return clean;
+  }
+
+  if (url && isPdfSource(source, url) && fileLabel) {
+    return fileLabel;
   }
 
   if (source.pageType && source.pageType !== "other") {
     return pageTypeLabelForTree(source.pageType);
   }
 
-  return filename ? formatPathSegment(filename) : "Source page";
+  return fileLabel || "Source page";
 }
 
 function hasUsefulProvidedTitle(source: SourceTreeSource) {
@@ -313,7 +321,15 @@ function isGenericContainerSegment(label: string) {
 }
 
 function isGenericDocumentTitle(label: string) {
-  return /^(guidelines?|forms?|application|registration form|information|details?|here|learn more)$/i.test(label);
+  return /^(guidelines?|forms?|application|registration form|information|details?|here|learn more|successful proposal)$/i.test(label);
+}
+
+function shouldPreferPdfFilename(label: string) {
+  return (
+    /^[A-Za-z0-9]+(?:-[A-Za-z0-9]+){2,}$/.test(label) ||
+    /^this\b/i.test(label) ||
+    /\b(sample|example|successful)\b.*\b(application|proposal)\b/i.test(label)
+  );
 }
 
 function sameLabel(left: string, right: string) {
