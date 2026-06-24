@@ -98,117 +98,107 @@ export default async function SharedAwardDetailPage({ params }: Params) {
   const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
   const awardSummary = displayAwardSummary(award.summary);
   const awardSummaryParts = awardBaselineSummaryParts(award.summary);
+  const sourceTreeSources = officialSources.map((source) => ({
+    id: source.id,
+    title: source.title,
+    displayTitle: source.display_title,
+    pageDescription: source.page_description,
+    pageMetadata: source.page_metadata,
+    pageMetadataGeneratedAt: source.page_metadata_generated_at,
+    pageMetadataModel: source.page_metadata_model,
+    url: source.url,
+    pageType: source.page_type,
+    lastCheckedAt: source.last_checked_at,
+    lastError: source.last_error,
+    latestChanges: latestChangesForSource(source, officialChanges).slice(0, 3).map((change) => ({
+      id: change.id,
+      sourceTitle: change.source_title,
+      sourceUrl: change.source_url,
+      sourcePageType: change.source_page_type,
+      summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
+      changeDetails: change.change_details,
+      detectedAt: change.detected_at,
+      previousTextSample: change.previous_snapshot_id
+        ? snapshotById.get(change.previous_snapshot_id) || null
+        : null,
+      newTextSample: change.new_snapshot_id
+        ? snapshotById.get(change.new_snapshot_id) || null
+        : null,
+    })),
+  }));
+  const recentOfficialChanges = officialChanges.slice(0, 10);
 
   return (
     <div className="award-detail-page">
-      <Link className="button-secondary" href="/dashboard/awards">
-        <ArrowLeft size={16} aria-hidden="true" />
-        Back to find awards
-      </Link>
+      <div className="award-detail-command-row">
+        <Link className="award-detail-back-link" href="/dashboard/awards">
+          <ArrowLeft size={16} aria-hidden="true" />
+          Back to find awards
+        </Link>
+        <TrackSharedAwardButton
+          sharedAwardId={award.id}
+          tracked={tracked}
+          canManage={canManageOffice(officeContext.current.role)}
+        />
+      </div>
 
-      <section className="dashboard-panel dashboard-panel-pad award-detail-hero">
-        <div className="award-detail-topline">
-          <div className="award-detail-badges">
-            <span className="badge">{officialSources.length} source pages</span>
-            <span className="badge">{officialChanges.length} recorded updates</span>
-            {tracked && <span className="badge">On watchlist</span>}
-          </div>
-          <div className="award-detail-actions">
-            <TrackSharedAwardButton
-              sharedAwardId={award.id}
-              tracked={tracked}
-              canManage={canManageOffice(officeContext.current.role)}
-            />
-          </div>
+      <header className="award-detail-header">
+        <div className="award-detail-meta-line">
+          <span>{officialSources.length} source pages</span>
+          <span>{officialChanges.length} recorded updates</span>
+          {tracked && <span>On watchlist</span>}
         </div>
 
-        <div className="min-w-0">
-          <h1 className="dashboard-page-title mt-4">{award.name}</h1>
-          {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
-            <AwardBaselineDetails parts={awardSummaryParts} />
-          ) : awardSummary && (
-            <p className="award-detail-summary-copy">{awardSummary}</p>
-          )}
-          {displayHomepage && (
-            <a
-              className="award-detail-homepage"
-              href={displayHomepage}
-              rel="noreferrer"
-              target="_blank"
-            >
-              <ExternalLink size={15} aria-hidden="true" />
-              <span className="truncate">{displayHomepage}</span>
-            </a>
-          )}
-        </div>
-      </section>
+        <h1 className="award-detail-title">{award.name}</h1>
 
-      <section className="award-detail-workspace">
-        <div className="dashboard-panel dashboard-panel-pad award-detail-panel award-detail-outline-panel">
-          <div className="award-detail-panel-header">
-            <div>
-              <h2 className="dashboard-panel-title">Page outline</h2>
-              <p className="dashboard-panel-copy">
-                Official source pages are grouped into a readable outline with snapshots,
-                page sections, and recent changes.
-              </p>
-            </div>
-            <span className="badge">{officialSources.length} pages</span>
-          </div>
-          <div className="award-detail-tree-frame">
-            <SourcePageTree
-              layout="split"
-              sources={officialSources.map((source) => ({
-                id: source.id,
-                title: source.title,
-                displayTitle: source.display_title,
-                pageDescription: source.page_description,
-                pageMetadata: source.page_metadata,
-                pageMetadataGeneratedAt: source.page_metadata_generated_at,
-                pageMetadataModel: source.page_metadata_model,
-                url: source.url,
-                pageType: source.page_type,
-                lastCheckedAt: source.last_checked_at,
-                lastError: source.last_error,
-                latestChanges: latestChangesForSource(source, officialChanges).slice(0, 3).map((change) => ({
-                  id: change.id,
-                  sourceTitle: change.source_title,
-                  sourceUrl: change.source_url,
-                  sourcePageType: change.source_page_type,
-                  summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
-                  changeDetails: change.change_details,
-                  detectedAt: change.detected_at,
-                  previousTextSample: change.previous_snapshot_id
-                    ? snapshotById.get(change.previous_snapshot_id) || null
-                    : null,
-                  newTextSample: change.new_snapshot_id
-                    ? snapshotById.get(change.new_snapshot_id) || null
-                    : null,
-                })),
-              }))}
-            />
-          </div>
-        </div>
+        {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
+          <AwardBaselineDetails parts={awardSummaryParts} />
+        ) : awardSummary ? (
+          <p className="award-detail-summary-copy">{awardSummary}</p>
+        ) : null}
 
-        <div className="dashboard-panel dashboard-panel-pad award-detail-panel award-detail-updates-panel">
-          <div className="award-detail-panel-header">
-            <div>
-              <h2 className="dashboard-panel-title">Update history</h2>
-              <p className="dashboard-panel-copy">
-                Shared award updates, including changes found before your office added it.
-              </p>
-            </div>
-            <span className="badge">{officialChanges.length} updates</span>
+        {displayHomepage && (
+          <a
+            className="award-detail-homepage"
+            href={displayHomepage}
+            rel="noreferrer"
+            target="_blank"
+          >
+            <ExternalLink size={15} aria-hidden="true" />
+            <span className="truncate">{displayHomepage}</span>
+          </a>
+        )}
+      </header>
+
+      <main className="award-detail-record">
+        <section className="award-detail-section">
+          <div className="award-detail-section-heading">
+            <h2>Page outline</h2>
+            <p>
+              Official source pages grouped into a readable outline. Expand a page to see
+              extracted sections, facts, updates, and snapshots.
+            </p>
           </div>
+          <SourcePageTree
+            layout="inline"
+            sources={sourceTreeSources}
+          />
+        </section>
+
+        <details className="award-detail-section award-detail-history">
+          <summary>
+            <span>Recent updates</span>
+            <span>{officialChanges.length}</span>
+          </summary>
           <div className="award-detail-update-list">
-            {officialChanges.map((change) => (
-              <article className="dashboard-list-item award-detail-update" key={change.id}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-black">{change.source_title || "Shared source page"}</p>
-                  <span className="badge">{formatDate(change.detected_at)}</span>
+            {recentOfficialChanges.map((change) => (
+              <article className="award-detail-update" key={change.id}>
+                <div className="award-detail-update-heading">
+                  <p>{change.source_title || "Shared source page"}</p>
+                  <span>{formatDate(change.detected_at)}</span>
                 </div>
                 <a
-                  className="mt-1 block truncate text-sm font-semibold text-[var(--brand)] underline"
+                  className="award-detail-update-link"
                   href={change.source_url}
                   rel="noreferrer"
                   target="_blank"
@@ -239,12 +229,17 @@ export default async function SharedAwardDetailPage({ params }: Params) {
                 />
               </article>
             ))}
+            {officialChanges.length > recentOfficialChanges.length && (
+              <p className="award-detail-history-note">
+                Showing the {recentOfficialChanges.length} most recent updates.
+              </p>
+            )}
             {officialChanges.length === 0 && (
               <p className="text-[var(--muted)]">No updates have been recorded yet.</p>
             )}
           </div>
-        </div>
-      </section>
+        </details>
+      </main>
     </div>
   );
 }
