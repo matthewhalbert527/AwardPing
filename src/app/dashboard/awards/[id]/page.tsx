@@ -106,13 +106,23 @@ export default async function SharedAwardDetailPage({ params }: Params) {
         Back to find awards
       </Link>
 
-      <section className="award-detail-hero">
-        <div className="min-w-0">
+      <section className="dashboard-panel dashboard-panel-pad award-detail-hero">
+        <div className="award-detail-topline">
           <div className="award-detail-badges">
             <span className="badge">{officialSources.length} source pages</span>
             <span className="badge">{officialChanges.length} recorded updates</span>
             {tracked && <span className="badge">On watchlist</span>}
           </div>
+          <div className="award-detail-actions">
+            <TrackSharedAwardButton
+              sharedAwardId={award.id}
+              tracked={tracked}
+              canManage={canManageOffice(officeContext.current.role)}
+            />
+          </div>
+        </div>
+
+        <div className="min-w-0">
           <h1 className="dashboard-page-title mt-4">{award.name}</h1>
           {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
             <AwardBaselineDetails parts={awardSummaryParts} />
@@ -131,20 +141,6 @@ export default async function SharedAwardDetailPage({ params }: Params) {
             </a>
           )}
         </div>
-        <aside className="dashboard-panel dashboard-panel-pad award-detail-watchlist">
-          <h2 className="dashboard-panel-title">Watchlist</h2>
-          <p className="dashboard-panel-copy">
-            You can view this history without adding it. Add it when your office
-            wants the award on its own watchlist.
-          </p>
-          <div className="mt-4">
-            <TrackSharedAwardButton
-              sharedAwardId={award.id}
-              tracked={tracked}
-              canManage={canManageOffice(officeContext.current.role)}
-            />
-          </div>
-        </aside>
       </section>
 
       <section className="award-detail-workspace">
