@@ -309,7 +309,7 @@ function Get-RestartBatchMode {
   $loaded = if ($Status) { [int]$Status.Loaded } else { 0 }
   $processed = if ($Status) { [int]$Status.Processed } else { 0 }
   $remaining = [Math]::Max(0, $loaded - $processed)
-  if ($BatchMode -eq "batch" -and $remaining -gt $DirectCatchupThreshold) {
+  if ($BatchMode -eq "batch" -and $remaining -le $DirectCatchupThreshold) {
     return "immediate"
   }
   return $BatchMode
