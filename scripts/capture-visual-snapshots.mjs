@@ -64,6 +64,10 @@ const completeMissingBatchLimit = completeMissingBaselines
   ? positiveInt(args["complete-missing-batch-limit"] || env.AWARDPING_COMPLETE_MISSING_BATCH_LIMIT, 250)
   : 0;
 const prioritizeMissingBaselines = boolArg(args["prioritize-missing-baselines"], true);
+const prioritizeIssueSources = boolArg(
+  args["prioritize-issue-sources"] ?? env.AWARDPING_PRIORITIZE_ISSUE_SOURCES,
+  true,
+);
 const skipExistingBaseline = boolArg(args["skip-existing-baseline"], false);
 const skipExistingBaselineEffective = skipExistingBaseline || completeMissingBaselines;
 const keepUnchanged = boolArg(args["keep-unchanged"], false);
@@ -116,6 +120,14 @@ const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const heartbeatMinutes = positiveInt(args["heartbeat-minutes"] || env.AWARDPING_WORKER_HEARTBEAT_MINUTES, 5);
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
+const retryAccessBlockedCaptures = boolArg(
+  args["retry-access-blocked-captures"] ?? env.AWARDPING_RETRY_ACCESS_BLOCKED_CAPTURES,
+  true,
+);
+const safeRedirectUrlUpdate = boolArg(
+  args["safe-redirect-url-update"] ?? env.AWARDPING_SAFE_REDIRECT_URL_UPDATE,
+  true,
+);
 const visualWebConcurrency = boundedInt(
   args["web-concurrency"] || env.AWARDPING_VISUAL_WEB_CONCURRENCY,
   1,
@@ -241,6 +253,7 @@ async function runOnce() {
       complete_missing_baselines: completeMissingBaselines,
       complete_missing_batch_limit: completeMissingBatchLimit || null,
       prioritize_missing_baselines: prioritizeMissingBaselines,
+      prioritize_issue_sources: prioritizeIssueSources,
       skip_existing_baseline: skipExistingBaseline,
       keep_unchanged: keepUnchanged,
       keep_rejected: keepRejected,
@@ -256,6 +269,8 @@ async function runOnce() {
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
       max_sources_per_browser: maxSourcesPerBrowser,
+      retry_access_blocked_captures: retryAccessBlockedCaptures,
+      safe_redirect_url_update: safeRedirectUrlUpdate,
       web_concurrency: visualWebConcurrency,
       max_pdf_bytes: maxPdfBytes,
       r2_backfill_baselines: r2BackfillBaselines,
@@ -294,6 +309,14 @@ async function runOnce() {
     page_ready_waits: 0,
     page_ready_timeouts: 0,
     page_ready_wait_ms: 0,
+    issue_sources_loaded: 0,
+    issue_sources_cleared: 0,
+    issue_sources_still_failing: 0,
+    issue_sources_new_failures: 0,
+    access_block_retries: 0,
+    safe_redirect_url_updates: 0,
+    safe_redirect_url_update_skipped: 0,
+    safe_redirect_url_update_failed: 0,
     failed: 0,
     promoted: 0,
     pdf_checked: 0,
@@ -418,6 +441,7 @@ async function runOnce() {
     }
 
     let retriedAfterBrowserRestart = false;
+    let retriedAfterAccessBlock = false;
     while (true) {
       try {
         await waitForDomain(source.url);
@@ -426,6 +450,10 @@ async function runOnce() {
           sourceTimeoutMs,
           `source hard timeout after ${sourceTimeoutMs}ms`,
         );
+        if (hasOpenSourceIssue(source)) {
+          report.issue_sources_cleared += 1;
+          console.log(`ISSUE_CLEARED ${sourceLabel(source)}`);
+        }
         if (!pdfSource) state.sourcesSinceBrowserStart += 1;
         break;
       } catch (error) {
@@ -440,7 +468,25 @@ async function runOnce() {
           continue;
         }
 
+        if (
+          !pdfSource &&
+          retryAccessBlockedCaptures &&
+          !retriedAfterAccessBlock &&
+          isRetryableAccessBlockError(error)
+        ) {
+          report.access_block_retries += 1;
+          console.log(`RETRY_ACCESS_BLOCK ${sourceLabel(source)} | ${errorMessage(error)}`);
+          await restartBrowser(state, "after_access_block");
+          retriedAfterAccessBlock = true;
+          continue;
+        }
+
         report.failed += 1;
+        if (hasOpenSourceIssue(source)) {
+          report.issue_sources_still_failing += 1;
+        } else {
+          report.issue_sources_new_failures += 1;
+        }
         const message = errorMessage(error);
         report.errors.push({
           source_id: source.id,
@@ -494,6 +540,10 @@ async function runOnce() {
       sources = orderSourcesForBaselineCoverage(sources);
     }
 
+    if (prioritizeIssueSources) {
+      sources = orderSourcesForIssueRepair(sources);
+    }
+
     if (completeMissingBaselines) {
       const missingTargets = sources.filter((source) => needsMissingBaselineCompletion(source));
       sources = missingTargets.filter((source) => !isKnownBrokenSource(source));
@@ -513,6 +563,12 @@ async function runOnce() {
         `BASELINE_COMPLETION targets=${sources.length} total_missing_targets=${totalMissingTargets} actionable_missing_targets=${totalMissingTargets - knownBrokenMissingTargets} known_broken_missing_targets=${knownBrokenMissingTargets} batch_limit=${completeMissingBatchLimit || "all"}`,
       );
     }
+
+    report.issue_sources_loaded = sources.filter(hasOpenSourceIssue).length;
+    if (report.issue_sources_loaded > 0) {
+      console.log(`ISSUE_REPAIR_QUEUE loaded=${report.issue_sources_loaded} total_sources=${sources.length}`);
+    }
+    await updateWorkerRunMetadata(workerRunId, report);
 
     if (visualWebConcurrency > 1) {
       console.log(`WEB_CONCURRENCY workers=${visualWebConcurrency} domain_delay_ms=${domainDelayMs}`);
@@ -661,7 +717,7 @@ async function processSource(source, context, browserMeta, report) {
     });
     report.baselined += 1;
     await maybeSyncR2Snapshot(source, capture, report);
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
     return;
   }
@@ -678,7 +734,7 @@ async function processSource(source, context, browserMeta, report) {
     });
     report.capture_behavior_refreshed += 1;
     await maybeSyncR2Snapshot(source, capture, report);
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(
       `BASELINE capture_behavior_refresh from=${baseline.capture_behavior_version || 0} to=${captureBehaviorVersion} ${sourceLabel(source)}`,
     );
@@ -720,7 +776,7 @@ async function processSource(source, context, browserMeta, report) {
       }
     }
     await maybeRepairMissingR2Snapshot(source, capture, report);
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     if (textChanged) {
       report.text_only_ignored += 1;
       console.log(`UNCHANGED screenshot_match_text_diff_ignored ${sourceLabel(source)}`);
@@ -743,7 +799,7 @@ async function processSource(source, context, browserMeta, report) {
   report.candidate_changes += 1;
   if (!deterministic.candidate_change) {
     report.deterministic_noise += 1;
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     console.log(`NOISE deterministic ${deterministic.reason || "local_diff_rejected"} ${sourceLabel(source)}`);
     return;
@@ -802,10 +858,10 @@ async function reviewAndApplyCandidateChange({
       });
       report.review += 1;
       report.review_paths.push(toArchiveRelative(reviewPath));
-      await markSharedSourceVisualCheckSucceeded(source, capture);
+      await markSharedSourceVisualCheckSucceeded(source, capture, report);
       console.log(`REVIEW ai_failure ${sourceLabel(source)}`);
     } else {
-      await markSharedSourceVisualCheckSucceeded(source, capture);
+      await markSharedSourceVisualCheckSucceeded(source, capture, report);
       if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     }
     return;
@@ -835,7 +891,7 @@ async function reviewAndApplyCandidateChange({
     });
     report.review += 1;
     report.review_paths.push(toArchiveRelative(reviewPath));
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`REVIEW low_confidence ${sourceLabel(source)}`);
     return;
   }
@@ -873,13 +929,13 @@ async function reviewAndApplyCandidateChange({
       await maybeSyncR2Snapshot(source, capture, report);
     }
 
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`AI TRUE ${aiReview.result.reader_summary || sourceLabel(source)}`);
     return;
   }
 
   report.ai_rejected += 1;
-  await markSharedSourceVisualCheckSucceeded(source, capture);
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
   if (keepRejected) {
     const rejectedPath = saveRejectedRecord({
       source,
@@ -906,7 +962,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     report.unchanged += 1;
     report.pdf_unchanged += 1;
     await maybeRepairMissingR2Snapshot(source, capture, report);
-    await markSharedSourceVisualCheckSucceeded(source, capture);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(textChanged ? `UNCHANGED pdf_file_match_text_diff_ignored ${sourceLabel(source)}` : `UNCHANGED pdf_file_match ${sourceLabel(source)}`);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     return;
@@ -966,7 +1022,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     report.promoted += 1;
     await maybeSyncR2Snapshot(source, capture, report);
   }
-  await markSharedSourceVisualCheckSucceeded(source, capture);
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
 
   console.log(`REVIEW pdf_changed ${sourceLabel(source)}`);
 }
@@ -1887,7 +1943,7 @@ async function upsertSharedVisualSnapshot({ source, hash, text, capture, created
   return existing || null;
 }
 
-async function markSharedSourceVisualCheckSucceeded(source, capture) {
+async function markSharedSourceVisualCheckSucceeded(source, capture, report = null) {
   const now = new Date().toISOString();
   const { error } = await supabase
     .from("shared_award_sources")
@@ -1903,6 +1959,8 @@ async function markSharedSourceVisualCheckSucceeded(source, capture) {
     .eq("id", source.id);
 
   if (error) throw error;
+
+  await maybeUpdateSafeRedirectUrl(source, capture, now, report);
 }
 
 async function markSharedSourceVisualCheckFailed(source, message) {
@@ -1920,6 +1978,104 @@ async function markSharedSourceVisualCheckFailed(source, message) {
     .eq("id", source.id);
 
   if (error) throw error;
+}
+
+async function maybeUpdateSafeRedirectUrl(source, capture, now, report = null) {
+  if (!safeRedirectUrlUpdate) return;
+
+  const nextUrl = safeRedirectUrlForCapture(source, capture);
+  if (!nextUrl) return;
+
+  const { data: duplicate, error: duplicateError } = await supabase
+    .from("shared_award_sources")
+    .select("id")
+    .eq("shared_award_id", source.shared_award_id)
+    .eq("url", nextUrl)
+    .neq("id", source.id)
+    .limit(1)
+    .maybeSingle();
+
+  if (duplicateError) {
+    if (report) report.safe_redirect_url_update_failed += 1;
+    console.log(`SOURCE_URL_CANONICALIZE_CHECK_FAILED ${errorMessage(duplicateError)} ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (duplicate?.id) {
+    if (report) report.safe_redirect_url_update_skipped += 1;
+    console.log(`SOURCE_URL_CANONICALIZE_SKIPPED duplicate=${duplicate.id} next_url=${nextUrl} ${sourceLabel(source)}`);
+    return;
+  }
+
+  const { error } = await supabase
+    .from("shared_award_sources")
+    .update({
+      url: nextUrl,
+      updated_at: now,
+    })
+    .eq("id", source.id);
+
+  if (error) {
+    if (report) report.safe_redirect_url_update_failed += 1;
+    console.log(`SOURCE_URL_CANONICALIZE_FAILED ${errorMessage(error)} next_url=${nextUrl} ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (source.shared_award_id) {
+    const { error: awardError } = await supabase
+      .from("shared_awards")
+      .update({
+        official_homepage: nextUrl,
+        updated_at: now,
+      })
+      .eq("id", source.shared_award_id)
+      .eq("official_homepage", source.url);
+
+    if (awardError) {
+      console.log(`AWARD_HOMEPAGE_CANONICALIZE_FAILED ${errorMessage(awardError)} next_url=${nextUrl} ${sourceLabel(source)}`);
+    }
+  }
+
+  if (report) report.safe_redirect_url_updates += 1;
+  source.url = nextUrl;
+  console.log(`SOURCE_URL_CANONICALIZED next_url=${nextUrl} ${sourceLabel(source)}`);
+}
+
+function safeRedirectUrlForCapture(source, capture) {
+  const original = cleanText(source?.url);
+  const finalUrl = cleanText(capture?.final_url);
+  if (!original || !finalUrl || original === finalUrl) return null;
+
+  try {
+    const before = new URL(original);
+    const after = new URL(finalUrl);
+    if (!["http:", "https:"].includes(before.protocol) || !["http:", "https:"].includes(after.protocol)) {
+      return null;
+    }
+    if (after.username || after.password) return null;
+
+    const beforeHost = normalizeRedirectHost(before.hostname);
+    const afterHost = normalizeRedirectHost(after.hostname);
+    if (!beforeHost || beforeHost !== afterHost) return null;
+
+    if (normalizeRedirectPath(before.pathname) !== normalizeRedirectPath(after.pathname)) return null;
+    if (before.search !== after.search) return null;
+
+    after.hash = "";
+    const safeUrl = after.toString();
+    return safeUrl !== original ? safeUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeRedirectHost(hostname) {
+  return String(hostname || "").toLowerCase().replace(/^www\./, "");
+}
+
+function normalizeRedirectPath(pathname) {
+  const cleanPath = String(pathname || "/").replace(/\/+$/, "");
+  return cleanPath || "/";
 }
 
 function sourcePageMetadataUpdate(source, capture) {
@@ -3266,6 +3422,22 @@ function orderSourcesForBaselineCoverage(sources) {
   });
 }
 
+function orderSourcesForIssueRepair(sources) {
+  return [...sources].sort((left, right) => {
+    const leftPriority = sourceIssuePriority(left);
+    const rightPriority = sourceIssuePriority(right);
+    if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+
+    if (leftPriority !== 9) {
+      const failureDelta =
+        nonNegativeInt(right.consecutive_failures, 0) - nonNegativeInt(left.consecutive_failures, 0);
+      if (failureDelta !== 0) return failureDelta;
+    }
+
+    return sourceSortKey(left).localeCompare(sourceSortKey(right));
+  });
+}
+
 function summarizeBaselineCoverage(sources) {
   let existing = 0;
   let knownBrokenMissing = 0;
@@ -3294,6 +3466,72 @@ function baselineCoveragePriority(source) {
   if (!hasBaselineForSource(source) && !isKnownBrokenSource(source)) return 0;
   if (hasBaselineForSource(source)) return 1;
   return 2;
+}
+
+function hasOpenSourceIssue(source) {
+  return Boolean(cleanText(source?.last_error));
+}
+
+function sourceIssuePriority(source) {
+  if (!hasOpenSourceIssue(source)) return 9;
+
+  const issueType = classifySourceIssue(source.last_error);
+  if (
+    [
+      "security_challenge",
+      "access_blocked",
+      "http_403",
+      "http_429",
+      "http_5xx",
+      "timeout",
+    ].includes(issueType)
+  ) {
+    return 0;
+  }
+  if (["dns", "ssl"].includes(issueType)) return 1;
+  if (["soft_404", "http_404"].includes(issueType)) return 3;
+  return 2;
+}
+
+function classifySourceIssue(message) {
+  const text = String(message || "").toLowerCase();
+  if (!text) return "none";
+  if (
+    text.includes("invalid capture page: security_challenge") ||
+    text.includes("robot challenge") ||
+    text.includes("captcha") ||
+    text.includes("checking if the site connection is secure") ||
+    text.includes("checking the site connection security")
+  ) {
+    return "security_challenge";
+  }
+  if (
+    text.includes("invalid capture page: access_blocked") ||
+    text.includes("access denied") ||
+    text.includes("forbidden") ||
+    text.includes("blocked")
+  ) {
+    return "access_blocked";
+  }
+  if (text.includes("http 403")) return "http_403";
+  if (text.includes("http 404") || text.includes("page load failed with http 404")) return "http_404";
+  if (text.includes("invalid capture page: soft_404") || text.includes("page not found")) return "soft_404";
+  if (text.includes("http 429")) return "http_429";
+  if (/\bhttp 5\d\d\b/.test(text)) return "http_5xx";
+  if (text.includes("timeout") || text.includes("timed out")) return "timeout";
+  if (text.includes("net::err_name_not_resolved") || text.includes("dns") || text.includes("enotfound")) return "dns";
+  if (text.includes("ssl") || text.includes("certificate") || text.includes("net::err_cert")) return "ssl";
+  return "other";
+}
+
+function isRetryableAccessBlockError(error) {
+  return [
+    "security_challenge",
+    "access_blocked",
+    "http_403",
+    "http_429",
+    "http_5xx",
+  ].includes(classifySourceIssue(errorMessage(error)));
 }
 
 function isKnownBrokenSource(source) {
@@ -3325,7 +3563,7 @@ function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, created_at, shared_awards!inner(id, name, status)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status)",
     )
     .eq("shared_awards.status", "active")
     .eq("admin_review_status", "open")
@@ -3547,6 +3785,14 @@ function visualWorkerMetadata(report) {
       page_ready_waits: report.page_ready_waits,
       page_ready_timeouts: report.page_ready_timeouts,
       page_ready_wait_ms: report.page_ready_wait_ms,
+      issue_sources_loaded: report.issue_sources_loaded,
+      issue_sources_cleared: report.issue_sources_cleared,
+      issue_sources_still_failing: report.issue_sources_still_failing,
+      issue_sources_new_failures: report.issue_sources_new_failures,
+      access_block_retries: report.access_block_retries,
+      safe_redirect_url_updates: report.safe_redirect_url_updates,
+      safe_redirect_url_update_skipped: report.safe_redirect_url_update_skipped,
+      safe_redirect_url_update_failed: report.safe_redirect_url_update_failed,
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
