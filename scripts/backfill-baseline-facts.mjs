@@ -239,6 +239,11 @@ async function runOnce() {
           extracted_at: new Date().toISOString(),
           snapshot_hash: capture.image_hash || capture.file_hash || null,
         };
+        const sanity = baselineFactsMatchSource(source, capture, facts);
+        if (!sanity.ok) {
+          if (applyUpdates) await rejectFactsInSupabaseSource(source, facts, metadata, capture, sanity.reason);
+          throw new Error(`Baseline facts rejected: ${sanity.reason}`);
+        }
 
         if (applyUpdates) {
           applyFactsToBaseline(target.baselinePath, baseline, facts, metadata);
@@ -588,6 +593,7 @@ async function processGeminiApiBatchChunk(entries, report, runId) {
         extracted_at: new Date().toISOString(),
         snapshot_hash: entry.capture.image_hash || entry.capture.file_hash || null,
       };
+      const sanity = baselineFactsMatchSource(entry.source, entry.capture, facts);
 
       recordGeminiApiUsage(
         report,
@@ -604,6 +610,13 @@ async function processGeminiApiBatchChunk(entries, report, runId) {
           cost_multiplier: 0.5,
         },
       );
+
+      if (!sanity.ok) {
+        if (applyUpdates) {
+          await rejectFactsInSupabaseSource(entry.source, facts, metadata, entry.capture, sanity.reason);
+        }
+        throw new Error(`Baseline facts rejected: ${sanity.reason}`);
+      }
 
       if (applyUpdates) {
         applyFactsToBaseline(entry.target.baselinePath, entry.baseline, facts, metadata);
@@ -973,6 +986,39 @@ async function applyFactsToSupabaseSource(source, facts, metadata, capture) {
   if (error) throw new Error(`shared_award_sources metadata update failed: ${error.message}`);
 }
 
+async function rejectFactsInSupabaseSource(source, facts, metadata, capture, reason) {
+  if (!supabase) return;
+  const displayTitle = cleanPageTitle(capture.page_title) || cleanText(source.title) || "Source page";
+  const { error } = await supabase
+    .from("shared_award_sources")
+    .update({
+      display_title: displayTitle,
+      page_description: null,
+      page_metadata: {
+        version: 1,
+        kind: "source_page_outline",
+        provider: metadata.provider,
+        model: metadata.model,
+        generated_at: metadata.extracted_at,
+        snapshot_hash: metadata.snapshot_hash,
+        capture_kind: capture.kind || "webpage",
+        final_url: capture.final_url || null,
+        page_title: capture.page_title || null,
+        baseline_facts_rejected: true,
+        rejection_reason: reason,
+        rejected_display_title: facts.display_title || null,
+        rejected_award_name: facts.award_name || null,
+        quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
+      },
+      page_metadata_generated_at: metadata.extracted_at,
+      page_metadata_model: metadata.model,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", source.id)
+    .eq("admin_review_status", "open");
+  if (error) throw new Error(`shared_award_sources rejected metadata update failed: ${error.message}`);
+}
+
 function applyFactsToBaseline(baselinePath, baseline, facts, metadata) {
   const summary = {
     ...(baseline.summary_metadata || {}),
@@ -1021,6 +1067,70 @@ function normalizeBaselineFacts(value) {
     confidence: normalizeConfidence(parsed.confidence) || "low",
     quality_flags: stringArray(parsed.quality_flags).map(cleanSlug).filter(Boolean).slice(0, 20),
   };
+}
+
+function baselineFactsMatchSource(source, capture, facts) {
+  if (cleanSlug(facts.status) === "failed") return { ok: false, reason: "facts_status_failed" };
+
+  const expectedTokens = distinctiveSourceTokens([
+    source.shared_awards?.name,
+    source.title,
+    capture.page_title,
+  ].join(" "));
+  if (!expectedTokens.length) return { ok: true };
+
+  const factTokens = distinctiveSourceTokens([
+    facts.display_title,
+    facts.award_name,
+    facts.page_description,
+    facts.page_purpose,
+    ...(facts.sections || []).flatMap((section) => [section.title, section.description]),
+  ].join(" "));
+  const overlap = expectedTokens.filter((token) => factTokens.includes(token));
+
+  if (overlap.length > 0) return { ok: true };
+  return {
+    ok: false,
+    reason: `extracted facts did not match source tokens: ${expectedTokens.slice(0, 8).join(", ")}`,
+  };
+}
+
+function distinctiveSourceTokens(value) {
+  const stop = new Set([
+    "about",
+    "applicant",
+    "applicants",
+    "application",
+    "applications",
+    "apply",
+    "award",
+    "awards",
+    "eligibility",
+    "fellowship",
+    "fellowships",
+    "grant",
+    "grants",
+    "home",
+    "homepage",
+    "page",
+    "program",
+    "programs",
+    "scholar",
+    "scholars",
+    "scholarship",
+    "scholarships",
+    "source",
+    "student",
+    "students",
+    "the",
+    "and",
+    "for",
+    "with",
+  ]);
+  return normalizeText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 4 && !stop.has(token))
+    .slice(0, 18);
 }
 
 function baselineHasFacts(baseline) {
@@ -1493,6 +1603,17 @@ function cleanSlug(value) {
     .replace(/[^a-z0-9_-]+/g, "_")
     .replace(/^_+|_+$/g, "")
     .slice(0, 80);
+}
+
+function normalizeText(value) {
+  return cleanText(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function cleanPageTitle(value) {
+  return cleanText(value)
+    .replace(/\s+[|-]\s+US-Ireland Alliance$/i, "")
+    .replace(/\s+[|-]\s+AwardPing$/i, "")
+    .trim();
 }
 
 function cleanText(value) {

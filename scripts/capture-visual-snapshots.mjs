@@ -2072,6 +2072,32 @@ function sourcePageMetadataUpdate(source, capture) {
 
   const metadata = capture.baseline_facts_metadata || {};
   const generatedAt = metadata.extracted_at || new Date().toISOString();
+  const sanity = baselineFactsMatchSource(source, capture, facts);
+  if (!sanity.ok) {
+    return {
+      display_title: cleanNullable(capture.page_title) || cleanNullable(source.title) || null,
+      page_description: null,
+      page_metadata: {
+        version: 1,
+        kind: "source_page_outline",
+        provider: metadata.provider || aiProvider,
+        model: metadata.model || aiModel,
+        generated_at: generatedAt,
+        snapshot_hash: metadata.snapshot_hash || visualHashForCapture(capture),
+        capture_kind: capture.kind || "webpage",
+        final_url: capture.final_url || null,
+        page_title: capture.page_title || null,
+        baseline_facts_rejected: true,
+        rejection_reason: sanity.reason,
+        rejected_display_title: facts.display_title || null,
+        rejected_award_name: facts.award_name || null,
+        quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
+      },
+      page_metadata_generated_at: generatedAt,
+      page_metadata_model: metadata.model || aiModel,
+    };
+  }
+
   const displayTitle = facts.display_title || cleanNullable(capture.page_title) || cleanNullable(source.title);
   const description =
     facts.page_description ||
@@ -2099,6 +2125,70 @@ function sourcePageMetadataUpdate(source, capture) {
     page_metadata_generated_at: generatedAt,
     page_metadata_model: metadata.model || aiModel,
   };
+}
+
+function baselineFactsMatchSource(source, capture, facts) {
+  if (cleanSlug(facts.status) === "failed") return { ok: false, reason: "facts_status_failed" };
+
+  const expectedTokens = distinctiveSourceTokens([
+    source.shared_awards?.name,
+    source.title,
+    capture.page_title,
+  ].join(" "));
+  if (!expectedTokens.length) return { ok: true };
+
+  const factTokens = distinctiveSourceTokens([
+    facts.display_title,
+    facts.award_name,
+    facts.page_description,
+    facts.page_purpose,
+    ...(facts.sections || []).flatMap((section) => [section.title, section.description]),
+  ].join(" "));
+  const overlap = expectedTokens.filter((token) => factTokens.includes(token));
+
+  if (overlap.length > 0) return { ok: true };
+  return {
+    ok: false,
+    reason: `extracted facts did not match source tokens: ${expectedTokens.slice(0, 8).join(", ")}`,
+  };
+}
+
+function distinctiveSourceTokens(value) {
+  const stop = new Set([
+    "about",
+    "applicant",
+    "applicants",
+    "application",
+    "applications",
+    "apply",
+    "award",
+    "awards",
+    "eligibility",
+    "fellowship",
+    "fellowships",
+    "grant",
+    "grants",
+    "home",
+    "homepage",
+    "page",
+    "program",
+    "programs",
+    "scholar",
+    "scholars",
+    "scholarship",
+    "scholarships",
+    "source",
+    "student",
+    "students",
+    "the",
+    "and",
+    "for",
+    "with",
+  ]);
+  return normalizeText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 4 && !stop.has(token))
+    .slice(0, 18);
 }
 
 async function syncR2SnapshotPair(source, capture) {

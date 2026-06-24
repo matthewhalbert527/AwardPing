@@ -29,6 +29,7 @@
     "source:baseline-facts": "node scripts/backfill-baseline-facts.mjs",
     "award:baseline-details": "node scripts/backfill-award-baseline-details.mjs",
     "award:baseline-facts-aggregate": "node scripts/aggregate-award-baseline-facts.mjs",
+    "award:cleanup-contaminated-baseline-facts": "node scripts/cleanup-contaminated-baseline-facts.mjs",
     "source:broken-report": "node scripts/report-broken-sources.mjs",
     "privacy:backfill": "node scripts/backfill-encrypted-personal-data.mjs"
   },

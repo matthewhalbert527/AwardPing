@@ -510,6 +510,8 @@ function workerMetadata(report) {
 
 function baselineFacts(source) {
   const metadata = jsonObjectOrEmpty(source.page_metadata);
+  if (metadata.baseline_facts_rejected || metadata.baselineFactsRejected) return {};
+  if (metadata.kind && !metadata.baseline_facts && !metadata.baselineFacts) return {};
   return jsonObjectOrEmpty(metadata.baseline_facts || metadata.baselineFacts || source.page_metadata);
 }
 
