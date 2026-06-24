@@ -109,6 +109,7 @@ async function canViewSnapshot(
         .select("id")
         .eq("id", sharedAwardSourceId)
         .eq("shared_award_id", sharedAwardId)
+        .eq("admin_review_status", "open")
         .maybeSingle(),
     ]);
 

@@ -59,6 +59,7 @@ export async function POST(request: Request, { params }: Props) {
       .from("shared_award_sources")
       .select("*")
       .eq("shared_award_id", id)
+      .eq("admin_review_status", "open")
       .order("created_at", { ascending: true }),
   ]);
 

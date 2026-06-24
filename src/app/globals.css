@@ -2534,6 +2534,56 @@ a {
   font-weight: 850;
 }
 
+.admin-tabs,
+.admin-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.42rem;
+}
+
+.admin-tabs {
+  margin-bottom: 0.05rem;
+}
+
+.admin-tab,
+.admin-subtab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+  border: 1px solid rgba(215, 225, 239, 0.98);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #536073;
+  font-size: 0.78rem;
+  font-weight: 950;
+  min-height: 2.2rem;
+  padding: 0.48rem 0.82rem;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.admin-tab-active,
+.admin-subtab-active {
+  border-color: color-mix(in srgb, var(--brand) 42%, #ffffff);
+  background: var(--brand-blue-soft);
+  color: var(--foreground);
+}
+
+.admin-tab-count,
+.admin-subtab span {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--foreground);
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 0.22rem 0.4rem;
+}
+
+.admin-subtabs {
+  margin-top: 0.2rem;
+}
+
 .admin-metric-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 12.75rem), 1fr));
@@ -2875,6 +2925,57 @@ a {
   line-height: 1.3;
   text-align: right;
   white-space: nowrap;
+}
+
+.admin-issue-button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.54rem;
+}
+
+.admin-issue-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28rem;
+  border: 1px solid rgba(215, 225, 239, 0.98);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--foreground);
+  font-size: 0.68rem;
+  font-weight: 950;
+  min-height: 2rem;
+  padding: 0.38rem 0.64rem;
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.admin-issue-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--brand) 42%, #ffffff);
+  background: var(--brand-blue-soft);
+}
+
+.admin-issue-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.admin-issue-button-danger {
+  border-color: color-mix(in srgb, var(--brand-pink) 32%, #ffffff);
+  color: #7f1d4d;
+}
+
+.admin-issue-button-danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--brand-pink) 54%, #ffffff);
+  background: var(--brand-pink-soft);
+}
+
+.admin-issue-action-error {
+  flex-basis: 100%;
+  color: #7f1d4d;
+  font-size: 0.72rem;
+  font-weight: 850;
 }
 
 .admin-detail-grid {

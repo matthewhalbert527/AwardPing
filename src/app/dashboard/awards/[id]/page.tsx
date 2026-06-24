@@ -46,6 +46,7 @@ export default async function SharedAwardDetailPage({ params }: Params) {
         .from("shared_award_sources")
         .select("*")
         .eq("shared_award_id", id)
+        .eq("admin_review_status", "open")
         .order("page_type", { ascending: true })
         .order("created_at", { ascending: true }),
       supabase

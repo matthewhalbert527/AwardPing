@@ -321,6 +321,7 @@ async function loadSourcesByAward(awardIds) {
           "id, shared_award_id, url, title, page_type, confidence, last_checked_at, last_error, created_at",
         )
         .in("shared_award_id", chunk)
+        .eq("admin_review_status", "open")
         .order("page_type", { ascending: true })
         .order("created_at", { ascending: true })
         .range(from, from + pageSize - 1);

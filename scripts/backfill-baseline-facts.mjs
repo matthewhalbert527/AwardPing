@@ -968,7 +968,8 @@ async function applyFactsToSupabaseSource(source, facts, metadata, capture) {
       page_metadata_model: metadata.model,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", source.id);
+    .eq("id", source.id)
+    .eq("admin_review_status", "open");
   if (error) throw new Error(`shared_award_sources metadata update failed: ${error.message}`);
 }
 

@@ -113,6 +113,7 @@ async function fetchAllSharedSources(supabase: SupabaseAdminClient) {
       supabase
         .from("shared_award_sources")
         .select("shared_award_id, url, page_type, last_checked_at")
+        .eq("admin_review_status", "open")
         .range(from, to),
   );
 }

@@ -143,7 +143,11 @@ async function loadSourcesByAward() {
   const rows = await loadAllRows(
     "shared_award_sources",
     "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type",
-    (query) => query.not("page_metadata_generated_at", "is", null).order("page_metadata_generated_at", { ascending: false }),
+    (query) =>
+      query
+        .eq("admin_review_status", "open")
+        .not("page_metadata_generated_at", "is", null)
+        .order("page_metadata_generated_at", { ascending: false }),
   );
   const grouped = new Map();
   for (const row of rows) {

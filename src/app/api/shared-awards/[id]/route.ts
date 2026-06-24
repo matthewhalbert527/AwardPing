@@ -55,6 +55,7 @@ export async function GET(_request: Request, { params }: Props) {
       .from("shared_award_sources")
       .select("id, shared_award_id, url, title, page_type, last_checked_at, last_error, created_at")
       .eq("shared_award_id", id)
+      .eq("admin_review_status", "open")
       .order("created_at", { ascending: true }),
     admin
       .from("shared_award_change_events")

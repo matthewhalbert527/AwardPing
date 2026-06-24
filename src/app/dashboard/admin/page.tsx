@@ -7,6 +7,7 @@ import {
   Eye,
   Sparkles,
 } from "lucide-react";
+import { AdminTabs } from "@/components/admin-tabs";
 import { AdminAutoRefresh } from "@/components/admin-auto-refresh";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
@@ -81,7 +82,8 @@ export default async function AdminPage() {
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active"),
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open"),
     admin
       .from("shared_award_sources")
       .select("*", { count: "exact", head: true })
@@ -90,31 +92,37 @@ export default async function AdminPage() {
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("page_metadata_generated_at", "is", null),
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("last_checked_at", "is", null),
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .gte("last_checked_at", checked24hCutoff),
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .gte("last_checked_at", checked48hCutoff),
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .gte("last_checked_at", checked7dCutoff),
     admin
       .from("shared_award_sources")
       .select("id, last_checked_at, shared_awards!inner(status)")
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("last_checked_at", "is", null)
       .order("last_checked_at", { ascending: false })
       .limit(1),
@@ -274,6 +282,8 @@ export default async function AdminPage() {
         <AdminAutoRefresh intervalSeconds={30} />
       </div>
 
+      <AdminTabs active="status" issueCount={pageIssueSummary.queueTotal + pageIssueSummary.reviewLater} />
+
       {pipelineErrors.length > 0 && (
         <section className="mb-6 card border-[var(--brand-pink)] p-5">
           <div className="flex items-start gap-3">
@@ -334,8 +344,8 @@ export default async function AdminPage() {
           icon={AlertTriangle}
           label="Page issues"
           value={formatNumber(pageIssueSummary.queueTotal)}
-          detail={`${formatNumber(pageIssueSummary.persistentSourceErrors)} repeated failures; ${formatNumber(pageIssueSummary.recentWorkerPageErrors)} recent worker page errors`}
-          attention={pageIssueSummary.queueTotal > 0 || pageIssueSummary.recentWorkerPageErrors > 0}
+          detail={`${formatNumber(pageIssueSummary.persistentSourceErrors)} repeated failures; ${formatNumber(pageIssueSummary.reviewLater)} saved for review`}
+          attention={pageIssueSummary.queueTotal > 0 || pageIssueSummary.recentWorkerPageErrors > 0 || pageIssueSummary.reviewLater > 0}
         />
       </section>
 
@@ -346,7 +356,7 @@ export default async function AdminPage() {
             <h2>Page issue review</h2>
           </div>
           <Link className="button button-secondary" href="/dashboard/admin/issues">
-            Open full queue
+            Open tab
           </Link>
         </div>
         <div className="admin-stat-grid admin-stat-grid-compact">
@@ -355,6 +365,7 @@ export default async function AdminPage() {
           <MiniStat label="Award detail errors" value={pageIssueSummary.awardStructureErrors} attention={pageIssueSummary.awardStructureErrors > 0} />
           <MiniStat label="Missing snapshots" value={pageIssueSummary.missingSnapshots} attention={pageIssueSummary.missingSnapshots > 0} />
           <MiniStat label="Missing page info" value={pageIssueSummary.missingPageInfo} attention={pageIssueSummary.missingPageInfo > 0} />
+          <MiniStat label="Review later" value={pageIssueSummary.reviewLater} attention={pageIssueSummary.reviewLater > 0} />
         </div>
         {topPageIssues.length > 0 ? (
           <div className="admin-issue-list admin-issue-list-compact">

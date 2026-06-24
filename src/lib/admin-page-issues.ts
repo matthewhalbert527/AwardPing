@@ -16,6 +16,10 @@ type SourceIssueRow = {
   url: string;
   title: string;
   display_title: string | null;
+  admin_review_status: "open" | "review_later";
+  admin_review_note: string | null;
+  admin_reviewed_at: string | null;
+  admin_reviewed_by: string | null;
   page_type: string;
   last_checked_at: string | null;
   consecutive_failures: number;
@@ -67,7 +71,21 @@ export type AdminPageIssueSummary = {
   recentWorkerPageErrors: number;
   missingSnapshots: number;
   missingPageInfo: number;
+  reviewLater: number;
   queueTotal: number;
+};
+
+export type AdminReviewLaterSource = {
+  id: string;
+  awardId: string;
+  awardName: string;
+  sourceTitle: string;
+  sourceUrl: string;
+  message: string;
+  note: string | null;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+  failures: number;
 };
 
 export type AdminPageIssueLoadResult = {
@@ -77,7 +95,7 @@ export type AdminPageIssueLoadResult = {
 };
 
 const sourceIssueSelect =
-  "id, shared_award_id, url, title, display_title, page_type, last_checked_at, consecutive_failures, last_error, updated_at, shared_awards!inner(id, name, status)";
+  "id, shared_award_id, url, title, display_title, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, page_type, last_checked_at, consecutive_failures, last_error, updated_at, shared_awards!inner(id, name, status)";
 
 export async function loadAdminPageIssues(
   admin: AdminClient,
@@ -98,6 +116,7 @@ export async function loadAdminPageIssues(
       .from("shared_award_sources")
       .select(sourceIssueSelect)
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("last_error", "is", null)
       .order("consecutive_failures", { ascending: false })
       .order("updated_at", { ascending: false })
@@ -106,11 +125,13 @@ export async function loadAdminPageIssues(
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("last_error", "is", null),
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("last_error", "is", null)
       .gte("consecutive_failures", 3),
     admin
@@ -128,11 +149,13 @@ export async function loadAdminPageIssues(
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active"),
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open"),
     admin
       .from("shared_award_sources")
       .select("id, shared_awards!inner(status)", { count: "exact", head: true })
       .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
       .not("page_metadata_generated_at", "is", null),
     admin
       .from("shared_award_source_visual_snapshots")
@@ -170,6 +193,7 @@ export async function loadAdminPageIssues(
           .from("shared_award_sources")
           .select(sourceIssueSelect)
           .eq("shared_awards.status", "active")
+          .eq("admin_review_status", "open")
           .in("id", workerSourceIds)
       : { data: [], error: null };
 
@@ -201,10 +225,41 @@ export async function loadAdminPageIssues(
     recentWorkerPageErrors: workerPageErrors.length,
     missingSnapshots: Math.max(0, activeSourceCount - visualSnapshotCount),
     missingPageInfo: Math.max(0, activeSourceCount - activeMetadataCount),
+    reviewLater: await countReviewLaterSources(admin, loadErrors),
     queueTotal: (sourceCountResult.count || 0) + (awardCountResult.count || 0),
   };
 
   return { summary, issues, loadErrors };
+}
+
+export async function loadAdminReviewLaterSources(
+  admin: AdminClient,
+): Promise<{ sources: AdminReviewLaterSource[]; loadErrors: string[] }> {
+  const { data, error } = await admin
+    .from("shared_award_sources")
+    .select(sourceIssueSelect)
+    .eq("shared_awards.status", "active")
+    .eq("admin_review_status", "review_later")
+    .order("admin_reviewed_at", { ascending: false, nullsFirst: false })
+    .order("updated_at", { ascending: false })
+    .limit(200);
+
+  const rows = (data || []) as unknown as SourceIssueRow[];
+  return {
+    sources: rows.map(reviewLaterRowToSource),
+    loadErrors: error?.message ? [error.message] : [],
+  };
+}
+
+async function countReviewLaterSources(admin: AdminClient, loadErrors: string[]) {
+  const { count, error } = await admin
+    .from("shared_award_sources")
+    .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+    .eq("shared_awards.status", "active")
+    .eq("admin_review_status", "review_later");
+
+  if (error?.message) loadErrors.push(error.message);
+  return count || 0;
 }
 
 function sourceRowToIssue(row: SourceIssueRow): AdminPageIssue {
@@ -222,6 +277,22 @@ function sourceRowToIssue(row: SourceIssueRow): AdminPageIssue {
     sourceUrl: row.url,
     message,
     checkedAt: row.last_checked_at || row.updated_at,
+    failures: row.consecutive_failures || 0,
+  };
+}
+
+function reviewLaterRowToSource(row: SourceIssueRow): AdminReviewLaterSource {
+  const award = sourceAward(row);
+  return {
+    id: row.id,
+    awardId: award?.id || row.shared_award_id,
+    awardName: award?.name || "Unknown award",
+    sourceTitle: cleanDisplayTitle(row.display_title || row.title || row.url),
+    sourceUrl: row.url,
+    message: row.last_error || "Marked for later troubleshooting.",
+    note: row.admin_review_note,
+    reviewedAt: row.admin_reviewed_at,
+    reviewedBy: row.admin_reviewed_by,
     failures: row.consecutive_failures || 0,
   };
 }

@@ -3327,6 +3327,7 @@ function buildSourcesQuery() {
       "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, created_at, shared_awards!inner(id, name, status)",
     )
     .eq("shared_awards.status", "active")
+    .eq("admin_review_status", "open")
     .order("next_check_at", { ascending: true })
     .order("created_at", { ascending: true });
 

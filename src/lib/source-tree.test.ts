@@ -18,7 +18,7 @@ describe("source tree grouping", () => {
       },
     ]);
 
-    expect(tree.map((node) => node.label)).toEqual(["Homepage", "Files and PDFs"]);
+    expect(tree.map((node) => node.label)).toEqual(["Overview", "Files and PDFs"]);
 
     const files = tree.find((node) => node.label === "Files and PDFs");
     expect(files?.children[0].label).toBe("View an overview of Schwarzman Scholars");

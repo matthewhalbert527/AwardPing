@@ -188,6 +188,7 @@ async function fetchSharedSourcesForAwards(
     .from("shared_award_sources")
     .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, last_error")
     .in("shared_award_id", ids)
+    .eq("admin_review_status", "open")
     .order("created_at", { ascending: true });
 
   return (data || []) as SharedSourceDirectoryRow[];

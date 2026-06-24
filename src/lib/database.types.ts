@@ -148,6 +148,10 @@ export type Database = {
           page_metadata: Json;
           page_metadata_generated_at: string | null;
           page_metadata_model: string | null;
+          admin_review_status: "open" | "review_later";
+          admin_review_note: string | null;
+          admin_reviewed_at: string | null;
+          admin_reviewed_by: string | null;
           page_type: AwardPageType;
           confidence: number;
           reason: string | null;
@@ -171,6 +175,10 @@ export type Database = {
           page_metadata?: Json;
           page_metadata_generated_at?: string | null;
           page_metadata_model?: string | null;
+          admin_review_status?: "open" | "review_later";
+          admin_review_note?: string | null;
+          admin_reviewed_at?: string | null;
+          admin_reviewed_by?: string | null;
           page_type?: AwardPageType;
           confidence?: number;
           reason?: string | null;
@@ -191,6 +199,10 @@ export type Database = {
           page_metadata?: Json;
           page_metadata_generated_at?: string | null;
           page_metadata_model?: string | null;
+          admin_review_status?: "open" | "review_later";
+          admin_review_note?: string | null;
+          admin_reviewed_at?: string | null;
+          admin_reviewed_by?: string | null;
           page_type?: AwardPageType;
           confidence?: number;
           reason?: string | null;

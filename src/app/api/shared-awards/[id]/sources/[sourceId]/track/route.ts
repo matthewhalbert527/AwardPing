@@ -42,6 +42,7 @@ export async function POST(_request: Request, { params }: Props) {
       .select("*")
       .eq("id", sourceId)
       .eq("shared_award_id", id)
+      .eq("admin_review_status", "open")
       .maybeSingle(),
   ]);
 
