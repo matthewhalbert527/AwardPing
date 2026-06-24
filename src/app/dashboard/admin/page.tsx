@@ -1,6 +1,7 @@
 import {
   Activity,
   AlertTriangle,
+  Clock3,
   Database,
   Eye,
   Sparkles,
@@ -55,11 +56,22 @@ export default async function AdminPage() {
   }
 
   const admin = createSupabaseAdminClient();
+  const now = new Date();
+  const renderedAt = now.toISOString();
+  const checked24hCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const checked48hCutoff = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
+  const checked7dCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const [
     { data: workerRunRows, error: workerRunError },
     { count: sharedSourceCount, error: sharedSourceError },
     { count: activeSharedSourceCount, error: activeSharedSourceError },
     { count: sourceMetadataCount, error: sourceMetadataError },
+    { count: activeSourceMetadataCount, error: activeSourceMetadataError },
+    { count: checkedSharedSourceCount, error: checkedSharedSourceError },
+    { count: checkedSharedSource24hCount, error: checkedSharedSource24hError },
+    { count: checkedSharedSource48hCount, error: checkedSharedSource48hError },
+    { count: checkedSharedSource7dCount, error: checkedSharedSource7dError },
+    { data: latestCheckedSourceRows, error: latestCheckedSourceError },
     { count: visualSnapshotRecordCount, error: visualSnapshotRecordError },
   ] = await Promise.all([
     admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(30),
@@ -72,6 +84,38 @@ export default async function AdminPage() {
       .from("shared_award_sources")
       .select("*", { count: "exact", head: true })
       .not("page_metadata_generated_at", "is", null),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .not("page_metadata_generated_at", "is", null),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .not("last_checked_at", "is", null),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .gte("last_checked_at", checked24hCutoff),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .gte("last_checked_at", checked48hCutoff),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .gte("last_checked_at", checked7dCutoff),
+    admin
+      .from("shared_award_sources")
+      .select("id, last_checked_at, shared_awards!inner(status)")
+      .eq("shared_awards.status", "active")
+      .not("last_checked_at", "is", null)
+      .order("last_checked_at", { ascending: false })
+      .limit(1),
     admin
       .from("shared_award_source_visual_snapshots")
       .select("*", { count: "exact", head: true }),
@@ -114,12 +158,6 @@ export default async function AdminPage() {
   const latestAwardDetailPublishing = objectValue(latestAwardDetailPipeline.publishing);
   const latestPageInfoStatusRun = latestPageInfoRun || latestVisualRun;
   const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
-  const latestPageInfoGeminiCliUsage = latestPageInfoRun
-    ? objectValue(latestPageInfoMetadata.gemini_cli_usage)
-    : latestGeminiCliUsage;
-  const latestAwardDetailGeminiCliUsage = objectValue(
-    latestAwardDetailMetadata.gemini_cli_usage,
-  );
   const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
   const latestPageInfoGeminiUsage = latestPageInfoRun
     ? objectValue(latestPageInfoMetadata.gemini_usage)
@@ -144,8 +182,33 @@ export default async function AdminPage() {
   const latestVisualBaselined = numberFromObject(latestCapture, "baselined") || latestVisualRun?.initial_count || 0;
   const latestVisualUnchanged = numberFromObject(latestCapture, "unchanged") || latestVisualRun?.unchanged_count || 0;
   const latestVisualFailed = numberFromObject(latestCapture, "failed") || latestVisualRun?.failed_count || 0;
+  const latestPageInfoBatchJobs = numberFromObject(latestPageInfoGeminiUsage, "batch_jobs");
+  const latestPageInfoBatchRequests = numberFromObject(latestPageInfoGeminiUsage, "batch_requests");
+  const latestPageInfoBatchFailures = numberFromObject(latestPageInfoGeminiUsage, "batch_failures");
+  const latestPageInfoBatchCompleted = Math.min(
+    latestPageInfoBatchRequests,
+    numberFromObject(latestPageInfoGeminiUsage, "calls") + latestPageInfoBatchFailures,
+  );
+  const latestPageInfoBatchPending = Math.max(
+    0,
+    latestPageInfoBatchRequests - latestPageInfoBatchCompleted,
+  );
+  const latestPageInfoBatchPercent = percent(
+    latestPageInfoBatchCompleted,
+    latestPageInfoBatchRequests,
+  );
+  const latestPageInfoLoaded = numberFromObject(latestPageInfoCounts, "loaded_baselines");
+  const latestPageInfoProcessed =
+    numberFromObject(latestPageInfoCounts, "extracted") ||
+    numberFromObject(latestPageInfoExtraction, "extracted") ||
+    latestPageInfoRun?.initial_count ||
+    0;
+  const latestPageInfoSkipped =
+    numberFromObject(latestPageInfoCounts, "skipped_existing") +
+    numberFromObject(latestPageInfoCounts, "skipped_ineligible");
+  const latestPageInfoRunCompleted = latestPageInfoProcessed + latestPageInfoSkipped;
+  const latestPageInfoRunPercent = percent(latestPageInfoRunCompleted, latestPageInfoLoaded);
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
-  const renderedAt = new Date().toISOString();
   const latestBaselinePace = baselinePaceFromMetadata(
     latestVisualRun,
     latestVisualMetadata,
@@ -155,6 +218,17 @@ export default async function AdminPage() {
   const publishedSnapshotCount = visualSnapshotRecordCount || 0;
   const publishedSnapshotMissing = Math.max(0, activeSourceTotal - publishedSnapshotCount);
   const publishedSnapshotPercent = percent(publishedSnapshotCount, activeSourceTotal);
+  const activeSourceMetadataTotal = activeSourceMetadataCount || 0;
+  const activeSourceMetadataMissing = Math.max(0, activeSourceTotal - activeSourceMetadataTotal);
+  const activeSourceMetadataPercent = percent(activeSourceMetadataTotal, activeSourceTotal);
+  const checkedSourceTotal = checkedSharedSourceCount || 0;
+  const checkedSourcePercent = percent(checkedSourceTotal, activeSourceTotal);
+  const checkedSource24h = checkedSharedSource24hCount || 0;
+  const checkedSource48h = checkedSharedSource48hCount || 0;
+  const checkedSource7d = checkedSharedSource7dCount || 0;
+  const checkedSourceNever = Math.max(0, activeSourceTotal - checkedSourceTotal);
+  const checkedSourceOlderThan7d = Math.max(0, checkedSourceTotal - checkedSource7d);
+  const latestSourceCheckedAt = latestCheckedSourceRows?.[0]?.last_checked_at || null;
   const baselineCoveragePercent = latestBaselineCoverage
     ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
     : 0;
@@ -167,6 +241,12 @@ export default async function AdminPage() {
     sharedSourceError?.message,
     activeSharedSourceError?.message,
     sourceMetadataError?.message,
+    activeSourceMetadataError?.message,
+    checkedSharedSourceError?.message,
+    checkedSharedSource24hError?.message,
+    checkedSharedSource48hError?.message,
+    checkedSharedSource7dError?.message,
+    latestCheckedSourceError?.message,
     visualSnapshotRecordError?.message,
   ].filter(Boolean);
   const sourceMetadataPercent = percent(sourceMetadataCount || 0, sharedSourceCount || 0);
@@ -200,7 +280,7 @@ export default async function AdminPage() {
         </section>
       )}
 
-      <section className="admin-metric-grid">
+      <section className="admin-metric-grid admin-metric-grid-primary">
         <MetricCard
           icon={Eye}
           label="Daily worker"
@@ -221,261 +301,290 @@ export default async function AdminPage() {
         />
         <MetricCard
           icon={Sparkles}
-          label="Gemini API calls"
-          value={formatNumber(numberFromObject(latestPageInfoGeminiUsage, "calls"))}
-          detail={latestPageInfoGeminiApiHealth.metricDetail}
-          attention={latestPageInfoGeminiApiHealth.attention}
-        />
-        <MetricCard
-          icon={Database}
-          label="R2 uploads"
-          value={formatNumber(numberFromObject(latestCounts, "r2_uploaded"))}
-          detail={`${formatNumber(numberFromObject(latestCounts, "r2_rotated"))} rotated, ${formatNumber(numberFromObject(latestCounts, "r2_failed"))} failed`}
-          attention={numberFromObject(latestCounts, "r2_failed") > 0}
+          label="Info coverage"
+          value={`${activeSourceMetadataPercent}%`}
+          detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active pages have extracted information`}
+          attention={activeSourceMetadataMissing > 0}
         />
         <MetricCard
           icon={Sparkles}
-          label="Award details"
-          value={latestAwardDetailRun ? statusLabel(latestAwardDetailRun.status) : "None"}
+          label="Batch work"
+          value={latestPageInfoBatchRequests > 0 ? `${latestPageInfoBatchPercent}%` : "None"}
           detail={
-            latestAwardDetailRun
-              ? `${formatNumber(numberFromObject(latestAwardDetailExtraction, "extracted"))} extracted, ${formatNumber(latestAwardDetailApplied)} applied`
-              : "No detail run logged"
+            latestPageInfoBatchRequests > 0
+              ? `${formatNumber(latestPageInfoBatchCompleted)} complete, ${formatNumber(latestPageInfoBatchPending)} pending; ${latestPageInfoGeminiApiHealth.metricDetail}`
+              : latestPageInfoGeminiApiHealth.metricDetail
           }
-          attention={latestAwardDetailRun?.status === "failed"}
+          attention={latestPageInfoGeminiApiHealth.attention || latestPageInfoBatchFailures > 0}
         />
         <MetricCard
-          icon={Activity}
-          label="Published updates"
-          value={formatNumber(numberFromObject(latestPublishing, "published_updates"))}
-          detail={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} meaningful changes in latest run`}
-          attention={numberFromObject(latestPublishing, "failed") > 0}
+          icon={Clock3}
+          label="Baseline checks"
+          value={`${checkedSourcePercent}%`}
+          detail={`${formatNumber(checkedSource24h)} checked in 24h; latest ${latestSourceCheckedAt ? formatDate(latestSourceCheckedAt) : "never"}`}
+          attention={checkedSourceNever > 0}
         />
       </section>
 
-      <section className="mt-6 grid gap-6 xl:grid-cols-[1.15fr_0.85fr]">
-        <div className="card admin-section-card">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <Eye size={18} aria-hidden="true" />
-                <h2 className="text-2xl font-black">Daily screenshot pipeline</h2>
-              </div>
-              <p className="mt-2 text-sm text-[var(--muted)]">
-                One local PC worker captures screenshots and PDFs. Gemini is used for separate
-                page-information backfills and pages/PDFs that already look different.
-              </p>
+      <section className="admin-dashboard-grid">
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Eye size={18} aria-hidden="true" />
+              <h2>Screenshot and R2</h2>
             </div>
             <StatusPill status={latestVisualRun?.status || "running"} />
           </div>
-
-          <div className="admin-stat-grid admin-stat-grid-wide">
+          {latestBaselineCoverage && (
+            <ProgressBar
+              label="Screenshot baseline coverage"
+              value={baselineCoveragePercent}
+              detail={`${formatNumber(latestBaselineCoverage.existingBaselines)} baselined, ${formatNumber(latestBaselineCoverage.missingBaselines)} missing.`}
+            />
+          )}
+          <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Checked" value={latestVisualChecked} />
             <MiniStat label="Baselined" value={latestVisualBaselined} />
-            <MiniStat label="Unchanged" value={latestVisualUnchanged} />
             <MiniStat label="Failed" value={latestVisualFailed} attention={latestVisualFailed > 0} />
-            <MiniStat label="Facts extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
-            <MiniStat label="Facts skipped" value={numberFromObject(latestPageInfoExtraction, "skipped")} attention={geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) || geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)} />
-            <MiniStat label="Candidates" value={numberFromObject(latestComparison, "candidates")} />
-            <MiniStat label="Interpreted" value={numberFromObject(latestComparison, "interpreted")} />
-            <MiniStat label="Published" value={numberFromObject(latestPublishing, "published_updates")} />
             <MiniStat label="R2 uploaded" value={numberFromObject(latestCounts, "r2_uploaded")} />
-            <MiniStat label="R2 failed" value={numberFromObject(latestCounts, "r2_failed")} attention={numberFromObject(latestCounts, "r2_failed") > 0} />
+            <MiniStat label="Unpublished" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
+            <MiniStat label="Done this run" value={latestBaselinePace?.completedThisRun || 0} />
+          </div>
+          <DetailDisclosure label="More scan details">
+            <div className="admin-stat-grid admin-stat-grid-compact">
+              <MiniStat label="Unchanged" value={latestVisualUnchanged} />
+              <MiniStat label="R2 rotated" value={numberFromObject(latestCounts, "r2_rotated")} />
+              <MiniStat label="R2 failed" value={numberFromObject(latestCounts, "r2_failed")} attention={numberFromObject(latestCounts, "r2_failed") > 0} />
+              <MiniStat label="Published rows" value={publishedSnapshotCount} />
+            </div>
+            <dl className="admin-detail-grid admin-detail-grid-tight">
+              <Detail label="Stage" value={latestVisualStage} />
+              <Detail label="Started" value={latestVisualRun ? formatDate(latestVisualRun.started_at) : "None"} />
+              <Detail label="Finished" value={latestVisualRun?.finished_at ? formatDate(latestVisualRun.finished_at) : "Still running"} />
+              <Detail label="R2 sync" value={booleanFromObject(latestOptions, "r2_snapshot_sync") ? "On" : "Off"} />
+              <Detail label="Bucket" value={stringFromObject(latestOptions, "r2_bucket") || "Not set"} />
+              <Detail label="R2 coverage" value={`${publishedSnapshotPercent}% of active sources`} />
+            </dl>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>Gemini page information</h2>
+            </div>
+            <span className={latestPageInfoGeminiApiHealth.attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {latestPageInfoGeminiApiHealth.label}
+            </span>
+          </div>
+          <div className="admin-progress-stack">
+            <ProgressBar
+              label="Information coverage"
+              value={activeSourceMetadataPercent}
+              detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active source pages have extracted page facts.`}
+            />
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Pages with info" value={activeSourceMetadataTotal} />
+            <MiniStat label="Pages missing info" value={activeSourceMetadataMissing} attention={activeSourceMetadataMissing > 0} />
+            <MiniStat label="Batch pending" value={latestPageInfoBatchPending} attention={latestPageInfoBatchPending > 0} />
+            <MiniStat label="Batch failed" value={latestPageInfoBatchFailures} attention={latestPageInfoBatchFailures > 0} />
+            <MiniStat label="API calls" value={numberFromObject(latestPageInfoGeminiUsage, "calls")} />
+            <MiniStat label="API cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
+          </div>
+          <DetailDisclosure label="More Gemini details">
+            <div className="admin-progress-stack">
+              {latestPageInfoBatchRequests > 0 && (
+                <ProgressBar
+                  label="Current batch completion"
+                  value={latestPageInfoBatchPercent}
+                  detail={`${formatNumber(latestPageInfoBatchCompleted)} of ${formatNumber(latestPageInfoBatchRequests)} batch requests complete; ${formatNumber(latestPageInfoBatchPending)} pending.`}
+                />
+              )}
+              {latestPageInfoLoaded > 0 && (
+                <ProgressBar
+                  label="Latest page-info run"
+                  value={latestPageInfoRunPercent}
+                  detail={`${formatNumber(latestPageInfoRunCompleted)} of ${formatNumber(latestPageInfoLoaded)} loaded local baselines processed in this run.`}
+                />
+              )}
+            </div>
+            <div className="admin-stat-grid admin-stat-grid-compact">
+              <MiniStat label="Extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
+              <MiniStat label="Applied" value={latestPageInfoApplied} />
+              <MiniStat label="Batch jobs" value={latestPageInfoBatchJobs} />
+              <MiniStat label="Batch submitted" value={latestPageInfoBatchRequests} />
+              <MiniStat label="Batch complete" value={latestPageInfoBatchCompleted} />
+              <MiniStat label="Cost cap" value={formatApiCostCap(latestPageInfoOptions)} />
+            </div>
+            <dl className="admin-detail-grid admin-detail-grid-tight">
+              <Detail label="Provider" value={latestPageInfoStatusRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
+              <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestPageInfoMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
+              <Detail label="API mode" value={stringFromObject(latestPageInfoGeminiUsage, "api_mode") || stringFromObject(latestPageInfoOptions, "gemini_api_mode") || "Immediate"} />
+              <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestPageInfoStatusRun?.status === "running" ? "On" : "Off"} />
+              {latestPageInfoGeminiApiHealth.errorDetail && (
+                <Detail label="Last API error" value={latestPageInfoGeminiApiHealth.errorDetail} />
+              )}
+            </dl>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Database size={18} aria-hidden="true" />
+              <h2>Coverage and freshness</h2>
+            </div>
+          </div>
+          <ProgressBar
+            label="Baseline comparison coverage"
+            value={checkedSourcePercent}
+            detail={`${formatNumber(checkedSourceTotal)} active source pages have been checked at least once.`}
+          />
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Active sources" value={activeSourceTotal} />
+            <MiniStat label="Active info scanned" value={`${formatNumber(activeSourceMetadataTotal)} (${activeSourceMetadataPercent}%)`} />
+            <MiniStat label="Checked 24h" value={checkedSource24h} />
+            <MiniStat label="Checked 7d" value={checkedSource7d} />
+            <MiniStat label="Older than 7d" value={checkedSourceOlderThan7d} attention={checkedSourceOlderThan7d > 0} />
+            <MiniStat label="Never checked" value={checkedSourceNever} attention={checkedSourceNever > 0} />
+            <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
+          </div>
+          <DetailDisclosure label="More coverage details">
+            <div className="admin-stat-grid admin-stat-grid-compact">
+              <MiniStat label="Catalog sources" value={sharedSourceCount || 0} />
+              <MiniStat label="All info scanned" value={`${formatNumber(sourceMetadataCount || 0)} (${sourceMetadataPercent}%)`} />
+              <MiniStat label="Checked ever" value={`${formatNumber(checkedSourceTotal)} (${checkedSourcePercent}%)`} />
+              <MiniStat label="Checked 48h" value={checkedSource48h} />
+              <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
+            </div>
+            <dl className="admin-detail-grid admin-detail-grid-tight">
+              <Detail label="Latest source check" value={latestSourceCheckedAt ? formatDate(latestSourceCheckedAt) : "None yet"} />
+              <Detail label="Checked in last 24h" value={`${formatNumber(checkedSource24h)} of ${formatNumber(activeSourceTotal)}`} />
+              <Detail label="Checked in last 48h" value={`${formatNumber(checkedSource48h)} of ${formatNumber(activeSourceTotal)}`} />
+              <Detail label="Checked in last 7d" value={`${formatNumber(checkedSource7d)} of ${formatNumber(activeSourceTotal)}`} />
+            </dl>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Activity size={18} aria-hidden="true" />
+              <h2>Change workflow</h2>
+            </div>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Candidates" value={numberFromObject(latestComparison, "candidates")} />
+            <MiniStat label="True changes" value={numberFromObject(latestComparison, "true_changes")} />
+            <MiniStat label="Published" value={numberFromObject(latestPublishing, "published_updates")} />
+            <MiniStat label="Publish failed" value={numberFromObject(latestPublishing, "failed")} attention={numberFromObject(latestPublishing, "failed") > 0} />
+          </div>
+          <DetailDisclosure label="Pipeline details">
+            <div className="admin-stat-grid admin-stat-grid-compact">
+              <MiniStat label="Interpreted" value={numberFromObject(latestComparison, "interpreted")} />
+              <MiniStat label="Needs review" value={numberFromObject(latestComparison, "review")} />
+              <MiniStat label="Duplicates" value={numberFromObject(latestPublishing, "duplicate_updates")} />
+            </div>
+            <div className="admin-flow-list admin-flow-list-compact">
+              <PipelineRow
+                icon={Eye}
+                title="Capture"
+                detail={`Checked ${formatNumber(latestVisualChecked)}, baselined ${formatNumber(latestVisualBaselined)}, failed ${formatNumber(latestVisualFailed)}.`}
+                status={latestVisualRun ? statusLabel(latestVisualRun.status) : "Waiting"}
+              />
+              <PipelineRow
+                icon={Sparkles}
+                title="Extract page info"
+                detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active pages covered. Batch pending: ${formatNumber(latestPageInfoBatchPending)}.`}
+                status={latestPageInfoStatusRun?.status === "running" ? "Running" : "Idle"}
+                attention={numberFromObject(latestPageInfoExtraction, "failed") > 0}
+              />
+              <PipelineRow
+                icon={Activity}
+                title="Interpret differences"
+                detail={`${formatNumber(numberFromObject(latestComparison, "candidates"))} candidates, ${formatNumber(numberFromObject(latestComparison, "true_changes"))} meaningful changes.`}
+                status={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} true`}
+              />
+              <PipelineRow
+                icon={Database}
+                title="Publish"
+                detail={`${formatNumber(numberFromObject(latestPublishing, "published_updates"))} published, ${formatNumber(numberFromObject(latestPublishing, "duplicate_updates"))} duplicates ignored.`}
+                status={numberFromObject(latestPublishing, "failed") > 0 ? "Needs attention" : "Ready"}
+                attention={numberFromObject(latestPublishing, "failed") > 0}
+              />
+            </div>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Eye size={18} aria-hidden="true" />
+              <h2>Capture quality</h2>
+            </div>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Expanded controls" value={numberFromObject(latestCounts, "expanded_controls")} />
+            <MiniStat label="Ready timeouts" value={numberFromObject(latestCounts, "page_ready_timeouts")} attention={numberFromObject(latestCounts, "page_ready_timeouts") > 0} />
+            <MiniStat label="Blocked pages" value={numberFromObject(latestCounts, "blocked_page_captures")} attention={numberFromObject(latestCounts, "blocked_page_captures") > 0} />
+            <MiniStat label="PDFs checked" value={numberFromObject(latestCounts, "pdf_checked")} />
+            <MiniStat label="PDFs changed" value={numberFromObject(latestCounts, "pdf_changed")} />
           </div>
-
-          <div className="admin-flow-list">
-            <PipelineRow
-              icon={Eye}
-              title="1. Capture screenshots and PDFs"
-              detail={`Checked ${formatNumber(latestVisualChecked)}, baselined ${formatNumber(latestVisualBaselined)}, failed ${formatNumber(latestVisualFailed)}.`}
-              status={latestVisualRun ? statusLabel(latestVisualRun.status) : "Waiting"}
-            />
-            <PipelineRow
-              icon={Sparkles}
-              title="2. Scan pages for award information"
-              detail={`Extracted ${formatNumber(numberFromObject(latestPageInfoExtraction, "extracted"))}, applied ${formatNumber(latestPageInfoApplied)}, failed ${formatNumber(numberFromObject(latestPageInfoExtraction, "failed"))}.`}
-              status={
-                geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) ||
-                geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)
-                  ? "Cap reached"
-                  : latestPageInfoStatusRun?.status === "running" ||
-                      booleanFromObject(latestPageInfoExtraction, "enabled")
-                    ? "On"
-                    : "Off"
-              }
-              attention={
-                numberFromObject(latestPageInfoExtraction, "failed") > 0 ||
-                geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) ||
-                geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)
-              }
-            />
-            <PipelineRow
-              icon={Activity}
-              title="3. Compare and interpret differences"
-              detail={`Candidates ${formatNumber(numberFromObject(latestComparison, "candidates"))}, interpreted ${formatNumber(numberFromObject(latestComparison, "interpreted"))}, review ${formatNumber(numberFromObject(latestComparison, "review"))}.`}
-              status={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} true`}
-            />
-            <PipelineRow
-              icon={Database}
-              title="4. Publish meaningful updates"
-              detail={`Published ${formatNumber(numberFromObject(latestPublishing, "published_updates"))}, duplicates ignored ${formatNumber(numberFromObject(latestPublishing, "duplicate_updates"))}, failed ${formatNumber(numberFromObject(latestPublishing, "failed"))}.`}
-              status={numberFromObject(latestPublishing, "failed") > 0 ? "Needs attention" : "Ready"}
-              attention={numberFromObject(latestPublishing, "failed") > 0}
-            />
-          </div>
-
-          <div className="mt-5 grid gap-4 xl:grid-cols-2">
-            <div className="admin-subpanel">
-              <h3 className="font-black">R2 snapshot storage</h3>
-              <div className="admin-stat-grid admin-stat-grid-tight">
-                <MiniStat label="Uploaded objects" value={numberFromObject(latestCounts, "r2_uploaded")} />
-                <MiniStat label="Rotated objects" value={numberFromObject(latestCounts, "r2_rotated")} />
-                <MiniStat label="Upload failures" value={numberFromObject(latestCounts, "r2_failed")} attention={numberFromObject(latestCounts, "r2_failed") > 0} />
-                <MiniStat label="Skipped existing" value={numberFromObject(latestCounts, "r2_skipped_existing")} />
-                <MiniStat label="Repaired missing" value={numberFromObject(latestCounts, "r2_repaired_missing")} />
-                <MiniStat label="Known missing" value={numberFromObject(latestCounts, "r2_known_missing")} attention={numberFromObject(latestCounts, "r2_known_missing") > 0} />
-                <MiniStat label="Published rows" value={publishedSnapshotCount} />
-                <MiniStat label="Unpublished active" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
-              </div>
-              <dl className="admin-detail-grid">
-                <Detail label="R2 sync" value={booleanFromObject(latestOptions, "r2_snapshot_sync") ? "On" : "Off"} />
-                <Detail label="Repair missing" value={booleanFromObject(latestOptions, "r2_repair_missing_snapshots") ? "On" : "Off"} />
-                <Detail label="Bucket" value={stringFromObject(latestOptions, "r2_bucket") || "Not set"} />
-                <Detail label="R2 coverage" value={`${publishedSnapshotPercent}% of active sources`} />
-              </dl>
-            </div>
-
-            <div className="admin-subpanel">
-              <h3 className="font-black">Page information scan</h3>
-              <div className="admin-stat-grid admin-stat-grid-tight">
-                <MiniStat label="Extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
-                <MiniStat label="Skipped" value={numberFromObject(latestPageInfoExtraction, "skipped")} attention={geminiApiCapReached(latestPageInfoOptions, latestPageInfoGeminiUsage) || geminiCapReached(latestPageInfoOptions, latestPageInfoGeminiCliUsage)} />
-                <MiniStat label="Failed" value={numberFromObject(latestPageInfoExtraction, "failed")} attention={numberFromObject(latestPageInfoExtraction, "failed") > 0} />
-                <MiniStat label="Applied" value={latestPageInfoApplied} />
-              </div>
-              <dl className="admin-detail-grid">
-                <Detail label="Provider" value={latestPageInfoStatusRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
-                <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestPageInfoMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
-                <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestPageInfoStatusRun?.status === "running" ? "On" : "Off"} />
-                <Detail label="API status" value={latestPageInfoGeminiApiHealth.label} />
-                <Detail label="API calls" value={formatNumber(numberFromObject(latestPageInfoGeminiUsage, "calls"))} />
-                <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
-                <Detail label="API cost cap" value={formatApiCostCap(latestPageInfoOptions)} />
-                <Detail label="CLI call cap" value={formatCap(latestPageInfoOptions)} />
-                {latestPageInfoGeminiApiHealth.errorDetail && (
-                  <Detail label="Last API error" value={latestPageInfoGeminiApiHealth.errorDetail} />
-                )}
-              </dl>
-            </div>
-          </div>
-
-          <div className="admin-subpanel">
-            <h3 className="font-black">Screenshot behavior checks</h3>
-            <div className="admin-stat-grid admin-stat-grid-wide">
+          <DetailDisclosure label="More quality details">
+            <div className="admin-stat-grid admin-stat-grid-compact">
               <MiniStat label="Refreshed captures" value={numberFromObject(latestCounts, "capture_behavior_refreshed")} />
-              <MiniStat label="Expanded controls" value={numberFromObject(latestCounts, "expanded_controls")} />
               <MiniStat label="Discovered PDFs" value={numberFromObject(latestCounts, "discovered_pdf_sources")} />
               <MiniStat label="Page ready waits" value={numberFromObject(latestCounts, "page_ready_waits")} />
-              <MiniStat label="Ready timeouts" value={numberFromObject(latestCounts, "page_ready_timeouts")} attention={numberFromObject(latestCounts, "page_ready_timeouts") > 0} />
-              <MiniStat label="Blocked pages" value={numberFromObject(latestCounts, "blocked_page_captures")} attention={numberFromObject(latestCounts, "blocked_page_captures") > 0} />
-              <MiniStat label="PDFs checked" value={numberFromObject(latestCounts, "pdf_checked")} />
-              <MiniStat label="PDFs changed" value={numberFromObject(latestCounts, "pdf_changed")} />
             </div>
-          </div>
+            <dl className="admin-detail-grid admin-detail-grid-tight">
+              <Detail label="AI provider" value={latestVisualRun?.ai_provider || "none"} />
+              <Detail label="AI model" value={stringFromObject(latestVisualMetadata, "ai_model") || "none"} />
+              <Detail label="API status" value={latestGeminiApiHealth.label} />
+              <Detail label="API tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} />
+              <Detail label="CLI image files" value={formatNumber(numberFromObject(latestGeminiCliUsage, "image_files"))} />
+              <Detail label="CLI elapsed" value={`${formatNumber(numberFromObject(latestGeminiCliUsage, "elapsed_ms"))} ms`} />
+            </dl>
+          </DetailDisclosure>
+        </div>
 
-          <div className="admin-subpanel">
-            <h3 className="font-black">Latest run detail</h3>
-            {latestVisualRun ? (
-              <dl className="admin-detail-grid admin-detail-grid-wide">
-                <Detail label="Started" value={formatDate(latestVisualRun.started_at)} />
-                <Detail label="Finished" value={latestVisualRun.finished_at ? formatDate(latestVisualRun.finished_at) : "Still running"} />
-                <Detail label="AI provider" value={latestVisualRun.ai_provider || "none"} />
-                <Detail label="AI model" value={stringFromObject(latestVisualMetadata, "ai_model") || "none"} />
-                <Detail label="Current stage" value={latestVisualStage} />
-                <Detail label="Archive root" value={stringFromObject(latestVisualMetadata, "archive_root") || "Local worker default"} />
-                <Detail label="Web workers" value={formatNumber(numberFromObject(latestOptions, "web_concurrency") || 1)} />
-                <Detail label="Gemini API status" value={latestGeminiApiHealth.label} />
-                <Detail label="Gemini API tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} />
-                <Detail label="Gemini CLI image files" value={formatNumber(numberFromObject(latestGeminiCliUsage, "image_files"))} />
-                <Detail label="Gemini CLI elapsed" value={`${formatNumber(numberFromObject(latestGeminiCliUsage, "elapsed_ms"))} ms`} />
-              </dl>
-            ) : (
-              <p className="mt-3 text-sm text-[var(--muted)]">
-                No screenshot worker run has been recorded in Supabase yet.
-              </p>
-            )}
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>Award detail summaries</h2>
+            </div>
+            {latestAwardDetailRun && <StatusPill status={latestAwardDetailRun.status} />}
           </div>
-
-          <div className="admin-subpanel">
-            <h3 className="font-black">Baseline award details</h3>
-            {latestAwardDetailRun ? (
-              <>
-                <div className="admin-stat-grid admin-stat-grid-wide">
-                  <MiniStat label="Awards checked" value={latestAwardDetailRun.checked_count || 0} />
+          {latestAwardDetailRun ? (
+            <>
+              <div className="admin-stat-grid admin-stat-grid-compact">
+                <MiniStat label="Awards checked" value={latestAwardDetailRun.checked_count || 0} />
+                <MiniStat label="Details extracted" value={numberFromObject(latestAwardDetailExtraction, "extracted")} />
+                <MiniStat label="Summaries applied" value={latestAwardDetailApplied} />
+                <MiniStat label="No baseline yet" value={numberFromObject(latestAwardDetailExtraction, "no_baseline")} attention={numberFromObject(latestAwardDetailExtraction, "no_baseline") > 0} />
+              </div>
+              <DetailDisclosure label="More award details">
+                <div className="admin-stat-grid admin-stat-grid-compact">
                   <MiniStat label="Skipped existing" value={numberFromObject(latestAwardDetailCounts, "skipped_existing")} />
-                  <MiniStat label="Details extracted" value={numberFromObject(latestAwardDetailExtraction, "extracted")} />
-                  <MiniStat label="Website summaries applied" value={latestAwardDetailApplied} />
-                  <MiniStat
-                    label="No baseline yet"
-                    value={numberFromObject(latestAwardDetailExtraction, "no_baseline")}
-                    attention={numberFromObject(latestAwardDetailExtraction, "no_baseline") > 0}
-                  />
+                  <MiniStat label="API cost" value={`$${formatUsd(numberFromObjectFloat(latestAwardDetailGeminiUsage, "estimated_cost_usd"))}`} />
                 </div>
-                <dl className="admin-detail-grid admin-detail-grid-wide">
+                <dl className="admin-detail-grid admin-detail-grid-tight">
                   <Detail label="Started" value={formatDate(latestAwardDetailRun.started_at)} />
                   <Detail label="Finished" value={latestAwardDetailRun.finished_at ? formatDate(latestAwardDetailRun.finished_at) : "Still running"} />
                   <Detail label="AI model" value={stringFromObject(latestAwardDetailMetadata, "ai_model") || "Source page facts"} />
-                  <Detail label="Gemini API calls" value={formatNumber(numberFromObject(latestAwardDetailGeminiUsage, "calls"))} />
-                  <Detail label="Estimated API cost" value={`$${formatUsd(numberFromObjectFloat(latestAwardDetailGeminiUsage, "estimated_cost_usd"))}`} />
-                  <Detail label="Gemini CLI calls" value={formatNumber(numberFromObject(latestAwardDetailGeminiCliUsage, "calls"))} />
-                  <Detail label="Call cap" value={formatCap(latestAwardDetailOptions)} />
+                  <Detail label="API calls" value={formatNumber(numberFromObject(latestAwardDetailGeminiUsage, "calls"))} />
                   <Detail label="API cost cap" value={formatApiCostCap(latestAwardDetailOptions)} />
-                  <Detail label="Safe models" value={formatSafeModels(latestAwardDetailOptions)} />
-                  <Detail label="Unsafe override" value={booleanFromObject(latestAwardDetailOptions, "allow_unsafe_gemini_cli_model") ? "On" : "Off"} />
+                  <Detail label="CLI call cap" value={formatCap(latestAwardDetailOptions)} />
                 </dl>
-              </>
-            ) : (
-              <p className="mt-3 text-sm text-[var(--muted)]">
-                No baseline award-detail run has been recorded yet.
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="card admin-section-card admin-side-card">
-          <div className="flex items-center gap-2">
-            <Database size={18} aria-hidden="true" />
-            <h2 className="text-2xl font-black">Snapshot coverage</h2>
-          </div>
-          <div className="admin-stat-grid admin-stat-grid-side">
-            <MiniStat label="Catalog source pages" value={sharedSourceCount || 0} />
-            <MiniStat label="Active source pages" value={activeSourceTotal} />
-            <MiniStat label="Page outlines scanned" value={`${formatNumber(sourceMetadataCount || 0)} (${sourceMetadataPercent}%)`} />
-            <MiniStat label="R2 snapshot rows" value={publishedSnapshotCount} />
-            <MiniStat label="Unpublished active" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
-            <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
-            <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
-            <MiniStat label="Done this run" value={latestBaselinePace?.completedThisRun || 0} />
-            <MiniStat
-              label="Baseline rate"
-              value={latestBaselinePace ? `${formatNumber(Math.round(latestBaselinePace.pagesPerHour))}/hr` : "Waiting"}
-            />
-            <MiniStat label="Estimated remaining" value={latestBaselinePace?.etaLabel || "Waiting"} />
-          </div>
-          {latestBaselineCoverage && (
-            <ProgressBar
-              className="mt-5"
-              label="Screenshot baseline coverage"
-              value={baselineCoveragePercent}
-              detail={`${formatNumber(latestBaselineCoverage.existingBaselines)} baselined, ${formatNumber(latestBaselineCoverage.missingBaselines)} still missing${latestBaselinePace ? `; ${latestBaselinePace.completedThisRun} added in ${latestBaselinePace.elapsedLabel}` : ""}`}
-            />
+              </DetailDisclosure>
+            </>
+          ) : (
+            <p className="text-sm text-[var(--muted)]">
+              No baseline award-detail run has been recorded yet.
+            </p>
           )}
-          <p className="mt-4 text-sm text-[var(--muted)]">
-            Local baseline coverage tracks screenshots on this PC. R2 coverage tracks screenshots
-            that are published for website viewing. Broken links are separated so they do not hide
-            actionable missing screenshots.
-          </p>
         </div>
       </section>
 
@@ -586,15 +695,30 @@ function ProgressBar({
 }) {
   return (
     <div className={className}>
-      <div className="flex items-center justify-between gap-3 text-sm font-bold text-[var(--muted)]">
+      <div className="flex items-center justify-between gap-3 text-xs font-bold text-[var(--muted)]">
         <span>{label}</span>
         <span>{value}%</span>
       </div>
-      <div className="mt-2 h-3 overflow-hidden rounded-full bg-[var(--brand-blue-soft)]">
+      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[var(--brand-blue-soft)]">
         <div className="h-full rounded-full bg-[var(--brand)]" style={{ width: `${value}%` }} />
       </div>
-      <p className="mt-2 text-sm font-semibold text-[var(--muted)]">{detail}</p>
+      <p className="mt-1.5 text-xs font-semibold text-[var(--muted)]">{detail}</p>
     </div>
+  );
+}
+
+function DetailDisclosure({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="admin-detail-disclosure">
+      <summary>{label}</summary>
+      <div className="admin-detail-disclosure-body">{children}</div>
+    </details>
   );
 }
 
@@ -730,16 +854,6 @@ function formatCap(options: Record<string, unknown>) {
 function formatApiCostCap(options: Record<string, unknown>) {
   const cap = numberFromObjectFloat(options, "gemini_api_daily_cost_cap_usd");
   return cap > 0 ? `$${formatUsd(cap)}` : "No cap";
-}
-
-function formatSafeModels(options: Record<string, unknown>) {
-  const raw = options.gemini_cli_safe_models;
-  if (Array.isArray(raw)) {
-    const labels = raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
-    return labels.length > 0 ? labels.join(", ") : "Not logged";
-  }
-  if (typeof raw === "string" && raw.trim()) return raw;
-  return "Not logged";
 }
 
 function formatDate(value: string) {
