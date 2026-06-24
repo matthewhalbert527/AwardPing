@@ -10,7 +10,6 @@ import {
   ChevronUp,
   Pause,
   Play,
-  RotateCw,
   Search,
   Trash2,
 } from "lucide-react";
@@ -186,13 +185,6 @@ export function WatchlistAwardGroups({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ status }),
       }),
-    );
-  }
-
-  async function checkMonitor(source: WatchlistSource) {
-    if (!source.monitorId) return;
-    await runAction(`${source.id}:check`, () =>
-      fetch(`/api/monitors/${source.monitorId}/check`, { method: "POST" }),
     );
   }
 
@@ -372,13 +364,12 @@ export function WatchlistAwardGroups({
                   renderSourceActions={(source) =>
                     canManage ? (
                       <SourceActions
-                        busy={busyId === source.id || busyId === `${source.id}:check`}
+                        busy={busyId === source.id}
                         source={source}
                         onTrack={() => trackSource(group, source)}
                         onUntrack={() => untrackSource(group, source)}
                         onPause={() => updateMonitor(source, "paused")}
                         onResume={() => updateMonitor(source, "active")}
-                        onCheck={() => checkMonitor(source)}
                       />
                     ) : null
                   }
@@ -431,7 +422,6 @@ function SourceActions({
   onUntrack,
   onPause,
   onResume,
-  onCheck,
 }: {
   busy: boolean;
   source: WatchlistSource;
@@ -439,7 +429,6 @@ function SourceActions({
   onUntrack: () => void;
   onPause: () => void;
   onResume: () => void;
-  onCheck: () => void;
 }) {
   if (!source.monitorId) {
     return (
@@ -457,10 +446,6 @@ function SourceActions({
 
   return (
     <div className="flex shrink-0 flex-wrap gap-2">
-      <button className="button-secondary" type="button" onClick={onCheck} disabled={busy}>
-        <RotateCw size={15} aria-hidden="true" />
-        {busy ? "Working..." : "Check now"}
-      </button>
       {source.status === "paused" ? (
         <button className="button-secondary" type="button" onClick={onResume} disabled={busy}>
           <Play size={15} aria-hidden="true" />

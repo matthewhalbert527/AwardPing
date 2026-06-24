@@ -92,10 +92,6 @@ export default async function SharedAwardDetailPage({ params }: Params) {
       }),
     ),
   );
-  const snapshotById = await fetchSnapshotSamples(
-    supabase,
-    snapshotIdsForChanges(officialChanges),
-  );
   const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
   const awardSummary = displayAwardSummary(award.summary);
   const awardSummaryParts = awardBaselineSummaryParts(award.summary);
@@ -119,12 +115,6 @@ export default async function SharedAwardDetailPage({ params }: Params) {
       summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
       changeDetails: change.change_details,
       detectedAt: change.detected_at,
-      previousTextSample: change.previous_snapshot_id
-        ? snapshotById.get(change.previous_snapshot_id) || null
-        : null,
-      newTextSample: change.new_snapshot_id
-        ? snapshotById.get(change.new_snapshot_id) || null
-        : null,
     })),
   }));
   const recentOfficialChanges = officialChanges.slice(0, 10);
@@ -214,20 +204,13 @@ export default async function SharedAwardDetailPage({ params }: Params) {
                   changeDetails={change.change_details}
                 />
                 <ChangeEvidencePanel
-                  changeId={change.id}
-                  changeKind="shared"
+                  sourceId={change.shared_award_source_id}
                   sourceUrl={change.source_url}
                   sourceTitle={change.source_title}
                   sourcePageTypeLabel={change.source_page_type ? pageTypeLabel(change.source_page_type) : null}
                   summary={displayChangeSummary(change.summary, change.source_url, change.change_details)}
                   changeDetails={change.change_details}
                   detectedAt={change.detected_at}
-                  previousTextSample={change.previous_snapshot_id
-                    ? snapshotById.get(change.previous_snapshot_id) || null
-                    : null}
-                  newTextSample={change.new_snapshot_id
-                    ? snapshotById.get(change.new_snapshot_id) || null
-                    : null}
                 />
               </article>
             ))}
@@ -277,37 +260,6 @@ function AwardBaselineDetails({
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString();
-}
-
-type SupabaseServerClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
-
-async function fetchSnapshotSamples(
-  supabase: SupabaseServerClient,
-  snapshotIds: string[],
-) {
-  if (snapshotIds.length === 0) return new Map<string, string>();
-
-  const { data } = await supabase
-    .from("shared_award_source_snapshots")
-    .select("id, text_sample")
-    .in("id", snapshotIds);
-
-  return new Map((data || []).map((snapshot) => [snapshot.id, snapshot.text_sample]));
-}
-
-function snapshotIdsForChanges(
-  changes: Array<{
-    previous_snapshot_id: string | null;
-    new_snapshot_id: string | null;
-  }>,
-) {
-  return [
-    ...new Set(
-      changes
-        .flatMap((change) => [change.previous_snapshot_id, change.new_snapshot_id])
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
 }
 
 function latestChangesForSource<

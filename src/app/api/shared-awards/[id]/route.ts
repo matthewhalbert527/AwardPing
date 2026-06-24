@@ -60,7 +60,7 @@ export async function GET(_request: Request, { params }: Props) {
     admin
       .from("shared_award_change_events")
       .select(
-        "id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, previous_snapshot_id, new_snapshot_id, summary, change_details, detected_at",
+        "id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at",
       )
       .eq("shared_award_id", id)
       .order("detected_at", { ascending: false })
@@ -109,11 +109,6 @@ export async function GET(_request: Request, { params }: Props) {
       }),
     ),
   );
-  const snapshotById = await fetchSnapshotSamples(
-    admin,
-    snapshotIdsForChanges(changes),
-  );
-
   return NextResponse.json({
     award: {
       id: sharedAward.id,
@@ -140,12 +135,6 @@ export async function GET(_request: Request, { params }: Props) {
           summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
           changeDetails: change.change_details,
           detectedAt: change.detected_at,
-          previousTextSample: change.previous_snapshot_id
-            ? snapshotById.get(change.previous_snapshot_id) || null
-            : null,
-          newTextSample: change.new_snapshot_id
-            ? snapshotById.get(change.new_snapshot_id) || null
-            : null,
         })),
       })),
       changes: changes.map((change) => ({
@@ -156,46 +145,9 @@ export async function GET(_request: Request, { params }: Props) {
         summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
         changeDetails: change.change_details,
         detectedAt: change.detected_at,
-        previousTextSample: change.previous_snapshot_id
-          ? snapshotById.get(change.previous_snapshot_id) || null
-          : null,
-        newTextSample: change.new_snapshot_id
-          ? snapshotById.get(change.new_snapshot_id) || null
-          : null,
       })),
     },
   });
-}
-
-type SupabaseAdminClient = ReturnType<typeof createSupabaseAdminClient>;
-
-async function fetchSnapshotSamples(
-  admin: SupabaseAdminClient,
-  snapshotIds: string[],
-) {
-  if (snapshotIds.length === 0) return new Map<string, string>();
-
-  const { data } = await admin
-    .from("shared_award_source_snapshots")
-    .select("id, text_sample")
-    .in("id", snapshotIds);
-
-  return new Map((data || []).map((snapshot) => [snapshot.id, snapshot.text_sample]));
-}
-
-function snapshotIdsForChanges(
-  changes: Array<{
-    previous_snapshot_id: string | null;
-    new_snapshot_id: string | null;
-  }>,
-) {
-  return [
-    ...new Set(
-      changes
-        .flatMap((change) => [change.previous_snapshot_id, change.new_snapshot_id])
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
 }
 
 function latestChangesForSource<

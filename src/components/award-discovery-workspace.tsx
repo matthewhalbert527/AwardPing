@@ -45,8 +45,6 @@ export type SharedAwardChange = {
   summary: string;
   changeDetails?: unknown;
   detectedAt: string;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
 };
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");

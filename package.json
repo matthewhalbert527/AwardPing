@@ -28,10 +28,6 @@
     "source:baseline-facts": "node scripts/backfill-baseline-facts.mjs",
     "award:baseline-details": "node scripts/backfill-award-baseline-details.mjs",
     "award:baseline-facts-aggregate": "node scripts/aggregate-award-baseline-facts.mjs",
-    "changes:backfill-details": "node scripts/backfill-change-details.mjs",
-    "updates:squash": "node scripts/squash-update-bugs.mjs",
-    "updates:squash:apply": "node scripts/squash-update-bugs.mjs --apply=true",
-    "updates:squash:all": "node scripts/squash-update-bugs.mjs --apply=true --limit=all --scan-limit=6000",
     "source:broken-report": "node scripts/report-broken-sources.mjs",
     "privacy:backfill": "node scripts/backfill-encrypted-personal-data.mjs"
   },

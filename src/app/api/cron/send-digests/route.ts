@@ -2,7 +2,6 @@ import { NextResponse, type NextRequest } from "next/server";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
 import type { Json } from "@/lib/database.types";
 import { errorMessage, finishJobRun, startJobRun } from "@/lib/job-runs";
-import { runDailyDigestDeliveries } from "@/lib/monitor-runner";
 import { runPublicUpdateDigestDeliveries } from "@/lib/public-updates";
 
 export const runtime = "nodejs";
@@ -26,7 +25,6 @@ export async function GET(request: NextRequest) {
   let runId: string | null = null;
   try {
     runId = await startJobRun("send-digests");
-    const officeResults = await runDailyDigestDeliveries();
     const publicResult = await runPublicUpdateDigestDeliveries().catch((error) => ({
       digestKey: new Date().toISOString().slice(0, 10),
       sent: 0,
@@ -34,14 +32,13 @@ export async function GET(request: NextRequest) {
       skipped: false,
       reason: errorMessage(error),
     }));
-    const processedCount =
-      officeResults.length + publicResult.sent + publicResult.failed;
+    const processedCount = publicResult.sent + publicResult.failed;
     const publicDigestMetadata = JSON.parse(JSON.stringify(publicResult)) as Json;
     await finishJobRun(runId, {
       status: "succeeded",
       processedCount,
       metadata: {
-        officeResultCount: officeResults.length,
+        legacyOfficeTextDigestsDisabled: true,
         publicDigest: publicDigestMetadata,
       },
     });
@@ -50,7 +47,6 @@ export async function GET(request: NextRequest) {
       ok: true,
       runId,
       delivered: processedCount,
-      officeResults,
       publicResult,
     });
   } catch (error) {

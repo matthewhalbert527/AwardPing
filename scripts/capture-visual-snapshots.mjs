@@ -912,7 +912,6 @@ async function reviewAndApplyCandidateChange({
     await publishVisualChangeEvent({
       source,
       baseline,
-      previous,
       capture,
       aiReview,
       report,
@@ -1829,24 +1828,10 @@ async function maybeRepairMissingR2Snapshot(source, capture, report) {
   return repaired;
 }
 
-async function publishVisualChangeEvent({ source, baseline, previous, capture, aiReview, report }) {
+async function publishVisualChangeEvent({ source, baseline, capture, aiReview, report }) {
   const detectedAt = new Date().toISOString();
 
   try {
-    const previousSnapshot = await upsertSharedVisualSnapshot({
-      source,
-      hash: visualHashForBaseline(baseline),
-      text: previous.text || "",
-      capture: previous,
-      createdAt: baseline.captured_at || detectedAt,
-    });
-    const newSnapshot = await upsertSharedVisualSnapshot({
-      source,
-      hash: visualHashForCapture(capture),
-      text: capture.text || "",
-      capture,
-      createdAt: capture.captured_at || detectedAt,
-    });
     const changeDetails = aiReview.result.change_details || visualChangeDetailsFromReview({
       source,
       diff: {},
@@ -1861,8 +1846,8 @@ async function publishVisualChangeEvent({ source, baseline, previous, capture, a
           source_url: source.url,
           source_title: source.title || null,
           source_page_type: source.page_type || null,
-          previous_snapshot_id: previousSnapshot?.id || null,
-          new_snapshot_id: newSnapshot?.id || null,
+          previous_snapshot_id: null,
+          new_snapshot_id: null,
           previous_hash: visualHashForBaseline(baseline),
           new_hash: visualHashForCapture(capture),
           summary: aiReview.result.reader_summary || changeDetails.reader_summary,
@@ -1896,51 +1881,6 @@ async function publishVisualChangeEvent({ source, baseline, previous, capture, a
     });
     console.log(`PUBLISH FAILED ${message} ${sourceLabel(source)}`);
   }
-}
-
-async function upsertSharedVisualSnapshot({ source, hash, text, capture, createdAt }) {
-  const cleanHash = cleanText(hash);
-  if (!cleanHash) return null;
-
-  const sample = visualSnapshotTextSample(text);
-  const row = {
-    shared_award_id: source.shared_award_id,
-    shared_award_source_id: source.id,
-    source_url: source.url,
-    source_title: source.title || null,
-    source_page_type: source.page_type || null,
-    hash: cleanHash,
-    text_sample: sample,
-    byte_length: Buffer.byteLength(String(text || ""), "utf8"),
-    status_code: capture.status_code || capture.meta?.status_code || null,
-    content_type: capture.content_type || capture.meta?.content_type || `visual-snapshot/${capture.kind || "webpage"}`,
-    created_at: createdAt,
-  };
-
-  const { data, error } = await supabase
-    .from("shared_award_source_snapshots")
-    .upsert(row, {
-      onConflict: "shared_award_id,source_url,hash",
-      ignoreDuplicates: true,
-    })
-    .select("id")
-    .maybeSingle();
-
-  if (error) throw error;
-  if (data?.id) return data;
-
-  const { data: existing, error: existingError } = await supabase
-    .from("shared_award_source_snapshots")
-    .select("id")
-    .eq("shared_award_id", source.shared_award_id)
-    .eq("source_url", source.url)
-    .eq("hash", cleanHash)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (existingError) throw existingError;
-  return existing || null;
 }
 
 async function markSharedSourceVisualCheckSucceeded(source, capture, report = null) {
@@ -5197,11 +5137,6 @@ function visualHashForCapture(capture) {
 function visualHashForBaseline(baseline) {
   const hash = baseline?.file_hash || baseline?.image_hash || baseline?.text_hash || "";
   return hash ? `visual:${hash}` : "";
-}
-
-function visualSnapshotTextSample(text) {
-  const clean = normalizeVisibleText(text || "");
-  return truncate(clean || "Visual snapshot captured; no readable text was extracted.", 5000);
 }
 
 function baselineHasFacts(baseline) {

@@ -93,7 +93,7 @@ export default async function Home() {
               {
                 icon: Timer,
                 title: "Source-first checks",
-                text: "Watch official award page text for deadline, eligibility, and instruction updates.",
+                text: "Watch official award pages and PDFs for deadline, eligibility, and instruction updates.",
               },
               {
                 icon: FileText,
@@ -103,7 +103,7 @@ export default async function Home() {
               {
                 icon: Bell,
                 title: "Advisor-ready alerts",
-                text: "Hourly scheduled checks are included for free, with simple update history for follow-up.",
+                text: "Daily screenshot checks are included for free, with simple update history for follow-up.",
               },
             ].map((item, index) => {
               const Icon = item.icon;

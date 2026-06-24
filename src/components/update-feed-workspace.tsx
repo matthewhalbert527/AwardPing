@@ -12,9 +12,8 @@ import { readableSourceTitle } from "@/lib/display-text";
 
 export type UpdateFeedRow = {
   id: string;
-  changeId: string;
-  changeKind: "shared" | "office";
   awardId: string | null;
+  sourceId?: string | null;
   title: string;
   sourceTitle: string;
   sourceUrl: string | null;
@@ -24,8 +23,6 @@ export type UpdateFeedRow = {
   detectedAt: string;
   kind: "shared" | "office";
   inWatchlist: boolean;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
 };
 
 type ScopeFilter = "watchlist" | "all";
@@ -213,16 +210,13 @@ export function UpdateFeedWorkspace({
                 />
                 <ChangeEvidencePanel
                   compact
-                  changeId={change.changeId}
-                  changeKind={change.changeKind}
+                  sourceId={change.sourceId}
                   sourceUrl={change.sourceUrl}
                   sourceTitle={change.sourceTitle}
                   sourcePageTypeLabel={change.sourcePageType ? pageTypeLabel(change.sourcePageType) : null}
                   summary={change.summary}
                   changeDetails={change.changeDetails}
                   detectedAt={change.detectedAt}
-                  previousTextSample={change.previousTextSample}
-                  newTextSample={change.newTextSample}
                 />
               </div>
               {change.awardId && (

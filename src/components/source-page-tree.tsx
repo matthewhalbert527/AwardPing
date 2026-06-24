@@ -30,8 +30,6 @@ export type SourcePageTreeChange = {
   summary: string;
   changeDetails?: unknown;
   detectedAt: string;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
 };
 
 export type SourcePageTreeSource = SourceTreeSource & {
@@ -602,8 +600,7 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
             />
             <ChangeEvidencePanel
               compact
-              changeId={change.id}
-              changeKind="shared"
+              sourceId={source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId}
               sourceUrl={change.sourceUrl}
               sourceTitle={change.sourceTitle}
               sourcePageTypeLabel={
@@ -612,8 +609,6 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
               summary={change.summary}
               changeDetails={change.changeDetails}
               detectedAt={change.detectedAt}
-              previousTextSample={change.previousTextSample}
-              newTextSample={change.newTextSample}
             />
           </article>
         ))

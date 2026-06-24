@@ -1,7 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
-import { errorMessage, finishJobRun, startJobRun } from "@/lib/job-runs";
-import { runDueMonitorChecks } from "@/lib/monitor-runner";
+import { finishJobRun, startJobRun } from "@/lib/job-runs";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -21,27 +20,21 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  let runId: string | null = null;
-  try {
-    runId = await startJobRun("check-monitors");
-    const results = await runDueMonitorChecks();
-    await finishJobRun(runId, {
-      status: "succeeded",
-      processedCount: results.length,
-      metadata: { resultCount: results.length },
-    });
+  const runId = await startJobRun("check-monitors");
+  await finishJobRun(runId, {
+    status: "succeeded",
+    processedCount: 0,
+    metadata: {
+      disabled: true,
+      reason: "Legacy text monitor checks have been retired in favor of the local screenshot worker.",
+    },
+  });
 
-    return NextResponse.json({ ok: true, runId, checked: results.length, results });
-  } catch (error) {
-    const message = errorMessage(error);
-    if (runId) {
-      await finishJobRun(runId, {
-        status: "failed",
-        processedCount: 0,
-        error: message,
-      }).catch(() => undefined);
-    }
-
-    return NextResponse.json({ ok: false, runId, error: message }, { status: 500 });
-  }
+  return NextResponse.json({
+    ok: true,
+    runId,
+    checked: 0,
+    disabled: true,
+    reason: "Legacy text monitor checks have been retired in favor of the local screenshot worker.",
+  });
 }

@@ -1,30 +1,25 @@
 import { ExternalLink } from "lucide-react";
 import { buildChangeEvidence } from "@/lib/change-evidence";
 import { readableSourceTitle } from "@/lib/display-text";
+import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 
 export function ChangeEvidencePanel({
-  changeId,
-  changeKind,
+  sourceId,
   sourceUrl,
   sourceTitle,
   sourcePageTypeLabel,
   summary,
   changeDetails,
   detectedAt,
-  previousTextSample,
-  newTextSample,
   compact = false,
 }: {
-  changeId?: string | null;
-  changeKind?: "shared" | "office" | null;
+  sourceId?: string | null;
   sourceUrl?: string | null;
   sourceTitle?: string | null;
   sourcePageTypeLabel?: string | null;
   summary?: string | null;
   changeDetails?: unknown;
   detectedAt?: string | null;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
   compact?: boolean;
 }) {
   const evidence = buildChangeEvidence({
@@ -32,38 +27,22 @@ export function ChangeEvidencePanel({
     sourceTitle,
     summary,
     changeDetails,
-    previousTextSample,
-    newTextSample,
   });
-  const storedHighlightUrl =
-    changeId && changeKind
-      ? `/highlight/${changeKind}/${encodeURIComponent(changeId)}`
-      : null;
+  const snapshotTitle = readableSourceTitle(sourceTitle, sourceUrl);
 
   return (
     <details className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
       <summary>View change explanation</summary>
       <div className="change-evidence-body">
-        {storedHighlightUrl ? (
-          <a
-            className="change-evidence-highlight-link"
-            href={storedHighlightUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            Open full change explanation
-          </a>
-        ) : evidence.highlightedUrl ? (
-          <a
-            className="change-evidence-highlight-link"
-            href={evidence.highlightedUrl}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            Open matched official-page text
-          </a>
+        {sourceId && sourceUrl ? (
+          <div className="change-evidence-highlight-link">
+            <SourceSnapshotViewerButton
+              sourceId={sourceId}
+              sourcePageTypeLabel={sourcePageTypeLabel}
+              sourceTitle={snapshotTitle}
+              sourceUrl={sourceUrl}
+            />
+          </div>
         ) : null}
 
         <section className="change-evidence-section">
@@ -126,13 +105,12 @@ export function ChangeEvidencePanel({
             </div>
           ) : evidence.hasSummaryEvidence ? (
             <p className="change-evidence-note">
-              Snapshot text is not available for this update, so AwardPing is showing the stored
-              change summary.
+              AwardPing is showing the stored screenshot-based change summary for this update.
             </p>
           ) : (
             <p className="change-evidence-note">
-              AwardPing does not have enough stored snapshot text to show before/after evidence for
-              this update.
+              AwardPing does not have enough structured screenshot evidence to show before/after
+              wording for this update.
             </p>
           )}
         </section>
@@ -151,7 +129,7 @@ export function ChangeEvidencePanel({
               {sourceTitle && (
                 <div>
                   <dt>Page</dt>
-                  <dd>{readableSourceTitle(sourceTitle, sourceUrl)}</dd>
+                  <dd>{snapshotTitle}</dd>
                 </div>
               )}
               {sourceUrl && (
@@ -180,18 +158,6 @@ export function ChangeEvidencePanel({
             </dl>
           </section>
         )}
-
-        {storedHighlightUrl ? (
-          <p className="change-evidence-note">
-            Full explanations use AwardPing&apos;s stored snapshot text, so they still work when the
-            official page has changed again.
-          </p>
-        ) : evidence.highlightedUrl ? (
-          <p className="change-evidence-note">
-            Matched official-page links depend on the current site still containing the changed text
-            and may not work on PDFs or heavily scripted pages.
-          </p>
-        ) : null}
       </div>
     </details>
   );
