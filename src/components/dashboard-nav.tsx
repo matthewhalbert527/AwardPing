@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, type FocusEvent } from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import {
@@ -38,30 +39,64 @@ export function DashboardNav({ isSiteAdmin = false }: { isSiteAdmin?: boolean })
           </Link>
         );
       })}
-      {isSiteAdmin && (
-        <div className="dashboard-nav-admin-menu">
-          <Link
-            aria-haspopup="menu"
-            className={`dashboard-nav-link dashboard-nav-link-admin ${activeSection === "admin" ? "dashboard-nav-link-active" : ""}`}
-            href="/dashboard/admin"
-          >
-            <Activity size={16} aria-hidden="true" />
-            Admin
-            <ChevronDown className="dashboard-nav-caret" size={14} aria-hidden="true" />
-          </Link>
-          <div className="dashboard-nav-admin-dropdown" role="menu">
-            <Link className="dashboard-nav-admin-item" href="/dashboard/admin" role="menuitem">
-              <Activity size={15} aria-hidden="true" />
-              <span>Page data</span>
-            </Link>
-            <Link className="dashboard-nav-admin-item" href="/dashboard/admin/issues" role="menuitem">
-              <AlertTriangle size={15} aria-hidden="true" />
-              <span>Issues</span>
-            </Link>
-          </div>
-        </div>
-      )}
+      {isSiteAdmin && <AdminNavMenu active={activeSection === "admin"} />}
     </nav>
+  );
+}
+
+function AdminNavMenu({ active }: { active: boolean }) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  function closeMenu() {
+    setIsOpen(false);
+  }
+
+  function handleBlur(event: FocusEvent<HTMLDivElement>) {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      closeMenu();
+    }
+  }
+
+  return (
+    <div
+      className={`dashboard-nav-admin-menu ${isOpen ? "dashboard-nav-admin-menu-open" : ""}`}
+      onBlur={handleBlur}
+      onFocus={() => setIsOpen(true)}
+      onMouseEnter={() => setIsOpen(true)}
+      onMouseLeave={closeMenu}
+    >
+      <Link
+        aria-expanded={isOpen}
+        aria-haspopup="menu"
+        className={`dashboard-nav-link dashboard-nav-link-admin ${active ? "dashboard-nav-link-active" : ""}`}
+        href="/dashboard/admin"
+        onClick={closeMenu}
+      >
+        <Activity size={16} aria-hidden="true" />
+        Admin
+        <ChevronDown className="dashboard-nav-caret" size={14} aria-hidden="true" />
+      </Link>
+      <div className="dashboard-nav-admin-dropdown" role="menu">
+        <Link
+          className="dashboard-nav-admin-item"
+          href="/dashboard/admin"
+          onClick={closeMenu}
+          role="menuitem"
+        >
+          <Activity size={15} aria-hidden="true" />
+          <span>Page data</span>
+        </Link>
+        <Link
+          className="dashboard-nav-admin-item"
+          href="/dashboard/admin/issues"
+          onClick={closeMenu}
+          role="menuitem"
+        >
+          <AlertTriangle size={15} aria-hidden="true" />
+          <span>Issues</span>
+        </Link>
+      </div>
+    </div>
   );
 }
 

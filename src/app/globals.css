@@ -884,15 +884,17 @@ a {
   transition: opacity 150ms ease, transform 150ms ease;
 }
 
-.dashboard-nav-admin-menu:hover .dashboard-nav-admin-dropdown,
-.dashboard-nav-admin-menu:focus-within .dashboard-nav-admin-dropdown {
+.dashboard-nav-admin-menu-open .dashboard-nav-admin-dropdown,
+.dashboard-nav-admin-menu-static:hover .dashboard-nav-admin-dropdown,
+.dashboard-nav-admin-menu-static:focus-within .dashboard-nav-admin-dropdown {
   opacity: 1;
   pointer-events: auto;
   transform: translateY(0);
 }
 
-.dashboard-nav-admin-menu:hover .dashboard-nav-caret,
-.dashboard-nav-admin-menu:focus-within .dashboard-nav-caret {
+.dashboard-nav-admin-menu-open .dashboard-nav-caret,
+.dashboard-nav-admin-menu-static:hover .dashboard-nav-caret,
+.dashboard-nav-admin-menu-static:focus-within .dashboard-nav-caret {
   transform: rotate(180deg);
 }
 

@@ -78,7 +78,7 @@ function DashboardNavFallback({ isSiteAdmin }: { isSiteAdmin: boolean }) {
         Watchlist
       </Link>
       {isSiteAdmin && (
-        <div className="dashboard-nav-admin-menu">
+        <div className="dashboard-nav-admin-menu dashboard-nav-admin-menu-static">
           <Link className="dashboard-nav-link dashboard-nav-link-admin" href="/dashboard/admin">
             <Activity size={16} aria-hidden="true" />
             Admin
