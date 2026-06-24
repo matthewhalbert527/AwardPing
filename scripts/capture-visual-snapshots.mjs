@@ -167,7 +167,8 @@ const r2SnapshotSlots = [
   { name: "meta", fileName: "meta.json", contentType: "application/json; charset=utf-8" },
 ];
 const crawlerUserAgent =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 AwardPingVisualSnapshot/1.0 (+https://awardping.com/contact)";
+  cleanText(args["crawler-user-agent"] || env.AWARDPING_CRAWLER_USER_AGENT) ||
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -3828,6 +3829,10 @@ async function createBrowserContext(browser) {
     colorScheme: "light",
     ignoreHTTPSErrors: true,
     deviceScaleFactor: 1,
+    extraHTTPHeaders: {
+      "Accept-Language": "en-US,en;q=0.9",
+      "Upgrade-Insecure-Requests": "1",
+    },
   });
 
   await context.addInitScript({
