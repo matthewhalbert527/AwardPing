@@ -58,6 +58,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   renderSourceActions,
   showSnapshotActions = true,
   layout = "inline",
+  groupByHost = true,
 }: {
   sources: T[];
   canManage?: boolean;
@@ -69,8 +70,9 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   renderSourceActions?: (source: T) => ReactNode;
   showSnapshotActions?: boolean;
   layout?: "inline" | "split";
+  groupByHost?: boolean;
 }) {
-  const tree = useMemo(() => buildSourceTree(sources), [sources]);
+  const tree = useMemo(() => buildSourceTree(sources, { groupByHost }), [sources, groupByHost]);
   const expandableIds = useMemo(() => collectExpandableIds(tree), [tree]);
   const flatSources = useMemo(() => flattenTreeSources(tree), [tree]);
   const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set());

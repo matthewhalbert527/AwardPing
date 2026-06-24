@@ -18,6 +18,10 @@ export type SourceTreeNode<T extends SourceTreeSource> = {
   children: SourceTreeNode<T>[];
 };
 
+export type SourceTreeOptions = {
+  groupByHost?: boolean;
+};
+
 type MutableSourceTreeNode<T extends SourceTreeSource> = Omit<
   SourceTreeNode<T>,
   "children"
@@ -26,12 +30,15 @@ type MutableSourceTreeNode<T extends SourceTreeSource> = Omit<
   childMap: Map<string, MutableSourceTreeNode<T>>;
 };
 
-export function buildSourceTree<T extends SourceTreeSource>(sources: T[]) {
+export function buildSourceTree<T extends SourceTreeSource>(
+  sources: T[],
+  options: SourceTreeOptions = {},
+) {
   const normalized = [...sources].sort((a, b) => sortSourceForTree(a).localeCompare(sortSourceForTree(b)));
   const hosts = new Set(
     normalized.map((source) => safeUrl(source.url)?.hostname || "").filter(Boolean),
   );
-  const includeHost = hosts.size > 1;
+  const includeHost = options.groupByHost !== false && hosts.size > 1;
   const root = createMutableNode<T>("root", "Sources");
 
   for (const source of normalized) {
@@ -104,8 +111,9 @@ function sortNode<T extends SourceTreeSource>(node: SourceTreeNode<T>) {
 
 function sortSourceForTree(source: SourceTreeSource) {
   const url = safeUrl(source.url);
-  if (source.pageType === "homepage") return `0:${url?.hostname || ""}:${url?.pathname || ""}`;
-  return `1:${url?.hostname || ""}:${url?.pathname || ""}:${source.title}`;
+  const label = sourceLeafLabel(source, url);
+  if (source.pageType === "homepage") return `0:${url?.hostname || ""}:${label}`;
+  return `1:${categoryLabelForSource(source) || ""}:${label}:${url?.hostname || ""}:${url?.pathname || ""}`;
 }
 
 function safeUrl(value: string) {
@@ -117,16 +125,27 @@ function safeUrl(value: string) {
 }
 
 function sourceLabelsForTree(source: SourceTreeSource, url: URL) {
-  if (source.pageType === "homepage" || isRootPath(url)) {
-    return ["Homepage"];
-  }
-
-  if (isPdfSource(source, url) || isCmsUploadPath(url)) {
-    return ["Files and PDFs", sourceLeafLabel(source, url)];
+  if (isRootPath(url)) {
+    const label = sourceLeafLabel(source, url);
+    return sameLabel(label, "Homepage") || sameLabel(label, "Source page")
+      ? ["Overview"]
+      : ["Overview", label];
   }
 
   const leafLabel = sourceLeafLabel(source, url);
   const category = categoryLabelForSource(source);
+
+  if (source.pageType === "homepage") {
+    return sameLabel(leafLabel, "Homepage") ? ["Overview"] : [leafLabel];
+  }
+
+  if (isPdfSource(source, url) || isCmsUploadPath(url)) {
+    if (category) {
+      return sameLabel(category, leafLabel) ? [category] : [category, leafLabel];
+    }
+    return ["Files and PDFs", sourceLeafLabel(source, url)];
+  }
+
   if (category) {
     return sameLabel(category, leafLabel) ? [category] : [category, leafLabel];
   }
@@ -138,6 +157,10 @@ function sourceLabelsForTree(source: SourceTreeSource, url: URL) {
 
   if (hasUsefulProvidedTitle(source)) {
     return [leafLabel];
+  }
+
+  if (source.pageType && source.pageType !== "other") {
+    return [pageTypeLabelForTree(source.pageType)];
   }
 
   const pathLabels = meaningfulPathLabelsForUrl(url);
@@ -162,6 +185,7 @@ function meaningfulPathLabelsForUrl(url: URL) {
 function categoryLabelForSource(source: SourceTreeSource) {
   const metadataCategory = categoryLabelFromText(pageCategoryFromMetadata(source.pageMetadata));
   if (metadataCategory) return metadataCategory;
+  if (source.pageType === "homepage") return "Overview";
   if (source.pageType === "application") return "Application";
   if (source.pageType === "deadline") return "Deadlines";
   if (source.pageType === "eligibility") return "Eligibility";
@@ -171,8 +195,7 @@ function categoryLabelForSource(source: SourceTreeSource) {
 }
 
 function pageCategoryFromMetadata(value: unknown) {
-  const metadata = objectValue(value);
-  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts || value);
+  const facts = baselineFactsFromMetadata(value);
   return cleanText(facts.page_category);
 }
 
@@ -196,9 +219,9 @@ function categoryLabelFromText(value: string | null) {
   return null;
 }
 
-function sourceLeafLabel(source: SourceTreeSource, url: URL) {
-  const filename = url.pathname.split("/").filter(Boolean).at(-1);
-  const clean = readableSourceTitle(source.displayTitle || source.title, source.url)
+function sourceLeafLabel(source: SourceTreeSource, url: URL | null) {
+  const filename = url?.pathname.split("/").filter(Boolean).at(-1);
+  const clean = readableSourceTitle(displayTitleFromSource(source), source.url)
     .replace(/\bdownload\b/gi, "")
     .replace(/\s+/g, " ")
     .replace(/\s+([.,;:])/g, "$1")
@@ -210,16 +233,20 @@ function sourceLeafLabel(source: SourceTreeSource, url: URL) {
     !/^source page$/i.test(clean) &&
     !/^homepage$/i.test(clean) &&
     !/^download$/i.test(clean) &&
-    !(isPdfSource(source, url) && isGenericDocumentTitle(clean))
+    !(url && isPdfSource(source, url) && isGenericDocumentTitle(clean))
   ) {
     return clean;
+  }
+
+  if (source.pageType && source.pageType !== "other") {
+    return pageTypeLabelForTree(source.pageType);
   }
 
   return filename ? formatPathSegment(filename) : "Source page";
 }
 
 function hasUsefulProvidedTitle(source: SourceTreeSource) {
-  const clean = readableSourceTitle(source.displayTitle || source.title, source.url)
+  const clean = readableSourceTitle(displayTitleFromSource(source), source.url)
     .replace(/\s+/g, " ")
     .trim();
   return Boolean(
@@ -229,6 +256,37 @@ function hasUsefulProvidedTitle(source: SourceTreeSource) {
       !/^download$/i.test(clean) &&
       !/^(learn more|read more|click here|here|apply|view|open|details?|information)$/i.test(clean),
   );
+}
+
+function displayTitleFromSource(source: SourceTreeSource) {
+  const facts = baselineFactsFromMetadata(source.pageMetadata);
+  return (
+    cleanText(source.displayTitle) ||
+    cleanText(facts.display_title) ||
+    cleanText(facts.page_title) ||
+    cleanText(facts.title) ||
+    cleanText(source.title)
+  );
+}
+
+function baselineFactsFromMetadata(value: unknown) {
+  const metadata = objectValue(value);
+  return objectValue(metadata.baseline_facts || metadata.baselineFacts || value);
+}
+
+function pageTypeLabelForTree(pageType: AwardPageType) {
+  const labels: Record<AwardPageType, string> = {
+    homepage: "Overview",
+    deadline: "Deadlines",
+    application: "How to Apply",
+    eligibility: "Eligibility",
+    requirements: "Requirements",
+    pdf: "PDF guide",
+    faq: "FAQ",
+    other: "Source page",
+  };
+
+  return labels[pageType];
 }
 
 function isPdfSource(source: SourceTreeSource, url: URL) {

@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { SourcePageTree } from "@/components/source-page-tree";
+import { buildSourceTree } from "@/lib/source-tree";
 
 describe("SourcePageTree", () => {
   it("renders readable source titles and latest update dates in collapsed rows", () => {
@@ -184,4 +185,71 @@ describe("SourcePageTree", () => {
 
     expect(html).toContain("2 pages / 1 changed / 1 needs review");
   });
+
+  it("uses extracted page titles and skips host buckets when requested", () => {
+    const sources = [
+      {
+        id: "portal",
+        title: "grants-and-awards",
+        url: "https://asian-studies.org/Grants-and-Awards/NEAC-Korea",
+        pageType: "application" as const,
+        pageMetadata: {
+          baseline_facts: {
+            page_title: "NEAC Korean Studies Grant Portal",
+            page_category: "How to Apply",
+            award_relevance: "primary",
+          },
+        },
+        latestChanges: [],
+      },
+      {
+        id: "guidelines",
+        title: "uploads/2024/file",
+        url: "https://asianstudies.org/uploads/neac-korea-guidelines.pdf",
+        pageType: "pdf" as const,
+        pageMetadata: {
+          baseline_facts: {
+            display_title: "Korean Studies Grant Guidelines PDF",
+            page_category: "Application Materials",
+            award_relevance: "primary",
+          },
+        },
+        latestChanges: [],
+      },
+    ];
+    const treeLabels = treeLabelsText(buildSourceTree(sources, { groupByHost: false }));
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        groupByHost: false,
+        sources,
+      }),
+    );
+
+    expect(treeLabels).toContain("NEAC Korean Studies Grant Portal");
+    expect(treeLabels).toContain("Korean Studies Grant Guidelines PDF");
+    expect(treeLabels).not.toContain("asian-studies.org");
+    expect(treeLabels).not.toContain("asianstudies.org");
+    expect(treeLabels).not.toContain("grants-and-awards");
+    expect(treeLabels).not.toContain("uploads/2024/file");
+    expect(html).toContain("How to Apply");
+    expect(html).toContain("Application Materials");
+    expect(html).not.toContain("asian-studies.org");
+    expect(html).not.toContain("asianstudies.org");
+    expect(html).not.toContain("grants-and-awards");
+    expect(html).not.toContain("uploads/2024/file");
+  });
 });
+
+function treeLabelsText(tree: ReturnType<typeof buildSourceTree>) {
+  const labels: string[] = [];
+
+  function visit(nodes: typeof tree) {
+    for (const node of nodes) {
+      labels.push(node.label);
+      visit(node.children);
+    }
+  }
+
+  visit(tree);
+  return labels.join("\n");
+}

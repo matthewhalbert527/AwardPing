@@ -180,6 +180,7 @@ export default async function SharedAwardDetailPage({ params }: Params) {
             </p>
           </div>
           <SourcePageTree
+            groupByHost={false}
             layout="inline"
             sources={sourceTreeSources}
           />
