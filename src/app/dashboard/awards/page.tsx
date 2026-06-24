@@ -9,9 +9,11 @@ import {
 } from "@/components/watchlist-award-groups";
 import { requireUser } from "@/lib/auth";
 import { displayAwardSummary } from "@/lib/award-summary";
+import { canonicalAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
+import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import {
   displayHomepageForAward,
   filterTrackableOfficialSources,
@@ -33,7 +35,10 @@ type MonitorRow = Database["public"]["Tables"]["monitors"]["Row"];
 type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
 type SharedSourceRow = Database["public"]["Tables"]["shared_award_sources"]["Row"];
 type SupabaseServerClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
-type SharedAwardDirectoryRow = Pick<SharedAwardRow, "id" | "name" | "official_homepage" | "summary">;
+type SharedAwardDirectoryRow = Pick<
+  SharedAwardRow,
+  "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts"
+>;
 type TrackedOfficeAwardRow = Pick<OfficeAwardRow, "id" | "shared_award_id">;
 type SharedSourceDirectoryRow = Pick<
   SharedSourceRow,
@@ -110,7 +115,7 @@ async function fetchAllSharedAwards(supabase: SupabaseServerClient) {
   return fetchAllPages<SharedAwardDirectoryRow>((from, to) =>
     supabase
       .from("shared_awards")
-      .select("id, name, official_homepage, summary")
+      .select("id, name, slug, official_homepage, summary, public_facts")
       .eq("status", "active")
       .order("name", { ascending: true })
       .range(from, to),
@@ -247,11 +252,25 @@ function mapSharedAwardIndex(
   );
 
   return sharedAwards.map((award) => {
+    const facts = publicAwardFactsFromAward({
+      summary: award.summary,
+      publicFacts: award.public_facts,
+      sources: [],
+    });
+
     return {
       id: award.id,
       name: award.name,
+      slug: award.slug,
+      publicPath: canonicalAwardPath(award.slug, award.name, award.id),
       officialHomepage: award.official_homepage,
       summary: displayAwardSummary(award.summary),
+      deadline: facts.deadline,
+      academicLevels: facts.academicLevels,
+      disciplines: facts.disciplines,
+      citizenship: facts.citizenship,
+      lastCheckedAt: null,
+      recentlyUpdated: false,
       sourceCount: null,
       sourceIssueCount: null,
       changeCount: null,

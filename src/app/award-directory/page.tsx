@@ -4,10 +4,12 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { displayAwardSummary } from "@/lib/award-summary";
+import { canonicalAwardPath } from "@/lib/award-slugs";
 import { dedupeChangeSummaries, isUsefulChangeForAward } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, getOfficeContext } from "@/lib/offices";
+import { latestCheckedAt, publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import {
   displayHomepageForAward,
   filterTrackableOfficialSources,
@@ -21,10 +23,13 @@ type AwardRow = Database["public"]["Tables"]["awards"]["Row"];
 type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
 type SharedSourceRow = Database["public"]["Tables"]["shared_award_sources"]["Row"];
 type SharedChangeRow = Database["public"]["Tables"]["shared_award_change_events"]["Row"];
-type SharedAwardDirectoryRow = Pick<SharedAwardRow, "id" | "name" | "official_homepage" | "summary">;
+type SharedAwardDirectoryRow = Pick<
+  SharedAwardRow,
+  "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
+>;
 type SharedSourceDirectoryRow = Pick<
   SharedSourceRow,
-  "shared_award_id" | "url" | "page_type" | "last_checked_at"
+  "shared_award_id" | "url" | "page_type" | "last_checked_at" | "page_metadata"
 >;
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
@@ -101,7 +106,7 @@ async function fetchAllSharedAwards(supabase: SupabaseAdminClient) {
   return fetchAllPages<SharedAwardDirectoryRow>((from, to) =>
     supabase
       .from("shared_awards")
-      .select("id, name, official_homepage, summary")
+      .select("id, name, slug, official_homepage, summary, public_facts, public_facts_generated_at")
       .eq("status", "active")
       .order("name", { ascending: true })
       .range(from, to),
@@ -112,7 +117,7 @@ async function fetchAllSharedSources(supabase: SupabaseAdminClient) {
   return fetchAllPages<SharedSourceDirectoryRow>((from, to) =>
       supabase
         .from("shared_award_sources")
-        .select("shared_award_id, url, page_type, last_checked_at")
+        .select("shared_award_id, url, page_type, last_checked_at, page_metadata")
         .eq("admin_review_status", "open")
         .range(from, to),
   );
@@ -154,6 +159,11 @@ function mapSharedAwards(
     const sources = filterTrackableOfficialSources(
       sharedSourcesByAwardId.get(award.id) || [],
     );
+    const facts = publicAwardFactsFromAward({
+      summary: award.summary,
+      publicFacts: award.public_facts,
+      sources,
+    });
     const changes = dedupeChangeSummaries(
       (sharedChangesByAwardId.get(award.id) || []).filter((change) =>
         isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
@@ -169,8 +179,16 @@ function mapSharedAwards(
     return {
       id: award.id,
       name: award.name,
+      slug: award.slug,
+      publicPath: canonicalAwardPath(award.slug, award.name, award.id),
       officialHomepage: displayHomepageForAward(award.official_homepage, sources),
       summary: displayAwardSummary(award.summary),
+      deadline: facts.deadline,
+      academicLevels: facts.academicLevels,
+      disciplines: facts.disciplines,
+      citizenship: facts.citizenship,
+      lastCheckedAt: latestCheckedAt(sources),
+      recentlyUpdated: changes.length > 0,
       sourceCount: sources.length,
       sourceIssueCount: null,
       changeCount: changes.length,

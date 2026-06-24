@@ -15,6 +15,12 @@ export async function SiteHeader() {
           <BrandLogo />
         </Link>
 
+        <nav className="site-header-nav" aria-label="Primary navigation">
+          <Link href="/updates">Live Updates</Link>
+          <Link href="/award-directory">Award Directory</Link>
+          <Link href="/advisor-hub">Advisor Hub</Link>
+        </nav>
+
         <div className="flex items-center gap-2">
           <span className="hidden sm:block">
             <Link href="/dashboard" className="button-secondary">

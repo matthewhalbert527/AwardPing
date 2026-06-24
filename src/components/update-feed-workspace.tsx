@@ -12,6 +12,7 @@ import { readableSourceTitle } from "@/lib/display-text";
 
 export type UpdateFeedRow = {
   id: string;
+  changeId?: string | null;
   awardId: string | null;
   sourceId?: string | null;
   title: string;
@@ -23,6 +24,7 @@ export type UpdateFeedRow = {
   detectedAt: string;
   kind: "shared" | "office";
   inWatchlist: boolean;
+  unread?: boolean;
 };
 
 type ScopeFilter = "watchlist" | "all";
@@ -189,8 +191,9 @@ export function UpdateFeedWorkspace({
 
       <section className="grid gap-3">
         {filteredRows.map((change) => (
-          <article className="update-feed-card" key={change.id}>
+          <article className={`update-feed-card ${change.unread ? "update-feed-card-unread" : ""}`} key={change.id}>
             <div className="update-feed-card-meta">
+              {change.unread && <span className="update-feed-unread-pill">Unread</span>}
               <span>{formatDate(change.detectedAt)}</span>
               <span>{change.kind === "shared" ? "Shared" : "Office"}</span>
               {change.sourcePageType && <span>{pageTypeLabel(change.sourcePageType)}</span>}
@@ -220,7 +223,7 @@ export function UpdateFeedWorkspace({
                 />
               </div>
               {change.awardId && (
-                <Link className="button-secondary self-start whitespace-nowrap" href={`/dashboard/awards/${change.awardId}`}>
+                <Link className="button-secondary self-start whitespace-nowrap" href={awardUpdateHref(change)}>
                   Award page
                 </Link>
               )}
@@ -237,6 +240,15 @@ export function UpdateFeedWorkspace({
       </section>
     </div>
   );
+}
+
+function awardUpdateHref(change: UpdateFeedRow) {
+  if (!change.awardId) return "/dashboard";
+  const params = new URLSearchParams();
+  if (change.sourceId) params.set("source", change.sourceId);
+  if (change.changeId) params.set("change", change.changeId);
+  const query = params.toString();
+  return `/dashboard/awards/${change.awardId}${query ? `?${query}` : ""}`;
 }
 
 function readFilters(searchParams: URLSearchParams) {

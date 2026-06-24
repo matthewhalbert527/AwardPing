@@ -26,7 +26,7 @@ const reviewCsvPath =
 const supabase = createSupabaseClient();
 const awards = await loadAll(
   "shared_awards",
-  "id,search_key,name,official_homepage,summary,confidence,status,source,updated_at",
+  "id,search_key,name,slug,official_homepage,summary,confidence,status,source,updated_at",
 );
 const sources = await loadAll(
   "shared_award_sources",
@@ -36,6 +36,12 @@ const activeAwardsById = new Map(
   awards.filter((award) => award.status === "active").map((award) => [award.id, award]),
 );
 const existingAwardsByKey = new Map(awards.map((award) => [award.search_key, award]));
+const existingAwardsBySlug = new Map(
+  awards.filter((award) => award.slug).map((award) => [award.slug, award]),
+);
+const existingAwardsByHomepage = new Map(
+  awards.filter((award) => award.official_homepage).map((award) => [canonicalUrlKey(award.official_homepage), award]),
+);
 const existingSourceKeys = new Set(
   sources.map((source) => `${source.shared_award_id}\n${canonicalUrlKey(source.url)}`),
 );
@@ -301,24 +307,31 @@ function extractOpportunities(pageData, source, award) {
 
 function opportunityTitleForLink(url, link, lines) {
   const linkText = cleanText(link.text);
-  if (linkText && !isGenericLinkText(linkText) && hasOpportunityTerms(linkText)) {
+  if (linkText && !isGenericLinkText(linkText) && !looksLikeBodySentence(linkText) && hasOpportunityTerms(linkText)) {
     return { title: linkText, matchedLine: linkText, lineIndex: -1, matchedFromPageText: false };
   }
 
   const pathTokens = pathOpportunityTokens(url);
   let best = { line: "", score: 0, index: -1 };
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.length < 8 || line.length > 190) continue;
-    if (isGenericLinkText(line)) continue;
-    if (!hasOpportunityTerms(line)) continue;
-    const normalized = normalizeText(line);
-    const score = pathTokens.filter((token) => normalized.includes(token)).length;
-    if (score > best.score) best = { line, score, index };
+  if (pathTokens.length > 0) {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line.length < 8 || line.length > 190) continue;
+      if (isGenericLinkText(line)) continue;
+      if (looksLikeBodySentence(line)) continue;
+      if (!hasOpportunityTerms(line)) continue;
+      const normalized = normalizeText(line);
+      const score = pathTokens.filter((token) => normalized.includes(token)).length;
+      if (score > best.score) best = { line, score, index };
+    }
   }
 
   const neededScore = pathTokens.length <= 2 ? Math.min(1, pathTokens.length) : 2;
   if (best.score >= neededScore && best.line) {
+    const pathTitle = titleFromUrlPath(url);
+    if (isLowQualityAwardTitle(best.line) && !isLowQualityAwardTitle(pathTitle)) {
+      return { title: pathTitle, matchedLine: best.line, lineIndex: best.index, matchedFromPageText: false };
+    }
     return { title: best.line, matchedLine: best.line, lineIndex: best.index, matchedFromPageText: true };
   }
 
@@ -348,8 +361,8 @@ function opportunityScore(url, link, title, titleResult) {
   const signal = `${url} ${title} ${link.text || ""} ${link.contextText || ""}`.toLowerCase();
   if (titleResult.matchedFromPageText) score += 5;
   if (hasOpportunityTerms(title)) score += 5;
-  if (/\/(scholarships?|fellowships?|grants?|awards?)\b/i.test(new URL(url).pathname)) score += 3;
-  if (/\b(apply|application|deadline|eligib|membership|travel|doctoral|phd|research)\b/.test(signal)) score += 3;
+  if (/\/(scholarships?|fellowships?|grants?|awards?|financial-aid)\b/i.test(new URL(url).pathname)) score += 3;
+  if (/\b(apply|application|deadline|eligib|membership|travel|doctoral|phd|research|guidelines?)\b/.test(signal)) score += 3;
   if (isGenericLinkText(link.text)) score -= 1;
   if (title.length > 16) score += 1;
   return score;
@@ -368,22 +381,43 @@ function isStaleListingAward(award, pageData, opportunities) {
 
 async function upsertOpportunityAward(opportunity, source, sourceAward) {
   const searchKey = normalizeSharedAwardKey(opportunity.title);
-  const existingAward = existingAwardsByKey.get(searchKey) || null;
+  const homepageKey = canonicalUrlKey(opportunity.url);
+  const existingByKey = existingAwardsByKey.get(searchKey) || null;
+  const existingByHomepage = existingAwardsByHomepage.get(homepageKey) || null;
+  const existingAward = existingByKey || existingByHomepage || null;
   const now = new Date().toISOString();
   let awardId = existingAward?.id || null;
   let awardChanged = false;
 
   if (existingAward) {
+    const previousSearchKey = existingAward.search_key;
+    const searchKeyConflict = existingAwardsByKey.get(searchKey);
+    const renameAward = shouldReplaceAwardTitle(existingAward.name, opportunity.title, existingAward.official_homepage, opportunity.url);
     const updates = {
       official_homepage: opportunity.url,
       status: "active",
       updated_at: now,
     };
+    if (renameAward) {
+      updates.name = opportunity.title;
+      if (!searchKeyConflict || searchKeyConflict.id === existingAward.id) {
+        updates.search_key = searchKey;
+      }
+    }
+    if (!existingAward.slug || (renameAward && isLowQualitySlug(existingAward.slug, existingAward.name))) {
+      updates.slug = uniqueAwardSlug(opportunity.title, existingAward.id);
+    }
     if (!existingAward.summary && opportunity.description) {
       updates.summary = opportunity.description;
     }
     const { error } = await supabase.from("shared_awards").update(updates).eq("id", existingAward.id);
     if (error) throw new Error(`shared_awards update failed: ${error.message}`);
+    Object.assign(existingAward, updates);
+    existingAwardsByHomepage.set(homepageKey, existingAward);
+    if (updates.search_key) {
+      existingAwardsByKey.delete(previousSearchKey);
+      existingAwardsByKey.set(searchKey, existingAward);
+    }
     awardChanged = true;
   } else {
     const { data, error } = await supabase
@@ -391,17 +425,19 @@ async function upsertOpportunityAward(opportunity, source, sourceAward) {
       .insert({
         search_key: searchKey,
         name: opportunity.title,
+        slug: uniqueAwardSlug(opportunity.title),
         official_homepage: opportunity.url,
         summary: opportunity.description,
         confidence: opportunity.confidence,
         status: "active",
         source: "admin",
       })
-      .select("id,search_key,name,official_homepage,summary,confidence,status,source,updated_at")
+      .select("id,search_key,name,slug,official_homepage,summary,confidence,status,source,updated_at")
       .single();
     if (error) throw new Error(`shared_awards insert failed: ${error.message}`);
     awardId = data.id;
     existingAwardsByKey.set(searchKey, data);
+    existingAwardsByHomepage.set(homepageKey, data);
     awardChanged = true;
   }
 
@@ -426,6 +462,31 @@ async function upsertOpportunityAward(opportunity, source, sourceAward) {
   return { awardId, awardChanged, sourceChanged };
 }
 
+function shouldReplaceAwardTitle(currentTitle, nextTitle, currentUrl, nextUrl) {
+  if (cleanText(currentTitle) === cleanText(nextTitle)) return false;
+  if (canonicalUrlKey(currentUrl) !== canonicalUrlKey(nextUrl)) return false;
+  return isLowQualityAwardTitle(currentTitle) || !hasOpportunityTerms(currentTitle);
+}
+
+function isLowQualityAwardTitle(value) {
+  const clean = cleanText(value);
+  return (
+    /\b(19|20)\d{2}\b/.test(clean) ||
+    /\b(application|program)?\s*guidelines?\b/i.test(clean) ||
+    /\b(pdf|document|download)\b/i.test(clean)
+  );
+}
+
+function isLowQualitySlug(slug, title) {
+  const cleanSlug = String(slug || "");
+  return (
+    cleanSlug.length < 12 ||
+    /\b(19|20)\d{2}\b/.test(cleanSlug) ||
+    /\b(application|program)?-?guidelines?\b/i.test(cleanSlug) ||
+    isLowQualityAwardTitle(title)
+  );
+}
+
 async function archiveSharedAward(award, opportunities, source) {
   const replacementNames = opportunities.map((opportunity) => opportunity.title).join("; ");
   const { error } = await supabase
@@ -442,7 +503,7 @@ async function archiveSharedAward(award, opportunities, source) {
 function isListingSource(source) {
   const value = `${source.url} ${source.title || ""}`;
   if (source.page_type === "pdf") return false;
-  return /\b(scholarships?|fellowships?|grants?|awards?|opportunities|funding)\b/i.test(value);
+  return /\b(scholarships?|fellowships?|grants?|awards?|opportunities|funding|financial aid|financial-aid)\b/i.test(value);
 }
 
 function looksLikeSecurityChallenge(pageData) {
@@ -458,8 +519,12 @@ function isExcludedOpportunityUrl(url, link) {
   const parsed = new URL(url);
   const lower = `${parsed.pathname} ${link.text || ""} ${link.contextText || ""}`.toLowerCase();
   if (parsed.hash && parsed.pathname === "/") return true;
-  if (/\.(pdf|docx?|xlsx?|pptx?|zip|png|jpe?g|gif|webp|svg)$/i.test(parsed.pathname)) return true;
-  if (/^\/(resources?|scholarships?|fellowships?|grants?|awards?|opportunities|funding)\/?$/i.test(parsed.pathname)) return true;
+  const isDocument = /\.(pdf|docx?)$/i.test(parsed.pathname);
+  if (isDocument) {
+    return !hasOpportunityTerms(lower) || isNonOpportunityDocument(lower);
+  }
+  if (/\.(xlsx?|pptx?|zip|png|jpe?g|gif|webp|svg)$/i.test(parsed.pathname)) return true;
+  if (/^\/(resources?|scholarships?|fellowships?|grants?|awards?|opportunities|funding|student-programs|volta-voices|professionals|chapters|values|advocacy|people|our-people)\/?$/i.test(parsed.pathname)) return true;
   if (/wp-login|logout|login|signin|sign-in|donate|careers?|jobs?|privacy|terms|bylaws|council-intranet|directory|member-portal|membership\/?$|research\/?$|conferences?\/?$/.test(lower)) {
     return !hasOpportunityTerms(lower);
   }
@@ -467,7 +532,13 @@ function isExcludedOpportunityUrl(url, link) {
 }
 
 function hasOpportunityTerms(value) {
-  return /\b(scholarships?|fellowships?|grants?|awards?|funding|stipend|travel grant|membership scholarship)\b/i.test(
+  return /\b(scholarships?|fellowships?|grants?|awards?|funding|financial aid|tuition assistance|stipend|travel grant|membership scholarship|application guidelines?|program guidelines?|application guide|program guide|guidelines?)\b/i.test(
+    String(value || "").replace(/\baward-winning\b/gi, ""),
+  );
+}
+
+function isNonOpportunityDocument(value) {
+  return /\b(annual report|strategic plan|sponsorship|prospectus|speaker bios?|disclosures?|registration form|job opening|internship job|bibliography|toolkit|position statement|getting started guide|research|magazine|newsletter)\b/i.test(
     String(value || ""),
   );
 }
@@ -501,6 +572,7 @@ function distinctiveTokens(value) {
     "grant",
     "grants",
     "program",
+    "programs",
     "student",
     "students",
   ]);
@@ -523,13 +595,13 @@ function pathOpportunityTokens(value) {
 }
 
 function isGenericLinkText(value) {
-  return /^(learn more|read more|more|details?|apply|click here|here|view|open|download|skip to content)$/i.test(
+  return /^(learn more|read more|more|details?|apply|application|guidelines?|program guide|application guide|click here|here|view|open|download|skip to content)$/i.test(
     cleanText(value),
   );
 }
 
 function isGenericOpportunityTitle(value) {
-  return /^(scholarships?|fellowships?|grants?|awards?|resources?|apply for a scholarship|learn more|home)$/i.test(
+  return /^(scholarships?|fellowships?|grants?|awards?|resources?|apply for a scholarship|learn more|home|application|guidelines?)$/i.test(
     cleanText(value),
   );
 }
@@ -539,13 +611,21 @@ function looksLikeHeading(value) {
   return clean.length <= 90 && /^[A-Z0-9 &|:'’().,-]+$/.test(clean);
 }
 
+function looksLikeBodySentence(value) {
+  const clean = cleanText(value);
+  return clean.length > 85 && /[.!?;:]/.test(clean);
+}
+
 function titleFromUrlPath(value) {
   try {
-    const segment =
-      decodeURIComponent(new URL(value).pathname)
-        .split("/")
-        .filter(Boolean)
-        .pop() || "Opportunity";
+    const pathname = decodeURIComponent(new URL(value).pathname);
+    const lower = pathname.toLowerCase();
+    if (/(^|[^a-z0-9])parent[-_ ]?infant([^a-z0-9]|$)/.test(lower)) return "Parent & Infant Financial Aid";
+    if (/(^|[^a-z0-9])preschool([^a-z0-9]|$)/.test(lower)) return "Preschool Financial Aid";
+    if (/(^|[^a-z0-9])school[-_ ]?age([^a-z0-9]|$)/.test(lower)) return "School-Age Financial Aid";
+    if (/(^|[^a-z0-9])arts[-_ ]?sciences?([^a-z0-9]|$)/.test(lower)) return "Arts & Sciences Award";
+    if (/(^|[^a-z0-9])nofer([^a-z0-9]|$)/.test(lower)) return "George H. Nofer Scholarship for Law";
+    const segment = pathname.split("/").filter(Boolean).pop() || "Opportunity";
     return titleCase(segment.replace(/\.[a-z0-9]+$/i, "").replace(/[-_]+/g, " "));
   } catch {
     return "Opportunity";
@@ -580,6 +660,46 @@ function canonicalUrlKey(value) {
 
 function normalizeSharedAwardKey(name) {
   return cleanText(name).toLowerCase().replace(/\s+/g, " ");
+}
+
+function uniqueAwardSlug(name, awardId = null) {
+  const base = conciseAwardSlug(name);
+  let candidate = base;
+  let index = 2;
+  while (true) {
+    const existing = existingAwardsBySlug.get(candidate);
+    if (!existing || existing.id === awardId) {
+      existingAwardsBySlug.set(candidate, { id: awardId || `pending:${candidate}` });
+      return candidate;
+    }
+    candidate = `${base}-${index}`;
+    index += 1;
+  }
+}
+
+function conciseAwardSlug(name) {
+  const clean = cleanText(name)
+    .replace(/\b(19|20)\d{2}\b/g, " ")
+    .replace(/\b(application|program)?\s*guidelines?\b/gi, " ")
+    .replace(/\b(pdf|document|download)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const opportunityPart = clean
+    .split(/\s[-–—:]\s/)
+    .reverse()
+    .find((part) => /\b(scholarship|fellowship|grant|award|financial aid|program)\b/i.test(part)) ||
+    clean;
+  const slug = opportunityPart
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-")
+    .split("-")
+    .filter(Boolean)
+    .slice(0, 8)
+    .join("-");
+  return slug || "award";
 }
 
 function hostName(value) {

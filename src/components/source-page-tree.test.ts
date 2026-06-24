@@ -92,7 +92,7 @@ describe("SourcePageTree", () => {
     expect(html).not.toContain("gemini-2.5-flash-lite");
   });
 
-  it("starts split source branches collapsed while keeping the detail panel ready", () => {
+  it("starts split source branches open while keeping the detail panel ready", () => {
     const html = renderToStaticMarkup(
       createElement(SourcePageTree, {
         layout: "split",
@@ -132,10 +132,10 @@ describe("SourcePageTree", () => {
     );
 
     expect(html).toContain("source-tree-split");
-    expect(html).toContain("aria-expanded=\"false\"");
+    expect(html).toContain("aria-expanded=\"true\"");
     expect(html).toContain("Eligibility");
     expect(html).toContain("Academic standing requirements.");
-    expect(html).not.toContain("Citizenship requirements.");
+    expect(html).toContain("Citizenship requirements.");
   });
 
   it("summarizes branch-level page status counts", () => {

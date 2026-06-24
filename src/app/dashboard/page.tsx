@@ -8,12 +8,13 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
-import { hasSupabaseConfig } from "@/lib/config";
+import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Json } from "@/lib/database.types";
 import { getOnboardingStatus } from "@/lib/onboarding";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 
 type OfficeAward = {
   id: string;
@@ -75,6 +76,9 @@ export default async function DashboardPage({ searchParams }: Props) {
   const officeAwardRows = (officeAwards || []) as OfficeAward[];
   const sharedChangeRows = (sharedChanges || []) as SharedChange[];
   const sharedAwardIds = [...new Set(sharedChangeRows.map((change) => change.shared_award_id))];
+  const unreadChangeIds = hasSupabaseAdminConfig()
+    ? await unreadSharedChangeIdsForUser(user.id, sharedChangeRows).catch(() => new Set<string>())
+    : new Set<string>();
 
   const [{ data: sharedAwards }] =
     await Promise.all([
@@ -124,6 +128,7 @@ export default async function DashboardPage({ searchParams }: Props) {
 
     return {
       id: `shared-${change.id}`,
+      changeId: change.id,
       awardId: change.shared_award_id,
       sourceId: change.shared_award_source_id,
       title,
@@ -135,6 +140,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       detectedAt: change.detected_at,
       kind: "shared",
       inWatchlist: officeSharedAwardIds.has(change.shared_award_id),
+      unread: unreadChangeIds.has(change.id),
     };
   });
 

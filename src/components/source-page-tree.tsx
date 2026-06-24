@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   BellOff,
   ChevronDown,
@@ -30,6 +30,7 @@ export type SourcePageTreeChange = {
   summary: string;
   changeDetails?: unknown;
   detectedAt: string;
+  unread?: boolean;
 };
 
 export type SourcePageTreeSource = SourceTreeSource & {
@@ -61,6 +62,8 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   showSnapshotActions = true,
   layout = "inline",
   groupByHost = true,
+  initialSelectedSourceId,
+  selectedChangeId,
 }: {
   sources: T[];
   canManage?: boolean;
@@ -73,17 +76,40 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   showSnapshotActions?: boolean;
   layout?: "inline" | "split";
   groupByHost?: boolean;
+  initialSelectedSourceId?: string | null;
+  selectedChangeId?: string | null;
 }) {
   const tree = useMemo(() => buildSourceTree(sources, { groupByHost }), [sources, groupByHost]);
   const expandableIds = useMemo(() => collectExpandableIds(tree), [tree]);
   const flatSources = useMemo(() => flattenTreeSources(tree), [tree]);
-  const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set());
+  const initialSelectedSource = useMemo(
+    () =>
+      (initialSelectedSourceId &&
+      flatSources.find((source) => source.id === initialSelectedSourceId)) ||
+      flatSources[0] ||
+      null,
+    [flatSources, initialSelectedSourceId],
+  );
+  const initialReadChangeIds = useMemo(
+    () => (initialSelectedSource ? unreadChangeIdsForSource(initialSelectedSource, new Set()) : []),
+    [initialSelectedSource],
+  );
+  const [openNodes, setOpenNodes] = useState<Set<string>>(() =>
+    layout === "split" ? new Set(expandableIds.nodeIds) : new Set(),
+  );
   const [openSources, setOpenSources] = useState<Set<string>>(() => new Set());
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
-    () => flatSources[0]?.id || null,
+    () => initialSelectedSource?.id || null,
+  );
+  const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
+    () => new Set(initialReadChangeIds),
   );
   const selectedSource = flatSources.find((source) => source.id === selectedSourceId) || flatSources[0] || null;
   const selectedSourceIdForRender = selectedSource?.id || null;
+
+  useEffect(() => {
+    postReadChangeIds(initialReadChangeIds);
+  }, [initialReadChangeIds]);
 
   const hasExpandableItems =
     expandableIds.nodeIds.length > 0 || expandableIds.sourceIds.length > 0;
@@ -124,6 +150,16 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   function collapseAll() {
     setOpenNodes(new Set());
     setOpenSources(new Set());
+  }
+
+  function selectSource(sourceId: string) {
+    const nextSource = flatSources.find((source) => source.id === sourceId) || null;
+    const unreadIds = nextSource ? unreadChangeIdsForSource(nextSource, readChangeIds) : [];
+    if (unreadIds.length > 0) {
+      setReadChangeIds((current) => new Set([...current, ...unreadIds]));
+      postReadChangeIds(unreadIds);
+    }
+    setSelectedSourceId(sourceId);
   }
 
   if (sources.length === 0) {
@@ -170,7 +206,8 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
       toggleSource,
       variant: layout === "split" ? "summary" : "inline",
       selectedSourceId: selectedSourceIdForRender,
-      onSelectSource: setSelectedSourceId,
+      onSelectSource: selectSource,
+      readChangeIds,
     }),
   );
 
@@ -184,7 +221,9 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
         <SourcePageDetailPanel
           source={selectedSource}
           renderSourceActions={renderSourceActions}
+          selectedChangeId={selectedChangeId}
           showSnapshotActions={showSnapshotActions}
+          readChangeIds={readChangeIds}
         />
       </div>
     );
@@ -215,6 +254,7 @@ function renderNode<T extends SourcePageTreeSource>({
   variant,
   selectedSourceId,
   onSelectSource,
+  readChangeIds,
 }: {
   node: SourceTreeNode<T>;
   depth: number;
@@ -232,6 +272,7 @@ function renderNode<T extends SourcePageTreeSource>({
   variant: "inline" | "summary";
   selectedSourceId: string | null;
   onSelectSource: (sourceId: string) => void;
+  readChangeIds: Set<string>;
 }) {
   const hasChildren = node.children.length > 0;
   const leafOnly = !hasChildren && node.directSources.length === node.sources.length;
@@ -260,6 +301,7 @@ function renderNode<T extends SourcePageTreeSource>({
         toggleSource={toggleSource}
         variant={variant}
         onSelectSource={onSelectSource}
+        unreadCount={unreadChangeIdsForSource(source, readChangeIds).length}
       />
     ));
   }
@@ -323,6 +365,7 @@ function renderNode<T extends SourcePageTreeSource>({
               toggleSource={toggleSource}
               variant={variant}
               onSelectSource={onSelectSource}
+              unreadCount={unreadChangeIdsForSource(source, readChangeIds).length}
             />
           ))}
           {node.children.map((child) =>
@@ -343,6 +386,7 @@ function renderNode<T extends SourcePageTreeSource>({
               variant,
               selectedSourceId,
               onSelectSource,
+              readChangeIds,
             }),
           )}
         </div>
@@ -391,6 +435,7 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   toggleSource,
   variant = "inline",
   onSelectSource,
+  unreadCount = 0,
 }: {
   source: T;
   depth: number;
@@ -401,12 +446,13 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   toggleSource: (sourceId: string) => void;
   variant?: "inline" | "summary";
   onSelectSource?: (sourceId: string) => void;
+  unreadCount?: number;
 }) {
   const outline = sourceOutline(source);
   const title = outline.displayTitle || sourceTreeSourceLabel(source);
   const latestChanges = source.latestChanges || [];
   const latestChange = latestChanges[0] || null;
-  const rowStatus = sourceRowStatus(source, latestChange);
+  const rowStatus = sourceRowStatus(source, latestChange, unreadCount);
   const rowActions = renderSourceActions?.(source);
   const snapshotSourceId =
     source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
@@ -447,9 +493,14 @@ function SourcePageRow<T extends SourcePageTreeSource>({
               )}
               <span>{title}</span>
             </button>
-            <span className={rowStatus === "Changed" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+            <span className={rowStatus === "Changed" || rowStatus === "New update" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
               {rowStatus}
             </span>
+            {unreadCount > 0 && (
+              <span className="source-tree-unread-badge">
+                {unreadCount} unread
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs font-bold uppercase text-[var(--muted)]">
             {sourceMeta(source)}
@@ -485,6 +536,9 @@ function SourcePageRow<T extends SourcePageTreeSource>({
           <div className="source-tree-row-actions">
             {showSnapshotActions && snapshotSourceId && (
               <SourceSnapshotViewerButton
+                changeDetectedAt={latestChange?.detectedAt}
+                changeDetails={latestChange?.changeDetails}
+                changeSummary={latestChange?.summary}
                 sourceId={snapshotSourceId}
                 sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
                 sourceTitle={title}
@@ -502,11 +556,15 @@ function SourcePageRow<T extends SourcePageTreeSource>({
 function SourcePageDetailPanel<T extends SourcePageTreeSource>({
   source,
   renderSourceActions,
+  selectedChangeId,
   showSnapshotActions,
+  readChangeIds,
 }: {
   source: T | null;
   renderSourceActions?: (source: T) => ReactNode;
+  selectedChangeId?: string | null;
   showSnapshotActions: boolean;
+  readChangeIds: Set<string>;
 }) {
   if (!source) {
     return (
@@ -519,7 +577,10 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
   const outline = sourceOutline(source);
   const title = outline.displayTitle || sourceTreeSourceLabel(source);
   const latestChanges = source.latestChanges || [];
-  const rowStatus = sourceRowStatus(source, latestChanges[0] || null);
+  const unreadCount = unreadChangeIdsForSource(source, readChangeIds).length;
+  const orderedChanges = orderSelectedChange(latestChanges, selectedChangeId);
+  const selectedChange = orderedChanges[0] || null;
+  const rowStatus = sourceRowStatus(source, selectedChange, unreadCount);
   const rowActions = renderSourceActions?.(source);
   const snapshotSourceId =
     source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
@@ -529,7 +590,7 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
       <div className="source-tree-detail-header">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className={rowStatus === "Changed" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+            <span className={rowStatus === "Changed" || rowStatus === "New update" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
               {rowStatus}
             </span>
             <span className="badge">
@@ -552,6 +613,9 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
           <div className="source-tree-row-actions">
             {showSnapshotActions && snapshotSourceId && (
               <SourceSnapshotViewerButton
+                changeDetectedAt={selectedChange?.detectedAt}
+                changeDetails={selectedChange?.changeDetails}
+                changeSummary={selectedChange?.summary}
                 sourceId={snapshotSourceId}
                 sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
                 sourceTitle={title}
@@ -564,7 +628,7 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
       </div>
 
       <div className="source-tree-update-panel source-tree-detail-content">
-        <SourcePageDetails source={source} outline={outline} latestChanges={latestChanges} />
+        <SourcePageDetails source={source} outline={outline} latestChanges={orderedChanges} selectedChangeId={selectedChangeId} />
       </div>
     </aside>
   );
@@ -574,18 +638,21 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
   source,
   outline,
   latestChanges,
+  selectedChangeId,
 }: {
   source: T;
   outline: SourceOutline;
   latestChanges: SourcePageTreeChange[];
+  selectedChangeId?: string | null;
 }) {
   return (
     <>
       <SourcePageOutline source={source} outline={outline} />
       {latestChanges.length > 0 ? (
         latestChanges.slice(0, 2).map((change) => (
-          <article className="source-tree-update" key={change.id}>
+          <article className={`source-tree-update ${selectedChangeId === change.id ? "source-tree-update-selected" : ""}`} key={change.id}>
             <div className="flex flex-wrap items-center gap-2">
+              {selectedChangeId === change.id && <span className="source-tree-selected-badge">Selected update</span>}
               <span className="badge">{formatDate(change.detectedAt)}</span>
               {change.sourcePageType && (
                 <span className="badge">{pageTypeLabel(change.sourcePageType)}</span>
@@ -726,6 +793,36 @@ function flattenTreeSources<T extends SourcePageTreeSource>(tree: SourceTreeNode
   }
 
   return sources;
+}
+
+function unreadChangeIdsForSource<T extends SourcePageTreeSource>(
+  source: T,
+  readChangeIds: Set<string>,
+) {
+  return (source.latestChanges || [])
+    .filter((change) => change.unread && !readChangeIds.has(change.id))
+    .map((change) => change.id);
+}
+
+function postReadChangeIds(changeIds: string[]) {
+  if (changeIds.length === 0) return;
+  void fetch("/api/shared-award-change-reads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changeIds }),
+  }).catch(() => undefined);
+}
+
+function orderSelectedChange<T extends SourcePageTreeChange>(
+  changes: T[],
+  selectedChangeId?: string | null,
+) {
+  if (!selectedChangeId) return changes;
+  return [...changes].sort((a, b) => {
+    if (a.id === selectedChangeId) return -1;
+    if (b.id === selectedChangeId) return 1;
+    return 0;
+  });
 }
 
 function BranchActions<T extends SourcePageTreeSource>({
@@ -872,8 +969,10 @@ function sourceFactRows(facts: Record<string, unknown>) {
 function sourceRowStatus(
   source: SourcePageTreeSource,
   latestChange: SourcePageTreeChange | null,
+  unreadCount = 0,
 ) {
   if (source.lastError) return "Needs review";
+  if (unreadCount > 0) return "New update";
   if (latestChange) return "Changed";
   if (source.pageMetadata || source.pageDescription || source.displayTitle) return "Unchanged";
   return "Details pending";

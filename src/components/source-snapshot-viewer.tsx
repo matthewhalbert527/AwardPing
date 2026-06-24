@@ -9,6 +9,7 @@ import {
   LoaderCircle,
   X,
 } from "lucide-react";
+import { buildChangeEvidence } from "@/lib/change-evidence";
 
 type SnapshotObject = {
   key: string;
@@ -33,6 +34,9 @@ type SourceSnapshotResponse = {
 type SnapshotVersion = "latest" | "previous";
 
 export function SourceSnapshotViewerButton({
+  changeDetectedAt,
+  changeDetails,
+  changeSummary,
   sourceId,
   sourceTitle,
   sourceUrl,
@@ -42,6 +46,9 @@ export function SourceSnapshotViewerButton({
   sourceTitle: string;
   sourceUrl: string;
   sourcePageTypeLabel?: string | null;
+  changeSummary?: string | null;
+  changeDetails?: unknown;
+  changeDetectedAt?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -62,6 +69,23 @@ export function SourceSnapshotViewerButton({
 
   const activeSnapshot = snapshot?.[activeVersion] || null;
   const canShowPrevious = Boolean(snapshot && hasSnapshotObjects(snapshot.previous));
+  const evidence = useMemo(
+    () =>
+      buildChangeEvidence({
+        sourceUrl,
+        sourceTitle,
+        summary: changeSummary,
+        changeDetails,
+      }),
+    [changeDetails, changeSummary, sourceTitle, sourceUrl],
+  );
+  const hasEvidencePanel = Boolean(
+    changeSummary ||
+      changeDetectedAt ||
+      evidence.currentSnippets.length ||
+      evidence.previousSnippets.length ||
+      evidence.confidenceLabel,
+  );
 
   async function openViewer() {
     if (!sourceId) return;
@@ -170,6 +194,14 @@ export function SourceSnapshotViewerButton({
               </div>
             </div>
 
+            {hasEvidencePanel && (
+              <SnapshotEvidencePanel
+                detectedAt={changeDetectedAt}
+                evidence={evidence}
+                summary={changeSummary}
+              />
+            )}
+
             <SnapshotBody
               activeSnapshot={activeSnapshot}
               error={error}
@@ -181,6 +213,46 @@ export function SourceSnapshotViewerButton({
         </div>
       )}
     </>
+  );
+}
+
+function SnapshotEvidencePanel({
+  detectedAt,
+  evidence,
+  summary,
+}: {
+  detectedAt?: string | null;
+  evidence: ReturnType<typeof buildChangeEvidence>;
+  summary?: string | null;
+}) {
+  return (
+    <aside className="source-snapshot-evidence" aria-label="Selected change evidence">
+      <div className="source-snapshot-evidence-heading">
+        <div>
+          <p>Selected change</p>
+          <h3>{evidence.changeTypeLabel || "Source update"}</h3>
+        </div>
+        <div className="source-snapshot-evidence-badges">
+          {evidence.confidenceLabel && <span>{evidence.confidenceLabel}</span>}
+          {detectedAt && <span>{formatSnapshotDate(detectedAt)}</span>}
+        </div>
+      </div>
+      <p className="source-snapshot-evidence-summary">
+        {evidence.summarySnippet || summary || "AwardPing detected a meaningful source-page change."}
+      </p>
+      {(evidence.previousSnippets.length > 0 || evidence.currentSnippets.length > 0) && (
+        <div className="source-snapshot-evidence-grid">
+          <div>
+            <strong>Previous</strong>
+            <p>{evidence.previousSnippets[0] || evidence.beforeSnippet || "No previous wording stored."}</p>
+          </div>
+          <div>
+            <strong>Current</strong>
+            <p>{evidence.currentSnippets[0] || evidence.afterSnippet || "No current wording stored."}</p>
+          </div>
+        </div>
+      )}
+    </aside>
   );
 }
 

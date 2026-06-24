@@ -13,7 +13,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
-import { hasSupabaseConfig } from "@/lib/config";
+import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
 import {
   displayHomepageForAward,
@@ -21,17 +21,20 @@ import {
   isMonitorableOfficialSource,
 } from "@/lib/source-url-policy";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 
 type Params = {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ source?: string; change?: string }>;
 };
 
-export default async function SharedAwardDetailPage({ params }: Params) {
+export default async function SharedAwardDetailPage({ params, searchParams }: Params) {
   if (!hasSupabaseConfig()) return <SetupNotice />;
 
   const user = await requireUser();
   const officeContext = await requireOfficeContext(user);
   const { id } = await params;
+  const query = await searchParams;
   const supabase = await createSupabaseServerClient();
 
   const [{ data: award }, { data: sources }, { data: changes }, { data: officeAward }] =
@@ -92,6 +95,9 @@ export default async function SharedAwardDetailPage({ params }: Params) {
       }),
     ),
   );
+  const unreadChangeIds = hasSupabaseAdminConfig()
+    ? await unreadSharedChangeIdsForUser(user.id, officialChanges).catch(() => new Set<string>())
+    : new Set<string>();
   const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
   const awardSummary = displayAwardSummary(award.summary);
   const awardSummaryParts = awardBaselineSummaryParts(award.summary);
@@ -115,6 +121,7 @@ export default async function SharedAwardDetailPage({ params }: Params) {
       summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
       changeDetails: change.change_details,
       detectedAt: change.detected_at,
+      unread: unreadChangeIds.has(change.id),
     })),
   }));
   const recentOfficialChanges = officialChanges.slice(0, 10);
@@ -172,7 +179,9 @@ export default async function SharedAwardDetailPage({ params }: Params) {
           </div>
           <SourcePageTree
             groupByHost={false}
-            layout="inline"
+            initialSelectedSourceId={query.source || undefined}
+            layout="split"
+            selectedChangeId={query.change || undefined}
             sources={sourceTreeSources}
           />
         </section>

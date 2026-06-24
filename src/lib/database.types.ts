@@ -95,8 +95,12 @@ export type Database = {
           id: string;
           search_key: string;
           name: string;
+          slug: string | null;
           official_homepage: string | null;
           summary: string | null;
+          public_facts: Json;
+          public_facts_generated_at: string | null;
+          public_facts_model: string | null;
           confidence: number;
           status: "active" | "archived";
           source: "seed" | "user" | "admin";
@@ -111,8 +115,12 @@ export type Database = {
           id?: string;
           search_key: string;
           name: string;
+          slug?: string | null;
           official_homepage?: string | null;
           summary?: string | null;
+          public_facts?: Json;
+          public_facts_generated_at?: string | null;
+          public_facts_model?: string | null;
           confidence?: number;
           status?: "active" | "archived";
           source?: "seed" | "user" | "admin";
@@ -126,6 +134,10 @@ export type Database = {
         Update: {
           official_homepage?: string | null;
           summary?: string | null;
+          slug?: string | null;
+          public_facts?: Json;
+          public_facts_generated_at?: string | null;
+          public_facts_model?: string | null;
           confidence?: number;
           status?: "active" | "archived";
           source?: "seed" | "user" | "admin";
@@ -134,6 +146,66 @@ export type Database = {
           next_structure_scan_at?: string;
           structure_scan_error?: string | null;
           updated_at?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_slug_aliases: {
+        Row: {
+          id: string;
+          slug: string;
+          shared_award_id: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          slug: string;
+          shared_award_id: string;
+          created_at?: string;
+        };
+        Update: {
+          slug?: string;
+          shared_award_id?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_update_read_baselines: {
+        Row: {
+          user_id: string;
+          baseline_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          baseline_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          baseline_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_change_reads: {
+        Row: {
+          user_id: string;
+          shared_award_change_event_id: string;
+          shared_award_id: string;
+          shared_award_source_id: string | null;
+          read_at: string;
+        };
+        Insert: {
+          user_id: string;
+          shared_award_change_event_id: string;
+          shared_award_id: string;
+          shared_award_source_id?: string | null;
+          read_at?: string;
+        };
+        Update: {
+          shared_award_id?: string;
+          shared_award_source_id?: string | null;
+          read_at?: string;
         };
         Relationships: [];
       };

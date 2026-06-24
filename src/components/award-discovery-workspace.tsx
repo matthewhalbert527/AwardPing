@@ -17,8 +17,16 @@ import { displayAwardSummary } from "@/lib/award-summary";
 export type SharedAwardCard = {
   id: string;
   name: string;
+  slug: string | null;
+  publicPath: string;
   officialHomepage: string | null;
   summary: string | null;
+  deadline: string | null;
+  academicLevels: string[];
+  disciplines: string[];
+  citizenship: string[];
+  lastCheckedAt: string | null;
+  recentlyUpdated: boolean;
   sourceCount: number | null;
   sourceIssueCount: number | null;
   changeCount: number | null;
@@ -52,18 +60,56 @@ const pageSizeOptions = [30, 50, 100] as const;
 
 export function AwardDiscoveryWorkspace({
   sharedAwards,
+  isAuthenticated,
 }: {
   sharedAwards: SharedAwardCard[];
   canManage: boolean;
   isAuthenticated: boolean;
 }) {
-  const awards = sharedAwards;
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(true);
   const [selectedLetter, setSelectedLetter] = useState("A");
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(30);
   const [letterPageIndex, setLetterPageIndex] = useState(0);
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [disciplineFilter, setDisciplineFilter] = useState("all");
+  const [citizenshipFilter, setCitizenshipFilter] = useState("all");
+  const [deadlineFilter, setDeadlineFilter] = useState("all");
+  const [recentFilter, setRecentFilter] = useState("all");
+
+  const levelOptions = useMemo(
+    () => uniqueOptions(sharedAwards.flatMap((award) => award.academicLevels)),
+    [sharedAwards],
+  );
+  const disciplineOptions = useMemo(
+    () => uniqueOptions(sharedAwards.flatMap((award) => award.disciplines)),
+    [sharedAwards],
+  );
+  const citizenshipOptions = useMemo(
+    () => uniqueOptions(sharedAwards.flatMap((award) => award.citizenship)),
+    [sharedAwards],
+  );
+  const awards = useMemo(
+    () =>
+      sharedAwards.filter((award) => {
+        if (levelFilter !== "all" && !award.academicLevels.includes(levelFilter)) return false;
+        if (disciplineFilter !== "all" && !award.disciplines.includes(disciplineFilter)) return false;
+        if (citizenshipFilter !== "all" && !award.citizenship.includes(citizenshipFilter)) return false;
+        if (deadlineFilter === "listed" && !award.deadline) return false;
+        if (deadlineFilter === "missing" && award.deadline) return false;
+        if (recentFilter === "recent" && !award.recentlyUpdated) return false;
+        return true;
+      }),
+    [
+      citizenshipFilter,
+      deadlineFilter,
+      disciplineFilter,
+      levelFilter,
+      recentFilter,
+      sharedAwards,
+    ],
+  );
 
   const alphabeticalAwards = useMemo(
     () => sortAwardsAlphabetically(awards),
@@ -110,6 +156,10 @@ export function AwardDiscoveryWorkspace({
     setSelectedLetter(letter);
     setLetterPageIndex(0);
     setSearchOpen(false);
+  }
+
+  function awardHref(award: SharedAwardCard) {
+    return isAuthenticated ? `/dashboard/awards/${award.id}` : award.publicPath;
   }
 
   function renderBrowseControls(position: "top" | "bottom") {
@@ -206,7 +256,8 @@ export function AwardDiscoveryWorkspace({
             </p>
           </div>
           <div className="update-feed-stats">
-            <span>{awards.length.toLocaleString()} awards</span>
+            <span>{awards.length.toLocaleString()} shown</span>
+            <span>{sharedAwards.length.toLocaleString()} total</span>
             <span>{availableLetters.size} browse letters</span>
           </div>
         </div>
@@ -276,7 +327,7 @@ export function AwardDiscoveryWorkspace({
                 {matches.map((award) => (
                   <Link
                     className="award-search-option"
-                    href={`/dashboard/awards/${award.id}`}
+                    href={awardHref(award)}
                     key={award.id}
                     role="option"
                     aria-selected={false}
@@ -296,6 +347,86 @@ export function AwardDiscoveryWorkspace({
               </div>
             </div>
           )}
+        </div>
+
+        <div className="award-directory-filter-grid">
+          <label>
+            <span>Academic level</span>
+            <select
+              className="input"
+              value={levelFilter}
+              onChange={(event) => {
+                setLevelFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All levels</option>
+              {levelOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Discipline</span>
+            <select
+              className="input"
+              value={disciplineFilter}
+              onChange={(event) => {
+                setDisciplineFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All disciplines</option>
+              {disciplineOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Citizenship</span>
+            <select
+              className="input"
+              value={citizenshipFilter}
+              onChange={(event) => {
+                setCitizenshipFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All citizenship</option>
+              {citizenshipOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Deadline</span>
+            <select
+              className="input"
+              value={deadlineFilter}
+              onChange={(event) => {
+                setDeadlineFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">Any deadline</option>
+              <option value="listed">Deadline listed</option>
+              <option value="missing">Deadline pending</option>
+            </select>
+          </label>
+          <label>
+            <span>Updates</span>
+            <select
+              className="input"
+              value={recentFilter}
+              onChange={(event) => {
+                setRecentFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All awards</option>
+              <option value="recent">Recently updated</option>
+            </select>
+          </label>
         </div>
 
         {!browseHiddenBySearch && (
@@ -329,7 +460,7 @@ export function AwardDiscoveryWorkspace({
                 className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
                 key={award.id}
               >
-                <Link className="award-row-summary block" href={`/dashboard/awards/${award.id}`}>
+                <Link className="award-row-summary block" href={awardHref(award)}>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <span className="inline-flex min-w-0 items-center gap-2 font-black">
                       <span>{award.name}</span>
@@ -344,6 +475,15 @@ export function AwardDiscoveryWorkspace({
                       {compactAwardBlurb(award.summary, award.name)}
                     </p>
                   )}
+                  <div className="award-directory-row-meta">
+                    {award.deadline && <span>Deadline: {award.deadline}</span>}
+                    {award.academicLevels.slice(0, 2).map((level) => (
+                      <span key={level}>{level}</span>
+                    ))}
+                    {award.citizenship.slice(0, 1).map((citizenship) => (
+                      <span key={citizenship}>{citizenship}</span>
+                    ))}
+                  </div>
                 </Link>
               </article>
             ))}
@@ -440,4 +580,10 @@ function ensureSentencePunctuation(value: string) {
   const clean = value.replace(/\s+/g, " ").replace(/[,:;-\s]+$/g, "").trim();
   if (!clean) return null;
   return /[.!?]$/.test(clean) ? clean : `${clean}.`;
+}
+
+function uniqueOptions(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b),
+  );
 }

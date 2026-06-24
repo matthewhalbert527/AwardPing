@@ -88,6 +88,7 @@ async function runOnce() {
 
         const details = aggregateAwardDetails(award, usableSources);
         const websiteSummary = buildWebsiteSummary(award, details);
+        const publicFacts = buildPublicFacts(details);
         report.extracted += 1;
         report.saved_awards.push({
           award_id: award.id,
@@ -97,7 +98,7 @@ async function runOnce() {
         });
 
         if (applyUpdates) {
-          await updateAwardSummary(award, details, websiteSummary);
+          await updateAwardSummary(award, details, websiteSummary, publicFacts);
           report.applied += 1;
         }
 
@@ -129,7 +130,7 @@ async function runOnce() {
 async function loadAwards() {
   const awards = await loadAllRows(
     "shared_awards",
-    "id, name, official_homepage, summary, confidence, status, last_structure_scan_at, created_at",
+    "id, name, slug, official_homepage, summary, public_facts, confidence, status, last_structure_scan_at, created_at",
     (query) => {
       query = query.eq("status", "active").order("created_at", { ascending: true });
       if (awardIdFilter) query = query.eq("id", awardIdFilter);
@@ -337,12 +338,43 @@ function addFact(parts, label, value) {
   parts.push(`${label}: ${truncate(cleanValues.join("; "), 500)}.`);
 }
 
-async function updateAwardSummary(award, details, websiteSummary) {
+function buildPublicFacts(details) {
+  const text = [
+    ...details.eligibility,
+    ...details.requirements,
+    ...details.application_materials,
+    ...details.documents,
+  ].join(" ");
+
+  return {
+    overview: details.summary || null,
+    deadline: details.deadline,
+    opening_date: details.opening_date,
+    award_amounts: details.award_amounts,
+    eligibility: details.eligibility,
+    requirements: details.requirements,
+    application_materials: details.application_materials,
+    how_to_apply: details.how_to_apply,
+    important_dates: details.important_dates,
+    documents: details.documents,
+    contacts: details.contacts,
+    academic_levels: inferAcademicLevels(text),
+    disciplines: inferDisciplines(text),
+    citizenship: inferCitizenship(text),
+    sources_used: details.sources_used,
+    confidence: details.confidence,
+  };
+}
+
+async function updateAwardSummary(award, details, websiteSummary, publicFacts) {
   const now = new Date().toISOString();
   const { error } = await supabase
     .from("shared_awards")
     .update({
       summary: websiteSummary,
+      public_facts: publicFacts,
+      public_facts_generated_at: now,
+      public_facts_model: "source-page-baseline-facts",
       confidence: confidenceScore(details.confidence),
       last_structure_scan_at: now,
       structure_scan_error: null,
@@ -350,6 +382,34 @@ async function updateAwardSummary(award, details, websiteSummary) {
     })
     .eq("id", award.id);
   if (error) throw new Error(describeSupabaseError(error, "update award fact summary"));
+}
+
+function inferAcademicLevels(value) {
+  const clean = String(value || "").toLowerCase();
+  const levels = [];
+  if (/\b(first-year|freshman|sophomore|junior|senior|undergraduate|bachelor)/.test(clean)) levels.push("Undergraduate");
+  if (/\bgraduate|master|doctoral|phd|ph\.d|postdoctoral|postdoc/.test(clean)) levels.push("Graduate");
+  if (/\bpostdoctoral|postdoc/.test(clean)) levels.push("Postdoctoral");
+  return levels;
+}
+
+function inferDisciplines(value) {
+  const clean = String(value || "").toLowerCase();
+  const disciplines = [];
+  if (/\b(stem|science|engineering|mathematics|technology|computer|biology|chemistry|physics)\b/.test(clean)) disciplines.push("STEM");
+  if (/\bpublic service|policy|government|international affairs|foreign service|leadership\b/.test(clean)) disciplines.push("Public service");
+  if (/\bhumanities|arts|literature|history|language|social science\b/.test(clean)) disciplines.push("Humanities / social sciences");
+  if (/\bhealth|medicine|medical|nursing|clinical\b/.test(clean)) disciplines.push("Health");
+  return disciplines;
+}
+
+function inferCitizenship(value) {
+  const clean = String(value || "").toLowerCase();
+  const citizenship = [];
+  if (/\bu\.?s\.?\s+(citizen|national)|united states citizen/.test(clean)) citizenship.push("U.S. citizens");
+  if (/\bpermanent resident|green card/.test(clean)) citizenship.push("Permanent residents");
+  if (/\binternational students?|non-u\.?s\.?|foreign nationals?/.test(clean)) citizenship.push("International applicants");
+  return citizenship;
 }
 
 async function startWorkerRun(report) {

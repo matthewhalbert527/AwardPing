@@ -1,13 +1,20 @@
 import type { Metadata } from "next";
-import { BellRing, CheckCircle2 } from "lucide-react";
-import { PublicUpdatesForm } from "@/components/public-updates-form";
+import Link from "next/link";
+import { ArrowRight, BellRing, ExternalLink, Rss } from "lucide-react";
+import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { pageTypeLabel } from "@/lib/award-discovery-types";
+import { canonicalAwardPath } from "@/lib/award-slugs";
+import { hasSupabaseAdminConfig } from "@/lib/config";
+import { getLiveUpdateItems } from "@/lib/live-updates";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Daily Award Updates",
+  title: "Live Fellowship Updates | AwardPing",
   description:
-    "Subscribe to public daily AwardPing emails when useful nationally competitive award-page updates are detected.",
+    "A public, chronological feed of plain-English changes detected on nationally competitive fellowship and scholarship source pages.",
 };
 
 type Props = {
@@ -17,45 +24,99 @@ type Props = {
 export default async function UpdatesPage({ searchParams }: Props) {
   const params = await searchParams;
   const statusMessage = updatesStatusMessage(params);
+  const updates = hasSupabaseAdminConfig() ? await getLiveUpdateItems(80) : [];
 
   return (
     <div className="page-shell">
       <SiteHeader />
-      <main>
-        <section className="mx-auto grid max-w-6xl gap-6 px-5 py-10 lg:grid-cols-[0.82fr_1.18fr] lg:items-start lg:py-14">
+      <main className="mx-auto max-w-6xl px-5 py-10 lg:py-14">
+        <section className="public-updates-hero">
           <div>
             <span className="badge">
-              <BellRing size={15} aria-hidden="true" />
-              Daily updates
+              <Rss size={15} aria-hidden="true" />
+              Live update feed
             </span>
-            <h1 className="mt-4 text-4xl font-black leading-tight md:text-5xl">
-              Useful award updates by email.
+            <h1 className="mt-4 text-4xl font-black leading-tight md:text-6xl">
+              Plain-English award changes as they are found.
             </h1>
-            <p className="mt-3 text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
-              Get a daily email only when AwardPing detects useful changes on
-              public nationally competitive award source pages. Quiet days stay quiet.
+            <p className="mt-4 max-w-3xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
+              AwardPing watches official fellowship pages, PDFs, deadline lists,
+              eligibility pages, and application instructions, then turns meaningful
+              changes into a scannable feed.
             </p>
-            <div className="mt-4 grid gap-2 text-sm font-bold text-[#30384a]">
-              {[
-                "Double opt-in confirmation before mail starts",
-                "Official source-page changes, not product marketing",
-                "Unsubscribe link in every public digest",
-              ].map((item) => (
-                <p className="flex items-center gap-2" key={item}>
-                  <CheckCircle2 className="text-[var(--brand)]" size={18} aria-hidden="true" />
-                  {item}
-                </p>
-              ))}
+          </div>
+          <div className="public-updates-cta">
+            <BellRing size={22} aria-hidden="true" />
+            <h2>Daily email digest</h2>
+            <p>Get a quiet daily email only when useful public updates are detected.</p>
+            <Link className="button-primary" href="/updates/subscribe">
+              Subscribe
+              <ArrowRight size={16} aria-hidden="true" />
+            </Link>
+          </div>
+        </section>
+
+        {statusMessage && (
+          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
+            {statusMessage}
+          </div>
+        )}
+
+        <section className="public-live-feed" aria-label="Live award updates">
+          <div className="public-live-feed-heading">
+            <div>
+              <p className="dashboard-label">Chronological feed</p>
+              <h2>Latest source-page changes</h2>
             </div>
+            <Link className="button-secondary" href="/award-directory">
+              Award Directory
+              <ArrowRight size={16} aria-hidden="true" />
+            </Link>
           </div>
 
-          <div>
-            {statusMessage && (
-              <div className="mb-4 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
-                {statusMessage}
+          <div className="public-live-feed-list">
+            {updates.map((update) => {
+              const awardHref = canonicalAwardPath(update.awardSlug, update.awardName, update.awardId);
+              return (
+                <article className="public-live-update-row" key={update.id}>
+                  <div className="public-live-update-time">
+                    <span>{update.detectedLabel}</span>
+                    <strong>{update.changeTypeLabel}</strong>
+                  </div>
+                  <div className="min-w-0">
+                    <div className="public-live-update-title-row">
+                      <Link href={awardHref}>{update.awardName}</Link>
+                      {update.sourcePageType && (
+                        <span className="badge">{pageTypeLabel(update.sourcePageType)}</span>
+                      )}
+                    </div>
+                    <p className="public-live-update-source">{update.sourceTitle}</p>
+                    <ChangeSummaryDisplay
+                      compact
+                      summary={update.summary}
+                      sourceUrl={update.sourceUrl}
+                      sourceTitle={update.sourceTitle}
+                      changeDetails={update.changeDetails}
+                    />
+                  </div>
+                  <a
+                    className="public-live-update-source-link"
+                    href={update.sourceUrl}
+                    rel="noreferrer"
+                    target="_blank"
+                    aria-label={`Open ${update.sourceTitle}`}
+                  >
+                    <ExternalLink size={16} aria-hidden="true" />
+                  </a>
+                </article>
+              );
+            })}
+
+            {updates.length === 0 && (
+              <div className="public-live-feed-empty">
+                No public changes are ready to show yet.
               </div>
             )}
-            <PublicUpdatesForm />
           </div>
         </section>
       </main>
