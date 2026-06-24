@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle, Database, ExternalLink, Eye, Sparkles } from "lucide-react";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
-import { AdminTabs } from "@/components/admin-tabs";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
@@ -61,8 +60,6 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           <p className="admin-page-timestamp">Page data refreshed {formatDate(new Date().toISOString())}.</p>
         </div>
       </div>
-
-      <AdminTabs active="issues" issueCount={summary.queueTotal + summary.reviewLater} />
 
       {allLoadErrors.length > 0 && (
         <section className="card admin-section-card border-[var(--brand-pink)]">

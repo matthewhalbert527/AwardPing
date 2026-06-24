@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Activity, Inbox, ListChecks, SearchCheck } from "lucide-react";
+import { Activity, AlertTriangle, ChevronDown, Inbox, ListChecks, SearchCheck } from "lucide-react";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { OfficeSwitcher } from "@/components/office-switcher";
 import { ProfileMenu } from "@/components/profile-menu";
@@ -78,10 +78,23 @@ function DashboardNavFallback({ isSiteAdmin }: { isSiteAdmin: boolean }) {
         Watchlist
       </Link>
       {isSiteAdmin && (
-        <Link className="dashboard-nav-link dashboard-nav-link-admin" href="/dashboard/admin">
-          <Activity size={16} aria-hidden="true" />
-          Admin
-        </Link>
+        <div className="dashboard-nav-admin-menu">
+          <Link className="dashboard-nav-link dashboard-nav-link-admin" href="/dashboard/admin">
+            <Activity size={16} aria-hidden="true" />
+            Admin
+            <ChevronDown className="dashboard-nav-caret" size={14} aria-hidden="true" />
+          </Link>
+          <div className="dashboard-nav-admin-dropdown" role="menu">
+            <Link className="dashboard-nav-admin-item" href="/dashboard/admin" role="menuitem">
+              <Activity size={15} aria-hidden="true" />
+              <span>Page data</span>
+            </Link>
+            <Link className="dashboard-nav-admin-item" href="/dashboard/admin/issues" role="menuitem">
+              <AlertTriangle size={15} aria-hidden="true" />
+              <span>Issues</span>
+            </Link>
+          </div>
+        </div>
       )}
     </nav>
   );
