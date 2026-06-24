@@ -1,7 +1,6 @@
 import {
   Activity,
   AlertTriangle,
-  Clock3,
   Database,
   Eye,
   Sparkles,
@@ -480,17 +479,6 @@ export default async function AdminPage() {
         </div>
       </section>
 
-      <section className="mt-6">
-        <RecentRuns runs={visualRuns.length ? visualRuns : workerRuns} title="Recent screenshot runs" />
-      </section>
-
-      <section className="mt-6">
-        <RecentRuns runs={pageInfoRuns} title="Recent page information runs" />
-      </section>
-
-      <section className="mt-6">
-        <RecentRuns runs={awardDetailRuns} title="Recent award detail runs" />
-      </section>
     </AdminShell>
   );
 }
@@ -617,99 +605,6 @@ function Detail({ label, value }: { label: string; value: string }) {
       <dd>{value}</dd>
     </div>
   );
-}
-
-function RecentRuns({ runs, title }: { runs: LocalWorkerRun[]; title: string }) {
-  return (
-    <section className="card admin-section-card">
-      <div className="flex items-center gap-2">
-        <Clock3 size={18} aria-hidden="true" />
-        <h2 className="text-2xl font-black">{title}</h2>
-      </div>
-      <div className="mt-5 grid gap-3">
-        {runs.slice(0, 10).map((run) => {
-          const metrics = workerRunMetrics(run);
-          return (
-            <div className="admin-run-row" key={run.id}>
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <p className="font-black">{workerRunLabel(run.worker_name)}</p>
-                  <p className="text-sm text-[var(--muted)]">
-                    {formatDate(run.started_at)}
-                    {run.finished_at ? `, finished ${formatDate(run.finished_at)}` : ""}
-                  </p>
-                </div>
-                <StatusPill status={run.status} />
-              </div>
-              <p className="mt-2 text-sm text-[var(--muted)]">
-                Checked {formatNumber(metrics.checked)}, {metrics.secondaryLabel}{" "}
-                {formatNumber(metrics.secondaryValue)}, {metrics.tertiaryLabel}{" "}
-                {formatNumber(metrics.tertiaryValue)}, failed {formatNumber(metrics.failed)}
-              </p>
-              {run.error && <p className="mt-2 text-sm font-semibold">{run.error}</p>}
-            </div>
-          );
-        })}
-        {runs.length === 0 && <p className="text-sm text-[var(--muted)]">No runs recorded.</p>}
-      </div>
-    </section>
-  );
-}
-
-function workerRunMetrics(run: LocalWorkerRun) {
-  const metadata = metadataObject(run.metadata);
-  const counts = objectValue(metadata.counts);
-
-  if (run.worker_name.includes("baseline-facts")) {
-    const pipeline = effectiveDetailPipeline(metadata);
-    const extraction = objectValue(pipeline.extraction);
-    return {
-      checked: numberFromObject(counts, "checked") || run.checked_count || 0,
-      secondaryLabel: "extracted",
-      secondaryValue: numberFromObject(extraction, "extracted") || run.initial_count || 0,
-      tertiaryLabel: "applied",
-      tertiaryValue:
-        numberFromObject(extraction, "backfilled") ||
-        numberFromObject(counts, "applied") ||
-        run.changed_count ||
-        0,
-      failed: numberFromObject(extraction, "failed") || run.failed_count || 0,
-    };
-  }
-
-  if (run.worker_name.includes("award-baseline-detail")) {
-    const pipeline = effectiveDetailPipeline(metadata);
-    const extraction = objectValue(pipeline.extraction);
-    const publishing = objectValue(pipeline.publishing);
-    return {
-      checked:
-        numberFromObject(extraction, "checked") ||
-        numberFromObject(counts, "checked") ||
-        run.checked_count ||
-        0,
-      secondaryLabel: "extracted",
-      secondaryValue: numberFromObject(extraction, "extracted") || run.initial_count || 0,
-      tertiaryLabel: "applied",
-      tertiaryValue:
-        numberFromObject(publishing, "applied") ||
-        numberFromObject(counts, "applied") ||
-        run.changed_count ||
-        0,
-      failed: numberFromObject(extraction, "failed") || run.failed_count || 0,
-    };
-  }
-
-  const pipeline = objectValue(metadata.visual_pipeline);
-  const capture = objectValue(pipeline.capture);
-  const comparison = objectValue(pipeline.comparison);
-  return {
-    checked: numberFromObject(capture, "checked") || run.checked_count || 0,
-    secondaryLabel: "baselined",
-    secondaryValue: numberFromObject(capture, "baselined") || run.initial_count || 0,
-    tertiaryLabel: "changed",
-    tertiaryValue: numberFromObject(comparison, "true_changes") || run.changed_count || 0,
-    failed: numberFromObject(capture, "failed") || run.failed_count || 0,
-  };
 }
 
 function StatusPill({ status }: { status: "running" | "succeeded" | "failed" }) {
@@ -845,13 +740,6 @@ function formatSafeModels(options: Record<string, unknown>) {
   }
   if (typeof raw === "string" && raw.trim()) return raw;
   return "Not logged";
-}
-
-function workerRunLabel(value: string) {
-  return value
-    .replace(/^local-/, "")
-    .replaceAll("-", " ")
-    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function formatDate(value: string) {

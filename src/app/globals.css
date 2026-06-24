@@ -2543,16 +2543,14 @@ a {
   margin-top: 1rem;
 }
 
-.admin-pipeline-row,
-.admin-run-row {
+.admin-pipeline-row {
   border: 1px solid rgba(215, 225, 239, 0.95);
   border-radius: 0.5rem;
   background: rgba(255, 255, 255, 0.9);
   padding: 0.9rem;
 }
 
-.admin-pipeline-row-attention,
-.admin-run-row-attention {
+.admin-pipeline-row-attention {
   border-color: color-mix(in srgb, var(--brand-pink) 46%, #ffffff);
 }
 
