@@ -4,6 +4,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
+import { readableSourceTitle } from "@/lib/display-text";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 
 export type PublicDigestCandidate = {
@@ -102,7 +103,7 @@ export function buildPublicDigestChanges(
     .map((change) => ({
       eventId: change.id,
       awardName: awardNameById.get(change.shared_award_id) || "Tracked award",
-      sourceTitle: change.source_title || "Source page",
+      sourceTitle: readableSourceTitle(change.source_title, change.source_url),
       sourceUrl: change.source_url,
       summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
       detectedAt: change.detected_at,

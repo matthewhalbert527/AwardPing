@@ -3,6 +3,7 @@ import { AlertTriangle, Database, ExternalLink, Eye, Sparkles } from "lucide-rea
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { AdminPageIssue, AdminReviewLaterSource, PageIssueSeverity } from "@/lib/admin-page-issues";
 import { loadAdminPageIssues, loadAdminReviewLaterSources } from "@/lib/admin-page-issues";
@@ -251,7 +252,7 @@ function IssueRow({ issue }: { issue: AdminPageIssue }) {
         <p className="admin-issue-message">{issue.message}</p>
         <div className="admin-issue-actions">
           {issue.awardId && (
-            <Link href={`/dashboard/awards/${issue.awardId}`} className="admin-issue-link">
+            <Link href={dashboardAwardPath(issue.awardSlug, issue.awardName, issue.awardId)} className="admin-issue-link">
               Award page
             </Link>
           )}
@@ -295,7 +296,7 @@ function ReviewLaterList({ sources }: { sources: AdminReviewLaterSource[] }) {
             <p className="admin-issue-source">{source.sourceTitle}</p>
             <p className="admin-issue-message">{source.note || source.message}</p>
             <div className="admin-issue-actions">
-              <Link href={`/dashboard/awards/${source.awardId}`} className="admin-issue-link">
+              <Link href={dashboardAwardPath(source.awardSlug, source.awardName, source.awardId)} className="admin-issue-link">
                 Award page
               </Link>
               <a href={source.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">

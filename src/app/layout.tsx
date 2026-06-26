@@ -21,6 +21,13 @@ export const metadata: Metadata = {
   },
   description:
     "Monitor nationally competitive award pages for deadline, eligibility, application, and PDF updates.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/awardping-icon.png", type: "image/png", sizes: "512x512" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" }],
+  },
   keywords: [
     "AwardPing",
     "nationally competitive awards",

@@ -42,8 +42,8 @@ describe("SourcePageTree", () => {
     expect(html).toContain("Homepage");
     expect(html).toContain("Expand all");
     expect(html).toContain("Collapse all");
-    expect(html).toContain("Latest update:");
-    expect(html).toContain("None recorded");
+    expect(html).toContain("Update:");
+    expect(html).toContain("None");
     expect(html).not.toContain("https://agbell.org/financial-aid/</span>");
     expect(html).not.toContain("&gt;/&lt;");
   });
@@ -88,7 +88,7 @@ describe("SourcePageTree", () => {
     expect(html).toContain("Eligibility rules for the scholarship.");
     expect(html).toContain("Citizenship");
     expect(html).toContain("January 29, 2026");
-    expect(html).toContain("Page outline updated");
+    expect(html).not.toContain("Page outline updated");
     expect(html).not.toContain("gemini-2.5-flash-lite");
   });
 
@@ -135,7 +135,7 @@ describe("SourcePageTree", () => {
     expect(html).toContain("aria-expanded=\"true\"");
     expect(html).toContain("Eligibility");
     expect(html).toContain("Academic standing requirements.");
-    expect(html).toContain("Citizenship requirements.");
+    expect(html).not.toContain("Citizenship requirements.");
   });
 
   it("summarizes branch-level page status counts", () => {
@@ -266,6 +266,103 @@ describe("SourcePageTree", () => {
 
     expect(html).toContain("Lee Jung Joon Korea Conference Workshop Grant Application");
     expect(html).not.toContain("this successful proposal");
+  });
+
+  it("does not clear unread source markers on default split render", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "deadline",
+            title: "Deadline",
+            displayTitle: "Deadline",
+            url: "https://example.edu/scholarship/deadline",
+            pageType: "deadline",
+            latestChanges: [
+              {
+                id: "change-deadline",
+                sourceTitle: "Deadline",
+                sourceUrl: "https://example.edu/scholarship/deadline",
+                sourcePageType: "deadline",
+                summary: "The campus deadline moved to January 29, 2026.",
+                detectedAt: "2026-06-23T15:00:00.000Z",
+                unread: true,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("New update");
+    expect(html).toContain("1 unread");
+    expect(html).toContain("source-tree-unread-badge");
+  });
+
+  it("treats explicit source deep links as opened for local unread display", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        initialSelectedSourceId: "deadline",
+        layout: "split",
+        sources: [
+          {
+            id: "deadline",
+            title: "Deadline",
+            displayTitle: "Deadline",
+            url: "https://example.edu/scholarship/deadline",
+            pageType: "deadline",
+            latestChanges: [
+              {
+                id: "change-deadline",
+                sourceTitle: "Deadline",
+                sourceUrl: "https://example.edu/scholarship/deadline",
+                sourcePageType: "deadline",
+                summary: "The campus deadline moved to January 29, 2026.",
+                detectedAt: "2026-06-23T15:00:00.000Z",
+                unread: true,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Changed");
+    expect(html).not.toContain("1 unread");
+    expect(html).not.toContain("source-tree-unread-badge");
+  });
+
+  it("ignores rejected baseline facts instead of rendering stale extracted values", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "bad-metadata",
+            title: "Official page",
+            url: "https://example.edu/scholarship",
+            pageType: "homepage",
+            pageMetadata: {
+              baseline_facts_rejected: true,
+              page_title: "Wrong Award Title",
+              deadline: "January 1, 1900",
+              baseline_facts: {
+                display_title: "Wrong Award Title",
+                deadline: "January 1, 1900",
+                sections: [{ title: "Wrong Section", status: "needs_review" }],
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Official page");
+    expect(html).not.toContain("Wrong Award Title");
+    expect(html).not.toContain("January 1, 1900");
+    expect(html).not.toContain("Wrong Section");
   });
 });
 

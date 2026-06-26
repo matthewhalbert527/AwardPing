@@ -178,22 +178,6 @@ export function SourceSnapshotViewerButton({
               </button>
             </div>
 
-            <div className="source-snapshot-toolbar">
-              <div className="source-snapshot-tabs" aria-label="Snapshot versions">
-                <SnapshotTab
-                  active={activeVersion === "latest"}
-                  label="Latest"
-                  onSelect={() => setActiveVersion("latest")}
-                />
-                <SnapshotTab
-                  active={activeVersion === "previous"}
-                  disabled={!canShowPrevious}
-                  label="Previous"
-                  onSelect={() => setActiveVersion("previous")}
-                />
-              </div>
-            </div>
-
             {hasEvidencePanel && (
               <SnapshotEvidencePanel
                 detectedAt={changeDetectedAt}
@@ -206,6 +190,8 @@ export function SourceSnapshotViewerButton({
               activeSnapshot={activeSnapshot}
               error={error}
               loading={loading}
+              canShowPrevious={canShowPrevious}
+              onVersionChange={setActiveVersion}
               title={snapshot?.source_title || sourceTitle}
               version={activeVersion}
             />
@@ -291,14 +277,18 @@ function SnapshotTab({
 
 function SnapshotBody({
   activeSnapshot,
+  canShowPrevious,
   error,
   loading,
+  onVersionChange,
   title,
   version,
 }: {
   activeSnapshot: SnapshotSide | null;
+  canShowPrevious: boolean;
   error: string | null;
   loading: boolean;
+  onVersionChange: (version: SnapshotVersion) => void;
   title: string;
   version: SnapshotVersion;
 }) {
@@ -332,19 +322,19 @@ function SnapshotBody({
 
   if (primaryObject.kind === "pdf") {
     return (
-      <div className="source-snapshot-pdf">
-        <FileText size={34} aria-hidden="true" />
-        <div>
-          <p className="source-snapshot-pdf-title">PDF snapshot</p>
-          <a
-            className="button-secondary source-snapshot-open-link"
-            href={primaryObject.url}
-            rel="noreferrer"
-            target="_blank"
-          >
-            <ExternalLink size={14} aria-hidden="true" />
-            Open PDF
-          </a>
+      <div className="source-snapshot-frame">
+        <SnapshotFrameActions
+          activeVersion={version}
+          canShowPrevious={canShowPrevious}
+          openLabel="Open PDF"
+          openUrl={primaryObject.url}
+          onVersionChange={onVersionChange}
+        />
+        <div className="source-snapshot-pdf">
+          <FileText size={34} aria-hidden="true" />
+          <div>
+            <p className="source-snapshot-pdf-title">PDF snapshot</p>
+          </div>
         </div>
       </div>
     );
@@ -352,18 +342,58 @@ function SnapshotBody({
 
   return (
     <div className="source-snapshot-frame">
-      <div className="source-snapshot-frame-actions">
-        <a href={primaryObject.url} rel="noreferrer" target="_blank">
-          <ExternalLink size={14} aria-hidden="true" />
-          Open image
-        </a>
-      </div>
+      <SnapshotFrameActions
+        activeVersion={version}
+        canShowPrevious={canShowPrevious}
+        openLabel="Open image"
+        openUrl={primaryObject.url}
+        onVersionChange={onVersionChange}
+      />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         alt={`${title} ${version} snapshot`}
         className="source-snapshot-image"
         src={primaryObject.url}
       />
+    </div>
+  );
+}
+
+function SnapshotFrameActions({
+  activeVersion,
+  canShowPrevious,
+  openLabel,
+  openUrl,
+  onVersionChange,
+}: {
+  activeVersion: SnapshotVersion;
+  canShowPrevious: boolean;
+  openLabel: string;
+  openUrl: string;
+  onVersionChange: (version: SnapshotVersion) => void;
+}) {
+  return (
+    <div className="source-snapshot-frame-actions">
+      <div className="source-snapshot-version-control">
+        <span>Screenshot</span>
+        <div className="source-snapshot-tabs" aria-label="Screenshot version">
+          <SnapshotTab
+            active={activeVersion === "latest"}
+            label="Latest"
+            onSelect={() => onVersionChange("latest")}
+          />
+          <SnapshotTab
+            active={activeVersion === "previous"}
+            disabled={!canShowPrevious}
+            label="Previous"
+            onSelect={() => onVersionChange("previous")}
+          />
+        </div>
+      </div>
+      <a href={openUrl} rel="noreferrer" target="_blank">
+        <ExternalLink size={14} aria-hidden="true" />
+        {openLabel}
+      </a>
     </div>
   );
 }

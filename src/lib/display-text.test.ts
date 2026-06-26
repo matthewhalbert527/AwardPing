@@ -6,6 +6,12 @@ describe("display text helpers", () => {
     expect(readableSourceTitle("https://agbell.org/financial-aid/", "https://agbell.org/financial-aid/")).toBe(
       "Financial Aid",
     );
+    expect(
+      readableSourceTitle(
+        "http://sites.nationalacademies.org/PGA/Fellowships/ARLPostdoc/index.htm",
+        "http://sites.nationalacademies.org/PGA/Fellowships/ARLPostdoc/index.htm",
+      ),
+    ).toBe("ARLPostdoc");
     expect(readableSourceTitle("/", "https://agbell.org/")).toBe("Homepage");
     expect(
       readableSourceTitle(

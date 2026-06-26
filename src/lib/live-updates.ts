@@ -5,6 +5,7 @@ import {
 } from "@/lib/change-summary";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
+import { readableSourceTitle } from "@/lib/display-text";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -78,13 +79,14 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
     .slice(0, limit)
     .map((change) => {
       const award = awardById.get(change.shared_award_id);
+      const sourceTitle = readableSourceTitle(change.source_title, change.source_url);
       return {
         id: change.id,
         awardId: change.shared_award_id,
         awardName: award?.name || "Tracked award",
         awardSlug: award?.slug || null,
         sourceId: change.shared_award_source_id,
-        sourceTitle: change.source_title || "Source page",
+        sourceTitle,
         sourceUrl: change.source_url,
         sourcePageType: change.source_page_type,
         summary: displayChangeSummary(change.summary, change.source_url, change.change_details),

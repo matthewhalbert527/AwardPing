@@ -29,7 +29,7 @@ type SharedAwardDirectoryRow = Pick<
 >;
 type SharedSourceDirectoryRow = Pick<
   SharedSourceRow,
-  "shared_award_id" | "url" | "page_type" | "last_checked_at" | "page_metadata"
+  "shared_award_id" | "url" | "page_type" | "last_checked_at"
 >;
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
@@ -117,7 +117,7 @@ async function fetchAllSharedSources(supabase: SupabaseAdminClient) {
   return fetchAllPages<SharedSourceDirectoryRow>((from, to) =>
       supabase
         .from("shared_award_sources")
-        .select("shared_award_id, url, page_type, last_checked_at, page_metadata")
+        .select("shared_award_id, url, page_type, last_checked_at")
         .eq("admin_review_status", "open")
         .range(from, to),
   );

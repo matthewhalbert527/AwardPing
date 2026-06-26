@@ -235,4 +235,26 @@ describe("source tree grouping", () => {
     expect(eligibility?.children.map((node) => node.label)).toEqual(["Citizenship"]);
     expect(deadlines?.children.map((node) => node.label)).toEqual(["Campus deadline"]);
   });
+
+  it("does not use rejected baseline metadata for page labels or categories", () => {
+    const tree = buildSourceTree([
+      {
+        id: "rejected",
+        title: "Official page",
+        url: "https://example.edu/scholarship",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts_rejected: true,
+          baseline_facts: {
+            display_title: "Wrong Extracted Title",
+            page_category: "Deadlines",
+          },
+        },
+      },
+    ]);
+
+    expect(tree.map((node) => node.label)).toEqual(["Official page"]);
+    expect(tree.map((node) => node.label)).not.toContain("Deadlines");
+    expect(tree.map((node) => node.label)).not.toContain("Wrong Extracted Title");
+  });
 });

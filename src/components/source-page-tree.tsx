@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   BellOff,
   ChevronDown,
@@ -91,9 +91,13 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
     [flatSources, initialSelectedSourceId],
   );
   const initialReadChangeIds = useMemo(
-    () => (initialSelectedSource ? unreadChangeIdsForSource(initialSelectedSource, new Set()) : []),
-    [initialSelectedSource],
+    () =>
+      initialSelectedSourceId && initialSelectedSource
+        ? unreadChangeIdsForSource(initialSelectedSource, new Set())
+        : [],
+    [initialSelectedSource, initialSelectedSourceId],
   );
+  const initialReadSourceIdRef = useRef<string | null>(null);
   const [openNodes, setOpenNodes] = useState<Set<string>>(() =>
     layout === "split" ? new Set(expandableIds.nodeIds) : new Set(),
   );
@@ -108,8 +112,16 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   const selectedSourceIdForRender = selectedSource?.id || null;
 
   useEffect(() => {
-    postReadChangeIds(initialReadChangeIds);
-  }, [initialReadChangeIds]);
+    if (!initialSelectedSourceId || initialReadSourceIdRef.current === initialSelectedSourceId) {
+      return;
+    }
+
+    const explicitSource = flatSources.find((source) => source.id === initialSelectedSourceId);
+    if (!explicitSource) return;
+
+    initialReadSourceIdRef.current = initialSelectedSourceId;
+    postReadChangeIds(unreadChangeIdsForSource(explicitSource, new Set()));
+  }, [flatSources, initialSelectedSourceId]);
 
   const hasExpandableItems =
     expandableIds.nodeIds.length > 0 || expandableIds.sourceIds.length > 0;
@@ -503,28 +515,32 @@ function SourcePageRow<T extends SourcePageTreeSource>({
             )}
           </div>
           <p className="mt-1 text-xs font-bold uppercase text-[var(--muted)]">
-            {sourceMeta(source)}
+            {summaryMode ? sourceCompactMeta(source) : sourceMeta(source)}
           </p>
-          {outline.description && (
+          {!summaryMode && outline.description && (
             <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
               {outline.description}
             </p>
           )}
-          <a
-            className="mt-2 block truncate text-sm font-semibold text-[var(--brand)] underline"
-            href={source.url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ExternalLink className="mr-1 inline" size={13} aria-hidden="true" />
-            {source.url}
-          </a>
-          <div className="source-tree-source-dates">
-            <span>Last checked: {checkedLabel}</span>
-            <span>
-              Latest update: {latestChange ? formatDate(latestChange.detectedAt) : "None recorded"}
-            </span>
-          </div>
+          {!summaryMode && (
+            <>
+              <a
+                className="mt-2 inline-flex min-w-0 max-w-full items-center gap-1 truncate text-sm font-semibold text-[var(--brand)] underline"
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={13} aria-hidden="true" />
+                <span className="truncate">Open source</span>
+              </a>
+              <div className="source-tree-source-dates">
+                <span>Checked: {checkedLabel}</span>
+                <span>
+                  Update: {latestChange ? formatDate(latestChange.detectedAt) : "None"}
+                </span>
+              </div>
+            </>
+          )}
           {open && !summaryMode && (
             <div className="source-tree-update-panel">
               <SourcePageDetails source={source} outline={outline} latestChanges={latestChanges} />
@@ -599,14 +615,15 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
           </div>
           <h3 className="source-tree-detail-title">{title}</h3>
           <a
-            className="mt-2 block truncate text-sm font-semibold text-[var(--brand)] underline"
+            className="source-tree-detail-link"
             href={source.url}
             target="_blank"
             rel="noreferrer"
           >
-            <ExternalLink className="mr-1 inline" size={13} aria-hidden="true" />
-            {source.url}
+            <ExternalLink size={13} aria-hidden="true" />
+            Open source
           </a>
+          <p className="source-tree-detail-host">{sourceHost(source.url)}</p>
         </div>
 
         {(showSnapshotActions || rowActions) && (
@@ -647,7 +664,7 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
 }) {
   return (
     <>
-      <SourcePageOutline source={source} outline={outline} />
+      <SourcePageOutline outline={outline} />
       {latestChanges.length > 0 ? (
         latestChanges.slice(0, 2).map((change) => (
           <article className={`source-tree-update ${selectedChangeId === change.id ? "source-tree-update-selected" : ""}`} key={change.id}>
@@ -680,26 +697,20 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
           </article>
         ))
       ) : (
-        <p className="change-evidence-note">
-          No screenshot updates have been recorded for this source page yet.
-        </p>
+        <p className="change-evidence-note">No updates recorded for this source.</p>
       )}
     </>
   );
 }
 
-function SourcePageOutline<T extends SourcePageTreeSource>({
-  source,
+function SourcePageOutline({
   outline,
 }: {
-  source: T;
   outline: SourceOutline;
 }) {
   const facts = outline.facts;
   const factRows = sourceFactRows(facts);
-  const sections = outline.sections.slice(0, 8);
-  const generatedAt = source.pageMetadataGeneratedAt || outline.metadataGeneratedAt;
-  const confidence = cleanString(facts.confidence);
+  const sections = outline.sections.slice(0, 5);
 
   if (!outline.hasMetadata && !outline.description) return null;
 
@@ -707,8 +718,9 @@ function SourcePageOutline<T extends SourcePageTreeSource>({
     <section className="source-tree-page-outline">
       <div className="flex flex-wrap items-center gap-2">
         <span className="badge">{outline.category || "Source page"}</span>
-        <span className="badge">{relevanceLabel(outline.relevance)}</span>
-        {confidence && <span className="badge">Confidence: {titleCase(confidence)}</span>}
+        {outline.relevance && outline.relevance !== "primary" && (
+          <span className="badge">{relevanceLabel(outline.relevance)}</span>
+        )}
       </div>
 
       {outline.description && (
@@ -723,9 +735,11 @@ function SourcePageOutline<T extends SourcePageTreeSource>({
             <div className="source-tree-outline-section" key={`${section.title}-${index}`}>
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <p className="min-w-0 font-black">{section.title}</p>
-                <span className={section.status === "needs_review" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-                  {sectionStatusLabel(section.status)}
-                </span>
+                {section.status === "needs_review" && (
+                  <span className="badge bg-[var(--brand-pink-soft)]">
+                    {sectionStatusLabel(section.status)}
+                  </span>
+                )}
               </div>
               {section.description && (
                 <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{section.description}</p>
@@ -737,19 +751,13 @@ function SourcePageOutline<T extends SourcePageTreeSource>({
 
       {factRows.length > 0 && (
         <dl className="source-tree-fact-grid">
-          {factRows.map((fact) => (
+          {factRows.slice(0, 6).map((fact) => (
             <div className="source-tree-fact" key={fact.label}>
               <dt>{fact.label}</dt>
               <dd>{fact.value}</dd>
             </div>
           ))}
         </dl>
-      )}
-
-      {generatedAt && (
-        <p className="mt-3 text-xs font-bold uppercase text-[var(--muted)]">
-          Page outline updated {formatDate(generatedAt)}
-        </p>
       )}
     </section>
   );
@@ -921,7 +929,12 @@ type SourceOutline = {
 
 function sourceOutline(source: SourcePageTreeSource): SourceOutline {
   const metadata = objectValue(source.pageMetadata);
-  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts || source.pageMetadata);
+  const metadataRejected =
+    metadata.baseline_facts_rejected === true ||
+    objectValue(metadata.baseline_facts_metadata).rejected === true;
+  const facts = metadataRejected
+    ? {}
+    : objectValue(metadata.baseline_facts || metadata.baselineFacts);
   const displayTitle =
     cleanString(source.displayTitle) ||
     cleanString(facts.display_title) ||
@@ -1028,6 +1041,23 @@ function sourceMeta(source: SourcePageTreeSource) {
   ]
     .filter(Boolean)
     .join(" - ");
+}
+
+function sourceCompactMeta(source: SourcePageTreeSource) {
+  return [
+    source.pageType ? pageTypeLabel(source.pageType) : "Source page",
+    sourceHost(source.url),
+  ]
+    .filter(Boolean)
+    .join(" - ");
+}
+
+function sourceHost(value: string | null | undefined) {
+  try {
+    return new URL(value || "").hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
 }
 
 function formatDate(value: string) {

@@ -43,6 +43,132 @@ describe("change summary filtering", () => {
     ).toBe(true);
   });
 
+  it("hides PDF file hash changes when no content change is described", () => {
+    expect(
+      isUsefulChangeForAward({
+        awardName: "Mitchell Scholarship",
+        sourceTitle: "Download and View the Entire Application (PDF)",
+        sourceUrl: "https://example.edu/mitchell-application.pdf",
+        summary:
+          "The application PDF for the US-Ireland Alliance Scholarship has been updated. The specific changes within the PDF are not detailed, but the file itself has changed.",
+        change_details: {
+          reader_summary:
+            "The application PDF for the US-Ireland Alliance Scholarship has been updated. The specific changes within the PDF are not detailed, but the file itself has changed.",
+          before: "de 10120 db 6011766 a 56 ef 8 a 0 e 6 cf 65 ed 44 d 58 ee 7 f",
+          after: "ab 3598308 a 5833 a 8 d 4139 d 0055 fca 7 bdd 8 f 41 b 3 d",
+          section: "Download and View the Entire Application (PDF)",
+          change_type: "document",
+          advisor_impact:
+            "Advisors should check the updated application PDF for any changes to requirements, deadlines, or eligibility criteria.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: ["ab 3598308 a 5833 a 8 d 4139 d 0055 fca 7 bdd 8 f 41 b 3 d"],
+            removed_text: ["de 10120 db 6011766 a 56 ef 8 a 0 e 6 cf 65 ed 44 d 58 ee 7 f"],
+            likely_section: "Download and View the Entire Application (PDF)",
+            page_type: "pdf",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { page_type: "pdf" },
+          quality_flags: [],
+          generated_at: "2026-06-25T00:00:00.000Z",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("hides document file-size changes when no wording change is identified", () => {
+    expect(
+      isUsefulChangeForAward({
+        awardName: "Rangel International Affairs Fellowship",
+        sourceTitle: "Recommendation Form (Word version)",
+        sourceUrl: "https://example.edu/rangel-recommendation-form.docx",
+        summary:
+          "The Rangel International Affairs Fellowship recommendation form has been updated. The file size has decreased significantly, indicating a potential change in content or format.",
+        change_details: {
+          reader_summary:
+            "The Rangel International Affairs Fellowship recommendation form has been updated. The file size has decreased significantly, indicating a potential change in content or format.",
+          before: "36864",
+          after: "234",
+          section: "Recommendation Form (Word version)",
+          change_type: "document",
+          advisor_impact:
+            "Advisors should download and review the updated recommendation form to ensure they are using the most current version.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: ["234"],
+            removed_text: ["36864"],
+            likely_section: "Recommendation Form (Word version)",
+            page_type: "pdf",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { page_type: "pdf" },
+          quality_flags: [],
+          generated_at: "2026-06-26T00:00:00.000Z",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps PDF changes when concrete applicant-facing wording changed", () => {
+    expect(
+      isUsefulChangeSummary(
+        "The application PDF changed the deadline from January 15, 2026 to January 22, 2026.",
+      ),
+    ).toBe(true);
+  });
+
+  it("hides animated statistic counter drift", () => {
+    expect(
+      isUsefulChangeSummary(
+        "The number of participating universities and colleges has decreased from 2019 to 1635, and the number of scholarships awarded globally has decreased from 20158 to 16299. The total investment amount remains the same.",
+      ),
+    ).toBe(false);
+  });
+
+  it("hides featured-fellow roster rotations", () => {
+    expect(
+      isUsefulChangeSummary(
+        "The featured fellows section has been updated to reflect new awardees and their fellowship details.",
+        {
+          reader_summary:
+            "The featured fellows section has been updated to reflect new awardees and their fellowship details.",
+          before:
+            "FEATURED FELLOWS Silvia Huerta Lopez MD, Harvard University, PhD, Harvard University. Fellowship awarded in 2023 to support work towards an MD and a PhD.",
+          after:
+            "FEATURED FELLOWS Michael Yusov PhD, California Institute of Technology. Fellowship awarded in 2024 to support work towards a PhD.",
+          section: "Featured Fellows",
+          change_type: "content_update",
+          advisor_impact:
+            "No application requirements, deadlines, eligibility, or funding text changed.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: [
+              "FEATURED FELLOWS Michael Yusov PhD, California Institute of Technology. Fellowship awarded in 2024 to support work towards a PhD.",
+            ],
+            removed_text: [
+              "FEATURED FELLOWS Silvia Huerta Lopez MD, Harvard University, PhD, Harvard University. Fellowship awarded in 2023 to support work towards an MD and a PhD.",
+            ],
+            likely_section: "Featured Fellows",
+            page_type: "other",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: {},
+          quality_flags: ["visual_snapshot_comparison"],
+          generated_at: "2026-06-26T09:38:51.000Z",
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("uses structured reader summaries for filtering and display", () => {
     const changeDetails = {
       reader_summary: "The deadline section now says applications close April 15, 2026.",

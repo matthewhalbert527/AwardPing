@@ -335,7 +335,7 @@ function addFact(parts, label, value) {
     .map((item) => cleanText(stripUrls(item)).replace(/[.;:\s]+$/g, ""))
     .filter(Boolean);
   if (!cleanValues.length) return;
-  parts.push(`${label}: ${truncate(cleanValues.join("; "), 500)}.`);
+  parts.push(`${label}: ${ensureSentencePunctuation(truncate(cleanValues.join("; "), 500))}`);
 }
 
 function buildPublicFacts(details) {
@@ -656,7 +656,11 @@ function ensureSentencePunctuation(value) {
 
 function truncate(value, maxLength) {
   const clean = String(value || "");
-  return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}...` : clean;
+  if (clean.length <= maxLength) return clean;
+  const target = Math.max(1, maxLength - 3);
+  const boundary = clean.lastIndexOf(" ", target);
+  const clipped = clean.slice(0, boundary > target * 0.65 ? boundary : target).replace(/[.,;:\s]+$/g, "");
+  return `${clipped}...`;
 }
 
 function jsonObjectOrEmpty(value) {

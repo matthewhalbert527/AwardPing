@@ -83,7 +83,12 @@ export default async function Home() {
         <section className="home-journey-band border-y border-[var(--line)]">
           <div className="mx-auto grid max-w-6xl gap-3 px-5 py-8 md:grid-cols-4">
             {journeys.map((journey) => (
-              <Link className="home-journey-card" href={journey.href} key={journey.label}>
+              <Link
+                className="home-journey-card"
+                href={journey.href}
+                key={journey.label}
+                prefetch={journey.href === "/award-directory" ? false : undefined}
+              >
                 <span>{journey.label}</span>
                 <p>{journey.text}</p>
               </Link>

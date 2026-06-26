@@ -83,7 +83,7 @@ export default async function DashboardPage({ searchParams }: Props) {
   const [{ data: sharedAwards }] =
     await Promise.all([
       sharedAwardIds.length
-        ? supabase.from("shared_awards").select("id, name").in("id", sharedAwardIds)
+        ? supabase.from("shared_awards").select("id, name, slug").in("id", sharedAwardIds)
         : Promise.resolve({ data: [] }),
     ]);
 
@@ -98,9 +98,15 @@ export default async function DashboardPage({ searchParams }: Props) {
       .map((award) => [award.shared_award_id as string, award.name]),
   );
   const sharedAwardNameById = new Map(
-    ((sharedAwards || []) as Array<{ id: string; name: string }>).map((award) => [
+    ((sharedAwards || []) as Array<{ id: string; name: string; slug: string | null }>).map((award) => [
       award.id,
       award.name,
+    ]),
+  );
+  const sharedAwardSlugById = new Map(
+    ((sharedAwards || []) as Array<{ id: string; name: string; slug: string | null }>).map((award) => [
+      award.id,
+      award.slug,
     ]),
   );
   const sharedRows: UpdateFeedRow[] = dedupeChangeSummaries(
@@ -130,6 +136,7 @@ export default async function DashboardPage({ searchParams }: Props) {
       id: `shared-${change.id}`,
       changeId: change.id,
       awardId: change.shared_award_id,
+      awardSlug: sharedAwardSlugById.get(change.shared_award_id) || null,
       sourceId: change.shared_award_source_id,
       title,
       sourceTitle: change.source_title || "Shared source page",

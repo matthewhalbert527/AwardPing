@@ -2,11 +2,14 @@
 import crypto from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -20,14 +23,18 @@ import {
 import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
+import {
+  shouldAutoReviewLaterFailure,
+  shouldRejectDiscoveredSource,
+} from "./source-hygiene.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 2;
-const captureBehaviorName = "expand-details-without-summary-toggle";
+const captureBehaviorVersion = 3;
+const captureBehaviorName = "multi-state-expansion-capture";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -45,6 +52,8 @@ const brokenSourcesCurrentPath = join(brokenSourcesDir, "broken-sources-current.
 const brokenSourcesJsonlPath = join(brokenSourcesDir, "broken-sources-events.jsonl");
 const brokenSourcesCsvPath = join(brokenSourcesDir, "broken-sources-current.csv");
 const limit = positiveInt(args.limit, 25);
+const shardCount = boundedInt(args["shard-count"] || env.AWARDPING_VISUAL_SHARD_COUNT, 1, 1, 64);
+const shardIndex = nonNegativeInt(args["shard-index"] || env.AWARDPING_VISUAL_SHARD_INDEX, 0);
 const includeNotDue = boolArg(args.all, false) || boolArg(args["include-not-due"], false);
 const sourceIdFilter = cleanText(args["source-id"]);
 const sourceUrlFilter = cleanText(args["source-url"]);
@@ -113,6 +122,22 @@ const viewportWidth = positiveInt(args["viewport-width"], 1365);
 const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
+const maxExpansionStateScreenshots = boundedInt(
+  args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
+  8,
+  0,
+  24,
+);
+const discoverHtmlSubpages = boolArg(
+  args["discover-html-subpages"] ?? env.AWARDPING_DISCOVER_HTML_SUBPAGES,
+  true,
+);
+const maxHtmlSubpageDiscoveries = boundedInt(
+  args["max-html-subpage-discoveries"] || env.AWARDPING_MAX_HTML_SUBPAGE_DISCOVERIES,
+  8,
+  0,
+  25,
+);
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
 const pageReadyTimeoutMs = positiveInt(args["page-ready-timeout-ms"] || env.AWARDPING_PAGE_READY_TIMEOUT_MS, 15_000);
@@ -187,6 +212,11 @@ if (!supabaseUrl || !serviceRoleKey) {
   process.exit(1);
 }
 
+if (shardIndex >= shardCount) {
+  console.error(`Invalid shard index ${shardIndex}; shard index must be between 0 and ${shardCount - 1}.`);
+  process.exit(1);
+}
+
 if (!aiProvider) {
   console.error(missingAiMessage(requestedAiProvider));
   process.exit(1);
@@ -242,6 +272,9 @@ async function runOnce() {
     env_path: envPath,
     options: {
       limit,
+      shard_count: shardCount,
+      shard_index: shardCount > 1 ? shardIndex : null,
+      shard_key: shardCount > 1 ? "source_url_hostname" : null,
       include_not_due: includeNotDue,
       source_id: sourceIdFilter || null,
       source_url: sourceUrlFilter || null,
@@ -262,6 +295,8 @@ async function runOnce() {
       viewport_height: viewportHeight,
       jpeg_quality: jpegQuality,
       thumb_width: thumbWidth,
+      discover_html_subpages: discoverHtmlSubpages,
+      max_html_subpage_discoveries: maxHtmlSubpageDiscoveries,
       timeout_ms: timeoutMs,
       page_ready_timeout_ms: pageReadyTimeoutMs,
       source_timeout_ms: sourceTimeoutMs,
@@ -325,6 +360,8 @@ async function runOnce() {
     expanded_controls: 0,
     discovered_pdf_candidates: 0,
     discovered_pdf_sources: 0,
+    discovered_html_candidates: 0,
+    discovered_html_sources: 0,
     r2_uploaded: 0,
     r2_rotated: 0,
     r2_failed: 0,
@@ -571,7 +608,9 @@ async function runOnce() {
     await updateWorkerRunMetadata(workerRunId, report);
 
     if (visualWebConcurrency > 1) {
-      console.log(`WEB_CONCURRENCY workers=${visualWebConcurrency} domain_delay_ms=${domainDelayMs}`);
+      console.log(
+        `WEB_CONCURRENCY workers=${visualWebConcurrency} domain_delay_ms=${domainDelayMs} shard=${formatShardLabel()}`,
+      );
       await runConcurrent(sources, visualWebConcurrency, async (source, _index, workerIndex) => {
         await processQueuedSource(source, workerIndex);
       });
@@ -896,6 +935,28 @@ async function reviewAndApplyCandidateChange({
     return;
   }
 
+  if (aiReview.result.is_true_change && aiReviewLooksLikeAnimatedCounterChange(aiReview)) {
+    markAiReviewAsNoise(
+      aiReview,
+      "animated_stat_counter",
+      "Animated statistic counters or impact-number widgets changed while the page was loading.",
+    );
+  }
+  if (aiReview.result.is_true_change && aiReviewLooksLikeProfileRosterChange(aiReview)) {
+    markAiReviewAsNoise(
+      aiReview,
+      "profile_roster_rotation",
+      "Profile, featured-fellow, alumni, or recipient roster content changed without applicant-facing award information changing.",
+    );
+  }
+  if (aiReview.result.is_true_change && aiReviewLooksLikeDocumentMetadataOnlyChange(aiReview)) {
+    markAiReviewAsNoise(
+      aiReview,
+      "document_metadata_only_change",
+      "The document file changed, but no concrete award-relevant wording change was identified.",
+    );
+  }
+
   if (aiReview.result.is_true_change) {
     const changePath = saveTrueChange({
       source,
@@ -980,6 +1041,23 @@ async function processPdfComparison(source, baseline, previous, capture, report)
 
   report.candidate_changes += 1;
   report.pdf_changed += 1;
+
+  if (!textChanged) {
+    report.deterministic_noise += 1;
+    if (promote) {
+      writeBaseline(source, capture, {
+        reason: "pdf_file_hash_changed_text_match_ignored",
+        previous_baseline_capture: baseline.capture || null,
+        baseline_facts: capture.baseline_facts || null,
+        baseline_facts_metadata: capture.baseline_facts_metadata || null,
+      });
+      report.promoted += 1;
+    }
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`NOISE pdf_file_hash_changed_text_match_ignored ${sourceLabel(source)}`);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    return;
+  }
 
   if (["gemini-cli", "gemini", "openai"].includes(aiProvider)) {
     await reviewAndApplyCandidateChange({
@@ -1189,8 +1267,22 @@ async function captureSource(source, context, browserMeta, report) {
       }
     }).catch(() => null);
     await page.waitForTimeout(250).catch(() => null);
+    const counterStability = await waitForLikelyAnimatedCounterStability(page);
+    const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir);
+    if (report && expansionStateEvidence.states.length) {
+      report.expanded_controls += expansionStateEvidence.states.length;
+    }
+    if (expansionStateEvidence.states.length) {
+      const restored = await expandPageForSnapshot(page);
+      expanded.expansion_state_restore = restored;
+    }
+
     const discoveredPdfLinks = await discoverPdfLinksOnPage(page, source);
     await maybeRecordDiscoveredPdfSources(source, discoveredPdfLinks, expanded, report);
+    const discoveredHtmlLinks = discoverHtmlSubpages
+      ? await discoverHtmlSubpageLinksOnPage(page, source)
+      : [];
+    await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
 
     const pageTitle = await page.title().catch(() => "");
     const finalUrl = page.url();
@@ -1202,7 +1294,7 @@ async function captureSource(source, context, browserMeta, report) {
       device_pixel_ratio: window.devicePixelRatio || 1,
     }));
     const rawText = await page.evaluate(() => document.body?.innerText || "");
-    const text = normalizeVisibleText(rawText);
+    const text = combinedVisibleTextForCapture(rawText, expansionStateEvidence.states);
     const invalidCapture = classifyInvalidPageCapture({
       status: response?.status() || null,
       finalUrl,
@@ -1249,13 +1341,31 @@ async function captureSource(source, context, browserMeta, report) {
       browser: browserMeta,
       hidden_noise_counts: hiddenNoise,
       page_readiness: pageReadiness,
+      counter_stability: counterStability,
       expanded_content: expanded,
+      expansion_state_candidates: expansionStateEvidence.candidates || 0,
+      expansion_state_screenshots: expansionStateEvidence.states.map((state) => ({
+        index: state.index,
+        tag: state.tag || null,
+        label: state.label,
+        page: state.page,
+        image_hash: state.image_hash,
+        text_hash: state.text_hash,
+        text_length: state.text_length,
+        page_bytes: state.page_bytes,
+      })),
+      expansion_state_error: expansionStateEvidence.error || null,
       discovered_pdf_links: discoveredPdfLinks.slice(0, 20),
+      discovered_html_links: discoveredHtmlLinks.slice(0, 20),
       files: {
         page: toArchiveRelative(pagePath),
         thumb: toArchiveRelative(thumbPath),
         text: toArchiveRelative(textPath),
         meta: toArchiveRelative(metaPath),
+        expansion_states: expansionStateEvidence.states.map((state) => ({
+          label: state.label,
+          page: state.page,
+        })),
       },
     };
 
@@ -1268,6 +1378,7 @@ async function captureSource(source, context, browserMeta, report) {
       thumb_path: thumbPath,
       text_path: textPath,
       meta_path: metaPath,
+      expansion_state_screenshots: expansionStateEvidence.states,
       text,
     };
   } finally {
@@ -1450,6 +1561,266 @@ async function expandPageForSnapshot(page) {
   }
 }
 
+async function captureExpansionStateEvidence(page, context, captureDir) {
+  if (maxExpansionStateScreenshots <= 0) return { states: [], candidates: 0, error: null };
+
+  try {
+    const setup = await page.evaluate((maxControls) => {
+      function textOf(element) {
+        return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+      }
+
+      function signalFor(element) {
+        return [
+          element.id,
+          element.className,
+          element.getAttribute("aria-label"),
+          element.getAttribute("aria-controls"),
+          element.getAttribute("data-target"),
+          element.getAttribute("data-bs-target"),
+          element.getAttribute("data-toggle"),
+          element.getAttribute("data-bs-toggle"),
+          element.getAttribute("href"),
+          textOf(element),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+      }
+
+      function isVisible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0
+        );
+      }
+
+      function isExpandableStateControl(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        if (!isVisible(element)) return false;
+        if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
+
+        const tag = element.tagName.toLowerCase();
+        const href = element.getAttribute("href") || "";
+        if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
+          return false;
+        }
+
+        const signal = signalFor(element);
+        if (/(menu|nav|navbar|search|login|log in|sign in|subscribe|newsletter|share|print|donate|cart|next|previous|prev|facebook|twitter|linkedin|instagram)/i.test(signal)) {
+          return false;
+        }
+
+        const explicit =
+          tag === "summary" ||
+          element.getAttribute("aria-expanded") !== null ||
+          element.getAttribute("aria-controls") ||
+          element.getAttribute("data-target") ||
+          element.getAttribute("data-bs-target") ||
+          element.getAttribute("data-toggle") ||
+          element.getAttribute("data-bs-toggle") ||
+          element.closest("details, .accordion, [class*='accordion' i], [class*='faq' i], [id*='faq' i], [role='tablist']");
+
+        const contentRelevant =
+          /\b(faq|question|answer|expand|show|more|details|eligib|requirement|criteria|nomination|application|process|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?|amount|tuition|stipend)\b/i.test(signal);
+
+        return Boolean(explicit && contentRelevant);
+      }
+
+      const controls = [
+        ...document.querySelectorAll(
+          [
+            "summary",
+            "details > :first-child",
+            "button",
+            "[role='button']",
+            "[role='tab']",
+            "a[href^='#']",
+            "a[data-toggle]",
+            "a[data-bs-toggle]",
+            "button[data-toggle]",
+            "button[data-bs-toggle]",
+            "[onclick]",
+            "[tabindex]",
+            "[class*='accordion' i]",
+            "[class*='toggle' i]",
+            "[class*='elementor-tab-title' i]",
+            "[class*='e-n-accordion-item-title' i]",
+          ].join(", "),
+        ),
+      ]
+        .filter(isExpandableStateControl)
+        .slice(0, maxControls);
+
+      controls.forEach((control, index) => {
+        control.setAttribute("data-awardping-expansion-state-index", String(index));
+      });
+
+      return {
+        candidates: controls.length,
+        labels: controls.map((control, index) => ({
+          index,
+          tag: control.tagName,
+          label: textOf(control).slice(0, 120) || control.getAttribute("aria-label") || `Section ${index + 1}`,
+        })),
+        base_text: document.body?.innerText || "",
+      };
+    }, maxExpansionStateScreenshots);
+
+    const states = [];
+    let knownText = setup.base_text || "";
+    for (const candidate of setup.labels || []) {
+      const state = await page.evaluate(async (index) => {
+        const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+
+        function textOf(element) {
+          return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+        }
+
+        function panelTargetsFor(element) {
+          const selectors = [];
+          for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
+            const value = element.getAttribute(attr);
+            if (!value) continue;
+            for (const token of value.split(/\s+/).filter(Boolean)) {
+              if (token.startsWith("#") && token.length > 1) selectors.push(token);
+              else if (/^[A-Za-z][\w:-]*$/.test(token)) selectors.push(`#${CSS.escape(token)}`);
+            }
+          }
+          return selectors.flatMap((selector) => {
+            try {
+              return [...document.querySelectorAll(selector)];
+            } catch {
+              return [];
+            }
+          });
+        }
+
+        function forcePanelOpen(panel) {
+          if (!(panel instanceof HTMLElement)) return;
+          panel.hidden = false;
+          panel.removeAttribute("hidden");
+          panel.setAttribute("aria-hidden", "false");
+          panel.classList.add("show", "open", "active");
+          panel.style.setProperty("display", "block", "important");
+          panel.style.setProperty("height", "auto", "important");
+          panel.style.setProperty("max-height", "none", "important");
+          panel.style.setProperty("visibility", "visible", "important");
+          panel.style.setProperty("opacity", "1", "important");
+        }
+
+        const control = document.querySelector(`[data-awardping-expansion-state-index="${index}"]`);
+        if (!(control instanceof HTMLElement)) {
+          return { index, label: `Section ${index + 1}`, text: "", clicked: false, targets: 0 };
+        }
+
+        control.scrollIntoView({ block: "start", inline: "nearest" });
+        await delay(80);
+        try {
+          control.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+          control.click();
+          control.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        } catch {
+          // Keep collecting text and screenshots from other controls.
+        }
+        const parentDetails = control.closest("details");
+        if (parentDetails) parentDetails.setAttribute("open", "");
+        control.setAttribute("aria-expanded", "true");
+        const targets = panelTargetsFor(control);
+        for (const panel of targets) forcePanelOpen(panel);
+        await delay(220);
+
+        return {
+          index,
+          tag: control.tagName,
+          label: textOf(control).slice(0, 120) || control.getAttribute("aria-label") || `Section ${index + 1}`,
+          text: document.body?.innerText || "",
+          clicked: true,
+          targets: targets.length,
+        };
+      }, candidate.index);
+
+      const stateText = state?.text || "";
+      const isNativeSummaryState = String(state?.tag || "").toUpperCase() === "SUMMARY";
+      if (!isNativeSummaryState && !textAddsMeaningfulExpansionContent(knownText, stateText)) continue;
+
+      const stateNumber = states.length + 1;
+      const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
+      const pagePath = join(captureDir, fileName);
+      await page.waitForLoadState("networkidle", { timeout: Math.min(3_000, timeoutMs) }).catch(() => null);
+      const pageBuffer = await page.screenshot({
+        path: pagePath,
+        fullPage: true,
+        type: "jpeg",
+        quality: jpegQuality,
+        timeout: timeoutMs,
+      });
+
+      const normalizedText = normalizeVisibleText(stateText);
+      states.push({
+        index: state.index,
+        tag: state.tag || null,
+        label: cleanText(state.label) || `Section ${stateNumber}`,
+        page: toArchiveRelative(pagePath),
+        page_path: pagePath,
+        image_hash: hashBuffer(pageBuffer),
+        page_bytes: pageBuffer.length,
+        text: normalizedText,
+        text_hash: hashText(normalizedText),
+        text_length: normalizedText.length,
+        targets: state.targets || 0,
+      });
+      knownText = `${knownText}\n\n${stateText}`;
+    }
+
+    return { states, candidates: setup.candidates || 0, error: null };
+  } catch (error) {
+    return { states: [], candidates: 0, error: errorMessage(error) };
+  }
+}
+
+function combinedVisibleTextForCapture(rawText, expansionStates) {
+  const parts = [rawText || ""];
+  for (const state of expansionStates || []) {
+    if (!state?.text) continue;
+    parts.push(`Expansion state: ${state.label || "Section"}\n${state.text}`);
+  }
+  return normalizeVisibleText(parts.join("\n\n"));
+}
+
+function textAddsMeaningfulExpansionContent(knownText, candidateText) {
+  const known = normalizeVisibleText(knownText || "");
+  const candidate = normalizeVisibleText(candidateText || "");
+  if (candidate.length < 240) return false;
+  if (!known) return true;
+  if (known.includes(candidate.slice(0, Math.min(600, candidate.length)))) return false;
+
+  const candidateShingles = textShingles(candidate);
+  if (candidateShingles.length < 8) return candidate.length > known.length + 240;
+
+  const knownShingles = new Set(textShingles(known));
+  const newCount = candidateShingles.filter((shingle) => !knownShingles.has(shingle)).length;
+  return newCount >= 8 && newCount / candidateShingles.length >= 0.08;
+}
+
+function textShingles(value) {
+  const words = normalizeText(value)
+    .split(/\s+/)
+    .filter((word) => word.length >= 3)
+    .slice(0, 5000);
+  const shingles = [];
+  for (let index = 0; index <= words.length - 6; index += 1) {
+    shingles.push(words.slice(index, index + 6).join(" "));
+  }
+  return shingles;
+}
+
 async function waitForMeaningfulPageContent(page) {
   const startedAt = Date.now();
   const before = await pageReadinessSnapshot(page);
@@ -1493,6 +1864,121 @@ async function waitForMeaningfulPageContent(page) {
     timed_out: timedOut && after.text_length < minTextLength,
     before,
     after,
+  };
+}
+
+async function waitForLikelyAnimatedCounterStability(page) {
+  const startedAt = Date.now();
+  const stableMs = 1_000;
+  const maxMs = 5_000;
+  const pollMs = 250;
+  const before = await animatedCounterSnapshot(page);
+
+  if (!before.has_likely_counter) {
+    return {
+      skipped: true,
+      stable: true,
+      waited_ms: 0,
+      before,
+      after: before,
+    };
+  }
+
+  let last = before;
+  let lastChangedAt = Date.now();
+
+  while (Date.now() - startedAt < maxMs) {
+    await page.waitForTimeout(pollMs).catch(() => null);
+    const current = await animatedCounterSnapshot(page);
+    if (current.hash !== last.hash || Math.abs(current.text_length - last.text_length) > 3) {
+      last = current;
+      lastChangedAt = Date.now();
+      continue;
+    }
+    last = current;
+    if (Date.now() - lastChangedAt >= stableMs) {
+      return {
+        skipped: false,
+        stable: true,
+        waited_ms: Date.now() - startedAt,
+        before,
+        after: current,
+      };
+    }
+  }
+
+  return {
+    skipped: false,
+    stable: false,
+    waited_ms: Date.now() - startedAt,
+    before,
+    after: last,
+  };
+}
+
+async function animatedCounterSnapshot(page) {
+  const snapshot = await page
+    .evaluate(() => {
+      const visible = (element) => {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0
+        );
+      };
+      const counterSelector = [
+        '[class*="counter" i]',
+        '[id*="counter" i]',
+        '[class*="countup" i]',
+        '[id*="countup" i]',
+        '[class*="stat" i]',
+        '[id*="stat" i]',
+        '[class*="metric" i]',
+        '[id*="metric" i]',
+        '[class*="number" i]',
+        '[id*="number" i]',
+        "[data-counter]",
+        "[data-count]",
+      ].join(",");
+      const counterText = [...document.querySelectorAll(counterSelector)]
+        .filter(visible)
+        .map((element) => element.innerText || element.textContent || "")
+        .join(" ");
+      const bodyText = document.body?.innerText || "";
+      const signalText = counterText || bodyText.slice(0, 12_000);
+      const largeNumbers = signalText.match(/\b\d{3,}(?:,\d{3})*\b/g) || [];
+      const hasCounterTerm =
+        Boolean(counterText.trim()) ||
+        /\b(counter|count[- ]?up|animated|animation|stat(?:istic)?s?|metric|kpi|impact number|number of|total number|participating universities|universities and colleges|scholarships awarded|awarded globally|total investment|investment amount)\b/i.test(
+          signalText,
+        );
+
+      return {
+        text: signalText.replace(/\s+/g, " ").trim().slice(0, 8_000),
+        has_likely_counter: hasCounterTerm && largeNumbers.length >= 2,
+        large_number_count: largeNumbers.length,
+        counter_text_length: counterText.length,
+      };
+    })
+    .catch(() => ({
+      text: "",
+      has_likely_counter: false,
+      large_number_count: 0,
+      counter_text_length: 0,
+    }));
+
+  const clean = normalizeText(snapshot.text || "");
+  return {
+    has_likely_counter: Boolean(snapshot.has_likely_counter),
+    large_number_count: snapshot.large_number_count || 0,
+    counter_text_length: snapshot.counter_text_length || 0,
+    text_length: clean.length,
+    hash: clean ? hashText(clean) : "",
   };
 }
 
@@ -1616,13 +2102,22 @@ async function discoverPdfLinksOnPage(page, source) {
     const documentSignal =
       /\b(application|guidelines?|instructions?|materials?|form|document|download)\b/.test(signal) &&
       /(\/files?\/|\/uploads?\/|\/documents?\/|\/media\/|download|attachment|pdf)/.test(signal);
+    const title = readablePdfLinkTitle(link, source);
+    const hygiene = shouldRejectDiscoveredSource({
+      url,
+      title,
+      award_name: source.shared_awards?.name || "",
+      page_type: "pdf",
+      reason: signal,
+    });
 
     if (!pdfUrl && !pdfText && !documentSignal) continue;
+    if (hygiene.action === "review_later") continue;
     if (!isRelevantDiscoveredPdfLink(link, url, source)) continue;
     seen.add(url);
     candidates.push({
       url,
-      title: readablePdfLinkTitle(link, source),
+      title,
       link_text: link.text || null,
       reason: pdfUrl ? "pdf_url" : pdfText ? "pdf_link_text" : "document_link_signal",
     });
@@ -1802,6 +2297,401 @@ async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, repor
   console.log(`DISCOVERED PDF SOURCES inserted=${inserted} parent=${sourceLabel(source)}`);
 }
 
+async function discoverHtmlSubpageLinksOnPage(page, source) {
+  if (maxHtmlSubpageDiscoveries <= 0) return [];
+
+  const rawLinks = await page
+    .evaluate(() =>
+      [...document.querySelectorAll("a[href]")].map((link) => ({
+        href: link.getAttribute("href") || "",
+        text: (link.innerText || link.textContent || "").replace(/\s+/g, " ").trim(),
+        title: link.getAttribute("title") || "",
+        ariaLabel: link.getAttribute("aria-label") || "",
+        rel: link.getAttribute("rel") || "",
+        target: link.getAttribute("target") || "",
+        contextText: (
+          link.closest("article, section, main, li, tr, p, div")?.innerText ||
+          link.parentElement?.innerText ||
+          ""
+        )
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 1200),
+        inBoilerplateRegion: Boolean(
+          link.closest(
+            [
+              "header",
+              "footer",
+              "nav",
+              "aside",
+              "[role='navigation']",
+              "[role='contentinfo']",
+              ".header",
+              ".footer",
+              ".site-header",
+              ".site-footer",
+              ".navbar",
+              ".navigation",
+              ".menu",
+              ".mobile-menu",
+              ".sidebar",
+            ].join(","),
+          ),
+        ),
+      })),
+    )
+    .catch(() => []);
+
+  const currentUrl = normalizeComparableUrl(source.url);
+  const seen = new Set();
+  const candidates = [];
+
+  for (const link of rawLinks) {
+    const url = normalizeDiscoveredUrl(link.href, source.url);
+    if (!url || seen.has(url)) continue;
+    if (normalizeComparableUrl(url) === currentUrl) continue;
+    const title = readableHtmlLinkTitle(link, url);
+    const hygiene = shouldRejectDiscoveredSource({
+      url,
+      title,
+      award_name: source.shared_awards?.name || "",
+      page_type: "other",
+      reason: [link.text, link.title, link.ariaLabel, link.contextText].filter(Boolean).join(" "),
+    });
+    if (hygiene.action === "review_later") continue;
+    if (!isRelevantDiscoveredHtmlLink(link, url, source)) continue;
+
+    seen.add(url);
+    const pageType = inferHtmlSubpageType(link, url);
+    candidates.push({
+      url,
+      title,
+      page_type: pageType,
+      confidence: confidenceForHtmlSubpage(link, url, pageType),
+      reason: reasonForHtmlSubpage(link, url, pageType),
+      link_text: link.text || null,
+    });
+  }
+
+  return candidates
+    .sort((left, right) => right.confidence - left.confidence || left.title.localeCompare(right.title))
+    .slice(0, maxHtmlSubpageDiscoveries);
+}
+
+function isRelevantDiscoveredHtmlLink(link, url, source) {
+  if (isPdfLikeUrl(url) || isLikelyDownloadUrl(url)) return false;
+  if (!isSameDiscoveryHost(url, source.url)) return false;
+
+  const title = readableHtmlLinkTitle(link, url);
+  const directSignal = [url, title, link.text, link.title, link.ariaLabel]
+    .filter(Boolean)
+    .join(" ");
+  const haystack = [url, title, link.text, link.title, link.ariaLabel, link.contextText]
+    .filter(Boolean)
+    .join(" ");
+
+  if (isBoilerplateHtmlSubpageLink(haystack)) return false;
+  if (isLikelyGenericHtmlSpillover(link, url, source)) return false;
+  if (!hasHtmlDiscoveryRelevantTerms(haystack)) return false;
+  const hasStrongDirectTerms = hasStrongHtmlDiscoveryTerms(directSignal);
+  const hasStrongContextTerms = hasStrongHtmlDiscoveryTerms(haystack);
+  if (link.inBoilerplateRegion && !hasStrongDirectTerms) return false;
+
+  const awardTokens = distinctiveAwardTokens(`${source.shared_awards?.name || ""} ${source.title || ""}`);
+  const matchingAwardTokens = awardTokens.filter((token) => haystack.toLowerCase().includes(token));
+  const matchesAwardTokens =
+    matchingAwardTokens.length >= Math.min(2, Math.max(1, awardTokens.length));
+
+  if (matchesAwardTokens) return true;
+  if (hasStrongDirectTerms) return true;
+  if (
+    hasStrongContextTerms &&
+    ["application", "eligibility", "requirements", "deadline", "faq"].includes(source.page_type)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isLikelyGenericHtmlSpillover(link, url, source) {
+  const title = readableHtmlLinkTitle(link, url);
+  const signal = [url, title, link.text, link.title, link.ariaLabel, link.contextText]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const awardContext = `${source.shared_awards?.name || ""} ${source.title || ""}`.toLowerCase();
+  const hasAwardSignal =
+    /\b(apply|application|applicant|eligib|deadline|due date|requirements?|materials?|guidelines?|nomination|portal|faq|fellowships?|scholarships?|grants?|awards?)\b/.test(
+      signal,
+    );
+
+  if (hasRepeatedUrlSegment(url)) return true;
+
+  if (
+    /\b(recipes?|cooking school|nutrition facts?|egg safety|food safety|foodservice|manufacturers?|professional resources?|recertification|certification faqs?|on-demand|ceu bundle|training|course|webinar|podcast|content marketing|mobile marketing|marketing automation|influencer marketing|overview of marketing)\b/.test(
+      signal,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(alumni|testimonials?|success stories|meet our fellows|fellows directory|recent fellows|grant recipients?|award recipients?|scholars housing|room \d{2,4}|center associate|mission areas|startup|tech transfer|activities and networking|lectures)\b/.test(
+      signal,
+    )
+  ) {
+    return true;
+  }
+
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    if (
+      /\/(?:grantee|grantees|awardee|awardees|recipient|recipients?|fellows-directory|faculty\/research\/publications|faculty\/pages\/item\.aspx|university-ad)(?:\/|$)/.test(
+        pathname,
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      /\/(?:privacy-policy|cookie-policy|ferpa|subject-index|subject-indexing|calendar-conferences|announcements?)(?:\/|$)/.test(
+        pathname,
+      )
+    ) {
+      return true;
+    }
+
+    if (/\/news(?:\/|$)/.test(pathname) && !hasAwardSignal) {
+      return true;
+    }
+  } catch {
+    return true;
+  }
+
+  if (
+    /\b(ferpa for students|subject index terms|submit your news|calendar of conferences|cookie policy|privacy policy|fellowship privacy statement|selection committees?|staff directory|committee members?)\b/.test(
+      signal,
+    )
+  ) {
+    return true;
+  }
+
+  if (/^\s*(read more|more|learn more|lire plus)\s*$/i.test(title) && !hasAwardSignal) {
+    return true;
+  }
+
+  try {
+    if (/(?:^|\/)(?:research|education|science|innovation|equal-opportunities)(?:\/|$)/i.test(new URL(url).pathname)) {
+      return !/\b(application|apply|eligib|deadline|faq|requirements?|materials?|guidelines?|nomination|portal)\b/.test(signal);
+    }
+  } catch {
+    return true;
+  }
+
+  if (/\bfaq\b/.test(title.toLowerCase()) && /\bfaq\b/.test(awardContext)) return false;
+
+  return false;
+}
+
+function hasRepeatedUrlSegment(value) {
+  try {
+    const segments = new URL(value).pathname
+      .split("/")
+      .map((segment) => segment.trim().toLowerCase())
+      .filter(Boolean);
+    const counts = new Map();
+    for (const segment of segments) {
+      if (segment.length < 4) continue;
+      const count = (counts.get(segment) || 0) + 1;
+      counts.set(segment, count);
+      if (count >= 3) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report) {
+  if (!links.length) return;
+  if (report) report.discovered_html_candidates += links.length;
+
+  const { data: existing, error: existingError } = await supabase
+    .from("shared_award_sources")
+    .select("url")
+    .eq("shared_award_id", source.shared_award_id);
+
+  if (existingError) {
+    if (report) {
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message: `HTML subpage discovery lookup failed: ${existingError.message}`,
+      });
+    }
+    return;
+  }
+
+  const existingUrls = new Set((existing || []).map((row) => normalizeComparableUrl(row.url)));
+  const rows = links
+    .filter((link) => !existingUrls.has(normalizeComparableUrl(link.url)))
+    .map((link) => ({
+      shared_award_id: source.shared_award_id,
+      url: link.url,
+      title: link.title,
+      page_type: link.page_type,
+      confidence: link.confidence,
+      reason: [
+        "Found by the visual snapshot worker after expanding page content.",
+        `Parent source: ${source.url}`,
+        `Signal: ${link.reason}`,
+        expanded?.controls_clicked ? `Expanded controls: ${expanded.controls_clicked}` : null,
+      ]
+        .filter(Boolean)
+        .join(" "),
+      source: "seed",
+      next_check_at: new Date().toISOString(),
+    }));
+
+  if (!rows.length) return;
+
+  const { data, error } = await supabase
+    .from("shared_award_sources")
+    .upsert(rows, { onConflict: "shared_award_id,url", ignoreDuplicates: true })
+    .select("id,url");
+
+  if (error) {
+    if (report) {
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message: `HTML subpage discovery insert failed: ${error.message}`,
+      });
+    }
+    return;
+  }
+
+  const inserted = data?.length || rows.length;
+  if (report) report.discovered_html_sources += inserted;
+  console.log(`DISCOVERED HTML SOURCES inserted=${inserted} parent=${sourceLabel(source)}`);
+}
+
+function isSameDiscoveryHost(value, baseValue) {
+  const host = normalizedHost(value);
+  const baseHost = normalizedHost(baseValue);
+  if (!host || !baseHost) return false;
+  return host === baseHost || host.endsWith(`.${baseHost}`) || baseHost.endsWith(`.${host}`);
+}
+
+function normalizedHost(value) {
+  try {
+    return new URL(value).hostname.toLowerCase().replace(/^www\./, "");
+  } catch {
+    return "";
+  }
+}
+
+function normalizeComparableUrl(value) {
+  try {
+    const parsed = new URL(value);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/+$/g, "") || "/";
+    return parsed.toString();
+  } catch {
+    return String(value || "");
+  }
+}
+
+function isLikelyDownloadUrl(value) {
+  try {
+    const parsed = new URL(value);
+    return /\.(?:docx?|xlsx?|pptx?|zip|rar|7z|jpg|jpeg|png|gif|webp|svg|ics|mp4|mp3|mov|avi)$/i.test(
+      parsed.pathname,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function inferHtmlSubpageType(link, url) {
+  const signal = [url, link.text, link.title, link.ariaLabel, link.contextText].filter(Boolean).join(" ");
+  if (/\b(faq|frequently asked questions?)\b/i.test(signal)) return "faq";
+  if (/\b(eligible|eligibility|who should apply|citizenship|gpa|academic standing)\b/i.test(signal)) {
+    return "eligibility";
+  }
+  if (/\b(deadline|due date|dates?|calendar|timeline|opens?|closes?)\b/i.test(signal)) return "deadline";
+  if (/\b(apply|application|nomination|portal|submit|submission|how to apply)\b/i.test(signal)) {
+    return "application";
+  }
+  if (/\b(requirements?|materials?|instructions?|guidelines?|essays?|transcripts?|recommendations?|selection)\b/i.test(signal)) {
+    return "requirements";
+  }
+  return "other";
+}
+
+function confidenceForHtmlSubpage(link, url, pageType) {
+  const signal = [url, link.text, link.title, link.ariaLabel].filter(Boolean).join(" ");
+  let confidence = 0.74;
+  if (pageType !== "other") confidence += 0.08;
+  if (hasStrongHtmlDiscoveryTerms(signal)) confidence += 0.08;
+  if (!link.inBoilerplateRegion) confidence += 0.04;
+  return Math.min(0.93, Number(confidence.toFixed(2)));
+}
+
+function reasonForHtmlSubpage(link, url, pageType) {
+  const title = readableHtmlLinkTitle(link, url);
+  const terms = [];
+  const signal = [url, title, link.text, link.title, link.ariaLabel].filter(Boolean).join(" ");
+  if (/\bfaq|frequently asked questions?\b/i.test(signal)) terms.push("faq");
+  if (/\beligib/i.test(signal)) terms.push("eligibility");
+  if (/\bdeadlines?|due date|timeline\b/i.test(signal)) terms.push("deadline");
+  if (/\bapply|application|nomination|portal|submit\b/i.test(signal)) terms.push("application");
+  if (/\brequirements?|materials?|instructions?|guidelines?\b/i.test(signal)) terms.push("requirements");
+  return `${pageType}_html_link${terms.length ? `:${terms.join(",")}` : ""}`;
+}
+
+function hasHtmlDiscoveryRelevantTerms(value) {
+  return /\b(deadline|due date|dates?|timeline|calendar|applications?\s+(?:open|close|due)|opens?|closes?|apply|application|how to apply|eligible|eligibility|requirements?|recommendations?|nomination|nominations?|transcripts?|essays?|materials?|instructions?|guidelines?|selection|submit|submission|citizenship|gpa|portal|faq|frequently asked questions?|award amount|benefits?|funding|stipend|tuition)\b/i.test(
+    String(value || ""),
+  );
+}
+
+function hasStrongHtmlDiscoveryTerms(value) {
+  return /\b(deadline|due date|how to apply|apply|application|eligible|eligibility|requirements?|materials?|instructions?|guidelines?|nomination|portal|faq|frequently asked questions?)\b/i.test(
+    String(value || ""),
+  );
+}
+
+function isBoilerplateHtmlSubpageLink(value) {
+  const clean = String(value || "");
+  const hasAwardSignal =
+    /\b(apply|application|applicant|eligib|deadline|due date|requirements?|materials?|instructions?|guidelines?|nomination|portal|faq|frequently asked questions?|fellowships?|scholarships?|grants?|awards?)\b/i.test(
+      clean,
+    );
+  if (
+    /\b(login|log in|sign in|create account|privacy policy|terms of use|accessibility|copyright|donate|give now|store|shop|cart|checkout|subscribe|newsletter|staff|board|bylaws?|annual report|media kit|sponsorship|advertising|facebook|twitter|x\.com|instagram|linkedin|youtube|rss)\b/i.test(
+      clean,
+    )
+  ) {
+    return true;
+  }
+  return /\b(press release|newsroom|blog|events?|calendar of events|webinar)\b/i.test(clean) && !hasAwardSignal;
+}
+
+function readableHtmlLinkTitle(link, url) {
+  const text = cleanText(link.text || link.title || link.ariaLabel);
+  if (text) return text.slice(0, 180);
+  try {
+    const parsed = new URL(url);
+    const segment = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).pop() || parsed.hostname);
+    return segment.replace(/[-_]+/g, " ").slice(0, 180) || "Source page";
+  } catch {
+    return "Source page";
+  }
+}
+
 function normalizeDiscoveredUrl(value, baseUrl) {
   if (!value || value.startsWith("mailto:") || value.startsWith("tel:")) return null;
   try {
@@ -1954,15 +2844,43 @@ async function markSharedSourceVisualCheckSucceeded(source, capture, report = nu
 async function markSharedSourceVisualCheckFailed(source, message) {
   const now = new Date().toISOString();
   const failures = nonNegativeInt(source.consecutive_failures, 0) + 1;
+  const parsedStatus = parseHttpStatusFromMessage(message);
+  const failureType = failureTypeFromMessage(message, parsedStatus.status_code);
+  const hygiene = shouldAutoReviewLaterFailure(
+    {
+      ...source,
+      award_name: source.shared_awards?.name || "",
+      source_url: source.url,
+      source_title: source.title,
+    },
+    {
+      message,
+      status_code: parsedStatus.status_code,
+      failure_type: failureType,
+    },
+  );
+  const update = {
+    last_checked_at: now,
+    next_check_at: nextVisualSourceCheckDate(),
+    consecutive_failures: failures,
+    last_error: truncate(message, 1000),
+    updated_at: now,
+  };
+
+  if (hygiene.action === "review_later") {
+    update.admin_review_status = "review_later";
+    update.admin_review_note = truncate(
+      `Auto-cleaned by visual worker (${hygiene.reason}): ${hygiene.note || message}`,
+      1000,
+    );
+    update.admin_reviewed_at = now;
+    update.admin_reviewed_by = "awardping-worker";
+    console.log(`SOURCE_REVIEW_LATER reason=${hygiene.reason} ${sourceLabel(source)}`);
+  }
+
   const { error } = await supabase
     .from("shared_award_sources")
-    .update({
-      last_checked_at: now,
-      next_check_at: nextVisualSourceCheckDate(),
-      consecutive_failures: failures,
-      last_error: truncate(message, 1000),
-      updated_at: now,
-    })
+    .update(update)
     .eq("id", source.id);
 
   if (error) throw error;
@@ -2429,6 +3347,14 @@ function captureR2Files(capture) {
   addIfPresent("pdf", "document.pdf", capture.pdf_path, "application/pdf");
   addIfPresent("text", "text.txt", capture.text_path, "text/plain; charset=utf-8");
   addIfPresent("meta", "meta.json", capture.meta_path, "application/json; charset=utf-8");
+  for (const [index, state] of (capture.expansion_state_screenshots || []).entries()) {
+    addIfPresent(
+      `expansion_state_${String(index + 1).padStart(2, "0")}`,
+      `expansion-state-${String(index + 1).padStart(2, "0")}.jpg`,
+      state.page_path,
+      "image/jpeg",
+    );
+  }
 
   return files;
 }
@@ -2454,6 +3380,15 @@ function r2CaptureMetadata(capture) {
     thumb_bytes: capture.thumb_bytes || null,
     dimensions: capture.dimensions || null,
     page_count: capture.page_count || null,
+    expansion_state_count: capture.expansion_state_screenshots?.length || 0,
+    expansion_state_screenshots:
+      capture.expansion_state_screenshots?.map((state) => ({
+        label: state.label,
+        image_hash: state.image_hash,
+        text_hash: state.text_hash,
+        text_length: state.text_length,
+        page_bytes: state.page_bytes,
+      })) || [],
     pdf_text_error: capture.pdf_text_error || null,
     baseline_facts: capture.baseline_facts || null,
     baseline_facts_metadata: capture.baseline_facts_metadata || null,
@@ -2971,7 +3906,8 @@ function geminiCliDiffPrompt({ source, baseline, previous, capture, diff, determ
     "Return strict compact JSON only with these keys:",
     "{is_true_change, noise_reason, reader_summary, advisor_impact, changed_section, confidence, before, after, change_type, structured_diff, quality_flags, updated_baseline_facts}",
     "is_true_change must be true only for concrete award-relevant changes: deadlines, opening/closing dates, eligibility, requirements, nomination/recommendation instructions, documents/PDF/guidelines, award amount/funding, or application instructions.",
-    "Reject cookie banners, carousels, ads, current-date-only changes, font/reflow/lazy-image changes, navigation/footer/sidebar changes, social widgets, recipient/news churn, unrelated research/news pages, and access/security/404 pages.",
+    "Reject cookie banners, carousels, ads, current-date-only changes, font/reflow/lazy-image changes, navigation/footer/sidebar changes, social widgets, featured-fellow/alumni/profile roster rotations, recipient/news churn, unrelated research/news pages, access/security/404 pages, and file-hash/file-size-only PDF or document changes.",
+    "For PDFs, Word forms, and downloadable files, is_true_change must be false unless you can name the actual changed wording, date, requirement, amount, or applicant instruction. Do not approve a change just because the file bytes, hash, or size changed.",
     "reader_summary should be one or two plain-English advisor-facing sentences when true; otherwise null.",
     "advisor_impact should say what an advising office might need to check or update when true; otherwise null.",
     "confidence must be low, medium, or high. If confidence is low, set is_true_change=false.",
@@ -3453,13 +4389,13 @@ async function loadSources(pageLimit) {
   const sources = [];
 
   for (let from = 0; sources.length < pageLimit; from += pageSize) {
-    const to = Math.min(from + pageSize - 1, pageLimit - 1);
+    const to = from + pageSize - 1;
     const { data, error } = await buildSourcesQuery().range(from, to);
 
     if (error) throw new Error(describeSupabaseError(error, "load shared award sources"));
 
     const page = data || [];
-    sources.push(...page);
+    sources.push(...page.filter(sourceMatchesShard));
 
     if (page.length < to - from + 1) {
       break;
@@ -3467,6 +4403,30 @@ async function loadSources(pageLimit) {
   }
 
   return sources.slice(0, pageLimit);
+}
+
+function sourceMatchesShard(source) {
+  if (shardCount <= 1) return true;
+  if (sourceIdFilter || sourceUrlFilter) return true;
+  return shardIndexForSource(source) === shardIndex;
+}
+
+function shardIndexForSource(source) {
+  const key = sourceShardKey(source);
+  const hex = hashText(key).slice(0, 12);
+  return Number.parseInt(hex, 16) % shardCount;
+}
+
+function sourceShardKey(source) {
+  try {
+    return new URL(source.url).hostname.toLowerCase().replace(/^www\./, "") || source.id;
+  } catch {
+    return source.id || source.url || "unknown";
+  }
+}
+
+function formatShardLabel() {
+  return shardCount > 1 ? `${shardIndex + 1}/${shardCount}` : "none";
 }
 
 function hasBaselineForSource(source) {
@@ -3875,6 +4835,8 @@ function visualWorkerMetadata(report) {
       expanded_controls: report.expanded_controls,
       discovered_pdf_candidates: report.discovered_pdf_candidates,
       discovered_pdf_sources: report.discovered_pdf_sources,
+      discovered_html_candidates: report.discovered_html_candidates,
+      discovered_html_sources: report.discovered_html_sources,
       promoted: report.promoted,
       r2_uploaded: report.r2_uploaded,
       r2_rotated: report.r2_rotated,
@@ -3940,10 +4902,11 @@ function visualWorkerMetadata(report) {
 }
 
 function visualWorkerName() {
-  if (r2BackfillBaselines) return "local-visual-snapshot-worker-r2-backfill";
-  if (completeMissingBaselines) return "local-visual-snapshot-worker-baseline-completion";
-  if (baselineRefresh) return "local-visual-snapshot-worker-baseline-refresh";
-  return "local-visual-snapshot-worker";
+  const suffix = shardCount > 1 ? `-shard-${shardIndex + 1}-of-${shardCount}` : "";
+  if (r2BackfillBaselines) return `local-visual-snapshot-worker-r2-backfill${suffix}`;
+  if (completeMissingBaselines) return `local-visual-snapshot-worker-baseline-completion${suffix}`;
+  if (baselineRefresh) return `local-visual-snapshot-worker-baseline-refresh${suffix}`;
+  return `local-visual-snapshot-worker${suffix}`;
 }
 
 async function recordBrokenSourceFailure(source, message) {
@@ -3961,37 +4924,80 @@ async function recordBrokenSourceFailure(source, message) {
   const statusCode = parsed.status_code || probe?.status_code || null;
   const now = new Date().toISOString();
   const key = `${source.id}|${source.url}`;
-  const current = readJsonIfExists(brokenSourcesCurrentPath) || {};
-  const previous = current[key] || null;
-  const record = {
-    key,
-    first_seen_at: previous?.first_seen_at || now,
-    last_seen_at: now,
-    seen_count: (previous?.seen_count || 0) + 1,
-    status_code: statusCode,
-    status_text: parsed.status_text || probe?.status_text || null,
-    failure_type: failureTypeFromMessage(message, statusCode),
-    source_id: source.id,
-    shared_award_id: source.shared_award_id,
-    award_name: source.shared_awards?.name || null,
-    source_title: source.title || null,
-    source_url: source.url,
-    final_url: probe?.final_url || null,
-    page_type: source.page_type || null,
-    error_message: message,
-    content_type: probe?.content_type || null,
-    content_length: probe?.content_length || null,
-    probe_error: probe?.probe_error || null,
-  };
 
-  current[key] = record;
-  if (knownBrokenSourceIds) {
-    knownBrokenSourceIds.add(source.id);
+  const releaseLock = await acquireFileLock(join(brokenSourcesDir, "broken-sources.lock"));
+  try {
+    const current = readJsonIfExists(brokenSourcesCurrentPath) || {};
+    const previous = current[key] || null;
+    const record = {
+      key,
+      first_seen_at: previous?.first_seen_at || now,
+      last_seen_at: now,
+      seen_count: (previous?.seen_count || 0) + 1,
+      status_code: statusCode,
+      status_text: parsed.status_text || probe?.status_text || null,
+      failure_type: failureTypeFromMessage(message, statusCode),
+      source_id: source.id,
+      shared_award_id: source.shared_award_id,
+      award_name: source.shared_awards?.name || null,
+      source_title: source.title || null,
+      source_url: source.url,
+      final_url: probe?.final_url || null,
+      page_type: source.page_type || null,
+      error_message: message,
+      content_type: probe?.content_type || null,
+      content_length: probe?.content_length || null,
+      probe_error: probe?.probe_error || null,
+    };
+
+    current[key] = record;
+    if (knownBrokenSourceIds) {
+      knownBrokenSourceIds.add(source.id);
+    }
+    writeFileSync(brokenSourcesCurrentPath, JSON.stringify(current, null, 2), "utf8");
+    appendFileSync(brokenSourcesJsonlPath, `${JSON.stringify(record)}\n`, "utf8");
+    writeBrokenSourcesCsv(Object.values(current));
+  } finally {
+    releaseLock();
   }
-  writeFileSync(brokenSourcesCurrentPath, JSON.stringify(current, null, 2), "utf8");
-  appendFileSync(brokenSourcesJsonlPath, `${JSON.stringify(record)}\n`, "utf8");
-  writeBrokenSourcesCsv(Object.values(current));
   console.log(`BROKEN_SOURCE recorded status=${statusCode || "unknown"} ${sourceLabel(source)}`);
+}
+
+async function acquireFileLock(lockPath, timeoutMs = 30_000) {
+  const startedAt = Date.now();
+
+  while (true) {
+    try {
+      const fd = openSync(lockPath, "wx");
+      writeFileSync(fd, `pid=${process.pid} started=${new Date().toISOString()}\n`, "utf8");
+      return () => {
+        try {
+          closeSync(fd);
+        } catch {
+          // ignore close failures during process shutdown
+        }
+        rmSync(lockPath, { force: true });
+      };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+
+      try {
+        const ageMs = Date.now() - statSync(lockPath).mtimeMs;
+        if (ageMs > 2 * 60 * 1000) {
+          rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        rmSync(lockPath, { force: true });
+        continue;
+      }
+
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`Timed out waiting for file lock: ${lockPath}`);
+      }
+      await sleep(100 + Math.floor(Math.random() * 150));
+    }
+  }
 }
 
 function parseHttpStatusFromMessage(message) {
@@ -4885,6 +5891,235 @@ function looksLikeRecipientNewsOrPressText(value) {
   );
 }
 
+function aiReviewLooksLikeProfileRosterChange(aiReview) {
+  const result = aiReview?.result || {};
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : {};
+  const structuredDiff =
+    details.structured_diff && typeof details.structured_diff === "object" && !Array.isArray(details.structured_diff)
+      ? details.structured_diff
+      : {};
+  const sectionText = normalizeText([
+    result.reader_summary,
+    result.changed_section,
+    details.reader_summary,
+    details.section,
+    structuredDiff.likely_section,
+  ].join(" ")).toLowerCase();
+  const evidenceText = normalizeText([
+    result.before,
+    result.after,
+    details.before,
+    details.after,
+    ...stringArray(structuredDiff.added_text),
+    ...stringArray(structuredDiff.removed_text),
+  ].join(" ")).toLowerCase();
+  const combined = `${sectionText} ${evidenceText}`;
+
+  if (hasApplicantFacingAwardSignalText(evidenceText)) return false;
+
+  const explicitProfileSection = /\b(featured fellows?|meet the fellows?|fellow highlights?|recipient profiles?|past recipients?|alumni profiles?)\b/.test(
+    sectionText,
+  );
+  const rosterEvidence = /\b(fellowship awarded in \d{4} to support work towards|immigrant from|child of immigrants?|featured fellows?|recipient profile|past recipients?|alumni profile)\b/.test(
+    combined,
+  );
+  const personProfileEvidence =
+    /\b(ph\.?\s*d|m\.?\s*d|j\.?\s*d|m\.?\s*b\.?\s*a|assistant professor|founder|cto|ceo|university|college)\b/.test(
+      evidenceText,
+    ) && /\b(fellow|fellowship|recipient|alumni|immigrant)\b/.test(evidenceText);
+
+  return (explicitProfileSection && (rosterEvidence || personProfileEvidence)) || (rosterEvidence && personProfileEvidence);
+}
+
+function aiReviewLooksLikeAnimatedCounterChange(aiReview) {
+  const result = aiReview?.result || {};
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : {};
+  const structuredDiff =
+    details.structured_diff && typeof details.structured_diff === "object" && !Array.isArray(details.structured_diff)
+      ? details.structured_diff
+      : {};
+
+  return looksLikeAnimatedCounterChangeText(
+    [
+      result.reader_summary,
+      result.advisor_impact,
+      result.changed_section,
+      result.before,
+      result.after,
+      details.reader_summary,
+      details.advisor_impact,
+      details.section,
+      details.before,
+      details.after,
+      ...stringArray(structuredDiff.added_text),
+      ...stringArray(structuredDiff.removed_text),
+      ...stringArray(structuredDiff.date_changes),
+      ...stringArray(structuredDiff.amount_changes),
+    ].join(" "),
+  );
+}
+
+function looksLikeAnimatedCounterChangeText(value) {
+  const text = String(value || "");
+  const normalized = normalizeText(text).toLowerCase();
+  const numericValues = text.match(/\b\d{3,}(?:,\d{3})*\b/g) || [];
+
+  if (numericValues.length < 2) return false;
+
+  const hasCounterSignal =
+    /\b(counter|count[- ]?up|animated|animation|stat(?:istic)?s?|metric|kpi|impact number|number of|total number)\b/.test(
+      normalized,
+    ) ||
+    /\b(participating universities|universities and colleges|scholarships awarded|awarded globally|total investment|investment amount)\b/.test(
+      normalized,
+    );
+
+  const hasCounterDrift =
+    /\b(?:increased|decreased|changed|moved|went|dropped|rose|updated)\s+from\s+\d[\d,]*\s+to\s+\d[\d,]*/.test(
+      normalized,
+    ) || /\bfrom\s+\d[\d,]*\s+to\s+\d[\d,]*/.test(normalized);
+
+  const hasApplicantFacingSignal = hasApplicantFacingAwardSignalText(normalized);
+
+  return hasCounterSignal && hasCounterDrift && !hasApplicantFacingSignal;
+}
+
+function aiReviewLooksLikeDocumentMetadataOnlyChange(aiReview) {
+  const result = aiReview?.result || {};
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : {};
+  const structuredDiff =
+    details.structured_diff && typeof details.structured_diff === "object" && !Array.isArray(details.structured_diff)
+      ? details.structured_diff
+      : {};
+  const summaryText = normalizeText([
+    result.reader_summary,
+    result.advisor_impact,
+    result.changed_section,
+    result.change_type,
+    result.noise_reason,
+    details.reader_summary,
+    details.advisor_impact,
+    details.section,
+    details.change_type,
+  ].join(" "));
+  const evidence = [
+    result.before,
+    result.after,
+    details.before,
+    details.after,
+    ...stringArray(structuredDiff.added_text),
+    ...stringArray(structuredDiff.removed_text),
+    ...stringArray(structuredDiff.date_changes),
+    ...stringArray(structuredDiff.amount_changes),
+  ].filter(Boolean);
+  const evidenceText = normalizeText(evidence.join(" "));
+  const combined = `${summaryText} ${evidenceText}`.toLowerCase();
+  const pageType = cleanSlug(structuredDiff.page_type || details.source?.page_type || "");
+  const documentContext =
+    /^(pdf|document|application_pdf|materials?)$/.test(pageType) ||
+    /\b(pdf|docx?|word version|document|file|form|download)\b/i.test(combined);
+
+  if (!documentContext) return false;
+  if (hasApplicantFacingAwardSignalText(evidenceText)) return false;
+  if (stringArray(structuredDiff.date_changes).length || stringArray(structuredDiff.amount_changes).length) {
+    return false;
+  }
+
+  const metadataOnlyLanguage =
+    /\bspecific changes? (?:within|in) (?:the )?(?:pdf|document|file) (?:are|were) not detailed\b/.test(combined) ||
+    /\bfile itself has changed\b/.test(combined) ||
+    /\bfile size (?:has )?(?:increased|decreased|changed)\b/.test(combined) ||
+    /\bpotential change in content or format\b/.test(combined) ||
+    /\bdownload and review the updated\b/.test(combined) ||
+    /\bupdated (?:pdf|document|file|form) for any changes\b/.test(combined);
+  const genericDocumentUpdate =
+    /\b(?:pdf|document|form|file)\b/.test(combined) &&
+    /\b(?:has been updated|was updated|changed)\b/.test(combined) &&
+    !hasApplicantFacingAwardSignalText(summaryText);
+  const opaqueEvidence = evidence.length > 0 && evidence.every(isOpaqueDocumentEvidenceText);
+
+  return (metadataOnlyLanguage || genericDocumentUpdate) && (opaqueEvidence || evidence.length === 0);
+}
+
+function hasApplicantFacingAwardSignalText(value) {
+  return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/.test(
+    String(value || "").toLowerCase(),
+  );
+}
+
+function markAiReviewAsNoise(aiReview, flag, reason) {
+  const result = aiReview?.result || {};
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : null;
+  const structuredDiff =
+    details?.structured_diff && typeof details.structured_diff === "object" && !Array.isArray(details.structured_diff)
+      ? details.structured_diff
+      : {};
+  const cleanFlag = cleanSlug(flag);
+  const qualityFlags = unique([
+    ...stringArray(result.quality_flags).map(cleanSlug),
+    ...stringArray(details?.quality_flags).map(cleanSlug),
+    cleanFlag,
+  ]).filter(Boolean);
+  const noiseFlags = unique([
+    ...stringArray(structuredDiff.noise_flags).map(cleanSlug),
+    cleanFlag,
+  ]).filter(Boolean);
+
+  aiReview.result = {
+    ...result,
+    is_true_change: false,
+    noise_reason: result.noise_reason || reason,
+    reader_summary: null,
+    advisor_impact: null,
+    confidence: "high",
+    quality_flags: qualityFlags,
+    change_details: details
+      ? {
+          ...details,
+          reader_summary: "No award-relevant visual change was detected.",
+          advisor_impact: null,
+          is_alert_worthy: false,
+          confidence: "high",
+          change_type: "noise",
+          quality_flags: qualityFlags,
+          structured_diff: {
+            ...structuredDiff,
+            noise_flags: noiseFlags,
+          },
+          generation_status: "rejected",
+        }
+      : result.change_details,
+  };
+}
+
+function isOpaqueDocumentEvidenceText(value) {
+  const clean = normalizeText(String(value || ""));
+  if (!clean) return true;
+  if (/^\d{1,10}$/.test(clean)) return true;
+  const tokens = clean.match(/[a-z0-9]+/gi) || [];
+  if (!tokens.length) return true;
+  const hexTokenCount = tokens.filter((token) => /^[a-f0-9]{1,16}$/i.test(token)).length;
+  const longHashCount = tokens.filter((token) => /^[a-f0-9]{16,}$/i.test(token)).length;
+  const readableWordCount = tokens.filter((token) => /[g-z]/i.test(token) && token.length >= 4).length;
+
+  return (
+    longHashCount > 0 ||
+    (tokens.length >= 6 && hexTokenCount / tokens.length >= 0.82 && readableWordCount === 0)
+  );
+}
+
 function looksLikeSourceAccessError(value) {
   const clean = normalizeText(String(value || ""));
   return /\b(error\s*(?:401|403|404|410|429|50[0-4])|access denied|forbidden|not found|page not found|service unavailable|too many requests)\b/i.test(
@@ -5425,6 +6660,7 @@ function isBrowserClosedError(error) {
     message.includes("browser context was closed") ||
     message.includes("browser has been closed") ||
     message.includes("context has been closed") ||
+    message.includes("session closed") ||
     message.includes("other side closed") ||
     message.includes("target closed")
   );
@@ -5488,7 +6724,7 @@ const aiSystemPrompt = [
   "Use normalized text as secondary context for screenshots because it can be incomplete or noisy.",
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
   "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
-  "Reject cookie banners, carousels, ads, newsletter popups, current-date or last-updated-only changes, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+  "Reject cookie banners, carousels, ads, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
   "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",
   "advisor_impact should say what an advising office might need to check or update.",
@@ -5617,6 +6853,7 @@ if (continuous) {
 } else {
   try {
     await runOnce();
+    process.exit(0);
   } catch (error) {
     console.error(errorMessage(error));
     process.exit(1);

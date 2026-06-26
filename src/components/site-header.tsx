@@ -9,32 +9,34 @@ export async function SiteHeader() {
   const profile = user ? await getUserProfile(user.id) : null;
 
   return (
-    <header className="sticky top-0 z-40 px-4 pt-4">
-      <div className="mx-auto flex max-w-6xl items-center justify-between rounded-full border border-[var(--line)] bg-white/[0.86] px-4 py-3 shadow-[0_18px_55px_rgba(22,34,74,0.09)] backdrop-blur-xl">
-        <Link href="/" className="brand-link" aria-label="AwardPing home">
-          <BrandLogo />
-        </Link>
+    <header className="app-header">
+      <div className="app-header-shell">
+        <div className="app-header-bar">
+          <Link href="/" className="brand-link app-header-brand" aria-label="AwardPing home">
+            <BrandLogo />
+          </Link>
 
-        <nav className="site-header-nav" aria-label="Primary navigation">
-          <Link href="/updates">Live Updates</Link>
-          <Link href="/award-directory">Award Directory</Link>
-          <Link href="/advisor-hub">Advisor Hub</Link>
-        </nav>
+          <nav className="site-header-nav" aria-label="Primary navigation">
+            <Link href="/updates">Live Updates</Link>
+            <Link href="/award-directory" prefetch={false}>Award Directory</Link>
+            <Link href="/advisor-hub">Advisor Hub</Link>
+          </nav>
 
-        <div className="flex items-center gap-2">
-          <span className="hidden sm:block">
-            <Link href="/dashboard" className="button-secondary">
-              <LayoutDashboard size={17} aria-hidden="true" />
-              Dashboard
-            </Link>
-          </span>
-          {user ? (
-            <ProfileMenu email={user.email} fullName={profile?.full_name} />
-          ) : (
-            <Link href="/signup" className="button-primary">
-              Sign up for free
-            </Link>
-          )}
+          <div className="app-header-actions">
+            {user ? (
+              <>
+                <Link href="/dashboard" className="button-secondary">
+                  <LayoutDashboard size={17} aria-hidden="true" />
+                  Dashboard
+                </Link>
+                <ProfileMenu email={user.email} fullName={profile?.full_name} />
+              </>
+            ) : (
+              <Link href="/signup" className="button-primary">
+                Sign up for free
+              </Link>
+            )}
+          </div>
         </div>
       </div>
     </header>

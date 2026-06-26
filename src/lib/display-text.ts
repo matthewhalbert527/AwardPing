@@ -92,6 +92,7 @@ function meaningfulUrlSegments(url: URL) {
     .filter(
       (segment) =>
         segment.length > 1 &&
+        !/^index\.(html?|php|aspx?)$/i.test(segment) &&
         !/^(page|pages|resources?|view|programs?|awards?|scholarships?|fellowships?|grants?)$/i.test(
           segment,
         ),

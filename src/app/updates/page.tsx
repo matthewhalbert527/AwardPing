@@ -68,7 +68,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
               <p className="dashboard-label">Chronological feed</p>
               <h2>Latest source-page changes</h2>
             </div>
-            <Link className="button-secondary" href="/award-directory">
+            <Link className="button-secondary" href="/award-directory" prefetch={false}>
               Award Directory
               <ArrowRight size={16} aria-hidden="true" />
             </Link>

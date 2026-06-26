@@ -75,7 +75,7 @@ export default async function AdvisorHubPage() {
                 {user ? "Open dashboard" : "Start a watchlist"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
-              <Link className="button-secondary" href="/award-directory">
+              <Link className="button-secondary" href="/award-directory" prefetch={false}>
                 Search awards
                 <SearchCheck size={17} aria-hidden="true" />
               </Link>

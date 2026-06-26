@@ -37,6 +37,9 @@ export function ChangeEvidencePanel({
         {sourceId && sourceUrl ? (
           <div className="change-evidence-highlight-link">
             <SourceSnapshotViewerButton
+              changeDetectedAt={detectedAt}
+              changeDetails={changeDetails}
+              changeSummary={summary}
               sourceId={sourceId}
               sourcePageTypeLabel={sourcePageTypeLabel}
               sourceTitle={snapshotTitle}

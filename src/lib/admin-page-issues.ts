@@ -7,6 +7,7 @@ type LocalWorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
 type AwardEmbed = {
   id: string;
   name: string;
+  slug: string | null;
   status: "active" | "archived";
 };
 
@@ -31,6 +32,7 @@ type SourceIssueRow = {
 type AwardIssueRow = {
   id: string;
   name: string;
+  slug: string | null;
   official_homepage: string | null;
   structure_scan_error: string | null;
   last_structure_scan_at: string | null;
@@ -55,6 +57,7 @@ export type AdminPageIssue = {
   severity: PageIssueSeverity;
   label: string;
   awardId: string | null;
+  awardSlug: string | null;
   awardName: string;
   sourceId: string | null;
   sourceTitle: string;
@@ -78,6 +81,7 @@ export type AdminPageIssueSummary = {
 export type AdminReviewLaterSource = {
   id: string;
   awardId: string;
+  awardSlug: string | null;
   awardName: string;
   sourceTitle: string;
   sourceUrl: string;
@@ -94,8 +98,31 @@ export type AdminPageIssueLoadResult = {
   loadErrors: string[];
 };
 
+type CountResult = {
+  count: number;
+  error: { message: string } | null;
+};
+
 const sourceIssueSelect =
-  "id, shared_award_id, url, title, display_title, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, page_type, last_checked_at, consecutive_failures, last_error, updated_at, shared_awards!inner(id, name, status)";
+  "id, shared_award_id, url, title, display_title, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, page_type, last_checked_at, consecutive_failures, last_error, updated_at, shared_awards!inner(id, name, slug, status)";
+
+export async function countActiveOpenSourcesWithVisualSnapshots(
+  admin: AdminClient,
+): Promise<CountResult> {
+  try {
+    const [sourceIds, snapshotSourceIds] = await Promise.all([
+      loadActiveOpenSourceIds(admin),
+      loadVisualSnapshotSourceIds(admin),
+    ]);
+    const snapshotSet = new Set(snapshotSourceIds);
+    return {
+      count: sourceIds.filter((id) => snapshotSet.has(id)).length,
+      error: null,
+    };
+  } catch (error) {
+    return { count: 0, error: { message: errorMessage(error) } };
+  }
+}
 
 export async function loadAdminPageIssues(
   admin: AdminClient,
@@ -136,7 +163,7 @@ export async function loadAdminPageIssues(
       .gte("consecutive_failures", 3),
     admin
       .from("shared_awards")
-      .select("id, name, official_homepage, structure_scan_error, last_structure_scan_at, updated_at")
+      .select("id, name, slug, official_homepage, structure_scan_error, last_structure_scan_at, updated_at")
       .eq("status", "active")
       .not("structure_scan_error", "is", null)
       .order("updated_at", { ascending: false })
@@ -157,9 +184,7 @@ export async function loadAdminPageIssues(
       .eq("shared_awards.status", "active")
       .eq("admin_review_status", "open")
       .not("page_metadata_generated_at", "is", null),
-    admin
-      .from("shared_award_source_visual_snapshots")
-      .select("*", { count: "exact", head: true }),
+    countActiveOpenSourcesWithVisualSnapshots(admin),
     workerRuns
       ? Promise.resolve({ data: workerRuns, error: null })
       : admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(20),
@@ -232,6 +257,42 @@ export async function loadAdminPageIssues(
   return { summary, issues, loadErrors };
 }
 
+async function loadActiveOpenSourceIds(admin: AdminClient) {
+  const ids: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)")
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
+      .range(from, from + 999);
+    if (error) throw new Error(error.message);
+    const rows = (data || []) as Array<{ id: string | null }>;
+    ids.push(...rows.map((row) => row.id).filter((id): id is string => Boolean(id)));
+    if (rows.length < 1000) break;
+  }
+  return ids;
+}
+
+async function loadVisualSnapshotSourceIds(admin: AdminClient) {
+  const ids: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin
+      .from("shared_award_source_visual_snapshots")
+      .select("shared_award_source_id")
+      .range(from, from + 999);
+    if (error) throw new Error(error.message);
+    const rows = (data || []) as Array<{ shared_award_source_id: string | null }>;
+    ids.push(
+      ...rows
+        .map((row) => row.shared_award_source_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    if (rows.length < 1000) break;
+  }
+  return ids;
+}
+
 export async function loadAdminReviewLaterSources(
   admin: AdminClient,
 ): Promise<{ sources: AdminReviewLaterSource[]; loadErrors: string[] }> {
@@ -271,6 +332,7 @@ function sourceRowToIssue(row: SourceIssueRow): AdminPageIssue {
     severity: sourceIssueSeverity(message, row.consecutive_failures),
     label: issueLabel(message),
     awardId: award?.id || row.shared_award_id,
+    awardSlug: award?.slug || null,
     awardName: award?.name || "Unknown award",
     sourceId: row.id,
     sourceTitle: cleanDisplayTitle(row.display_title || row.title || row.url),
@@ -286,6 +348,7 @@ function reviewLaterRowToSource(row: SourceIssueRow): AdminReviewLaterSource {
   return {
     id: row.id,
     awardId: award?.id || row.shared_award_id,
+    awardSlug: award?.slug || null,
     awardName: award?.name || "Unknown award",
     sourceTitle: cleanDisplayTitle(row.display_title || row.title || row.url),
     sourceUrl: row.url,
@@ -305,6 +368,7 @@ function awardRowToIssue(row: AwardIssueRow): AdminPageIssue {
     severity: awardIssueSeverity(message),
     label: issueLabel(message),
     awardId: row.id,
+    awardSlug: row.slug,
     awardName: row.name,
     sourceId: null,
     sourceTitle: "Award detail summary",
@@ -326,6 +390,7 @@ function workerPageErrorToIssue(
     severity: sourceIssueSeverity(issue.message, source?.consecutive_failures || 0),
     label: issueLabel(issue.message),
     awardId: award?.id || source?.shared_award_id || null,
+    awardSlug: award?.slug || null,
     awardName: award?.name || "Unknown award",
     sourceId: issue.sourceId,
     sourceTitle: cleanDisplayTitle(source?.display_title || source?.title || issue.sourceUrl || "Worker page error"),
@@ -435,6 +500,14 @@ function severityRank(value: PageIssueSeverity) {
 function dateMs(value: string | null) {
   const ms = value ? new Date(value).getTime() : 0;
   return Number.isFinite(ms) ? ms : 0;
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message?: unknown }).message || "Unknown error");
+  }
+  return String(error || "Unknown error");
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

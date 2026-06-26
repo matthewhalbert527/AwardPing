@@ -283,7 +283,14 @@ function displayTitleFromSource(source: SourceTreeSource) {
 
 function baselineFactsFromMetadata(value: unknown) {
   const metadata = objectValue(value);
-  return objectValue(metadata.baseline_facts || metadata.baselineFacts || value);
+  if (
+    metadata.baseline_facts_rejected === true ||
+    objectValue(metadata.baseline_facts_metadata).rejected === true
+  ) {
+    return {};
+  }
+
+  return objectValue(metadata.baseline_facts || metadata.baselineFacts);
 }
 
 function pageTypeLabelForTree(pageType: AwardPageType) {

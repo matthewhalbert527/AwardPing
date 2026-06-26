@@ -514,18 +514,46 @@ async function processGeminiApiBatchChunkGroup(chunks, report, runId) {
 }
 
 async function processGeminiApiBatchChunkSafely(entries, report, runId) {
-  try {
-    await processGeminiApiBatchChunk(entries, report, runId);
-  } catch (error) {
-    const message = errorMessage(error);
-    report.failed += entries.length;
-    report.gemini_usage.batch_failures += entries.length;
-    for (const entry of entries) {
-      report.errors.push({ source_id: entry.source.id, source_url: entry.source.url, message });
+  const maxAttempts = 6;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      await processGeminiApiBatchChunk(entries, report, runId);
+      return;
+    } catch (error) {
+      const message = errorMessage(error);
+      if (attempt < maxAttempts && isRetryableGeminiBatchSubmissionFailure(message)) {
+        const waitMs = geminiBatchRetryDelayMs(attempt);
+        console.log(
+          `BASELINE_FACTS_BATCH retry_unhandled requests=${entries.length} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 500)}`,
+        );
+        await sleep(waitMs);
+        continue;
+      }
+
+      report.failed += entries.length;
+      report.gemini_usage.batch_failures += entries.length;
+      for (const entry of entries) {
+        report.errors.push({ source_id: entry.source.id, source_url: entry.source.url, message });
+      }
+      console.log(`BASELINE_FACTS_BATCH failed_unhandled requests=${entries.length} message=${truncate(message, 500)}`);
+      await maybeUpdateWorkerRun(runId, report);
+      return;
     }
-    console.log(`BASELINE_FACTS_BATCH failed_unhandled requests=${entries.length} message=${truncate(message, 500)}`);
-    await maybeUpdateWorkerRun(runId, report);
   }
+}
+
+function isRetryableGeminiBatchSubmissionFailure(message) {
+  const clean = String(message || "").toLowerCase();
+  if (/\b(prepay|prepayment|credits?\s+are\s+depleted|billing)\b/.test(clean)) return false;
+  return /\b(408|429|500|502|503|504|rate.?limit|quota|temporar|timeout|unavailable|econnreset|network|fetch failed)\b/.test(
+    clean,
+  );
+}
+
+function geminiBatchRetryDelayMs(attempt) {
+  const baseMs = Math.min(15 * 60_000, 60_000 * 2 ** Math.max(0, attempt - 1));
+  const jitterMs = Math.floor(Math.random() * 20_000);
+  return baseMs + jitterMs;
 }
 
 async function processGeminiApiBatchChunk(entries, report, runId) {
@@ -557,17 +585,28 @@ async function processGeminiApiBatchChunk(entries, report, runId) {
   }
 
   const responses = extractGeminiBatchInlineResponses(completed);
+  const responseByKey = geminiBatchInlineResponseMap(responses);
   if (responses.length !== entries.length) {
     console.log(
       `BASELINE_FACTS_BATCH response_count_mismatch job=${batchName} expected=${entries.length} actual=${responses.length}`,
     );
   }
+  if (responseByKey.missingKeys > 0 || responseByKey.duplicateKeys.size > 0) {
+    console.log(
+      `BASELINE_FACTS_BATCH response_key_warning job=${batchName} responses=${responses.length} missing_keys=${responseByKey.missingKeys} duplicate_keys=${responseByKey.duplicateKeys.size}`,
+    );
+  }
 
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
-    const inlineResponse = responses[index] || null;
+    const inlineResponse = responseByKey.responses.get(entry.source.id) || null;
     try {
-      if (!inlineResponse) throw new Error("Gemini batch response missing for request.");
+      if (!inlineResponse) {
+        throw new Error(`Gemini batch response missing matching metadata key for source ${entry.source.id}.`);
+      }
+      if (responseByKey.duplicateKeys.has(entry.source.id)) {
+        throw new Error(`Gemini batch response had duplicate metadata keys for source ${entry.source.id}.`);
+      }
       if (inlineResponse.error) {
         throw new Error(`Gemini batch item error: ${geminiInlineErrorMessage(inlineResponse.error)}`);
       }
@@ -825,6 +864,35 @@ function extractGeminiBatchInlineResponses(data) {
   if (Array.isArray(direct?.inlinedResponses)) return direct.inlinedResponses;
   if (Array.isArray(direct?.inlined_responses)) return direct.inlined_responses;
   return [];
+}
+
+function geminiBatchInlineResponseMap(responses) {
+  const mapped = new Map();
+  const duplicateKeys = [];
+  let missingKeys = 0;
+
+  for (const response of responses) {
+    const key = geminiBatchInlineResponseKey(response);
+    if (!key) {
+      missingKeys += 1;
+      continue;
+    }
+    if (mapped.has(key)) duplicateKeys.push(key);
+    mapped.set(key, response);
+  }
+
+  return { responses: mapped, missingKeys, duplicateKeys: new Set(duplicateKeys) };
+}
+
+function geminiBatchInlineResponseKey(response) {
+  return cleanText(
+    response?.metadata?.key ||
+      response?.metadata?.request_key ||
+      response?.metadata?.source_id ||
+      response?.requestMetadata?.key ||
+      response?.request_metadata?.key ||
+      response?.key,
+  );
 }
 
 function geminiBatchErrorMessage(data) {
@@ -1106,6 +1174,7 @@ function distinctiveSourceTokens(value) {
     "eligibility",
     "fellowship",
     "fellowships",
+    "foundation",
     "grant",
     "grants",
     "home",
@@ -1118,8 +1187,19 @@ function distinctiveSourceTokens(value) {
     "scholarship",
     "scholarships",
     "source",
+    "sources",
     "student",
     "students",
+    "college",
+    "department",
+    "form",
+    "institute",
+    "official",
+    "portal",
+    "research",
+    "school",
+    "university",
+    "website",
     "the",
     "and",
     "for",

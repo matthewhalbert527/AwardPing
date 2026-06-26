@@ -122,7 +122,14 @@ export function latestCheckedAt(sources: Array<{ last_checked_at?: string | null
 
 function baselineFactsFromMetadata(value: unknown) {
   const metadata = objectValue(value);
-  return objectValue(metadata.baseline_facts || metadata.baselineFacts || value);
+  if (
+    metadata.baseline_facts_rejected === true ||
+    objectValue(metadata.baseline_facts_metadata).rejected === true
+  ) {
+    return {};
+  }
+
+  return objectValue(metadata.baseline_facts || metadata.baselineFacts);
 }
 
 function splitFact(value: string | null, fallback: string[] = []) {

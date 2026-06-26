@@ -7,10 +7,12 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  ExternalLink,
   Search,
   X,
 } from "lucide-react";
 import { type AwardPageType } from "@/lib/award-discovery-types";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { displayAwardSummary } from "@/lib/award-summary";
 
@@ -159,7 +161,7 @@ export function AwardDiscoveryWorkspace({
   }
 
   function awardHref(award: SharedAwardCard) {
-    return isAuthenticated ? `/dashboard/awards/${award.id}` : award.publicPath;
+    return isAuthenticated ? dashboardAwardPath(award.slug, award.name, award.id) : award.publicPath;
   }
 
   function renderBrowseControls(position: "top" | "bottom") {
@@ -485,6 +487,14 @@ export function AwardDiscoveryWorkspace({
                     ))}
                   </div>
                 </Link>
+                {isAuthenticated && (
+                  <div className="award-row-actions">
+                    <Link className="button-secondary px-3 py-2 text-sm" href={award.publicPath}>
+                      Public page
+                      <ExternalLink size={14} aria-hidden="true" />
+                    </Link>
+                  </div>
+                )}
               </article>
             ))}
           </div>

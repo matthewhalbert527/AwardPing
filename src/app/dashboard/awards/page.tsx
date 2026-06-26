@@ -39,6 +39,7 @@ type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts"
 >;
+type SharedAwardLookupRow = Pick<SharedAwardRow, "id" | "slug">;
 type TrackedOfficeAwardRow = Pick<OfficeAwardRow, "id" | "shared_award_id">;
 type SharedSourceDirectoryRow = Pick<
   SharedSourceRow,
@@ -167,19 +168,37 @@ async function loadWatchlistGroups(
     ]);
 
   const awards = (officeAwards || []) as OfficeAwardRow[];
-  const sharedSources = await fetchSharedSourcesForAwards(
-    supabase,
-    awards
-      .map((award) => award.shared_award_id)
-      .filter((id): id is string => Boolean(id)),
-  );
+  const sharedAwardIds = awards
+    .map((award) => award.shared_award_id)
+    .filter((id): id is string => Boolean(id));
+  const [sharedSources, sharedAwards] = await Promise.all([
+    fetchSharedSourcesForAwards(supabase, sharedAwardIds),
+    fetchSharedAwardsByIds(supabase, sharedAwardIds),
+  ]);
 
   return buildWatchlistGroups(
     awards,
     (monitors || []) as MonitorRow[],
     (officeAwardSources || []) as OfficeAwardSourceRow[],
     sharedSources,
+    sharedAwards,
   );
+}
+
+async function fetchSharedAwardsByIds(
+  supabase: SupabaseServerClient,
+  sharedAwardIds: string[],
+) {
+  const ids = [...new Set(sharedAwardIds)];
+  if (ids.length === 0) return [];
+
+  const { data } = await supabase
+    .from("shared_awards")
+    .select("id, slug")
+    .in("id", ids)
+    .eq("status", "active");
+
+  return (data || []) as SharedAwardLookupRow[];
 }
 
 async function fetchSharedSourcesForAwards(
@@ -287,10 +306,12 @@ function buildWatchlistGroups(
   monitors: MonitorRow[],
   awardSources: OfficeAwardSourceRow[],
   sharedSources: SharedSourceDirectoryRow[],
+  sharedAwards: SharedAwardLookupRow[],
 ): WatchlistAwardGroup[] {
   const monitorsByAward = groupBy(monitors, (monitor) => monitor.award_id || "standalone");
   const awardSourcesByAward = groupBy(awardSources, (source) => source.award_id);
   const sharedSourcesByAward = groupBy(sharedSources, (source) => source.shared_award_id);
+  const sharedAwardById = new Map(sharedAwards.map((award) => [award.id, award]));
   const groups = awards.map((award) => {
     const monitorRows = monitorsByAward.get(award.id) || [];
     const officeSources = awardSourcesByAward.get(award.id) || [];
@@ -355,6 +376,7 @@ function buildWatchlistGroups(
     return {
       id: award.id,
       sharedAwardId: award.shared_award_id,
+      sharedAwardSlug: award.shared_award_id ? sharedAwardById.get(award.shared_award_id)?.slug || null : null,
       name: award.name,
       summary: displayAwardSummary(award.summary),
       officialHomepage: displayHomepageForAward(award.official_homepage, sharedRows),
@@ -368,6 +390,7 @@ function buildWatchlistGroups(
     .map((monitor) => ({
       id: `monitor:${monitor.id}`,
       sharedAwardId: null,
+      sharedAwardSlug: null,
       name: monitor.label,
       summary: null,
       officialHomepage: monitor.url,

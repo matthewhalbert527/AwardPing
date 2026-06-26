@@ -25,10 +25,10 @@ export default async function DashboardLayout({
 
   return (
     <div className="dashboard-shell">
-      <header className="dashboard-header">
-        <div className="dashboard-header-shell">
-          <div className="dashboard-header-bar">
-            <Link href="/" className="brand-link dashboard-brand-link" aria-label="AwardPing home">
+      <header className="app-header dashboard-header">
+        <div className="app-header-shell dashboard-header-shell">
+          <div className="app-header-bar dashboard-header-bar">
+            <Link href="/" className="brand-link app-header-brand dashboard-brand-link" aria-label="AwardPing home">
               <BrandLogo />
             </Link>
 
@@ -38,7 +38,7 @@ export default async function DashboardLayout({
               </Suspense>
             </div>
 
-            <div className="dashboard-header-actions">
+            <div className="app-header-actions dashboard-header-actions">
               {officeContext && officeOptions.length > 1 && (
                 <OfficeSwitcher
                   offices={officeOptions}

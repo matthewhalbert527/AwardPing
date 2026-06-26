@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
+import { countActiveOpenSourcesWithVisualSnapshots } from "@/lib/admin-page-issues";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -122,9 +123,7 @@ export default async function AdminPage() {
       .not("last_checked_at", "is", null)
       .order("last_checked_at", { ascending: false })
       .limit(1),
-    admin
-      .from("shared_award_source_visual_snapshots")
-      .select("*", { count: "exact", head: true }),
+    countActiveOpenSourcesWithVisualSnapshots(admin),
   ]);
 
   const workerRuns = (workerRunRows || []) as LocalWorkerRun[];

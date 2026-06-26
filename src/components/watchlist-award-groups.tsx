@@ -14,11 +14,13 @@ import {
   Trash2,
 } from "lucide-react";
 import { type AwardPageType } from "@/lib/award-discovery-types";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { SourcePageTree } from "@/components/source-page-tree";
 
 export type WatchlistAwardGroup = {
   id: string;
   sharedAwardId: string | null;
+  sharedAwardSlug: string | null;
   name: string;
   summary: string | null;
   officialHomepage: string | null;
@@ -295,7 +297,7 @@ export function WatchlistAwardGroups({
                     {group.sharedAwardId ? (
                       <Link
                         className="inline-flex min-w-0 items-center gap-2 text-[var(--foreground)] hover:text-[var(--brand)]"
-                        href={`/dashboard/awards/${group.sharedAwardId}`}
+                        href={dashboardAwardPath(group.sharedAwardSlug, group.name, group.sharedAwardId)}
                       >
                         <span className="min-w-0 break-words">{group.name}</span>
                         <ChevronRight className="shrink-0" size={20} aria-hidden="true" />

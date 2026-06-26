@@ -394,8 +394,12 @@ function Write-UninstallScript {
   "AwardPing Local Source Worker",
   "AwardPing Local Worker Auto Update",
   "AwardPing Visual Snapshot Worker",
+  "AwardPing Visual Snapshot Worker Shard 1",
+  "AwardPing Visual Snapshot Worker Shard 2",
+  "AwardPing Visual Snapshot Worker Shard 3",
   "AwardPing Baseline Completion Watchdog",
-  "AwardPing Baseline Facts Watchdog"
+  "AwardPing Baseline Facts Watchdog",
+  "AwardPing Startup Supervisor"
 )
 
 foreach (`$taskName in `$taskNames) {
@@ -425,14 +429,20 @@ param(
   [int]`$DomainDelayMs = 1500,
   [int]`$WebConcurrency = 4,
   [int]`$MaxRestarts = 3,
-  [int]`$CompleteMissingBatchLimit = 250
+  [int]`$CompleteMissingBatchLimit = 250,
+  [int]`$ShardCount = 1,
+  [int]`$ShardIndex = 0
 )
 
 `$ErrorActionPreference = "Stop"
 `$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
 `$AppDir = Join-Path `$InstallRoot "app"
 `$LogDir = Join-Path `$InstallRoot "logs"
-`$LockPath = Join-Path `$InstallRoot "visual-worker.lock"
+if (`$ShardCount -lt 1) { throw "ShardCount must be at least 1." }
+if (`$ShardIndex -lt 0 -or `$ShardIndex -ge `$ShardCount) { throw "ShardIndex must be between 0 and `$(`$ShardCount - 1)." }
+`$ShardLabel = if (`$ShardCount -gt 1) { "shard-`$(`$ShardIndex + 1)-of-`$ShardCount" } else { "single" }
+`$LockName = if (`$ShardCount -gt 1) { "visual-worker-`$ShardLabel.lock" } else { "visual-worker.lock" }
+`$LockPath = Join-Path `$InstallRoot `$LockName
 New-Item -ItemType Directory -Force -Path `$LogDir | Out-Null
 
 function Test-VisualLockActive {
@@ -472,6 +482,7 @@ if (Test-VisualLockActive -Path `$LockPath) {
 `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 `$mode = if (`$CompleteMissingBaselines) { "complete-missing-baselines" } elseif (`$BaselineRefresh) { "baseline-refresh" } else { "snapshots" }
 `$logPrefix = if (`$CompleteMissingBaselines) { "awardping-visual-complete-baselines" } elseif (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
+`$logPrefix = if (`$ShardCount -gt 1) { "`$logPrefix-`$ShardLabel" } else { `$logPrefix }
 `$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
 
 `$nodePath = (Get-Command node.exe -ErrorAction Stop).Source
@@ -490,6 +501,10 @@ if (-not (Test-Path -LiteralPath `$workerScript)) {
   [string]`$DomainDelayMs,
   "--web-concurrency",
   [string]`$WebConcurrency,
+  "--shard-count",
+  [string]`$ShardCount,
+  "--shard-index",
+  [string]`$ShardIndex,
   "--extract-baseline-info=false"
 )
 if (`$All) { `$workerArgs += "--all=true" }
@@ -507,15 +522,15 @@ if (`$CompleteMissingBaselines) {
 if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
 
 if (`$CompleteMissingBaselines) {
-  Write-Host "Running AwardPing missing visual baseline completion. Log: `$logPath"
+  Write-Host "Running AwardPing missing visual baseline completion (`$ShardLabel). Log: `$logPath"
 } elseif (`$BaselineRefresh) {
-  Write-Host "Running AwardPing visual baseline refresh. Log: `$logPath"
+  Write-Host "Running AwardPing visual baseline refresh (`$ShardLabel). Log: `$logPath"
 } else {
-  Write-Host "Running AwardPing visual snapshot worker. Log: `$logPath"
+  Write-Host "Running AwardPing visual snapshot worker (`$ShardLabel). Log: `$logPath"
 }
-Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode log=`$logPath" -Encoding ASCII
+Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath" -Encoding ASCII
 `$exitCode = 1
-Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
+Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
 try {
   `$attempt = 0
   do {
@@ -909,17 +924,39 @@ function Remove-LegacySourceTask {
 function Register-VisualSnapshotTask {
   param([string]$InstallRoot)
 
-  Write-Step "Creating AwardPing visual snapshot task"
-  $taskName = "AwardPing Visual Snapshot Worker"
+  Write-Step "Creating AwardPing visual snapshot shard tasks"
   $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000"
-  $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
-  $settings.DisallowStartIfOnBatteries = $false
-  $settings.StopIfGoingOnBatteries = $false
-  $settings.Hidden = $true
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC." -Force | Out-Null
-  Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
+  Unregister-ScheduledTask -TaskName "AwardPing Visual Snapshot Worker" -Confirm:$false -ErrorAction SilentlyContinue
+
+  for ($shardIndex = 0; $shardIndex -lt 3; $shardIndex += 1) {
+    $taskName = "AwardPing Visual Snapshot Worker Shard $($shardIndex + 1)"
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000 -WebConcurrency 3 -ShardCount 3 -ShardIndex $shardIndex"
+    $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
+    $settings.DisallowStartIfOnBatteries = $false
+    $settings.StopIfGoingOnBatteries = $false
+    $settings.Hidden = $true
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC. Domain shard $($shardIndex + 1) of 3." -Force | Out-Null
+    Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
+  }
+}
+
+function Register-StartupSupervisorTask {
+  param([string]$InstallRoot)
+
+  Write-Step "Creating AwardPing startup supervisor task"
+  $sourceScript = Join-Path $PSScriptRoot "Start-AwardPingOnBoot.ps1"
+  if (-not (Test-Path -LiteralPath $sourceScript)) {
+    Write-Host "Startup supervisor script is missing; skipping startup supervisor task." -ForegroundColor Yellow
+    return
+  }
+
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sourceScript -InstallRoot $InstallRoot -Install
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not install AwardPing startup supervisor task."
+  }
+
+  Write-Host "Scheduled task created: AwardPing Startup Supervisor at Windows sign-in"
 }
 
 $packageRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -976,6 +1013,7 @@ Write-LauncherScripts -InstallRoot $InstallRoot
 Install-Dependencies -AppDir $appDir
 Remove-LegacySourceTask -InstallRoot $InstallRoot
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
+Register-StartupSupervisorTask -InstallRoot $InstallRoot
 
 if ((-not $UpdateOnly) -and $runTest) {
   Write-Step "Running one-page visual snapshot test"

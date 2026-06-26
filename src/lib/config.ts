@@ -42,7 +42,6 @@ export function hasSupabaseConfig() {
 export function hasSupabaseAdminConfig() {
   return Boolean(
     appConfig.supabaseUrl &&
-      appConfig.supabaseAnonKey &&
       appConfig.supabaseServiceRoleKey,
   );
 }

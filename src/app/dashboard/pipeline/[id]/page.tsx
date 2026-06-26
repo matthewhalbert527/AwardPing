@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseConfig } from "@/lib/config";
 import { requireOfficeContext } from "@/lib/offices";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
@@ -24,7 +25,18 @@ export default async function PipelineAwardRedirectPage({ params }: Params) {
     .maybeSingle();
 
   if (award?.shared_award_id) {
-    redirect(`/dashboard/awards/${award.shared_award_id}`);
+    const { data: sharedAward } = await supabase
+      .from("shared_awards")
+      .select("id, name, slug")
+      .eq("id", award.shared_award_id)
+      .eq("status", "active")
+      .maybeSingle();
+
+    if (sharedAward) {
+      redirect(dashboardAwardPath(sharedAward.slug, sharedAward.name, sharedAward.id));
+    }
+
+    redirect("/dashboard/awards?view=watchlist");
   }
 
   redirect("/dashboard/awards?view=watchlist");

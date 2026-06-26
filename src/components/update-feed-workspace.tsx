@@ -7,6 +7,7 @@ import { Search, X } from "lucide-react";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { awardPageTypes, pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { changeDetailsSearchText } from "@/lib/change-details";
 import { readableSourceTitle } from "@/lib/display-text";
 
@@ -14,6 +15,7 @@ export type UpdateFeedRow = {
   id: string;
   changeId?: string | null;
   awardId: string | null;
+  awardSlug?: string | null;
   sourceId?: string | null;
   title: string;
   sourceTitle: string;
@@ -248,7 +250,7 @@ function awardUpdateHref(change: UpdateFeedRow) {
   if (change.sourceId) params.set("source", change.sourceId);
   if (change.changeId) params.set("change", change.changeId);
   const query = params.toString();
-  return `/dashboard/awards/${change.awardId}${query ? `?${query}` : ""}`;
+  return `${dashboardAwardPath(change.awardSlug, change.title, change.awardId)}${query ? `?${query}` : ""}`;
 }
 
 function readFilters(searchParams: URLSearchParams) {

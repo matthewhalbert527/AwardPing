@@ -33,6 +33,9 @@ export function isUsefulChangeSummary(
     !normalized.includes("something changed") &&
     !normalized.includes("content was updated") &&
     !normalized.includes("page text updated") &&
+    !looksLikeAnimatedCounterChange(clean) &&
+    !looksLikeProfileRosterChange(clean, changeDetails) &&
+    !looksLikeDocumentMetadataOnlyChange(clean) &&
     !looksLikeBoilerplateChange(clean)
   );
 }
@@ -249,6 +252,94 @@ function looksLikeBoilerplateChange(summary: string) {
     /(social media|facebook|instagram|twitter|x\.com|linkedin|youtube|@[\w.-]+)/.test(normalized) ||
     /(required statements|copyright|all rights reserved|privacy|cookie|newsletter|subscribe)/.test(normalized) ||
     /\b(suite|blvd|boulevard|street|avenue)\b/.test(normalized)
+  );
+}
+
+function looksLikeAnimatedCounterChange(summary: string) {
+  const normalized = summary.toLowerCase();
+  const numericValues = summary.match(/\b\d{3,}(?:,\d{3})*\b/g) || [];
+
+  if (numericValues.length < 2) return false;
+
+  const hasCounterSignal =
+    /\b(counter|count[- ]?up|animated|animation|stat(?:istic)?s?|metric|kpi|impact number|number of|total number)\b/.test(
+      normalized,
+    ) ||
+    /\b(participating universities|universities and colleges|scholarships awarded|awarded globally|total investment|investment amount)\b/.test(
+      normalized,
+    );
+
+  const hasCounterDrift =
+    /\b(?:increased|decreased|changed|moved|went|dropped|rose|updated)\s+from\s+\d[\d,]*\s+to\s+\d[\d,]*/.test(
+      normalized,
+    ) || /\bfrom\s+\d[\d,]*\s+to\s+\d[\d,]*/.test(normalized);
+
+  const hasApplicantFacingSignal = /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/.test(
+    normalized,
+  );
+
+  return hasCounterSignal && hasCounterDrift && !hasApplicantFacingSignal;
+}
+
+function looksLikeDocumentMetadataOnlyChange(summary: string) {
+  const normalized = summary.toLowerCase();
+  const hasDocumentSignal = /\b(pdf|document|docx?|word version|form|file)\b/.test(normalized);
+  if (!hasDocumentSignal) return false;
+
+  const metadataOnlyLanguage =
+    /\bspecific changes? (?:within|in) (?:the )?(?:pdf|document|file) (?:are|were) not detailed\b/.test(normalized) ||
+    /\bfile itself has changed\b/.test(normalized) ||
+    /\bfile size (?:has )?(?:increased|decreased|changed)\b/.test(normalized) ||
+    /\bpotential change in content or format\b/.test(normalized);
+  const genericDocumentUpdate =
+    /\b(?:pdf|document|form|file)\b.*\b(?:has been updated|was updated|changed)\b/.test(
+      normalized,
+    ) &&
+    !/\b(?:deadline|due|eligible|eligibility|required|requirement|recommendation letter|transcript|essay|nomination|award amount|stipend|tuition|funding)\b/.test(
+      normalized,
+    );
+
+  return metadataOnlyLanguage || genericDocumentUpdate;
+}
+
+function looksLikeProfileRosterChange(summary: string, changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  const flags = new Set([
+    ...(details?.quality_flags || []),
+    ...(details?.structured_diff.noise_flags || []),
+  ]);
+  if (flags.has("profile_testimonial_change")) return true;
+
+  const evidenceText = [
+    details?.before,
+    details?.after,
+    ...(details?.structured_diff.added_text || []),
+    ...(details?.structured_diff.removed_text || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const text = [
+    summary,
+    details?.before,
+    details?.after,
+    details?.section,
+    ...(details?.structured_diff.added_text || []),
+    ...(details?.structured_diff.removed_text || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return false;
+  if (/\b(deadline|due|eligible|eligibility|required|requirement|recommendation|transcript|essay|nomination|submit|submission|award amount|stipend|tuition|funding)\b/.test(evidenceText)) {
+    return false;
+  }
+
+  return (
+    /\b(featured fellows?|meet the fellows?|fellow highlights?|recipient profiles?|past recipients?|alumni profiles?|profile roster|testimonial|roster content|new awardees)\b/.test(
+      text,
+    ) ||
+    /\bfellowship awarded in \d{4} to support work towards\b/.test(text)
   );
 }
 
