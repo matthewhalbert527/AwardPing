@@ -14,7 +14,7 @@ import {
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { sortAwardsForSearch } from "@/lib/award-search";
-import { displayAwardSummary } from "@/lib/award-summary";
+import { compactAwardDirectorySummary } from "@/lib/award-summary";
 
 export type SharedAwardCard = {
   id: string;
@@ -147,7 +147,7 @@ export function AwardDiscoveryWorkspace({
     return sortAwardsForSearch(
       filter,
       alphabeticalAwards,
-      (award) => displayAwardSummary(award.summary),
+      (award) => award.summary,
     ).slice(0, 100);
   }, [alphabeticalAwards, query]);
   const searchQuery = query.trim();
@@ -538,58 +538,7 @@ function sourceStatusText(award: SharedAwardCard) {
 }
 
 function compactAwardBlurb(summary: string | null, awardName: string) {
-  const clean = displayAwardSummary(summary);
-  if (!clean) return null;
-
-  const firstSentence = firstMeaningfulSentence(clean) || clean;
-  return singleLineAwardSentence(firstSentence, awardName);
-}
-
-function firstMeaningfulSentence(value: string) {
-  return (
-    value
-      .split(/(?<=[.!?])\s+/)
-      .map((sentence) => sentence.trim())
-      .find((sentence) => sentence.length >= 35) || null
-  );
-}
-
-function singleLineAwardSentence(value: string, awardName: string) {
-  const clean = value.replace(/\s+/g, " ").trim();
-  if (!clean) return null;
-
-  const normalizedName = awardName.replace(/\s+/g, " ").trim();
-  const withoutParenthetical = clean.replace(/\s*\([^)]{2,80}\)\s*/g, " ");
-  const sentence = withoutParenthetical.replace(/\s+/g, " ").trim();
-  if (sentence.length <= 145) return ensureSentencePunctuation(sentence);
-
-  const leadMatch = sentence.match(
-    /^(The\s+)?(.+?)\s+(provides?|offers?|supports?|funds?|awards?|gives?|recognizes?|honors?|helps?|enables?)\s+(.+?)(?:\s+(?:for|to|that|who|from|through|including|matching|with)\b|,|;|$)/i,
-  );
-  if (leadMatch) {
-    const subject = leadMatch[2]?.length > 58 ? normalizedName : `${leadMatch[1] || ""}${leadMatch[2]}`.trim();
-    const verb = leadMatch[3]?.toLowerCase() || "supports";
-    const object = leadMatch[4]?.trim() || "applicants";
-    const concise = `${subject} ${verb} ${object}`;
-    if (concise.length <= 145) return ensureSentencePunctuation(concise);
-  }
-
-  const boundary = sentence.slice(0, 146).search(/\s(?:for|to|that|who|from|through|including|matching|with)\b/i);
-  if (boundary > 65) return ensureSentencePunctuation(sentence.slice(0, boundary).trim());
-
-  const words = sentence.split(/\s+/);
-  const limited = words.reduce((acc, word) => {
-    const next = acc ? `${acc} ${word}` : word;
-    return next.length <= 135 ? next : acc;
-  }, "");
-
-  return ensureSentencePunctuation(limited || sentence.slice(0, 135).trim());
-}
-
-function ensureSentencePunctuation(value: string) {
-  const clean = value.replace(/\s+/g, " ").replace(/[,:;-\s]+$/g, "").trim();
-  if (!clean) return null;
-  return /[.!?]$/.test(clean) ? clean : `${clean}.`;
+  return compactAwardDirectorySummary(summary, awardName);
 }
 
 function uniqueOptions(values: string[]) {

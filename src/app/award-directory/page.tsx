@@ -3,33 +3,24 @@ import { SetupNotice } from "@/components/setup-notice";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
-import { displayAwardSummary } from "@/lib/award-summary";
+import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { canonicalAwardPath } from "@/lib/award-slugs";
 import { dedupeChangeSummaries, isUsefulChangeForAward } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, getOfficeContext } from "@/lib/offices";
-import { latestCheckedAt, publicAwardFactsFromAward } from "@/lib/public-award-facts";
-import {
-  displayHomepageForAward,
-  filterTrackableOfficialSources,
-  isMonitorableOfficialSource,
-} from "@/lib/source-url-policy";
+import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
+import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const dynamic = "force-dynamic";
 
 type AwardRow = Database["public"]["Tables"]["awards"]["Row"];
 type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
-type SharedSourceRow = Database["public"]["Tables"]["shared_award_sources"]["Row"];
 type SharedChangeRow = Database["public"]["Tables"]["shared_award_change_events"]["Row"];
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
->;
-type SharedSourceDirectoryRow = Pick<
-  SharedSourceRow,
-  "shared_award_id" | "url" | "page_type" | "last_checked_at"
 >;
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
@@ -52,10 +43,9 @@ export default async function AwardDirectoryPage() {
   const user = await getCurrentUser();
   const officeContext = user ? await getOfficeContext(user) : null;
   const admin = createSupabaseAdminClient();
-  const [sharedAwards, sharedSources, { data: sharedChanges }, { data: awards }] =
+  const [sharedAwards, { data: sharedChanges }, { data: awards }] =
     await Promise.all([
       fetchAllSharedAwards(admin),
-      fetchAllSharedSources(admin),
       admin
         .from("shared_award_change_events")
         .select("shared_award_id, source_url, source_page_type, summary, change_details")
@@ -72,7 +62,6 @@ export default async function AwardDirectoryPage() {
 
   const sharedCatalog = mapSharedAwards(
     sharedAwards,
-    groupBySharedAwardId(sharedSources),
     groupBySharedAwardId(sharedChanges || []),
     awards || [],
   );
@@ -113,16 +102,6 @@ async function fetchAllSharedAwards(supabase: SupabaseAdminClient) {
   );
 }
 
-async function fetchAllSharedSources(supabase: SupabaseAdminClient) {
-  return fetchAllPages<SharedSourceDirectoryRow>((from, to) =>
-      supabase
-        .from("shared_award_sources")
-        .select("shared_award_id, url, page_type, last_checked_at")
-        .eq("admin_review_status", "open")
-        .range(from, to),
-  );
-}
-
 async function fetchAllPages<Row>(
   queryPage: (from: number, to: number) => PromiseLike<{
     data: Row[] | null;
@@ -145,7 +124,6 @@ async function fetchAllPages<Row>(
 
 function mapSharedAwards(
   sharedAwards: SharedAwardDirectoryRow[],
-  sharedSourcesByAwardId: Map<string, SharedSourceDirectoryRow[]>,
   sharedChangesByAwardId: Map<string, SharedChangeDirectoryRow[]>,
   officeAwards: AwardRow[],
 ) {
@@ -156,13 +134,9 @@ function mapSharedAwards(
   );
 
   return sharedAwards.map((award) => {
-    const sources = filterTrackableOfficialSources(
-      sharedSourcesByAwardId.get(award.id) || [],
-    );
     const facts = publicAwardFactsFromAward({
       summary: award.summary,
       publicFacts: award.public_facts,
-      sources,
     });
     const changes = dedupeChangeSummaries(
       (sharedChangesByAwardId.get(award.id) || []).filter((change) =>
@@ -181,15 +155,15 @@ function mapSharedAwards(
       name: award.name,
       slug: award.slug,
       publicPath: canonicalAwardPath(award.slug, award.name, award.id),
-      officialHomepage: displayHomepageForAward(award.official_homepage, sources),
-      summary: displayAwardSummary(award.summary),
+      officialHomepage: award.official_homepage,
+      summary: compactAwardDirectorySummary(facts.overview || award.summary, award.name),
       deadline: facts.deadline,
       academicLevels: facts.academicLevels,
       disciplines: facts.disciplines,
       citizenship: facts.citizenship,
-      lastCheckedAt: latestCheckedAt(sources),
+      lastCheckedAt: null,
       recentlyUpdated: changes.length > 0,
-      sourceCount: sources.length,
+      sourceCount: null,
       sourceIssueCount: null,
       changeCount: changes.length,
       tracked: trackedSharedIds.has(award.id),

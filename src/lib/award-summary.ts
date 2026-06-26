@@ -56,6 +56,17 @@ export function awardBaselineSummaryParts(summary: string | null | undefined): A
   return { overview, facts };
 }
 
+export function compactAwardDirectorySummary(
+  summary: string | null | undefined,
+  awardName: string,
+) {
+  const clean = displayAwardSummary(summary);
+  if (!clean) return null;
+
+  const firstSentence = firstMeaningfulSentence(clean) || clean;
+  return singleLineAwardSentence(firstSentence, awardName);
+}
+
 function normalizeBaselineLabel(value: string) {
   const lower = value.toLowerCase();
   return baselineFactLabels.find((label) => label.toLowerCase() === lower) || null;
@@ -63,6 +74,55 @@ function normalizeBaselineLabel(value: string) {
 
 function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function firstMeaningfulSentence(value: string) {
+  return (
+    value
+      .split(/(?<=[.!?])\s+/)
+      .map((sentence) => sentence.trim())
+      .find((sentence) => sentence.length >= 35) || null
+  );
+}
+
+function singleLineAwardSentence(value: string, awardName: string) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean) return null;
+
+  const normalizedName = awardName.replace(/\s+/g, " ").trim();
+  const withoutParenthetical = clean.replace(/\s*\([^)]{2,80}\)\s*/g, " ");
+  const sentence = withoutParenthetical.replace(/\s+/g, " ").trim();
+  if (sentence.length <= 145) return ensureSentencePunctuation(sentence);
+
+  const leadMatch = sentence.match(
+    /^(The\s+)?(.+?)\s+(provides?|offers?|supports?|funds?|awards?|gives?|recognizes?|honors?|helps?|enables?)\s+(.+?)(?:\s+(?:for|to|that|who|from|through|including|matching|with)\b|,|;|$)/i,
+  );
+  if (leadMatch) {
+    const subject = leadMatch[2]?.length > 58
+      ? normalizedName
+      : `${leadMatch[1] || ""}${leadMatch[2]}`.trim();
+    const verb = leadMatch[3]?.toLowerCase() || "supports";
+    const object = leadMatch[4]?.trim() || "applicants";
+    const concise = `${subject} ${verb} ${object}`;
+    if (concise.length <= 145) return ensureSentencePunctuation(concise);
+  }
+
+  const boundary = sentence.slice(0, 146).search(/\s(?:for|to|that|who|from|through|including|matching|with)\b/i);
+  if (boundary > 65) return ensureSentencePunctuation(sentence.slice(0, boundary).trim());
+
+  const words = sentence.split(/\s+/);
+  const limited = words.reduce((acc, word) => {
+    const next = acc ? `${acc} ${word}` : word;
+    return next.length <= 135 ? next : acc;
+  }, "");
+
+  return ensureSentencePunctuation(limited || sentence.slice(0, 135).trim());
+}
+
+function ensureSentencePunctuation(value: string) {
+  const clean = value.replace(/\s+/g, " ").replace(/[,:;-\s]+$/g, "").trim();
+  if (!clean) return null;
+  return /[.!?]$/.test(clean) ? clean : `${clean}.`;
 }
 
 function looksLikeBrokenSummary(summary: string) {
