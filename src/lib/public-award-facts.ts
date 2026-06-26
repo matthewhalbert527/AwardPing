@@ -143,7 +143,11 @@ function arrayField(value: unknown) {
 }
 
 function inferAcademicLevels(values: string[]) {
-  const text = values.join(" ").toLowerCase();
+  const text = values
+    .join(" ")
+    .toLowerCase()
+    .replace(/\bundergraduate transcripts?\b/g, "")
+    .replace(/\bbachelor'?s? transcripts?\b/g, "");
   const levels: string[] = [];
   if (/\b(first-year|freshman|sophomore|junior|senior|undergraduate|bachelor)/.test(text)) levels.push("Undergraduate");
   if (/\bgraduate|master|doctoral|phd|ph\.d|postdoctoral|postdoc/.test(text)) levels.push("Graduate");
@@ -154,6 +158,7 @@ function inferAcademicLevels(values: string[]) {
 function inferDisciplines(values: string[]) {
   const text = values.join(" ").toLowerCase();
   const disciplines: string[] = [];
+  if (/\b(ecology|evolution|biology|life sciences?)\b/.test(text)) disciplines.push("Life sciences");
   if (/\b(stem|science|engineering|mathematics|technology|computer|biology|chemistry|physics)\b/.test(text)) disciplines.push("STEM");
   if (/\bpublic service|policy|government|international affairs|foreign service|leadership\b/.test(text)) disciplines.push("Public service");
   if (/\bhumanities|arts|literature|history|language|social science\b/.test(text)) disciplines.push("Humanities / social sciences");

@@ -40,6 +40,13 @@ export function classifySourceHygiene(sourceLike = {}, failure = {}) {
     return review("boilerplate_or_policy_link", "Boilerplate, policy, news, event, or generic resource link");
   }
 
+  if (isCrossProgramOrBroadListingSource(directHaystack, awardName)) {
+    return review(
+      "cross_program_source",
+      "Source appears to describe a different award or broad program listing",
+    );
+  }
+
   if (isOversizedFailure(message, failureType)) {
     return review("oversized_file", "File is too large for daily monitoring");
   }
@@ -235,6 +242,73 @@ function isKnownBoilerplateUrl(host, path, haystack) {
     return true;
   }
   return /(?:^|\.)youtube\.com$/.test(host) || /(?:^|\.)youtu\.be$/.test(host) || /(?:^|\.)vimeo\.com$/.test(host);
+}
+
+function isCrossProgramOrBroadListingSource(directHaystack, awardName) {
+  const awardTokens = distinctiveAwardTokens(awardName);
+  if (awardTokens.length < 2) return false;
+
+  const normalizedSignal = wordSignal(directHaystack);
+  const matchingTokens = awardTokens.filter((token) => tokenAppears(normalizedSignal, token));
+  const hasEnoughAwardMatch = matchingTokens.length >= Math.min(2, awardTokens.length);
+  if (hasEnoughAwardMatch) return false;
+
+  return (
+    /\b(request for applications?|funding opportunities?|policies and procedures|award instructions?|sam faqs?|simons award manager|brand portal|job board)\b/.test(
+      normalizedSignal,
+    ) ||
+    /\b(fellows? to faculty|shenoy undergraduate research fellowship|surfin|quantum materials?|graduate scholars program|plasticity and the aging brain|scpab|sfari|neuroscience)\b/.test(
+      normalizedSignal,
+    )
+  );
+}
+
+function distinctiveAwardTokens(value) {
+  const stop = new Set([
+    "award",
+    "awards",
+    "fellow",
+    "fellowship",
+    "fellowships",
+    "foundation",
+    "foundations",
+    "grant",
+    "grants",
+    "graduate",
+    "international",
+    "national",
+    "postdoctoral",
+    "program",
+    "programs",
+    "research",
+    "scholar",
+    "scholars",
+    "scholarship",
+    "scholarships",
+    "student",
+    "students",
+    "undergraduate",
+  ]);
+
+  const tokens = String(value || "")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 4 && !stop.has(token));
+
+  return [...new Set(tokens)].slice(0, 12);
+}
+
+function wordSignal(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenAppears(signal, token) {
+  return new RegExp(`\\b${token}\\b`, "i").test(signal);
 }
 
 function isOversizedFailure(message, failureType) {

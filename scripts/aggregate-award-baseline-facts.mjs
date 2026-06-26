@@ -385,7 +385,10 @@ async function updateAwardSummary(award, details, websiteSummary, publicFacts) {
 }
 
 function inferAcademicLevels(value) {
-  const clean = String(value || "").toLowerCase();
+  const clean = String(value || "")
+    .toLowerCase()
+    .replace(/\bundergraduate transcripts?\b/g, "")
+    .replace(/\bbachelor'?s? transcripts?\b/g, "");
   const levels = [];
   if (/\b(first-year|freshman|sophomore|junior|senior|undergraduate|bachelor)/.test(clean)) levels.push("Undergraduate");
   if (/\bgraduate|master|doctoral|phd|ph\.d|postdoctoral|postdoc/.test(clean)) levels.push("Graduate");
@@ -396,6 +399,7 @@ function inferAcademicLevels(value) {
 function inferDisciplines(value) {
   const clean = String(value || "").toLowerCase();
   const disciplines = [];
+  if (/\b(ecology|evolution|biology|life sciences?)\b/.test(clean)) disciplines.push("Life sciences");
   if (/\b(stem|science|engineering|mathematics|technology|computer|biology|chemistry|physics)\b/.test(clean)) disciplines.push("STEM");
   if (/\bpublic service|policy|government|international affairs|foreign service|leadership\b/.test(clean)) disciplines.push("Public service");
   if (/\bhumanities|arts|literature|history|language|social science\b/.test(clean)) disciplines.push("Humanities / social sciences");

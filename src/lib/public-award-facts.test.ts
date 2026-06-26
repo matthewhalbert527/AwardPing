@@ -44,4 +44,24 @@ describe("public award facts", () => {
     expect(facts.deadline).toBeNull();
     expect(facts.eligibility).toEqual([]);
   });
+
+  it("does not infer an undergraduate audience from transcript requirements", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {},
+      sources: [
+        {
+          page_metadata: {
+            baseline_facts: {
+              eligibility: ["Students entering U.S.-based Ph.D. programs in ecology and evolution"],
+              requirements: ["Undergraduate transcript", "Two recommendation letters"],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(facts.academicLevels).toEqual(["Graduate"]);
+    expect(facts.disciplines).toEqual(["Life sciences"]);
+  });
 });

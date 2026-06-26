@@ -183,4 +183,44 @@ describe("source hygiene classifier", () => {
       }),
     ).toMatchObject({ action: "keep" });
   });
+
+  it("keeps Simons source pages that match the specific ecology and evolution fellowship", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.simonsfoundation.org/grant/simons-graduate-fellowships-in-ecology-and-evolution/",
+        title: "Simons Graduate Fellowships in Ecology and Evolution",
+        page_type: "homepage",
+        award_name: "Simons Foundation - Graduate Fellowship in Ecology and Evolution",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.simonsfoundation.org/grant/simons-graduate-fellowships-in-ecology-and-evolution/?tab=how-to-apply",
+        title: "How to Apply",
+        page_type: "application",
+        award_name: "Simons Foundation - Graduate Fellowship in Ecology and Evolution",
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
+
+  it("rejects broad Simons RFA and sibling program pages for a specific award", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.simonsfoundation.org/mathematics-physical-sciences/funding/request-for-applications/",
+        title: "Request for Applications",
+        page_type: "application",
+        award_name: "Simons Foundation - Graduate Fellowship in Ecology and Evolution",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.simonsfoundation.org/funding-opportunities/fellows-to-faculty/",
+        title: "Fellows-to-Faculty Award - Simons Foundation",
+        page_type: "application",
+        award_name: "Simons Foundation - Graduate Fellowship in Ecology and Evolution",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+  });
 });
