@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { AwardDiscoveryWorkspace } from "@/components/award-discovery-workspace";
 import { SetupNotice } from "@/components/setup-notice";
 import { SiteFooter } from "@/components/site-footer";
@@ -18,6 +19,7 @@ export const dynamic = "force-dynamic";
 type AwardRow = Database["public"]["Tables"]["awards"]["Row"];
 type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
 type SharedChangeRow = Database["public"]["Tables"]["shared_award_change_events"]["Row"];
+type OfficeAwardTrackingRow = Pick<AwardRow, "shared_award_id">;
 type SharedAwardDirectoryRow = Pick<
   SharedAwardRow,
   "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts" | "public_facts_generated_at"
@@ -41,30 +43,19 @@ export default async function AwardDirectoryPage() {
   }
 
   const user = await getCurrentUser();
-  const officeContext = user ? await getOfficeContext(user) : null;
+  const [officeContext, sharedCatalogBase] = await Promise.all([
+    user ? getOfficeContext(user) : Promise.resolve(null),
+    getCachedSharedCatalog(),
+  ]);
   const admin = createSupabaseAdminClient();
-  const [sharedAwards, { data: sharedChanges }, { data: awards }] =
-    await Promise.all([
-      fetchAllSharedAwards(admin),
-      admin
-        .from("shared_award_change_events")
-        .select("shared_award_id, source_url, source_page_type, summary, change_details")
-        .order("detected_at", { ascending: false })
-        .limit(1000),
-      officeContext
-        ? admin
-            .from("awards")
-            .select("*")
-            .eq("office_id", officeContext.current.officeId)
-            .eq("status", "active")
-        : Promise.resolve({ data: [] as AwardRow[] }),
-    ]);
-
-  const sharedCatalog = mapSharedAwards(
-    sharedAwards,
-    groupBySharedAwardId(sharedChanges || []),
-    awards || [],
-  );
+  const { data: awards } = officeContext
+    ? await admin
+        .from("awards")
+        .select("shared_award_id")
+        .eq("office_id", officeContext.current.officeId)
+        .eq("status", "active")
+    : { data: [] as OfficeAwardTrackingRow[] };
+  const sharedCatalog = withTrackedSharedAwards(sharedCatalogBase, awards || []);
 
   return (
     <div className="page-shell">
@@ -90,6 +81,28 @@ export default async function AwardDirectoryPage() {
 }
 
 type SupabaseAdminClient = ReturnType<typeof createSupabaseAdminClient>;
+
+const getCachedSharedCatalog = unstable_cache(
+  async () => {
+    const admin = createSupabaseAdminClient();
+    const [sharedAwards, { data: sharedChanges }] = await Promise.all([
+      fetchAllSharedAwards(admin),
+      admin
+        .from("shared_award_change_events")
+        .select("shared_award_id, source_url, source_page_type, summary, change_details")
+        .order("detected_at", { ascending: false })
+        .limit(1000),
+    ]);
+
+    return mapSharedAwards(
+      sharedAwards,
+      groupBySharedAwardId(sharedChanges || []),
+      new Set<string>(),
+    );
+  },
+  ["award-directory-shared-catalog-v3"],
+  { revalidate: 300 },
+);
 
 async function fetchAllSharedAwards(supabase: SupabaseAdminClient) {
   return fetchAllPages<SharedAwardDirectoryRow>((from, to) =>
@@ -125,14 +138,8 @@ async function fetchAllPages<Row>(
 function mapSharedAwards(
   sharedAwards: SharedAwardDirectoryRow[],
   sharedChangesByAwardId: Map<string, SharedChangeDirectoryRow[]>,
-  officeAwards: AwardRow[],
+  trackedSharedIds: Set<string>,
 ) {
-  const trackedSharedIds = new Set(
-    officeAwards
-      .map((award) => award.shared_award_id)
-      .filter((id): id is string => Boolean(id)),
-  );
-
   return sharedAwards.map((award) => {
     const facts = publicAwardFactsFromAward({
       summary: award.summary,
@@ -172,6 +179,22 @@ function mapSharedAwards(
       changes: [],
     };
   });
+}
+
+function withTrackedSharedAwards(
+  sharedAwards: ReturnType<typeof mapSharedAwards>,
+  officeAwards: OfficeAwardTrackingRow[],
+) {
+  const trackedSharedIds = new Set(
+    officeAwards
+      .map((award) => award.shared_award_id)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  if (trackedSharedIds.size === 0) return sharedAwards;
+  return sharedAwards.map((award) =>
+    trackedSharedIds.has(award.id) ? { ...award, tracked: true } : award,
+  );
 }
 
 function groupBySharedAwardId<Row extends { shared_award_id: string }>(rows: Row[]) {
