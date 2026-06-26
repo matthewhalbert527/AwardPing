@@ -110,6 +110,15 @@ describe("source hygiene classifier", () => {
         award_name: "Ellison Scholars",
       }),
     ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.amphilsoc.org/news/cnair-oaxaca-following-paths-archival-materials",
+        title: "CNAIR in Oaxaca: Following the Paths of Archival Materials",
+        award_name:
+          "American Philosophical Society / Mellon Foundation - Native American Scholars Initiative Digital Knowledge Sharing Fellowships",
+      }),
+    ).toMatchObject({ action: "review_later" });
   });
 
   it("keeps application-related news or tips pages", () => {
@@ -120,6 +129,129 @@ describe("source hygiene classifier", () => {
         award_name: "Tillman Military Scholarship",
       }),
     ).toMatchObject({ action: "keep" });
+  });
+
+  it("rejects publication, transcript, catalog collection, and general article spillover", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.mainsheet.mysticseaport.org/",
+        title: "Mainsheet",
+        award_name: "Mystic Seaport - Munson Institute - Paul Cuffe Memorial Fellowship",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://grants.thomafoundation.org/research/transcript-nm-education-funders-southern-summit-nonprofit-leader-panel/",
+        title: "Transcript: NM Southern Summit Nonprofit Leader Panel",
+        award_name: "Thoma Foundation - Spanish Colonial Art Fellowships and Research/Travel Grants",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://catalog.lindahall.org/discovery/collectionDiscovery?vid=01LINDAHALL_INST%3ALHL&collectionId=81117989130005961",
+        title: "COLLECTION Charles S. Peirce Collection",
+        award_name: "Linda Hall Library - Science, Engineering & Technology Doctoral and Postdoctoral Fellowships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://hbswk.hbs.edu/item/inside-one-startups-journey-to-break-down-hiring-and-funding-barriers",
+        title: "INSIDE ONE STARTUP'S JOURNEY TO BREAK DOWN HIRING (AND FUNDING) BARRIERS",
+        award_name: "Harvard Business School - The Summer Venture in Management",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.getty.edu/calendar/educator-wellness-day-2026/",
+        title: "educator wellness day 2026",
+        award_name: "Getty Research Institute - Dissertation & Postdoctoral Fellowships in Art History & Visual Studies",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.getty.edu/projects/concrete-art-argentina-brazil/",
+        title: "Concrete Art in Argentina and Brazil",
+        award_name: "Getty Research Institute - Dissertation & Postdoctoral Fellowships in Art History & Visual Studies",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://studentaid.alberta.ca/policy/student-aid-policy-manual/eligibility-for-student-aid/types-of-funding/",
+        title: "Types of Funding",
+        award_name: "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://arcsfoundation.org/national/meet-rochearcs-scholars",
+        title: "ARCS Roche scholars",
+        award_name: "ARCS Foundation Scholar Awards for UIUC Students in STEM",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www2.ed.gov/grants-and-programs/apply-grant/available-grants?page=1",
+        title: "2",
+        award_name: "Foreign Language and Area Studies Fellowship",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://home.treasury.gov/system/files/131/Ironworkers-Local-17-Pension-Fund-Notification-Letter.pdf",
+        title: "Ironworkers Local 17 Pension Fund Notification Letter.pdf",
+        award_name: "US Treasury International Affairs Junior Fellowship",
+        page_type: "pdf",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.lung.org/research",
+        title: "Research & Reports",
+        award_name: "American Lung Association Research Grants",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.sas.rochester.edu/aas/about/contact.html",
+        title: "contact the director of undergraduate studies",
+        award_name: "University of Rochester - Frederick Douglass Institute for African & African-American Studies - Postdoctoral Fellowship",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.awma.org/ev_calendar_day.asp?eventid=327&date=6/21/2026",
+        title: "Daily",
+        award_name: "Air & Waste Management Association (A&WMA) - Graduate Scholarships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.jpf.go.jp/e/about/citizen/",
+        title: "The Japan Foundation Prizes for Global Citizenship",
+        award_name: "Japanese Studies Fellowship Program for Doctoral Candidates",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://acf.gov/css/employers/child-support-portal",
+        title: "Child Support Portal",
+        award_name: "U.S. Department of Health and Human Services (HHS) - Administration for Children and Families - Behavioral Interventions Scholars Grant",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
   });
 
   it("rejects recursive crawler URLs", () => {

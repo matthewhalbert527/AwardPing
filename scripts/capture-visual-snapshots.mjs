@@ -116,6 +116,10 @@ const geminiApiDailyCostCapUsd = nonNegativeNumber(
 const geminiApiPricingMode = cleanSlug(
   args["gemini-api-pricing-mode"] || env.AWARDPING_GEMINI_API_PRICING_MODE || "standard",
 ) || "standard";
+const interpretVisualChanges = boolArg(
+  args["interpret-visual-changes"] ?? env.AWARDPING_INTERPRET_VISUAL_CHANGES,
+  true,
+);
 const extractBaselineInfo = boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
 const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
@@ -127,6 +131,10 @@ const maxExpansionStateScreenshots = boundedInt(
   8,
   0,
   24,
+);
+const discoverPdfSubpages = boolArg(
+  args["discover-pdf-subpages"] ?? env.AWARDPING_DISCOVER_PDF_SUBPAGES,
+  true,
 );
 const discoverHtmlSubpages = boolArg(
   args["discover-html-subpages"] ?? env.AWARDPING_DISCOVER_HTML_SUBPAGES,
@@ -295,6 +303,7 @@ async function runOnce() {
       viewport_height: viewportHeight,
       jpeg_quality: jpegQuality,
       thumb_width: thumbWidth,
+      discover_pdf_subpages: discoverPdfSubpages,
       discover_html_subpages: discoverHtmlSubpages,
       max_html_subpage_discoveries: maxHtmlSubpageDiscoveries,
       timeout_ms: timeoutMs,
@@ -324,6 +333,7 @@ async function runOnce() {
       gemini_api_max_calls: aiProvider === "gemini" ? geminiApiMaxCalls || null : null,
       gemini_api_daily_cost_cap_usd: aiProvider === "gemini" ? geminiApiDailyCostCapUsd : null,
       gemini_api_pricing_mode: aiProvider === "gemini" ? geminiApiPricingMode : null,
+      interpret_visual_changes: interpretVisualChanges,
       extract_baseline_info: extractBaselineInfo,
       backfill_baseline_info: backfillBaselineInfo,
     },
@@ -732,6 +742,17 @@ async function backfillOneR2Baseline(source, report) {
 }
 
 async function processSource(source, context, browserMeta, report) {
+  const hygiene = shouldRejectDiscoveredSource({
+    ...source,
+    award_name: source.shared_awards?.name || "",
+    source_url: source.url,
+    source_title: source.title,
+  });
+  if (hygiene.action === "review_later") {
+    await markSharedSourceReviewLater(source, hygiene);
+    return;
+  }
+
   const pdfSource = isPdfSource(source);
   const capture = pdfSource
     ? await capturePdfSource(source)
@@ -836,6 +857,14 @@ async function processSource(source, context, browserMeta, report) {
       };
 
   report.candidate_changes += 1;
+  if (!interpretVisualChanges) {
+    await maybeRepairMissingR2Snapshot(source, capture, report);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(`SKIP visual_interpretation_disabled ${sourceLabel(source)}`);
+    return;
+  }
+
   if (!deterministic.candidate_change) {
     report.deterministic_noise += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
@@ -1284,7 +1313,9 @@ async function captureSource(source, context, browserMeta, report) {
       expanded.expansion_state_restore = restored;
     }
 
-    const discoveredPdfLinks = await discoverPdfLinksOnPage(page, source);
+    const discoveredPdfLinks = discoverPdfSubpages
+      ? await discoverPdfLinksOnPage(page, source)
+      : [];
     await maybeRecordDiscoveredPdfSources(source, discoveredPdfLinks, expanded, report);
     const discoveredHtmlLinks = discoverHtmlSubpages
       ? await discoverHtmlSubpageLinksOnPage(page, source)
@@ -2846,6 +2877,23 @@ async function markSharedSourceVisualCheckSucceeded(source, capture, report = nu
   if (error) throw error;
 
   await maybeUpdateSafeRedirectUrl(source, capture, now, report);
+}
+
+async function markSharedSourceReviewLater(source, hygiene) {
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from("shared_award_sources")
+    .update({
+      admin_review_status: "review_later",
+      admin_review_note: hygiene.note || "Auto-cleaned before screenshot capture.",
+      admin_reviewed_at: now,
+      admin_reviewed_by: "awardping-visual-snapshot-worker",
+      updated_at: now,
+    })
+    .eq("id", source.id);
+
+  if (error) throw new Error(`shared_award_sources review_later update failed: ${error.message}`);
+  console.log(`SOURCE_REVIEW_LATER pre_capture reason=${hygiene.reason} ${sourceLabel(source)}`);
 }
 
 async function markSharedSourceVisualCheckFailed(source, message) {

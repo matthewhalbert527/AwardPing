@@ -157,7 +157,22 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
   }
 
   if (
-    /\/(?:people|person|faculty|staff|board|alumni|testimonials?|success-stories|recipient|recipients?|fellows-directory|meet-our-[^/]*fellows|scholars-housing|center-associate|housing|mission-areas|science\/mission-areas|activities-and-networking|lectures|summer-alumni|equal-opportunities|innovation-techtransfer|nccr-spinoff|startups?)(?:\/|$)/.test(
+    /(?:^|\.)mainsheet\.mysticseaport\.org$/.test(host) ||
+    (/(?:^|\.)hbswk\.hbs\.edu$/.test(host) && /\/item\//.test(cleanPath)) ||
+    (/^catalog\./.test(host) && /\/discovery\/collectiondiscovery/.test(cleanPath)) ||
+    (/(?:^|\.)studentaid\.alberta\.ca$/.test(host) && /\/policy\/student-aid-policy-manual\//.test(cleanPath)) ||
+    (/(?:^|\.)home\.treasury\.gov$/.test(host) && /\/system\/files\/131\//.test(cleanPath) && !/\b(junior fellowship|international affairs|application|apply|eligib|deadline|fellowship)\b/.test(directHaystack)) ||
+    (/(?:^|\.)home\.treasury\.gov$/.test(host) && /\/services\/the-multiemployer-pension-reform-act-of-2014\//.test(cleanPath)) ||
+    (/(?:^|\.)lung\.org$/.test(host) && /^(?:\/|\/research\/?)$/.test(cleanPath) && !/\b(grant|award|application|eligib|deadline|fellowship)\b/.test(directHaystack)) ||
+    (/(?:^|\.)jpf\.go\.jp$/.test(host) && /\/e\/(?:about\/citizen|project\/japanese\/teach\/support)\//.test(cleanPath)) ||
+    (/(?:^|\.)acf\.gov$/.test(host) && /\/(?:css\/outreach-material|css\/employers\/child-support-portal)(?:\/|$)/.test(cleanPath)) ||
+    (/(?:^|\.)getty\.edu$/.test(host) && /\/(?:calendar|projects|publications)\//.test(cleanPath) && !hasAwardSignal)
+  ) {
+    return true;
+  }
+
+  if (
+    /\/(?:people|person|faculty|staff|board|alumni|testimonials?|success-stories|recipient|recipients?|fellows-directory|meet-our-[^/]*fellows|meet-[^/]*scholars|scholars-housing|center-associate|housing|mission-areas|science\/mission-areas|activities-and-networking|lectures|summer-alumni|equal-opportunities|innovation-techtransfer|nccr-spinoff|startups?)(?:\/|$)/.test(
       cleanPath,
     )
   ) {
@@ -188,6 +203,14 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
     return true;
   }
 
+  if (/\/(?:contact|contact-us|about\/contact)(?:\/|\.html?|$)/.test(cleanPath) && !hasAwardSignal) {
+    return true;
+  }
+
+  if (/\bcalendar\b|ev_calendar_day/.test(cleanPath) && !hasAwardSignal) {
+    return true;
+  }
+
   if (
     /\b(ferpa for students|subject index terms|submit your news|calendar of conferences|cookie policy|privacy policy|fellowship privacy statement|selection committees?|staff directory|committee members?)\b/.test(
       directHaystack,
@@ -196,12 +219,20 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
     return true;
   }
 
-  if (/^\s*(read more|more|learn more|lire plus)\s*$/i.test(directHaystack.replace(/^https?:\/\/\S+\s+/i, "")) && !hasAwardSignal) {
+  if (/^\s*(read more|more|learn more|lire plus|email)\s*$/i.test(directHaystack.replace(/^https?:\/\/\S+\s+/i, "")) && !hasAwardSignal) {
     return true;
   }
 
   if (
-    /\b(content marketing|mobile marketing|marketing automation|influencer marketing|overview of marketing|egg nutrition|nutrition facts|egg safety|food safety|foodservice|manufacturers overview|recertification|certification faqs?|professional resources|participant tax service|filing your tax return|tax liability for foreign recipients|sprintax|nonresident alien income tax|form 8843|form 1042-s|room \d{2,4}|meet our fellows|recent fellows|fellows directory|grant recipients?|award recipients?|alumni|testimonials|success stories)\b/.test(
+    /\b(content marketing|mobile marketing|marketing automation|influencer marketing|overview of marketing|egg nutrition|nutrition facts|egg safety|food safety|foodservice|manufacturers overview|recertification|certification faqs?|professional resources|participant tax service|filing your tax return|tax liability for foreign recipients|sprintax|nonresident alien income tax|form 8843|form 1042-s|room \d{2,4}|meet our fellows|recent fellows|fellows directory|grant recipients?|award recipients?|alumni|testimonials|success stories|authorization letter|withdrawal letter|initial approval letter|final approval letter|notification letter|pension fund|local \d{2,4})\b/.test(
+      directHaystack,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(transcripts?|panel discussion|nonprofit leader panel|educational stakeholders panel|digital collections?|exhibition sources?|collection discovery|special collections?|history of science|inside one startup|hiring barriers|policy manual|educator wellness day|concrete art|conservation workshop|submit to the getty research journal|prizes for global citizenship|japanese-language education|child support portal|countries accepting payments)\b/.test(
       directHaystack,
     )
   ) {
@@ -218,6 +249,10 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
 function isKnownBoilerplateUrl(host, path, haystack) {
   const hasAwardSignal =
     /\b(apply|application|applicant|eligib|deadline|due date|requirements?|materials?|guidelines?|nomination|portal|faq|fellowships?|scholarships?|grants?|awards?)\b/.test(
+      haystack,
+    );
+  const hasApplicationSignal =
+    /\b(apply|application|applicant|eligib|deadline|due date|nomination|portal|faq|how to apply|application process|application tips)\b/.test(
       haystack,
     );
   if (
@@ -242,7 +277,7 @@ function isKnownBoilerplateUrl(host, path, haystack) {
   ) {
     return true;
   }
-  if (/\/(?:news|blog|events?|calendar|press)(?:\/|$)/.test(path) && !hasAwardSignal) {
+  if (/\/(?:news|blog|events?|calendar|press)(?:\/|$)/.test(path) && !hasApplicationSignal) {
     return true;
   }
   if (/\/(?:privacy|terms|accessibility)(?:\/|$)/.test(path)) {
@@ -261,7 +296,7 @@ function isCrossProgramOrBroadListingSource(directHaystack, awardName) {
   if (hasEnoughAwardMatch) return false;
 
   return (
-    /\b(request for applications?|funding opportunities?|policies and procedures|award instructions?|sam faqs?|simons award manager|brand portal|job board)\b/.test(
+    /\b(request for applications?|funding opportunities?|policies and procedures|award instructions?|sam faqs?|simons award manager|brand portal|job board|available grants?)\b/.test(
       normalizedSignal,
     ) ||
     /\b(fellows? to faculty|shenoy undergraduate research fellowship|surfin|quantum materials?|graduate scholars program|plasticity and the aging brain|scpab|sfari|neuroscience)\b/.test(
