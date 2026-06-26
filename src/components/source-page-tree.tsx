@@ -337,7 +337,6 @@ function renderNode<T extends SourcePageTreeSource>({
           )}
           <FolderTree size={17} aria-hidden="true" />
           <span className="source-tree-branch-title">{node.label}</span>
-          <span className="source-tree-count">{branchStatus(node.sources, getSourceTracked)}</span>
         </button>
 
         {canManage && (onTrackSources || onUntrackSources) && (
@@ -509,9 +508,7 @@ function SourcePageRow<T extends SourcePageTreeSource>({
               {rowStatus}
             </span>
             {unreadCount > 0 && (
-              <span className="source-tree-unread-badge">
-                {unreadCount} unread
-              </span>
+              <span className="source-tree-unread-badge" aria-label="Unread updates" />
             )}
           </div>
           <p className="mt-1 text-xs font-bold uppercase text-[var(--muted)]">
@@ -878,42 +875,6 @@ function BranchActions<T extends SourcePageTreeSource>({
       )}
     </div>
   );
-}
-
-function branchStatus<T extends SourcePageTreeSource>(
-  sources: T[],
-  getSourceTracked: (source: T) => boolean,
-) {
-  const trackedCount = sources.filter(getSourceTracked).length;
-  const changedCount = sources.filter((source) => (source.latestChanges || []).length > 0).length;
-  const needsReviewCount = sources.filter((source) => Boolean(source.lastError)).length;
-  const needsScanCount = sources.filter(
-    (source) =>
-      !source.lastError &&
-      !(source.latestChanges || []).length &&
-      !source.pageMetadata &&
-      !source.pageDescription &&
-      !source.displayTitle,
-  ).length;
-  const parts = [`${sources.length} page${sources.length === 1 ? "" : "s"}`];
-
-  if (changedCount > 0) {
-    parts.push(`${changedCount} changed`);
-  }
-
-  if (needsReviewCount > 0) {
-    parts.push(`${needsReviewCount} needs review`);
-  }
-
-  if (needsScanCount > 0) {
-    parts.push(`${needsScanCount} details pending`);
-  }
-
-  if (trackedCount > 0) {
-    parts.push(`${trackedCount} tracked`);
-  }
-
-  return parts.join(" / ");
 }
 
 type SourceOutline = {

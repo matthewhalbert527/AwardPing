@@ -99,19 +99,19 @@ export function PublicAwardWorkspace({
             <PanelButton
               active={selected.kind === "overview"}
               label="Overview"
-              meta={`${data.sources.length} sources`}
+              meta="Profile"
               onClick={() => setSelected({ kind: "overview" })}
             />
             <PanelButton
               active={selected.kind === "facts"}
               label="Key details"
-              meta={`${factRows.length} fields`}
+              meta="Facts"
               onClick={() => setSelected({ kind: "facts" })}
             />
             <PanelButton
               active={selected.kind === "changes"}
               label="Recent changes"
-              meta={`${data.changes.length} updates`}
+              meta="Updates"
               onClick={() => setSelected({ kind: "changes" })}
               updateCount={data.changes.length}
             />
@@ -131,7 +131,7 @@ export function PublicAwardWorkspace({
                   active={selected.kind === "source" && selected.sourceId === source.id}
                   key={source.id}
                   label={source.title}
-                  meta={`${pageTypeLabel(source.pageType)}${changeCount ? ` / ${changeCount} updates` : ""}`}
+                  meta={pageTypeLabel(source.pageType)}
                   onClick={() => setSelected({ kind: "source", sourceId: source.id })}
                   updateCount={changeCount}
                 />
@@ -226,9 +226,7 @@ function PanelButton({
         <small>{meta}</small>
       </span>
       {hasUpdate && (
-        <span className="public-award-update-count" aria-label={`${updateCount} recent updates`}>
-          {updateCount}
-        </span>
+        <span className="public-award-update-count" aria-label="Recent updates" />
       )}
     </button>
   );

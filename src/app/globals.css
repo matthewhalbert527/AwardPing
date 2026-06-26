@@ -3343,7 +3343,6 @@ a {
 }
 
 .public-award-nav-list {
-  counter-reset: award-nav-item;
   display: grid;
   gap: 0.22rem;
   margin: 0.18rem 0 0 0.45rem;
@@ -3361,7 +3360,6 @@ a {
 }
 
 .public-award-nav-button {
-  counter-increment: award-nav-item;
   position: relative;
   display: grid;
   grid-template-columns: 1.45rem minmax(0, 1fr) auto;
@@ -3432,7 +3430,12 @@ a {
 }
 
 .public-award-nav-marker::after {
-  content: counter(award-nav-item);
+  content: "";
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.72;
 }
 
 .public-award-nav-text {
@@ -3461,8 +3464,9 @@ a {
 
 .public-award-update-count {
   display: inline-flex;
-  min-width: 1.4rem;
-  height: 1.4rem;
+  width: 0.74rem;
+  min-width: 0.74rem;
+  height: 0.74rem;
   align-items: center;
   justify-content: center;
   border-radius: 999px;
@@ -3471,7 +3475,7 @@ a {
   font-size: 0.68rem;
   font-weight: 950;
   line-height: 1;
-  padding: 0 0.42rem;
+  padding: 0;
   box-shadow: 0 0 0 3px var(--brand-pink-soft);
 }
 
@@ -3875,6 +3879,16 @@ a {
 .update-feed-card-unread {
   border-color: color-mix(in srgb, var(--brand-pink) 60%, #ffffff);
   box-shadow: 0 22px 64px color-mix(in srgb, var(--brand-pink) 20%, transparent);
+}
+
+.source-tree-unread-badge {
+  width: 0.72rem;
+  min-width: 0.72rem;
+  height: 0.72rem;
+  padding: 0;
+  background: var(--brand-pink);
+  color: transparent;
+  box-shadow: 0 0 0 3px var(--brand-pink-soft);
 }
 
 .source-tree-source:has(.source-tree-unread-badge) {

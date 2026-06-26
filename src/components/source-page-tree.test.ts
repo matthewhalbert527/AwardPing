@@ -138,7 +138,7 @@ describe("SourcePageTree", () => {
     expect(html).not.toContain("Citizenship requirements.");
   });
 
-  it("summarizes branch-level page status counts", () => {
+  it("does not show numeric branch status counts in split sidebar outlines", () => {
     const html = renderToStaticMarkup(
       createElement(SourcePageTree, {
         layout: "split",
@@ -183,7 +183,9 @@ describe("SourcePageTree", () => {
       }),
     );
 
-    expect(html).toContain("2 pages / 1 changed / 1 needs review");
+    expect(html).toContain("Deadlines");
+    expect(html).not.toContain("2 pages / 1 changed / 1 needs review");
+    expect(html).not.toContain("source-tree-count");
   });
 
   it("uses extracted page titles and skips host buckets when requested", () => {
@@ -296,7 +298,7 @@ describe("SourcePageTree", () => {
     );
 
     expect(html).toContain("New update");
-    expect(html).toContain("1 unread");
+    expect(html).not.toContain("1 unread");
     expect(html).toContain("source-tree-unread-badge");
   });
 

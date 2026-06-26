@@ -150,6 +150,13 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
   }
 
   if (
+    (/(?:^|\.)iie\.org$/.test(host) && /^(?:\/|\/connect\/?|\/connect\/students\/?)$/.test(cleanPath)) ||
+    /\/connect\/students\/participant-tax-service-information(?:\/|$)/.test(cleanPath)
+  ) {
+    return true;
+  }
+
+  if (
     /\/(?:people|person|faculty|staff|board|alumni|testimonials?|success-stories|recipient|recipients?|fellows-directory|meet-our-[^/]*fellows|scholars-housing|center-associate|housing|mission-areas|science\/mission-areas|activities-and-networking|lectures|summer-alumni|equal-opportunities|innovation-techtransfer|nccr-spinoff|startups?)(?:\/|$)/.test(
       cleanPath,
     )
@@ -194,7 +201,7 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
   }
 
   if (
-    /\b(content marketing|mobile marketing|marketing automation|influencer marketing|overview of marketing|egg nutrition|nutrition facts|egg safety|food safety|foodservice|manufacturers overview|recertification|certification faqs?|professional resources|room \d{2,4}|meet our fellows|recent fellows|fellows directory|grant recipients?|award recipients?|alumni|testimonials|success stories)\b/.test(
+    /\b(content marketing|mobile marketing|marketing automation|influencer marketing|overview of marketing|egg nutrition|nutrition facts|egg safety|food safety|foodservice|manufacturers overview|recertification|certification faqs?|professional resources|participant tax service|filing your tax return|tax liability for foreign recipients|sprintax|nonresident alien income tax|form 8843|form 1042-s|room \d{2,4}|meet our fellows|recent fellows|fellows directory|grant recipients?|award recipients?|alumni|testimonials|success stories)\b/.test(
       directHaystack,
     )
   ) {
@@ -258,6 +265,9 @@ function isCrossProgramOrBroadListingSource(directHaystack, awardName) {
       normalizedSignal,
     ) ||
     /\b(fellows? to faculty|shenoy undergraduate research fellowship|surfin|quantum materials?|graduate scholars program|plasticity and the aging brain|scpab|sfari|neuroscience)\b/.test(
+      normalizedSignal,
+    ) ||
+    /\b(iie heiskell awards?|heiskell awards?|eligibility nomination)\b/.test(
       normalizedSignal,
     )
   );

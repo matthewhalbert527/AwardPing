@@ -223,4 +223,33 @@ describe("source hygiene classifier", () => {
       }),
     ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
   });
+
+  it("keeps CEAIE Teach in China pages and rejects IIE tax/navigation spillover", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.iie.org/programs/ceaie-teach-in-china/eligibility/",
+        title: "CEAIE Teach In China Program Eligibility",
+        page_type: "eligibility",
+        award_name: "CEAIE Teach In China Program",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.iie.org/connect/students/participant-tax-service-information/faq/",
+        title: "Participant Tax Service Information FAQ",
+        page_type: "faq",
+        award_name: "CEAIE Teach In China Program",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.iie.org/get-involved/become-an-iienetwork-member/iie-heiskell-awards/nomination-and-selection/",
+        title: "Eligibility & Nomination",
+        page_type: "eligibility",
+        award_name: "CEAIE Teach In China Program",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+  });
 });
