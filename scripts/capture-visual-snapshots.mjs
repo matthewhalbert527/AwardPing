@@ -956,6 +956,13 @@ async function reviewAndApplyCandidateChange({
       "The document file changed, but no concrete award-relevant wording change was identified.",
     );
   }
+  if (aiReview.result.is_true_change && aiReviewLooksLikeFundraisingOnlyChange(aiReview)) {
+    markAiReviewAsNoise(
+      aiReview,
+      "fundraising_form_change",
+      "Donation, fundraising, or checkout widgets changed without applicant-facing award information changing.",
+    );
+  }
 
   if (aiReview.result.is_true_change) {
     const changePath = saveTrueChange({
@@ -6050,10 +6057,77 @@ function aiReviewLooksLikeDocumentMetadataOnlyChange(aiReview) {
   return (metadataOnlyLanguage || genericDocumentUpdate) && (opaqueEvidence || evidence.length === 0);
 }
 
+function aiReviewLooksLikeFundraisingOnlyChange(aiReview) {
+  const result = aiReview?.result || {};
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : {};
+  const structuredDiff =
+    details.structured_diff && typeof details.structured_diff === "object" && !Array.isArray(details.structured_diff)
+      ? details.structured_diff
+      : {};
+  const text = normalizeText(
+    [
+      result.reader_summary,
+      result.advisor_impact,
+      result.changed_section,
+      result.before,
+      result.after,
+      details.reader_summary,
+      details.advisor_impact,
+      details.section,
+      details.before,
+      details.after,
+      ...stringArray(structuredDiff.added_text),
+      ...stringArray(structuredDiff.removed_text),
+      ...stringArray(structuredDiff.amount_changes),
+    ].join(" "),
+  ).toLowerCase();
+
+  if (!/\b(donate|donation|donor|tribute|gift amount|one[- ]time donation|monthly gift|fundraising|cart|checkout|sponsor|sponsorship)\b/.test(text)) {
+    return false;
+  }
+
+  const applicantText = normalizeText(
+    [
+      result.reader_summary,
+      result.advisor_impact,
+      result.before,
+      result.after,
+      details.reader_summary,
+      details.advisor_impact,
+      details.before,
+      details.after,
+      ...stringArray(structuredDiff.added_text),
+      ...stringArray(structuredDiff.removed_text),
+      ...stringArray(structuredDiff.amount_changes),
+    ].join(" "),
+  ).toLowerCase();
+
+  return !hasApplicantFacingAwardSignalText(stripUnchangedApplicantReferences(applicantText));
+}
+
 function hasApplicantFacingAwardSignalText(value) {
   return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/.test(
     String(value || "").toLowerCase(),
   );
+}
+
+function stripUnchangedApplicantReferences(value) {
+  return String(value || "")
+    .replace(
+      /\b(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,90}\b(?:remain(?:s)?|are|is|were|was)?\s*(?:unchanged|not changed|no change)\b/gi,
+      " ",
+    )
+    .replace(
+      /\b(?:no|not any)\s+(?:changes?|updates?)\s+(?:to|in)\s+(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b/gi,
+      " ",
+    )
+    .replace(
+      /\bno\b[^.]{0,140}\b(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,140}\b(?:changed|change|updated|updates?)\b/gi,
+      " ",
+    );
 }
 
 function markAiReviewAsNoise(aiReview, flag, reason) {
@@ -6724,7 +6798,7 @@ const aiSystemPrompt = [
   "Use normalized text as secondary context for screenshots because it can be incomplete or noisy.",
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
   "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
-  "Reject cookie banners, carousels, ads, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+  "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
   "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",
   "advisor_impact should say what an advising office might need to check or update.",

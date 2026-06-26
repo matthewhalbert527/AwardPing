@@ -131,6 +131,46 @@ describe("change summary filtering", () => {
     ).toBe(false);
   });
 
+  it("hides donation form churn even when a deadline page title is involved", () => {
+    const changeDetails = {
+      reader_summary:
+        "The Parkinson's Foundation has updated its donation form, removing specific one-time donation amounts and a tribute option. The award deadlines themselves remain unchanged.",
+      before:
+        "One-time donation amount $50 $100 $250 $500. Make this gift in tribute.",
+      after: "Donation amount. Donate now.",
+      section: "Postdoctoral Fellowship Deadlines",
+      change_type: "deadline",
+      advisor_impact:
+        "No deadline, eligibility, requirement, or application instruction changed.",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: ["Donation amount. Donate now."],
+        removed_text: [
+          "One-time donation amount $50 $100 $250 $500. Make this gift in tribute.",
+        ],
+        likely_section: "Postdoctoral Fellowship Deadlines",
+        page_type: "deadline",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {},
+      quality_flags: ["visual_snapshot_comparison"],
+      generated_at: "2026-06-26T00:00:00.000Z",
+    };
+
+    expect(
+      isUsefulChangeForAward({
+        awardName: "Parkinson's Foundation - Postdoctoral Fellowship",
+        sourceTitle: "Postdoctoral Fellowship Deadlines",
+        sourceUrl: "https://example.org/postdoctoral-fellowship-deadlines",
+        summary: changeDetails.reader_summary,
+        change_details: changeDetails,
+      }),
+    ).toBe(false);
+  });
+
   it("hides featured-fellow roster rotations", () => {
     expect(
       isUsefulChangeSummary(

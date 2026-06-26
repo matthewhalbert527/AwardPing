@@ -36,6 +36,7 @@ export function isUsefulChangeSummary(
     !looksLikeAnimatedCounterChange(clean) &&
     !looksLikeProfileRosterChange(clean, changeDetails) &&
     !looksLikeDocumentMetadataOnlyChange(clean) &&
+    !looksLikeFundraisingOnlyChange(clean, changeDetails) &&
     !looksLikeBoilerplateChange(clean)
   );
 }
@@ -302,6 +303,47 @@ function looksLikeDocumentMetadataOnlyChange(summary: string) {
   return metadataOnlyLanguage || genericDocumentUpdate;
 }
 
+function looksLikeFundraisingOnlyChange(summary: string, changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  const fundraisingText = [
+    summary,
+    details?.reader_summary,
+    details?.before,
+    details?.after,
+    details?.section,
+    details?.advisor_impact,
+    ...(details?.structured_diff.added_text || []),
+    ...(details?.structured_diff.removed_text || []),
+    ...(details?.structured_diff.amount_changes || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!fundraisingText) return false;
+
+  const hasFundraisingSignal =
+    /\b(donate|donation|donor|tribute|gift amount|one[- ]time donation|monthly gift|fundraising|cart|checkout|sponsor|sponsorship)\b/.test(
+      fundraisingText,
+    );
+  if (!hasFundraisingSignal) return false;
+
+  const applicantText = [
+    summary,
+    details?.reader_summary,
+    details?.before,
+    details?.after,
+    details?.advisor_impact,
+    ...(details?.structured_diff.added_text || []),
+    ...(details?.structured_diff.removed_text || []),
+    ...(details?.structured_diff.amount_changes || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return !hasApplicantFacingChangeSignal(stripUnchangedApplicantReferences(applicantText));
+}
+
 function looksLikeProfileRosterChange(summary: string, changeDetails: unknown) {
   const details = parseChangeDetails(changeDetails);
   const flags = new Set([
@@ -340,6 +382,28 @@ function looksLikeProfileRosterChange(summary: string, changeDetails: unknown) {
       text,
     ) ||
     /\bfellowship awarded in \d{4} to support work towards\b/.test(text)
+  );
+}
+
+function stripUnchangedApplicantReferences(value: string) {
+  return value
+    .replace(
+      /\b(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,90}\b(?:remain(?:s)?|are|is|were|was)?\s*(?:unchanged|not changed|no change)\b/gi,
+      " ",
+    )
+    .replace(
+      /\b(?:no|not any)\s+(?:changes?|updates?)\s+(?:to|in)\s+(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b/gi,
+      " ",
+    )
+    .replace(
+      /\bno\b[^.]{0,140}\b(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,140}\b(?:changed|change|updated|updates?)\b/gi,
+      " ",
+    );
+}
+
+function hasApplicantFacingChangeSignal(value: string) {
+  return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/.test(
+    value,
   );
 }
 

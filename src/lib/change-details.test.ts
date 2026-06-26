@@ -531,6 +531,38 @@ describe("structured change details", () => {
     expect(details.quality_flags).toContain("no_actual_changed_fact");
   });
 
+  it("treats donation form changes on award pages as non-meaningful", () => {
+    const details = {
+      reader_summary:
+        "The Parkinson's Foundation has updated its donation form, removing specific one-time donation amounts and a tribute option. The award deadlines themselves remain unchanged.",
+      before:
+        "One-time donation amount $50 $100 $250 $500. Make this gift in tribute.",
+      after: "Donation amount. Donate now.",
+      section: "Postdoctoral Fellowship Deadlines",
+      change_type: "deadline",
+      advisor_impact:
+        "No deadline, eligibility, requirement, or application instruction changed.",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: ["Donation amount. Donate now."],
+        removed_text: [
+          "One-time donation amount $50 $100 $250 $500. Make this gift in tribute.",
+        ],
+        likely_section: "Postdoctoral Fellowship Deadlines",
+        page_type: "deadline",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {},
+      quality_flags: ["visual_snapshot_comparison"],
+      generated_at: "2026-06-26T00:00:00.000Z",
+    };
+
+    expect(isMeaningfulChangeDetails(details)).toBe(false);
+  });
+
   it("treats storefront product boilerplate as non-meaningful", () => {
     const details = {
       reader_summary:

@@ -524,6 +524,9 @@ function qualityFlagsForDetails(details: ChangeDetails) {
   if (hasDocumentMetadataOnlyChange(details)) {
     flags.push("document_metadata_only_change");
   }
+  if (hasFundraisingOnlyChange(details)) {
+    flags.push("fundraising_form_change");
+  }
   if (looksLikeProfileOrTestimonialRotation(details.structured_diff)) {
     flags.push("profile_testimonial_change");
   }
@@ -583,6 +586,7 @@ function isAlertWorthyFromFlags(flags: string[]) {
       "format_only_change",
       "context_only_change",
       "document_metadata_only_change",
+      "fundraising_form_change",
       "recipient_news_change",
     ].includes(flag),
   );
@@ -964,6 +968,66 @@ function hasFundingAmountContext(value: string) {
   );
 }
 
+function hasFundraisingOnlyChange(details: ChangeDetails) {
+  const fundraisingText = [
+    details.reader_summary,
+    details.before,
+    details.after,
+    details.section,
+    details.advisor_impact,
+    ...details.structured_diff.added_text,
+    ...details.structured_diff.removed_text,
+    ...details.structured_diff.amount_changes,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!fundraisingText) return false;
+
+  const hasFundraisingSignal =
+    /\b(donate|donation|donor|tribute|gift amount|one[- ]time donation|monthly gift|fundraising|cart|checkout|sponsor|sponsorship)\b/.test(
+      fundraisingText,
+    );
+  if (!hasFundraisingSignal) return false;
+
+  const applicantText = [
+    details.reader_summary,
+    details.before,
+    details.after,
+    details.advisor_impact,
+    ...details.structured_diff.added_text,
+    ...details.structured_diff.removed_text,
+    ...details.structured_diff.amount_changes,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return !hasApplicantFacingChangeSignalText(stripUnchangedApplicantReferences(applicantText));
+}
+
+function stripUnchangedApplicantReferences(value: string) {
+  return value
+    .replace(
+      /\b(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,90}\b(?:remain(?:s)?|are|is|were|was)?\s*(?:unchanged|not changed|no change)\b/gi,
+      " ",
+    )
+    .replace(
+      /\b(?:no|not any)\s+(?:changes?|updates?)\s+(?:to|in)\s+(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b/gi,
+      " ",
+    )
+    .replace(
+      /\bno\b[^.]{0,140}\b(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,140}\b(?:changed|change|updated|updates?)\b/gi,
+      " ",
+    );
+}
+
+function hasApplicantFacingChangeSignalText(value: string) {
+  return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/i.test(
+    value,
+  );
+}
+
 function isAwardDateContext(sentence: string) {
   const lower = sentence.toLowerCase();
   if (isHistoricalRecipientOrMarketingText(sentence)) return false;
@@ -1258,6 +1322,7 @@ function isPersistentQualityFlag(flag: string) {
     "indistinct_truncated_snippet",
     "format_only_change",
     "document_metadata_only_change",
+    "fundraising_form_change",
     "profile_testimonial_change",
     "recipient_news_change",
   ].includes(flag);
