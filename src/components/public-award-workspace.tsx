@@ -112,8 +112,8 @@ export function PublicAwardWorkspace({
               active={selected.kind === "changes"}
               label="Recent changes"
               meta={`${data.changes.length} updates`}
-              hasUpdate={data.changes.length > 0}
               onClick={() => setSelected({ kind: "changes" })}
+              updateCount={data.changes.length}
             />
           </div>
         </details>
@@ -129,11 +129,11 @@ export function PublicAwardWorkspace({
               return (
                 <PanelButton
                   active={selected.kind === "source" && selected.sourceId === source.id}
-                  hasUpdate={changeCount > 0}
                   key={source.id}
                   label={source.title}
                   meta={`${pageTypeLabel(source.pageType)}${changeCount ? ` / ${changeCount} updates` : ""}`}
                   onClick={() => setSelected({ kind: "source", sourceId: source.id })}
+                  updateCount={changeCount}
                 />
               );
             })}
@@ -201,17 +201,19 @@ export function PublicAwardWorkspace({
 
 function PanelButton({
   active,
-  hasUpdate = false,
   label,
   meta,
   onClick,
+  updateCount = 0,
 }: {
   active: boolean;
-  hasUpdate?: boolean;
   label: string;
   meta: string;
   onClick: () => void;
+  updateCount?: number;
 }) {
+  const hasUpdate = updateCount > 0;
+
   return (
     <button
       className={`public-award-nav-button ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
@@ -223,7 +225,11 @@ function PanelButton({
         <strong>{label}</strong>
         <small>{meta}</small>
       </span>
-      {hasUpdate && <span className="public-award-update-dot" aria-label="Has recent updates" />}
+      {hasUpdate && (
+        <span className="public-award-update-count" aria-label={`${updateCount} recent updates`}>
+          {updateCount}
+        </span>
+      )}
     </button>
   );
 }
