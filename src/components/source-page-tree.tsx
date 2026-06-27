@@ -62,6 +62,9 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   showSnapshotActions = true,
   layout = "inline",
   groupByHost = true,
+  splitDetailIntro,
+  splitSidebarFooter,
+  splitSidebarIntro,
   initialSelectedSourceId,
   selectedChangeId,
 }: {
@@ -76,6 +79,9 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   showSnapshotActions?: boolean;
   layout?: "inline" | "split";
   groupByHost?: boolean;
+  splitDetailIntro?: ReactNode;
+  splitSidebarFooter?: ReactNode;
+  splitSidebarIntro?: ReactNode;
   initialSelectedSourceId?: string | null;
   selectedChangeId?: string | null;
 }) {
@@ -227,16 +233,29 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
     return (
       <div className="source-tree source-tree-split">
         <div className="source-tree-list">
-          {controls}
-          {treeContent}
+          {splitSidebarIntro}
+          <details className="source-tree-sidebar-group" open>
+            <summary>
+              <ChevronDown size={15} aria-hidden="true" />
+              <span>Official sources</span>
+            </summary>
+            <div className="source-tree-sidebar-list">
+              {controls}
+              {treeContent}
+            </div>
+          </details>
+          {splitSidebarFooter}
         </div>
-        <SourcePageDetailPanel
-          source={selectedSource}
-          renderSourceActions={renderSourceActions}
-          selectedChangeId={selectedChangeId}
-          showSnapshotActions={showSnapshotActions}
-          readChangeIds={readChangeIds}
-        />
+        <div className="source-tree-detail-stack">
+          {splitDetailIntro}
+          <SourcePageDetailPanel
+            source={selectedSource}
+            renderSourceActions={renderSourceActions}
+            selectedChangeId={selectedChangeId}
+            showSnapshotActions={showSnapshotActions}
+            readChangeIds={readChangeIds}
+          />
+        </div>
       </div>
     );
   }
@@ -463,14 +482,15 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   const title = outline.displayTitle || sourceTreeSourceLabel(source);
   const latestChanges = source.latestChanges || [];
   const latestChange = latestChanges[0] || null;
+  const summaryMode = variant === "summary";
   const rowStatus = sourceRowStatus(source, latestChange, unreadCount);
+  const showUpdateDot = summaryMode ? latestChanges.length > 0 : unreadCount > 0;
   const rowActions = renderSourceActions?.(source);
   const snapshotSourceId =
     source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
   const checkedLabel = source.lastCheckedAt
     ? new Date(source.lastCheckedAt).toLocaleString()
     : "Not checked yet";
-  const summaryMode = variant === "summary";
 
   function handleSourceClick() {
     if (summaryMode) {
@@ -507,8 +527,8 @@ function SourcePageRow<T extends SourcePageTreeSource>({
             <span className={rowStatus === "Changed" || rowStatus === "New update" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
               {rowStatus}
             </span>
-            {unreadCount > 0 && (
-              <span className="source-tree-unread-badge" aria-label="Unread updates" />
+            {showUpdateDot && (
+              <span className="source-tree-unread-badge" aria-label="Recent updates" />
             )}
           </div>
           <p className="mt-1 text-xs font-bold uppercase text-[var(--muted)]">
@@ -1005,12 +1025,13 @@ function sourceMeta(source: SourcePageTreeSource) {
 }
 
 function sourceCompactMeta(source: SourcePageTreeSource) {
+  const updateCount = source.latestChanges?.length || 0;
   return [
     source.pageType ? pageTypeLabel(source.pageType) : "Source page",
-    sourceHost(source.url),
+    `${updateCount} update${updateCount === 1 ? "" : "s"}`,
   ]
     .filter(Boolean)
-    .join(" - ");
+    .join(" / ");
 }
 
 function sourceHost(value: string | null | undefined) {

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, ChevronDown, ExternalLink, ListChecks } from "lucide-react";
 import { SourcePageTree } from "@/components/source-page-tree";
 import { SetupNotice } from "@/components/setup-notice";
 import { TrackSharedAwardButton } from "@/components/track-shared-award-button";
@@ -106,6 +106,14 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
   const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
   const awardSummary = displayAwardSummary(award.summary);
   const awardSummaryParts = awardBaselineSummaryParts(award.summary);
+  const visibleAwardFacts = (awardSummaryParts?.facts || []).filter(
+    (fact) => fact.label.toLowerCase() !== "baseline detail confidence",
+  );
+  const lastCheckedAt = latestDate(
+    officialSources
+      .map((source) => source.last_checked_at)
+      .filter((value): value is string => Boolean(value)),
+  );
   const sourceTreeSources = officialSources.map((source) => ({
     id: source.id,
     title: source.title,
@@ -132,56 +140,72 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
 
   return (
     <div className="award-detail-page">
-      <div className="award-detail-command-row">
-        <Link className="award-detail-back-link" href="/dashboard/awards">
-          <ArrowLeft size={16} aria-hidden="true" />
-          Back to find awards
-        </Link>
-        <Link className="button-secondary" href={canonicalAwardPath(award.slug, award.name, award.id)}>
-          Public page
-          <ExternalLink size={16} aria-hidden="true" />
-        </Link>
-        <TrackSharedAwardButton
-          sharedAwardId={award.id}
-          tracked={tracked}
-          canManage={canManageOffice(officeContext.current.role)}
-        />
-      </div>
-
-      <header className="award-detail-header">
-        <div className="award-detail-meta-line">
-          <span>{officialSources.length} source pages</span>
-          <span>{officialChanges.length} recorded updates</span>
-          {tracked && <span>On watchlist</span>}
-        </div>
-
-        <h1 className="award-detail-title">{award.name}</h1>
-
-        {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
-          <AwardBaselineDetails parts={awardSummaryParts} />
-        ) : awardSummary ? (
-          <p className="award-detail-summary-copy">{awardSummary}</p>
-        ) : null}
-
-        {displayHomepage && (
-          <a
-            className="award-detail-homepage"
-            href={displayHomepage}
-            rel="noreferrer"
-            target="_blank"
-          >
-            <ExternalLink size={15} aria-hidden="true" />
-            <span>Official homepage</span>
-          </a>
-        )}
-      </header>
-
-      <main className="award-detail-record award-detail-record-console">
+      <main className="award-detail-record award-detail-record-console" id="award-source-record">
         <SourcePageTree
           groupByHost={false}
           initialSelectedSourceId={query.source || undefined}
           layout="split"
           selectedChangeId={query.change || undefined}
+          splitDetailIntro={
+            <>
+              <div className="award-detail-command-row">
+                <Link className="award-detail-back-link" href="/dashboard/awards">
+                  <ArrowLeft size={16} aria-hidden="true" />
+                  Back to find awards
+                </Link>
+                <Link
+                  className="button-secondary"
+                  href={canonicalAwardPath(award.slug, award.name, award.id)}
+                >
+                  Public page
+                  <ExternalLink size={16} aria-hidden="true" />
+                </Link>
+                <TrackSharedAwardButton
+                  sharedAwardId={award.id}
+                  tracked={tracked}
+                  canManage={canManageOffice(officeContext.current.role)}
+                />
+              </div>
+
+              <header className="award-detail-header" id="award-overview">
+                <div className="award-detail-meta-line">
+                  <span>{officialSources.length} source pages</span>
+                  <span>{officialChanges.length} recorded updates</span>
+                  {tracked && <span>On watchlist</span>}
+                </div>
+
+                <h1 className="award-detail-title">{award.name}</h1>
+
+                <span className="award-detail-anchor" id="award-key-details" aria-hidden="true" />
+
+                {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
+                  <AwardBaselineDetails parts={awardSummaryParts} />
+                ) : awardSummary ? (
+                  <p className="award-detail-summary-copy">{awardSummary}</p>
+                ) : null}
+
+                {displayHomepage && (
+                  <a
+                    className="award-detail-homepage"
+                    href={displayHomepage}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    <ExternalLink size={15} aria-hidden="true" />
+                    <span>Official homepage</span>
+                  </a>
+                )}
+              </header>
+            </>
+          }
+          splitSidebarFooter={<AwardDetailSidebarFooter lastCheckedAt={lastCheckedAt} />}
+          splitSidebarIntro={
+            <AwardDetailSidebarIntro
+              factCount={visibleAwardFacts.length}
+              recentChangeCount={officialChanges.length}
+              sourceCount={officialSources.length}
+            />
+          }
           sources={sourceTreeSources}
         />
       </main>
@@ -215,6 +239,74 @@ function AwardBaselineDetails({
           ))}
         </dl>
       )}
+    </div>
+  );
+}
+
+function AwardDetailSidebarIntro({
+  factCount,
+  recentChangeCount,
+  sourceCount,
+}: {
+  factCount: number;
+  recentChangeCount: number;
+  sourceCount: number;
+}) {
+  return (
+    <>
+      <div className="public-award-sidebar-header award-detail-sidebar-header">
+        <p>Award outline</p>
+      </div>
+
+      <div className="public-award-sidebar-card public-award-sidebar-page-card">
+        <ListChecks size={24} aria-hidden="true" />
+        <strong>Page outline</strong>
+      </div>
+
+      <details className="public-award-nav-group award-detail-sidebar-profile" open>
+        <summary>
+          <ChevronDown size={15} aria-hidden="true" />
+          <span>Award profile</span>
+        </summary>
+        <div className="public-award-nav-list">
+          <a className="public-award-nav-button public-award-nav-button-profile" href="#award-overview">
+            <span className="public-award-nav-marker" aria-hidden="true" />
+            <span className="public-award-nav-text">
+              <strong>Overview</strong>
+              <small>{countLabel(sourceCount, "source")}</small>
+            </span>
+          </a>
+          <a className="public-award-nav-button public-award-nav-button-profile" href="#award-key-details">
+            <span className="public-award-nav-marker" aria-hidden="true" />
+            <span className="public-award-nav-text">
+              <strong>Key details</strong>
+              <small>{countLabel(factCount, "field")}</small>
+            </span>
+          </a>
+          <a
+            className={`public-award-nav-button public-award-nav-button-profile ${recentChangeCount > 0 ? "public-award-nav-button-updated" : ""}`}
+            href="#award-source-record"
+          >
+            <span className="public-award-nav-marker" aria-hidden="true" />
+            <span className="public-award-nav-text">
+              <strong>Recent changes</strong>
+              <small>{countLabel(recentChangeCount, "update")}</small>
+            </span>
+            {recentChangeCount > 0 && (
+              <span className="public-award-update-count" aria-label="Recent updates" />
+            )}
+          </a>
+        </div>
+      </details>
+    </>
+  );
+}
+
+function AwardDetailSidebarFooter({ lastCheckedAt }: { lastCheckedAt: string | null }) {
+  return (
+    <div className="public-award-sidebar-card public-award-sidebar-last-checked">
+      <span>Last checked</span>
+      <strong>{lastCheckedAt ? formatShortDate(lastCheckedAt) : "Pending"}</strong>
     </div>
   );
 }
@@ -295,6 +387,33 @@ function queryString(query: { source?: string; change?: string }) {
   if (query.change) params.set("change", query.change);
   const value = params.toString();
   return value ? `?${value}` : "";
+}
+
+function latestDate(values: string[]) {
+  let latest: string | null = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+
+  for (const value of values) {
+    const time = new Date(value).getTime();
+    if (Number.isFinite(time) && time > latestTime) {
+      latestTime = time;
+      latest = value;
+    }
+  }
+
+  return latest;
+}
+
+function formatShortDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function countLabel(count: number, singular: string) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 function normalizeUrlKey(value: string | null | undefined) {

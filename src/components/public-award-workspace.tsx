@@ -90,6 +90,11 @@ export function PublicAwardWorkspace({
           </button>
         </div>
 
+        <div className="public-award-sidebar-card public-award-sidebar-page-card">
+          <ListChecks size={24} aria-hidden="true" />
+          <strong>Page outline</strong>
+        </div>
+
         <details className="public-award-nav-group" open>
           <summary>
             <ChevronDown size={15} aria-hidden="true" />
@@ -99,19 +104,19 @@ export function PublicAwardWorkspace({
             <PanelButton
               active={selected.kind === "overview"}
               label="Overview"
-              meta="Profile"
+              meta={countLabel(data.sources.length, "source")}
               onClick={() => setSelected({ kind: "overview" })}
             />
             <PanelButton
               active={selected.kind === "facts"}
               label="Key details"
-              meta="Facts"
+              meta={countLabel(factRows.length, "field")}
               onClick={() => setSelected({ kind: "facts" })}
             />
             <PanelButton
               active={selected.kind === "changes"}
               label="Recent changes"
-              meta="Updates"
+              meta={countLabel(data.changes.length, "update")}
               onClick={() => setSelected({ kind: "changes" })}
               updateCount={data.changes.length}
             />
@@ -131,15 +136,20 @@ export function PublicAwardWorkspace({
                   active={selected.kind === "source" && selected.sourceId === source.id}
                   key={source.id}
                   label={source.title}
-                  meta={pageTypeLabel(source.pageType)}
+                  meta={`${pageTypeLabel(source.pageType)} / ${countLabel(changeCount, "update")}`}
                   onClick={() => setSelected({ kind: "source", sourceId: source.id })}
                   updateCount={changeCount}
+                  variant="source"
                 />
               );
             })}
           </div>
         </details>
 
+        <div className="public-award-sidebar-card public-award-sidebar-last-checked">
+          <span>Last checked</span>
+          <strong>{data.lastCheckedAt ? formatDate(data.lastCheckedAt) : "Pending"}</strong>
+        </div>
       </aside>
 
       <main className="public-award-console-main">
@@ -205,18 +215,20 @@ function PanelButton({
   meta,
   onClick,
   updateCount = 0,
+  variant = "profile",
 }: {
   active: boolean;
   label: string;
   meta: string;
   onClick: () => void;
   updateCount?: number;
+  variant?: "profile" | "source";
 }) {
   const hasUpdate = updateCount > 0;
 
   return (
     <button
-      className={`public-award-nav-button ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
+      className={`public-award-nav-button public-award-nav-button-${variant} ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
       type="button"
       onClick={onClick}
     >
@@ -464,4 +476,8 @@ function formatDate(value: string) {
     day: "numeric",
     year: "numeric",
   }).format(new Date(value));
+}
+
+function countLabel(count: number, singular: string) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }

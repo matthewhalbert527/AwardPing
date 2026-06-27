@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { PublicAwardWorkspace } from "@/components/public-award-workspace";
 
 describe("PublicAwardWorkspace", () => {
-  it("keeps public award outline labels free of numeric counts", () => {
+  it("renders the award outline sidebar with pluralized counts", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
         data: {
@@ -88,9 +88,14 @@ describe("PublicAwardWorkspace", () => {
     const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
 
     expect(sidebarHtml).toContain("Overview");
-    expect(sidebarHtml).toContain("Profile");
+    expect(sidebarHtml).toContain("Award profile");
+    expect(sidebarHtml).toContain("1 source");
+    expect(sidebarHtml).toContain("4 fields");
     expect(sidebarHtml).toContain("Recent changes");
-    expect(sidebarHtml).toContain("Updates");
+    expect(sidebarHtml).toContain("1 update");
+    expect(sidebarHtml).toContain("Official sources");
+    expect(sidebarHtml).toContain("Homepage / 1 update");
+    expect(sidebarHtml).toContain("Last checked");
     expect(sidebarHtml).not.toContain("1 sources");
     expect(sidebarHtml).not.toContain("1 updates");
     expect(sidebarHtml).not.toContain("1 recent updates");

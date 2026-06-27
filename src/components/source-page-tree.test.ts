@@ -302,7 +302,7 @@ describe("SourcePageTree", () => {
     expect(html).toContain("source-tree-unread-badge");
   });
 
-  it("treats explicit source deep links as opened for local unread display", () => {
+  it("treats explicit source deep links as opened while keeping recent update markers", () => {
     const html = renderToStaticMarkup(
       createElement(SourcePageTree, {
         initialSelectedSourceId: "deadline",
@@ -332,7 +332,8 @@ describe("SourcePageTree", () => {
 
     expect(html).toContain("Changed");
     expect(html).not.toContain("1 unread");
-    expect(html).not.toContain("source-tree-unread-badge");
+    expect(html).toContain('aria-label="Recent updates"');
+    expect(html).toContain("source-tree-unread-badge");
   });
 
   it("ignores rejected baseline facts instead of rendering stale extracted values", () => {
