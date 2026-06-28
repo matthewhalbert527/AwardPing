@@ -33,8 +33,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 4;
-const captureBehaviorName = "delayed-content-settled-capture";
+const captureBehaviorVersion = 5;
+const captureBehaviorName = "scroll-activated-settled-capture";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -166,6 +166,35 @@ const captureSettlePollMs = boundedInt(
   300,
   100,
   1_000,
+);
+const captureScrollActivation = boolArg(
+  args["capture-scroll-activation"] ?? env.AWARDPING_CAPTURE_SCROLL_ACTIVATION,
+  true,
+);
+const captureScrollStepRatio = Math.min(
+  1,
+  Math.max(
+    0.25,
+    nonNegativeNumber(args["capture-scroll-step-ratio"] || env.AWARDPING_CAPTURE_SCROLL_STEP_RATIO, 0.75),
+  ),
+);
+const captureScrollWaitMs = boundedInt(
+  args["capture-scroll-wait-ms"] || env.AWARDPING_CAPTURE_SCROLL_WAIT_MS,
+  250,
+  50,
+  2_000,
+);
+const captureScrollFinalWaitMs = boundedInt(
+  args["capture-scroll-final-wait-ms"] || env.AWARDPING_CAPTURE_SCROLL_FINAL_WAIT_MS,
+  500,
+  50,
+  3_000,
+);
+const captureScrollMaxSteps = boundedInt(
+  args["capture-scroll-max-steps"] || env.AWARDPING_CAPTURE_SCROLL_MAX_STEPS,
+  80,
+  5,
+  300,
 );
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
@@ -329,6 +358,11 @@ async function runOnce() {
       capture_settle_stable_ms: captureSettleStableMs,
       capture_settle_max_ms: captureSettleMaxMs,
       capture_settle_poll_ms: captureSettlePollMs,
+      capture_scroll_activation: captureScrollActivation,
+      capture_scroll_step_ratio: captureScrollStepRatio,
+      capture_scroll_wait_ms: captureScrollWaitMs,
+      capture_scroll_final_wait_ms: captureScrollFinalWaitMs,
+      capture_scroll_max_steps: captureScrollMaxSteps,
       source_timeout_ms: sourceTimeoutMs,
       visual_source_check_minutes: visualSourceCheckMinutes,
       delay_ms: delayMs,
@@ -378,6 +412,10 @@ async function runOnce() {
     capture_settle_waits: 0,
     capture_settle_timeouts: 0,
     capture_settle_wait_ms: 0,
+    scroll_activation_runs: 0,
+    scroll_activation_steps: 0,
+    scroll_activation_wait_ms: 0,
+    scroll_activation_changed: 0,
     issue_sources_loaded: 0,
     issue_sources_cleared: 0,
     issue_sources_still_failing: 0,
@@ -1326,6 +1364,13 @@ async function captureSource(source, context, browserMeta, report) {
         video.removeAttribute("autoplay");
       }
     }).catch(() => null);
+    const scrollActivation = await activateScrollTriggeredContent(page);
+    if (report) {
+      if (!scrollActivation.skipped) report.scroll_activation_runs += 1;
+      report.scroll_activation_steps += scrollActivation.steps || 0;
+      report.scroll_activation_wait_ms += scrollActivation.waited_ms || 0;
+      if (scrollActivation.changed) report.scroll_activation_changed += 1;
+    }
     const pageSettle = await waitForPageSettledForSnapshot(page);
     if (report) {
       if (pageSettle.waited_ms > 0) report.capture_settle_waits += 1;
@@ -1408,6 +1453,7 @@ async function captureSource(source, context, browserMeta, report) {
       browser: browserMeta,
       hidden_noise_counts: hiddenNoise,
       page_readiness: pageReadiness,
+      scroll_activation: scrollActivation,
       page_settle: pageSettle,
       counter_stability: counterStability,
       expanded_content: expanded,
@@ -1933,6 +1979,186 @@ async function waitForMeaningfulPageContent(page) {
     before,
     after,
   };
+}
+
+async function activateScrollTriggeredContent(page) {
+  const startedAt = Date.now();
+  const before = await pageSettleSnapshot(page);
+  if (!captureScrollActivation) {
+    return {
+      skipped: true,
+      changed: false,
+      steps: 0,
+      waited_ms: 0,
+      before: compactPageSettleSnapshot(before),
+      after: compactPageSettleSnapshot(before),
+    };
+  }
+
+  const result = await page
+    .evaluate(
+      async ({ finalWaitMs, maxSteps, stepRatio, waitMs }) => {
+        const delay = (milliseconds) => new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+        const nextFrame = () => new Promise((resolveFrame) => requestAnimationFrame(() => resolveFrame()));
+        const documentElement = document.documentElement;
+        const body = document.body;
+        const viewportHeight = Math.max(window.innerHeight || 0, 1);
+        const stepSize = Math.max(120, Math.floor(viewportHeight * stepRatio));
+        const startX = window.scrollX || 0;
+        let scrollHeight = Math.max(documentElement.scrollHeight, body?.scrollHeight || 0, viewportHeight);
+        let targetY = 0;
+        let steps = 0;
+        let maxScrollY = Math.max(0, scrollHeight - viewportHeight);
+
+        const triggerAt = async (y) => {
+          window.scrollTo(startX, Math.max(0, y));
+          window.dispatchEvent(new Event("scroll"));
+          document.dispatchEvent(new Event("scroll"));
+          await nextFrame();
+          await delay(waitMs);
+        };
+
+        await triggerAt(0);
+
+        while (steps < maxSteps && targetY < maxScrollY) {
+          targetY = Math.min(maxScrollY, targetY + stepSize);
+          await triggerAt(targetY);
+          steps += 1;
+          scrollHeight = Math.max(documentElement.scrollHeight, body?.scrollHeight || 0, viewportHeight);
+          maxScrollY = Math.max(0, scrollHeight - viewportHeight);
+        }
+
+        if (steps < maxSteps && targetY < scrollHeight) {
+          await triggerAt(maxScrollY);
+        }
+
+        await delay(finalWaitMs);
+        window.scrollTo(startX, 0);
+        window.dispatchEvent(new Event("scroll"));
+        document.dispatchEvent(new Event("scroll"));
+        await nextFrame();
+        await delay(Math.min(finalWaitMs, 500));
+
+        return {
+          steps,
+          step_size: stepSize,
+          viewport_height: viewportHeight,
+          scroll_height: scrollHeight,
+          hit_step_limit: steps >= maxSteps && targetY < maxScrollY,
+        };
+      },
+      {
+        finalWaitMs: captureScrollFinalWaitMs,
+        maxSteps: captureScrollMaxSteps,
+        stepRatio: captureScrollStepRatio,
+        waitMs: captureScrollWaitMs,
+      },
+    )
+    .catch((error) => ({
+      steps: 0,
+      step_size: 0,
+      viewport_height: 0,
+      scroll_height: 0,
+      hit_step_limit: false,
+      error: errorMessage(error),
+    }));
+
+  await page.waitForLoadState("networkidle", { timeout: Math.min(3_000, timeoutMs) }).catch(() => null);
+  const forcedReveal = await forceScrollRevealElementsVisible(page);
+  await page.waitForTimeout(Math.min(captureScrollWaitMs, 500)).catch(() => null);
+  const after = await pageSettleSnapshot(page);
+  const changed = before.signal !== after.signal;
+
+  return {
+    skipped: false,
+    changed,
+    waited_ms: Date.now() - startedAt,
+    wait_ms: captureScrollWaitMs,
+    final_wait_ms: captureScrollFinalWaitMs,
+    step_ratio: captureScrollStepRatio,
+    max_steps: captureScrollMaxSteps,
+    steps: result.steps || 0,
+    step_size: result.step_size || 0,
+    viewport_height: result.viewport_height || 0,
+    scroll_height: result.scroll_height || 0,
+    hit_step_limit: Boolean(result.hit_step_limit),
+    forced_reveal_elements: forcedReveal.count || 0,
+    forced_reveal_selectors: forcedReveal.selectors || [],
+    error: result.error || null,
+    before: compactPageSettleSnapshot(before),
+    after: compactPageSettleSnapshot(after),
+  };
+}
+
+async function forceScrollRevealElementsVisible(page) {
+  return page
+    .evaluate(() => {
+      const selectors = [
+        "[data-aos]",
+        ".aos-init",
+        ".aos-animate",
+        ".elementor-invisible",
+        ".animated",
+        ".wow",
+        ".slide-in-left",
+        ".slide-in-right",
+        ".slide-in-up",
+        ".slide-in-down",
+        ".fade-in",
+        ".fadeIn",
+        ".fadeInUp",
+        ".fadeInDown",
+        ".fadeInLeft",
+        ".fadeInRight",
+      ];
+      const selector = selectors.join(",");
+      let style = document.getElementById("awardping-scroll-reveal-visible-style");
+      if (!style) {
+        style = document.createElement("style");
+        style.id = "awardping-scroll-reveal-visible-style";
+        style.textContent = `
+          ${selector} {
+            opacity: 1 !important;
+            transform: none !important;
+            visibility: visible !important;
+          }
+          .elementor-invisible {
+            visibility: visible !important;
+          }
+          [data-awardping-hidden-noise] {
+            display: none !important;
+            visibility: hidden !important;
+          }
+        `;
+        (document.head || document.documentElement).appendChild(style);
+      }
+
+      let count = 0;
+      const matchedSelectors = new Set();
+      for (const element of document.querySelectorAll(selector)) {
+        if (!(element instanceof HTMLElement)) continue;
+        if (element.closest("[data-awardping-hidden-noise]")) continue;
+        for (const candidate of selectors) {
+          if (element.matches(candidate)) matchedSelectors.add(candidate);
+        }
+        element.classList.add("aos-animate");
+        element.classList.remove("elementor-invisible");
+        element.style.setProperty("opacity", "1", "important");
+        element.style.setProperty("transform", "none", "important");
+        element.style.setProperty("visibility", "visible", "important");
+        count += 1;
+      }
+
+      return {
+        count,
+        selectors: [...matchedSelectors].slice(0, 20),
+      };
+    })
+    .catch((error) => ({
+      count: 0,
+      selectors: [],
+      error: errorMessage(error),
+    }));
 }
 
 async function waitForPageSettledForSnapshot(page) {
@@ -3796,6 +4022,19 @@ async function hideNoiseElements(page) {
       if (element.closest("main, article, [role='main']") && awardTerms.test(textOf(element))) {
         return !/(cookie|consent|gdpr|popup|modal|newsletter|subscribe|chat|intercom|drift|crisp|ad|ads|advertisement|sponsor|carousel|slider|swiper|slick|marquee)/i.test(signal);
       }
+      if (awardTerms.test(textOf(element))) {
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const overlayLike =
+          style.position === "fixed" ||
+          style.position === "sticky" ||
+          rect.width * rect.height < window.innerWidth * window.innerHeight * 0.25;
+        const explicitNoise = /(cookie|consent|gdpr|popup|modal|newsletter|subscribe|chat|intercom|drift|crisp|advertisement|ad-banner|social-share|sharebar)/i.test(
+          signal,
+        );
+        const decorativeNoise = /(sponsor|carousel|slider|swiper|slick|marquee)/i.test(signal);
+        if (!explicitNoise && !(decorativeNoise && overlayLike)) return true;
+      }
       return false;
     }
 
@@ -5099,6 +5338,10 @@ function visualWorkerMetadata(report) {
       capture_settle_waits: report.capture_settle_waits,
       capture_settle_timeouts: report.capture_settle_timeouts,
       capture_settle_wait_ms: report.capture_settle_wait_ms,
+      scroll_activation_runs: report.scroll_activation_runs,
+      scroll_activation_steps: report.scroll_activation_steps,
+      scroll_activation_wait_ms: report.scroll_activation_wait_ms,
+      scroll_activation_changed: report.scroll_activation_changed,
       issue_sources_loaded: report.issue_sources_loaded,
       issue_sources_cleared: report.issue_sources_cleared,
       issue_sources_still_failing: report.issue_sources_still_failing,
