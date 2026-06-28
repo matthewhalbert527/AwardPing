@@ -33,8 +33,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 3;
-const captureBehaviorName = "multi-state-expansion-capture";
+const captureBehaviorVersion = 4;
+const captureBehaviorName = "delayed-content-settled-capture";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -149,6 +149,24 @@ const maxHtmlSubpageDiscoveries = boundedInt(
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
 const pageReadyTimeoutMs = positiveInt(args["page-ready-timeout-ms"] || env.AWARDPING_PAGE_READY_TIMEOUT_MS, 15_000);
+const captureSettleStableMs = boundedInt(
+  args["capture-settle-stable-ms"] || env.AWARDPING_CAPTURE_SETTLE_STABLE_MS,
+  1_500,
+  250,
+  5_000,
+);
+const captureSettleMaxMs = boundedInt(
+  args["capture-settle-max-ms"] || env.AWARDPING_CAPTURE_SETTLE_MAX_MS,
+  8_000,
+  1_000,
+  20_000,
+);
+const captureSettlePollMs = boundedInt(
+  args["capture-settle-poll-ms"] || env.AWARDPING_CAPTURE_SETTLE_POLL_MS,
+  300,
+  100,
+  1_000,
+);
 const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const heartbeatMinutes = positiveInt(args["heartbeat-minutes"] || env.AWARDPING_WORKER_HEARTBEAT_MINUTES, 5);
@@ -308,6 +326,9 @@ async function runOnce() {
       max_html_subpage_discoveries: maxHtmlSubpageDiscoveries,
       timeout_ms: timeoutMs,
       page_ready_timeout_ms: pageReadyTimeoutMs,
+      capture_settle_stable_ms: captureSettleStableMs,
+      capture_settle_max_ms: captureSettleMaxMs,
+      capture_settle_poll_ms: captureSettlePollMs,
       source_timeout_ms: sourceTimeoutMs,
       visual_source_check_minutes: visualSourceCheckMinutes,
       delay_ms: delayMs,
@@ -354,6 +375,9 @@ async function runOnce() {
     page_ready_waits: 0,
     page_ready_timeouts: 0,
     page_ready_wait_ms: 0,
+    capture_settle_waits: 0,
+    capture_settle_timeouts: 0,
+    capture_settle_wait_ms: 0,
     issue_sources_loaded: 0,
     issue_sources_cleared: 0,
     issue_sources_still_failing: 0,
@@ -1302,7 +1326,12 @@ async function captureSource(source, context, browserMeta, report) {
         video.removeAttribute("autoplay");
       }
     }).catch(() => null);
-    await page.waitForTimeout(250).catch(() => null);
+    const pageSettle = await waitForPageSettledForSnapshot(page);
+    if (report) {
+      if (pageSettle.waited_ms > 0) report.capture_settle_waits += 1;
+      if (pageSettle.timed_out) report.capture_settle_timeouts += 1;
+      report.capture_settle_wait_ms += pageSettle.waited_ms;
+    }
     const counterStability = await waitForLikelyAnimatedCounterStability(page);
     const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir);
     if (report && expansionStateEvidence.states.length) {
@@ -1379,6 +1408,7 @@ async function captureSource(source, context, browserMeta, report) {
       browser: browserMeta,
       hidden_noise_counts: hiddenNoise,
       page_readiness: pageReadiness,
+      page_settle: pageSettle,
       counter_stability: counterStability,
       expanded_content: expanded,
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
@@ -1905,6 +1935,56 @@ async function waitForMeaningfulPageContent(page) {
   };
 }
 
+async function waitForPageSettledForSnapshot(page) {
+  const startedAt = Date.now();
+  const before = await pageSettleSnapshot(page);
+  let last = before;
+  let lastChangedAt = startedAt;
+  let changeCount = 0;
+
+  while (Date.now() - startedAt < captureSettleMaxMs) {
+    if (Date.now() - lastChangedAt >= captureSettleStableMs) {
+      return {
+        stable: true,
+        timed_out: false,
+        waited_ms: Date.now() - startedAt,
+        stable_ms: captureSettleStableMs,
+        max_ms: captureSettleMaxMs,
+        poll_ms: captureSettlePollMs,
+        change_count: changeCount,
+        before: compactPageSettleSnapshot(before),
+        after: compactPageSettleSnapshot(last),
+      };
+    }
+
+    const remainingMaxMs = captureSettleMaxMs - (Date.now() - startedAt);
+    const remainingStableMs = captureSettleStableMs - (Date.now() - lastChangedAt);
+    const waitMs = Math.max(0, Math.min(captureSettlePollMs, remainingMaxMs, remainingStableMs));
+    if (waitMs <= 0) break;
+    await page.waitForTimeout(waitMs).catch(() => null);
+
+    const current = await pageSettleSnapshot(page);
+    if (current.signal !== last.signal) {
+      changeCount += 1;
+      lastChangedAt = Date.now();
+    }
+    last = current;
+  }
+
+  const stable = Date.now() - lastChangedAt >= captureSettleStableMs;
+  return {
+    stable,
+    timed_out: !stable,
+    waited_ms: Date.now() - startedAt,
+    stable_ms: captureSettleStableMs,
+    max_ms: captureSettleMaxMs,
+    poll_ms: captureSettlePollMs,
+    change_count: changeCount,
+    before: compactPageSettleSnapshot(before),
+    after: compactPageSettleSnapshot(last),
+  };
+}
+
 async function waitForLikelyAnimatedCounterStability(page) {
   const startedAt = Date.now();
   const stableMs = 1_000;
@@ -2044,6 +2124,146 @@ async function pageReadinessSnapshot(page) {
       title: "",
       error: errorMessage(error),
     }));
+}
+
+async function pageSettleSnapshot(page) {
+  const raw = await page
+    .evaluate(() => {
+      const body = document.body;
+      const documentElement = document.documentElement;
+      const bodyText = (body?.innerText || "").replace(/\s+/g, " ").trim();
+      const textSample =
+        bodyText.length > 32_000 ? `${bodyText.slice(0, 16_000)} ${bodyText.slice(-16_000)}` : bodyText;
+      const scrollHeight = Math.max(documentElement.scrollHeight, body?.scrollHeight || 0);
+      const scrollWidth = Math.max(documentElement.scrollWidth, body?.scrollWidth || 0, window.innerWidth);
+      const layoutParts = [];
+      let visibleElementCount = 0;
+      let sampledElementCount = 0;
+      const maxLayoutSamples = 900;
+
+      const addLayoutPart = (element, rect, style, forceSample = false) => {
+        if (!forceSample && sampledElementCount >= maxLayoutSamples) return;
+        if (forceSample && sampledElementCount >= maxLayoutSamples * 2) return;
+        sampledElementCount += 1;
+        const className = String(element.className || "")
+          .replace(/\s+/g, ".")
+          .slice(0, 80);
+        const id = String(element.id || "").slice(0, 48);
+        const label = `${element.tagName.toLowerCase()}${id ? `#${id}` : ""}${className ? `.${className}` : ""}`;
+        const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
+        const transform = style.transform && style.transform !== "none" ? style.transform.slice(0, 100) : "";
+        layoutParts.push(
+          [
+            label,
+            Math.round(rect.left),
+            Math.round(rect.top),
+            Math.round(rect.width),
+            Math.round(rect.height),
+            Math.round(Number(style.opacity || 1) * 100),
+            style.position || "",
+            transform,
+            text,
+          ].join(":"),
+        );
+      };
+
+      for (const element of body ? body.querySelectorAll("*") : []) {
+        if (!(element instanceof HTMLElement)) continue;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        const opacity = Number(style.opacity || 1);
+        if (
+          rect.width <= 0 ||
+          rect.height <= 0 ||
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          opacity <= 0
+        ) {
+          continue;
+        }
+
+        visibleElementCount += 1;
+        const transform = style.transform && style.transform !== "none";
+        const fixedOrSticky = style.position === "fixed" || style.position === "sticky";
+        const horizontalOffCanvas = rect.left < 0 || rect.right > window.innerWidth;
+        const namedLikePanel = /\b(drawer|flyout|slide|side|sidebar|card|panel|modal|toast|popover)\b/i.test(
+          `${element.id || ""} ${element.className || ""} ${element.getAttribute("role") || ""}`,
+        );
+
+        addLayoutPart(element, rect, style, transform || fixedOrSticky || horizontalOffCanvas || namedLikePanel);
+      }
+
+      return {
+        ready_state: document.readyState,
+        text_length: bodyText.length,
+        text_sample: textSample,
+        link_count: document.links.length,
+        image_count: document.images.length,
+        script_count: document.scripts.length,
+        visible_element_count: visibleElementCount,
+        sampled_element_count: sampledElementCount,
+        scroll_height: scrollHeight,
+        scroll_width: scrollWidth,
+        title: document.title || "",
+        layout_sample: layoutParts.join("|").slice(0, 80_000),
+      };
+    })
+    .catch((error) => ({
+      ready_state: "unknown",
+      text_length: 0,
+      text_sample: "",
+      link_count: 0,
+      image_count: 0,
+      script_count: 0,
+      visible_element_count: 0,
+      sampled_element_count: 0,
+      scroll_height: 0,
+      scroll_width: 0,
+      title: "",
+      layout_sample: "",
+      error: errorMessage(error),
+    }));
+
+  const textHash = raw.text_sample ? hashText(normalizeText(raw.text_sample)) : "";
+  const layoutHash = raw.layout_sample ? hashText(raw.layout_sample) : "";
+  const signal = [
+    raw.ready_state || "",
+    raw.text_length || 0,
+    textHash,
+    layoutHash,
+    raw.visible_element_count || 0,
+    raw.link_count || 0,
+    raw.image_count || 0,
+    raw.scroll_height || 0,
+    raw.scroll_width || 0,
+    raw.title || "",
+    raw.error || "",
+  ].join("|");
+
+  return {
+    ...raw,
+    text_hash: textHash,
+    layout_hash: layoutHash,
+    signal,
+  };
+}
+
+function compactPageSettleSnapshot(snapshot) {
+  return {
+    ready_state: snapshot.ready_state || "unknown",
+    text_length: snapshot.text_length || 0,
+    text_hash: snapshot.text_hash || "",
+    layout_hash: snapshot.layout_hash || "",
+    link_count: snapshot.link_count || 0,
+    image_count: snapshot.image_count || 0,
+    script_count: snapshot.script_count || 0,
+    visible_element_count: snapshot.visible_element_count || 0,
+    sampled_element_count: snapshot.sampled_element_count || 0,
+    scroll_height: snapshot.scroll_height || 0,
+    scroll_width: snapshot.scroll_width || 0,
+    title: snapshot.title || "",
+    error: snapshot.error || null,
+  };
 }
 
 function classifyInvalidPageCapture({ status, finalUrl, pageTitle, text, dimensions }) {
@@ -4876,6 +5096,9 @@ function visualWorkerMetadata(report) {
       page_ready_waits: report.page_ready_waits,
       page_ready_timeouts: report.page_ready_timeouts,
       page_ready_wait_ms: report.page_ready_wait_ms,
+      capture_settle_waits: report.capture_settle_waits,
+      capture_settle_timeouts: report.capture_settle_timeouts,
+      capture_settle_wait_ms: report.capture_settle_wait_ms,
       issue_sources_loaded: report.issue_sources_loaded,
       issue_sources_cleared: report.issue_sources_cleared,
       issue_sources_still_failing: report.issue_sources_still_failing,
