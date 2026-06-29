@@ -143,8 +143,8 @@ describe("PublicAwardWorkspace", () => {
 
     expect(sidebarHtml).toContain("Overview");
     expect(sidebarHtml).toContain("Award profile");
-    expect(sidebarHtml).toContain("3 sources");
     expect(sidebarHtml).toContain("4 fields");
+    expect(sidebarHtml).not.toContain("Key details");
     expect(sidebarHtml).toContain("Recent changes");
     expect(sidebarHtml).toContain("1 update");
     expect(sidebarHtml).toContain("Sources");
@@ -160,5 +160,13 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("1 sources");
     expect(sidebarHtml).not.toContain("1 updates");
     expect(sidebarHtml).not.toContain("1 recent updates");
+
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+    expect(mainHtml).toContain("Overview");
+    expect(mainHtml).toContain("Deadline");
+    expect(mainHtml).toContain("Eligibility");
+    expect(mainHtml).toContain("Academic level");
+    expect(mainHtml).not.toContain("Official source pages");
+    expect(mainHtml).not.toContain("Stable");
   });
 });

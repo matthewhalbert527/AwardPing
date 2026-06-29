@@ -177,8 +177,6 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
 
                 <h1 className="award-detail-title">{award.name}</h1>
 
-                <span className="award-detail-anchor" id="award-key-details" aria-hidden="true" />
-
                 {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
                   <AwardBaselineDetails parts={awardSummaryParts} />
                 ) : awardSummary ? (
@@ -225,16 +223,15 @@ function AwardBaselineDetails({
   const visibleFacts = parts.facts.filter(
     (fact) => fact.label.toLowerCase() !== "baseline detail confidence",
   );
-  const compactFacts = visibleFacts.slice(0, 6);
 
   return (
     <div className="award-detail-facts">
       {parts.overview && <p className="award-detail-summary-copy">{parts.overview}</p>}
-      {compactFacts.length > 0 && (
+      {visibleFacts.length > 0 && (
         <dl
           className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}
         >
-          {compactFacts.map((fact) => (
+          {visibleFacts.map((fact) => (
             <div className="award-detail-fact" key={fact.label}>
               <dt>{fact.label}</dt>
               <dd>{fact.value}</dd>
@@ -270,13 +267,6 @@ function AwardDetailSidebarIntro({
           <span className="public-award-nav-marker" aria-hidden="true" />
           <span className="public-award-nav-text">
             <strong>Overview</strong>
-            <small>{countLabel(sourceCount, "source")}</small>
-          </span>
-        </a>
-        <a className="public-award-nav-button public-award-nav-button-profile" href="#award-key-details">
-          <span className="public-award-nav-marker" aria-hidden="true" />
-          <span className="public-award-nav-text">
-            <strong>Key details</strong>
             <small>{countLabel(factCount, "field")}</small>
           </span>
         </a>

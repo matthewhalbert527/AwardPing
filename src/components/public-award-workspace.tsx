@@ -21,7 +21,6 @@ type PublicAwardWorkspaceProps = {
 
 type SelectedPanel =
   | { kind: "overview" }
-  | { kind: "facts" }
   | { kind: "changes" }
   | { kind: "source"; sourceId: string };
 
@@ -53,11 +52,9 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
   const selectedTitle =
     selected.kind === "overview"
       ? "Award overview"
-      : selected.kind === "facts"
-        ? "Key details"
-        : selected.kind === "changes"
-          ? "Recent changes"
-          : selectedSource?.title || "Source page";
+      : selected.kind === "changes"
+        ? "Recent changes"
+        : selectedSource?.title || "Source page";
   const sourceChangeCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const source of data.sources) {
@@ -144,14 +141,8 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
           <PanelButton
             active={selected.kind === "overview"}
             label="Overview"
-            meta={countLabel(data.sources.length, "source")}
-            onClick={() => setSelected({ kind: "overview" })}
-          />
-          <PanelButton
-            active={selected.kind === "facts"}
-            label="Key details"
             meta={countLabel(factRows.length, "field")}
-            onClick={() => setSelected({ kind: "facts" })}
+            onClick={() => setSelected({ kind: "overview" })}
           />
           <PanelButton
             active={selected.kind === "changes"}
@@ -219,13 +210,9 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
         <section className="public-award-console-panel">
           {selected.kind === "overview" && (
             <OverviewPanel
-              data={data}
               factRows={factRows}
-              onSelectSource={selectSource}
-              sourceChangeCounts={sourceChangeCounts}
             />
           )}
-          {selected.kind === "facts" && <FactsPanel rows={factRows} />}
           {selected.kind === "changes" && <ChangesPanel changes={data.changes} />}
           {selected.kind === "source" && selectedSource && (
             <SourcePanel
@@ -323,15 +310,9 @@ function PanelButton({
 }
 
 function OverviewPanel({
-  data,
   factRows,
-  onSelectSource,
-  sourceChangeCounts,
 }: {
-  data: PublicAwardPageData;
   factRows: Array<{ label: string; value: string; icon?: "calendar" | "checklist" }>;
-  onSelectSource: (sourceId: string) => void;
-  sourceChangeCounts: Map<string, number>;
 }) {
   return (
     <div className="public-award-panel-stack">
@@ -340,53 +321,7 @@ function OverviewPanel({
       </div>
 
       <div className="public-award-fact-table public-award-fact-table-compact">
-        {factRows.slice(0, 5).map((fact) => (
-          <FactLine fact={fact} key={fact.label} />
-        ))}
-      </div>
-
-      <div className="public-award-source-table">
-        <div className="public-award-table-heading">
-          <h3>Official source pages</h3>
-          <span>{data.sources.length} tracked</span>
-        </div>
-        {data.sources.slice(0, 6).map((source) => {
-          const changes = sourceChangeCounts.get(source.id) || 0;
-          return (
-            <article className={changes ? "public-award-source-line public-award-source-line-updated" : "public-award-source-line"} key={source.id}>
-              <div>
-                <span>{pageTypeLabel(source.pageType)}</span>
-                <h4>
-                  <button
-                    className="public-award-source-line-button"
-                    type="button"
-                    onClick={() => onSelectSource(source.id)}
-                  >
-                    {source.title}
-                  </button>
-                </h4>
-              </div>
-              <strong>{changes ? `${changes} updates` : "Stable"}</strong>
-            </article>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function FactsPanel({
-  rows,
-}: {
-  rows: Array<{ label: string; value: string; icon?: "calendar" | "checklist" }>;
-}) {
-  return (
-    <div className="public-award-panel-stack">
-      <div className="public-award-section-heading">
-        <h2>Key details</h2>
-      </div>
-      <div className="public-award-fact-table">
-        {rows.map((fact) => (
+        {factRows.map((fact) => (
           <FactLine fact={fact} key={fact.label} />
         ))}
       </div>
