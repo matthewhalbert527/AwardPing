@@ -21,6 +21,7 @@
   --surface: #ffffff;
   --surface-warm: #f2f2f4;
   --app-shell-width: 96rem;
+  --award-page-template-width: 88rem;
 }
 
 @theme inline {
@@ -1536,12 +1537,15 @@ a {
 }
 
 .dashboard-content:has(.award-detail-page) {
-  max-width: 96rem;
+  width: min(100%, var(--award-page-template-width));
+  max-width: var(--award-page-template-width);
+  margin: 0 auto;
 }
 
 .award-detail-page {
   display: grid;
   gap: 1rem;
+  width: 100%;
   color: #252525;
 }
 
@@ -3444,7 +3448,7 @@ a {
 }
 
 .public-award-console-wrap {
-  width: min(100%, 102rem);
+  width: min(100%, var(--award-page-template-width));
   margin: 0 auto;
   padding: 1rem;
 }
