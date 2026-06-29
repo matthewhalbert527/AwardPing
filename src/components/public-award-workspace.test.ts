@@ -162,6 +162,18 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("1 recent updates");
 
     const mainHtml = html.slice(html.indexOf("</aside>"));
+    const headerHtml = mainHtml.slice(
+      mainHtml.indexOf('<header class="public-award-console-header">'),
+      mainHtml.indexOf("</header>"),
+    );
+    expect(mainHtml).not.toContain("public-award-console-breadcrumb");
+    expect(headerHtml).toContain("Example Fellowship");
+    expect(headerHtml).toContain("3 source pages");
+    expect(headerHtml).toContain("A fellowship for testing.");
+    expect(headerHtml.indexOf("Example Fellowship")).toBeLessThan(headerHtml.indexOf("3 source pages"));
+    expect(headerHtml.indexOf("3 source pages")).toBeLessThan(headerHtml.indexOf("A fellowship for testing."));
+    expect(headerHtml).not.toContain("1 recent updates");
+    expect(headerHtml).not.toContain("high confidence");
     expect(mainHtml).toContain("Overview");
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");

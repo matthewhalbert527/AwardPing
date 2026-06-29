@@ -49,12 +49,6 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
           normalizeUrl(change.sourceUrl) === normalizeUrl(selectedSource.url),
       )
     : [];
-  const selectedTitle =
-    selected.kind === "overview"
-      ? "Award overview"
-      : selected.kind === "changes"
-        ? "Recent changes"
-        : selectedSource?.title || "Source page";
   const sourceChangeCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const source of data.sources) {
@@ -169,22 +163,12 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
       </aside>
 
       <main className="public-award-console-main">
-        <div className="public-award-console-breadcrumb">
-          <Link href="/award-directory" prefetch={false}>Award Directory</Link>
-          <span>/</span>
-          <Link href={data.canonicalPath}>{data.award.name}</Link>
-          <span>/</span>
-          <strong>{selectedTitle}</strong>
-        </div>
-
         <header className="public-award-console-header">
           <div>
+            <h1>{data.award.name}</h1>
             <div className="award-detail-meta-line">
               <span>{data.sources.length} source pages</span>
-              <span>{data.changes.length} recent updates</span>
-              {data.facts.confidence && <span>{data.facts.confidence} confidence</span>}
             </div>
-            <h1>{data.award.name}</h1>
             {data.facts.overview && <p>{data.facts.overview}</p>}
           </div>
           <div className="public-award-console-actions">

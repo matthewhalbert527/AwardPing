@@ -149,33 +149,12 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
           selectedChangeId={query.change || undefined}
           splitDetailIntro={
             <>
-              <div className="award-detail-command-row">
-                <Link className="award-detail-back-link" href="/dashboard/awards">
-                  <ArrowLeft size={16} aria-hidden="true" />
-                  Back to find awards
-                </Link>
-                <Link
-                  className="button-secondary"
-                  href={canonicalAwardPath(award.slug, award.name, award.id)}
-                >
-                  Public page
-                  <ExternalLink size={16} aria-hidden="true" />
-                </Link>
-                <TrackSharedAwardButton
-                  sharedAwardId={award.id}
-                  tracked={tracked}
-                  canManage={canManageOffice(officeContext.current.role)}
-                />
-              </div>
-
               <header className="award-detail-header" id="award-overview">
+                <h1 className="award-detail-title">{award.name}</h1>
+
                 <div className="award-detail-meta-line">
                   <span>{officialSources.length} source pages</span>
-                  <span>{officialChanges.length} recorded updates</span>
-                  {tracked && <span>On watchlist</span>}
                 </div>
-
-                <h1 className="award-detail-title">{award.name}</h1>
 
                 {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
                   <AwardBaselineDetails parts={awardSummaryParts} />
@@ -195,6 +174,25 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
                   </a>
                 )}
               </header>
+
+              <div className="award-detail-command-row">
+                <Link className="award-detail-back-link" href="/dashboard/awards">
+                  <ArrowLeft size={16} aria-hidden="true" />
+                  Back to find awards
+                </Link>
+                <Link
+                  className="button-secondary"
+                  href={canonicalAwardPath(award.slug, award.name, award.id)}
+                >
+                  Public page
+                  <ExternalLink size={16} aria-hidden="true" />
+                </Link>
+                <TrackSharedAwardButton
+                  sharedAwardId={award.id}
+                  tracked={tracked}
+                  canManage={canManageOffice(officeContext.current.role)}
+                />
+              </div>
             </>
           }
           splitSidebarFooter={<AwardDetailSidebarFooter lastCheckedAt={lastCheckedAt} />}
