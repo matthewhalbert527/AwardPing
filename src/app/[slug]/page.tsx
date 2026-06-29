@@ -118,6 +118,7 @@ function PublicAwardPage({
 
   return (
     <div className="page-shell public-award-shell">
+      <SiteHeader />
       <main className="public-award-console-wrap">
         <PublicAwardWorkspace data={data} />
       </main>

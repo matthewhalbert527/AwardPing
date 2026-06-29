@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { PublicAwardWorkspace } from "@/components/public-award-workspace";
 import { SiteFooter } from "@/components/site-footer";
+import { SiteHeader } from "@/components/site-header";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
 import { getPublicAwardSourcePageBySlugs } from "@/lib/public-award-pages";
 
@@ -41,6 +42,7 @@ export default async function PublicAwardSourcePage({ params }: Props) {
 
   return (
     <div className="page-shell public-award-shell">
+      <SiteHeader />
       <main className="public-award-console-wrap">
         <PublicAwardWorkspace data={data} initialSourceId={data.source.id} />
       </main>
