@@ -3,8 +3,13 @@
 .next
 .vercel
 dist
+public/awardping-worker-windows.zip
 node_modules
 reports
+tmp
+AwardPingVisualSnapshots
+visual-snapshots
+visual-snapshot-archive
 supabase/.branches
 supabase/.temp
 *.tsbuildinfo

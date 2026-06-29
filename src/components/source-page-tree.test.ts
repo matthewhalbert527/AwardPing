@@ -1,0 +1,384 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { SourcePageTree } from "@/components/source-page-tree";
+import { buildSourceTree } from "@/lib/source-tree";
+
+describe("SourcePageTree", () => {
+  it("renders readable source titles and latest update dates in collapsed rows", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        sources: [
+          {
+            id: "home",
+            title: "https://agbell.org/financial-aid/",
+            url: "https://agbell.org/financial-aid/",
+            pageType: "homepage",
+            lastCheckedAt: "2026-05-27T19:44:12.000Z",
+            latestChanges: [
+              {
+                id: "change-1",
+                sourceTitle: "Financial Aid",
+                sourceUrl: "https://agbell.org/financial-aid/",
+                sourcePageType: "homepage",
+                summary: "The Financial Aid page added application deadline wording.",
+                detectedAt: "2026-05-28T20:00:00.000Z",
+              },
+            ],
+          },
+          {
+            id: "root",
+            title: "/",
+            url: "https://agbell.org/",
+            pageType: "other",
+            lastCheckedAt: "2026-05-27T22:53:52.000Z",
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Financial Aid");
+    expect(html).toContain("Homepage");
+    expect(html).toContain("Expand all");
+    expect(html).toContain("Collapse all");
+    expect(html).toContain("Update:");
+    expect(html).toContain("None");
+    expect(html).not.toContain("https://agbell.org/financial-aid/</span>");
+    expect(html).not.toContain("&gt;/&lt;");
+  });
+
+  it("renders a split outline with selected page details", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "eligibility",
+            title: "Eligibility",
+            displayTitle: "Eligibility",
+            pageDescription: "Eligibility rules for the scholarship.",
+            url: "https://example.edu/scholarship/eligibility",
+            pageType: "eligibility",
+            pageMetadataGeneratedAt: "2026-06-23T15:00:00.000Z",
+            pageMetadataModel: "gemini-2.5-flash-lite",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Eligibility",
+                award_relevance: "primary",
+                deadline: "January 29, 2026",
+                eligibility: ["Sophomores and juniors"],
+                sections: [
+                  {
+                    title: "Citizenship",
+                    description: "Applicants must meet citizenship requirements.",
+                    status: "unchanged",
+                  },
+                ],
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("source-tree-split");
+    expect(html).toContain("source-tree-detail-panel");
+    expect(html).toContain("Eligibility rules for the scholarship.");
+    expect(html).toContain("Citizenship");
+    expect(html).toContain("January 29, 2026");
+    expect(html).not.toContain("Page outline updated");
+    expect(html).not.toContain("gemini-2.5-flash-lite");
+  });
+
+  it("starts split source branches open while keeping the detail panel ready", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "citizenship",
+            title: "Citizenship",
+            displayTitle: "Citizenship",
+            pageDescription: "Citizenship requirements.",
+            url: "https://example.edu/scholarship/eligibility/citizenship",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Eligibility",
+                award_relevance: "primary",
+              },
+            },
+            latestChanges: [],
+          },
+          {
+            id: "standing",
+            title: "Academic standing",
+            displayTitle: "Academic standing",
+            pageDescription: "Academic standing requirements.",
+            url: "https://example.edu/scholarship/eligibility/standing",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Eligibility",
+                award_relevance: "primary",
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("source-tree-split");
+    expect(html).toContain("aria-expanded=\"true\"");
+    expect(html).toContain("Eligibility");
+    expect(html).toContain("Academic standing requirements.");
+    expect(html).not.toContain("Citizenship requirements.");
+  });
+
+  it("does not show numeric branch status counts in split sidebar outlines", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "deadline",
+            title: "Deadline",
+            displayTitle: "Deadline",
+            url: "https://example.edu/scholarship/dates/deadline",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Deadlines",
+              },
+            },
+            latestChanges: [
+              {
+                id: "change-1",
+                sourceTitle: "Deadline",
+                sourceUrl: "https://example.edu/scholarship/dates/deadline",
+                sourcePageType: "deadline",
+                summary: "The campus deadline moved later.",
+                detectedAt: "2026-06-23T15:00:00.000Z",
+              },
+            ],
+          },
+          {
+            id: "calendar",
+            title: "Calendar",
+            displayTitle: "Calendar",
+            url: "https://example.edu/scholarship/dates/calendar",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                page_category: "Deadlines",
+              },
+            },
+            lastError: "Capture timed out.",
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Deadlines");
+    expect(html).not.toContain("2 pages / 1 changed / 1 needs review");
+    expect(html).not.toContain("source-tree-count");
+  });
+
+  it("uses extracted page titles and skips host buckets when requested", () => {
+    const sources = [
+      {
+        id: "portal",
+        title: "grants-and-awards",
+        url: "https://asian-studies.org/Grants-and-Awards/NEAC-Korea",
+        pageType: "application" as const,
+        pageMetadata: {
+          baseline_facts: {
+            page_title: "NEAC Korean Studies Grant Portal",
+            page_category: "How to Apply",
+            award_relevance: "primary",
+          },
+        },
+        latestChanges: [],
+      },
+      {
+        id: "guidelines",
+        title: "uploads/2024/file",
+        url: "https://asianstudies.org/uploads/neac-korea-guidelines.pdf",
+        pageType: "pdf" as const,
+        pageMetadata: {
+          baseline_facts: {
+            display_title: "Korean Studies Grant Guidelines PDF",
+            page_category: "Application Materials",
+            award_relevance: "primary",
+          },
+        },
+        latestChanges: [],
+      },
+      {
+        id: "sample-proposal",
+        title: "this successful proposal",
+        url: "https://asianstudies.org/uploads/Lee-Jung-Joon-Korea-Conference-Workshop-Grant-Application.pdf",
+        pageType: "pdf" as const,
+        latestChanges: [],
+      },
+    ];
+    const treeLabels = treeLabelsText(buildSourceTree(sources, { groupByHost: false }));
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        groupByHost: false,
+        sources,
+      }),
+    );
+
+    expect(treeLabels).toContain("NEAC Korean Studies Grant Portal");
+    expect(treeLabels).toContain("Korean Studies Grant Guidelines PDF");
+    expect(treeLabels).toContain("Lee Jung Joon Korea Conference Workshop Grant Application");
+    expect(treeLabels).not.toContain("asian-studies.org");
+    expect(treeLabels).not.toContain("asianstudies.org");
+    expect(treeLabels).not.toContain("grants-and-awards");
+    expect(treeLabels).not.toContain("uploads/2024/file");
+    expect(treeLabels).not.toContain("this successful proposal");
+    expect(html).toContain("How to Apply");
+    expect(html).toContain("Application Materials");
+    expect(html).not.toContain("asian-studies.org");
+    expect(html).not.toContain("asianstudies.org");
+    expect(html).not.toContain("grants-and-awards");
+    expect(html).not.toContain("uploads/2024/file");
+  });
+
+  it("uses cleaned PDF labels in visible source detail titles", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "sample-proposal",
+            title: "this successful proposal",
+            url: "https://asianstudies.org/uploads/Lee-Jung-Joon-Korea-Conference-Workshop-Grant-Application.pdf",
+            pageType: "pdf",
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Lee Jung Joon Korea Conference Workshop Grant Application");
+    expect(html).not.toContain("this successful proposal");
+  });
+
+  it("does not clear unread source markers on default split render", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "deadline",
+            title: "Deadline",
+            displayTitle: "Deadline",
+            url: "https://example.edu/scholarship/deadline",
+            pageType: "deadline",
+            latestChanges: [
+              {
+                id: "change-deadline",
+                sourceTitle: "Deadline",
+                sourceUrl: "https://example.edu/scholarship/deadline",
+                sourcePageType: "deadline",
+                summary: "The campus deadline moved to January 29, 2026.",
+                detectedAt: "2026-06-23T15:00:00.000Z",
+                unread: true,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("New update");
+    expect(html).not.toContain("1 unread");
+    expect(html).toContain("source-tree-unread-badge");
+  });
+
+  it("treats explicit source deep links as opened while keeping recent update markers", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        initialSelectedSourceId: "deadline",
+        layout: "split",
+        sources: [
+          {
+            id: "deadline",
+            title: "Deadline",
+            displayTitle: "Deadline",
+            url: "https://example.edu/scholarship/deadline",
+            pageType: "deadline",
+            latestChanges: [
+              {
+                id: "change-deadline",
+                sourceTitle: "Deadline",
+                sourceUrl: "https://example.edu/scholarship/deadline",
+                sourcePageType: "deadline",
+                summary: "The campus deadline moved to January 29, 2026.",
+                detectedAt: "2026-06-23T15:00:00.000Z",
+                unread: true,
+              },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Changed");
+    expect(html).not.toContain("1 unread");
+    expect(html).toContain('aria-label="Recent updates"');
+    expect(html).toContain("source-tree-unread-badge");
+  });
+
+  it("ignores rejected baseline facts instead of rendering stale extracted values", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "bad-metadata",
+            title: "Official page",
+            url: "https://example.edu/scholarship",
+            pageType: "homepage",
+            pageMetadata: {
+              baseline_facts_rejected: true,
+              page_title: "Wrong Award Title",
+              deadline: "January 1, 1900",
+              baseline_facts: {
+                display_title: "Wrong Award Title",
+                deadline: "January 1, 1900",
+                sections: [{ title: "Wrong Section", status: "needs_review" }],
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Official page");
+    expect(html).not.toContain("Wrong Award Title");
+    expect(html).not.toContain("January 1, 1900");
+    expect(html).not.toContain("Wrong Section");
+  });
+});
+
+function treeLabelsText(tree: ReturnType<typeof buildSourceTree>) {
+  const labels: string[] = [];
+
+  function visit(nodes: typeof tree) {
+    for (const node of nodes) {
+      labels.push(node.label);
+      visit(node.children);
+    }
+  }
+
+  visit(tree);
+  return labels.join("\n");
+}

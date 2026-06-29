@@ -4,6 +4,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
+import { readableSourceTitle } from "@/lib/display-text";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 
 export type PublicDigestCandidate = {
@@ -36,7 +37,6 @@ export type PublicDigestDelivery = {
 
 export type PublicUnsubscribeTokenSubscriber = {
   id: string;
-  email: string;
   created_at: string;
 };
 
@@ -67,7 +67,7 @@ export function createPublicUnsubscribeToken(
   secret: string,
 ) {
   const key = secret || fallbackTokenSecret;
-  const payload = `${subscriber.id}:${subscriber.email}:${subscriber.created_at}:unsubscribe`;
+  const payload = `${subscriber.id}:${subscriber.created_at}:unsubscribe`;
   const signature = crypto.createHmac("sha256", key).update(payload).digest("base64url");
 
   return `${subscriber.id}.${signature}`;
@@ -103,7 +103,7 @@ export function buildPublicDigestChanges(
     .map((change) => ({
       eventId: change.id,
       awardName: awardNameById.get(change.shared_award_id) || "Tracked award",
-      sourceTitle: change.source_title || "Source page",
+      sourceTitle: readableSourceTitle(change.source_title, change.source_url),
       sourceUrl: change.source_url,
       summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
       detectedAt: change.detected_at,

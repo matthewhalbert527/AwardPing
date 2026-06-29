@@ -15,9 +15,15 @@ const cmsAdminHosts = new Set(["a.cms.omniupdate.com"]);
 const hardNonAwardPath =
   /\/(wp-login\.php|login|signin|sign-in|cart|donate|privacy|terms|terms-of-use|terms-of-service|termsofuse|jobregister)\b|\/(sign-up|signup|subscribe|newsletter)\b|\/portal\/user\/u_login\.php/i;
 const listingPath = /\/(news|events|calendar|tag|category)\b/i;
+const genericListingOrSearchPath =
+  /\/(?:tag|tags|category|categories)(?:\/|$)|\/(?:search|search-results?|site-search|search-results-page)(?:\/|\.html?|\.aspx?|$)|\/(?:guidelinesearch|sitesearch|search|searchresults?)\.(?:html?|aspx?|php)$/i;
 const trackingQuery = /[?&](share|replytocom|utm_|fbclid|gclid|redirect_to=)/i;
 const nonMonitorableAsset = /\.(jpg|jpeg|png|gif|webp|svg|zip|ics|mp4|mp3|doc|docx|xls|xlsx|ppt|pptx)$/i;
+const boilerplatePdfSource =
+  /\b(login instructions?|log in|sign in|conflict of interest|coi|code of conduct|privacy policy|terms of use|bylaws?|annual report|tax form|form 990|media kit|press kit|brand guidelines?|sponsorship prospectus|advertising|invoice|receipt)\b/i;
 const awardRelatedText = /(scholar|fellow|award|grant|program|apply|application|deadline|eligib)/i;
+const specificAwardDetailText =
+  /\b(how to apply|application process|application requirements?|eligibility requirements?|program requirements?|deadline|due date|faq|frequently asked questions?)\b/i;
 const protectedOfficialSourcePageTypes = new Set([
   "homepage",
   "deadline",
@@ -227,7 +233,14 @@ export function nonAwardReason(value, title = "", pageType = null) {
     if (institutionalDiscoveryHosts.has(host)) return "institutional_discovery_host";
     if (cmsAdminHosts.has(host)) return "cms_admin_host";
     if (hardNonAwardPath.test(url.pathname)) return "generic_non_award_path";
+    if (
+      genericListingOrSearchPath.test(url.pathname) ||
+      hasGenericSearchQuery(url, lower)
+    ) {
+      return "generic_source_shape";
+    }
     if (trackingQuery.test(full)) return "tracking_or_redirect_query";
+    if (String(pageType || "").toLowerCase() === "pdf" && boilerplatePdfSource.test(lower)) return "boilerplate_pdf";
     if (protectedOfficialSourcePageTypes.has(String(pageType || "").toLowerCase())) return null;
     if (listingPath.test(url.pathname) && !awardRelatedText.test(lower)) return "generic_listing_path";
     if (nonMonitorableAsset.test(url.pathname)) return "non_monitorable_asset";
@@ -427,6 +440,29 @@ function canonicalSearchParams(searchParams) {
     `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`),
   );
   return kept.length ? `?${kept.map(([key, value]) => `${key}=${value}`).join("&")}` : "";
+}
+
+function hasGenericSearchQuery(url, lowerSignal) {
+  if (specificAwardDetailText.test(lowerSignal)) return false;
+
+  const path = url.pathname.toLowerCase().replace(/\/+$/g, "") || "/";
+  const titleSearchSignal = /\b(search results?|site search|back to search|results for)\b/i.test(
+    lowerSignal,
+  );
+
+  for (const [rawKey, rawValue] of url.searchParams.entries()) {
+    const key = rawKey.toLowerCase();
+    const value = String(rawValue || "").trim();
+    if (!value) continue;
+    if (["search", "keyword", "keywords", "keys", "search_api_fulltext"].includes(key)) return true;
+    if (key === "q" && (titleSearchSignal || path === "/" || /\/(?:search|site-search|search-results?)$/.test(path))) {
+      return true;
+    }
+    if (key === "s" && (titleSearchSignal || path === "/" || path === "/index.php")) return true;
+    if (key === "query" && titleSearchSignal) return true;
+  }
+
+  return false;
 }
 
 function countBy(values, getKey) {

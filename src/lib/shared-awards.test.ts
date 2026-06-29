@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compactAwardDirectorySummary,
   defaultAwardPlaceholderSummary,
   displayAwardSummary,
 } from "@/lib/award-summary";
@@ -183,6 +184,22 @@ describe("shared awards", () => {
     expect(
       displayAwardSummary(
         "Skip to main content Toggle Menu Apply Learn More Privacy Policy Cookie Policy Contact Us.",
+      ),
+    ).toBeNull();
+  });
+
+  it("compacts award summaries for the directory payload", () => {
+    expect(
+      compactAwardDirectorySummary(
+        "The Goldwater Scholarship supports undergraduate researchers in STEM fields. Deadline: January 29, 2026. Eligibility: U.S. citizen undergraduate students.",
+        "Goldwater Scholarship",
+      ),
+    ).toBe("The Goldwater Scholarship supports undergraduate researchers in STEM fields.");
+
+    expect(
+      compactAwardDirectorySummary(
+        defaultAwardPlaceholderSummary,
+        "Seed Award",
       ),
     ).toBeNull();
   });

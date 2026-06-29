@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { canManageOffice, getMembershipForOffice } from "@/lib/offices";
-import { runSingleMonitorCheck } from "@/lib/monitor-runner";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -38,6 +37,12 @@ export async function POST(_request: Request, { params }: Params) {
     return NextResponse.json({ error: "Only office owners and admins can run checks." }, { status: 403 });
   }
 
-  const result = await runSingleMonitorCheck(monitor);
-  return NextResponse.json({ ok: result.ok, result });
+  return NextResponse.json(
+    {
+      ok: false,
+      error:
+        "Manual text checks have been retired. This source will be checked by the daily screenshot worker.",
+    },
+    { status: 410 },
+  );
 }

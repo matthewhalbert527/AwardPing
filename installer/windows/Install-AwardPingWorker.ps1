@@ -1,7 +1,6 @@
 param(
   [string]$InstallRoot = "$env:LOCALAPPDATA\AwardPingWorker",
   [string]$SupabaseUrl = "https://zploenljxkqzyxcmbyec.supabase.co",
-  [switch]$RunInitialDeepCrawl,
   [switch]$UpdateOnly
 )
 
@@ -267,7 +266,8 @@ function Copy-AppFiles {
       $SourceRoot,
       $AppDir,
       "/E",
-      "/XD", "node_modules", ".next", ".git", ".vercel", "dist",
+      "/XD", "node_modules", ".next", ".git", ".vercel", "dist", "reports", "tmp",
+      "AwardPingVisualSnapshots", "visual-snapshots", "visual-snapshot-archive",
       "/XF", ".env*", "*.tsbuildinfo", ".DS_Store",
       "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS"
     )
@@ -279,7 +279,18 @@ function Copy-AppFiles {
   }
 
   Get-ChildItem -Path $SourceRoot -Force | Where-Object {
-    $_.Name -notin @("node_modules", ".next", ".git", ".vercel", "dist") -and
+    $_.Name -notin @(
+      "node_modules",
+      ".next",
+      ".git",
+      ".vercel",
+      "dist",
+      "reports",
+      "tmp",
+      "AwardPingVisualSnapshots",
+      "visual-snapshots",
+      "visual-snapshot-archive"
+    ) -and
     $_.Name -notlike ".env*" -and
     $_.Name -notlike "*.tsbuildinfo" -and
     $_.Name -ne ".DS_Store"
@@ -293,8 +304,7 @@ function Write-EnvFile {
     [string]$Path,
     [string]$SupabaseUrl,
     [string]$SupabaseServiceRoleKey,
-    [string]$GeminiApiKey,
-    [int]$PageLimit
+    [string]$GeminiApiKey
   )
 
   Write-Step "Writing local worker environment"
@@ -302,20 +312,23 @@ function Write-EnvFile {
 NEXT_PUBLIC_SUPABASE_URL=$SupabaseUrl
 SUPABASE_SERVICE_ROLE_KEY=$SupabaseServiceRoleKey
 
-AI_PROVIDER=auto
+AI_PROVIDER=gemini
 GEMINI_API_KEY=$GeminiApiKey
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-2.5-flash-lite
 GEMINI_DISCOVERY_MODEL=gemini-2.5-flash-lite
-GEMINI_SUMMARY_MODEL=gemini-2.5-flash
+GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
+AWARDPING_VISUAL_GEMINI_MODEL=gemini-2.5-flash-lite
+AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=10
+AWARDPING_VISUAL_WEB_CONCURRENCY=4
+AWARDPING_EXTRACT_BASELINE_INFO=false
+AWARDPING_R2_OPERATION_RETRIES=5
+AWARDPING_R2_REPAIR_MISSING_SNAPSHOTS=true
 
-LOCAL_WORKER_PAGE_LIMIT=$PageLimit
-LOCAL_WORKER_CHECK_INTERVAL_MINUTES=60
-LOCAL_WORKER_MAX_SUBPAGES_PER_SOURCE=10
-LOCAL_WORKER_DEEP_CRAWL_MAX_SUBPAGES_PER_SOURCE=24
-LOCAL_WORKER_DEEP_CRAWL_DEPTH=2
-LOCAL_WORKER_STRUCTURE_RESCAN_DAYS=7
-LOCAL_WORKER_AI_SUMMARIES=true
-LOCAL_WORKER_AI_PROVIDER=auto
+AWARDPING_R2_SNAPSHOT_SYNC=false
+R2_BUCKET=awardping-snapshots
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
 "@
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
@@ -331,17 +344,23 @@ function Update-ExistingEnvFileDefaults {
   Write-Step "Refreshing local worker defaults"
   $content = Get-Content -Path $Path -Raw
   $updates = [ordered]@{
-    "AI_PROVIDER" = "auto"
-    "GEMINI_MODEL" = "gemini-2.5-flash"
+    "AI_PROVIDER" = "gemini"
+    "GEMINI_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_DISCOVERY_MODEL" = "gemini-2.5-flash-lite"
-    "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash"
-    "LOCAL_WORKER_CHECK_INTERVAL_MINUTES" = "60"
-    "LOCAL_WORKER_MAX_SUBPAGES_PER_SOURCE" = "10"
-    "LOCAL_WORKER_DEEP_CRAWL_MAX_SUBPAGES_PER_SOURCE" = "24"
-    "LOCAL_WORKER_DEEP_CRAWL_DEPTH" = "2"
-    "LOCAL_WORKER_STRUCTURE_RESCAN_DAYS" = "7"
-    "LOCAL_WORKER_AI_SUMMARIES" = "true"
-    "LOCAL_WORKER_AI_PROVIDER" = "auto"
+    "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash-lite"
+    "AWARDPING_VISUAL_GEMINI_MODEL" = "gemini-2.5-flash-lite"
+  }
+  $missingDefaults = [ordered]@{
+    "AWARDPING_GEMINI_API_DAILY_COST_CAP_USD" = "10"
+    "AWARDPING_VISUAL_WEB_CONCURRENCY" = "4"
+    "AWARDPING_EXTRACT_BASELINE_INFO" = "false"
+    "AWARDPING_R2_OPERATION_RETRIES" = "5"
+    "AWARDPING_R2_REPAIR_MISSING_SNAPSHOTS" = "true"
+    "AWARDPING_R2_SNAPSHOT_SYNC" = "false"
+    "R2_BUCKET" = "awardping-snapshots"
+    "R2_ACCOUNT_ID" = ""
+    "R2_ACCESS_KEY_ID" = ""
+    "R2_SECRET_ACCESS_KEY" = ""
   }
 
   foreach ($key in $updates.Keys) {
@@ -354,62 +373,15 @@ function Update-ExistingEnvFileDefaults {
     }
   }
 
+  foreach ($key in $missingDefaults.Keys) {
+    $pattern = "(?m)^$([regex]::Escape($key))=.*$"
+    if ($content -notmatch $pattern) {
+      $content = $content.TrimEnd() + "`r`n$key=$($missingDefaults[$key])`r`n"
+    }
+  }
+
   Set-Content -Path $Path -Value $content -Encoding UTF8
-  Write-Host "Summary model set to gemini-2.5-flash; discovery model kept on gemini-2.5-flash-lite."
-}
-
-function Write-RunScript {
-  param(
-    [string]$InstallRoot,
-    [int]$DefaultLimit
-  )
-
-  $scriptPath = Join-Path $InstallRoot "Run-AwardPingWorker.ps1"
-  $content = @"
-param(
-  [int]`$Limit = $DefaultLimit,
-  [string]`$Award = "",
-  [switch]`$DeepCrawl,
-  [switch]`$NoAi,
-  [switch]`$NoDiscoverSubpages,
-  [switch]`$IncludeFailed,
-  [int]`$MaxSubpages = 0,
-  [int]`$CrawlDepth = 0
-)
-
-`$ErrorActionPreference = "Stop"
-`$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$AppDir = Join-Path `$InstallRoot "app"
-`$LogDir = Join-Path `$InstallRoot "logs"
-`$LockPath = Join-Path `$InstallRoot "worker.lock"
-New-Item -ItemType Directory -Force -Path `$LogDir | Out-Null
-
-`$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-`$logPath = Join-Path `$LogDir "awardping-worker-`$stamp.log"
-
-Set-Location `$AppDir
-`$workerArgs = @("run", "worker:local", "--", "--env", ".env.worker.local", "--limit", [string]`$Limit)
-if (`$Award) { `$workerArgs += @("--award", `$Award) }
-if (`$DeepCrawl) { `$workerArgs += @("--deep-crawl=true", "--include-not-due=true", "--force-structure=true") }
-if (`$NoAi) { `$workerArgs += "--ai=false" }
-if (`$NoDiscoverSubpages) { `$workerArgs += "--discover-subpages=false" }
-if (`$IncludeFailed) { `$workerArgs += "--include-failed=true" }
-if (`$MaxSubpages -gt 0) { `$workerArgs += @("--max-subpages", [string]`$MaxSubpages) }
-if (`$CrawlDepth -gt 0) { `$workerArgs += @("--crawl-depth", [string]`$CrawlDepth) }
-
-Write-Host "Running AwardPing worker. Log: `$logPath"
-Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o)" -Encoding ASCII
-try {
-  & npm @workerArgs *>&1 | Tee-Object -FilePath `$logPath
-  `$exitCode = `$LASTEXITCODE
-} finally {
-  Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
-}
-exit `$exitCode
-"@
-
-  Set-Content -Path $scriptPath -Value $content -Encoding UTF8
-  return $scriptPath
+  Write-Host "Gemini API defaults set to gemini-2.5-flash-lite with an AwardPing estimated daily cost cap."
 }
 
 function Write-UninstallScript {
@@ -420,7 +392,14 @@ function Write-UninstallScript {
 `$ErrorActionPreference = "Stop"
 `$taskNames = @(
   "AwardPing Local Source Worker",
-  "AwardPing Local Worker Auto Update"
+  "AwardPing Local Worker Auto Update",
+  "AwardPing Visual Snapshot Worker",
+  "AwardPing Visual Snapshot Worker Shard 1",
+  "AwardPing Visual Snapshot Worker Shard 2",
+  "AwardPing Visual Snapshot Worker Shard 3",
+  "AwardPing Baseline Completion Watchdog",
+  "AwardPing Baseline Facts Watchdog",
+  "AwardPing Startup Supervisor"
 )
 
 foreach (`$taskName in `$taskNames) {
@@ -435,58 +414,38 @@ Write-Host "$InstallRoot"
 }
 
 function Write-LauncherScripts {
-  param(
-    [string]$InstallRoot,
-    [string]$RunScript
-  )
+  param([string]$InstallRoot)
 
-  $deepCrawlPath = Join-Path $InstallRoot "1-RUN-DEEP-CRAWL-AGAIN.bat"
-  $deepCrawlContent = @"
-@echo off
-echo Running AwardPing full source expansion crawl.
-echo This searches known award pages for official subpages and can take a while.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$RunScript" -DeepCrawl -Limit 20000 -MaxSubpages 24 -CrawlDepth 2 -IncludeFailed
-echo.
-pause
-"@
-
-  Set-Content -Path $deepCrawlPath -Value $deepCrawlContent -Encoding ASCII
-
-  $dailyCheckPath = Join-Path $InstallRoot "2-RUN-HOURLY-CHECK-NOW.bat"
-  $dailyCheckContent = @"
-@echo off
-echo Running one scheduled-style AwardPing source check now.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$RunScript"
-echo.
-pause
-"@
-
-  Set-Content -Path $dailyCheckPath -Value $dailyCheckContent -Encoding ASCII
-
-  $logsPath = Join-Path $InstallRoot "OPEN-LOGS.bat"
-  $logsContent = @"
-@echo off
-explorer.exe "$InstallRoot\logs"
-"@
-
-  Set-Content -Path $logsPath -Value $logsContent -Encoding ASCII
-
-  $webUpdateScript = Join-Path $InstallRoot "Update-AwardPingWorkerFromWeb.ps1"
-  $webUpdateContent = @"
+  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+$visualRunContent = @"
 param(
-  [string]`$PackageUrl = "https://awardping.com/awardping-worker-windows.zip",
-  [switch]`$Force
+  [int]`$Limit = 50000,
+  [switch]`$All,
+  [switch]`$BaselineRefresh,
+  [switch]`$PdfOnly,
+  [switch]`$WebOnly,
+  [switch]`$CompleteMissingBaselines,
+  [switch]`$SkipExistingBaseline,
+  [int]`$DomainDelayMs = 1500,
+  [int]`$WebConcurrency = 4,
+  [int]`$MaxRestarts = 3,
+  [int]`$CompleteMissingBatchLimit = 250,
+  [int]`$ShardCount = 1,
+  [int]`$ShardIndex = 0
 )
 
 `$ErrorActionPreference = "Stop"
 `$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
-`$statePath = Join-Path `$InstallRoot "update-state.json"
-`$workerLock = Join-Path `$InstallRoot "worker.lock"
-`$tempRoot = Join-Path `$env:TEMP ("AwardPingWorkerUpdate-" + [guid]::NewGuid().ToString("N"))
-`$zipPath = Join-Path `$tempRoot "awardping-worker-windows.zip"
-`$extractPath = Join-Path `$tempRoot "extracted"
+`$AppDir = Join-Path `$InstallRoot "app"
+`$LogDir = Join-Path `$InstallRoot "logs"
+if (`$ShardCount -lt 1) { throw "ShardCount must be at least 1." }
+if (`$ShardIndex -lt 0 -or `$ShardIndex -ge `$ShardCount) { throw "ShardIndex must be between 0 and `$(`$ShardCount - 1)." }
+`$ShardLabel = if (`$ShardCount -gt 1) { "shard-`$(`$ShardIndex + 1)-of-`$ShardCount" } else { "single" }
+`$LockName = if (`$ShardCount -gt 1) { "visual-worker-`$ShardLabel.lock" } else { "visual-worker.lock" }
+`$LockPath = Join-Path `$InstallRoot `$LockName
+New-Item -ItemType Directory -Force -Path `$LogDir | Out-Null
 
-function Test-WorkerLockActive {
+function Test-VisualLockActive {
   param([string]`$Path)
 
   if (-not (Test-Path `$Path)) {
@@ -499,102 +458,362 @@ function Test-WorkerLockActive {
     if (`$match.Success) {
       `$workerPid = [int]`$match.Groups[1].Value
       `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
-      if (`$process -and `$process.CommandLine -like "*Run-AwardPingWorker.ps1*") {
+      if (`$process -and (
+        `$process.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+        `$process.CommandLine -like "*source:visual-snapshots*"
+      )) {
         return `$true
       }
     }
   } catch {
-    Write-Host "Could not inspect worker lock; treating it as stale."
+    Write-Host "Could not inspect visual worker lock; treating it as stale."
   }
 
-  Write-Host "Removing stale AwardPing worker lock."
+  Write-Host "Removing stale AwardPing visual worker lock."
   Remove-Item -Path `$Path -Force -ErrorAction SilentlyContinue
   return `$false
 }
 
-try {
-  if ((Test-WorkerLockActive -Path `$workerLock) -and -not `$Force) {
-    Write-Host "AwardPing worker appears to be running. Skipping update until the next updater run."
-    exit 0
-  }
-
-  `$remoteKey = `$null
-  try {
-    `$head = Invoke-WebRequest -Method Head -Uri `$PackageUrl -UseBasicParsing
-    `$etag = `$head.Headers["ETag"]
-    `$lastModified = `$head.Headers["Last-Modified"]
-    `$contentLength = `$head.Headers["Content-Length"]
-    `$remoteParts = @(`$etag, `$lastModified, `$contentLength) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]`$_) }
-    if (`$remoteParts.Count -gt 0) {
-      `$remoteKey = `$remoteParts -join "|"
-    }
-  } catch {
-    Write-Host "Could not read update metadata; continuing with a normal download check."
-  }
-
-  if (`$remoteKey -and (Test-Path `$statePath) -and -not `$Force) {
-    try {
-      `$state = Get-Content -Path `$statePath -Raw | ConvertFrom-Json
-      if (`$state.remoteKey -eq `$remoteKey) {
-        Write-Host "AwardPing runner is already current."
-        exit 0
-      }
-    } catch {
-      Write-Host "Existing update state could not be read; refreshing runner."
-    }
-  }
-
-  New-Item -ItemType Directory -Force -Path `$tempRoot, `$extractPath | Out-Null
-  Write-Host "Downloading latest AwardPing runner package..."
-  Invoke-WebRequest -Uri `$PackageUrl -OutFile `$zipPath -UseBasicParsing
-  if (-not `$remoteKey) {
-    `$remoteKey = (Get-FileHash -Path `$zipPath -Algorithm SHA256).Hash
-  }
-
-  Write-Host "Extracting update package..."
-  Expand-Archive -Path `$zipPath -DestinationPath `$extractPath -Force
-
-  `$installer = Get-ChildItem -Path `$extractPath -Recurse -Filter "Install-AwardPingWorker.ps1" | Select-Object -First 1
-  if (-not `$installer) {
-    throw "Downloaded package did not contain Install-AwardPingWorker.ps1."
-  }
-
-  Write-Host "Applying update. Existing keys will be kept."
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File `$installer.FullName -InstallRoot `$InstallRoot -UpdateOnly
-  if (`$LASTEXITCODE -ne 0) {
-    throw "AwardPing update failed with exit code `$LASTEXITCODE."
-  }
-
-  if (`$remoteKey) {
-    [pscustomobject]@{
-      packageUrl = `$PackageUrl
-      remoteKey = `$remoteKey
-      updatedAt = (Get-Date).ToString("o")
-    } | ConvertTo-Json | Set-Content -Path `$statePath -Encoding UTF8
-  }
-
-  Write-Host "AwardPing runner update complete." -ForegroundColor Green
-} finally {
-  if (Test-Path `$tempRoot) {
-    Remove-Item -Path `$tempRoot -Recurse -Force -ErrorAction SilentlyContinue
-  }
+if (Test-VisualLockActive -Path `$LockPath) {
+  Write-Host "AwardPing visual snapshot worker is already running. Skipping this launch."
+  exit 0
 }
+
+`$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+`$mode = if (`$CompleteMissingBaselines) { "complete-missing-baselines" } elseif (`$BaselineRefresh) { "baseline-refresh" } else { "snapshots" }
+`$logPrefix = if (`$CompleteMissingBaselines) { "awardping-visual-complete-baselines" } elseif (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
+`$logPrefix = if (`$ShardCount -gt 1) { "`$logPrefix-`$ShardLabel" } else { `$logPrefix }
+`$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
+
+`$nodePath = (Get-Command node.exe -ErrorAction Stop).Source
+`$workerScript = Join-Path `$AppDir "scripts\capture-visual-snapshots.mjs"
+if (-not (Test-Path -LiteralPath `$workerScript)) {
+  throw "Missing AwardPing visual snapshot worker script: `$workerScript"
+}
+
+`$workerArgs = @(
+  `$workerScript,
+  "--env",
+  ".env.worker.local",
+  "--limit",
+  [string]`$Limit,
+  "--domain-delay-ms",
+  [string]`$DomainDelayMs,
+  "--web-concurrency",
+  [string]`$WebConcurrency,
+  "--shard-count",
+  [string]`$ShardCount,
+  "--shard-index",
+  [string]`$ShardIndex,
+  "--extract-baseline-info=false"
+)
+if (`$All) { `$workerArgs += "--all=true" }
+if (`$BaselineRefresh) { `$workerArgs += "--baseline-refresh=true" }
+if (`$PdfOnly) { `$workerArgs += "--pdf-only=true" }
+if (`$WebOnly) { `$workerArgs += "--web-only=true" }
+if (`$CompleteMissingBaselines) {
+  `$workerArgs += "--complete-missing-baselines=true"
+  `$workerArgs += "--skip-existing-baseline=true"
+  `$workerArgs += "--baseline-refresh=true"
+  `$workerArgs += "--extract-baseline-info=false"
+  `$workerArgs += "--complete-missing-batch-limit"
+  `$workerArgs += [string]`$CompleteMissingBatchLimit
+}
+if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
+
+if (`$CompleteMissingBaselines) {
+  Write-Host "Running AwardPing missing visual baseline completion (`$ShardLabel). Log: `$logPath"
+} elseif (`$BaselineRefresh) {
+  Write-Host "Running AwardPing visual baseline refresh (`$ShardLabel). Log: `$logPath"
+} else {
+  Write-Host "Running AwardPing visual snapshot worker (`$ShardLabel). Log: `$logPath"
+}
+Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath" -Encoding ASCII
+`$exitCode = 1
+Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
+try {
+  `$attempt = 0
+  do {
+    `$attempt += 1
+    if (`$attempt -gt 1) {
+      `$waitSeconds = [Math]::Min(60, 10 * `$attempt)
+      Add-Content -Path `$logPath -Value "VISUAL_WORKER_RESTART attempt=`$attempt max_restarts=`$MaxRestarts wait_seconds=`$waitSeconds started=`$(Get-Date -Format o)" -Encoding UTF8
+      Start-Sleep -Seconds `$waitSeconds
+    }
+
+    `$previousErrorActionPreference = `$ErrorActionPreference
+    `$ErrorActionPreference = "Continue"
+    try {
+      & `$nodePath @workerArgs 2>&1 | ForEach-Object {
+        `$line = [string]`$_
+        Write-Host `$line
+        Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+      }
+    } finally {
+      `$ErrorActionPreference = `$previousErrorActionPreference
+    }
+    `$exitCode = `$LASTEXITCODE
+    Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT attempt=`$attempt exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
+  } while (`$exitCode -ne 0 -and `$attempt -le `$MaxRestarts)
+} catch {
+  Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
+  throw
+} finally {
+  Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
+}
+exit `$exitCode
 "@
 
-  Set-Content -Path $webUpdateScript -Value $webUpdateContent -Encoding UTF8
+  Set-Content -Path $visualRunScript -Value $visualRunContent -Encoding UTF8
 
-  $webUpdateBatPath = Join-Path $InstallRoot "0-UPDATE-FROM-WEBSITE.bat"
-  $webUpdateBatContent = @"
+  $visualCheckPath = Join-Path $InstallRoot "3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat"
+  $visualCheckContent = @"
 @echo off
-echo Updating AwardPing runner from awardping.com.
-echo This keeps your existing Supabase and Gemini keys.
-echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$webUpdateScript"
+echo Running AwardPing visual snapshot check now.
+echo This captures screenshots and normalized visible text under D:\AwardPingVisualSnapshots.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000
 echo.
 pause
 "@
 
-  Set-Content -Path $webUpdateBatPath -Value $webUpdateBatContent -Encoding ASCII
+  Set-Content -Path $visualCheckPath -Value $visualCheckContent -Encoding ASCII
+
+  $visualBaselinePath = Join-Path $InstallRoot "5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat"
+  $visualBaselineContent = @"
+@echo off
+echo Running AwardPing visual baseline refresh now.
+echo This replaces screenshot baselines so the next scheduled run can compare against them.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000 -BaselineRefresh
+echo.
+pause
+"@
+
+  Set-Content -Path $visualBaselinePath -Value $visualBaselineContent -Encoding ASCII
+
+  $pdfBaselinePath = Join-Path $InstallRoot "7-RUN-PDF-BASELINE-REFRESH-NOW.bat"
+  $pdfBaselineContent = @"
+@echo off
+echo Running AwardPing PDF baseline refresh now.
+echo This downloads PDF sources and compares future runs by PDF file hash.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000 -BaselineRefresh -PdfOnly
+echo.
+pause
+"@
+
+  Set-Content -Path $pdfBaselinePath -Value $pdfBaselineContent -Encoding ASCII
+
+  $completeBaselinePath = Join-Path $InstallRoot "8-COMPLETE-MISSING-VISUAL-BASELINES-NOW.bat"
+  $completeBaselineContent = @"
+@echo off
+echo Completing missing AwardPing visual baselines now.
+echo Existing baselines will be skipped so this only works on pages that still need a baseline.
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 50000 -CompleteMissingBaselines -CompleteMissingBatchLimit 250
+echo.
+pause
+"@
+
+  Set-Content -Path $completeBaselinePath -Value $completeBaselineContent -Encoding ASCII
+
+  $visualStatusScriptPath = Join-Path $InstallRoot "Show-AwardPingVisualStatus.ps1"
+  $visualStatusScriptContent = @"
+`$ErrorActionPreference = "Stop"
+`$InstallRoot = Split-Path -Parent `$MyInvocation.MyCommand.Path
+`$LogDir = Join-Path `$InstallRoot "logs"
+`$LockPath = Join-Path `$InstallRoot "visual-worker.lock"
+`$ReportDir = Join-Path `$InstallRoot "app\reports"
+
+function Count-Matches {
+  param(
+    [string[]]`$Lines,
+    [string]`$Pattern
+  )
+
+  return (`$Lines | Select-String -Pattern `$Pattern | Measure-Object).Count
+}
+
+function Read-JsonIfExists {
+  param([string]`$Path)
+
+  if (-not `$Path -or -not (Test-Path `$Path)) {
+    return `$null
+  }
+
+  try {
+    return Get-Content -Path `$Path -Raw | ConvertFrom-Json
+  } catch {
+    return `$null
+  }
+}
+
+`$running = Get-CimInstance Win32_Process | Where-Object {
+  `$cmd = `$_.CommandLine
+  `$cmd -and
+  `$cmd -notlike "*Show-AwardPingVisualStatus.ps1*" -and
+  `$cmd -notlike "*Get-CimInstance Win32_Process*" -and
+  (
+    `$cmd -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+    `$cmd -like "*source:visual-snapshots*" -or
+    `$cmd -like "*capture-visual-snapshots.mjs*"
+  )
+}
+`$lockText = if (Test-Path `$LockPath) { Get-Content -Path `$LockPath -Raw -ErrorAction SilentlyContinue } else { "" }
+`$latestLog = Get-ChildItem -Path `$LogDir -Filter "awardping-visual*.log" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending |
+  Select-Object -First 1
+`$lines = if (`$latestLog) { Get-Content -Path `$latestLog.FullName -ErrorAction SilentlyContinue } else { @() }
+`$reportLine = `$lines | Select-String -Pattern "^REPORT " | Select-Object -Last 1
+`$reportPath = if (`$reportLine) { `$reportLine.Line -replace "^REPORT\s+", "" } else { "" }
+`$report = Read-JsonIfExists -Path `$reportPath
+
+if (-not `$running -and -not `$report -and (Test-Path `$ReportDir)) {
+  `$latestReport = Get-ChildItem -Path `$ReportDir -Filter "visual-snapshot-run-*.json" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  if (`$latestReport) {
+    `$report = Read-JsonIfExists -Path `$latestReport.FullName
+    `$reportPath = `$latestReport.FullName
+  }
+}
+
+Write-Host "AwardPing visual snapshot status"
+Write-Host ""
+Write-Host "Running: `$([bool]`$running)"
+if (`$running) {
+  Write-Host "Process IDs: `$((`$running | Select-Object -ExpandProperty ProcessId) -join ', ')"
+}
+if (`$lockText) {
+  Write-Host "Lock: `$(`$lockText.Trim())"
+}
+Write-Host ""
+
+if (`$latestLog) {
+  Write-Host "Latest log: `$(`$latestLog.FullName)"
+  Write-Host "Log updated: `$(`$latestLog.LastWriteTime)"
+  Write-Host "Baselines: `$(Count-Matches `$lines '^BASELINE ')"
+  Write-Host "Unchanged: `$(Count-Matches `$lines '^UNCHANGED')"
+  Write-Host "PDF checked: `$(Count-Matches `$lines '^BASELINE PDF |^UNCHANGED pdf_|^REVIEW pdf_')"
+  Write-Host "PDF skipped: `$(Count-Matches `$lines '^NOISE skipped_pdf ')"
+  Write-Host "Failed: `$(Count-Matches `$lines '^FAILED ')"
+  Write-Host "Candidate changes: `$(Count-Matches `$lines '^AI TRUE|^AI REJECTED|^REVIEW ')"
+  Write-Host ""
+  Write-Host "Last log line:"
+  Write-Host (`$lines | Select-Object -Last 1)
+} else {
+  Write-Host "No visual snapshot logs found."
+}
+
+Write-Host ""
+if (`$report) {
+  Write-Host "Latest report: `$reportPath"
+  Write-Host "Status: `$(`$report.status)"
+  Write-Host "Started: `$(`$report.started_at)"
+  Write-Host "Finished: `$(`$report.finished_at)"
+  Write-Host "Checked: `$(`$report.checked)"
+  Write-Host "Baselined: `$(`$report.baselined)"
+  Write-Host "Unchanged: `$(`$report.unchanged)"
+  Write-Host "AI true changes: `$(`$report.ai_true_changes)"
+  Write-Host "AI rejected: `$(`$report.ai_rejected)"
+  Write-Host "Review: `$(`$report.review)"
+  Write-Host "Failed: `$(`$report.failed)"
+  if (`$null -ne `$report.skipped_existing_baseline) {
+    Write-Host "Skipped existing baselines: `$(`$report.skipped_existing_baseline)"
+  }
+  Write-Host "PDF skipped: `$(`$report.skipped_pdf)"
+  if (`$null -ne `$report.pdf_checked) {
+    Write-Host "PDF checked: `$(`$report.pdf_checked)"
+    Write-Host "PDF changed: `$(`$report.pdf_changed)"
+    Write-Host "PDF unchanged: `$(`$report.pdf_unchanged)"
+  }
+  if (`$report.gemini_usage) {
+    Write-Host "Gemini calls: `$(`$report.gemini_usage.calls)"
+    Write-Host "Gemini tokens: `$(`$report.gemini_usage.total_tokens)"
+  }
+  if (`$report.baseline_coverage_start) {
+    Write-Host "Baseline coverage start: existing `$(`$report.baseline_coverage_start.existing_baselines) / `$(`$report.baseline_coverage_start.loaded_sources); missing `$(`$report.baseline_coverage_start.missing_baselines); actionable missing `$(`$report.baseline_coverage_start.actionable_missing_baselines); known broken missing `$(`$report.baseline_coverage_start.known_broken_missing_baselines)"
+  }
+  if (`$report.baseline_coverage_finish) {
+    Write-Host "Baseline coverage finish: existing `$(`$report.baseline_coverage_finish.existing_baselines) / `$(`$report.baseline_coverage_finish.loaded_sources); missing `$(`$report.baseline_coverage_finish.missing_baselines); actionable missing `$(`$report.baseline_coverage_finish.actionable_missing_baselines); known broken missing `$(`$report.baseline_coverage_finish.known_broken_missing_baselines)"
+  }
+}
+
+Write-Host ""
+`$taskInfo = Get-ScheduledTaskInfo -TaskName "AwardPing Visual Snapshot Worker" -ErrorAction SilentlyContinue
+if (`$taskInfo) {
+  Write-Host "Scheduled task next run: `$(`$taskInfo.NextRunTime)"
+  Write-Host "Scheduled task last run: `$(`$taskInfo.LastRunTime)"
+  Write-Host "Scheduled task last result: `$(`$taskInfo.LastTaskResult)"
+}
+"@
+
+  Set-Content -Path $visualStatusScriptPath -Value $visualStatusScriptContent -Encoding UTF8
+
+  $visualStatusBatPath = Join-Path $InstallRoot "6-SHOW-VISUAL-SNAPSHOT-STATUS.bat"
+  $visualStatusBatContent = @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualStatusScriptPath"
+echo.
+pause
+"@
+
+  Set-Content -Path $visualStatusBatPath -Value $visualStatusBatContent -Encoding ASCII
+
+  $usageScriptPath = Join-Path $InstallRoot "Show-AwardPingGeminiUsage.ps1"
+  $usageScriptContent = @"
+`$ErrorActionPreference = "Stop"
+`$UsageDir = "D:\AwardPingVisualSnapshots\usage"
+`$SummaryPath = Join-Path `$UsageDir "gemini-usage-current.json"
+
+if (-not (Test-Path `$SummaryPath)) {
+  Write-Host "No AwardPing Gemini usage records yet."
+  Write-Host "Gemini usage is recorded only when the visual checker finds a screenshot change and asks Gemini to review it."
+  Write-Host "Dollar spend/cap is shown in Google AI Studio > Spend; the Gemini API response does not return account dollar spend."
+  Write-Host "Usage folder: `$UsageDir"
+  exit 0
+}
+
+`$summary = Get-Content -Path `$SummaryPath -Raw | ConvertFrom-Json
+`$month = `$summary.month_total
+
+Write-Host "AwardPing Gemini usage"
+Write-Host "Month: `$(`$summary.month)"
+Write-Host "Updated: `$(`$summary.updated_at)"
+Write-Host ""
+Write-Host "Month calls: `$(`$month.calls)"
+Write-Host "Month tokens: `$(`$month.total_tokens)"
+Write-Host "Prompt tokens: `$(`$month.prompt_tokens)"
+Write-Host "Output tokens: `$(`$month.candidates_tokens)"
+Write-Host ""
+Write-Host "Dollar spend/cap: check Google AI Studio > Spend. The Gemini API response does not return account dollar spend."
+Write-Host "AI Studio cost information may take up to 24 hours to update."
+Write-Host ""
+Write-Host "Daily usage:"
+`$summary.daily |
+  Sort-Object date -Descending |
+  Select-Object -First 31 @{Name="Date";Expression={`$_.date}}, @{Name="Calls";Expression={`$_.calls}}, @{Name="Tokens";Expression={`$_.total_tokens}}, @{Name="Prompt";Expression={`$_.prompt_tokens}}, @{Name="Output";Expression={`$_.candidates_tokens}} |
+  Format-Table -AutoSize
+Write-Host ""
+Write-Host "Raw usage folder: `$UsageDir"
+"@
+
+  Set-Content -Path $usageScriptPath -Value $usageScriptContent -Encoding UTF8
+
+  $usageBatPath = Join-Path $InstallRoot "4-SHOW-GEMINI-USAGE.bat"
+  $usageBatContent = @"
+@echo off
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$usageScriptPath"
+echo.
+pause
+"@
+
+  Set-Content -Path $usageBatPath -Value $usageBatContent -Encoding ASCII
+
+  $logsPath = Join-Path $InstallRoot "OPEN-LOGS.bat"
+  $logsContent = @"
+@echo off
+explorer.exe "$InstallRoot\logs"
+"@
+
+  Set-Content -Path $logsPath -Value $logsContent -Encoding ASCII
 
   $readmePath = Join-Path $InstallRoot "README-INSTALLED-RUNNER.txt"
   $readmeContent = @"
@@ -602,16 +821,18 @@ AwardPing runner is installed here:
 $InstallRoot
 
 Use:
-0-UPDATE-FROM-WEBSITE.bat
-  Downloads the latest runner from awardping.com and updates this install without re-entering keys.
-  The installed auto-update task checks the same URL every 30 minutes.
-  If a crawl or scheduled check is running, the updater skips that cycle and tries again later.
+3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
+  Runs the disk-backed visual screenshot checker across all source pages.
+  The daily scheduled visual task uses the same runner.
 
-1-RUN-DEEP-CRAWL-AGAIN.bat
-  Runs the full source expansion crawl.
+4-SHOW-GEMINI-USAGE.bat
+  Shows AwardPing Gemini usage recorded by this PC, grouped by day and month.
 
-2-RUN-HOURLY-CHECK-NOW.bat
-  Runs one normal scheduled-style check immediately.
+5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat
+  Replaces screenshot baselines across all source pages so the next scheduled run can compare against a fresh baseline.
+
+6-SHOW-VISUAL-SNAPSHOT-STATUS.bat
+  Shows whether the visual worker is running, live log counts, the latest report, and the next scheduled run.
 
 OPEN-LOGS.bat
   Opens crawler logs.
@@ -625,35 +846,117 @@ function Install-Dependencies {
 
   Write-Step "Installing npm dependencies"
   Set-Location $AppDir
-  & npm ci --omit=dev
-  if ($LASTEXITCODE -ne 0) {
-    throw "npm install failed."
+
+  $nodeModules = Join-Path $AppDir "node_modules"
+  for ($attempt = 1; $attempt -le 2; $attempt += 1) {
+    Remove-DirectoryWithRetry -Path $nodeModules
+    & npm ci --omit=dev
+    if ($LASTEXITCODE -eq 0) {
+      return
+    }
+
+    if ($attempt -lt 2) {
+      Write-Host "npm install failed; retrying after a clean dependency removal." -ForegroundColor Yellow
+    }
+  }
+
+  throw "npm install failed."
+}
+
+function Remove-DirectoryWithRetry {
+  param([string]$Path)
+
+  if (-not (Test-Path $Path)) {
+    return
+  }
+
+  for ($attempt = 1; $attempt -le 5; $attempt += 1) {
+    try {
+      Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+      return
+    } catch {
+      if ($attempt -eq 5) {
+        throw
+      }
+      Start-Sleep -Milliseconds (500 * $attempt)
+    }
   }
 }
 
-function Register-WorkerTask {
-  param([string]$RunScript)
-
-  Write-Step "Creating Windows Scheduled Task"
-  $taskName = "AwardPing Local Source Worker"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$RunScript`""
-  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 60) -RepetitionDuration (New-TimeSpan -Days 3650)
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 3)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Checks AwardPing shared award source pages from this PC every 60 minutes." -Force | Out-Null
-  Write-Host "Scheduled task created: $taskName every 60 minutes"
-}
-
-function Register-UpdaterTask {
+function Remove-LegacySourceTask {
   param([string]$InstallRoot)
 
-  Write-Step "Creating AwardPing auto-update task"
-  $taskName = "AwardPing Local Worker Auto Update"
-  $updateScript = Join-Path $InstallRoot "Update-AwardPingWorkerFromWeb.ps1"
-  $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$updateScript`""
-  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) -RepetitionInterval (New-TimeSpan -Minutes 30) -RepetitionDuration (New-TimeSpan -Days 3650)
-  $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 1)
-  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Checks awardping.com for updated AwardPing local worker packages every 30 minutes." -Force | Out-Null
-  Write-Host "Scheduled task created: $taskName every 30 minutes"
+  Write-Step "Removing legacy scheduled tasks"
+  foreach ($taskName in @("AwardPing Local Source Worker", "AwardPing Local Worker Auto Update")) {
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) {
+      Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+      Write-Host "Removed legacy scheduled task: $taskName"
+    } else {
+      Write-Host "Legacy scheduled task is not present: $taskName"
+    }
+  }
+
+  foreach ($fileName in @(
+    "Run-AwardPingWorker.ps1",
+    "worker.lock",
+    "1-RUN-DEEP-CRAWL-AGAIN.bat",
+    "2-RUN-90-MINUTE-CHECK-NOW.bat",
+    "2-RUN-HOURLY-CHECK-NOW.bat",
+    "RUN-DAILY-CHECK-NOW.bat",
+    "RUN-DEEP-CRAWL-ALL.bat"
+  )) {
+    $legacyPath = Join-Path $InstallRoot $fileName
+    if (Test-Path $legacyPath) {
+      Remove-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
+      Write-Host "Removed legacy launcher: $fileName"
+    }
+  }
+
+  $legacyWorkerScript = Join-Path $InstallRoot "app\scripts\run-local-source-worker.mjs"
+  if (Test-Path $legacyWorkerScript) {
+    Remove-Item -LiteralPath $legacyWorkerScript -Force -ErrorAction SilentlyContinue
+    Write-Host "Removed legacy source/text worker script from installed app."
+  }
+}
+
+function Register-VisualSnapshotTask {
+  param([string]$InstallRoot)
+
+  Write-Step "Creating AwardPing visual snapshot shard tasks"
+  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+  Unregister-ScheduledTask -TaskName "AwardPing Visual Snapshot Worker" -Confirm:$false -ErrorAction SilentlyContinue
+
+  for ($shardIndex = 0; $shardIndex -lt 3; $shardIndex += 1) {
+    $taskName = "AwardPing Visual Snapshot Worker Shard $($shardIndex + 1)"
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000 -WebConcurrency 3 -ShardCount 3 -ShardIndex $shardIndex"
+    $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
+    $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
+    $settings.DisallowStartIfOnBatteries = $false
+    $settings.StopIfGoingOnBatteries = $false
+    $settings.Hidden = $true
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC. Domain shard $($shardIndex + 1) of 3." -Force | Out-Null
+    Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
+  }
+}
+
+function Register-StartupSupervisorTask {
+  param([string]$InstallRoot)
+
+  Write-Step "Creating AwardPing startup supervisor task"
+  $sourceScript = Join-Path $PSScriptRoot "Start-AwardPingOnBoot.ps1"
+  if (-not (Test-Path -LiteralPath $sourceScript)) {
+    Write-Host "Startup supervisor script is missing; skipping startup supervisor task." -ForegroundColor Yellow
+    return
+  }
+
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $sourceScript -InstallRoot $InstallRoot -Install
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not install AwardPing startup supervisor task."
+  }
+
+  Write-Host "Scheduled task created: AwardPing Startup Supervisor at Windows sign-in"
 }
 
 $packageRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -682,9 +985,10 @@ if ($UpdateOnly) {
 $appDir = Join-Path $InstallRoot "app"
 $envPath = Join-Path $appDir ".env.worker.local"
 $logDir = Join-Path $InstallRoot "logs"
+$runTest = $false
 
 if ($UpdateOnly -and -not (Test-Path $envPath)) {
-  throw "Update-only mode did not find $envPath. Run 1-INSTALL-AND-RUN-DEEP-CRAWL.bat first."
+  throw "Update-only mode did not find $envPath. Run the installer first."
 }
 
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
@@ -696,50 +1000,38 @@ Copy-AppFiles -SourceRoot $sourceRoot -AppDir $appDir
 if ($UpdateOnly) {
   Write-Host "Update-only mode: keeping existing keys and scheduled task settings, then refreshing worker defaults."
   Update-ExistingEnvFileDefaults -Path $envPath
-  $pageLimit = 500
 } else {
-  $pageLimit = [int](Read-Default "Pages to check per scheduled run" "500")
   $supabaseServiceRoleKey = Read-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl
   $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
-  $createSchedule = Read-YesNo "Create a Windows Scheduled Task that runs every 60 minutes?" $true
-  $runTest = Read-YesNo "Run a one-page test after install?" $true
-  $runDeepCrawl = $RunInitialDeepCrawl -or (Read-YesNo "Run the full initial source expansion crawl now? This is the search that expands awards beyond 1-2 pages." $true)
-  Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey -PageLimit $pageLimit
+  $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
+  Write-Host "Only the daily visual screenshot checker will be scheduled. The legacy hourly source/text worker will be removed."
+  Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey
 }
 
-$runScript = Write-RunScript -InstallRoot $InstallRoot -DefaultLimit $pageLimit
 Write-UninstallScript -InstallRoot $InstallRoot
-Write-LauncherScripts -InstallRoot $InstallRoot -RunScript $runScript
+Write-LauncherScripts -InstallRoot $InstallRoot
 Install-Dependencies -AppDir $appDir
-Register-UpdaterTask -InstallRoot $InstallRoot
-
-if ((-not $UpdateOnly) -and $createSchedule) {
-  Register-WorkerTask -RunScript $runScript
-}
+Remove-LegacySourceTask -InstallRoot $InstallRoot
+Register-VisualSnapshotTask -InstallRoot $InstallRoot
+Register-StartupSupervisorTask -InstallRoot $InstallRoot
 
 if ((-not $UpdateOnly) -and $runTest) {
-  Write-Step "Running one-page worker test"
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runScript -Limit 1 -NoDiscoverSubpages
+  Write-Step "Running one-page visual snapshot test"
+  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $visualRunScript -All -Limit 1
   if ($LASTEXITCODE -ne 0) {
-    throw "The one-page test failed. Check logs under $logDir."
-  }
-}
-
-if ((-not $UpdateOnly) -and $runDeepCrawl) {
-  Write-Step "Running full initial source expansion crawl"
-  Write-Host "This searches award pages for official subpages. It may run for a long time."
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runScript -DeepCrawl -Limit 20000 -MaxSubpages 24 -CrawlDepth 2 -IncludeFailed
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "The initial deep crawl stopped early, but the runner is installed." -ForegroundColor Yellow
-    Write-Host "Check logs under: $logDir" -ForegroundColor Yellow
-    Write-Host "You can continue later with: $InstallRoot\1-RUN-DEEP-CRAWL-AGAIN.bat" -ForegroundColor Yellow
+    throw "The one-page visual snapshot test failed. Check logs under $logDir."
   }
 }
 
 Write-Step "Done"
 Write-Host "Installed at: $InstallRoot"
-Write-Host "Run manually any time with:"
-Write-Host "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$runScript`""
-Write-Host "Run the source expansion crawl with:"
-Write-Host "`"$InstallRoot\1-RUN-DEEP-CRAWL-AGAIN.bat`""
+Write-Host "Run the daily screenshot checker manually with:"
+Write-Host "`"$InstallRoot\3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat`""
+Write-Host "Run a fresh visual baseline refresh with:"
+Write-Host "`"$InstallRoot\5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat`""
+Write-Host "Run a fresh PDF-only baseline refresh with:"
+Write-Host "`"$InstallRoot\7-RUN-PDF-BASELINE-REFRESH-NOW.bat`""
+Write-Host "Check visual worker status with:"
+Write-Host "`"$InstallRoot\6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`""
 Write-Host "Logs are in: $logDir"

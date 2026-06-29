@@ -7,14 +7,16 @@ import { Search, X } from "lucide-react";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { awardPageTypes, pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { changeDetailsSearchText } from "@/lib/change-details";
 import { readableSourceTitle } from "@/lib/display-text";
 
 export type UpdateFeedRow = {
   id: string;
-  changeId: string;
-  changeKind: "shared" | "office";
+  changeId?: string | null;
   awardId: string | null;
+  awardSlug?: string | null;
+  sourceId?: string | null;
   title: string;
   sourceTitle: string;
   sourceUrl: string | null;
@@ -24,8 +26,7 @@ export type UpdateFeedRow = {
   detectedAt: string;
   kind: "shared" | "office";
   inWatchlist: boolean;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
+  unread?: boolean;
 };
 
 type ScopeFilter = "watchlist" | "all";
@@ -97,10 +98,10 @@ export function UpdateFeedWorkspace({
       <section className={`update-filter-panel ${isPending ? "update-filter-panel-pending" : ""}`}>
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="dashboard-label">{filters.scope === "all" ? "Database updates" : "Watchlist updates"}</p>
+            <p className="dashboard-label">{filters.scope === "all" ? "Directory updates" : "Watchlist updates"}</p>
             <p className="dashboard-panel-copy">
               {filters.scope === "all"
-                ? "Changes from the shared award database."
+                ? "Changes from the shared award directory."
                 : "Changes from awards and source pages on your watchlist."}
             </p>
           </div>
@@ -192,8 +193,9 @@ export function UpdateFeedWorkspace({
 
       <section className="grid gap-3">
         {filteredRows.map((change) => (
-          <article className="update-feed-card" key={change.id}>
+          <article className={`update-feed-card ${change.unread ? "update-feed-card-unread" : ""}`} key={change.id}>
             <div className="update-feed-card-meta">
+              {change.unread && <span className="update-feed-unread-pill">Unread</span>}
               <span>{formatDate(change.detectedAt)}</span>
               <span>{change.kind === "shared" ? "Shared" : "Office"}</span>
               {change.sourcePageType && <span>{pageTypeLabel(change.sourcePageType)}</span>}
@@ -213,20 +215,17 @@ export function UpdateFeedWorkspace({
                 />
                 <ChangeEvidencePanel
                   compact
-                  changeId={change.changeId}
-                  changeKind={change.changeKind}
+                  sourceId={change.sourceId}
                   sourceUrl={change.sourceUrl}
                   sourceTitle={change.sourceTitle}
                   sourcePageTypeLabel={change.sourcePageType ? pageTypeLabel(change.sourcePageType) : null}
                   summary={change.summary}
                   changeDetails={change.changeDetails}
                   detectedAt={change.detectedAt}
-                  previousTextSample={change.previousTextSample}
-                  newTextSample={change.newTextSample}
                 />
               </div>
               {change.awardId && (
-                <Link className="button-secondary self-start whitespace-nowrap" href={`/dashboard/awards/${change.awardId}`}>
+                <Link className="button-secondary self-start whitespace-nowrap" href={awardUpdateHref(change)}>
                   Award page
                 </Link>
               )}
@@ -243,6 +242,15 @@ export function UpdateFeedWorkspace({
       </section>
     </div>
   );
+}
+
+function awardUpdateHref(change: UpdateFeedRow) {
+  if (!change.awardId) return "/dashboard";
+  const params = new URLSearchParams();
+  if (change.sourceId) params.set("source", change.sourceId);
+  if (change.changeId) params.set("change", change.changeId);
+  const query = params.toString();
+  return `${dashboardAwardPath(change.awardSlug, change.title, change.awardId)}${query ? `?${query}` : ""}`;
 }
 
 function readFilters(searchParams: URLSearchParams) {

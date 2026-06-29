@@ -1,11 +1,18 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Inbox, ListChecks, SearchCheck } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ChevronDown,
+  Inbox,
+  ListChecks,
+  SearchCheck,
+} from "lucide-react";
+import { BrandLogo } from "@/components/brand-logo";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { OfficeSwitcher } from "@/components/office-switcher";
 import { ProfileMenu } from "@/components/profile-menu";
-import { BrandLogo } from "@/components/brand-logo";
-import { getCurrentUser, getUserProfile } from "@/lib/auth";
+import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { getOfficeContext } from "@/lib/offices";
 
 export default async function DashboardLayout({
@@ -16,6 +23,7 @@ export default async function DashboardLayout({
   const user = await getCurrentUser();
   const profile = user ? await getUserProfile(user.id) : null;
   const officeContext = user ? await getOfficeContext(user) : null;
+  const isSiteAdmin = isSiteAdminEmail(user?.email);
   const officeOptions =
     officeContext?.memberships.map((membership) => ({
       officeId: membership.officeId,
@@ -32,8 +40,8 @@ export default async function DashboardLayout({
             </Link>
 
             <div className="dashboard-header-nav-wrap">
-              <Suspense fallback={<DashboardNavFallback />}>
-                <DashboardNav />
+              <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
+                <DashboardNav isSiteAdmin={isSiteAdmin} />
               </Suspense>
             </div>
 
@@ -55,7 +63,7 @@ export default async function DashboardLayout({
   );
 }
 
-function DashboardNavFallback() {
+function DashboardNavFallback({ isSiteAdmin }: { isSiteAdmin: boolean }) {
   return (
     <nav className="dashboard-nav" aria-label="Dashboard navigation">
       <Link
@@ -67,7 +75,7 @@ function DashboardNavFallback() {
       </Link>
       <Link className="dashboard-nav-link dashboard-nav-link-database" href="/dashboard/awards">
         <SearchCheck size={16} aria-hidden="true" />
-        Database
+        Award Directory
       </Link>
       <Link
         className="dashboard-nav-link dashboard-nav-link-watchlist"
@@ -76,6 +84,25 @@ function DashboardNavFallback() {
         <ListChecks size={16} aria-hidden="true" />
         Watchlist
       </Link>
+      {isSiteAdmin && (
+        <div className="dashboard-nav-admin-menu dashboard-nav-admin-menu-static">
+          <Link className="dashboard-nav-link dashboard-nav-link-admin" href="/dashboard/admin">
+            <Activity size={16} aria-hidden="true" />
+            Admin
+            <ChevronDown className="dashboard-nav-caret" size={14} aria-hidden="true" />
+          </Link>
+          <div className="dashboard-nav-admin-dropdown" role="menu">
+            <Link className="dashboard-nav-admin-item" href="/dashboard/admin" role="menuitem">
+              <Activity size={15} aria-hidden="true" />
+              <span>Page data</span>
+            </Link>
+            <Link className="dashboard-nav-admin-item" href="/dashboard/admin/issues" role="menuitem">
+              <AlertTriangle size={15} aria-hidden="true" />
+              <span>Issues</span>
+            </Link>
+          </div>
+        </div>
+      )}
     </nav>
   );
 }

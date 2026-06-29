@@ -36,7 +36,7 @@ export async function PricingSection() {
         <Link className="button-primary" href={user ? "/dashboard" : "/signup"}>
           {user ? "Open dashboard" : "Sign up for free"}
         </Link>
-        <Link className="button-secondary" href="/award-directory">
+        <Link className="button-secondary" href="/award-directory" prefetch={false}>
           Find exact pages
         </Link>
       </div>

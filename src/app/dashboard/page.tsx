@@ -7,14 +7,14 @@ import {
   dedupeChangeSummaries,
   displayChangeSummary,
   isUsefulChangeForAward,
-  isUsefulChangeSummary,
 } from "@/lib/change-summary";
-import { hasSupabaseConfig } from "@/lib/config";
+import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Json } from "@/lib/database.types";
 import { getOnboardingStatus } from "@/lib/onboarding";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 
 type OfficeAward = {
   id: string;
@@ -29,33 +29,9 @@ type SharedChange = {
   source_title: string | null;
   source_url: string;
   source_page_type: AwardPageType | null;
-  previous_snapshot_id: string | null;
-  new_snapshot_id: string | null;
   summary: string;
   change_details: Json;
   detected_at: string;
-};
-
-type LocalChange = {
-  id: string;
-  monitor_id: string;
-  previous_snapshot_id: string | null;
-  new_snapshot_id: string | null;
-  summary: string;
-  change_details: Json;
-  detected_at: string;
-};
-
-type MonitorSummary = {
-  id: string;
-  label: string;
-  url: string;
-  page_type: AwardPageType | null;
-};
-
-type SnapshotSample = {
-  id: string;
-  text_sample: string;
 };
 
 type Props = {
@@ -81,7 +57,7 @@ export default async function DashboardPage({ searchParams }: Props) {
   const officeContext = onboardingStatus.officeContext;
   const supabase = await createSupabaseServerClient();
 
-  const [{ data: officeAwards }, { data: sharedChanges }, { data: localChanges }] =
+  const [{ data: officeAwards }, { data: sharedChanges }] =
     await Promise.all([
       supabase
         .from("awards")
@@ -91,53 +67,23 @@ export default async function DashboardPage({ searchParams }: Props) {
       supabase
         .from("shared_award_change_events")
         .select(
-          "id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, previous_snapshot_id, new_snapshot_id, summary, change_details, detected_at",
+          "id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at",
         )
         .order("detected_at", { ascending: false })
         .limit(350),
-      supabase
-        .from("change_events")
-        .select("id, monitor_id, previous_snapshot_id, new_snapshot_id, summary, change_details, detected_at")
-        .eq("office_id", officeContext.current.officeId)
-        .order("detected_at", { ascending: false })
-        .limit(100),
     ]);
 
   const officeAwardRows = (officeAwards || []) as OfficeAward[];
   const sharedChangeRows = (sharedChanges || []) as SharedChange[];
-  const localChangeRows = (localChanges || []) as LocalChange[];
   const sharedAwardIds = [...new Set(sharedChangeRows.map((change) => change.shared_award_id))];
-  const monitorIds = [...new Set(localChangeRows.map((change) => change.monitor_id))];
-  const sharedSnapshotIds = snapshotIdsForChanges(sharedChangeRows);
-  const localSnapshotIds = snapshotIdsForChanges(localChangeRows);
+  const unreadChangeIds = hasSupabaseAdminConfig()
+    ? await unreadSharedChangeIdsForUser(user.id, sharedChangeRows).catch(() => new Set<string>())
+    : new Set<string>();
 
-  const [
-    { data: sharedAwards },
-    { data: monitors },
-    { data: sharedSnapshots },
-    { data: localSnapshots },
-  ] =
+  const [{ data: sharedAwards }] =
     await Promise.all([
       sharedAwardIds.length
-        ? supabase.from("shared_awards").select("id, name").in("id", sharedAwardIds)
-        : Promise.resolve({ data: [] }),
-      monitorIds.length
-        ? supabase
-            .from("monitors")
-            .select("id, label, url, page_type")
-            .in("id", monitorIds)
-        : Promise.resolve({ data: [] }),
-      sharedSnapshotIds.length
-        ? supabase
-            .from("shared_award_source_snapshots")
-            .select("id, text_sample")
-            .in("id", sharedSnapshotIds)
-        : Promise.resolve({ data: [] }),
-      localSnapshotIds.length
-        ? supabase
-            .from("monitor_snapshots")
-            .select("id, text_sample")
-            .in("id", localSnapshotIds)
+        ? supabase.from("shared_awards").select("id, name, slug").in("id", sharedAwardIds)
         : Promise.resolve({ data: [] }),
     ]);
 
@@ -152,17 +98,17 @@ export default async function DashboardPage({ searchParams }: Props) {
       .map((award) => [award.shared_award_id as string, award.name]),
   );
   const sharedAwardNameById = new Map(
-    ((sharedAwards || []) as Array<{ id: string; name: string }>).map((award) => [
+    ((sharedAwards || []) as Array<{ id: string; name: string; slug: string | null }>).map((award) => [
       award.id,
       award.name,
     ]),
   );
-  const monitorById = new Map(
-    ((monitors || []) as MonitorSummary[]).map((monitor) => [monitor.id, monitor]),
+  const sharedAwardSlugById = new Map(
+    ((sharedAwards || []) as Array<{ id: string; name: string; slug: string | null }>).map((award) => [
+      award.id,
+      award.slug,
+    ]),
   );
-  const sharedSnapshotById = snapshotSampleMap((sharedSnapshots || []) as SnapshotSample[]);
-  const localSnapshotById = snapshotSampleMap((localSnapshots || []) as SnapshotSample[]);
-
   const sharedRows: UpdateFeedRow[] = dedupeChangeSummaries(
     sharedChangeRows.filter((change) => {
       const awardName =
@@ -189,8 +135,9 @@ export default async function DashboardPage({ searchParams }: Props) {
     return {
       id: `shared-${change.id}`,
       changeId: change.id,
-      changeKind: "shared",
       awardId: change.shared_award_id,
+      awardSlug: sharedAwardSlugById.get(change.shared_award_id) || null,
+      sourceId: change.shared_award_source_id,
       title,
       sourceTitle: change.source_title || "Shared source page",
       sourceUrl: change.source_url,
@@ -200,43 +147,11 @@ export default async function DashboardPage({ searchParams }: Props) {
       detectedAt: change.detected_at,
       kind: "shared",
       inWatchlist: officeSharedAwardIds.has(change.shared_award_id),
-      previousTextSample: change.previous_snapshot_id
-        ? sharedSnapshotById.get(change.previous_snapshot_id) || null
-        : null,
-      newTextSample: change.new_snapshot_id
-        ? sharedSnapshotById.get(change.new_snapshot_id) || null
-        : null,
+      unread: unreadChangeIds.has(change.id),
     };
   });
 
-  const localRows: UpdateFeedRow[] = localChangeRows
-    .filter((change) => isUsefulChangeSummary(change.summary, change.change_details))
-    .map((change) => {
-      const monitor = monitorById.get(change.monitor_id);
-      return {
-        id: `office-${change.id}`,
-        changeId: change.id,
-        changeKind: "office",
-        awardId: null,
-        title: monitor?.label || "Tracked award page",
-        sourceTitle: "Office watchlist page",
-        sourceUrl: monitor?.url || null,
-        sourcePageType: monitor?.page_type || null,
-        summary: displayChangeSummary(change.summary, monitor?.url || null, change.change_details),
-        changeDetails: change.change_details,
-        detectedAt: change.detected_at,
-        kind: "office",
-        inWatchlist: true,
-        previousTextSample: change.previous_snapshot_id
-          ? localSnapshotById.get(change.previous_snapshot_id) || null
-          : null,
-        newTextSample: change.new_snapshot_id
-          ? localSnapshotById.get(change.new_snapshot_id) || null
-          : null,
-      };
-    });
-
-  const rows = [...sharedRows, ...localRows].sort(
+  const rows = [...sharedRows].sort(
     (a, b) => new Date(b.detectedAt).getTime() - new Date(a.detectedAt).getTime(),
   );
 
@@ -254,21 +169,3 @@ export default async function DashboardPage({ searchParams }: Props) {
   );
 }
 
-function snapshotIdsForChanges(
-  changes: Array<{
-    previous_snapshot_id: string | null;
-    new_snapshot_id: string | null;
-  }>,
-) {
-  return [
-    ...new Set(
-      changes
-        .flatMap((change) => [change.previous_snapshot_id, change.new_snapshot_id])
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
-}
-
-function snapshotSampleMap(snapshots: SnapshotSample[]) {
-  return new Map(snapshots.map((snapshot) => [snapshot.id, snapshot.text_sample]));
-}

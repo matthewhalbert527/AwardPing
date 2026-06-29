@@ -1,6 +1,4 @@
-# AwardPing Local PC Worker Installer
-
-Use this package on the Windows PC that will crawl award pages.
+# AwardPing Local PC Worker
 
 ## What It Does
 
@@ -9,31 +7,58 @@ Use this package on the Windows PC that will crawl award pages.
 - Prompts for the Supabase `service_role` key and Gemini API key.
 - Writes those values to `.env.worker.local` on the PC.
 - Installs npm dependencies.
-- Runs a one-page test.
-- Can immediately run the full initial source expansion crawl that searches for
-  official subpages across awards.
-- Optionally creates a Windows Scheduled Task named `AwardPing Local Source Worker`
-  that runs every 60 minutes.
+- Runs a one-page visual snapshot test.
+- Creates a Windows Scheduled Task named `AwardPing Visual Snapshot Worker`
+  that runs the screenshot/PDF checker daily.
 
 ## Windows Install
 
-1. Copy `awardping-worker-windows.zip` to the PC.
-2. Extract the zip.
-3. Double-click `1-INSTALL-AND-RUN-DEEP-CRAWL.bat`.
-4. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
-   key when prompted.
-5. Paste the Gemini API key when prompted.
-6. Accept the hourly Scheduled Task when prompted.
+Run the installer directly from this repo on the crawler PC:
 
-For a setup without immediately starting the full crawl, double-click:
-
-```text
-2-INSTALL-ONLY.bat
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1"
 ```
 
-The normal first-run choice is `1-INSTALL-AND-RUN-DEEP-CRAWL.bat`. It installs
-the worker, then starts the source expansion crawl after the one-page validation.
-The `runner-files` folder is just the internal app package used by the installer.
+Then:
+
+1. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
+   key when prompted.
+2. Paste the Gemini API key when prompted.
+3. Accept the Scheduled Task when prompted.
+
+The old hosted `awardping-worker-windows.zip` updater has been retired. Update
+the worker by editing this repo and copying changed worker files into
+`%LOCALAPPDATA%\AwardPingWorker\app` on this PC.
+
+## Baseline Completion Watchdog
+
+While backfilling missing visual baselines, install the watchdog from this repo:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Watch-AwardPingBaselineCompletion.ps1" -InstallRoot "$env:LOCALAPPDATA\AwardPingWorker" -Install
+```
+
+That creates a Windows Scheduled Task named
+`AwardPing Baseline Completion Watchdog`. It checks every five minutes and
+restarts `Run-AwardPingVisualSnapshots.ps1 -CompleteMissingBaselines` if the
+baseline-completion worker stopped before actionable missing baselines reached
+zero.
+
+## Baseline Page-Info Watchdog
+
+While backfilling Gemini page information from saved screenshots/PDFs, install
+the page-info watchdog from this repo:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Watch-AwardPingBaselineFacts.ps1" -InstallRoot "$env:LOCALAPPDATA\AwardPingWorker" -Install
+```
+
+That creates a Windows Scheduled Task named
+`AwardPing Baseline Facts Watchdog`. It checks every five minutes and restarts
+`Run-AwardPingBaselineFacts.ps1` if the Gemini page-info extraction stopped
+before all local baselines have facts. It skips pages already extracted. If the
+daily Gemini API cost cap is reached, it pauses for the rest of the day instead
+of immediately restarting and spending past the cap.
 
 The Supabase key must be an elevated AwardPing project key from Supabase Project
 Settings -> API. Use either the legacy JWT `service_role` key or a newer
@@ -46,35 +71,16 @@ local `.env.worker.local` file because the worker needs them to run.
 
 ## Manual Run
 
-After install, double-click this from the extracted package or from
-`%LOCALAPPDATA%\AwardPingWorker` to expand all awards:
+To run the visual screenshot/PDF checker immediately, double-click:
 
 ```text
-3-RUN-DEEP-CRAWL-AGAIN.bat
-```
-
-That is equivalent to:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingWorker.ps1" -DeepCrawl -Limit 20000 -MaxSubpages 24 -CrawlDepth 2
-```
-
-To run the scheduled-style hourly check immediately, double-click:
-
-```text
-4-RUN-HOURLY-CHECK-NOW.bat
+3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
 ```
 
 Or run this in PowerShell:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingWorker.ps1" -Limit 1
-```
-
-To do a targeted deep crawl for one award, run:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingWorker.ps1" -Award "Udall" -DeepCrawl -Limit 75 -MaxSubpages 24 -CrawlDepth 2
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingVisualSnapshots.ps1" -All -Limit 50000
 ```
 
 Logs are written to:

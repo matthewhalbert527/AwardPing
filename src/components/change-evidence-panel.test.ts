@@ -7,8 +7,7 @@ describe("ChangeEvidencePanel", () => {
   it("combines summary evidence and source metadata in one update details disclosure", () => {
     const html = renderToStaticMarkup(
       createElement(ChangeEvidencePanel, {
-        changeId: "change-1",
-        changeKind: "shared",
+        sourceId: "source-1",
         sourceUrl: "https://example.edu/award",
         sourceTitle: "Application page",
         sourcePageTypeLabel: "Deadline",
@@ -52,10 +51,11 @@ describe("ChangeEvidencePanel", () => {
     expect(html).toContain("High confidence");
     expect(html).toContain("Application page");
     expect(html).toContain("Deadline");
-    expect(html).toContain("Open full change explanation");
-    expect(html).toContain("/highlight/shared/change-1");
+    expect(html).toContain("Snapshot");
+    expect(html).not.toContain("Open full change explanation");
+    expect(html).not.toContain("/highlight/shared/change-1");
     expect(html).not.toContain("Source details");
     expect(html).not.toContain("<dt>Status</dt>");
-    expect(html).not.toContain("AwardPing does not have enough stored snapshot text");
+    expect(html).not.toContain("stored snapshot text");
   });
 });

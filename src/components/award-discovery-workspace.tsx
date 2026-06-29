@@ -1,30 +1,34 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import {
-  Bell,
-  BellOff,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
   ExternalLink,
-  Plus,
   Search,
   X,
 } from "lucide-react";
 import { type AwardPageType } from "@/lib/award-discovery-types";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { sortAwardsForSearch } from "@/lib/award-search";
-import { displayAwardSummary } from "@/lib/award-summary";
-import { SourcePageTree } from "@/components/source-page-tree";
+import { compactAwardDirectorySummary } from "@/lib/award-summary";
 
 export type SharedAwardCard = {
   id: string;
   name: string;
+  slug: string | null;
+  publicPath: string;
   officialHomepage: string | null;
   summary: string | null;
+  deadline: string | null;
+  academicLevels: string[];
+  disciplines: string[];
+  citizenship: string[];
+  lastCheckedAt: string | null;
+  recentlyUpdated: boolean;
   sourceCount: number | null;
   sourceIssueCount: number | null;
   changeCount: number | null;
@@ -51,8 +55,6 @@ export type SharedAwardChange = {
   summary: string;
   changeDetails?: unknown;
   detectedAt: string;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
 };
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -60,25 +62,56 @@ const pageSizeOptions = [30, 50, 100] as const;
 
 export function AwardDiscoveryWorkspace({
   sharedAwards,
-  canManage,
   isAuthenticated,
 }: {
   sharedAwards: SharedAwardCard[];
   canManage: boolean;
   isAuthenticated: boolean;
 }) {
-  const router = useRouter();
-  const [awards, setAwards] = useState(sharedAwards);
   const [query, setQuery] = useState("");
-  const [selectedAwardId, setSelectedAwardId] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [browseOpen, setBrowseOpen] = useState(true);
   const [selectedLetter, setSelectedLetter] = useState("A");
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(30);
   const [letterPageIndex, setLetterPageIndex] = useState(0);
-  const [trackingAwardId, setTrackingAwardId] = useState<string | null>(null);
-  const [loadingDetailsId, setLoadingDetailsId] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
+  const [levelFilter, setLevelFilter] = useState("all");
+  const [disciplineFilter, setDisciplineFilter] = useState("all");
+  const [citizenshipFilter, setCitizenshipFilter] = useState("all");
+  const [deadlineFilter, setDeadlineFilter] = useState("all");
+  const [recentFilter, setRecentFilter] = useState("all");
+
+  const levelOptions = useMemo(
+    () => uniqueOptions(sharedAwards.flatMap((award) => award.academicLevels)),
+    [sharedAwards],
+  );
+  const disciplineOptions = useMemo(
+    () => uniqueOptions(sharedAwards.flatMap((award) => award.disciplines)),
+    [sharedAwards],
+  );
+  const citizenshipOptions = useMemo(
+    () => uniqueOptions(sharedAwards.flatMap((award) => award.citizenship)),
+    [sharedAwards],
+  );
+  const awards = useMemo(
+    () =>
+      sharedAwards.filter((award) => {
+        if (levelFilter !== "all" && !award.academicLevels.includes(levelFilter)) return false;
+        if (disciplineFilter !== "all" && !award.disciplines.includes(disciplineFilter)) return false;
+        if (citizenshipFilter !== "all" && !award.citizenship.includes(citizenshipFilter)) return false;
+        if (deadlineFilter === "listed" && !award.deadline) return false;
+        if (deadlineFilter === "missing" && award.deadline) return false;
+        if (recentFilter === "recent" && !award.recentlyUpdated) return false;
+        return true;
+      }),
+    [
+      citizenshipFilter,
+      deadlineFilter,
+      disciplineFilter,
+      levelFilter,
+      recentFilter,
+      sharedAwards,
+    ],
+  );
 
   const alphabeticalAwards = useMemo(
     () => sortAwardsAlphabetically(awards),
@@ -114,188 +147,12 @@ export function AwardDiscoveryWorkspace({
     return sortAwardsForSearch(
       filter,
       alphabeticalAwards,
-      (award) => displayAwardSummary(award.summary),
+      (award) => award.summary,
     ).slice(0, 100);
   }, [alphabeticalAwards, query]);
   const searchQuery = query.trim();
   const showSearchResults = searchOpen && searchQuery.length > 0;
   const browseHiddenBySearch = showSearchResults;
-
-  async function trackSharedAward(award: SharedAwardCard) {
-    if (!isAuthenticated) return;
-    if (!canManage) {
-      setMessage("Only office owners and admins can add awards to the watchlist.");
-      return;
-    }
-
-    setTrackingAwardId(award.id);
-    setMessage("");
-
-    const response = await fetch(`/api/shared-awards/${award.id}/track`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cadence: "daily" }),
-    });
-    const data = await response.json();
-    setTrackingAwardId(null);
-
-    if (!response.ok) {
-      setMessage(data.error || "Award could not be added to the watchlist.");
-      return;
-    }
-
-    setMessage(
-      data.alreadyTracked
-        ? `${award.name} is already on your watchlist.`
-        : `${award.name} was added to your watchlist.`,
-    );
-    setAwards((current) => updateAwardTracking(current, award.id, true));
-    router.refresh();
-  }
-
-  async function trackSourceSet(
-    award: SharedAwardCard,
-    sources: SharedAwardCard["sources"],
-    label: string,
-    actionId: string,
-  ) {
-    if (!isAuthenticated) return;
-    if (!canManage) {
-      setMessage("Only office owners and admins can add source pages to the watchlist.");
-      return;
-    }
-
-    setTrackingAwardId(actionId);
-    setMessage("");
-
-    for (const source of sources.filter((source) => !source.tracked)) {
-      const response = await fetch(`/api/shared-awards/${award.id}/sources/${source.id}/track`, {
-        method: "POST",
-      });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        setTrackingAwardId(null);
-        setMessage(data.error || `${label} could not be added to the watchlist.`);
-        return;
-      }
-    }
-
-    setTrackingAwardId(null);
-    setMessage(`${label} was added to your watchlist.`);
-    setAwards((current) =>
-      updateAwardTracking(
-        current,
-        award.id,
-        true,
-        new Set(sources.map((source) => source.id)),
-      ),
-    );
-    router.refresh();
-  }
-
-  async function untrackSourceSet(
-    award: SharedAwardCard,
-    sources: SharedAwardCard["sources"],
-    label: string,
-    actionId: string,
-  ) {
-    if (!isAuthenticated) return;
-    if (!canManage) {
-      setMessage("Only office owners and admins can remove source pages from the watchlist.");
-      return;
-    }
-
-    const trackedSources = sources.filter((source) => source.tracked);
-    if (trackedSources.length === 0) return;
-    if (!confirm(`Remove ${label} from your watchlist?`)) return;
-
-    setTrackingAwardId(actionId);
-    setMessage("");
-
-    for (const source of trackedSources) {
-      const response = await fetch(`/api/shared-awards/${award.id}/sources/${source.id}/track`, {
-        method: "DELETE",
-      });
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        setTrackingAwardId(null);
-        setMessage(data.error || `${label} could not be removed from the watchlist.`);
-        return;
-      }
-    }
-
-    setTrackingAwardId(null);
-    setMessage(`${label} was removed from your watchlist.`);
-    setAwards((current) =>
-      updateAwardTracking(
-        current,
-        award.id,
-        false,
-        new Set(trackedSources.map((source) => source.id)),
-      ),
-    );
-    router.refresh();
-  }
-
-  async function untrackSharedAward(award: SharedAwardCard) {
-    if (!isAuthenticated) return;
-    if (!canManage) {
-      setMessage("Only office owners and admins can remove awards from the watchlist.");
-      return;
-    }
-
-    if (!confirm(`Remove ${award.name} from your watchlist?`)) return;
-
-    setTrackingAwardId(award.id);
-    setMessage("");
-
-    const response = await fetch(`/api/shared-awards/${award.id}/track`, {
-      method: "DELETE",
-    });
-    const data = await response.json();
-    setTrackingAwardId(null);
-
-    if (!response.ok) {
-      setMessage(data.error || "Award could not be removed from the watchlist.");
-      return;
-    }
-
-    setMessage(`${award.name} was removed from your watchlist.`);
-    setAwards((current) => updateAwardTracking(current, award.id, false));
-    router.refresh();
-  }
-
-  async function loadAwardDetails(awardId: string) {
-    const existing = awards.find((award) => award.id === awardId);
-    if (!existing || existing.detailsLoaded || loadingDetailsId === awardId) return;
-
-    setLoadingDetailsId(awardId);
-    setMessage("");
-
-    try {
-      const response = await fetch(`/api/shared-awards/${awardId}`, {
-        headers: { accept: "application/json" },
-      });
-      const data = await response.json();
-
-      if (!response.ok) {
-        setMessage(data.error || "Award details could not be loaded.");
-        return;
-      }
-
-      setAwards((current) =>
-        current.map((award) =>
-          award.id === awardId ? { ...award, ...data.award, detailsLoaded: true } : award,
-        ),
-      );
-    } catch {
-      setMessage("Award details could not be loaded. Try again.");
-    } finally {
-      setLoadingDetailsId((current) => (current === awardId ? null : current));
-    }
-  }
 
   function selectLetter(letter: string) {
     setSelectedLetter(letter);
@@ -303,28 +160,8 @@ export function AwardDiscoveryWorkspace({
     setSearchOpen(false);
   }
 
-  function showAwardInBrowse(award: SharedAwardCard) {
-    const initial = awardInitial(award.name);
-    const awardsForLetter = alphabeticalAwards.filter(
-      (candidate) => awardInitial(candidate.name) === initial,
-    );
-    const awardIndex = Math.max(
-      0,
-      awardsForLetter.findIndex((candidate) => candidate.id === award.id),
-    );
-
-    setSelectedLetter(initial);
-    setLetterPageIndex(Math.floor(awardIndex / pageSize));
-    setSelectedAwardId(award.id);
-    setSearchOpen(false);
-    setBrowseOpen(true);
-    void loadAwardDetails(award.id);
-  }
-
-  function expandVisibleAward(award: SharedAwardCard) {
-    setSelectedAwardId(award.id);
-    setSearchOpen(false);
-    void loadAwardDetails(award.id);
+  function awardHref(award: SharedAwardCard) {
+    return isAuthenticated ? dashboardAwardPath(award.slug, award.name, award.id) : award.publicPath;
   }
 
   function renderBrowseControls(position: "top" | "bottom") {
@@ -415,13 +252,14 @@ export function AwardDiscoveryWorkspace({
       <section className="update-filter-panel">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <p className="dashboard-label">Award database</p>
+            <p className="dashboard-label">Award directory</p>
             <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
-              Search the shared source database first. Browse alphabetically only when you need to explore.
+              Search the shared award directory first. Browse alphabetically only when you need to explore.
             </p>
           </div>
           <div className="update-feed-stats">
-            <span>{awards.length.toLocaleString()} awards</span>
+            <span>{awards.length.toLocaleString()} shown</span>
+            <span>{sharedAwards.length.toLocaleString()} total</span>
             <span>{availableLetters.size} browse letters</span>
           </div>
         </div>
@@ -434,7 +272,7 @@ export function AwardDiscoveryWorkspace({
             }
           }}
         >
-          <label className="dashboard-label" htmlFor="award-database-search">
+          <label className="dashboard-label" htmlFor="award-directory-search">
             Search awards
           </label>
           <div className="award-search-control mt-2">
@@ -444,7 +282,7 @@ export function AwardDiscoveryWorkspace({
               aria-hidden="true"
             />
             <input
-              id="award-database-search"
+              id="award-directory-search"
               className="input input-with-leading-icon award-search-input"
               placeholder="Goldwater, Fulbright, NSF GRFP..."
               value={query}
@@ -456,7 +294,6 @@ export function AwardDiscoveryWorkspace({
               onChange={(event) => {
                 const nextQuery = event.target.value;
                 setQuery(nextQuery);
-                setSelectedAwardId("");
                 setSearchOpen(nextQuery.trim().length > 0);
               }}
             />
@@ -490,34 +327,108 @@ export function AwardDiscoveryWorkspace({
                 tabIndex={-1}
               >
                 {matches.map((award) => (
-                  <button
-                    className={`award-search-option ${
-                      selectedAwardId === award.id ? "award-search-option-active" : ""
-                    }`}
+                  <Link
+                    className="award-search-option"
+                    href={awardHref(award)}
                     key={award.id}
-                    type="button"
                     role="option"
-                    aria-selected={selectedAwardId === award.id}
-                    onMouseDown={(event) => {
-                      event.preventDefault();
-                      setQuery(award.name);
-                      showAwardInBrowse(award);
-                    }}
+                    aria-selected={false}
+                    onClick={() => setSearchOpen(false)}
                   >
                     <span className="award-search-option-title">{award.name}</span>
                     {searchResultMetaText(award) && (
                       <span className="award-search-option-meta">{searchResultMetaText(award)}</span>
                     )}
-                  </button>
+                  </Link>
                 ))}
                 {matches.length === 0 && (
                   <p className="award-search-empty">
-                    No matching database award yet.
+                    No matching award yet.
                   </p>
                 )}
               </div>
             </div>
           )}
+        </div>
+
+        <div className="award-directory-filter-grid">
+          <label>
+            <span>Academic level</span>
+            <select
+              className="input"
+              value={levelFilter}
+              onChange={(event) => {
+                setLevelFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All levels</option>
+              {levelOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Discipline</span>
+            <select
+              className="input"
+              value={disciplineFilter}
+              onChange={(event) => {
+                setDisciplineFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All disciplines</option>
+              {disciplineOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Citizenship</span>
+            <select
+              className="input"
+              value={citizenshipFilter}
+              onChange={(event) => {
+                setCitizenshipFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All citizenship</option>
+              {citizenshipOptions.map((option) => (
+                <option key={option} value={option}>{option}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Deadline</span>
+            <select
+              className="input"
+              value={deadlineFilter}
+              onChange={(event) => {
+                setDeadlineFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">Any deadline</option>
+              <option value="listed">Deadline listed</option>
+              <option value="missing">Deadline pending</option>
+            </select>
+          </label>
+          <label>
+            <span>Updates</span>
+            <select
+              className="input"
+              value={recentFilter}
+              onChange={(event) => {
+                setRecentFilter(event.target.value);
+                setLetterPageIndex(0);
+              }}
+            >
+              <option value="all">All awards</option>
+              <option value="recent">Recently updated</option>
+            </select>
+          </label>
         </div>
 
         {!browseHiddenBySearch && (
@@ -546,220 +457,53 @@ export function AwardDiscoveryWorkspace({
           {renderBrowseControls("top")}
 
           <div className="grid gap-3">
-            {visibleLetterAwards.map((award) => {
-              const expanded = selectedAwardId === award.id;
-
-              return (
-                <article
-                  className={`award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)] ${
-                    expanded ? "award-row-card-expanded" : ""
-                  }`}
-                  key={award.id}
-                >
-                  <button
-                    className="award-row-summary"
-                    type="button"
-                    onClick={() => {
-                      if (expanded) {
-                        setSelectedAwardId("");
-                        return;
-                      }
-
-                      setQuery("");
-                      expandVisibleAward(award);
-                    }}
-                    aria-expanded={expanded}
-                  >
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <span className="inline-flex min-w-0 items-center gap-2 font-black">
-                        {expanded ? (
-                          <ChevronUp size={17} aria-hidden="true" />
-                        ) : (
-                          <ChevronDown size={17} aria-hidden="true" />
-                        )}
-                        <span>{award.name}</span>
-                      </span>
-                      <span className="text-xs font-bold text-[var(--muted)]">
-                        {sourceStatusText(award)}
-                      </span>
-                    </div>
-                    {!expanded && compactAwardBlurb(award.summary, award.name) && (
-                      <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
-                        {compactAwardBlurb(award.summary, award.name)}
-                      </p>
-                    )}
-                  </button>
-
-                  {expanded && (
-                    <AwardInlineDetails
-                      award={award}
-                      canManage={canManage}
-                      isAuthenticated={isAuthenticated}
-                      trackingAwardId={trackingAwardId}
-                      detailsLoading={loadingDetailsId === award.id && !award.detailsLoaded}
-                      onTrackAward={trackSharedAward}
-                      onUntrackAward={untrackSharedAward}
-                      onTrackSources={trackSourceSet}
-                      onUntrackSources={untrackSourceSet}
-                    />
+            {visibleLetterAwards.map((award) => (
+              <article
+                className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
+                key={award.id}
+              >
+                <Link className="award-row-summary block" href={awardHref(award)}>
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <span className="inline-flex min-w-0 items-center gap-2 font-black">
+                      <span>{award.name}</span>
+                      <ChevronRight size={17} aria-hidden="true" />
+                    </span>
+                    <span className="text-xs font-bold text-[var(--muted)]">
+                      {sourceStatusText(award)}
+                    </span>
+                  </div>
+                  {compactAwardBlurb(award.summary, award.name) && (
+                    <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
+                      {compactAwardBlurb(award.summary, award.name)}
+                    </p>
                   )}
-                </article>
-              );
-            })}
+                  <div className="award-directory-row-meta">
+                    {award.deadline && <span>Deadline: {award.deadline}</span>}
+                    {award.academicLevels.slice(0, 2).map((level) => (
+                      <span key={level}>{level}</span>
+                    ))}
+                    {award.citizenship.slice(0, 1).map((citizenship) => (
+                      <span key={citizenship}>{citizenship}</span>
+                    ))}
+                  </div>
+                </Link>
+                {isAuthenticated && (
+                  <div className="award-row-actions">
+                    <Link className="button-secondary px-3 py-2 text-sm" href={award.publicPath}>
+                      Public page
+                      <ExternalLink size={14} aria-hidden="true" />
+                    </Link>
+                  </div>
+                )}
+              </article>
+            ))}
           </div>
 
           {renderBrowseControls("bottom")}
         </section>
       )}
-      {message && <p className="text-sm font-semibold">{message}</p>}
     </div>
   );
-}
-
-function AwardInlineDetails({
-  award,
-  canManage,
-  isAuthenticated,
-  trackingAwardId,
-  detailsLoading,
-  onTrackAward,
-  onUntrackAward,
-  onTrackSources,
-  onUntrackSources,
-}: {
-  award: SharedAwardCard;
-  canManage: boolean;
-  isAuthenticated: boolean;
-  trackingAwardId: string | null;
-  detailsLoading: boolean;
-  onTrackAward: (award: SharedAwardCard) => void;
-  onUntrackAward: (award: SharedAwardCard) => void;
-  onTrackSources: (
-    award: SharedAwardCard,
-    sources: SharedAwardCard["sources"],
-    label: string,
-    actionId: string,
-  ) => void;
-  onUntrackSources: (
-    award: SharedAwardCard,
-    sources: SharedAwardCard["sources"],
-    label: string,
-    actionId: string,
-  ) => void;
-}) {
-  const awardSummary = expandedAwardBlurb(award.summary);
-
-  return (
-    <div className="award-inline-details">
-      <div className="award-inline-section award-inline-overview">
-        <div className="min-w-0">
-          <h4 className="award-inline-section-title">Overview</h4>
-          {awardSummary && (
-            <p className="mt-2 max-w-3xl leading-7 text-[var(--muted)]">{awardSummary}</p>
-          )}
-          {award.officialHomepage && (
-            <a
-              className={`${awardSummary ? "mt-3" : ""} inline-flex max-w-full items-center gap-2 truncate text-sm font-bold text-[var(--brand)] underline`}
-              href={award.officialHomepage}
-              target="_blank"
-              rel="noreferrer"
-            >
-              <ExternalLink size={15} aria-hidden="true" />
-              <span className="truncate">{award.officialHomepage}</span>
-            </a>
-          )}
-        </div>
-
-        <div className="flex shrink-0 flex-col gap-2">
-          {!isAuthenticated ? (
-            <Link className="button-primary" href="/signup">
-              <Bell size={17} aria-hidden="true" />
-              Create account for updates
-            </Link>
-          ) : (
-            <button
-              className={award.tracked ? "button-secondary" : "button-primary"}
-              type="button"
-              disabled={!canManage || trackingAwardId === award.id}
-              onClick={() => (award.tracked ? onUntrackAward(award) : onTrackAward(award))}
-            >
-              {award.tracked ? (
-                <BellOff size={17} aria-hidden="true" />
-              ) : (
-                <Plus size={17} aria-hidden="true" />
-              )}
-              {trackingAwardId === award.id
-                ? award.tracked
-                  ? "Removing..."
-                  : "Adding..."
-                : award.tracked
-                  ? "Untrack all"
-                  : "Track all"}
-            </button>
-          )}
-          {isAuthenticated && (
-            <Link className="button-secondary" href={`/dashboard/awards/${award.id}`}>
-              Full award page
-            </Link>
-          )}
-        </div>
-      </div>
-
-      <div className="award-inline-section">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <h4 className="award-inline-section-title">Source pages and latest updates</h4>
-            <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-              Expand a source page to see its most recent detected text update. Open the full award
-              page for the complete update history.
-            </p>
-          </div>
-        </div>
-        <div className="mt-3">
-          {detailsLoading ? (
-            <p className="rounded-2xl border border-dashed border-[var(--line)] p-4 text-[var(--muted)]">
-              Loading source pages...
-            </p>
-          ) : (
-            <SourcePageTree
-              sources={award.sources}
-              canManage={isAuthenticated && canManage}
-              busyId={trackingAwardId}
-              getSourceTracked={(source) => Boolean(source.tracked)}
-              onTrackSources={(sources, label, actionId) =>
-                onTrackSources(award, sources, label, actionId)
-              }
-              onUntrackSources={(sources, label, actionId) =>
-                onUntrackSources(award, sources, label, actionId)
-              }
-            />
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function updateAwardTracking(
-  awards: SharedAwardCard[],
-  awardId: string,
-  tracked: boolean,
-  sourceIds?: Set<string>,
-) {
-  return awards.map((award) => {
-    if (award.id !== awardId) return award;
-
-    const sources = award.sources.map((source) =>
-      !sourceIds || sourceIds.has(source.id) ? { ...source, tracked } : source,
-    );
-    const nextTracked = tracked || sources.some((source) => source.tracked);
-
-    return {
-      ...award,
-      tracked: nextTracked,
-      sources,
-    };
-  });
 }
 
 function sortAwardsAlphabetically(awards: SharedAwardCard[]) {
@@ -794,78 +538,11 @@ function sourceStatusText(award: SharedAwardCard) {
 }
 
 function compactAwardBlurb(summary: string | null, awardName: string) {
-  const clean = displayAwardSummary(summary);
-  if (!clean) return null;
-
-  const firstSentence = firstMeaningfulSentence(clean) || clean;
-  return singleLineAwardSentence(firstSentence, awardName);
+  return compactAwardDirectorySummary(summary, awardName);
 }
 
-function expandedAwardBlurb(summary: string | null) {
-  return boundedAwardBlurb(summary, 560);
-}
-
-function boundedAwardBlurb(summary: string | null, maxLength: number) {
-  const clean = displayAwardSummary(summary);
-  if (!clean) return null;
-
-  const firstSentence = firstMeaningfulSentence(clean);
-  const value = maxLength <= 180 && firstSentence ? firstSentence : clean;
-  return truncateAtWord(value, maxLength);
-}
-
-function firstMeaningfulSentence(value: string) {
-  return (
-    value
-      .split(/(?<=[.!?])\s+/)
-      .map((sentence) => sentence.trim())
-      .find((sentence) => sentence.length >= 35) || null
+function uniqueOptions(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((a, b) =>
+    a.localeCompare(b),
   );
-}
-
-function singleLineAwardSentence(value: string, awardName: string) {
-  const clean = value.replace(/\s+/g, " ").trim();
-  if (!clean) return null;
-
-  const normalizedName = awardName.replace(/\s+/g, " ").trim();
-  const withoutParenthetical = clean.replace(/\s*\([^)]{2,80}\)\s*/g, " ");
-  const sentence = withoutParenthetical.replace(/\s+/g, " ").trim();
-  if (sentence.length <= 145) return ensureSentencePunctuation(sentence);
-
-  const leadMatch = sentence.match(
-    /^(The\s+)?(.+?)\s+(provides?|offers?|supports?|funds?|awards?|gives?|recognizes?|honors?|helps?|enables?)\s+(.+?)(?:\s+(?:for|to|that|who|from|through|including|matching|with)\b|,|;|$)/i,
-  );
-  if (leadMatch) {
-    const subject = leadMatch[2]?.length > 58 ? normalizedName : `${leadMatch[1] || ""}${leadMatch[2]}`.trim();
-    const verb = leadMatch[3]?.toLowerCase() || "supports";
-    const object = leadMatch[4]?.trim() || "applicants";
-    const concise = `${subject} ${verb} ${object}`;
-    if (concise.length <= 145) return ensureSentencePunctuation(concise);
-  }
-
-  const boundary = sentence.slice(0, 146).search(/\s(?:for|to|that|who|from|through|including|matching|with)\b/i);
-  if (boundary > 65) return ensureSentencePunctuation(sentence.slice(0, boundary).trim());
-
-  const words = sentence.split(/\s+/);
-  const limited = words.reduce((acc, word) => {
-    const next = acc ? `${acc} ${word}` : word;
-    return next.length <= 135 ? next : acc;
-  }, "");
-
-  return ensureSentencePunctuation(limited || sentence.slice(0, 135).trim());
-}
-
-function ensureSentencePunctuation(value: string) {
-  const clean = value.replace(/\s+/g, " ").replace(/[,:;-\s]+$/g, "").trim();
-  if (!clean) return null;
-  return /[.!?]$/.test(clean) ? clean : `${clean}.`;
-}
-
-function truncateAtWord(value: string, maxLength: number) {
-  const clean = value.replace(/\s+/g, " ").trim();
-  if (clean.length <= maxLength) return clean;
-
-  const truncated = clean.slice(0, maxLength + 1);
-  const boundary = truncated.lastIndexOf(" ");
-  return `${truncated.slice(0, boundary > 80 ? boundary : maxLength).trim()}...`;
 }

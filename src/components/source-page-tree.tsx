@@ -1,6 +1,6 @@
 "use client";
 
-import { type CSSProperties, type ReactNode, useMemo, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   BellOff,
   ChevronDown,
@@ -13,9 +13,14 @@ import {
 } from "lucide-react";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
+import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 import { pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
-import { readableSourceTitle } from "@/lib/display-text";
-import { buildSourceTree, type SourceTreeNode, type SourceTreeSource } from "@/lib/source-tree";
+import {
+  buildSourceTree,
+  sourceTreeSourceLabel,
+  type SourceTreeNode,
+  type SourceTreeSource,
+} from "@/lib/source-tree";
 
 export type SourcePageTreeChange = {
   id: string;
@@ -25,13 +30,17 @@ export type SourcePageTreeChange = {
   summary: string;
   changeDetails?: unknown;
   detectedAt: string;
-  previousTextSample?: string | null;
-  newTextSample?: string | null;
+  unread?: boolean;
 };
 
 export type SourcePageTreeSource = SourceTreeSource & {
   sharedAwardSourceId?: string | null;
   monitorId?: string | null;
+  displayTitle?: string | null;
+  pageDescription?: string | null;
+  pageMetadata?: unknown;
+  pageMetadataGeneratedAt?: string | null;
+  pageMetadataModel?: string | null;
   pageType: AwardPageType | null;
   status?: "active" | "paused" | "error" | "untracked";
   cadence?: string | null;
@@ -50,6 +59,15 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   onTrackSources,
   onUntrackSources,
   renderSourceActions,
+  showSnapshotActions = true,
+  layout = "inline",
+  initiallyExpanded,
+  groupByHost = true,
+  splitDetailIntro,
+  splitSidebarFooter,
+  splitSidebarIntro,
+  initialSelectedSourceId,
+  selectedChangeId,
 }: {
   sources: T[];
   canManage?: boolean;
@@ -59,11 +77,59 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   onTrackSources?: (sources: T[], label: string, actionId: string) => void;
   onUntrackSources?: (sources: T[], label: string, actionId: string) => void;
   renderSourceActions?: (source: T) => ReactNode;
+  showSnapshotActions?: boolean;
+  layout?: "inline" | "split";
+  initiallyExpanded?: boolean;
+  groupByHost?: boolean;
+  splitDetailIntro?: ReactNode;
+  splitSidebarFooter?: ReactNode;
+  splitSidebarIntro?: ReactNode;
+  initialSelectedSourceId?: string | null;
+  selectedChangeId?: string | null;
 }) {
-  const tree = useMemo(() => buildSourceTree(sources), [sources]);
+  const tree = useMemo(() => buildSourceTree(sources, { groupByHost }), [sources, groupByHost]);
   const expandableIds = useMemo(() => collectExpandableIds(tree), [tree]);
-  const [openNodes, setOpenNodes] = useState<Set<string>>(() => new Set());
+  const flatSources = useMemo(() => flattenTreeSources(tree), [tree]);
+  const initialSelectedSource = useMemo(
+    () =>
+      (initialSelectedSourceId &&
+      flatSources.find((source) => source.id === initialSelectedSourceId)) ||
+      flatSources[0] ||
+      null,
+    [flatSources, initialSelectedSourceId],
+  );
+  const initialReadChangeIds = useMemo(
+    () =>
+      initialSelectedSourceId && initialSelectedSource
+        ? unreadChangeIdsForSource(initialSelectedSource, new Set())
+        : [],
+    [initialSelectedSource, initialSelectedSourceId],
+  );
+  const initialReadSourceIdRef = useRef<string | null>(null);
+  const [openNodes, setOpenNodes] = useState<Set<string>>(() =>
+    (initiallyExpanded ?? layout === "split") ? new Set(expandableIds.nodeIds) : new Set(),
+  );
   const [openSources, setOpenSources] = useState<Set<string>>(() => new Set());
+  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
+    () => initialSelectedSource?.id || null,
+  );
+  const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
+    () => new Set(initialReadChangeIds),
+  );
+  const selectedSource = flatSources.find((source) => source.id === selectedSourceId) || flatSources[0] || null;
+  const selectedSourceIdForRender = selectedSource?.id || null;
+
+  useEffect(() => {
+    if (!initialSelectedSourceId || initialReadSourceIdRef.current === initialSelectedSourceId) {
+      return;
+    }
+
+    const explicitSource = flatSources.find((source) => source.id === initialSelectedSourceId);
+    if (!explicitSource) return;
+
+    initialReadSourceIdRef.current = initialSelectedSourceId;
+    postReadChangeIds(unreadChangeIdsForSource(explicitSource, new Set()));
+  }, [flatSources, initialSelectedSourceId]);
 
   const hasExpandableItems =
     expandableIds.nodeIds.length > 0 || expandableIds.sourceIds.length > 0;
@@ -106,50 +172,100 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
     setOpenSources(new Set());
   }
 
+  function selectSource(sourceId: string) {
+    const nextSource = flatSources.find((source) => source.id === sourceId) || null;
+    const unreadIds = nextSource ? unreadChangeIdsForSource(nextSource, readChangeIds) : [];
+    if (unreadIds.length > 0) {
+      setReadChangeIds((current) => new Set([...current, ...unreadIds]));
+      postReadChangeIds(unreadIds);
+    }
+    setSelectedSourceId(sourceId);
+  }
+
   if (sources.length === 0) {
     return <p className="text-[var(--muted)]">{emptyMessage}</p>;
   }
 
+  const controls = hasExpandableItems ? (
+    <div className="source-tree-controls" aria-label="Source page display controls">
+      <button
+        className="button-secondary px-3 py-2 text-sm"
+        type="button"
+        onClick={expandAll}
+        disabled={allExpanded}
+      >
+        <ChevronsDown size={15} aria-hidden="true" />
+        Expand all
+      </button>
+      <button
+        className="button-secondary px-3 py-2 text-sm"
+        type="button"
+        onClick={collapseAll}
+        disabled={!openNodes.size && !openSources.size}
+      >
+        <ChevronsUp size={15} aria-hidden="true" />
+        Collapse all
+      </button>
+    </div>
+  ) : null;
+
+  const treeContent = tree.map((node) =>
+    renderNode({
+      node,
+      depth: 0,
+      openNodes,
+      openSources,
+      canManage,
+      busyId,
+      getSourceTracked,
+      onTrackSources,
+      onUntrackSources,
+      renderSourceActions,
+      showSnapshotActions,
+      toggleNode,
+      toggleSource,
+      variant: layout === "split" ? "summary" : "inline",
+      selectedSourceId: selectedSourceIdForRender,
+      onSelectSource: selectSource,
+      readChangeIds,
+    }),
+  );
+
+  if (layout === "split") {
+    return (
+      <div className="source-tree source-tree-split">
+        <div className="source-tree-list">
+          {splitSidebarIntro}
+          <details className="source-tree-sidebar-group" open>
+            <summary>
+              <ChevronDown size={15} aria-hidden="true" />
+              <span>Sources</span>
+            </summary>
+            <div className="source-tree-sidebar-list">
+              {controls}
+              {treeContent}
+            </div>
+          </details>
+          {splitSidebarFooter}
+        </div>
+        <div className="source-tree-detail-stack">
+          {splitDetailIntro}
+          <SourcePageDetailPanel
+            source={selectedSource}
+            renderSourceActions={renderSourceActions}
+            selectedChangeId={selectedChangeId}
+            showSnapshotActions={showSnapshotActions}
+            readChangeIds={readChangeIds}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="source-tree">
-      {hasExpandableItems && (
-        <div className="source-tree-controls" aria-label="Source page display controls">
-          <button
-            className="button-secondary px-3 py-2 text-sm"
-            type="button"
-            onClick={expandAll}
-            disabled={allExpanded}
-          >
-            <ChevronsDown size={15} aria-hidden="true" />
-            Expand all
-          </button>
-          <button
-            className="button-secondary px-3 py-2 text-sm"
-            type="button"
-            onClick={collapseAll}
-            disabled={!openNodes.size && !openSources.size}
-          >
-            <ChevronsUp size={15} aria-hidden="true" />
-            Collapse all
-          </button>
-        </div>
-      )}
-      {tree.map((node) =>
-        renderNode({
-          node,
-          depth: 0,
-          openNodes,
-          openSources,
-          canManage,
-          busyId,
-          getSourceTracked,
-          onTrackSources,
-          onUntrackSources,
-          renderSourceActions,
-          toggleNode,
-          toggleSource,
-        }),
-      )}
+      {controls}
+      {treeContent}
     </div>
   );
 }
@@ -165,8 +281,13 @@ function renderNode<T extends SourcePageTreeSource>({
   onTrackSources,
   onUntrackSources,
   renderSourceActions,
+  showSnapshotActions,
   toggleNode,
   toggleSource,
+  variant,
+  selectedSourceId,
+  onSelectSource,
+  readChangeIds,
 }: {
   node: SourceTreeNode<T>;
   depth: number;
@@ -178,12 +299,18 @@ function renderNode<T extends SourcePageTreeSource>({
   onTrackSources?: (sources: T[], label: string, actionId: string) => void;
   onUntrackSources?: (sources: T[], label: string, actionId: string) => void;
   renderSourceActions?: (source: T) => ReactNode;
+  showSnapshotActions: boolean;
   toggleNode: (nodeId: string) => void;
   toggleSource: (sourceId: string) => void;
+  variant: "inline" | "summary";
+  selectedSourceId: string | null;
+  onSelectSource: (sourceId: string) => void;
+  readChangeIds: Set<string>;
 }) {
   const hasChildren = node.children.length > 0;
   const leafOnly = !hasChildren && node.directSources.length === node.sources.length;
   const open = openNodes.has(node.id);
+  const unreadCount = unreadChangeIdsForSources(node.sources, readChangeIds).length;
 
   if (leafOnly) {
     return node.directSources.map((source) => (
@@ -202,8 +329,13 @@ function renderNode<T extends SourcePageTreeSource>({
             onUntrackSources,
           })
         }
+        active={selectedSourceId === source.id}
+        showSnapshotActions={showSnapshotActions}
         source={source}
         toggleSource={toggleSource}
+        variant={variant}
+        onSelectSource={onSelectSource}
+        unreadCount={unreadChangeIdsForSource(source, readChangeIds).length}
       />
     ));
   }
@@ -227,7 +359,9 @@ function renderNode<T extends SourcePageTreeSource>({
           )}
           <FolderTree size={17} aria-hidden="true" />
           <span className="source-tree-branch-title">{node.label}</span>
-          <span className="source-tree-count">{branchStatus(node.sources, getSourceTracked)}</span>
+          {unreadCount > 0 && (
+            <span className="source-tree-unread-badge" aria-label="Recent updates" />
+          )}
         </button>
 
         {canManage && (onTrackSources || onUntrackSources) && (
@@ -261,8 +395,13 @@ function renderNode<T extends SourcePageTreeSource>({
                   onUntrackSources,
                 })
               }
+              active={selectedSourceId === source.id}
+              showSnapshotActions={showSnapshotActions}
               source={source}
               toggleSource={toggleSource}
+              variant={variant}
+              onSelectSource={onSelectSource}
+              unreadCount={unreadChangeIdsForSource(source, readChangeIds).length}
             />
           ))}
           {node.children.map((child) =>
@@ -277,8 +416,13 @@ function renderNode<T extends SourcePageTreeSource>({
               onTrackSources,
               onUntrackSources,
               renderSourceActions,
+              showSnapshotActions,
               toggleNode,
               toggleSource,
+              variant,
+              selectedSourceId,
+              onSelectSource,
+              readChangeIds,
             }),
           )}
         </div>
@@ -308,7 +452,7 @@ function renderDefaultSourceActions<T extends SourcePageTreeSource>({
     <BranchActions
       actionId={source.id}
       busyId={busyId}
-      label={readableSourceTitle(source.title, source.url)}
+      label={sourceTreeSourceLabel(source)}
       onTrackSources={onTrackSources}
       onUntrackSources={onUntrackSources}
       sources={[source]}
@@ -321,25 +465,50 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   source,
   depth,
   open,
+  active = false,
   renderSourceActions,
+  showSnapshotActions,
   toggleSource,
+  variant = "inline",
+  onSelectSource,
+  unreadCount = 0,
 }: {
   source: T;
   depth: number;
   open: boolean;
+  active?: boolean;
   renderSourceActions?: (source: T) => ReactNode;
+  showSnapshotActions: boolean;
   toggleSource: (sourceId: string) => void;
+  variant?: "inline" | "summary";
+  onSelectSource?: (sourceId: string) => void;
+  unreadCount?: number;
 }) {
-  const title = readableSourceTitle(source.title, source.url);
+  const outline = sourceOutline(source);
+  const title = outline.displayTitle || sourceTreeSourceLabel(source);
   const latestChanges = source.latestChanges || [];
   const latestChange = latestChanges[0] || null;
+  const summaryMode = variant === "summary";
+  const rowStatus = sourceRowStatus(source, latestChange, unreadCount);
+  const showUpdateDot = summaryMode ? latestChanges.length > 0 : unreadCount > 0;
+  const rowActions = renderSourceActions?.(source);
+  const snapshotSourceId =
+    source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
   const checkedLabel = source.lastCheckedAt
     ? new Date(source.lastCheckedAt).toLocaleString()
     : "Not checked yet";
 
+  function handleSourceClick() {
+    if (summaryMode) {
+      onSelectSource?.(source.id);
+      return;
+    }
+    toggleSource(source.id);
+  }
+
   return (
     <div
-      className="source-tree-source dashboard-list-item"
+      className={`source-tree-source dashboard-list-item ${summaryMode ? "source-tree-source-summary" : ""} ${active ? "source-tree-source-active" : ""}`}
       style={{ "--tree-depth": depth } as CSSProperties}
     >
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -348,82 +517,272 @@ function SourcePageRow<T extends SourcePageTreeSource>({
             <button
               className="source-tree-source-title"
               type="button"
-              onClick={() => toggleSource(source.id)}
-              aria-expanded={open}
+              onClick={handleSourceClick}
+              aria-expanded={summaryMode ? undefined : open}
+              aria-pressed={summaryMode ? active : undefined}
             >
-              {open ? (
+              {summaryMode ? (
+                <ChevronRight size={16} aria-hidden="true" />
+              ) : open ? (
                 <ChevronDown size={16} aria-hidden="true" />
               ) : (
                 <ChevronRight size={16} aria-hidden="true" />
               )}
               <span>{title}</span>
             </button>
+            <span className={rowStatus === "Changed" || rowStatus === "New update" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {rowStatus}
+            </span>
+            {showUpdateDot && (
+              <span className="source-tree-unread-badge" aria-label="Recent updates" />
+            )}
           </div>
           <p className="mt-1 text-xs font-bold uppercase text-[var(--muted)]">
-            {sourceMeta(source)}
+            {summaryMode ? sourceCompactMeta(source) : sourceMeta(source)}
           </p>
-          <a
-            className="mt-2 block truncate text-sm font-semibold text-[var(--brand)] underline"
-            href={source.url}
-            target="_blank"
-            rel="noreferrer"
-          >
-            <ExternalLink className="mr-1 inline" size={13} aria-hidden="true" />
-            {source.url}
-          </a>
-          <div className="source-tree-source-dates">
-            <span>Last checked: {checkedLabel}</span>
-            <span>
-              Latest update: {latestChange ? formatDate(latestChange.detectedAt) : "None recorded"}
-            </span>
-          </div>
-          {open && (
+          {!summaryMode && outline.description && (
+            <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
+              {outline.description}
+            </p>
+          )}
+          {!summaryMode && (
+            <>
+              <a
+                className="mt-2 inline-flex min-w-0 max-w-full items-center gap-1 truncate text-sm font-semibold text-[var(--brand)] underline"
+                href={source.url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink size={13} aria-hidden="true" />
+                <span className="truncate">Open source</span>
+              </a>
+              <div className="source-tree-source-dates">
+                <span>Checked: {checkedLabel}</span>
+                <span>
+                  Update: {latestChange ? formatDate(latestChange.detectedAt) : "None"}
+                </span>
+              </div>
+            </>
+          )}
+          {open && !summaryMode && (
             <div className="source-tree-update-panel">
-              {latestChanges.length > 0 ? (
-                latestChanges.slice(0, 2).map((change) => (
-                  <article className="source-tree-update" key={change.id}>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="badge">{formatDate(change.detectedAt)}</span>
-                      {change.sourcePageType && (
-                        <span className="badge">{pageTypeLabel(change.sourcePageType)}</span>
-                      )}
-                    </div>
-                    <ChangeSummaryDisplay
-                      compact
-                      summary={change.summary}
-                      sourceUrl={change.sourceUrl}
-                      sourceTitle={change.sourceTitle}
-                      changeDetails={change.changeDetails}
-                    />
-                    <ChangeEvidencePanel
-                      compact
-                      changeId={change.id}
-                      changeKind="shared"
-                      sourceUrl={change.sourceUrl}
-                      sourceTitle={change.sourceTitle}
-                      sourcePageTypeLabel={
-                        change.sourcePageType ? pageTypeLabel(change.sourcePageType) : null
-                      }
-                      summary={change.summary}
-                      changeDetails={change.changeDetails}
-                      detectedAt={change.detectedAt}
-                      previousTextSample={change.previousTextSample}
-                      newTextSample={change.newTextSample}
-                    />
-                  </article>
-                ))
-              ) : (
-                <p className="change-evidence-note">
-                  No text updates have been recorded for this source page yet.
-                </p>
-              )}
+              <SourcePageDetails source={source} outline={outline} latestChanges={latestChanges} />
             </div>
           )}
         </div>
 
-        {renderSourceActions?.(source)}
+        {!summaryMode && (showSnapshotActions || rowActions) && (
+          <div className="source-tree-row-actions">
+            {showSnapshotActions && snapshotSourceId && (
+              <SourceSnapshotViewerButton
+                changeDetectedAt={latestChange?.detectedAt}
+                changeDetails={latestChange?.changeDetails}
+                changeSummary={latestChange?.summary}
+                sourceId={snapshotSourceId}
+                sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
+                sourceTitle={title}
+                sourceUrl={source.url}
+              />
+            )}
+            {rowActions}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+function SourcePageDetailPanel<T extends SourcePageTreeSource>({
+  source,
+  renderSourceActions,
+  selectedChangeId,
+  showSnapshotActions,
+  readChangeIds,
+}: {
+  source: T | null;
+  renderSourceActions?: (source: T) => ReactNode;
+  selectedChangeId?: string | null;
+  showSnapshotActions: boolean;
+  readChangeIds: Set<string>;
+}) {
+  if (!source) {
+    return (
+      <aside className="source-tree-detail-panel">
+        <p className="text-sm font-semibold text-[var(--muted)]">No source page selected.</p>
+      </aside>
+    );
+  }
+
+  const outline = sourceOutline(source);
+  const title = outline.displayTitle || sourceTreeSourceLabel(source);
+  const latestChanges = source.latestChanges || [];
+  const unreadCount = unreadChangeIdsForSource(source, readChangeIds).length;
+  const orderedChanges = orderSelectedChange(latestChanges, selectedChangeId);
+  const selectedChange = orderedChanges[0] || null;
+  const rowStatus = sourceRowStatus(source, selectedChange, unreadCount);
+  const rowActions = renderSourceActions?.(source);
+  const snapshotSourceId =
+    source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
+
+  return (
+    <aside className="source-tree-detail-panel">
+      <div className="source-tree-detail-header">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={rowStatus === "Changed" || rowStatus === "New update" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {rowStatus}
+            </span>
+            <span className="badge">
+              {source.pageType ? pageTypeLabel(source.pageType) : "Source page"}
+            </span>
+          </div>
+          <h3 className="source-tree-detail-title">{title}</h3>
+          <a
+            className="source-tree-detail-link"
+            href={source.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink size={13} aria-hidden="true" />
+            Open source
+          </a>
+          <p className="source-tree-detail-host">{sourceHost(source.url)}</p>
+        </div>
+
+        {(showSnapshotActions || rowActions) && (
+          <div className="source-tree-row-actions">
+            {showSnapshotActions && snapshotSourceId && (
+              <SourceSnapshotViewerButton
+                changeDetectedAt={selectedChange?.detectedAt}
+                changeDetails={selectedChange?.changeDetails}
+                changeSummary={selectedChange?.summary}
+                sourceId={snapshotSourceId}
+                sourcePageTypeLabel={source.pageType ? pageTypeLabel(source.pageType) : null}
+                sourceTitle={title}
+                sourceUrl={source.url}
+              />
+            )}
+            {rowActions}
+          </div>
+        )}
+      </div>
+
+      <div className="source-tree-update-panel source-tree-detail-content">
+        <SourcePageDetails source={source} outline={outline} latestChanges={orderedChanges} selectedChangeId={selectedChangeId} />
+      </div>
+    </aside>
+  );
+}
+
+function SourcePageDetails<T extends SourcePageTreeSource>({
+  source,
+  outline,
+  latestChanges,
+  selectedChangeId,
+}: {
+  source: T;
+  outline: SourceOutline;
+  latestChanges: SourcePageTreeChange[];
+  selectedChangeId?: string | null;
+}) {
+  return (
+    <>
+      <SourcePageOutline outline={outline} />
+      {latestChanges.length > 0 ? (
+        latestChanges.slice(0, 2).map((change) => (
+          <article className={`source-tree-update ${selectedChangeId === change.id ? "source-tree-update-selected" : ""}`} key={change.id}>
+            <div className="flex flex-wrap items-center gap-2">
+              {selectedChangeId === change.id && <span className="source-tree-selected-badge">Selected update</span>}
+              <span className="badge">{formatDate(change.detectedAt)}</span>
+              {change.sourcePageType && (
+                <span className="badge">{pageTypeLabel(change.sourcePageType)}</span>
+              )}
+            </div>
+            <ChangeSummaryDisplay
+              compact
+              summary={change.summary}
+              sourceUrl={change.sourceUrl}
+              sourceTitle={change.sourceTitle}
+              changeDetails={change.changeDetails}
+            />
+            <ChangeEvidencePanel
+              compact
+              sourceId={source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId}
+              sourceUrl={change.sourceUrl}
+              sourceTitle={change.sourceTitle}
+              sourcePageTypeLabel={
+                change.sourcePageType ? pageTypeLabel(change.sourcePageType) : null
+              }
+              summary={change.summary}
+              changeDetails={change.changeDetails}
+              detectedAt={change.detectedAt}
+            />
+          </article>
+        ))
+      ) : (
+        <p className="change-evidence-note">No updates recorded for this source.</p>
+      )}
+    </>
+  );
+}
+
+function SourcePageOutline({
+  outline,
+}: {
+  outline: SourceOutline;
+}) {
+  const facts = outline.facts;
+  const factRows = sourceFactRows(facts);
+  const sections = outline.sections.slice(0, 5);
+
+  if (!outline.hasMetadata && !outline.description) return null;
+
+  return (
+    <section className="source-tree-page-outline">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="badge">{outline.category || "Source page"}</span>
+        {outline.relevance && outline.relevance !== "primary" && (
+          <span className="badge">{relevanceLabel(outline.relevance)}</span>
+        )}
+      </div>
+
+      {outline.description && (
+        <p className="mt-3 text-sm font-semibold leading-6 text-[var(--muted)]">
+          {outline.description}
+        </p>
+      )}
+
+      {sections.length > 0 && (
+        <div className="source-tree-outline-sections">
+          {sections.map((section, index) => (
+            <div className="source-tree-outline-section" key={`${section.title}-${index}`}>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <p className="min-w-0 font-black">{section.title}</p>
+                {section.status === "needs_review" && (
+                  <span className="badge bg-[var(--brand-pink-soft)]">
+                    {sectionStatusLabel(section.status)}
+                  </span>
+                )}
+              </div>
+              {section.description && (
+                <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{section.description}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {factRows.length > 0 && (
+        <dl className="source-tree-fact-grid">
+          {factRows.slice(0, 6).map((fact) => (
+            <div className="source-tree-fact" key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </section>
   );
 }
 
@@ -448,6 +807,62 @@ function collectExpandableIds<T extends SourcePageTreeSource>(tree: SourceTreeNo
   }
 
   return { nodeIds, sourceIds };
+}
+
+function flattenTreeSources<T extends SourcePageTreeSource>(tree: SourceTreeNode<T>[]) {
+  const sources: T[] = [];
+
+  function visit(node: SourceTreeNode<T>) {
+    sources.push(...node.directSources);
+    for (const child of node.children) {
+      visit(child);
+    }
+  }
+
+  for (const node of tree) {
+    visit(node);
+  }
+
+  return sources;
+}
+
+function unreadChangeIdsForSource<T extends SourcePageTreeSource>(
+  source: T,
+  readChangeIds: Set<string>,
+) {
+  return (source.latestChanges || [])
+    .filter((change) => change.unread && !readChangeIds.has(change.id))
+    .map((change) => change.id);
+}
+
+function unreadChangeIdsForSources<T extends SourcePageTreeSource>(
+  sources: T[],
+  readChangeIds: Set<string>,
+) {
+  return [
+    ...new Set(sources.flatMap((source) => unreadChangeIdsForSource(source, readChangeIds))),
+  ];
+}
+
+function postReadChangeIds(changeIds: string[]) {
+  if (changeIds.length === 0) return;
+  void fetch("/api/shared-award-change-reads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changeIds }),
+  }).catch(() => undefined);
+}
+
+function orderSelectedChange<T extends SourcePageTreeChange>(
+  changes: T[],
+  selectedChangeId?: string | null,
+) {
+  if (!selectedChangeId) return changes;
+  return [...changes].sort((a, b) => {
+    if (a.id === selectedChangeId) return -1;
+    if (b.id === selectedChangeId) return 1;
+    return 0;
+  });
 }
 
 function BranchActions<T extends SourcePageTreeSource>({
@@ -497,18 +912,122 @@ function BranchActions<T extends SourcePageTreeSource>({
   );
 }
 
-function branchStatus<T extends SourcePageTreeSource>(
-  sources: T[],
-  getSourceTracked: (source: T) => boolean,
+type SourceOutline = {
+  displayTitle: string | null;
+  description: string | null;
+  category: string | null;
+  relevance: string | null;
+  metadataGeneratedAt: string | null;
+  facts: Record<string, unknown>;
+  sections: Array<{ title: string; description: string; status: string }>;
+  hasMetadata: boolean;
+};
+
+function sourceOutline(source: SourcePageTreeSource): SourceOutline {
+  const metadata = objectValue(source.pageMetadata);
+  const metadataRejected =
+    metadata.baseline_facts_rejected === true ||
+    objectValue(metadata.baseline_facts_metadata).rejected === true;
+  const facts = metadataRejected
+    ? {}
+    : objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  const displayTitle =
+    cleanString(source.displayTitle) ||
+    cleanString(facts.display_title) ||
+    cleanString(facts.page_title) ||
+    null;
+  const description =
+    cleanString(source.pageDescription) ||
+    cleanString(facts.page_description) ||
+    cleanString(facts.page_purpose) ||
+    cleanString(arrayValue(facts.notes)[0]) ||
+    null;
+
+  return {
+    displayTitle,
+    description,
+    category: cleanString(facts.page_category) || (source.pageType ? pageTypeLabel(source.pageType) : null),
+    relevance: cleanString(facts.award_relevance),
+    metadataGeneratedAt:
+      cleanString(source.pageMetadataGeneratedAt) ||
+      cleanString(metadata.generated_at) ||
+      cleanString(metadata.baseline_facts_metadata && objectValue(metadata.baseline_facts_metadata).extracted_at),
+    facts,
+    sections: sectionRows(facts.sections),
+    hasMetadata: Object.keys(metadata).length > 0 || Object.keys(facts).length > 0,
+  };
+}
+
+function sourceFactRows(facts: Record<string, unknown>) {
+  const rows = [
+    { label: "Deadline", value: cleanString(facts.deadline) },
+    { label: "Opening Date", value: cleanString(facts.opening_date) },
+    { label: "Award Amount", value: joinArray(facts.award_amounts) },
+    { label: "Eligibility", value: joinArray(facts.eligibility) },
+    { label: "Requirements", value: joinArray(facts.requirements) },
+    { label: "Materials", value: joinArray(facts.application_materials) },
+    { label: "How To Apply", value: joinArray(facts.how_to_apply) },
+    { label: "Important Dates", value: joinArray(facts.important_dates) },
+    { label: "Documents", value: joinArray(facts.documents) },
+    { label: "Contact", value: joinArray(facts.contacts) },
+  ];
+
+  return rows.filter((row): row is { label: string; value: string } => Boolean(row.value));
+}
+
+function sourceRowStatus(
+  source: SourcePageTreeSource,
+  latestChange: SourcePageTreeChange | null,
+  unreadCount = 0,
 ) {
-  const trackedCount = sources.filter(getSourceTracked).length;
-  const parts = [`${sources.length} page${sources.length === 1 ? "" : "s"}`];
+  if (source.lastError) return "Needs review";
+  if (unreadCount > 0) return "New update";
+  if (latestChange) return "Changed";
+  if (source.pageMetadata || source.pageDescription || source.displayTitle) return "Unchanged";
+  return "Details pending";
+}
 
-  if (trackedCount > 0) {
-    parts.push(`${trackedCount} tracked`);
-  }
+function sectionRows(value: unknown) {
+  return arrayValue(value)
+    .map((item) => {
+      const object = objectValue(item);
+      const title = cleanString(object.title || object.name || object.label) || cleanString(item);
+      const description = cleanString(object.description || object.summary || object.detail) || "";
+      const status = cleanString(object.status) || "unchanged";
+      return title ? { title, description, status } : null;
+    })
+    .filter((item): item is { title: string; description: string; status: string } => Boolean(item));
+}
 
-  return parts.join(" · ");
+function relevanceLabel(value: string | null) {
+  if (value === "primary") return "Primary source";
+  if (value === "supporting") return "Supporting source";
+  if (value === "unrelated") return "Unrelated";
+  return "Needs review";
+}
+
+function sectionStatusLabel(value: string) {
+  if (value === "needs_review") return "Needs review";
+  return titleCase(value.replace(/[-_]+/g, " "));
+}
+
+function joinArray(value: unknown) {
+  const values = arrayValue(value).map(cleanString).filter(Boolean);
+  return values.length ? values.slice(0, 4).join("; ") : "";
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function cleanString(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function sourceMeta(source: SourcePageTreeSource) {
@@ -518,6 +1037,24 @@ function sourceMeta(source: SourcePageTreeSource) {
   ]
     .filter(Boolean)
     .join(" - ");
+}
+
+function sourceCompactMeta(source: SourcePageTreeSource) {
+  const updateCount = source.latestChanges?.length || 0;
+  return [
+    source.pageType ? pageTypeLabel(source.pageType) : "Source page",
+    `${updateCount} update${updateCount === 1 ? "" : "s"}`,
+  ]
+    .filter(Boolean)
+    .join(" / ");
+}
+
+function sourceHost(value: string | null | undefined) {
+  try {
+    return new URL(value || "").hostname.replace(/^www\./, "");
+  } catch {
+    return "";
+  }
 }
 
 function formatDate(value: string) {

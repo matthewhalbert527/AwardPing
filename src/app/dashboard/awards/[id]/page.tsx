@@ -1,19 +1,20 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { ArrowLeft, ExternalLink } from "lucide-react";
-import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
-import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { SourcePageTree } from "@/components/source-page-tree";
 import { SetupNotice } from "@/components/setup-notice";
 import { TrackSharedAwardButton } from "@/components/track-shared-award-button";
-import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { requireUser } from "@/lib/auth";
-import { displayAwardSummary } from "@/lib/award-summary";
+import { canonicalAwardPath, dashboardAwardPath, normalizeAwardSlug } from "@/lib/award-slugs";
+import { awardBaselineSummaryParts, displayAwardSummary } from "@/lib/award-summary";
 import {
   dedupeChangeSummaries,
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
-import { hasSupabaseConfig } from "@/lib/config";
+import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
+import type { Database } from "@/lib/database.types";
+import { readableSourceTitle } from "@/lib/display-text";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
 import {
   displayHomepageForAward,
@@ -21,47 +22,55 @@ import {
   isMonitorableOfficialSource,
 } from "@/lib/source-url-policy";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 
 type Params = {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ source?: string; change?: string }>;
 };
 
-export default async function SharedAwardDetailPage({ params }: Params) {
+type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
+
+export default async function SharedAwardDetailPage({ params, searchParams }: Params) {
   if (!hasSupabaseConfig()) return <SetupNotice />;
 
   const user = await requireUser();
   const officeContext = await requireOfficeContext(user);
   const { id } = await params;
+  const query = await searchParams;
   const supabase = await createSupabaseServerClient();
+  const resolvedAward = await resolveSharedAwardForDashboard(supabase, id);
 
-  const [{ data: award }, { data: sources }, { data: changes }, { data: officeAward }] =
+  if (resolvedAward.award && resolvedAward.shouldRedirect) {
+    redirect(`${dashboardAwardPath(resolvedAward.award.slug, resolvedAward.award.name, resolvedAward.award.id)}${queryString(query)}`);
+  }
+
+  const awardId = resolvedAward.award?.id || id;
+
+  const [{ data: sources }, { data: changes }, { data: officeAward }] =
     await Promise.all([
-      supabase
-        .from("shared_awards")
-        .select("*")
-        .eq("id", id)
-        .eq("status", "active")
-        .maybeSingle(),
       supabase
         .from("shared_award_sources")
         .select("*")
-        .eq("shared_award_id", id)
+        .eq("shared_award_id", awardId)
+        .eq("admin_review_status", "open")
         .order("page_type", { ascending: true })
         .order("created_at", { ascending: true }),
       supabase
         .from("shared_award_change_events")
         .select("*")
-        .eq("shared_award_id", id)
+        .eq("shared_award_id", awardId)
         .order("detected_at", { ascending: false })
         .limit(50),
       supabase
         .from("awards")
         .select("id")
         .eq("office_id", officeContext.current.officeId)
-        .eq("shared_award_id", id)
+        .eq("shared_award_id", awardId)
         .eq("status", "active")
         .maybeSingle(),
     ]);
+  const award = resolvedAward.award;
 
   if (!award) {
     return (
@@ -71,7 +80,7 @@ export default async function SharedAwardDetailPage({ params }: Params) {
           Back to find awards
         </Link>
         <div className="card mt-6 rounded-3xl p-6 text-[var(--muted)]">
-          Award was not found in the shared database.
+          Award was not found in the shared directory.
         </div>
       </div>
     );
@@ -91,183 +100,210 @@ export default async function SharedAwardDetailPage({ params }: Params) {
       }),
     ),
   );
-  const snapshotById = await fetchSnapshotSamples(
-    supabase,
-    snapshotIdsForChanges(officialChanges),
-  );
+  const unreadChangeIds = hasSupabaseAdminConfig()
+    ? await unreadSharedChangeIdsForUser(user.id, officialChanges).catch(() => new Set<string>())
+    : new Set<string>();
   const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
   const awardSummary = displayAwardSummary(award.summary);
+  const awardSummaryParts = awardBaselineSummaryParts(award.summary);
+  const visibleAwardFacts = (awardSummaryParts?.facts || []).filter(
+    (fact) => fact.label.toLowerCase() !== "baseline detail confidence",
+  );
+  const lastCheckedAt = latestDate(
+    officialSources
+      .map((source) => source.last_checked_at)
+      .filter((value): value is string => Boolean(value)),
+  );
+  const sourceTreeSources = officialSources.map((source) => ({
+    id: source.id,
+    title: source.title,
+    displayTitle: source.display_title,
+    pageDescription: source.page_description,
+    pageMetadata: source.page_metadata,
+    pageMetadataGeneratedAt: source.page_metadata_generated_at,
+    pageMetadataModel: source.page_metadata_model,
+    url: source.url,
+    pageType: source.page_type,
+    lastCheckedAt: source.last_checked_at,
+    lastError: source.last_error,
+    latestChanges: latestChangesForSource(source, officialChanges).slice(0, 3).map((change) => ({
+      id: change.id,
+      sourceTitle: readableSourceTitle(change.source_title, change.source_url),
+      sourceUrl: change.source_url,
+      sourcePageType: change.source_page_type,
+      summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
+      changeDetails: change.change_details,
+      detectedAt: change.detected_at,
+      unread: unreadChangeIds.has(change.id),
+    })),
+  }));
 
   return (
-    <div>
-      <Link className="button-secondary" href="/dashboard/awards">
-        <ArrowLeft size={16} aria-hidden="true" />
-        Back to find awards
-      </Link>
-
-      <div className="mt-8 grid min-w-0 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="min-w-0">
-          <div className="flex flex-wrap gap-2">
-            <span className="badge">{officialSources.length} source pages</span>
-            <span className="badge">{officialChanges.length} recorded updates</span>
-            {tracked && <span className="badge">On watchlist</span>}
-          </div>
-          <h1 className="dashboard-page-title mt-4">{award.name}</h1>
-          {awardSummary && (
-            <p className="mt-3 max-w-3xl leading-7 text-[var(--muted)]">{awardSummary}</p>
-          )}
-          {displayHomepage && (
-            <a
-              className="mt-3 inline-flex max-w-full items-center gap-2 truncate text-sm font-bold text-[var(--brand)] underline"
-              href={displayHomepage}
-              rel="noreferrer"
-              target="_blank"
-            >
-              <ExternalLink size={15} aria-hidden="true" />
-              <span className="truncate">{displayHomepage}</span>
-            </a>
-          )}
-        </div>
-        <div className="dashboard-panel dashboard-panel-pad">
-          <h2 className="dashboard-panel-title">Watchlist</h2>
-          <p className="dashboard-panel-copy">
-            You can view this history without adding it. Add it when your office
-            wants the award on its own watchlist.
-          </p>
-          <div className="mt-4">
-            <TrackSharedAwardButton
-              sharedAwardId={award.id}
-              tracked={tracked}
-              canManage={canManageOffice(officeContext.current.role)}
-            />
-          </div>
-        </div>
-      </div>
-
-      <section className="mt-8 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
-        <div className="dashboard-panel dashboard-panel-pad min-w-0">
-          <h2 className="dashboard-panel-title">Sites checked</h2>
-          <p className="dashboard-panel-copy">
-            Official source pages are grouped by site so you can review the source structure
-            without a long flat list.
-          </p>
-          <div className="dashboard-list">
-            <SourcePageTree
-              sources={officialSources.map((source) => ({
-                id: source.id,
-                title: source.title,
-                url: source.url,
-                pageType: source.page_type,
-                lastCheckedAt: source.last_checked_at,
-                lastError: source.last_error,
-                latestChanges: latestChangesForSource(source, officialChanges).slice(0, 3).map((change) => ({
-                  id: change.id,
-                  sourceTitle: change.source_title,
-                  sourceUrl: change.source_url,
-                  sourcePageType: change.source_page_type,
-                  summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
-                  changeDetails: change.change_details,
-                  detectedAt: change.detected_at,
-                  previousTextSample: change.previous_snapshot_id
-                    ? snapshotById.get(change.previous_snapshot_id) || null
-                    : null,
-                  newTextSample: change.new_snapshot_id
-                    ? snapshotById.get(change.new_snapshot_id) || null
-                    : null,
-                })),
-              }))}
-            />
-          </div>
-        </div>
-
-        <div className="dashboard-panel dashboard-panel-pad min-w-0">
-          <h2 className="dashboard-panel-title">Update history</h2>
-          <p className="dashboard-panel-copy">
-            This history stays with the shared award, including updates found
-            before your office added it to the watchlist.
-          </p>
-          <div className="dashboard-list">
-            {officialChanges.map((change) => (
-              <article className="dashboard-list-item min-w-0" key={change.id}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="font-black">{change.source_title || "Shared source page"}</p>
-                  <span className="badge">{formatDate(change.detected_at)}</span>
-                </div>
-                <a
-                  className="mt-1 block truncate text-sm font-semibold text-[var(--brand)] underline"
-                  href={change.source_url}
-                  rel="noreferrer"
-                  target="_blank"
+    <div className="award-detail-page">
+      <main className="award-detail-record award-detail-record-console" id="award-source-record">
+        <SourcePageTree
+          groupByHost={false}
+          initiallyExpanded={false}
+          initialSelectedSourceId={query.source || undefined}
+          layout="split"
+          selectedChangeId={query.change || undefined}
+          splitDetailIntro={
+            <>
+              <div className="award-detail-command-row">
+                <Link className="award-detail-back-link" href="/dashboard/awards">
+                  <ArrowLeft size={16} aria-hidden="true" />
+                  Back to find awards
+                </Link>
+                <Link
+                  className="button-secondary"
+                  href={canonicalAwardPath(award.slug, award.name, award.id)}
                 >
-                  {change.source_url}
-                </a>
-                <ChangeSummaryDisplay
-                  summary={displayChangeSummary(change.summary, change.source_url, change.change_details)}
-                  sourceUrl={change.source_url}
-                  sourceTitle={change.source_title}
-                  changeDetails={change.change_details}
+                  Public page
+                  <ExternalLink size={16} aria-hidden="true" />
+                </Link>
+                <TrackSharedAwardButton
+                  sharedAwardId={award.id}
+                  tracked={tracked}
+                  canManage={canManageOffice(officeContext.current.role)}
                 />
-                <ChangeEvidencePanel
-                  changeId={change.id}
-                  changeKind="shared"
-                  sourceUrl={change.source_url}
-                  sourceTitle={change.source_title}
-                  sourcePageTypeLabel={change.source_page_type ? pageTypeLabel(change.source_page_type) : null}
-                  summary={displayChangeSummary(change.summary, change.source_url, change.change_details)}
-                  changeDetails={change.change_details}
-                  detectedAt={change.detected_at}
-                  previousTextSample={change.previous_snapshot_id
-                    ? snapshotById.get(change.previous_snapshot_id) || null
-                    : null}
-                  newTextSample={change.new_snapshot_id
-                    ? snapshotById.get(change.new_snapshot_id) || null
-                    : null}
-                />
-              </article>
-            ))}
-            {officialChanges.length === 0 && (
-              <p className="text-[var(--muted)]">No updates have been recorded yet.</p>
-            )}
-          </div>
-        </div>
-      </section>
+              </div>
+
+              <header className="award-detail-header" id="award-overview">
+                <div className="award-detail-meta-line">
+                  <span>{officialSources.length} source pages</span>
+                  <span>{officialChanges.length} recorded updates</span>
+                  {tracked && <span>On watchlist</span>}
+                </div>
+
+                <h1 className="award-detail-title">{award.name}</h1>
+
+                <span className="award-detail-anchor" id="award-key-details" aria-hidden="true" />
+
+                {awardSummaryParts && awardSummaryParts.facts.length > 0 ? (
+                  <AwardBaselineDetails parts={awardSummaryParts} />
+                ) : awardSummary ? (
+                  <p className="award-detail-summary-copy">{awardSummary}</p>
+                ) : null}
+
+                {displayHomepage && (
+                  <a
+                    className="award-detail-homepage"
+                    href={displayHomepage}
+                    rel="noreferrer"
+                    target="_blank"
+                  >
+                    <ExternalLink size={15} aria-hidden="true" />
+                    <span>Official homepage</span>
+                  </a>
+                )}
+              </header>
+            </>
+          }
+          splitSidebarFooter={<AwardDetailSidebarFooter lastCheckedAt={lastCheckedAt} />}
+          splitSidebarIntro={
+            <AwardDetailSidebarIntro
+              factCount={visibleAwardFacts.length}
+              recentChangeCount={officialChanges.length}
+              sourceCount={officialSources.length}
+            />
+          }
+          sources={sourceTreeSources}
+        />
+      </main>
     </div>
   );
 }
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+function AwardBaselineDetails({
+  parts,
+}: {
+  parts: {
+    overview: string | null;
+    facts: Array<{ label: string; value: string }>;
+  };
+}) {
+  const visibleFacts = parts.facts.filter(
+    (fact) => fact.label.toLowerCase() !== "baseline detail confidence",
+  );
+  const compactFacts = visibleFacts.slice(0, 6);
+
+  return (
+    <div className="award-detail-facts">
+      {parts.overview && <p className="award-detail-summary-copy">{parts.overview}</p>}
+      {compactFacts.length > 0 && (
+        <dl
+          className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}
+        >
+          {compactFacts.map((fact) => (
+            <div className="award-detail-fact" key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
 }
 
-type SupabaseServerClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
+function AwardDetailSidebarIntro({
+  factCount,
+  recentChangeCount,
+  sourceCount,
+}: {
+  factCount: number;
+  recentChangeCount: number;
+  sourceCount: number;
+}) {
+  return (
+    <>
+      <div className="public-award-sidebar-header award-detail-sidebar-header">
+        <div>
+          <p>Award outline</p>
+          <span>{countLabel(sourceCount, "source")}</span>
+        </div>
+      </div>
 
-async function fetchSnapshotSamples(
-  supabase: SupabaseServerClient,
-  snapshotIds: string[],
-) {
-  if (snapshotIds.length === 0) return new Map<string, string>();
-
-  const { data } = await supabase
-    .from("shared_award_source_snapshots")
-    .select("id, text_sample")
-    .in("id", snapshotIds);
-
-  return new Map((data || []).map((snapshot) => [snapshot.id, snapshot.text_sample]));
+      <div className="public-award-nav-section award-detail-sidebar-profile" aria-label="Award profile">
+        <p className="public-award-nav-heading">Award profile</p>
+        <a className="public-award-nav-button public-award-nav-button-profile" href="#award-overview">
+          <span className="public-award-nav-marker" aria-hidden="true" />
+          <span className="public-award-nav-text">
+            <strong>Overview</strong>
+            <small>{countLabel(sourceCount, "source")}</small>
+          </span>
+        </a>
+        <a className="public-award-nav-button public-award-nav-button-profile" href="#award-key-details">
+          <span className="public-award-nav-marker" aria-hidden="true" />
+          <span className="public-award-nav-text">
+            <strong>Key details</strong>
+            <small>{countLabel(factCount, "field")}</small>
+          </span>
+        </a>
+        <a
+          className={`public-award-nav-button public-award-nav-button-profile ${recentChangeCount > 0 ? "public-award-nav-button-updated" : ""}`}
+          href="#award-source-record"
+        >
+          <span className="public-award-nav-marker" aria-hidden="true" />
+          <span className="public-award-nav-text">
+            <strong>Recent changes</strong>
+            <small>{countLabel(recentChangeCount, "update")}</small>
+          </span>
+          {recentChangeCount > 0 && (
+            <span className="public-award-update-count" aria-label="Recent updates" />
+          )}
+        </a>
+      </div>
+    </>
+  );
 }
 
-function snapshotIdsForChanges(
-  changes: Array<{
-    previous_snapshot_id: string | null;
-    new_snapshot_id: string | null;
-  }>,
-) {
-  return [
-    ...new Set(
-      changes
-        .flatMap((change) => [change.previous_snapshot_id, change.new_snapshot_id])
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
+function AwardDetailSidebarFooter({ lastCheckedAt }: { lastCheckedAt: string | null }) {
+  return (
+    <p className="award-detail-sidebar-footer">
+      Checked <strong>{lastCheckedAt ? formatShortDate(lastCheckedAt) : "pending"}</strong>
+    </p>
+  );
 }
 
 function latestChangesForSource<
@@ -282,6 +318,97 @@ function latestChangesForSource<
 
     return normalizeUrlKey(change.source_url) === sourceUrlKey;
   });
+}
+
+async function resolveSharedAwardForDashboard(
+  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
+  identifier: string,
+): Promise<{ award: SharedAwardRow | null; shouldRedirect: boolean }> {
+  const normalized = normalizeAwardSlug(identifier);
+
+  if (isUuid(identifier)) {
+    const { data } = await supabase
+      .from("shared_awards")
+      .select("*")
+      .eq("id", identifier)
+      .eq("status", "active")
+      .maybeSingle();
+
+    return {
+      award: data,
+      shouldRedirect: Boolean(data?.slug),
+    };
+  }
+
+  const { data: direct } = await supabase
+    .from("shared_awards")
+    .select("*")
+    .eq("slug", normalized)
+    .eq("status", "active")
+    .maybeSingle();
+
+  if (direct) {
+    return {
+      award: direct,
+      shouldRedirect: identifier !== normalized || direct.slug !== normalized,
+    };
+  }
+
+  const { data: alias } = await supabase
+    .from("shared_award_slug_aliases")
+    .select("slug, shared_awards!inner(*)")
+    .eq("slug", normalized)
+    .eq("shared_awards.status", "active")
+    .maybeSingle();
+
+  return {
+    award: embeddedSharedAward(alias?.shared_awards),
+    shouldRedirect: Boolean(alias),
+  };
+}
+
+function embeddedSharedAward(value: unknown) {
+  if (Array.isArray(value)) return embeddedSharedAward(value[0]);
+  return value && typeof value === "object" ? value as SharedAwardRow : null;
+}
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function queryString(query: { source?: string; change?: string }) {
+  const params = new URLSearchParams();
+  if (query.source) params.set("source", query.source);
+  if (query.change) params.set("change", query.change);
+  const value = params.toString();
+  return value ? `?${value}` : "";
+}
+
+function latestDate(values: string[]) {
+  let latest: string | null = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+
+  for (const value of values) {
+    const time = new Date(value).getTime();
+    if (Number.isFinite(time) && time > latestTime) {
+      latestTime = time;
+      latest = value;
+    }
+  }
+
+  return latest;
+}
+
+function formatShortDate(value: string) {
+  return new Intl.DateTimeFormat("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(new Date(value));
+}
+
+function countLabel(count: number, singular: string) {
+  return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
 function normalizeUrlKey(value: string | null | undefined) {

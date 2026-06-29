@@ -8,6 +8,7 @@ export const appConfig = {
   alertFromEmail: process.env.ALERT_FROM_EMAIL || "AwardPing <alerts@example.com>",
   contactToEmail: process.env.CONTACT_TO_EMAIL || "",
   cronSecret: process.env.CRON_SECRET || "",
+  dataEncryptionKey: process.env.APP_DATA_ENCRYPTION_KEY || "",
   tavilyApiKey: process.env.TAVILY_API_KEY || "",
   aiProvider: process.env.AI_PROVIDER || "auto",
   geminiApiKey: process.env.GEMINI_API_KEY || "",
@@ -22,6 +23,13 @@ export const appConfig = {
     "gemini-2.5-flash-lite",
   openaiApiKey: process.env.OPENAI_API_KEY || "",
   openaiDiscoveryModel: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini",
+  r2AccountId: textFromEnv("R2_ACCOUNT_ID"),
+  r2Endpoint: textFromEnv("R2_ENDPOINT"),
+  r2AccessKeyId: textFromEnv("R2_ACCESS_KEY_ID"),
+  r2SecretAccessKey: textFromEnv("R2_SECRET_ACCESS_KEY"),
+  r2Bucket: textFromEnv("R2_BUCKET", "awardping-snapshots"),
+  r2SignedUrlTtlSeconds: numberFromEnv("R2_SIGNED_URL_TTL_SECONDS", 900),
+  adminEmails: emailListFromEnv("AWARDPING_ADMIN_EMAILS"),
   discoveryDailyUserLimit: numberFromEnv("DISCOVERY_DAILY_USER_LIMIT", 10),
   discoveryDailyIpLimit: numberFromEnv("DISCOVERY_DAILY_IP_LIMIT", 30),
   discoveryDailyGlobalLimit: numberFromEnv("DISCOVERY_DAILY_GLOBAL_LIMIT", 100),
@@ -34,12 +42,31 @@ export function hasSupabaseConfig() {
 export function hasSupabaseAdminConfig() {
   return Boolean(
     appConfig.supabaseUrl &&
-      appConfig.supabaseAnonKey &&
       appConfig.supabaseServiceRoleKey,
+  );
+}
+
+export function hasR2Config() {
+  return Boolean(
+    appConfig.r2Bucket &&
+      appConfig.r2AccessKeyId &&
+      appConfig.r2SecretAccessKey &&
+      (appConfig.r2Endpoint || appConfig.r2AccountId),
   );
 }
 
 function numberFromEnv(key: string, fallback: number) {
   const value = Number(process.env[key]);
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
+
+function textFromEnv(key: string, fallback = "") {
+  return (process.env[key] || fallback).replace(/^\uFEFF/, "").trim();
+}
+
+function emailListFromEnv(key: string) {
+  return (process.env[key] || "")
+    .split(",")
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
 }

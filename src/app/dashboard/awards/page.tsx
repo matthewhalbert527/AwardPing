@@ -9,9 +9,11 @@ import {
 } from "@/components/watchlist-award-groups";
 import { requireUser } from "@/lib/auth";
 import { displayAwardSummary } from "@/lib/award-summary";
+import { canonicalAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
+import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import {
   displayHomepageForAward,
   filterTrackableOfficialSources,
@@ -33,11 +35,26 @@ type MonitorRow = Database["public"]["Tables"]["monitors"]["Row"];
 type SharedAwardRow = Database["public"]["Tables"]["shared_awards"]["Row"];
 type SharedSourceRow = Database["public"]["Tables"]["shared_award_sources"]["Row"];
 type SupabaseServerClient = Awaited<ReturnType<typeof createSupabaseServerClient>>;
-type SharedAwardDirectoryRow = Pick<SharedAwardRow, "id" | "name" | "official_homepage" | "summary">;
+type SharedAwardDirectoryRow = Pick<
+  SharedAwardRow,
+  "id" | "name" | "slug" | "official_homepage" | "summary" | "public_facts"
+>;
+type SharedAwardLookupRow = Pick<SharedAwardRow, "id" | "slug">;
 type TrackedOfficeAwardRow = Pick<OfficeAwardRow, "id" | "shared_award_id">;
 type SharedSourceDirectoryRow = Pick<
   SharedSourceRow,
-  "id" | "shared_award_id" | "url" | "title" | "page_type" | "last_checked_at" | "last_error"
+  | "id"
+  | "shared_award_id"
+  | "url"
+  | "title"
+  | "display_title"
+  | "page_description"
+  | "page_metadata"
+  | "page_metadata_generated_at"
+  | "page_metadata_model"
+  | "page_type"
+  | "last_checked_at"
+  | "last_error"
 >;
 
 export default async function DashboardAwardsPage({ searchParams }: Props) {
@@ -99,7 +116,7 @@ async function fetchAllSharedAwards(supabase: SupabaseServerClient) {
   return fetchAllPages<SharedAwardDirectoryRow>((from, to) =>
     supabase
       .from("shared_awards")
-      .select("id, name, official_homepage, summary")
+      .select("id, name, slug, official_homepage, summary, public_facts")
       .eq("status", "active")
       .order("name", { ascending: true })
       .range(from, to),
@@ -151,19 +168,37 @@ async function loadWatchlistGroups(
     ]);
 
   const awards = (officeAwards || []) as OfficeAwardRow[];
-  const sharedSources = await fetchSharedSourcesForAwards(
-    supabase,
-    awards
-      .map((award) => award.shared_award_id)
-      .filter((id): id is string => Boolean(id)),
-  );
+  const sharedAwardIds = awards
+    .map((award) => award.shared_award_id)
+    .filter((id): id is string => Boolean(id));
+  const [sharedSources, sharedAwards] = await Promise.all([
+    fetchSharedSourcesForAwards(supabase, sharedAwardIds),
+    fetchSharedAwardsByIds(supabase, sharedAwardIds),
+  ]);
 
   return buildWatchlistGroups(
     awards,
     (monitors || []) as MonitorRow[],
     (officeAwardSources || []) as OfficeAwardSourceRow[],
     sharedSources,
+    sharedAwards,
   );
+}
+
+async function fetchSharedAwardsByIds(
+  supabase: SupabaseServerClient,
+  sharedAwardIds: string[],
+) {
+  const ids = [...new Set(sharedAwardIds)];
+  if (ids.length === 0) return [];
+
+  const { data } = await supabase
+    .from("shared_awards")
+    .select("id, slug")
+    .in("id", ids)
+    .eq("status", "active");
+
+  return (data || []) as SharedAwardLookupRow[];
 }
 
 async function fetchSharedSourcesForAwards(
@@ -175,8 +210,9 @@ async function fetchSharedSourcesForAwards(
 
   const { data } = await supabase
     .from("shared_award_sources")
-    .select("id, shared_award_id, url, title, page_type, last_checked_at, last_error")
+    .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, last_error")
     .in("shared_award_id", ids)
+    .eq("admin_review_status", "open")
     .order("created_at", { ascending: true });
 
   return (data || []) as SharedSourceDirectoryRow[];
@@ -235,11 +271,25 @@ function mapSharedAwardIndex(
   );
 
   return sharedAwards.map((award) => {
+    const facts = publicAwardFactsFromAward({
+      summary: award.summary,
+      publicFacts: award.public_facts,
+      sources: [],
+    });
+
     return {
       id: award.id,
       name: award.name,
+      slug: award.slug,
+      publicPath: canonicalAwardPath(award.slug, award.name, award.id),
       officialHomepage: award.official_homepage,
       summary: displayAwardSummary(award.summary),
+      deadline: facts.deadline,
+      academicLevels: facts.academicLevels,
+      disciplines: facts.disciplines,
+      citizenship: facts.citizenship,
+      lastCheckedAt: null,
+      recentlyUpdated: false,
       sourceCount: null,
       sourceIssueCount: null,
       changeCount: null,
@@ -256,10 +306,12 @@ function buildWatchlistGroups(
   monitors: MonitorRow[],
   awardSources: OfficeAwardSourceRow[],
   sharedSources: SharedSourceDirectoryRow[],
+  sharedAwards: SharedAwardLookupRow[],
 ): WatchlistAwardGroup[] {
   const monitorsByAward = groupBy(monitors, (monitor) => monitor.award_id || "standalone");
   const awardSourcesByAward = groupBy(awardSources, (source) => source.award_id);
   const sharedSourcesByAward = groupBy(sharedSources, (source) => source.shared_award_id);
+  const sharedAwardById = new Map(sharedAwards.map((award) => [award.id, award]));
   const groups = awards.map((award) => {
     const monitorRows = monitorsByAward.get(award.id) || [];
     const officeSources = awardSourcesByAward.get(award.id) || [];
@@ -275,6 +327,11 @@ function buildWatchlistGroups(
         monitorId: null,
         monitorSharedAwardSourceId: null,
         title: source.title,
+        displayTitle: source.display_title,
+        pageDescription: source.page_description,
+        pageMetadata: source.page_metadata,
+        pageMetadataGeneratedAt: source.page_metadata_generated_at,
+        pageMetadataModel: source.page_metadata_model,
         url: source.url,
         pageType: source.page_type,
         status: "untracked",
@@ -319,6 +376,7 @@ function buildWatchlistGroups(
     return {
       id: award.id,
       sharedAwardId: award.shared_award_id,
+      sharedAwardSlug: award.shared_award_id ? sharedAwardById.get(award.shared_award_id)?.slug || null : null,
       name: award.name,
       summary: displayAwardSummary(award.summary),
       officialHomepage: displayHomepageForAward(award.official_homepage, sharedRows),
@@ -332,6 +390,7 @@ function buildWatchlistGroups(
     .map((monitor) => ({
       id: `monitor:${monitor.id}`,
       sharedAwardId: null,
+      sharedAwardSlug: null,
       name: monitor.label,
       summary: null,
       officialHomepage: monitor.url,

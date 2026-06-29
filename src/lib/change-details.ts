@@ -521,6 +521,12 @@ function qualityFlagsForDetails(details: ChangeDetails) {
   if (hasContextOnlySnippetChange(details)) {
     flags.push("context_only_change");
   }
+  if (hasDocumentMetadataOnlyChange(details)) {
+    flags.push("document_metadata_only_change");
+  }
+  if (hasFundraisingOnlyChange(details)) {
+    flags.push("fundraising_form_change");
+  }
   if (looksLikeProfileOrTestimonialRotation(details.structured_diff)) {
     flags.push("profile_testimonial_change");
   }
@@ -579,6 +585,8 @@ function isAlertWorthyFromFlags(flags: string[]) {
       "indistinct_truncated_snippet",
       "format_only_change",
       "context_only_change",
+      "document_metadata_only_change",
+      "fundraising_form_change",
       "recipient_news_change",
     ].includes(flag),
   );
@@ -656,6 +664,58 @@ function hasContextOnlySnippetChange(details: ChangeDetails) {
   );
 }
 
+function hasDocumentMetadataOnlyChange(details: ChangeDetails) {
+  const summaryText = [
+    details.reader_summary,
+    details.advisor_impact,
+    details.section,
+    details.change_type,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const evidence = [
+    details.before,
+    details.after,
+    ...details.structured_diff.added_text,
+    ...details.structured_diff.removed_text,
+    ...details.structured_diff.date_changes,
+    ...details.structured_diff.amount_changes,
+  ].filter((value): value is string => Boolean(value));
+  const evidenceText = evidence.join(" ");
+  const pageType = cleanSlugText(details.structured_diff.page_type || details.source.page_type);
+  const sourceContext = `${details.source.source_title || ""} ${details.source.source_url || ""}`;
+  const documentContext =
+    /^(pdf|document|application_pdf|materials?)$/.test(pageType) ||
+    /\.(?:pdf|docx?)(?:[?#]|$)/i.test(sourceContext) ||
+    /\b(pdf|docx?|word version|application pdf|download form|recommendation form)\b/i.test(
+      `${summaryText} ${sourceContext}`,
+    );
+
+  if (!documentContext) return false;
+  if (hasApplicationRequirementSignal(evidenceText) || hasFundingAmountContext(evidenceText)) {
+    return false;
+  }
+  if (
+    details.structured_diff.date_changes.length ||
+    details.structured_diff.amount_changes.length
+  ) {
+    return false;
+  }
+
+  const metadataOnlyLanguage = /\b(?:specific changes? (?:within|in) (?:the )?(?:pdf|document|file) (?:are|were) not detailed|file itself has changed|file size (?:has )?(?:increased|decreased|changed)|potential change in content or format|download and review the updated|check the updated (?:application )?(?:pdf|document|form)|updated (?:pdf|document|file|form) for any changes)\b/i.test(
+    summaryText,
+  );
+  const genericDocumentUpdate =
+    /\b(?:pdf|document|file|form)\b/i.test(summaryText) &&
+    /\b(?:has been updated|was updated|changed)\b/i.test(summaryText) &&
+    !/\b(?:deadline|due|eligible|eligibility|required|requirement|recommendation letter|transcript|essay|nomination|award amount|stipend|tuition|funding)\b/i.test(
+      summaryText,
+    );
+  const opaqueEvidence = evidence.length > 0 && evidence.every(isOpaqueDocumentEvidence);
+
+  return (metadataOnlyLanguage || genericDocumentUpdate) && (opaqueEvidence || evidence.length === 0);
+}
+
 function refineContentOnlyChange(details: ChangeDetails): ChangeDetails {
   const contentRotation = profileTestimonialChangeSummary(details.source, details.structured_diff);
   if (!contentRotation) return details;
@@ -691,13 +751,20 @@ function looksLikeProfileOrTestimonialRotation(diff: StructuredChangeDiff) {
 function looksLikeProfileOrTestimonialRotationText(value: string) {
   const clean = normalizeChangeText(value);
   if (!clean) return false;
+  const featuredFellowSignals =
+    /\b(featured fellows?|meet the fellows?|fellow highlights?|recipient profiles?|past recipients?)\b/i.test(
+      clean,
+    ) &&
+    /\b(fellowship awarded|immigrant from|child of immigrants?|ph\.?\s*d|m\.?\s*d|j\.?\s*d|university|college)\b/i.test(
+      clean,
+    );
   const quoteSignals = (clean.match(/[“”"]/g) || []).length >= 2;
   const personSignals =
-    /\b(fellow|scholar|recipient|alum(?:na|ni|nus)?|student|teacher|professor|faculty|speaker|bio|biography|profile|testimonial|quote)\b/i.test(
+    /\b(fellow|fellowship|scholar|recipient|alum(?:na|ni|nus)?|student|teacher|professor|faculty|speaker|bio|biography|profile|testimonial|quote|immigrant)\b/i.test(
       clean,
     );
   const storySignals =
-    /\b(earned an? ma|earned an? m\.?a\.?|earned an? master's|teaches at|i am proud|i've made|my fellowship|my career|learned from colleagues|honored to be teaching|profile|testimonial)\b/i.test(
+    /\b(earned an? ma|earned an? m\.?a\.?|earned an? master's|teaches at|i am proud|i've made|my fellowship|my career|learned from colleagues|honored to be teaching|profile|testimonial|fellowship awarded in \d{4} to support work towards|immigrant from|child of immigrants?)\b/i.test(
       clean,
     );
   const rosterSignals =
@@ -709,7 +776,7 @@ function looksLikeProfileOrTestimonialRotationText(value: string) {
       clean,
     );
 
-  return personSignals && (quoteSignals || storySignals || rosterSignals || stateFellowSignals);
+  return featuredFellowSignals || (personSignals && (quoteSignals || storySignals || rosterSignals || stateFellowSignals));
 }
 
 function looksLikeRecipientNewsOrPressChange(input: {
@@ -898,6 +965,66 @@ function hasFundingAmountContext(value: string) {
 
   return /\b(stipend|tuition|funding|funds?|grant|scholarships?|fellowships?|award amount|awards?:|amount awarded|prize|financial support|honorarium|living allowance|travel expenses?|research expenses?)\b/.test(
     lower,
+  );
+}
+
+function hasFundraisingOnlyChange(details: ChangeDetails) {
+  const fundraisingText = [
+    details.reader_summary,
+    details.before,
+    details.after,
+    details.section,
+    details.advisor_impact,
+    ...details.structured_diff.added_text,
+    ...details.structured_diff.removed_text,
+    ...details.structured_diff.amount_changes,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!fundraisingText) return false;
+
+  const hasFundraisingSignal =
+    /\b(donate|donation|donor|tribute|gift amount|one[- ]time donation|monthly gift|fundraising|cart|checkout|sponsor|sponsorship)\b/.test(
+      fundraisingText,
+    );
+  if (!hasFundraisingSignal) return false;
+
+  const applicantText = [
+    details.reader_summary,
+    details.before,
+    details.after,
+    details.advisor_impact,
+    ...details.structured_diff.added_text,
+    ...details.structured_diff.removed_text,
+    ...details.structured_diff.amount_changes,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+  return !hasApplicantFacingChangeSignalText(stripUnchangedApplicantReferences(applicantText));
+}
+
+function stripUnchangedApplicantReferences(value: string) {
+  return value
+    .replace(
+      /\b(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,90}\b(?:remain(?:s)?|are|is|were|was)?\s*(?:unchanged|not changed|no change)\b/gi,
+      " ",
+    )
+    .replace(
+      /\b(?:no|not any)\s+(?:changes?|updates?)\s+(?:to|in)\s+(?:award\s+)?(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b/gi,
+      " ",
+    )
+    .replace(
+      /\bno\b[^.]{0,140}\b(?:deadlines?|eligibility|requirements?|application(?:\s+instructions?)?|award amounts?|funding)\b[^.]{0,140}\b(?:changed|change|updated|updates?)\b/gi,
+      " ",
+    );
+}
+
+function hasApplicantFacingChangeSignalText(value: string) {
+  return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/i.test(
+    value,
   );
 }
 
@@ -1194,8 +1321,27 @@ function isPersistentQualityFlag(flag: string) {
     "orphan_punctuation",
     "indistinct_truncated_snippet",
     "format_only_change",
+    "document_metadata_only_change",
+    "fundraising_form_change",
+    "profile_testimonial_change",
     "recipient_news_change",
   ].includes(flag);
+}
+
+function isOpaqueDocumentEvidence(value: string) {
+  const clean = normalizeChangeText(value);
+  if (!clean) return true;
+  if (/^\d{1,10}$/.test(clean)) return true;
+  const tokens = clean.match(/[a-z0-9]+/gi) || [];
+  if (!tokens.length) return true;
+  const hexTokenCount = tokens.filter((token) => /^[a-f0-9]{1,16}$/i.test(token)).length;
+  const longHashCount = tokens.filter((token) => /^[a-f0-9]{16,}$/i.test(token)).length;
+  const readableWordCount = tokens.filter((token) => /[g-z]/i.test(token) && token.length >= 4).length;
+
+  return (
+    longHashCount > 0 ||
+    (tokens.length >= 6 && hexTokenCount / tokens.length >= 0.82 && readableWordCount === 0)
+  );
 }
 
 function hasIndistinctTruncatedSnippets(before: string | null, after: string | null) {

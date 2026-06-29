@@ -3,10 +3,11 @@ import {
   MemberPreferenceSelect,
   MemberRoleSelect,
   OfficeNameForm,
+  PrivacyControls,
   ProfileSettingsForm,
 } from "@/components/office-forms";
 import { SetupNotice } from "@/components/setup-notice";
-import { requireUser } from "@/lib/auth";
+import { getUserProfile, requireUser } from "@/lib/auth";
 import { appConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { editableOfficeName } from "@/lib/office-names";
@@ -39,11 +40,7 @@ export default async function OfficePage() {
         .order("created_at", { ascending: false })
     : { data: [] as InviteRow[] };
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("full_name, organization")
-    .eq("id", user.id)
-    .maybeSingle();
+  const profile = await getUserProfile(user.id);
 
   return (
     <div className="dashboard-page">
@@ -131,6 +128,7 @@ export default async function OfficePage() {
             </div>
           </section>
         )}
+        <PrivacyControls />
       </div>
     </div>
   );

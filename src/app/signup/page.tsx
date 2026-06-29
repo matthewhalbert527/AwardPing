@@ -32,7 +32,7 @@ export default async function SignupPage({ searchParams }: Props) {
         <div className="card rounded-3xl p-6">
           <h1 className="text-3xl font-black">Sign up for free</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
-            Create an account, then create your office or join an existing one.
+            Create an account, then finish your encrypted profile and office setup.
           </p>
           <div className="mt-6">
             {hasSupabaseConfig() ? <AuthForm mode="signup" nextPath={nextPath} /> : <SetupNotice />}

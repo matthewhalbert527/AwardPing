@@ -2,7 +2,16 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Building2, Link as LinkIcon, MailPlus, Save, Search, UserRound } from "lucide-react";
+import {
+  Building2,
+  Download,
+  Link as LinkIcon,
+  MailPlus,
+  Save,
+  Search,
+  Trash2,
+  UserRound,
+} from "lucide-react";
 import type { NotificationPreference, OfficeRole } from "@/lib/database.types";
 
 type SearchUser = {
@@ -392,5 +401,67 @@ export function MemberRoleSelect({
       <option value="member">Member</option>
       <option value="admin">Admin</option>
     </select>
+  );
+}
+
+export function PrivacyControls() {
+  const [confirm, setConfirm] = useState("");
+  const [message, setMessage] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteAccount() {
+    setDeleting(true);
+    setMessage("");
+
+    const response = await fetch("/api/privacy/delete", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ confirm }),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      setDeleting(false);
+      setMessage(data.error || "Account could not be deleted.");
+      return;
+    }
+
+    window.location.href = "/";
+  }
+
+  return (
+    <section className="dashboard-panel dashboard-panel-pad">
+      <h2 className="dashboard-panel-title">Privacy controls</h2>
+      <p className="dashboard-panel-copy">
+        Export your account data or permanently delete your AwardPing account.
+      </p>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+        <a className="button-secondary" href="/api/privacy/export" download>
+          <Download size={17} aria-hidden="true" />
+          Download my data
+        </a>
+      </div>
+      <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4">
+        <label className="block">
+          <span className="text-sm font-bold">Type DELETE to delete your account</span>
+          <input
+            className="input mt-2"
+            value={confirm}
+            onChange={(event) => setConfirm(event.target.value)}
+            autoComplete="off"
+          />
+        </label>
+        <button
+          className="button-secondary mt-3"
+          type="button"
+          onClick={deleteAccount}
+          disabled={deleting || confirm !== "DELETE"}
+        >
+          <Trash2 size={17} aria-hidden="true" />
+          {deleting ? "Deleting..." : "Delete account"}
+        </button>
+        {message && <p className="mt-3 text-sm font-semibold">{message}</p>}
+      </div>
+    </section>
   );
 }

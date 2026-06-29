@@ -18,7 +18,7 @@ describe("source tree grouping", () => {
       },
     ]);
 
-    expect(tree.map((node) => node.label)).toEqual(["Homepage", "Files and PDFs"]);
+    expect(tree.map((node) => node.label)).toEqual(["Overview", "Files and PDFs"]);
 
     const files = tree.find((node) => node.label === "Files and PDFs");
     expect(files?.children[0].label).toBe("View an overview of Schwarzman Scholars");
@@ -185,5 +185,76 @@ describe("source tree grouping", () => {
       "AG Bell Global LSL Symposium 2026 Registration Form English",
       "Guidelines Parent Infant 2025 1",
     ]);
+  });
+
+  it("uses extracted display titles instead of noisy URL path leaves", () => {
+    const tree = buildSourceTree([
+      {
+        id: "hench",
+        title: "hench.htm",
+        displayTitle: "Hench Postdoctoral Fellowship",
+        url: "http://www.americanantiquarian.org/hench.htm",
+        pageType: "other",
+      },
+    ]);
+
+    expect(tree.map((node) => node.label)).toEqual(["Hench Postdoctoral Fellowship"]);
+    expect(tree.map((node) => node.label)).not.toContain("Hench Htm");
+  });
+
+  it("groups extracted page categories into scholarship concepts", () => {
+    const tree = buildSourceTree([
+      {
+        id: "citizenship",
+        title: "Citizenship",
+        displayTitle: "Citizenship",
+        url: "https://example.edu/scholarship/eligibility/citizenship",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts: {
+            page_category: "Eligibility",
+          },
+        },
+      },
+      {
+        id: "campus-deadline",
+        title: "Campus deadline",
+        displayTitle: "Campus deadline",
+        url: "https://example.edu/scholarship/dates/campus",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts: {
+            page_category: "Deadlines",
+          },
+        },
+      },
+    ]);
+
+    const eligibility = tree.find((node) => node.label === "Eligibility");
+    const deadlines = tree.find((node) => node.label === "Deadlines");
+    expect(eligibility?.children.map((node) => node.label)).toEqual(["Citizenship"]);
+    expect(deadlines?.children.map((node) => node.label)).toEqual(["Campus deadline"]);
+  });
+
+  it("does not use rejected baseline metadata for page labels or categories", () => {
+    const tree = buildSourceTree([
+      {
+        id: "rejected",
+        title: "Official page",
+        url: "https://example.edu/scholarship",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts_rejected: true,
+          baseline_facts: {
+            display_title: "Wrong Extracted Title",
+            page_category: "Deadlines",
+          },
+        },
+      },
+    ]);
+
+    expect(tree.map((node) => node.label)).toEqual(["Official page"]);
+    expect(tree.map((node) => node.label)).not.toContain("Deadlines");
+    expect(tree.map((node) => node.label)).not.toContain("Wrong Extracted Title");
   });
 });

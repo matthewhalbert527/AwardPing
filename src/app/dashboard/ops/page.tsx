@@ -12,6 +12,7 @@ import {
 import {
   isMonitorableOfficialSource,
 } from "@/lib/source-url-policy";
+import { readableSourceTitle } from "@/lib/display-text";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
@@ -379,7 +380,8 @@ export default async function OpsPage() {
                 key={change.id}
               >
                 <p className="font-black">
-                  {sharedAwardName.get(change.shared_award_id) || change.source_title || "Shared source"}
+                  {sharedAwardName.get(change.shared_award_id) ||
+                    readableSourceTitle(change.source_title, change.source_url)}
                 </p>
                 <a
                   className="mt-1 block truncate text-sm font-semibold text-[var(--brand)] underline"
@@ -387,7 +389,7 @@ export default async function OpsPage() {
                   rel="noreferrer"
                   target="_blank"
                 >
-                  {change.source_url}
+                  Open official source
                 </a>
                 <p className="mt-2 text-sm text-[var(--muted)]">{formatDate(change.detected_at)}</p>
                 <p className="mt-2 leading-7 text-[var(--muted)]">

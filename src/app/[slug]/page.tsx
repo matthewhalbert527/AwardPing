@@ -1,12 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { notFound } from "next/navigation";
-import { ArrowRight, CheckCircle2 } from "lucide-react";
+import { notFound, redirect } from "next/navigation";
+import {
+  ArrowRight,
+  CheckCircle2,
+} from "lucide-react";
 import { FreeChecker } from "@/components/free-checker";
+import { PublicAwardWorkspace } from "@/components/public-award-workspace";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
+import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
+import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
 import { getSeoPage, seoPages } from "@/lib/seo-pages";
+
+export const dynamic = "force-dynamic";
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -19,18 +27,45 @@ export function generateStaticParams() {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params;
   const page = getSeoPage(slug);
-  if (!page) return {};
+  if (page) {
+    return {
+      title: page.title,
+      description: page.description,
+    };
+  }
+
+  if (!hasSupabaseAdminConfig()) return {};
+  const awardPage = await getPublicAwardPageBySlug(slug).catch(() => null);
+  if (!awardPage) return {};
 
   return {
-    title: page.title,
-    description: page.description,
+    title: `${awardPage.award.name} | AwardPing`,
+    description: awardPage.metaDescription,
+    alternates: {
+      canonical: `${appConfig.url}${awardPage.canonicalPath}`,
+    },
   };
 }
 
-export default async function SeoLandingPage({ params }: Props) {
+export default async function SlugPage({ params }: Props) {
   const { slug } = await params;
   const page = getSeoPage(slug);
-  if (!page) notFound();
+  if (page) return <SeoLandingPageContent page={page} />;
+
+  if (!hasSupabaseAdminConfig()) notFound();
+  const user = await getCurrentUser();
+  const awardPage = await getPublicAwardPageBySlug(slug, { userId: user?.id }).catch(() => null);
+  if (!awardPage) notFound();
+  if (awardPage.redirectPath) redirect(awardPage.redirectPath);
+
+  return <PublicAwardPage data={awardPage} />;
+}
+
+async function SeoLandingPageContent({
+  page,
+}: {
+  page: NonNullable<ReturnType<typeof getSeoPage>>;
+}) {
   const user = await getCurrentUser();
 
   return (
@@ -51,7 +86,7 @@ export default async function SeoLandingPage({ params }: Props) {
                 {user ? "Open dashboard" : "Sign up for free"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
-              <Link className="button-secondary" href="/award-directory">
+              <Link className="button-secondary" href="/award-directory" prefetch={false}>
                 Find exact pages
               </Link>
             </div>
@@ -69,6 +104,24 @@ export default async function SeoLandingPage({ params }: Props) {
             ))}
           </div>
         </section>
+      </main>
+      <SiteFooter />
+    </div>
+  );
+}
+
+function PublicAwardPage({
+  data,
+}: {
+  data: Awaited<ReturnType<typeof getPublicAwardPageBySlug>>;
+}) {
+  if (!data) notFound();
+
+  return (
+    <div className="page-shell public-award-shell">
+      <SiteHeader />
+      <main className="public-award-console-wrap">
+        <PublicAwardWorkspace data={data} />
       </main>
       <SiteFooter />
     </div>

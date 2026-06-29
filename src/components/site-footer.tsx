@@ -16,7 +16,7 @@ export function SiteFooter() {
           </p>
           <div className="mt-3 flex flex-col gap-2 text-sm font-semibold text-[var(--foreground)]">
             <Link href="/dashboard">Dashboard</Link>
-            <Link href="/award-directory">Find awards</Link>
+            <Link href="/award-directory" prefetch={false}>Find awards</Link>
             <Link href="/award-page-change-checker">Award page checker</Link>
           </div>
         </div>

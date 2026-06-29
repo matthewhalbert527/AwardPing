@@ -28,6 +28,10 @@
 *.orig
 reports/
 tmp/
+tmp-next-dev-*.log
+AwardPingVisualSnapshots/
+visual-snapshots/
+visual-snapshot-archive/
 public/awardping-worker-windows.zip
 
 # debug

@@ -23,7 +23,7 @@ export async function POST(request: Request, { params }: Props) {
 
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
-      { error: "Shared award database is not configured." },
+      { error: "Shared award directory is not configured." },
       { status: 503 },
     );
   }
@@ -59,6 +59,7 @@ export async function POST(request: Request, { params }: Props) {
       .from("shared_award_sources")
       .select("*")
       .eq("shared_award_id", id)
+      .eq("admin_review_status", "open")
       .order("created_at", { ascending: true }),
   ]);
 
@@ -104,7 +105,7 @@ export async function DELETE(_request: Request, { params }: Props) {
 
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
-      { error: "Shared award database is not configured." },
+      { error: "Shared award directory is not configured." },
       { status: 503 },
     );
   }

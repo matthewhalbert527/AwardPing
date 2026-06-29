@@ -21,6 +21,8 @@ npm run dev
 
 The app can render without environment variables, but auth, persistence, email, and AI discovery require Supabase, Resend, Tavily, and either Gemini or OpenAI keys.
 
+Set `AWARDPING_ADMIN_EMAILS` to a comma-separated list of owner login emails to enable the private `/dashboard/admin` background scan page.
+
 For local development, `npx supabase start` applies the migrations and prints the local Project URL plus publishable/secret keys. Put those local values in `.env.local`, then restart `npm run dev`.
 
 ## Supabase Setup
@@ -48,34 +50,25 @@ Owners and admins can invite teammates by searching existing users by email, sen
 
 Set `CRON_SECRET` in production so Vercel can call the monitor and digest cron routes. The default digest cron runs at 13:00 UTC.
 
-## Local PC Source Worker
+## Local PC Visual Worker
 
-For the lowest-cost setup, keep the website on Vercel and run the crawler from a local computer. The worker reads shared award sources from Supabase, checks the source pages, discovers relevant same-site subpages, writes snapshots, and records shared change history that every future tracker can see.
-
-```bash
-npm run worker:local -- --env .env.worker.local --limit 500
-```
-
-Useful options:
+For the lowest-cost setup, keep the website on Vercel and run the screenshot/PDF
+checker from a local computer. The worker reads shared award sources from
+Supabase, captures visual baselines, compares future screenshots and PDFs, and
+uses AI only when a visual candidate needs review.
 
 ```bash
-npm run worker:local -- --env .env.worker.local --limit 500 --max-subpages 8 --structure-rescan-days 7
-npm run worker:local -- --env .env.worker.local --award "Udall" --deep-crawl=true --include-not-due=true --force-structure=true --limit 75 --max-subpages 24 --crawl-depth 2
-npm run worker:local -- --env .env.worker.local --limit 25 --ai=false
-npm run worker:local -- --env .env.worker.local --baseline-refresh=true --include-not-due=true --baseline-started-at 2026-06-11T16:30:00.000Z --limit 5000 --ai=false
+npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000
 ```
 
-The worker checks page content every 60 minutes by default and refreshes each award's source-page list weekly so rearranged application, deadline, eligibility, FAQ, and PDF pages can be picked up. AI summaries use `GEMINI_API_KEY` or `OPENAI_API_KEY` when present and fall back to deterministic summaries when neither is configured. Each run writes a `local_worker_runs` record so `/dashboard/ops` can show checked, changed, discovered, failed, and AI provider counts.
+The legacy local text-change worker has been retired. Daily checking should use
+`Run-AwardPingVisualSnapshots.ps1`, which is scheduled on the crawler PC for
+6:00 PM.
 
-Use `--baseline-refresh=true` only for intentional slate resets. It fetches active sources, writes the current snapshot, advances each source's `last_hash`, and does not create change-event alerts for that pass. For large catalogs, pass the same `--baseline-started-at` timestamp to every batch; sources already refreshed after that timestamp are skipped, so the reset can resume cleanly.
-
-To create a Windows installer package for the PC:
-
-```bash
-npm run package:windows-worker
-```
-
-Move `dist/awardping-worker-windows.zip` to the PC, extract it, and double-click `1-INSTALL-AND-RUN-DEEP-CRAWL.bat`. Full instructions are in `docs/local-pc-worker-installer.md`.
+The Windows worker now lives on the crawler PC directly. Make code changes in
+this repo, copy the changed worker files into `%LOCALAPPDATA%\AwardPingWorker\app`
+when needed, then deploy Vercel and push Git. The old hosted worker zip updater
+has been retired.
 
 ## Private Beta Launch
 
@@ -89,7 +82,7 @@ Before inviting real advisors:
 6. Run `npm run launch:check -- --env .env.production.local --production`.
 7. Run `npm run launch:smoke -- --url https://your-domain.com`.
 8. Run `npm run seed:shared-awards` against production.
-9. Run `npm run worker:local -- --env .env.worker.local --limit 500` from the local crawler computer.
+9. Run `npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000` from the local crawler computer.
 10. Use `/dashboard/ops` as an owner/admin to confirm cron runs, monitor errors, and failed deliveries after launch.
 
 The full launch runbook is in `docs/private-beta-launch.md`.

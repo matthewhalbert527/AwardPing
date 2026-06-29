@@ -1,23 +1,26 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   BellOff,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Pause,
   Play,
-  RotateCw,
   Search,
   Trash2,
 } from "lucide-react";
 import { type AwardPageType } from "@/lib/award-discovery-types";
+import { dashboardAwardPath } from "@/lib/award-slugs";
 import { SourcePageTree } from "@/components/source-page-tree";
 
 export type WatchlistAwardGroup = {
   id: string;
   sharedAwardId: string | null;
+  sharedAwardSlug: string | null;
   name: string;
   summary: string | null;
   officialHomepage: string | null;
@@ -30,6 +33,11 @@ export type WatchlistSource = {
   monitorId: string | null;
   monitorSharedAwardSourceId?: string | null;
   title: string;
+  displayTitle?: string | null;
+  pageDescription?: string | null;
+  pageMetadata?: unknown;
+  pageMetadataGeneratedAt?: string | null;
+  pageMetadataModel?: string | null;
   url: string;
   pageType: AwardPageType | null;
   status: "active" | "paused" | "error" | "untracked";
@@ -182,13 +190,6 @@ export function WatchlistAwardGroups({
     );
   }
 
-  async function checkMonitor(source: WatchlistSource) {
-    if (!source.monitorId) return;
-    await runAction(`${source.id}:check`, () =>
-      fetch(`/api/monitors/${source.monitorId}/check`, { method: "POST" }),
-    );
-  }
-
   async function runAction(id: string, action: () => Promise<Response>) {
     setBusyId(id);
     setMessage("");
@@ -290,23 +291,40 @@ export function WatchlistAwardGroups({
         return (
           <article className="dashboard-panel dashboard-panel-pad" key={group.id}>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <button
-                className="min-w-0 flex-1 text-left"
-                type="button"
-                onClick={() => toggleOpen(group.id)}
-              >
-                <h2 className="flex items-center gap-2 text-2xl font-black">
-                  {open ? (
-                    <ChevronUp size={20} aria-hidden="true" />
-                  ) : (
-                    <ChevronDown size={20} aria-hidden="true" />
-                  )}
-                  {group.name}
-                </h2>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-start gap-2">
+                  <h2 className="min-w-0 text-2xl font-black">
+                    {group.sharedAwardId ? (
+                      <Link
+                        className="inline-flex min-w-0 items-center gap-2 text-[var(--foreground)] hover:text-[var(--brand)]"
+                        href={dashboardAwardPath(group.sharedAwardSlug, group.name, group.sharedAwardId)}
+                      >
+                        <span className="min-w-0 break-words">{group.name}</span>
+                        <ChevronRight className="shrink-0" size={20} aria-hidden="true" />
+                      </Link>
+                    ) : (
+                      group.name
+                    )}
+                  </h2>
+                  <button
+                    className="button-secondary px-3 py-2 text-sm"
+                    type="button"
+                    onClick={() => toggleOpen(group.id)}
+                    aria-expanded={open}
+                    aria-label={open ? `Hide source pages for ${group.name}` : `Show source pages for ${group.name}`}
+                  >
+                    {open ? (
+                      <ChevronUp size={16} aria-hidden="true" />
+                    ) : (
+                      <ChevronDown size={16} aria-hidden="true" />
+                    )}
+                    Pages
+                  </button>
+                </div>
                 <p className="mt-2 text-xs font-bold uppercase text-[var(--muted)]">
                   {trackedCount} of {sourceCount} pages tracked
                 </p>
-              </button>
+              </div>
 
               {canManage && (
                 <div className="flex shrink-0 flex-wrap gap-2">
@@ -348,13 +366,12 @@ export function WatchlistAwardGroups({
                   renderSourceActions={(source) =>
                     canManage ? (
                       <SourceActions
-                        busy={busyId === source.id || busyId === `${source.id}:check`}
+                        busy={busyId === source.id}
                         source={source}
                         onTrack={() => trackSource(group, source)}
                         onUntrack={() => untrackSource(group, source)}
                         onPause={() => updateMonitor(source, "paused")}
                         onResume={() => updateMonitor(source, "active")}
-                        onCheck={() => checkMonitor(source)}
                       />
                     ) : null
                   }
@@ -407,7 +424,6 @@ function SourceActions({
   onUntrack,
   onPause,
   onResume,
-  onCheck,
 }: {
   busy: boolean;
   source: WatchlistSource;
@@ -415,7 +431,6 @@ function SourceActions({
   onUntrack: () => void;
   onPause: () => void;
   onResume: () => void;
-  onCheck: () => void;
 }) {
   if (!source.monitorId) {
     return (
@@ -433,10 +448,6 @@ function SourceActions({
 
   return (
     <div className="flex shrink-0 flex-wrap gap-2">
-      <button className="button-secondary" type="button" onClick={onCheck} disabled={busy}>
-        <RotateCw size={15} aria-hidden="true" />
-        {busy ? "Working..." : "Check now"}
-      </button>
       {source.status === "paused" ? (
         <button className="button-secondary" type="button" onClick={onResume} disabled={busy}>
           <Play size={15} aria-hidden="true" />

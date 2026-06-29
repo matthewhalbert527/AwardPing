@@ -9,6 +9,7 @@ export const runtime = "nodejs";
 
 const subscribeSchema = z.object({
   email: z.string().trim().email(),
+  privacyConsent: z.literal(true),
   website: z.string().optional(),
 });
 
@@ -16,7 +17,7 @@ export async function POST(request: Request) {
   const parsed = subscribeSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json(
-      { ok: false, error: "Enter a valid email address." },
+      { ok: false, error: "Enter a valid email address and accept the privacy terms." },
       { status: 400 },
     );
   }

@@ -42,6 +42,7 @@ export async function POST(_request: Request, { params }: Props) {
       .select("*")
       .eq("id", sourceId)
       .eq("shared_award_id", id)
+      .eq("admin_review_status", "open")
       .maybeSingle(),
   ]);
 
@@ -162,7 +163,7 @@ function validateSetup() {
 
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
-      { error: "Shared award database is not configured." },
+      { error: "Shared award directory is not configured." },
       { status: 503 },
     );
   }

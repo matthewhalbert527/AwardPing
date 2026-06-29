@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BellRing, Database, Inbox, ListChecks, SearchCheck, Sparkles } from "lucide-react";
+import { BellRing, Inbox, ListChecks, SearchCheck, Sparkles } from "lucide-react";
 
 export type DashboardSection = "database" | "watchlist";
 export type DashboardSectionView = "awards" | "updates" | "request";
@@ -13,10 +13,10 @@ type Props = {
 
 const sectionCopy = {
   database: {
-    eyebrow: "Database",
-    title: "Shared award database",
-    copy: "Search every shared award source and review changes across the full database.",
-    icon: Database,
+    eyebrow: "Award Directory",
+    title: "Award directory",
+    copy: "Search every shared award source and review changes across the full directory.",
+    icon: SearchCheck,
   },
   watchlist: {
     eyebrow: "Watchlist",
@@ -28,7 +28,7 @@ const sectionCopy = {
   eyebrow: string;
   title: string;
   copy: string;
-  icon: typeof Database;
+  icon: typeof SearchCheck;
 }>;
 
 export function DashboardSectionCard({
@@ -94,7 +94,7 @@ export function DashboardSectionCard({
 
       <div className="dashboard-section-stats" aria-label="Workspace counts">
         {typeof databaseCount === "number" && (
-          <span>{databaseCount.toLocaleString()} database</span>
+          <span>{databaseCount.toLocaleString()} directory</span>
         )}
         {typeof watchlistCount === "number" && (
           <span>{watchlistCount.toLocaleString()} watchlist</span>

@@ -41,7 +41,7 @@ describe("public update digest helpers", () => {
       {
         id: "newer",
         shared_award_id: "award-a",
-        source_title: "How to Apply",
+        source_title: "https://example.edu/award/how-to-apply",
         source_url: "https://example.edu/award/how-to-apply",
         summary:
           "The application instructions now say finalists must submit two recommendation letters by February 1.",
@@ -84,7 +84,7 @@ describe("public update digest helpers", () => {
       expect.objectContaining({
         eventId: "newer",
         awardName: "Example Fellowship",
-        sourceTitle: "How to Apply",
+        sourceTitle: "How To Apply",
       }),
     ]);
   });

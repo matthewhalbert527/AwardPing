@@ -95,8 +95,12 @@ export type Database = {
           id: string;
           search_key: string;
           name: string;
+          slug: string | null;
           official_homepage: string | null;
           summary: string | null;
+          public_facts: Json;
+          public_facts_generated_at: string | null;
+          public_facts_model: string | null;
           confidence: number;
           status: "active" | "archived";
           source: "seed" | "user" | "admin";
@@ -111,8 +115,12 @@ export type Database = {
           id?: string;
           search_key: string;
           name: string;
+          slug?: string | null;
           official_homepage?: string | null;
           summary?: string | null;
+          public_facts?: Json;
+          public_facts_generated_at?: string | null;
+          public_facts_model?: string | null;
           confidence?: number;
           status?: "active" | "archived";
           source?: "seed" | "user" | "admin";
@@ -126,6 +134,10 @@ export type Database = {
         Update: {
           official_homepage?: string | null;
           summary?: string | null;
+          slug?: string | null;
+          public_facts?: Json;
+          public_facts_generated_at?: string | null;
+          public_facts_model?: string | null;
           confidence?: number;
           status?: "active" | "archived";
           source?: "seed" | "user" | "admin";
@@ -137,12 +149,81 @@ export type Database = {
         };
         Relationships: [];
       };
+      shared_award_slug_aliases: {
+        Row: {
+          id: string;
+          slug: string;
+          shared_award_id: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          slug: string;
+          shared_award_id: string;
+          created_at?: string;
+        };
+        Update: {
+          slug?: string;
+          shared_award_id?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_update_read_baselines: {
+        Row: {
+          user_id: string;
+          baseline_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          baseline_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          baseline_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_change_reads: {
+        Row: {
+          user_id: string;
+          shared_award_change_event_id: string;
+          shared_award_id: string;
+          shared_award_source_id: string | null;
+          read_at: string;
+        };
+        Insert: {
+          user_id: string;
+          shared_award_change_event_id: string;
+          shared_award_id: string;
+          shared_award_source_id?: string | null;
+          read_at?: string;
+        };
+        Update: {
+          shared_award_id?: string;
+          shared_award_source_id?: string | null;
+          read_at?: string;
+        };
+        Relationships: [];
+      };
       shared_award_sources: {
         Row: {
           id: string;
           shared_award_id: string;
           url: string;
           title: string;
+          display_title: string | null;
+          page_description: string | null;
+          page_metadata: Json;
+          page_metadata_generated_at: string | null;
+          page_metadata_model: string | null;
+          admin_review_status: "open" | "review_later";
+          admin_review_note: string | null;
+          admin_reviewed_at: string | null;
+          admin_reviewed_by: string | null;
           page_type: AwardPageType;
           confidence: number;
           reason: string | null;
@@ -161,6 +242,15 @@ export type Database = {
           shared_award_id: string;
           url: string;
           title: string;
+          display_title?: string | null;
+          page_description?: string | null;
+          page_metadata?: Json;
+          page_metadata_generated_at?: string | null;
+          page_metadata_model?: string | null;
+          admin_review_status?: "open" | "review_later";
+          admin_review_note?: string | null;
+          admin_reviewed_at?: string | null;
+          admin_reviewed_by?: string | null;
           page_type?: AwardPageType;
           confidence?: number;
           reason?: string | null;
@@ -176,10 +266,20 @@ export type Database = {
         };
         Update: {
           title?: string;
+          display_title?: string | null;
+          page_description?: string | null;
+          page_metadata?: Json;
+          page_metadata_generated_at?: string | null;
+          page_metadata_model?: string | null;
+          admin_review_status?: "open" | "review_later";
+          admin_review_note?: string | null;
+          admin_reviewed_at?: string | null;
+          admin_reviewed_by?: string | null;
           page_type?: AwardPageType;
           confidence?: number;
           reason?: string | null;
           source?: "seed" | "user" | "admin";
+          submitted_by_user_id?: string | null;
           last_hash?: string | null;
           last_checked_at?: string | null;
           next_check_at?: string;
@@ -231,6 +331,64 @@ export type Database = {
           status_code?: number | null;
           content_type?: string | null;
           created_at?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_source_visual_snapshots: {
+        Row: {
+          shared_award_source_id: string;
+          shared_award_id: string;
+          source_url: string;
+          source_title: string | null;
+          source_page_type: AwardPageType | null;
+          kind: "webpage" | "pdf";
+          bucket: string;
+          latest_captured_at: string | null;
+          latest_object_keys: Json;
+          latest_hashes: Json;
+          latest_metadata: Json;
+          previous_captured_at: string | null;
+          previous_object_keys: Json;
+          previous_hashes: Json;
+          previous_metadata: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          shared_award_source_id: string;
+          shared_award_id: string;
+          source_url: string;
+          source_title?: string | null;
+          source_page_type?: AwardPageType | null;
+          kind?: "webpage" | "pdf";
+          bucket: string;
+          latest_captured_at?: string | null;
+          latest_object_keys?: Json;
+          latest_hashes?: Json;
+          latest_metadata?: Json;
+          previous_captured_at?: string | null;
+          previous_object_keys?: Json;
+          previous_hashes?: Json;
+          previous_metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          shared_award_id?: string;
+          source_url?: string;
+          source_title?: string | null;
+          source_page_type?: AwardPageType | null;
+          kind?: "webpage" | "pdf";
+          bucket?: string;
+          latest_captured_at?: string | null;
+          latest_object_keys?: Json;
+          latest_hashes?: Json;
+          latest_metadata?: Json;
+          previous_captured_at?: string | null;
+          previous_object_keys?: Json;
+          previous_hashes?: Json;
+          previous_metadata?: Json;
+          updated_at?: string;
         };
         Relationships: [];
       };
@@ -376,7 +534,9 @@ export type Database = {
       public_update_subscribers: {
         Row: {
           id: string;
-          email: string;
+          email: string | null;
+          email_hash: string | null;
+          email_encrypted: string | null;
           status: PublicUpdateSubscriberStatus;
           confirmation_token_hash: string | null;
           unsubscribe_token_hash: string;
@@ -389,7 +549,9 @@ export type Database = {
         };
         Insert: {
           id?: string;
-          email: string;
+          email?: string | null;
+          email_hash?: string | null;
+          email_encrypted?: string | null;
           status?: PublicUpdateSubscriberStatus;
           confirmation_token_hash?: string | null;
           unsubscribe_token_hash: string;
@@ -401,7 +563,9 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
-          email?: string;
+          email?: string | null;
+          email_hash?: string | null;
+          email_encrypted?: string | null;
           status?: PublicUpdateSubscriberStatus;
           confirmation_token_hash?: string | null;
           unsubscribe_token_hash?: string;
@@ -419,7 +583,8 @@ export type Database = {
           subscriber_id: string;
           digest_key: string;
           change_event_ids: string[];
-          recipient: string;
+          recipient: string | null;
+          recipient_hash: string | null;
           status: PublicUpdateDeliveryStatus;
           error: string | null;
           sent_at: string;
@@ -430,7 +595,8 @@ export type Database = {
           subscriber_id: string;
           digest_key: string;
           change_event_ids?: string[];
-          recipient: string;
+          recipient?: string | null;
+          recipient_hash?: string | null;
           status: PublicUpdateDeliveryStatus;
           error?: string | null;
           sent_at?: string;
@@ -501,6 +667,7 @@ export type Database = {
           discovered_count: number;
           failed_count: number;
           error: string | null;
+          metadata: Json;
           started_at: string;
           finished_at: string | null;
         };
@@ -516,6 +683,7 @@ export type Database = {
           discovered_count?: number;
           failed_count?: number;
           error?: string | null;
+          metadata?: Json;
           started_at?: string;
           finished_at?: string | null;
         };
@@ -529,6 +697,7 @@ export type Database = {
           discovered_count?: number;
           failed_count?: number;
           error?: string | null;
+          metadata?: Json;
           finished_at?: string | null;
         };
         Relationships: [];
@@ -717,23 +886,32 @@ export type Database = {
         Row: {
           id: string;
           email: string | null;
+          email_hash: string | null;
           full_name: string | null;
           organization: string | null;
+          full_name_encrypted: string | null;
+          organization_encrypted: string | null;
           created_at: string;
           updated_at: string;
         };
         Insert: {
           id: string;
           email?: string | null;
+          email_hash?: string | null;
           full_name?: string | null;
           organization?: string | null;
+          full_name_encrypted?: string | null;
+          organization_encrypted?: string | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           email?: string | null;
+          email_hash?: string | null;
           full_name?: string | null;
           organization?: string | null;
+          full_name_encrypted?: string | null;
+          organization_encrypted?: string | null;
           updated_at?: string;
         };
         Relationships: [];
@@ -922,7 +1100,8 @@ export type Database = {
           channel: string;
           delivery_type: "immediate" | "digest";
           digest_key: string | null;
-          recipient: string;
+          recipient: string | null;
+          recipient_hash: string | null;
           status: string;
           error: string | null;
           created_at: string;
@@ -935,7 +1114,8 @@ export type Database = {
           channel?: string;
           delivery_type?: "immediate" | "digest";
           digest_key?: string | null;
-          recipient: string;
+          recipient?: string | null;
+          recipient_hash?: string | null;
           status: string;
           error?: string | null;
         };
@@ -972,6 +1152,36 @@ export type Database = {
           created_at?: string;
         };
         Update: never;
+        Relationships: [];
+      };
+      privacy_requests: {
+        Row: {
+          id: string;
+          user_id: string | null;
+          email_hash: string | null;
+          request_type: "export" | "delete";
+          status: "pending" | "completed" | "failed";
+          details: Json;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string | null;
+          email_hash?: string | null;
+          request_type: "export" | "delete";
+          status?: "pending" | "completed" | "failed";
+          details?: Json;
+          created_at?: string;
+          completed_at?: string | null;
+        };
+        Update: {
+          user_id?: string | null;
+          email_hash?: string | null;
+          status?: "pending" | "completed" | "failed";
+          details?: Json;
+          completed_at?: string | null;
+        };
         Relationships: [];
       };
     };

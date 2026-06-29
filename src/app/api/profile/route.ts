@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
+import { encryptedProfileFields } from "@/lib/personal-data";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -31,8 +32,11 @@ export async function PATCH(request: Request) {
       {
         id: user.id,
         email: user.email || null,
-        full_name: parsed.data.fullName,
-        organization: parsed.data.organization,
+        ...encryptedProfileFields({
+          email: user.email,
+          fullName: parsed.data.fullName,
+          organization: parsed.data.organization,
+        }),
         updated_at: new Date().toISOString(),
       },
       { onConflict: "id" },

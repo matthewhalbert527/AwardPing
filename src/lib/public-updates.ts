@@ -15,6 +15,11 @@ import {
   publicDigestSince,
   type PublicDigestCandidate,
 } from "@/lib/public-updates-core";
+import {
+  decryptPersonalData,
+  encryptedEmailFields,
+  personalDataLookupHash,
+} from "@/lib/personal-data";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type PublicSubscriberRow =
@@ -32,15 +37,31 @@ type SharedChangeRow = Pick<
 
 export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) {
   const email = normalizePublicUpdateEmail(rawEmail);
+  const encryptedEmail = encryptedEmailFields(email);
   const supabase = createSupabaseAdminClient();
-  const { data: existing, error } = await supabase
+  const existingResult = await supabase
     .from("public_update_subscribers")
     .select("*")
-    .eq("email", email)
+    .eq("email_hash", encryptedEmail.email_hash)
     .maybeSingle();
+  let existing = existingResult.data;
 
-  if (error) {
-    throw error;
+  if (existingResult.error) {
+    throw existingResult.error;
+  }
+
+  if (!existing) {
+    const legacy = await supabase
+      .from("public_update_subscribers")
+      .select("*")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (legacy.error) {
+      throw legacy.error;
+    }
+
+    existing = legacy.data;
   }
 
   if (existing?.status === "active") {
@@ -62,6 +83,9 @@ export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) 
     const { error: updateError } = await supabase
       .from("public_update_subscribers")
       .update({
+        email: null,
+        email_hash: encryptedEmail.email_hash,
+        email_encrypted: encryptedEmail.email_encrypted,
         status: "pending",
         confirmation_token_hash: hashToken(confirmationToken),
         unsubscribe_token_hash: unsubscribeTokenHash,
@@ -78,7 +102,9 @@ export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) 
   } else {
     const insert: PublicSubscriberInsert = {
       id: baseSubscriber.id,
-      email,
+      email: null,
+      email_hash: encryptedEmail.email_hash,
+      email_encrypted: encryptedEmail.email_encrypted,
       status: "pending",
       confirmation_token_hash: hashToken(confirmationToken),
       unsubscribe_token_hash: unsubscribeTokenHash,
@@ -198,7 +224,7 @@ export async function runPublicUpdateDigestDeliveries(date = new Date()) {
 
   const { data: subscribers, error: subscriberError } = await supabase
     .from("public_update_subscribers")
-    .select("id, email, status, confirmation_token_hash, unsubscribe_token_hash, confirmation_sent_at, confirmed_at, unsubscribed_at, last_digest_sent_at, created_at, updated_at")
+    .select("id, email, email_hash, email_encrypted, status, confirmation_token_hash, unsubscribe_token_hash, confirmation_sent_at, confirmed_at, unsubscribed_at, last_digest_sent_at, created_at, updated_at")
     .eq("status", "active")
     .order("created_at", { ascending: true });
 
@@ -237,9 +263,13 @@ export async function runPublicUpdateDigestDeliveries(date = new Date()) {
   const changeEventIds = changes.map((change) => change.eventId);
 
   for (const subscriber of undeliveredSubscribers) {
+    const subscriberEmail = publicSubscriberEmail(subscriber);
+    if (!subscriberEmail) continue;
+
     const unsubscribeToken = createPublicUnsubscribeToken(subscriber, appConfig.cronSecret);
     const unsubscribeUrl = `${appConfig.url}/api/public-updates/unsubscribe?token=${encodeURIComponent(unsubscribeToken)}`;
     const unsubscribeTokenHash = hashToken(unsubscribeToken);
+    const recipientHash = personalDataLookupHash(subscriberEmail);
 
     if (subscriber.unsubscribe_token_hash !== unsubscribeTokenHash) {
       const { error: tokenUpdateError } = await supabase
@@ -257,7 +287,7 @@ export async function runPublicUpdateDigestDeliveries(date = new Date()) {
 
     try {
       await sendPublicDailyDigestEmail({
-        to: subscriber.email,
+        to: subscriberEmail,
         changes,
         unsubscribeUrl,
       });
@@ -269,7 +299,8 @@ export async function runPublicUpdateDigestDeliveries(date = new Date()) {
           subscriber_id: subscriber.id,
           digest_key: digestKey,
           change_event_ids: changeEventIds,
-          recipient: subscriber.email,
+          recipient: null,
+          recipient_hash: recipientHash,
           status: "sent",
           sent_at: now,
         });
@@ -290,7 +321,8 @@ export async function runPublicUpdateDigestDeliveries(date = new Date()) {
         subscriber_id: subscriber.id,
         digest_key: digestKey,
         change_event_ids: changeEventIds,
-        recipient: subscriber.email,
+        recipient: null,
+        recipient_hash: recipientHash,
         status: "failed",
         error: error instanceof Error ? error.message : "Public digest email failed.",
       });
@@ -346,4 +378,8 @@ async function loadPublicDigestChanges(date: Date) {
 
 function cryptoRandomUuid() {
   return crypto.randomUUID();
+}
+
+function publicSubscriberEmail(subscriber: PublicSubscriberRow) {
+  return decryptPersonalData(subscriber.email_encrypted) || subscriber.email || null;
 }

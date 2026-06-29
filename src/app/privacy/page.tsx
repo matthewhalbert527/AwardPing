@@ -50,6 +50,14 @@ const useCases = [
   "Protect the service from abuse and excessive automated use",
 ];
 
+const rights = [
+  "Access and export account data from dashboard privacy controls.",
+  "Delete an AwardPing account from dashboard privacy controls.",
+  "Unsubscribe from public update emails using the link in each message.",
+  "Request correction, restriction, or other privacy help through the contact page.",
+  "Use the contact page for US state privacy requests, including access, deletion, correction, or appeal requests where applicable.",
+];
+
 const processors = [
   "Vercel hosts the web application and serverless routes.",
   "Supabase stores account, office, watchlist, and monitoring data.",
@@ -90,7 +98,9 @@ export default function PrivacyPage() {
               <p className="mt-4 leading-7 text-[var(--muted)]">
                 AwardPing is an educational monitoring tool. It does not sell user
                 contact details, does not run third-party ads, and does not collect
-                payment card or financial account information.
+                payment card or financial account information. Passwords are handled
+                by Supabase Auth as non-reversible password hashes; AwardPing does
+                not store raw passwords.
               </p>
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
                 <Link className="button-primary" href="/contact">
@@ -155,6 +165,40 @@ export default function PrivacyPage() {
           </div>
         </section>
 
+        <section className="mx-auto max-w-6xl px-5 pb-14">
+         <div className="grid gap-6 lg:grid-cols-2">
+            <article className="card rounded-3xl p-5 sm:p-6">
+              <h2 className="text-3xl font-black">Privacy rights</h2>
+              <ul className="mt-5 grid gap-3">
+                {rights.map((item) => (
+                  <li
+                    className="rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
+                    key={item}
+                  >
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </article>
+
+            <article className="card rounded-3xl p-5 sm:p-6">
+              <h2 className="text-3xl font-black">Encryption and safeguards</h2>
+              <p className="mt-4 leading-7 text-[var(--muted)]">
+                AwardPing uses HTTPS in transit and encrypted hosted storage.
+                Public update subscriber email addresses and selected profile
+                fields are additionally encrypted by AwardPing before storage.
+                Delivery logs store keyed recipient hashes instead of readable
+                recipient email addresses.
+              </p>
+              <p className="mt-4 leading-7 text-[var(--muted)]">
+                Account sessions use essential authentication cookies. AwardPing
+                does not use third-party advertising cookies or sell/share personal
+                information for cross-context behavioral advertising.
+              </p>
+            </article>
+          </div>
+        </section>
+
         <section className="mx-auto max-w-6xl px-5 pb-16">
           <div className="card rounded-3xl p-5 sm:p-6">
             <div className="grid gap-8 lg:grid-cols-3">
@@ -169,9 +213,9 @@ export default function PrivacyPage() {
               <div>
                 <h2 className="text-2xl font-black">Deletion</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-                  Users can request account, office, or contact-message deletion
-                  through the contact page. AwardPing may retain minimal logs
-                  needed for abuse prevention, security, and legal compliance.
+                  Logged-in users can export or delete account data from dashboard
+                  privacy controls. AwardPing may retain minimal records needed
+                  for abuse prevention, security, and legal compliance.
                 </p>
               </div>
               <div>
