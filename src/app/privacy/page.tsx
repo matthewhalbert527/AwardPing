@@ -166,7 +166,7 @@ export default function PrivacyPage() {
         </section>
 
         <section className="mx-auto max-w-6xl px-5 pb-14">
-          <div className="grid gap-6 lg:grid-cols-2">
+         <div className="grid gap-6 lg:grid-cols-2">
             <article className="card rounded-3xl p-5 sm:p-6">
               <h2 className="text-3xl font-black">Privacy rights</h2>
               <ul className="mt-5 grid gap-3">

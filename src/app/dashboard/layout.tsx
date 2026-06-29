@@ -1,10 +1,17 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Activity, AlertTriangle, ChevronDown, Inbox, ListChecks, SearchCheck } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  ChevronDown,
+  Inbox,
+  ListChecks,
+  SearchCheck,
+} from "lucide-react";
+import { BrandLogo } from "@/components/brand-logo";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { OfficeSwitcher } from "@/components/office-switcher";
 import { ProfileMenu } from "@/components/profile-menu";
-import { BrandLogo } from "@/components/brand-logo";
 import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { getOfficeContext } from "@/lib/offices";
 
@@ -25,27 +32,31 @@ export default async function DashboardLayout({
 
   return (
     <div className="dashboard-shell">
-      <aside className="dashboard-sidebar" aria-label="Dashboard workspace">
-        <div className="dashboard-sidebar-brand">
-          <Link href="/" className="brand-link dashboard-brand-link" aria-label="AwardPing home">
-            <BrandLogo />
-          </Link>
+      <header className="dashboard-header">
+        <div className="dashboard-header-shell">
+          <div className="dashboard-header-bar">
+            <Link href="/" className="brand-link dashboard-brand-link" aria-label="AwardPing home">
+              <BrandLogo />
+            </Link>
+
+            <div className="dashboard-header-nav-wrap">
+              <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
+                <DashboardNav isSiteAdmin={isSiteAdmin} />
+              </Suspense>
+            </div>
+
+            <div className="dashboard-header-actions">
+              {officeContext && officeOptions.length > 1 && (
+                <OfficeSwitcher
+                  offices={officeOptions}
+                  currentOfficeId={officeContext.current.officeId}
+                />
+              )}
+              {user && <ProfileMenu email={user.email} fullName={profile?.full_name} />}
+            </div>
+          </div>
         </div>
-        <div className="dashboard-sidebar-nav-wrap">
-          <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
-            <DashboardNav isSiteAdmin={isSiteAdmin} />
-          </Suspense>
-        </div>
-        <div className="dashboard-sidebar-actions">
-          {officeContext && (
-            <OfficeSwitcher
-              offices={officeOptions}
-              currentOfficeId={officeContext.current.officeId}
-            />
-          )}
-          {user && <ProfileMenu email={user.email} fullName={profile?.full_name} />}
-        </div>
-      </aside>
+      </header>
 
       <main className="dashboard-content">{children}</main>
     </div>
