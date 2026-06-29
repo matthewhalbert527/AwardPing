@@ -1606,18 +1606,18 @@ a {
 .award-detail-title {
   max-width: 62rem;
   color: var(--foreground);
-  font-size: clamp(1.55rem, 2.45vw, 2.08rem);
+  font-size: clamp(1.34rem, 1.85vw, 1.72rem);
   font-weight: 900;
   letter-spacing: 0;
-  line-height: 1.12;
+  line-height: 1.16;
 }
 
 .award-detail-summary-copy {
   max-width: 64rem;
   color: #252525;
-  font-size: 0.98rem;
+  font-size: 0.9rem;
   font-weight: 500;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
 .award-detail-homepage {
@@ -1628,7 +1628,7 @@ a {
   gap: 0.45rem;
   margin-top: 0.15rem;
   color: var(--brand);
-  font-size: 0.96rem;
+  font-size: 0.88rem;
   font-weight: 760;
   text-decoration: underline;
 }
@@ -1674,14 +1674,14 @@ a {
 
 .award-detail-fact dt {
   color: var(--foreground);
-  font-size: 0.94rem;
+  font-size: 0.84rem;
   font-weight: 850;
   line-height: 1.25;
 }
 
 .award-detail-fact dd {
   color: #252525;
-  font-size: 0.96rem;
+  font-size: 0.88rem;
   font-weight: 500;
   line-height: 1.5;
 }
@@ -1893,7 +1893,7 @@ a {
 }
 
 .award-detail-page .award-detail-record-console .source-tree-detail-title {
-  font-size: clamp(1.18rem, 2vw, 1.55rem);
+  font-size: clamp(1.02rem, 1.55vw, 1.28rem);
 }
 
 .award-detail-section {
@@ -3851,18 +3851,18 @@ a {
 .public-award-console-header h1 {
   margin-top: 0.35rem;
   color: var(--foreground);
-  font-size: clamp(1.55rem, 2.4vw, 2.05rem);
+  font-size: clamp(1.34rem, 1.85vw, 1.72rem);
   font-weight: 900;
-  line-height: 1.08;
+  line-height: 1.16;
 }
 
 .public-award-console-header p {
   max-width: 64rem;
   margin-top: 0.55rem;
   color: var(--muted);
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 500;
-  line-height: 1.65;
+  line-height: 1.5;
 }
 
 .public-award-console-actions {
@@ -3901,14 +3901,14 @@ a {
 
 .public-award-metric span {
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 850;
 }
 
 .public-award-metric strong {
   overflow-wrap: anywhere;
   color: var(--foreground);
-  font-size: clamp(1.05rem, 1.7vw, 1.38rem);
+  font-size: clamp(0.96rem, 1.35vw, 1.16rem);
   font-weight: 900;
   line-height: 1.1;
 }
@@ -3926,6 +3926,11 @@ a {
   display: grid;
   gap: 0.78rem;
   min-width: 0;
+}
+
+.public-award-console-panel .public-award-section-heading h2 {
+  font-size: 1.08rem;
+  font-weight: 900;
 }
 
 .public-award-fact-table,
@@ -3961,14 +3966,14 @@ a {
   align-items: center;
   gap: 0.4rem;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.7rem;
   font-weight: 950;
   text-transform: uppercase;
 }
 
 .public-award-fact-line dd {
   color: var(--foreground);
-  font-size: 0.96rem;
+  font-size: 0.88rem;
   font-weight: 650;
   line-height: 1.5;
 }
@@ -3985,7 +3990,7 @@ a {
 .public-award-table-heading h3,
 .public-award-source-detail-heading h2 {
   color: var(--foreground);
-  font-size: 1.25rem;
+  font-size: 1.05rem;
   font-weight: 900;
 }
 
@@ -4027,7 +4032,7 @@ a {
 .public-award-change-line h3 {
   margin-top: 0.12rem;
   color: var(--foreground);
-  font-size: 1rem;
+  font-size: 0.9rem;
   font-weight: 900;
   line-height: 1.35;
 }
@@ -4054,7 +4059,7 @@ a {
 .public-award-source-detail-heading p {
   margin-top: 0.25rem;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.84rem;
   font-weight: 560;
   line-height: 1.55;
 }
@@ -4336,11 +4341,11 @@ a {
   }
 
   .public-award-console-header h1 {
-    font-size: clamp(1.45rem, 7.5vw, 1.9rem);
+    font-size: clamp(1.28rem, 6.4vw, 1.62rem);
   }
 
   .public-award-console-header p {
-    font-size: 0.95rem;
+    font-size: 0.88rem;
   }
 
   .public-award-console-actions {
