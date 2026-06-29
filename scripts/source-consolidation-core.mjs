@@ -128,6 +128,10 @@ export function strongConsolidationReason(source = {}, award = {}) {
   const direct = directSignal(source);
   const awardSpecific = hasAwardSpecificSignal(source, award);
 
+  if (genericListingOrSearchShape(parsed, direct)) {
+    return "generic_source_shape";
+  }
+
   if (genericTitle(source.title) && !awardSpecific && !highIntentSignal.test(direct)) {
     return "generic_navigation_source";
   }
@@ -248,6 +252,44 @@ function genericTitle(value) {
   const title = normalizeWords(value);
   return /^(home|homepage|about|about us|contact|contact us|resources?|more|mehr|learn more|read more|daily|email|pdf|search|search locations|student benefits|request free samples|join|ciee\.org)$/.test(
     title,
+  );
+}
+
+function genericListingOrSearchShape(url, direct) {
+  const path = url.pathname.toLowerCase();
+
+  return (
+    /\/(?:tag|tags|category|categories)(?:\/|$)/.test(path) ||
+    /\/(?:search|search-results?|site-search|search-results-page)(?:\/|\.html?|\.aspx?|$)/.test(path) ||
+    /\/(?:guidelinesearch|sitesearch|search|searchresults?)\.(?:html?|aspx?|php)$/.test(path) ||
+    hasGenericSearchQuery(url, direct)
+  );
+}
+
+function hasGenericSearchQuery(url, direct) {
+  if (specificAwardDetailSignal(direct)) return false;
+
+  const path = url.pathname.toLowerCase().replace(/\/+$/g, "") || "/";
+  const titleSearchSignal = /\b(search results?|site search|back to search|results for)\b/i.test(direct);
+
+  for (const [rawKey, rawValue] of url.searchParams.entries()) {
+    const key = rawKey.toLowerCase();
+    const value = String(rawValue || "").trim();
+    if (!value) continue;
+    if (["search", "keyword", "keywords", "keys", "search_api_fulltext"].includes(key)) return true;
+    if (key === "q" && (titleSearchSignal || path === "/" || /\/(?:search|site-search|search-results?)$/.test(path))) {
+      return true;
+    }
+    if (key === "s" && (titleSearchSignal || path === "/" || path === "/index.php")) return true;
+    if (key === "query" && titleSearchSignal) return true;
+  }
+
+  return false;
+}
+
+function specificAwardDetailSignal(value) {
+  return /\b(how to apply|application process|application requirements?|eligibility requirements?|program requirements?|deadline|due date|faq|frequently asked questions?)\b/i.test(
+    value,
   );
 }
 

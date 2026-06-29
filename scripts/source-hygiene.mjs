@@ -32,8 +32,19 @@ export function classifySourceHygiene(sourceLike = {}, failure = {}) {
     return review("recursive_or_cyclic_url", "URL repeats the same path segment and is likely crawler recursion");
   }
 
-  if (isGenericNonAwardDiscoveryUrl(host, path, directHaystack)) {
+  if (isGenericListingOrSearchShape(parsed, directHaystack)) {
+    return review("generic_source_shape", "Generic listing or search page is not specific enough for award monitoring");
+  }
+
+  if (isGenericNonAwardDiscoveryUrl(parsed, host, path, directHaystack)) {
     return review("non_award_source", "Generic site page is not specific enough for award monitoring");
+  }
+
+  if (isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, awardName)) {
+    return review(
+      "cross_program_source",
+      "Source appears to describe a different award, calendar, archive, or broad listing",
+    );
   }
 
   if (isKnownBoilerplateUrl(host, path, directHaystack)) {
@@ -134,8 +145,9 @@ function isRecursiveOrCyclicUrl(path) {
   return false;
 }
 
-function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
+function isGenericNonAwardDiscoveryUrl(parsed, host, path, directHaystack) {
   const cleanPath = path.toLowerCase();
+  const cleanSearch = String(parsed?.search || "").toLowerCase();
   const hasAwardSignal =
     /\b(apply|application|applicant|eligib|deadline|due date|requirements?|materials?|guidelines?|nomination|portal|faq|fellowships?|scholarships?|grants?|awards?)\b/.test(
       directHaystack,
@@ -211,6 +223,10 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
     return true;
   }
 
+  if (/\boption=com_jevents\b/.test(cleanSearch) || /\btask=month\.calendar\b/.test(cleanSearch)) {
+    return true;
+  }
+
   if (
     /\b(ferpa for students|subject index terms|submit your news|calendar of conferences|cookie policy|privacy policy|fellowship privacy statement|selection committees?|staff directory|committee members?)\b/.test(
       directHaystack,
@@ -244,6 +260,100 @@ function isGenericNonAwardDiscoveryUrl(host, path, directHaystack) {
   }
 
   return false;
+}
+
+function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, awardName) {
+  const cleanPath = path.toLowerCase();
+  const cleanSearch = String(parsed?.search || "").toLowerCase();
+  const awardSignal = wordSignal(awardName);
+  const sourceSignal = wordSignal(`${directHaystack} ${cleanPath} ${cleanSearch}`);
+
+  if (host === "fields.utoronto.ca" && cleanPath === "/activities/thematic") return true;
+  if (host === "postdocs.ubc.ca" && cleanPath === "/awards-funding") return true;
+  if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(cleanPath)) return true;
+  if (host === "ncbi.nlm.nih.gov" && /^\/medline\/publisherportal(?:\/|$)/.test(cleanPath)) return true;
+  if (host === "www8.nationalacademies.org" && /\/pa\/managerequest\.aspx$/.test(cleanPath)) return true;
+  if (host === "fastlane.nsf.gov" && cleanPath === "/fastlane.jsp") return true;
+  if (host === "nsf.gov" && cleanPath === "/funding/programs.jsp" && /\borg=sbe\b/.test(cleanSearch)) {
+    return true;
+  }
+  if ((host === "nsf.gov" || host === "beta.nsf.gov") && /^\/geo\/(?:ags|ear)(?:\/|$)/.test(cleanPath)) {
+    return true;
+  }
+  if (host === "croucher.org.hk" && /croucher-science-communication-studentships/.test(cleanPath)) {
+    return !/\bscience communication\b/.test(awardSignal);
+  }
+  if (host === "usascholarships.com" && /\/barbizon-college-tuition-scholarship-program(?:\/|$)/.test(cleanPath)) {
+    return true;
+  }
+  if (host === "gerda-henkel-stiftung.de" && cleanPath === "/en/prize") return true;
+  if (host === "aotf.org" && cleanPath === "/funding/") return true;
+  if (host === "apf.apa.org" && cleanPath === "/" && !/\bapf\b.*\b(?:fellowship|scholarship|grant)\b/.test(sourceSignal)) {
+    return true;
+  }
+  if (host === "gsa.gov" && /^\/reference\/(?:civil-rights-programs|freedom-of-information-act-foia)(?:\/|$)/.test(cleanPath)) {
+    return true;
+  }
+  if (host === "lung.org" && /^\/get-involved\/ways-to-give(?:\/|$)/.test(cleanPath)) return true;
+  if (host === "seg.org" && /\/programs\/student-programs\/seg-evolve(?:\/|$)/.test(cleanPath)) {
+    return /\bscholarships?\b/.test(awardSignal);
+  }
+  if (/(^|\.)shafr\.org$/.test(host) && (/\boption=com_jevents\b/.test(cleanSearch) || /\btask=month\.calendar\b/.test(cleanSearch))) {
+    return true;
+  }
+  if (host === "dowjonesnewsfund.org" && /\/news\/students-can-apply-for-2019-internships(?:\/|$)/.test(cleanPath)) {
+    return true;
+  }
+  if (host === "pgfusa.org" && /\/2022-awards-program(?:\/|$)/.test(cleanPath)) return true;
+  if (
+    host === "costumesocietyamerica.com" &&
+    /\bstella\b.*\bblum\b/.test(awardSignal) &&
+    !/stella|travel-research-grant/.test(cleanPath)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isGenericListingOrSearchShape(url, directHaystack) {
+  const path = String(url?.pathname || "").toLowerCase();
+
+  return (
+    /\/(?:tag|tags|category|categories)(?:\/|$)/.test(path) ||
+    /\/(?:search|search-results?|site-search|search-results-page)(?:\/|\.html?|\.aspx?|$)/.test(path) ||
+    /\/(?:guidelinesearch|sitesearch|search|searchresults?)\.(?:html?|aspx?|php)$/.test(path) ||
+    hasGenericSearchQuery(url, directHaystack)
+  );
+}
+
+function hasGenericSearchQuery(url, directHaystack) {
+  if (isSpecificAwardDetailSignal(directHaystack)) return false;
+
+  const path = String(url?.pathname || "").toLowerCase().replace(/\/+$/g, "") || "/";
+  const titleSearchSignal = /\b(search results?|site search|back to search|results for)\b/i.test(
+    directHaystack,
+  );
+
+  for (const [rawKey, rawValue] of url?.searchParams?.entries?.() || []) {
+    const key = rawKey.toLowerCase();
+    const value = String(rawValue || "").trim();
+    if (!value) continue;
+    if (["search", "keyword", "keywords", "keys", "search_api_fulltext"].includes(key)) return true;
+    if (key === "q" && (titleSearchSignal || path === "/" || /\/(?:search|site-search|search-results?)$/.test(path))) {
+      return true;
+    }
+    if (key === "s" && (titleSearchSignal || path === "/" || path === "/index.php")) return true;
+    if (key === "query" && titleSearchSignal) return true;
+  }
+
+  return false;
+}
+
+function isSpecificAwardDetailSignal(value) {
+  return /\b(how to apply|application process|application requirements?|eligibility requirements?|program requirements?|deadline|due date|faq|frequently asked questions?)\b/i.test(
+    value,
+  );
 }
 
 function isKnownBoilerplateUrl(host, path, haystack) {

@@ -16,7 +16,7 @@ export default function AwardDirectoryLoading() {
       <main className="mx-auto max-w-6xl px-5 py-10 lg:py-12">
         <div className="award-directory-loading">
           <div>
-            <p className="dashboard-label">Award database</p>
+            <p className="dashboard-label">Award directory</p>
             <h1>Loading award directory</h1>
             <p>Preparing searchable fellowship records.</p>
           </div>

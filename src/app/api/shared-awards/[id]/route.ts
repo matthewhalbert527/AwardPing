@@ -28,7 +28,7 @@ export async function GET(_request: Request, { params }: Props) {
 
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
-      { error: "Shared award database is not configured." },
+      { error: "Shared award directory is not configured." },
       { status: 503 },
     );
   }

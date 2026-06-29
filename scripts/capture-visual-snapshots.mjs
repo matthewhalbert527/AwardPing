@@ -1054,6 +1054,12 @@ async function reviewAndApplyCandidateChange({
       "Donation, fundraising, or checkout widgets changed without applicant-facing award information changing.",
     );
   }
+  if (aiReview.result.is_true_change) {
+    const auditNoise = aiReviewLooksLikePublishedAuditNoise(aiReview, source);
+    if (auditNoise) {
+      markAiReviewAsNoise(aiReview, auditNoise.flag, auditNoise.reason);
+    }
+  }
 
   if (aiReview.result.is_true_change) {
     const changePath = saveTrueChange({
@@ -6622,6 +6628,238 @@ function aiReviewLooksLikeFundraisingOnlyChange(aiReview) {
   return !hasApplicantFacingAwardSignalText(stripUnchangedApplicantReferences(applicantText));
 }
 
+function aiReviewLooksLikePublishedAuditNoise(aiReview, source) {
+  const context = aiReviewAuditNoiseContext(aiReview, source);
+  const { combined, sourceUrl, host, search, section, summary } = context;
+  const strippedApplicantText = stripUnchangedApplicantReferences(context.evidenceText);
+  const hasSubstantiveApplicantSignal = hasApplicantFacingAwardSignalText(strippedApplicantText);
+
+  if (
+    /\b(sitewide messages?|dismiss message|top of page notice|holiday notice|building getty|gallery access|page header|operating hours|hours[_ -]?change|today'?s hours|planned closings|open today|countdown timer|america'?s 250th|captcha|math problem|photo credit|view count|post id|application identifier|writer'?s id)\b/.test(
+      combined,
+    )
+  ) {
+    return {
+      flag: "site_chrome_or_transient_notice",
+      reason:
+        "The apparent change is a sitewide notice, operating-hours widget, counter, CAPTCHA, view count, or other transient page chrome.",
+    };
+  }
+
+  if (
+    /\b(navigation menu|navigation\/links|content[_ -]?reorder|page[_ -]?structure[_ -]?change|faq order|order of (?:the )?(?:navigation links|links|questions)|reordered|swapped)\b/.test(
+      combined,
+    ) &&
+    !/\b(?:new|added|removed|changed)\s+(?:deadline|due date|eligibility requirement|application requirement|award amount|stipend|tuition)\b/.test(
+      combined,
+    )
+  ) {
+    return {
+      flag: "navigation_or_reorder_only_change",
+      reason: "Only navigation, sidebar, or FAQ item order changed; no applicant-facing award fact changed.",
+    };
+  }
+
+  if (
+    (/\boption=com_jevents\b/.test(search) ||
+      /\btask=month\.calendar\b/.test(search) ||
+      /\b(upcoming events?|admissions events?|calendar|conference|information session|open house|news & events?)\b/.test(
+        `${section} ${summary} ${sourceUrl}`,
+      )) &&
+    !/\b(application deadline|deadline changed|applications? (?:open|close|due)|submit(?:ted)? by)\b/.test(combined)
+  ) {
+    return {
+      flag: "calendar_event_noise",
+      reason: "The change is calendar, conference, admissions-event, or news/event churn rather than award rules.",
+    };
+  }
+
+  if (
+    /\b(updated date|application papers updated date|update date|last updated|modified date|view count|writer'?s id|post id)\b/.test(
+      combined,
+    ) &&
+    !/\b(applications? (?:is |are )?now open|application period (?:is )?open|deadline changed|eligibility changed|award amount changed)\b/.test(
+      combined,
+    )
+  ) {
+    return {
+      flag: "metadata_only_update",
+      reason: "Only an internal updated-date, view-count, post-id, writer-id, or similar metadata field changed.",
+    };
+  }
+
+  if (
+    host === "nifa.usda.gov" &&
+    /\b(latest updates?|food and agriculture service learning program|food safety outreach program|successful institutions fy ?24|official publications and guidelines)\b/.test(
+      combined,
+    )
+  ) {
+    return {
+      flag: "generic_latest_updates_block",
+      reason: "A generic NIFA latest-updates/sidebar block changed for another opportunity.",
+    };
+  }
+
+  if (
+    /\b(file size and hash|specific changes? (?:within|in) (?:the )?(?:pdf|document|file) (?:are|were) not detailed|content of the pdf itself has changed, though the specific award details are not visible|file itself has changed)\b/.test(
+      combined,
+    ) &&
+    !hasSubstantiveApplicantSignal
+  ) {
+    return {
+      flag: "insufficient_document_semantic_diff",
+      reason: "The document changed, but the worker did not identify a concrete award-relevant text change.",
+    };
+  }
+
+  if (
+    /\b(quote|testimonial|featured young leader|did you know\?|homepage introductory text|tagline|our impact statistics|program results|statistic(?:s)? update|profile carousel|featured scholar)\b/.test(
+      combined,
+    ) &&
+    !hasSubstantiveApplicantSignal
+  ) {
+    return {
+      flag: "marketing_or_rotating_content",
+      reason: "Rotating quote, testimonial, marketing copy, featured profile, or impact-stat content changed.",
+    };
+  }
+
+  if (sourceUrlLooksKnownBadForAwardChange(context)) {
+    return {
+      flag: "wrong_or_generic_source_shape",
+      reason: "The source URL is a known generic, stale, calendar, donation, or cross-program source shape.",
+    };
+  }
+
+  return null;
+}
+
+function aiReviewAuditNoiseContext(aiReview, source) {
+  const result = aiReview?.result || {};
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : {};
+  const structuredDiff =
+    details.structured_diff && typeof details.structured_diff === "object" && !Array.isArray(details.structured_diff)
+      ? details.structured_diff
+      : {};
+  const sourceUrl = String(details.source?.source_url || source?.url || "");
+  const parsed = safeUrlForAuditNoise(sourceUrl);
+  const host = parsed?.hostname.replace(/^www\./i, "").toLowerCase() || "";
+  const path = parsed?.pathname.toLowerCase() || "";
+  const search = parsed?.search.toLowerCase() || "";
+  const section = normalizeText(
+    [
+      result.changed_section,
+      details.section,
+      structuredDiff.likely_section,
+      result.change_type,
+      details.change_type,
+    ].join(" "),
+  ).toLowerCase();
+  const summary = normalizeText(
+    [
+      result.reader_summary,
+      result.advisor_impact,
+      result.noise_reason,
+      details.reader_summary,
+      details.advisor_impact,
+    ].join(" "),
+  ).toLowerCase();
+  const evidenceText = normalizeText(
+    [
+      result.before,
+      result.after,
+      details.before,
+      details.after,
+      ...stringArray(structuredDiff.added_text),
+      ...stringArray(structuredDiff.removed_text),
+      ...stringArray(structuredDiff.date_changes),
+      ...stringArray(structuredDiff.amount_changes),
+    ].join(" "),
+  ).toLowerCase();
+  const sourceText = normalizeText(
+    [
+      source?.shared_awards?.name,
+      source?.title,
+      source?.page_type,
+      sourceUrl,
+      details.source?.award_name,
+      details.source?.source_title,
+      details.source?.page_type,
+    ].join(" "),
+  ).toLowerCase();
+
+  return {
+    combined: `${summary} ${section} ${evidenceText} ${sourceText}`.trim(),
+    evidenceText,
+    host,
+    path,
+    search,
+    section,
+    summary,
+    sourceText,
+    sourceUrl,
+  };
+}
+
+function sourceUrlLooksKnownBadForAwardChange(context) {
+  const { host, path, search, sourceText, sourceUrl } = context;
+
+  if (host === "fields.utoronto.ca" && path === "/activities/thematic") return true;
+  if (host === "postdocs.ubc.ca" && path === "/awards-funding") return true;
+  if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(path)) return true;
+  if (host === "ncbi.nlm.nih.gov" && /^\/medline\/publisherportal(?:\/|$)/.test(path)) return true;
+  if (host === "www8.nationalacademies.org" && /\/pa\/managerequest\.aspx$/.test(path)) return true;
+  if (host === "fastlane.nsf.gov" && path === "/fastlane.jsp") return true;
+  if (host === "nsf.gov" && path === "/funding/programs.jsp" && /\borg=sbe\b/.test(search)) return true;
+  if ((host === "nsf.gov" || host === "beta.nsf.gov") && /^\/geo\/(?:ags|ear)(?:\/|$)/.test(path)) {
+    return true;
+  }
+  if (host === "croucher.org.hk" && /croucher-science-communication-studentships/.test(path)) {
+    return !/\bscience communication\b/.test(sourceText);
+  }
+  if (host === "usascholarships.com" && /\/barbizon-college-tuition-scholarship-program(?:\/|$)/.test(path)) {
+    return true;
+  }
+  if (host === "gerda-henkel-stiftung.de" && path === "/en/prize") return true;
+  if (host === "aotf.org" && path === "/funding/") return true;
+  if (host === "gsa.gov" && /^\/reference\/(?:civil-rights-programs|freedom-of-information-act-foia)(?:\/|$)/.test(path)) {
+    return true;
+  }
+  if (host === "lung.org" && /^\/get-involved\/ways-to-give(?:\/|$)/.test(path)) return true;
+  if (host === "seg.org" && /\/programs\/student-programs\/seg-evolve(?:\/|$)/.test(path)) {
+    return /\bscholarships?\b/.test(sourceText);
+  }
+  if (/(^|\.)shafr\.org$/.test(host) && (/\boption=com_jevents\b/.test(search) || /\btask=month\.calendar\b/.test(search))) {
+    return true;
+  }
+  if (host === "dowjonesnewsfund.org" && /\/news\/students-can-apply-for-2019-internships(?:\/|$)/.test(path)) {
+    return true;
+  }
+  if (host === "pgfusa.org" && /\/2022-awards-program(?:\/|$)/.test(path)) return true;
+  if (
+    host === "costumesocietyamerica.com" &&
+    /\bstella\b.*\bblum\b/.test(sourceText) &&
+    !/stella|travel-research-grant/.test(path)
+  ) {
+    return true;
+  }
+
+  return /\/(?:tag|tags|category|categories|search|search-results?|site-search)(?:\/|$)/.test(path) ||
+    /\b(?:search|keyword|keywords|search_api_fulltext)=/.test(search) ||
+    /option=com_jevents|task=month\.calendar/.test(sourceUrl.toLowerCase());
+}
+
+function safeUrlForAuditNoise(value) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
 function hasApplicantFacingAwardSignalText(value) {
   return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/.test(
     String(value || "").toLowerCase(),
@@ -7313,6 +7551,7 @@ const aiSystemPrompt = [
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
   "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
   "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+  "Also reject sitewide notices, holiday or operating-hours banners, countdown timers, view counts, post IDs, writer IDs, CAPTCHA/math changes, navigation or FAQ reordering, generic Latest Updates blocks, calendar/conference/admissions-event churn, stale archive pages, and document hash/file-size-only changes unless specific award-relevant text changed.",
   "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",
   "advisor_impact should say what an advising office might need to check or update.",

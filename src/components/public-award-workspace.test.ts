@@ -44,7 +44,7 @@ describe("PublicAwardWorkspace", () => {
             {
               id: "source-1",
               sourceSlug: "homepage",
-              publicPath: "/example-fellowship/homepage",
+              publicPath: "/example-fellowship",
               title: "Homepage",
               description: "Official homepage.",
               url: "https://example.edu/fellowship",
@@ -68,14 +68,68 @@ describe("PublicAwardWorkspace", () => {
                 confidence: null,
               },
             },
+            {
+              id: "source-2",
+              sourceSlug: "apply",
+              publicPath: "/example-fellowship",
+              title: "Application portal",
+              description: "Apply for the fellowship.",
+              url: "https://example.edu/fellowship/apply",
+              pageType: "application",
+              lastCheckedAt: "2026-06-26T12:00:00.000Z",
+              facts: {
+                overview: "Application portal.",
+                deadline: null,
+                openingDate: null,
+                awardAmount: null,
+                eligibility: [],
+                requirements: [],
+                applicationMaterials: [],
+                howToApply: ["Submit the application form."],
+                importantDates: [],
+                documents: [],
+                contacts: [],
+                academicLevels: [],
+                disciplines: [],
+                citizenship: [],
+                confidence: null,
+              },
+            },
+            {
+              id: "source-3",
+              sourceSlug: "contact",
+              publicPath: "/example-fellowship",
+              title: "Contact the program",
+              description: "Email and phone support.",
+              url: "https://example.edu/fellowship/contact",
+              pageType: "other",
+              lastCheckedAt: "2026-06-26T12:00:00.000Z",
+              facts: {
+                overview: "Program contact page.",
+                deadline: null,
+                openingDate: null,
+                awardAmount: null,
+                eligibility: [],
+                requirements: [],
+                applicationMaterials: [],
+                howToApply: [],
+                importantDates: [],
+                documents: [],
+                contacts: ["fellowships@example.edu"],
+                academicLevels: [],
+                disciplines: [],
+                citizenship: [],
+                confidence: null,
+              },
+            },
           ],
           changes: [
             {
               id: "change-1",
-              sourceId: "source-1",
-              sourceTitle: "Homepage",
-              sourceUrl: "https://example.edu/fellowship",
-              sourcePageType: "homepage",
+              sourceId: "source-2",
+              sourceTitle: "Application portal",
+              sourceUrl: "https://example.edu/fellowship/apply",
+              sourcePageType: "application",
               summary: "The deadline changed.",
               changeDetails: {},
               detectedAt: "2026-06-26T12:00:00.000Z",
@@ -89,13 +143,20 @@ describe("PublicAwardWorkspace", () => {
 
     expect(sidebarHtml).toContain("Overview");
     expect(sidebarHtml).toContain("Award profile");
-    expect(sidebarHtml).toContain("1 source");
+    expect(sidebarHtml).toContain("3 sources");
     expect(sidebarHtml).toContain("4 fields");
     expect(sidebarHtml).toContain("Recent changes");
     expect(sidebarHtml).toContain("1 update");
-    expect(sidebarHtml).toContain("Official sources");
-    expect(sidebarHtml).toContain("Homepage / 1 update");
-    expect(sidebarHtml).toContain("Last checked");
+    expect(sidebarHtml).toContain("Sources");
+    expect(sidebarHtml).toContain("Application");
+    expect(sidebarHtml).toContain("Application / 1 update");
+    expect(sidebarHtml).toContain("Contact");
+    expect(sidebarHtml).toContain("Other source / 0 updates");
+    expect(sidebarHtml).toContain("Checked Jun 26, 2026");
+    expect(sidebarHtml).toContain("public-award-source-group");
+    expect(sidebarHtml).not.toContain("public-award-sidebar-page-card");
+    expect(sidebarHtml).not.toContain("public-award-sidebar-last-checked");
+    expect(sidebarHtml).not.toContain('<details class="public-award-source-group" open');
     expect(sidebarHtml).not.toContain("1 sources");
     expect(sidebarHtml).not.toContain("1 updates");
     expect(sidebarHtml).not.toContain("1 recent updates");

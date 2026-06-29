@@ -53,7 +53,8 @@ export default async function SlugPage({ params }: Props) {
   if (page) return <SeoLandingPageContent page={page} />;
 
   if (!hasSupabaseAdminConfig()) notFound();
-  const awardPage = await getPublicAwardPageBySlug(slug).catch(() => null);
+  const user = await getCurrentUser();
+  const awardPage = await getPublicAwardPageBySlug(slug, { userId: user?.id }).catch(() => null);
   if (!awardPage) notFound();
   if (awardPage.redirectPath) redirect(awardPage.redirectPath);
 

@@ -98,10 +98,10 @@ export function UpdateFeedWorkspace({
       <section className={`update-filter-panel ${isPending ? "update-filter-panel-pending" : ""}`}>
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="dashboard-label">{filters.scope === "all" ? "Database updates" : "Watchlist updates"}</p>
+            <p className="dashboard-label">{filters.scope === "all" ? "Directory updates" : "Watchlist updates"}</p>
             <p className="dashboard-panel-copy">
               {filters.scope === "all"
-                ? "Changes from the shared award database."
+                ? "Changes from the shared award directory."
                 : "Changes from awards and source pages on your watchlist."}
             </p>
           </div>

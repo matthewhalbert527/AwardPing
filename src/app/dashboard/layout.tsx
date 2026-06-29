@@ -25,31 +25,27 @@ export default async function DashboardLayout({
 
   return (
     <div className="dashboard-shell">
-      <header className="app-header dashboard-header">
-        <div className="app-header-shell dashboard-header-shell">
-          <div className="app-header-bar dashboard-header-bar">
-            <Link href="/" className="brand-link app-header-brand dashboard-brand-link" aria-label="AwardPing home">
-              <BrandLogo />
-            </Link>
-
-            <div className="dashboard-header-nav-wrap">
-              <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
-                <DashboardNav isSiteAdmin={isSiteAdmin} />
-              </Suspense>
-            </div>
-
-            <div className="app-header-actions dashboard-header-actions">
-              {officeContext && officeOptions.length > 1 && (
-                <OfficeSwitcher
-                  offices={officeOptions}
-                  currentOfficeId={officeContext.current.officeId}
-                />
-              )}
-              {user && <ProfileMenu email={user.email} fullName={profile?.full_name} />}
-            </div>
-          </div>
+      <aside className="dashboard-sidebar" aria-label="Dashboard workspace">
+        <div className="dashboard-sidebar-brand">
+          <Link href="/" className="brand-link dashboard-brand-link" aria-label="AwardPing home">
+            <BrandLogo />
+          </Link>
         </div>
-      </header>
+        <div className="dashboard-sidebar-nav-wrap">
+          <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
+            <DashboardNav isSiteAdmin={isSiteAdmin} />
+          </Suspense>
+        </div>
+        <div className="dashboard-sidebar-actions">
+          {officeContext && (
+            <OfficeSwitcher
+              offices={officeOptions}
+              currentOfficeId={officeContext.current.officeId}
+            />
+          )}
+          {user && <ProfileMenu email={user.email} fullName={profile?.full_name} />}
+        </div>
+      </aside>
 
       <main className="dashboard-content">{children}</main>
     </div>
@@ -68,7 +64,7 @@ function DashboardNavFallback({ isSiteAdmin }: { isSiteAdmin: boolean }) {
       </Link>
       <Link className="dashboard-nav-link dashboard-nav-link-database" href="/dashboard/awards">
         <SearchCheck size={16} aria-hidden="true" />
-        Database
+        Award Directory
       </Link>
       <Link
         className="dashboard-nav-link dashboard-nav-link-watchlist"

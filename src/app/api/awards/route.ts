@@ -40,7 +40,7 @@ export async function POST(request: Request) {
 
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
-      { error: "Shared award database is not configured." },
+      { error: "Shared award directory is not configured." },
       { status: 503 },
     );
   }
@@ -132,7 +132,7 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Shared award database could not be updated.",
+            : "Shared award directory could not be updated.",
       },
       { status: 500 },
     );

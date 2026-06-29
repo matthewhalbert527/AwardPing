@@ -69,7 +69,14 @@ const force = boolArg(args.force, false);
 const includePdf = boolArg(args["include-pdf"], true);
 const includeWeb = boolArg(args["include-web"], true);
 const sourceIdFilter = cleanText(args["source-id"]);
+const shardCount = positiveInt(args["shard-count"], 1);
+const shardIndex = nonNegativeInt(args["shard-index"], 0);
 const useGeminiBatchApi = aiProvider === "gemini" && geminiApiMode !== "immediate";
+
+if (shardIndex >= shardCount) {
+  console.error(`--shard-index must be less than --shard-count. Received ${shardIndex}/${shardCount}.`);
+  process.exit(1);
+}
 
 if (aiProvider === "gemini-cli" && !geminiCliPath) {
   console.error("AWARDPING_GEMINI_CLI_PATH must point to agy.exe.");
@@ -114,6 +121,8 @@ async function runOnce() {
       include_pdf: includePdf,
       include_web: includeWeb,
       source_id: sourceIdFilter || null,
+      shard_count: shardCount,
+      shard_index: shardIndex,
       gemini_cli_model: geminiCliModel,
       gemini_cli_safe_models: geminiCliSafeModels,
       allow_unsafe_gemini_cli_model: allowUnsafeGeminiCliModel,
@@ -299,6 +308,7 @@ function loadBaselineTargets() {
   for (const entry of readdirSync(sourcesRoot, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (sourceIdFilter && entry.name !== sourceIdFilter) continue;
+    if (shardCount > 1 && stableShard(entry.name, shardCount) !== shardIndex) continue;
     const baselinePath = join(sourcesRoot, entry.name, "baseline.json");
     if (!existsSync(baselinePath)) continue;
 
@@ -320,6 +330,15 @@ function loadBaselineTargets() {
   }
 
   return targets.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+}
+
+function stableShard(value, count) {
+  let hash = 2166136261;
+  for (const char of String(value || "")) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) % count;
 }
 
 function captureFromBaseline(baseline) {
@@ -380,8 +399,10 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "You are extracting baseline page information for AwardPing from a captured official source page.",
     "Use the screenshot image when one is provided. Use the normalized visible text or PDF text as supporting context.",
     "Create a clean readable display_title and a short page_description for this exact source page, even when it is not an eligibility, deadline, or application page.",
+    "display_title must include the most distinctive visible organization, award, program, or page-title words for this source page.",
     "Extract only facts that are visible or directly supported. Do not guess missing dates, amounts, or requirements.",
-    "Keep output short. page_description must be 25 words or fewer. Each array must have at most 5 items. Each item must be a short phrase or one short sentence.",
+    "Keep output very short. page_description must be 20 words or fewer. Each array must have at most 3 items. Each item must be a short phrase, not a sentence.",
+    "Prefer null or [] over verbose explanations. Do not include extra keys, markdown, comments, or prose outside the JSON object.",
     "If a PDF or page is mostly unrelated background, policy, reporting, data documentation, or a generic portal, summarize its purpose briefly and leave scholarship-specific fields empty.",
     "Return compact JSON with these keys:",
     "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
@@ -718,7 +739,7 @@ function geminiApiBaselineFactsRequest(source, capture, reason) {
     ],
     generationConfig: {
       temperature: 0.1,
-      maxOutputTokens: 2200,
+      maxOutputTokens: 8192,
       responseMimeType: "application/json",
     },
   };
@@ -935,7 +956,7 @@ async function runGeminiApiBaselineFactsAnalysis(source, capture) {
     if (attempt < maxJsonAttempts) {
       const waitMs = 1_000 * attempt;
       console.log(
-        `GEMINI_RETRY kind=baseline_facts_json attempt=${attempt}/${maxJsonAttempts} wait_ms=${waitMs} message=invalid_json raw=${truncate(rawText, 160)}`,
+        `GEMINI_RETRY kind=baseline_facts_json attempt=${attempt}/${maxJsonAttempts} wait_ms=${waitMs} message=invalid_json raw=${logSnippet(rawText, 240)}`,
       );
       await sleep(waitMs);
       continue;
@@ -1138,6 +1159,13 @@ function normalizeBaselineFacts(value) {
 function baselineFactsMatchSource(source, capture, facts) {
   if (cleanSlug(facts.status) === "failed") return { ok: false, reason: "facts_status_failed" };
 
+  const factText = [
+    facts.display_title,
+    facts.award_name,
+    facts.page_description,
+    facts.page_purpose,
+    ...(facts.sections || []).flatMap((section) => [section.title, section.description]),
+  ].join(" ");
   const expectedTokens = distinctiveSourceTokens([
     source.shared_awards?.name,
     source.title,
@@ -1145,20 +1173,69 @@ function baselineFactsMatchSource(source, capture, facts) {
   ].join(" "));
   if (!expectedTokens.length) return { ok: true };
 
-  const factTokens = distinctiveSourceTokens([
-    facts.display_title,
-    facts.award_name,
-    facts.page_description,
-    facts.page_purpose,
-    ...(facts.sections || []).flatMap((section) => [section.title, section.description]),
-  ].join(" "));
+  const factTokens = distinctiveSourceTokens(factText);
   const overlap = expectedTokens.filter((token) => factTokens.includes(token));
 
   if (overlap.length > 0) return { ok: true };
+
+  if (facts.award_relevance !== "primary") {
+    const urlTokens = distinctiveUrlTokens(source.url);
+    const factIdentityTokens = distinctiveIdentityTokens(factText);
+    if (urlTokens.some((token) => factIdentityTokens.includes(token))) return { ok: true };
+  }
+
   return {
     ok: false,
     reason: `extracted facts did not match source tokens: ${expectedTokens.slice(0, 8).join(", ")}`,
   };
+}
+
+function distinctiveUrlTokens(value) {
+  if (!value) return [];
+  try {
+    const url = new URL(value);
+    return distinctiveIdentityTokens([url.hostname.replace(/^www\./i, ""), url.pathname].join(" "));
+  } catch {
+    return distinctiveIdentityTokens(value);
+  }
+}
+
+function distinctiveIdentityTokens(value) {
+  const stop = new Set([
+    "about",
+    "apply",
+    "application",
+    "applications",
+    "award",
+    "awards",
+    "com",
+    "contact",
+    "edu",
+    "eligibility",
+    "form",
+    "gov",
+    "grant",
+    "grants",
+    "home",
+    "html",
+    "http",
+    "https",
+    "index",
+    "org",
+    "page",
+    "pages",
+    "pdf",
+    "program",
+    "programs",
+    "scholarship",
+    "scholarships",
+    "source",
+    "www",
+  ]);
+  return normalizeText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !/^\d+$/.test(token) && !stop.has(token))
+    .slice(0, 18);
 }
 
 function distinctiveSourceTokens(value) {
@@ -1191,9 +1268,18 @@ function distinctiveSourceTokens(value) {
     "student",
     "students",
     "college",
+    "com",
+    "community",
     "department",
+    "edu",
     "form",
+    "gov",
+    "home",
+    "html",
+    "http",
+    "https",
     "institute",
+    "org",
     "official",
     "portal",
     "research",
@@ -1204,10 +1290,11 @@ function distinctiveSourceTokens(value) {
     "and",
     "for",
     "with",
+    "www",
   ]);
   return normalizeText(value)
     .split(/\s+/)
-    .filter((token) => token.length >= 4 && !stop.has(token))
+    .filter((token) => token.length >= 3 && token.length <= 40 && !stop.has(token))
     .slice(0, 18);
 }
 
@@ -1499,21 +1586,71 @@ function jsonObjectOrEmpty(value) {
 }
 
 function parseJsonObject(text) {
-  const clean = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  const clean = String(text || "").trim().replace(/^\uFEFF/, "");
   if (!clean) return null;
-  try {
-    const parsed = JSON.parse(clean);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    const match = clean.match(/\{[\s\S]*\}/);
-    if (!match) return null;
+
+  for (const candidate of jsonObjectCandidates(clean)) {
     try {
-      const parsed = JSON.parse(match[0]);
+      const parsed = JSON.parse(candidate);
       return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
     } catch {
-      return null;
+      // Try the next candidate.
     }
   }
+
+  return null;
+}
+
+function jsonObjectCandidates(text) {
+  const candidates = [text];
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  candidates.push(...balancedJsonObjectCandidates(text));
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function balancedJsonObjectCandidates(text) {
+  const candidates = [];
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      if (depth === 0) start = index;
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}" && depth > 0) {
+      depth -= 1;
+      if (depth === 0 && start >= 0) {
+        candidates.push(text.slice(start, index + 1));
+        start = -1;
+      }
+    }
+  }
+
+  return candidates;
 }
 
 function extractGeminiText(data) {
@@ -1701,6 +1838,10 @@ function cleanText(value) {
 function truncate(value, maxLength) {
   const clean = String(value || "");
   return clean.length > maxLength ? `${clean.slice(0, maxLength - 1)}...` : clean;
+}
+
+function logSnippet(value, maxLength) {
+  return truncate(String(value || "").replace(/\s+/g, " ").trim(), maxLength);
 }
 
 function errorMessage(error) {

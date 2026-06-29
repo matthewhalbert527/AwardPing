@@ -18,6 +18,7 @@ import {
   isMonitorableOfficialSource,
 } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 
 type SharedAwardRow = Pick<
   Database["public"]["Tables"]["shared_awards"]["Row"],
@@ -85,15 +86,14 @@ export type PublicAwardPageData = {
     summary: string;
     changeDetails: Json;
     detectedAt: string;
+    unread?: boolean;
   }>;
 };
 
-export type PublicAwardSourcePageData = PublicAwardPageData & {
-  source: PublicAwardPageData["sources"][number];
-  sourceChanges: PublicAwardPageData["changes"];
-};
-
-export async function getPublicAwardPageBySlug(slug: string): Promise<PublicAwardPageData | null> {
+export async function getPublicAwardPageBySlug(
+  slug: string,
+  options: { userId?: string | null } = {},
+): Promise<PublicAwardPageData | null> {
   const normalizedSlug = normalizeAwardSlug(slug);
   if (!normalizedSlug) return null;
 
@@ -107,7 +107,7 @@ export async function getPublicAwardPageBySlug(slug: string): Promise<PublicAwar
 
   if (direct.error) throw direct.error;
   if (direct.data) {
-    return loadPublicAwardPageData(direct.data as SharedAwardRow, null);
+    return loadPublicAwardPageData(direct.data as SharedAwardRow, null, options);
   }
 
   const alias = await admin
@@ -124,34 +124,8 @@ export async function getPublicAwardPageBySlug(slug: string): Promise<PublicAwar
   return loadPublicAwardPageData(
     embeddedAward,
     canonicalAwardPath(embeddedAward.slug, embeddedAward.name, embeddedAward.id),
+    options,
   );
-}
-
-export async function getPublicAwardSourcePageBySlugs(
-  awardSlug: string,
-  sourceSlug: string,
-): Promise<PublicAwardSourcePageData | null> {
-  const awardPage = await getPublicAwardPageBySlug(awardSlug);
-  if (!awardPage) return null;
-
-  const normalizedSourceSlug = normalizeAwardSlug(sourceSlug);
-  const source = awardPage.sources.find((candidate) => candidate.sourceSlug === normalizedSourceSlug);
-  if (!source) return null;
-
-  const canonicalSourcePath = `${awardPage.canonicalPath}/${source.sourceSlug}`;
-  const awardRedirectPath = awardPage.redirectPath ? `${awardPage.redirectPath}/${source.sourceSlug}` : null;
-  const sourceRedirectPath = normalizedSourceSlug === source.sourceSlug ? null : canonicalSourcePath;
-
-  return {
-    ...awardPage,
-    redirectPath: awardRedirectPath || sourceRedirectPath,
-    source,
-    sourceChanges: awardPage.changes.filter(
-      (change) =>
-        change.sourceId === source.id ||
-        normalizeUrl(change.sourceUrl) === normalizeUrl(source.url),
-    ),
-  };
 }
 
 export async function getPublicAwardSitemapRows(limit = 50000) {
@@ -171,48 +145,10 @@ export async function getPublicAwardSitemapRows(limit = 50000) {
   }));
 }
 
-export async function getPublicAwardSourceSitemapRows(limit = 50000) {
-  const admin = createSupabaseAdminClient();
-  const { data: awards, error: awardError } = await admin
-    .from("shared_awards")
-    .select("id, name, slug, updated_at")
-    .eq("status", "active")
-    .not("slug", "is", null)
-    .limit(limit);
-
-  if (awardError) return [];
-
-  const activeAwardById = new Map((awards || []).map((award) => [award.id, award]));
-  const sourceRows = await loadOpenSourceRowsForSitemap(limit);
-  const sourcesByAwardId = new Map<string, SharedSourceRow[]>();
-
-  for (const source of sourceRows) {
-    if (!activeAwardById.has(source.shared_award_id)) continue;
-    const sources = sourcesByAwardId.get(source.shared_award_id) || [];
-    sources.push(source);
-    sourcesByAwardId.set(source.shared_award_id, sources);
-  }
-
-  const rows: Array<{ urlPath: string; updatedAt: string | null }> = [];
-  for (const [awardId, sources] of sourcesByAwardId.entries()) {
-    const award = activeAwardById.get(awardId);
-    if (!award) continue;
-    const awardPath = canonicalAwardPath(award.slug, award.name, award.id);
-    for (const source of withUniqueAwardSourceSlugs(filterTrackableOfficialSources(sources))) {
-      rows.push({
-        urlPath: `${awardPath}/${source.sourceSlug}`,
-        updatedAt: source.last_checked_at || award.updated_at,
-      });
-      if (rows.length >= limit) return rows;
-    }
-  }
-
-  return rows;
-}
-
 async function loadPublicAwardPageData(
   award: SharedAwardRow,
   redirectPath: string | null,
+  options: { userId?: string | null } = {},
 ): Promise<PublicAwardPageData> {
   const admin = createSupabaseAdminClient();
   const [{ data: sources }, { data: changes }] = await Promise.all([
@@ -253,7 +189,7 @@ async function loadPublicAwardPageData(
   const publicSources = withUniqueAwardSourceSlugs(officialSources).map((source) => ({
     id: source.id,
     sourceSlug: source.sourceSlug,
-    publicPath: `${canonicalPath}/${source.sourceSlug}`,
+    publicPath: canonicalPath,
     title: readableSourceTitle(source.display_title || source.title, source.url),
     description: source.page_description,
     url: source.url,
@@ -263,6 +199,10 @@ async function loadPublicAwardPageData(
       sources: [source],
     }),
   }));
+  const limitedChanges = officialChanges.slice(0, 8);
+  const unreadChangeIds = options.userId
+    ? await unreadSharedChangeIdsForUser(options.userId, limitedChanges).catch(() => null)
+    : null;
 
   return {
     award,
@@ -273,7 +213,7 @@ async function loadPublicAwardPageData(
     officialHomepage: displayHomepageForAward(award.official_homepage, officialSources),
     lastCheckedAt: latestCheckedAt(officialSources),
     sources: publicSources,
-    changes: officialChanges.slice(0, 8).map((change) => ({
+    changes: limitedChanges.map((change) => ({
       id: change.id,
       sourceId: change.shared_award_source_id,
       sourceTitle: readableSourceTitle(change.source_title, change.source_url),
@@ -282,39 +222,9 @@ async function loadPublicAwardPageData(
       summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
       changeDetails: change.change_details,
       detectedAt: change.detected_at,
+      unread: unreadChangeIds ? unreadChangeIds.has(change.id) : true,
     })),
   };
-}
-
-async function loadOpenSourceRowsForSitemap(limit: number) {
-  const admin = createSupabaseAdminClient();
-  const rows: SharedSourceRow[] = [];
-  for (let from = 0; rows.length < limit; from += 1000) {
-    const { data, error } = await admin
-      .from("shared_award_sources")
-      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_type, last_checked_at")
-      .eq("admin_review_status", "open")
-      .order("shared_award_id", { ascending: true })
-      .order("page_type", { ascending: true })
-      .order("created_at", { ascending: true })
-      .range(from, from + 999);
-    if (error) return rows;
-    rows.push(...((data || []) as SharedSourceRow[]));
-    if (!data || data.length < 1000) break;
-  }
-  return rows.slice(0, limit);
-}
-
-function normalizeUrl(value: string | null | undefined) {
-  try {
-    const url = new URL(value || "");
-    url.hash = "";
-    url.search = "";
-    url.pathname = url.pathname.replace(/\/+$/g, "") || "/";
-    return url.toString().toLowerCase();
-  } catch {
-    return String(value || "").trim().toLowerCase();
-  }
 }
 
 function embeddedSharedAward(value: unknown): SharedAwardRow | null {

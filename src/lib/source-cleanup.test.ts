@@ -114,6 +114,50 @@ describe("post-crawl source cleanup classification", () => {
 
     expect(actionFor(rows, "login-pdf")?.action).toBe(cleanupActions.safeToRemove);
   });
+
+  it("removes generic category and search shaped sources even with award-ish words", () => {
+    const rows = [
+      source({
+        id: "category",
+        url: "https://usascholarships.com/category/scholarships/scholarships-by-major/engineering/",
+        title: "engineering",
+        page_type: "homepage",
+      }),
+      source({
+        id: "search",
+        url: "https://example.org/?s=fellowship",
+        title: "Search results",
+        page_type: "application",
+      }),
+      source({ id: "good", url: "https://example.org/current", title: "Current award page" }),
+    ];
+
+    expect(actionFor(rows, "category")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "category")?.reason).toBe("generic_source_shape");
+    expect(actionFor(rows, "search")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "search")?.reason).toBe("generic_source_shape");
+  });
+
+  it("does not mistake research pages or detail URLs for generic search shapes", () => {
+    const rows = [
+      source({
+        id: "research",
+        url: "https://centerformodernhealth.org/research.php",
+        title: "Research",
+        page_type: "other",
+      }),
+      source({
+        id: "daad-detail",
+        url: "https://www.daad.org/de/foerderung-finden/stipendiendatenbank/?type=a&q=&detail_to_show=50026200",
+        title: "Studienstipendien - Masterstudium",
+        page_type: "other",
+      }),
+      source({ id: "good", url: "https://example.org/current", title: "Current award page" }),
+    ];
+
+    expect(actionFor(rows, "research")?.action).toBe(cleanupActions.noAction);
+    expect(actionFor(rows, "daad-detail")?.action).toBe(cleanupActions.noAction);
+  });
 });
 
 describe("source consolidation classification", () => {
@@ -227,5 +271,67 @@ describe("source consolidation classification", () => {
         { ...award, name: "Equal Justice America - Fellowships for Law Students" },
       ),
     ).toMatchObject({ action: "review_later", reason: "profile_or_school_spillover" });
+  });
+
+  it("rejects generic category and search shaped sources while keeping tabbed award details", () => {
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "category",
+          url: "https://usascholarships.com/category/scholarships/scholarships-by-major/engineering/",
+          title: "engineering",
+          page_type: "homepage",
+        }),
+        { ...award, name: "US Pharmacopeia Research Fellowship" },
+      ),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "search",
+          url: "https://www.nlm.nih.gov/services/guidelinesearch.html",
+          title: "details",
+          page_type: "other",
+        }),
+        { ...award, name: "Associate Fellowship Program" },
+      ),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "tab",
+          url: "https://www.simonsfoundation.org/grant/simons-graduate-fellowships-in-ecology-and-evolution/?tab=how-to-apply",
+          title: "How to Apply",
+          page_type: "application",
+        }),
+        { ...award, name: "Simons Foundation - Graduate Fellowship in Ecology and Evolution" },
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "research",
+          url: "https://centerformodernhealth.org/research.php",
+          title: "Research",
+          page_type: "other",
+        }),
+        { ...award, name: "Center for Modern Health Summer Fellowship" },
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "daad-detail",
+          url: "https://www.daad.org/de/foerderung-finden/stipendiendatenbank/?type=a&q=&detail_to_show=50026200",
+          title: "Studienstipendien - Masterstudium",
+          page_type: "other",
+        }),
+        { ...award, name: "Graduate Study Scholarship Master Studies in Germany" },
+      ).action,
+    ).toBe("keep");
   });
 });

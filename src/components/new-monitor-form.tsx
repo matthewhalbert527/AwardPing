@@ -47,7 +47,7 @@ export function NewMonitorForm() {
         <div>
           <h2 className="dashboard-panel-title">Track exact URL</h2>
           <p className="dashboard-panel-copy">
-            Add a deadline, application, eligibility, instruction, or PDF page that is not in the database yet.
+            Add a deadline, application, eligibility, instruction, or PDF page that is not in the directory yet.
           </p>
         </div>
         <button

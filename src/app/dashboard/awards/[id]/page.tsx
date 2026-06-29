@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowLeft, ChevronDown, ExternalLink, ListChecks } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import { SourcePageTree } from "@/components/source-page-tree";
 import { SetupNotice } from "@/components/setup-notice";
 import { TrackSharedAwardButton } from "@/components/track-shared-award-button";
@@ -80,7 +80,7 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
           Back to find awards
         </Link>
         <div className="card mt-6 rounded-3xl p-6 text-[var(--muted)]">
-          Award was not found in the shared database.
+          Award was not found in the shared directory.
         </div>
       </div>
     );
@@ -143,6 +143,7 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
       <main className="award-detail-record award-detail-record-console" id="award-source-record">
         <SourcePageTree
           groupByHost={false}
+          initiallyExpanded={false}
           initialSelectedSourceId={query.source || undefined}
           layout="split"
           selectedChangeId={query.change || undefined}
@@ -230,7 +231,9 @@ function AwardBaselineDetails({
     <div className="award-detail-facts">
       {parts.overview && <p className="award-detail-summary-copy">{parts.overview}</p>}
       {compactFacts.length > 0 && (
-        <dl className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}>
+        <dl
+          className={`award-detail-fact-grid ${parts.overview ? "award-detail-fact-grid-spaced" : ""}`}
+        >
           {compactFacts.map((fact) => (
             <div className="award-detail-fact" key={fact.label}>
               <dt>{fact.label}</dt>
@@ -255,59 +258,51 @@ function AwardDetailSidebarIntro({
   return (
     <>
       <div className="public-award-sidebar-header award-detail-sidebar-header">
-        <p>Award outline</p>
-      </div>
-
-      <div className="public-award-sidebar-card public-award-sidebar-page-card">
-        <ListChecks size={24} aria-hidden="true" />
-        <strong>Page outline</strong>
-      </div>
-
-      <details className="public-award-nav-group award-detail-sidebar-profile" open>
-        <summary>
-          <ChevronDown size={15} aria-hidden="true" />
-          <span>Award profile</span>
-        </summary>
-        <div className="public-award-nav-list">
-          <a className="public-award-nav-button public-award-nav-button-profile" href="#award-overview">
-            <span className="public-award-nav-marker" aria-hidden="true" />
-            <span className="public-award-nav-text">
-              <strong>Overview</strong>
-              <small>{countLabel(sourceCount, "source")}</small>
-            </span>
-          </a>
-          <a className="public-award-nav-button public-award-nav-button-profile" href="#award-key-details">
-            <span className="public-award-nav-marker" aria-hidden="true" />
-            <span className="public-award-nav-text">
-              <strong>Key details</strong>
-              <small>{countLabel(factCount, "field")}</small>
-            </span>
-          </a>
-          <a
-            className={`public-award-nav-button public-award-nav-button-profile ${recentChangeCount > 0 ? "public-award-nav-button-updated" : ""}`}
-            href="#award-source-record"
-          >
-            <span className="public-award-nav-marker" aria-hidden="true" />
-            <span className="public-award-nav-text">
-              <strong>Recent changes</strong>
-              <small>{countLabel(recentChangeCount, "update")}</small>
-            </span>
-            {recentChangeCount > 0 && (
-              <span className="public-award-update-count" aria-label="Recent updates" />
-            )}
-          </a>
+        <div>
+          <p>Award outline</p>
+          <span>{countLabel(sourceCount, "source")}</span>
         </div>
-      </details>
+      </div>
+
+      <div className="public-award-nav-section award-detail-sidebar-profile" aria-label="Award profile">
+        <p className="public-award-nav-heading">Award profile</p>
+        <a className="public-award-nav-button public-award-nav-button-profile" href="#award-overview">
+          <span className="public-award-nav-marker" aria-hidden="true" />
+          <span className="public-award-nav-text">
+            <strong>Overview</strong>
+            <small>{countLabel(sourceCount, "source")}</small>
+          </span>
+        </a>
+        <a className="public-award-nav-button public-award-nav-button-profile" href="#award-key-details">
+          <span className="public-award-nav-marker" aria-hidden="true" />
+          <span className="public-award-nav-text">
+            <strong>Key details</strong>
+            <small>{countLabel(factCount, "field")}</small>
+          </span>
+        </a>
+        <a
+          className={`public-award-nav-button public-award-nav-button-profile ${recentChangeCount > 0 ? "public-award-nav-button-updated" : ""}`}
+          href="#award-source-record"
+        >
+          <span className="public-award-nav-marker" aria-hidden="true" />
+          <span className="public-award-nav-text">
+            <strong>Recent changes</strong>
+            <small>{countLabel(recentChangeCount, "update")}</small>
+          </span>
+          {recentChangeCount > 0 && (
+            <span className="public-award-update-count" aria-label="Recent updates" />
+          )}
+        </a>
+      </div>
     </>
   );
 }
 
 function AwardDetailSidebarFooter({ lastCheckedAt }: { lastCheckedAt: string | null }) {
   return (
-    <div className="public-award-sidebar-card public-award-sidebar-last-checked">
-      <span>Last checked</span>
-      <strong>{lastCheckedAt ? formatShortDate(lastCheckedAt) : "Pending"}</strong>
-    </div>
+    <p className="award-detail-sidebar-footer">
+      Checked <strong>{lastCheckedAt ? formatShortDate(lastCheckedAt) : "pending"}</strong>
+    </p>
   );
 }
 

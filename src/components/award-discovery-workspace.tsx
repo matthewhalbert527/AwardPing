@@ -252,9 +252,9 @@ export function AwardDiscoveryWorkspace({
       <section className="update-filter-panel">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <p className="dashboard-label">Award database</p>
+            <p className="dashboard-label">Award directory</p>
             <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
-              Search the shared source database first. Browse alphabetically only when you need to explore.
+              Search the shared award directory first. Browse alphabetically only when you need to explore.
             </p>
           </div>
           <div className="update-feed-stats">
@@ -272,7 +272,7 @@ export function AwardDiscoveryWorkspace({
             }
           }}
         >
-          <label className="dashboard-label" htmlFor="award-database-search">
+          <label className="dashboard-label" htmlFor="award-directory-search">
             Search awards
           </label>
           <div className="award-search-control mt-2">
@@ -282,7 +282,7 @@ export function AwardDiscoveryWorkspace({
               aria-hidden="true"
             />
             <input
-              id="award-database-search"
+              id="award-directory-search"
               className="input input-with-leading-icon award-search-input"
               placeholder="Goldwater, Fulbright, NSF GRFP..."
               value={query}
@@ -343,7 +343,7 @@ export function AwardDiscoveryWorkspace({
                 ))}
                 {matches.length === 0 && (
                   <p className="award-search-empty">
-                    No matching database award yet.
+                    No matching award yet.
                   </p>
                 )}
               </div>

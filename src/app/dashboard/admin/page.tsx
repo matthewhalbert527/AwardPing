@@ -30,6 +30,14 @@ type BaselinePace = {
   elapsedLabel: string;
 };
 
+type GeminiApiHealth = {
+  label: string;
+  metricDetail: string;
+  errorDetail: string;
+  attention: boolean;
+  blocked: boolean;
+};
+
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
@@ -194,6 +202,7 @@ export default async function AdminPage() {
     latestPageInfoBatchRequests,
     numberFromObject(latestPageInfoGeminiUsage, "calls") + latestPageInfoBatchFailures,
   );
+  const latestPageInfoBatchReturned = latestPageInfoBatchCompleted;
   const latestPageInfoBatchPending = Math.max(
     0,
     latestPageInfoBatchRequests - latestPageInfoBatchCompleted,
@@ -213,6 +222,22 @@ export default async function AdminPage() {
     numberFromObject(latestPageInfoCounts, "skipped_ineligible");
   const latestPageInfoRunCompleted = latestPageInfoProcessed + latestPageInfoSkipped;
   const latestPageInfoRunPercent = percent(latestPageInfoRunCompleted, latestPageInfoLoaded);
+  const latestPageInfoApiMode =
+    stringFromObject(latestPageInfoGeminiUsage, "api_mode") ||
+    stringFromObject(latestPageInfoOptions, "gemini_api_mode") ||
+    "immediate";
+  const latestPageInfoIsBatch = latestPageInfoApiMode.toLowerCase() === "batch";
+  const latestPageInfoWorkerState = pageInfoWorkerState({
+    run: latestPageInfoRun,
+    apiMode: latestPageInfoApiMode,
+    health: latestPageInfoGeminiApiHealth,
+    batchJobs: latestPageInfoBatchJobs,
+    batchRequests: latestPageInfoBatchRequests,
+    batchReturned: latestPageInfoBatchReturned,
+    batchPending: latestPageInfoBatchPending,
+    applied: latestPageInfoApplied,
+    failed: numberFromObject(latestPageInfoExtraction, "failed") || latestPageInfoRun?.failed_count || 0,
+  });
   const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
   const latestBaselinePace = baselinePaceFromMetadata(
     latestVisualRun,
@@ -378,8 +403,8 @@ export default async function AdminPage() {
               <Sparkles size={18} aria-hidden="true" />
               <h2>Gemini page information</h2>
             </div>
-            <span className={latestPageInfoGeminiApiHealth.attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-              {latestPageInfoGeminiApiHealth.label}
+            <span className={latestPageInfoWorkerState.attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {latestPageInfoWorkerState.label}
             </span>
           </div>
           <div className="admin-progress-stack">
@@ -389,28 +414,48 @@ export default async function AdminPage() {
               detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active source pages have extracted page facts.`}
             />
           </div>
+          <div className="admin-flow-list admin-flow-list-compact">
+            <PipelineRow
+              icon={Clock3}
+              title="Current worker"
+              detail={latestPageInfoWorkerState.detail}
+              status={formatApiMode(latestPageInfoApiMode)}
+              attention={latestPageInfoWorkerState.attention}
+            />
+          </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Pages with info" value={activeSourceMetadataTotal} />
             <MiniStat label="Pages missing info" value={activeSourceMetadataMissing} attention={activeSourceMetadataMissing > 0} />
-            <MiniStat label="Batch pending" value={latestPageInfoBatchPending} attention={latestPageInfoBatchPending > 0} />
-            <MiniStat label="Batch failed" value={latestPageInfoBatchFailures} attention={latestPageInfoBatchFailures > 0} />
-            <MiniStat label="API calls" value={numberFromObject(latestPageInfoGeminiUsage, "calls")} />
-            <MiniStat label="API cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
+            {latestPageInfoIsBatch ? (
+              <>
+                <MiniStat label="Batch jobs" value={latestPageInfoBatchJobs} />
+                <MiniStat label="Requests queued" value={latestPageInfoBatchRequests} attention={latestPageInfoBatchPending > 0} />
+                <MiniStat label="Requests returned" value={latestPageInfoBatchReturned} />
+                <MiniStat label="Requests waiting" value={latestPageInfoBatchPending} attention={latestPageInfoBatchPending > 0} />
+              </>
+            ) : (
+              <>
+                <MiniStat label="API calls" value={numberFromObject(latestPageInfoGeminiUsage, "calls")} />
+                <MiniStat label="API status" value={latestPageInfoGeminiApiHealth.label} attention={latestPageInfoGeminiApiHealth.attention} />
+              </>
+            )}
+            <MiniStat label="Facts applied" value={latestPageInfoApplied} />
+            <MiniStat label="Run cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
           </div>
           <DetailDisclosure label="More Gemini details">
             <div className="admin-progress-stack">
               {latestPageInfoBatchRequests > 0 && (
                 <ProgressBar
-                  label="Current batch completion"
+                  label="Current batch return"
                   value={latestPageInfoBatchPercent}
-                  detail={`${formatNumber(latestPageInfoBatchCompleted)} of ${formatNumber(latestPageInfoBatchRequests)} batch requests complete; ${formatNumber(latestPageInfoBatchPending)} pending.`}
+                  detail={`${formatNumber(latestPageInfoBatchReturned)} of ${formatNumber(latestPageInfoBatchRequests)} submitted requests have returned from Gemini; ${formatNumber(latestPageInfoBatchPending)} are still queued or running.`}
                 />
               )}
               {latestPageInfoLoaded > 0 && (
                 <ProgressBar
                   label="Latest page-info run"
                   value={latestPageInfoRunPercent}
-                  detail={`${formatNumber(latestPageInfoRunCompleted)} of ${formatNumber(latestPageInfoLoaded)} loaded local baselines processed in this run.`}
+                  detail={`${formatNumber(latestPageInfoRunCompleted)} of ${formatNumber(latestPageInfoLoaded)} loaded local baselines have been applied or skipped. Submitted-but-waiting batch requests are not counted here yet.`}
                 />
               )}
             </div>
@@ -419,13 +464,15 @@ export default async function AdminPage() {
               <MiniStat label="Applied" value={latestPageInfoApplied} />
               <MiniStat label="Batch jobs" value={latestPageInfoBatchJobs} />
               <MiniStat label="Batch submitted" value={latestPageInfoBatchRequests} />
-              <MiniStat label="Batch complete" value={latestPageInfoBatchCompleted} />
+              <MiniStat label="Batch returned" value={latestPageInfoBatchReturned} />
+              <MiniStat label="Batch failed" value={latestPageInfoBatchFailures} attention={latestPageInfoBatchFailures > 0} />
               <MiniStat label="Cost cap" value={formatApiCostCap(latestPageInfoOptions)} />
             </div>
             <dl className="admin-detail-grid admin-detail-grid-tight">
               <Detail label="Provider" value={latestPageInfoStatusRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
               <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestPageInfoMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
-              <Detail label="API mode" value={stringFromObject(latestPageInfoGeminiUsage, "api_mode") || stringFromObject(latestPageInfoOptions, "gemini_api_mode") || "Immediate"} />
+              <Detail label="API mode" value={formatApiMode(latestPageInfoApiMode)} />
+              <Detail label="Batch accounting" value="Queued requests count when submitted; returned/applied counts update only after Gemini finishes a batch job." />
               <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestPageInfoStatusRun?.status === "running" ? "On" : "Off"} />
               {latestPageInfoGeminiApiHealth.errorDetail && (
                 <Detail label="Last API error" value={latestPageInfoGeminiApiHealth.errorDetail} />
@@ -786,6 +833,100 @@ function visualRunStage(run: LocalWorkerRun | null, metadata: Record<string, unk
   return "Running";
 }
 
+function pageInfoWorkerState({
+  run,
+  apiMode,
+  health,
+  batchJobs,
+  batchRequests,
+  batchReturned,
+  batchPending,
+  applied,
+  failed,
+}: {
+  run: LocalWorkerRun | null;
+  apiMode: string;
+  health: GeminiApiHealth;
+  batchJobs: number;
+  batchRequests: number;
+  batchReturned: number;
+  batchPending: number;
+  applied: number;
+  failed: number;
+}) {
+  if (!run) {
+    return {
+      label: "No run logged",
+      detail: "No page-info worker run has been recorded yet.",
+      attention: false,
+    };
+  }
+  if (run.status === "failed") {
+    return {
+      label: "Worker failed",
+      detail: "The latest page-info worker stopped with an error. Open details for the latest API or worker error.",
+      attention: true,
+    };
+  }
+  if (health.blocked) {
+    return {
+      label: "API blocked",
+      detail: health.metricDetail,
+      attention: true,
+    };
+  }
+
+  const mode = apiMode.toLowerCase();
+  if (mode === "batch") {
+    if (run.status === "succeeded") {
+      return {
+        label: "Batch run finished",
+        detail: `${formatNumber(batchReturned)} of ${formatNumber(batchRequests)} submitted requests returned; ${formatNumber(applied)} facts were applied and ${formatNumber(failed)} failed in this run.`,
+        attention: failed > 0,
+      };
+    }
+    if (batchRequests <= 0) {
+      return {
+        label: "Preparing batch",
+        detail: "The worker is loading eligible local baselines and assembling the next Gemini Batch request group.",
+        attention: false,
+      };
+    }
+    if (batchReturned <= 0) {
+      return {
+        label: "Batch queued",
+        detail: `${formatNumber(batchRequests)} requests have been submitted across ${formatNumber(batchJobs)} Gemini Batch jobs. No responses have returned yet, so no new facts have been applied from this batch group.`,
+        attention: false,
+      };
+    }
+    if (batchPending > 0) {
+      return {
+        label: "Batch returning",
+        detail: `${formatNumber(batchReturned)} requests have returned from Gemini and ${formatNumber(batchPending)} are still queued or running. ${formatNumber(applied)} facts have been applied so far in this run.`,
+        attention: failed > 0,
+      };
+    }
+    return {
+      label: "Applying results",
+      detail: `All ${formatNumber(batchRequests)} submitted batch requests have returned; the worker is applying facts and writing run metadata.`,
+      attention: failed > 0,
+    };
+  }
+
+  if (run.status === "succeeded") {
+    return {
+      label: "Run finished",
+      detail: `${formatNumber(applied)} page facts were applied in the latest immediate-mode run.`,
+      attention: failed > 0,
+    };
+  }
+  return {
+    label: health.label === "Ready, no calls this run" ? "Immediate running" : health.label,
+    detail: `${formatNumber(applied)} page facts have been applied in this immediate-mode run. ${health.metricDetail}.`,
+    attention: health.attention || failed > 0,
+  };
+}
+
 function geminiCapReached(options: Record<string, unknown>, usage: Record<string, unknown>) {
   const cap = numberFromObject(options, "gemini_cli_max_calls");
   if (cap <= 0) return false;
@@ -858,6 +999,13 @@ function formatCap(options: Record<string, unknown>) {
 function formatApiCostCap(options: Record<string, unknown>) {
   const cap = numberFromObjectFloat(options, "gemini_api_daily_cost_cap_usd");
   return cap > 0 ? `$${formatUsd(cap)}` : "No cap";
+}
+
+function formatApiMode(value: string) {
+  const mode = value.trim().toLowerCase();
+  if (mode === "batch") return "Batch API";
+  if (mode === "immediate") return "Immediate API";
+  return value || "Unknown mode";
 }
 
 function formatDate(value: string) {

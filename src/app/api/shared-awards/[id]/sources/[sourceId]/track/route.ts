@@ -163,7 +163,7 @@ function validateSetup() {
 
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
-      { error: "Shared award database is not configured." },
+      { error: "Shared award directory is not configured." },
       { status: 503 },
     );
   }

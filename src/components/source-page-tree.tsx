@@ -61,6 +61,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   renderSourceActions,
   showSnapshotActions = true,
   layout = "inline",
+  initiallyExpanded,
   groupByHost = true,
   splitDetailIntro,
   splitSidebarFooter,
@@ -78,6 +79,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   renderSourceActions?: (source: T) => ReactNode;
   showSnapshotActions?: boolean;
   layout?: "inline" | "split";
+  initiallyExpanded?: boolean;
   groupByHost?: boolean;
   splitDetailIntro?: ReactNode;
   splitSidebarFooter?: ReactNode;
@@ -105,7 +107,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
   );
   const initialReadSourceIdRef = useRef<string | null>(null);
   const [openNodes, setOpenNodes] = useState<Set<string>>(() =>
-    layout === "split" ? new Set(expandableIds.nodeIds) : new Set(),
+    (initiallyExpanded ?? layout === "split") ? new Set(expandableIds.nodeIds) : new Set(),
   );
   const [openSources, setOpenSources] = useState<Set<string>>(() => new Set());
   const [selectedSourceId, setSelectedSourceId] = useState<string | null>(
@@ -237,7 +239,7 @@ export function SourcePageTree<T extends SourcePageTreeSource>({
           <details className="source-tree-sidebar-group" open>
             <summary>
               <ChevronDown size={15} aria-hidden="true" />
-              <span>Official sources</span>
+              <span>Sources</span>
             </summary>
             <div className="source-tree-sidebar-list">
               {controls}
@@ -308,6 +310,7 @@ function renderNode<T extends SourcePageTreeSource>({
   const hasChildren = node.children.length > 0;
   const leafOnly = !hasChildren && node.directSources.length === node.sources.length;
   const open = openNodes.has(node.id);
+  const unreadCount = unreadChangeIdsForSources(node.sources, readChangeIds).length;
 
   if (leafOnly) {
     return node.directSources.map((source) => (
@@ -356,6 +359,9 @@ function renderNode<T extends SourcePageTreeSource>({
           )}
           <FolderTree size={17} aria-hidden="true" />
           <span className="source-tree-branch-title">{node.label}</span>
+          {unreadCount > 0 && (
+            <span className="source-tree-unread-badge" aria-label="Recent updates" />
+          )}
         </button>
 
         {canManage && (onTrackSources || onUntrackSources) && (
@@ -827,6 +833,15 @@ function unreadChangeIdsForSource<T extends SourcePageTreeSource>(
   return (source.latestChanges || [])
     .filter((change) => change.unread && !readChangeIds.has(change.id))
     .map((change) => change.id);
+}
+
+function unreadChangeIdsForSources<T extends SourcePageTreeSource>(
+  sources: T[],
+  readChangeIds: Set<string>,
+) {
+  return [
+    ...new Set(sources.flatMap((source) => unreadChangeIdsForSource(source, readChangeIds))),
+  ];
 }
 
 function postReadChangeIds(changeIds: string[]) {

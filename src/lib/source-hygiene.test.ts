@@ -131,6 +131,56 @@ describe("source hygiene classifier", () => {
     ).toMatchObject({ action: "keep" });
   });
 
+  it("rejects generic tag, category, and search result source shapes", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://usascholarships.com/category/scholarships/scholarships-by-major/engineering/",
+        title: "engineering",
+        award_name: "US Pharmacopeia Research Fellowship",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://example.org/tag/scholarship/",
+        title: "Scholarship",
+        award_name: "Example Scholarship",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.nlm.nih.gov/services/guidelinesearch.html",
+        title: "details",
+        award_name: "Associate Fellowship Program",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://example.org/?s=fellowship",
+        title: "Search results",
+        award_name: "Example Fellowship",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://centerformodernhealth.org/research.php",
+        title: "Research",
+        award_name: "Center for Modern Health Summer Fellowship",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.daad.org/de/foerderung-finden/stipendiendatenbank/?type=a&q=&detail_to_show=50026200",
+        title: "Studienstipendien - Masterstudium",
+        award_name: "Graduate Study Scholarship Master Studies in Germany",
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
+
   it("rejects publication, transcript, catalog collection, and general article spillover", () => {
     expect(
       shouldRejectDiscoveredSource({
@@ -383,5 +433,75 @@ describe("source hygiene classifier", () => {
         award_name: "CEAIE Teach In China Program",
       }),
     ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+  });
+
+  it("rejects recent bad source shapes found in published update audits", () => {
+    const crossProgramExamples = [
+      {
+        url: "https://www.fields.utoronto.ca/activities/thematic",
+        title: "thematic programs",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.nsf.gov/funding/programs.jsp?org=SBE",
+        title: "NSF Directorate of Social, Behavioral and Economic Sciences",
+        award_name: "National Science Foundation (NSF) - Arctic Doctoral Dissertation Improvement Grant",
+      },
+      {
+        url: "https://www.fastlane.nsf.gov/fastlane.jsp",
+        title: "FastLane",
+        award_name: "National Science Foundation (NSF) - Atmospheric and Geospace Sciences (AGS) Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.ncbi.nlm.nih.gov/books/n/cd/standards/",
+        title: "Standards and Guidelines",
+        award_name: "Associate Fellowship Program",
+      },
+      {
+        url: "https://www.postdocs.ubc.ca/awards-funding",
+        title: "Awards & Funding",
+        award_name: "University of British Columbia (UBC) - Killam Postdoctoral Fellowship",
+      },
+      {
+        url: "https://croucher.org.hk/hk/funding/study-awards/croucher-science-communication-studentships",
+        title: "Croucher Science Communication Studentships",
+        award_name: "Croucher Foundation - Doctoral Scholarship for Students from Hong Kong",
+      },
+      {
+        url: "https://www.costumesocietyamerica.com/csa-betty-kirke-excellence-in-research-award",
+        title: "Betty Kirke Excellence In Research Award",
+        award_name: "Costume Society of America (CSA) - Stella Blum Student Research Travel Grant",
+      },
+      {
+        url: "https://pgfusa.org/2022-awards-program/",
+        title: "2022 Awards Program",
+        award_name: "Princess Grace Awards Program",
+      },
+      {
+        url: "https://www.lung.org/get-involved/ways-to-give/donation-faq?form=FUNUKYZBMGT",
+        title: "Monthly",
+        award_name: "American Lung Association Research Grants",
+      },
+      {
+        url: "https://seg.org/programs/student-programs/seg-evolve/",
+        title: "SEG EVOLVE Carbon Solutions Application",
+        award_name: "Society of Exploration Geophysicists (SEG) Foundation - Scholarships",
+      },
+    ];
+
+    for (const example of crossProgramExamples) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://members.shafr.org/index.php?option=com_jevents&task=month.calendar&Itemid=115&year=2026&month=06&day=03",
+        title: "Upcoming Events",
+        award_name: "Society for Historians of American Foreign Relations (SHAFR) - Dissertation Grants",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "non_award_source" });
   });
 });

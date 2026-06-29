@@ -1,10 +1,7 @@
 import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
-import { PublicAwardWorkspace } from "@/components/public-award-workspace";
-import { SiteFooter } from "@/components/site-footer";
-import { SiteHeader } from "@/components/site-header";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
-import { getPublicAwardSourcePageBySlugs } from "@/lib/public-award-pages";
+import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
 
 export const dynamic = "force-dynamic";
 
@@ -13,46 +10,30 @@ type Props = {
 };
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { slug, sourceSlug } = await params;
+  const { slug } = await params;
   if (!hasSupabaseAdminConfig()) return {};
 
-  const data = await getPublicAwardSourcePageBySlugs(slug, sourceSlug).catch(() => null);
+  const data = await getPublicAwardPageBySlug(slug).catch(() => null);
   if (!data) return {};
 
-  const description =
-    data.source.description ||
-    `${data.source.title} details, official link, and recent updates for ${data.award.name}.`;
-
   return {
-    title: `${data.source.title} | ${data.award.name} | AwardPing`,
-    description: truncate(description, 155),
+    title: `${data.award.name} | AwardPing`,
+    description: data.metaDescription,
     alternates: {
-      canonical: `${appConfig.url}${data.source.publicPath}`,
+      canonical: `${appConfig.url}${data.canonicalPath}`,
+    },
+    robots: {
+      index: false,
+      follow: true,
     },
   };
 }
 
 export default async function PublicAwardSourcePage({ params }: Props) {
-  const { slug, sourceSlug } = await params;
+  const { slug } = await params;
   if (!hasSupabaseAdminConfig()) notFound();
 
-  const data = await getPublicAwardSourcePageBySlugs(slug, sourceSlug).catch(() => null);
+  const data = await getPublicAwardPageBySlug(slug).catch(() => null);
   if (!data) notFound();
-  if (data.redirectPath) redirect(data.redirectPath);
-
-  return (
-    <div className="page-shell public-award-shell">
-      <SiteHeader />
-      <main className="public-award-console-wrap">
-        <PublicAwardWorkspace data={data} initialSourceId={data.source.id} />
-      </main>
-      <SiteFooter />
-    </div>
-  );
-}
-
-function truncate(value: string, length: number) {
-  const clean = value.replace(/\s+/g, " ").trim();
-  if (clean.length <= length) return clean;
-  return `${clean.slice(0, length - 1).replace(/\s+\S*$/, "")}...`;
+  redirect(data.redirectPath || data.canonicalPath);
 }

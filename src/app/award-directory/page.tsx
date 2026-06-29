@@ -62,7 +62,7 @@ export default async function AwardDirectoryPage() {
       <SiteHeader />
       <main className="mx-auto max-w-6xl px-5 py-10 lg:py-12">
         <div className="mb-5 max-w-3xl">
-          <h1 className="text-4xl font-black md:text-5xl">Explore the award database</h1>
+          <h1 className="text-4xl font-black md:text-5xl">Explore the award directory</h1>
           <p className="mt-3 text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
             Search the awards AwardPing already checks. Expand any award to see
             its official source tree and recent update history.

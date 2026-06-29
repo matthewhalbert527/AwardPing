@@ -26,7 +26,7 @@ const goldwater: SharedAwardCard = {
 };
 
 describe("AwardDiscoveryWorkspace", () => {
-  it("shows a canonical public page link for signed-in award database rows", () => {
+  it("shows a canonical public page link for signed-in award directory rows", () => {
     const html = renderToStaticMarkup(
       createElement(AwardDiscoveryWorkspace, {
         canManage: false,

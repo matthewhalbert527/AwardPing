@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 import { hasSupabaseAdminConfig } from "@/lib/config";
-import { getPublicAwardSitemapRows, getPublicAwardSourceSitemapRows } from "@/lib/public-award-pages";
+import { getPublicAwardSitemapRows } from "@/lib/public-award-pages";
 import { seoPages } from "@/lib/seo-pages";
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
@@ -20,9 +20,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const awardRows = hasSupabaseAdminConfig()
     ? await getPublicAwardSitemapRows().catch(() => [])
     : [];
-  const awardSourceRows = hasSupabaseAdminConfig()
-    ? await getPublicAwardSourceSitemapRows().catch(() => [])
-    : [];
 
   return [
     ...staticRoutes.map((route) => ({
@@ -36,10 +33,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ...awardRows.map((award) => ({
       url: `${baseUrl}${award.urlPath}`,
       lastModified: award.updatedAt ? new Date(award.updatedAt) : new Date(),
-    })),
-    ...awardSourceRows.map((source) => ({
-      url: `${baseUrl}${source.urlPath}`,
-      lastModified: source.updatedAt ? new Date(source.updatedAt) : new Date(),
     })),
   ];
 }

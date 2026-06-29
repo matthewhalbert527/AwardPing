@@ -17,7 +17,6 @@ import type { PublicAwardPageData } from "@/lib/public-award-pages";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
-  initialSourceId?: string | null;
 };
 
 type SelectedPanel =
@@ -26,13 +25,19 @@ type SelectedPanel =
   | { kind: "changes" }
   | { kind: "source"; sourceId: string };
 
-export function PublicAwardWorkspace({
-  data,
-  initialSourceId = null,
-}: PublicAwardWorkspaceProps) {
+type PublicAwardSource = PublicAwardPageData["sources"][number];
+type PublicAwardChange = PublicAwardPageData["changes"][number];
+type SourceOutlineSection = {
+  key: string;
+  label: string;
+  sources: PublicAwardSource[];
+};
+
+export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [selected, setSelected] = useState<SelectedPanel>(() =>
-    initialSourceId ? { kind: "source", sourceId: initialSourceId } : { kind: "overview" },
+  const [selected, setSelected] = useState<SelectedPanel>({ kind: "overview" });
+  const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
+    () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
   const selectedSource =
     selected.kind === "source"
@@ -67,7 +72,50 @@ export function PublicAwardWorkspace({
     }
     return counts;
   }, [data.changes, data.sources]);
+  const sourceUnreadCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const source of data.sources) {
+      counts.set(
+        source.id,
+        data.changes.filter(
+          (change) =>
+            isChangeForSource(change, source) &&
+            isUnreadChange(change, readChangeIds),
+        ).length,
+      );
+    }
+    return counts;
+  }, [data.changes, data.sources, readChangeIds]);
+  const sourceSections = useMemo(() => groupSourcesByOutlineSection(data.sources), [data.sources]);
+  const unreadChangeCount = useMemo(
+    () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
+    [data.changes, readChangeIds],
+  );
   const factRows = awardFactRows(data.facts);
+  const markChangesRead = (changeIds: string[]) => {
+    const uniqueIds = [...new Set(changeIds)].filter(Boolean);
+    if (uniqueIds.length === 0) return;
+    setReadChangeIds((current) => new Set([...current, ...uniqueIds]));
+    postReadChangeIds(uniqueIds);
+  };
+  const selectSource = (sourceId: string) => {
+    const source = data.sources.find((candidate) => candidate.id === sourceId);
+    if (!source) return;
+    markChangesRead(
+      data.changes
+        .filter((change) => isChangeForSource(change, source) && isUnreadChange(change, readChangeIds))
+        .map((change) => change.id),
+    );
+    setSelected({ kind: "source", sourceId });
+  };
+  const selectChanges = () => {
+    markChangesRead(
+      data.changes
+        .filter((change) => isUnreadChange(change, readChangeIds))
+        .map((change) => change.id),
+    );
+    setSelected({ kind: "changes" });
+  };
 
   return (
     <div className={`public-award-console ${sidebarOpen ? "" : "public-award-console-collapsed"}`}>
@@ -75,6 +123,7 @@ export function PublicAwardWorkspace({
         <div className="public-award-sidebar-header">
           <div className="min-w-0">
             <p>Award outline</p>
+            <span>{data.lastCheckedAt ? `Checked ${formatDate(data.lastCheckedAt)}` : "Check pending"}</span>
           </div>
           <button
             aria-label={sidebarOpen ? "Collapse page outline" : "Expand page outline"}
@@ -90,65 +139,41 @@ export function PublicAwardWorkspace({
           </button>
         </div>
 
-        <div className="public-award-sidebar-card public-award-sidebar-page-card">
-          <ListChecks size={24} aria-hidden="true" />
-          <strong>Page outline</strong>
+        <div className="public-award-nav-section" aria-label="Award profile">
+          <p className="public-award-nav-heading">Award profile</p>
+          <PanelButton
+            active={selected.kind === "overview"}
+            label="Overview"
+            meta={countLabel(data.sources.length, "source")}
+            onClick={() => setSelected({ kind: "overview" })}
+          />
+          <PanelButton
+            active={selected.kind === "facts"}
+            label="Key details"
+            meta={countLabel(factRows.length, "field")}
+            onClick={() => setSelected({ kind: "facts" })}
+          />
+          <PanelButton
+            active={selected.kind === "changes"}
+            label="Recent changes"
+            meta={countLabel(data.changes.length, "update")}
+            onClick={selectChanges}
+            updateCount={unreadChangeCount}
+          />
         </div>
 
-        <details className="public-award-nav-group" open>
-          <summary>
-            <ChevronDown size={15} aria-hidden="true" />
-            <span>Award profile</span>
-          </summary>
-          <div className="public-award-nav-list">
-            <PanelButton
-              active={selected.kind === "overview"}
-              label="Overview"
-              meta={countLabel(data.sources.length, "source")}
-              onClick={() => setSelected({ kind: "overview" })}
+        <div className="public-award-nav-section" aria-label="Official sources">
+          <p className="public-award-nav-heading">Sources</p>
+          {sourceSections.map((section) => (
+            <SourceOutlineSection
+              key={section.key}
+              onSelectSource={selectSource}
+              section={section}
+              selected={selected}
+              sourceChangeCounts={sourceChangeCounts}
+              sourceUnreadCounts={sourceUnreadCounts}
             />
-            <PanelButton
-              active={selected.kind === "facts"}
-              label="Key details"
-              meta={countLabel(factRows.length, "field")}
-              onClick={() => setSelected({ kind: "facts" })}
-            />
-            <PanelButton
-              active={selected.kind === "changes"}
-              label="Recent changes"
-              meta={countLabel(data.changes.length, "update")}
-              onClick={() => setSelected({ kind: "changes" })}
-              updateCount={data.changes.length}
-            />
-          </div>
-        </details>
-
-        <details className="public-award-nav-group" open>
-          <summary>
-            <ChevronDown size={15} aria-hidden="true" />
-            <span>Official sources</span>
-          </summary>
-          <div className="public-award-nav-list">
-            {data.sources.map((source) => {
-              const changeCount = sourceChangeCounts.get(source.id) || 0;
-              return (
-                <PanelButton
-                  active={selected.kind === "source" && selected.sourceId === source.id}
-                  key={source.id}
-                  label={source.title}
-                  meta={`${pageTypeLabel(source.pageType)} / ${countLabel(changeCount, "update")}`}
-                  onClick={() => setSelected({ kind: "source", sourceId: source.id })}
-                  updateCount={changeCount}
-                  variant="source"
-                />
-              );
-            })}
-          </div>
-        </details>
-
-        <div className="public-award-sidebar-card public-award-sidebar-last-checked">
-          <span>Last checked</span>
-          <strong>{data.lastCheckedAt ? formatDate(data.lastCheckedAt) : "Pending"}</strong>
+          ))}
         </div>
       </aside>
 
@@ -193,7 +218,12 @@ export function PublicAwardWorkspace({
 
         <section className="public-award-console-panel">
           {selected.kind === "overview" && (
-            <OverviewPanel data={data} factRows={factRows} sourceChangeCounts={sourceChangeCounts} />
+            <OverviewPanel
+              data={data}
+              factRows={factRows}
+              onSelectSource={selectSource}
+              sourceChangeCounts={sourceChangeCounts}
+            />
           )}
           {selected.kind === "facts" && <FactsPanel rows={factRows} />}
           {selected.kind === "changes" && <ChangesPanel changes={data.changes} />}
@@ -206,6 +236,54 @@ export function PublicAwardWorkspace({
         </section>
       </main>
     </div>
+  );
+}
+
+function SourceOutlineSection({
+  onSelectSource,
+  section,
+  selected,
+  sourceChangeCounts,
+  sourceUnreadCounts,
+}: {
+  onSelectSource: (sourceId: string) => void;
+  section: SourceOutlineSection;
+  selected: SelectedPanel;
+  sourceChangeCounts: Map<string, number>;
+  sourceUnreadCounts: Map<string, number>;
+}) {
+  const unreadCount = section.sources.reduce(
+    (total, source) => total + (sourceUnreadCounts.get(source.id) || 0),
+    0,
+  );
+
+  return (
+    <details className="public-award-source-group">
+      <summary>
+        <ChevronDown size={14} aria-hidden="true" />
+        <span>{section.label}</span>
+        {unreadCount > 0 && (
+          <span className="public-award-update-count" aria-label="Recent updates" />
+        )}
+      </summary>
+      <div className="public-award-source-sublist">
+        {section.sources.map((source) => {
+          const changeCount = sourceChangeCounts.get(source.id) || 0;
+          const sourceUnreadCount = sourceUnreadCounts.get(source.id) || 0;
+          return (
+            <PanelButton
+              active={selected.kind === "source" && selected.sourceId === source.id}
+              key={source.id}
+              label={source.title}
+              meta={`${pageTypeLabel(source.pageType)} / ${countLabel(changeCount, "update")}`}
+              onClick={() => onSelectSource(source.id)}
+              updateCount={sourceUnreadCount}
+              variant="source"
+            />
+          );
+        })}
+      </div>
+    </details>
   );
 }
 
@@ -247,10 +325,12 @@ function PanelButton({
 function OverviewPanel({
   data,
   factRows,
+  onSelectSource,
   sourceChangeCounts,
 }: {
   data: PublicAwardPageData;
   factRows: Array<{ label: string; value: string; icon?: "calendar" | "checklist" }>;
+  onSelectSource: (sourceId: string) => void;
   sourceChangeCounts: Map<string, number>;
 }) {
   return (
@@ -277,7 +357,13 @@ function OverviewPanel({
               <div>
                 <span>{pageTypeLabel(source.pageType)}</span>
                 <h4>
-                  <Link href={source.publicPath}>{source.title}</Link>
+                  <button
+                    className="public-award-source-line-button"
+                    type="button"
+                    onClick={() => onSelectSource(source.id)}
+                  >
+                    {source.title}
+                  </button>
                 </h4>
               </div>
               <strong>{changes ? `${changes} updates` : "Stable"}</strong>
@@ -330,10 +416,6 @@ function SourcePanel({
             Official source
             <ExternalLink size={15} aria-hidden="true" />
           </a>
-          <Link className="button-secondary" href={source.publicPath}>
-            Source page
-            <ArrowRight size={15} aria-hidden="true" />
-          </Link>
         </div>
       </div>
 
@@ -456,6 +538,132 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]) {
 
 function compactList(values: string[]) {
   return values.filter(Boolean).slice(0, 6).join("; ");
+}
+
+const SOURCE_SECTION_ORDER = [
+  "overview",
+  "application",
+  "deadlines",
+  "eligibility",
+  "requirements",
+  "award",
+  "documents",
+  "contact",
+  "faq",
+  "other",
+];
+
+function groupSourcesByOutlineSection(sources: PublicAwardSource[]) {
+  const sections = new Map<string, SourceOutlineSection>();
+
+  for (const source of sources) {
+    const section = outlineSectionForSource(source);
+    const existing = sections.get(section.key);
+    if (existing) {
+      existing.sources.push(source);
+    } else {
+      sections.set(section.key, { ...section, sources: [source] });
+    }
+  }
+
+  return [...sections.values()]
+    .map((section) => ({
+      ...section,
+      sources: [...section.sources].sort((a, b) => sourceSortLabel(a).localeCompare(sourceSortLabel(b))),
+    }))
+    .sort((a, b) => sourceSectionSortKey(a).localeCompare(sourceSectionSortKey(b)));
+}
+
+function outlineSectionForSource(source: PublicAwardSource) {
+  const text = searchableSourceText(source);
+
+  if (source.pageType === "homepage") return { key: "overview", label: "Overview" };
+  if (source.pageType === "application") return { key: "application", label: "Application" };
+  if (source.pageType === "deadline") return { key: "deadlines", label: "Deadlines" };
+  if (source.pageType === "eligibility") return { key: "eligibility", label: "Eligibility" };
+  if (source.pageType === "requirements") return { key: "requirements", label: "Requirements" };
+  if (source.pageType === "pdf") return { key: "documents", label: "Documents" };
+  if (source.pageType === "faq") return { key: "faq", label: "FAQ" };
+
+  if (/\b(contact|contacts|email|phone|staff|directory|people|support|program officer)\b/.test(text)) {
+    return { key: "contact", label: "Contact" };
+  }
+  if (/\b(apply|application|applications|portal|form|submit|submission|nomination|applicant)\b/.test(text)) {
+    return { key: "application", label: "Application" };
+  }
+  if (/\b(deadline|deadlines|due date|timeline|calendar|important date|dates)\b/.test(text)) {
+    return { key: "deadlines", label: "Deadlines" };
+  }
+  if (/\b(eligib|citizenship|resident|gpa|academic level|field of study|discipline)\b/.test(text)) {
+    return { key: "eligibility", label: "Eligibility" };
+  }
+  if (/\b(requirement|requirements|criteria|guideline|instructions|rules)\b/.test(text)) {
+    return { key: "requirements", label: "Requirements" };
+  }
+  if (/\b(funding|award amount|amount|stipend|benefit|salary|grant)\b/.test(text)) {
+    return { key: "award", label: "Award details" };
+  }
+  if (/\b(pdf|document|documents|file|files|guide|handbook|materials|transcript|letter)\b/.test(text)) {
+    return { key: "documents", label: "Documents" };
+  }
+  if (/\b(faq|faqs|questions|help)\b/.test(text)) {
+    return { key: "faq", label: "FAQ" };
+  }
+
+  return { key: "other", label: "Other sources" };
+}
+
+function searchableSourceText(source: PublicAwardSource) {
+  const facts = source.facts;
+  return [
+    source.title,
+    source.description,
+    source.url,
+    facts.deadline,
+    facts.openingDate,
+    facts.awardAmount,
+    ...facts.academicLevels,
+    ...facts.disciplines,
+    ...facts.citizenship,
+    ...facts.eligibility,
+    ...facts.requirements,
+    ...facts.applicationMaterials,
+    ...facts.howToApply,
+    ...facts.importantDates,
+    ...facts.documents,
+    ...facts.contacts,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function sourceSectionSortKey(section: SourceOutlineSection) {
+  const order = SOURCE_SECTION_ORDER.indexOf(section.key);
+  return `${order === -1 ? 99 : order}:${section.label}`;
+}
+
+function sourceSortLabel(source: PublicAwardSource) {
+  const pageTypeRank = source.pageType === "homepage" ? "0" : "1";
+  return `${pageTypeRank}:${source.title.toLowerCase()}:${source.url.toLowerCase()}`;
+}
+
+function isChangeForSource(change: PublicAwardChange, source: PublicAwardSource) {
+  return change.sourceId === source.id || normalizeUrl(change.sourceUrl) === normalizeUrl(source.url);
+}
+
+function isUnreadChange(change: PublicAwardChange, readChangeIds: Set<string>) {
+  return change.unread !== false && !readChangeIds.has(change.id);
+}
+
+function postReadChangeIds(changeIds: string[]) {
+  void fetch("/api/shared-award-change-reads", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ changeIds }),
+  }).catch(() => {
+    // The local UI state should still clear promptly if persistence is unavailable.
+  });
 }
 
 function normalizeUrl(value: string | null | undefined) {

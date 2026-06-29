@@ -14,7 +14,7 @@ import {
 
 const links = [
   { href: "/dashboard", label: "Updates", icon: Inbox, section: "updates" },
-  { href: "/dashboard/awards", label: "Database", icon: SearchCheck, section: "database" },
+  { href: "/dashboard/awards", label: "Award Directory", icon: SearchCheck, section: "database" },
   { href: "/dashboard/awards?view=watchlist", label: "Watchlist", icon: ListChecks, section: "watchlist" },
 ];
 
