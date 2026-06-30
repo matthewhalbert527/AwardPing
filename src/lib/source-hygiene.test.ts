@@ -413,6 +413,15 @@ describe("source hygiene classifier", () => {
         award_name: "University Summer Course Grant",
       }),
     ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.studieren-weltweit.de/content/uploads/2020/06/mit-stipendium-ins-ausland.pdf",
+        title: "Mit Stipendium ins Ausland",
+        page_type: "pdf",
+        award_name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
   });
 
   it("keeps Simons source pages that match the specific ecology and evolution fellowship", () => {

@@ -139,10 +139,15 @@ describe("shared awards", () => {
       url: "https://www2.daad.de/bundles/daadadminlbh/uploads/live/5129.pdf",
       page_type: "pdf",
     };
+    const broadBrochure = {
+      url: "https://www.studieren-weltweit.de/content/uploads/2020/06/mit-stipendium-ins-ausland.pdf",
+      page_type: "pdf",
+    };
 
     expect(isClearlyNonAwardSourceUrl(duplicateExport.url)).toBe(true);
     expect(isTrackableOfficialSourceUrl(duplicateExport.url)).toBe(false);
     expect(isMonitorableOfficialSource(duplicateExport)).toBe(false);
+    expect(isMonitorableOfficialSource(broadBrochure)).toBe(false);
     expect(isMonitorableOfficialSource(checklist)).toBe(true);
   });
 

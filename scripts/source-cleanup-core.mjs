@@ -234,6 +234,7 @@ export function nonAwardReason(value, title = "", pageType = null) {
     if (cmsAdminHosts.has(host)) return "cms_admin_host";
     if (hardNonAwardPath.test(url.pathname)) return "generic_non_award_path";
     if (isDaadScholarshipDatabasePdfExport(host, url.pathname)) return "duplicate_pdf_export";
+    if (isBroadScholarshipBrochurePdf(host, url.pathname)) return "broad_scholarship_brochure";
     if (
       genericListingOrSearchPath.test(url.pathname) ||
       hasGenericSearchQuery(url, lower)
@@ -255,6 +256,13 @@ function isDaadScholarshipDatabasePdfExport(host, path) {
   return (
     /(^|\.)daad\.de$/.test(host) &&
     /\/deutschland\/stipendium\/datenbank\/[^/]+\/21148-scholarship-database\.pdf$/i.test(path)
+  );
+}
+
+function isBroadScholarshipBrochurePdf(host, path) {
+  return (
+    host === "studieren-weltweit.de" &&
+    /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(path)
   );
 }
 

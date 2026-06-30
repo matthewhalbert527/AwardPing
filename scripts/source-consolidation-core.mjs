@@ -196,6 +196,8 @@ export function strongConsolidationReason(source = {}, award = {}) {
     return "academic_policy_pdf_spillover";
   }
 
+  if (isBroadScholarshipBrochurePdf(host, path)) return "broad_scholarship_brochure";
+
   if (host === "ala.org" && /\/council_documents\//.test(path)) return "governance_pdf_spillover";
 
   if (host === "home.treasury.gov" && /\/(?:system\/files|services\/the-multiemployer-pension-reform-act-of-2014|policy-issues|data)\//.test(path) && !awardSpecific) {
@@ -252,6 +254,13 @@ function isBroadAcademicPdfSpillover(host, path, direct, award) {
     (/(^|\.)kmk\.org$/.test(host) && /\/(?:hochschulzugang|zab)\/|baccalaureate/i.test(path)) ||
     (host === "humboldt-foundation.de" && /\/fileadmin\/bewerben\/programme\/.*list_of_countries\.pdf$/i.test(path)) ||
     (host === "hrk.de" && /\/fileadmin\/redaktion\/hrk\/.*auslandstitel/i.test(path))
+  );
+}
+
+function isBroadScholarshipBrochurePdf(host, path) {
+  return (
+    host === "studieren-weltweit.de" &&
+    /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(path)
   );
 }
 

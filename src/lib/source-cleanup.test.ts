@@ -130,6 +130,21 @@ describe("post-crawl source cleanup classification", () => {
     expect(actionFor(rows, "daad-pdf-export")?.reason).toBe("duplicate_pdf_export");
   });
 
+  it("removes broad DAAD scholarship brochures", () => {
+    const rows = [
+      source({
+        id: "daad-brochure",
+        url: "https://www.studieren-weltweit.de/content/uploads/2020/06/mit-stipendium-ins-ausland.pdf",
+        title: "Mit Stipendium ins Ausland",
+        page_type: "pdf",
+      }),
+      source({ id: "good", url: "https://example.org/current", title: "Current award page" }),
+    ];
+
+    expect(actionFor(rows, "daad-brochure")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "daad-brochure")?.reason).toBe("broad_scholarship_brochure");
+  });
+
   it("removes generic category and search shaped sources even with award-ish words", () => {
     const rows = [
       source({
@@ -299,6 +314,18 @@ describe("source consolidation classification", () => {
         { ...award, name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants" },
       ),
     ).toMatchObject({ action: "review_later", reason: "academic_policy_pdf_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "daad-brochure",
+          url: "https://www.studieren-weltweit.de/content/uploads/2020/06/mit-stipendium-ins-ausland.pdf",
+          title: "Mit Stipendium ins Ausland",
+          page_type: "pdf",
+        }),
+        { ...award, name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants" },
+      ),
+    ).toMatchObject({ action: "review_later", reason: "broad_scholarship_brochure" });
 
     expect(
       classifySourceForConsolidation(

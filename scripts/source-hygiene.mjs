@@ -47,6 +47,10 @@ export function classifySourceHygiene(sourceLike = {}, failure = {}) {
     );
   }
 
+  if (isBroadScholarshipBrochurePdf(host, path)) {
+    return review("cross_program_source", "Broad scholarship brochure is not specific enough for this award");
+  }
+
   if (isGenericNonAwardDiscoveryUrl(parsed, host, path, directHaystack)) {
     return review("non_award_source", "Generic site page is not specific enough for award monitoring");
   }
@@ -344,6 +348,13 @@ function isBroadAcademicPdfSpillover(host, path, signal, awardName) {
     (/(^|\.)kmk\.org$/.test(host) && /\/(?:hochschulzugang|zab)\/|baccalaureate/i.test(path)) ||
     (host === "humboldt-foundation.de" && /\/fileadmin\/bewerben\/programme\/.*list_of_countries\.pdf$/i.test(path)) ||
     (host === "hrk.de" && /\/fileadmin\/redaktion\/hrk\/.*auslandstitel/i.test(path))
+  );
+}
+
+function isBroadScholarshipBrochurePdf(host, path) {
+  return (
+    host === "studieren-weltweit.de" &&
+    /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(path)
   );
 }
 
