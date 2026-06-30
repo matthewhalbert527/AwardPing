@@ -1644,6 +1644,22 @@ a {
   white-space: nowrap;
 }
 
+.award-detail-header-actions {
+  display: grid;
+  width: fit-content;
+  max-width: 100%;
+  gap: 0.55rem;
+}
+
+.award-detail-header-actions .button-primary,
+.award-detail-header-actions .button-secondary {
+  width: 100%;
+  min-height: 2.35rem;
+  border-radius: 0.35rem;
+  padding: 0.48rem 0.82rem;
+  box-shadow: none;
+}
+
 .award-detail-facts {
   max-width: 72rem;
   margin-top: 0.2rem;
@@ -3866,14 +3882,16 @@ a {
 }
 
 .public-award-console-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  display: grid;
+  min-width: 13.5rem;
+  align-content: start;
+  justify-items: stretch;
   gap: 0.55rem;
 }
 
 .public-award-console-actions .button-primary,
 .public-award-console-actions .button-secondary {
+  width: 100%;
   min-height: 2.35rem;
   border-radius: 0.35rem;
   padding: 0.48rem 0.82rem;

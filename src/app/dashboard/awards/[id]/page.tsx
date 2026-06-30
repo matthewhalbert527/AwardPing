@@ -173,6 +173,13 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
                     <span>Official homepage</span>
                   </a>
                 )}
+                <div className="award-detail-header-actions">
+                  <TrackSharedAwardButton
+                    sharedAwardId={award.id}
+                    tracked={tracked}
+                    canManage={canManageOffice(officeContext.current.role)}
+                  />
+                </div>
               </header>
 
               <div className="award-detail-command-row">
@@ -187,11 +194,6 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
                   Public page
                   <ExternalLink size={16} aria-hidden="true" />
                 </Link>
-                <TrackSharedAwardButton
-                  sharedAwardId={award.id}
-                  tracked={tracked}
-                  canManage={canManageOffice(officeContext.current.role)}
-                />
               </div>
             </>
           }

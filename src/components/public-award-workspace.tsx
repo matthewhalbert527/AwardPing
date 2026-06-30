@@ -172,16 +172,16 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
             {data.facts.overview && <p>{data.facts.overview}</p>}
           </div>
           <div className="public-award-console-actions">
-            <Link className="button-primary" href="/signup">
-              Add to watchlist
-              <ArrowRight size={16} aria-hidden="true" />
-            </Link>
             {data.officialHomepage && (
               <a className="button-secondary" href={data.officialHomepage} rel="noreferrer" target="_blank">
                 <ExternalLink size={15} aria-hidden="true" />
                 Official homepage
               </a>
             )}
+            <Link className="button-primary" href="/signup">
+              Add to watchlist
+              <ArrowRight size={16} aria-hidden="true" />
+            </Link>
           </div>
         </header>
 
