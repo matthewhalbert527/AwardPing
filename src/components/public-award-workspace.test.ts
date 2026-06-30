@@ -149,6 +149,8 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).toContain("Application / 1 update");
     expect(sidebarHtml).toContain("Contact");
     expect(sidebarHtml).toContain("Other source / 0 updates");
+    expect(sidebarHtml).not.toContain("Homepage / 0 updates");
+    expect(sidebarHtml).not.toContain("<span>Overview</span><small>1 source</small>");
     expect(sidebarHtml).toContain("Checked Jun 26, 2026");
     expect(sidebarHtml).toContain("public-award-source-group");
     expect(sidebarHtml).not.toContain("public-award-sidebar-page-card");

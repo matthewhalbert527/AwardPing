@@ -83,7 +83,7 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
     return counts;
   }, [data.changes, data.sources, readChangeIds]);
   const sourceSections = useMemo(
-    () => groupSourcesByOutlineSection(data.sources, data.award.name),
+    () => groupSourcesByOutlineSection(sourcesForSidebar(data.sources), data.award.name),
     [data.award.name, data.sources],
   );
   const unreadChangeCount = useMemo(
@@ -155,19 +155,21 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
           />
         </div>
 
-        <div className="public-award-nav-section" aria-label="Official sources">
-          <p className="public-award-nav-heading">Sources</p>
-          {sourceSections.map((section) => (
-            <SourceOutlineSection
-              key={section.key}
-              onSelectSource={selectSource}
-              section={section}
-              selected={selected}
-              sourceChangeCounts={sourceChangeCounts}
-              sourceUnreadCounts={sourceUnreadCounts}
-            />
-          ))}
-        </div>
+        {sourceSections.length > 0 && (
+          <div className="public-award-nav-section" aria-label="Official sources">
+            <p className="public-award-nav-heading">Sources</p>
+            {sourceSections.map((section) => (
+              <SourceOutlineSection
+                key={section.key}
+                onSelectSource={selectSource}
+                section={section}
+                selected={selected}
+                sourceChangeCounts={sourceChangeCounts}
+                sourceUnreadCounts={sourceUnreadCounts}
+              />
+            ))}
+          </div>
+        )}
       </aside>
 
       <main className="public-award-console-main">
@@ -477,6 +479,10 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
   ];
 
   return rows.filter(isFactRow);
+}
+
+function sourcesForSidebar(sources: PublicAwardSource[]) {
+  return sources.filter((source) => source.pageType !== "homepage");
 }
 
 function compactList(values: string[]) {

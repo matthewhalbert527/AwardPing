@@ -596,6 +596,83 @@ describe("change summary filtering", () => {
     expect(changes.map((change) => change.id)).toEqual(["newer"]);
   });
 
+  it("dedupes repeated recommendation-completeness updates", () => {
+    const sourceUrl = "https://erefdn.org/scholarship-program/";
+
+    const changes = dedupeChangeSummaries([
+      {
+        id: "newer",
+        shared_award_id: "eref-scholarships",
+        source_url: sourceUrl,
+        summary:
+          "The Environmental Research & Education Foundation (EREF) scholarship application now explicitly states that it is not complete without 3 recommendations, clarifying a previous ambiguity.",
+        change_details: {
+          reader_summary:
+            "The Environmental Research & Education Foundation (EREF) scholarship application now explicitly states that it is not complete without 3 recommendations, clarifying a previous ambiguity.",
+          before:
+            "Is my application considered complete if my recommenders have not completed the recommendation? The recommendations are critical to the application.",
+          after: null,
+          section: "SCHOLARSHIP FAQ",
+          change_type: "requirement_change",
+          advisor_impact:
+            "Advisors should inform students that 3 recommendations are now a mandatory requirement for a complete EREF scholarship application.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: ["The application is not complete without the 3 recommendations."],
+            removed_text: [
+              "Is my application considered complete if my recommenders have not completed the recommendation?",
+            ],
+            likely_section: "Application",
+            page_type: "homepage",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { source_url: sourceUrl, page_type: "homepage" },
+          quality_flags: ["visual_snapshot_comparison"],
+          generated_at: "2026-06-30T19:18:28.465Z",
+        },
+      },
+      {
+        id: "older",
+        shared_award_id: "eref-scholarships",
+        source_url: sourceUrl,
+        summary:
+          "The Environmental Research & Education Foundation (EREF) has updated its scholarship application FAQ. Specifically, the section addressing recommendation requirements has been clarified to state that the application is not complete without the three required recommendations.",
+        change_details: {
+          reader_summary:
+            "The Environmental Research & Education Foundation (EREF) has updated its scholarship application FAQ. Specifically, the section addressing recommendation requirements has been clarified to state that the application is not complete without the three required recommendations.",
+          before:
+            "Is my application considered complete if my recommenders have not completed the recommendation? The application is not complete without the 3 recommendations.",
+          after: "The application is not complete without the 3 recommendations.",
+          section: "Scholarship FAQ",
+          change_type: "requirement_change",
+          advisor_impact:
+            "Students must ensure all three recommendations are submitted for their application to be considered complete.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: [],
+            removed_text: [
+              "Is my application considered complete if my recommenders have not completed the recommendation?",
+            ],
+            likely_section: "Application",
+            page_type: "homepage",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { source_url: sourceUrl, page_type: "homepage" },
+          quality_flags: ["visual_snapshot_comparison"],
+          generated_at: "2026-06-28T04:34:13.157Z",
+        },
+      },
+    ]);
+
+    expect(changes.map((change) => change.id)).toEqual(["newer"]);
+  });
+
   it("dedupes matching structured evidence even when AI labels the change differently", () => {
     const before =
       "Ansley Abraham, Director of the SREB-State Doctoral Scholars Program, and the Dean and Chair.";

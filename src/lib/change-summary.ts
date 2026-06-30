@@ -279,16 +279,17 @@ function semanticChangeDedupeSignature(change: {
     .filter(Boolean)
     .join(" ");
   const tokens = semanticChangeTokens(evidenceText);
-  if (tokens.size < 8) return null;
-
   const conceptText = [change.summary, details.reader_summary, evidenceText]
     .filter(Boolean)
     .join(" ");
+  const conceptKeys = semanticChangeConceptKeys(conceptText);
+  if (tokens.size < 8 && conceptKeys.size === 0) return null;
+  if (tokens.size < 4) return null;
 
   return {
     scope: `award:${awardKey}|url:${sourceKey}|section:${sectionKey}`,
     tokens,
-    conceptKeys: semanticChangeConceptKeys(conceptText),
+    conceptKeys,
   };
 }
 
@@ -380,6 +381,13 @@ function semanticChangeConceptKeys(value: string) {
     /\b(?:opt out|second half|portion)\b/.test(normalized)
   ) {
     conceptKeys.add("attendance-washington-optional");
+  }
+  if (
+    /\bapplication\b/.test(normalized) &&
+    /\bnot complete\b/.test(normalized) &&
+    /\brecommendations?\b/.test(normalized)
+  ) {
+    conceptKeys.add("application-recommendations-incomplete");
   }
 
   return conceptKeys;
