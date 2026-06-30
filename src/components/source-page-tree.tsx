@@ -50,6 +50,9 @@ export type SourcePageTreeSource = SourceTreeSource & {
   latestChanges?: SourcePageTreeChange[];
 };
 
+type FactValue = string | string[];
+type SourceFactRow = { label: string; value: FactValue };
+
 export function SourcePageTree<T extends SourcePageTreeSource>({
   sources,
   canManage = false,
@@ -777,7 +780,9 @@ function SourcePageOutline({
           {factRows.slice(0, 6).map((fact) => (
             <div className="source-tree-fact" key={fact.label}>
               <dt>{fact.label}</dt>
-              <dd>{fact.value}</dd>
+              <dd>
+                <FactValueDisplay className="source-tree-fact-list" value={fact.value} />
+              </dd>
             </div>
           ))}
         </dl>
@@ -972,7 +977,30 @@ function sourceFactRows(facts: Record<string, unknown>) {
     { label: "Contact", value: joinArray(facts.contacts) },
   ];
 
-  return rows.filter((row): row is { label: string; value: string } => Boolean(row.value));
+  return rows.filter(isSourceFactRow);
+}
+
+function FactValueDisplay({
+  className,
+  value,
+}: {
+  className: string;
+  value: FactValue;
+}) {
+  if (!Array.isArray(value)) return <>{value}</>;
+  if (value.length === 1) return <>{value[0]}</>;
+
+  return (
+    <ul className={className}>
+      {value.map((item, index) => (
+        <li key={`${item}-${index}`}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function isSourceFactRow(row: { label: string; value: FactValue | null }): row is SourceFactRow {
+  return Array.isArray(row.value) ? row.value.length > 0 : Boolean(row.value);
 }
 
 function sourceRowStatus(
@@ -1013,7 +1041,9 @@ function sectionStatusLabel(value: string) {
 
 function joinArray(value: unknown) {
   const values = arrayValue(value).map(cleanString).filter(Boolean);
-  return values.length ? values.slice(0, 4).join("; ") : "";
+  const clean = values.slice(0, 4);
+  if (clean.length === 0) return null;
+  return clean.length === 1 ? clean[0] : clean;
 }
 
 function arrayValue(value: unknown): unknown[] {

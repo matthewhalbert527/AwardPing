@@ -67,7 +67,7 @@ describe("SourcePageTree", () => {
                 page_category: "Eligibility",
                 award_relevance: "primary",
                 deadline: "January 29, 2026",
-                eligibility: ["Sophomores and juniors"],
+                eligibility: ["Sophomores and juniors", "U.S. citizens"],
                 sections: [
                   {
                     title: "Citizenship",
@@ -88,6 +88,10 @@ describe("SourcePageTree", () => {
     expect(html).toContain("Eligibility rules for the scholarship.");
     expect(html).toContain("Citizenship");
     expect(html).toContain("January 29, 2026");
+    expect(html).toContain('<ul class="source-tree-fact-list">');
+    expect(html).toContain("<li>Sophomores and juniors</li>");
+    expect(html).toContain("<li>U.S. citizens</li>");
+    expect(html).not.toContain("Sophomores and juniors; U.S. citizens");
     expect(html).not.toContain("Page outline updated");
     expect(html).not.toContain("gemini-2.5-flash-lite");
   });

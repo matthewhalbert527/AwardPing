@@ -1702,6 +1702,21 @@ a {
   line-height: 1.5;
 }
 
+.award-detail-fact-list,
+.source-tree-fact-list,
+.public-award-fact-list {
+  display: grid;
+  gap: 0.22rem;
+  margin: 0;
+  padding-left: 1.05rem;
+}
+
+.award-detail-fact-list li,
+.source-tree-fact-list li,
+.public-award-fact-list li {
+  padding-left: 0.08rem;
+}
+
 .award-detail-record {
   display: grid;
   gap: 1.15rem;

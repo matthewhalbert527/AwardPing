@@ -234,13 +234,32 @@ function AwardBaselineDetails({
           {visibleFacts.map((fact) => (
             <div className="award-detail-fact" key={fact.label}>
               <dt>{fact.label}</dt>
-              <dd>{fact.value}</dd>
+              <dd>
+                <AwardDetailFactValue value={fact.value} />
+              </dd>
             </div>
           ))}
         </dl>
       )}
     </div>
   );
+}
+
+function AwardDetailFactValue({ value }: { value: string }) {
+  const items = splitFactItems(value);
+  if (items.length <= 1) return <>{value}</>;
+
+  return (
+    <ul className="award-detail-fact-list">
+      {items.map((item, index) => (
+        <li key={`${item}-${index}`}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+function splitFactItems(value: string) {
+  return value.split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean);
 }
 
 function AwardDetailSidebarIntro({

@@ -26,6 +26,9 @@ type SelectedPanel =
 
 type PublicAwardSource = PublicAwardPageData["sources"][number];
 type PublicAwardChange = PublicAwardPageData["changes"][number];
+type FactValue = string | string[];
+type FactRow = { label: string; value: FactValue; icon?: "calendar" | "checklist" };
+type MaybeFactRow = { label: string; value: FactValue | null; icon?: "calendar" | "checklist" };
 type SourceOutlineSection = {
   key: string;
   label: string;
@@ -305,7 +308,7 @@ function PanelButton({
 function OverviewPanel({
   factRows,
 }: {
-  factRows: Array<{ label: string; value: string; icon?: "calendar" | "checklist" }>;
+  factRows: FactRow[];
 }) {
   return (
     <div className="public-award-panel-stack">
@@ -396,7 +399,7 @@ function ChangesPanel({
 function FactLine({
   fact,
 }: {
-  fact: { label: string; value: string; icon?: "calendar" | "checklist" };
+  fact: FactRow;
 }) {
   return (
     <div className="public-award-fact-line">
@@ -405,8 +408,29 @@ function FactLine({
         {fact.icon === "checklist" && <ListChecks size={16} aria-hidden="true" />}
         {fact.label}
       </dt>
-      <dd>{fact.value}</dd>
+      <dd>
+        <FactValueDisplay className="public-award-fact-list" value={fact.value} />
+      </dd>
     </div>
+  );
+}
+
+function FactValueDisplay({
+  className,
+  value,
+}: {
+  className: string;
+  value: FactValue;
+}) {
+  if (!Array.isArray(value)) return <>{value}</>;
+  if (value.length === 1) return <>{value[0]}</>;
+
+  return (
+    <ul className={className}>
+      {value.map((item, index) => (
+        <li key={`${item}-${index}`}>{item}</li>
+      ))}
+    </ul>
   );
 }
 
@@ -419,8 +443,8 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function awardFactRows(facts: PublicAwardPageData["facts"]) {
-  return [
+function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
+  const rows: MaybeFactRow[] = [
     { label: "Deadline", value: facts.deadline, icon: "calendar" as const },
     { label: "Opening date", value: facts.openingDate },
     { label: "Award amount", value: facts.awardAmount },
@@ -434,13 +458,13 @@ function awardFactRows(facts: PublicAwardPageData["facts"]) {
     { label: "Important dates", value: compactList(facts.importantDates) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },
-  ].filter((row): row is { label: string; value: string; icon?: "calendar" | "checklist" } =>
-    Boolean(row.value),
-  );
+  ];
+
+  return rows.filter(isFactRow);
 }
 
-function sourceFactRows(facts: PublicAwardPageData["facts"]) {
-  return [
+function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
+  const rows: MaybeFactRow[] = [
     { label: "Deadline", value: facts.deadline, icon: "calendar" as const },
     { label: "Award amount", value: facts.awardAmount },
     { label: "Eligibility", value: compactList(facts.eligibility) },
@@ -450,13 +474,19 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]) {
     { label: "Important dates", value: compactList(facts.importantDates) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },
-  ].filter((row): row is { label: string; value: string; icon?: "calendar" | "checklist" } =>
-    Boolean(row.value),
-  );
+  ];
+
+  return rows.filter(isFactRow);
 }
 
 function compactList(values: string[]) {
-  return values.filter(Boolean).slice(0, 6).join("; ");
+  const clean = values.map((value) => value.trim()).filter(Boolean).slice(0, 6);
+  if (clean.length === 0) return null;
+  return clean.length === 1 ? clean[0] : clean;
+}
+
+function isFactRow(row: MaybeFactRow): row is FactRow {
+  return Array.isArray(row.value) ? row.value.length > 0 : Boolean(row.value);
 }
 
 const SOURCE_SECTION_ORDER = [

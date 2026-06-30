@@ -26,7 +26,7 @@ describe("PublicAwardWorkspace", () => {
             openingDate: null,
             awardAmount: "$1,000",
             eligibility: ["Graduate students"],
-            requirements: [],
+            requirements: ["First requirement", "Second requirement"],
             applicationMaterials: [],
             howToApply: [],
             importantDates: [],
@@ -143,7 +143,7 @@ describe("PublicAwardWorkspace", () => {
 
     expect(sidebarHtml).toContain("Overview");
     expect(sidebarHtml).toContain("Award profile");
-    expect(sidebarHtml).toContain("4 fields");
+    expect(sidebarHtml).toContain("5 fields");
     expect(sidebarHtml).not.toContain("Key details");
     expect(sidebarHtml).toContain("Recent changes");
     expect(sidebarHtml).toContain("1 update");
@@ -183,6 +183,10 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");
     expect(mainHtml).toContain("Academic level");
+    expect(mainHtml).toContain('<ul class="public-award-fact-list">');
+    expect(mainHtml).toContain("<li>First requirement</li>");
+    expect(mainHtml).toContain("<li>Second requirement</li>");
+    expect(mainHtml).not.toContain("First requirement; Second requirement");
     expect(mainHtml).not.toContain("Official source pages");
     expect(mainHtml).not.toContain("Stable");
   });
