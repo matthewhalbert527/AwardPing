@@ -185,12 +185,6 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
           </div>
         </header>
 
-        <section className="public-award-overview-strip" aria-label="Award summary">
-          <Metric label="Deadline" value={data.facts.deadline || "Not listed"} />
-          <Metric label="Award amount" value={data.facts.awardAmount || "Not listed"} />
-          <Metric label="Last checked" value={data.lastCheckedAt ? formatDate(data.lastCheckedAt) : "Pending"} />
-        </section>
-
         <section className="public-award-console-panel">
           {selected.kind === "overview" && (
             <OverviewPanel
@@ -380,15 +374,6 @@ function ChangesPanel({
       ) : (
         <EmptyState text="No meaningful updates have been recorded yet." />
       )}
-    </div>
-  );
-}
-
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="public-award-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }

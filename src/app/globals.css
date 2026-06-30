@@ -3898,39 +3898,6 @@ a {
   box-shadow: none;
 }
 
-.public-award-overview-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  border: 1px solid rgba(223, 229, 242, 0.95);
-  border-radius: 0.45rem;
-  background: #ffffff;
-}
-
-.public-award-metric {
-  display: grid;
-  gap: 0.28rem;
-  min-width: 0;
-  padding: 0.78rem 0.9rem;
-}
-
-.public-award-metric + .public-award-metric {
-  border-left: 1px solid rgba(223, 229, 242, 0.95);
-}
-
-.public-award-metric span {
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 850;
-}
-
-.public-award-metric strong {
-  overflow-wrap: anywhere;
-  color: var(--foreground);
-  font-size: clamp(0.96rem, 1.35vw, 1.16rem);
-  font-weight: 900;
-  line-height: 1.1;
-}
-
 .public-award-console-panel {
   min-width: 0;
   border: 1px solid rgba(223, 229, 242, 0.95);
@@ -4374,14 +4341,8 @@ a {
     flex: 1 1 12rem;
   }
 
-  .public-award-overview-strip,
   .public-award-fact-table-compact {
     grid-template-columns: 1fr;
-  }
-
-  .public-award-metric + .public-award-metric {
-    border-left: 0;
-    border-top: 1px solid rgba(223, 229, 242, 0.95);
   }
 
   .public-award-fact-line,

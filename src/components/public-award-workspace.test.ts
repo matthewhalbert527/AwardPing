@@ -177,6 +177,8 @@ describe("PublicAwardWorkspace", () => {
     expect(headerHtml).toContain("Official homepage");
     expect(headerHtml).toContain("Add to watchlist");
     expect(headerHtml.indexOf("Official homepage")).toBeLessThan(headerHtml.indexOf("Add to watchlist"));
+    expect(mainHtml).not.toContain("public-award-overview-strip");
+    expect(mainHtml).not.toContain("Last checked");
     expect(mainHtml).toContain("Overview");
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");
