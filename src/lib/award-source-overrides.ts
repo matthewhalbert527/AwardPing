@@ -88,6 +88,59 @@ export const awardSourceOverrides: AwardSourceOverride[] = [
   officialHomepageOverride("Soros Fellowship for New Americans", "https://www.pdsoros.org/"),
   officialHomepageOverride("Soros Fellowships for New Americans", "https://www.pdsoros.org/"),
   officialHomepageOverride("Churchill Scholarship", "https://www.churchillscholarship.org/"),
+  {
+    awardName: "Future Investigators in NASA Earth and Space Science and Technology",
+    sources: [
+      {
+        url:
+          "https://nspires.nasaprs.com/external/solicitations/summary.do?method=init&path=&solId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D",
+        title: "NASA NSPIRES FINESST F.5 Solicitation",
+        pageType: "homepage",
+        confidence: 0.96,
+        reason: "Official NSPIRES solicitation page for current FINESST F.5.",
+      },
+      {
+        url:
+          "https://science.nasa.gov/researchers/solicitations/roses-2025/amendment-52-nasa-smd-graduate-student-research-solicitation-future-investigators-in-nasa-earth-and-space-science-and-technology/",
+        title: "NASA FINESST Amendment 52 Notice",
+        pageType: "deadline",
+        confidence: 0.94,
+        reason: "Official NASA Science notice announcing final FINESST F.5 text and due date.",
+      },
+      {
+        url:
+          "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1075626&solicitationId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D&viewSolicitationDocument=1",
+        title: "F.5 Future Investigators in NASA Earth and Space Science and Technology",
+        pageType: "pdf",
+        confidence: 0.96,
+        reason: "Official FINESST F.5 solicitation text.",
+      },
+      {
+        url:
+          "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1138353&solicitationId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D&viewSolicitationDocument=1",
+        title: "FINESST-25 Q&A June 23, 2026",
+        pageType: "faq",
+        confidence: 0.9,
+        reason: "Official FINESST question and answer document.",
+      },
+      {
+        url:
+          "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1137180&solicitationId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D&viewSolicitationDocument=1",
+        title: "FINESST25 Webinar Slides",
+        pageType: "application",
+        confidence: 0.86,
+        reason: "Official FINESST webinar slides.",
+      },
+      {
+        url:
+          "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1136886&solicitationId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D&viewSolicitationDocument=1",
+        title: "F.5 FINESST Earth Office Hours Slides",
+        pageType: "application",
+        confidence: 0.86,
+        reason: "Official FINESST Earth office hours slides.",
+      },
+    ],
+  },
   officialHomepageOverride(
     "Tillman Scholars Program",
     "https://pattillmanfoundation.org/apply-to-be-a-scholar/",

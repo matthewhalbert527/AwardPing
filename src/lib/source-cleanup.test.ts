@@ -145,6 +145,30 @@ describe("post-crawl source cleanup classification", () => {
     expect(actionFor(rows, "daad-brochure")?.reason).toBe("broad_scholarship_brochure");
   });
 
+  it("removes obvious NSPIRES utility documents", () => {
+    const rows = [
+      source({
+        id: "roses-table",
+        url: "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1041497&solicitationId={44C4B6D5-A499-3314-7172-3435A7ED59C6}&viewSolicitationDocument=1",
+        title:
+          "DUE DATES: Table 2 lists and links to all program elements in due date order as amended on 05202026 (.HTML)",
+        page_type: "deadline",
+      }),
+      source({
+        id: "adobe",
+        url: "https://get.adobe.com/reader/",
+        title: "Download Adobe Acrobat Reader",
+        page_type: "pdf",
+      }),
+      source({ id: "good", url: "https://example.org/current", title: "Current award page" }),
+    ];
+
+    expect(actionFor(rows, "roses-table")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "roses-table")?.reason).toBe("nspires_roses_spillover");
+    expect(actionFor(rows, "adobe")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "adobe")?.reason).toBe("software_download");
+  });
+
   it("removes generic category and search shaped sources even with award-ish words", () => {
     const rows = [
       source({
@@ -326,6 +350,32 @@ describe("source consolidation classification", () => {
         { ...award, name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants" },
       ),
     ).toMatchObject({ action: "review_later", reason: "broad_scholarship_brochure" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "nspires-sibling",
+          url: "https://nspires.nasaprs.com/external/solicitations/summary.do?solId={BD18A167-6DE8-1A35-A0ED-96F16AC6DE49}&path=&method=init",
+          title: "Space Weather Science Applications Operations 2 Research",
+          page_type: "application",
+          reason:
+            "Parent source: https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=660371&solicitationId={E16CD59F-29DD-06C0-8971-CE1A9C252FD4}&viewSolicitationDocument=1",
+        }),
+        { ...award, name: "Future Investigators in NASA Earth and Space Science and Technology" },
+      ),
+    ).toMatchObject({ action: "review_later", reason: "nspires_roses_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "finesst",
+          url: "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1075626&solicitationId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D&viewSolicitationDocument=1",
+          title: "F.5 Future Investigators in NASA Earth and Space Science and Technology",
+          page_type: "pdf",
+        }),
+        { ...award, name: "Future Investigators in NASA Earth and Space Science and Technology" },
+      ).action,
+    ).toBe("keep");
 
     expect(
       classifySourceForConsolidation(

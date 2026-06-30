@@ -46,6 +46,7 @@ const genericWords = new Set([
   "council",
   "department",
   "doctoral",
+  "earth",
   "foundation",
   "fellow",
   "fellowship",
@@ -56,6 +57,7 @@ const genericWords = new Set([
   "institute",
   "international",
   "memorial",
+  "nasa",
   "national",
   "postdoctoral",
   "program",
@@ -67,8 +69,10 @@ const genericWords = new Set([
   "scholarships",
   "science",
   "sciences",
+  "space",
   "student",
   "students",
+  "technology",
   "university",
 ]);
 
@@ -232,9 +236,11 @@ export function nonAwardReason(value, title = "", pageType = null) {
     const lower = `${title} ${full}`.toLowerCase();
     if (institutionalDiscoveryHosts.has(host)) return "institutional_discovery_host";
     if (cmsAdminHosts.has(host)) return "cms_admin_host";
+    if (host === "get.adobe.com" && /^\/reader\/?$/i.test(url.pathname)) return "software_download";
     if (hardNonAwardPath.test(url.pathname)) return "generic_non_award_path";
     if (isDaadScholarshipDatabasePdfExport(host, url.pathname)) return "duplicate_pdf_export";
     if (isBroadScholarshipBrochurePdf(host, url.pathname)) return "broad_scholarship_brochure";
+    if (isCommonNspiresRosesDocument(host, url.pathname, lower)) return "nspires_roses_spillover";
     if (
       genericListingOrSearchPath.test(url.pathname) ||
       hasGenericSearchQuery(url, lower)
@@ -263,6 +269,16 @@ function isBroadScholarshipBrochurePdf(host, path) {
   return (
     host === "studieren-weltweit.de" &&
     /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(path)
+  );
+}
+
+function isCommonNspiresRosesDocument(host, path, signal) {
+  return (
+    host === "nspires.nasaprs.com" &&
+    /^\/external\/viewrepositorydocument/i.test(path) &&
+    /\b(?:complete\s+roses|full\s+roses|roses[-\s]?\d{2,4}|summary\s+of\s+solicitation|due\s+dates?|table\s+[23]|guidebook\s+for\s+proposers)\b/i.test(
+      signal,
+    )
   );
 }
 

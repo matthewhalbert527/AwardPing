@@ -3,6 +3,7 @@ const institutionalDiscoveryHosts = new Set([
   "onsa.asu.edu",
 ]);
 const cmsAdminHosts = new Set(["a.cms.omniupdate.com"]);
+const softwareDownloadHosts = new Set(["get.adobe.com"]);
 
 const hardNonAwardPath =
   /\/(wp-login\.php|login|signin|sign-in|cart|donate|privacy|terms|terms-of-use|terms-of-service|termsofuse|jobregister)\b|\/(sign-up|signup|subscribe|newsletter)\b|\/portal\/user\/u_login\.php/i;
@@ -58,6 +59,7 @@ export function isClearlyNonAwardSourceUrl(value: string | null | undefined) {
     const fullUrl = url.toString();
     if (!["http:", "https:"].includes(url.protocol)) return true;
     if (cmsAdminHosts.has(hostname)) return true;
+    if (softwareDownloadHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
     if (isDuplicateOrBroadPdfUrl(hostname, url.pathname)) return true;
     if (hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl)) return true;
@@ -77,6 +79,7 @@ export function isHardBlockedOfficialSourceUrl(value: string | null | undefined)
     const fullUrl = url.toString();
     if (!["http:", "https:"].includes(url.protocol)) return true;
     if (cmsAdminHosts.has(hostname)) return true;
+    if (softwareDownloadHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
     if (isDuplicateOrBroadPdfUrl(hostname, url.pathname)) return true;
     return hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl);

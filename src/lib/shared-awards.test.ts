@@ -105,6 +105,7 @@ describe("shared awards", () => {
     expect(isClearlyNonAwardSourceUrl("https://isi.org/faculty/+18005267022")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("tel:+18005267022")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("https://www.tylenol.com/news/scholarship")).toBe(false);
+    expect(isClearlyNonAwardSourceUrl("https://get.adobe.com/reader/")).toBe(true);
   });
 
   it("keeps official application, deadline, and PDF source pages monitorable", () => {
@@ -233,5 +234,16 @@ describe("shared awards", () => {
     expect(new Set(urls).size).toBe(urls.length);
     expect(urls).toContain("https://us-irelandalliance.org/mitchellscholarship/applicants/eligibility");
     expect(urls).not.toContain("https://onsa.asu.edu/scholarship/mitchell-scholarship");
+  });
+
+  it("includes a compact current FINESST source set", () => {
+    const finesst = awardSourceOverrides.find(
+      (award) => award.awardName === "Future Investigators in NASA Earth and Space Science and Technology",
+    );
+    const urls = finesst?.sources.map((source) => source.url) || [];
+
+    expect(finesst?.sources.length).toBe(6);
+    expect(new Set(urls).size).toBe(urls.length);
+    expect(urls[0]).toContain("F9C7B701-6405-FD55-6705-EB4B190646B8");
   });
 });

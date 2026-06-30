@@ -22,6 +22,7 @@ const genericAwardWords = new Set([
   "department",
   "deutscher",
   "doctoral",
+  "earth",
   "exchange",
   "foundation",
   "fellow",
@@ -33,6 +34,7 @@ const genericAwardWords = new Set([
   "german",
   "institute",
   "international",
+  "nasa",
   "national",
   "postdoctoral",
   "program",
@@ -43,9 +45,12 @@ const genericAwardWords = new Set([
   "scholarship",
   "scholarships",
   "science",
+  "sciences",
   "service",
+  "space",
   "student",
   "students",
+  "technology",
   "university",
 ]);
 
@@ -190,6 +195,10 @@ export function strongConsolidationReason(source = {}, award = {}) {
     return "archive_pdf_spillover";
   }
 
+  if (isNspiresRosesSpillover(host, path, directSourceSignal(source), award)) {
+    return "nspires_roses_spillover";
+  }
+
   if (isDaadScholarshipDatabasePdfExport(host, path)) return "duplicate_pdf_export";
 
   if (isBroadAcademicPdfSpillover(host, path, direct, award)) {
@@ -242,6 +251,35 @@ function isDaadScholarshipDatabasePdfExport(host, path) {
   );
 }
 
+function isNspiresRosesSpillover(host, path, direct, award) {
+  if (host !== "nspires.nasaprs.com") return false;
+  if (!/^\/external\/(?:viewrepositorydocument|solicitations\/summary(?:!init)?\.do)/i.test(path)) {
+    return false;
+  }
+  const awardTokens = distinctiveAwardTokens(award?.name || "");
+  const tokenMatches = matchingAwardTokens({ url: direct, title: direct, display_title: direct }, award);
+  if (tokenMatches.length >= Math.min(2, awardTokens.length)) return false;
+  if (awardTokens.length >= 2) return true;
+
+  const signal = normalizeWords(direct);
+  if (
+    /\b(?:complete\s+roses|full\s+roses|roses\s?\d{2,4}|summary\s+of\s+solicitation|due\s+dates?|table\s+[23]|guidebook\s+for\s+proposers)\b/i.test(
+      signal,
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(?:not\s+solicited|program\s+overview|research\s+program\s+overview|research\s+announcement|announcement\s+for\s+proposals|proposer'?s?\s+telecon)\b/i.test(
+      signal,
+    )
+  ) {
+    return true;
+  }
+  if (/^\/external\/solicitations\/summary(?:!init)?\.do/i.test(path)) return true;
+  return /^[a-f]\s?\d{1,2}\b/i.test(signal);
+}
+
 function isBroadAcademicPdfSpillover(host, path, direct, award) {
   if (!/\.pdf(?:$|[?#])/i.test(path)) return false;
   if (host === "static.daad.de" && matchingAwardTokens({ url: direct, title: direct, reason: direct }, award).length >= 1) {
@@ -288,6 +326,13 @@ export function distinctiveAwardTokens(value) {
 
 function directSignal(source = {}) {
   return [source.url, source.title, source.display_title, source.page_type, source.reason]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+}
+
+function directSourceSignal(source = {}) {
+  return [source.url, source.title, source.display_title, source.page_type]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();

@@ -424,6 +424,49 @@ describe("source hygiene classifier", () => {
     ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
   });
 
+  it("rejects NSPIRES ROSES sibling spillover while keeping FINESST-specific sources", () => {
+    const awardName = "Future Investigators in NASA Earth and Space Science and Technology";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://nspires.nasaprs.com/external/solicitations/summary.do?solId={BD18A167-6DE8-1A35-A0ED-96F16AC6DE49}&path=&method=init",
+        title: "Space Weather Science Applications Operations 2 Research",
+        page_type: "application",
+        award_name: awardName,
+        reason:
+          "Parent source: https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=660371&solicitationId={E16CD59F-29DD-06C0-8971-CE1A9C252FD4}&viewSolicitationDocument=1",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1041497&solicitationId={44C4B6D5-A499-3314-7172-3435A7ED59C6}&viewSolicitationDocument=1",
+        title:
+          "DUE DATES: Table 2 lists and links to all program elements in due date order as amended on 05202026 (.HTML)",
+        page_type: "deadline",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1075626&solicitationId=%7BF9C7B701-6405-FD55-6705-EB4B190646B8%7D&viewSolicitationDocument=1",
+        title: "F.5 Future Investigators in NASA Earth and Space Science and Technology",
+        page_type: "pdf",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://get.adobe.com/reader/",
+        title: "Download Adobe Acrobat Reader",
+        page_type: "pdf",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "review_later", reason: "software_download" });
+  });
+
   it("keeps Simons source pages that match the specific ecology and evolution fellowship", () => {
     expect(
       shouldRejectDiscoveredSource({
