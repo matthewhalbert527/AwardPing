@@ -65,6 +65,49 @@ describe("public award facts", () => {
     expect(facts.disciplines).toEqual(["Life sciences"]);
   });
 
+  it("moves submitted documents out of requirements and into application materials", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {},
+      sources: [
+        {
+          page_metadata: {
+            baseline_facts: {
+              eligibility: [
+                "Must be a full-time student",
+                "Research topic must fit with EREF's mission",
+              ],
+              requirements: [
+                "Online application submission.",
+                "Three references required.",
+                "College transcripts (unofficial accepted).",
+                "Personal statement (500 words or less).",
+                "Research statement (500 words or less).",
+                "Three references.",
+              ],
+              application_materials: [
+                "Contact Information",
+                "Career Interests",
+                "College transcripts",
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(facts.requirements).toEqual([]);
+    expect(facts.applicationMaterials).toEqual([
+      "Online application submission.",
+      "Three references required.",
+      "College transcripts (unofficial accepted).",
+      "Personal statement (500 words or less).",
+      "Research statement (500 words or less).",
+      "Contact Information",
+      "Career Interests",
+    ]);
+  });
+
   it("preserves multiple award amounts as separate public fact items", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,

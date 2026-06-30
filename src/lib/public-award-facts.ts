@@ -51,6 +51,7 @@ export function publicAwardFactsFromAward(input: {
         factMap.get("application materials") || null,
         sourceFacts.flatMap((facts) => arrayField(facts.application_materials)),
       );
+  const normalizedFacts = normalizeApplicationMaterials(requirements, applicationMaterials);
   const documents = arrayField(structured.documents).length
     ? arrayField(structured.documents)
     : splitFact(factMap.get("documents") || null, sourceFacts.flatMap((facts) => arrayField(facts.documents)));
@@ -83,8 +84,8 @@ export function publicAwardFactsFromAward(input: {
       firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date))),
     awardAmount: compactFact(structuredAwardAmounts.length ? structuredAwardAmounts : fallbackAwardAmounts),
     eligibility,
-    requirements,
-    applicationMaterials,
+    requirements: normalizedFacts.requirements,
+    applicationMaterials: normalizedFacts.applicationMaterials,
     howToApply: arrayField(structured.how_to_apply).length
       ? arrayField(structured.how_to_apply)
       : splitFact(factMap.get("how to apply") || null, sourceFacts.flatMap((facts) => arrayField(facts.how_to_apply))),
@@ -95,13 +96,13 @@ export function publicAwardFactsFromAward(input: {
       : splitFact(factMap.get("contacts") || null, sourceFacts.flatMap((facts) => arrayField(facts.contacts))),
     academicLevels: arrayField(structured.academic_levels).length
       ? arrayField(structured.academic_levels)
-      : inferAcademicLevels([...eligibility, ...requirements]),
+      : inferAcademicLevels([...eligibility, ...normalizedFacts.requirements]),
     disciplines: arrayField(structured.disciplines).length
       ? arrayField(structured.disciplines)
-      : inferDisciplines([...eligibility, ...requirements, ...documents]),
+      : inferDisciplines([...eligibility, ...normalizedFacts.requirements, ...documents]),
     citizenship: arrayField(structured.citizenship).length
       ? arrayField(structured.citizenship)
-      : inferCitizenship([...eligibility, ...requirements]),
+      : inferCitizenship([...eligibility, ...normalizedFacts.requirements]),
     confidence:
       cleanString(structured.confidence) ||
       cleanString(factMap.get("baseline detail confidence")),
@@ -144,6 +145,64 @@ function compactFact(values: string[]) {
   const clean = uniqueShort(values);
   if (clean.length === 0) return null;
   return clean.length === 1 ? clean[0] : clean;
+}
+
+function normalizeApplicationMaterials(requirements: string[], applicationMaterials: string[]) {
+  const movedMaterials: string[] = [];
+  const remainingRequirements: string[] = [];
+
+  for (const requirement of requirements) {
+    if (looksLikeApplicationMaterial(requirement)) {
+      movedMaterials.push(requirement);
+    } else {
+      remainingRequirements.push(requirement);
+    }
+  }
+
+  return {
+    requirements: uniqueSemanticItems(remainingRequirements),
+    applicationMaterials: uniqueSemanticItems([...movedMaterials, ...applicationMaterials]),
+  };
+}
+
+function looksLikeApplicationMaterial(value: string) {
+  const text = value.toLowerCase();
+
+  return (
+    /\b(transcripts?|references?|recommendations?|recommendation letters?|letters? of recommendation|personal statements?|research statements?|statements?|essays?|forms?|application form|online application|application submission|resume|cv|curriculum vitae|portfolio|writing sample|proposal|abstract|budget|work samples?|test scores?|gre|toefl|ielts)\b/.test(
+      text,
+    ) &&
+    !/\b(research topic|research priorities|academic performance|demonstrated interest|full[- ]time|citizenship|resident|gpa requirement|eligible|ineligible|must be enrolled|degree program|field of study)\b/.test(
+      text,
+    )
+  );
+}
+
+function uniqueSemanticItems(values: string[]) {
+  const seen = new Map<string, string>();
+
+  for (const value of values.map(cleanString).filter(Boolean)) {
+    const key = semanticItemKey(value);
+    const existing = seen.get(key);
+    if (!existing || value.length > existing.length) {
+      seen.set(key, truncate(value, 180));
+    }
+  }
+
+  return [...seen.values()].slice(0, 10);
+}
+
+function semanticItemKey(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\b(required|required\.|must be submitted|must submit|submitted|submission|upload(?:ed)?|complete(?:d)?|the|a|an)\b/g, " ")
+    .replace(/\breferences\b/g, "reference")
+    .replace(/\brecommendations\b/g, "recommendation")
+    .replace(/\btranscripts\b/g, "transcript")
+    .replace(/\bstatements\b/g, "statement")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function splitFactItems(value: string) {
