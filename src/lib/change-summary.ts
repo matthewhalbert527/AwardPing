@@ -37,6 +37,7 @@ export function isUsefulChangeSummary(
     !looksLikeProfileRosterChange(clean, changeDetails) &&
     !looksLikeDocumentMetadataOnlyChange(clean) &&
     !looksLikeFundraisingOnlyChange(clean, changeDetails) &&
+    !looksLikeNavigationOnlyChange(clean, changeDetails) &&
     !looksLikeBoilerplateChange(clean)
   );
 }
@@ -342,6 +343,52 @@ function looksLikeFundraisingOnlyChange(summary: string, changeDetails: unknown)
     .toLowerCase();
 
   return !hasApplicantFacingChangeSignal(stripUnchangedApplicantReferences(applicantText));
+}
+
+function looksLikeNavigationOnlyChange(summary: string, changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  const structuredDiff = details?.structured_diff;
+  const text = [
+    summary,
+    details?.reader_summary,
+    details?.advisor_impact,
+    details?.section,
+    details?.change_type,
+    structuredDiff?.likely_section,
+    ...(structuredDiff?.added_text || []),
+    ...(structuredDiff?.removed_text || []),
+    details?.before,
+    details?.after,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return false;
+
+  const hasNavigationSignal =
+    /\b(navigation menu|navigation links?|left[- ]hand navigation|left sidebar|sidebar links?|menu items?|link order|order of (?:the )?(?:main )?(?:navigation links|links|menu items)|page structure|content[_ -]?reorder|ui[_ -]?change)\b/.test(
+      text,
+    ) ||
+    /\b(?:reordered|swapped positions?|moved|positioned before|listed before|located below|distinct link)\b/.test(
+      text,
+    );
+  if (!hasNavigationSignal) return false;
+
+  const dateChanges = structuredDiff?.date_changes || [];
+  const amountChanges = structuredDiff?.amount_changes || [];
+  if (dateChanges.length > 0 || amountChanges.length > 0) return false;
+
+  const concreteAwardFactChanged =
+    /\b(?:new|added|removed|changed|updated)\s+(?:application deadline|deadline|due date|award amount|stipend|tuition|funding amount)\b/.test(
+      text,
+    ) ||
+    /\b(?:applications?|nominations?)\s+(?:are|is)?\s*(?:now\s+)?(?:open|closed|due)\b/.test(
+      text,
+    ) ||
+    /\b(?:deadline|due date)\s+(?:is|was|has been|changed|moved|extended)\b/.test(text) ||
+    /\b(?:submit|apply|complete)\s+(?:by|before|no later than)\b/.test(text);
+
+  return !concreteAwardFactChanged;
 }
 
 function looksLikeProfileRosterChange(summary: string, changeDetails: unknown) {

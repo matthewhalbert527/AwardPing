@@ -43,6 +43,42 @@ describe("change summary filtering", () => {
     ).toBe(true);
   });
 
+  it("hides navigation-only menu reorder updates", () => {
+    expect(
+      isUsefulChangeForAward({
+        awardName: "Freeman-ASIA Award",
+        sourceTitle: "Freeman-ASIA Award",
+        sourceUrl: "https://www.iie.org/programs/freeman-asia/",
+        summary:
+          "The navigation menu for the Freeman-ASIA Award has been reordered. The 'Eligibility' and 'FAQs' links have swapped positions.",
+        change_details: {
+          reader_summary:
+            "The navigation menu for the Freeman-ASIA Award has been reordered. The 'Eligibility' and 'FAQs' links have swapped positions.",
+          before: "Eligibility For Advisers FAQs Apply Overview",
+          after: "FAQs Apply Overview Eligibility For Advisers",
+          section: "Navigation Menu",
+          change_type: "content_reorder",
+          advisor_impact:
+            "Advisors should note the change in the order of the navigation links on the Freeman-ASIA Award page.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: ["FAQs"],
+            removed_text: ["Eligibility"],
+            likely_section: "Eligibility",
+            page_type: "homepage",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { page_type: "homepage" },
+          quality_flags: ["visual_snapshot_comparison"],
+          generated_at: "2026-06-30T06:11:39.962Z",
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("hides PDF file hash changes when no content change is described", () => {
     expect(
       isUsefulChangeForAward({

@@ -6646,14 +6646,25 @@ function aiReviewLooksLikePublishedAuditNoise(aiReview, source) {
     };
   }
 
-  if (
-    /\b(navigation menu|navigation\/links|content[_ -]?reorder|page[_ -]?structure[_ -]?change|faq order|order of (?:the )?(?:navigation links|links|questions)|reordered|swapped)\b/.test(
+  const looksLikeNavigationReorder =
+    /\b(navigation menu|navigation\/links|navigation links?|left[- ]hand navigation|left sidebar|sidebar links?|menu items?|link order|page[_ -]?structure[_ -]?change|faq order|order of (?:the )?(?:main )?(?:navigation links|links|questions|menu items)|content[_ -]?reorder|ui[_ -]?change)\b/.test(
       combined,
-    ) &&
-    !/\b(?:new|added|removed|changed)\s+(?:deadline|due date|eligibility requirement|application requirement|award amount|stipend|tuition)\b/.test(
+    ) ||
+    (/\b(?:navigation|sidebar|menu|links?)\b/.test(combined) &&
+      /\b(?:reordered|swapped positions?|moved|positioned before|listed before|located below|distinct link)\b/.test(
+        combined,
+      ));
+  const hasConcreteAwardFactChange =
+    /\b(?:new|added|removed|changed|updated)\s+(?:application deadline|deadline|due date|award amount|stipend|tuition|funding amount)\b/.test(
       combined,
-    )
-  ) {
+    ) ||
+    /\b(?:applications?|nominations?)\s+(?:are|is)?\s*(?:now\s+)?(?:open|closed|due)\b/.test(
+      combined,
+    ) ||
+    /\b(?:deadline|due date)\s+(?:is|was|has been|changed|moved|extended)\b/.test(combined) ||
+    /\b(?:submit|apply|complete)\s+(?:by|before|no later than)\b/.test(combined);
+
+  if (looksLikeNavigationReorder && !hasConcreteAwardFactChange) {
     return {
       flag: "navigation_or_reorder_only_change",
       reason: "Only navigation, sidebar, or FAQ item order changed; no applicant-facing award fact changed.",
