@@ -179,16 +179,35 @@ export function dedupeChangeSummaries<
   },
 >(changes: Change[]) {
   const seen = new Set<string>();
+  const semanticSeen: SemanticChangeSignature[] = [];
 
   return changes.filter((change) => {
     const key = changeSummaryDedupeKey(change);
     if (!key) return false;
 
     if (seen.has(key)) return false;
+
+    const semanticSignature = semanticChangeDedupeSignature(change);
+    if (
+      semanticSignature &&
+      semanticSeen.some((existing) =>
+        semanticChangeSignaturesOverlap(existing, semanticSignature),
+      )
+    ) {
+      return false;
+    }
+
     seen.add(key);
+    if (semanticSignature) semanticSeen.push(semanticSignature);
     return true;
   });
 }
+
+type SemanticChangeSignature = {
+  scope: string;
+  tokens: Set<string>;
+  conceptKeys: Set<string>;
+};
 
 export function changeSummaryDedupeKey(change: {
   shared_award_id?: string | null;
@@ -230,6 +249,156 @@ function changeEvidenceDedupeKey(changeDetails: unknown) {
 
   if (evidenceParts.length < 2) return "";
   return `evidence:${evidenceParts.join("|")}`;
+}
+
+function semanticChangeDedupeSignature(change: {
+  shared_award_id?: string | null;
+  source_url?: string | null;
+  summary: string | null | undefined;
+  change_details?: unknown;
+  changeDetails?: unknown;
+}): SemanticChangeSignature | null {
+  const details = parseChangeDetails(change.change_details ?? change.changeDetails);
+  if (!details || !details.is_alert_worthy) return null;
+
+  const sourceKey = normalizeSourceUrlForDedupe(change.source_url || details.source?.source_url);
+  const awardKey = String(change.shared_award_id || details.source?.award_name || "").trim().toLowerCase();
+  if (!sourceKey || !awardKey) return null;
+
+  const sectionKey = normalizeSemanticScopePart(
+    details.section || details.structured_diff.likely_section || "",
+  );
+  const evidenceText = [
+    details.before,
+    details.after,
+    ...details.structured_diff.added_text,
+    ...details.structured_diff.removed_text,
+    ...details.structured_diff.date_changes,
+    ...details.structured_diff.amount_changes,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const tokens = semanticChangeTokens(evidenceText);
+  if (tokens.size < 8) return null;
+
+  const conceptText = [change.summary, details.reader_summary, evidenceText]
+    .filter(Boolean)
+    .join(" ");
+
+  return {
+    scope: `award:${awardKey}|url:${sourceKey}|section:${sectionKey}`,
+    tokens,
+    conceptKeys: semanticChangeConceptKeys(conceptText),
+  };
+}
+
+function semanticChangeSignaturesOverlap(
+  existing: SemanticChangeSignature,
+  candidate: SemanticChangeSignature,
+) {
+  if (existing.scope !== candidate.scope) return false;
+
+  const intersection = setIntersectionSize(existing.tokens, candidate.tokens);
+  const smallerSize = Math.min(existing.tokens.size, candidate.tokens.size);
+  const unionSize = existing.tokens.size + candidate.tokens.size - intersection;
+  for (const conceptKey of candidate.conceptKeys) {
+    if (
+      existing.conceptKeys.has(conceptKey) &&
+      intersection >= 7 &&
+      intersection / smallerSize >= 0.55
+    ) {
+      return true;
+    }
+  }
+
+  return intersection >= 10 && intersection / smallerSize >= 0.72 && intersection / unionSize >= 0.45;
+}
+
+function semanticChangeTokens(value: string) {
+  const normalized = cleanDisplayText(value)
+    .toLowerCase()
+    .replace(/\bd\.?\s*c\.?\b/g, "washington")
+    .replace(/[^a-z0-9]+/g, " ");
+  const stopwords = new Set([
+    "about",
+    "acceptance",
+    "added",
+    "after",
+    "again",
+    "award",
+    "before",
+    "changed",
+    "changes",
+    "check",
+    "clarifies",
+    "college",
+    "complete",
+    "congress",
+    "current",
+    "details",
+    "during",
+    "eligible",
+    "eligibility",
+    "following",
+    "however",
+    "information",
+    "necessary",
+    "participants",
+    "policy",
+    "preferred",
+    "previous",
+    "program",
+    "requirement",
+    "requirements",
+    "section",
+    "source",
+    "student",
+    "students",
+    "summary",
+    "updated",
+    "while",
+  ]);
+
+  return new Set(
+    normalized
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 5 && !stopwords.has(token) && !/^\d+$/.test(token)),
+  );
+}
+
+function semanticChangeConceptKeys(value: string) {
+  const normalized = cleanDisplayText(value)
+    .toLowerCase()
+    .replace(/\bd\.?\s*c\.?\b/g, "washington")
+    .replace(/\s+/g, " ");
+  const conceptKeys = new Set<string>();
+
+  if (
+    /\battendance\b/.test(normalized) &&
+    /\bwashington\b/.test(normalized) &&
+    /\b(?:opt out|second half|portion)\b/.test(normalized)
+  ) {
+    conceptKeys.add("attendance-washington-optional");
+  }
+
+  return conceptKeys;
+}
+
+function normalizeSemanticScopePart(value: string) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function setIntersectionSize<T>(left: Set<T>, right: Set<T>) {
+  let count = 0;
+  for (const value of left) {
+    if (right.has(value)) count += 1;
+  }
+  return count;
 }
 
 function looksLikeTruncatedFragment(summary: string) {

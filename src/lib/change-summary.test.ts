@@ -521,6 +521,81 @@ describe("change summary filtering", () => {
     ]);
   });
 
+  it("dedupes semantic repeats of the same source change when AI phrases them differently", () => {
+    const sourceUrl = "https://henryclaycenter.org/college-student-congress/";
+    const commonAttendanceText =
+      "While it is our preference that all 51 participants are able to commit to the program in Lexington, KY and Washington, D.C., we recognize that jobs, family events and other conflicts can limit students' abilities to attend the full two-week summer program. Attendance at the first half of the program in Lexington is mandatory for acceptance. However, participants may opt out of the second half of the program in Washington, D.C. if necessary.";
+
+    const changes = dedupeChangeSummaries([
+      {
+        id: "newer",
+        shared_award_id: "henry-clay",
+        source_url: sourceUrl,
+        summary:
+          "The program now clarifies that while attendance for the full two weeks is preferred, participants may opt out of the Washington D.C. portion if necessary, though the Lexington portion is mandatory.",
+        change_details: {
+          reader_summary:
+            "The program now clarifies that while attendance for the full two weeks is preferred, participants may opt out of the Washington D.C. portion if necessary, though the Lexington portion is mandatory.",
+          before: "Do I have to attend the program for the full amount of time in Lexington and Washington, D.C.?",
+          after: commonAttendanceText,
+          section: "Frequently Asked Questions",
+          change_type: "requirement_change",
+          advisor_impact:
+            "Students should be aware that while full attendance is preferred, the D.C. portion of the program is now optional, though the Lexington portion remains mandatory.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: [commonAttendanceText],
+            removed_text: [
+              "Do I have to attend the program for the full amount of time in Lexington and Washington, D.C.?",
+            ],
+            likely_section: null,
+            page_type: "homepage",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { source_url: sourceUrl, page_type: "homepage" },
+          quality_flags: ["visual_snapshot_comparison"],
+          generated_at: "2026-06-30T19:35:03.569Z",
+        },
+      },
+      {
+        id: "older",
+        shared_award_id: "henry-clay",
+        source_url: sourceUrl,
+        summary:
+          "The program's attendance policy has been updated. While full attendance is preferred, participants may now opt out of the second half of the program in Washington, D.C., if necessary.",
+        change_details: {
+          reader_summary:
+            "The program's attendance policy has been updated. While full attendance is preferred, participants may now opt out of the second half of the program in Washington, D.C., if necessary.",
+          before: commonAttendanceText.replace(" if necessary.", "."),
+          after: null,
+          section: "Frequently Asked Questions",
+          change_type: "eligibility_or_requirement_change",
+          advisor_impact:
+            "Students should be aware that while attendance in Lexington is mandatory, the requirement to attend the full program in Washington, D.C. has been relaxed.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: [],
+            removed_text: [commonAttendanceText.replace(" if necessary.", ".")],
+            likely_section: null,
+            page_type: "homepage",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: { source_url: sourceUrl, page_type: "homepage" },
+          quality_flags: ["visual_snapshot_comparison"],
+          generated_at: "2026-06-30T06:09:30.702Z",
+        },
+      },
+    ]);
+
+    expect(changes.map((change) => change.id)).toEqual(["newer"]);
+  });
+
   it("dedupes matching structured evidence even when AI labels the change differently", () => {
     const before =
       "Ansley Abraham, Director of the SREB-State Doctoral Scholars Program, and the Dean and Chair.";
