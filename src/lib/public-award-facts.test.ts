@@ -64,4 +64,15 @@ describe("public award facts", () => {
     expect(facts.academicLevels).toEqual(["Graduate"]);
     expect(facts.disciplines).toEqual(["Life sciences"]);
   });
+
+  it("preserves multiple award amounts as separate public fact items", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {
+        award_amounts: ["Full tuition; Living stipend"],
+      },
+    });
+
+    expect(facts.awardAmount).toEqual(["Full tuition", "Living stipend"]);
+  });
 });

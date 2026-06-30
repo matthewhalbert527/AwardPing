@@ -21,7 +21,7 @@ describe("PublicAwardWorkspace", () => {
             overview: "A fellowship for testing.",
             deadline: "January 29, 2026",
             openingDate: null,
-            awardAmount: "$1,000",
+            awardAmount: "$1,000; Travel stipend",
             eligibility: ["Graduate students"],
             requirements: ["First requirement; Second requirement"],
             applicationMaterials: [],
@@ -181,8 +181,11 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("Eligibility");
     expect(mainHtml).toContain("Academic level");
     expect(mainHtml).toContain('<ul class="public-award-fact-list">');
+    expect(mainHtml).toContain("<li>$1,000</li>");
+    expect(mainHtml).toContain("<li>Travel stipend</li>");
     expect(mainHtml).toContain("<li>First requirement</li>");
     expect(mainHtml).toContain("<li>Second requirement</li>");
+    expect(mainHtml).not.toContain("$1,000; Travel stipend");
     expect(mainHtml).not.toContain("First requirement; Second requirement");
     expect(mainHtml).not.toContain("Official source pages");
     expect(mainHtml).not.toContain("Stable");

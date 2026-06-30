@@ -5,7 +5,7 @@ export type PublicAwardFacts = {
   overview: string | null;
   deadline: string | null;
   openingDate: string | null;
-  awardAmount: string | null;
+  awardAmount: string | string[] | null;
   eligibility: string[];
   requirements: string[];
   applicationMaterials: string[];
@@ -60,6 +60,11 @@ export function publicAwardFactsFromAward(input: {
         factMap.get("important dates") || null,
         sourceFacts.flatMap((facts) => arrayField(facts.important_dates)),
       );
+  const structuredAwardAmounts = arrayField(structured.award_amounts).flatMap(splitFactItems);
+  const fallbackAwardAmounts = splitFact(
+    factMap.get("award amount") || null,
+    sourceFacts.flatMap((facts) => arrayField(facts.award_amounts)),
+  );
 
   return {
     overview:
@@ -76,10 +81,7 @@ export function publicAwardFactsFromAward(input: {
       cleanString(structured.opening_date) ||
       cleanString(factMap.get("opening date")) ||
       firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date))),
-    awardAmount:
-      firstValue(arrayField(structured.award_amounts)) ||
-      cleanString(factMap.get("award amount")) ||
-      firstValue(sourceFacts.flatMap((facts) => arrayField(facts.award_amounts))),
+    awardAmount: compactFact(structuredAwardAmounts.length ? structuredAwardAmounts : fallbackAwardAmounts),
     eligibility,
     requirements,
     applicationMaterials,
@@ -133,8 +135,19 @@ function baselineFactsFromMetadata(value: unknown) {
 }
 
 function splitFact(value: string | null, fallback: string[] = []) {
-  if (!value) return uniqueShort(fallback);
-  return uniqueShort([...value.split(/\s*;\s*/), ...fallback]);
+  const fallbackItems = fallback.flatMap(splitFactItems);
+  if (!value) return uniqueShort(fallbackItems);
+  return uniqueShort([...splitFactItems(value), ...fallbackItems]);
+}
+
+function compactFact(values: string[]) {
+  const clean = uniqueShort(values);
+  if (clean.length === 0) return null;
+  return clean.length === 1 ? clean[0] : clean;
+}
+
+function splitFactItems(value: string) {
+  return value.split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean);
 }
 
 function arrayField(value: unknown) {

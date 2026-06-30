@@ -422,12 +422,12 @@ function FactValueDisplay({
   className: string;
   value: FactValue;
 }) {
-  if (!Array.isArray(value)) return <>{value}</>;
-  if (value.length === 1) return <>{value[0]}</>;
+  const items = Array.isArray(value) ? value.flatMap(splitFactItems) : splitFactItems(value);
+  if (items.length <= 1) return <>{items[0] || ""}</>;
 
   return (
     <ul className={className}>
-      {value.map((item, index) => (
+      {items.map((item, index) => (
         <li key={`${item}-${index}`}>{item}</li>
       ))}
     </ul>
