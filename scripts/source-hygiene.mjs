@@ -1,6 +1,6 @@
 export function classifySourceHygiene(sourceLike = {}, failure = {}) {
   const url = String(sourceLike.url || sourceLike.source_url || "");
-  const title = String(sourceLike.title || sourceLike.source_title || "");
+  const title = String(sourceLike.display_title || sourceLike.title || sourceLike.source_title || "");
   const awardName = String(sourceLike.award_name || sourceLike.awardName || "");
   const reason = String(sourceLike.reason || "");
   const pageType = String(sourceLike.page_type || "");
@@ -34,6 +34,17 @@ export function classifySourceHygiene(sourceLike = {}, failure = {}) {
 
   if (isGenericListingOrSearchShape(parsed, directHaystack)) {
     return review("generic_source_shape", "Generic listing or search page is not specific enough for award monitoring");
+  }
+
+  if (isDuplicatePdfExportUrl(host, path)) {
+    return review("duplicate_pdf_export", "Synthetic PDF export duplicates the canonical award database page");
+  }
+
+  if (isBroadAcademicPdfSpillover(host, path, [url, title, reason].join(" "), awardName)) {
+    return review(
+      "cross_program_source",
+      "Broad academic policy or support PDF is not specific enough for this award",
+    );
   }
 
   if (isGenericNonAwardDiscoveryUrl(parsed, host, path, directHaystack)) {
@@ -316,6 +327,34 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   return false;
 }
 
+function isDuplicatePdfExportUrl(host, path) {
+  return (
+    /(^|\.)daad\.de$/.test(host) &&
+    /\/deutschland\/stipendium\/datenbank\/[^/]+\/21148-scholarship-database\.pdf$/i.test(path)
+  );
+}
+
+function isBroadAcademicPdfSpillover(host, path, signal, awardName) {
+  if (!/\.pdf(?:$|[?#])/i.test(path)) return false;
+  if (host === "static.daad.de" && hasAwardTokenMatch(signal, awardName, 1)) return false;
+  if (hasAwardTokenMatch(signal, awardName)) return false;
+
+  return (
+    (host === "static.daad.de" && /\/media\/daad_de\/pdfs_nicht_barrierefrei\//.test(path)) ||
+    (/(^|\.)kmk\.org$/.test(host) && /\/(?:hochschulzugang|zab)\/|baccalaureate/i.test(path)) ||
+    (host === "humboldt-foundation.de" && /\/fileadmin\/bewerben\/programme\/.*list_of_countries\.pdf$/i.test(path)) ||
+    (host === "hrk.de" && /\/fileadmin\/redaktion\/hrk\/.*auslandstitel/i.test(path))
+  );
+}
+
+function hasAwardTokenMatch(signal, awardName, minimum = 2) {
+  const sourceSignal = wordSignal(signal);
+  const tokens = distinctiveAwardTokens(awardName);
+  if (tokens.length === 0) return false;
+  const matches = tokens.filter((token) => tokenAppears(sourceSignal, token));
+  return matches.length >= Math.min(minimum, tokens.length);
+}
+
 function isGenericListingOrSearchShape(url, directHaystack) {
   const path = String(url?.pathname || "").toLowerCase();
 
@@ -422,6 +461,12 @@ function distinctiveAwardTokens(value) {
   const stop = new Set([
     "award",
     "awards",
+    "academic",
+    "akademischer",
+    "austauschdienst",
+    "daad",
+    "deutscher",
+    "exchange",
     "fellow",
     "fellowship",
     "fellowships",
@@ -430,6 +475,7 @@ function distinctiveAwardTokens(value) {
     "grant",
     "grants",
     "graduate",
+    "german",
     "international",
     "national",
     "postdoctoral",
@@ -442,6 +488,7 @@ function distinctiveAwardTokens(value) {
     "scholarships",
     "student",
     "students",
+    "service",
     "undergraduate",
   ]);
 

@@ -366,6 +366,55 @@ describe("source hygiene classifier", () => {
     ).toMatchObject({ action: "keep" });
   });
 
+  it("rejects DAAD duplicate print PDFs and broad academic PDF spillover", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.daad.de/deutschland/stipendium/datenbank/en/21148-scholarship-database.pdf?status=4&origin=44&detail=57742121",
+        title: "as PDF",
+        page_type: "pdf",
+        award_name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "duplicate_pdf_export" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://static.daad.de/media/daad_de/pdfs_nicht_barrierefrei/in-deutschland-studieren-forschen-lehren/790_2023-01-01_daad_merkblatt_tarif_790-d_extern.pdf",
+        title: "these conditions [pdf-file]",
+        page_type: "pdf",
+        award_name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants",
+        reason: "Parent source: https://www.daad.de/en/studying-in-germany/living-in-germany/health-insurance/",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www2.daad.de/bundles/daadadminlbh/uploads/live/5129.pdf",
+        title: "DAAD Doctoral Research Grants Application Checklist",
+        page_type: "pdf",
+        award_name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://static.daad.de/media/daad_de/pdfs_nicht_barrierefrei/in-deutschland-studieren-forschen-lehren/hsk_hwk_faq.pdf",
+        title: "FAQs",
+        display_title: "FAQs - University Summer Course Grant",
+        page_type: "pdf",
+        award_name: "University Summer Course Grant",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://static.daad.de/media/daad_de/pdfs_nicht_barrierefrei/in-deutschland-studieren-forschen-lehren/daad_hsk_kursanbieterliste.pdf",
+        title: "Kursliste (Course List) 2026",
+        page_type: "pdf",
+        award_name: "University Summer Course Grant",
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
+
   it("keeps Simons source pages that match the specific ecology and evolution fellowship", () => {
     expect(
       shouldRejectDiscoveredSource({

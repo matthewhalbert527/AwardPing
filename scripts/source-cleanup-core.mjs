@@ -233,6 +233,7 @@ export function nonAwardReason(value, title = "", pageType = null) {
     if (institutionalDiscoveryHosts.has(host)) return "institutional_discovery_host";
     if (cmsAdminHosts.has(host)) return "cms_admin_host";
     if (hardNonAwardPath.test(url.pathname)) return "generic_non_award_path";
+    if (isDaadScholarshipDatabasePdfExport(host, url.pathname)) return "duplicate_pdf_export";
     if (
       genericListingOrSearchPath.test(url.pathname) ||
       hasGenericSearchQuery(url, lower)
@@ -248,6 +249,13 @@ export function nonAwardReason(value, title = "", pageType = null) {
   } catch {
     return "invalid_url";
   }
+}
+
+function isDaadScholarshipDatabasePdfExport(host, path) {
+  return (
+    /(^|\.)daad\.de$/.test(host) &&
+    /\/deutschland\/stipendium\/datenbank\/[^/]+\/21148-scholarship-database\.pdf$/i.test(path)
+  );
 }
 
 export function isBroadRootAgencyHomepage(value, awardName = "") {

@@ -59,6 +59,7 @@ export function isClearlyNonAwardSourceUrl(value: string | null | undefined) {
     if (!["http:", "https:"].includes(url.protocol)) return true;
     if (cmsAdminHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
+    if (isDuplicatePdfExportUrl(hostname, url.pathname)) return true;
     if (hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl)) return true;
     if (listingPath.test(url.pathname) && !awardRelatedText.test(fullUrl)) return true;
     return nonMonitorableAsset.test(url.pathname);
@@ -77,10 +78,18 @@ export function isHardBlockedOfficialSourceUrl(value: string | null | undefined)
     if (!["http:", "https:"].includes(url.protocol)) return true;
     if (cmsAdminHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
+    if (isDuplicatePdfExportUrl(hostname, url.pathname)) return true;
     return hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl);
   } catch {
     return true;
   }
+}
+
+function isDuplicatePdfExportUrl(hostname: string, pathname: string) {
+  return (
+    /(^|\.)daad\.de$/.test(hostname) &&
+    /\/deutschland\/stipendium\/datenbank\/[^/]+\/21148-scholarship-database\.pdf$/i.test(pathname)
+  );
 }
 
 export function filterTrackableOfficialSources<T extends { url: string }>(sources: T[]) {

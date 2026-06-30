@@ -115,6 +115,21 @@ describe("post-crawl source cleanup classification", () => {
     expect(actionFor(rows, "login-pdf")?.action).toBe(cleanupActions.safeToRemove);
   });
 
+  it("removes duplicate DAAD scholarship database PDF exports", () => {
+    const rows = [
+      source({
+        id: "daad-pdf-export",
+        url: "https://www.daad.de/deutschland/stipendium/datenbank/en/21148-scholarship-database.pdf?status=4&origin=44&detail=57742121",
+        title: "as PDF",
+        page_type: "pdf",
+      }),
+      source({ id: "good", url: "https://example.org/current", title: "Current award page" }),
+    ];
+
+    expect(actionFor(rows, "daad-pdf-export")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "daad-pdf-export")?.reason).toBe("duplicate_pdf_export");
+  });
+
   it("removes generic category and search shaped sources even with award-ish words", () => {
     const rows = [
       source({
@@ -259,6 +274,31 @@ describe("source consolidation classification", () => {
         { ...award, name: "DAAD-Research Internships in Science and Engineering (RISE)" },
       ),
     ).toMatchObject({ action: "review_later", reason: "participant_report_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "daad-export",
+          url: "https://www.daad.de/deutschland/stipendium/datenbank/en/21148-scholarship-database.pdf?status=4&origin=44&detail=57742121",
+          title: "as PDF",
+          page_type: "pdf",
+        }),
+        { ...award, name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants" },
+      ),
+    ).toMatchObject({ action: "review_later", reason: "duplicate_pdf_export" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "daad-static",
+          url: "https://static.daad.de/media/daad_de/pdfs_nicht_barrierefrei/in-deutschland-studieren-forschen-lehren/790_2023-01-01_daad_merkblatt_tarif_790-d_extern.pdf",
+          title: "these conditions [pdf-file]",
+          page_type: "pdf",
+          reason: "Parent source: https://www.daad.de/en/studying-in-germany/living-in-germany/health-insurance/",
+        }),
+        { ...award, name: "DAAD (German Academic Exchange Service) - Doctoral Research Grants" },
+      ),
+    ).toMatchObject({ action: "review_later", reason: "academic_policy_pdf_spillover" });
 
     expect(
       classifySourceForConsolidation(

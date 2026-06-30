@@ -130,6 +130,22 @@ describe("shared awards", () => {
     }
   });
 
+  it("hides duplicate DAAD scholarship database PDF exports while keeping real DAAD PDFs", () => {
+    const duplicateExport = {
+      url: "https://www.daad.de/deutschland/stipendium/datenbank/en/21148-scholarship-database.pdf?status=4&origin=44&detail=57742121",
+      page_type: "pdf",
+    };
+    const checklist = {
+      url: "https://www2.daad.de/bundles/daadadminlbh/uploads/live/5129.pdf",
+      page_type: "pdf",
+    };
+
+    expect(isClearlyNonAwardSourceUrl(duplicateExport.url)).toBe(true);
+    expect(isTrackableOfficialSourceUrl(duplicateExport.url)).toBe(false);
+    expect(isMonitorableOfficialSource(duplicateExport)).toBe(false);
+    expect(isMonitorableOfficialSource(checklist)).toBe(true);
+  });
+
   it("lets trusted source page types override generic listing heuristics without overriding hard blocks", () => {
     expect(
       isMonitorableOfficialSource({

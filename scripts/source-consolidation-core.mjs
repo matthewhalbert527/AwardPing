@@ -11,12 +11,18 @@ const protectedPageTypes = new Set([
 const genericAwardWords = new Set([
   "administration",
   "american",
+  "academic",
+  "akademischer",
   "association",
+  "austauschdienst",
   "award",
   "awards",
   "college",
+  "daad",
   "department",
+  "deutscher",
   "doctoral",
+  "exchange",
   "foundation",
   "fellow",
   "fellowship",
@@ -24,6 +30,7 @@ const genericAwardWords = new Set([
   "graduate",
   "grant",
   "grants",
+  "german",
   "institute",
   "international",
   "national",
@@ -36,6 +43,7 @@ const genericAwardWords = new Set([
   "scholarship",
   "scholarships",
   "science",
+  "service",
   "student",
   "students",
   "university",
@@ -182,6 +190,12 @@ export function strongConsolidationReason(source = {}, award = {}) {
     return "archive_pdf_spillover";
   }
 
+  if (isDaadScholarshipDatabasePdfExport(host, path)) return "duplicate_pdf_export";
+
+  if (isBroadAcademicPdfSpillover(host, path, direct, award)) {
+    return "academic_policy_pdf_spillover";
+  }
+
   if (host === "ala.org" && /\/council_documents\//.test(path)) return "governance_pdf_spillover";
 
   if (host === "home.treasury.gov" && /\/(?:system\/files|services\/the-multiemployer-pension-reform-act-of-2014|policy-issues|data)\//.test(path) && !awardSpecific) {
@@ -217,6 +231,28 @@ export function strongConsolidationReason(source = {}, award = {}) {
   if (host === "acf.gov" && /\/css\/(?:outreach-material|employers)\//.test(path)) return "agency_program_spillover";
 
   return null;
+}
+
+function isDaadScholarshipDatabasePdfExport(host, path) {
+  return (
+    /(^|\.)daad\.de$/.test(host) &&
+    /\/deutschland\/stipendium\/datenbank\/[^/]+\/21148-scholarship-database\.pdf$/i.test(path)
+  );
+}
+
+function isBroadAcademicPdfSpillover(host, path, direct, award) {
+  if (!/\.pdf(?:$|[?#])/i.test(path)) return false;
+  if (host === "static.daad.de" && matchingAwardTokens({ url: direct, title: direct, reason: direct }, award).length >= 1) {
+    return false;
+  }
+  if (hasAwardSpecificSignal({ url: direct, title: direct, reason: direct }, award)) return false;
+
+  return (
+    (host === "static.daad.de" && /\/media\/daad_de\/pdfs_nicht_barrierefrei\//.test(path)) ||
+    (/(^|\.)kmk\.org$/.test(host) && /\/(?:hochschulzugang|zab)\/|baccalaureate/i.test(path)) ||
+    (host === "humboldt-foundation.de" && /\/fileadmin\/bewerben\/programme\/.*list_of_countries\.pdf$/i.test(path)) ||
+    (host === "hrk.de" && /\/fileadmin\/redaktion\/hrk\/.*auslandstitel/i.test(path))
+  );
 }
 
 export function hasAwardSpecificSignal(source = {}, award = {}) {
