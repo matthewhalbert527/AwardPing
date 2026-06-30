@@ -1040,10 +1040,14 @@ function sectionStatusLabel(value: string) {
 }
 
 function joinArray(value: unknown) {
-  const values = arrayValue(value).map(cleanString).filter(Boolean);
+  const values = arrayValue(value).map(cleanString).filter(Boolean).flatMap(splitFactItems);
   const clean = values.slice(0, 4);
   if (clean.length === 0) return null;
   return clean.length === 1 ? clean[0] : clean;
+}
+
+function splitFactItems(value: string) {
+  return value.split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean);
 }
 
 function arrayValue(value: unknown): unknown[] {

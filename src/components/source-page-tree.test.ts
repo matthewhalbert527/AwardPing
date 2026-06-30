@@ -67,7 +67,7 @@ describe("SourcePageTree", () => {
                 page_category: "Eligibility",
                 award_relevance: "primary",
                 deadline: "January 29, 2026",
-                eligibility: ["Sophomores and juniors", "U.S. citizens"],
+                eligibility: ["Sophomores and juniors; U.S. citizens"],
                 sections: [
                   {
                     title: "Citizenship",

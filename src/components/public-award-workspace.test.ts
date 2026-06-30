@@ -26,7 +26,7 @@ describe("PublicAwardWorkspace", () => {
             openingDate: null,
             awardAmount: "$1,000",
             eligibility: ["Graduate students"],
-            requirements: ["First requirement", "Second requirement"],
+            requirements: ["First requirement; Second requirement"],
             applicationMaterials: [],
             howToApply: [],
             importantDates: [],

@@ -480,9 +480,13 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
 }
 
 function compactList(values: string[]) {
-  const clean = values.map((value) => value.trim()).filter(Boolean).slice(0, 6);
+  const clean = values.flatMap(splitFactItems).slice(0, 6);
   if (clean.length === 0) return null;
   return clean.length === 1 ? clean[0] : clean;
+}
+
+function splitFactItems(value: string) {
+  return value.split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean);
 }
 
 function isFactRow(row: MaybeFactRow): row is FactRow {
