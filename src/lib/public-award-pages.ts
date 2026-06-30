@@ -59,7 +59,7 @@ type SharedChangeRow = Pick<
 >;
 
 export type PublicAwardPageData = {
-  award: SharedAwardRow;
+  award: Pick<SharedAwardRow, "id" | "name" | "slug" | "official_homepage" | "updated_at">;
   canonicalPath: string;
   redirectPath: string | null;
   facts: ReturnType<typeof publicAwardFactsFromAward>;
@@ -191,7 +191,7 @@ async function loadPublicAwardPageData(
     sourceSlug: source.sourceSlug,
     publicPath: canonicalPath,
     title: readableSourceTitle(source.display_title || source.title, source.url),
-    description: source.page_description,
+    description: compactSourceDescription(source.page_description),
     url: source.url,
     pageType: source.page_type,
     lastCheckedAt: source.last_checked_at,
@@ -205,7 +205,13 @@ async function loadPublicAwardPageData(
     : null;
 
   return {
-    award,
+    award: {
+      id: award.id,
+      name: award.name,
+      slug: award.slug,
+      official_homepage: award.official_homepage,
+      updated_at: award.updated_at,
+    },
     canonicalPath,
     redirectPath,
     facts,
@@ -230,4 +236,20 @@ async function loadPublicAwardPageData(
 function embeddedSharedAward(value: unknown): SharedAwardRow | null {
   if (Array.isArray(value)) return embeddedSharedAward(value[0]);
   return value && typeof value === "object" ? (value as SharedAwardRow) : null;
+}
+
+const generatedFactDescriptionLabelPattern =
+  /\b(?:Deadline|Opening date|Award amount|Eligibility|Requirements|Application materials|How to apply|Important dates|Documents|Contacts|Notes|Baseline detail confidence):/i;
+
+function compactSourceDescription(value: string | null) {
+  const clean = value?.replace(/\s+/g, " ").trim() || "";
+  if (!clean) return null;
+
+  const factStart = clean.search(generatedFactDescriptionLabelPattern);
+  if (factStart <= 0) return clean;
+
+  return clean
+    .slice(0, factStart)
+    .replace(/\s+[.:;,-]*$/g, "")
+    .trim() || null;
 }
