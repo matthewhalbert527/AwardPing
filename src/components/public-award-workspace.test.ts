@@ -186,4 +186,149 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).not.toContain("Official source pages");
     expect(mainHtml).not.toContain("Stable");
   });
+
+  it("keeps oversized source groups compact while preserving updated sources", () => {
+    const noisyUpdatedSource = makeSource({
+      id: "source-updated-noise",
+      title: "1935-1936 - Vol 66",
+      url: "https://portal.sds.ox.ac.uk/articles/online_resource/1935-1936_-_Vol_66/25432207",
+    });
+    const sources = [
+      noisyUpdatedSource,
+      ...["A", "B", "C", "D", "E", "F", "G"].map((suffix) =>
+        makeSource({
+          id: `source-detail-${suffix}`,
+          title: `Application detail ${suffix}`,
+          url: `https://example.edu/fellowship/application/${suffix.toLowerCase()}`,
+        }),
+      ),
+      ...["H", "I", "J", "K", "L"].map((suffix) =>
+        makeSource({
+          id: `source-generic-${suffix}`,
+          title: `Generic filler ${suffix}`,
+          url: `https://example.edu/fellowship/generic/${suffix.toLowerCase()}`,
+        }),
+      ),
+    ];
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: makePageData({
+          sources,
+          changes: [
+            {
+              id: "change-updated-noise",
+              sourceId: noisyUpdatedSource.id,
+              sourceTitle: noisyUpdatedSource.title,
+              sourceUrl: noisyUpdatedSource.url,
+              sourcePageType: "application",
+              summary: "The application detail changed.",
+              changeDetails: {},
+              detectedAt: "2026-06-26T12:00:00.000Z",
+            },
+          ],
+        }),
+      }),
+    );
+
+    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+
+    expect(sidebarHtml).toContain("13 sources");
+    expect(sidebarHtml).toContain("1935-1936 - Vol 66");
+    expect(sidebarHtml).toContain("Application / 1 update");
+    expect(sidebarHtml).toContain("5 more tracked pages");
+    expect(sidebarHtml).not.toContain("Generic filler L");
+    expect(sidebarHtml.match(/public-award-nav-button-source/g) || []).toHaveLength(8);
+  });
 });
+
+function makePageData({
+  sources,
+  changes,
+}: {
+  sources: ReturnType<typeof makeSource>[];
+  changes: Array<{
+    id: string;
+    sourceId: string;
+    sourceTitle: string;
+    sourceUrl: string;
+    sourcePageType: "application";
+    summary: string;
+    changeDetails: Record<string, never>;
+    detectedAt: string;
+  }>;
+}) {
+  return {
+    award: {
+      id: "award-1",
+      name: "Example Fellowship",
+      slug: "example-fellowship",
+      official_homepage: "https://example.edu/fellowship",
+      summary: "A fellowship for testing.",
+      public_facts: {},
+      public_facts_generated_at: "2026-06-26T12:00:00.000Z",
+      updated_at: "2026-06-26T12:00:00.000Z",
+    },
+    canonicalPath: "/example-fellowship",
+    redirectPath: null,
+    facts: {
+      overview: "A fellowship for testing.",
+      deadline: "January 29, 2026",
+      openingDate: null,
+      awardAmount: "$1,000",
+      eligibility: ["Graduate students"],
+      requirements: [],
+      applicationMaterials: [],
+      howToApply: [],
+      importantDates: [],
+      documents: [],
+      contacts: [],
+      academicLevels: ["Graduate"],
+      disciplines: [],
+      citizenship: [],
+      confidence: "high",
+    },
+    metaDescription: "Example fellowship details.",
+    officialHomepage: "https://example.edu/fellowship",
+    lastCheckedAt: "2026-06-26T12:00:00.000Z",
+    sources,
+    changes,
+  };
+}
+
+function makeSource({
+  id,
+  title,
+  url,
+}: {
+  id: string;
+  title: string;
+  url: string;
+}) {
+  return {
+    id,
+    sourceSlug: id,
+    publicPath: "/example-fellowship",
+    title,
+    description: null,
+    url,
+    pageType: "application" as const,
+    lastCheckedAt: "2026-06-26T12:00:00.000Z",
+    facts: {
+      overview: null,
+      deadline: null,
+      openingDate: null,
+      awardAmount: null,
+      eligibility: [],
+      requirements: [],
+      applicationMaterials: [],
+      howToApply: [],
+      importantDates: [],
+      documents: [],
+      contacts: [],
+      academicLevels: [],
+      disciplines: [],
+      citizenship: [],
+      confidence: null,
+    },
+  };
+}

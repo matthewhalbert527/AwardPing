@@ -32,6 +32,8 @@ type SourceOutlineSection = {
   sources: PublicAwardSource[];
 };
 
+const MAX_VISIBLE_SOURCES_PER_SECTION = 8;
+
 export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [selected, setSelected] = useState<SelectedPanel>({ kind: "overview" });
@@ -77,7 +79,10 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
     }
     return counts;
   }, [data.changes, data.sources, readChangeIds]);
-  const sourceSections = useMemo(() => groupSourcesByOutlineSection(data.sources), [data.sources]);
+  const sourceSections = useMemo(
+    () => groupSourcesByOutlineSection(data.sources, data.award.name),
+    [data.award.name, data.sources],
+  );
   const unreadChangeCount = useMemo(
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
     [data.changes, readChangeIds],
@@ -221,18 +226,23 @@ function SourceOutlineSection({
     (total, source) => total + (sourceUnreadCounts.get(source.id) || 0),
     0,
   );
+  const visibleSources = visibleSourcesForSection(section, sourceChangeCounts, sourceUnreadCounts);
+  const hiddenSourceCount = section.sources.length - visibleSources.length;
 
   return (
     <details className="public-award-source-group">
       <summary>
         <ChevronDown size={14} aria-hidden="true" />
-        <span>{section.label}</span>
+        <span className="public-award-source-group-label">
+          <span>{section.label}</span>
+          <small>{countLabel(section.sources.length, "source")}</small>
+        </span>
         {unreadCount > 0 && (
           <span className="public-award-update-count" aria-label="Recent updates" />
         )}
       </summary>
       <div className="public-award-source-sublist">
-        {section.sources.map((source) => {
+        {visibleSources.map((source) => {
           const changeCount = sourceChangeCounts.get(source.id) || 0;
           const sourceUnreadCount = sourceUnreadCounts.get(source.id) || 0;
           return (
@@ -247,6 +257,11 @@ function SourceOutlineSection({
             />
           );
         })}
+        {hiddenSourceCount > 0 && (
+          <div className="public-award-source-overflow-note">
+            {countLabel(hiddenSourceCount, "more tracked page")}
+          </div>
+        )}
       </div>
     </details>
   );
@@ -457,8 +472,9 @@ const SOURCE_SECTION_ORDER = [
   "other",
 ];
 
-function groupSourcesByOutlineSection(sources: PublicAwardSource[]) {
+function groupSourcesByOutlineSection(sources: PublicAwardSource[], awardName: string) {
   const sections = new Map<string, SourceOutlineSection>();
+  const awardTokens = distinctiveAwardTokens(awardName);
 
   for (const source of sources) {
     const section = outlineSectionForSource(source);
@@ -473,7 +489,9 @@ function groupSourcesByOutlineSection(sources: PublicAwardSource[]) {
   return [...sections.values()]
     .map((section) => ({
       ...section,
-      sources: [...section.sources].sort((a, b) => sourceSortLabel(a).localeCompare(sourceSortLabel(b))),
+      sources: [...section.sources].sort((a, b) =>
+        sourceOutlineSortKey(a, awardTokens).localeCompare(sourceOutlineSortKey(b, awardTokens)),
+      ),
     }))
     .sort((a, b) => sourceSectionSortKey(a).localeCompare(sourceSectionSortKey(b)));
 }
@@ -547,9 +565,129 @@ function sourceSectionSortKey(section: SourceOutlineSection) {
   return `${order === -1 ? 99 : order}:${section.label}`;
 }
 
+function visibleSourcesForSection(
+  section: SourceOutlineSection,
+  sourceChangeCounts: Map<string, number>,
+  sourceUnreadCounts: Map<string, number>,
+) {
+  if (section.sources.length <= MAX_VISIBLE_SOURCES_PER_SECTION) return section.sources;
+
+  const updatedSources = section.sources.filter((source) =>
+    hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
+  );
+  const selected = new Map(updatedSources.map((source) => [source.id, source]));
+
+  for (const source of section.sources) {
+    if (selected.size >= Math.max(MAX_VISIBLE_SOURCES_PER_SECTION, updatedSources.length)) break;
+    selected.set(source.id, source);
+  }
+
+  return [
+    ...updatedSources,
+    ...section.sources.filter(
+      (source) => selected.has(source.id) && !hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
+    ),
+  ];
+}
+
+function hasSourceUpdate(
+  source: PublicAwardSource,
+  sourceChangeCounts: Map<string, number>,
+  sourceUnreadCounts: Map<string, number>,
+) {
+  return (sourceUnreadCounts.get(source.id) || 0) > 0 || (sourceChangeCounts.get(source.id) || 0) > 0;
+}
+
+function sourceOutlineSortKey(source: PublicAwardSource, awardTokens: string[]) {
+  return `${sourceOutlinePriority(source, awardTokens)}:${sourceSortLabel(source)}`;
+}
+
+function sourceOutlinePriority(source: PublicAwardSource, awardTokens: string[]) {
+  const text = searchableSourceText(source);
+  if (source.pageType === "homepage") return 0;
+  if (sourceMatchesAwardTokens(text, awardTokens)) return 1;
+  if (isNoisyOutlineSource(source, text, awardTokens)) return 9;
+  if (/\b(named scholarship|scholarship|fellowship|grant|award|funding)\b/.test(text)) return 2;
+  if (/\b(application guide|how to apply|when to apply|deadline|eligib|requirement|supporting documents)\b/.test(text)) {
+    return 3;
+  }
+  if (source.pageType && source.pageType !== "other") return 4;
+  return 5;
+}
+
+function isNoisyOutlineSource(source: PublicAwardSource, text: string, awardTokens: string[]) {
+  const title = source.title.toLowerCase();
+  const url = safeUrl(source.url);
+  const host = url?.hostname.toLowerCase().replace(/^www\./, "") || "";
+  const path = url?.pathname.toLowerCase() || "";
+
+  if (/^\d{4}-\d{4}\s*-\s*vol\s+\d+\b/.test(title)) return true;
+  if (/\b(charred grains?|administrative and private documents|journal of record|public statistics|sitemap)\b/.test(title)) {
+    return true;
+  }
+  if (host === "portal.sds.ox.ac.uk") {
+    if (/^\/(?:browse|groups|stats|sitemap|gazette|authors)(?:\/|$)/.test(path)) return true;
+    if (/^\/search(?:\/|$)/.test(path)) return true;
+    if (
+      /^\/articles\/(?:figure|online_resource)\//.test(path) &&
+      !sourceMatchesAwardTokens(text, awardTokens) &&
+      !/\b(scholarship|fellowship|grant|award|funding|deadline|eligib)\b/.test(text)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function sourceMatchesAwardTokens(text: string, awardTokens: string[]) {
+  if (awardTokens.length === 0) return false;
+  const matches = awardTokens.filter((token) => new RegExp(`\\b${escapeRegExp(token)}\\b`, "i").test(text));
+  return matches.length >= Math.min(2, awardTokens.length);
+}
+
+function distinctiveAwardTokens(value: string) {
+  const generic = new Set([
+    "award",
+    "awards",
+    "fellow",
+    "fellowship",
+    "fellowships",
+    "foundation",
+    "graduate",
+    "program",
+    "programme",
+    "scholar",
+    "scholars",
+    "scholarship",
+    "scholarships",
+    "student",
+    "students",
+    "university",
+  ]);
+  return [
+    ...new Set(
+      (value.toLowerCase().match(/[a-z0-9]+/g) || []).filter(
+        (token) => token.length >= 4 && !generic.has(token),
+      ),
+    ),
+  ].slice(0, 8);
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function sourceSortLabel(source: PublicAwardSource) {
   const pageTypeRank = source.pageType === "homepage" ? "0" : "1";
   return `${pageTypeRank}:${source.title.toLowerCase()}:${source.url.toLowerCase()}`;
+}
+
+function safeUrl(value: string) {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
 }
 
 function isChangeForSource(change: PublicAwardChange, source: PublicAwardSource) {

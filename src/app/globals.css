@@ -3654,6 +3654,27 @@ a {
   background: color-mix(in srgb, var(--brand-blue-soft) 38%, #ffffff);
 }
 
+.public-award-source-group-label {
+  display: grid;
+  gap: 0.08rem;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.public-award-source-group-label > span,
+.public-award-source-group-label > small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-award-source-group-label > small {
+  color: color-mix(in srgb, var(--muted) 82%, #ffffff);
+  font-size: 0.64rem;
+  font-weight: 850;
+  text-transform: none;
+}
+
 .public-award-source-group[open] > summary svg {
   transform: rotate(0deg);
 }
@@ -3666,6 +3687,14 @@ a {
   display: grid;
   gap: 0.24rem;
   padding-left: 0.24rem;
+}
+
+.public-award-source-overflow-note {
+  border-radius: 0.38rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.26rem 0.52rem 0.34rem 1.25rem;
 }
 
 .public-award-nav-button {
