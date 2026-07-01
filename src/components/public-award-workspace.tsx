@@ -322,8 +322,6 @@ function SourcePanel({
   changes: PublicAwardPageData["changes"];
   source: PublicAwardPageData["sources"][number];
 }) {
-  const factRows = sourceFactRows(source.facts);
-
   return (
     <div className="public-award-panel-stack">
       <div className="public-award-source-detail-heading">
@@ -332,7 +330,6 @@ function SourcePanel({
             <span className="badge" key={tag}>{tag}</span>
           ))}
           <h2>{source.title}</h2>
-          {source.description && <p>{source.description}</p>}
         </div>
         <div className="public-award-console-actions">
           <a className="button-primary" href={source.url} rel="noreferrer" target="_blank">
@@ -342,26 +339,22 @@ function SourcePanel({
         </div>
       </div>
 
-      {factRows.length > 0 ? (
-        <div className="public-award-fact-table">
-          {factRows.slice(0, 6).map((fact) => (
-            <FactLine fact={fact} key={fact.label} />
-          ))}
-        </div>
-      ) : (
-        <EmptyState text="No structured details have been extracted from this source page yet." />
-      )}
-
-      <ChangesPanel changes={changes} title="Recent changes on this page" />
+      <ChangesPanel
+        changes={changes}
+        emptyText="No meaningful updates have been recorded for this source yet."
+        title="Source update history"
+      />
     </div>
   );
 }
 
 function ChangesPanel({
   changes,
+  emptyText = "No meaningful updates have been recorded yet.",
   title = "Recent changes",
 }: {
   changes: PublicAwardPageData["changes"];
+  emptyText?: string;
   title?: string;
 }) {
   return (
@@ -392,7 +385,7 @@ function ChangesPanel({
           ))}
         </div>
       ) : (
-        <EmptyState text="No meaningful updates have been recorded yet." />
+        <EmptyState text={emptyText} />
       )}
     </div>
   );
@@ -453,22 +446,6 @@ function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
     { label: "Academic level", value: compactList(facts.academicLevels) },
     { label: "Discipline", value: compactList(facts.disciplines) },
     { label: "Citizenship", value: compactList(facts.citizenship) },
-    { label: "Eligibility", value: compactList(facts.eligibility) },
-    { label: "Award conditions", value: compactList(facts.requirements) },
-    { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
-    { label: "How to apply", value: compactList(facts.howToApply) },
-    { label: "Important dates", value: compactList(facts.importantDates) },
-    { label: "Documents", value: compactList(facts.documents) },
-    { label: "Contact", value: compactList(facts.contacts) },
-  ];
-
-  return rows.filter(isFactRow);
-}
-
-function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
-  const rows: MaybeFactRow[] = [
-    { label: "Deadline", value: facts.deadline, icon: "calendar" as const },
-    { label: "Award amount", value: facts.awardAmount },
     { label: "Eligibility", value: compactList(facts.eligibility) },
     { label: "Award conditions", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
