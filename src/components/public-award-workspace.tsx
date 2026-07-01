@@ -5,7 +5,6 @@ import Link from "next/link";
 import {
   ArrowRight,
   CalendarDays,
-  ChevronDown,
   ExternalLink,
   FileText,
   ListChecks,
@@ -30,13 +29,8 @@ type PublicAwardChange = PublicAwardPageData["changes"][number];
 type FactValue = string | string[];
 type FactRow = { label: string; value: FactValue; icon?: "calendar" | "checklist" };
 type MaybeFactRow = { label: string; value: FactValue | null; icon?: "calendar" | "checklist" };
-type SourceOutlineSection = {
-  key: string;
-  label: string;
-  sources: PublicAwardSource[];
-};
 
-const MAX_VISIBLE_SOURCES_PER_SECTION = 8;
+const MAX_VISIBLE_SIDEBAR_SOURCES = 10;
 
 export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -83,12 +77,15 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
     }
     return counts;
   }, [data.changes, data.sources, readChangeIds]);
-  const sourceSections = useMemo(
-    () => groupSourcesByOutlineSection(
-      sourcesForSidebar(data.sources, data.award.official_homepage),
-      data.award.name,
-    ),
-    [data.award.name, data.award.official_homepage, data.sources],
+  const sourceOutline = useMemo(
+    () =>
+      visibleSourcesForSidebar(
+        sourcesForSidebar(data.sources, data.award.official_homepage),
+        data.award.name,
+        sourceChangeCounts,
+        sourceUnreadCounts,
+      ),
+    [data.award.name, data.award.official_homepage, data.sources, sourceChangeCounts, sourceUnreadCounts],
   );
   const unreadChangeCount = useMemo(
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
@@ -159,19 +156,25 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
           />
         </div>
 
-        {sourceSections.length > 0 && (
+        {sourceOutline.sources.length > 0 && (
           <div className="public-award-nav-section" aria-label="Official sources">
             <p className="public-award-nav-heading">Sources</p>
-            {sourceSections.map((section) => (
-              <SourceOutlineSection
-                key={section.key}
-                onSelectSource={selectSource}
-                section={section}
-                selected={selected}
-                sourceChangeCounts={sourceChangeCounts}
-                sourceUnreadCounts={sourceUnreadCounts}
-              />
-            ))}
+            <div className="public-award-source-sublist public-award-source-flat-list">
+              {sourceOutline.visibleSources.map((source) => (
+                <SourceOutlineButton
+                  key={source.id}
+                  onSelectSource={selectSource}
+                  selected={selected}
+                  source={source}
+                  sourceUnreadCount={sourceUnreadCounts.get(source.id) || 0}
+                />
+              ))}
+              {sourceOutline.hiddenSourceCount > 0 && (
+                <div className="public-award-source-overflow-note">
+                  {countLabel(sourceOutline.hiddenSourceCount, "more tracked page")}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </aside>
@@ -218,61 +221,26 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
   );
 }
 
-function SourceOutlineSection({
+function SourceOutlineButton({
   onSelectSource,
-  section,
   selected,
-  sourceChangeCounts,
-  sourceUnreadCounts,
+  source,
+  sourceUnreadCount,
 }: {
   onSelectSource: (sourceId: string) => void;
-  section: SourceOutlineSection;
   selected: SelectedPanel;
-  sourceChangeCounts: Map<string, number>;
-  sourceUnreadCounts: Map<string, number>;
+  source: PublicAwardSource;
+  sourceUnreadCount: number;
 }) {
-  const unreadCount = section.sources.reduce(
-    (total, source) => total + (sourceUnreadCounts.get(source.id) || 0),
-    0,
-  );
-  const visibleSources = visibleSourcesForSection(section, sourceChangeCounts, sourceUnreadCounts);
-  const hiddenSourceCount = section.sources.length - visibleSources.length;
-
   return (
-    <details className="public-award-source-group">
-      <summary>
-        <ChevronDown size={14} aria-hidden="true" />
-        <span className="public-award-source-group-label">
-          <span>{section.label}</span>
-          <small>{countLabel(section.sources.length, "source")}</small>
-        </span>
-        {unreadCount > 0 && (
-          <span className="public-award-update-count" aria-label="Recent updates" />
-        )}
-      </summary>
-      <div className="public-award-source-sublist">
-        {visibleSources.map((source) => {
-          const changeCount = sourceChangeCounts.get(source.id) || 0;
-          const sourceUnreadCount = sourceUnreadCounts.get(source.id) || 0;
-          return (
-            <PanelButton
-              active={selected.kind === "source" && selected.sourceId === source.id}
-              key={source.id}
-              label={source.title}
-              meta={`${pageTypeLabel(source.pageType)} / ${countLabel(changeCount, "update")}`}
-              onClick={() => onSelectSource(source.id)}
-              updateCount={sourceUnreadCount}
-              variant="source"
-            />
-          );
-        })}
-        {hiddenSourceCount > 0 && (
-          <div className="public-award-source-overflow-note">
-            {countLabel(hiddenSourceCount, "more tracked page")}
-          </div>
-        )}
-      </div>
-    </details>
+    <PanelButton
+      active={selected.kind === "source" && selected.sourceId === source.id}
+      label={source.title}
+      onClick={() => onSelectSource(source.id)}
+      tags={sourceTags(source)}
+      updateCount={sourceUnreadCount}
+      variant="source"
+    />
   );
 }
 
@@ -281,13 +249,15 @@ function PanelButton({
   label,
   meta,
   onClick,
+  tags = [],
   updateCount = 0,
   variant = "profile",
 }: {
   active: boolean;
   label: string;
-  meta: string;
+  meta?: string | null;
   onClick: () => void;
+  tags?: string[];
   updateCount?: number;
   variant?: "profile" | "source";
 }) {
@@ -302,7 +272,18 @@ function PanelButton({
       <span className="public-award-nav-marker" aria-hidden="true" />
       <span className="public-award-nav-text">
         <strong>{label}</strong>
-        <small>{meta}</small>
+        {(meta || tags.length > 0) && (
+          <small>
+            {meta}
+            {tags.length > 0 && (
+              <span className="public-award-nav-tags">
+                {tags.map((tag) => (
+                  <span key={tag}>{tag}</span>
+                ))}
+              </span>
+            )}
+          </small>
+        )}
       </span>
       {hasUpdate && (
         <span className="public-award-update-count" aria-label="Recent updates" />
@@ -344,7 +325,9 @@ function SourcePanel({
     <div className="public-award-panel-stack">
       <div className="public-award-source-detail-heading">
         <div>
-          <span className="badge">{pageTypeLabel(source.pageType)}</span>
+          {sourceTags(source).map((tag) => (
+            <span className="badge" key={tag}>{tag}</span>
+          ))}
           <h2>{source.title}</h2>
           {source.description && <p>{source.description}</p>}
         </div>
@@ -520,80 +503,43 @@ function isFactRow(row: MaybeFactRow): row is FactRow {
   return Array.isArray(row.value) ? row.value.length > 0 : Boolean(row.value);
 }
 
-const SOURCE_SECTION_ORDER = [
-  "overview",
-  "application",
-  "deadlines",
-  "eligibility",
-  "requirements",
-  "award",
-  "documents",
-  "contact",
-  "faq",
-  "other",
-];
-
-function groupSourcesByOutlineSection(sources: PublicAwardSource[], awardName: string) {
-  const sections = new Map<string, SourceOutlineSection>();
+function visibleSourcesForSidebar(
+  sources: PublicAwardSource[],
+  awardName: string,
+  sourceChangeCounts: Map<string, number>,
+  sourceUnreadCounts: Map<string, number>,
+) {
   const awardTokens = distinctiveAwardTokens(awardName);
+  const sortedSources = [...sources].sort((a, b) =>
+    sourceOutlineSortKey(a, awardTokens).localeCompare(sourceOutlineSortKey(b, awardTokens)),
+  );
 
-  for (const source of sources) {
-    const section = outlineSectionForSource(source);
-    const existing = sections.get(section.key);
-    if (existing) {
-      existing.sources.push(source);
-    } else {
-      sections.set(section.key, { ...section, sources: [source] });
-    }
+  if (sortedSources.length <= MAX_VISIBLE_SIDEBAR_SOURCES) {
+    return { sources: sortedSources, visibleSources: sortedSources, hiddenSourceCount: 0 };
   }
 
-  return [...sections.values()]
-    .map((section) => ({
-      ...section,
-      sources: [...section.sources].sort((a, b) =>
-        sourceOutlineSortKey(a, awardTokens).localeCompare(sourceOutlineSortKey(b, awardTokens)),
-      ),
-    }))
-    .sort((a, b) => sourceSectionSortKey(a).localeCompare(sourceSectionSortKey(b)));
-}
+  const updatedSources = sortedSources.filter((source) =>
+    hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
+  );
+  const selected = new Map(updatedSources.map((source) => [source.id, source]));
 
-function outlineSectionForSource(source: PublicAwardSource) {
-  const text = searchableSourceText(source);
-
-  if (source.pageType === "homepage") return { key: "overview", label: "Overview" };
-  if (source.pageType === "application") return { key: "application", label: "Application" };
-  if (source.pageType === "deadline") return { key: "deadlines", label: "Deadlines" };
-  if (source.pageType === "eligibility") return { key: "eligibility", label: "Eligibility" };
-  if (source.pageType === "requirements") return { key: "requirements", label: "Award conditions" };
-  if (source.pageType === "pdf") return { key: "documents", label: "Documents" };
-  if (source.pageType === "faq") return { key: "faq", label: "FAQ" };
-
-  if (/\b(contact|contacts|email|phone|staff|directory|people|support|program officer)\b/.test(text)) {
-    return { key: "contact", label: "Contact" };
-  }
-  if (/\b(apply|application|applications|portal|form|submit|submission|nomination|applicant)\b/.test(text)) {
-    return { key: "application", label: "Application" };
-  }
-  if (/\b(deadline|deadlines|due date|timeline|calendar|important date|dates)\b/.test(text)) {
-    return { key: "deadlines", label: "Deadlines" };
-  }
-  if (/\b(eligib|citizenship|resident|gpa|academic level|field of study|discipline)\b/.test(text)) {
-    return { key: "eligibility", label: "Eligibility" };
-  }
-  if (/\b(requirement|requirements|criteria|guideline|instructions|rules|conditions?|obligations?)\b/.test(text)) {
-    return { key: "requirements", label: "Award conditions" };
-  }
-  if (/\b(funding|award amount|amount|stipend|benefit|salary|grant)\b/.test(text)) {
-    return { key: "award", label: "Award details" };
-  }
-  if (/\b(pdf|document|documents|file|files|guide|handbook|materials|transcript|letter)\b/.test(text)) {
-    return { key: "documents", label: "Documents" };
-  }
-  if (/\b(faq|faqs|questions|help)\b/.test(text)) {
-    return { key: "faq", label: "FAQ" };
+  for (const source of sortedSources) {
+    if (selected.size >= Math.max(MAX_VISIBLE_SIDEBAR_SOURCES, updatedSources.length)) break;
+    selected.set(source.id, source);
   }
 
-  return { key: "other", label: "Other sources" };
+  const visibleSources = [
+    ...updatedSources,
+    ...sortedSources.filter(
+      (source) => selected.has(source.id) && !hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
+    ),
+  ];
+
+  return {
+    sources: sortedSources,
+    visibleSources,
+    hiddenSourceCount: sortedSources.length - visibleSources.length,
+  };
 }
 
 function searchableSourceText(source: PublicAwardSource) {
@@ -619,36 +565,6 @@ function searchableSourceText(source: PublicAwardSource) {
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
-}
-
-function sourceSectionSortKey(section: SourceOutlineSection) {
-  const order = SOURCE_SECTION_ORDER.indexOf(section.key);
-  return `${order === -1 ? 99 : order}:${section.label}`;
-}
-
-function visibleSourcesForSection(
-  section: SourceOutlineSection,
-  sourceChangeCounts: Map<string, number>,
-  sourceUnreadCounts: Map<string, number>,
-) {
-  if (section.sources.length <= MAX_VISIBLE_SOURCES_PER_SECTION) return section.sources;
-
-  const updatedSources = section.sources.filter((source) =>
-    hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
-  );
-  const selected = new Map(updatedSources.map((source) => [source.id, source]));
-
-  for (const source of section.sources) {
-    if (selected.size >= Math.max(MAX_VISIBLE_SOURCES_PER_SECTION, updatedSources.length)) break;
-    selected.set(source.id, source);
-  }
-
-  return [
-    ...updatedSources,
-    ...section.sources.filter(
-      (source) => selected.has(source.id) && !hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
-    ),
-  ];
 }
 
 function hasSourceUpdate(
@@ -741,6 +657,10 @@ function escapeRegExp(value: string) {
 function sourceSortLabel(source: PublicAwardSource) {
   const pageTypeRank = source.pageType === "homepage" ? "0" : "1";
   return `${pageTypeRank}:${source.title.toLowerCase()}:${source.url.toLowerCase()}`;
+}
+
+function sourceTags(source: PublicAwardSource) {
+  return source.pageType === "pdf" ? ["PDF"] : [];
 }
 
 function safeUrl(value: string) {

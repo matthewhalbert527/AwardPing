@@ -3711,6 +3711,10 @@ a {
   padding-left: 0.24rem;
 }
 
+.public-award-source-flat-list {
+  padding-left: 0;
+}
+
 .public-award-source-overflow-note {
   border-radius: 0.38rem;
   color: var(--muted);
@@ -3736,7 +3740,7 @@ a {
 }
 
 .public-award-nav-button-source {
-  padding-left: 0.95rem;
+  padding-left: 0.6rem;
 }
 
 .public-award-nav-button::before {
@@ -3794,6 +3798,27 @@ a {
   font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.public-award-nav-tags {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 0.22rem;
+}
+
+.public-award-nav-tags > span {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: var(--surface-warm);
+  color: var(--brand-dark);
+  font-size: 0.62rem;
+  font-weight: 950;
+  letter-spacing: 0;
+  line-height: 1;
+  padding: 0.16rem 0.34rem;
+  text-transform: uppercase;
 }
 
 .public-award-update-count {

@@ -96,13 +96,13 @@ describe("PublicAwardWorkspace", () => {
               id: "source-3",
               sourceSlug: "contact",
               publicPath: "/example-fellowship",
-              title: "Contact the program",
-              description: "Email and phone support.",
-              url: "https://example.edu/fellowship/contact",
-              pageType: "other",
+              title: "Program guide",
+              description: "Official PDF guide.",
+              url: "https://example.edu/fellowship/program-guide.pdf",
+              pageType: "pdf",
               lastCheckedAt: "2026-06-26T12:00:00.000Z",
               facts: {
-                overview: "Program contact page.",
+                overview: "Program guide.",
                 deadline: null,
                 openingDate: null,
                 awardAmount: null,
@@ -155,14 +155,18 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).toContain("Recent changes");
     expect(sidebarHtml).toContain("1 update");
     expect(sidebarHtml).toContain("Sources");
-    expect(sidebarHtml).toContain("Application");
-    expect(sidebarHtml).toContain("Application / 1 update");
-    expect(sidebarHtml).toContain("Contact");
-    expect(sidebarHtml).toContain("Other source / 0 updates");
+    expect(sidebarHtml).toContain("Application portal");
+    expect(sidebarHtml).toContain("Program guide");
+    expect(sidebarHtml).toContain("<span>PDF</span>");
+    expect(sidebarHtml).not.toContain("Application / 1 update");
+    expect(sidebarHtml).not.toContain("PDF guide / 0 updates");
+    expect(sidebarHtml).not.toContain("Award conditions");
+    expect(sidebarHtml).not.toContain("Other source / 0 updates");
     expect(sidebarHtml).not.toContain("Homepage / 0 updates");
     expect(sidebarHtml).not.toContain("<span>Overview</span><small>1 source</small>");
     expect(sidebarHtml).toContain("Checked Jun 26, 2026");
-    expect(sidebarHtml).toContain("public-award-source-group");
+    expect(sidebarHtml).toContain("public-award-source-flat-list");
+    expect(sidebarHtml).not.toContain("public-award-source-group");
     expect(sidebarHtml).not.toContain("public-award-sidebar-page-card");
     expect(sidebarHtml).not.toContain("public-award-sidebar-last-checked");
     expect(sidebarHtml).not.toContain('<details class="public-award-source-group" open');
@@ -250,12 +254,11 @@ describe("PublicAwardWorkspace", () => {
 
     const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
 
-    expect(sidebarHtml).toContain("13 sources");
     expect(sidebarHtml).toContain("1935-1936 - Vol 66");
-    expect(sidebarHtml).toContain("Application / 1 update");
-    expect(sidebarHtml).toContain("5 more tracked pages");
+    expect(sidebarHtml).not.toContain("Application / 1 update");
+    expect(sidebarHtml).toContain("3 more tracked pages");
     expect(sidebarHtml).not.toContain("Generic filler L");
-    expect(sidebarHtml.match(/public-award-nav-button-source/g) || []).toHaveLength(8);
+    expect(sidebarHtml.match(/public-award-nav-button-source/g) || []).toHaveLength(10);
   });
 
   it("hides the award landing page source even when it is classified as application", () => {
