@@ -13,6 +13,7 @@ import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
 import {
+  canonicalSourceUrlKey,
   displayHomepageForAward,
   filterTrackableOfficialSources,
   isMonitorableOfficialSource,
@@ -201,6 +202,14 @@ async function loadPublicAwardPageData(
       sources: [source],
     }),
   }));
+  const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
+  const sourcesForPublicPage = withHomepageFallbackSource({
+    sources: publicSources,
+    award,
+    canonicalPath,
+    facts,
+    officialHomepage: displayHomepage,
+  });
   const limitedChanges = officialChanges.slice(0, 8);
   const unreadChangeIds = options.userId
     ? await unreadSharedChangeIdsForUser(options.userId, limitedChanges).catch(() => null)
@@ -218,9 +227,9 @@ async function loadPublicAwardPageData(
     redirectPath,
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
-    officialHomepage: displayHomepageForAward(award.official_homepage, officialSources),
+    officialHomepage: displayHomepage,
     lastCheckedAt: latestCheckedAt(officialSources),
-    sources: publicSources,
+    sources: sourcesForPublicPage,
     changes: limitedChanges.map((change) => ({
       id: change.id,
       sourceId: change.shared_award_source_id,
@@ -233,6 +242,41 @@ async function loadPublicAwardPageData(
       unread: unreadChangeIds ? unreadChangeIds.has(change.id) : true,
     })),
   };
+}
+
+function withHomepageFallbackSource({
+  sources,
+  award,
+  canonicalPath,
+  facts,
+  officialHomepage,
+}: {
+  sources: PublicAwardPageData["sources"];
+  award: SharedAwardRow;
+  canonicalPath: string;
+  facts: ReturnType<typeof publicAwardFactsFromAward>;
+  officialHomepage: string | null;
+}) {
+  if (!officialHomepage) return sources;
+
+  const homepageKey = canonicalSourceUrlKey(officialHomepage);
+  const hasHomepageSource = sources.some((source) => canonicalSourceUrlKey(source.url) === homepageKey);
+  if (hasHomepageSource) return sources;
+
+  return [
+    {
+      id: `official-homepage-${award.id}`,
+      sourceSlug: "award-homepage",
+      publicPath: canonicalPath,
+      title: "Award homepage",
+      description: facts.overview,
+      url: officialHomepage,
+      pageType: "homepage" as AwardPageType,
+      lastCheckedAt: null,
+      facts: publicAwardFactsFromAward({}),
+    },
+    ...sources,
+  ];
 }
 
 function embeddedSharedAward(value: unknown): SharedAwardRow | null {
