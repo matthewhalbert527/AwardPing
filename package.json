@@ -24,6 +24,7 @@
     "source:discover": "node scripts/find-official-sources-from-discovery-pages.mjs",
     "source:import-directories": "node scripts/import-fellowship-directories.mjs",
     "source:consolidate": "node scripts/consolidate-shared-award-sources.mjs",
+    "source:full-cleanup": "node scripts/full-source-cleanup-pass.mjs",
     "source:preflight": "node scripts/run-source-preflight.mjs",
     "source:reconcile-listings": "node scripts/reconcile-listing-opportunities.mjs",
     "source:backfill-slug-aliases": "node scripts/backfill-award-slug-aliases.mjs",
