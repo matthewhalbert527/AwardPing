@@ -36,6 +36,10 @@ export function classifySourceHygiene(sourceLike = {}, failure = {}) {
     return review("generic_source_shape", "Generic listing or search page is not specific enough for award monitoring");
   }
 
+  if (isOpenDataPortalSpilloverUrl(parsed, host, path, directHaystack, reason, awardName)) {
+    return review("generic_source_shape", "Open-data listing, search, or facet page is not a specific award source");
+  }
+
   if (isSoftwareDownloadUrl(host, path)) {
     return review("software_download", "Software download page is not an award source");
   }
@@ -293,6 +297,9 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
 
   if (host === "fields.utoronto.ca" && cleanPath === "/activities/thematic") return true;
   if (host === "postdocs.ubc.ca" && cleanPath === "/awards-funding") return true;
+  if (isAlbertaCareerOrStudentAidSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
   if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(cleanPath)) return true;
   if (host === "ncbi.nlm.nih.gov" && /^\/medline\/publisherportal(?:\/|$)/.test(cleanPath)) return true;
   if (host === "www8.nationalacademies.org" && /\/pa\/managerequest\.aspx$/.test(cleanPath)) return true;
@@ -332,6 +339,47 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
     host === "costumesocietyamerica.com" &&
     /\bstella\b.*\bblum\b/.test(awardSignal) &&
     !/stella|travel-research-grant/.test(cleanPath)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isAlbertaCareerOrStudentAidSpillover(host, path, search, directSignal, awardName) {
+  const signal = `${directSignal} ${path} ${search}`;
+  const matchesAward = hasDistinctiveAwardSourceMatch(signal, awardName);
+
+  if (/(^|\.)alis\.alberta\.ca$/.test(host)) return true;
+  if (host === "adultlearning.alberta.ca" && /^\/pcc\/provider\/?$/i.test(path)) return true;
+  if (/archive\.org$/.test(host) && /\/internationaltrade\d{4}\/internationaltrade\d{4}\.pdf$/i.test(path)) {
+    return true;
+  }
+
+  if (
+    /(^|\.)studentaid\.alberta\.ca$/.test(host) &&
+    /^\/scholarships\/[^/]+\/?$/i.test(path) &&
+    !matchesAward
+  ) {
+    return true;
+  }
+
+  if (
+    /(^|\.)studentaid\.alberta\.ca$/.test(host) &&
+    /^\/(?:student-aid-funding-guide|policy|types-of-funding|repayment|resources\/upload-documents-instructions|eligibility)(?:\/|$)/i.test(
+      path,
+    ) &&
+    !matchesAward
+  ) {
+    return true;
+  }
+
+  if (
+    /(^|\.)alberta\.ca$/.test(host) &&
+    /^\/(?:alberta-ca-account|apply-career-training-licence|career-training|eligibility-for-student-aid|fr\/eligibility-for-student-aid|id-requirements-for-identification-cards|private-career-colleges|registry-services|student-complaints|tuition-refunds)(?:[./-]|\/|$)/i.test(
+      path,
+    ) &&
+    !matchesAward
   ) {
     return true;
   }
@@ -411,6 +459,16 @@ function hasAwardTokenMatch(signal, awardName, minimum = 2) {
   return matches.length >= Math.min(minimum, tokens.length);
 }
 
+function hasDistinctiveAwardSourceMatch(signal, awardName, minimum = 1) {
+  const sourceSignal = wordSignal(signal);
+  const tokens = distinctiveAwardTokens(awardName).filter(
+    (token) => !["alberta", "government", "student", "students", "award", "awards"].includes(token),
+  );
+  if (tokens.length === 0) return false;
+  const matches = tokens.filter((token) => tokenAppears(sourceSignal, token));
+  return matches.length >= Math.min(minimum, tokens.length);
+}
+
 function isGenericListingOrSearchShape(url, directHaystack) {
   const path = String(url?.pathname || "").toLowerCase();
 
@@ -420,6 +478,64 @@ function isGenericListingOrSearchShape(url, directHaystack) {
     /\/(?:guidelinesearch|sitesearch|search|searchresults?)\.(?:html?|aspx?|php)$/.test(path) ||
     hasGenericSearchQuery(url, directHaystack)
   );
+}
+
+function isOpenDataPortalSpilloverUrl(url, host, path, directHaystack, reason, awardName) {
+  if (!/(^|\.)open\.alberta\.ca$/.test(host)) return false;
+  if (isOpenAlbertaBoilerplatePath(path)) return true;
+  if (/^\/opendata(?:\/|$)/i.test(path)) return true;
+  if (/^\/dataset\/[^/]+\/resource\/[^/]+\/download(?:\/|$)/i.test(path)) return true;
+  if (isOpenDataListingOrFacetUrl(url, path)) return true;
+
+  const parentSignal = String(reason || "").toLowerCase();
+  const awardTokens = distinctiveAwardTokens(awardName).filter(
+    (token) => !["alberta", "government", "student"].includes(token),
+  );
+  const sourceSignal = [directHaystack, url?.toString?.() || "", reason].join(" ");
+  if (
+    /^\/(?:publications|dataset)\/[^/]+/i.test(path) &&
+    awardTokens.length > 0 &&
+    !awardTokens.some((token) => tokenAppears(wordSignal(sourceSignal), token)) &&
+    (
+      /parent source:\s*https?:\/\/(?:[^/\s]+\.)?open\.alberta\.ca\/(?:dataset|publications|opendata)?(?:[/?]|\s|$)/i.test(
+        parentSignal,
+      ) ||
+      /found by the visual snapshot worker after expanding page content/i.test(parentSignal)
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isOpenAlbertaBoilerplatePath(path) {
+  return /^\/(?:documentation|licence|policy|suggest|dataset|publications)?\/?$/i.test(path);
+}
+
+function isOpenDataListingOrFacetUrl(url, path) {
+  if (!/^\/(?:publications|dataset|opendata)\/?$/i.test(path)) return false;
+
+  const listingKeys = new Set([
+    "audience",
+    "dataset_type",
+    "organization",
+    "page",
+    "pubtype",
+    "q",
+    "res_format",
+    "rows",
+    "sort",
+    "start",
+    "tags",
+    "topic",
+  ]);
+
+  for (const key of url?.searchParams?.keys?.() || []) {
+    if (listingKeys.has(key.toLowerCase())) return true;
+  }
+
+  return false;
 }
 
 function hasGenericSearchQuery(url, directHaystack) {

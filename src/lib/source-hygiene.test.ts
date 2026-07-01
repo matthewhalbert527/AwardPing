@@ -181,6 +181,100 @@ describe("source hygiene classifier", () => {
     ).toMatchObject({ action: "keep" });
   });
 
+  it("rejects open-data search and facet pages discovered as award subpages", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://open.alberta.ca/publications?pubtype=Reference+Material&tags=Alberta+Made+Production+Grant",
+        title: "Alberta Made Production Grant",
+        page_type: "deadline",
+        award_name:
+          "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://open.alberta.ca/dataset?q=%22Employment%20forecasting--Alberta--Periodicals%22",
+        title: "Employment forecasting--Alberta--Periodicals",
+        page_type: "deadline",
+        award_name:
+          "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://open.alberta.ca/opendata?audience=General+Public&page=2",
+        title: "2",
+        page_type: "deadline",
+        award_name:
+          "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://open.alberta.ca/dataset/e934cad0-06a0-4e7b-a462-74f9423fed61/resource/ef91890d-186c-4c7f-8e8e-de6b9aa22892/download/ae-alberta-tuition-framework-version-2-1-2021-12.pdf",
+        title: "Alberta tuition framework",
+        page_type: "pdf",
+        award_name: "University of Alberta - Killam and Notley Postdoctoral Fellowships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://open.alberta.ca/publications/2009-economic-update",
+        title: "2008-2009 economic update",
+        page_type: "deadline",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://open.alberta.ca/dataset?tags=economic+outlook&page=3 Signal: deadline_html_link",
+        award_name:
+          "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "generic_source_shape" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://open.alberta.ca/publications/albertas-occupational-outlook",
+        title: "Alberta's occupational outlook",
+        page_type: "deadline",
+        award_name: "Alberta Occupational Outlook",
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
+
+  it("rejects Alberta career and sibling student-aid spillover", () => {
+    const awardName =
+      "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://alis.alberta.ca/occinfo/alberta-job-postings/electrician/49818269/",
+        title: "Electrician",
+        page_type: "deadline",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://studentaid.alberta.ca/scholarships/new-beginnings-bursary/",
+        title: "Apply",
+        page_type: "application",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://studentaid.alberta.ca/scholarships/sir-james-lougheed-award-of-distinction/",
+        title: "Sir James Lougheed Award Eligibility",
+        page_type: "homepage",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
+
   it("rejects publication, transcript, catalog collection, and general article spillover", () => {
     expect(
       shouldRejectDiscoveredSource({

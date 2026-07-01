@@ -167,6 +167,51 @@ describe("change summary filtering", () => {
     ).toBe(false);
   });
 
+  it("hides view-count-only changes even when generated as high-confidence updates", () => {
+    const changeDetails = {
+      reader_summary:
+        "The 'Alberta Made Production Grant' publication has been updated, with the view count changing from 7849 to 7869. The description text appears to be identical.",
+      before:
+        "7849 UPDATED DESCRIPTION The Alberta Made Production Grant (AMPG) is a competitive grant program designed to provide funding to Alberta producers for projects with a minimum eligible Alberta spend of $50,000 and total...",
+      after:
+        "7869 UPDATED DESCRIPTION The Alberta Made Production Grant (AMPG) is a competitive grant program designed to provide funding to Alberta producers for projects with a minimum eligible Alberta spend of $50,000 and total...",
+      section: "Description",
+      change_type: "view_count_change",
+      advisor_impact:
+        "Advisors should note that the view count for the publication has increased. The description text has not changed.",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: [
+          "7869 UPDATED DESCRIPTION The Alberta Made Production Grant (AMPG) is a competitive grant program designed to provide funding to Alberta producers for projects with a minimum eligible Alberta spend of $50,000 and total...",
+        ],
+        removed_text: [
+          "7849 UPDATED DESCRIPTION The Alberta Made Production Grant (AMPG) is a competitive grant program designed to provide funding to Alberta producers for projects with a minimum eligible Alberta spend of $50,000 and total...",
+        ],
+        likely_section: "Eligibility",
+        page_type: "deadline",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: { page_type: "deadline" },
+      quality_flags: ["visual_snapshot_comparison"],
+      generated_at: "2026-07-01T03:53:46.606Z",
+    };
+
+    expect(isUsefulChangeSummary(changeDetails.reader_summary, changeDetails)).toBe(false);
+    expect(
+      isUsefulChangeForAward({
+        awardName: "Government of Alberta - Alberta Student Aid - Sir James Lougheed Graduate Scholarships",
+        sourceTitle: "Alberta Made Production Grant",
+        sourceUrl:
+          "https://open.alberta.ca/publications?pubtype=Reference+Material&tags=Alberta+Made+Production+Grant",
+        summary: changeDetails.reader_summary,
+        change_details: changeDetails,
+      }),
+    ).toBe(false);
+  });
+
   it("hides donation form churn even when a deadline page title is involved", () => {
     const changeDetails = {
       reader_summary:

@@ -33,6 +33,7 @@ export function isUsefulChangeSummary(
     !normalized.includes("something changed") &&
     !normalized.includes("content was updated") &&
     !normalized.includes("page text updated") &&
+    !looksLikeCounterOnlyChange(clean, changeDetails) &&
     !looksLikeAnimatedCounterChange(clean) &&
     !looksLikeProfileRosterChange(clean, changeDetails) &&
     !looksLikeDocumentMetadataOnlyChange(clean) &&
@@ -458,6 +459,67 @@ function looksLikeAnimatedCounterChange(summary: string) {
   );
 
   return hasCounterSignal && hasCounterDrift && !hasApplicantFacingSignal;
+}
+
+function looksLikeCounterOnlyChange(summary: string, changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  const structuredDiff = details?.structured_diff;
+  const text = [
+    summary,
+    details?.reader_summary,
+    details?.advisor_impact,
+    details?.section,
+    details?.change_type,
+    structuredDiff?.likely_section,
+    details?.before,
+    details?.after,
+    ...(structuredDiff?.added_text || []),
+    ...(structuredDiff?.removed_text || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  if (!text) return false;
+
+  const hasCounterSignal =
+    /\b(?:view count|views count|hit count|read count|visit count|view_count|page views?)\b/.test(
+      text,
+    ) ||
+    /\b(?:writer'?s id|post id)\b/.test(text) ||
+    /\bview[-_ ]?count[-_ ]?(?:change|update)\b/.test(text);
+  if (!hasCounterSignal) return false;
+
+  const dateChanges = structuredDiff?.date_changes || [];
+  const amountChanges = structuredDiff?.amount_changes || [];
+  if (dateChanges.length > 0 || amountChanges.length > 0) return false;
+
+  const before = normalizeCounterEvidence(details?.before || structuredDiff?.removed_text?.join(" ") || "");
+  const after = normalizeCounterEvidence(details?.after || structuredDiff?.added_text?.join(" ") || "");
+  const evidenceOnlyCounterDrift = Boolean(before && after && before === after);
+  if (evidenceOnlyCounterDrift) return true;
+
+  const strippedApplicantText = stripUnchangedApplicantReferences(text);
+  if (hasApplicantFacingChangeSignal(strippedApplicantText)) return false;
+
+  const explicitlyCounterOnly =
+    /\b(?:only|just|merely)\b[^.]{0,80}\b(?:view count|hit count|read count|page views?)\b/.test(
+      text,
+    ) ||
+    /\bdescription text appears to be identical\b/.test(text) ||
+    /\bdoes not affect\b[^.]{0,100}\b(?:deadline|eligibility|application|requirements?)\b/.test(
+      text,
+    );
+
+  return explicitlyCounterOnly || /\bview[-_ ]?count[-_ ]?(?:change|update)\b/.test(text);
+}
+
+function normalizeCounterEvidence(value: string) {
+  return cleanDisplayText(value)
+    .toLowerCase()
+    .replace(/\b\d{2,}(?:,\d{3})*\b/g, " ")
+    .replace(/\bupdated description\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function looksLikeDocumentMetadataOnlyChange(summary: string) {

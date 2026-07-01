@@ -61,6 +61,7 @@ export function isClearlyNonAwardSourceUrl(value: string | null | undefined) {
     if (cmsAdminHosts.has(hostname)) return true;
     if (softwareDownloadHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
+    if (isOpenDataListingOrFacetUrl(hostname, url)) return true;
     if (isDuplicateOrBroadPdfUrl(hostname, url.pathname)) return true;
     if (hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl)) return true;
     if (listingPath.test(url.pathname) && !awardRelatedText.test(fullUrl)) return true;
@@ -81,6 +82,7 @@ export function isHardBlockedOfficialSourceUrl(value: string | null | undefined)
     if (cmsAdminHosts.has(hostname)) return true;
     if (softwareDownloadHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
+    if (isOpenDataListingOrFacetUrl(hostname, url)) return true;
     if (isDuplicateOrBroadPdfUrl(hostname, url.pathname)) return true;
     return hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl);
   } catch {
@@ -96,6 +98,37 @@ function isDuplicateOrBroadPdfUrl(hostname: string, pathname: string) {
     hostname === "studieren-weltweit.de" &&
     /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(pathname)
   );
+}
+
+function isOpenDataListingOrFacetUrl(hostname: string, url: URL) {
+  if (!/(^|\.)open\.alberta\.ca$/.test(hostname)) return false;
+  if (/^\/(?:documentation|licence|policy|suggest|dataset|publications)?\/?$/i.test(url.pathname)) {
+    return true;
+  }
+  if (/^\/opendata(?:\/|$)/i.test(url.pathname)) return true;
+  if (/^\/dataset\/[^/]+\/resource\/[^/]+\/download(?:\/|$)/i.test(url.pathname)) return true;
+  if (!/^\/(?:publications|dataset)\/?$/i.test(url.pathname)) return false;
+
+  const listingKeys = new Set([
+    "audience",
+    "dataset_type",
+    "organization",
+    "page",
+    "pubtype",
+    "q",
+    "res_format",
+    "rows",
+    "sort",
+    "start",
+    "tags",
+    "topic",
+  ]);
+
+  for (const key of url.searchParams.keys()) {
+    if (listingKeys.has(key.toLowerCase())) return true;
+  }
+
+  return false;
 }
 
 export function filterTrackableOfficialSources<T extends { url: string }>(sources: T[]) {

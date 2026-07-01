@@ -152,6 +152,41 @@ describe("shared awards", () => {
     expect(isMonitorableOfficialSource(checklist)).toBe(true);
   });
 
+  it("hard-blocks open-data listing and facet URLs from public source outlines", () => {
+    const openDataFacet = {
+      url: "https://open.alberta.ca/publications?pubtype=Reference+Material&tags=Alberta+Made+Production+Grant",
+      page_type: "deadline",
+    };
+    const openDataSearch = {
+      url: "https://open.alberta.ca/dataset?q=%22Employment%20forecasting--Alberta--Periodicals%22",
+      page_type: "deadline",
+    };
+    const openDataPage = {
+      url: "https://open.alberta.ca/opendata?audience=General+Public&page=2",
+      page_type: "deadline",
+    };
+    const openDataBoilerplate = {
+      url: "https://open.alberta.ca/licence",
+      page_type: "deadline",
+    };
+    const openDataResourcePdf = {
+      url: "https://open.alberta.ca/dataset/e934cad0-06a0-4e7b-a462-74f9423fed61/resource/ef91890d-186c-4c7f-8e8e-de6b9aa22892/download/ae-alberta-tuition-framework-version-2-1-2021-12.pdf",
+      page_type: "pdf",
+    };
+    const openDataDetail = {
+      url: "https://open.alberta.ca/publications/albertas-occupational-outlook",
+      page_type: "deadline",
+    };
+
+    expect(isClearlyNonAwardSourceUrl(openDataFacet.url)).toBe(true);
+    expect(isMonitorableOfficialSource(openDataFacet)).toBe(false);
+    expect(isMonitorableOfficialSource(openDataSearch)).toBe(false);
+    expect(isMonitorableOfficialSource(openDataPage)).toBe(false);
+    expect(isMonitorableOfficialSource(openDataBoilerplate)).toBe(false);
+    expect(isMonitorableOfficialSource(openDataResourcePdf)).toBe(false);
+    expect(isMonitorableOfficialSource(openDataDetail)).toBe(true);
+  });
+
   it("lets trusted source page types override generic listing heuristics without overriding hard blocks", () => {
     expect(
       isMonitorableOfficialSource({
