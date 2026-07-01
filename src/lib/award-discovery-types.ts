@@ -39,7 +39,7 @@ export function pageTypeLabel(pageType: AwardPageType) {
     deadline: "Deadline",
     application: "Application",
     eligibility: "Eligibility",
-    requirements: "Requirements",
+    requirements: "Award conditions",
     pdf: "PDF guide",
     faq: "FAQ",
     other: "Other source",

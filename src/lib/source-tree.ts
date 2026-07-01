@@ -193,7 +193,7 @@ function categoryLabelForSource(source: SourceTreeSource) {
   if (source.pageType === "application") return "Application";
   if (source.pageType === "deadline") return "Deadlines";
   if (source.pageType === "eligibility") return "Eligibility";
-  if (source.pageType === "requirements") return "Requirements";
+  if (source.pageType === "requirements") return "Award conditions";
   if (source.pageType === "faq") return "FAQ";
   return null;
 }
@@ -299,7 +299,7 @@ function pageTypeLabelForTree(pageType: AwardPageType) {
     deadline: "Deadlines",
     application: "How to Apply",
     eligibility: "Eligibility",
-    requirements: "Requirements",
+    requirements: "Award conditions",
     pdf: "PDF guide",
     faq: "FAQ",
     other: "Source page",

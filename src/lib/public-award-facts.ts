@@ -51,7 +51,7 @@ export function publicAwardFactsFromAward(input: {
         factMap.get("application materials") || null,
         sourceFacts.flatMap((facts) => arrayField(facts.application_materials)),
       );
-  const normalizedFacts = normalizeApplicationMaterials(requirements, applicationMaterials);
+  const normalizedFacts = normalizeRequirementFacts(requirements, applicationMaterials);
   const documents = arrayField(structured.documents).length
     ? arrayField(structured.documents)
     : splitFact(factMap.get("documents") || null, sourceFacts.flatMap((facts) => arrayField(facts.documents)));
@@ -147,20 +147,20 @@ function compactFact(values: string[]) {
   return clean.length === 1 ? clean[0] : clean;
 }
 
-function normalizeApplicationMaterials(requirements: string[], applicationMaterials: string[]) {
+function normalizeRequirementFacts(requirements: string[], applicationMaterials: string[]) {
   const movedMaterials: string[] = [];
-  const remainingRequirements: string[] = [];
+  const awardConditions: string[] = [];
 
   for (const requirement of requirements) {
     if (looksLikeApplicationMaterial(requirement)) {
       movedMaterials.push(requirement);
-    } else {
-      remainingRequirements.push(requirement);
+    } else if (looksLikeAwardCondition(requirement)) {
+      awardConditions.push(requirement);
     }
   }
 
   return {
-    requirements: uniqueSemanticItems(remainingRequirements),
+    requirements: uniqueSemanticItems(awardConditions),
     applicationMaterials: uniqueSemanticItems([...movedMaterials, ...applicationMaterials]),
   };
 }
@@ -169,12 +169,51 @@ function looksLikeApplicationMaterial(value: string) {
   const text = value.toLowerCase();
 
   return (
-    /\b(transcripts?|references?|recommendations?|recommendation letters?|letters? of recommendation|personal statements?|research statements?|statements?|essays?|forms?|application form|online application|application submission|resume|cv|curriculum vitae|portfolio|writing sample|proposal|abstract|budget|work samples?|test scores?|gre|toefl|ielts)\b/.test(
+    (/\b(transcripts?|references?|recommendations?|recommendation letters?|letters? of recommendation|letters? of intent|loi|personal statements?|research statements?|supporting statements?|statements?|essays?|forms?|application form|scholarship application|application packet|online application|application submission|application portal|upload(?:ed|s|ing)?|resume|cv|curriculum vitae|portfolio|writing sample|proposal|abstract|budget|work samples?|test scores?|gre|toefl|ielts)\b/.test(
       text,
-    ) &&
+    ) ||
+      /\b(questions?|section [a-z0-9]|sections? of the)\b/.test(text)) &&
     !/\b(research topic|research priorities|academic performance|demonstrated interest|full[- ]time|citizenship|resident|gpa requirement|eligible|ineligible|must be enrolled|degree program|field of study)\b/.test(
       text,
     )
+  );
+}
+
+function looksLikeAwardCondition(value: string) {
+  const text = value.toLowerCase();
+
+  if (
+    /\b(academic performance|potential for success|relevance of work|selection criteria|review criteria|evaluation criteria|demonstrated interest|research topic|research priorities|fit with .*mission|fit within .*priorities)\b/.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    /\b(full[- ]time|master'?s|doctoral|undergraduate|graduate|citizens?|resident|gpa|field of study|degree program|enrolled)\b/.test(
+      text,
+    ) &&
+    !/\b(maintain|remain|continue|during|through|throughout|award year|award period|funding period)\b/.test(
+      text,
+    )
+  ) {
+    return false;
+  }
+
+  const specificCompletionCondition =
+    /\b(complete|completion)\b.*\b(final report|progress report|program|training|residency|orientation|workshop|conference|service|internship|fellowship|project)\b/.test(
+      text,
+    );
+
+  return (
+    specificCompletionCondition ||
+    /\b(attend|attendance|participate|participation|serve|service|report|progress report|final report|residency|orientation|workshop|conference|commit|commitment|obligation|maintain|remain|continue|throughout|during the award|award period|award year|may not|cannot|can not|must not|not hold|hold another|concurrent|simultaneous)\b/.test(
+      text,
+    ) ||
+    /\brecipients?\s+must\b/.test(text) ||
+    /\bawardees?\s+must\b/.test(text) ||
+    /\bfellows?\s+must\b/.test(text)
   );
 }
 

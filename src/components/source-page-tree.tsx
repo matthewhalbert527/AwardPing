@@ -969,7 +969,7 @@ function sourceFactRows(facts: Record<string, unknown>) {
     { label: "Opening Date", value: cleanString(facts.opening_date) },
     { label: "Award Amount", value: joinArray(facts.award_amounts) },
     { label: "Eligibility", value: joinArray(facts.eligibility) },
-    { label: "Requirements", value: joinArray(facts.requirements) },
+    { label: "Award conditions", value: joinArray(facts.requirements) },
     { label: "Materials", value: joinArray(facts.application_materials) },
     { label: "How To Apply", value: joinArray(facts.how_to_apply) },
     { label: "Important Dates", value: joinArray(facts.important_dates) },

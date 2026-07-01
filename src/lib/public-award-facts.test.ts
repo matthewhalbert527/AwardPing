@@ -83,6 +83,9 @@ describe("public award facts", () => {
                 "College transcripts (unofficial accepted).",
                 "Personal statement (500 words or less).",
                 "Research statement (500 words or less).",
+                "Complete three questions in Section C.",
+                "Answer all sections of the supporting statement.",
+                "Upload the supporting statement as a PDF document.",
                 "Three references.",
               ],
               application_materials: [
@@ -103,8 +106,40 @@ describe("public award facts", () => {
       "College transcripts (unofficial accepted).",
       "Personal statement (500 words or less).",
       "Research statement (500 words or less).",
+      "Complete three questions in Section C.",
+      "Answer all sections of the supporting statement.",
+      "Upload the supporting statement as a PDF document.",
       "Contact Information",
       "Career Interests",
+    ]);
+  });
+
+  it("only keeps true award conditions in the requirements field", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {},
+      sources: [
+        {
+          page_metadata: {
+            baseline_facts: {
+              requirements: [
+                "Academic performance",
+                "Relevance of work to solid waste management science",
+                "Potential for success",
+                "Recipients must submit a final report at the end of the award year.",
+                "Awardees may not hold another major fellowship concurrently.",
+                "Students must maintain full-time enrollment throughout the award period.",
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(facts.requirements).toEqual([
+      "Recipients must submit a final report at the end of the award year.",
+      "Awardees may not hold another major fellowship concurrently.",
+      "Students must maintain full-time enrollment throughout the award period.",
     ]);
   });
 

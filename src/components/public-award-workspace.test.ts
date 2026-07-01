@@ -23,7 +23,7 @@ describe("PublicAwardWorkspace", () => {
             openingDate: null,
             awardAmount: "$1,000; Travel stipend",
             eligibility: ["Graduate students"],
-            requirements: ["First requirement; Second requirement"],
+            requirements: ["Recipients must submit a final report; Awardees may not hold another fellowship"],
             applicationMaterials: [],
             howToApply: [],
             importantDates: [],
@@ -181,14 +181,16 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("Overview");
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");
+    expect(mainHtml).toContain("Award conditions");
+    expect(mainHtml).not.toContain("Requirements");
     expect(mainHtml).toContain("Academic level");
     expect(mainHtml).toContain('<ul class="public-award-fact-list">');
     expect(mainHtml).toContain("<li>$1,000</li>");
     expect(mainHtml).toContain("<li>Travel stipend</li>");
-    expect(mainHtml).toContain("<li>First requirement</li>");
-    expect(mainHtml).toContain("<li>Second requirement</li>");
+    expect(mainHtml).toContain("<li>Recipients must submit a final report</li>");
+    expect(mainHtml).toContain("<li>Awardees may not hold another fellowship</li>");
     expect(mainHtml).not.toContain("$1,000; Travel stipend");
-    expect(mainHtml).not.toContain("First requirement; Second requirement");
+    expect(mainHtml).not.toContain("Recipients must submit a final report; Awardees may not hold another fellowship");
     expect(mainHtml).not.toContain("Official source pages");
     expect(mainHtml).not.toContain("Stable");
   });

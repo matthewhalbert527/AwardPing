@@ -454,7 +454,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
     { label: "Discipline", value: compactList(facts.disciplines) },
     { label: "Citizenship", value: compactList(facts.citizenship) },
     { label: "Eligibility", value: compactList(facts.eligibility) },
-    { label: "Requirements", value: compactList(facts.requirements) },
+    { label: "Award conditions", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
     { label: "How to apply", value: compactList(facts.howToApply) },
     { label: "Important dates", value: compactList(facts.importantDates) },
@@ -470,7 +470,7 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
     { label: "Deadline", value: facts.deadline, icon: "calendar" as const },
     { label: "Award amount", value: facts.awardAmount },
     { label: "Eligibility", value: compactList(facts.eligibility) },
-    { label: "Requirements", value: compactList(facts.requirements) },
+    { label: "Award conditions", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
     { label: "How to apply", value: compactList(facts.howToApply) },
     { label: "Important dates", value: compactList(facts.importantDates) },
@@ -543,7 +543,7 @@ function outlineSectionForSource(source: PublicAwardSource) {
   if (source.pageType === "application") return { key: "application", label: "Application" };
   if (source.pageType === "deadline") return { key: "deadlines", label: "Deadlines" };
   if (source.pageType === "eligibility") return { key: "eligibility", label: "Eligibility" };
-  if (source.pageType === "requirements") return { key: "requirements", label: "Requirements" };
+  if (source.pageType === "requirements") return { key: "requirements", label: "Award conditions" };
   if (source.pageType === "pdf") return { key: "documents", label: "Documents" };
   if (source.pageType === "faq") return { key: "faq", label: "FAQ" };
 
@@ -559,8 +559,8 @@ function outlineSectionForSource(source: PublicAwardSource) {
   if (/\b(eligib|citizenship|resident|gpa|academic level|field of study|discipline)\b/.test(text)) {
     return { key: "eligibility", label: "Eligibility" };
   }
-  if (/\b(requirement|requirements|criteria|guideline|instructions|rules)\b/.test(text)) {
-    return { key: "requirements", label: "Requirements" };
+  if (/\b(requirement|requirements|criteria|guideline|instructions|rules|conditions?|obligations?)\b/.test(text)) {
+    return { key: "requirements", label: "Award conditions" };
   }
   if (/\b(funding|award amount|amount|stipend|benefit|salary|grant)\b/.test(text)) {
     return { key: "award", label: "Award details" };
