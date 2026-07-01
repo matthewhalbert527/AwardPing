@@ -61,6 +61,7 @@ export function isClearlyNonAwardSourceUrl(value: string | null | undefined) {
     if (cmsAdminHosts.has(hostname)) return true;
     if (softwareDownloadHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
+    if (isNationalAcademiesNonAwardUrl(hostname, url)) return true;
     if (isOpenDataListingOrFacetUrl(hostname, url)) return true;
     if (isDuplicateOrBroadPdfUrl(hostname, url.pathname)) return true;
     if (hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl)) return true;
@@ -82,6 +83,7 @@ export function isHardBlockedOfficialSourceUrl(value: string | null | undefined)
     if (cmsAdminHosts.has(hostname)) return true;
     if (softwareDownloadHosts.has(hostname)) return true;
     if (phoneNumberPathSegment.test(decodeURIComponent(url.pathname))) return true;
+    if (isNationalAcademiesNonAwardUrl(hostname, url)) return true;
     if (isOpenDataListingOrFacetUrl(hostname, url)) return true;
     if (isDuplicateOrBroadPdfUrl(hostname, url.pathname)) return true;
     return hardNonAwardPath.test(url.pathname) || trackingQuery.test(fullUrl);
@@ -98,6 +100,25 @@ function isDuplicateOrBroadPdfUrl(hostname: string, pathname: string) {
     hostname === "studieren-weltweit.de" &&
     /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(pathname)
   );
+}
+
+function isNationalAcademiesNonAwardUrl(hostname: string, url: URL) {
+  const path = url.pathname.toLowerCase().replace(/\/+$/g, "") || "/";
+
+  if (hostname === "www8.nationalacademies.org") {
+    return /^\/pa\/(?:managerequest|feedback)\.aspx$/.test(path);
+  }
+
+  if (hostname !== "nationalacademies.org") return false;
+
+  if (
+    path === "/" ||
+    /^\/(?:current-operating-status|members|myacademies-accounts|advancing-a-robust-us-economy)(?:\/|$)/.test(path)
+  ) {
+    return true;
+  }
+
+  return /^\/projects(?:\/|$)/.test(path);
 }
 
 function isOpenDataListingOrFacetUrl(hostname: string, url: URL) {
@@ -186,7 +207,7 @@ function canonicalSearchParams(searchParams: URLSearchParams) {
     const value = rawValue.trim();
     if (!key || key.startsWith("utm_")) continue;
     if (["fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "share", "replytocom"].includes(key)) continue;
-    if (["lang", "locale", "view", "campaign"].includes(key)) continue;
+    if (["lang", "locale", "view", "campaign", "sort"].includes(key)) continue;
     if (key === "page" && (!value || value === "1")) continue;
     if (key === "s" && !value) continue;
     kept.push([key, value.toLowerCase()]);

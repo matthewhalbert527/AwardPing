@@ -669,6 +669,8 @@ function shortenSourceDisplayTitle(title: string, awardName: string) {
   let value = original
     .replace(/\s*\[(?:download|pdf)\]\s*$/i, "")
     .replace(/\s*\((?:download|pdf)\)\s*$/i, "")
+    .replace(/^(?:the\s+)?national academies(?: of sciences, engineering, and medicine)?\s+/i, "")
+    .replace(/\bapplicant resources?\b/gi, "")
     .trim();
 
   if (!value) return "";
@@ -712,21 +714,52 @@ function removableAwardPhrases(awardName: string) {
   const pieces = awardName
     .split(/\s*(?:[|:]|-)\s+/)
     .flatMap((part) => [part, part.replace(/\([^)]*\)/g, " ")]);
+  const subphrases = awardSubphrases(withoutParentheticals);
   return [
     awardName,
     withoutParentheticals,
     ...pieces,
+    ...subphrases,
     ...acronyms,
   ]
+    .flatMap(awardPhraseVariants)
     .map((phrase) => phrase.replace(/\s+/g, " ").trim())
     .filter((phrase, index, phrases) => phrase.length >= 2 && phrases.indexOf(phrase) === index)
     .sort((a, b) => b.length - a.length);
+}
+
+function awardSubphrases(value: string) {
+  const words = value.split(/\s+/).map((word) => word.trim()).filter(Boolean);
+  const phrases: string[] = [];
+  for (let start = 0; start < words.length; start += 1) {
+    for (let end = start + 3; end <= words.length; end += 1) {
+      const phrase = words.slice(start, end).join(" ");
+      if (/\b(award|scholarships?|fellowships?|grants?|programs?|programme)\b/i.test(phrase)) {
+        phrases.push(phrase);
+      }
+    }
+  }
+  return phrases;
+}
+
+function awardPhraseVariants(value: string) {
+  const variants = new Set([value]);
+  variants.add(value.replace(/\bfellowship\b/gi, "Fellowships"));
+  variants.add(value.replace(/\bfellowships\b/gi, "Fellowship"));
+  variants.add(value.replace(/\bscholarship\b/gi, "Scholarships"));
+  variants.add(value.replace(/\bscholarships\b/gi, "Scholarship"));
+  variants.add(value.replace(/\bprogram\b/gi, "Programs"));
+  variants.add(value.replace(/\bprograms\b/gi, "Program"));
+  variants.add(value.replace(/\bprogramme\b/gi, "Programmes"));
+  variants.add(value.replace(/\bprogrammes\b/gi, "Programme"));
+  return [...variants];
 }
 
 function removePhrase(value: string, phrase: string) {
   if (!phrase) return value;
   const escaped = escapeRegExp(phrase);
   return value
+    .replace(new RegExp(`^(\\d{4}(?:[-–]\\d{2,4})?\\s+)${escaped}\\b\\s*[:|/-]?\\s*`, "i"), "$1")
     .replace(new RegExp(`^${escaped}\\b\\s*[:|/-]?\\s*`, "i"), "")
     .replace(new RegExp(`\\s*[:|/-]?\\s*\\b${escaped}$`, "i"), "")
     .replace(/\s+/g, " ")

@@ -334,6 +334,39 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("ACM Awards: Advice");
     expect(sidebarHtml).not.toContain("[Download]");
   });
+
+  it("shortens National Academies Gulf fellowship source titles", () => {
+    const data = makePageData({
+      sources: [
+        makeSource({
+          id: "source-gulf-application",
+          title: "National Academies Gulf Research Program Science Policy Fellowships Application and Review Process",
+          url: "https://www.nationalacademies.org/programs/GULF-GULFEO-14-01/application-process",
+        }),
+        makeSource({
+          id: "source-gulf-office-hour",
+          pageType: "pdf",
+          title: "2026 Science Policy Fellowship Q&A Office Hour Presentation Applicant Resource",
+          url: "https://www.nationalacademies.org/cdn/materials/a1127513-8528-483f-a66a-eae8136ed637",
+        }),
+      ],
+      changes: [],
+    });
+    data.award.name = "Gulf Research Program Science Policy Fellowship";
+
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data,
+      }),
+    );
+
+    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+
+    expect(sidebarHtml).toContain("Application and Review Process");
+    expect(sidebarHtml).toContain("2026 Q&amp;A Office Hour Presentation");
+    expect(sidebarHtml).not.toContain("National Academies Gulf Research Program");
+    expect(sidebarHtml).not.toContain("Applicant Resource");
+  });
 });
 
 function makePageData({

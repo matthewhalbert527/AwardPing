@@ -302,7 +302,7 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   }
   if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(cleanPath)) return true;
   if (host === "ncbi.nlm.nih.gov" && /^\/medline\/publisherportal(?:\/|$)/.test(cleanPath)) return true;
-  if (host === "www8.nationalacademies.org" && /\/pa\/managerequest\.aspx$/.test(cleanPath)) return true;
+  if (isNationalAcademiesSpillover(host, cleanPath, cleanSearch)) return true;
   if (host === "fastlane.nsf.gov" && cleanPath === "/fastlane.jsp") return true;
   if (host === "nsf.gov" && cleanPath === "/funding/programs.jsp" && /\borg=sbe\b/.test(cleanSearch)) {
     return true;
@@ -343,6 +343,25 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
     return true;
   }
 
+  return false;
+}
+
+function isNationalAcademiesSpillover(host, path, search = "") {
+  if (host === "www8.nationalacademies.org") {
+    return /^\/pa\/(?:managerequest|feedback)\.aspx$/.test(path);
+  }
+
+  if (host !== "nationalacademies.org") return false;
+
+  if (
+    path === "/" ||
+    /^\/(?:current-operating-status|members|myacademies-accounts|advancing-a-robust-us-economy)(?:\/|$)/.test(path)
+  ) {
+    return true;
+  }
+
+  if (/^\/projects(?:\/|$)/.test(path)) return true;
+  if (/^\/programs\/[^/]+\/updates$/.test(path) && /\bsort=/.test(search)) return true;
   return false;
 }
 

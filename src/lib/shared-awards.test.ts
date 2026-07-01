@@ -96,6 +96,18 @@ describe("shared awards", () => {
     ]);
   });
 
+  it("deduplicates sorted update URL variants against the canonical page", () => {
+    const sources = filterTrackableOfficialSources([
+      { url: "https://www.nationalacademies.org/programs/GULF-GULFEO-14-01/updates?sort=asc" },
+      { url: "https://www.nationalacademies.org/programs/GULF-GULFEO-14-01/updates" },
+      { url: "https://www.nationalacademies.org/programs/GULF-GULFEO-14-01/updates?sort=desc" },
+    ]);
+
+    expect(sources).toEqual([
+      { url: "https://www.nationalacademies.org/programs/GULF-GULFEO-14-01/updates" },
+    ]);
+  });
+
   it("filters clearly non-award source URLs without dropping award-like news paths", () => {
     expect(isClearlyNonAwardSourceUrl("https://onsa.asu.edu/apply")).toBe(false);
     expect(isInstitutionalDiscoveryUrl("https://onsa.asu.edu/apply")).toBe(true);
@@ -106,6 +118,31 @@ describe("shared awards", () => {
     expect(isClearlyNonAwardSourceUrl("tel:+18005267022")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("https://www.tylenol.com/news/scholarship")).toBe(false);
     expect(isClearlyNonAwardSourceUrl("https://get.adobe.com/reader/")).toBe(true);
+  });
+
+  it("hard-blocks National Academies utility and unrelated project spillover", () => {
+    const blocked = [
+      "https://www.nationalacademies.org/",
+      "https://www.nationalacademies.org/current-operating-status",
+      "https://www.nationalacademies.org/members",
+      "https://www.nationalacademies.org/advancing-a-robust-us-economy",
+      "https://www.nationalacademies.org/projects/HMD-HCS-25-14/event/46980",
+      "https://www8.nationalacademies.org/pa/managerequest.aspx?key=HMD-HCS-25-14",
+      "https://www8.nationalacademies.org/pa/feedback.aspx?type=project&key=HMD-HCS-25-14",
+    ];
+
+    for (const url of blocked) {
+      expect(isClearlyNonAwardSourceUrl(url)).toBe(true);
+      expect(isTrackableOfficialSourceUrl(url)).toBe(false);
+      expect(isMonitorableOfficialSource({ url, page_type: "requirements" })).toBe(false);
+    }
+
+    expect(isTrackableOfficialSourceUrl("https://www.nationalacademies.org/programs/GULF-GULFEO-14-01/resources")).toBe(
+      true,
+    );
+    expect(isTrackableOfficialSourceUrl("https://www.nationalacademies.org/cdn/materials/a1127513-8528-483f-a66a-eae8136ed637")).toBe(
+      true,
+    );
   });
 
   it("keeps official application, deadline, and PDF source pages monitorable", () => {
