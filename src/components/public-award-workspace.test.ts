@@ -155,6 +155,7 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).toContain("Recent changes");
     expect(sidebarHtml).toContain("1 update");
     expect(sidebarHtml).toContain("Sources");
+    expect(sidebarHtml).toContain("Award homepage");
     expect(sidebarHtml).toContain("Application portal");
     expect(sidebarHtml).toContain("Program guide");
     expect(sidebarHtml).toContain("<span>PDF</span>");
@@ -261,7 +262,7 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml.match(/public-award-nav-button-source/g) || []).toHaveLength(10);
   });
 
-  it("hides the award landing page source even when it is classified as application", () => {
+  it("lists the award landing page source even when it is classified as application", () => {
     const html = renderToStaticMarkup(
       createElement(PublicAwardWorkspace, {
         data: makePageData({
@@ -281,8 +282,8 @@ describe("PublicAwardWorkspace", () => {
     const mainHtml = html.slice(html.indexOf("</aside>"));
 
     expect(sidebarHtml).toContain("Award profile");
-    expect(sidebarHtml).not.toContain("Sources");
-    expect(sidebarHtml).not.toContain("Example Fellowship Application");
+    expect(sidebarHtml).toContain("Sources");
+    expect(sidebarHtml).toContain("Example Fellowship Application");
     expect(sidebarHtml).not.toContain("Application / 0 updates");
     expect(mainHtml).toContain("1 source page");
     expect(mainHtml).toContain("Official homepage");

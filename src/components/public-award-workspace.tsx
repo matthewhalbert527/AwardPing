@@ -80,12 +80,12 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
   const sourceOutline = useMemo(
     () =>
       visibleSourcesForSidebar(
-        sourcesForSidebar(data.sources, data.award.official_homepage),
+        data.sources,
         data.award.name,
         sourceChangeCounts,
         sourceUnreadCounts,
       ),
-    [data.award.name, data.award.official_homepage, data.sources, sourceChangeCounts, sourceUnreadCounts],
+    [data.award.name, data.sources, sourceChangeCounts, sourceUnreadCounts],
   );
   const unreadChangeCount = useMemo(
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
@@ -163,6 +163,7 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
               {sourceOutline.visibleSources.map((source) => (
                 <SourceOutlineButton
                   key={source.id}
+                  awardName={data.award.name}
                   onSelectSource={selectSource}
                   selected={selected}
                   source={source}
@@ -222,11 +223,13 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
 }
 
 function SourceOutlineButton({
+  awardName,
   onSelectSource,
   selected,
   source,
   sourceUnreadCount,
 }: {
+  awardName: string;
   onSelectSource: (sourceId: string) => void;
   selected: SelectedPanel;
   source: PublicAwardSource;
@@ -235,7 +238,7 @@ function SourceOutlineButton({
   return (
     <PanelButton
       active={selected.kind === "source" && selected.sourceId === source.id}
-      label={source.title}
+      label={sourceDisplayTitle(source, awardName)}
       onClick={() => onSelectSource(source.id)}
       tags={sourceTags(source)}
       updateCount={sourceUnreadCount}
@@ -478,17 +481,6 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
   return rows.filter(isFactRow);
 }
 
-function sourcesForSidebar(sources: PublicAwardSource[], officialHomepage: string | null) {
-  return sources.filter((source) => !isAwardLandingSource(source, officialHomepage));
-}
-
-function isAwardLandingSource(source: PublicAwardSource, officialHomepageValue: string | null) {
-  if (source.pageType === "homepage") return true;
-
-  const officialHomepage = normalizeUrl(officialHomepageValue);
-  return Boolean(officialHomepage && normalizeUrl(source.url) === officialHomepage);
-}
-
 function compactList(values: string[]) {
   const clean = values.flatMap(splitFactItems).slice(0, 6);
   if (clean.length === 0) return null;
@@ -661,6 +653,18 @@ function sourceSortLabel(source: PublicAwardSource) {
 
 function sourceTags(source: PublicAwardSource) {
   return source.pageType === "pdf" ? ["PDF"] : [];
+}
+
+function sourceDisplayTitle(source: PublicAwardSource, awardName: string) {
+  const cleanTitle = source.title.replace(/\s+/g, " ").trim();
+  if (
+    source.pageType === "homepage" &&
+    (!cleanTitle || /^(homepage|home|source page|official homepage|official page)$/i.test(cleanTitle))
+  ) {
+    return "Award homepage";
+  }
+  if (cleanTitle && cleanTitle.toLowerCase() !== awardName.toLowerCase()) return cleanTitle;
+  return source.pageType === "homepage" ? "Award homepage" : cleanTitle || "Source page";
 }
 
 function safeUrl(value: string) {
