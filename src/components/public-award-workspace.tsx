@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
+import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
@@ -387,6 +388,16 @@ function ChangesPanel({
               <div>
                 <h3>{change.sourceTitle}</h3>
                 <p>{change.summary}</p>
+                <ChangeEvidencePanel
+                  changeDetails={change.changeDetails}
+                  compact
+                  detectedAt={change.detectedAt}
+                  sourceId={change.sourceId}
+                  sourcePageTypeLabel={change.sourcePageType ? pageTypeLabel(change.sourcePageType) : null}
+                  sourceTitle={change.sourceTitle}
+                  sourceUrl={change.sourceUrl}
+                  summary={change.summary}
+                />
               </div>
             </article>
           ))}

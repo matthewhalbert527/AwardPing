@@ -128,7 +128,17 @@ describe("PublicAwardWorkspace", () => {
               sourceUrl: "https://example.edu/fellowship/apply",
               sourcePageType: "application",
               summary: "The deadline changed.",
-              changeDetails: {},
+              changeDetails: {
+                before: "Applications close January 29, 2026.",
+                after: "Applications close February 5, 2026.",
+                reader_summary: "The application deadline moved later.",
+                confidence: "high",
+                change_type: "deadline_change",
+                structured_diff: {
+                  added_text: ["Applications close February 5, 2026."],
+                  removed_text: ["Applications close January 29, 2026."],
+                },
+              },
               detectedAt: "2026-06-26T12:00:00.000Z",
             },
           ],
