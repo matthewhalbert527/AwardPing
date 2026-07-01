@@ -6,6 +6,7 @@ dist
 public/awardping-worker-windows.zip
 node_modules
 reports
+logs
 tmp
 AwardPingVisualSnapshots
 visual-snapshots
