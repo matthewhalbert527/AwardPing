@@ -86,11 +86,12 @@ describe("public award facts", () => {
                 "Complete three questions in Section C.",
                 "Answer all sections of the supporting statement.",
                 "Upload the supporting statement as a PDF document.",
+                "Contact Information.",
+                "Career Interests.",
+                "College Information.",
                 "Three references.",
               ],
               application_materials: [
-                "Contact Information",
-                "Career Interests",
                 "College transcripts",
               ],
             },
@@ -109,8 +110,8 @@ describe("public award facts", () => {
       "Complete three questions in Section C.",
       "Answer all sections of the supporting statement.",
       "Upload the supporting statement as a PDF document.",
-      "Contact Information",
-      "Career Interests",
+      "Contact Information.",
+      "Career Interests.",
     ]);
   });
 

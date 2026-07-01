@@ -168,8 +168,10 @@ async function loadPublicAwardPageData(
   ]);
 
   const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[]);
+  const officialSourceIds = new Set(officialSources.map((source) => source.id));
   const officialChanges = dedupeChangeSummaries(
     ((changes || []) as SharedChangeRow[]).filter((change) =>
+      (!change.shared_award_source_id || officialSourceIds.has(change.shared_award_source_id)) &&
       isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
       isUsefulChangeForAward({
         awardName: award.name,

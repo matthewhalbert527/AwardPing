@@ -172,7 +172,9 @@ function looksLikeApplicationMaterial(value: string) {
     (/\b(transcripts?|references?|recommendations?|recommendation letters?|letters? of recommendation|letters? of intent|loi|personal statements?|research statements?|supporting statements?|statements?|essays?|forms?|application form|scholarship application|application packet|online application|application submission|application portal|upload(?:ed|s|ing)?|resume|cv|curriculum vitae|portfolio|writing sample|proposal|abstract|budget|work samples?|test scores?|gre|toefl|ielts)\b/.test(
       text,
     ) ||
-      /\b(questions?|section [a-z0-9]|sections? of the)\b/.test(text)) &&
+      /\b(questions?|section [a-z0-9]|sections? of the|contact information|career interests?|college information|tuition and living expenses|sources? of funding|college academic honors?|extracurricular activities)\b/.test(
+        text,
+      )) &&
     !/\b(research topic|research priorities|academic performance|demonstrated interest|full[- ]time|citizenship|resident|gpa requirement|eligible|ineligible|must be enrolled|degree program|field of study)\b/.test(
       text,
     )
