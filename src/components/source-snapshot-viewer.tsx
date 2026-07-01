@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Clock3,
   ExternalLink,
@@ -18,6 +18,7 @@ type SnapshotObject = {
 
 type SnapshotSide = {
   captured_at: string | null;
+  focus_ratio?: number | null;
   kind?: "webpage" | "pdf" | string;
   objects: Record<string, SnapshotObject>;
 };
@@ -96,7 +97,7 @@ export function SourceSnapshotViewerButton({
     setActiveVersion("latest");
 
     try {
-      const response = await fetch(`/api/source-snapshots/${encodeURIComponent(sourceId)}`, {
+      const response = await fetch(snapshotRequestPath(sourceId, evidence), {
         cache: "no-store",
       });
       const body = (await response.json().catch(() => null)) as
@@ -292,10 +293,19 @@ function SnapshotBody({
   title: string;
   version: SnapshotVersion;
 }) {
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const primaryObject = useMemo(
     () => selectPrimarySnapshotObject(activeSnapshot),
     [activeSnapshot],
   );
+  const focusRatio = typeof activeSnapshot?.focus_ratio === "number"
+    ? activeSnapshot.focus_ratio
+    : null;
+
+  useEffect(() => {
+    scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio);
+  }, [focusRatio, primaryObject?.url, version]);
 
   if (loading) {
     return (
@@ -322,10 +332,11 @@ function SnapshotBody({
 
   if (primaryObject.kind === "pdf") {
     return (
-      <div className="source-snapshot-frame">
+      <div className="source-snapshot-frame" ref={frameRef}>
         <SnapshotFrameActions
           activeVersion={version}
           canShowPrevious={canShowPrevious}
+          hasFocusTarget={focusRatio !== null}
           openLabel="Open PDF"
           openUrl={primaryObject.url}
           onVersionChange={onVersionChange}
@@ -341,10 +352,11 @@ function SnapshotBody({
   }
 
   return (
-    <div className="source-snapshot-frame">
+    <div className="source-snapshot-frame" ref={frameRef}>
       <SnapshotFrameActions
         activeVersion={version}
         canShowPrevious={canShowPrevious}
+        hasFocusTarget={focusRatio !== null}
         openLabel="Open image"
         openUrl={primaryObject.url}
         onVersionChange={onVersionChange}
@@ -353,7 +365,9 @@ function SnapshotBody({
       <img
         alt={`${title} ${version} snapshot`}
         className="source-snapshot-image"
+        ref={imageRef}
         src={primaryObject.url}
+        onLoad={() => scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio)}
       />
     </div>
   );
@@ -362,12 +376,14 @@ function SnapshotBody({
 function SnapshotFrameActions({
   activeVersion,
   canShowPrevious,
+  hasFocusTarget,
   openLabel,
   openUrl,
   onVersionChange,
 }: {
   activeVersion: SnapshotVersion;
   canShowPrevious: boolean;
+  hasFocusTarget: boolean;
   openLabel: string;
   openUrl: string;
   onVersionChange: (version: SnapshotVersion) => void;
@@ -375,7 +391,7 @@ function SnapshotFrameActions({
   return (
     <div className="source-snapshot-frame-actions">
       <div className="source-snapshot-version-control">
-        <span>Screenshot</span>
+        <span>{hasFocusTarget ? "Changed section" : "Screenshot"}</span>
         <div className="source-snapshot-tabs" aria-label="Screenshot version">
           <SnapshotTab
             active={activeVersion === "latest"}
@@ -396,6 +412,54 @@ function SnapshotFrameActions({
       </a>
     </div>
   );
+}
+
+function snapshotRequestPath(sourceId: string, evidence: ReturnType<typeof buildChangeEvidence>) {
+  const params = new URLSearchParams();
+  for (const snippet of snapshotFocusSnippets("latest", evidence)) {
+    params.append("latest", snippet);
+  }
+  for (const snippet of snapshotFocusSnippets("previous", evidence)) {
+    params.append("previous", snippet);
+  }
+  const query = params.toString();
+  return `/api/source-snapshots/${encodeURIComponent(sourceId)}${query ? `?${query}` : ""}`;
+}
+
+function snapshotFocusSnippets(version: SnapshotVersion, evidence: ReturnType<typeof buildChangeEvidence>) {
+  const snippets = version === "latest"
+    ? [evidence.afterSnippet, ...evidence.currentSnippets, evidence.summarySnippet]
+    : [evidence.beforeSnippet, ...evidence.previousSnippets, evidence.summarySnippet];
+  return uniqueStrings(
+    snippets
+      .filter((snippet): snippet is string => Boolean(snippet))
+      .map((snippet) => snippet.replace(/\s+/g, " ").trim())
+      .filter((snippet) => snippet.length >= 8)
+      .map((snippet) => snippet.slice(0, 220)),
+  ).slice(0, 4);
+}
+
+function scrollToFocusRatio(
+  frame: HTMLDivElement | null,
+  image: HTMLImageElement | null,
+  focusRatio: number | null,
+) {
+  if (!frame || !image || focusRatio === null || !Number.isFinite(focusRatio)) return;
+
+  window.requestAnimationFrame(() => {
+    const imageTop = image.offsetTop;
+    const imageHeight = image.clientHeight;
+    if (!imageHeight) return;
+    const targetTop = imageTop + imageHeight * Math.max(0, Math.min(1, focusRatio));
+    frame.scrollTo({
+      top: Math.max(0, targetTop - frame.clientHeight * 0.35),
+      behavior: "auto",
+    });
+  });
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values)];
 }
 
 function selectPrimarySnapshotObject(snapshot: SnapshotSide | null) {

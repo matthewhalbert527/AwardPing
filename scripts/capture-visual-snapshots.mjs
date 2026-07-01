@@ -3622,11 +3622,8 @@ async function syncR2SnapshotPair(source, capture) {
   const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
   await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
 
-  const existingLatestKeys = jsonObjectOrEmpty(existingRecord?.latest_object_keys);
   const previousObjectKeys = Object.keys(rotatedKeys).length
-    ? Object.keys(existingLatestKeys).length
-      ? existingLatestKeys
-      : rotatedKeys
+    ? rotatedKeys
     : {};
   const previousHashes = Object.keys(rotatedKeys).length
     ? jsonObjectOrEmpty(existingRecord?.latest_hashes)

@@ -43,3 +43,15 @@ export async function createR2SignedReadUrl(key: string) {
     expiresIn: appConfig.r2SignedUrlTtlSeconds,
   });
 }
+
+export async function readR2ObjectText(key: string) {
+  const client = createR2Client();
+  const response = await client.send(
+    new GetObjectCommand({
+      Bucket: appConfig.r2Bucket,
+      Key: key,
+    }),
+  );
+
+  return response.Body?.transformToString() || "";
+}

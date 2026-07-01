@@ -8,7 +8,7 @@ import {
 } from "@/lib/config";
 import type { Json } from "@/lib/database.types";
 import { getOfficeContext } from "@/lib/offices";
-import { createR2SignedReadUrl, getR2Bucket } from "@/lib/r2";
+import { createR2SignedReadUrl, getR2Bucket, readR2ObjectText } from "@/lib/r2";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -22,7 +22,7 @@ type SnapshotObject = {
   url: string;
 };
 
-export async function GET(_request: Request, { params }: Props) {
+export async function GET(request: Request, { params }: Props) {
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
@@ -60,6 +60,11 @@ export async function GET(_request: Request, { params }: Props) {
     createSignedSnapshotObjects(snapshot.latest_object_keys),
     createSignedSnapshotObjects(snapshot.previous_object_keys),
   ]);
+  const requestUrl = new URL(request.url);
+  const [latestFocusRatio, previousFocusRatio] = await Promise.all([
+    snapshotFocusRatio(snapshot.latest_object_keys, requestUrl.searchParams.getAll("latest")),
+    snapshotFocusRatio(snapshot.previous_object_keys, requestUrl.searchParams.getAll("previous")),
+  ]);
 
   return NextResponse.json({
     source_id: snapshot.shared_award_source_id,
@@ -75,12 +80,14 @@ export async function GET(_request: Request, { params }: Props) {
       hashes: snapshot.latest_hashes,
       metadata: snapshot.latest_metadata,
       objects: latestObjects,
+      focus_ratio: latestFocusRatio,
     },
     previous: {
       captured_at: snapshot.previous_captured_at,
       hashes: snapshot.previous_hashes,
       metadata: snapshot.previous_metadata,
       objects: previousObjects,
+      focus_ratio: previousFocusRatio,
     },
   });
 }
@@ -138,4 +145,54 @@ function jsonObject(value: Json) {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, Json>)
     : {};
+}
+
+async function snapshotFocusRatio(objectKeys: Json, snippets: string[]) {
+  const textKey = textObjectKey(objectKeys);
+  const cleanSnippets = snippets.map(cleanSnippet).filter(Boolean).slice(0, 5);
+  if (!textKey || cleanSnippets.length === 0) return null;
+
+  try {
+    const text = cleanText(await readR2ObjectText(textKey));
+    if (!text) return null;
+    const index = bestSnippetIndex(text, cleanSnippets);
+    if (index < 0) return null;
+    return Math.max(0, Math.min(1, index / Math.max(1, text.length)));
+  } catch {
+    return null;
+  }
+}
+
+function textObjectKey(objectKeys: Json) {
+  const keys = jsonObject(objectKeys);
+  const textKey = keys.text;
+  return typeof textKey === "string" && textKey ? textKey : null;
+}
+
+function bestSnippetIndex(text: string, snippets: string[]) {
+  const lowerText = text.toLowerCase();
+  for (const snippet of snippets) {
+    const lowerSnippet = snippet.toLowerCase();
+    const exactIndex = lowerText.indexOf(lowerSnippet);
+    if (exactIndex >= 0) return exactIndex;
+
+    const words = lowerSnippet.match(/[a-z0-9$,.:-]+/gi) || [];
+    for (let length = Math.min(12, words.length); length >= 5; length -= 1) {
+      const fragment = words.slice(0, length).join(" ").toLowerCase();
+      const fragmentIndex = lowerText.indexOf(fragment);
+      if (fragmentIndex >= 0) return fragmentIndex;
+    }
+  }
+  return -1;
+}
+
+function cleanSnippet(value: string) {
+  return cleanText(value)
+    .slice(0, 500);
+}
+
+function cleanText(value: string) {
+  return String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
