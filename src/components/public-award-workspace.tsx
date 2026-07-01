@@ -164,6 +164,7 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
                 <SourceOutlineButton
                   key={source.id}
                   awardName={data.award.name}
+                  officialHomepage={data.officialHomepage}
                   onSelectSource={selectSource}
                   selected={selected}
                   source={source}
@@ -212,7 +213,9 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
           {selected.kind === "changes" && <ChangesPanel changes={data.changes} />}
           {selected.kind === "source" && selectedSource && (
             <SourcePanel
+              awardName={data.award.name}
               changes={selectedSourceChanges}
+              officialHomepage={data.officialHomepage}
               source={selectedSource}
             />
           )}
@@ -224,12 +227,14 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
 
 function SourceOutlineButton({
   awardName,
+  officialHomepage,
   onSelectSource,
   selected,
   source,
   sourceUnreadCount,
 }: {
   awardName: string;
+  officialHomepage?: string | null;
   onSelectSource: (sourceId: string) => void;
   selected: SelectedPanel;
   source: PublicAwardSource;
@@ -238,7 +243,7 @@ function SourceOutlineButton({
   return (
     <PanelButton
       active={selected.kind === "source" && selected.sourceId === source.id}
-      label={sourceDisplayTitle(source, awardName)}
+      label={sourceDisplayTitle(source, awardName, officialHomepage)}
       onClick={() => onSelectSource(source.id)}
       tags={sourceTags(source)}
       updateCount={sourceUnreadCount}
@@ -316,12 +321,18 @@ function OverviewPanel({
 }
 
 function SourcePanel({
+  awardName,
   changes,
+  officialHomepage,
   source,
 }: {
+  awardName: string;
   changes: PublicAwardPageData["changes"];
+  officialHomepage?: string | null;
   source: PublicAwardPageData["sources"][number];
 }) {
+  const displayTitle = sourceDisplayTitle(source, awardName, officialHomepage);
+
   return (
     <div className="public-award-panel-stack">
       <div className="public-award-source-detail-heading">
@@ -329,7 +340,7 @@ function SourcePanel({
           {sourceTags(source).map((tag) => (
             <span className="badge" key={tag}>{tag}</span>
           ))}
-          <h2>{source.title}</h2>
+          <h2>{displayTitle}</h2>
         </div>
         <div className="public-award-console-actions">
           <a className="button-primary" href={source.url} rel="noreferrer" target="_blank">
@@ -632,16 +643,122 @@ function sourceTags(source: PublicAwardSource) {
   return source.pageType === "pdf" ? ["PDF"] : [];
 }
 
-function sourceDisplayTitle(source: PublicAwardSource, awardName: string) {
+function sourceDisplayTitle(source: PublicAwardSource, awardName: string, officialHomepage?: string | null) {
   const cleanTitle = source.title.replace(/\s+/g, " ").trim();
+  const isOfficialHomepage =
+    Boolean(officialHomepage) && normalizeUrl(source.url) === normalizeUrl(officialHomepage);
   if (
-    source.pageType === "homepage" &&
+    (source.pageType === "homepage" || isOfficialHomepage) &&
     (!cleanTitle || /^(homepage|home|source page|official homepage|official page)$/i.test(cleanTitle))
   ) {
-    return "Award homepage";
+    return "Homepage";
   }
-  if (cleanTitle && cleanTitle.toLowerCase() !== awardName.toLowerCase()) return cleanTitle;
-  return source.pageType === "homepage" ? "Award homepage" : cleanTitle || "Source page";
+  if (source.pageType === "homepage" || isOfficialHomepage || cleanTitle.toLowerCase() === awardName.toLowerCase()) {
+    return "Homepage";
+  }
+
+  const shortTitle = shortenSourceDisplayTitle(cleanTitle, awardName);
+  if (shortTitle) return shortTitle;
+
+  return cleanTitle || "Source page";
+}
+
+function shortenSourceDisplayTitle(title: string, awardName: string) {
+  const original = title.replace(/\s+/g, " ").trim();
+  const hadDownloadSuffix = /\s*(?:\[(?:download|pdf)\]|\((?:download|pdf)\))\s*$/i.test(original);
+  let value = original
+    .replace(/\s*\[(?:download|pdf)\]\s*$/i, "")
+    .replace(/\s*\((?:download|pdf)\)\s*$/i, "")
+    .trim();
+
+  if (!value) return "";
+
+  const cleanedOriginal = value;
+  value = bestNonBrandSegment(value, awardName);
+  for (const phrase of removableAwardPhrases(awardName)) {
+    value = removePhrase(value, phrase);
+  }
+
+  value = bestNonBrandSegment(value, awardName)
+    .replace(/^(?:official\s+)?(?:award|awards)\s+committee\s+/i, "")
+    .replace(/^(?:official\s+)?(?:award|awards|scholarship|scholarships|fellowship|fellowships|grant|grants|program|programme)\s*[:|-]\s*/i, "")
+    .replace(/^(?:official\s+)?(?:award|awards)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:|/-]+|[\s:|/-]+$/g, "")
+    .trim();
+
+  if (!value || (!hadDownloadSuffix && value.toLowerCase() === cleanedOriginal.toLowerCase())) return "";
+  return toDisplayTitleCase(value);
+}
+
+function bestNonBrandSegment(title: string, awardName: string) {
+  const parts = title
+    .split(/\s*(?:[|:]|-)\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length <= 1) return title.trim();
+
+  const awardPhrases = removableAwardPhrases(awardName);
+  const hasBrandPart = parts.some((part) => awardPhrases.some((phrase) => phraseMatches(part, phrase)));
+  if (!hasBrandPart) return title.trim();
+
+  const nonBrand = parts.find((part) => !awardPhrases.some((phrase) => phraseMatches(part, phrase)));
+  return nonBrand || parts[0];
+}
+
+function removableAwardPhrases(awardName: string) {
+  const withoutParentheticals = awardName.replace(/\([^)]*\)/g, " ");
+  const acronyms = [...awardName.matchAll(/\(([A-Z][A-Z0-9&]{1,})\)/g)].map((match) => match[1]);
+  const pieces = awardName
+    .split(/\s*(?:[|:]|-)\s+/)
+    .flatMap((part) => [part, part.replace(/\([^)]*\)/g, " ")]);
+  return [
+    awardName,
+    withoutParentheticals,
+    ...pieces,
+    ...acronyms,
+  ]
+    .map((phrase) => phrase.replace(/\s+/g, " ").trim())
+    .filter((phrase, index, phrases) => phrase.length >= 2 && phrases.indexOf(phrase) === index)
+    .sort((a, b) => b.length - a.length);
+}
+
+function removePhrase(value: string, phrase: string) {
+  if (!phrase) return value;
+  const escaped = escapeRegExp(phrase);
+  return value
+    .replace(new RegExp(`^${escaped}\\b\\s*[:|/-]?\\s*`, "i"), "")
+    .replace(new RegExp(`\\s*[:|/-]?\\s*\\b${escaped}$`, "i"), "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function phraseMatches(value: string, phrase: string) {
+  return new RegExp(`\\b${escapeRegExp(phrase)}\\b`, "i").test(value);
+}
+
+function toDisplayTitleCase(value: string) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+
+  const smallWords = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "nor", "of", "on", "or", "the", "to", "with"]);
+  return clean
+    .split(" ")
+    .map((word, index, words) => {
+      const normalized = word.toLowerCase();
+      if (/^[A-Z0-9&]{2,}$/.test(word)) return word;
+      if (index > 0 && index < words.length - 1 && smallWords.has(normalized)) return normalized;
+      return word
+        .split(/([/-])/)
+        .map((part) => {
+          if (/^[/-]$/.test(part)) return part;
+          if (/^[A-Z0-9&]{2,}$/.test(part)) return part;
+          const lower = part.toLowerCase();
+          return lower ? `${lower.charAt(0).toUpperCase()}${lower.slice(1)}` : part;
+        })
+        .join("");
+    })
+    .join(" ");
 }
 
 function safeUrl(value: string) {

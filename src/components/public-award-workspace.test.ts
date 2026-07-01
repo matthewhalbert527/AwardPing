@@ -155,7 +155,7 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).toContain("Recent changes");
     expect(sidebarHtml).toContain("1 update");
     expect(sidebarHtml).toContain("Sources");
-    expect(sidebarHtml).toContain("Award homepage");
+    expect(sidebarHtml).toContain("Homepage");
     expect(sidebarHtml).toContain("Application portal");
     expect(sidebarHtml).toContain("Program guide");
     expect(sidebarHtml).toContain("<span>PDF</span>");
@@ -283,11 +283,56 @@ describe("PublicAwardWorkspace", () => {
 
     expect(sidebarHtml).toContain("Award profile");
     expect(sidebarHtml).toContain("Sources");
-    expect(sidebarHtml).toContain("Example Fellowship Application");
+    expect(sidebarHtml).toContain("Homepage");
+    expect(sidebarHtml).not.toContain("Example Fellowship Application");
     expect(sidebarHtml).not.toContain("Application / 0 updates");
     expect(mainHtml).toContain("1 source page");
     expect(mainHtml).toContain("Official homepage");
     expect(mainHtml).not.toContain("Official source");
+  });
+
+  it("uses concise source titles within the award context", () => {
+    const data = makePageData({
+      sources: [
+        makeSource({
+          id: "source-home",
+          title: "ACM Doctoral Dissertation Award Nominations",
+          url: "https://awards.acm.org/doctoral-dissertation/nominations#h-eligibility",
+        }),
+        makeSource({
+          id: "source-conflict",
+          title: "ACM Awards Committee Conflict of Interest Guidelines",
+          url: "https://awards.acm.org/award-committee-conflict-guidelines",
+        }),
+        makeSource({
+          id: "source-advice",
+          pageType: "pdf",
+          title: "ACM Awards: Advice for Nominators and Endorsers [Download]",
+          url: "https://awards.acm.org/acm-awards-advice-for-nominators.pdf",
+        }),
+      ],
+      changes: [],
+    });
+    data.award.name = "Association for Computing Machinery (ACM) - Doctoral Dissertation Award";
+    data.award.official_homepage = "https://awards.acm.org/doctoral-dissertation/nominations";
+    data.officialHomepage = "https://awards.acm.org/doctoral-dissertation/nominations";
+
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data,
+      }),
+    );
+
+    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+
+    expect(sidebarHtml).toContain("Homepage");
+    expect(sidebarHtml).toContain("Conflict of Interest Guidelines");
+    expect(sidebarHtml).toContain("Advice for Nominators and Endorsers");
+    expect(sidebarHtml).toContain("<span>PDF</span>");
+    expect(sidebarHtml).not.toContain("ACM Doctoral Dissertation Award Nominations");
+    expect(sidebarHtml).not.toContain("ACM Awards Committee Conflict");
+    expect(sidebarHtml).not.toContain("ACM Awards: Advice");
+    expect(sidebarHtml).not.toContain("[Download]");
   });
 });
 
@@ -344,10 +389,12 @@ function makePageData({
 
 function makeSource({
   id,
+  pageType = "application",
   title,
   url,
 }: {
   id: string;
+  pageType?: "application" | "pdf";
   title: string;
   url: string;
 }) {
@@ -358,7 +405,7 @@ function makeSource({
     title,
     description: null,
     url,
-    pageType: "application" as const,
+    pageType,
     lastCheckedAt: "2026-06-26T12:00:00.000Z",
     facts: {
       overview: null,
