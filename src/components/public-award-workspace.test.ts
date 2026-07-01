@@ -257,6 +257,34 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("Generic filler L");
     expect(sidebarHtml.match(/public-award-nav-button-source/g) || []).toHaveLength(8);
   });
+
+  it("hides the award landing page source even when it is classified as application", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: makePageData({
+          sources: [
+            makeSource({
+              id: "source-landing",
+              title: "Example Fellowship Application",
+              url: "https://example.edu/fellowship",
+            }),
+          ],
+          changes: [],
+        }),
+      }),
+    );
+
+    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(sidebarHtml).toContain("Award profile");
+    expect(sidebarHtml).not.toContain("Sources");
+    expect(sidebarHtml).not.toContain("Example Fellowship Application");
+    expect(sidebarHtml).not.toContain("Application / 0 updates");
+    expect(mainHtml).toContain("1 source page");
+    expect(mainHtml).toContain("Official homepage");
+    expect(mainHtml).not.toContain("Official source");
+  });
 });
 
 function makePageData({

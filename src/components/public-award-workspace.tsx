@@ -84,8 +84,11 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
     return counts;
   }, [data.changes, data.sources, readChangeIds]);
   const sourceSections = useMemo(
-    () => groupSourcesByOutlineSection(sourcesForSidebar(data.sources), data.award.name),
-    [data.award.name, data.sources],
+    () => groupSourcesByOutlineSection(
+      sourcesForSidebar(data.sources, data.award.official_homepage),
+      data.award.name,
+    ),
+    [data.award.name, data.award.official_homepage, data.sources],
   );
   const unreadChangeCount = useMemo(
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
@@ -492,8 +495,15 @@ function sourceFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
   return rows.filter(isFactRow);
 }
 
-function sourcesForSidebar(sources: PublicAwardSource[]) {
-  return sources.filter((source) => source.pageType !== "homepage");
+function sourcesForSidebar(sources: PublicAwardSource[], officialHomepage: string | null) {
+  return sources.filter((source) => !isAwardLandingSource(source, officialHomepage));
+}
+
+function isAwardLandingSource(source: PublicAwardSource, officialHomepageValue: string | null) {
+  if (source.pageType === "homepage") return true;
+
+  const officialHomepage = normalizeUrl(officialHomepageValue);
+  return Boolean(officialHomepage && normalizeUrl(source.url) === officialHomepage);
 }
 
 function compactList(values: string[]) {
