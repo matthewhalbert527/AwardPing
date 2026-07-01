@@ -211,6 +211,7 @@ function isSafeAutomaticCleanup(row) {
     "archive_pdf_spillover",
     "professional_training_spillover",
     "professional_material_spillover",
+    "same_host_sibling_program_spillover",
     "broad_grants_listing_spillover",
     "campus_program_spillover",
     "product_resource_spillover",

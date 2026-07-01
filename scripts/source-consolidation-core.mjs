@@ -151,6 +151,10 @@ export function strongConsolidationReason(source = {}, award = {}) {
 
   if (/\/university-ad\//.test(path)) return "university_ad_spillover";
 
+  if (isSameHostSiblingProgramSpillover(host, path, directSourceSignal(source), award)) {
+    return "same_host_sibling_program_spillover";
+  }
+
   if (/\/(?:about|contact|contact-us|people|staff|faculty|alumni|meet|locations?|rooms?|spaces?|workshops?|calendar|events?|news|blog)(?:\/|\.html?|$)/.test(path) && !awardSpecific) {
     return "generic_navigation_source";
   }
@@ -308,7 +312,7 @@ export function hasAwardSpecificSignal(source = {}, award = {}) {
 
 export function matchingAwardTokens(source = {}, award = {}) {
   const tokens = distinctiveAwardTokens(award?.name || "");
-  const signal = normalizeWords(directSignal(source));
+  const signal = normalizeWords(directSourceSignal(source));
   return tokens.filter((token) => new RegExp(`\\b${escapeRegExp(token)}\\b`, "i").test(signal));
 }
 
@@ -325,17 +329,148 @@ export function distinctiveAwardTokens(value) {
 }
 
 function directSignal(source = {}) {
-  return [source.url, source.title, source.display_title, source.page_type, source.reason]
+  return [source.url, source.title, source.display_title, source.page_description, source.page_type, source.reason]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
 }
 
 function directSourceSignal(source = {}) {
-  return [source.url, source.title, source.display_title, source.page_type]
+  return [source.url, source.title, source.display_title, source.page_description, source.page_type]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();
+}
+
+function isSameHostSiblingProgramSpillover(host, path, direct, award) {
+  const homepage = safeUrl(award?.official_homepage);
+  if (!homepage) return false;
+
+  const homepageHost = homepage.hostname.toLowerCase().replace(/^www\./, "");
+  if (homepageHost !== host) return false;
+
+  const sourcePath = normalizePath(path);
+  const homepagePath = normalizePath(homepage.pathname);
+  if (!sourcePath || !homepagePath || homepagePath === "/") return false;
+  if (sourcePath === homepagePath || sourcePath.startsWith(`${homepagePath}/`)) return false;
+
+  const awardRootPath = awardRootPathFromHomepage(homepagePath, award?.name || "");
+  if (awardRootPath && (sourcePath === awardRootPath || sourcePath.startsWith(`${awardRootPath}/`))) {
+    return false;
+  }
+
+  const tokens = siblingSpecificAwardTokens(award?.name || "", homepagePath, host);
+  if (tokens.length === 0) return false;
+
+  const sourceSignal = normalizeWords(`${direct} ${sourcePath}`);
+  const matchingTokens = tokens.filter((token) => tokenAppears(sourceSignal, token));
+  if (matchingTokens.length >= Math.min(2, tokens.length)) return false;
+  if (tokens.length === 1 && matchingTokens.length === 1) return false;
+
+  if (hasSharedProgramCollectionRoot(homepagePath, sourcePath)) return true;
+  if (hasShallowSiblingAwardPageSignal(sourcePath, sourceSignal)) return true;
+
+  return (
+    /^\/(?:programs?|awards?|scholarships?|fellowships?|grants?|funding|our-work)(?:\/|$)/.test(sourcePath) &&
+    hasProgramLikePathSignal(sourcePath)
+  );
+}
+
+function awardRootPathFromHomepage(homepagePath, awardName) {
+  const segments = pathSegments(homepagePath);
+  if (!segments.length) return null;
+
+  const tokens = siblingSpecificAwardTokens(awardName, homepagePath, "");
+  const matchingIndex = segments.findIndex((segment) => {
+    const signal = normalizeWords(segment);
+    return tokens.some((token) => tokenAppears(signal, token));
+  });
+
+  if (matchingIndex !== -1) {
+    return `/${segments.slice(0, matchingIndex + 1).join("/")}`;
+  }
+
+  if (segments.length === 1) return `/${segments[0]}`;
+  return null;
+}
+
+function siblingSpecificAwardTokens(awardName, homepagePath, host) {
+  const hostTokens = new Set(normalizeWords(host).split(" ").filter(Boolean));
+  const homepageSignal = normalizeWords(`${awardName} ${homepagePath}`);
+  return distinctiveAwardTokens(awardName)
+    .filter((token) => !siblingGenericWords.has(token))
+    .filter((token) => !hostTokens.has(token))
+    .filter((token) => tokenAppears(homepageSignal, token));
+}
+
+const siblingGenericWords = new Set([
+  ...genericAwardWords,
+  "about",
+  "apply",
+  "application",
+  "canada",
+  "canadian",
+  "college",
+  "competition",
+  "details",
+  "education",
+  "instructions",
+  "nomination",
+  "online",
+  "overview",
+  "policy",
+  "primary",
+  "school",
+  "scholarship",
+  "society",
+  "state",
+  "states",
+  "traditional",
+  "united",
+]);
+
+function hasSharedProgramCollectionRoot(homepagePath, sourcePath) {
+  const homepageSegments = pathSegments(homepagePath);
+  const sourceSegments = pathSegments(sourcePath);
+  if (!homepageSegments.length || !sourceSegments.length) return false;
+  if (homepageSegments[0] !== sourceSegments[0]) return false;
+
+  if (
+    /^(programs?|awards?|scholarships?|fellowships?|grants?|funding|opportunities|our-work)$/.test(
+      homepageSegments[0],
+    )
+  ) {
+    return true;
+  }
+
+  return homepageSegments.length > 1 && sourceSegments.length > 1 && homepageSegments[1] === sourceSegments[1];
+}
+
+function hasProgramLikePathSignal(path) {
+  return /\/(?:programs?|awards?|scholarships?|fellowships?|grants?|funding|apply|application|how-to-apply|eligibility|deadline|deadlines|nomination|documents?|uploads?)(?:\/|$)/.test(
+    path,
+  );
+}
+
+function hasShallowSiblingAwardPageSignal(path, signal) {
+  const segments = pathSegments(path);
+  if (segments.length > 1) return false;
+  if (!/[_-]/.test(segments[0] || "")) return false;
+  return /\b(?:research chair|distinguished visitor|traditional scholar|killam|arctic initiative|entrepreneurship|visiting chair|student awards?)\b/i.test(
+    signal,
+  );
+}
+
+function pathSegments(value) {
+  return normalizePath(value)
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+}
+
+function normalizePath(value) {
+  const clean = String(value || "").trim().toLowerCase().replace(/\/+$/g, "");
+  return clean || "/";
 }
 
 function genericTitle(value) {
@@ -390,6 +525,10 @@ function normalizeWords(value) {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function tokenAppears(signal, token) {
+  return new RegExp(`\\b${escapeRegExp(token)}\\b`, "i").test(signal);
 }
 
 function safeUrl(value) {

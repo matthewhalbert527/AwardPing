@@ -451,4 +451,98 @@ describe("source consolidation classification", () => {
       ).action,
     ).toBe("keep");
   });
+
+  it("rejects same-host sibling program pages while keeping the award branch", () => {
+    const fulbrightAward = {
+      ...award,
+      name: "Fulbright Canada Mitacs Globalink",
+      official_homepage:
+        "https://www.fulbright.ca/programs/undergraduate-students/fulbright-canada-mitacs-globalink-program",
+    };
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "globalink-application",
+          url: "https://www.fulbright.ca/programs/undergraduate-students/fulbright-canada-mitacs-globalink-program/application-instructions",
+          title: "Application Instructions",
+          page_description: "Instructions for the Fulbright Canada-Mitacs Globalink Research Internship application.",
+          page_type: "application",
+        }),
+        fulbrightAward,
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "globalink-pdf",
+          url: "https://www.fulbright.ca/uploads/pdf/globalink/2020/Fulbright-Mitacs-French.pdf",
+          title: "French-language language proficiency report",
+          page_description: "Confidential report for Fulbright Canada-Mitacs Globalink applicants.",
+          page_type: "pdf",
+        }),
+        fulbrightAward,
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "killam",
+          url: "https://www.fulbright.ca/programs/killam-fellowships/americans/how-to-apply",
+          title: "HOW TO APPLY",
+          page_description: "Instructions for American students applying to the Fulbright Canada Killam Fellowships.",
+          page_type: "application",
+        }),
+        fulbrightAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "traditional",
+          url: "https://www.fulbright.ca/programs/canadian-scholars/traditional-awards/how-to-apply",
+          title: "Traditional Scholar Application Instructions",
+          page_description: "Instructions for Canadian applicants to apply for Traditional Scholar awards.",
+          page_type: "application",
+        }),
+        fulbrightAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "research-chair",
+          url: "https://www.fulbright.ca/field_open_-_vanderbilt",
+          title: "Fulbright Canada Research Chair (field open), Vanderbilt University",
+          page_description: "Details for the Fulbright Canada Research Chair at Vanderbilt University.",
+          page_type: "deadline",
+        }),
+        fulbrightAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+  });
+
+  it("keeps related same-host pages under the inferred award root", () => {
+    const acmAward = {
+      ...award,
+      name: "Association for Computing Machinery (ACM) - Doctoral Dissertation Award",
+      official_homepage: "https://awards.acm.org/doctoral-dissertation/nominations#h-eligibility",
+    };
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "acm-conflict",
+          url: "https://awards.acm.org/doctoral-dissertation/conflict-of-interest-guidelines",
+          title: "ACM Awards Committee Conflict of Interest Guidelines",
+          page_type: "requirements",
+        }),
+        acmAward,
+      ).action,
+    ).toBe("keep");
+  });
 });
