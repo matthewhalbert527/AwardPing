@@ -428,8 +428,8 @@ function snapshotRequestPath(sourceId: string, evidence: ReturnType<typeof build
 
 function snapshotFocusSnippets(version: SnapshotVersion, evidence: ReturnType<typeof buildChangeEvidence>) {
   const snippets = version === "latest"
-    ? [evidence.afterSnippet, ...evidence.currentSnippets, evidence.summarySnippet]
-    : [evidence.beforeSnippet, ...evidence.previousSnippets, evidence.summarySnippet];
+    ? [evidence.afterSnippet, ...evidence.currentSnippets]
+    : [evidence.beforeSnippet, ...evidence.previousSnippets];
   return uniqueStrings(
     snippets
       .filter((snippet): snippet is string => Boolean(snippet))

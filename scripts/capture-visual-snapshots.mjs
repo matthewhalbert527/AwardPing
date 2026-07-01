@@ -33,8 +33,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 5;
-const captureBehaviorName = "scroll-activated-settled-capture";
+const captureBehaviorVersion = 6;
+const captureBehaviorName = "scroll-activated-settled-capture-with-layout-metadata";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -2186,6 +2186,7 @@ async function waitForPageSettledForSnapshot(page) {
         change_count: changeCount,
         before: compactPageSettleSnapshot(before),
         after: compactPageSettleSnapshot(last),
+        after_layout_sample: last.layout_sample || "",
       };
     }
 
@@ -2214,6 +2215,7 @@ async function waitForPageSettledForSnapshot(page) {
     change_count: changeCount,
     before: compactPageSettleSnapshot(before),
     after: compactPageSettleSnapshot(last),
+    after_layout_sample: last.layout_sample || "",
   };
 }
 
@@ -2371,7 +2373,7 @@ async function pageSettleSnapshot(page) {
       const layoutParts = [];
       let visibleElementCount = 0;
       let sampledElementCount = 0;
-      const maxLayoutSamples = 900;
+      const maxLayoutSamples = 1800;
 
       const addLayoutPart = (element, rect, style, forceSample = false) => {
         if (!forceSample && sampledElementCount >= maxLayoutSamples) return;
@@ -2382,13 +2384,17 @@ async function pageSettleSnapshot(page) {
           .slice(0, 80);
         const id = String(element.id || "").slice(0, 48);
         const label = `${element.tagName.toLowerCase()}${id ? `#${id}` : ""}${className ? `.${className}` : ""}`;
-        const text = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 100);
+        const text = (element.innerText || element.textContent || "")
+          .replace(/\s+/g, " ")
+          .replace(/\|/g, " ")
+          .trim()
+          .slice(0, 220);
         const transform = style.transform && style.transform !== "none" ? style.transform.slice(0, 100) : "";
         layoutParts.push(
           [
             label,
-            Math.round(rect.left),
-            Math.round(rect.top),
+            Math.round(rect.left + window.scrollX),
+            Math.round(rect.top + window.scrollY),
             Math.round(rect.width),
             Math.round(rect.height),
             Math.round(Number(style.opacity || 1) * 100),
@@ -2415,14 +2421,33 @@ async function pageSettleSnapshot(page) {
         }
 
         visibleElementCount += 1;
+        const tagName = element.tagName.toLowerCase();
+        const elementText = (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
+        const hasOwnText = Array.from(element.childNodes).some(
+          (node) =>
+            node.nodeType === Node.TEXT_NODE &&
+            Boolean((node.textContent || "").replace(/\s+/g, " ").trim()),
+        );
+        const preferredTextElement =
+          /^(h1|h2|h3|h4|h5|h6|p|li|dt|dd|td|th|caption|a|button|label|summary|figcaption|blockquote)$/i.test(
+            tagName,
+          );
         const transform = style.transform && style.transform !== "none";
         const fixedOrSticky = style.position === "fixed" || style.position === "sticky";
         const horizontalOffCanvas = rect.left < 0 || rect.right > window.innerWidth;
         const namedLikePanel = /\b(drawer|flyout|slide|side|sidebar|card|panel|modal|toast|popover)\b/i.test(
           `${element.id || ""} ${element.className || ""} ${element.getAttribute("role") || ""}`,
         );
+        const shouldSampleText =
+          elementText &&
+          (preferredTextElement ||
+            hasOwnText ||
+            element.getAttribute("role") === "heading" ||
+            element.childElementCount === 0);
 
-        addLayoutPart(element, rect, style, transform || fixedOrSticky || horizontalOffCanvas || namedLikePanel);
+        if (shouldSampleText || transform || fixedOrSticky || horizontalOffCanvas || namedLikePanel) {
+          addLayoutPart(element, rect, style, transform || fixedOrSticky || horizontalOffCanvas || namedLikePanel);
+        }
       }
 
       return {

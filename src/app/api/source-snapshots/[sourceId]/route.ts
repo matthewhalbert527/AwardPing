@@ -148,42 +148,110 @@ function jsonObject(value: Json) {
 }
 
 async function snapshotFocusRatio(objectKeys: Json, snippets: string[]) {
-  const textKey = textObjectKey(objectKeys);
+  const metaKey = objectKey(objectKeys, "meta");
   const cleanSnippets = snippets.map(cleanSnippet).filter(Boolean).slice(0, 5);
-  if (!textKey || cleanSnippets.length === 0) return null;
+  if (!metaKey || cleanSnippets.length === 0) return null;
 
   try {
-    const text = cleanText(await readR2ObjectText(textKey));
-    if (!text) return null;
-    const index = bestSnippetIndex(text, cleanSnippets);
-    if (index < 0) return null;
-    return Math.max(0, Math.min(1, index / Math.max(1, text.length)));
+    const meta = JSON.parse(await readR2ObjectText(metaKey)) as Record<string, unknown>;
+    const layoutSample = layoutSampleFromMeta(meta);
+    const scrollHeight = scrollHeightFromMeta(meta);
+    if (!layoutSample || !scrollHeight) return null;
+    const top = bestLayoutTop(layoutSample, cleanSnippets);
+    if (top === null) return null;
+    return Math.max(0, Math.min(1, top / Math.max(1, scrollHeight)));
   } catch {
     return null;
   }
 }
 
-function textObjectKey(objectKeys: Json) {
+function objectKey(objectKeys: Json, name: string) {
   const keys = jsonObject(objectKeys);
-  const textKey = keys.text;
-  return typeof textKey === "string" && textKey ? textKey : null;
+  const key = keys[name];
+  return typeof key === "string" && key ? key : null;
 }
 
-function bestSnippetIndex(text: string, snippets: string[]) {
-  const lowerText = text.toLowerCase();
-  for (const snippet of snippets) {
-    const lowerSnippet = snippet.toLowerCase();
-    const exactIndex = lowerText.indexOf(lowerSnippet);
-    if (exactIndex >= 0) return exactIndex;
+function layoutSampleFromMeta(meta: Record<string, unknown>) {
+  const pageSettle = meta.page_settle && typeof meta.page_settle === "object"
+    ? meta.page_settle as Record<string, unknown>
+    : {};
+  return typeof pageSettle.after_layout_sample === "string"
+    ? pageSettle.after_layout_sample
+    : "";
+}
 
-    const words = lowerSnippet.match(/[a-z0-9$,.:-]+/gi) || [];
-    for (let length = Math.min(12, words.length); length >= 5; length -= 1) {
-      const fragment = words.slice(0, length).join(" ").toLowerCase();
-      const fragmentIndex = lowerText.indexOf(fragment);
-      if (fragmentIndex >= 0) return fragmentIndex;
+function scrollHeightFromMeta(meta: Record<string, unknown>) {
+  const dimensions = meta.dimensions && typeof meta.dimensions === "object"
+    ? meta.dimensions as Record<string, unknown>
+    : {};
+  const pageSettle = meta.page_settle && typeof meta.page_settle === "object"
+    ? meta.page_settle as Record<string, unknown>
+    : {};
+  const after = pageSettle.after && typeof pageSettle.after === "object"
+    ? pageSettle.after as Record<string, unknown>
+    : {};
+  const value = numberValue(dimensions.scroll_height) || numberValue(after.scroll_height);
+  return value && value > 0 ? value : null;
+}
+
+function bestLayoutTop(layoutSample: string, snippets: string[]) {
+  let best: { score: number; top: number } | null = null;
+
+  for (const entry of layoutSample.split("|")) {
+    const item = parseLayoutSampleEntry(entry);
+    if (!item || item.text.length < 4) continue;
+    for (const snippet of snippets) {
+      const score = layoutMatchScore(item.text, snippet);
+      if (score <= 0) continue;
+      if (!best || score > best.score) {
+        best = {
+          score,
+          top: Math.max(0, item.top + Math.max(0, item.height) * 0.35),
+        };
+      }
     }
   }
-  return -1;
+
+  return best?.top ?? null;
+}
+
+function parseLayoutSampleEntry(entry: string) {
+  const parts = entry.split(":");
+  if (parts.length < 9) return null;
+  const top = numberValue(parts[2]);
+  const height = numberValue(parts[4]) || 0;
+  const text = cleanText(parts.slice(8).join(":"));
+  if (top === null) return null;
+  return { top, height, text };
+}
+
+function layoutMatchScore(text: string, snippet: string) {
+  const haystack = cleanText(text).toLowerCase();
+  const needle = cleanText(snippet).toLowerCase();
+  if (!haystack || !needle) return 0;
+  if (haystack.includes(needle)) return 1000 + needle.length;
+
+  const words = uniqueWords(needle);
+  if (words.length < 3) return 0;
+  const matched = words.filter((word) => haystack.includes(word));
+  const coverage = matched.length / words.length;
+  if (matched.length >= 4 && coverage >= 0.5) return Math.round(coverage * 100);
+  return 0;
+}
+
+function uniqueWords(value: string) {
+  return [
+    ...new Set(
+      (value.match(/[a-z0-9$,.:-]+/gi) || [])
+        .map((word) => word.toLowerCase())
+        .filter((word) => word.length >= 3),
+    ),
+  ];
+}
+
+function numberValue(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function cleanSnippet(value: string) {
