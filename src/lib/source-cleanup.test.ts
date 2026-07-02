@@ -545,4 +545,133 @@ describe("source consolidation classification", () => {
       ).action,
     ).toBe("keep");
   });
+
+  it("rejects P.E.O. sibling awards and PDFs while keeping Scholar Awards sources", () => {
+    const peoAward = {
+      ...award,
+      name: "P.E.O. Scholar Awards",
+      official_homepage: "https://www.peointernational.org/educational-support/scholar-awards/",
+    };
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-scholar-awards",
+          url: "https://www.peointernational.org/educational-support/scholar-awards/eligibility-and-application-process/",
+          title: "Eligibility and Application Process",
+          page_description: "Eligibility and application process for P.E.O. Scholar Awards applicants.",
+          page_type: "application",
+        }),
+        peoAward,
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-star",
+          url: "https://www.peointernational.org/educational-support/star-scholarship/eligibility-and-application-process/",
+          title: "Eligibility and Application Process",
+          page_description: "Eligibility and application process for P.E.O. STAR Scholarship applicants.",
+          page_type: "application",
+        }),
+        peoAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-ips",
+          url: "https://www.peointernational.org/educational-support/international-peace-scholarship-fund/eligibility-and-application-process/",
+          title: "Eligibility and Application Process",
+          page_description: "Eligibility and application process for the International Peace Scholarship Fund.",
+          page_type: "application",
+        }),
+        peoAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-pce-pdf",
+          url: "https://storage.googleapis.com/peo-portal-static/file-library/forms/PCECandidatePreApplicationIncomeAndExpenseGuide_11.2025_Final.pdf",
+          title: "PCE Candidate's Pre-Application Income and Expense Guide",
+          page_type: "pdf",
+        }),
+        peoAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-star-pdf",
+          url: "https://storage.googleapis.com/peo-portal-static/file-library/forms/STARScholarshipProcedures_202607_Final.pdf",
+          title: "STAR Scholarship Procedures",
+          page_type: "pdf",
+        }),
+        peoAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-star-student-pdf",
+          url: "https://storage.googleapis.com/peo-portal-static/3ad52b69a6a443b981119089ff368a02/4950e9a82a4b457aa92d9e7a349b71fc/STAR%20Student%20Application%20Instructions%205_22_2026%20final.pdf",
+          title: "STAR Student Application Instructions",
+          page_type: "pdf",
+        }),
+        peoAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "peo-ips-calendar",
+          url: "https://www.peointernational.org/resource/ips-application-calendar/",
+          title: "IPS Application Calendar",
+          page_type: "deadline",
+        }),
+        peoAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "same_host_sibling_program_spillover" });
+  });
+
+  it("keeps generic-named award pages when the URL branch matches the award name", () => {
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "aos-research-grants",
+          url: "https://americanornithology.org/awards-grants/research-grants/",
+          title: "Research Grants",
+          page_type: "homepage",
+        }),
+        {
+          ...award,
+          name: "American Ornithological Society (AOS) - Research Grants",
+          official_homepage: "https://americanornithology.org/awards-grants/student-memberships/",
+        },
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "asm-grants",
+          url: "https://www.mammalsociety.org/grants",
+          title: "Grants",
+          page_type: "homepage",
+        }),
+        {
+          ...award,
+          name: "American Society of Mammalogists (ASM) - Grants & Fellowships",
+          official_homepage: "https://www.mammalsociety.org/committees/grants-in-aid",
+        },
+      ).action,
+    ).toBe("keep");
+  });
 });

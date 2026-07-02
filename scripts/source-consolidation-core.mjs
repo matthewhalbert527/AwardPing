@@ -57,6 +57,25 @@ const genericAwardWords = new Set([
 const highIntentSignal =
   /\b(apply|application|applicant|deadline|eligib|requirement|guidelines?|instructions?|faq|nomination|portal|materials?|forms?|scholarships?|fellowships?|grants?|awards?)\b/i;
 
+const sharedProgramCollectionRoots = new Set([
+  "award",
+  "awards",
+  "educational-support",
+  "education-support",
+  "fellowship",
+  "fellowships",
+  "funding",
+  "grant",
+  "grants",
+  "opportunities",
+  "our-work",
+  "program",
+  "programs",
+  "scholarship",
+  "scholarships",
+  "student-aid",
+]);
+
 export function classifySourceForConsolidation(source = {}, award = {}, options = {}) {
   const quality = sourceQualityScore(source, award);
   const reason = strongConsolidationReason(source, award);
@@ -150,6 +169,10 @@ export function strongConsolidationReason(source = {}, award = {}) {
   }
 
   if (/\/university-ad\//.test(path)) return "university_ad_spillover";
+
+  if (isKnownSiblingAwardSpillover(path, directSourceSignal(source), award)) {
+    return "same_host_sibling_program_spillover";
+  }
 
   if (isSameHostSiblingProgramSpillover(host, path, directSourceSignal(source), award)) {
     return "same_host_sibling_program_spillover";
@@ -317,13 +340,20 @@ export function matchingAwardTokens(source = {}, award = {}) {
 }
 
 export function distinctiveAwardTokens(value) {
+  const prepared = joinDottedAcronyms(String(value || ""));
+  const acronymTokens = new Set(
+    (prepared.match(/\b[A-Z0-9]{2,}\b/g) || [])
+      .map((token) => token.toLowerCase())
+      .filter((token) => token.length >= 2 && !genericAwardWords.has(token)),
+  );
+
   return [
     ...new Set(
-      String(value || "")
+      prepared
         .toLowerCase()
         .replace(/&/g, " and ")
         .split(/[^a-z0-9]+/g)
-        .filter((token) => token.length >= 4 && !genericAwardWords.has(token)),
+        .filter((token) => (token.length >= 4 || acronymTokens.has(token)) && !genericAwardWords.has(token)),
     ),
   ].slice(0, 14);
 }
@@ -359,6 +389,8 @@ function isSameHostSiblingProgramSpillover(host, path, direct, award) {
     return false;
   }
 
+  if (hasAwardNamePathPhraseMatch(sourcePath, award?.name || "")) return false;
+
   const tokens = siblingSpecificAwardTokens(award?.name || "", homepagePath, host);
   if (tokens.length === 0) return false;
 
@@ -374,6 +406,101 @@ function isSameHostSiblingProgramSpillover(host, path, direct, award) {
     /^\/(?:programs?|awards?|scholarships?|fellowships?|grants?|funding|our-work)(?:\/|$)/.test(sourcePath) &&
     hasProgramLikePathSignal(sourcePath)
   );
+}
+
+function isKnownSiblingAwardSpillover(path, direct, award) {
+  const awardSignal = normalizeWords(`${award?.name || ""} ${award?.official_homepage || ""}`);
+  const rawSourceSignal = `${direct} ${path} ${safeDecode(`${direct} ${path}`)}`;
+  const sourceSignal = normalizeWords(rawSourceSignal);
+  const compactSourceSignal = sourceSignal.replace(/\s+/g, "");
+
+  if (
+    tokenAppears(awardSignal, "peo") &&
+    tokenAppears(awardSignal, "scholar") &&
+    tokenAppears(awardSignal, "awards")
+  ) {
+    const currentBranch = /\b(?:scholar awards?|scholar-awards)\b/i.test(sourceSignal);
+    const siblingBranch =
+      /\b(?:star scholarship|star student application|star procedures|international peace scholarship|ips application calendar|ips policies|program for continuing education|continuing education|pce candidate|pce income|pce application|pce policies)\b/i.test(
+        sourceSignal,
+      ) ||
+      /(?:starscholarship|starprocedures|ipsapplication|ipspolicies|pcecandidate|pceincome|pcepolicies)/i.test(
+        compactSourceSignal,
+      );
+
+    if (siblingBranch && !currentBranch) return true;
+  }
+
+  return false;
+}
+
+const awardPhraseOrgStopWords = new Set([
+  "american",
+  "association",
+  "board",
+  "canada",
+  "center",
+  "centre",
+  "college",
+  "committee",
+  "council",
+  "department",
+  "division",
+  "foundation",
+  "institute",
+  "international",
+  "national",
+  "office",
+  "organization",
+  "society",
+  "university",
+]);
+
+function hasAwardNamePathPhraseMatch(sourcePath, awardName) {
+  const segments = pathSegments(sourcePath).map((segment) => slugifyAwardPhrase(segment)).filter(Boolean);
+  if (!segments.length) return false;
+
+  for (const candidate of awardNamePathPhrases(awardName)) {
+    if (!candidate.slug) continue;
+    if (segments.includes(candidate.slug)) return true;
+    if (sourcePath.includes(`/${candidate.slug}/`) || sourcePath.endsWith(`/${candidate.slug}`)) return true;
+
+    if (candidate.tokens.length <= 3) {
+      const tokenSegments = candidate.tokens.filter((token) => token.length >= 4);
+      if (tokenSegments.some((token) => segments.includes(token))) return true;
+    }
+  }
+
+  return false;
+}
+
+function awardNamePathPhrases(awardName) {
+  const prepared = joinDottedAcronyms(String(awardName || ""));
+  const parts = prepared
+    .split(/\s+(?:-|–|—)\s+|:\s+/g)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const tail = parts.at(-1) || prepared;
+  const phrases = [tail, prepared];
+
+  return phrases
+    .map((phrase) => {
+      const tokens = normalizeWords(phrase)
+        .split(" ")
+        .filter((token) => token.length >= 2 && !awardPhraseOrgStopWords.has(token));
+      return {
+        tokens,
+        slug: tokens.join("-"),
+      };
+    })
+    .filter((candidate, index, all) => candidate.slug && all.findIndex((item) => item.slug === candidate.slug) === index);
+}
+
+function slugifyAwardPhrase(value) {
+  return normalizeWords(value)
+    .split(" ")
+    .filter(Boolean)
+    .join("-");
 }
 
 function awardRootPathFromHomepage(homepagePath, awardName) {
@@ -436,18 +563,17 @@ function hasSharedProgramCollectionRoot(homepagePath, sourcePath) {
   if (homepageSegments[0] !== sourceSegments[0]) return false;
 
   if (
-    /^(programs?|awards?|scholarships?|fellowships?|grants?|funding|opportunities|our-work)$/.test(
-      homepageSegments[0],
-    )
+    sharedProgramCollectionRoots.has(homepageSegments[0])
   ) {
-    return true;
+    if (homepageSegments.length === 1) return true;
+    return sourceSegments.length > 1 && homepageSegments[1] !== sourceSegments[1] && hasProgramLikePathSignal(sourcePath);
   }
 
   return homepageSegments.length > 1 && sourceSegments.length > 1 && homepageSegments[1] === sourceSegments[1];
 }
 
 function hasProgramLikePathSignal(path) {
-  return /\/(?:programs?|awards?|scholarships?|fellowships?|grants?|funding|apply|application|how-to-apply|eligibility|deadline|deadlines|nomination|documents?|uploads?)(?:\/|$)/.test(
+  return /\/(?:programs?|awards?|scholarships?|fellowships?|grants?|funding|support|apply|application|how-to-apply|eligibility|deadline|deadlines|nomination|documents?|uploads?)(?:\/|$)|(?:^|[-_/])(?:award|awards|scholarship|scholarships|fellowship|fellowships|grant|grants|program|programs)(?:[-_/]|$)/.test(
     path,
   );
 }
@@ -519,12 +645,24 @@ function specificAwardDetailSignal(value) {
 }
 
 function normalizeWords(value) {
-  return String(value || "")
+  return joinDottedAcronyms(String(value || ""))
     .toLowerCase()
     .replace(/&/g, " and ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function joinDottedAcronyms(value) {
+  return String(value || "").replace(/\b(?:[A-Za-z]\.){2,}[A-Za-z]?\.?/g, (match) => match.replace(/\./g, ""));
+}
+
+function safeDecode(value) {
+  try {
+    return decodeURIComponent(String(value || ""));
+  } catch {
+    return String(value || "");
+  }
 }
 
 function tokenAppears(signal, token) {

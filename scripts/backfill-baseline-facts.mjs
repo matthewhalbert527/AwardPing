@@ -407,6 +407,7 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "Return compact JSON with these keys:",
     "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
     "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections.",
+    "Every important_dates item must include context plus the date, such as \"Application deadline: January 15, 2027\" or \"Award notifications: May 1\". Do not output bare dates.",
     "sections should list 0 to 5 visible scholarship concepts or page areas with {title, description, status}. Use status unchanged for baseline sections.",
     "award_relevance must be primary, supporting, unclear, or unrelated. confidence must be low, medium, or high.",
     "Use null for unknown deadline/opening_date/page_purpose.",

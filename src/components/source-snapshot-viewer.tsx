@@ -203,6 +203,105 @@ export function SourceSnapshotViewerButton({
   );
 }
 
+export function SourceSnapshotInlinePreview({
+  changeDetails,
+  changeSummary,
+  sourceId,
+  sourceTitle,
+  sourceUrl,
+}: {
+  sourceId: string | null | undefined;
+  sourceTitle: string;
+  sourceUrl: string;
+  changeSummary?: string | null;
+  changeDetails?: unknown;
+}) {
+  const [snapshotState, setSnapshotState] = useState<{
+    requestPath: string;
+    snapshot: SourceSnapshotResponse | null;
+  } | null>(null);
+  const evidence = useMemo(
+    () =>
+      buildChangeEvidence({
+        sourceUrl,
+        sourceTitle,
+        summary: changeSummary,
+        changeDetails,
+      }),
+    [changeDetails, changeSummary, sourceTitle, sourceUrl],
+  );
+  const requestPath = useMemo(
+    () => (sourceId ? snapshotRequestPath(sourceId, evidence) : null),
+    [evidence, sourceId],
+  );
+  const snapshot = snapshotState?.requestPath === requestPath
+    ? snapshotState.snapshot
+    : null;
+  const requestFinished = snapshotState?.requestPath === requestPath;
+
+  useEffect(() => {
+    if (!requestPath) return;
+
+    const controller = new AbortController();
+
+    fetch(requestPath, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const body = (await response.json().catch(() => null)) as
+          | SourceSnapshotResponse
+          | { error?: string }
+          | null;
+
+        if (!response.ok || !isSourceSnapshotResponse(body)) {
+          setSnapshotState({ requestPath, snapshot: null });
+          return;
+        }
+
+        setSnapshotState({ requestPath, snapshot: body });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setSnapshotState({ requestPath, snapshot: null });
+        }
+      });
+
+    return () => controller.abort();
+  }, [requestPath]);
+
+  if (!sourceId || !requestPath) return null;
+
+  if (!requestFinished) {
+    return (
+      <div className="source-snapshot-inline source-snapshot-inline-state">
+        <LoaderCircle className="animate-spin" size={16} aria-hidden="true" />
+        Loading screenshot preview...
+      </div>
+    );
+  }
+
+  if (
+    !snapshot ||
+    (!hasSnapshotObjects(snapshot.latest) && !hasSnapshotObjects(snapshot.previous))
+  ) {
+    return (
+      <div className="source-snapshot-inline source-snapshot-inline-state">
+        <ImageIcon size={16} aria-hidden="true" />
+        Screenshot preview not captured yet.
+      </div>
+    );
+  }
+
+  return (
+    <SnapshotInlineBody
+      key={requestPath}
+      snapshot={snapshot}
+      title={snapshot.source_title || sourceTitle}
+    />
+  );
+}
+
 function SnapshotEvidencePanel({
   detectedAt,
   evidence,
@@ -373,6 +472,88 @@ function SnapshotBody({
   );
 }
 
+function SnapshotInlineBody({
+  snapshot,
+  title,
+}: {
+  snapshot: SourceSnapshotResponse;
+  title: string;
+}) {
+  const [activeVersion, setActiveVersion] = useState<SnapshotVersion>("latest");
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const latestAvailable = hasSnapshotObjects(snapshot.latest);
+  const previousAvailable = hasSnapshotObjects(snapshot.previous);
+  const resolvedVersion =
+    activeVersion === "previous" && previousAvailable
+      ? "previous"
+      : latestAvailable
+        ? "latest"
+        : "previous";
+  const activeSnapshot = snapshot[resolvedVersion];
+  const primaryObject = useMemo(
+    () => selectPrimarySnapshotObject(activeSnapshot),
+    [activeSnapshot],
+  );
+  const focusRatio = typeof activeSnapshot?.focus_ratio === "number"
+    ? activeSnapshot.focus_ratio
+    : null;
+
+  useEffect(() => {
+    scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio);
+  }, [focusRatio, primaryObject?.url, resolvedVersion]);
+
+  if (!primaryObject) return null;
+
+  const openLabel = primaryObject.kind === "pdf" ? "Open PDF" : "Open image";
+
+  return (
+    <div className="source-snapshot-inline">
+      <div className="source-snapshot-inline-actions">
+        <div className="source-snapshot-version-control">
+          <span>{focusRatio !== null ? "Changed section" : "Screenshot not localized yet"}</span>
+          <div className="source-snapshot-tabs source-snapshot-inline-tabs" aria-label="Screenshot version">
+            <SnapshotTab
+              active={resolvedVersion === "latest"}
+              disabled={!latestAvailable}
+              label="Latest"
+              onSelect={() => setActiveVersion("latest")}
+            />
+            <SnapshotTab
+              active={resolvedVersion === "previous"}
+              disabled={!previousAvailable}
+              label="Previous"
+              onSelect={() => setActiveVersion("previous")}
+            />
+          </div>
+        </div>
+        <a href={primaryObject.url} rel="noreferrer" target="_blank">
+          <ExternalLink size={13} aria-hidden="true" />
+          {openLabel}
+        </a>
+      </div>
+
+      {primaryObject.kind === "pdf" ? (
+        <div className="source-snapshot-inline-pdf">
+          <FileText size={22} aria-hidden="true" />
+          PDF snapshot available
+        </div>
+      ) : (
+        <div className="source-snapshot-inline-frame" ref={frameRef}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            alt={`${title} ${resolvedVersion} changed section screenshot`}
+            className="source-snapshot-inline-image"
+            ref={imageRef}
+            src={primaryObject.url}
+            onLoad={() => scrollToFocusRatio(frameRef.current, imageRef.current, focusRatio)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SnapshotFrameActions({
   activeVersion,
   canShowPrevious,
@@ -391,7 +572,7 @@ function SnapshotFrameActions({
   return (
     <div className="source-snapshot-frame-actions">
       <div className="source-snapshot-version-control">
-        <span>{hasFocusTarget ? "Changed section" : "Screenshot"}</span>
+        <span>{hasFocusTarget ? "Changed section" : "Screenshot not localized yet"}</span>
         <div className="source-snapshot-tabs" aria-label="Screenshot version">
           <SnapshotTab
             active={activeVersion === "latest"}
@@ -444,7 +625,12 @@ function scrollToFocusRatio(
   image: HTMLImageElement | null,
   focusRatio: number | null,
 ) {
-  if (!frame || !image || focusRatio === null || !Number.isFinite(focusRatio)) return;
+  if (!frame || !image) return;
+
+  if (focusRatio === null || !Number.isFinite(focusRatio)) {
+    frame.scrollTo({ top: 0, behavior: "auto" });
+    return;
+  }
 
   window.requestAnimationFrame(() => {
     const imageTop = image.offsetTop;
@@ -472,6 +658,16 @@ function selectPrimarySnapshotObject(snapshot: SnapshotSide | null) {
 
 function hasSnapshotObjects(snapshot: SnapshotSide) {
   return Object.values(snapshot.objects || {}).some((value) => Boolean(value?.url));
+}
+
+function isSourceSnapshotResponse(value: unknown): value is SourceSnapshotResponse {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "latest" in value &&
+      "previous" in value &&
+      "source_url" in value,
+  );
 }
 
 function formatSnapshotDate(value: string) {

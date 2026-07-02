@@ -1,5 +1,6 @@
 import { awardBaselineSummaryParts, displayAwardSummary } from "@/lib/award-summary";
 import type { Json } from "@/lib/database.types";
+import { normalizeImportantDateItems } from "@/lib/important-dates";
 
 export type PublicAwardFacts = {
   overview: string | null;
@@ -55,7 +56,7 @@ export function publicAwardFactsFromAward(input: {
   const documents = arrayField(structured.documents).length
     ? arrayField(structured.documents)
     : splitFact(factMap.get("documents") || null, sourceFacts.flatMap((facts) => arrayField(facts.documents)));
-  const importantDates = arrayField(structured.important_dates).length
+  const rawImportantDates = arrayField(structured.important_dates).length
     ? arrayField(structured.important_dates)
     : splitFact(
         factMap.get("important dates") || null,
@@ -67,6 +68,16 @@ export function publicAwardFactsFromAward(input: {
     sourceFacts.flatMap((facts) => arrayField(facts.award_amounts)),
   );
 
+  const deadline =
+    cleanString(structured.deadline) ||
+    cleanString(factMap.get("deadline")) ||
+    firstValue(sourceFacts.map((facts) => cleanString(facts.deadline)));
+  const openingDate =
+    cleanString(structured.opening_date) ||
+    cleanString(factMap.get("opening date")) ||
+    firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date)));
+  const importantDates = normalizeImportantDateItems(rawImportantDates, { deadline, openingDate });
+
   return {
     overview:
       cleanString(structured.overview) ||
@@ -74,14 +85,8 @@ export function publicAwardFactsFromAward(input: {
       summaryParts?.overview ||
       displayAwardSummary(input.summary) ||
       null,
-    deadline:
-      cleanString(structured.deadline) ||
-      cleanString(factMap.get("deadline")) ||
-      firstValue(sourceFacts.map((facts) => cleanString(facts.deadline))),
-    openingDate:
-      cleanString(structured.opening_date) ||
-      cleanString(factMap.get("opening date")) ||
-      firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date))),
+    deadline,
+    openingDate,
     awardAmount: compactFact(structuredAwardAmounts.length ? structuredAwardAmounts : fallbackAwardAmounts),
     eligibility,
     requirements: normalizedFacts.requirements,

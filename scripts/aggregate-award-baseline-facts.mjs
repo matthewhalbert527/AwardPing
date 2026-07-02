@@ -219,7 +219,10 @@ function aggregateAwardDetails(award, sources) {
   details.requirements = rankedValues(details.requirements, 12);
   details.application_materials = rankedValues(details.application_materials, 10);
   details.how_to_apply = rankedValues(details.how_to_apply, 8);
-  details.important_dates = rankedValues(details.important_dates, 10);
+  details.important_dates = normalizeImportantDateItems(rankedValues(details.important_dates, 10), {
+    deadline: details.deadline,
+    openingDate: details.opening_date,
+  });
   details.documents = rankedValues(details.documents, 8);
   details.contacts = rankedValues(details.contacts, 6);
   details.notes = rankedValues(details.notes, 6);
@@ -282,6 +285,65 @@ function rankedValues(values, limit) {
       return true;
     })
     .slice(0, limit);
+}
+
+function normalizeImportantDateItems(values, context = {}) {
+  const seen = new Set();
+  const normalized = [];
+  for (const value of values) {
+    const item = contextualImportantDate(value, context);
+    if (!item) continue;
+    const key = item.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(truncate(item, 180));
+  }
+  return normalized.slice(0, 10);
+}
+
+function contextualImportantDate(value, context) {
+  const clean = cleanText(value).replace(/^important dates?:\s*/i, "");
+  if (!clean || !hasDateSignal(clean)) return null;
+  if (!isBareDateValue(clean)) return clean;
+  if (sameDateText(clean, context.deadline)) return `Application deadline: ${clean}`;
+  if (sameDateText(clean, context.openingDate)) return `Applications open: ${clean}`;
+  return null;
+}
+
+function sameDateText(value, reference) {
+  const left = normalizeDateText(value);
+  const right = normalizeDateText(reference || "");
+  return Boolean(left && right && (left === right || right.includes(left) || left.includes(right)));
+}
+
+function normalizeDateText(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/\b(?:deadline|due|opens?|opening|applications?|application|date|by|on|at)\b/g, " ")
+    .replace(/\b(\d{1,2})(?:st|nd|rd|th)\b/g, "$1")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasDateSignal(value) {
+  return (
+    /\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i.test(value) ||
+    /\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/.test(value) ||
+    /\b(?:spring|summer|fall|autumn|winter)\s+\d{4}\b/i.test(value)
+  );
+}
+
+function isBareDateValue(value) {
+  const stripped = cleanText(value)
+    .toLowerCase()
+    .replace(/\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/g, " ")
+    .replace(/\b(?:spring|summer|fall|autumn|winter|early|mid|late|end|beginning|start|through|to|and|or|of|the|by|on|at)\b/g, " ")
+    .replace(/\b\d{1,4}(?:st|nd|rd|th)?\b/g, " ")
+    .replace(/[,\-–—/().:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped.length === 0;
 }
 
 function bestAwardDescription(award, sources) {

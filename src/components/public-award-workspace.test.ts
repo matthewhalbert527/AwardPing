@@ -367,6 +367,51 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("National Academies Gulf Research Program");
     expect(sidebarHtml).not.toContain("Applicant Resource");
   });
+
+  it("keeps noisy updated source labels compact without clipped ellipses", () => {
+    const data = makePageData({
+      sources: [
+        makeSource({
+          id: "source-nofo",
+          title: "a NOFO of up to $50 million",
+          url: "https://energy.gov/nofo",
+        }),
+        makeSource({
+          id: "source-instructions",
+          title: "Instructions on submitting applications for this funding opportunity",
+          url: "https://energy.gov/instructions",
+        }),
+        makeSource({
+          id: "source-payment",
+          title: "online payment link",
+          url: "https://energy.gov/payment",
+        }),
+        makeSource({
+          id: "source-announcement",
+          title: "announced a series of funding opportunities for workforce development",
+          url: "https://energy.gov/announcement",
+        }),
+      ],
+      changes: [],
+    });
+    data.award.name =
+      "U.S. Department of Energy (DOE) - Oak Ridge Institute for Science & Education (ORISE) - Graduate, Post-Master's & Postdoctoral Fellowships";
+
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data,
+      }),
+    );
+
+    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+
+    expect(sidebarHtml).toContain("NOFO up to $50M");
+    expect(sidebarHtml).toContain("Submission Instructions");
+    expect(sidebarHtml).toContain("Online Payment");
+    expect(sidebarHtml).toContain("Funding Announcements");
+    expect(sidebarHtml).not.toContain("...");
+    expect(sidebarHtml).not.toContain("…");
+  });
 });
 
 function makePageData({

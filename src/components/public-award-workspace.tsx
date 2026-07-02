@@ -14,6 +14,7 @@ import {
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
+import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
@@ -294,7 +295,9 @@ function PanelButton({
         )}
       </span>
       {hasUpdate && (
-        <span className="public-award-update-count" aria-label="Recent updates" />
+        <span className="public-award-update-count" aria-label={`${updateCount} unread update${updateCount === 1 ? "" : "s"}`}>
+          {updateCount > 9 ? "9+" : updateCount}
+        </span>
       )}
     </button>
   );
@@ -353,6 +356,8 @@ function SourcePanel({
       <ChangesPanel
         changes={changes}
         emptyText="No meaningful updates have been recorded for this source yet."
+        showSnapshotPreviews
+        sourceIdFallback={source.id}
         title="Source update history"
       />
     </div>
@@ -362,10 +367,14 @@ function SourcePanel({
 function ChangesPanel({
   changes,
   emptyText = "No meaningful updates have been recorded yet.",
+  showSnapshotPreviews = false,
+  sourceIdFallback,
   title = "Recent changes",
 }: {
   changes: PublicAwardPageData["changes"];
   emptyText?: string;
+  showSnapshotPreviews?: boolean;
+  sourceIdFallback?: string | null;
   title?: string;
 }) {
   return (
@@ -381,6 +390,15 @@ function ChangesPanel({
               <div>
                 <h3>{change.sourceTitle}</h3>
                 <p>{change.summary}</p>
+                {showSnapshotPreviews && (
+                  <SourceSnapshotInlinePreview
+                    changeDetails={change.changeDetails}
+                    changeSummary={change.summary}
+                    sourceId={change.sourceId || sourceIdFallback}
+                    sourceTitle={change.sourceTitle}
+                    sourceUrl={change.sourceUrl}
+                  />
+                )}
                 <ChangeEvidencePanel
                   changeDetails={change.changeDetails}
                   compact
@@ -658,9 +676,9 @@ function sourceDisplayTitle(source: PublicAwardSource, awardName: string, offici
   }
 
   const shortTitle = shortenSourceDisplayTitle(cleanTitle, awardName);
-  if (shortTitle) return shortTitle;
+  if (shortTitle) return compactSourceDisplayTitle(shortTitle, true);
 
-  return cleanTitle || "Source page";
+  return compactSourceDisplayTitle(cleanTitle || "Source page");
 }
 
 function shortenSourceDisplayTitle(title: string, awardName: string) {
@@ -691,6 +709,67 @@ function shortenSourceDisplayTitle(title: string, awardName: string) {
 
   if (!value || (!hadDownloadSuffix && value.toLowerCase() === cleanedOriginal.toLowerCase())) return "";
   return toDisplayTitleCase(value);
+}
+
+function compactSourceDisplayTitle(title: string, forceDisplayCase = false) {
+  const original = title
+    .replace(/[.]{3,}|…/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:|/-]+|[\s:|/-]+$/g, "")
+    .trim();
+  let value = title
+    .replace(/[.]{3,}|…/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s:|/-]+|[\s:|/-]+$/g, "")
+    .trim();
+
+  if (!value) return "Source page";
+
+  value = value
+    .replace(/^frequently asked questions$/i, "FAQ")
+    .replace(/^instructions?\s+on\s+submitting\b.*$/i, "Submission Instructions")
+    .replace(/^online\s+payment\s+link$/i, "Online Payment")
+    .replace(/^a\s+NOFO\s+of\s+up\s+to\s+\$?(\d+(?:\.\d+)?)\s+million$/i, "NOFO up to $$$1M")
+    .replace(/^announced\s+a\s+series\s+of\s+fund(?:ing|i).*$/i, "Funding Announcements")
+    .replace(/^benefits\s+of\s+working\s+at\s+ener(?:gy)?\b.*$/i, "Benefits")
+    .replace(/^apprenticeships?\s+(?:&|and)\s+workfor(?:ce)?\b.*$/i, "Apprenticeships")
+    .replace(/^department\s+of\s+energy$/i, "Department of Energy")
+    .replace(/\bU\.S\.\s+Department\s+of\s+Energy(?:\s+\(DOE\))?\b/gi, "DOE")
+    .replace(/\bOak\s+Ridge\s+Institute\s+for\s+Science\s+(?:&|and)\s+Education\b/gi, "ORISE")
+    .replace(/\s+/g, " ")
+    .trim();
+  const transformed = forceDisplayCase || value.toLowerCase() !== original.toLowerCase();
+
+  if (value.length <= 42) return displaySourceTitleCase(value, transformed);
+
+  const segments = value
+    .split(/\s*(?:[|:]|-)\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.length - b.length);
+  const compactSegment = segments.find((segment) => segment.length <= 42);
+  if (compactSegment) return displaySourceTitleCase(compactSegment, true);
+
+  const words = value.split(/\s+/).filter(Boolean);
+  const compactWords = words.slice(0, 6).join(" ");
+  if (compactWords.length >= 12) return displaySourceTitleCase(compactWords, true);
+
+  return displaySourceTitleCase(words.slice(0, 7).join(" ") || value.slice(0, 42), true);
+}
+
+function displaySourceTitleCase(value: string, forceDisplayCase: boolean) {
+  if (!forceDisplayCase && !isMostlyLowercase(value) && !isMostlyUppercase(value)) return value;
+  return toDisplayTitleCase(value);
+}
+
+function isMostlyLowercase(value: string) {
+  const letters = value.replace(/[^A-Za-z]/g, "");
+  return Boolean(letters) && letters === letters.toLowerCase();
+}
+
+function isMostlyUppercase(value: string) {
+  const letters = value.replace(/[^A-Za-z]/g, "");
+  return letters.length >= 3 && letters === letters.toUpperCase();
 }
 
 function bestNonBrandSegment(title: string, awardName: string) {
@@ -774,12 +853,13 @@ function toDisplayTitleCase(value: string) {
   const clean = value.replace(/\s+/g, " ").trim();
   if (!clean) return "";
 
-  const smallWords = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "nor", "of", "on", "or", "the", "to", "with"]);
+  const smallWords = new Set(["a", "an", "and", "as", "at", "but", "by", "for", "from", "in", "nor", "of", "on", "or", "the", "to", "up", "with"]);
   return clean
     .split(" ")
     .map((word, index, words) => {
       const normalized = word.toLowerCase();
       if (/^[A-Z0-9&]{2,}$/.test(word)) return word;
+      if (/^\$?\d+(?:\.\d+)?[A-Z]+$/.test(word)) return word;
       if (index > 0 && index < words.length - 1 && smallWords.has(normalized)) return normalized;
       return word
         .split(/([/-])/)
