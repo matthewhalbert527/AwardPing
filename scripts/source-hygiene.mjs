@@ -728,9 +728,38 @@ function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, rea
   if (isCampusHelpdeskSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isSshrcImmigrationSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isNasaAerospaceHistoryFellowshipSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
+  if (isRhodesScholarshipOxfordSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
   if (isHighVolumeAwardCrawlerSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
 
   return false;
+}
+
+function isRhodesScholarshipOxfordSpillover(host, path, search, directSignal, awardSignal) {
+  const isRhodesScholarship =
+    /\brhodes scholarships?\b/.test(awardSignal) && !/\brhodes university\b/.test(awardSignal);
+  if (!isRhodesScholarship) return false;
+
+  if (host === "rhodeshouse.ox.ac.uk" || host === "rhodesscholar.org") {
+    return false;
+  }
+
+  if (
+    host === "ox.ac.uk" ||
+    host.endsWith(".ox.ac.uk") ||
+    [
+      "assets.publishing.service.gov.uk",
+      "becomecharity.org.uk",
+      "euchems.eu",
+      "uni-of-oxford.custhelp.com",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  return /\b(?:graduate application guide|undergraduate applying|student self service|student visa|graduate admissions|college listing|student appeal|course handbook|uniq|crankstart|access oxford|disability advisory service|academic technology approval scheme)\b/.test(
+    sourceSignal,
+  );
 }
 
 function isNasaAerospaceHistoryFellowshipSpillover(host, path, search, directSignal, awardSignal) {

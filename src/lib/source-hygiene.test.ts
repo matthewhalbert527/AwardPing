@@ -1766,4 +1766,87 @@ describe("source hygiene classifier", () => {
       });
     }
   });
+
+  it("rejects generic Oxford spillover while keeping Rhodes Scholarship sources", () => {
+    const award_name = "Rhodes Scholarships";
+
+    for (const example of [
+      {
+        url: "https://www.rhodeshouse.ox.ac.uk/scholarships/the-rhodes-scholarship/",
+        title: "The Rhodes Scholarship",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.rhodeshouse.ox.ac.uk/scholarships/applications/united-states/",
+        title: "Rhodes Scholarships for the United States",
+        page_type: "application",
+      },
+      {
+        url: "http://www.rhodesscholar.org/office-of-the-american-secretary/application-overview/apply/",
+        title: "Application Overview",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.ox.ac.uk/admissions/graduate/application-guide/starting-your-application/your-application-account",
+        title: "Your application account",
+        page_type: "application",
+      },
+      {
+        url: "https://oxweb-platform.admin.ox.ac.uk/admissions/graduate/application-guide/references/changing-a-referee",
+        title: "Changing a referee",
+        page_type: "application",
+      },
+      {
+        url: "https://www.ox.ac.uk/students/visa/before/cas",
+        title: "Your CAS number",
+        page_type: "faq",
+      },
+      {
+        url: "https://proctors.web.ox.ac.uk/sites/default/files/proctors/documents/media/procedure_university_student_appeal_mt23_v1.1.pdf",
+        title: "University student appeal procedure",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.becomecharity.org.uk/media/1685/factsheet_english_upp_final_v2.pdf",
+        title: "Become Higher Education Pamphlet",
+        page_type: "pdf",
+      },
+      {
+        url: "https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/938632/visit-guidance-v10.0ext.pdf",
+        title: "Home Office staff visit guidance",
+        page_type: "pdf",
+      },
+      {
+        url: "https://uni-of-oxford.custhelp.com/app/answers/detail/a_id/1169/kw/pdf",
+        title: "How to convert your document to PDF file format",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.euchems.eu/wp-content/uploads/2018/10/Periodic-Table-ultimate-PDF.pdf",
+        title: "Periodic Table",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        award_name: "Rhodes University (South Africa) - Postdoctoral Fellowship",
+        url: "https://www.ru.ac.za/research/postdoctoralfellows/",
+        title: "Postdoctoral fellows",
+        page_type: "homepage",
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
 });
