@@ -2354,6 +2354,128 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects AHA fellowship CPR and guideline spillover while keeping research application pages", () => {
+    const postdocAward = "American Heart Association (AHA) - Postdoctoral Fellowship";
+    const predocAward = "American Heart Association (AHA) - Predoctoral Fellowship";
+
+    for (const example of [
+      {
+        award_name: postdocAward,
+        url: "https://professional.heart.org/en/research-programs/application-information/postdoctoral-fellowship",
+        title: "Postdoctoral Fellowship",
+        page_type: "application",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/en/research-programs/aha-funding-opportunities/predoctoral-fellowship",
+        title: "2027 American Heart Association Predoctoral Fellowship",
+        page_type: "homepage",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/en/research-programs/application-resources/required-application-documents/biosketch-instructions",
+        title: "Biosketch Instructions",
+        page_type: "application",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://professional.heart.org/en/-/media/PHD-Files/Research/Application-Instructions/AHA_Research_Funding_Application_Instructions_AC.pdf?sc_lang=en",
+        title: "Application Instructions",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        award_name: predocAward,
+        url: "https://cpr.heart.org/en/resuscitation-science/cpr-and-ecc-guidelines",
+        title: "CPR & ECC Guidelines",
+        page_type: "requirements",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://apps.apple.com/us/app/aha-acls/id1506944443",
+        title: "Download in the Apple Store",
+        page_type: "pdf",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/-/media/PHD-Files/Guidelines-and-Statements/Correspondence/AACVPR_AHA_ACC_Scientific_Statement_ucm_505694.pdf?sc_lang=en",
+        title: "Scientific Statement on Cardiac Rehabilitation",
+        page_type: "pdf",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://professional.heart.org/en/guidelines-and-statements/correspondence",
+        title: "Correspondence",
+        page_type: "requirements",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/en/research-programs/sure-scholars",
+        title: "SURE Scholars Program",
+        page_type: "other",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://www.heart.org/en/about-us/editorial-guidelines",
+        title: "Editorial Guidelines",
+        page_type: "requirements",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/-/media/PHD-Files/Meetings/ISC/2022/Alert--Fraud-Registration-and-Housing-Vendors.pdf?sc_lang=en",
+        title: "Fraud Concerns - International Stroke Conference",
+        page_type: "pdf",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://professional.heart.org/en/research-programs/application-resources/required-application-documents/department-head-letter-instructions",
+        title: "Department Head Letter Instructions",
+        page_type: "application",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://professional.heart.org/en/research-programs/application-resources/required-application-documents/consultant-information",
+        title: "Consultant Information",
+        page_type: "application",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/en/research-programs/application-resources/required-application-documents/collaborating-investigator-information",
+        title: "Collaborating Investigator Information",
+        page_type: "application",
+      },
+      {
+        award_name: predocAward,
+        url: "https://professional.heart.org/en/research-programs/application-resources/required-application-documents/mentoring-team-for-the-career-development-award-information",
+        title: "Mentoring Team for the Career Development Award",
+        page_type: "application",
+      },
+      {
+        award_name: postdocAward,
+        url: "https://professional.heart.org/en/research-programs/awardee-resources/open-science-frequently-asked-questions",
+        title: "Open Science - Frequently Asked Questions",
+        page_type: "faq",
+      },
+      {
+        award_name: predocAward,
+        url: "https://higherlogicdownload.s3.amazonaws.com/NEUROCRITICALCARE/b8b3b384-bfb9-42af-bb55-45973d5054a4/UploadedImages/Documents/Guidelines/LHI_Final_GL-Published.pdf",
+        title: "Evidence-Based Guidelines for the Management of Large Hemispheric Infarction",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";

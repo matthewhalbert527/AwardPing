@@ -1122,6 +1122,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isAnnPlatoFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isFlasFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isNoaaHollingsScholarshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isAhaResearchFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1605,6 +1606,65 @@ function isNoaaHollingsScholarshipSpillover(host, path, search, sourceSignal, aw
     host === "whitehouse.gov"
   ) {
     return true;
+  }
+
+  return true;
+}
+
+function isAhaResearchFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isHeartAssociationAward =
+    /\bamerican heart association\b/.test(awardSignal) || (/\baha\b/.test(awardSignal) && /\bheart\b/.test(awardSignal));
+  const isAhaResearchFellowship =
+    isHeartAssociationAward &&
+    /\b(?:predoctoral|postdoctoral)\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal);
+  if (!isAhaResearchFellowship) return false;
+
+  if (
+    host === "cpr.heart.org" ||
+    host === "apps.apple.com" ||
+    host === "play.google.com" ||
+    host === "higherlogicdownload.s3.amazonaws.com" ||
+    host === "heart.org"
+  ) {
+    return true;
+  }
+
+  if (host === "professional.heart.org") {
+    if (/^\/en\/research-programs\/application-information\/(?:pre|post)doctoral-fellowship\/?$/.test(path)) {
+      return false;
+    }
+    if (/^\/en\/research-programs\/aha-funding-opportunities\/(?:pre|post)doctoral-fellowship\/?$/.test(path)) {
+      return false;
+    }
+    if (
+      /^\/en\/research-programs\/application-resources\/required-application-documents\/(?:collaborating-investigator-information|consultant-information|department-head-letter-instructions|mentoring-team-for-the-career-development-award-information)\/?$/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+    if (/^\/en\/research-programs\/application-resources(?:\/|$)/.test(path)) return false;
+    if (/^\/en\/research-programs\/aha-proposalcentral\/?$/.test(path)) return false;
+    if (/^\/(?:en\/)?-\/media\/phd-files\/research\/application-instructions\//.test(path)) return false;
+
+    if (/^\/en\/?$/.test(path)) return true;
+    if (/^\/en\/about-us(?:\/|$)/.test(path)) return true;
+    if (/^\/en\/guidelines-and-statements(?:\/|$)/.test(path)) return true;
+    if (/^\/en\/meetings(?:\/|$)/.test(path)) return true;
+    if (/^\/en\/research-programs\/(?:awardee-policies|awardee-resources)(?:\/|$)/.test(path)) return true;
+    if (/^\/(?:en\/)?-\/media\/phd-files\/guidelines-and-statements\//.test(path)) return true;
+    if (/^\/(?:en\/)?-\/media\/phd-files\/meetings\//.test(path)) return true;
+    if (/^\/(?:en\/)?-\/media\/phd-files\/research\/(?!application-instructions\/)/.test(path)) return true;
+    if (
+      /^\/en\/research-programs\/(?:aha-funded-research|aha-research-accomplishments|research-impact\/strategic-networks|sure-scholars|women-in-aha-research)(?:\/|$)/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+
+    return false;
   }
 
   return true;
