@@ -967,6 +967,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isErasmusMundusCrawlerSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isArcePreDissertationTravelGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isNstgroCrawlerSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isPlanetaryScienceSummerSchoolSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isWilsonKennanShortTermGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSignal, awardSignal)) return true;
@@ -1216,6 +1217,25 @@ function isNstgroCrawlerSpillover(host, path, search, sourceSignal, awardSignal)
   return /\b(?:planetary data system|earthdata|ntrs|pubspace|open science and data management|station|technology transfer|patent|roses|viking mission|webb reveals|whats up|grants policy|cooperative agreement manual|film documentary|merchandising|media guidelines|space technology research grants?)\b/.test(
     sourceSignal,
   );
+}
+
+function isPlanetaryScienceSummerSchoolSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isPlanetaryScienceSummerSchool =
+    /\bplanetary science summer school\b/.test(awardSignal) &&
+    /\b(?:nasa|jpl|jet propulsion)\b/.test(awardSignal);
+  if (!isPlanetaryScienceSummerSchool) return false;
+
+  if (host === "jpl.nasa.gov") {
+    return !/^\/edu\/(?:intern|internships)\/apply\/nasa-science-mission-design-schools\/?$/.test(path);
+  }
+
+  if (host === "d2pn8kiwq2w21t.cloudfront.net") {
+    return !/^\/documents\/(?:nasa_smds_faq|smds_(?:financialsupport|learninggoals)[^/]*)\.pdf$/.test(path);
+  }
+
+  if (host.endsWith(".jpl.nasa.gov")) return true;
+
+  return true;
 }
 
 function isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, awardSignal) {

@@ -1051,6 +1051,43 @@ describe("source hygiene classifier", () => {
           "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
       },
       {
+        url: "https://pds.mcp.nasa.gov/portal/investigations/urn--nasa--pds--context--investigation--mission---cassini-huygens/instruments",
+        title: "Cassini",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://science.nasa.gov/researchers/sara/faqs/prc-faq-roses/",
+        title: "PRC FAQ for ROSES",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://www.nasa.gov/stem/murep/projects/ncas.html",
+        title: "NCAS program website",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://www.jpl.nasa.gov/edu/internships/apply/nasaipac-teacher-archive-research-program/",
+        title: "IPAC Teacher Archive Research Program",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://www.earthdata.nasa.gov/data/tools/appeears",
+        title: "Application for Extracting and Exploring Analysis Ready Samples (AppEEARS)",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "http://www.jpl.nasa.gov/edu/pdfs/siri_resume_template_spring2022.pdf",
+        title: "SIRI Resume Guidelines",
+        page_type: "pdf",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
         url: "https://grants.nih.gov/grants/guide/WeeklyIndex.cfm?04-24-26",
         title: "NIH Guide: Weekly Index for April 24, 2026",
         award_name: "MARC Undergraduate Student Training in Academic Research",
@@ -1285,6 +1322,34 @@ describe("source hygiene classifier", () => {
         page_type: "homepage",
         award_name:
           "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://www.jpl.nasa.gov/edu/intern/apply/nasa-science-mission-design-schools/",
+        title: "NASA Science Mission Design Schools",
+        page_type: "application",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://www.jpl.nasa.gov/edu/internships/apply/nasa-science-mission-design-schools/",
+        title: "Science Mission Design Schools",
+        page_type: "application",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://d2pn8kiwq2w21t.cloudfront.net/documents/NASA_SMDS_FAQ.pdf",
+        title: "Frequently Asked Questions",
+        page_type: "pdf",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
+      },
+      {
+        url: "https://d2pn8kiwq2w21t.cloudfront.net/documents/smds_financialsupport_01.2026.pdf",
+        title: "Financial Support Requirements",
+        page_type: "pdf",
+        award_name:
+          "National Aeronautics and Space Administration (NASA) - Jet Propulsion Laboratory (JPL) - Planetary Science Summer School",
       },
       {
         url: "https://grants.gov/search-results-detail/353267",
