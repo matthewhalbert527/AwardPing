@@ -4,6 +4,7 @@ import {
   isMeaningfulChangeDetails,
   parseChangeDetails,
 } from "@/lib/change-details";
+import { hasRelativeAgeOnlyPolicyChange } from "@/lib/award-monitoring-policy";
 import { cleanDisplayText, readableSourceTitle } from "@/lib/display-text";
 
 export function isUsefulChangeSummary(
@@ -38,6 +39,7 @@ export function isUsefulChangeSummary(
     !looksLikeProfileRosterChange(clean, changeDetails) &&
     !looksLikeDocumentMetadataOnlyChange(clean) &&
     !looksLikeFundraisingOnlyChange(clean, changeDetails) &&
+    !looksLikeRelativeAgeOnlyChange(clean, changeDetails) &&
     !looksLikeNavigationOnlyChange(clean, changeDetails) &&
     !looksLikeTransientSiteChromeChange(clean, changeDetails) &&
     !looksLikeEventOrRelatedContentNoise(clean, changeDetails) &&
@@ -636,6 +638,20 @@ function looksLikeFundraisingOnlyChange(summary: string, changeDetails: unknown)
     .toLowerCase();
 
   return !hasApplicantFacingChangeSignal(stripUnchangedApplicantReferences(applicantText));
+}
+
+function looksLikeRelativeAgeOnlyChange(summary: string, changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  return hasRelativeAgeOnlyPolicyChange({
+    readerSummary: [summary, details?.reader_summary].filter(Boolean).join(" "),
+    section: details?.section,
+    before: details?.before,
+    after: details?.after,
+    addedText: details?.structured_diff.added_text,
+    removedText: details?.structured_diff.removed_text,
+    dateChanges: details?.structured_diff.date_changes,
+    amountChanges: details?.structured_diff.amount_changes,
+  });
 }
 
 function looksLikeNavigationOnlyChange(summary: string, changeDetails: unknown) {

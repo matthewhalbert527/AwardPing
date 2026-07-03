@@ -1,3 +1,9 @@
+import {
+  hasRelativeAgeOnlyPolicyChange,
+  hasRelativeAgeOnlyTextDiff,
+  isAlertBlockingMonitoringPolicyFlag,
+  isPersistentMonitoringPolicyFlag,
+} from "@/lib/award-monitoring-policy";
 import { summarizeChange } from "@/lib/diff";
 
 export type ChangeDetailsConfidence = "low" | "medium" | "high";
@@ -482,6 +488,15 @@ function qualityFlagsForDiff(input: {
     flags.push("recipient_news_change");
   }
   if (
+    !input.addedDates.length &&
+    !input.removedDates.length &&
+    !input.addedAmounts.length &&
+    !input.removedAmounts.length &&
+    hasRelativeAgeOnlyTextDiff(input.removedText, input.addedText)
+  ) {
+    flags.push("relative_age_timestamp_churn");
+  }
+  if (
     !input.addedText.length &&
     !input.removedText.length &&
     !input.addedDates.length &&
@@ -526,6 +541,20 @@ function qualityFlagsForDetails(details: ChangeDetails) {
   }
   if (hasFundraisingOnlyChange(details)) {
     flags.push("fundraising_form_change");
+  }
+  if (
+    hasRelativeAgeOnlyPolicyChange({
+      readerSummary: details.reader_summary,
+      section: details.section,
+      before: details.before,
+      after: details.after,
+      addedText: details.structured_diff.added_text,
+      removedText: details.structured_diff.removed_text,
+      dateChanges: details.structured_diff.date_changes,
+      amountChanges: details.structured_diff.amount_changes,
+    })
+  ) {
+    flags.push("relative_age_timestamp_churn");
   }
   if (looksLikeProfileOrTestimonialRotation(details.structured_diff)) {
     flags.push("profile_testimonial_change");
@@ -573,8 +602,8 @@ function qualityFlagsForDetails(details: ChangeDetails) {
 
 function isAlertWorthyFromFlags(flags: string[]) {
   return !flags.some((flag) =>
+    isAlertBlockingMonitoringPolicyFlag(flag) ||
     [
-      "ai_invalid_json",
       "source_access_error",
       "raw_scrape_signal",
       "orphan_punctuation",
@@ -1313,7 +1342,7 @@ function isHistoricalRecipientOrMarketingText(value: string) {
 }
 
 function isPersistentQualityFlag(flag: string) {
-  return [
+  return isPersistentMonitoringPolicyFlag(flag) || [
     "ai_invalid_json",
     "no_previous_snapshot",
     "sample_expansion",

@@ -8,8 +8,8 @@
 - Writes those values to `.env.worker.local` on the PC.
 - Installs npm dependencies.
 - Runs a one-page visual snapshot test.
-- Creates a Windows Scheduled Task named `AwardPing Visual Snapshot Worker`
-  that runs the screenshot/PDF checker daily.
+- Creates Windows Scheduled Tasks named `AwardPing Visual Snapshot Worker Shard 1-3`
+  that run the screenshot/PDF checker daily.
 
 ## Windows Install
 
@@ -68,6 +68,33 @@ installing dependencies.
 
 The installer hides pasted keys while you type. They are still stored in the PC's
 local `.env.worker.local` file because the worker needs them to run.
+
+## Nightly Source Quality Pass
+
+To run the cleanup/accuracy pass every night beside the normal 6 PM visual
+snapshot runner, install the separate scheduled task:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingOvernightSourceQuality.ps1"
+```
+
+That creates a Windows Scheduled Task named
+`AwardPing Overnight Source Quality Pass`. By default it runs daily at 6 PM local
+time for up to 10 hours, applies the source cleanup, short-title cleanup, missing
+homepage cleanup, and aggregate award fact refresh, and writes logs under
+`%LOCALAPPDATA%\AwardPingWorker\logs`.
+
+To run it manually after installation, double-click:
+
+```text
+9-RUN-OVERNIGHT-SOURCE-QUALITY-NOW.bat
+```
+
+Useful install options:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingOvernightSourceQuality.ps1" -At "6pm" -Hours 10 -MaxAwards 90 -MinOpenSources 75
+```
 
 ## Manual Run
 

@@ -396,6 +396,63 @@ describe("structured change details", () => {
     expect(isMeaningfulChangeDetails(details)).toBe(false);
   });
 
+  it("treats relative news age label churn as non-meaningful", () => {
+    const details = {
+      reader_summary:
+        "The dates for recent chapter news items have been updated. The 'Chapter Annual & Treasurer Report Overview' now shows '7 days ago' instead of '6 days ago', and 'Chapter Health, Reports and Online Communities' now shows '9 days ago' instead of '8 days ago'.",
+      before: "Chapter Health, Reports and Online Communities 8 days ago",
+      after: "Chapter Health, Reports and Online Communities 9 days ago",
+      section: "Recent chapter news",
+      change_type: "content_update",
+      advisor_impact: "Review applicant instructions for any needed office-facing updates.",
+      is_alert_worthy: true,
+      confidence: "medium",
+      structured_diff: {
+        added_text: [
+          "Chapter Annual & Treasurer Report Overview 7 days ago",
+          "Chapter Health, Reports and Online Communities 9 days ago",
+        ],
+        removed_text: [
+          "Chapter Annual & Treasurer Report Overview 6 days ago",
+          "Chapter Health, Reports and Online Communities 8 days ago",
+        ],
+        likely_section: "Recent chapter news",
+        page_type: "homepage",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {
+        award_name: "Grants-in-Aid of Research Program",
+        source_title: "George Bugliarello Prize",
+        page_type: "homepage",
+      },
+      quality_flags: [],
+      generated_at: "2026-07-03T12:00:00.000Z",
+    };
+
+    expect(isMeaningfulChangeDetails(details)).toBe(false);
+  });
+
+  it("rejects heuristic diffs where only relative ago labels increment", () => {
+    const details = buildHeuristicChangeDetails({
+      previousSample:
+        "Recent News Chapter Annual & Treasurer Report Overview 6 days ago. Chapter Health, Reports and Online Communities 8 days ago.",
+      nextText:
+        "Recent News Chapter Annual & Treasurer Report Overview 7 days ago. Chapter Health, Reports and Online Communities 9 days ago.",
+      source: {
+        award_name: "Grants-in-Aid of Research Program",
+        source_title: "George Bugliarello Prize",
+        page_type: "homepage",
+      },
+      generatedAt: "2026-07-03T12:00:00.000Z",
+    });
+
+    expect(details.quality_flags).toContain("relative_age_timestamp_churn");
+    expect(details.is_alert_worthy).toBe(false);
+    expect(details.reader_summary).toBe("No award-relevant wording changed in the stored excerpt.");
+  });
+
   it("keeps real application date changes when the normalized dates differ", () => {
     const details = {
       reader_summary:

@@ -24,6 +24,11 @@ import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import {
+  aiReviewLooksLikeRelativeAgeOnlyChange,
+  hasRelativeAgeOnlyTextDiff,
+  monitoringPolicyPromptLinesForScope,
+} from "./lib/award-monitoring-policy.mjs";
+import {
   shouldAutoReviewLaterFailure,
   shouldRejectDiscoveredSource,
 } from "./source-hygiene.mjs";
@@ -1071,6 +1076,13 @@ async function reviewAndApplyCandidateChange({
       aiReview,
       "fundraising_form_change",
       "Donation, fundraising, or checkout widgets changed without applicant-facing award information changing.",
+    );
+  }
+  if (aiReview.result.is_true_change && aiReviewLooksLikeRelativeAgeOnlyChange(aiReview)) {
+    markAiReviewAsNoise(
+      aiReview,
+      "relative_age_timestamp_churn",
+      "Only relative recency labels such as '8 days ago' changed; no applicant-facing award information changed.",
     );
   }
   if (aiReview.result.is_true_change) {
@@ -4479,6 +4491,7 @@ function geminiCliDiffPrompt({ source, baseline, previous, capture, diff, determ
     "{is_true_change, noise_reason, reader_summary, advisor_impact, changed_section, confidence, before, after, change_type, structured_diff, quality_flags, updated_baseline_facts}",
     "is_true_change must be true only for concrete award-relevant changes: deadlines, opening/closing dates, eligibility, requirements, nomination/recommendation instructions, documents/PDF/guidelines, award amount/funding, or application instructions.",
     "Reject cookie banners, carousels, ads, current-date-only changes, font/reflow/lazy-image changes, navigation/footer/sidebar changes, social widgets, featured-fellow/alumni/profile roster rotations, recipient/news churn, unrelated research/news pages, access/security/404 pages, and file-hash/file-size-only PDF or document changes.",
+    ...monitoringPolicyPromptLinesForScope("visual_snapshot_gemini_cli"),
     "For PDFs, Word forms, and downloadable files, is_true_change must be false unless you can name the actual changed wording, date, requirement, amount, or applicant instruction. Do not approve a change just because the file bytes, hash, or size changed.",
     "reader_summary should be one or two plain-English advisor-facing sentences when true; otherwise null.",
     "advisor_impact should say what an advising office might need to check or update when true; otherwise null.",
@@ -4932,6 +4945,18 @@ function classifyDeterministicChange(diff, source) {
     return {
       classification: "likely_noise",
       reason: "recipient_news_or_press_churn",
+      candidate_change: false,
+    };
+  }
+
+  if (
+    !diff.date_changes.length &&
+    !diff.amount_changes.length &&
+    hasRelativeAgeOnlyTextDiff(diff.removed_text, diff.added_text)
+  ) {
+    return {
+      classification: "likely_noise",
+      reason: "relative_age_timestamp_churn",
       candidate_change: false,
     };
   }
@@ -7642,6 +7667,7 @@ const aiSystemPrompt = [
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
   "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
   "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+  ...monitoringPolicyPromptLinesForScope("visual_snapshot_ai"),
   "Also reject sitewide notices, holiday or operating-hours banners, countdown timers, view counts, post IDs, writer IDs, CAPTCHA/math changes, navigation or FAQ reordering, generic Latest Updates blocks, calendar/conference/admissions-event churn, stale archive pages, and document hash/file-size-only changes unless specific award-relevant text changed.",
   "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",

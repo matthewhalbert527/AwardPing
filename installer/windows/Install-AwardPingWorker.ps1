@@ -397,6 +397,7 @@ function Write-UninstallScript {
   "AwardPing Visual Snapshot Worker Shard 1",
   "AwardPing Visual Snapshot Worker Shard 2",
   "AwardPing Visual Snapshot Worker Shard 3",
+  "AwardPing Overnight Source Quality Pass",
   "AwardPing Baseline Completion Watchdog",
   "AwardPing Baseline Facts Watchdog",
   "AwardPing Startup Supervisor"
