@@ -1121,6 +1121,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isAafcsGraduateFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isAnnPlatoFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isFlasFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isNoaaHollingsScholarshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1561,6 +1562,47 @@ function isFlasFellowshipSpillover(host, path, search, sourceSignal, awardSignal
       "grants.gov",
       "share.ed.gov",
     ].includes(host)
+  ) {
+    return true;
+  }
+
+  return true;
+}
+
+function isNoaaHollingsScholarshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isHollingsAward =
+    /\bhollings\b/.test(awardSignal) &&
+    (/\bnoaa\b/.test(awardSignal) || /\bernest\b/.test(awardSignal) || /\bscholarships?\b/.test(awardSignal));
+  if (!isHollingsAward) return false;
+
+  if (host === "noaa.gov") {
+    if (
+      /^\/office-education\/hollings-scholarship\/(?:current\/class-of(?:[-/]|$)|2022-hollings-scholars(?:\/|$))/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+    if (/^\/office-education\/hollings-scholarship(?:\/|$)/.test(path)) return false;
+    if (/^\/node\/15665\/?$/.test(path)) return false;
+    if (/^\/sites\/default\/files\/legacy\/document\/2019\/jun\/hollings_[^/]+\.pdf$/i.test(path)) return false;
+    if (/^\/media\/file\/pdf-hollings-project-plan-form-062316-office-of-education\/?$/i.test(path)) return false;
+    if (/^\/sites\/default\/files\/2023-08\/scholarship-app-accessible_2023\.pdf$/i.test(path)) return false;
+    return true;
+  }
+
+  if (host === "oedwebdbapps.iso.noaa.gov") {
+    return !/^\/(?:uspa|sstr)(?:\/|$)/.test(path);
+  }
+
+  if (
+    host === "fisheries.noaa.gov" ||
+    host === "media.fisheries.noaa.gov" ||
+    host === "financialservices.fisheries.noaa.gov" ||
+    host.endsWith(".fisheries.noaa.gov") ||
+    host === "helpx.adobe.com" ||
+    host === "gpo.gov" ||
+    host === "whitehouse.gov"
   ) {
     return true;
   }

@@ -2275,6 +2275,85 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects NOAA Hollings crawler spillover while keeping real Hollings pages", () => {
+    const award_name = "Ernest F. Hollings Undergraduate Scholarship (NOAA)";
+
+    for (const example of [
+      {
+        url: "https://www.noaa.gov/office-education/hollings-scholarship",
+        title: "Ernest F. Hollings Undergraduate Scholarship",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.noaa.gov/office-education/hollings-scholarship/prospective/faq",
+        title: "Frequently Asked Questions for Applicants",
+        page_type: "faq",
+      },
+      {
+        url: "https://www.noaa.gov/node/15665",
+        title: "Hollings Scholarship Student Manual",
+        page_type: "deadline",
+      },
+      {
+        url: "https://www.noaa.gov/sites/default/files/legacy/document/2019/Jun/hollings_travel_request_form.pdf",
+        title: "Travel Request Form",
+        page_type: "pdf",
+      },
+      {
+        url: "https://oedwebdbapps.iso.noaa.gov/uspa/",
+        title: "Undergraduate Scholarship Programs Application",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.noaa.gov/guidance",
+        title: "NOAA Guidance Documents",
+        page_type: "application",
+      },
+      {
+        url: "https://www.noaa.gov/about-our-agency",
+        title: "NOAA's mission",
+        page_type: "faq",
+      },
+      {
+        url: "https://www.noaa.gov/noaa_landing_page/comment_modal?email=education%40noaa.gov",
+        title: "Comment on this page",
+        page_type: "faq",
+      },
+      {
+        url: "https://www.noaa.gov/office-education/hollings-scholarship/current/class-of-2025-2027-hollings-scholar-profiles",
+        title: "Class of 2025-2027 Hollings scholar profiles",
+        page_type: "other",
+      },
+      {
+        url: "https://www.fisheries.noaa.gov/grant/coastal-habitat-restoration-and-resilience-grants-underserved-communities",
+        title: "Coastal Habitat Restoration and Resilience Grants",
+        page_type: "application",
+      },
+      {
+        url: "https://media.fisheries.noaa.gov/2025-01/habitat-restoration-grant.pdf",
+        title: "Habitat Restoration Grant PDF",
+        page_type: "pdf",
+      },
+      {
+        url: "https://helpx.adobe.com/acrobat/using/create-customize-pdf-portfolios.html",
+        title: "Create PDF Portfolios",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";
