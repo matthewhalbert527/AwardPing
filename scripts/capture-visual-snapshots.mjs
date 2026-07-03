@@ -27,6 +27,7 @@ import {
   shouldAutoReviewLaterFailure,
   shouldRejectDiscoveredSource,
 } from "./source-hygiene.mjs";
+import { classifySourceForConsolidation } from "./source-consolidation-core.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -812,6 +813,12 @@ async function processSource(source, context, browserMeta, report) {
   });
   if (hygiene.action === "review_later") {
     await markSharedSourceReviewLater(source, hygiene);
+    return;
+  }
+
+  const consolidation = classifySourceForConsolidation(source, source.shared_awards || {});
+  if (consolidation.action === "review_later") {
+    await markSharedSourceReviewLater(source, consolidation);
     return;
   }
 
@@ -2628,6 +2635,17 @@ async function discoverPdfLinksOnPage(page, source) {
 
     if (!pdfUrl && !pdfText && !documentSignal) continue;
     if (hygiene.action === "review_later") continue;
+    const consolidation = classifySourceForConsolidation(
+      {
+        url,
+        title,
+        page_type: "pdf",
+        page_description: link.contextText,
+        reason: signal,
+      },
+      source.shared_awards || {},
+    );
+    if (consolidation.action === "review_later") continue;
     if (!isRelevantDiscoveredPdfLink(link, url, source)) continue;
     seen.add(url);
     candidates.push({
@@ -2866,18 +2884,29 @@ async function discoverHtmlSubpageLinksOnPage(page, source) {
     if (!url || seen.has(url)) continue;
     if (normalizeComparableUrl(url) === currentUrl) continue;
     const title = readableHtmlLinkTitle(link, url);
+    const pageType = inferHtmlSubpageType(link, url);
     const hygiene = shouldRejectDiscoveredSource({
       url,
       title,
       award_name: source.shared_awards?.name || "",
-      page_type: "other",
+      page_type: pageType,
       reason: [link.text, link.title, link.ariaLabel, link.contextText].filter(Boolean).join(" "),
     });
     if (hygiene.action === "review_later") continue;
+    const consolidation = classifySourceForConsolidation(
+      {
+        url,
+        title,
+        page_type: pageType,
+        page_description: link.contextText,
+        reason: [link.text, link.title, link.ariaLabel, link.contextText].filter(Boolean).join(" "),
+      },
+      source.shared_awards || {},
+    );
+    if (consolidation.action === "review_later") continue;
     if (!isRelevantDiscoveredHtmlLink(link, url, source)) continue;
 
     seen.add(url);
-    const pageType = inferHtmlSubpageType(link, url);
     candidates.push({
       url,
       title,
@@ -4410,6 +4439,7 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "Return compact JSON with these keys:",
     "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
     "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections.",
+    "Every important_dates item must include context plus the date, such as \"Application deadline: January 15, 2027\" or \"Award notifications: May 1\". Do not output bare dates.",
     "sections should list 0 to 8 visible scholarship concepts or page areas with {title, description, status}. Use status unchanged for baseline sections.",
     "award_relevance must be primary, supporting, unclear, or unrelated. confidence must be low, medium, or high.",
     "Use null for unknown deadline/opening_date/page_purpose.",
@@ -5141,7 +5171,7 @@ function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
     .eq("shared_awards.status", "active")
     .eq("admin_review_status", "open")

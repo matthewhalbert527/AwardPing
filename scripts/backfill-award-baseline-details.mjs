@@ -407,6 +407,7 @@ function awardDetailPrompt(award, evidence) {
     "{status, summary, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sources_used, confidence, quality_flags}",
     "status must be succeeded or insufficient_evidence. summary must be one plain-English sentence for advisors.",
     "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sources_used, quality_flags.",
+    "Every important_dates item must include context plus the date, such as \"Application deadline: January 15, 2027\" or \"Award notifications: May 1\". Do not output bare dates.",
     "Use null for unknown deadline or opening_date. confidence must be low, medium, or high.",
     "sources_used array items should be compact strings naming the source title or URL that supported important facts.",
     "",

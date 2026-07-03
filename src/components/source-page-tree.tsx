@@ -13,8 +13,12 @@ import {
 } from "lucide-react";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { ChangeSummaryDisplay } from "@/components/change-summary-display";
-import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
+import {
+  SourceSnapshotInlinePreview,
+  SourceSnapshotViewerButton,
+} from "@/components/source-snapshot-viewer";
 import { pageTypeLabel, type AwardPageType } from "@/lib/award-discovery-types";
+import { normalizeImportantDateItems } from "@/lib/important-dates";
 import {
   buildSourceTree,
   sourceTreeSourceLabel,
@@ -688,6 +692,9 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
   latestChanges: SourcePageTreeChange[];
   selectedChangeId?: string | null;
 }) {
+  const snapshotSourceId =
+    source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
+
   return (
     <>
       <SourcePageOutline outline={outline} />
@@ -708,9 +715,16 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
               sourceTitle={change.sourceTitle}
               changeDetails={change.changeDetails}
             />
+            <SourceSnapshotInlinePreview
+              changeDetails={change.changeDetails}
+              changeSummary={change.summary}
+              sourceId={snapshotSourceId}
+              sourceTitle={change.sourceTitle || sourceTreeSourceLabel(source)}
+              sourceUrl={change.sourceUrl}
+            />
             <ChangeEvidencePanel
               compact
-              sourceId={source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId}
+              sourceId={snapshotSourceId}
               sourceUrl={change.sourceUrl}
               sourceTitle={change.sourceTitle}
               sourcePageTypeLabel={
@@ -972,7 +986,7 @@ function sourceFactRows(facts: Record<string, unknown>) {
     { label: "Award conditions", value: joinArray(facts.requirements) },
     { label: "Materials", value: joinArray(facts.application_materials) },
     { label: "How To Apply", value: joinArray(facts.how_to_apply) },
-    { label: "Important Dates", value: joinArray(facts.important_dates) },
+    { label: "Important Dates", value: importantDatesValue(facts) },
     { label: "Documents", value: joinArray(facts.documents) },
     { label: "Contact", value: joinArray(facts.contacts) },
   ];
@@ -1042,6 +1056,16 @@ function sectionStatusLabel(value: string) {
 function joinArray(value: unknown) {
   const values = arrayValue(value).map(cleanString).filter(Boolean).flatMap(splitFactItems);
   const clean = values.slice(0, 4);
+  if (clean.length === 0) return null;
+  return clean.length === 1 ? clean[0] : clean;
+}
+
+function importantDatesValue(facts: Record<string, unknown>) {
+  const values = arrayValue(facts.important_dates).map(cleanString).filter(Boolean);
+  const clean = normalizeImportantDateItems(values, {
+    deadline: cleanString(facts.deadline),
+    openingDate: cleanString(facts.opening_date),
+  }).slice(0, 4);
   if (clean.length === 0) return null;
   return clean.length === 1 ? clean[0] : clean;
 }

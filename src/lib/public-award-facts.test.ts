@@ -154,4 +154,29 @@ describe("public award facts", () => {
 
     expect(facts.awardAmount).toEqual(["Full tuition", "Living stipend"]);
   });
+
+  it("requires context for every important date", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {
+        deadline: "March 15, 2027",
+        opening_date: "September 15, 2026",
+        important_dates: [
+          "March 15, 2027",
+          "February 1, 2027",
+          "December 15, 2026",
+          "September 15, 2026",
+          "Awards announced by: May 1",
+          "Headshot photo due: June 1",
+        ],
+      },
+    });
+
+    expect(facts.importantDates).toEqual([
+      "Application deadline: March 15, 2027",
+      "Applications open: September 15, 2026",
+      "Awards announced by: May 1",
+      "Headshot photo due: June 1",
+    ]);
+  });
 });
