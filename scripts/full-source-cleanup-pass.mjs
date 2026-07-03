@@ -226,6 +226,7 @@ function isSafeAutomaticCleanup(row) {
     "agency_program_spillover",
     "library_service_spillover",
     "educational_resource_spillover",
+    "official_domain_spillover",
   ]);
 
   if (safeReasons.has(row.reason)) return true;
@@ -337,13 +338,32 @@ function titleCleanupDecision(source, award) {
   }
 
   const rawTitle = cleanText(source.title);
+  const documentDisplayMismatch =
+    currentDisplay &&
+    looksLikeUnrelatedDocumentTitle(source, currentDisplay, nextTitle, award?.name || "");
+  const documentTitleRepair = documentDisplayMismatch && titleMatchesDocumentUrl(source, nextTitle);
+  const currentDisplayNeedsCleanup =
+    currentDisplay &&
+    (
+      currentDisplay.length > 56 ||
+      includesAwardPhrase(currentDisplay, award?.name || "") ||
+      /^https?:\/\//i.test(currentDisplay) ||
+      looksLikeUrlPathTitle(currentDisplay) ||
+      isWeakTitle(currentDisplay) ||
+      documentTitleRepair
+    );
+
+  if (currentDisplay && !currentDisplayNeedsCleanup) {
+    return null;
+  }
+
   const shouldUpdate =
     !currentDisplay ||
-    currentDisplay.length > 56 ||
+    currentDisplayNeedsCleanup ||
     rawTitle.length > 72 ||
-    includesAwardPhrase(currentDisplay || rawTitle, award?.name || "") ||
-    /^https?:\/\//i.test(currentDisplay || rawTitle) ||
-    looksLikeUrlPathTitle(currentDisplay || rawTitle);
+    includesAwardPhrase(rawTitle, award?.name || "") ||
+    /^https?:\/\//i.test(rawTitle) ||
+    looksLikeUrlPathTitle(rawTitle);
 
   if (!shouldUpdate) return null;
   if (nextTitle.length > 80 || isWeakTitle(nextTitle)) return null;
@@ -354,7 +374,11 @@ function titleCleanupDecision(source, award) {
     current_display_title: source.display_title || null,
     current_title: source.title || null,
     next_display_title: nextTitle,
-    reason: currentDisplay ? "simplify_display_title" : "add_display_title",
+    reason: documentTitleRepair
+      ? "repair_document_display_title"
+      : currentDisplay
+        ? "simplify_display_title"
+        : "add_display_title",
   };
 }
 
@@ -362,6 +386,7 @@ function conciseSourceDisplayTitle(source, award) {
   const awardName = cleanText(award?.name);
   const rawTitle = readableSourceTitle(source.display_title || source.title, source.url);
   const storedTitle = readableSourceTitle(source.title, source.url);
+  const urlTitle = readableSourceTitle(null, source.url);
   const isOfficialHomepage =
     Boolean(award?.official_homepage) &&
     normalizeUrl(source.url) === normalizeUrl(award.official_homepage);
@@ -377,6 +402,9 @@ function conciseSourceDisplayTitle(source, award) {
     return "Homepage";
   }
 
+  const documentUrlTitle = preferredDocumentUrlTitle(source, rawTitle, storedTitle, urlTitle, awardName);
+  if (documentUrlTitle) return documentUrlTitle;
+
   const shortened = shortenSourceDisplayTitle(rawTitle, awardName);
   if (shortened) return shortened;
 
@@ -391,6 +419,17 @@ function conciseSourceDisplayTitle(source, award) {
   if (isWeakTitle(rawTitle) && fromUrl && !isWeakTitle(fromUrl)) return fromUrl;
 
   return rawTitle || "Source page";
+}
+
+function preferredDocumentUrlTitle(source, rawTitle, storedTitle, urlTitle, awardName) {
+  if (!isDocumentLikeSource(source)) return "";
+  if (!source.display_title) return "";
+  if (!urlTitle || isWeakTitle(urlTitle) || looksLikeUrlPathTitle(urlTitle)) return "";
+  if (sameTitle(rawTitle, urlTitle)) return "";
+  if (!looksLikeUnrelatedDocumentTitle(source, rawTitle, urlTitle, awardName, storedTitle)) return "";
+
+  const shortened = shortenSourceDisplayTitle(urlTitle, awardName);
+  return shortened || toDisplayTitleCase(urlTitle);
 }
 
 function missingHomepageRows({ awards, allSources, reviewLaterSourceIds }) {
@@ -889,13 +928,93 @@ function phraseMatches(value, phrase) {
 }
 
 function isGenericActionTitle(value) {
-  return /^(apply|applications?|learn more|read more|view more|more information|details?|click here|here|tips here\.?)$/i.test(
+  return /^(apply|applications?|learn more|read more|view more|more information|details?|click here|here|tips here\.?|please see here|available here|view file|view rfp|view report|view full report|read report|download cfp|download resource|download the announcement|view as a pdf|pdf version|external,? opens in a new window\.?)$/i.test(
     cleanText(value),
   );
 }
 
+function isDocumentLikeSource(source) {
+  return (
+    source?.page_type === "pdf" ||
+    /\.(?:pdf|docx?|pptx?|xlsx?)(?:$|[?#])/i.test(String(source?.url || "")) ||
+    /(^|\/\/)docs\.google\.com\/document\//i.test(String(source?.url || ""))
+  );
+}
+
+function looksLikeUnrelatedDocumentTitle(source, title, candidateTitle, awardName, storedTitle = "") {
+  if (!isDocumentLikeSource(source)) return false;
+  const cleanTitle = cleanText(title);
+  const cleanCandidate = cleanText(candidateTitle);
+  if (!cleanTitle || !cleanCandidate || sameTitle(cleanTitle, cleanCandidate)) return false;
+  if (isWeakTitle(cleanTitle) || looksLikeUrlPathTitle(cleanTitle)) return true;
+
+  const targets = [cleanCandidate, storedTitle, awardName].filter(Boolean);
+  if (targets.some((target) => hasMeaningfulTitleOverlap(cleanTitle, target))) return false;
+
+  const titleTokens = meaningfulTitleTokens(cleanTitle);
+  const candidateTokens = meaningfulTitleTokens(cleanCandidate);
+  return titleTokens.length > 0 && candidateTokens.length > 0;
+}
+
+function titleMatchesDocumentUrl(source, title) {
+  const urlTitle = readableSourceTitle(null, source?.url);
+  if (!urlTitle || isWeakTitle(urlTitle)) return false;
+  return sameTitle(title, urlTitle) || hasMeaningfulTitleOverlap(title, urlTitle);
+}
+
+function hasMeaningfulTitleOverlap(left, right) {
+  const leftTokens = new Set(meaningfulTitleTokens(left));
+  if (!leftTokens.size) return false;
+  return meaningfulTitleTokens(right).some((token) => leftTokens.has(token));
+}
+
+function meaningfulTitleTokens(value) {
+  const generic = new Set([
+    "about",
+    "application",
+    "apply",
+    "award",
+    "awards",
+    "checklist",
+    "click",
+    "details",
+    "document",
+    "download",
+    "fellowship",
+    "fellowships",
+    "file",
+    "form",
+    "guide",
+    "guidelines",
+    "here",
+    "information",
+    "instructions",
+    "page",
+    "pdf",
+    "program",
+    "programs",
+    "report",
+    "requirements",
+    "research",
+    "scholarship",
+    "source",
+    "student",
+    "students",
+  ]);
+
+  return [
+    ...new Set(
+      cleanText(value)
+        .toLowerCase()
+        .replace(/&/g, " and ")
+        .split(/[^a-z0-9]+/g)
+        .filter((token) => token.length >= 4 && !generic.has(token)),
+    ),
+  ];
+}
+
 function isWeakTitle(value) {
-  return /^(source page|other source|homepage|home|download|details?|information|read more|learn more|click here|here)$/i.test(
+  return /^(source page|other source|homepage|home|download|details?|information|read more|learn more|click here|here|please see here|available here|view file|view rfp|view report|view full report|read report|download cfp|download resource|download the announcement|view as a pdf|pdf version|external,? opens in a new window\.?)$/i.test(
     cleanText(value),
   );
 }

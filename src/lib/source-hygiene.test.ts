@@ -460,6 +460,251 @@ describe("source hygiene classifier", () => {
     ).toMatchObject({ action: "keep" });
   });
 
+  it("rejects broad DOE official-domain spillover while keeping ORISE fellowship sources", () => {
+    const awardName =
+      "U.S. Department of Energy (DOE) - Oak Ridge Institute for Science & Education (ORISE) - Graduate, Post-Master's & Postdoctoral Fellowships";
+
+    const broadDoeExamples = [
+      {
+        url: "https://www.energy.gov/articles/fact-sheet-energy-department-prevented-blackouts-saved-american-lives-during-winter-storms",
+        title: "FACT SHEET: Energy Department Prevented Blackouts & Saved American Lives During Winter Storms",
+        page_type: "other",
+      },
+      {
+        url: "https://www.energy.gov/fe/submitting-electronic-payment",
+        title: "online payment link",
+        page_type: "application",
+      },
+      {
+        url: "https://www.energy.gov/cmei/ammto/critical-minerals-and-materials-accelerator-0",
+        title: "a NOFO of up to $50 million",
+        page_type: "requirements",
+      },
+      {
+        url: "https://infrastructure-exchange.energy.gov/Default.aspx",
+        title: "a NOFO of up to $135 million",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www.energy.gov/sites/default/files/2022-03/doe-fy2023-budget-in-brief-v2.pdf",
+        title: "FY 2023 Budget in Brief",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.energy.gov/doe-affiliated-nobel-prize-laureates",
+        title: "DOE-affiliated Nobel Prize Laureates",
+        page_type: "other",
+        reason: "Local worker discovered this other page from https://www.energy.gov/internships-fellowships.",
+      },
+      {
+        url: "https://www.energy.gov/apprenticeships-workforce-development",
+        title: "Apprenticeships & Workforce Development",
+        page_type: "other",
+        reason: "Local worker discovered this other page from https://www.energy.gov/internships-fellowships.",
+      },
+      {
+        url: "https://www.usajobs.gov/Help/faq/application/documents/resume/what-to-include/",
+        title: "What to Include in Your Federal Resume",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/work-us-department-energy Signal: document_link_signal",
+      },
+      {
+        url: "https://www.fedconnect.net/FedConnect/default.aspx?ReturnUrl=%2ffedconnect%3fdoc%3dDE-FOA-0003105%26agency%3dDOE&doc=DE-FOA-0003105&agency=DOE",
+        title: "Download the full funding opportunity on FedConnect.",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmei/mining/funding-notice-critical-material-innovation-efficiency-and-alternatives Signal: document_link_signal",
+      },
+      {
+        url: "https://pubs.usgs.gov/periodicals/mcs2024/mcs2024.pdf",
+        title: "U.S. Geological Survey",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmei/articles/does-office-critical-minerals-and-energy-innovation-announces-over-45-million-support Signal: pdf_url",
+      },
+      {
+        url: "https://infrastructure-exchange.energy.gov/FileContent.aspx?FileID=26f78413-b753-4ca1-8998-e231770c6e7e",
+        title: "Application for Federal Assistance (SF 424) - updated 1-28-24",
+        page_type: "application",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://infrastructure-exchange.energy.gov/Default.aspx Signal: application_html_link:application",
+      },
+      {
+        url: "https://www.energy.gov/sites/default/files/2025-03/258%20-%20Order%20on%20Motion%20for%20Contempt.pdf",
+        title: "Order on Motion for Contempt (March 17, 2025)",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/notice-court-orders Signal: pdf_url",
+      },
+      {
+        url: "https://fossil.energy.gov/fergas-fe/docs/Portal_User_Manual_v_1_2.pdf",
+        title: "Portal User Manual",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://fossil.energy.gov/fergas-fe/main.html Signal: pdf_url",
+      },
+      {
+        url: "https://eere-exchange.energy.gov/FAQ.aspx?FoaId=9b0fa116-6f34-4078-9891-a3421679962e",
+        title: "FAQs webpage",
+        page_type: "faq",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://eere-exchange.energy.gov/Default.aspx?Search=3589&SearchType= Signal: faq_html_link:faq",
+      },
+      {
+        url: "https://eere-exchange.energy.gov/Default.aspx",
+        title: "Default",
+        page_type: "application",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://eere-exchange.energy.gov/FAQ.aspx?FoaId=9b0fa116-6f34-4078-9891-a3421679962e Signal: application_html_link",
+      },
+      {
+        url: "https://www.justice.gov/oip/amendment-s2488.pdf",
+        title: "Open Government Act",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/gc/foia-frequently-asked-questions-faqs Signal: pdf_url",
+      },
+      {
+        url: "https://arpa-e.energy.gov/programs-and-initiatives/search-all-projects/pure-harves2t-produced-water-utilization-recovery-energy-materials-high-value-advanced-resource-valorization-using-emerging-switchable-solvent-technologies",
+        title: "Learn More",
+        page_type: "requirements",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://arpa-e.energy.gov/programs-and-initiatives/view-all-programs/recover Signal: requirements_html_link:requirements",
+      },
+      {
+        url: "https://science.osti.gov/-/media/grants/pdf/foas/2024/DE-FOA-0003444.pdf",
+        title: "DE FOA 0003444",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmei/ammto/articles/apply-grants-fund-materials-and-advanced-manufacturing-research-development-and Signal: pdf_url",
+      },
+      {
+        url: "https://www.nrel.gov/docs/fy23osti/81483.pdf",
+        title: "Materials Used in U.S. Wind Energy Technologies: Quantities and Availability for Two Future Scenarios",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmm/critical-minerals-materials-program Signal: pdf_url Expanded controls: 1",
+      },
+      {
+        url: "https://docs.google.com/document/d/1zZIL6snPer_N9UjWY7w7_xnRUSXWQRjEk7Ehl7sAf44/edit?usp=sharing",
+        title: "TCU Career Consortium History",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmm/critical-materials-collaborative Signal: document_link_signal",
+      },
+      {
+        url: "https://www.energy.gov/sites/default/files/2026-06/DOE-OIG-26-38.pdf",
+        title: "OIG-26-38.pdf",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/ig/articles/additional-action-would-assist-advanced-research-projects-agency-energy-fulfill-us Signal: pdf_url",
+      },
+      {
+        url: "https://www.energy.gov/sites/prod/files/2013/07/f2/Area.pdf",
+        title: "Table 2",
+        page_type: "pdf",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/hgeo/guidelines-filing-monthly-reports Signal: pdf_url",
+      },
+      {
+        url: "https://www.energy.gov/science-innovation/innovation/hubs",
+        title: "Energy Innovation Hub",
+        page_type: "requirements",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmei/ammto/articles/doe-energy-innovation-hub-announces-10-million-early-stage-research-development Signal: requirements_html_link",
+      },
+      {
+        url: "https://www.energy.gov/node/4827873",
+        title: "Learn more about Conductivity-Enhanced Materials",
+        page_type: "requirements",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmei/ammto/next-generation-materials-and-processes Signal: requirements_html_link:requirements Expanded controls: 3",
+      },
+      {
+        url: "https://www.energy.gov/eere/ammto/funding-selections-ammto-large-wind-turbine-materials-and-manufacturing-funding",
+        title: "Learn more about the selections",
+        page_type: "requirements",
+        reason:
+          "Found by the visual snapshot worker after expanding page content. Parent source: https://www.energy.gov/cmei/ammto/articles/three-new-selections-will-advance-materials-and-manufacturing-offshore-wind Signal: requirements_html_link:requirements",
+      },
+    ];
+
+    for (const example of broadDoeExamples) {
+      expect(
+        shouldRejectDiscoveredSource({
+          ...example,
+          award_name: awardName,
+        }),
+      ).toMatchObject({ action: "review_later", reason: "official_domain_spillover" });
+    }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.energy.gov/internships-fellowships",
+        title: "Internships & Fellowships - Department of Energy",
+        page_type: "homepage",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.energy.gov/sites/default/files/2026-01/orise-postdoctoral-fellowship-application-guide.pdf",
+        title: "ORISE Postdoctoral Fellowship Application Guide",
+        page_type: "pdf",
+        award_name: awardName,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.energy.gov/sites/default/files/2026-03/OEA_WashingtonDC.pdf",
+        title: "Office of Enterprise Assessments - Washington DC",
+        page_type: "pdf",
+        award_name:
+          "U.S. Department of Energy (DOE) - Office of Energy Efficiency & Renewable Energy (EERE) - Post-Master's and Postdoctoral Science & Technology Policy (STP) Fellowship",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://science.osti.gov/wdts/suli/How-to-Apply/Workshop-Archive",
+        title: "SULI Workshop Archive",
+        page_type: "application",
+        award_name: "Department of Energy Science Undergraduate Laboratory Internship (SULI)",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://science.osti.gov/wdts/scgsr/How-to-Apply/DOE-Lab-POCs",
+        title: "participating DOE National Laboratories and User Facilities.",
+        page_type: "application",
+        award_name:
+          "U.S. Department of Energy (DOE) - Office of Science Graduate Student Research (SCGSR) Program",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    const suliAwardName = "Department of Energy Science Undergraduate Laboratory Internship (SULI)";
+    for (const url of [
+      "https://science.osti.gov/sbir/Anonymous-Feedback",
+      "https://science.osti.gov/User-Facilities/Frequently-Asked-Questions",
+      "https://science.osti.gov/-/media/_/pdf/user-facilities/memoranda/Office_of_Science_User_Facility_Definition_Memo.pdf",
+      "https://science.osti.gov/sbir",
+      "https://science.osti.gov/Leaving-Office-of-Science?url=http%3a%2f%2fwww.ameslab.gov%2f&external=true",
+    ]) {
+      expect(
+        shouldRejectDiscoveredSource({
+          url,
+          title: "Office of Science sibling section",
+          page_type: "other",
+          award_name: suliAwardName,
+        }),
+      ).toMatchObject({ action: "review_later", reason: "official_domain_spillover" });
+    }
+  });
+
   it("rejects DAAD duplicate print PDFs and broad academic PDF spillover", () => {
     expect(
       shouldRejectDiscoveredSource({

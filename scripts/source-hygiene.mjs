@@ -74,6 +74,13 @@ export function classifySourceHygiene(sourceLike = {}, failure = {}) {
     );
   }
 
+  if (isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, reason, awardName)) {
+    return review(
+      "official_domain_spillover",
+      "Official-domain page appears to belong to a broad agency site or sibling program, not this award",
+    );
+  }
+
   if (isKnownBoilerplateUrl(host, path, directHaystack)) {
     return review("boilerplate_or_policy_link", "Boilerplate, policy, news, event, or generic resource link");
   }
@@ -404,6 +411,168 @@ function isAlbertaCareerOrStudentAidSpillover(host, path, search, directSignal, 
   }
 
   return false;
+}
+
+function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, reason, awardName) {
+  const cleanPath = path.toLowerCase();
+  const search = String(parsed?.search || "").toLowerCase();
+  const directSignal = wordSignal([directHaystack, cleanPath, search].join(" "));
+  const combinedSignal = wordSignal([directHaystack, cleanPath, search, reason].join(" "));
+  const awardSignal = wordSignal(awardName);
+
+  if (isDoeAgencySpillover(host, cleanPath, directSignal, combinedSignal, awardSignal)) return true;
+  if (isOfficeOfScienceSiblingSpillover(host, cleanPath, directSignal, awardSignal)) return true;
+  if (isDoeExternalDiscoverySpillover(host, directSignal, combinedSignal, awardSignal)) return true;
+
+  return false;
+}
+
+function isOfficeOfScienceSiblingSpillover(host, path, directSignal, awardSignal) {
+  if (host !== "science.osti.gov") return false;
+  if (!/\b(?:science undergraduate laboratory|suli|graduate student research|scgsr)\b/.test(awardSignal)) {
+    return false;
+  }
+  if (hasDoeAwardSpecificSignal(directSignal, awardSignal)) return false;
+
+  return (
+    /^\/(?:sbir|user-facilities|leaving-office-of-science)(?:\/|$)/.test(path) ||
+    /^\/-\/media\/_\/pdf\/user-facilities(?:\/|$)/.test(path)
+  );
+}
+
+function isDoeAgencySpillover(host, path, directSignal, combinedSignal, awardSignal) {
+  const isDoeHost =
+    /(^|\.)energy\.gov$/.test(host) ||
+    host === "eere-exchange.energy.gov" ||
+    host === "infrastructure-exchange.energy.gov" ||
+    host === "fossil.energy.gov" ||
+    host === "science.osti.gov";
+  if (!isDoeHost) return false;
+
+  const directSourceSignal = `${directSignal} ${path}`;
+  const sourceSignal = `${combinedSignal} ${path}`;
+  if (hasDoeAwardSpecificSignal(directSourceSignal, awardSignal)) return false;
+  if (isDoeFellowshipCollectionPage(path, directSourceSignal, awardSignal)) return false;
+
+  if (
+    (host === "eere-exchange.energy.gov" || host === "infrastructure-exchange.energy.gov") &&
+    /\/(?:default|faq|filecontent)\.aspx$/i.test(path)
+  ) {
+    return true;
+  }
+
+  if (
+    host === "arpa-e.energy.gov" &&
+    /\/programs-and-initiatives\/(?:view-all-programs|search-all-projects)(?:\/|$)/.test(path)
+  ) {
+    return true;
+  }
+
+  if (host === "science.osti.gov" && /\/grants\/pdf\/foas\//.test(path)) {
+    return true;
+  }
+
+  if (
+    hasDoeSpilloverParentSignal(sourceSignal) &&
+    (
+      /\/sites\/(?:default|prod)\/files\//.test(path) ||
+      /^\/node\/\d+(?:\/|$)/.test(path) ||
+      /^\/(?:science-innovation\/innovation\/hubs|eere\/ammto)(?:\/|$)/.test(path) ||
+      /\b(?:oig|fe 746r|lng snapshot|portal faqs|strategy for plastics innovation|conductivity enhanced materials|energy innovation hub|funding selections|large wind turbine materials|advanced manufacturing)\b/.test(
+        sourceSignal,
+      )
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /\/(?:articles?|news|events?|calendar|press|budget-performance|mission|national-laboratories|doe-affiliated-nobel-prize-laureates|work-us-department-energy|energy-program-offices|office-inspector-general|freedom-information-act|submitting-electronic-payment|application-fee|apprenticeships-workforce-development|careers|documents\/faqs-transit-gas-reportingpdf)(?:\/|$)/.test(
+      path,
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    /^\/(?:cio|gc|ig|hgeo|fe|fecm|cmei|cmm)(?:\/|$)/.test(path)
+  ) {
+    return true;
+  }
+
+  return /\b(?:nofo|notice of funding opportunity|critical minerals?|critical materials?|lng export|electronic payments?|filing fee|foia|information quality|vulnerability disclosure|nobel prize|national laboratories|budget performance|budget in brief|mission|careers?|whistleblower|fact sheet|coal plants?|hydrocarbons?|geothermal|advanced manufacturing|workshops?|court order|temporary restraining order|docket room|monthly import exports?|natural gas|import export|e filing|blanket authorization|federal resume|federal register|code of federal regulations|fedconnect|geological survey|mineral commodity summaries|life insurance election|health benefits election|adoption and foster care|apprenticeship|application for federal assistance|sf 424|budget justification|data sheet and workbook|filecontent aspx|faq log|roadmap|project descriptions?|portal user manual|points of entry|application for rehearing|request for rehearing|motion for contempt|motion to intervene|preliminary injunction|frontline advocates?|american petroleum|policy statement)\b/.test(
+    sourceSignal,
+  );
+}
+
+function isDoeExternalDiscoverySpillover(host, directSignal, combinedSignal, awardSignal) {
+  if (!/\b(?:doe|department energy|orise|oak ridge|eere|energy efficiency|science undergraduate laboratory|suli|postdoctoral|fellowship|internship)\b/.test(awardSignal)) {
+    return false;
+  }
+  if (hasDoeAwardSpecificSignal(directSignal, awardSignal)) return false;
+  if (!hasDoeSpilloverParentSignal(combinedSignal)) return false;
+
+  const externalHosts = [
+    /(^|\.)whitehouse\.gov$/,
+    /(^|\.)usajobs\.gov$/,
+    /(^|\.)dol\.gov$/,
+    /(^|\.)gpo\.gov$/,
+    /^frwebgate\.access\.gpo\.gov$/,
+    /(^|\.)justice\.gov$/,
+    /(^|\.)usgs\.gov$/,
+    /(^|\.)opm\.gov$/,
+    /(^|\.)fedconnect\.net$/,
+    /(^|\.)arpa-e\.energy\.gov$/,
+    /(^|\.)nrel\.gov$/,
+    /(^|\.)science\.osti\.gov$/,
+    /(^|\.)docs\.google\.com$/,
+    /(^|\.)obamawhitehouse\.archives\.gov$/,
+    /(^|\.)trumpwhitehouse\.archives\.gov$/,
+  ];
+
+  if (externalHosts.some((pattern) => pattern.test(host))) return true;
+
+  return /\b(?:federal resume|federal register|code of federal regulations|fedconnect|geological survey|mineral commodity summaries|life insurance election|health benefits election|adoption and foster care|apprenticeship|foia|open government act|application for federal assistance|sf 424|budget justification|data sheet and workbook|faq log|portal user manual|motion for contempt|request for rehearing|motion to intervene)\b/.test(
+    directSignal,
+  );
+}
+
+function hasDoeSpilloverParentSignal(signal) {
+  return /\b(?:energy gov apprenticeships workforce development|energy gov cmei|energy gov cmm|energy gov hgeo|energy gov gc|energy gov fe|energy gov fecm|fossil energy gov|energy gov ig|energy gov cio|energy gov careers benefits working energy|energy gov work us department energy|energy gov articles energy department|energy gov articles fact sheet|energy gov node|energy gov documents faqs transit gas|energy gov notice court orders|energy gov science innovation innovation hubs|arpa e energy gov programs and initiatives|infrastructure exchange energy gov default aspx|eere exchange energy gov default aspx|eere exchange energy gov faq aspx)\b/.test(
+    signal,
+  );
+}
+
+function hasDoeAwardSpecificSignal(signal, awardSignal = "") {
+  if (
+    /\b(?:science undergraduate laboratory|suli)\b/.test(awardSignal) &&
+    /\b(?:science undergraduate laboratory|suli|wdts suli)\b/.test(signal)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(?:graduate student research|scgsr)\b/.test(awardSignal) &&
+    /\b(?:graduate student research|scgsr|wdts scgsr)\b/.test(signal)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(?:orise|oak ridge)\b/.test(awardSignal) &&
+    /\b(?:orise|oak ridge|science education|research participation program)\b/.test(signal)
+  ) {
+    return true;
+  }
+
+  return /\b(?:internships?\s+(?:and\s+)?fellowships?|internships?-fellowships?|postdoctoral fellowships?|graduate fellowships?)\b/.test(
+    signal,
+  );
+}
+
+function isDoeFellowshipCollectionPage(path, signal, awardSignal) {
+  if (!/\b(?:orise|fellowships?|internships?|postdoctoral|graduate)\b/.test(awardSignal)) return false;
+  return path === "/internships-fellowships" || /\binternships?\s+(?:and\s+)?fellowships?\b/.test(signal);
 }
 
 function isDuplicatePdfExportUrl(host, path) {
