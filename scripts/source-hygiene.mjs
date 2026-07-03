@@ -1126,6 +1126,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isEisenhowerTransportationFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isGfoaScholarshipsSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isRhodesUniversityPostdoctoralFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isLlnlLawrenceFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1731,6 +1732,34 @@ function isRhodesUniversityPostdoctoralFellowshipSpillover(host, path, search, s
       "/media/rhodesuniversity/content/research/documents/postdoctoral/2026_ru_postdoc_application_form.docx",
       "/media/rhodesuniversity/content/research/documents/postdoctoral/ru_post-doctoral_2nd_year_renewal_application.doc",
     ].includes(normalizedPath);
+  }
+
+  return true;
+}
+
+function isLlnlLawrenceFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isLawrenceFellowship =
+    (/\bllnl\b/.test(awardSignal) || /\blawrence livermore\b/.test(awardSignal)) &&
+    /\blawrence\b/.test(awardSignal) &&
+    /\b(?:postdoctoral|postdoc)\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal);
+  if (!isLawrenceFellowship) return false;
+
+  if (host === "st.llnl.gov") {
+    return ![
+      "/opportunities/postdocs/postdoc-program/lawrence-fellowship",
+      "/opportunities/postdocs/postdoc-program/lawrence-fellowship/learn-more-and-apply",
+      "/sites/default/files/inline-files/interest_statement_example_0.pdf",
+      "/sites/default/files/inline-files/lf-flyer-2025.pdf",
+    ].includes(path);
+  }
+
+  if (host === "jobs.smartrecruiters.com") {
+    return !/^\/llnl\/3743990009710696-lawrence-fellowship-postdoctoral-researcher\/?$/.test(path);
+  }
+
+  if (host === "us.smrtr.io") {
+    return !/^\/49s7z\/?$/.test(path);
   }
 
   return true;

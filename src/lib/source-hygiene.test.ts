@@ -2708,6 +2708,95 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects LLNL sibling job and research spillover while keeping Lawrence Fellowship sources", () => {
+    const award_name = "Lawrence Livermore National Laboratory (LLNL) - Lawrence Postdoctoral Fellowship";
+
+    for (const example of [
+      {
+        url: "https://st.llnl.gov/opportunities/postdocs/postdoc-program/lawrence-fellowship",
+        title: "Lawrence Fellowship",
+        page_type: "homepage",
+      },
+      {
+        url: "https://st.llnl.gov/opportunities/postdocs/postdoc-program/lawrence-fellowship/learn-more-and-apply",
+        title: "Lawrence Fellowship: Learn more and apply",
+        page_type: "application",
+      },
+      {
+        url: "https://st.llnl.gov/sites/default/files/inline-files/LF-Flyer-2025.pdf",
+        title: "Lawrence Fellowship Flyer",
+        page_type: "pdf",
+      },
+      {
+        url: "https://st.llnl.gov/sites/default/files/inline-files/Interest_Statement_example_0.pdf",
+        title: "Interest Statement Example",
+        page_type: "pdf",
+      },
+      {
+        url: "https://jobs.smartrecruiters.com/LLNL/3743990009710696-lawrence-fellowship-postdoctoral-researcher",
+        title: "LLNL Lawrence Fellowship Postdoctoral Researcher",
+        page_type: "application",
+      },
+      {
+        url: "https://us.smrtr.io/49s7z",
+        title: "Submit Application",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://st.llnl.gov/node/943",
+        title: "Lawrence Fellowship: How to Apply Button",
+        page_type: "application",
+      },
+      {
+        url: "https://st.llnl.gov/opportunities/postdocs/postdoc-program/lawrence-fellowship/current-and-past-lawrence-fellows",
+        title: "Current and Former Lawrence Fellows",
+        page_type: "other",
+      },
+      {
+        url: "https://st.llnl.gov/opportunities/postdocs/postdoc-program/lawrence-fellowship/current-and-past-lawrence-fellows/zachary-sims",
+        title: "Zachary Sims",
+        page_type: "other",
+      },
+      {
+        url: "https://st.llnl.gov/sci-ed/SAGE/application-process",
+        title: "SAGE Application Process",
+        page_type: "application",
+      },
+      {
+        url: "https://www.llnl.gov/join-our-team/careers/find-your-job/8197899c-8f04-4c2a-a3eb-b3bfe99148bf/all/3743990013835796",
+        title: "John S. Foster, Jr. and Harold Brown Postdoctoral Fellowships",
+        page_type: "application",
+      },
+      {
+        url: "https://pls.llnl.gov/research-and-development/materials-science",
+        title: "Materials Science",
+        page_type: "requirements",
+      },
+      {
+        url: "https://ldrd-annual.llnl.gov/ldrd-annual-2023/project-highlights/accelerated-materials-and-manufacturing/powderjet-agile-system-high-quality-metal-powder-production",
+        title: "PowderJet",
+        page_type: "requirements",
+      },
+      {
+        url: "https://st.llnl.gov/sites/default/files/2022-11/Sea%20Change%20in%20High%20School%20STEM%20Education.pdf",
+        title: "Sea Change in High School STEM Education",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";
