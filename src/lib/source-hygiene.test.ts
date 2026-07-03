@@ -346,7 +346,7 @@ describe("source hygiene classifier", () => {
         title: "2",
         award_name: "Foreign Language and Area Studies Fellowship",
       }),
-    ).toMatchObject({ action: "review_later", reason: "cross_program_source" });
+    ).toMatchObject({ action: "review_later", reason: "official_domain_spillover" });
 
     expect(
       shouldRejectDiscoveredSource({
@@ -2211,6 +2211,60 @@ describe("source hygiene classifier", () => {
       {
         url: "https://internet3.trincoll.edu/FacMan/FacultyManual.pdf",
         title: "Faculty Manual",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
+  it("rejects Department of Education crawler spillover while keeping FLAS program pages", () => {
+    const award_name = "Foreign Language and Area Studies Fellowship";
+
+    for (const example of [
+      {
+        url: "https://iris.ed.gov/programs/flas",
+        title: "Foreign Language and Area Studies Fellowships Program",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www2.ed.gov/programs/iegpsflasf/index.html",
+        title: "Foreign Language and Area Studies Fellowships Program",
+        page_type: "homepage",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www2.ed.gov/laws-and-policy/laws-preschool-grade-12-education/birth-grade-12-policy-documents",
+        title: "Birth to Grade 12 Policy Documents",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www2.ed.gov/sites/ed/files/fund/grant/apply/appforms/sf424b.pdf",
+        title: "SF-424 Assurances Form",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www2.ed.gov/grants-and-programs/grants-higher-education/international-and-foreign-language-education/centers-aligned-areas-national-need-caann-program-84015c",
+        title: "Centers Aligned with Areas of National Need Program",
+        page_type: "deadline",
+      },
+      {
+        url: "https://www.ed.gov/grants-and-programs",
+        title: "U.S. Department of Education Grants and Programs",
+        page_type: "eligibility",
+      },
+      {
+        url: "https://whitehouse.gov/wp-content/uploads/2019/10/M-20-02-Guidance-Memo.pdf",
+        title: "OMB Memorandum M-20-02",
         page_type: "pdf",
       },
     ]) {

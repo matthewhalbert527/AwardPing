@@ -1120,6 +1120,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isAafcsGraduateFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isAnnPlatoFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isFlasFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1528,6 +1529,38 @@ function isAnnPlatoFellowshipSpillover(host, path, search, sourceSignal, awardSi
     host.endsWith(".trincoll.edu") ||
     host === "1gyhoq479ufd3yna29x7ubjn-wpengine.netdna-ssl.com" ||
     host === "careerlifedesign.trincoll.edu"
+  ) {
+    return true;
+  }
+
+  return true;
+}
+
+function isFlasFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isFlasFellowship =
+    /\bforeign language\b/.test(awardSignal) &&
+    /\barea studies\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal);
+  if (!isFlasFellowship) return false;
+
+  if (host === "iris.ed.gov" && /^\/programs\/flas\/?$/.test(path)) return false;
+
+  if ((host === "ed.gov" || host === "www2.ed.gov") && /^\/programs\/iegpsflasf(?:\/|$)/.test(path)) {
+    return false;
+  }
+
+  if (host === "ed.gov" || host === "www2.ed.gov" || host.endsWith(".ed.gov")) return true;
+
+  if (
+    [
+      "whitehouse.gov",
+      "congress.gov",
+      "federalregister.gov",
+      "idea.ed.gov",
+      "apply07.grants.gov",
+      "grants.gov",
+      "share.ed.gov",
+    ].includes(host)
   ) {
     return true;
   }
