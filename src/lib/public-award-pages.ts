@@ -9,6 +9,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
@@ -169,10 +170,10 @@ async function loadPublicAwardPageData(
   ]);
 
   const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[]);
-  const officialSourceIds = new Set(officialSources.map((source) => source.id));
+  const changeIsFromOpenSource = activeChangeSourceFilter(officialSources);
   const officialChanges = dedupeChangeSummaries(
     ((changes || []) as SharedChangeRow[]).filter((change) =>
-      (!change.shared_award_source_id || officialSourceIds.has(change.shared_award_source_id)) &&
+      changeIsFromOpenSource(change) &&
       isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
       isUsefulChangeForAward({
         awardName: award.name,

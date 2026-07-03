@@ -252,6 +252,45 @@ describe("change summary filtering", () => {
     ).toBe(false);
   });
 
+  it("hides transient site chrome and security-question changes", () => {
+    expect(
+      isUsefulChangeSummary(
+        "A system maintenance notification has been added to the CPE Compliance FAQs page, indicating that access to certain PDF documents will be unavailable on July 3, 2026, due to scheduled maintenance.",
+      ),
+    ).toBe(false);
+    expect(
+      isUsefulChangeSummary(
+        "The website changed the math question required to submit a reference question. It was previously 19 + 19 and is now 18 - 5.",
+      ),
+    ).toBe(false);
+  });
+
+  it("hides event, news, related-award, and past-winner list churn", () => {
+    expect(
+      isUsefulChangeSummary(
+        "The \"Read the latest news\" section has been updated with new articles and events, including a youth webinar and a new award announcement.",
+      ),
+    ).toBe(false);
+    expect(
+      isUsefulChangeSummary(
+        "The 'Related Opportunities' section has been updated. The ACS Graduate Student Success Grant has been removed, and another grant has been added.",
+      ),
+    ).toBe(false);
+    expect(
+      isUsefulChangeSummary(
+        "The \"Meet Past Award Winners\" section has been updated to reflect the 2026 honorees instead of the 2025 honorees.",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps applicant-facing deadline changes even when an event word appears", () => {
+    expect(
+      isUsefulChangeSummary(
+        "The application deadline for the internship webinar scholarship has been extended from June 29, 2026, to July 15, 2026.",
+      ),
+    ).toBe(true);
+  });
+
   it("hides featured-fellow roster rotations", () => {
     expect(
       isUsefulChangeSummary(

@@ -12,6 +12,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
@@ -88,8 +89,10 @@ export default async function SharedAwardDetailPage({ params, searchParams }: Pa
 
   const tracked = Boolean(officeAward);
   const officialSources = filterTrackableOfficialSources(sources || []);
+  const changeIsFromOpenSource = activeChangeSourceFilter(officialSources);
   const officialChanges = dedupeChangeSummaries(
     (changes || []).filter((change) =>
+      changeIsFromOpenSource(change) &&
       isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
         isUsefulChangeForAward({
           awardName: award.name,

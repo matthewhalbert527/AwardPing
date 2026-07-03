@@ -39,6 +39,8 @@ export function isUsefulChangeSummary(
     !looksLikeDocumentMetadataOnlyChange(clean) &&
     !looksLikeFundraisingOnlyChange(clean, changeDetails) &&
     !looksLikeNavigationOnlyChange(clean, changeDetails) &&
+    !looksLikeTransientSiteChromeChange(clean, changeDetails) &&
+    !looksLikeEventOrRelatedContentNoise(clean, changeDetails) &&
     !looksLikeBoilerplateChange(clean)
   );
 }
@@ -433,6 +435,58 @@ function looksLikeBoilerplateChange(summary: string) {
     /(required statements|copyright|all rights reserved|privacy|cookie|newsletter|subscribe)/.test(normalized) ||
     /\b(suite|blvd|boulevard|street|avenue)\b/.test(normalized)
   );
+}
+
+function looksLikeTransientSiteChromeChange(summary: string, changeDetails: unknown) {
+  const text = changeTextForNoiseCheck(summary, changeDetails);
+  if (!text) return false;
+
+  if (/\bmaintenance\b/.test(text) && /\bnotification|scheduled|unavailable|system\b/.test(text)) {
+    return true;
+  }
+  if (/\b(?:security question|math question|captcha|operating hours?|hours have been updated)\b/.test(text)) {
+    return true;
+  }
+
+  if (hasApplicantFacingChangeSignal(stripUnchangedApplicantReferences(text))) return false;
+
+  return /\b(?:system maintenance|scheduled maintenance|maintenance notification|security question|math question|captcha|operating hours?|hours have been updated|access to (?:certain )?(?:pdf )?documents? will be unavailable|access to (?:certain )?(?:pdf )?documents? (?:is|are|will be) unavailable|banner promoting|registration (?:is )?(?:closed|full)|waitlist)\b/.test(
+    text,
+  );
+}
+
+function looksLikeEventOrRelatedContentNoise(summary: string, changeDetails: unknown) {
+  const text = changeTextForNoiseCheck(summary, changeDetails);
+  if (!text) return false;
+  if (hasApplicantFacingChangeSignal(stripUnchangedApplicantReferences(text))) return false;
+
+  return (
+    /\b(?:related opportunities|related awards|similar awards|meet past award winners|past award winners|past recipients|recent recipients|current fellows|featured fellows?|honorees|new individuals listed|committee member listings)\b/.test(
+      text,
+    ) ||
+    /\b(?:read the latest news|latest news|news & events|news and events|upcoming events?|events section|blog entry|press release|webinar|conference|workshop|lecture|information session|event registration)\b/.test(
+      text,
+    )
+  );
+}
+
+function changeTextForNoiseCheck(summary: string, changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  return [
+    summary,
+    details?.reader_summary,
+    details?.advisor_impact,
+    details?.section,
+    details?.change_type,
+    details?.structured_diff.likely_section,
+    details?.before,
+    details?.after,
+    ...(details?.structured_diff.added_text || []),
+    ...(details?.structured_diff.removed_text || []),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function looksLikeAnimatedCounterChange(summary: string) {

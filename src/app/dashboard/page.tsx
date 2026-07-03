@@ -12,6 +12,7 @@ import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Json } from "@/lib/database.types";
 import { getOnboardingStatus } from "@/lib/onboarding";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
@@ -32,6 +33,12 @@ type SharedChange = {
   summary: string;
   change_details: Json;
   detected_at: string;
+};
+
+type SharedSourceStatus = {
+  id: string;
+  url: string;
+  admin_review_status: "open" | "review_later";
 };
 
 type Props = {
@@ -76,16 +83,35 @@ export default async function DashboardPage({ searchParams }: Props) {
   const officeAwardRows = (officeAwards || []) as OfficeAward[];
   const sharedChangeRows = (sharedChanges || []) as SharedChange[];
   const sharedAwardIds = [...new Set(sharedChangeRows.map((change) => change.shared_award_id))];
-  const unreadChangeIds = hasSupabaseAdminConfig()
-    ? await unreadSharedChangeIdsForUser(user.id, sharedChangeRows).catch(() => new Set<string>())
-    : new Set<string>();
+  const sourceIds = [
+    ...new Set(
+      sharedChangeRows
+        .map((change) => change.shared_award_source_id)
+        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+    ),
+  ];
 
-  const [{ data: sharedAwards }] =
+  const [{ data: sharedAwards }, { data: sharedSources }] =
     await Promise.all([
       sharedAwardIds.length
         ? supabase.from("shared_awards").select("id, name, slug").in("id", sharedAwardIds)
         : Promise.resolve({ data: [] }),
+      sourceIds.length
+        ? supabase
+            .from("shared_award_sources")
+            .select("id, url, admin_review_status")
+            .in("id", sourceIds)
+        : Promise.resolve({ data: [] }),
     ]);
+  const changeIsFromOpenSource = activeChangeSourceFilter(
+    ((sharedSources || []) as SharedSourceStatus[]).filter(
+      (source) => source.admin_review_status === "open",
+    ),
+  );
+  const activeSharedChangeRows = sharedChangeRows.filter(changeIsFromOpenSource);
+  const unreadChangeIds = hasSupabaseAdminConfig()
+    ? await unreadSharedChangeIdsForUser(user.id, activeSharedChangeRows).catch(() => new Set<string>())
+    : new Set<string>();
 
   const officeSharedAwardIds = new Set(
     officeAwardRows
@@ -110,7 +136,7 @@ export default async function DashboardPage({ searchParams }: Props) {
     ]),
   );
   const sharedRows: UpdateFeedRow[] = dedupeChangeSummaries(
-    sharedChangeRows.filter((change) => {
+    activeSharedChangeRows.filter((change) => {
       const awardName =
         officeAwardNameBySharedId.get(change.shared_award_id) ||
         sharedAwardNameById.get(change.shared_award_id);

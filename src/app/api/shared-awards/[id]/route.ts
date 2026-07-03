@@ -6,6 +6,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { getOfficeContext } from "@/lib/offices";
 import {
@@ -97,8 +98,10 @@ export async function GET(_request: Request, { params }: Props) {
       .filter((sourceId): sourceId is string => Boolean(sourceId)),
   );
   const sources = filterTrackableOfficialSources(sharedSources || []);
+  const changeIsFromOpenSource = activeChangeSourceFilter(sources);
   const changes = dedupeChangeSummaries(
     (sharedChanges || []).filter((change) =>
+      changeIsFromOpenSource(change) &&
       isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
       isUsefulChangeForAward({
         awardName: sharedAward.name,

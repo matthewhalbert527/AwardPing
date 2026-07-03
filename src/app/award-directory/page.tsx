@@ -11,6 +11,7 @@ import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, getOfficeContext } from "@/lib/offices";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -26,7 +27,16 @@ type SharedAwardDirectoryRow = Pick<
 >;
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
-  "shared_award_id" | "source_url" | "source_page_type" | "summary" | "change_details"
+  | "shared_award_id"
+  | "shared_award_source_id"
+  | "source_url"
+  | "source_page_type"
+  | "summary"
+  | "change_details"
+>;
+type SharedSourceDirectoryRow = Pick<
+  Database["public"]["Tables"]["shared_award_sources"]["Row"],
+  "id" | "url" | "admin_review_status"
 >;
 
 export default async function AwardDirectoryPage() {
@@ -89,14 +99,33 @@ const getCachedSharedCatalog = unstable_cache(
       fetchAllSharedAwards(admin),
       admin
         .from("shared_award_change_events")
-        .select("shared_award_id, source_url, source_page_type, summary, change_details")
+        .select("shared_award_id, shared_award_source_id, source_url, source_page_type, summary, change_details")
         .order("detected_at", { ascending: false })
         .limit(1000),
     ]);
+    const sharedChangeRows = (sharedChanges || []) as SharedChangeDirectoryRow[];
+    const sourceIds = [
+      ...new Set(
+        sharedChangeRows
+          .map((change) => change.shared_award_source_id)
+          .filter((sourceId): sourceId is string => Boolean(sourceId)),
+      ),
+    ];
+    const { data: sourceRows } = sourceIds.length
+      ? await admin
+          .from("shared_award_sources")
+          .select("id, url, admin_review_status")
+          .in("id", sourceIds)
+      : { data: [] as SharedSourceDirectoryRow[] };
+    const changeIsFromOpenSource = activeChangeSourceFilter(
+      ((sourceRows || []) as SharedSourceDirectoryRow[]).filter(
+        (source) => source.admin_review_status === "open",
+      ),
+    );
 
     return mapSharedAwards(
       sharedAwards,
-      groupBySharedAwardId(sharedChanges || []),
+      groupBySharedAwardId(sharedChangeRows.filter(changeIsFromOpenSource)),
       new Set<string>(),
     );
   },

@@ -6,6 +6,7 @@ import {
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -25,6 +26,11 @@ type SharedChangeRow = Pick<
 type SharedAwardLookupRow = Pick<
   Database["public"]["Tables"]["shared_awards"]["Row"],
   "id" | "name" | "slug"
+>;
+
+type SharedSourceLookupRow = Pick<
+  Database["public"]["Tables"]["shared_award_sources"]["Row"],
+  "id" | "url" | "admin_review_status"
 >;
 
 export type LiveUpdateItem = {
@@ -49,22 +55,41 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
     .from("shared_award_change_events")
     .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
     .order("detected_at", { ascending: false })
-    .limit(Math.max(limit * 4, 80));
+    .limit(Math.max(limit * 8, 160));
 
   if (!changes?.length) return [];
 
   const changeRows = changes as SharedChangeRow[];
   const awardIds = [...new Set(changeRows.map((change) => change.shared_award_id))];
+  const sourceIds = [
+    ...new Set(
+      changeRows
+        .map((change) => change.shared_award_source_id)
+        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+    ),
+  ];
   const { data: awards } = awardIds.length
     ? await admin.from("shared_awards").select("id, name, slug").in("id", awardIds).eq("status", "active")
     : { data: [] as SharedAwardLookupRow[] };
+  const { data: sources } = sourceIds.length
+    ? await admin
+        .from("shared_award_sources")
+        .select("id, url, admin_review_status")
+        .in("id", sourceIds)
+    : { data: [] as SharedSourceLookupRow[] };
   const awardById = new Map((awards || []).map((award) => [award.id, award]));
+  const changeIsFromOpenSource = activeChangeSourceFilter(
+    ((sources || []) as SharedSourceLookupRow[]).filter(
+      (source) => source.admin_review_status === "open",
+    ),
+  );
 
   return dedupeChangeSummaries(
     changeRows.filter((change) => {
       const award = awardById.get(change.shared_award_id);
       return (
         Boolean(award) &&
+        changeIsFromOpenSource(change) &&
         isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
         isUsefulChangeForAward({
           awardName: award?.name,

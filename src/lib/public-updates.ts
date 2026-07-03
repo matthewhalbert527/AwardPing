@@ -20,6 +20,7 @@ import {
   encryptedEmailFields,
   personalDataLookupHash,
 } from "@/lib/personal-data";
+import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type PublicSubscriberRow =
@@ -32,7 +33,19 @@ type SharedAwardRow = Pick<
 >;
 type SharedChangeRow = Pick<
   Database["public"]["Tables"]["shared_award_change_events"]["Row"],
-  "id" | "shared_award_id" | "source_title" | "source_url" | "summary" | "change_details" | "detected_at"
+  | "id"
+  | "shared_award_id"
+  | "shared_award_source_id"
+  | "source_title"
+  | "source_url"
+  | "source_page_type"
+  | "summary"
+  | "change_details"
+  | "detected_at"
+>;
+type SharedSourceStatusRow = Pick<
+  Database["public"]["Tables"]["shared_award_sources"]["Row"],
+  "id" | "url" | "admin_review_status"
 >;
 
 export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) {
@@ -344,10 +357,10 @@ async function loadPublicDigestChanges(date: Date) {
   const supabase = createSupabaseAdminClient();
   const { data: changes, error } = await supabase
     .from("shared_award_change_events")
-    .select("id, shared_award_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
+    .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
     .gte("detected_at", publicDigestSince(date))
     .order("detected_at", { ascending: false })
-    .limit(80);
+    .limit(240);
 
   if (error) {
     throw error;
@@ -357,23 +370,47 @@ async function loadPublicDigestChanges(date: Date) {
     return [];
   }
 
-  const awardIds = [
-    ...new Set((changes as SharedChangeRow[]).map((change) => change.shared_award_id)),
+  const changeRows = changes as SharedChangeRow[];
+  const awardIds = [...new Set(changeRows.map((change) => change.shared_award_id))];
+  const sourceIds = [
+    ...new Set(
+      changeRows
+        .map((change) => change.shared_award_source_id)
+        .filter((sourceId): sourceId is string => Boolean(sourceId)),
+    ),
   ];
-  const { data: awards, error: awardsError } = await supabase
-    .from("shared_awards")
-    .select("id, name")
-    .in("id", awardIds);
+  const [{ data: awards, error: awardsError }, { data: sources, error: sourcesError }] =
+    await Promise.all([
+      supabase.from("shared_awards").select("id, name").in("id", awardIds),
+      sourceIds.length
+        ? supabase
+            .from("shared_award_sources")
+            .select("id, url, admin_review_status")
+            .in("id", sourceIds)
+        : Promise.resolve({ data: [] as SharedSourceStatusRow[], error: null }),
+    ]);
 
   if (awardsError) {
     throw awardsError;
+  }
+  if (sourcesError) {
+    throw sourcesError;
   }
 
   const awardNameById = new Map(
     ((awards || []) as SharedAwardRow[]).map((award) => [award.id, award.name]),
   );
+  const changeIsFromOpenSource = activeChangeSourceFilter(
+    ((sources || []) as SharedSourceStatusRow[]).filter(
+      (source) => source.admin_review_status === "open",
+    ),
+  );
 
-  return buildPublicDigestChanges(changes as PublicDigestCandidate[], awardNameById, 12);
+  return buildPublicDigestChanges(
+    (changeRows as PublicDigestCandidate[]).filter(changeIsFromOpenSource),
+    awardNameById,
+    12,
+  );
 }
 
 function cryptoRandomUuid() {

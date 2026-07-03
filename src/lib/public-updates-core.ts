@@ -10,6 +10,7 @@ import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 export type PublicDigestCandidate = {
   id: string;
   shared_award_id: string;
+  shared_award_source_id?: string | null;
   source_title: string | null;
   source_url: string;
   source_page_type?: string | null;
