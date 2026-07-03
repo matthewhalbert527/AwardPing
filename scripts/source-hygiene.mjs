@@ -727,7 +727,72 @@ function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, rea
   if (isNlmNcbiFellowshipSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isCampusHelpdeskSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isSshrcImmigrationSpillover(host, cleanPath, directSignal, awardSignal)) return true;
+  if (isNasaAerospaceHistoryFellowshipSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
   if (isHighVolumeAwardCrawlerSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
+
+  return false;
+}
+
+function isNasaAerospaceHistoryFellowshipSpillover(host, path, search, directSignal, awardSignal) {
+  const isAward =
+    /\bnasa\b/.test(awardSignal) &&
+    /\baerospace history\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal);
+  if (!isAward) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+
+  if (host === "nasa.gov" && /^\/history\/history-office\/fellowships\/?$/.test(path)) {
+    return false;
+  }
+  if (host === "historians.org" && /^\/award-grant\/fellowships-in-aerospace-history\/?$/.test(path)) {
+    return false;
+  }
+  if (
+    host === "historyoftechnology.org" &&
+    /^\/awards\/nasa-fellowship-in-the-history-of-space-technology\/?$/.test(path)
+  ) {
+    return false;
+  }
+  if (host === "hssonline.org" && /^\/page\/nasafellowship\/?$/.test(path)) {
+    return false;
+  }
+
+  if (
+    host === "nasa.gov" ||
+    host.endsWith(".nasa.gov") ||
+    [
+      "data.nasa.gov",
+      "intern.nasa.gov",
+      "nasa.sharepoint.com",
+      "pds.mcp.nasa.gov",
+      "stemgateway.nasa.gov",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  if (
+    [
+      "federalregister.gov",
+      "forum.earthdata.nasa.gov",
+      "gcc02.safelinks.protection.outlook.com",
+      "github.com",
+      "ieeexplore.ieee.org",
+      "issnationallab.org",
+      "opendap.org",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  if (
+    /\b(?:international space station|iss|artemis|earthdata|planetary data|app?eears|opendap|ntrs|pathways|internship|astronaut|brand|media usage|merchandise|grant cooperative agreement|public access|pubspace|science data|station benefits|smd information policy|deia executive orders)\b/.test(
+      sourceSignal,
+    )
+  ) {
+    return true;
+  }
 
   return false;
 }

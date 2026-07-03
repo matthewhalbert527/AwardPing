@@ -1681,4 +1681,89 @@ describe("source hygiene classifier", () => {
       });
     }
   });
+
+  it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
+    const award_name =
+      "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";
+
+    for (const example of [
+      {
+        url: "https://www.nasa.gov/history/history-office/fellowships/",
+        title: "NASA History Office Fellowships",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.historians.org/award-grant/fellowships-in-aerospace-history/",
+        title: "Fellowships in Aerospace History",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.historyoftechnology.org/awards/nasa-fellowship-in-the-history-of-space-technology/",
+        title: "NASA Fellowship in the History of Space Technology",
+        page_type: "homepage",
+      },
+      {
+        url: "https://hssonline.org/page/nasafellowship",
+        title: "NASA Fellowship in the History of Space Science",
+        page_type: "homepage",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.nasa.gov/international-space-station/",
+        title: "International Space Station",
+        page_type: "other",
+      },
+      {
+        url: "http://www.nasa.gov/artemis",
+        title: "Artemis",
+        page_type: "other",
+      },
+      {
+        url: "https://www.nasa.gov/history/history-publications-and-resources/aeronautics-and-space-report-of-the-president/",
+        title: "Aeronautics and Space Report of the President",
+        page_type: "other",
+      },
+      {
+        url: "https://www.nasa.gov/learning-resources/internship-programs/",
+        title: "Internship Programs",
+        page_type: "application",
+      },
+      {
+        url: "https://stemgateway.nasa.gov/public/s/explore-opportunities",
+        title: "Click Here to Explore Our Opportunities and Apply",
+        page_type: "application",
+      },
+      {
+        url: "https://www.earthdata.nasa.gov/data/tools/appeears",
+        title: "Application for Extracting and Exploring Analysis Ready Samples",
+        page_type: "application",
+      },
+      {
+        url: "https://pds.mcp.nasa.gov/portal/instruments/urn--nasa--pds--context--instrument--eng---co/data",
+        title: "Cassini Orbiter Spacecraft Sensors",
+        page_type: "application",
+      },
+      {
+        url: "https://nasa.sharepoint.com/sites/GrantsPolicyandCompliance/SiteAssets/SitePages/Regulations-and-Guidance/3617002291GCAM---March-2025.pdf?web=1",
+        title: "NASA Grant Cooperative Agreement Manual",
+        page_type: "pdf",
+      },
+      {
+        url: "https://github.com/nasa/AppEEARS-Data-Resources/blob/main/guides/How-to-bulk-download-AppEEARS-outputs.md",
+        title: "How to bulk download AppEEARS outputs",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
 });
