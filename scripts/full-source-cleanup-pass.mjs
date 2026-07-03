@@ -28,6 +28,8 @@ const titleConcurrency = positiveInt(args["title-concurrency"], 8);
 const targetAwardIds = csvList(args["award-ids"]);
 const targetAwardSlugs = csvList(args["award-slugs"]);
 const hasTargetAwards = targetAwardIds.length > 0 || targetAwardSlugs.length > 0;
+const sourcePageSize = positiveInt(args["source-page-size"], hasTargetAwards ? 50 : 1000);
+const minSourcePageSize = positiveInt(args["min-source-page-size"], hasTargetAwards ? 5 : 10);
 const outputPrefix =
   args["output-prefix"] ||
   join(root, "reports", `full-source-cleanup-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -45,7 +47,7 @@ const supabase = createSupabaseServiceClient(
 );
 
 console.log(
-  `Full source cleanup; apply=${apply}; safety=${safetyMode}; moveReviewLater=${moveReviewLater}; cleanupTitles=${cleanupTitles}; addMissingHomepages=${addMissingHomepages}; targetAwardIds=${targetAwardIds.length}; targetAwardSlugs=${targetAwardSlugs.length}.`,
+  `Full source cleanup; apply=${apply}; safety=${safetyMode}; moveReviewLater=${moveReviewLater}; cleanupTitles=${cleanupTitles}; addMissingHomepages=${addMissingHomepages}; targetAwardIds=${targetAwardIds.length}; targetAwardSlugs=${targetAwardSlugs.length}; sourcePageSize=${sourcePageSize}; minSourcePageSize=${minSourcePageSize}.`,
 );
 
 const awards = await loadActiveAwards({ ids: targetAwardIds, slugs: targetAwardSlugs });
@@ -54,7 +56,11 @@ if (hasTargetAwards && awards.length === 0) {
 }
 const scopedAwardIds = awards.map((award) => award.id);
 const [openSourceRows, homepageSourceRows] = await Promise.all([
-  loadActiveAwardSources({ reviewStatus: "open", awardIds: scopedAwardIds }),
+  loadActiveAwardSources({
+    reviewStatus: "open",
+    awardIds: scopedAwardIds,
+    filterReviewStatusInDatabase: !hasTargetAwards,
+  }),
   addMissingHomepages
     ? loadActiveAwardHomepageKeys({ awardIds: scopedAwardIds })
     : Promise.resolve([]),
@@ -590,21 +596,25 @@ async function loadActiveAwardSources(options = {}) {
       let query = supabase
         .from("shared_award_sources")
         .select(
-          "id,shared_award_id,url,title,display_title,page_description,page_type,reason,last_error,admin_review_status",
+          "id,shared_award_id,url,title,display_title,page_description,page_type,reason,last_error,admin_review_status,created_at",
         )
         .eq("shared_award_id", options.awardId);
-      if (options.reviewStatus) {
+      if (options.reviewStatus && options.filterReviewStatusInDatabase !== false) {
         query = query.eq("admin_review_status", options.reviewStatus);
       }
       return query;
-    });
+    }).then((rows) =>
+      options.reviewStatus && options.filterReviewStatusInDatabase === false
+        ? rows.filter((row) => row.admin_review_status === options.reviewStatus)
+        : rows,
+    );
   }
 
   return loadSourceRowsById(() => {
     let query = supabase
       .from("shared_award_sources")
       .select(
-        "id,shared_award_id,url,title,display_title,page_description,page_type,reason,last_error,admin_review_status",
+        "id,shared_award_id,url,title,display_title,page_description,page_type,reason,last_error,admin_review_status,created_at",
       );
     if (options.reviewStatus) {
       query = query.eq("admin_review_status", options.reviewStatus);
@@ -632,7 +642,7 @@ async function loadActiveAwardHomepageKeys(options = {}) {
     return loadSourceRowsForSingleAward(() =>
       supabase
         .from("shared_award_sources")
-        .select("id,shared_award_id,url,admin_review_status")
+        .select("id,shared_award_id,url,admin_review_status,created_at")
         .eq("shared_award_id", options.awardId),
     );
   }
@@ -640,7 +650,7 @@ async function loadActiveAwardHomepageKeys(options = {}) {
   return loadSourceRowsById(() => {
     return supabase
       .from("shared_award_sources")
-      .select("id,shared_award_id,url,admin_review_status");
+      .select("id,shared_award_id,url,admin_review_status,created_at");
   });
 }
 
@@ -667,7 +677,7 @@ async function loadPaged(makeQuery) {
 
 async function loadSourceRowsById(makeQuery) {
   const rows = [];
-  const pageSize = 1000;
+  const pageSize = sourcePageSize;
   let lastId = null;
 
   for (;;) {
@@ -688,17 +698,39 @@ async function loadSourceRowsById(makeQuery) {
 
 async function loadSourceRowsForSingleAward(makeQuery) {
   const rows = [];
-  const pageSize = 1000;
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await makeQuery()
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + pageSize - 1);
-    if (error) throw new Error(`Supabase source load failed: ${error.message}`);
+  let pageSize = sourcePageSize;
+  let lastCreatedAt = null;
+  for (;;) {
+    let query = makeQuery().order("created_at", { ascending: true }).limit(pageSize);
+    if (lastCreatedAt) {
+      query = query.gt("created_at", lastCreatedAt);
+    }
+    const { data, error } = await query;
+    if (error) {
+      if (isStatementTimeout(error) && pageSize > minSourcePageSize) {
+        pageSize = Math.max(minSourcePageSize, Math.floor(pageSize / 2));
+        console.warn(
+          `Supabase source page timed out; retrying cursor with sourcePageSize=${pageSize}.`,
+        );
+        continue;
+      }
+      throw new Error(`Supabase source load failed: ${error.message}`);
+    }
     rows.push(...(data || []));
     if (!data || data.length < pageSize) break;
+    const nextCreatedAt = data.at(-1)?.created_at;
+    if (!nextCreatedAt || nextCreatedAt === lastCreatedAt) {
+      throw new Error("Supabase source load failed: targeted pagination cursor did not advance");
+    }
+    lastCreatedAt = nextCreatedAt;
   }
   return rows;
+}
+
+function isStatementTimeout(error) {
+  return String(error?.message || "")
+    .toLowerCase()
+    .includes("statement timeout");
 }
 
 function renderCleanupCsv(cleanupRows, manualRows, titleRows, homepageRows, awardsById) {
