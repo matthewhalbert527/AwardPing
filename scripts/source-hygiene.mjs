@@ -1125,6 +1125,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isAhaResearchFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isEisenhowerTransportationFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isGfoaScholarshipsSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isRhodesUniversityPostdoctoralFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1708,6 +1709,28 @@ function isGfoaScholarshipsSpillover(host, path, search, sourceSignal, awardSign
 
   if (host === "gfoa-craftcms.files.svdcdn.com") {
     return !/\bscholarships?\b/.test(`${path} ${search}`);
+  }
+
+  return true;
+}
+
+function isRhodesUniversityPostdoctoralFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isRhodesUniversityPostdoc =
+    /\brhodes university\b/.test(awardSignal) &&
+    /\bpostdoctoral\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal);
+  if (!isRhodesUniversityPostdoc) return false;
+
+  const normalizedPath = path.replace(/\/{2,}/g, "/");
+
+  if (host === "ru.ac.za") {
+    return ![
+      "/research/postdoctoralfellows/",
+      "/researchgateway/postdoctoralfellows/",
+      "/media/rhodesuniversity/content/research/documents/postdoctoral/2026_cssr_postdoc_application_form.docx",
+      "/media/rhodesuniversity/content/research/documents/postdoctoral/2026_ru_postdoc_application_form.docx",
+      "/media/rhodesuniversity/content/research/documents/postdoctoral/ru_post-doctoral_2nd_year_renewal_application.doc",
+    ].includes(normalizedPath);
   }
 
   return true;

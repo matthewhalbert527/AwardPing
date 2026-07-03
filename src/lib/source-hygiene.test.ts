@@ -2634,6 +2634,80 @@ describe("source hygiene classifier", () => {
     });
   });
 
+  it("rejects Rhodes University whole-site spillover while keeping postdoctoral fellowship sources", () => {
+    const award_name = "Rhodes University (South Africa) - Postdoctoral Fellowship";
+
+    for (const example of [
+      {
+        url: "https://www.ru.ac.za/researchgateway//postdoctoralfellows/",
+        title: "Postdoctoral Research Fellowships",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.ru.ac.za/media/rhodesuniversity/content/research/documents/postdoctoral/2026_CSSR_Postdoc_Application_Form.docx",
+        title: "CSSR Postdoctoral Application Form",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.ru.ac.za/media/rhodesuniversity/content/research/documents/postdoctoral/2026_RU_Postdoc_Application_Form.docx",
+        title: "RU Postdoc Application Form",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.ru.ac.za/media/rhodesuniversity/content/research/documents/postdoctoral/RU_Post-Doctoral_2nd_Year_Renewal_Application.doc",
+        title: "RU Postdoc Renewal Application",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.ru.ac.za/admissiongateway/",
+        title: "Apply for Admissions",
+        page_type: "application",
+      },
+      {
+        url: "https://www.ru.ac.za/researchgateway/postgraduates/funding/",
+        title: "Postgraduate Funding",
+        page_type: "other",
+      },
+      {
+        url: "https://www.ru.ac.za/criticalstudies/",
+        title: "Critical Studies in Sexualities and Reproduction",
+        page_type: "eligibility",
+      },
+      {
+        url: "https://www.ru.ac.za/media/rhodesuniversity/content/criticalstudiesinsexualitiesandreproduction/documents/CSSR_-_MSSA_Study_Research_Toolkit_-_2020.pdf",
+        title: "CSSR/MSSA research toolkit",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.ru.ac.za/media/rhodesuniversity/content/research/documents/funding/Application_Guide_for_SARAO_Doctoral_Scholarships_for_2026.pdf",
+        title: "Application Guide for SARAO Doctoral Scholarships",
+        page_type: "pdf",
+      },
+      {
+        url: "https://ross.ru.ac.za/ugadmissions",
+        title: "Online Application",
+        page_type: "application",
+      },
+      {
+        url: "https://www.assaf.org.za/wp-content/uploads/2026/03/Call-for-Nominations-for-SAYAS-new-Members-2026.pdf",
+        title: "SAYAS new members call",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";
