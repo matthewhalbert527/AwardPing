@@ -1119,6 +1119,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isWilsonKennanShortTermGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isAafcsGraduateFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isAnnPlatoFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1508,6 +1509,28 @@ function isAafcsGraduateFellowshipSpillover(host, path, search, sourceSignal, aw
 
   if (host.endsWith(".aafcs.org")) return true;
   if (host === "higherlogicdownload.s3.amazonaws.com") return true;
+
+  return true;
+}
+
+function isAnnPlatoFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isAnnPlatoFellowship =
+    /\bann plato\b/.test(awardSignal) &&
+    /\btrinity college\b/.test(awardSignal) &&
+    /\b(?:postdoctoral|post mfa|mfa)\b/.test(awardSignal);
+  if (!isAnnPlatoFellowship) return false;
+
+  if (host === "trincoll.edu") {
+    return !/^\/dean-of-faculty\/faculty-development\/faculty-diversity\/ann-plato\/?$/.test(path);
+  }
+
+  if (
+    host.endsWith(".trincoll.edu") ||
+    host === "1gyhoq479ufd3yna29x7ubjn-wpengine.netdna-ssl.com" ||
+    host === "careerlifedesign.trincoll.edu"
+  ) {
+    return true;
+  }
 
   return true;
 }

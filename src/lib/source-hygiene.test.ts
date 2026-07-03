@@ -2170,6 +2170,57 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects Trinity crawler spillover while keeping the Ann Plato fellowship page", () => {
+    const award_name = "Trinity College - Ann Plato Postdoctoral/Post-MFA Fellowship";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.trincoll.edu/dean-of-faculty/faculty-development/faculty-diversity/ann-plato/",
+        title: "Ann Plato Postdoctoral/Post-MFA Fellowship",
+        page_type: "homepage",
+        award_name,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    for (const example of [
+      {
+        url: "https://www.trincoll.edu/admissions/apply/",
+        title: "Admissions Application",
+        page_type: "application",
+      },
+      {
+        url: "https://bulletin.trincoll.edu/programs/AHIS/requirements-krhha",
+        title: "Art history major requirements",
+        page_type: "requirements",
+      },
+      {
+        url: "https://forms.trincoll.edu/dofo/finalist-search-form-form-3/",
+        title: "Finalist Search Form",
+        page_type: "application",
+      },
+      {
+        url: "https://www.trincoll.edu/dean-of-faculty/faculty-development/faculty-hiring/",
+        title: "Faculty Hiring",
+        page_type: "application",
+      },
+      {
+        url: "https://www.trincoll.edu/dean-of-faculty/wp-content/uploads/sites/52/2020/10/BiasBrochure.pdf",
+        title: "Reviewing Applicants: Research on Bias and Assumptions",
+        page_type: "pdf",
+      },
+      {
+        url: "https://internet3.trincoll.edu/FacMan/FacultyManual.pdf",
+        title: "Faculty Manual",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";
