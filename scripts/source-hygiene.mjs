@@ -321,6 +321,12 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   if (isMarquetteMitchemInstitutionalSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
     return true;
   }
+  if (isRochesterFrederickDouglassInstitutionalSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
+  if (isOxfordPershingSquareSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
   if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(cleanPath)) return true;
   if (host === "ncbi.nlm.nih.gov" && /^\/medline\/publisherportal(?:\/|$)/.test(cleanPath)) return true;
   if (isNationalAcademiesSpillover(host, cleanPath, cleanSearch)) return true;
@@ -497,6 +503,64 @@ function isMarquetteMitchemInstitutionalSpillover(host, path, search, directSign
   }
 
   return false;
+}
+
+function isRochesterFrederickDouglassInstitutionalSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  if (!/\brochester\b/.test(awardSignal)) return false;
+  if (!/\bfrederick douglass\b/.test(awardSignal)) return false;
+  if (!/\bpostdoctoral\b/.test(awardSignal)) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  if (/\/aas\/fellowships\/postdoctoral\.html$/.test(path)) return false;
+  if (/\bfrederick douglass\b/.test(sourceSignal) && /\bpostdoctoral\b/.test(sourceSignal)) {
+    return false;
+  }
+
+  if (
+    host === "rochester.edu" ||
+    host.endsWith(".rochester.edu") ||
+    [
+      "docs.google.com",
+      "help.liaisonedu.com",
+      "irs.gov",
+      "nasfaa.org",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isOxfordPershingSquareSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  if (!/\boxford\b/.test(awardSignal)) return false;
+  if (!/\bpershing square\b/.test(awardSignal)) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  const isSaidHost = host === "sbs.ox.ac.uk" || host === "sbs.oxford.edu";
+  const isOxfordHost = host === "ox.ac.uk" || host.endsWith(".ox.ac.uk") || host === "sbs.oxford.edu";
+
+  if (!isOxfordHost) return false;
+  if (/\/oxford-pershing-square-[^/]*profiles(?:\/|$)/.test(path)) return true;
+
+  if (
+    isSaidHost &&
+    (
+      path === "/1plus1" ||
+      /^\/programmes\/degrees\/1plus1\/pershing-square-scholarship\/?$/.test(path) ||
+      /^\/oxford-experience\/scholarships-and-funding\/oxford-pershing-square-(?:graduate-scholarships|scholarship)\/?$/.test(path)
+    )
+  ) {
+    return false;
+  }
+
+  if (isSaidHost && /\bpershing square\b/.test(sourceSignal) && !/\bprofiles?\b/.test(sourceSignal)) {
+    return false;
+  }
+
+  return true;
 }
 
 function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, reason, awardName) {

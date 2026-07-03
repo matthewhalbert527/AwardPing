@@ -1431,4 +1431,95 @@ describe("source hygiene classifier", () => {
       });
     }
   });
+
+  it("rejects Rochester institutional spillover while keeping the Frederick Douglass postdoctoral page", () => {
+    const award_name =
+      "University of Rochester - Frederick Douglass Institute for African & African-American Studies - Postdoctoral Fellowship";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.sas.rochester.edu/aas/fellowships/postdoctoral.html",
+        title: "Postdoctoral Fellowship Overview",
+        page_type: "homepage",
+        award_name,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    for (const example of [
+      {
+        url: "https://www.rochester.edu/college/gradstudies/prospective/apply.html",
+        title: "How to Apply",
+        page_type: "application",
+      },
+      {
+        url: "https://www.sas.rochester.edu/aas/assets/pdf/PARTI-FDIInternalFacultyFellowship-applicant.pdf",
+        title: "Faculty Fellowship Applicant Form",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.sas.rochester.edu/aas/undergraduate/douglass-prize.html",
+        title: "Frederick Douglass Prize",
+        page_type: "other",
+      },
+      {
+        url: "https://www.urmc.rochester.edu/education/md/undergraduate-programs.cfm",
+        title: "Summer Undergraduate Research Fellowship (SURF)",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
+  it("rejects Oxford institutional spillover while keeping Pershing Square scholarship pages", () => {
+    const award_name = "Oxford Pershing Square Graduate Scholarship";
+
+    for (const example of [
+      {
+        url: "https://www.sbs.ox.ac.uk/oxford-experience/scholarships-and-funding/oxford-pershing-square-graduate-scholarships",
+        title: "Oxford Pershing Square Graduate Scholarships",
+        page_type: "homepage",
+      },
+      {
+        url: "http://www.sbs.oxford.edu/1plus1",
+        title: "Oxford 1+1 MBA",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.ox.ac.uk/admissions/graduate",
+        title: "Graduate admissions",
+        page_type: "application",
+      },
+      {
+        url: "https://www.sbs.ox.ac.uk/oxford-experience/scholarships-and-funding/laidlaw-scholarships",
+        title: "Laidlaw Scholarships",
+        page_type: "other",
+      },
+      {
+        url: "https://www.sbs.ox.ac.uk/oxford-experience/scholarships-and-funding/oxford-pershing-square-scholarship/oxford-pershing-square-graduate-scholarships-profiles",
+        title: "Oxford Pershing Square Graduate Scholarships profiles",
+        page_type: "other",
+      },
+      {
+        url: "https://www.physics.ox.ac.uk/study/undergraduates/how-apply",
+        title: "How to Apply",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
 });
