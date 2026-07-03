@@ -1313,4 +1313,122 @@ describe("source hygiene classifier", () => {
       }),
     ).toMatchObject({ action: "review_later", reason: "non_award_source" });
   });
+
+  it("rejects UAlberta institutional spillover while keeping the Killam/Notley homepage", () => {
+    const award_name = "University of Alberta - Killam and Notley Postdoctoral Fellowships";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.ualberta.ca/research/research-support/post-doctoral-office/awards-funding/u-of-a-fellowships/index.html",
+        title: "Homepage",
+        page_type: "homepage",
+        award_name,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    for (const example of [
+      {
+        url: "https://calendar.ualberta.ca/content.php?catoid=69&navoid=20884",
+        title: "Academic Schedule",
+        page_type: "deadline",
+      },
+      {
+        url: "https://docs.google.com/document/d/127klE0AU6e3FSUcaZopkS5OkRra9gURXAu20YSZqX1o/template/preview",
+        title: "Noise Management Program",
+        page_type: "pdf",
+      },
+      {
+        url: "https://apply.ualberta.ca/account/register?r=https%3a%2f%2fapply.ualberta.ca%2fapply%2f",
+        title: "Create an account",
+        page_type: "application",
+      },
+      {
+        url: "https://www.ualberta.ca/admissions-programs/exchange-programs/incoming-exchange-application-guide/admission-requirements/possible-exchange-programs.html",
+        title: "Admission Requirements",
+        page_type: "eligibility",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
+  it("rejects NASA and NSF system pages that are not award sources", () => {
+    const examples = [
+      {
+        url: "https://www.nasa.gov/open/data.html",
+        title: ".gov/Open/Data",
+        page_type: "deadline",
+        award_name: "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "http://materialsinspace.nasa.gov/",
+        title: "Materials In Space",
+        page_type: "requirements",
+        award_name: "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "http://science.nasa.gov/oss-guidance",
+        title: "OSS Guidance",
+        page_type: "eligibility",
+        award_name: "Future Investigators in NASA Earth and Space Science and Technology",
+      },
+      {
+        url: "http://research.gov/common/attachment/Desktop/NSFProjectReportTemplate.docx",
+        title: "Download a project report template (DOCX).",
+        page_type: "pdf",
+        award_name: "National Science Foundation (NSF) - Postdoctoral Research Fellowships in Biology (PRFB)",
+      },
+    ];
+
+    for (const example of examples) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
+  it("rejects Marquette institutional spillover while keeping the Mitchem homepage", () => {
+    const award_name = "Marquette University - Mitchem Dissertation Completion Fellowships";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "http://www.marquette.edu/provost/mitchem-dissertation-program.shtml",
+        title: "Mitchem Dissertation Fellowship Program",
+        page_type: "homepage",
+        award_name,
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    for (const example of [
+      {
+        url: "https://admissions.marquette.edu/apply/",
+        title: "Apply to Marquette",
+        page_type: "application",
+      },
+      {
+        url: "https://bulletin.marquette.edu/business-administration/business-administration.pdf",
+        title: "2025-2026 Bulletin",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.marquette.edu/provost/policies-and-guidelines.php",
+        title: "Policies and Guidelines",
+        page_type: "requirements",
+      },
+      {
+        url: "https://studentaid.gov/sites/default/files/attestation-and-validation-of-identity.pdf",
+        title: "Attestation & Validation of Identity",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
 });

@@ -315,16 +315,28 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   if (isAlbertaCareerOrStudentAidSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
     return true;
   }
+  if (isAlbertaKillamNotleyInstitutionalSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
+  if (isMarquetteMitchemInstitutionalSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
   if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(cleanPath)) return true;
   if (host === "ncbi.nlm.nih.gov" && /^\/medline\/publisherportal(?:\/|$)/.test(cleanPath)) return true;
   if (isNationalAcademiesSpillover(host, cleanPath, cleanSearch)) return true;
   if (host === "fastlane.nsf.gov" && cleanPath === "/fastlane.jsp") return true;
+  if (host === "research.gov" && /^\/common\/attachment\/desktop\/nsfprojectreporttemplate\.docx$/i.test(cleanPath)) {
+    return true;
+  }
   if (host === "nsf.gov" && cleanPath === "/funding/programs.jsp" && /\borg=sbe\b/.test(cleanSearch)) {
     return true;
   }
   if ((host === "nsf.gov" || host === "beta.nsf.gov") && /^\/geo\/(?:ags|ear)(?:\/|$)/.test(cleanPath)) {
     return true;
   }
+  if (host === "materialsinspace.nasa.gov") return true;
+  if (host === "science.nasa.gov" && /^\/oss-guidance\/?$/.test(cleanPath)) return true;
+  if (host === "nasa.gov" && /^\/open\/data(?:\.html)?\/?$/.test(cleanPath)) return true;
   if (host === "croucher.org.hk" && /croucher-science-communication-studentships/.test(cleanPath)) {
     return !/\bscience communication\b/.test(awardSignal);
   }
@@ -414,6 +426,72 @@ function isAlbertaCareerOrStudentAidSpillover(host, path, search, directSignal, 
       path,
     ) &&
     !matchesAward
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isAlbertaKillamNotleyInstitutionalSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  if (!/\buniversity(?: of)? alberta\b/.test(awardSignal)) return false;
+  if (!/\b(?:killam|notley)\b/.test(awardSignal)) return false;
+  if (!/\bpostdoctoral\b/.test(awardSignal)) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  if (/\b(?:killam|notley)\b/.test(sourceSignal)) return false;
+  if (/\/research\/research-support\/post-doctoral-office\/awards-funding\/u-of-a-fellowships(?:\/|$)/.test(path)) {
+    return false;
+  }
+
+  if (
+    [
+      "apply.ualberta.ca",
+      "calendar.ualberta.ca",
+      "docs.google.com",
+      "beartracks.ualberta.ca",
+      "coned.ualberta.ca",
+      "myccid.ualberta.ca",
+      "mobile.ualberta.ca",
+      "eclass.srv.ualberta.ca",
+      "policiesonline.ualberta.ca",
+      "graduate-studies-apply.ualberta.ca",
+      "gradapply.ualberta.ca",
+      "registrar.ualberta.ca",
+      "support.ctl.ualberta.ca",
+      "xray.chem.ualberta.ca",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  if (host === "ualberta.ca" || host.endsWith(".ualberta.ca")) {
+    return !/\b(?:post doctoral office|postdoctoral office|awards funding|u of a fellowships)\b/.test(sourceSignal);
+  }
+
+  return false;
+}
+
+function isMarquetteMitchemInstitutionalSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  if (!/\bmarquette\b/.test(awardSignal)) return false;
+  if (!/\bmitchem\b/.test(awardSignal)) return false;
+  if (!/\bdissertation\b/.test(awardSignal)) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  if (/\bmitchem\b/.test(sourceSignal)) return false;
+  if (/\/provost\/mitchem-dissertation-program\.shtml$/.test(path)) return false;
+
+  if (
+    host === "marquette.edu" ||
+    host.endsWith(".marquette.edu") ||
+    [
+      "studentaid.gov",
+      "irs.gov",
+      "michigan.bank",
+      "scottishritemilwaukee.com",
+    ].includes(host)
   ) {
     return true;
   }
