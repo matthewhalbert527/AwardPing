@@ -2912,6 +2912,90 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects Getty whole-site spillover while keeping Conservation Science postdoc sources", () => {
+    const award_name = "Getty Conservation Institute (GCI) - Postdoctoral Fellowship in Conservation Science";
+
+    for (const example of [
+      {
+        url: "https://www.getty.edu/projects/postdoctoral-fellowship-conservation-science/",
+        title: "Postdoctoral Fellowship in Conservation Science",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.getty.edu/funding/residential-grants/",
+        title: "Residential Grants",
+        page_type: "application",
+      },
+      {
+        url: "https://www.getty.edu/funding/residential-grants/faqs/",
+        title: "Residential Grants FAQs",
+        page_type: "faq",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.getty.edu/projects/getty-scholars-program/",
+        title: "Getty Scholars Program",
+        page_type: "application",
+      },
+      {
+        url: "https://www.getty.edu/projects/pre-and-postdoctoral-fellowships/",
+        title: "Pre- and Postdoctoral Fellowships",
+        page_type: "other",
+      },
+      {
+        url: "https://www.getty.edu/projects/data-integration-conservation-science/",
+        title: "DISCO: Data Integration for Conservation Science",
+        page_type: "deadline",
+      },
+      {
+        url: "https://www.getty.edu/projects/van-goghs-irises-a-closer-look/",
+        title: "Getty Van Gogh's Irises: A Closer Look Project",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www.getty.edu/conservation/publications_resources/newsletters/pdf/v40n2.pdf",
+        title: "Conservation Perspectives - Fall 2025",
+        page_type: "pdf",
+      },
+      {
+        url: "https://media.getty.edu/Text/780581ad-cb83-535e-be51-ebed45b38959.pdf",
+        title: "2008 Report Conservation Issues of Modern and Contemporary Art",
+        page_type: "pdf",
+      },
+      {
+        url: "https://portal.getty.edu/",
+        title: "Getty Research Portal",
+        page_type: "application",
+      },
+      {
+        url: "https://aata.getty.edu/",
+        title: "AATA Database",
+        page_type: "requirements",
+      },
+      {
+        url: "https://apps.apple.com/us/app/gettyguide/id1488527711",
+        title: "Download GettyGuide app",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.repositoriodepublicaciones.encrym.edu.mx/pdf/13%20incontenible_corregido2019.pdf",
+        title: "13 Incontenible Corregido 2019",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";

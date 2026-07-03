@@ -1128,6 +1128,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isRhodesUniversityPostdoctoralFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isLlnlLawrenceFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isBehavioralInterventionsScholarsSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isGettyConservationSciencePostdocSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1796,6 +1797,26 @@ function isBehavioralInterventionsScholarsSpillover(host, path, search, sourceSi
     }
 
     return true;
+  }
+
+  return true;
+}
+
+function isGettyConservationSciencePostdocSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isGettyConservationSciencePostdoc =
+    /\bgetty\b/.test(awardSignal) &&
+    /\bconservation\b/.test(awardSignal) &&
+    /\bpostdoctoral\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal) &&
+    /\bscience\b/.test(awardSignal);
+  if (!isGettyConservationSciencePostdoc) return false;
+
+  if (host === "getty.edu") {
+    return ![
+      "/projects/postdoctoral-fellowship-conservation-science/",
+      "/funding/residential-grants/",
+      "/funding/residential-grants/faqs/",
+    ].includes(path);
   }
 
   return true;
