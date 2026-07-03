@@ -2529,6 +2529,111 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects GFOA general finance crawl spillover while keeping scholarship pages", () => {
+    const award_name = "Government Finance Officers Association (GFOA) - Scholarships";
+
+    for (const example of [
+      {
+        url: "https://www.gfoa.org/gfoascholarships",
+        title: "GFOA Scholarships",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.gfoa.org/academic-scholarships",
+        title: "Academic Scholarships",
+        page_type: "application",
+      },
+      {
+        url: "https://www.gfoa.org/available-scholarships",
+        title: "Available Scholarships",
+        page_type: "application",
+      },
+      {
+        url: "https://www.gfoa.org/cpfo-enrollment-scholarships",
+        title: "CPFO Enrollment Scholarships",
+        page_type: "application",
+      },
+      {
+        url: "https://www.gfoa.org/cpfo-scholarship-faqs",
+        title: "Frequently Asked Questions about the CPFO Enrollment Scholarships",
+        page_type: "faq",
+      },
+      {
+        url: "https://www.gfoa.org/gfoas-leadership-development-scholarship",
+        title: "GFOA's Leadership Development Scholarship",
+        page_type: "application",
+      },
+      {
+        url: "https://www.gfoa.org/leadership-academy-application",
+        title: "Leadership Academy Application",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.gfoa.org/bio/roach",
+        title: "Eric Roach - Government Finance Officers Association",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.gfoa.org/materials",
+        title: "Materials Library",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www.gfoa.org/materials/gfr1225-afe",
+        title: "2025 Awards for Excellence in Government Finance",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www.gfoa.org/2026-academic-scholarship-winners",
+        title: "2026 Academic Scholarship Winners",
+        page_type: "other",
+      },
+      {
+        url: "https://www.gfoa.org/scholarship-spotlight-gilbert-teklevchiev",
+        title: "GFOA Scholarship Spotlight: Gilbert Teklevchiev",
+        page_type: "other",
+      },
+      {
+        url: "https://members.gfoa.org/Gfoamember/Gfoamember/logout.aspx?URLSITE=https://www.gfoa.org/member-logout/materials/gfr0426-lessons",
+        title: "Log Out",
+        page_type: "requirements",
+      },
+      {
+        url: "https://gfoa-craftcms.files.svdcdn.com/production/general/gfr0426-Lessons-From-High-Performing-Governments.pdf?dm=1777500959",
+        title: "Lessons From High Performing Governments",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.irs.gov/pub/irs-drop/n-25-69.pdf",
+        title: "published guidance",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        award_name,
+        url: "https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Fwww.gfoa.org%2Favailable-scholarships",
+        title: "Share on Facebook",
+        page_type: "other",
+      }),
+    ).toMatchObject({
+      action: "review_later",
+    });
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";

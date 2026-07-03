@@ -1124,6 +1124,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isNoaaHollingsScholarshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isAhaResearchFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isEisenhowerTransportationFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isGfoaScholarshipsSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1683,6 +1684,31 @@ function isEisenhowerTransportationFellowshipSpillover(host, path, search, sourc
   }
 
   if (host === "fhwa.dot.gov") return true;
+
+  return true;
+}
+
+function isGfoaScholarshipsSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isGfoaScholarships =
+    (/\bgfoa\b/.test(awardSignal) || /\bgovernment finance officers association\b/.test(awardSignal)) &&
+    /\bscholarships?\b/.test(awardSignal);
+  if (!isGfoaScholarships) return false;
+
+  if (host === "gfoa.org") {
+    return ![
+      "/academic-scholarships",
+      "/available-scholarships",
+      "/cpfo-enrollment-scholarships",
+      "/cpfo-scholarship-faqs",
+      "/gfoas-leadership-development-scholarship",
+      "/gfoascholarships",
+      "/leadership-academy-application",
+    ].includes(path);
+  }
+
+  if (host === "gfoa-craftcms.files.svdcdn.com") {
+    return !/\bscholarships?\b/.test(`${path} ${search}`);
+  }
 
   return true;
 }
