@@ -1131,6 +1131,33 @@ describe("source hygiene classifier", () => {
           "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
       },
       {
+        url: "https://higherlogicdownload.s3.amazonaws.com/AAFCS/UploadedImages/Resources/Resource_Page_on_Website_Graphics__5_.pdf",
+        title: "Atrial Fibrillation Strategic Research Network Report",
+        page_type: "pdf",
+        award_name: "American Association of Family and Consumer Sciences (AAFCS) - Graduate Fellowships",
+      },
+      {
+        url: "https://www.aafcs.org/blogs/aafcs-team/2026/04/15/apply-for-bok-network?hlmlt=BL",
+        title: "Bring the FCS Body of Knowledge to Life: Apply for the BOK Resource Network",
+        award_name: "American Association of Family and Consumer Sciences (AAFCS) - Graduate Fellowships",
+      },
+      {
+        url: "https://www.aafcs.org/resources/careers",
+        title: "Access Resources Here",
+        award_name: "American Association of Family and Consumer Sciences (AAFCS) - Graduate Fellowships",
+      },
+      {
+        url: "https://online.aafcs.org/aafcsssa/censsacustmast.insert_page",
+        title: "Create a profile",
+        award_name: "American Association of Family and Consumer Sciences (AAFCS) - Graduate Fellowships",
+      },
+      {
+        url: "https://myplate-prod.azureedge.us/sites/default/files/2024-05/create-your-own-myplate-menu.pdf",
+        title: "Create Your Own MyPlate Menu",
+        page_type: "pdf",
+        award_name: "American Association of Family and Consumer Sciences (AAFCS) - Graduate Fellowships",
+      },
+      {
         url: "https://www.fau.edu/admissions/documents/international-student-guide.pdf",
         title: "International Student Guide",
         page_type: "pdf",
@@ -1298,6 +1325,12 @@ describe("source hygiene classifier", () => {
         page_type: "pdf",
         award_name:
           "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
+      },
+      {
+        url: "https://www.aafcs.org/resources/recognition/fellowships",
+        title: "Graduate Fellowships",
+        page_type: "homepage",
+        award_name: "American Association of Family and Consumer Sciences (AAFCS) - Graduate Fellowships",
       },
       {
         url: "https://www.fau.edu/artsandletters/huntington-library-short-term-fellowship/",

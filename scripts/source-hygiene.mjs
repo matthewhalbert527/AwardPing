@@ -970,6 +970,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isWilsonKennanShortTermGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isAafcsGraduateFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1319,6 +1320,27 @@ function isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSig
   if (host === "tmcf.org" || host.endsWith(".tmcf.org")) {
     return !/\b(?:bridging the dream|graduate scholarship)\b/.test(sourceSignal);
   }
+
+  return true;
+}
+
+function isAafcsGraduateFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isAafcsGraduateFellowship =
+    (/\baafcs\b/.test(awardSignal) || /\bamerican association of family and consumer sciences\b/.test(awardSignal)) &&
+    /\bgraduate fellowships?\b/.test(awardSignal);
+  if (!isAafcsGraduateFellowship) return false;
+
+  const pageSignal = `${sourceSignal} ${search}`;
+  if (host === "aafcs.org") {
+    if (/^\/resources\/recognition\/fellowships\/?$/.test(path)) return false;
+    if (/^\/resources\/recognition(?:\/|$)/.test(path) && /\bgraduate fellowships?\b/.test(pageSignal)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (host.endsWith(".aafcs.org")) return true;
+  if (host === "higherlogicdownload.s3.amazonaws.com") return true;
 
   return true;
 }
