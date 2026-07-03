@@ -2476,6 +2476,59 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects Eisenhower Transportation Fellowship crawl spillover while keeping the canonical homepage", () => {
+    const award_name = "Dwight David Eisenhower Transportation Fellowship Program";
+
+    expect(
+      shouldRejectDiscoveredSource({
+        award_name,
+        url: "https://highways.dot.gov/careers/dwight-david-eisenhower-transportation-fellowship-program",
+        title: "Dwight David Eisenhower Transportation Fellowship Program",
+        page_type: "homepage",
+      }),
+    ).toMatchObject({
+      action: "keep",
+    });
+
+    for (const example of [
+      {
+        url: "https://www.fhwa.dot.gov/careers/ddetfp.cfm",
+        title: "Dwight David Eisenhower Transportation Fellowship Program",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.fhwa.dot.gov/guidance/",
+        title: "Federal Highway Policy & Guidance Center",
+        page_type: "application",
+      },
+      {
+        url: "https://www.fhwa.dot.gov/bridge/steel/pubs/hif18042.pdf",
+        title: "Steel Truss Member Strengthening Design Example",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.fhwa.dot.gov/exit.cfm?link=http://onlinepubs.trb.org/Onlinepubs/circulars/ec037.pdf",
+        title: "TRB Circular E-C037",
+        page_type: "pdf",
+      },
+      {
+        url: "https://safety.fhwa.dot.gov/legislationandpolicy/fast/guidance.cfm",
+        title: "HSIP Eligibility Guidance",
+        page_type: "eligibility",
+      },
+      {
+        url: "https://www.in.gov/dot/div/contracts/standards/book/sep07/2008Master.pdf",
+        title: "Indiana DOT standards book",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";

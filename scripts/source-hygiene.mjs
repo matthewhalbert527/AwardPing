@@ -1123,6 +1123,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isFlasFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isNoaaHollingsScholarshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isAhaResearchFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isEisenhowerTransportationFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1666,6 +1667,22 @@ function isAhaResearchFellowshipSpillover(host, path, search, sourceSignal, awar
 
     return false;
   }
+
+  return true;
+}
+
+function isEisenhowerTransportationFellowshipSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isEisenhowerTransportationFellowship =
+    /\beisenhower\b/.test(awardSignal) &&
+    /\btransportation\b/.test(awardSignal) &&
+    /\bfellowships?\b/.test(awardSignal);
+  if (!isEisenhowerTransportationFellowship) return false;
+
+  if (host === "highways.dot.gov") {
+    return !/^\/careers\/dwight-david-eisenhower-transportation-fellowship-program\/?$/.test(path);
+  }
+
+  if (host === "fhwa.dot.gov") return true;
 
   return true;
 }
