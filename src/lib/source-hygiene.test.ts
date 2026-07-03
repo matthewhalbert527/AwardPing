@@ -2797,6 +2797,121 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects HHS/ACF Behavioral Interventions Scholars crawler spillover while keeping BIS summary sources", () => {
+    const award_name =
+      "U.S. Department of Health and Human Services (HHS) - Administration for Children and Families - Behavioral Interventions Scholars Grant";
+
+    for (const example of [
+      {
+        url: "https://acf.gov/opre/project/behavioral-interventions-scholars-2017-2024",
+        title: "Behavioral Interventions Scholars",
+        page_type: "homepage",
+      },
+      {
+        url: "https://acf.gov/opre/report/behavioral-interventions-scholars-2017-grantee-project-abstracts",
+        title: "Behavioral Interventions Scholars: 2017 Grantee Project Abstracts",
+        page_type: "other",
+      },
+      {
+        url: "https://acf.gov/opre/report/behavioral-interventions-scholars-grants-summary-chart-fy17",
+        title: "Behavioral Interventions Scholars Grants Summary Chart - FY17",
+        page_type: "other",
+      },
+      {
+        url: "https://acf.gov/opre/report/behavioral-interventions-scholars-grants-summary-chart-fy18",
+        title: "Behavioral Interventions Scholars Grants Summary Chart - FY18",
+        page_type: "other",
+      },
+      {
+        url: "https://acf.gov/opre/report/behavioral-interventions-scholars-grants-summary-chart-fy19",
+        title: "Behavioral Interventions Scholars Grants Summary Chart - FY19",
+        page_type: "other",
+      },
+      {
+        url: "https://acf.gov/opre/report/behavioral-interventions-scholars-grants-summary-chart-2021-2022",
+        title: "Behavioral Interventions Scholars Grants Summary Chart 2021-2022",
+        page_type: "other",
+      },
+      {
+        url: "https://acf.gov/opre/report/behavioral-interventions-scholars-grants-summary-chart-2022-2023",
+        title: "Behavioral Interventions Scholars Grants Summary Chart 2022-2023",
+        page_type: "other",
+      },
+      {
+        url: "https://acf.gov/sites/default/files/documents/opre/bis_grantee_summary_chart_fy2020.pdf",
+        title: "Behavioral Interventions Scholars Grants Summary Chart FY2020",
+        page_type: "pdf",
+      },
+      {
+        url: "https://acf.gov/sites/default/files/documents/opre/BIS%20Summary%20Chart_2023to2024_508.pdf",
+        title: "2023-2024 Behavioral Interventions Scholars Research Grants",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://acf.gov/cb/grant-funding/adoption-excellence-awards",
+        title: "Adoption Excellence Awards",
+        page_type: "application",
+      },
+      {
+        url: "https://acf.gov/cb/policy-guidance/faq-fostering-future-trump-accounts",
+        title: "Fostering the Future Powered by Trump Accounts",
+        page_type: "faq",
+      },
+      {
+        url: "https://acf.gov/css/employers",
+        title: "Employers",
+        page_type: "requirements",
+      },
+      {
+        url: "https://acf.gov/css/faq/how-does-federal-tax-refund-program-work",
+        title: "How does a federal tax refund offset work?",
+        page_type: "faq",
+      },
+      {
+        url: "https://acf.gov/ofvps/programs/fvpsa/fvpsa-grants-frequently-asked-questions",
+        title: "FVPSA Grants Frequently Asked Questions",
+        page_type: "faq",
+      },
+      {
+        url: "https://acf.gov/policy-guidance/hhs-grants-policy-statement",
+        title: "HHS Grants Policy Statement",
+        page_type: "requirements",
+      },
+      {
+        url: "https://acf.gov/sites/default/files/documents/opre/HHS_OPRE_Behavioral_Intervention_Scholars_StartofProject_LuyiJian_508%20%281%29.pdf",
+        title: "How does prosocial identity protect juveniles from reoffending?",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.hhs.gov/sites/default/files/hhs-grants-policy-statement-oct-2025.pdf",
+        title: "HHS Grants Policy Statement",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.medicaid.gov/federal-policy-guidance/downloads/sho24005.pdf",
+        title: "Best Practices for Adhering to EPSDT Requirements",
+        page_type: "pdf",
+      },
+      {
+        url: "https://gcc02.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwww.acf.hhs.gov%2Fsites%2Fdefault%2Ffiles%2Fdocuments%2Focse%2Feiwo_overview.pdf",
+        title: "e-IWO Overview Flyer",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";

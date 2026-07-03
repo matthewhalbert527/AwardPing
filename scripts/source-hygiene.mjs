@@ -1127,6 +1127,7 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isGfoaScholarshipsSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isRhodesUniversityPostdoctoralFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isLlnlLawrenceFellowshipSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isBehavioralInterventionsScholarsSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1760,6 +1761,41 @@ function isLlnlLawrenceFellowshipSpillover(host, path, search, sourceSignal, awa
 
   if (host === "us.smrtr.io") {
     return !/^\/49s7z\/?$/.test(path);
+  }
+
+  return true;
+}
+
+function isBehavioralInterventionsScholarsSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isBehavioralInterventionsScholars =
+    /\bbehavioral interventions scholars\b/.test(awardSignal) ||
+    (/\bbehavioral interventions\b/.test(awardSignal) &&
+      /\bscholars?\b/.test(awardSignal) &&
+      /\b(?:acf|hhs|administration for children)\b/.test(awardSignal));
+  if (!isBehavioralInterventionsScholars) return false;
+
+  const normalizedPath = path.replace(/\/{2,}/g, "/");
+
+  if (host === "acf.gov") {
+    if (/^\/opre\/project\/behavioral-interventions-scholars-2017-2024\/?$/.test(normalizedPath)) {
+      return false;
+    }
+    if (
+      /^\/opre\/report\/behavioral-interventions-scholars-(?:2017-grantee-project-abstracts|grants-summary-chart-(?:fy17|fy18|fy19|2021-2022|2022-2023))\/?$/.test(
+        normalizedPath,
+      )
+    ) {
+      return false;
+    }
+    if (
+      /^\/sites\/default\/files\/documents\/opre\/(?:bis_grantee_summary_chart_fy2020|bis%20summary%20chart_2023to2024_508)\.pdf$/.test(
+        normalizedPath,
+      )
+    ) {
+      return false;
+    }
+
+    return true;
   }
 
   return true;
