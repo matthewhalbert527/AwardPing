@@ -201,6 +201,18 @@ const delayMs = nonNegativeInt(args["delay-ms"], 0);
 const domainDelayMs = Math.max(1_500, nonNegativeInt(args["domain-delay-ms"], 1_500));
 const heartbeatMinutes = positiveInt(args["heartbeat-minutes"] || env.AWARDPING_WORKER_HEARTBEAT_MINUTES, 5);
 const maxSourcesPerBrowser = positiveInt(args["max-sources-per-browser"], 250);
+const sourceLoadPageSize = boundedInt(
+  args["source-load-page-size"] || env.AWARDPING_SOURCE_LOAD_PAGE_SIZE,
+  250,
+  5,
+  1_000,
+);
+const minSourceLoadPageSize = boundedInt(
+  args["min-source-load-page-size"] || env.AWARDPING_MIN_SOURCE_LOAD_PAGE_SIZE,
+  10,
+  1,
+  250,
+);
 const retryAccessBlockedCaptures = boolArg(
   args["retry-access-blocked-captures"] ?? env.AWARDPING_RETRY_ACCESS_BLOCKED_CAPTURES,
   true,
@@ -3061,26 +3073,13 @@ async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report)
   if (!links.length) return;
   if (report) report.discovered_html_candidates += links.length;
 
-  const { data: existing, error: existingError } = await supabase
-    .from("shared_award_sources")
-    .select("url")
-    .eq("shared_award_id", source.shared_award_id);
-
-  if (existingError) {
-    if (report) {
-      report.errors.push({
-        source_id: source.id,
-        source_url: source.url,
-        message: `HTML subpage discovery lookup failed: ${existingError.message}`,
-      });
-    }
-    return;
-  }
-
-  const existingUrls = new Set((existing || []).map((row) => normalizeComparableUrl(row.url)));
-  const rows = links
-    .filter((link) => !existingUrls.has(normalizeComparableUrl(link.url)))
-    .map((link) => ({
+  const seenUrls = new Set();
+  const rows = [];
+  for (const link of links) {
+    const comparableUrl = normalizeComparableUrl(link.url);
+    if (seenUrls.has(comparableUrl)) continue;
+    seenUrls.add(comparableUrl);
+    rows.push({
       shared_award_id: source.shared_award_id,
       url: link.url,
       title: link.title,
@@ -3096,7 +3095,8 @@ async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report)
         .join(" "),
       source: "seed",
       next_check_at: new Date().toISOString(),
-    }));
+    });
+  }
 
   if (!rows.length) return;
 
@@ -4957,24 +4957,52 @@ function classifyDeterministicChange(diff, source) {
 }
 
 async function loadSources(pageLimit) {
-  const pageSize = Math.min(1_000, pageLimit);
+  let pageSize = Math.min(sourceLoadPageSize, pageLimit);
   const sources = [];
 
-  for (let from = 0; sources.length < pageLimit; from += pageSize) {
+  for (let from = 0; sources.length < pageLimit; ) {
     const to = from + pageSize - 1;
+    const requestedPageSize = pageSize;
     const { data, error } = await buildSourcesQuery().range(from, to);
 
-    if (error) throw new Error(describeSupabaseError(error, "load shared award sources"));
+    if (error) {
+      if (isSupabaseStatementTimeoutLike(error) && pageSize > minSourceLoadPageSize) {
+        pageSize = Math.max(minSourceLoadPageSize, Math.floor(pageSize / 2));
+        console.warn(`SOURCE_LOAD_TIMEOUT retrying with page_size=${pageSize} from=${from}`);
+        continue;
+      }
+      if (sources.length > 0 && isSupabaseTransientLoadError(error)) {
+        console.warn(
+          `SOURCE_LOAD_PARTIAL using loaded=${sources.length} after ${describeSupabaseError(
+            error,
+            "load shared award sources",
+          )}`,
+        );
+        break;
+      }
+      throw new Error(describeSupabaseError(error, "load shared award sources"));
+    }
 
     const page = data || [];
     sources.push(...page.filter(sourceMatchesShard));
+    from += requestedPageSize;
 
-    if (page.length < to - from + 1) {
+    if (page.length < requestedPageSize) {
       break;
     }
   }
 
   return sources.slice(0, pageLimit);
+}
+
+function isSupabaseStatementTimeoutLike(error) {
+  return /statement timeout|upstream request timeout|timeout/i.test(String(error?.message || ""));
+}
+
+function isSupabaseTransientLoadError(error) {
+  return /schema cache|connection terminated|upstream request timeout|statement timeout|timeout/i.test(
+    String(error?.message || ""),
+  );
 }
 
 function sourceMatchesShard(source) {
