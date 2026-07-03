@@ -2016,6 +2016,160 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects NSF PRFB crawler spillover while keeping PRFB-specific sources", () => {
+    const award_name = "National Science Foundation (NSF) - Postdoctoral Research Fellowships in Biology (PRFB)";
+
+    for (const example of [
+      {
+        url: "https://www.nsf.gov/funding/opportunities/prfb-postdoctoral-research-fellowships-biology",
+        title: "Postdoctoral Research Fellowships in Biology (PRFB)",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.nsf.gov/funding/opportunities/prfb-postdoctoral-research-fellowships-biology/nsf26-504/solicitation",
+        title: "26-504",
+        page_type: "other",
+      },
+      {
+        url: "https://www.nsf.gov/policies/document/postdoctoral-research-fellowships-biology-prfb",
+        title: "(PRFB) Administrative Guide (NSF 25-032)",
+        page_type: "other",
+      },
+      {
+        url: "https://www.nsf.gov/bio/prfb/applicant_how_to_apply_prfb.pdf",
+        title: "How to Apply for Fellowship Applicants",
+        page_type: "pdf",
+      },
+      {
+        url: "https://nsf-gov-resources.nsf.gov/files/Postdoc_Reference_Letter_Submission_Guide_Sept_2024_Final_508%201_0.pdf",
+        title: "Reference Letter Author Submission Guide",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://seedfund.nsf.gov/apply/",
+        title: "Apply for funding",
+        page_type: "application",
+      },
+      {
+        url: "https://www.nsf.gov/bfa/dias/policy/rppr/",
+        title: "Research Performance Progress Report",
+        page_type: "requirements",
+      },
+      {
+        url: "https://new.nsf.gov/policies/document/nsf-grantsgov-application-guide",
+        title: "Grants.gov Application Guide",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.whitehouse.gov/wp-content/uploads/2025/07/Americas-AI-Action-Plan.pdf",
+        title: "America's AI Action Plan",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.sbir.gov/sites/default/files/elig_size_compliance_guide.pdf",
+        title: "Guide to SBIR/STTR Program Eligibility",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www..nsf.gov/funding/opportunities/postdoctoral-research-fellowships-biology-prfb",
+        title: "Page",
+        page_type: "application",
+      },
+      {
+        url: "https://nsf-gov-resources.nsf.gov/files/Postdoc_Reference_Letter_Submission_Guide_Sept_2024_Final_508%201_0.pdf?VersionId=cwogsX4E2fvH1cd_I6vRY5ADeQ218BSL",
+        title: "Reference Letter Author Submission Guide",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.nsf.gov/funding/opportunities/prfb-postdoctoral-research-fellowships-biology/503622/nsf22-623/solicitation",
+        title: "22-623",
+        page_type: "other",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
+  it("rejects NSF AGS-PRF crawler spillover while keeping AGS-specific sources", () => {
+    const award_name =
+      "National Science Foundation (NSF) - Atmospheric and Geospace Sciences (AGS) Postdoctoral Fellowships";
+
+    for (const example of [
+      {
+        url: "http://www.nsf.gov/funding/pgm_summ.jsp?pims_id=12779&org=NSF",
+        title: "Atmospheric and Geospace Sciences Postdoctoral Research Fellowships (AGS-PRF)",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.nsf.gov/funding/opportunities/ags-prf-atmospheric-geospace-sciences-postdoctoral-research",
+        title: "Atmospheric and Geospace Sciences Postdoctoral Research Fellowships (AGS-PRF)",
+        page_type: "other",
+      },
+      {
+        url: "https://www.nsf.gov/funding/opportunities/ags-prf-atmospheric-geospace-sciences-postdoctoral-research/nsf22-639/solicitation",
+        title: "22-639",
+        page_type: "other",
+      },
+      {
+        url: "https://www.nsf.gov/funding/information/faq-program-solicitation-nsf-22-639-atmospheric-geospace",
+        title: "Atmospheric and Geospace Sciences Postdoctoral Research Fellowships (AGS-PRF) (NSF 22-639)",
+        page_type: "faq",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.nsf.gov/geo/programs",
+        title: "GEO Programs - Directorate for Geosciences (GEO)",
+        page_type: "other",
+      },
+      {
+        url: "https://nsf-gov-resources.nsf.gov/2023-11/TMT_FAQs.website.11.08.23.pdf",
+        title: "Frequently Asked Questions, including",
+        page_type: "pdf",
+      },
+      {
+        url: "https://seedfund.nsf.gov/apply/",
+        title: "Apply for funding",
+        page_type: "application",
+      },
+      {
+        url: "https://resources.research.gov/common/attachment/Common/Grants_govProposal_Processing_in_Research.pdf",
+        title: "Grants.gov Proposal Processing in Research.gov",
+        page_type: "pdf",
+      },
+      {
+        url: "https://ceq.doe.gov/docs/get-involved/citizens-guide-to-nepa-2021.pdf",
+        title: "A Citizen's Guide to NEPA",
+        page_type: "pdf",
+      },
+      {
+        url: "https://www.nsf.gov/funding/opportunities/ags-prf-atmospheric-geospace-sciences-postdoctoral-research/nsf19-574/solicitation",
+        title: "19-574",
+        page_type: "other",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
   it("rejects NASA aerospace-history fellowship spillover while keeping real fellowship pages", () => {
     const award_name =
       "American Historical Association (AHA) and the National Aeronautics & Space Administration (NASA) - Doctoral & Postdoctoral Fellowships in Aerospace History";

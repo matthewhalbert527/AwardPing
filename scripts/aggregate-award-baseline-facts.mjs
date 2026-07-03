@@ -353,11 +353,10 @@ function bestAwardDescription(award, sources) {
       const relevance = cleanSlug(facts.award_relevance);
       const category = cleanSlug(facts.page_category);
       const description = cleanNullable(facts.page_description) || cleanNullable(source.page_description);
+      const sourceSignal = `${source.url || ""} ${source.display_title || ""} ${source.title || ""}`.toLowerCase();
       return {
         description,
-        score:
-          (relevance === "primary" ? 0 : relevance === "supporting" ? 1 : 2) +
-          (/(overview|award|fellowship|scholarship|application)/.test(category) ? 0 : 1),
+        score: awardDescriptionScore({ relevance, category, pageType: source.page_type, sourceSignal }),
       };
     })
     .filter((entry) => entry.description && !looksGenericDescription(entry.description))
@@ -367,6 +366,20 @@ function bestAwardDescription(award, sources) {
     preferred?.description ||
     `${award.name} has baseline details extracted from current AwardPing source snapshots.`
   );
+}
+
+function awardDescriptionScore({ relevance, category, pageType, sourceSignal }) {
+  let score = relevance === "primary" ? 0 : relevance === "supporting" ? 4 : 8;
+  if (!/(overview|award|fellowship|scholarship|application|solicitation)/.test(category)) score += 2;
+
+  const type = cleanSlug(pageType);
+  if (type === "homepage") score -= 4;
+  if (type === "application") score -= 2;
+  if (/\b(?:solicitation|program-solicitation|funding\/opportunities)\b/.test(sourceSignal)) score -= 2;
+
+  if (/\b(?:updates?|news|webinar|virtual office hours|office hours|event|history|faq)\b/.test(sourceSignal)) score += 8;
+  if (/\/updates(?:\/|$)/.test(sourceSignal)) score += 8;
+  return score;
 }
 
 function looksGenericDescription(value) {

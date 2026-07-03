@@ -339,6 +339,12 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   if (isNihNiaR36AgingDissertationSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
     return true;
   }
+  if (isNsfPrfbSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
+  if (isNsfAgsPostdoctoralSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
   if (isNsfEarthSciencesPostdoctoralSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
     return true;
   }
@@ -711,6 +717,147 @@ function isNsfEarthSciencesPostdoctoralSpillover(host, path, search, directSigna
   }
 
   return false;
+}
+
+function isNsfPrfbSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  const isPrfbAward =
+    /\bprfb\b/.test(awardSignal) ||
+    (/\bpostdoctoral research fellowships?\b/.test(awardSignal) &&
+      /\bbiology\b/.test(awardSignal) &&
+      /\b(?:nsf|national science foundation)\b/.test(awardSignal));
+  if (!isPrfbAward) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  const isNsfHost = host === "nsf.gov" || host === "beta.nsf.gov" || host === "new.nsf.gov";
+
+  if (host === ".nsf.gov") return true;
+  if (
+    isNsfHost &&
+    /^\/funding\/opportunities\/prfb-postdoctoral-research-fellowships-biology\/503622\/nsf\d{2}-\d{3}\/solicitation\/?$/.test(
+      path,
+    )
+  ) {
+    return true;
+  }
+  if (
+    isNsfHost &&
+    /^\/funding\/opportunities\/prfb-postdoctoral-research-fellowships-biology(?:\/|$)/.test(path)
+  ) {
+    return false;
+  }
+  if (isNsfHost && /^\/policies\/document\/postdoctoral-research-fellowships-biology-prfb\/?$/.test(path)) {
+    return false;
+  }
+  if (
+    host === "nsf.gov" &&
+    /^\/bio\/prfb\/(?:applicant_how_to_apply_prfb|sponsoring_scientist_how_to_prepare_prfb)\.pdf$/.test(path)
+  ) {
+    return false;
+  }
+  if (
+    host === "nsf-gov-resources.nsf.gov" &&
+    /^\/files\/postdoc_reference_letter_submission_guide_[^/]*\.pdf$/.test(path) &&
+    !search
+  ) {
+    return false;
+  }
+  if (
+    isNsfHost &&
+    /\b(?:prfb|postdoctoral research fellowships? in biology|postdoctoral research fellowship biology)\b/.test(
+      sourceSignal,
+    ) &&
+    !/\b(?:seed fund|sbir|sttr|pappg|proposal award policies|grants gov application guide|materials research|dmref|fairos|rppr|cost sharing|research security)\b/.test(
+      sourceSignal,
+    )
+  ) {
+    return false;
+  }
+
+  if (isNsfHost || host === "nsf-gov-resources.nsf.gov") return true;
+  if (isGenericNsfCrawlerSpilloverHost(host)) return true;
+
+  return false;
+}
+
+function isNsfAgsPostdoctoralSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  const isAgsPostdoctoralAward =
+    /\bags\b/.test(awardSignal) &&
+    /\b(?:atmospheric|geospace)\b/.test(awardSignal) &&
+    /\bpostdoctoral\b/.test(awardSignal) &&
+    /\b(?:nsf|national science foundation)\b/.test(awardSignal);
+  if (!isAgsPostdoctoralAward) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  const isNsfHost = host === "nsf.gov" || host === "beta.nsf.gov" || host === "new.nsf.gov";
+
+  if (
+    isNsfHost &&
+    /^\/funding\/opportunities\/ags-prf-atmospheric-geospace-sciences-postdoctoral-research\/nsf(?:04-573|06-584|11-521|14-509|19-574)\/solicitation\/?$/.test(
+      path,
+    )
+  ) {
+    return true;
+  }
+  if (
+    isNsfHost &&
+    /^\/funding\/opportunities\/ags-prf-atmospheric-geospace-sciences-postdoctoral-research(?:\/|$)/.test(path)
+  ) {
+    return false;
+  }
+  if (
+    host === "nsf.gov" &&
+    path === "/funding/pgm_summ.jsp" &&
+    /\bpims_id=12779\b/.test(search)
+  ) {
+    return false;
+  }
+  if (
+    host === "nsf.gov" &&
+    /^\/funding\/information\/faq-program-solicitation-nsf-22-639-atmospheric-geospace\/?$/.test(path)
+  ) {
+    return false;
+  }
+  if (
+    isNsfHost &&
+    /\b(?:ags prf|atmospheric and geospace sciences postdoctoral|geospace sciences postdoctoral research)\b/.test(
+      sourceSignal,
+    ) &&
+    !/\b(?:geo programs|environmental review|tmt|arecibo|seed fund|sbir|sttr|pappg|proposal award policies|grants gov application guide|materials research|rppr|cost sharing|research security)\b/.test(
+      sourceSignal,
+    )
+  ) {
+    return false;
+  }
+
+  if (isNsfHost || host === "nsf-gov-resources.nsf.gov") return true;
+  if (isGenericNsfCrawlerSpilloverHost(host)) return true;
+
+  return false;
+}
+
+function isGenericNsfCrawlerSpilloverHost(host) {
+  return [
+    "apply07.grants.gov",
+    "ceq.doe.gov",
+    "cdc.gov",
+    "congress.gov",
+    "fastlane.nsf.gov",
+    "gcc02.safelinks.protection.outlook.com",
+    "gpo.gov",
+    "mediahub.nsf.gov",
+    "mgi.gov",
+    "nist.gov",
+    "obamawhitehouse.archives.gov",
+    "par.nsf.gov",
+    "phe.gov",
+    "research.gov",
+    "resources.research.gov",
+    "sbir.gov",
+    "seedfund.nsf.gov",
+    "whitehouse.gov",
+  ].some((blockedHost) => host === blockedHost || host.endsWith(`.${blockedHost}`));
 }
 
 function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, reason, awardName) {
