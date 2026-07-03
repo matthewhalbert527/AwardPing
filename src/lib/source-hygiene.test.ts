@@ -981,6 +981,104 @@ describe("source hygiene classifier", () => {
         award_name: "Erasmus Mundus Joint Masters Degrees",
       },
       {
+        url: "https://www.eacea.ec.europa.eu/scholarships/erasmus-mundus-catalogue_de",
+        title: "Erasmus Mundus Catalogue",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://erasmus-plus.ec.europa.eu/bg/programme-guide/part-c/how-to-apply/step-4-application-form",
+        title: "Step 4: application form",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://www.eacea.ec.europa.eu/contacts/erasmus-mundus-and-intra-africa-academic-mobility-programme-students-complaints-form_en",
+        title: "Submit a complaint",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://library.arce.org/portal/Author/Home?author=Amiet%2C+Pierre%2C",
+        title: "Amiet, Pierre",
+        award_name:
+          "American Research Center in Egypt (ARCE) / CAORC - Pre-Dissertation Travel Grants",
+      },
+      {
+        url: "https://arce.org/arce-annual-meeting-student-access-grant/",
+        title: "2026 Student Access Grant",
+        award_name:
+          "American Research Center in Egypt (ARCE) / CAORC - Pre-Dissertation Travel Grants",
+      },
+      {
+        url: "https://arce.org/wp-content/uploads/2025/11/2026-AEF-1-Year-Grant-Instructions.pdf",
+        title: "2026 Short Term Grant: Application Guidelines",
+        page_type: "pdf",
+        award_name:
+          "American Research Center in Egypt (ARCE) / CAORC - Pre-Dissertation Travel Grants",
+      },
+      {
+        url: "https://pds.mcp.nasa.gov/portal/instruments/urn--nasa--pds--context--instrument--hirise---mro/data",
+        title: "Mars Reconnaissance Orbiter High Resolution Imaging Science Experiment",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://www.nasa.gov/directorates/stmd/space-tech-research-grants/2d-materials-for-energy-harvesting-and-sensing/",
+        title: "2 D Materials for Energy Harvesting and Sensing",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://www.earthdata.nasa.gov/engage/data-management-guidance/create-maintain-open-science-data-management-plan",
+        title: "How to Create and Maintain an Open Science and Data Management Plan",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://github.com/nasa/AppEEARS-Data-Resources/blob/main/guides/How-to-bulk-download-AppEEARS-outputs.md",
+        title: "How to bulk download AppEEARS outputs",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://issnationallab.org/research-and-science/research-opportunities-and-results/research-reports/",
+        title: "Read and Download Reports",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://www.federalregister.gov/documents/2016/10/27/2016-26014/revisions-to-uniform-administrative-requirements-cost-principles-and-audit-requirements-for-federal",
+        title: "Uniform Administrative Requirements",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://grants.nih.gov/grants/guide/WeeklyIndex.cfm?04-24-26",
+        title: "NIH Guide: Weekly Index for April 24, 2026",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
+        url: "https://grants.nih.gov/policy-and-compliance",
+        title: "Policy & Compliance | NIH Grants & Funding",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
+        url: "https://public.csr.nih.gov/sites/default/files/2022-11/CSRAC_Fellowship_review_WG_report_September_2022_final.pdf",
+        title: "Final Report of the CSR Advisory Council Working Group on Peer Review of NRSA Fellowship Applications",
+        page_type: "pdf",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
+        url: "https://www.era.nih.gov/files/ASSIST_user_guide.pdf",
+        title: "ASSIST User Guide",
+        page_type: "pdf",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
+        url: "https://www.gpo.gov/fdsys/pkg/FR-2010-09-14/pdf/2010-22705.pdf",
+        title: "Requirements for Federal Funding Accountability and Transparency Act Implementation",
+        page_type: "pdf",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
         url: "https://www.fau.edu/admissions/documents/international-student-guide.pdf",
         title: "International Student Guide",
         page_type: "pdf",
@@ -1062,6 +1160,64 @@ describe("source hygiene classifier", () => {
         title: "Erasmus Mundus Joint Masters",
         page_type: "homepage",
         award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://erasmus-plus.ec.europa.eu/opportunities/individuals/students/erasmus-mundus-joint-masters-scholarships",
+        title: "Erasmus Mundus Joint Masters (students)",
+        page_type: "homepage",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://www.eacea.ec.europa.eu/scholarships/erasmus-mundus-catalogue_en",
+        title: "Erasmus Mundus Catalogue",
+        page_type: "homepage",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://www.eacea.ec.europa.eu/scholarships_en",
+        title: "EACEA Scholarships Overview and General Information",
+        page_type: "faq",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://arce.org/fellowship/arce-caorc-research-fellowships/",
+        title: "ARCE-CAORC Research Fellowships",
+        page_type: "homepage",
+        award_name:
+          "American Research Center in Egypt (ARCE) / CAORC - Pre-Dissertation Travel Grants",
+      },
+      {
+        url: "https://arce.org/fellowships-landing/",
+        title: "Opportunities",
+        page_type: "other",
+        award_name:
+          "American Research Center in Egypt (ARCE) / CAORC - Pre-Dissertation Travel Grants",
+      },
+      {
+        url: "https://www.nasa.gov/directorates/spacetech/strg/nstgro",
+        title: "NASA Space Technology Graduate Research Opportunities (NSTGRO)",
+        page_type: "homepage",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://www.nasa.gov/nasa-space-technology-graduate-research-opportunities-nstgro/",
+        title: "Space Tech Graduate Research",
+        page_type: "homepage",
+        award_name:
+          "National Aeronautics & Space Administration (NASA) - Space Technology Graduate Research Fellowship (NSTGRO)",
+      },
+      {
+        url: "https://grants.gov/search-results-detail/353267",
+        title: "Maximizing Access to Research Careers (MARC) (T34)",
+        page_type: "homepage",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
+        url: "https://grants.nih.gov/grants/guide/pa-files/PAR-24-138.html",
+        title: "Maximizing Access to Research Careers (MARC) (T34)",
+        page_type: "homepage",
+        award_name: "MARC Undergraduate Student Training in Academic Research",
       },
       {
         url: "https://www.fau.edu/artsandletters/huntington-library-short-term-fellowship/",

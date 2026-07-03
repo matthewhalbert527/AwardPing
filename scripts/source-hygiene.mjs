@@ -964,6 +964,11 @@ function isSshrcImmigrationSpillover(host, path, directSignal, awardSignal) {
 function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awardSignal) {
   const sourceSignal = `${directSignal} ${path} ${search}`;
 
+  if (isErasmusMundusCrawlerSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isArcePreDissertationTravelGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isNstgroCrawlerSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
   }
@@ -1074,14 +1079,6 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
     if (host === "bja.ojp.gov" || host === "it.ojp.gov") return true;
   }
 
-  if (/\berasmus mundus\b|\bjoint masters\b/.test(awardSignal)) {
-    if (host === "ec.europa.eu" && /^\/info\/funding-tenders\/opportunities\/portal\/screen\/(?:how-to-participate\/(?:person-profile|org-details)|support)(?:\/|$)/.test(path)) {
-      return true;
-    }
-    if (host === "webgate.ec.europa.eu" && /^\/funding-tenders-opportunities\//.test(path)) return true;
-    if (host === "erasmus-plus.ec.europa.eu" && /^\/[a-z]{2}\/projects\/faq-list(?:\/|$)/.test(path)) return true;
-  }
-
   if (
     /\bflorida atlantic\b/.test(awardSignal) &&
     /\bhuntington library\b/.test(awardSignal) &&
@@ -1112,6 +1109,169 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   }
 
   return false;
+}
+
+function isErasmusMundusCrawlerSpillover(host, path, search, sourceSignal, awardSignal) {
+  if (!(/\berasmus mundus\b/.test(awardSignal) || /\bjoint masters\b/.test(awardSignal))) return false;
+
+  if (host === "eacea.ec.europa.eu") {
+    if (/^\/scholarships\/erasmus-mundus-catalogue_en\/?$/.test(path)) return false;
+    if (/^\/scholarships_en\/?$/.test(path)) return false;
+    return true;
+  }
+
+  if (host === "erasmus-plus.ec.europa.eu") {
+    if (
+      /^\/opportunities\/(?:opportunities-for-individuals\/)?(?:individuals\/)?students\/erasmus-mundus-joint-masters(?:-scholarships)?\/?$/.test(
+        path,
+      )
+    ) {
+      return false;
+    }
+    if (/\berasmus mundus joint masters\b/.test(sourceSignal) && !/^\/[a-z]{2}\//.test(path)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (
+    [
+      "ec.europa.eu",
+      "webgate.ec.europa.eu",
+      "commission.europa.eu",
+      "economy-finance.ec.europa.eu",
+      "europa.eu",
+      "oecd.org",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isArcePreDissertationTravelGrantSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isArceAward =
+    /\barce\b/.test(awardSignal) &&
+    (/\bpre dissertation\b/.test(awardSignal) || /\bcaorc\b/.test(awardSignal));
+  if (!isArceAward) return false;
+
+  if (host === "library.arce.org") return true;
+
+  if (host !== "arce.org") return false;
+  if (/^\/fellowship\/arce-caorc-research-fellowships\/?$/.test(path)) return false;
+  if (/^\/(?:fellowships-landing|for-students-grants)\/?$/.test(path)) return false;
+
+  if (/\b(?:arce caorc|caorc research fellowships?|pre dissertation)\b/.test(sourceSignal)) return false;
+
+  return (
+    /^\/(?:annual-meeting|arce-annual-meeting-student-access-grant|arce-archaeological-field-research-grant-research-supporting-members|arce-member-tour-egypt|arce-statement-protection-cultural-heritage|archive|financial-information|for-students-institutions-granting-degrees|for-students-internship-opportunities|grants|programs-fieldwork|research-supporting-members-rsm-projects)(?:\/|$)/.test(
+      path,
+    ) ||
+    /^\/wp-content\/uploads\//.test(path) ||
+    !/\b(?:fellowships?|pre dissertation|caorc)\b/.test(sourceSignal)
+  );
+}
+
+function isNstgroCrawlerSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isNstgroAward =
+    /\bnstgro\b/.test(awardSignal) ||
+    (/\bspace technology\b/.test(awardSignal) && /\bgraduate research\b/.test(awardSignal));
+  if (!isNstgroAward) return false;
+
+  if (host === "nasa.gov") {
+    if (/^\/directorates\/spacetech\/strg\/nstgro\/?$/.test(path)) return false;
+    if (/^\/nasa-space-technology-graduate-research-opportunities-nstgro\/?$/.test(path)) return false;
+    return true;
+  }
+
+  if (host === "nspires.nasaprs.com" && /\bnstgro\b/.test(sourceSignal)) return false;
+
+  if (
+    host.endsWith(".nasa.gov") ||
+    [
+      "data.nasa.gov",
+      "earthdata.nasa.gov",
+      "chrome-extension",
+      "federalregister.gov",
+      "forum.earthdata.nasa.gov",
+      "gcc02.safelinks.protection.outlook.com",
+      "github.com",
+      "issnationallab.org",
+      "nasa.sharepoint.com",
+      "ntrs.nasa.gov",
+      "pds.mcp.nasa.gov",
+      "science.nasa.gov",
+      "sti.nasa.gov",
+      "technology.nasa.gov",
+      "ieeexplore.ieee.org",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  return /\b(?:planetary data system|earthdata|ntrs|pubspace|open science and data management|station|technology transfer|patent|roses|viking mission|webb reveals|whats up|grants policy|cooperative agreement manual|film documentary|merchandising|media guidelines|space technology research grants?)\b/.test(
+    sourceSignal,
+  );
+}
+
+function isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isMarcAward =
+    /\bmaximizing access to research careers\b/.test(awardSignal) ||
+    (/\bmarc\b/.test(awardSignal) && /\bundergraduate\b/.test(awardSignal) && /\bresearch\b/.test(awardSignal));
+  if (!isMarcAward) return false;
+
+  if (host === "grants.gov" && /^\/search-results-detail\/353267\/?$/.test(path)) return false;
+  if (host === "grants.nih.gov" && /^\/grants\/guide\/pa-files\/par-24-138\.html$/.test(path)) return false;
+  if (host === "grants.nih.gov" && /^\/grants\/guide\/notice-files\/not-gm-24-033\.html$/.test(path)) {
+    return false;
+  }
+  if (
+    host === "nigms.nih.gov" &&
+    /^\/loop\/2024\/04\/new-u-rise-and-marc-funding-opportunities-and-upcoming-webinar\/?$/.test(path)
+  ) {
+    return false;
+  }
+  if (
+    host === "nigms.nih.gov" &&
+    /\b(?:marc|maximizing access to research careers|u rise)\b/.test(sourceSignal)
+  ) {
+    return false;
+  }
+
+  if (
+    [
+      "grants.nih.gov",
+      "search.grants.nih.gov",
+      "grants1.nih.gov",
+      "grants2.nih.gov",
+      "era.nih.gov",
+      "enhancing-peer-review.nih.gov",
+      "public.csr.nih.gov",
+      "report.nih.gov",
+      "dpcpsi.nih.gov",
+      "nih.gov",
+      "cdn.clinicaltrials.gov",
+      "clinicaltrials.gov",
+      "cfo.gov",
+      "gpo.gov",
+      "frwebgate.access.gpo.gov",
+      "edocket.access.gpo.gov",
+      "obamawhitehouse.archives.gov",
+      "aphis.usda.gov",
+      "commed.vcu.edu",
+    ].includes(host)
+  ) {
+    return true;
+  }
+
+  if (host === "grants.gov" && !/\b(?:par 24 138|par-24-138|marc|maximizing access to research careers)\b/.test(sourceSignal)) {
+    return true;
+  }
+
+  return /\b(?:nih guide|weekly index|uniform administrative requirements|grants process|policy compliance|application guide|sf424|assist user guide|peer review|federal funding accountability|clinical trial|biosketch|forms-i|continuous submission|modular budget|submissionschedule|parent announcements|small business application)\b/.test(
+    sourceSignal,
+  );
 }
 
 function isOfficeOfScienceSiblingSpillover(host, path, directSignal, awardSignal) {
