@@ -188,6 +188,14 @@ function isGenericNonAwardDiscoveryUrl(parsed, host, path, directHaystack) {
     );
 
   if (
+    host === "nlm.nih.gov" &&
+    /^\/about\/training\/(?:associate|postgraduate)(?:\/|$)/.test(cleanPath) &&
+    /\b(?:associate fellowship|postgraduate fellowship|fellowship program|librarians?)\b/.test(directHaystack)
+  ) {
+    return false;
+  }
+
+  if (
     /\/(?:recipes?|cooking-school|nutrition|foodservice|manufacturers?|professionals?|professional-resources|certification|get-certified|recertification|technical-resources|on-demand|courses?|course-catalog|training|learning|ceu|webinars?|podcasts?|sunnyside-up)(?:\/|$)/.test(
       cleanPath,
     )
@@ -423,6 +431,145 @@ function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, rea
   if (isDoeAgencySpillover(host, cleanPath, directSignal, combinedSignal, awardSignal)) return true;
   if (isOfficeOfScienceSiblingSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isDoeExternalDiscoverySpillover(host, directSignal, combinedSignal, awardSignal)) return true;
+  if (isSahrTravelGrantSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
+  if (isNlmNcbiFellowshipSpillover(host, cleanPath, directSignal, awardSignal)) return true;
+  if (isCampusHelpdeskSpillover(host, cleanPath, directSignal, awardSignal)) return true;
+  if (isSshrcImmigrationSpillover(host, cleanPath, directSignal, awardSignal)) return true;
+
+  return false;
+}
+
+function isSahrTravelGrantSpillover(host, path, search, directSignal, awardSignal) {
+  if (host !== "sahr.org.uk") return false;
+  if (!/\b(?:society army historical|university travel grants?|university research travel grants?)\b/.test(awardSignal)) {
+    return false;
+  }
+
+  const sourceSignal = `${directSignal} ${path} ${search}`;
+  if (
+    /\b(?:university research grants?|university research travel grants?|urg rules?|urg)\b/.test(sourceSignal) ||
+    /^\/(?:university-research-grants|urg-rules)\.php$/.test(path)
+  ) {
+    return false;
+  }
+
+  return (
+    /\bsid=/.test(search) ||
+    /^\/(?:electronic-journal-faq|essay-prize-competition|publications|news|events?|login|membership)(?:\.php|\/|$)/.test(path) ||
+    !/\b(?:travel grants?|university research)\b/.test(sourceSignal)
+  );
+}
+
+function isNlmNcbiFellowshipSpillover(host, path, directSignal, awardSignal) {
+  const isNlmFellowshipAward =
+    /\b(?:national library medicine|nlm|postgraduate librarians?|associate fellowship)\b/.test(awardSignal) &&
+    /\b(?:fellowship|fellowships|postgraduate|associate)\b/.test(awardSignal);
+  if (!isNlmFellowshipAward) return false;
+
+  const sourceSignal = `${directSignal} ${path}`;
+  if (/\b(?:associate fellowship|postgraduate fellowship|nlm associate|librarians fellowship)\b/.test(sourceSignal)) {
+    return false;
+  }
+
+  if (host === "pubmed.ncbi.nlm.nih.gov" || host === "pmc.ncbi.nlm.nih.gov") return true;
+  if (host === "pubchem.ncbi.nlm.nih.gov" || host === "submit.ncbi.nlm.nih.gov") return true;
+  if (host === "ftp.ncbi.nlm.nih.gov" || host === "ftp.ncbi.nih.gov" || host === "support.nlm.nih.gov") return true;
+  if (host === "catalog.nlm.nih.gov" || host === "cde.nlm.nih.gov") return true;
+  if (host === "techbull.nlm.nih.gov") return true;
+  if (host === "acmg.net" || host === "icmje.org") return true;
+  if (
+    [
+      "cms.gov",
+      "fda.gov",
+      "genome.gov",
+      "imago.indiana.edu",
+      "equator-network.org",
+      "ceur-ws.org",
+    ].includes(host)
+  ) {
+    return true;
+  }
+  if (host === "github.com" && /^\/ncbi(?:\/|$)/.test(path)) return true;
+
+  if (host === "ncbi.nlm.nih.gov") {
+    return /^\/(?:portal|mesh|books|gene|nuccore|protein|snp|pmc|clinvar|taxonomy|genome|structure|pubmed|refseq|core|home|datasets|cdd|account|sites|sra|genbank|sutils|projects|biosample|medgen|nlmcatalog|gtr|mailman|assembly|entrez|gquery|tools|viewvc|websub|bioproject|nucleotide|\d{6,})(?:\/|$)/.test(
+      path,
+    );
+  }
+
+  if (host === "nlm.nih.gov") {
+    return (
+      /^\/(?:bsd|databases|research|pubs|web_policies|about\/collection-development|mesh|training|services|portals|medline|listserv|medlineplus|psd|docline)(?:\/|$)/.test(
+        path,
+      ) && !/\b(?:associate fellowship|postgraduate fellowship|fellowship program)\b/.test(sourceSignal)
+    );
+  }
+
+  return false;
+}
+
+function isCampusHelpdeskSpillover(host, path, directSignal, awardSignal) {
+  const isAtlasAward = /\b(?:accessible teaching learning assessment systems|atlas)\b/.test(awardSignal);
+  if (isAtlasAward) {
+    const sourceSignal = `${directSignal} ${path}`;
+    if (/\batlas\b.*\bresearch fellowship\b/.test(sourceSignal)) return false;
+    if (host === "atlas.ku.edu") return false;
+    if (host === "services.ku.edu" && /^\/tdclient\//.test(path)) return true;
+    if (host === "humanresources.ku.edu") return true;
+    if (host === "policy.ku.edu" || host === "admin.ks.gov") return true;
+    if (host === "ku.edu" || /(^|\.)ku\.edu$/.test(host) || /(^|\.)kumc\.edu$/.test(host)) return true;
+    if (/sharepoint\.com$/.test(host) && /(?:kansas|kumed|ku)/.test(host)) return true;
+    if (
+      [
+        "cisa.gov",
+        "dol.gov",
+        "gpo.gov",
+        "acq.osd.mil",
+        "cdc.gov",
+        "nvlpubs.nist.gov",
+        "google.com",
+        "lawrenceks.org",
+        "kansasregents.org",
+        "aphis.usda.gov",
+        "docs.google.com",
+        "grants.nih.gov",
+        "csrc.nist.gov",
+        "nam10.safelinks.protection.outlook.com",
+        "kuendowment.org",
+        "irs.gov",
+      ].includes(host)
+    ) {
+      return true;
+    }
+  }
+
+  const isFauHuntingtonAward = /\b(?:florida atlantic|huntington library|doctoral candidates?)\b/.test(awardSignal);
+  if (isFauHuntingtonAward) {
+    const sourceSignal = `${directSignal} ${path}`;
+    if (/\b(?:huntington library|short term fellowship|doctoral candidates?)\b/.test(sourceSignal)) return false;
+    if (host === "helpdesk.fau.edu" && /^\/tdclient\//.test(path)) return true;
+    if (host === "helpdesk.fau.edu") return true;
+  }
+
+  return false;
+}
+
+function isSshrcImmigrationSpillover(host, path, directSignal, awardSignal) {
+  const isSshrcAward = /\b(?:sshrc|social science humanities research council|doctoral fellowships?)\b/.test(
+    awardSignal,
+  );
+  if (!isSshrcAward) return false;
+
+  const sourceSignal = `${directSignal} ${path}`;
+  if (/\b(?:sshrc|crsh|doctoral fellowships?|talent program|graduate scholarships?)\b/.test(sourceSignal)) {
+    return false;
+  }
+
+  if (host === "sshrc-crsh.canada.ca") return false;
+  if (host === "ircc.canada.ca" || host === "cic.gc.ca" || host === "ircc-services.canada.ca") return true;
+  if (host === "canada.ca") return true;
+  if (host === "nserc-crsng.canada.ca" || host === "cihr-irsc.gc.ca" || host === "sin-nas.canada.ca") return true;
+  if (host === "helpx.adobe.com") return true;
 
   return false;
 }

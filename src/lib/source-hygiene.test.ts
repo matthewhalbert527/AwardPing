@@ -705,6 +705,147 @@ describe("source hygiene classifier", () => {
     }
   });
 
+  it("rejects high-volume official-domain spillover discovered in source count audits", () => {
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.sahr.org.uk/electronic-journal-faq.php?sid=fb9d7a",
+        title: "Electronic Journal FAQs",
+        page_type: "faq",
+        award_name: "Society for Army Historical Research - University Research Travel Grants",
+      }),
+    ).toMatchObject({ action: "review_later", reason: "official_domain_spillover" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.sahr.org.uk/university-research-travel-grants.php",
+        title: "University Research Travel Grants",
+        page_type: "homepage",
+        award_name: "Society for Army Historical Research - University Research Travel Grants",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    for (const example of [
+      {
+        url: "https://pubmed.ncbi.nlm.nih.gov/32662519/",
+        title: "A published PubMed article",
+        award_name: "National Library of Medicine (NLM) - Postgraduate Fellowship Program for Librarians",
+      },
+      {
+        url: "https://www.ncbi.nlm.nih.gov/portal/utils/pageresolver.fcgi?recordid=123",
+        title: "NCBI Page Resolver",
+        award_name: "Associate Fellowship Program",
+      },
+      {
+        url: "https://www.ncbi.nlm.nih.gov/mesh/limits?term=Guideline%20Adherence",
+        title: "MeSH limits",
+        award_name: "Associate Fellowship Program",
+      },
+      {
+        url: "https://www.ncbi.nlm.nih.gov/RefSeq/",
+        title: "Reference Sequences",
+        award_name: "Associate Fellowship Program",
+      },
+      {
+        url: "https://www.nlm.nih.gov/portals/librarians.html",
+        title: "For Librarians",
+        award_name: "National Library of Medicine (NLM) - Postgraduate Fellowship Program for Librarians",
+      },
+      {
+        url: "https://techbull.nlm.nih.gov/vivisimo/cgi-bin/query-meta?v%3Aproject=technical-bulletin-date&binning-state=product==PubMed",
+        title: "PUBMED",
+        award_name: "National Library of Medicine (NLM) - Postgraduate Fellowship Program for Librarians",
+      },
+      {
+        url: "https://github.com/ncbi/sra-tools/wiki/01.-Downloading-SRA-Toolkit",
+        title: "Download SRA Toolkit",
+        award_name: "Associate Fellowship Program",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.nlm.nih.gov/about/training/associate/",
+        title: "NLM Associate Fellowship Program",
+        page_type: "homepage",
+        award_name: "Associate Fellowship Program",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    for (const example of [
+      {
+        url: "https://services.ku.edu/TDClient/818/Portal/KB/ArticleDet?ID=21168",
+        title: "Faculty Code",
+        award_name:
+          "University of Kansas - Accessible Teaching, Learning, and Assessment Systems (ATLAS) - Research Fellowship",
+      },
+      {
+        url: "https://ku.edu/admissions",
+        title: "Apply",
+        award_name:
+          "University of Kansas - Accessible Teaching, Learning, and Assessment Systems (ATLAS) - Research Fellowship",
+      },
+      {
+        url: "https://www.cisa.gov/sites/default/files/publications/GETS-WPS%20User%20Organization%20Responsibilities_0.pdf",
+        title: "GETS-WPS User Organization Responsibilities",
+        page_type: "pdf",
+        award_name:
+          "University of Kansas - Accessible Teaching, Learning, and Assessment Systems (ATLAS) - Research Fellowship",
+      },
+      {
+        url: "https://kansas.sharepoint.com/teams/our-resources/Course%20%20Room%20Scheduling%20Resources/Forms/AllItems.aspx",
+        title: "Instruction Mode Help Sheet",
+        page_type: "pdf",
+        award_name:
+          "University of Kansas - Accessible Teaching, Learning, and Assessment Systems (ATLAS) - Research Fellowship",
+      },
+      {
+        url: "https://helpdesk.fau.edu/TDClient/2061/Portal/KB/ArticleDet?ID=123",
+        title: "How to connect to Wi-Fi",
+        award_name: "Florida Atlantic-Huntington Library Short-Term Fellowship for Doctoral Candidates",
+      },
+      {
+        url: "https://www.canada.ca/en/immigration-refugees-citizenship/services/study-canada/work/after-graduation.html",
+        title: "Work in Canada after graduation",
+        award_name: "Social Science and Humanities Research Council of Canada (SSHRC) - Doctoral Fellowships",
+      },
+      {
+        url: "https://ircc.canada.ca/english/helpcentre/answer.asp?qnum=514",
+        title: "Help Centre answer",
+        award_name: "Social Science and Humanities Research Council of Canada (SSHRC) - Doctoral Fellowships",
+      },
+      {
+        url: "https://www.canada.ca/en/services/benefits/education/student-aid.html",
+        title: "Apply for student loans and grants",
+        award_name: "Social Science and Humanities Research Council of Canada (SSHRC) - Doctoral Fellowships",
+      },
+      {
+        url: "https://nserc-crsng.canada.ca/sites/default/files/2026-04/grant-amendment-form-e.pdf",
+        title: "Grant Amendment Form",
+        page_type: "pdf",
+        award_name: "Social Science and Humanities Research Council of Canada (SSHRC) - Doctoral Fellowships",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.sshrc-crsh.gc.ca/funding-financement/programs-programmes/fellowships/doctoral-doctorat-eng.aspx",
+        title: "SSHRC Doctoral Fellowships",
+        page_type: "homepage",
+        award_name: "Social Science and Humanities Research Council of Canada (SSHRC) - Doctoral Fellowships",
+      }),
+    ).toMatchObject({ action: "keep" });
+  });
+
   it("rejects DAAD duplicate print PDFs and broad academic PDF spillover", () => {
     expect(
       shouldRejectDiscoveredSource({

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildPostCrawlCleanupModel, cleanupActions } from "../../scripts/source-cleanup-core.mjs";
+import {
+  buildPostCrawlCleanupModel,
+  canonicalSourceUrlKey,
+  cleanupActions,
+} from "../../scripts/source-cleanup-core.mjs";
 import { classifySourceForConsolidation } from "../../scripts/source-consolidation-core.mjs";
 
 const award = {
@@ -67,6 +71,30 @@ describe("post-crawl source cleanup classification", () => {
     ];
 
     expect(actionFor(rows, "remove")?.action).toBe(cleanupActions.safeToRemove);
+  });
+
+  it("treats sid query parameters as duplicate session URLs", () => {
+    expect(canonicalSourceUrlKey("https://www.sahr.org.uk/urg-rules.php?sid=abc123")).toBe(
+      canonicalSourceUrlKey("https://sahr.org.uk/urg-rules.php?sid=def456"),
+    );
+
+    const rows = [
+      source({
+        id: "keep",
+        url: "https://www.sahr.org.uk/university-research-grants.php",
+        title: "University Research Grants",
+        confidence: 0.9,
+      }),
+      source({
+        id: "remove",
+        url: "https://www.sahr.org.uk/university-research-grants.php?sid=abc123",
+        title: "University Research Grants",
+        confidence: 0.8,
+      }),
+    ];
+
+    expect(actionFor(rows, "remove")?.action).toBe(cleanupActions.safeToRemove);
+    expect(actionFor(rows, "remove")?.reason).toBe("duplicate_source");
   });
 
   it("marks broad root agency homepages for replacement unless an award page remains", () => {

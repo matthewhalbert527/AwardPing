@@ -461,7 +461,7 @@ function canonicalSearchParams(searchParams) {
     const key = rawKey.toLowerCase();
     const value = rawValue.trim();
     if (!key || key.startsWith("utm_")) continue;
-    if (["fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "share", "replytocom"].includes(key)) continue;
+    if (["fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "share", "replytocom", "sid"].includes(key)) continue;
     if (["lang", "locale", "view", "campaign"].includes(key)) continue;
     if (key === "page" && (!value || value === "1")) continue;
     if (key === "s" && !value) continue;
