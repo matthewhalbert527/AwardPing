@@ -25,6 +25,9 @@ const addMissingHomepages = boolArg(args["add-missing-homepages"], true);
 const safetyMode = String(args.safety || "safe").trim().toLowerCase();
 const batchSize = positiveInt(args["batch-size"], 200);
 const titleConcurrency = positiveInt(args["title-concurrency"], 8);
+const targetAwardIds = csvList(args["award-ids"]);
+const targetAwardSlugs = csvList(args["award-slugs"]);
+const hasTargetAwards = targetAwardIds.length > 0 || targetAwardSlugs.length > 0;
 const outputPrefix =
   args["output-prefix"] ||
   join(root, "reports", `full-source-cleanup-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -42,18 +45,29 @@ const supabase = createSupabaseServiceClient(
 );
 
 console.log(
-  `Full source cleanup; apply=${apply}; safety=${safetyMode}; moveReviewLater=${moveReviewLater}; cleanupTitles=${cleanupTitles}; addMissingHomepages=${addMissingHomepages}.`,
+  `Full source cleanup; apply=${apply}; safety=${safetyMode}; moveReviewLater=${moveReviewLater}; cleanupTitles=${cleanupTitles}; addMissingHomepages=${addMissingHomepages}; targetAwardIds=${targetAwardIds.length}; targetAwardSlugs=${targetAwardSlugs.length}.`,
 );
 
-const [awards, loadedSources] = await Promise.all([
-  loadActiveAwards(),
-  loadActiveAwardSources(),
+const awards = await loadActiveAwards({ ids: targetAwardIds, slugs: targetAwardSlugs });
+if (hasTargetAwards && awards.length === 0) {
+  throw new Error("No active awards matched the requested --award-ids/--award-slugs target.");
+}
+const scopedAwardIds = awards.map((award) => award.id);
+const [openSourceRows, homepageSourceRows] = await Promise.all([
+  loadActiveAwardSources({ reviewStatus: "open", awardIds: scopedAwardIds }),
+  addMissingHomepages
+    ? loadActiveAwardHomepageKeys({ awardIds: scopedAwardIds })
+    : Promise.resolve([]),
 ]);
 
 const awardsById = new Map(awards.map((award) => [award.id, award]));
 const activeAwardIds = new Set(awards.map((award) => award.id));
-const allSources = dedupeById(loadedSources).filter((source) => activeAwardIds.has(source.shared_award_id));
-const openSources = allSources.filter((source) => source.admin_review_status === "open");
+const openSources = dedupeById(openSourceRows).filter((source) => activeAwardIds.has(source.shared_award_id));
+const allSources = addMissingHomepages
+  ? dedupeById([...openSources, ...homepageSourceRows]).filter((source) =>
+      activeAwardIds.has(source.shared_award_id),
+    )
+  : openSources;
 const duplicateLoserIds = findDuplicateLoserIds(openSources);
 const now = new Date().toISOString();
 
@@ -532,26 +546,102 @@ async function upsertHomepageSources(rows) {
   return upserted;
 }
 
-async function loadActiveAwards() {
-  return loadPaged(() =>
-    supabase
+async function loadActiveAwards(options = {}) {
+  if (options.ids?.length && options.slugs?.length) {
+    const [byId, bySlug] = await Promise.all([
+      loadActiveAwards({ ids: options.ids }),
+      loadActiveAwards({ slugs: options.slugs }),
+    ]);
+    return dedupeById([...byId, ...bySlug]);
+  }
+
+  return loadPaged(() => {
+    let query = supabase
       .from("shared_awards")
       .select("id,name,slug,official_homepage,status")
-      .eq("status", "active")
-      .order("name", { ascending: true }),
-  );
+      .eq("status", "active");
+    if (options.ids?.length) {
+      query = query.in("id", options.ids);
+    }
+    if (options.slugs?.length) {
+      query = query.in("slug", options.slugs);
+    }
+    return query.order("id", { ascending: true });
+  });
 }
 
-async function loadActiveAwardSources() {
-  return loadPaged(() =>
-    supabase
+async function loadActiveAwardSources(options = {}) {
+  if (options.awardIds?.length) {
+    const rows = [];
+    for (const awardId of options.awardIds) {
+      rows.push(
+        ...(await loadActiveAwardSources({
+          ...options,
+          awardIds: [],
+          awardId,
+        })),
+      );
+    }
+    return rows;
+  }
+
+  if (options.awardId) {
+    return loadSourceRowsForSingleAward(() => {
+      let query = supabase
+        .from("shared_award_sources")
+        .select(
+          "id,shared_award_id,url,title,display_title,page_description,page_type,reason,last_error,admin_review_status",
+        )
+        .eq("shared_award_id", options.awardId);
+      if (options.reviewStatus) {
+        query = query.eq("admin_review_status", options.reviewStatus);
+      }
+      return query;
+    });
+  }
+
+  return loadSourceRowsById(() => {
+    let query = supabase
       .from("shared_award_sources")
       .select(
-        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_type,confidence,reason,source,last_error,last_checked_at,consecutive_failures,admin_review_status,created_at,updated_at",
-      )
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true }),
-  );
+        "id,shared_award_id,url,title,display_title,page_description,page_type,reason,last_error,admin_review_status",
+      );
+    if (options.reviewStatus) {
+      query = query.eq("admin_review_status", options.reviewStatus);
+    }
+    return query;
+  });
+}
+
+async function loadActiveAwardHomepageKeys(options = {}) {
+  if (options.awardIds?.length) {
+    const rows = [];
+    for (const awardId of options.awardIds) {
+      rows.push(
+        ...(await loadActiveAwardHomepageKeys({
+          ...options,
+          awardIds: [],
+          awardId,
+        })),
+      );
+    }
+    return rows;
+  }
+
+  if (options.awardId) {
+    return loadSourceRowsForSingleAward(() =>
+      supabase
+        .from("shared_award_sources")
+        .select("id,shared_award_id,url,admin_review_status")
+        .eq("shared_award_id", options.awardId),
+    );
+  }
+
+  return loadSourceRowsById(() => {
+    return supabase
+      .from("shared_award_sources")
+      .select("id,shared_award_id,url,admin_review_status");
+  });
 }
 
 async function countOpenSources() {
@@ -569,6 +659,42 @@ async function loadPaged(makeQuery) {
   for (let from = 0; ; from += pageSize) {
     const { data, error } = await makeQuery().range(from, from + pageSize - 1);
     if (error) throw new Error(`Supabase load failed: ${error.message}`);
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+  }
+  return rows;
+}
+
+async function loadSourceRowsById(makeQuery) {
+  const rows = [];
+  const pageSize = 1000;
+  let lastId = null;
+
+  for (;;) {
+    let query = makeQuery().order("id", { ascending: true }).limit(pageSize);
+    if (lastId) {
+      query = query.gt("id", lastId);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Supabase source load failed: ${error.message}`);
+    rows.push(...(data || []));
+    if (!data || data.length < pageSize) break;
+    lastId = data.at(-1).id;
+  }
+
+  return rows;
+}
+
+async function loadSourceRowsForSingleAward(makeQuery) {
+  const rows = [];
+  const pageSize = 1000;
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await makeQuery()
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw new Error(`Supabase source load failed: ${error.message}`);
     rows.push(...(data || []));
     if (!data || data.length < pageSize) break;
   }
@@ -1169,4 +1295,12 @@ function boolArg(value, fallback) {
 function positiveInt(value, fallback) {
   const parsed = Number.parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function csvList(value) {
+  if (value === undefined || value === null || value === "") return [];
+  return String(value)
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
