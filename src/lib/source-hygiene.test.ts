@@ -1079,6 +1079,58 @@ describe("source hygiene classifier", () => {
         award_name: "MARC Undergraduate Student Training in Academic Research",
       },
       {
+        url: "https://www.wilsoncenter.org/research-fellowship",
+        title: "Wilson Center Research Fellowship",
+        award_name:
+          "Wilson Center / Kennan Institute - Short-Term Travel Grants for Research on Russia & the Former Soviet Union",
+      },
+      {
+        url: "https://www.wilsoncenter.org/article/infographic-russias-illegal-annexation-crimea",
+        title: "Infographic | Russia's Illegal Annexation of Crimea",
+        award_name:
+          "Wilson Center / Kennan Institute - Short-Term Travel Grants for Research on Russia & the Former Soviet Union",
+      },
+      {
+        url: "https://www.wilsoncenter.org/sites/default/files/media/uploads/documents/FY2020_Audited_Financial_Statement.pdf",
+        title: "FY 2020 Audited Financial Statement",
+        page_type: "pdf",
+        award_name:
+          "Wilson Center / Kennan Institute - Short-Term Travel Grants for Research on Russia & the Former Soviet Union",
+      },
+      {
+        url: "https://www.osce.org/files/f/documents/e/2/13380.pdf",
+        title: "2002 OSCE budget",
+        page_type: "pdf",
+        award_name:
+          "Wilson Center / Kennan Institute - Short-Term Travel Grants for Research on Russia & the Former Soviet Union",
+      },
+      {
+        url: "https://www.salliemae.com/college-planning/financial-aid/fafsa/",
+        title: "FAFSA 2026-27 - Sallie Mae",
+        award_name:
+          "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
+      },
+      {
+        url: "https://apply2.salliemae.com/s/who-are-you?dtd_cell=SMLRSOPANLNLEFOTAGZ1005N030013",
+        title: "Apply for a loan",
+        award_name:
+          "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
+      },
+      {
+        url: "https://46610517.fs1.hubspotusercontent-na1.net/hubfs/46610517/2K-scholarship/2K-No-Essay-Scholarship-by-Sallie-Sweepstakes-Official-Rules.pdf",
+        title: "Official Rules",
+        page_type: "pdf",
+        award_name:
+          "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
+      },
+      {
+        url: "https://www.irs.gov/pub/irs-prior/p970--2024.pdf",
+        title: "Tax Benefits for Education",
+        page_type: "pdf",
+        award_name:
+          "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
+      },
+      {
         url: "https://www.fau.edu/admissions/documents/international-student-guide.pdf",
         title: "International Student Guide",
         page_type: "pdf",
@@ -1218,6 +1270,34 @@ describe("source hygiene classifier", () => {
         title: "Maximizing Access to Research Careers (MARC) (T34)",
         page_type: "homepage",
         award_name: "MARC Undergraduate Student Training in Academic Research",
+      },
+      {
+        url: "http://www.wilsoncenter.org/opportunity/kennan-institute-short-term-grant",
+        title: "Kennan Institute Short-Term Grant",
+        page_type: "homepage",
+        award_name:
+          "Wilson Center / Kennan Institute - Short-Term Travel Grants for Research on Russia & the Former Soviet Union",
+      },
+      {
+        url: "https://www.wilsoncenter.org/opportunity/kennan-institute-title-viii-supported-short-term-grant",
+        title: "Kennan Institute Title VIII-Supported Short-Term Grant",
+        page_type: "homepage",
+        award_name:
+          "Wilson Center / Kennan Institute - Short-Term Travel Grants for Research on Russia & the Former Soviet Union",
+      },
+      {
+        url: "https://www.salliemae.com/landing/bridging-the-dream-for-graduates/",
+        title: "Bridging the Dream Scholarship Program",
+        page_type: "homepage",
+        award_name:
+          "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
+      },
+      {
+        url: "https://www.salliemae.com/content/dam/slm/writtencontent/Corporate/2026-2027_BTD_Grad_Official_Rules.pdf",
+        title: "Official Rules",
+        page_type: "pdf",
+        award_name:
+          "Sallie Mae Fund / Thurgood Marshall College Fund (TMCF) - Bridging the Dream Scholarship Program for Graduate Students",
       },
       {
         url: "https://www.fau.edu/artsandletters/huntington-library-short-term-fellowship/",

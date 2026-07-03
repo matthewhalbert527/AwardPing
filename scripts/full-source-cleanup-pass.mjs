@@ -699,11 +699,11 @@ async function loadSourceRowsById(makeQuery) {
 async function loadSourceRowsForSingleAward(makeQuery) {
   const rows = [];
   let pageSize = sourcePageSize;
-  let lastCreatedAt = null;
+  let lastId = null;
   for (;;) {
-    let query = makeQuery().order("created_at", { ascending: true }).limit(pageSize);
-    if (lastCreatedAt) {
-      query = query.gt("created_at", lastCreatedAt);
+    let query = makeQuery().order("id", { ascending: true }).limit(pageSize);
+    if (lastId) {
+      query = query.gt("id", lastId);
     }
     const { data, error } = await query;
     if (error) {
@@ -718,11 +718,11 @@ async function loadSourceRowsForSingleAward(makeQuery) {
     }
     rows.push(...(data || []));
     if (!data || data.length < pageSize) break;
-    const nextCreatedAt = data.at(-1)?.created_at;
-    if (!nextCreatedAt || nextCreatedAt === lastCreatedAt) {
+    const nextId = data.at(-1)?.id;
+    if (!nextId || nextId === lastId) {
       throw new Error("Supabase source load failed: targeted pagination cursor did not advance");
     }
-    lastCreatedAt = nextCreatedAt;
+    lastId = nextId;
   }
   return rows;
 }

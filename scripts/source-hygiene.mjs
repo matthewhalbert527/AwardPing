@@ -968,6 +968,8 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   if (isArcePreDissertationTravelGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isNstgroCrawlerSpillover(host, path, search, sourceSignal, awardSignal)) return true;
   if (isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isWilsonKennanShortTermGrantSpillover(host, path, search, sourceSignal, awardSignal)) return true;
+  if (isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSignal, awardSignal)) return true;
 
   if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
     return !/\bertegun\b/.test(sourceSignal);
@@ -1272,6 +1274,53 @@ function isMarcUndergraduateTrainingSpillover(host, path, search, sourceSignal, 
   return /\b(?:nih guide|weekly index|uniform administrative requirements|grants process|policy compliance|application guide|sf424|assist user guide|peer review|federal funding accountability|clinical trial|biosketch|forms-i|continuous submission|modular budget|submissionschedule|parent announcements|small business application)\b/.test(
     sourceSignal,
   );
+}
+
+function isWilsonKennanShortTermGrantSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isKennanShortTermGrant =
+    /\bkennan\b/.test(awardSignal) &&
+    /\bshort term\b/.test(awardSignal) &&
+    /\b(?:travel grants?|title viii|russia|former soviet)\b/.test(awardSignal);
+  if (!isKennanShortTermGrant) return false;
+
+  if (host === "wilsoncenter.org") {
+    if (/^\/opportunity\/kennan-institute(?:-title-viii-supported)?-short-term-grant\/?$/.test(path)) {
+      return false;
+    }
+    return true;
+  }
+
+  if (host === "kennaninstitute.org") {
+    return !/\b(?:short term grant|short-term grant|title viii)\b/.test(sourceSignal);
+  }
+
+  return true;
+}
+
+function isSallieMaeBridgingDreamGraduateSpillover(host, path, search, sourceSignal, awardSignal) {
+  const isBridgingDreamGraduateAward =
+    /\bbridging the dream\b/.test(awardSignal) &&
+    /\bgraduate\b/.test(awardSignal) &&
+    /\b(?:sallie mae|tmcf|thurgood marshall)\b/.test(awardSignal);
+  if (!isBridgingDreamGraduateAward) return false;
+
+  if (host === "salliemae.com") {
+    if (/^\/landing\/bridging-the-dream-for-graduates\/?$/.test(path)) return false;
+    if (
+      /^\/content\/dam\/slm\/writtencontent\/corporate\/(?:20\d{2}-20\d{2}_)?btd_grad_official_rules\.pdf$/.test(
+        path,
+      )
+    ) {
+      return false;
+    }
+    return true;
+  }
+
+  if (host === "tmcf.org" || host.endsWith(".tmcf.org")) {
+    return !/\b(?:bridging the dream|graduate scholarship)\b/.test(sourceSignal);
+  }
+
+  return true;
 }
 
 function isOfficeOfScienceSiblingSpillover(host, path, directSignal, awardSignal) {
