@@ -846,6 +846,234 @@ describe("source hygiene classifier", () => {
     ).toMatchObject({ action: "keep" });
   });
 
+  it("rejects high-count crawler spillover without removing the real award source", () => {
+    for (const example of [
+      {
+        url: "https://portal.sds.ox.ac.uk/ndownloader/files/43521618",
+        title: "Download file",
+        page_type: "pdf",
+        award_name: "Ertegun Graduate Scholarship Programme in the Humanities",
+      },
+      {
+        url: "https://portal.sds.ox.ac.uk/stats?groupId=47136",
+        title: "more stats...",
+        award_name: "Ertegun Graduate Scholarship Programme in the Humanities",
+      },
+      {
+        url: "https://www.earth.ox.ac.uk/themes/planetary-evolution-and-materials?page-4743376=1",
+        title: "previous",
+        award_name: "Ertegun Graduate Scholarship Programme in the Humanities",
+      },
+      {
+        url: "https://societyforhealthpsychology.org/read/articles-resources/f-ces-or-communications-or-diversity-multiculturalism-or-member-benefits/",
+        title: "Diversity & Multiculturalism",
+        award_name: "Society for Health Psychology Graduate Student Research Awards",
+      },
+      {
+        url: "https://societyforhealthpsychology.org/articles-resources/student-advisory-council/overview-of-the-internship-application-process/",
+        title: "overview of the internship application process",
+        award_name: "Society for Health Psychology Graduate Student Research Awards",
+      },
+      {
+        url: "https://www.usda.gov/guidance?f%5B0%5D=topic%3A8488&f%5B1%5D=topic%3A9046",
+        title: "Application Processing (1)",
+        award_name:
+          "U.S. Department of Agriculture National Institute of Food and Agriculture (USDA-NIFA) - Agriculture and Food Research Initiative - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.nrcs.usda.gov/resources/guides-and-instructions/access-road-ft-560-conservation-practice-standard",
+        title: "Access Road (Ft.) (560)",
+        award_name:
+          "U.S. Department of Agriculture National Institute of Food and Agriculture (USDA-NIFA) - Agriculture and Food Research Initiative - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.nist.gov/document/nist2015diffusionworkshop-nasapptx",
+        title: "Developing Diffusion Experiments for Space: Possibilities",
+        page_type: "pdf",
+        award_name:
+          "National Institutes of Standards and Technology Summer Undergraduate Research Fellowship",
+      },
+      {
+        url: "https://mgi.nist.gov/webform/page_feedback?page=https://www.nist.gov/mgi",
+        title: "Was this page helpful?",
+        award_name:
+          "National Institutes of Standards and Technology Summer Undergraduate Research Fellowship",
+      },
+      {
+        url: "https://www.nist.gov/webform/page_feedback?page=https://www.nist.gov/mml/materials-science-and-engineering-division",
+        title: "Was this page helpful?",
+        award_name:
+          "National Institutes of Standards and Technology Summer Undergraduate Research Fellowship",
+      },
+      {
+        url: "https://www.ala.org/cite?query=node/12074&title=Guidelines%20for%20University%20Library%20Services",
+        title: "CITE",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/rusa/guidelines/interlibrary",
+        title: "Interlibrary Loan Code for the United States.",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://journals.ala.org/index.php/rusq/article/download/3159/3291",
+        title: "Download this PDF file",
+        page_type: "pdf",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://portal.zedat.fu-berlin.de/idp-fub/profile/SAML2/Redirect/SSO;__Host-JSESSIONID=123?execution=e1s1&lang=en",
+        title: "English",
+        award_name:
+          "Freie Universitat Berlin - Berlin Program for Advanced German and European Studies - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://identity.fu-berlin.de/themen/e-research/news-thema-e-research/2026-06-19-comute-workshop.html",
+        title: "COMUTE Workshop",
+        award_name:
+          "Freie Universitat Berlin - Berlin Program for Advanced German and European Studies - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.fu-berlin.de/studium/bewerbung/immatrikulation/FAQ/Promotion/index.html?irq=0&next=en",
+        title: "English",
+        award_name:
+          "Freie Universitat Berlin - Berlin Program for Advanced German and European Studies - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.exeter.ac.uk/study/accommodation/room-finder/penncourt/",
+        title: "Pennsylvania Court",
+        award_name: "University of Exeter Global Excellence Scholarship",
+      },
+      {
+        url: "https://www.exeter.ac.uk/our-campuses/streatham-campus/",
+        title: "Streatham Campus in Exeter",
+        award_name: "University of Exeter Global Excellence Scholarship",
+      },
+      {
+        url: "https://funding.exeter.ac.uk/apply/step1/?award=2750",
+        title: "Apply here",
+        award_name: "University of Exeter Global Excellence Scholarship",
+      },
+      {
+        url: "https://nij.ojp.gov/funding/O-NIJ-2024-171966.pdf",
+        title: "O NIJ 2024 171966",
+        page_type: "pdf",
+        award_name: "NIJ Graduate Research Fellowship",
+      },
+      {
+        url: "https://nij.ojp.gov/funding/opportunities/o-nij-2025-172615",
+        title: "NIJ FY25 Research and Evaluation of Artificial Intelligence for Criminal Justice Purposes",
+        award_name: "NIJ Graduate Research Fellowship",
+      },
+      {
+        url: "https://bja.ojp.gov/program/it/global",
+        title: "Global Justice Information Sharing Initiative",
+        award_name: "NIJ Graduate Research Fellowship",
+      },
+      {
+        url: "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/how-to-participate/person-profile/n003dhsk",
+        title: "Christos VAITSIS, Mr",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://ec.europa.eu/info/funding-tenders/opportunities/portal/screen/support/faq/21983",
+        title: "Funding & Tenders Portal two-factor authentication",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://www.fau.edu/admissions/documents/international-student-guide.pdf",
+        title: "International Student Guide",
+        page_type: "pdf",
+        award_name: "Florida Atlantic-Huntington Library Short-Term Fellowship for Doctoral Candidates",
+      },
+      {
+        url: "https://www.fau.edu/uas/pdf/DARS.pdf",
+        title: "pdf instructions",
+        page_type: "pdf",
+        award_name: "Florida Atlantic-Huntington Library Short-Term Fellowship for Doctoral Candidates",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({
+        action: "review_later",
+        reason: "official_domain_spillover",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.ox.ac.uk/ertegun",
+        title: "Ertegun Graduate Scholarship Programme",
+        page_type: "homepage",
+        award_name: "Ertegun Graduate Scholarship Programme in the Humanities",
+      },
+      {
+        url: "https://societyforhealthpsychology.org/awards/graduate-student-research-awards/",
+        title: "Graduate Student Research Awards",
+        page_type: "homepage",
+        award_name: "Society for Health Psychology Graduate Student Research Awards",
+      },
+      {
+        url: "https://www.nifa.usda.gov/grants/programs/agriculture-food-research-initiative-afri",
+        title: "Agriculture and Food Research Initiative",
+        page_type: "homepage",
+        award_name:
+          "U.S. Department of Agriculture National Institute of Food and Agriculture (USDA-NIFA) - Agriculture and Food Research Initiative - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.nist.gov/surf",
+        title: "Summer Undergraduate Research Fellowship (SURF)",
+        page_type: "homepage",
+        award_name:
+          "National Institutes of Standards and Technology Summer Undergraduate Research Fellowship",
+      },
+      {
+        url: "https://www.ala.org/educationcareers/scholarships",
+        title: "ALA Scholarships",
+        page_type: "homepage",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/aboutala/offices/hrdr/scholarshipprgm/faqalascholarship",
+        title: "Frequently Asked Questions (FAQ)",
+        page_type: "faq",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.fu-berlin.de/sites/bprogram/",
+        title: "Berlin Program for Advanced German and European Studies",
+        page_type: "homepage",
+        award_name:
+          "Freie Universitat Berlin - Berlin Program for Advanced German and European Studies - Dissertation & Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.exeter.ac.uk/study/funding/award/?id=5612",
+        title: "Exeter Excellence Scholarships",
+        page_type: "homepage",
+        award_name: "University of Exeter Global Excellence Scholarship",
+      },
+      {
+        url: "https://nij.ojp.gov/funding/opportunities/graduate-research-fellowship",
+        title: "NIJ Graduate Research Fellowship",
+        page_type: "homepage",
+        award_name: "NIJ Graduate Research Fellowship",
+      },
+      {
+        url: "https://erasmus-plus.ec.europa.eu/opportunities/opportunities-for-individuals/students/erasmus-mundus-joint-masters",
+        title: "Erasmus Mundus Joint Masters",
+        page_type: "homepage",
+        award_name: "Erasmus Mundus Joint Masters Degrees",
+      },
+      {
+        url: "https://www.fau.edu/artsandletters/huntington-library-short-term-fellowship/",
+        title: "Huntington Library Short-Term Fellowship for Doctoral Candidates",
+        page_type: "homepage",
+        award_name: "Florida Atlantic-Huntington Library Short-Term Fellowship for Doctoral Candidates",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource(example)).toMatchObject({ action: "keep" });
+    }
+  });
+
   it("rejects DAAD duplicate print PDFs and broad academic PDF spillover", () => {
     expect(
       shouldRejectDiscoveredSource({

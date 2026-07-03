@@ -435,6 +435,7 @@ function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, rea
   if (isNlmNcbiFellowshipSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isCampusHelpdeskSpillover(host, cleanPath, directSignal, awardSignal)) return true;
   if (isSshrcImmigrationSpillover(host, cleanPath, directSignal, awardSignal)) return true;
+  if (isHighVolumeAwardCrawlerSpillover(host, cleanPath, search, directSignal, awardSignal)) return true;
 
   return false;
 }
@@ -570,6 +571,159 @@ function isSshrcImmigrationSpillover(host, path, directSignal, awardSignal) {
   if (host === "canada.ca") return true;
   if (host === "nserc-crsng.canada.ca" || host === "cihr-irsc.gc.ca" || host === "sin-nas.canada.ca") return true;
   if (host === "helpx.adobe.com") return true;
+
+  return false;
+}
+
+function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awardSignal) {
+  const sourceSignal = `${directSignal} ${path} ${search}`;
+
+  if (/\bertegun\b/.test(awardSignal) && (host === "portal.sds.ox.ac.uk" || host === "ox.ac.uk" || host.endsWith(".ox.ac.uk"))) {
+    return !/\bertegun\b/.test(sourceSignal);
+  }
+
+  if (
+    /\bhealth psychology\b/.test(awardSignal) &&
+    /\bgraduate student research\b/.test(awardSignal) &&
+    host === "societyforhealthpsychology.org" &&
+    /^\/(?:read\/articles-resources|articles-resources\/student-advisory-council|job|membership|equicare|get-involved|wp-content\/uploads)(?:\/|$)/.test(
+      path,
+    )
+  ) {
+    return !/\b(?:graduate student research|student research awards?|research awards?|award applications?)\b/.test(
+      sourceSignal,
+    );
+  }
+
+  if (/\b(?:afri|agriculture and food research initiative|agriculture food research initiative)\b/.test(awardSignal)) {
+    if ((host === "usda.gov" || host === "nifa.usda.gov") && /^\/(?:guidance|resources)\/?$/.test(path)) {
+      return /\bf%5b|f\[|topic%3a|resource_type%3a/.test(search);
+    }
+    if (host === "nrcs.usda.gov") return true;
+    if (
+      host === "usda.gov" &&
+      /^\/(?:sites\/default\/files\/guidance-documents|guidance)(?:\/|$)/.test(path) &&
+      !/\b(?:afri|agriculture food research initiative|dissertation|postdoctoral|fellowships?)\b/.test(sourceSignal)
+    ) {
+      return true;
+    }
+  }
+
+  if (
+    /\b(?:nist|standards technology|summer undergraduate research|surf)\b/.test(awardSignal) &&
+    /\b(?:summer undergraduate research|surf)\b/.test(awardSignal)
+  ) {
+    if (/\b(?:summer undergraduate research|surf)\b/.test(sourceSignal)) return false;
+    if (
+      (host === "nist.gov" || host === "mgi.nist.gov") &&
+      /^\/(?:webform|document|mml|news-events|image|video|programs-projects|publications|nist-organizations|new%20materials)(?:\/|$)/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+    if (host === "nvlpubs.nist.gov" || host === "tsapps.nist.gov") return true;
+  }
+
+  if (/\bamerican library association\b|\bala\b/.test(awardSignal) && /\bscholarships?\b/.test(awardSignal)) {
+    if (/\b(?:scholarships?|spectrum scholarship|apply for scholarships?|financial assistance|spectrum)\b/.test(sourceSignal) || /scholarship/i.test(path)) {
+      return false;
+    }
+    if (host === "ala.org" && /^\/(?:cite|acrl\/(?:standards|sites|aboutacrl)|ala\/mgrps|advocacy|aboutala|tools|rusa|yalsa|content-controls|sites\/default\/files)(?:\/|$)/.test(path)) {
+      return true;
+    }
+    if (
+      [
+        "journals.ala.org",
+        "ifla.org",
+        "senate.gov",
+        "highwire.stanford.edu",
+        "pdfs.semanticscholar.org",
+        "groups.niso.org",
+      ].includes(host)
+    ) {
+      return true;
+    }
+  }
+
+  if (/\bberlin program\b|\badvanced german\b|\beuropean studies\b/.test(awardSignal)) {
+    if (/\b(?:berlin program|advanced german|european studies)\b/.test(sourceSignal)) return false;
+    if (host === "portal.zedat.fu-berlin.de" && /^\/idp-fub\/profile\/saml2\//.test(path)) return true;
+    if (
+      (host === "fu-berlin.de" || host === "identity.fu-berlin.de") &&
+      /^\/(?:sites\/corporate-design|themen\/e-research|(?:en\/)?studium\/bewerbung|(?:en\/)?studium\/international\/studium_ausland\/(?:promos|erasmus2|direkt))(?:\/|$)/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  if (/\bexeter\b/.test(awardSignal) && /\bglobal excellence\b/.test(awardSignal)) {
+    if (/\b(?:global excellence|exeter excellence scholarships?|award\?id=5612)\b/.test(sourceSignal)) return false;
+    if (
+      (host === "exeter.ac.uk" || host.endsWith(".exeter.ac.uk")) &&
+      /^\/(?:our-campuses|study\/(?:accommodation|cornwall-accommodation)|accommodation|careers|open-days|students\/(?:finance|wellbeing|wp-support|mature)|study\/postgraduate|undergraduate\/applications|v8media\/(?:specificsites\/accommodation|currentstudents|recruitmentsites|universityofexeter\/aboutusresponsive)|postgraduate\/fees)(?:\/|$)/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+    if (host === "funding.exeter.ac.uk" && !/\baward=5612\b/.test(search)) return true;
+    if (["apps.apple.com", "play.google.com", "vacancies.exeter.ac.uk", "codebox.exeter.ac.uk"].includes(host)) {
+      return true;
+    }
+  }
+
+  if (/\bnij\b/.test(awardSignal) && /\b(?:graduate research fellowship|research assistantship)\b/.test(awardSignal)) {
+    if (/\b(?:graduate research fellowship|research assistantship|grf|nij rap)\b/.test(sourceSignal)) return false;
+    if (
+      (host === "nij.ojp.gov" || host === "ojp.gov") &&
+      /^\/(?:funding\/(?:opportunities|awards|o-nij[^/]*|docs|explore|financialguidedoj|part200uniformrequirements)|conference-cost|library\/publications|ncjrs)(?:\/|$)/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+    if (host === "bja.ojp.gov" || host === "it.ojp.gov") return true;
+  }
+
+  if (/\berasmus mundus\b|\bjoint masters\b/.test(awardSignal)) {
+    if (host === "ec.europa.eu" && /^\/info\/funding-tenders\/opportunities\/portal\/screen\/(?:how-to-participate\/(?:person-profile|org-details)|support)(?:\/|$)/.test(path)) {
+      return true;
+    }
+    if (host === "webgate.ec.europa.eu" && /^\/funding-tenders-opportunities\//.test(path)) return true;
+    if (host === "erasmus-plus.ec.europa.eu" && /^\/[a-z]{2}\/projects\/faq-list(?:\/|$)/.test(path)) return true;
+  }
+
+  if (
+    /\bflorida atlantic\b/.test(awardSignal) &&
+    /\bhuntington library\b/.test(awardSignal) &&
+    !/\b(?:huntington library|short term fellowship|doctoral candidates?)\b/.test(sourceSignal)
+  ) {
+    if (
+      (host === "fau.edu" || host.endsWith(".fau.edu") || host === "forms.fau.edu") &&
+      /^\/(?:admissions|graduate|registrar|controllers-office|successnetwork|global|ugstudies|careers|news-events|documents|ssoq|uas|facilities|canvas|jobs|regulations)(?:\/|$)/.test(
+        path,
+      )
+    ) {
+      return true;
+    }
+    if (
+      [
+        "flbog.edu",
+        "wordpress.fau.edu",
+        "irs.gov",
+        "workday.fau.edu",
+        "coe.fau.edu",
+        "sacscoc.org",
+        "fauf.fau.edu",
+        "web.respondus.com",
+      ].includes(host)
+    ) {
+      return true;
+    }
+  }
 
   return false;
 }
