@@ -194,6 +194,12 @@ function isGenericNonAwardDiscoveryUrl(parsed, host, path, directHaystack) {
   ) {
     return false;
   }
+  if (
+    host === "nia.nih.gov" &&
+    /^\/research\/training\/r36-aging-research-dissertation-awards-(?:increase|promote)-diversity\/?$/.test(cleanPath)
+  ) {
+    return false;
+  }
 
   if (
     /\/(?:recipes?|cooking-school|nutrition|foodservice|manufacturers?|professionals?|professional-resources|certification|get-certified|recertification|technical-resources|on-demand|courses?|course-catalog|training|learning|ceu|webinars?|podcasts?|sunnyside-up)(?:\/|$)/.test(
@@ -325,6 +331,15 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
     return true;
   }
   if (isOxfordPershingSquareSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
+  if (isSshrcPostdoctoralFellowshipSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
+  if (isNihNiaR36AgingDissertationSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
+    return true;
+  }
+  if (isNsfEarthSciencesPostdoctoralSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
     return true;
   }
   if (host === "ncbi.nlm.nih.gov" && /^\/books(?:\/|$)/.test(cleanPath)) return true;
@@ -561,6 +576,141 @@ function isOxfordPershingSquareSpillover(host, path, search, directSignal, award
   }
 
   return true;
+}
+
+function isSshrcPostdoctoralFellowshipSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  const isSshrcPostdoctoralAward =
+    /\b(?:sshrc|social science humanities research council|social sciences humanities research council)\b/.test(
+      awardSignal,
+    ) && /\bpostdoctoral\b/.test(awardSignal);
+  if (!isSshrcPostdoctoralAward) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  const isSshrcHost =
+    host === "sshrc-crsh.gc.ca" ||
+    host === "sshrcdevnew.sshrc-crsh.gc.ca" ||
+    host === "portal-portail.sshrc-crsh.gc.ca";
+
+  if (/\/funding-financement\/programs-programmes\/fellowships\/postdoctoral-postdoctorale-eng\.aspx$/.test(path)) {
+    return false;
+  }
+  if (/\/funding-financement\/apply-demande\/guides\/doctoral_postdoctoral_edi_guide-doctorat_postdoctorales_guide_edi-eng\.aspx$/.test(path)) {
+    return false;
+  }
+
+  if (
+    isSshrcHost &&
+    /\bpostdoctor(?:al|ale|ales)\b/.test(sourceSignal) &&
+    !/\b(?:nfrf|fnfr|cbrf|frbc|canada graduate|graduate research scholarship|forms online application tools|policy|policies|portal|contact|storytellers|partnership grant)\b/.test(
+      sourceSignal,
+    )
+  ) {
+    return false;
+  }
+
+  if (isSshrcHost) return true;
+  if (
+    [
+      "nserc-crsng.gc.ca",
+      "innovation.ca",
+      "snf.ch",
+      "dawncanada.net",
+      "chairs-chaires.gc.ca",
+      "science.gc.ca",
+      "achh.ca",
+      "criaw-icref.ca",
+      "nce-rce.gc.ca",
+    ].some((blockedHost) => host === blockedHost || host.endsWith(`.${blockedHost}`))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isNihNiaR36AgingDissertationSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  const isR36AgingDissertationAward =
+    /\baging research dissertation awards?\b/.test(awardSignal) ||
+    (/\bnia\b/.test(awardSignal) && /\br36\b/.test(awardSignal) && /\bdiversity\b/.test(awardSignal));
+  if (!isR36AgingDissertationAward) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  if (/^\/research\/training\/r36-aging-research-dissertation-awards-(?:increase|promote)-diversity\/?$/.test(path)) {
+    return false;
+  }
+  if (
+    host === "grants.nih.gov" &&
+    /^\/grants\/guide\/(?:pa-files|par-files|rfa-files)\//.test(path) &&
+    /\b(?:aging research dissertation|r36)\b/.test(sourceSignal)
+  ) {
+    return false;
+  }
+
+  if (host === "nia.nih.gov" || host.endsWith(".nia.nih.gov")) return true;
+  if (
+    [
+      "grants.nih.gov",
+      "era.nih.gov",
+      "reporter.nih.gov",
+      "projectreporter.nih.gov",
+      "clinicaltrials.gov",
+      "cdn.clinicaltrials.gov",
+      "sciencemag.org",
+      "gpo.gov",
+    ].some((blockedHost) => host === blockedHost || host.endsWith(`.${blockedHost}`))
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+function isNsfEarthSciencesPostdoctoralSpillover(host, path, search, directSignal, awardName) {
+  const awardSignal = wordSignal(awardName);
+  const isEarPostdoctoralAward =
+    /\b(?:earth sciences|ear)\b/.test(awardSignal) &&
+    /\bpostdoctoral\b/.test(awardSignal) &&
+    /\b(?:nsf|national science foundation)\b/.test(awardSignal);
+  if (!isEarPostdoctoralAward) return false;
+
+  const sourceSignal = wordSignal(`${directSignal} ${path} ${search}`);
+  const isNsfHost = host === "nsf.gov" || host === "beta.nsf.gov";
+
+  if (
+    isNsfHost &&
+    /^\/funding\/opportunities\/(?:ear-postdoctoral-fellowships-ear-pf|ear-pf-earth-sciences-postdoctoral-fellowships)(?:\/|$)/.test(
+      path,
+    )
+  ) {
+    return false;
+  }
+
+  if (
+    isNsfHost &&
+    /\b(?:ear pf|earth sciences postdoctoral fellowships?|postdoctoral fellowships ear)\b/.test(sourceSignal) &&
+    !/\b(?:dmref|dmr|materials research|seed fund|rui|roa|pui|cmmt|cssi|frontier research earth sciences|data policy|realignment)\b/.test(
+      sourceSignal,
+    )
+  ) {
+    return false;
+  }
+
+  if (isNsfHost) return true;
+  if (
+    [
+      "research.gov",
+      "resources.research.gov",
+      "fastlane.nsf.gov",
+      "seedfund.nsf.gov",
+      "whitehouse.gov",
+    ].some((blockedHost) => host === blockedHost || host.endsWith(`.${blockedHost}`))
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function isOfficialDomainSpilloverSource(parsed, host, path, directHaystack, reason, awardName) {

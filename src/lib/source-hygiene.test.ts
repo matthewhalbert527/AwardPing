@@ -1522,4 +1522,163 @@ describe("source hygiene classifier", () => {
       });
     }
   });
+
+  it("rejects SSHRC catalog spillover while keeping postdoctoral fellowship sources", () => {
+    const award_name =
+      "Social Science and Humanities Research Council of Canada (SSHRC) - Postdoctoral Fellowships";
+
+    for (const example of [
+      {
+        url: "http://www.sshrc-crsh.gc.ca/funding-financement/programs-programmes/fellowships/postdoctoral-postdoctorale-eng.aspx",
+        title: "SSHRC Postdoctoral Fellowships",
+        page_type: "homepage",
+      },
+      {
+        url: "http://www.sshrc-crsh.gc.ca/funding-financement/apply-demande/guides/doctoral_postdoctoral_edi_guide-doctorat_postdoctorales_guide_edi-eng.aspx",
+        title: "Guide to Including Diversity Considerations in Research Design for Doctoral and Postdoctoral Award Applicants",
+        page_type: "application",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "http://www.sshrc-crsh.gc.ca/funding-financement/nfrf-fnfr/exploration/2026/competition-concours-eng.aspx",
+        title: "2026 Exploration Competition",
+        page_type: "other",
+      },
+      {
+        url: "https://www.sshrc-crsh.gc.ca/funding-financement/cbrf-frbc/stage2-etape2/competition-concours/4-eligibility-eng.aspx",
+        title: "4. Eligibility",
+        page_type: "eligibility",
+      },
+      {
+        url: "http://www.sshrc-crsh.gc.ca/en/funding/opportunities/canada-graduate-research-scholarships/doctoral-program.aspx",
+        title: "Canada Graduate Research Scholarship-Doctoral program",
+        page_type: "application",
+      },
+      {
+        url: "https://portal-portail.sshrc-crsh.gc.ca/?pedisable=true",
+        title: "Basic HTML version",
+        page_type: "application",
+      },
+      {
+        url: "https://www.nserc-crsng.gc.ca/InterAgency-Interorganismes/RS-SR/_doc/Attestation_e.pdf",
+        title: "Attestation forms",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
+  it("rejects NIH/NIA R36 spillover while keeping Aging Dissertation award sources", () => {
+    const award_name =
+      "National Institutes of Health (NIH) - National Institute of Aging (NIA) - Aging Research Dissertation Awards to Increase Diversity (R36)";
+
+    for (const example of [
+      {
+        url: "https://www.nia.nih.gov/research/training/r36-aging-research-dissertation-awards-promote-diversity",
+        title: "R36 Aging Research Dissertation Awards to Promote Diversity",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.nia.nih.gov/research/training/r36-aging-research-dissertation-awards-increase-diversity",
+        title: "R36 Aging Research Dissertation Awards to Increase Diversity",
+        page_type: "homepage",
+      },
+      {
+        url: "https://grants.nih.gov/grants/guide/pa-files/PAR-24-183.html",
+        title: "Aging Research Dissertation Awards to Promote Diversity (R36 Clinical Trial Not Allowed)",
+        page_type: "homepage",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://grants.nih.gov/grants/guide/notice-files/NOT-OD-09-114.html",
+        title: "Applicants eligible for continuous submission",
+        page_type: "eligibility",
+      },
+      {
+        url: "https://www.era.nih.gov/reviewers/access-meeting-materials.htm",
+        title: "Access Meeting Materials",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www.nia.nih.gov/research/grants-funding/funding-policies-and-paylines",
+        title: "Funding line policies",
+        page_type: "application",
+      },
+      {
+        url: "https://cdn.clinicaltrials.gov/documents/ACT_Checklist.pdf",
+        title: "Checklist for Evaluating Whether a Clinical Trial or Study is an Applicable Clinical Trial",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
+
+  it("rejects NSF EAR-PF spillover while keeping Earth Sciences postdoctoral pages", () => {
+    const award_name = "National Science Foundation (NSF) - Division of Earth Sciences (EAR) Postdoctoral Fellowships";
+
+    for (const example of [
+      {
+        url: "https://www.nsf.gov/funding/opportunities/ear-postdoctoral-fellowships-ear-pf",
+        title: "EAR-PF Solicitation",
+        page_type: "homepage",
+      },
+      {
+        url: "https://beta.nsf.gov/funding/opportunities/ear-postdoctoral-fellowships-ear-pf",
+        title: "Earth Sciences Postdoctoral Fellowships (EAR-PF)",
+        page_type: "homepage",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "keep",
+      });
+    }
+
+    for (const example of [
+      {
+        url: "https://www.nsf.gov/funding/opportunities/dmref-designing-materials-revolutionize-engineer-our-future/nsf23-530/solicitation",
+        title: "Designing Materials to Revolutionize and Engineer our Future (DMREF)",
+        page_type: "requirements",
+      },
+      {
+        url: "https://www.nsf.gov/publications/pub_summ.jsp?ods_key=nsf25020",
+        title: "Division of Earth Sciences (EAR) Realignment FAQs",
+        page_type: "faq",
+      },
+      {
+        url: "https://seedfund.nsf.gov/apply/",
+        title: "Apply for funding",
+        page_type: "application",
+      },
+      {
+        url: "https://resources.research.gov/common/attachment/Common/Grants_govProposal_Processing_in_Research.pdf",
+        title: "Grants.gov Proposal Processing in Research.gov",
+        page_type: "pdf",
+      },
+    ]) {
+      expect(shouldRejectDiscoveredSource({ ...example, award_name })).toMatchObject({
+        action: "review_later",
+        reason: "cross_program_source",
+      });
+    }
+  });
 });
