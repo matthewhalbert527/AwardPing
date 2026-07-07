@@ -7,7 +7,6 @@ import {
   appConfig,
 } from "@/lib/config";
 import type { Json } from "@/lib/database.types";
-import { getOfficeContext } from "@/lib/offices";
 import { createR2SignedReadUrl, getR2Bucket, readR2ObjectText } from "@/lib/r2";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -31,12 +30,8 @@ export async function GET(request: Request, { params }: Props) {
     return NextResponse.json({ error: "Cloudflare R2 is not configured." }, { status: 503 });
   }
 
-  const user = await getCurrentUser();
-  if (!user) {
-    return NextResponse.json({ error: "Authentication is required." }, { status: 401 });
-  }
-
   const { sourceId } = await params;
+  const user = await getCurrentUser();
   const admin = createSupabaseAdminClient();
   const { data: snapshot, error } = await admin
     .from("shared_award_source_visual_snapshots")
@@ -53,7 +48,7 @@ export async function GET(request: Request, { params }: Props) {
   }
 
   if (!(await canViewSnapshot(user, snapshot.shared_award_id, snapshot.shared_award_source_id))) {
-    return NextResponse.json({ error: "You do not have access to this snapshot." }, { status: 403 });
+    return NextResponse.json({ error: "This snapshot is not available." }, { status: user ? 403 : 404 });
   }
 
   const [latestObjects, previousObjects] = await Promise.all([
@@ -93,14 +88,11 @@ export async function GET(request: Request, { params }: Props) {
 }
 
 async function canViewSnapshot(
-  user: { id: string; email?: string | null },
+  user: { id: string; email?: string | null } | null,
   sharedAwardId: string,
   sharedAwardSourceId: string,
 ) {
-  if (isSiteAdminEmail(user.email)) return true;
-
-  const officeContext = await getOfficeContext(user);
-  if (!officeContext) return false;
+  if (isSiteAdminEmail(user?.email)) return true;
 
   const admin = createSupabaseAdminClient();
   const [{ data: awardRow, error: awardError }, { data: sourceRow, error: sourceError }] =
