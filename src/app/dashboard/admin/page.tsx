@@ -11,14 +11,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { AdminMaintenanceControls } from "@/components/admin-maintenance-controls";
 import { SetupNotice } from "@/components/setup-notice";
-import {
-  getMaintenanceRunnerState,
-  maintenanceCommandForDisplay,
-  readLatestMaintenanceReport,
-  type MaintenanceReport,
-} from "@/lib/admin-maintenance";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { countActiveOpenSourcesWithVisualSnapshots } from "@/lib/admin-page-issues";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
@@ -28,7 +21,6 @@ import {
   GEMINI_BATCH_COST_PER_SOURCE_USD,
   MAINTENANCE_PROFILE_IDS,
   MAINTENANCE_PROFILES,
-  type MaintenanceProfileId,
 } from "@/lib/maintenance-profiles";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -65,6 +57,23 @@ type AdminSourceCounts = {
   loadErrors: string[];
 };
 
+type MaintenanceRunPhase = {
+  name: string;
+  status: string;
+  started_at?: string;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  log_path?: string;
+};
+
+type MaintenanceRunView = {
+  run: LocalWorkerRun;
+  metadata: Record<string, unknown>;
+  profile: string;
+  reportPath: string;
+  phases: MaintenanceRunPhase[];
+};
+
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
@@ -90,21 +99,8 @@ export default async function AdminPage() {
   }
 
   const admin = createSupabaseAdminClient();
-  const [counts, maintenanceState] = await Promise.all([
-    loadAdminSourceCounts(admin),
-    Promise.resolve(getMaintenanceRunnerState()),
-  ]);
-  const latestReport = readLatestMaintenanceReport(maintenanceState);
-  const commandTemplates = Object.fromEntries(
-    MAINTENANCE_PROFILE_IDS.map((profile) => [
-      profile,
-      maintenanceCommandForDisplay(
-        profile,
-        { apply: true, baselineCostCapUsd: DEFAULT_BASELINE_COST_CAP_USD },
-        maintenanceState,
-      ),
-    ]),
-  ) as Record<MaintenanceProfileId, string>;
+  const counts = await loadAdminSourceCounts(admin);
+  const latestMaintenance = latestMaintenanceRun(counts.recentRuns);
   const renderedAt = new Date().toISOString();
   const metadataPercent = percent(counts.openWithMetadata, counts.openSources);
   const cyclePercent = percent(
@@ -166,13 +162,8 @@ export default async function AdminPage() {
         <MetricCard
           icon={ServerCog}
           label="Worker Control"
-          value={maintenanceState.controlAvailable ? "Ready" : "Command Only"}
-          detail={
-            maintenanceState.controlAvailable
-              ? "This server can launch the local maintenance runner."
-              : maintenanceState.unavailableReason
-          }
-          attention={!maintenanceState.controlAvailable}
+          value="Local Only"
+          detail="Start and stop workers from the local command center; this page reflects the latest reported status."
         />
         <MetricCard
           icon={Database}
@@ -197,8 +188,8 @@ export default async function AdminPage() {
         <MetricCard
           icon={Clock3}
           label="Recent Runner"
-          value={latestReport?.status ? statusLabel(latestReport.status) : "None"}
-          detail={latestReport ? latestReportDetail(latestReport) : "No unified maintenance report found"}
+          value={latestMaintenance ? statusLabel(latestMaintenance.run.status) : "None"}
+          detail={latestMaintenance ? latestMaintenanceDetail(latestMaintenance) : "No local command-center run has been reported yet"}
         />
       </section>
 
@@ -207,15 +198,20 @@ export default async function AdminPage() {
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
               <PlayCircle size={18} aria-hidden="true" />
-              <h2>Run Maintenance</h2>
+              <h2>Local Command Center</h2>
             </div>
-            <StatusPill status={maintenanceState.controlAvailable ? "ready" : "unavailable"} />
+            <StatusPill status="ready" />
           </div>
-          <AdminMaintenanceControls
-            commandTemplates={commandTemplates}
-            controlAvailable={maintenanceState.controlAvailable}
-            unavailableReason={maintenanceState.unavailableReason}
-          />
+          <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+            Worker control stays on the Windows PC. Run these commands from
+            <span className="font-mono"> C:\Users\matth\Documents\AwardPing Project</span>;
+            this admin page will refresh from Supabase worker status rows.
+          </p>
+          <div className="grid gap-3">
+            <CommandLine command="npm run command:center -- status" />
+            <CommandLine command="npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10" />
+            <CommandLine command="npm run command:center -- profiles" />
+          </div>
         </div>
 
         <div className="card admin-section-card admin-dashboard-card">
@@ -252,18 +248,18 @@ export default async function AdminPage() {
               <Activity size={18} aria-hidden="true" />
               <h2>Latest Report</h2>
             </div>
-            {latestReport?.status && <StatusPill status={latestReport.status} />}
+            {latestMaintenance && <StatusPill status={latestMaintenance.run.status} />}
           </div>
-          {latestReport ? (
+          {latestMaintenance ? (
             <>
               <dl className="admin-detail-grid admin-detail-grid-tight">
-                <Detail label="Profile" value={latestReport.profile || "Unknown"} />
-                <Detail label="Started" value={latestReport.started_at ? formatDate(latestReport.started_at) : "Unknown"} />
-                <Detail label="Finished" value={latestReport.finished_at ? formatDate(latestReport.finished_at) : "Still running"} />
-                <Detail label="Report" value={latestReport.path} />
+                <Detail label="Profile" value={latestMaintenance.profile || "Unknown"} />
+                <Detail label="Started" value={formatDate(latestMaintenance.run.started_at)} />
+                <Detail label="Finished" value={latestMaintenance.run.finished_at ? formatDate(latestMaintenance.run.finished_at) : "Still running"} />
+                <Detail label="Report" value={latestMaintenance.reportPath || "Supabase status only"} />
               </dl>
               <div className="admin-flow-list admin-flow-list-compact">
-                {(latestReport.phases || []).slice(0, 8).map((phase) => (
+                {latestMaintenance.phases.slice(0, 8).map((phase) => (
                   <PipelineRow
                     detail={phase.finished_at ? `Finished ${formatDate(phase.finished_at)}` : "Still running"}
                     icon={phase.status === "failed" ? AlertTriangle : CheckCircle2}
@@ -277,7 +273,7 @@ export default async function AdminPage() {
             </>
           ) : (
             <p className="text-sm text-[var(--muted)]">
-              No local maintenance summary has been written yet.
+              No local command-center maintenance run has been written to Supabase yet.
             </p>
           )}
         </div>
@@ -622,6 +618,14 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
+function CommandLine({ command }: { command: string }) {
+  return (
+    <div className="admin-command-box">
+      <code>{command}</code>
+    </div>
+  );
+}
+
 function StatusPill({ status }: { status: string }) {
   const failed = status === "failed" || status === "unavailable" || status === "completed_with_failures";
   return (
@@ -631,10 +635,44 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-function latestReportDetail(report: MaintenanceReport) {
-  const started = report.started_at ? formatDate(report.started_at) : "unknown start";
-  const phases = report.phases?.length ? `${formatNumber(report.phases.length)} phases` : "no phases";
-  return `${report.profile || "maintenance"}; ${phases}; started ${started}`;
+function latestMaintenanceRun(runs: LocalWorkerRun[]): MaintenanceRunView | null {
+  const run = runs.find((candidate) => {
+    const metadata = objectValue(candidate.metadata);
+    return candidate.worker_name === "local-maintenance-runner" || metadata.kind === "maintenance";
+  });
+  if (!run) return null;
+
+  const metadata = objectValue(run.metadata);
+  return {
+    run,
+    metadata,
+    profile: cleanText(metadata.profile) || "maintenance",
+    reportPath: cleanText(metadata.report_path),
+    phases: maintenanceRunPhases(metadata.phases),
+  };
+}
+
+function latestMaintenanceDetail(view: MaintenanceRunView) {
+  const phases = view.phases.length ? `${formatNumber(view.phases.length)} phases` : "no phases";
+  return `${view.profile}; ${phases}; started ${formatDate(view.run.started_at)}`;
+}
+
+function maintenanceRunPhases(value: unknown): MaintenanceRunPhase[] {
+  if (!Array.isArray(value)) return [];
+  const phases: Array<MaintenanceRunPhase | null> = value.map((phase) => {
+      const source = objectValue(phase);
+      const name = cleanText(source.name);
+      if (!name) return null;
+      return {
+        name,
+        status: cleanText(source.status) || "running",
+        started_at: cleanText(source.started_at),
+        finished_at: cleanText(source.finished_at) || null,
+        exit_code: typeof source.exit_code === "number" ? source.exit_code : null,
+        log_path: cleanText(source.log_path),
+      };
+    });
+  return phases.filter((phase): phase is MaintenanceRunPhase => phase !== null);
 }
 
 function recentRunsIncludeGeminiCreditBlock(runs: LocalWorkerRun[]) {
@@ -664,6 +702,10 @@ function cleanKey(value: unknown) {
   return typeof value === "string"
     ? value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
     : "";
+}
+
+function cleanText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function formatDate(value: string) {

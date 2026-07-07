@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -71,8 +72,13 @@ const report = {
   phases_requested: phases,
   phases: [],
 };
+const maintenanceRun = await createMaintenanceWorkerRun().catch((error) => {
+  console.warn(`AWARDPING_MAINTENANCE_DB_SYNC_UNAVAILABLE ${errorMessage(error)}`);
+  return null;
+});
 
 writeReport();
+await syncMaintenanceWorkerRun("running");
 
 console.log(
   [
@@ -104,10 +110,12 @@ try {
 } catch (error) {
   report.status = "failed";
   report.error = errorMessage(error);
+  await syncMaintenanceWorkerRun("failed", errorMessage(error));
   throw error;
 } finally {
   report.finished_at = new Date().toISOString();
   writeReport();
+  await syncMaintenanceWorkerRun(report.status === "succeeded" ? "succeeded" : "failed", report.error || null);
   console.log(`AWARDPING_MAINTENANCE_REPORT ${reportPath}`);
 }
 
@@ -217,6 +225,7 @@ async function recordSkippedPhase(name, reason) {
   };
   report.phases.push(phase);
   writeReport();
+  await syncMaintenanceWorkerRun("running");
   console.log(`AWARDPING_MAINTENANCE_SKIP ${name} reason=${reason}`);
 }
 
@@ -234,6 +243,7 @@ async function runPhase(name, commandArgs, options = {}) {
   };
   report.phases.push(phase);
   writeReport();
+  await syncMaintenanceWorkerRun("running");
 
   console.log(`AWARDPING_MAINTENANCE_PHASE_START ${name} log=${logPath}`);
   const exitCode = await runCommand(commandArgs, logPath);
@@ -241,6 +251,7 @@ async function runPhase(name, commandArgs, options = {}) {
   phase.finished_at = new Date().toISOString();
   phase.status = exitCode === 0 ? "succeeded" : "failed";
   writeReport();
+  await syncMaintenanceWorkerRun("running");
 
   if (exitCode !== 0) {
     const message = `${name} failed with exit code ${exitCode}; see ${logPath}`;
@@ -297,6 +308,105 @@ function profilePhases(value) {
 function writeReport() {
   mkdirSync(dirname(reportPath), { recursive: true });
   writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
+}
+
+async function createMaintenanceWorkerRun() {
+  const supabase = supabaseFromEnv();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase
+    .from("local_worker_runs")
+    .insert({
+      worker_name: "local-maintenance-runner",
+      status: "running",
+      ai_provider: phases.includes("baseline-facts") ? "gemini" : null,
+      initial_count: phases.length,
+      metadata: maintenanceRunMetadata(),
+    })
+    .select("id")
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return { id: data?.id || null, supabase };
+}
+
+async function syncMaintenanceWorkerRun(status = "running", error = null) {
+  if (!maintenanceRun?.id || !maintenanceRun.supabase) return;
+  const failedCount = report.phases.filter((phase) => phase.status === "failed").length;
+  const succeededCount = report.phases.filter((phase) => phase.status === "succeeded").length;
+  const finished = status === "succeeded" || status === "failed";
+
+  const { error: updateError } = await maintenanceRun.supabase
+    .from("local_worker_runs")
+    .update({
+      status,
+      changed_count: succeededCount,
+      checked_count: report.phases.length,
+      failed_count: failedCount,
+      error,
+      finished_at: finished ? report.finished_at || new Date().toISOString() : null,
+      metadata: maintenanceRunMetadata(),
+    })
+    .eq("id", maintenanceRun.id);
+
+  if (updateError) {
+    console.warn(`AWARDPING_MAINTENANCE_DB_SYNC_FAILED ${updateError.message}`);
+  }
+}
+
+function maintenanceRunMetadata() {
+  return {
+    kind: "maintenance",
+    profile,
+    apply,
+    pid: process.pid,
+    report_path: reportPath,
+    log_dir: logDir,
+    env_path: envPath || null,
+    phases_requested: phases,
+    phases: report.phases.map((phase) => ({
+      name: phase.name,
+      status: phase.status,
+      started_at: phase.started_at,
+      finished_at: phase.finished_at,
+      exit_code: phase.exit_code,
+      log_path: phase.log_path,
+    })),
+    started_at: report.started_at,
+    finished_at: report.finished_at,
+    status: report.status,
+    updated_at: new Date().toISOString(),
+    source: "local_command_center",
+  };
+}
+
+function supabaseFromEnv() {
+  const loadedEnv = {
+    ...loadEnvFile(envPath ? resolve(root, envPath) : ""),
+    ...process.env,
+  };
+  const supabaseUrl = loadedEnv.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey = loadedEnv.SUPABASE_SERVICE_ROLE_KEY;
+  if (!supabaseUrl || !serviceRoleKey) return null;
+  return createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+}
+
+function loadEnvFile(path) {
+  if (!path || !existsSync(path)) return {};
+  const values = {};
+  for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex === -1) continue;
+    const key = line.slice(0, equalsIndex).trim();
+    let value = line.slice(equalsIndex + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+  return values;
 }
 
 function parseArgs(values) {

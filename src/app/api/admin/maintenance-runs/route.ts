@@ -1,26 +1,12 @@
-import { spawn } from "node:child_process";
 import { NextResponse } from "next/server";
-import { z } from "zod";
 import {
   getMaintenanceRunnerState,
-  maintenanceCommandForDisplay,
-  maintenanceRunnerArgs,
   readLatestMaintenanceReport,
 } from "@/lib/admin-maintenance";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
-import {
-  DEFAULT_BASELINE_COST_CAP_USD,
-  MAINTENANCE_PROFILE_IDS,
-} from "@/lib/maintenance-profiles";
 
 export const runtime = "nodejs";
-
-const postSchema = z.object({
-  profile: z.enum(MAINTENANCE_PROFILE_IDS),
-  apply: z.boolean().default(true),
-  baselineCostCapUsd: z.coerce.number().min(0).max(100).default(DEFAULT_BASELINE_COST_CAP_USD),
-});
 
 export async function GET() {
   const setupError = await validateAdminRequest();
@@ -38,56 +24,18 @@ export async function GET() {
   });
 }
 
-export async function POST(request: Request) {
+export async function POST() {
   const setupError = await validateAdminRequest();
   if (setupError.response) return setupError.response;
 
-  const parsed = postSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid maintenance run request." }, { status: 400 });
-  }
-
-  const state = getMaintenanceRunnerState();
-  const command = maintenanceCommandForDisplay(parsed.data.profile, parsed.data, state);
-  if (!state.controlAvailable) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: state.unavailableReason,
-        command,
-      },
-      { status: 503 },
-    );
-  }
-
-  try {
-    const args = maintenanceRunnerArgs(parsed.data.profile, parsed.data, state);
-    const child = spawn(process.execPath, args, {
-      cwd: state.workerAppDir,
-      detached: true,
-      env: process.env,
-      stdio: "ignore",
-      windowsHide: true,
-    });
-    child.unref();
-
-    return NextResponse.json({
-      ok: true,
-      pid: child.pid,
-      profile: parsed.data.profile,
-      command,
-      latestReport: readLatestMaintenanceReport(state),
-    });
-  } catch (error) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: error instanceof Error ? error.message : "Maintenance run could not be started.",
-        command,
-      },
-      { status: 500 },
-    );
-  }
+  return NextResponse.json(
+    {
+      ok: false,
+      error:
+        "Worker control is local-only. Run `npm run command:center -- start --profile=catchup` on the AwardPing PC.",
+    },
+    { status: 405 },
+  );
 }
 
 async function validateAdminRequest() {
@@ -119,7 +67,7 @@ async function validateAdminRequest() {
   if (!isSiteAdminEmail(user.email)) {
     return {
       response: NextResponse.json(
-        { error: "Only AwardPing site admins can start maintenance runs." },
+        { error: "Only AwardPing site admins can read maintenance status." },
         { status: 403 },
       ),
       user,
