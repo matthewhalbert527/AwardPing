@@ -24,7 +24,17 @@ type Props = {
 export default async function UpdatesPage({ searchParams }: Props) {
   const params = await searchParams;
   const statusMessage = updatesStatusMessage(params);
-  const updates = hasSupabaseAdminConfig() ? await getLiveUpdateItems(80) : [];
+  let updateLoadError = "";
+  let updates: Awaited<ReturnType<typeof getLiveUpdateItems>> = [];
+
+  if (hasSupabaseAdminConfig()) {
+    try {
+      updates = await getLiveUpdateItems(80);
+    } catch (error) {
+      updateLoadError = error instanceof Error ? error.message : "Live updates could not be loaded.";
+      console.error(updateLoadError);
+    }
+  }
 
   return (
     <div className="page-shell">
@@ -59,6 +69,12 @@ export default async function UpdatesPage({ searchParams }: Props) {
         {statusMessage && (
           <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
             {statusMessage}
+          </div>
+        )}
+
+        {updateLoadError && (
+          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
+            Live updates could not be loaded from Supabase right now. The feed is temporarily unavailable, not confirmed empty.
           </div>
         )}
 

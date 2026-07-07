@@ -316,6 +316,7 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   const awardSignal = wordSignal(awardName);
   const sourceSignal = wordSignal(`${directHaystack} ${cleanPath} ${cleanSearch}`);
 
+  if (isFieldsInstitutePostdoctoralSpillover(host, cleanPath, awardName)) return true;
   if (host === "fields.utoronto.ca" && cleanPath === "/activities/thematic") return true;
   if (host === "postdocs.ubc.ca" && cleanPath === "/awards-funding") return true;
   if (isAlbertaCareerOrStudentAidSpillover(host, cleanPath, cleanSearch, directHaystack, awardName)) {
@@ -398,6 +399,29 @@ function isKnownBadAwardSourceAssociation(parsed, host, path, directHaystack, aw
   }
 
   return false;
+}
+
+function isFieldsInstitutePostdoctoralSpillover(host, path, awardName) {
+  const awardSignal = wordSignal(awardName);
+  if (!/\bfields\b/.test(awardSignal) || !/\bpostdoctoral\b/.test(awardSignal)) return false;
+
+  const isFieldsHost = host === "fields.utoronto.ca" || host.endsWith(".fields.utoronto.ca");
+  const isTorontoHost = host === "utoronto.ca" || host.endsWith(".utoronto.ca");
+  if (!isFieldsHost && !isTorontoHost) return false;
+
+  const pathSignal = wordSignal(path);
+  if (isFieldsHost) {
+    if (path === "/honours-and-fellowships/postdoctoral-fellowships") return false;
+    if (
+      /^\/honours-and-fellowships\//.test(path) &&
+      /\bpostdoctoral\b/.test(pathSignal) &&
+      /\bfellow(?:s|ship|ships)?\b/.test(pathSignal)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function isNationalAcademiesSpillover(host, path, search = "") {
@@ -1178,10 +1202,33 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
   }
 
   if (/\bamerican library association\b|\bala\b/.test(awardSignal) && /\bscholarships?\b/.test(awardSignal)) {
-    if (/\b(?:scholarships?|spectrum scholarship|apply for scholarships?|financial assistance|spectrum)\b/.test(sourceSignal) || /scholarship/i.test(path)) {
+    const isAlaScholarshipPath =
+      /(?:^|\.)ala\.org$/.test(host) &&
+      /^\/(?:educationcareers\/scholarships?|aboutala\/offices\/hrdr\/scholarshipprgm|advocacy\/spectrum|spectrum|scholarships?)(?:\/|$)/.test(
+        path,
+      );
+    const isAlaAccreditedProgramPath =
+      /(?:^|\.)ala\.org$/.test(host) &&
+      /^\/(?:educationcareers\/)?accreditedprograms(?:\/(?:directory|ala-accredited-programs-directory|guidelines-choosing-masters-program-library-and-information-studies|faq))?\/?$/.test(
+        path,
+      );
+    const isAlaScholarshipFile =
+      (host === "ala.org" || host === "live-alaorg.pantheonsite.io") &&
+      /\bscholarship(?:prgm|s?|_comparison|%20comparison)\b/i.test(path);
+    const isSpecificScholarshipText =
+      /\b(?:ala scholarships?|ala scholarship program|american library association scholarships?|spectrum scholarships?|spectrum scholarship program|apply for spectrum scholarships?|apply for scholarships?|scholarship comparison|financial assistance)\b/.test(
+        sourceSignal,
+      );
+
+    if ((isAlaScholarshipPath || isAlaAccreditedProgramPath || isAlaScholarshipFile || isSpecificScholarshipText) && !/^\/cite(?:\/|$)/.test(path)) {
       return false;
     }
-    if (host === "ala.org" && /^\/(?:cite|acrl\/(?:standards|sites|aboutacrl)|ala\/mgrps|advocacy|aboutala|tools|rusa|yalsa|content-controls|sites\/default\/files)(?:\/|$)/.test(path)) {
+    if (
+      (host === "ala.org" || host.endsWith(".ala.org") || host === "live-alaorg.pantheonsite.io") &&
+      /^\/(?:cite|acrl|ala\/mgrps|advocacy|aboutala|offices|(?:educationcareers\/)?accreditedprograms\/resourcesforerp|tools|rusa|yalsa|yaforum|aasl|bbooks|conferencesevents|censorship-search-portal|node|content-controls[^/]*|sites\/default\/files)(?:\/|$)/.test(
+        path,
+      )
+    ) {
       return true;
     }
     if (
@@ -1192,6 +1239,21 @@ function isHighVolumeAwardCrawlerSpillover(host, path, search, directSignal, awa
         "highwire.stanford.edu",
         "pdfs.semanticscholar.org",
         "groups.niso.org",
+        "libguides.ala.org",
+        "alastore.ala.org",
+        "joblist.ala.org",
+        "drive.google.com",
+        "docs.google.com",
+        "d3jcs7j1qj73at.cloudfront.net",
+        "irs.gov",
+        "comminfo.rutgers.edu",
+        "doe.k12.de.us",
+        "www2.scholastic.com",
+        "foslsantacruz.org",
+        "rotary.org",
+        "digitalyouth.ischool.berkeley.edu",
+        "imls.gov",
+        "ilovelibraries.org",
       ].includes(host)
     ) {
       return true;

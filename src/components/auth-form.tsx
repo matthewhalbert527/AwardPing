@@ -11,7 +11,7 @@ type Props = {
 
 export function AuthForm({ mode, nextPath = "" }: Props) {
   const router = useRouter();
-  const fallbackPath = mode === "signup" ? "/dashboard/onboarding" : "/dashboard";
+  const fallbackPath = mode === "signup" ? "/dashboard/onboarding" : "/updates";
   const safeNext = safeNextPath(nextPath) || fallbackPath;
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -42,7 +42,7 @@ export function AuthForm({ mode, nextPath = "" }: Props) {
     setLoading(false);
 
     if (result.error) {
-      setMessage(result.error.message);
+      setMessage(authErrorMessage(result.error.message));
       return;
     }
 
@@ -101,4 +101,11 @@ export function AuthForm({ mode, nextPath = "" }: Props) {
 function safeNextPath(value: string | null) {
   if (!value || !value.startsWith("/") || value.startsWith("//")) return "";
   return value;
+}
+
+function authErrorMessage(message: string) {
+  if (/database error|querying schema|finding users/i.test(message)) {
+    return "Supabase is temporarily unable to reach the database. Please try again after the database comes back online.";
+  }
+  return message;
 }

@@ -1,6 +1,7 @@
 import { Check } from "lucide-react";
 import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth";
+import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
 const features = [
   "Unlimited award page monitors",
@@ -33,8 +34,8 @@ export async function PricingSection() {
         ))}
       </ul>
       <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-        <Link className="button-primary" href={user ? "/dashboard" : "/signup"}>
-          {user ? "Open dashboard" : "Sign up for free"}
+        <Link className="button-primary" href={user ? signedInLandingPath() : "/signup"}>
+          {user ? signedInLandingLabel() : "Sign up for free"}
         </Link>
         <Link className="button-secondary" href="/award-directory" prefetch={false}>
           Find exact pages

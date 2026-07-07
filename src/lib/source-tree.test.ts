@@ -257,4 +257,57 @@ describe("source tree grouping", () => {
     expect(tree.map((node) => node.label)).not.toContain("Deadlines");
     expect(tree.map((node) => node.label)).not.toContain("Wrong Extracted Title");
   });
+
+  it("does not use non-program or archived-cycle metadata for page labels or categories", () => {
+    const tree = buildSourceTree([
+      {
+        id: "not-program",
+        title: "Official source page",
+        url: "https://example.edu/scholarship/logo",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts: {
+            display_title: "Brand Logo",
+            page_category: "Deadlines",
+            cycle_relevance: "not_program_page",
+          },
+        },
+      },
+      {
+        id: "archived",
+        title: "Past recipients",
+        url: "https://example.edu/scholarship/past",
+        pageType: "other",
+        pageMetadata: {
+          baseline_facts: {
+            display_title: "2020 Recipients",
+            page_category: "Eligibility",
+            cycle_relevance: "archived_or_past",
+          },
+        },
+      },
+    ]);
+
+    const labels = treeLabelsText(tree);
+    expect(labels).toContain("Official source page");
+    expect(labels).toContain("Past recipients");
+    expect(labels).not.toContain("Brand Logo");
+    expect(labels).not.toContain("2020 Recipients");
+    expect(labels).not.toContain("Deadlines");
+    expect(labels).not.toContain("Eligibility");
+  });
 });
+
+function treeLabelsText(tree: ReturnType<typeof buildSourceTree>) {
+  const labels: string[] = [];
+
+  function visit(nodes: typeof tree) {
+    for (const node of nodes) {
+      labels.push(node.label);
+      visit(node.children);
+    }
+  }
+
+  visit(tree);
+  return labels.join("\n");
+}

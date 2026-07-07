@@ -40,14 +40,14 @@ describe("award slugs", () => {
     ).toBe("/barry-goldwater-scholarship-63298584");
   });
 
-  it("uses clean slugs for authenticated dashboard award paths", () => {
+  it("uses canonical public slugs for authenticated award paths", () => {
     expect(
       dashboardAwardPath(
         "goldwater-scholarship",
         "Barry Goldwater Scholarship",
         "63298584-f2f8-41b7-87a8-7892af8b642a",
       ),
-    ).toBe("/dashboard/awards/goldwater-scholarship");
+    ).toBe("/goldwater-scholarship");
   });
 
   it("creates clean source subpage slugs", () => {

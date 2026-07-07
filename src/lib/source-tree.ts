@@ -290,7 +290,16 @@ function baselineFactsFromMetadata(value: unknown) {
     return {};
   }
 
-  return objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  return baselineFactsAreUsable(facts) ? facts : {};
+}
+
+function baselineFactsAreUsable(facts: Record<string, unknown>) {
+  const relevance = cleanMetadataKey(facts.award_relevance);
+  const cycleRelevance = cleanMetadataKey(facts.cycle_relevance);
+  if (relevance === "unrelated") return false;
+  if (cycleRelevance === "not_program_page" || cycleRelevance === "archived_or_past") return false;
+  return true;
 }
 
 function pageTypeLabelForTree(pageType: AwardPageType) {
@@ -349,6 +358,16 @@ function sameLabel(left: string, right: string) {
 
 function normalizeLabel(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function cleanMetadataKey(value: unknown) {
+  return typeof value === "string"
+    ? value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+    : "";
 }
 
 function formatHost(hostname: string) {

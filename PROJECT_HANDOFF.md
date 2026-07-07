@@ -1,6 +1,6 @@
 # AwardPing Local Handoff
 
-The durable project handoff folder for this PC is:
+The durable project handoff folder and working repo for this PC is:
 
 `C:\Users\matth\Documents\AwardPing Project`
 

@@ -12,6 +12,7 @@ import {
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
+import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
 export const metadata: Metadata = {
   title: "Advisor Hub | AwardPing",
@@ -71,8 +72,8 @@ export default async function AdvisorHubPage() {
               PDF guides, and portal links.
             </p>
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <Link className="button-primary" href={user ? "/dashboard" : "/signup"}>
-                {user ? "Open dashboard" : "Start a watchlist"}
+              <Link className="button-primary" href={user ? signedInLandingPath() : "/signup"}>
+                {user ? signedInLandingLabel() : "Start a watchlist"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/award-directory" prefetch={false}>

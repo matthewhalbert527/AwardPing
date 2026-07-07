@@ -13,6 +13,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { canonicalAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
+import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
 export const dynamic = "force-dynamic";
 
@@ -38,7 +39,7 @@ const journeys = [
   { label: "Live Update Feed", href: "/updates", text: "Chronological plain-English changes." },
   { label: "Award Directory", href: "/award-directory", text: "Search and filter public award records." },
   { label: "Advisor Hub", href: "/advisor-hub", text: "Workflows for fellowship offices." },
-  { label: "My Watchlist", href: "/dashboard", text: "Your tracked awards and unread updates." },
+  { label: "Daily Digest", href: "/updates/subscribe", text: "Quiet email updates when useful changes appear." },
 ];
 
 export default async function Home() {
@@ -66,8 +67,8 @@ export default async function Home() {
               plain-English updates.
             </p>
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <Link className="button-primary" href={user ? "/dashboard" : "/signup"}>
-                {user ? "Open dashboard" : "Sign up for free"}
+              <Link className="button-primary" href={user ? signedInLandingPath() : "/signup"}>
+                {user ? signedInLandingLabel() : "Sign up for free"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/updates">

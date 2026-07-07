@@ -2,6 +2,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
+import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -174,8 +175,22 @@ async function runOnce() {
     errors: [],
   };
 
-  const runId = await startWorkerRun(report);
+  let runId = null;
   try {
+    const supabaseHealth = await checkSupabaseHealth(supabase);
+    if (!supabaseHealth.ok) {
+      report.status = "blocked";
+      report.stop_reason = "supabase_unavailable";
+      report.errors.push({
+        message: supabaseHealth.message,
+      });
+      console.log(
+        `SUPABASE_UNAVAILABLE reason=${supabaseHealth.reason} message=${truncate(supabaseHealth.message, 500)}`,
+      );
+      return;
+    }
+
+    runId = await startWorkerRun(report);
     const targets = loadBaselineTargets();
     report.loaded_baselines = targets.length;
     console.log(
@@ -405,11 +420,13 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "Prefer null or [] over verbose explanations. Do not include extra keys, markdown, comments, or prose outside the JSON object.",
     "If a PDF or page is mostly unrelated background, policy, reporting, data documentation, or a generic portal, summarize its purpose briefly and leave scholarship-specific fields empty.",
     "Return compact JSON with these keys:",
-    "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
+    "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, cycle_relevance, cycle_relevance_reason, application_cycle, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
     "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections.",
     "Every important_dates item must include context plus the date, such as \"Application deadline: January 15, 2027\" or \"Award notifications: May 1\". Do not output bare dates.",
     "sections should list 0 to 5 visible scholarship concepts or page areas with {title, description, status}. Use status unchanged for baseline sections.",
-    "award_relevance must be primary, supporting, unclear, or unrelated. confidence must be low, medium, or high.",
+    "award_relevance must be primary, supporting, unclear, or unrelated. Use primary only for the named award/program page or official application, deadline, eligibility, instruction, FAQ, portal, or document page for that same program. Use unrelated for sibling awards/programs, institutional resource/policy pages, event/seminar/news/archive/recipient pages, generic portals, payment/travel/logos/files, or pages that merely share the organization/domain.",
+    "cycle_relevance must be current_or_upcoming, evergreen, archived_or_past, unclear, or not_program_page. Use current_or_upcoming for visible current/future cycle, year, deadline, or application instructions. Use evergreen for active official application information without a cycle year. Use archived_or_past for previous calls, past recipients/events, or stale years. Use not_program_page when the page is not about the named program application cycle.",
+    "cycle_relevance_reason must be 12 words or fewer. application_cycle should be the visible year, term, or cycle name when present, otherwise null. confidence must be low, medium, or high.",
     "Use null for unknown deadline/opening_date/page_purpose.",
     "",
     `Reason: ${reason}`,
@@ -725,7 +742,7 @@ function geminiApiBaselineFactsRequest(source, capture, reason) {
     systemInstruction: {
       parts: [
         {
-          text: "Extract a compact source-page outline for AwardPing scholarship advisors. Return strict JSON only. Keep descriptions short enough to avoid truncation. Every source page needs a readable display_title and page_description, even if it is only a contact page, FAQ, PDF, portal, news page, or unclear page. Extract only facts directly supported by the screenshot, PDF text, or normalized text.",
+          text: "Extract a compact source-page outline for AwardPing scholarship advisors. Return strict JSON only. Keep descriptions short enough to avoid truncation. Every source page needs a readable display_title and page_description, even if it is only a contact page, FAQ, PDF, portal, news page, or unclear page. Extract only facts directly supported by the screenshot, PDF text, or normalized text. Classify whether the page is truly about the named program and whether it supports the current/upcoming application cycle, an active evergreen cycle, an archived/past cycle, an unclear cycle, or no program page at all.",
         },
       ],
     },
@@ -1079,29 +1096,42 @@ async function applyFactsToSupabaseSource(source, facts, metadata, capture) {
 async function rejectFactsInSupabaseSource(source, facts, metadata, capture, reason) {
   if (!supabase) return;
   const displayTitle = cleanPageTitle(capture.page_title) || cleanText(source.title) || "Source page";
+  const now = new Date().toISOString();
+  const update = {
+    display_title: displayTitle,
+    page_description: null,
+    page_metadata: {
+      version: 1,
+      kind: "source_page_outline",
+      provider: metadata.provider,
+      model: metadata.model,
+      generated_at: metadata.extracted_at,
+      snapshot_hash: metadata.snapshot_hash,
+      capture_kind: capture.kind || "webpage",
+      final_url: capture.final_url || null,
+      page_title: capture.page_title || null,
+      baseline_facts_rejected: true,
+      rejection_reason: reason,
+      quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
+    },
+    page_metadata_generated_at: metadata.extracted_at,
+    page_metadata_model: metadata.model,
+    updated_at: now,
+  };
+
+  if (shouldReviewLaterForBaselineFactsRejection(facts, reason)) {
+    update.admin_review_status = "review_later";
+    update.admin_review_note = truncate(
+      `Auto-cleaned by baseline facts (${reason}): Gemini classified this page as award_relevance=${facts.award_relevance}, cycle_relevance=${facts.cycle_relevance}.`,
+      1000,
+    );
+    update.admin_reviewed_at = now;
+    update.admin_reviewed_by = "awardping-baseline-facts-worker";
+  }
+
   const { error } = await supabase
     .from("shared_award_sources")
-    .update({
-      display_title: displayTitle,
-      page_description: null,
-      page_metadata: {
-        version: 1,
-        kind: "source_page_outline",
-        provider: metadata.provider,
-        model: metadata.model,
-        generated_at: metadata.extracted_at,
-        snapshot_hash: metadata.snapshot_hash,
-        capture_kind: capture.kind || "webpage",
-        final_url: capture.final_url || null,
-        page_title: capture.page_title || null,
-        baseline_facts_rejected: true,
-        rejection_reason: reason,
-        quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
-      },
-      page_metadata_generated_at: metadata.extracted_at,
-      page_metadata_model: metadata.model,
-      updated_at: new Date().toISOString(),
-    })
+    .update(update)
     .eq("id", source.id)
     .eq("admin_review_status", "open");
   if (error) throw new Error(`shared_award_sources rejected metadata update failed: ${error.message}`);
@@ -1140,6 +1170,11 @@ function normalizeBaselineFacts(value) {
     award_name: cleanNullable(parsed.award_name),
     page_purpose: cleanNullable(parsed.page_purpose),
     award_relevance: normalizeAwardRelevance(parsed.award_relevance || parsed.relevance),
+    cycle_relevance: normalizeCycleRelevance(
+      parsed.cycle_relevance || parsed.cycle_status || parsed.application_cycle_relevance,
+    ),
+    cycle_relevance_reason: cleanNullable(parsed.cycle_relevance_reason || parsed.cycle_reason),
+    application_cycle: cleanNullable(parsed.application_cycle || parsed.cycle || parsed.application_year),
     deadline: cleanNullable(parsed.deadline || parsed.deadline_date),
     opening_date: cleanNullable(parsed.opening_date || parsed.opens_at || parsed.application_opens),
     award_amounts: stringArray(parsed.award_amounts || parsed.amounts || parsed.funding).slice(0, 12),
@@ -1160,6 +1195,12 @@ function normalizeBaselineFacts(value) {
 function baselineFactsMatchSource(source, capture, facts) {
   if (cleanSlug(facts.status) === "failed") return { ok: false, reason: "facts_status_failed" };
 
+  const awardRelevance = normalizeAwardRelevance(facts.award_relevance);
+  const cycleRelevance = normalizeCycleRelevance(facts.cycle_relevance);
+  if (awardRelevance === "unrelated") return { ok: false, reason: "award_relevance_unrelated" };
+  if (cycleRelevance === "not_program_page") return { ok: false, reason: "cycle_relevance_not_program_page" };
+  if (cycleRelevance === "archived_or_past") return { ok: false, reason: "cycle_relevance_archived_or_past" };
+
   const factText = [
     facts.display_title,
     facts.award_name,
@@ -1179,7 +1220,7 @@ function baselineFactsMatchSource(source, capture, facts) {
 
   if (overlap.length > 0) return { ok: true };
 
-  if (facts.award_relevance !== "primary") {
+  if (awardRelevance !== "primary") {
     const urlTokens = distinctiveUrlTokens(source.url);
     const factIdentityTokens = distinctiveIdentityTokens(factText);
     if (urlTokens.some((token) => factIdentityTokens.includes(token))) return { ok: true };
@@ -1300,10 +1341,9 @@ function distinctiveSourceTokens(value) {
 }
 
 function baselineHasFacts(baseline) {
-  return Boolean(
-    baseline?.summary_metadata?.baseline_facts &&
-      baseline.summary_metadata.baseline_facts_metadata?.status !== "failed",
-  );
+  const facts = baseline?.summary_metadata?.baseline_facts;
+  if (!facts || baseline.summary_metadata.baseline_facts_metadata?.status === "failed") return false;
+  return Boolean(normalizeCycleRelevance(facts.cycle_relevance) !== "unclear" || cleanNullable(facts.cycle_relevance));
 }
 
 function recordGeminiCliUsage(report, source, capture, analysis) {
@@ -1754,6 +1794,31 @@ function normalizeAwardRelevance(value) {
   if (["primary", "supporting", "unclear", "unrelated"].includes(clean)) return clean;
   if (clean === "relevant") return "primary";
   return "unclear";
+}
+
+function normalizeCycleRelevance(value) {
+  const clean = cleanSlug(value);
+  if (["current_or_upcoming", "evergreen", "archived_or_past", "unclear", "not_program_page"].includes(clean)) {
+    return clean;
+  }
+  if (["current", "upcoming", "current_upcoming", "active", "open"].includes(clean)) return "current_or_upcoming";
+  if (["archive", "archived", "past", "past_cycle", "previous", "stale", "closed"].includes(clean)) {
+    return "archived_or_past";
+  }
+  if (["unrelated", "not_a_program_page", "not_program", "not_program_application_page"].includes(clean)) {
+    return "not_program_page";
+  }
+  return "unclear";
+}
+
+function shouldReviewLaterForBaselineFactsRejection(facts, reason) {
+  const awardRelevance = normalizeAwardRelevance(facts?.award_relevance);
+  const cycleRelevance = normalizeCycleRelevance(facts?.cycle_relevance);
+  const confidence = normalizeConfidence(facts?.confidence);
+  if (confidence === "low") return false;
+  if (awardRelevance === "unrelated") return true;
+  if (cycleRelevance === "not_program_page") return true;
+  return reason === "award_relevance_unrelated" || reason === "cycle_relevance_not_program_page";
 }
 
 function stringArray(value) {

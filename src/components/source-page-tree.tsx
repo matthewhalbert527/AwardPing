@@ -947,9 +947,8 @@ function sourceOutline(source: SourcePageTreeSource): SourceOutline {
   const metadataRejected =
     metadata.baseline_facts_rejected === true ||
     objectValue(metadata.baseline_facts_metadata).rejected === true;
-  const facts = metadataRejected
-    ? {}
-    : objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  const metadataFacts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  const facts = metadataRejected || !baselineFactsAreUsable(metadataFacts) ? {} : metadataFacts;
   const displayTitle =
     cleanString(source.displayTitle) ||
     cleanString(facts.display_title) ||
@@ -1078,6 +1077,14 @@ function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+function baselineFactsAreUsable(facts: Record<string, unknown>) {
+  const relevance = cleanMetadataKey(facts.award_relevance);
+  const cycleRelevance = cleanMetadataKey(facts.cycle_relevance);
+  if (relevance === "unrelated") return false;
+  if (cycleRelevance === "not_program_page" || cycleRelevance === "archived_or_past") return false;
+  return true;
+}
+
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -1086,6 +1093,13 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function cleanString(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function cleanMetadataKey(value: unknown) {
+  return cleanString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function sourceMeta(source: SourcePageTreeSource) {

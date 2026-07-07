@@ -184,6 +184,8 @@ describe("PublicAwardWorkspace", () => {
     expect(headerHtml).toContain("Example Fellowship");
     expect(headerHtml).toContain("3 source pages");
     expect(headerHtml).toContain("A fellowship for testing.");
+    expect(headerHtml).toContain("public-award-meta-line");
+    expect(headerHtml).not.toContain("award-detail");
     expect(headerHtml.indexOf("Example Fellowship")).toBeLessThan(headerHtml.indexOf("3 source pages"));
     expect(headerHtml.indexOf("3 source pages")).toBeLessThan(headerHtml.indexOf("A fellowship for testing."));
     expect(headerHtml).not.toContain("1 recent updates");
@@ -411,6 +413,49 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).toContain("Funding Announcements");
     expect(sidebarHtml).not.toContain("...");
     expect(sidebarHtml).not.toContain("…");
+  });
+  it("opens the requested source panel from canonical award page query state", () => {
+    const data = makePageData({
+      sources: [
+        makeSource({
+          id: "source-home",
+          pageType: "application",
+          title: "Homepage",
+          url: "https://example.edu/fellowship",
+        }),
+        makeSource({
+          id: "source-apply",
+          pageType: "application",
+          title: "Application Instructions",
+          url: "https://example.edu/fellowship/apply",
+        }),
+      ],
+      changes: [
+        {
+          id: "change-apply",
+          sourceId: "source-apply",
+          sourceTitle: "Application Instructions",
+          sourceUrl: "https://example.edu/fellowship/apply",
+          sourcePageType: "application",
+          summary: "The application instructions changed.",
+          changeDetails: {},
+          detectedAt: "2026-07-03T12:00:00.000Z",
+        },
+      ],
+    });
+
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data,
+        initialSourceId: "source-apply",
+      }),
+    );
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(mainHtml).toContain("Source update history");
+    expect(mainHtml).toContain("Application Instructions");
+    expect(mainHtml).toContain("The application instructions changed.");
+    expect(mainHtml).not.toContain("<h2>Overview</h2>");
   });
 });
 

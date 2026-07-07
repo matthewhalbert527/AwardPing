@@ -18,6 +18,8 @@ import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer
 
 type PublicAwardWorkspaceProps = {
   data: PublicAwardPageData;
+  initialChangeId?: string | null;
+  initialSourceId?: string | null;
 };
 
 type SelectedPanel =
@@ -33,9 +35,16 @@ type MaybeFactRow = { label: string; value: FactValue | null; icon?: "calendar" 
 
 const MAX_VISIBLE_SIDEBAR_SOURCES = 10;
 
-export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
+export function PublicAwardWorkspace({
+  data,
+  initialChangeId,
+  initialSourceId,
+}: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [selected, setSelected] = useState<SelectedPanel>({ kind: "overview" });
+  const initialSelectedSourceId = initialSourceIdForQuery(data, initialSourceId, initialChangeId);
+  const [selected, setSelected] = useState<SelectedPanel>(() =>
+    initialSelectedSourceId ? { kind: "source", sourceId: initialSelectedSourceId } : { kind: "overview" },
+  );
   const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
     () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
@@ -186,7 +195,7 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
         <header className="public-award-console-header">
           <div>
             <h1>{data.award.name}</h1>
-            <div className="award-detail-meta-line">
+            <div className="public-award-meta-line">
               <span>{data.sources.length} source pages</span>
             </div>
             {data.facts.overview && <p>{data.facts.overview}</p>}
@@ -224,6 +233,21 @@ export function PublicAwardWorkspace({ data }: PublicAwardWorkspaceProps) {
       </main>
     </div>
   );
+}
+
+function initialSourceIdForQuery(
+  data: PublicAwardPageData,
+  sourceId?: string | null,
+  changeId?: string | null,
+) {
+  if (sourceId && data.sources.some((source) => source.id === sourceId)) {
+    return sourceId;
+  }
+
+  if (!changeId) return null;
+  const change = data.changes.find((candidate) => candidate.id === changeId);
+  if (!change?.sourceId) return null;
+  return data.sources.some((source) => source.id === change.sourceId) ? change.sourceId : null;
 }
 
 function SourceOutlineButton({

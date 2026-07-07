@@ -245,7 +245,7 @@ export function UpdateFeedWorkspace({
 }
 
 function awardUpdateHref(change: UpdateFeedRow) {
-  if (!change.awardId) return "/dashboard";
+  if (!change.awardId) return "/updates";
   const params = new URLSearchParams();
   if (change.sourceId) params.set("source", change.sourceId);
   if (change.changeId) params.set("change", change.changeId);

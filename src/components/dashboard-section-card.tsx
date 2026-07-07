@@ -57,14 +57,14 @@ export function DashboardSectionCard({
         <nav className="dashboard-section-tabs" aria-label={`${content.eyebrow} views`}>
           <Link
             className={activeView === "awards" ? "dashboard-section-tab-active" : ""}
-            href={section === "database" ? "/dashboard/awards" : "/dashboard/awards?view=watchlist"}
+            href="/award-directory"
           >
             <SearchCheck size={16} aria-hidden="true" />
             Awards
           </Link>
           <Link
             className={activeView === "updates" ? "dashboard-section-tab-active" : ""}
-            href={section === "database" ? "/dashboard?scope=all" : "/dashboard"}
+            href="/updates"
           >
             <Inbox size={16} aria-hidden="true" />
             Updates
@@ -76,7 +76,7 @@ export function DashboardSectionCard({
             className={`dashboard-section-action dashboard-section-action-source ${
               activeView === "request" ? "dashboard-section-action-active" : ""
             }`}
-            href="/dashboard/awards?view=request"
+            href="/award-page-change-checker"
           >
             <Sparkles size={16} aria-hidden="true" />
             Request source

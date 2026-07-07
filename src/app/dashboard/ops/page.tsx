@@ -285,8 +285,8 @@ export default async function OpsPage() {
         <section className="card rounded-3xl p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-2xl font-black">Recent cron runs</h2>
-            <Link className="button-secondary" href="/dashboard/awards?view=watchlist">
-              View watchlist
+            <Link className="button-secondary" href="/award-directory">
+              View award directory
             </Link>
           </div>
           <div className="mt-5 grid gap-3">

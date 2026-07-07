@@ -1,41 +1,68 @@
+import Link from "next/link";
 import {
   Activity,
   AlertTriangle,
+  CheckCircle2,
   Clock3,
   Database,
-  Eye,
+  Gauge,
+  PlayCircle,
+  ServerCog,
   Sparkles,
 } from "lucide-react";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { AdminMaintenanceControls } from "@/components/admin-maintenance-controls";
 import { SetupNotice } from "@/components/setup-notice";
+import {
+  getMaintenanceRunnerState,
+  maintenanceCommandForDisplay,
+  readLatestMaintenanceReport,
+  type MaintenanceReport,
+} from "@/lib/admin-maintenance";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { countActiveOpenSourcesWithVisualSnapshots } from "@/lib/admin-page-issues";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
+import {
+  DEFAULT_BASELINE_COST_CAP_USD,
+  GEMINI_BATCH_COST_PER_SOURCE_USD,
+  MAINTENANCE_PROFILE_IDS,
+  MAINTENANCE_PROFILES,
+  type MaintenanceProfileId,
+} from "@/lib/maintenance-profiles";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
+type AdminClient = SupabaseClient<AwardPingDatabase>;
 type LocalWorkerRun = AwardPingDatabase["public"]["Tables"]["local_worker_runs"]["Row"];
+type IconComponent = typeof Activity;
 
-type BaselineCoverage = {
-  loadedSources: number;
-  existingBaselines: number;
-  missingBaselines: number;
-  actionableMissingBaselines: number;
-  knownBrokenMissingBaselines: number;
+type CycleCoverage = {
+  scannedSources: number;
+  sourcesWithFacts: number;
+  missingFacts: number;
+  sourcesWithCycleRelevance: number;
+  missingCycleRelevance: number;
+  rejectedFacts: number;
+  currentOrUpcoming: number;
+  evergreen: number;
+  archivedOrPast: number;
+  notProgramPage: number;
+  unclear: number;
 };
 
-type BaselinePace = {
-  completedThisRun: number;
-  pagesPerHour: number;
-  etaLabel: string;
-  elapsedLabel: string;
-};
-
-type GeminiApiHealth = {
-  label: string;
-  metricDetail: string;
-  errorDetail: string;
-  attention: boolean;
-  blocked: boolean;
+type AdminSourceCounts = {
+  activeAwards: number;
+  openSources: number;
+  reviewLaterSources: number;
+  openWithMetadata: number;
+  openWithoutMetadata: number;
+  openWithVisualSnapshots: number;
+  openMissingVisualSnapshots: number;
+  sourceErrors: number;
+  staleChecks: number;
+  cycleCoverage: CycleCoverage;
+  recentRuns: LocalWorkerRun[];
+  loadErrors: string[];
 };
 
 export const dynamic = "force-dynamic";
@@ -53,10 +80,9 @@ export default async function AdminPage() {
       <AdminShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Screenshot scans</h1>
+          <h1 className="mt-4 text-3xl font-black">Maintenance</h1>
           <p className="mt-2 text-[var(--muted)]">
-            Supabase service-role access is not configured for this deployment, so scan details
-            cannot be loaded.
+            Supabase service-role access is not configured for this deployment.
           </p>
         </div>
       </AdminShell>
@@ -64,246 +90,73 @@ export default async function AdminPage() {
   }
 
   const admin = createSupabaseAdminClient();
-  const now = new Date();
-  const renderedAt = now.toISOString();
-  const checked24hCutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const checked48hCutoff = new Date(now.getTime() - 48 * 60 * 60 * 1000).toISOString();
-  const checked7dCutoff = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-  const [
-    { data: workerRunRows, error: workerRunError },
-    { count: sharedSourceCount, error: sharedSourceError },
-    { count: activeSharedSourceCount, error: activeSharedSourceError },
-    { count: sourceMetadataCount, error: sourceMetadataError },
-    { count: activeSourceMetadataCount, error: activeSourceMetadataError },
-    { count: checkedSharedSourceCount, error: checkedSharedSourceError },
-    { count: checkedSharedSource24hCount, error: checkedSharedSource24hError },
-    { count: checkedSharedSource48hCount, error: checkedSharedSource48hError },
-    { count: checkedSharedSource7dCount, error: checkedSharedSource7dError },
-    { data: latestCheckedSourceRows, error: latestCheckedSourceError },
-    { count: visualSnapshotRecordCount, error: visualSnapshotRecordError },
-  ] = await Promise.all([
-    admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(30),
-    admin.from("shared_award_sources").select("*", { count: "exact", head: true }),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open"),
-    admin
-      .from("shared_award_sources")
-      .select("*", { count: "exact", head: true })
-      .not("page_metadata_generated_at", "is", null),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .not("page_metadata_generated_at", "is", null),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .not("last_checked_at", "is", null),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .gte("last_checked_at", checked24hCutoff),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .gte("last_checked_at", checked48hCutoff),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .gte("last_checked_at", checked7dCutoff),
-    admin
-      .from("shared_award_sources")
-      .select("id, last_checked_at, shared_awards!inner(status)")
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .not("last_checked_at", "is", null)
-      .order("last_checked_at", { ascending: false })
-      .limit(1),
-    countActiveOpenSourcesWithVisualSnapshots(admin),
+  const [counts, maintenanceState] = await Promise.all([
+    loadAdminSourceCounts(admin),
+    Promise.resolve(getMaintenanceRunnerState()),
   ]);
-
-  const workerRuns = (workerRunRows || []) as LocalWorkerRun[];
-  const visualRuns = workerRuns.filter((run) => run.worker_name.includes("visual-snapshot"));
-  const pageInfoRuns = workerRuns.filter((run) => run.worker_name.includes("baseline-facts"));
-  const awardDetailRuns = workerRuns.filter((run) =>
-    run.worker_name.includes("award-baseline-detail"),
+  const latestReport = readLatestMaintenanceReport(maintenanceState);
+  const commandTemplates = Object.fromEntries(
+    MAINTENANCE_PROFILE_IDS.map((profile) => [
+      profile,
+      maintenanceCommandForDisplay(
+        profile,
+        { apply: true, baselineCostCapUsd: DEFAULT_BASELINE_COST_CAP_USD },
+        maintenanceState,
+      ),
+    ]),
+  ) as Record<MaintenanceProfileId, string>;
+  const renderedAt = new Date().toISOString();
+  const metadataPercent = percent(counts.openWithMetadata, counts.openSources);
+  const cyclePercent = percent(
+    counts.cycleCoverage.sourcesWithCycleRelevance,
+    Math.max(1, counts.cycleCoverage.sourcesWithFacts),
   );
-  const latestVisualRun = visualRuns[0] || null;
-  const latestPageInfoRun = pageInfoRuns[0] || null;
-  const latestAwardDetailRun = awardDetailRuns[0] || null;
-  const latestVisualMetadata = latestVisualRun ? metadataObject(latestVisualRun.metadata) : {};
-  const latestPageInfoMetadata = latestPageInfoRun
-    ? metadataObject(latestPageInfoRun.metadata)
-    : {};
-  const latestAwardDetailMetadata = latestAwardDetailRun
-    ? metadataObject(latestAwardDetailRun.metadata)
-    : {};
-  const latestCounts = objectValue(latestVisualMetadata.counts);
-  const latestPageInfoCounts = objectValue(latestPageInfoMetadata.counts);
-  const latestAwardDetailCounts = objectValue(latestAwardDetailMetadata.counts);
-  const latestOptions = objectValue(latestVisualMetadata.options);
-  const latestPageInfoOptions = latestPageInfoRun
-    ? objectValue(latestPageInfoMetadata.options)
-    : latestOptions;
-  const latestAwardDetailOptions = objectValue(latestAwardDetailMetadata.options);
-  const latestPipeline = objectValue(latestVisualMetadata.visual_pipeline);
-  const latestPageInfoPipeline = latestPageInfoRun
-    ? effectiveDetailPipeline(latestPageInfoMetadata)
-    : latestPipeline;
-  const latestAwardDetailPipeline = effectiveDetailPipeline(latestAwardDetailMetadata);
-  const latestCapture = objectValue(latestPipeline.capture);
-  const latestComparison = objectValue(latestPipeline.comparison);
-  const latestPublishing = objectValue(latestPipeline.publishing);
-  const latestPageInfoExtraction = objectValue(latestPageInfoPipeline.extraction);
-  const latestAwardDetailExtraction = objectValue(latestAwardDetailPipeline.extraction);
-  const latestAwardDetailPublishing = objectValue(latestAwardDetailPipeline.publishing);
-  const latestPageInfoStatusRun = latestPageInfoRun || latestVisualRun;
-  const latestGeminiCliUsage = objectValue(latestVisualMetadata.gemini_cli_usage);
-  const latestGeminiUsage = objectValue(latestVisualMetadata.gemini_usage);
-  const latestPageInfoGeminiUsage = latestPageInfoRun
-    ? objectValue(latestPageInfoMetadata.gemini_usage)
-    : latestGeminiUsage;
-  const latestAwardDetailGeminiUsage = objectValue(latestAwardDetailMetadata.gemini_usage);
-  const latestPageInfoApplied =
-    numberFromObject(latestPageInfoExtraction, "backfilled") ||
-    numberFromObject(latestPageInfoCounts, "applied") ||
-    latestPageInfoRun?.changed_count ||
-    0;
-  const latestAwardDetailApplied =
-    numberFromObject(latestAwardDetailPublishing, "applied") ||
-    numberFromObject(latestAwardDetailCounts, "applied") ||
-    latestAwardDetailRun?.changed_count ||
-    0;
-  const latestGeminiApiHealth = geminiApiHealth(latestGeminiUsage, latestOptions);
-  const latestPageInfoGeminiApiHealth = geminiApiHealth(
-    latestPageInfoGeminiUsage,
-    latestPageInfoOptions,
-  );
-  const latestVisualChecked = numberFromObject(latestCapture, "checked") || latestVisualRun?.checked_count || 0;
-  const latestVisualBaselined = numberFromObject(latestCapture, "baselined") || latestVisualRun?.initial_count || 0;
-  const latestVisualUnchanged = numberFromObject(latestCapture, "unchanged") || latestVisualRun?.unchanged_count || 0;
-  const latestVisualFailed = numberFromObject(latestCapture, "failed") || latestVisualRun?.failed_count || 0;
-  const latestPageInfoBatchJobs = numberFromObject(latestPageInfoGeminiUsage, "batch_jobs");
-  const latestPageInfoBatchRequests = numberFromObject(latestPageInfoGeminiUsage, "batch_requests");
-  const latestPageInfoBatchFailures = numberFromObject(latestPageInfoGeminiUsage, "batch_failures");
-  const latestPageInfoBatchCompleted = Math.min(
-    latestPageInfoBatchRequests,
-    numberFromObject(latestPageInfoGeminiUsage, "calls") + latestPageInfoBatchFailures,
-  );
-  const latestPageInfoBatchReturned = latestPageInfoBatchCompleted;
-  const latestPageInfoBatchPending = Math.max(
-    0,
-    latestPageInfoBatchRequests - latestPageInfoBatchCompleted,
-  );
-  const latestPageInfoBatchPercent = percent(
-    latestPageInfoBatchCompleted,
-    latestPageInfoBatchRequests,
-  );
-  const latestPageInfoLoaded = numberFromObject(latestPageInfoCounts, "loaded_baselines");
-  const latestPageInfoProcessed =
-    numberFromObject(latestPageInfoCounts, "extracted") ||
-    numberFromObject(latestPageInfoExtraction, "extracted") ||
-    latestPageInfoRun?.initial_count ||
-    0;
-  const latestPageInfoSkipped =
-    numberFromObject(latestPageInfoCounts, "skipped_existing") +
-    numberFromObject(latestPageInfoCounts, "skipped_ineligible");
-  const latestPageInfoRunCompleted = latestPageInfoProcessed + latestPageInfoSkipped;
-  const latestPageInfoRunPercent = percent(latestPageInfoRunCompleted, latestPageInfoLoaded);
-  const latestPageInfoApiMode =
-    stringFromObject(latestPageInfoGeminiUsage, "api_mode") ||
-    stringFromObject(latestPageInfoOptions, "gemini_api_mode") ||
-    "immediate";
-  const latestPageInfoIsBatch = latestPageInfoApiMode.toLowerCase() === "batch";
-  const latestPageInfoWorkerState = pageInfoWorkerState({
-    run: latestPageInfoRun,
-    apiMode: latestPageInfoApiMode,
-    health: latestPageInfoGeminiApiHealth,
-    batchJobs: latestPageInfoBatchJobs,
-    batchRequests: latestPageInfoBatchRequests,
-    batchReturned: latestPageInfoBatchReturned,
-    batchPending: latestPageInfoBatchPending,
-    applied: latestPageInfoApplied,
-    failed: numberFromObject(latestPageInfoExtraction, "failed") || latestPageInfoRun?.failed_count || 0,
-  });
-  const latestBaselineCoverage = baselineCoverageFromMetadata(latestVisualMetadata);
-  const latestBaselinePace = baselinePaceFromMetadata(
-    latestVisualRun,
-    latestVisualMetadata,
-    renderedAt,
-  );
-  const activeSourceTotal = activeSharedSourceCount || sharedSourceCount || 0;
-  const publishedSnapshotCount = visualSnapshotRecordCount || 0;
-  const publishedSnapshotMissing = Math.max(0, activeSourceTotal - publishedSnapshotCount);
-  const publishedSnapshotPercent = percent(publishedSnapshotCount, activeSourceTotal);
-  const activeSourceMetadataTotal = activeSourceMetadataCount || 0;
-  const activeSourceMetadataMissing = Math.max(0, activeSourceTotal - activeSourceMetadataTotal);
-  const activeSourceMetadataPercent = percent(activeSourceMetadataTotal, activeSourceTotal);
-  const checkedSourceTotal = checkedSharedSourceCount || 0;
-  const checkedSourcePercent = percent(checkedSourceTotal, activeSourceTotal);
-  const checkedSource24h = checkedSharedSource24hCount || 0;
-  const checkedSource48h = checkedSharedSource48hCount || 0;
-  const checkedSource7d = checkedSharedSource7dCount || 0;
-  const checkedSourceNever = Math.max(0, activeSourceTotal - checkedSourceTotal);
-  const checkedSourceOlderThan7d = Math.max(0, checkedSourceTotal - checkedSource7d);
-  const latestSourceCheckedAt = latestCheckedSourceRows?.[0]?.last_checked_at || null;
-  const baselineCoveragePercent = latestBaselineCoverage
-    ? percent(latestBaselineCoverage.existingBaselines, latestBaselineCoverage.loadedSources)
-    : 0;
-  const localBaselineLabel = latestBaselineCoverage
-    ? `${formatNumber(latestBaselineCoverage.existingBaselines)} of ${formatNumber(latestBaselineCoverage.loadedSources)} local`
-    : `${formatNumber(publishedSnapshotCount)} sources indexed in R2`;
-  const latestVisualStage = visualRunStage(latestVisualRun, latestVisualMetadata);
-  const pipelineErrors = [
-    workerRunError?.message,
-    sharedSourceError?.message,
-    activeSharedSourceError?.message,
-    sourceMetadataError?.message,
-    activeSourceMetadataError?.message,
-    checkedSharedSourceError?.message,
-    checkedSharedSource24hError?.message,
-    checkedSharedSource48hError?.message,
-    checkedSharedSource7dError?.message,
-    latestCheckedSourceError?.message,
-    visualSnapshotRecordError?.message,
-  ].filter(Boolean);
-  const sourceMetadataPercent = percent(sourceMetadataCount || 0, sharedSourceCount || 0);
+  const visualPercent = percent(counts.openWithVisualSnapshots, counts.openSources);
+  const estimatedCatchupCost = counts.openSources * GEMINI_BATCH_COST_PER_SOURCE_USD;
+  const geminiBlocked = recentRunsIncludeGeminiCreditBlock(counts.recentRuns);
 
   return (
     <AdminShell>
       <div className="admin-page-header">
         <div>
           <span className="badge">Admin</span>
-          <h1 className="admin-page-title">Screenshot scans</h1>
+          <h1 className="admin-page-title">Maintenance</h1>
           <p className="admin-page-copy">
-            Owner-only status for the daily local worker that captures screenshots, stores snapshots
-            in R2, scans pages for award information, compares changes, and publishes meaningful updates.
+            Source cleanup, visual snapshots, Gemini Batch facts, public fact aggregation, and
+            snapshot retention are now organized behind one runner.
           </p>
           <p className="admin-page-timestamp">
             Page data refreshed {formatDate(renderedAt)}.
           </p>
         </div>
+        <Link className="button-secondary" href="/dashboard/admin/issues">
+          <AlertTriangle size={16} aria-hidden="true" />
+          Page Issues
+        </Link>
       </div>
 
-      {pipelineErrors.length > 0 && (
-        <section className="mb-6 card border-[var(--brand-pink)] p-5">
+      {counts.loadErrors.length > 0 && (
+        <section className="card border-[var(--brand-pink)] p-5">
           <div className="flex items-start gap-3">
             <AlertTriangle size={18} aria-hidden="true" />
             <div>
-              <h2 className="font-black">Some scan data could not be loaded</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">{pipelineErrors.join(" ")}</p>
+              <h2 className="font-black">Some admin data could not be loaded</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">{counts.loadErrors.join(" ")}</p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {geminiBlocked && (
+        <section className="card border-[var(--brand-pink)] p-5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} aria-hidden="true" />
+            <div>
+              <h2 className="font-black">Gemini credits need attention</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">
+                Recent worker logs include Gemini prepayment or depleted-credit errors, so catch-up
+                work will stall until billing is restored.
+              </p>
             </div>
           </div>
         </section>
@@ -311,211 +164,85 @@ export default async function AdminPage() {
 
       <section className="admin-metric-grid admin-metric-grid-primary">
         <MetricCard
-          icon={Eye}
-          label="Daily worker"
-          value={latestVisualRun ? statusLabel(latestVisualRun.status) : "None"}
-          detail={latestVisualRun ? latestVisualStage : "No run logged"}
-          attention={latestVisualRun?.status === "failed"}
+          icon={ServerCog}
+          label="Worker Control"
+          value={maintenanceState.controlAvailable ? "Ready" : "Command Only"}
+          detail={
+            maintenanceState.controlAvailable
+              ? "This server can launch the local maintenance runner."
+              : maintenanceState.unavailableReason
+          }
+          attention={!maintenanceState.controlAvailable}
         />
         <MetricCard
           icon={Database}
-          label="Screenshot baselines"
-          value={latestBaselineCoverage ? `${baselineCoveragePercent}%` : formatNumber(visualSnapshotRecordCount || 0)}
-          detail={
-            latestBaselineCoverage
-              ? `${localBaselineLabel}; ${formatNumber(publishedSnapshotMissing)} unpublished to R2`
-              : localBaselineLabel
-          }
-          attention={publishedSnapshotMissing > 0}
+          label="Open Sources"
+          value={formatNumber(counts.openSources)}
+          detail={`${formatNumber(counts.activeAwards)} active awards; ${formatNumber(counts.reviewLaterSources)} sources in review later`}
         />
         <MetricCard
           icon={Sparkles}
-          label="Info coverage"
-          value={`${activeSourceMetadataPercent}%`}
-          detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active pages have extracted information`}
-          attention={activeSourceMetadataMissing > 0}
+          label="Cycle Relevance"
+          value={`${cyclePercent}%`}
+          detail={`${formatNumber(counts.cycleCoverage.missingCycleRelevance)} fact rows still need the new current-cycle field`}
+          attention={counts.cycleCoverage.missingCycleRelevance > 0}
         />
         <MetricCard
-          icon={Sparkles}
-          label="Batch work"
-          value={latestPageInfoBatchRequests > 0 ? `${latestPageInfoBatchPercent}%` : "None"}
-          detail={
-            latestPageInfoBatchRequests > 0
-              ? `${formatNumber(latestPageInfoBatchCompleted)} complete, ${formatNumber(latestPageInfoBatchPending)} pending; ${latestPageInfoGeminiApiHealth.metricDetail}`
-              : latestPageInfoGeminiApiHealth.metricDetail
-          }
-          attention={latestPageInfoGeminiApiHealth.attention || latestPageInfoBatchFailures > 0}
+          icon={Gauge}
+          label="Gemini Catch-Up"
+          value={`~$${formatUsd(estimatedCatchupCost)}`}
+          detail={`${formatNumber(counts.openSources)} open pages at the historical batch average`}
+          attention={geminiBlocked}
         />
         <MetricCard
           icon={Clock3}
-          label="Baseline checks"
-          value={`${checkedSourcePercent}%`}
-          detail={`${formatNumber(checkedSource24h)} checked in 24h; latest ${latestSourceCheckedAt ? formatDate(latestSourceCheckedAt) : "never"}`}
-          attention={checkedSourceNever > 0}
+          label="Recent Runner"
+          value={latestReport?.status ? statusLabel(latestReport.status) : "None"}
+          detail={latestReport ? latestReportDetail(latestReport) : "No unified maintenance report found"}
         />
       </section>
 
       <section className="admin-dashboard-grid">
-        <div className="card admin-section-card admin-dashboard-card">
+        <div className="card admin-section-card admin-dashboard-card admin-maintenance-control-card">
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
-              <Eye size={18} aria-hidden="true" />
-              <h2>Screenshot and R2</h2>
+              <PlayCircle size={18} aria-hidden="true" />
+              <h2>Run Maintenance</h2>
             </div>
-            <StatusPill status={latestVisualRun?.status || "running"} />
+            <StatusPill status={maintenanceState.controlAvailable ? "ready" : "unavailable"} />
           </div>
-          {latestBaselineCoverage && (
-            <ProgressBar
-              label="Screenshot baseline coverage"
-              value={baselineCoveragePercent}
-              detail={`${formatNumber(latestBaselineCoverage.existingBaselines)} baselined, ${formatNumber(latestBaselineCoverage.missingBaselines)} missing.`}
-            />
-          )}
-          <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Checked" value={latestVisualChecked} />
-            <MiniStat label="Baselined" value={latestVisualBaselined} />
-            <MiniStat label="Failed" value={latestVisualFailed} attention={latestVisualFailed > 0} />
-            <MiniStat label="R2 uploaded" value={numberFromObject(latestCounts, "r2_uploaded")} />
-            <MiniStat label="Unpublished" value={publishedSnapshotMissing} attention={publishedSnapshotMissing > 0} />
-            <MiniStat label="Done this run" value={latestBaselinePace?.completedThisRun || 0} />
-          </div>
-          <DetailDisclosure label="More scan details">
-            <div className="admin-stat-grid admin-stat-grid-compact">
-              <MiniStat label="Unchanged" value={latestVisualUnchanged} />
-              <MiniStat label="R2 rotated" value={numberFromObject(latestCounts, "r2_rotated")} />
-              <MiniStat label="R2 failed" value={numberFromObject(latestCounts, "r2_failed")} attention={numberFromObject(latestCounts, "r2_failed") > 0} />
-              <MiniStat label="Published rows" value={publishedSnapshotCount} />
-            </div>
-            <dl className="admin-detail-grid admin-detail-grid-tight">
-              <Detail label="Stage" value={latestVisualStage} />
-              <Detail label="Started" value={latestVisualRun ? formatDate(latestVisualRun.started_at) : "None"} />
-              <Detail label="Finished" value={latestVisualRun?.finished_at ? formatDate(latestVisualRun.finished_at) : "Still running"} />
-              <Detail label="R2 sync" value={booleanFromObject(latestOptions, "r2_snapshot_sync") ? "On" : "Off"} />
-              <Detail label="Bucket" value={stringFromObject(latestOptions, "r2_bucket") || "Not set"} />
-              <Detail label="R2 coverage" value={`${publishedSnapshotPercent}% of active sources`} />
-            </dl>
-          </DetailDisclosure>
+          <AdminMaintenanceControls
+            commandTemplates={commandTemplates}
+            controlAvailable={maintenanceState.controlAvailable}
+            unavailableReason={maintenanceState.unavailableReason}
+          />
         </div>
 
         <div className="card admin-section-card admin-dashboard-card">
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
               <Sparkles size={18} aria-hidden="true" />
-              <h2>Gemini page information</h2>
+              <h2>Data Coverage</h2>
             </div>
-            <span className={latestPageInfoWorkerState.attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-              {latestPageInfoWorkerState.label}
-            </span>
-          </div>
-          <div className="admin-progress-stack">
-            <ProgressBar
-              label="Information coverage"
-              value={activeSourceMetadataPercent}
-              detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active source pages have extracted page facts.`}
-            />
-          </div>
-          <div className="admin-flow-list admin-flow-list-compact">
-            <PipelineRow
-              icon={Clock3}
-              title="Current worker"
-              detail={latestPageInfoWorkerState.detail}
-              status={formatApiMode(latestPageInfoApiMode)}
-              attention={latestPageInfoWorkerState.attention}
-            />
+            <span className="badge">{metadataPercent}% facts</span>
           </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Pages with info" value={activeSourceMetadataTotal} />
-            <MiniStat label="Pages missing info" value={activeSourceMetadataMissing} attention={activeSourceMetadataMissing > 0} />
-            {latestPageInfoIsBatch ? (
-              <>
-                <MiniStat label="Batch jobs" value={latestPageInfoBatchJobs} />
-                <MiniStat label="Requests queued" value={latestPageInfoBatchRequests} attention={latestPageInfoBatchPending > 0} />
-                <MiniStat label="Requests returned" value={latestPageInfoBatchReturned} />
-                <MiniStat label="Requests waiting" value={latestPageInfoBatchPending} attention={latestPageInfoBatchPending > 0} />
-              </>
-            ) : (
-              <>
-                <MiniStat label="API calls" value={numberFromObject(latestPageInfoGeminiUsage, "calls")} />
-                <MiniStat label="API status" value={latestPageInfoGeminiApiHealth.label} attention={latestPageInfoGeminiApiHealth.attention} />
-              </>
-            )}
-            <MiniStat label="Facts applied" value={latestPageInfoApplied} />
-            <MiniStat label="Run cost" value={`$${formatUsd(numberFromObjectFloat(latestPageInfoGeminiUsage, "estimated_cost_usd"))}`} />
+            <MiniStat label="Metadata" value={`${formatNumber(counts.openWithMetadata)} / ${formatNumber(counts.openSources)}`} />
+            <MiniStat label="Missing info" value={counts.openWithoutMetadata} attention={counts.openWithoutMetadata > 0} />
+            <MiniStat label="Visuals" value={`${visualPercent}%`} attention={counts.openMissingVisualSnapshots > 0} />
+            <MiniStat label="No visuals" value={counts.openMissingVisualSnapshots} attention={counts.openMissingVisualSnapshots > 0} />
+            <MiniStat label="Source errors" value={counts.sourceErrors} attention={counts.sourceErrors > 0} />
+            <MiniStat label="Stale checks" value={counts.staleChecks} attention={counts.staleChecks > 0} />
           </div>
-          <DetailDisclosure label="More Gemini details">
-            <div className="admin-progress-stack">
-              {latestPageInfoBatchRequests > 0 && (
-                <ProgressBar
-                  label="Current batch return"
-                  value={latestPageInfoBatchPercent}
-                  detail={`${formatNumber(latestPageInfoBatchReturned)} of ${formatNumber(latestPageInfoBatchRequests)} submitted requests have returned from Gemini; ${formatNumber(latestPageInfoBatchPending)} are still queued or running.`}
-                />
-              )}
-              {latestPageInfoLoaded > 0 && (
-                <ProgressBar
-                  label="Latest page-info run"
-                  value={latestPageInfoRunPercent}
-                  detail={`${formatNumber(latestPageInfoRunCompleted)} of ${formatNumber(latestPageInfoLoaded)} loaded local baselines have been applied or skipped. Submitted-but-waiting batch requests are not counted here yet.`}
-                />
-              )}
-            </div>
+          <DetailDisclosure label="Cycle relevance">
             <div className="admin-stat-grid admin-stat-grid-compact">
-              <MiniStat label="Extracted" value={numberFromObject(latestPageInfoExtraction, "extracted")} />
-              <MiniStat label="Applied" value={latestPageInfoApplied} />
-              <MiniStat label="Batch jobs" value={latestPageInfoBatchJobs} />
-              <MiniStat label="Batch submitted" value={latestPageInfoBatchRequests} />
-              <MiniStat label="Batch returned" value={latestPageInfoBatchReturned} />
-              <MiniStat label="Batch failed" value={latestPageInfoBatchFailures} attention={latestPageInfoBatchFailures > 0} />
-              <MiniStat label="Cost cap" value={formatApiCostCap(latestPageInfoOptions)} />
+              <MiniStat label="Current" value={counts.cycleCoverage.currentOrUpcoming} />
+              <MiniStat label="Evergreen" value={counts.cycleCoverage.evergreen} />
+              <MiniStat label="Archived" value={counts.cycleCoverage.archivedOrPast} />
+              <MiniStat label="Not program" value={counts.cycleCoverage.notProgramPage} />
+              <MiniStat label="Unclear" value={counts.cycleCoverage.unclear} />
+              <MiniStat label="Rejected" value={counts.cycleCoverage.rejectedFacts} />
             </div>
-            <dl className="admin-detail-grid admin-detail-grid-tight">
-              <Detail label="Provider" value={latestPageInfoStatusRun?.ai_provider || stringFromObject(latestPageInfoExtraction, "provider") || "None"} />
-              <Detail label="Model" value={stringFromObject(latestPageInfoExtraction, "model") || stringFromObject(latestPageInfoMetadata, "ai_model") || stringFromObject(latestVisualMetadata, "ai_model") || "None"} />
-              <Detail label="API mode" value={formatApiMode(latestPageInfoApiMode)} />
-              <Detail label="Batch accounting" value="Queued requests count when submitted; returned/applied counts update only after Gemini finishes a batch job." />
-              <Detail label="Daily page scan" value={booleanFromObject(latestPageInfoOptions, "extract_baseline_info") || latestPageInfoStatusRun?.status === "running" ? "On" : "Off"} />
-              {latestPageInfoGeminiApiHealth.errorDetail && (
-                <Detail label="Last API error" value={latestPageInfoGeminiApiHealth.errorDetail} />
-              )}
-            </dl>
-          </DetailDisclosure>
-        </div>
-
-        <div className="card admin-section-card admin-dashboard-card">
-          <div className="admin-panel-heading">
-            <div className="flex items-center gap-2">
-              <Database size={18} aria-hidden="true" />
-              <h2>Coverage and freshness</h2>
-            </div>
-          </div>
-          <ProgressBar
-            label="Baseline comparison coverage"
-            value={checkedSourcePercent}
-            detail={`${formatNumber(checkedSourceTotal)} active source pages have been checked at least once.`}
-          />
-          <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Active sources" value={activeSourceTotal} />
-            <MiniStat label="Active info scanned" value={`${formatNumber(activeSourceMetadataTotal)} (${activeSourceMetadataPercent}%)`} />
-            <MiniStat label="Checked 24h" value={checkedSource24h} />
-            <MiniStat label="Checked 7d" value={checkedSource7d} />
-            <MiniStat label="Older than 7d" value={checkedSourceOlderThan7d} attention={checkedSourceOlderThan7d > 0} />
-            <MiniStat label="Never checked" value={checkedSourceNever} attention={checkedSourceNever > 0} />
-            <MiniStat label="Actionable missing" value={latestBaselineCoverage?.actionableMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.actionableMissingBaselines)} />
-          </div>
-          <DetailDisclosure label="More coverage details">
-            <div className="admin-stat-grid admin-stat-grid-compact">
-              <MiniStat label="Catalog sources" value={sharedSourceCount || 0} />
-              <MiniStat label="All info scanned" value={`${formatNumber(sourceMetadataCount || 0)} (${sourceMetadataPercent}%)`} />
-              <MiniStat label="Checked ever" value={`${formatNumber(checkedSourceTotal)} (${checkedSourcePercent}%)`} />
-              <MiniStat label="Checked 48h" value={checkedSource48h} />
-              <MiniStat label="Known broken missing" value={latestBaselineCoverage?.knownBrokenMissingBaselines || 0} attention={Boolean(latestBaselineCoverage?.knownBrokenMissingBaselines)} />
-            </div>
-            <dl className="admin-detail-grid admin-detail-grid-tight">
-              <Detail label="Latest source check" value={latestSourceCheckedAt ? formatDate(latestSourceCheckedAt) : "None yet"} />
-              <Detail label="Checked in last 24h" value={`${formatNumber(checkedSource24h)} of ${formatNumber(activeSourceTotal)}`} />
-              <Detail label="Checked in last 48h" value={`${formatNumber(checkedSource48h)} of ${formatNumber(activeSourceTotal)}`} />
-              <Detail label="Checked in last 7d" value={`${formatNumber(checkedSource7d)} of ${formatNumber(activeSourceTotal)}`} />
-            </dl>
           </DetailDisclosure>
         </div>
 
@@ -523,124 +250,262 @@ export default async function AdminPage() {
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
               <Activity size={18} aria-hidden="true" />
-              <h2>Change workflow</h2>
+              <h2>Latest Report</h2>
             </div>
+            {latestReport?.status && <StatusPill status={latestReport.status} />}
           </div>
-          <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Candidates" value={numberFromObject(latestComparison, "candidates")} />
-            <MiniStat label="True changes" value={numberFromObject(latestComparison, "true_changes")} />
-            <MiniStat label="Published" value={numberFromObject(latestPublishing, "published_updates")} />
-            <MiniStat label="Publish failed" value={numberFromObject(latestPublishing, "failed")} attention={numberFromObject(latestPublishing, "failed") > 0} />
-          </div>
-          <DetailDisclosure label="Pipeline details">
-            <div className="admin-stat-grid admin-stat-grid-compact">
-              <MiniStat label="Interpreted" value={numberFromObject(latestComparison, "interpreted")} />
-              <MiniStat label="Needs review" value={numberFromObject(latestComparison, "review")} />
-              <MiniStat label="Duplicates" value={numberFromObject(latestPublishing, "duplicate_updates")} />
-            </div>
-            <div className="admin-flow-list admin-flow-list-compact">
-              <PipelineRow
-                icon={Eye}
-                title="Capture"
-                detail={`Checked ${formatNumber(latestVisualChecked)}, baselined ${formatNumber(latestVisualBaselined)}, failed ${formatNumber(latestVisualFailed)}.`}
-                status={latestVisualRun ? statusLabel(latestVisualRun.status) : "Waiting"}
-              />
-              <PipelineRow
-                icon={Sparkles}
-                title="Extract page info"
-                detail={`${formatNumber(activeSourceMetadataTotal)} of ${formatNumber(activeSourceTotal)} active pages covered. Batch pending: ${formatNumber(latestPageInfoBatchPending)}.`}
-                status={latestPageInfoStatusRun?.status === "running" ? "Running" : "Idle"}
-                attention={numberFromObject(latestPageInfoExtraction, "failed") > 0}
-              />
-              <PipelineRow
-                icon={Activity}
-                title="Interpret differences"
-                detail={`${formatNumber(numberFromObject(latestComparison, "candidates"))} candidates, ${formatNumber(numberFromObject(latestComparison, "true_changes"))} meaningful changes.`}
-                status={`${formatNumber(numberFromObject(latestComparison, "true_changes"))} true`}
-              />
-              <PipelineRow
-                icon={Database}
-                title="Publish"
-                detail={`${formatNumber(numberFromObject(latestPublishing, "published_updates"))} published, ${formatNumber(numberFromObject(latestPublishing, "duplicate_updates"))} duplicates ignored.`}
-                status={numberFromObject(latestPublishing, "failed") > 0 ? "Needs attention" : "Ready"}
-                attention={numberFromObject(latestPublishing, "failed") > 0}
-              />
-            </div>
-          </DetailDisclosure>
-        </div>
-
-        <div className="card admin-section-card admin-dashboard-card">
-          <div className="admin-panel-heading">
-            <div className="flex items-center gap-2">
-              <Eye size={18} aria-hidden="true" />
-              <h2>Capture quality</h2>
-            </div>
-          </div>
-          <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Expanded controls" value={numberFromObject(latestCounts, "expanded_controls")} />
-            <MiniStat label="Ready timeouts" value={numberFromObject(latestCounts, "page_ready_timeouts")} attention={numberFromObject(latestCounts, "page_ready_timeouts") > 0} />
-            <MiniStat label="Blocked pages" value={numberFromObject(latestCounts, "blocked_page_captures")} attention={numberFromObject(latestCounts, "blocked_page_captures") > 0} />
-            <MiniStat label="PDFs checked" value={numberFromObject(latestCounts, "pdf_checked")} />
-            <MiniStat label="PDFs changed" value={numberFromObject(latestCounts, "pdf_changed")} />
-          </div>
-          <DetailDisclosure label="More quality details">
-            <div className="admin-stat-grid admin-stat-grid-compact">
-              <MiniStat label="Refreshed captures" value={numberFromObject(latestCounts, "capture_behavior_refreshed")} />
-              <MiniStat label="Discovered PDFs" value={numberFromObject(latestCounts, "discovered_pdf_sources")} />
-              <MiniStat label="Page ready waits" value={numberFromObject(latestCounts, "page_ready_waits")} />
-            </div>
-            <dl className="admin-detail-grid admin-detail-grid-tight">
-              <Detail label="AI provider" value={latestVisualRun?.ai_provider || "none"} />
-              <Detail label="AI model" value={stringFromObject(latestVisualMetadata, "ai_model") || "none"} />
-              <Detail label="API status" value={latestGeminiApiHealth.label} />
-              <Detail label="API tokens" value={formatNumber(numberFromObject(latestGeminiUsage, "total_tokens"))} />
-              <Detail label="CLI image files" value={formatNumber(numberFromObject(latestGeminiCliUsage, "image_files"))} />
-              <Detail label="CLI elapsed" value={`${formatNumber(numberFromObject(latestGeminiCliUsage, "elapsed_ms"))} ms`} />
-            </dl>
-          </DetailDisclosure>
-        </div>
-
-        <div className="card admin-section-card admin-dashboard-card">
-          <div className="admin-panel-heading">
-            <div className="flex items-center gap-2">
-              <Sparkles size={18} aria-hidden="true" />
-              <h2>Award detail summaries</h2>
-            </div>
-            {latestAwardDetailRun && <StatusPill status={latestAwardDetailRun.status} />}
-          </div>
-          {latestAwardDetailRun ? (
+          {latestReport ? (
             <>
-              <div className="admin-stat-grid admin-stat-grid-compact">
-                <MiniStat label="Awards checked" value={latestAwardDetailRun.checked_count || 0} />
-                <MiniStat label="Details extracted" value={numberFromObject(latestAwardDetailExtraction, "extracted")} />
-                <MiniStat label="Summaries applied" value={latestAwardDetailApplied} />
-                <MiniStat label="No baseline yet" value={numberFromObject(latestAwardDetailExtraction, "no_baseline")} attention={numberFromObject(latestAwardDetailExtraction, "no_baseline") > 0} />
+              <dl className="admin-detail-grid admin-detail-grid-tight">
+                <Detail label="Profile" value={latestReport.profile || "Unknown"} />
+                <Detail label="Started" value={latestReport.started_at ? formatDate(latestReport.started_at) : "Unknown"} />
+                <Detail label="Finished" value={latestReport.finished_at ? formatDate(latestReport.finished_at) : "Still running"} />
+                <Detail label="Report" value={latestReport.path} />
+              </dl>
+              <div className="admin-flow-list admin-flow-list-compact">
+                {(latestReport.phases || []).slice(0, 8).map((phase) => (
+                  <PipelineRow
+                    detail={phase.finished_at ? `Finished ${formatDate(phase.finished_at)}` : "Still running"}
+                    icon={phase.status === "failed" ? AlertTriangle : CheckCircle2}
+                    key={`${phase.name}-${phase.started_at}`}
+                    status={statusLabel(phase.status || "running")}
+                    title={phase.name || "phase"}
+                    attention={phase.status === "failed"}
+                  />
+                ))}
               </div>
-              <DetailDisclosure label="More award details">
-                <div className="admin-stat-grid admin-stat-grid-compact">
-                  <MiniStat label="Skipped existing" value={numberFromObject(latestAwardDetailCounts, "skipped_existing")} />
-                  <MiniStat label="API cost" value={`$${formatUsd(numberFromObjectFloat(latestAwardDetailGeminiUsage, "estimated_cost_usd"))}`} />
-                </div>
-                <dl className="admin-detail-grid admin-detail-grid-tight">
-                  <Detail label="Started" value={formatDate(latestAwardDetailRun.started_at)} />
-                  <Detail label="Finished" value={latestAwardDetailRun.finished_at ? formatDate(latestAwardDetailRun.finished_at) : "Still running"} />
-                  <Detail label="AI model" value={stringFromObject(latestAwardDetailMetadata, "ai_model") || "Source page facts"} />
-                  <Detail label="API calls" value={formatNumber(numberFromObject(latestAwardDetailGeminiUsage, "calls"))} />
-                  <Detail label="API cost cap" value={formatApiCostCap(latestAwardDetailOptions)} />
-                  <Detail label="CLI call cap" value={formatCap(latestAwardDetailOptions)} />
-                </dl>
-              </DetailDisclosure>
             </>
           ) : (
             <p className="text-sm text-[var(--muted)]">
-              No baseline award-detail run has been recorded yet.
+              No local maintenance summary has been written yet.
             </p>
           )}
         </div>
       </section>
 
+      <section className="admin-dashboard-grid">
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <ServerCog size={18} aria-hidden="true" />
+              <h2>Profiles</h2>
+            </div>
+          </div>
+          <div className="admin-flow-list admin-flow-list-compact">
+            {MAINTENANCE_PROFILE_IDS.map((profile) => (
+              <PipelineRow
+                detail={MAINTENANCE_PROFILES[profile].detail}
+                icon={MAINTENANCE_PROFILES[profile].primary ? PlayCircle : Activity}
+                key={profile}
+                status={MAINTENANCE_PROFILES[profile].phases.join(" -> ")}
+                title={MAINTENANCE_PROFILES[profile].label}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Clock3 size={18} aria-hidden="true" />
+              <h2>Recent Worker Activity</h2>
+            </div>
+          </div>
+          <div className="admin-flow-list admin-flow-list-compact">
+            {counts.recentRuns.slice(0, 8).map((run) => (
+              <PipelineRow
+                detail={`${formatDate(run.started_at)}; checked ${formatNumber(run.checked_count)}, changed ${formatNumber(run.changed_count)}, failed ${formatNumber(run.failed_count)}`}
+                icon={run.status === "failed" ? AlertTriangle : Activity}
+                key={run.id}
+                status={statusLabel(run.status)}
+                title={run.worker_name}
+                attention={run.status === "failed"}
+              />
+            ))}
+            {counts.recentRuns.length === 0 && (
+              <p className="text-sm text-[var(--muted)]">
+                No local worker runs have been recorded yet.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Gauge size={18} aria-hidden="true" />
+              <h2>Catch-Up Budget</h2>
+            </div>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Open pages" value={counts.openSources} />
+            <MiniStat label="Avg/page" value={`$${formatUsd(GEMINI_BATCH_COST_PER_SOURCE_USD)}`} />
+            <MiniStat label="Estimate" value={`$${formatUsd(estimatedCatchupCost)}`} attention={geminiBlocked} />
+            <MiniStat label="Default cap" value={`$${formatUsd(DEFAULT_BASELINE_COST_CAP_USD)}`} />
+          </div>
+          <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+            The estimate uses the observed Gemini Batch average from previous AwardPing runs.
+          </p>
+        </div>
+      </section>
     </AdminShell>
   );
+}
+
+async function loadAdminSourceCounts(admin: AdminClient): Promise<AdminSourceCounts> {
+  const staleCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const [
+    activeAwards,
+    openSources,
+    reviewLaterSources,
+    openWithMetadata,
+    sourceErrors,
+    staleChecks,
+    recentRuns,
+    visualSnapshotCount,
+    cycleCoverageResult,
+  ] = await Promise.all([
+    admin.from("shared_awards").select("id", { count: "exact", head: true }).eq("status", "active"),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open"),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "review_later"),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
+      .not("page_metadata_generated_at", "is", null),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
+      .not("last_error", "is", null),
+    admin
+      .from("shared_award_sources")
+      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
+      .lt("last_checked_at", staleCutoff),
+    admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(20),
+    countActiveOpenSourcesWithVisualSnapshots(admin),
+    loadCycleCoverageResult(admin),
+  ]);
+
+  const loadErrors = [
+    activeAwards.error?.message,
+    openSources.error?.message,
+    reviewLaterSources.error?.message,
+    openWithMetadata.error?.message,
+    sourceErrors.error?.message,
+    staleChecks.error?.message,
+    recentRuns.error?.message,
+    visualSnapshotCount.error?.message,
+    cycleCoverageResult.error,
+  ].filter((message): message is string => Boolean(message));
+
+  const openSourceCount = openSources.count || 0;
+  const openWithMetadataCount = openWithMetadata.count || 0;
+  const openWithVisualSnapshots = visualSnapshotCount.count || 0;
+  return {
+    activeAwards: activeAwards.count || 0,
+    openSources: openSourceCount,
+    reviewLaterSources: reviewLaterSources.count || 0,
+    openWithMetadata: openWithMetadataCount,
+    openWithoutMetadata: Math.max(0, openSourceCount - openWithMetadataCount),
+    openWithVisualSnapshots,
+    openMissingVisualSnapshots: Math.max(0, openSourceCount - openWithVisualSnapshots),
+    sourceErrors: sourceErrors.count || 0,
+    staleChecks: staleChecks.count || 0,
+    cycleCoverage: cycleCoverageResult.coverage,
+    recentRuns: (recentRuns.data || []) as LocalWorkerRun[],
+    loadErrors,
+  };
+}
+
+async function loadCycleCoverageResult(admin: AdminClient) {
+  try {
+    return { coverage: await loadCycleCoverage(admin), error: "" };
+  } catch (error) {
+    return {
+      coverage: emptyCycleCoverage(),
+      error: error instanceof Error ? error.message : "Cycle relevance coverage could not be loaded.",
+    };
+  }
+}
+
+async function loadCycleCoverage(admin: AdminClient): Promise<CycleCoverage> {
+  const coverage = emptyCycleCoverage();
+
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin
+      .from("shared_award_sources")
+      .select("id, page_metadata, shared_awards!inner(status)")
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
+      .not("page_metadata_generated_at", "is", null)
+      .range(from, from + 999);
+
+    if (error) throw new Error(error.message);
+    const rows = (data || []) as Array<{ page_metadata: Json }>;
+    for (const row of rows) {
+      coverage.scannedSources += 1;
+      const metadata = objectValue(row.page_metadata);
+      if (
+        metadata.baseline_facts_rejected === true ||
+        objectValue(metadata.baseline_facts_metadata).rejected === true
+      ) {
+        coverage.rejectedFacts += 1;
+      }
+
+      const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
+      if (Object.keys(facts).length === 0) {
+        coverage.missingFacts += 1;
+        continue;
+      }
+
+      coverage.sourcesWithFacts += 1;
+      const cycleRelevance = cleanKey(facts.cycle_relevance);
+      if (!cycleRelevance) {
+        coverage.missingCycleRelevance += 1;
+        continue;
+      }
+
+      coverage.sourcesWithCycleRelevance += 1;
+      if (cycleRelevance === "current_or_upcoming") coverage.currentOrUpcoming += 1;
+      else if (cycleRelevance === "evergreen") coverage.evergreen += 1;
+      else if (cycleRelevance === "archived_or_past") coverage.archivedOrPast += 1;
+      else if (cycleRelevance === "not_program_page") coverage.notProgramPage += 1;
+      else coverage.unclear += 1;
+    }
+
+    if (rows.length < 1000) break;
+  }
+
+  return coverage;
+}
+
+function emptyCycleCoverage(): CycleCoverage {
+  return {
+    scannedSources: 0,
+    sourcesWithFacts: 0,
+    missingFacts: 0,
+    sourcesWithCycleRelevance: 0,
+    missingCycleRelevance: 0,
+    rejectedFacts: 0,
+    currentOrUpcoming: 0,
+    evergreen: 0,
+    archivedOrPast: 0,
+    notProgramPage: 0,
+    unclear: 0,
+  };
 }
 
 function AdminShell({ children }: { children: React.ReactNode }) {
@@ -652,7 +517,7 @@ function AdminAccessDenied({ configured }: { configured: boolean }) {
     <AdminShell>
       <div className="card p-6">
         <span className="badge">Admin</span>
-        <h1 className="mt-4 text-3xl font-black">Screenshot scans</h1>
+        <h1 className="mt-4 text-3xl font-black">Maintenance</h1>
         <p className="mt-2 text-[var(--muted)]">
           This page is limited to AwardPing site admins
           {configured ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}
@@ -669,7 +534,7 @@ function MetricCard({
   detail,
   attention = false,
 }: {
-  icon: typeof Activity;
+  icon: IconComponent;
   label: string;
   value: React.ReactNode;
   detail: string;
@@ -711,7 +576,7 @@ function PipelineRow({
   status,
   attention = false,
 }: {
-  icon: typeof Activity;
+  icon: IconComponent;
   title: string;
   detail: string;
   status: string;
@@ -729,31 +594,6 @@ function PipelineRow({
         </div>
         <span className={attention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>{status}</span>
       </div>
-    </div>
-  );
-}
-
-function ProgressBar({
-  label,
-  value,
-  detail,
-  className = "",
-}: {
-  label: string;
-  value: number;
-  detail: string;
-  className?: string;
-}) {
-  return (
-    <div className={className}>
-      <div className="flex items-center justify-between gap-3 text-xs font-bold text-[var(--muted)]">
-        <span>{label}</span>
-        <span>{value}%</span>
-      </div>
-      <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-[var(--brand-blue-soft)]">
-        <div className="h-full rounded-full bg-[var(--brand)]" style={{ width: `${value}%` }} />
-      </div>
-      <p className="mt-1.5 text-xs font-semibold text-[var(--muted)]">{detail}</p>
     </div>
   );
 }
@@ -782,230 +622,48 @@ function Detail({ label, value }: { label: string; value: string }) {
   );
 }
 
-function StatusPill({ status }: { status: "running" | "succeeded" | "failed" }) {
+function StatusPill({ status }: { status: string }) {
+  const failed = status === "failed" || status === "unavailable" || status === "completed_with_failures";
   return (
-    <span className={status === "failed" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+    <span className={failed ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
       {statusLabel(status)}
     </span>
+  );
+}
+
+function latestReportDetail(report: MaintenanceReport) {
+  const started = report.started_at ? formatDate(report.started_at) : "unknown start";
+  const phases = report.phases?.length ? `${formatNumber(report.phases.length)} phases` : "no phases";
+  return `${report.profile || "maintenance"}; ${phases}; started ${started}`;
+}
+
+function recentRunsIncludeGeminiCreditBlock(runs: LocalWorkerRun[]) {
+  return runs.some((run) =>
+    /prepayment credits|credits are depleted|billing needs attention/i.test(
+      JSON.stringify([run.error, run.metadata]),
+    ),
   );
 }
 
 function statusLabel(status: string) {
   if (status === "succeeded") return "Succeeded";
   if (status === "failed") return "Failed";
+  if (status === "completed_with_failures") return "Completed With Failures";
+  if (status === "unavailable") return "Unavailable";
+  if (status === "ready") return "Ready";
   return "Running";
 }
 
-function effectiveDetailPipeline(metadata: Record<string, unknown>) {
-  const detailPipeline = objectValue(metadata.detail_pipeline);
-  if (Object.keys(detailPipeline).length > 0) return detailPipeline;
-  return objectValue(metadata.visual_pipeline);
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
-function visualRunStage(run: LocalWorkerRun | null, metadata: Record<string, unknown>) {
-  if (!run) return "No run logged";
-  if (run.status === "succeeded") return "Finished";
-  if (run.status === "failed") return "Failed";
-
-  const counts = objectValue(metadata.counts);
-  const pipeline = objectValue(metadata.visual_pipeline);
-  const extraction = objectValue(pipeline.extraction);
-  const publishing = objectValue(pipeline.publishing);
-  const options = objectValue(metadata.options);
-  const geminiCliUsage = objectValue(metadata.gemini_cli_usage);
-  const geminiUsage = objectValue(metadata.gemini_usage);
-
-  if (geminiApiHealth(geminiUsage, options).blocked) {
-    return "Running: screenshots and R2, Gemini API billing blocked";
-  }
-  if (geminiApiCapReached(options, geminiUsage) || geminiCapReached(options, geminiCliUsage)) {
-    return "Running: screenshots and R2, Gemini cap reached";
-  }
-  if (numberFromObject(extraction, "extracted") > 0) {
-    return "Running: scanning pages for award information";
-  }
-  if (numberFromObject(counts, "r2_uploaded") > 0) {
-    return "Running: refreshing screenshots in R2";
-  }
-  if (numberFromObject(publishing, "published_updates") > 0) {
-    return "Running: publishing updates";
-  }
-  return "Running";
-}
-
-function pageInfoWorkerState({
-  run,
-  apiMode,
-  health,
-  batchJobs,
-  batchRequests,
-  batchReturned,
-  batchPending,
-  applied,
-  failed,
-}: {
-  run: LocalWorkerRun | null;
-  apiMode: string;
-  health: GeminiApiHealth;
-  batchJobs: number;
-  batchRequests: number;
-  batchReturned: number;
-  batchPending: number;
-  applied: number;
-  failed: number;
-}) {
-  if (!run) {
-    return {
-      label: "No run logged",
-      detail: "No page-info worker run has been recorded yet.",
-      attention: false,
-    };
-  }
-  if (run.status === "failed") {
-    return {
-      label: "Worker failed",
-      detail: "The latest page-info worker stopped with an error. Open details for the latest API or worker error.",
-      attention: true,
-    };
-  }
-  if (health.blocked) {
-    return {
-      label: "API blocked",
-      detail: health.metricDetail,
-      attention: true,
-    };
-  }
-
-  const mode = apiMode.toLowerCase();
-  if (mode === "batch") {
-    if (run.status === "succeeded") {
-      return {
-        label: "Batch run finished",
-        detail: `${formatNumber(batchReturned)} of ${formatNumber(batchRequests)} submitted requests returned; ${formatNumber(applied)} facts were applied and ${formatNumber(failed)} failed in this run.`,
-        attention: failed > 0,
-      };
-    }
-    if (batchRequests <= 0) {
-      return {
-        label: "Preparing batch",
-        detail: "The worker is loading eligible local baselines and assembling the next Gemini Batch request group.",
-        attention: false,
-      };
-    }
-    if (batchReturned <= 0) {
-      return {
-        label: "Batch queued",
-        detail: `${formatNumber(batchRequests)} requests have been submitted across ${formatNumber(batchJobs)} Gemini Batch jobs. No responses have returned yet, so no new facts have been applied from this batch group.`,
-        attention: false,
-      };
-    }
-    if (batchPending > 0) {
-      return {
-        label: "Batch returning",
-        detail: `${formatNumber(batchReturned)} requests have returned from Gemini and ${formatNumber(batchPending)} are still queued or running. ${formatNumber(applied)} facts have been applied so far in this run.`,
-        attention: failed > 0,
-      };
-    }
-    return {
-      label: "Applying results",
-      detail: `All ${formatNumber(batchRequests)} submitted batch requests have returned; the worker is applying facts and writing run metadata.`,
-      attention: failed > 0,
-    };
-  }
-
-  if (run.status === "succeeded") {
-    return {
-      label: "Run finished",
-      detail: `${formatNumber(applied)} page facts were applied in the latest immediate-mode run.`,
-      attention: failed > 0,
-    };
-  }
-  return {
-    label: health.label === "Ready, no calls this run" ? "Immediate running" : health.label,
-    detail: `${formatNumber(applied)} page facts have been applied in this immediate-mode run. ${health.metricDetail}.`,
-    attention: health.attention || failed > 0,
-  };
-}
-
-function geminiCapReached(options: Record<string, unknown>, usage: Record<string, unknown>) {
-  const cap = numberFromObject(options, "gemini_cli_max_calls");
-  if (cap <= 0) return false;
-  return numberFromObject(usage, "calls") >= cap;
-}
-
-function geminiApiCapReached(options: Record<string, unknown>, usage: Record<string, unknown>) {
-  const callCap = numberFromObject(options, "gemini_api_max_calls");
-  const costCap = numberFromObjectFloat(options, "gemini_api_daily_cost_cap_usd");
-  const callsReached = callCap > 0 && numberFromObject(usage, "calls") >= callCap;
-  const costReached =
-    costCap > 0 && numberFromObjectFloat(usage, "estimated_cost_usd") >= costCap;
-  return callsReached || costReached;
-}
-
-function geminiApiHealth(usage: Record<string, unknown>, options: Record<string, unknown>) {
-  const lastError = objectValue(usage.last_error);
-  const status = stringFromObject(usage, "status");
-  const blocked = status === "blocked" || lastError.blocked === true;
-  const capReached = geminiApiCapReached(options, usage);
-  const estimatedCost = `~$${formatUsd(numberFromObjectFloat(usage, "estimated_cost_usd"))} estimated`;
-  const cap = `cap ${formatApiCostCap(options)}`;
-  const errorMessage = stringFromObject(lastError, "message");
-  const errorDetail = errorMessage
-    ? `${stringFromObject(lastError, "provider_status") || `HTTP ${formatNumber(numberFromObject(lastError, "http_status"))}`}: ${errorMessage}`
+function cleanKey(value: unknown) {
+  return typeof value === "string"
+    ? value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")
     : "";
-
-  if (blocked) {
-    return {
-      label: "Blocked: API billing/prepay",
-      metricDetail: `${estimatedCost}, ${cap}; API billing needs attention`,
-      errorDetail,
-      attention: true,
-      blocked: true,
-    };
-  }
-  if (capReached) {
-    return {
-      label: "Cap reached",
-      metricDetail: `${estimatedCost}, ${cap}; worker will skip extra Gemini calls`,
-      errorDetail,
-      attention: true,
-      blocked: false,
-    };
-  }
-  if (status === "error") {
-    return {
-      label: "Last call failed",
-      metricDetail: `${estimatedCost}, ${cap}; check last API error`,
-      errorDetail,
-      attention: true,
-      blocked: false,
-    };
-  }
-
-  return {
-    label: numberFromObject(usage, "calls") > 0 ? "Ready" : "Ready, no calls this run",
-    metricDetail: `${estimatedCost}, ${cap}`,
-    errorDetail,
-    attention: false,
-    blocked: false,
-  };
-}
-
-function formatCap(options: Record<string, unknown>) {
-  const cap = numberFromObject(options, "gemini_cli_max_calls");
-  return cap > 0 ? formatNumber(cap) : "No cap";
-}
-
-function formatApiCostCap(options: Record<string, unknown>) {
-  const cap = numberFromObjectFloat(options, "gemini_api_daily_cost_cap_usd");
-  return cap > 0 ? `$${formatUsd(cap)}` : "No cap";
-}
-
-function formatApiMode(value: string) {
-  const mode = value.trim().toLowerCase();
-  if (mode === "batch") return "Batch API";
-  if (mode === "immediate") return "Immediate API";
-  return value || "Unknown mode";
 }
 
 function formatDate(value: string) {
@@ -1019,111 +677,11 @@ function formatNumber(value: number) {
 function formatUsd(value: number) {
   return value.toLocaleString("en-US", {
     minimumFractionDigits: value >= 1 ? 2 : 4,
-    maximumFractionDigits: 4,
+    maximumFractionDigits: value >= 1 ? 2 : 4,
   });
 }
 
 function percent(value: number, total: number) {
   if (total <= 0) return 0;
   return Math.min(100, Math.max(0, Math.round((value / total) * 100)));
-}
-
-function baselinePaceFromMetadata(
-  run: LocalWorkerRun | null,
-  metadata: Record<string, unknown>,
-  nowIso: string,
-): BaselinePace | null {
-  if (!run) return null;
-
-  const coverage = objectValue(metadata.baseline_coverage);
-  const start = baselineCoverageFromObject(objectValue(coverage.start));
-  const current = baselineCoverageFromMetadata(metadata);
-  if (!start || !current) return null;
-
-  const startedAtMs = new Date(run.started_at).getTime();
-  const nowMs = new Date(nowIso).getTime();
-  const elapsedHours = (nowMs - startedAtMs) / 3_600_000;
-  if (!Number.isFinite(elapsedHours) || elapsedHours <= 0) return null;
-
-  const completedThisRun = Math.max(0, current.existingBaselines - start.existingBaselines);
-  if (completedThisRun <= 0) return null;
-
-  const pagesPerHour = completedThisRun / elapsedHours;
-  const remainingHours =
-    pagesPerHour > 0 ? current.actionableMissingBaselines / pagesPerHour : null;
-
-  return {
-    completedThisRun,
-    pagesPerHour,
-    etaLabel: remainingHours === null ? "Unknown" : formatDurationHours(remainingHours),
-    elapsedLabel: formatDurationHours(elapsedHours),
-  };
-}
-
-function formatDurationHours(hours: number) {
-  if (!Number.isFinite(hours) || hours < 0) return "Unknown";
-  if (hours < 1) {
-    return `${Math.max(1, Math.round(hours * 60))}m`;
-  }
-
-  const wholeHours = Math.floor(hours);
-  const minutes = Math.round((hours - wholeHours) * 60);
-  if (wholeHours >= 24) {
-    const days = Math.floor(wholeHours / 24);
-    const remainderHours = wholeHours % 24;
-    return remainderHours > 0 ? `${days}d ${remainderHours}h` : `${days}d`;
-  }
-  return minutes > 0 ? `${wholeHours}h ${minutes}m` : `${wholeHours}h`;
-}
-
-function metadataObject(value: Json | undefined): Record<string, unknown> {
-  return objectValue(value);
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function numberFromObject(value: Record<string, unknown>, key: string) {
-  const number = Number(value[key]);
-  return Number.isFinite(number) && number >= 0 ? Math.floor(number) : 0;
-}
-
-function numberFromObjectFloat(value: Record<string, unknown>, key: string) {
-  const number = Number(value[key]);
-  return Number.isFinite(number) && number >= 0 ? number : 0;
-}
-
-function booleanFromObject(value: Record<string, unknown>, key: string) {
-  return value[key] === true;
-}
-
-function stringFromObject(value: Record<string, unknown>, key: string) {
-  const raw = value[key];
-  return typeof raw === "string" ? raw : "";
-}
-
-function baselineCoverageFromMetadata(metadata: Record<string, unknown>): BaselineCoverage | null {
-  const coverage = objectValue(metadata.baseline_coverage);
-  const finish = objectValue(coverage.finish);
-  const progress = objectValue(coverage.progress);
-  const start = objectValue(coverage.start);
-  const selected =
-    Object.keys(finish).length > 0 ? finish : Object.keys(progress).length > 0 ? progress : start;
-  return baselineCoverageFromObject(selected);
-}
-
-function baselineCoverageFromObject(selected: Record<string, unknown>): BaselineCoverage | null {
-  const loadedSources = numberFromObject(selected, "loaded_sources");
-  if (loadedSources <= 0) return null;
-
-  return {
-    loadedSources,
-    existingBaselines: numberFromObject(selected, "existing_baselines"),
-    missingBaselines: numberFromObject(selected, "missing_baselines"),
-    actionableMissingBaselines: numberFromObject(selected, "actionable_missing_baselines"),
-    knownBrokenMissingBaselines: numberFromObject(selected, "known_broken_missing_baselines"),
-  };
 }

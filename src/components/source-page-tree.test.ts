@@ -371,6 +371,53 @@ describe("SourcePageTree", () => {
     expect(html).not.toContain("January 1, 1900");
     expect(html).not.toContain("Wrong Section");
   });
+
+  it("ignores non-program and archived-cycle baseline facts in rendered details", () => {
+    const html = renderToStaticMarkup(
+      createElement(SourcePageTree, {
+        layout: "split",
+        sources: [
+          {
+            id: "not-program",
+            title: "Official page",
+            url: "https://example.edu/scholarship/logo",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                display_title: "Brand Logo",
+                deadline: "January 1, 1900",
+                cycle_relevance: "not_program_page",
+                sections: [{ title: "Logo Details", status: "unchanged" }],
+              },
+            },
+            latestChanges: [],
+          },
+          {
+            id: "archived",
+            title: "Past recipients",
+            url: "https://example.edu/scholarship/past-recipients",
+            pageType: "other",
+            pageMetadata: {
+              baseline_facts: {
+                display_title: "2020 Recipients",
+                eligibility: ["Past recipients only"],
+                cycle_relevance: "archived_or_past",
+              },
+            },
+            latestChanges: [],
+          },
+        ],
+      }),
+    );
+
+    expect(html).toContain("Official page");
+    expect(html).toContain("Past recipients");
+    expect(html).not.toContain("Brand Logo");
+    expect(html).not.toContain("2020 Recipients");
+    expect(html).not.toContain("January 1, 1900");
+    expect(html).not.toContain("Past recipients only");
+    expect(html).not.toContain("Logo Details");
+  });
 });
 
 function treeLabelsText(tree: ReturnType<typeof buildSourceTree>) {

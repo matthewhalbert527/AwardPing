@@ -174,6 +174,10 @@ export function strongConsolidationReason(source = {}, award = {}) {
     return "same_host_sibling_program_spillover";
   }
 
+  if (isFieldsInstitutePostdoctoralSpillover(host, path, award)) {
+    return "fields_postdoctoral_spillover";
+  }
+
   if (isSameHostSiblingProgramSpillover(host, path, directSourceSignal(source), award)) {
     return "same_host_sibling_program_spillover";
   }
@@ -235,6 +239,10 @@ export function strongConsolidationReason(source = {}, award = {}) {
   if (isBroadScholarshipBrochurePdf(host, path)) return "broad_scholarship_brochure";
 
   if (host === "ala.org" && /\/council_documents\//.test(path)) return "governance_pdf_spillover";
+
+  if (isAlaScholarshipSpillover(host, path, directSourceSignal(source), award)) {
+    return "ala_scholarship_spillover";
+  }
 
   if (host === "home.treasury.gov" && /\/(?:system\/files|services\/the-multiemployer-pension-reform-act-of-2014|policy-issues|data)\//.test(path) && !awardSpecific) {
     return "agency_policy_spillover";
@@ -327,6 +335,94 @@ function isBroadScholarshipBrochurePdf(host, path) {
     host === "studieren-weltweit.de" &&
     /\/content\/uploads\/\d{4}\/\d{2}\/mit-stipendium-ins-ausland\.pdf$/i.test(path)
   );
+}
+
+function isAlaScholarshipSpillover(host, path, direct, award) {
+  const awardSignal = normalizeWords(`${award?.name || ""} ${award?.official_homepage || ""}`);
+  if (!/\b(?:american library association|ala)\b/.test(awardSignal) || !/\bscholarships?\b/.test(awardSignal)) {
+    return false;
+  }
+
+  const sourceSignal = normalizeWords(`${direct} ${path}`);
+  const isAlaScholarshipPath =
+    /(?:^|\.)ala\.org$/.test(host) &&
+    /^\/(?:educationcareers\/scholarships?|aboutala\/offices\/hrdr\/scholarshipprgm|advocacy\/spectrum|spectrum|scholarships?)(?:\/|$)/.test(
+      path,
+    );
+  const isAlaAccreditedProgramPath =
+    /(?:^|\.)ala\.org$/.test(host) &&
+    /^\/(?:educationcareers\/)?accreditedprograms(?:\/(?:directory|ala-accredited-programs-directory|guidelines-choosing-masters-program-library-and-information-studies|faq))?\/?$/.test(
+      path,
+    );
+  const isAlaScholarshipFile =
+    (host === "ala.org" || host === "live-alaorg.pantheonsite.io") &&
+    /\bscholarship(?:prgm|s?|_comparison|%20comparison)\b/i.test(path);
+  const isSpecificScholarshipText =
+    /\b(?:ala scholarships?|ala scholarship program|american library association scholarships?|spectrum scholarships?|spectrum scholarship program|apply for spectrum scholarships?|apply for scholarships?|scholarship comparison|financial assistance)\b/.test(
+      sourceSignal,
+    );
+
+  if (
+    (isAlaScholarshipPath || isAlaAccreditedProgramPath || isAlaScholarshipFile || isSpecificScholarshipText) &&
+    !/^\/cite(?:\/|$)/.test(path)
+  ) {
+    return false;
+  }
+
+  return (
+    ((host === "ala.org" || host.endsWith(".ala.org") || host === "live-alaorg.pantheonsite.io") &&
+      /^\/(?:cite|acrl|ala\/mgrps|advocacy|aboutala|offices|(?:educationcareers\/)?accreditedprograms\/resourcesforerp|tools|rusa|yalsa|yaforum|aasl|bbooks|conferencesevents|censorship-search-portal|node|content-controls[^/]*|sites\/default\/files)(?:\/|$)/.test(
+        path,
+      )) ||
+    [
+      "journals.ala.org",
+      "ifla.org",
+      "senate.gov",
+      "highwire.stanford.edu",
+      "pdfs.semanticscholar.org",
+      "groups.niso.org",
+      "libguides.ala.org",
+      "alastore.ala.org",
+      "joblist.ala.org",
+      "drive.google.com",
+      "docs.google.com",
+      "d3jcs7j1qj73at.cloudfront.net",
+      "irs.gov",
+      "comminfo.rutgers.edu",
+      "doe.k12.de.us",
+      "www2.scholastic.com",
+      "foslsantacruz.org",
+      "rotary.org",
+      "digitalyouth.ischool.berkeley.edu",
+      "imls.gov",
+      "ilovelibraries.org",
+    ].includes(host)
+  );
+}
+
+function isFieldsInstitutePostdoctoralSpillover(host, path, award) {
+  const awardSignal = normalizeWords(`${award?.name || ""} ${award?.official_homepage || ""}`);
+  if (!tokenAppears(awardSignal, "fields") || !tokenAppears(awardSignal, "postdoctoral")) {
+    return false;
+  }
+
+  const isFieldsHost = host === "fields.utoronto.ca" || host.endsWith(".fields.utoronto.ca");
+  const isTorontoHost = host === "utoronto.ca" || host.endsWith(".utoronto.ca");
+  if (!isFieldsHost && !isTorontoHost) return false;
+
+  const pathSignal = normalizeWords(`${path} ${safeDecode(path)}`);
+  if (isFieldsHost) {
+    if (path === "/honours-and-fellowships/postdoctoral-fellowships") return false;
+    if (
+      /^\/honours-and-fellowships\//.test(path) &&
+      /\bpostdoctoral\b/.test(pathSignal) &&
+      /\bfellow(?:s|ship|ships)?\b/.test(pathSignal)
+    ) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export function hasAwardSpecificSignal(source = {}, award = {}) {

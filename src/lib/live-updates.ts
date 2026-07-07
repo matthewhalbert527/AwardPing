@@ -51,11 +51,15 @@ export type LiveUpdateItem = {
 
 export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> {
   const admin = createSupabaseAdminClient();
-  const { data: changes } = await admin
+  const { data: changes, error: changesError } = await admin
     .from("shared_award_change_events")
     .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
     .order("detected_at", { ascending: false })
     .limit(Math.max(limit * 8, 160));
+
+  if (changesError) {
+    throw new Error(`Live updates query failed: ${supabaseErrorMessage(changesError)}`);
+  }
 
   if (!changes?.length) return [];
 
@@ -68,15 +72,21 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
         .filter((sourceId): sourceId is string => Boolean(sourceId)),
     ),
   ];
-  const { data: awards } = awardIds.length
+  const { data: awards, error: awardsError } = awardIds.length
     ? await admin.from("shared_awards").select("id, name, slug").in("id", awardIds).eq("status", "active")
-    : { data: [] as SharedAwardLookupRow[] };
-  const { data: sources } = sourceIds.length
+    : { data: [] as SharedAwardLookupRow[], error: null };
+  const { data: sources, error: sourcesError } = sourceIds.length
     ? await admin
         .from("shared_award_sources")
         .select("id, url, admin_review_status")
         .in("id", sourceIds)
-    : { data: [] as SharedSourceLookupRow[] };
+    : { data: [] as SharedSourceLookupRow[], error: null };
+  if (awardsError) {
+    throw new Error(`Live update award lookup failed: ${supabaseErrorMessage(awardsError)}`);
+  }
+  if (sourcesError) {
+    throw new Error(`Live update source lookup failed: ${supabaseErrorMessage(sourcesError)}`);
+  }
   const awardById = new Map((awards || []).map((award) => [award.id, award]));
   const changeIsFromOpenSource = activeChangeSourceFilter(
     ((sources || []) as SharedSourceLookupRow[]).filter(
@@ -121,6 +131,15 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
         changeTypeLabel: changeTypeLabel(change.change_details),
       };
     });
+}
+
+function supabaseErrorMessage(error: { message?: string; code?: string; details?: string; hint?: string }) {
+  return [
+    error.message || "Unknown Supabase error",
+    error.code ? `(${error.code})` : "",
+    error.details ? `Details: ${error.details}` : "",
+    error.hint ? `Hint: ${error.hint}` : "",
+  ].filter(Boolean).join(" ");
 }
 
 export function relativeTimeLabel(value: string) {

@@ -22,7 +22,7 @@ export function AcceptInviteButton({ token }: { token: string }) {
       return;
     }
 
-    router.push("/dashboard");
+    router.push("/updates");
     router.refresh();
   }
 

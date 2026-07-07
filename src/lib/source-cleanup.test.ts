@@ -313,6 +313,162 @@ describe("source consolidation classification", () => {
     ).toMatchObject({ action: "review_later", reason: "professional_material_spillover" });
   });
 
+  it("rejects ALA committee and sibling-program spillover attached to ALA Scholarships", () => {
+    const alaAward = { ...award, name: "American Library Association (ALA) Scholarships" };
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-committee",
+          url: "https://www.ala.org/acrl/anss/acr-ansiil",
+          title: "ANSS Instruction and Information Literacy Committee",
+          page_type: "requirements",
+        }),
+        alaAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "ala_scholarship_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-guidelines",
+          url: "https://www.ala.org/content-controls-and-access-guidelines-vendors",
+          title: "Content Controls and Access Guidelines for Vendors",
+          page_type: "requirements",
+        }),
+        alaAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "ala_scholarship_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-cite",
+          url: "https://www.ala.org/cite?query=node/17486&title=Apply%20for%20Spectrum&url=https%3A//www.ala.org/advocacy/spectrum/apply",
+          title: "ALA Citation Generator",
+          page_type: "application",
+        }),
+        alaAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "ala_scholarship_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-store",
+          url: "https://alastore.ala.org/content/bed-bug-guide-public-libraries%E2%80%94eeditions-pdf-e-book",
+          title: "The Bed Bug Guide for Public Libraries",
+          page_type: "pdf",
+        }),
+        alaAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "ala_scholarship_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-review-panel",
+          url: "https://www.ala.org/educationcareers/accreditedprograms/resourcesforerp/travel",
+          title: "External Review Panel travel - frequently asked questions",
+          page_type: "faq",
+        }),
+        alaAward,
+      ),
+    ).toMatchObject({ action: "review_later", reason: "ala_scholarship_spillover" });
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-scholarships",
+          url: "https://www.ala.org/educationcareers/scholarships",
+          title: "ALA Scholarships",
+          page_type: "homepage",
+        }),
+        alaAward,
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-spectrum",
+          url: "https://www.ala.org/advocacy/spectrum/apply",
+          title: "Apply for Spectrum Scholarships",
+          page_type: "application",
+        }),
+        alaAward,
+      ).action,
+    ).toBe("keep");
+
+    expect(
+      classifySourceForConsolidation(
+        source({
+          id: "ala-accredited-programs",
+          url: "https://www.ala.org/educationcareers/accreditedprograms/directory",
+          title: "ALA-Accredited Programs Directory",
+          page_type: "requirements",
+        }),
+        alaAward,
+      ).action,
+    ).toBe("keep");
+  });
+
+  it("rejects Fields Institute activity and resource spillover while keeping postdoctoral fellowship pages", () => {
+    const fieldsAward = {
+      ...award,
+      name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      official_homepage: "https://www.fields.utoronto.ca/honours-and-fellowships/postdoctoral-fellowships",
+    };
+
+    for (const example of [
+      {
+        url: "https://www.fields.utoronto.ca/honours-and-fellowships/postdoctoral-fellowships",
+        title: "Postdoctoral Fellowships",
+        page_type: "homepage",
+      },
+      {
+        url: "https://www.fields.utoronto.ca/honours-and-fellowships/fields-perimeter-institute-africa-postdoctoral-fellows",
+        title: "Fields-AIMS-Perimeter Postdoctoral Fellows",
+        page_type: "application",
+      },
+    ]) {
+      expect(classifySourceForConsolidation(source(example), fieldsAward).action).toBe("keep");
+    }
+
+    for (const example of [
+      {
+        url: "https://www.fields.utoronto.ca/activities/25-26/cmm-seminar",
+        title: "2025-2026 Centre for Mathematical Medicine Seminar",
+        page_type: "other",
+      },
+      {
+        url: "https://www.fields.utoronto.ca/honours-and-fellowships/fields-research-fellowships",
+        title: "Fields Research Fellowship - Fields Institute",
+        page_type: "application",
+      },
+      {
+        url: "https://www.fields.utoronto.ca/resources/thematic-and-focus-program-proposals",
+        title: "Thematic or Focus Program Proposals",
+        page_type: "deadline",
+      },
+      {
+        url: "https://forms.fields.utoronto.ca/s3/gsa-proposal",
+        title: "General Scientific Activity Proposal - Fields Institute",
+        page_type: "deadline",
+      },
+      {
+        url: "https://www.utoronto.ca/utogether",
+        title: "University of Toronto",
+        page_type: "deadline",
+      },
+    ]) {
+      expect(classifySourceForConsolidation(source(example), fieldsAward)).toMatchObject({
+        action: "review_later",
+        reason: "fields_postdoctoral_spillover",
+      });
+    }
+  });
+
   it("rejects PDF and profile spillover that bloats source outlines", () => {
     expect(
       classifySourceForConsolidation(

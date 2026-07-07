@@ -25,10 +25,7 @@ export function canonicalAwardPath(slug: string | null | undefined, name: string
 }
 
 export function dashboardAwardPath(slug: string | null | undefined, name: string, id: string) {
-  const clean = normalizeAwardSlug(slug || "");
-  if (clean) return `/dashboard/awards/${clean}`;
-
-  return `/dashboard/awards/${id}`;
+  return canonicalAwardPath(slug, name, id);
 }
 
 export type AwardSourceSlugInput = {

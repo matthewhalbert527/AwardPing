@@ -16,7 +16,7 @@ export default async function OnboardingPage() {
   const status = await getOnboardingStatus(user);
 
   if (status.isComplete) {
-    redirect("/dashboard");
+    redirect("/updates");
   }
 
   const officeContext = status.officeContext;
@@ -75,8 +75,8 @@ export default async function OnboardingPage() {
         {!status.needsProfile && !status.needsOffice && (
           <section className="dashboard-panel dashboard-panel-pad">
             <h2 className="dashboard-panel-title">Setup complete</h2>
-            <Link className="button-primary mt-4" href="/dashboard">
-              Open dashboard
+            <Link className="button-primary mt-4" href="/updates">
+              Open updates
             </Link>
           </section>
         )}

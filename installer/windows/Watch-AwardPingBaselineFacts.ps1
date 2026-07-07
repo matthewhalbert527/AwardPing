@@ -379,7 +379,13 @@ if ($Install) {
   exit 0
 }
 
+$databaseStatusScriptAvailable = Test-Path -LiteralPath $DatabaseStatusScript
 $status = Get-BaselineFactsStatusFromDatabase
+if (-not $status -and $databaseStatusScriptAvailable) {
+  Write-WatchdogLog "database_unavailable_pause no_restart=true"
+  exit 0
+}
+
 if (-not $status) {
   $status = Get-BaselineFactsStatus
 }

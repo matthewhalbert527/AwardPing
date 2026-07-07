@@ -26,7 +26,7 @@ const goldwater: SharedAwardCard = {
 };
 
 describe("AwardDiscoveryWorkspace", () => {
-  it("shows a canonical public page link for signed-in award directory rows", () => {
+  it("uses the canonical public page as the signed-in award directory row destination", () => {
     const html = renderToStaticMarkup(
       createElement(AwardDiscoveryWorkspace, {
         canManage: false,
@@ -35,8 +35,8 @@ describe("AwardDiscoveryWorkspace", () => {
       }),
     );
 
-    expect(html).toContain("href=\"/dashboard/awards/goldwater-scholarship\"");
     expect(html).toContain("href=\"/goldwater-scholarship\"");
+    expect(html).not.toContain("href=\"/dashboard/awards/goldwater-scholarship\"");
     expect(html).toContain("Public page");
   });
 

@@ -137,7 +137,16 @@ function baselineFactsFromMetadata(value: unknown) {
     return {};
   }
 
-  return objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  return baselineFactsAreUsable(facts) ? facts : {};
+}
+
+function baselineFactsAreUsable(facts: Record<string, unknown>) {
+  const relevance = cleanKey(facts.award_relevance);
+  const cycleRelevance = cleanKey(facts.cycle_relevance);
+  if (relevance === "unrelated") return false;
+  if (cycleRelevance === "not_program_page" || cycleRelevance === "archived_or_past") return false;
+  return true;
 }
 
 function splitFact(value: string | null, fallback: string[] = []) {
@@ -315,6 +324,13 @@ function normalizeLabel(value: string) {
 
 function cleanString(value: unknown) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function cleanKey(value: unknown) {
+  return cleanString(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

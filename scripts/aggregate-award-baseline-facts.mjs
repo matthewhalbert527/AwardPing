@@ -235,7 +235,9 @@ function usableAwardSources(sources) {
   return sources.filter((source) => {
     const facts = baselineFacts(source);
     const relevance = cleanSlug(facts.award_relevance);
+    const cycleRelevance = cleanSlug(facts.cycle_relevance);
     if (relevance === "unrelated") return false;
+    if (cycleRelevance === "not_program_page" || cycleRelevance === "archived_or_past") return false;
     return Boolean(
       cleanNullable(facts.deadline) ||
         cleanNullable(facts.opening_date) ||

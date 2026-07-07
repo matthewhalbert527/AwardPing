@@ -10,7 +10,7 @@ type Params = {
 };
 
 export default async function PipelineAwardRedirectPage({ params }: Params) {
-  if (!hasSupabaseConfig()) redirect("/dashboard/awards?view=watchlist");
+  if (!hasSupabaseConfig()) redirect("/award-directory");
 
   const user = await requireUser();
   const officeContext = await requireOfficeContext(user);
@@ -36,8 +36,8 @@ export default async function PipelineAwardRedirectPage({ params }: Params) {
       redirect(dashboardAwardPath(sharedAward.slug, sharedAward.name, sharedAward.id));
     }
 
-    redirect("/dashboard/awards?view=watchlist");
+    redirect("/award-directory");
   }
 
-  redirect("/dashboard/awards?view=watchlist");
+  redirect("/award-directory");
 }

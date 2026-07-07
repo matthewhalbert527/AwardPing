@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { awardMonitoringPolicy } from "./lib/award-monitoring-policy.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -31,6 +31,10 @@ const sourcePageSize = positiveInt(args["source-page-size"], 500);
 const minSourcePageSize = positiveInt(args["min-source-page-size"], 10);
 const batchSize = positiveInt(args["batch-size"], 200);
 const safety = cleanChoice(args.safety, ["safe", "full"], "full");
+const selectionMode = cleanChoice(args["selection-mode"], ["volume", "rotation"], "rotation");
+const statePath = args["state-path"]
+  ? resolve(root, String(args["state-path"]))
+  : join(root, "reports", "overnight-source-quality-rotation-state.json");
 const cleanupTitles = boolArg(args["cleanup-titles"], true);
 const aggregateFacts = boolArg(args["aggregate-facts"], true);
 const forceAggregateFacts = boolArg(args["force-aggregate-facts"], true);
@@ -58,6 +62,8 @@ const report = {
     min_source_page_size: minSourcePageSize,
     batch_size: batchSize,
     safety,
+    selection_mode: selectionMode,
+    state_path: statePath,
     cleanup_titles: cleanupTitles,
     aggregate_facts: aggregateFacts,
     force_aggregate_facts: forceAggregateFacts,
@@ -78,6 +84,7 @@ const report = {
   completed_awards: [],
   failed_awards: [],
   commands: [],
+  selection_state: null,
 };
 
 try {
@@ -89,15 +96,23 @@ try {
       `safety=${safety}`,
       `minOpenSources=${minOpenSources}`,
       `maxAwards=${maxAwards}`,
+      `selectionMode=${selectionMode}`,
       `aggregateFacts=${aggregateFacts}`,
       `policyVersion=${awardMonitoringPolicy.version || "unknown"}`,
       `report=${reportPath}`,
     ].join(" "),
   );
 
+  let rotationContext = null;
   const awards = explicitSlugs.length
     ? await loadAwardsBySlug(explicitSlugs)
-    : await loadHighVolumeAwards({ minOpenSources, maxAwards });
+    : selectionMode === "rotation"
+      ? await loadRotatingAwards({ minOpenSources, maxAwards, statePath }).then((selection) => {
+          rotationContext = selection.context;
+          report.selection_state = selection.context;
+          return selection.awards;
+        })
+      : await loadHighVolumeAwards({ minOpenSources, maxAwards });
 
   report.selected_awards = awards.map((award) => ({
     id: award.id,
@@ -171,6 +186,12 @@ try {
       console.log(`AWARD_TARGET_FAILED ${award.slug} | ${awardResult.error}`);
       if (stopOnFailure) throw error;
     } finally {
+      if (apply && rotationContext && Number.isInteger(award.rotation_index) && rotationContext.eligible_count > 0) {
+        rotationContext.next_index = (award.rotation_index + 1) % rotationContext.eligible_count;
+        rotationContext.updated_at = new Date().toISOString();
+        report.selection_state = rotationContext;
+        writeRotationState(statePath, rotationContext);
+      }
       writeReport();
     }
   }
@@ -194,6 +215,38 @@ async function loadHighVolumeAwards({ minOpenSources: minimum, maxAwards: limit 
     .filter((award) => award.open_sources >= minimum)
     .sort((left, right) => right.open_sources - left.open_sources || left.name.localeCompare(right.name))
     .slice(0, limit);
+}
+
+async function loadRotatingAwards({ minOpenSources: minimum, maxAwards: limit, statePath: rotationStatePath }) {
+  const awards = await loadActiveAwards();
+  const counts = await loadOpenSourceCountsByAward();
+  const eligible = awards
+    .map((award) => ({ ...award, open_sources: counts.get(award.id) || 0 }))
+    .filter((award) => award.open_sources >= minimum)
+    .sort((left, right) => left.name.localeCompare(right.name) || left.slug.localeCompare(right.slug));
+
+  const savedState = readJsonIfExists(rotationStatePath);
+  const rawStartIndex = Number.parseInt(String(savedState?.next_index ?? 0), 10);
+  const startIndex = eligible.length ? modulo(Number.isFinite(rawStartIndex) ? rawStartIndex : 0, eligible.length) : 0;
+  const selected = [];
+  for (let offset = 0; offset < eligible.length && selected.length < limit; offset += 1) {
+    const rotationIndex = (startIndex + offset) % eligible.length;
+    selected.push({ ...eligible[rotationIndex], rotation_index: rotationIndex });
+  }
+
+  return {
+    awards: selected,
+    context: {
+      mode: "rotation",
+      state_path: rotationStatePath,
+      eligible_count: eligible.length,
+      selected_count: selected.length,
+      start_index: startIndex,
+      next_index: eligible.length && selected.length ? (selected[selected.length - 1].rotation_index + 1) % eligible.length : startIndex,
+      loaded_at: new Date().toISOString(),
+      updated_at: savedState?.updated_at || null,
+    },
+  };
 }
 
 async function loadAwardsBySlug(slugs) {
@@ -276,6 +329,11 @@ function writeReport() {
   writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
 }
 
+function writeRotationState(path, state) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(state, null, 2), "utf8");
+}
+
 function printHelp() {
   console.log(`Run the repeatable overnight source quality pass.
 
@@ -293,6 +351,8 @@ Options:
   --apply=false               Dry-run by default. Use --apply=true to update Supabase.
   --max-awards=40             Max high-volume awards to process.
   --min-open-sources=75       Only auto-select awards with at least this many open sources.
+  --selection-mode=rotation   rotation covers all matching awards over repeated runs; volume checks highest source-count awards first.
+  --state-path=...            Rotation cursor file. Defaults to reports/overnight-source-quality-rotation-state.json.
   --award-slugs=a,b           Process specific awards instead of selecting by volume.
   --safety=full               Pass through to full-source-cleanup-pass; safe or full.
   --cleanup-titles=true       Simplify source display titles while cleaning.
@@ -342,6 +402,15 @@ function loadEnvFile(path) {
   return values;
 }
 
+function readJsonIfExists(path) {
+  if (!path || !existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 function csvList(value) {
   if (value === undefined || value === null || value === "") return [];
   return String(value)
@@ -367,6 +436,10 @@ function positiveInt(value, fallback) {
 function positiveNumber(value, fallback) {
   const number = Number.parseFloat(String(value ?? ""));
   return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function modulo(value, divisor) {
+  return ((value % divisor) + divisor) % divisor;
 }
 
 function cleanChoice(value, choices, fallback) {

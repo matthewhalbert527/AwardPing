@@ -45,6 +45,43 @@ describe("public award facts", () => {
     expect(facts.eligibility).toEqual([]);
   });
 
+  it("ignores non-program and archived-cycle source baseline facts", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {},
+      sources: [
+        {
+          page_metadata: {
+            baseline_facts: {
+              award_relevance: "unrelated",
+              deadline: "January 1, 1900",
+            },
+          },
+        },
+        {
+          page_metadata: {
+            baseline_facts: {
+              cycle_relevance: "archived_or_past",
+              eligibility: ["Past recipients only"],
+            },
+          },
+        },
+        {
+          page_metadata: {
+            baseline_facts: {
+              cycle_relevance: "not_program_page",
+              application_materials: ["Logo file"],
+            },
+          },
+        },
+      ],
+    });
+
+    expect(facts.deadline).toBeNull();
+    expect(facts.eligibility).toEqual([]);
+    expect(facts.applicationMaterials).toEqual([]);
+  });
+
   it("does not infer an undergraduate audience from transcript requirements", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,

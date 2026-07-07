@@ -37,5 +37,5 @@ export async function getOnboardingStatus(user: UserLike): Promise<OnboardingSta
 }
 
 export function onboardingRedirectPath(status: Pick<OnboardingStatus, "isComplete">) {
-  return status.isComplete ? "/dashboard" : "/dashboard/onboarding";
+  return status.isComplete ? "/updates" : "/dashboard/onboarding";
 }

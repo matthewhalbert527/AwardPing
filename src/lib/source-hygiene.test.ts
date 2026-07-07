@@ -916,6 +916,53 @@ describe("source hygiene classifier", () => {
         award_name: "American Library Association (ALA) Scholarships",
       },
       {
+        url: "https://www.ala.org/acrl/anss/acr-ansiil",
+        title: "ANSS Instruction and Information Literacy Committee",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/acrl/is/awards/miriam-dudley-instruction-librarian-award",
+        title: "IS Miriam Dudley Instruction Librarian Award",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/content-controls-and-access-guidelines-vendors",
+        title: "Content Controls and Access Guidelines for Vendors",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/cite?query=node/17486&title=Apply%20for%20Spectrum&url=https%3A//www.ala.org/advocacy/spectrum/apply",
+        title: "ALA Citation Generator",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/sites/default/files/acrl/content/standards/impactful_scholarship.pdf",
+        title: "ACRL Framework for Impactful Scholarship and Metrics",
+        page_type: "pdf",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://alastore.ala.org/content/bed-bug-guide-public-libraries%E2%80%94eeditions-pdf-e-book",
+        title: "The Bed Bug Guide for Public Libraries",
+        page_type: "pdf",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://joblist.ala.org/career-advice/",
+        title: "ALA JobLIST Career Planning Portal",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/educationcareers/accreditedprograms/resourcesforerp/travel",
+        title: "External Review Panel travel - frequently asked questions",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "http://www.ala.org/offices/hrdr",
+        title: "Office for Human Resource Development and Recruitment (hrdr)",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
         url: "https://journals.ala.org/index.php/rusq/article/download/3159/3291",
         title: "Download this PDF file",
         page_type: "pdf",
@@ -1253,6 +1300,18 @@ describe("source hygiene classifier", () => {
         award_name: "American Library Association (ALA) Scholarships",
       },
       {
+        url: "https://www.ala.org/advocacy/spectrum/apply",
+        title: "Apply for Spectrum Scholarships",
+        page_type: "application",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
+        url: "https://www.ala.org/educationcareers/accreditedprograms/directory",
+        title: "ALA-Accredited Programs Directory",
+        page_type: "requirements",
+        award_name: "American Library Association (ALA) Scholarships",
+      },
+      {
         url: "https://www.fu-berlin.de/sites/bprogram/",
         title: "Berlin Program for Advanced German and European Studies",
         page_type: "homepage",
@@ -1586,6 +1645,29 @@ describe("source hygiene classifier", () => {
         award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
       },
       {
+        url: "https://www.fields.utoronto.ca/activities/25-26/cmm-seminar",
+        title: "2025-2026 Centre for Mathematical Medicine Seminar",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.fields.utoronto.ca/resources/thematic-and-focus-program-proposals",
+        title: "Thematic or Focus Program Proposals",
+        page_type: "deadline",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      },
+      {
+        url: "https://forms.fields.utoronto.ca/s3/gsa-proposal",
+        title: "General Scientific Activity Proposal - Fields Institute",
+        page_type: "deadline",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      },
+      {
+        url: "https://www.utoronto.ca/utogether",
+        title: "University of Toronto",
+        page_type: "deadline",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      },
+      {
         url: "https://www.nsf.gov/funding/programs.jsp?org=SBE",
         title: "NSF Directorate of Social, Behavioral and Economic Sciences",
         award_name: "National Science Foundation (NSF) - Arctic Doctoral Dissertation Improvement Grant",
@@ -1638,6 +1720,24 @@ describe("source hygiene classifier", () => {
         reason: "cross_program_source",
       });
     }
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.fields.utoronto.ca/honours-and-fellowships/postdoctoral-fellowships",
+        title: "Postdoctoral Fellowships",
+        page_type: "homepage",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      }),
+    ).toMatchObject({ action: "keep" });
+
+    expect(
+      shouldRejectDiscoveredSource({
+        url: "https://www.fields.utoronto.ca/honours-and-fellowships/fields-perimeter-institute-africa-postdoctoral-fellows",
+        title: "Fields-AIMS-Perimeter Postdoctoral Fellows",
+        page_type: "application",
+        award_name: "The Fields Institute for Research in Mathematical Sciences - Postdoctoral Fellowships",
+      }),
+    ).toMatchObject({ action: "keep" });
 
     expect(
       shouldRejectDiscoveredSource({

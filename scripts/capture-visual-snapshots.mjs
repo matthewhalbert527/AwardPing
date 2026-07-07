@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -33,6 +34,7 @@ import {
   shouldRejectDiscoveredSource,
 } from "./source-hygiene.mjs";
 import { classifySourceForConsolidation } from "./source-consolidation-core.mjs";
+import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -126,7 +128,14 @@ const interpretVisualChanges = boolArg(
   args["interpret-visual-changes"] ?? env.AWARDPING_INTERPRET_VISUAL_CHANGES,
   true,
 );
-const extractBaselineInfo = boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
+const localizationRepair = boolArg(args["localization-repair"] ?? env.AWARDPING_LOCALIZATION_REPAIR, false);
+const forceR2SnapshotRefresh = boolArg(
+  args["force-r2-snapshot-refresh"] ?? env.AWARDPING_FORCE_R2_SNAPSHOT_REFRESH,
+  localizationRepair,
+);
+const extractBaselineInfo = localizationRepair
+  ? false
+  : boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
 const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
 const viewportHeight = positiveInt(args["viewport-height"], 1600);
@@ -140,11 +149,11 @@ const maxExpansionStateScreenshots = boundedInt(
 );
 const discoverPdfSubpages = boolArg(
   args["discover-pdf-subpages"] ?? env.AWARDPING_DISCOVER_PDF_SUBPAGES,
-  true,
+  !localizationRepair,
 );
 const discoverHtmlSubpages = boolArg(
   args["discover-html-subpages"] ?? env.AWARDPING_DISCOVER_HTML_SUBPAGES,
-  true,
+  !localizationRepair,
 );
 const maxHtmlSubpageDiscoveries = boundedInt(
   args["max-html-subpage-discoveries"] || env.AWARDPING_MAX_HTML_SUBPAGE_DISCOVERIES,
@@ -244,7 +253,29 @@ const r2RepairMissingSnapshots = boolArg(
 );
 const r2SnapshotSync = boolArg(
   args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
-  r2BackfillBaselines,
+  r2BackfillBaselines || localizationRepair || forceR2SnapshotRefresh,
+);
+const snapshotHistoryPrune = boolArg(
+  args["snapshot-history-prune"] ?? env.AWARDPING_SNAPSHOT_HISTORY_PRUNE,
+  true,
+);
+const snapshotHistoryPruneKeep = boundedInt(
+  args["snapshot-history-prune-keep"] || env.AWARDPING_SNAPSHOT_HISTORY_PRUNE_KEEP,
+  2,
+  1,
+  20,
+);
+const snapshotHistoryPruneBatchSize = boundedInt(
+  args["snapshot-history-prune-batch-size"] || env.AWARDPING_SNAPSHOT_HISTORY_PRUNE_BATCH_SIZE,
+  10_000,
+  100,
+  100_000,
+);
+const snapshotHistoryPruneMaxBatches = boundedInt(
+  args["snapshot-history-prune-max-batches"] || env.AWARDPING_SNAPSHOT_HISTORY_PRUNE_MAX_BATCHES,
+  5,
+  1,
+  100,
 );
 const r2Bucket = String(args["r2-bucket"] || env.R2_BUCKET || "awardping-snapshots").trim();
 const r2AccountId = cleanText(args["r2-account-id"] || env.R2_ACCOUNT_ID);
@@ -340,6 +371,7 @@ async function runOnce() {
     started_at: startedAt,
     finished_at: null,
     status: "running",
+    stop_reason: null,
     ai_provider: aiProvider,
     ai_model: aiModel,
     env_path: envPath,
@@ -363,6 +395,8 @@ async function runOnce() {
       skip_existing_baseline: skipExistingBaseline,
       keep_unchanged: keepUnchanged,
       keep_rejected: keepRejected,
+      localization_repair: localizationRepair,
+      force_r2_snapshot_refresh: forceR2SnapshotRefresh,
       review_on_ai_failure: reviewOnAiFailure,
       viewport_width: viewportWidth,
       viewport_height: viewportHeight,
@@ -398,6 +432,10 @@ async function runOnce() {
       r2_repair_missing_snapshots: r2RepairMissingSnapshots,
       r2_snapshot_sync: r2SnapshotSync,
       r2_bucket: r2SnapshotSync ? r2Bucket : null,
+      snapshot_history_prune: snapshotHistoryPrune,
+      snapshot_history_prune_keep: snapshotHistoryPruneKeep,
+      snapshot_history_prune_batch_size: snapshotHistoryPruneBatchSize,
+      snapshot_history_prune_max_batches: snapshotHistoryPruneMaxBatches,
       gemini_cli_path: aiProvider === "gemini-cli" ? geminiCliPath : null,
       gemini_cli_model: aiProvider === "gemini-cli" ? geminiCliModel : null,
       gemini_cli_safe_models: aiProvider === "gemini-cli" ? geminiCliSafeModels : [],
@@ -416,6 +454,8 @@ async function runOnce() {
     candidate_changes: 0,
     ai_true_changes: 0,
     ai_rejected: 0,
+    evidence_sanity_corrected: 0,
+    evidence_sanity_rejected: 0,
     text_only_ignored: 0,
     deterministic_noise: 0,
     visual_noise: 0,
@@ -459,6 +499,18 @@ async function runOnce() {
     r2_repaired_missing: 0,
     r2_known_existing: 0,
     r2_known_missing: 0,
+    snapshot_history_prune: {
+      enabled: snapshotHistoryPrune,
+      keep: snapshotHistoryPruneKeep,
+      tables: {},
+      skipped: false,
+      error: null,
+    },
+    localization_repair_synced: 0,
+    localization_repair_baselined: 0,
+    localization_repair_skipped_changed: 0,
+    localization_repair_skipped_missing_baseline: 0,
+    localization_repair_skipped_pdf: 0,
     baseline_facts_extracted: 0,
     baseline_facts_failed: 0,
     baseline_facts_skipped: 0,
@@ -639,6 +691,21 @@ async function runOnce() {
   }
 
   try {
+    const supabaseHealth = await checkSupabaseHealth(supabase);
+    if (!supabaseHealth.ok) {
+      report.status = "blocked";
+      report.stop_reason = "supabase_unavailable";
+      report.errors.push({
+        source_id: null,
+        source_url: null,
+        message: supabaseHealth.message,
+      });
+      console.log(
+        `SUPABASE_UNAVAILABLE reason=${supabaseHealth.reason} message=${truncate(supabaseHealth.message, 500)}`,
+      );
+      return;
+    }
+
     workerRunId = await startWorkerRun(report);
     let sources = await loadSources(limit);
     coverageSources = sources;
@@ -727,6 +794,9 @@ async function runOnce() {
   } finally {
     await Promise.all([...browserStates].map((state) => closeBrowserState(state)));
     clearInterval(heartbeat);
+    if (snapshotHistoryPrune && report.status !== "blocked") {
+      await maybePruneSnapshotHistory(report);
+    }
     report.finished_at = new Date().toISOString();
     mkdirSync(dirname(reportPath), { recursive: true });
     writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
@@ -863,6 +933,7 @@ async function processSource(source, context, browserMeta, report) {
     });
     report.baselined += 1;
     await maybeSyncR2Snapshot(source, capture, report);
+    if (localizationRepair) report.localization_repair_baselined += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
     return;
@@ -880,10 +951,16 @@ async function processSource(source, context, browserMeta, report) {
     });
     report.capture_behavior_refreshed += 1;
     await maybeSyncR2Snapshot(source, capture, report);
+    if (localizationRepair) report.localization_repair_synced += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(
       `BASELINE capture_behavior_refresh from=${baseline.capture_behavior_version || 0} to=${captureBehaviorVersion} ${sourceLabel(source)}`,
     );
+    return;
+  }
+
+  if (localizationRepair) {
+    await processLocalizationRepairSource(source, baseline, capture, report);
     return;
   }
 
@@ -968,6 +1045,41 @@ async function processSource(source, context, browserMeta, report) {
     deterministic,
     report,
   });
+}
+
+async function processLocalizationRepairSource(source, baseline, capture, report) {
+  if (capture.kind === "pdf") {
+    report.localization_repair_skipped_pdf += 1;
+    console.log(`LOCALIZATION_REPAIR skip_pdf ${sourceLabel(source)}`);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    return;
+  }
+
+  if (!baseline) {
+    report.localization_repair_skipped_missing_baseline += 1;
+    console.log(`LOCALIZATION_REPAIR skip_missing_baseline ${sourceLabel(source)}`);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    return;
+  }
+
+  if (capture.image_hash && baseline.image_hash && capture.image_hash !== baseline.image_hash) {
+    report.localization_repair_skipped_changed += 1;
+    console.log(`LOCALIZATION_REPAIR skip_changed ${sourceLabel(source)}`);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    return;
+  }
+
+  await maybeSyncR2Snapshot(source, capture, report);
+  writeBaseline(source, capture, {
+    reason: "localization_repair",
+    previous_baseline: baseline || null,
+    baseline_facts: baseline?.summary_metadata?.baseline_facts || null,
+    baseline_facts_metadata: baseline?.summary_metadata?.baseline_facts_metadata || null,
+  });
+  report.localization_repair_synced += 1;
+  report.unchanged += 1;
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
+  console.log(`LOCALIZATION_REPAIR synced ${sourceLabel(source)}`);
 }
 
 async function reviewAndApplyCandidateChange({
@@ -1089,6 +1201,23 @@ async function reviewAndApplyCandidateChange({
     const auditNoise = aiReviewLooksLikePublishedAuditNoise(aiReview, source);
     if (auditNoise) {
       markAiReviewAsNoise(aiReview, auditNoise.flag, auditNoise.reason);
+    }
+  }
+  if (aiReview.result.is_true_change) {
+    const evidenceAudit = auditAiReviewAgainstTextEvidence({
+      source,
+      previous,
+      capture,
+      diff,
+      aiReview,
+    });
+    if (evidenceAudit.rejected) {
+      report.evidence_sanity_rejected += 1;
+      markAiReviewAsNoise(aiReview, evidenceAudit.flag, evidenceAudit.reason);
+      console.log(`AI_EVIDENCE_REJECTED ${evidenceAudit.flag} ${sourceLabel(source)}`);
+    } else if (evidenceAudit.corrected) {
+      report.evidence_sanity_corrected += 1;
+      console.log(`AI_EVIDENCE_CORRECTED ${evidenceAudit.flags.join(",")} ${sourceLabel(source)}`);
     }
   }
 
@@ -3565,7 +3694,7 @@ function sourcePageMetadataUpdate(source, capture) {
   const generatedAt = metadata.extracted_at || new Date().toISOString();
   const sanity = baselineFactsMatchSource(source, capture, facts);
   if (!sanity.ok) {
-    return {
+    const update = {
       display_title: cleanNullable(capture.page_title) || cleanNullable(source.title) || null,
       page_description: null,
       page_metadata: {
@@ -3585,6 +3714,18 @@ function sourcePageMetadataUpdate(source, capture) {
       page_metadata_generated_at: generatedAt,
       page_metadata_model: metadata.model || aiModel,
     };
+
+    if (shouldReviewLaterForBaselineFactsRejection(facts, sanity.reason)) {
+      update.admin_review_status = "review_later";
+      update.admin_review_note = truncate(
+        `Auto-cleaned by baseline facts (${sanity.reason}): Gemini classified this page as award_relevance=${facts.award_relevance}, cycle_relevance=${facts.cycle_relevance}.`,
+        1000,
+      );
+      update.admin_reviewed_at = generatedAt;
+      update.admin_reviewed_by = "awardping-visual-snapshot-worker";
+    }
+
+    return update;
   }
 
   const displayTitle = facts.display_title || cleanNullable(capture.page_title) || cleanNullable(source.title);
@@ -3618,6 +3759,12 @@ function sourcePageMetadataUpdate(source, capture) {
 
 function baselineFactsMatchSource(source, capture, facts) {
   if (cleanSlug(facts.status) === "failed") return { ok: false, reason: "facts_status_failed" };
+
+  const awardRelevance = normalizeAwardRelevance(facts.award_relevance);
+  const cycleRelevance = normalizeCycleRelevance(facts.cycle_relevance);
+  if (awardRelevance === "unrelated") return { ok: false, reason: "award_relevance_unrelated" };
+  if (cycleRelevance === "not_program_page") return { ok: false, reason: "cycle_relevance_not_program_page" };
+  if (cycleRelevance === "archived_or_past") return { ok: false, reason: "cycle_relevance_archived_or_past" };
 
   const expectedTokens = distinctiveSourceTokens([
     source.shared_awards?.name,
@@ -4449,11 +4596,13 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "Create a clean readable display_title and a short page_description for this exact source page, even when it is not an eligibility, deadline, or application page.",
     "Extract only facts that are visible or directly supported. Do not guess missing dates, amounts, or requirements.",
     "Return compact JSON with these keys:",
-    "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
+    "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, cycle_relevance, cycle_relevance_reason, application_cycle, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
     "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections.",
     "Every important_dates item must include context plus the date, such as \"Application deadline: January 15, 2027\" or \"Award notifications: May 1\". Do not output bare dates.",
     "sections should list 0 to 8 visible scholarship concepts or page areas with {title, description, status}. Use status unchanged for baseline sections.",
-    "award_relevance must be primary, supporting, unclear, or unrelated. confidence must be low, medium, or high.",
+    "award_relevance must be primary, supporting, unclear, or unrelated. Use primary only for the named award/program page or official application, deadline, eligibility, instruction, FAQ, portal, or document page for that same program. Use unrelated for sibling awards/programs, institutional resource/policy pages, event/seminar/news/archive/recipient pages, generic portals, payment/travel/logos/files, or pages that merely share the organization/domain.",
+    "cycle_relevance must be current_or_upcoming, evergreen, archived_or_past, unclear, or not_program_page. Use current_or_upcoming for visible current/future cycle, year, deadline, or application instructions. Use evergreen for active official application information without a cycle year. Use archived_or_past for previous calls, past recipients/events, or stale years. Use not_program_page when the page is not about the named program application cycle.",
+    "cycle_relevance_reason must be 12 words or fewer. application_cycle should be the visible year, term, or cycle name when present, otherwise null. confidence must be low, medium, or high.",
     "Use null for unknown deadline/opening_date/page_purpose.",
     "",
     `Reason: ${reason}`,
@@ -4493,6 +4642,8 @@ function geminiCliDiffPrompt({ source, baseline, previous, capture, diff, determ
     "Reject cookie banners, carousels, ads, current-date-only changes, font/reflow/lazy-image changes, navigation/footer/sidebar changes, social widgets, featured-fellow/alumni/profile roster rotations, recipient/news churn, unrelated research/news pages, access/security/404 pages, and file-hash/file-size-only PDF or document changes.",
     ...monitoringPolicyPromptLinesForScope("visual_snapshot_gemini_cli"),
     "For PDFs, Word forms, and downloadable files, is_true_change must be false unless you can name the actual changed wording, date, requirement, amount, or applicant instruction. Do not approve a change just because the file bytes, hash, or size changed.",
+    "Do not describe text as added if that same wording is already present in the previous capture. Do not describe text as removed if that same wording is still present in the new capture.",
+    "For structured_diff, added_text must be exact wording present in the new capture and absent from the previous capture; removed_text must be exact wording present in the previous capture and absent from the new capture.",
     "reader_summary should be one or two plain-English advisor-facing sentences when true; otherwise null.",
     "advisor_impact should say what an advising office might need to check or update when true; otherwise null.",
     "confidence must be low, medium, or high. If confidence is low, set is_true_change=false.",
@@ -5227,9 +5378,15 @@ function buildSourcesQuery() {
       "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
     .eq("shared_awards.status", "active")
-    .eq("admin_review_status", "open")
-    .order("next_check_at", { ascending: true })
-    .order("created_at", { ascending: true });
+    .eq("admin_review_status", "open");
+
+  if (localizationRepair) {
+    query = query.order("id", { ascending: true });
+  } else {
+    query = query
+      .order("next_check_at", { ascending: true })
+      .order("created_at", { ascending: true });
+  }
 
   if (!includeNotDue) {
     query = query.lte("next_check_at", new Date().toISOString());
@@ -5338,6 +5495,75 @@ async function updateWorkerRunMetadata(runId, report) {
   if (error && !isMissingMetadataColumnError(error)) {
     console.log(`WORKER RUN METADATA UPDATE FAILED | ${error.message}`);
   }
+}
+
+async function maybePruneSnapshotHistory(report) {
+  const tasks = [
+    {
+      label: "shared_award_source_snapshots",
+      rpc: "prune_shared_award_source_snapshot_history",
+      params: {
+        p_keep_per_source: snapshotHistoryPruneKeep,
+        p_batch_size: snapshotHistoryPruneBatchSize,
+        p_preserve_change_event_snapshots: true,
+      },
+    },
+    {
+      label: "monitor_snapshots",
+      rpc: "prune_monitor_snapshot_history",
+      params: {
+        p_keep_per_monitor: snapshotHistoryPruneKeep,
+        p_batch_size: snapshotHistoryPruneBatchSize,
+        p_preserve_change_event_snapshots: true,
+      },
+    },
+  ];
+
+  report.snapshot_history_prune.started_at = new Date().toISOString();
+
+  for (const task of tasks) {
+    const tableSummary = {
+      batches: 0,
+      candidate_count: 0,
+      deleted_count: 0,
+      maybe_more_remaining: false,
+    };
+    report.snapshot_history_prune.tables[task.label] = tableSummary;
+
+    try {
+      for (let batch = 1; batch <= snapshotHistoryPruneMaxBatches; batch += 1) {
+        const { data, error } = await supabase.rpc(task.rpc, {
+          ...task.params,
+          p_apply: true,
+        });
+
+        if (error) throw error;
+
+        const row = Array.isArray(data) ? data[0] : data;
+        const candidateCount = nonNegativeInt(row?.candidate_count, 0);
+        const deletedCount = nonNegativeInt(row?.deleted_count, 0);
+
+        tableSummary.batches += 1;
+        tableSummary.candidate_count += candidateCount;
+        tableSummary.deleted_count += deletedCount;
+
+        console.log(
+          `SNAPSHOT_HISTORY_PRUNE table=${task.label} batch=${batch} candidates=${candidateCount} deleted=${deletedCount}`,
+        );
+
+        if (candidateCount < snapshotHistoryPruneBatchSize || deletedCount === 0) break;
+      }
+
+      tableSummary.maybe_more_remaining = tableSummary.batches >= snapshotHistoryPruneMaxBatches;
+    } catch (error) {
+      const message = `Snapshot history prune failed for ${task.label}: ${errorMessage(error)}`;
+      report.snapshot_history_prune.error = message;
+      console.log(`SNAPSHOT_HISTORY_PRUNE_FAILED ${message}`);
+      break;
+    }
+  }
+
+  report.snapshot_history_prune.finished_at = new Date().toISOString();
 }
 
 async function startWorkerRunWithoutMetadata() {
@@ -5477,6 +5703,11 @@ function visualWorkerMetadata(report) {
       r2_repaired_missing: report.r2_repaired_missing,
       r2_known_existing: report.r2_known_existing,
       r2_known_missing: report.r2_known_missing,
+      localization_repair_synced: report.localization_repair_synced,
+      localization_repair_baselined: report.localization_repair_baselined,
+      localization_repair_skipped_changed: report.localization_repair_skipped_changed,
+      localization_repair_skipped_missing_baseline: report.localization_repair_skipped_missing_baseline,
+      localization_repair_skipped_pdf: report.localization_repair_skipped_pdf,
       baseline_facts_extracted: report.baseline_facts_extracted,
       baseline_facts_failed: report.baseline_facts_failed,
       baseline_facts_skipped: report.baseline_facts_skipped,
@@ -5535,6 +5766,7 @@ function visualWorkerMetadata(report) {
 
 function visualWorkerName() {
   const suffix = shardCount > 1 ? `-shard-${shardIndex + 1}-of-${shardCount}` : "";
+  if (localizationRepair) return `local-visual-snapshot-worker-localization-repair${suffix}`;
   if (r2BackfillBaselines) return `local-visual-snapshot-worker-r2-backfill${suffix}`;
   if (completeMissingBaselines) return `local-visual-snapshot-worker-baseline-completion${suffix}`;
   if (baselineRefresh) return `local-visual-snapshot-worker-baseline-refresh${suffix}`;
@@ -5748,6 +5980,14 @@ async function launchBrowser() {
     headless: true,
     timeout: timeoutMs,
     args: [
+      "--headless=new",
+      "--no-startup-window",
+      "--disable-gpu",
+      "--start-minimized",
+      "--window-position=-32000,-32000",
+      `--window-size=${viewportWidth},${viewportHeight}`,
+      "--disable-extensions",
+      "--disable-component-extensions-with-background-pages",
       "--disable-background-networking",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
@@ -5826,6 +6066,7 @@ function findInstalledBrowserExecutable() {
     env.BROWSER_EXECUTABLE_PATH,
     env.CHROME_PATH,
     env.EDGE_PATH,
+    ...findPlaywrightBrowserExecutables(),
     env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe") : null,
     env.PROGRAMFILES ? join(env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe") : null,
     env["ProgramFiles(x86)"] ? join(env["ProgramFiles(x86)"], "Google", "Chrome", "Application", "chrome.exe") : null,
@@ -5841,6 +6082,39 @@ function findInstalledBrowserExecutable() {
   ].filter(Boolean);
 
   return candidates.find((candidate) => existsSync(candidate)) || null;
+}
+
+function findPlaywrightBrowserExecutables() {
+  const roots = [
+    env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0"
+      ? resolve(env.PLAYWRIGHT_BROWSERS_PATH)
+      : null,
+    env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "ms-playwright") : null,
+  ].filter(Boolean);
+
+  const browserExecutables = [];
+  for (const rootPath of roots) {
+    if (!existsSync(rootPath)) continue;
+    let entries = [];
+    try {
+      entries = readdirSync(rootPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const basePath = join(rootPath, entry.name);
+      browserExecutables.push(
+        join(basePath, "chrome-headless-shell-win64", "chrome-headless-shell.exe"),
+        join(basePath, "chrome-win64", "chrome.exe"),
+        join(basePath, "chrome-win", "headless_shell.exe"),
+        join(basePath, "chrome-win", "chrome.exe"),
+        join(basePath, "chrome-linux", "chrome"),
+        join(basePath, "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+      );
+    }
+  }
+  return browserExecutables;
 }
 
 async function waitForDomain(value) {
@@ -6129,6 +6403,11 @@ function normalizeBaselineFacts(value) {
     award_name: cleanNullable(parsed.award_name),
     page_purpose: cleanNullable(parsed.page_purpose),
     award_relevance: normalizeAwardRelevance(parsed.award_relevance || parsed.relevance),
+    cycle_relevance: normalizeCycleRelevance(
+      parsed.cycle_relevance || parsed.cycle_status || parsed.application_cycle_relevance,
+    ),
+    cycle_relevance_reason: cleanNullable(parsed.cycle_relevance_reason || parsed.cycle_reason),
+    application_cycle: cleanNullable(parsed.application_cycle || parsed.cycle || parsed.application_year),
     deadline: cleanNullable(parsed.deadline || parsed.deadline_date),
     opening_date: cleanNullable(parsed.opening_date || parsed.opens_at || parsed.application_opens),
     award_amounts: stringArray(parsed.award_amounts || parsed.amounts || parsed.funding).slice(0, 12),
@@ -6805,6 +7084,19 @@ function aiReviewLooksLikePublishedAuditNoise(aiReview, source) {
   }
 
   if (
+    /\b(?:active committee roster as of|displaying active committee roster|committee roster retrieval date|last retrieved on|refresh now)\b/.test(
+      combined,
+    ) &&
+    /\broster\b/.test(combined) &&
+    !hasSubstantiveApplicantSignal
+  ) {
+    return {
+      flag: "metadata_only_roster_refresh",
+      reason: "Only committee roster retrieval/as-of dates changed; no applicant-facing award fact changed.",
+    };
+  }
+
+  if (
     host === "nifa.usda.gov" &&
     /\b(latest updates?|food and agriculture service learning program|food safety outreach program|successful institutions fy ?24|official publications and guidelines)\b/.test(
       combined,
@@ -7044,6 +7336,334 @@ function markAiReviewAsNoise(aiReview, flag, reason) {
         }
       : result.change_details,
   };
+}
+
+function auditAiReviewAgainstTextEvidence({ source, previous, capture, diff, aiReview }) {
+  const result = aiReview?.result || {};
+  if (!result.is_true_change) {
+    return { corrected: false, rejected: false, flags: [] };
+  }
+
+  const previousText = normalizeVisibleText(previous?.text || "");
+  const currentText = normalizeVisibleText(capture?.text || "");
+  if (!previousText || !currentText) {
+    return { corrected: false, rejected: false, flags: [] };
+  }
+
+  const details =
+    result.change_details && typeof result.change_details === "object" && !Array.isArray(result.change_details)
+      ? result.change_details
+      : {};
+  const structuredDiff = normalizeVisualStructuredDiff(
+    jsonObjectOrEmpty(details.structured_diff || result.structured_diff),
+    diff,
+    source,
+  );
+  const flags = [];
+  const addedAudit = auditDirectionalTextEvidence(
+    structuredDiff.added_text,
+    "added",
+    previousText,
+    currentText,
+  );
+  const removedAudit = auditDirectionalTextEvidence(
+    structuredDiff.removed_text,
+    "removed",
+    previousText,
+    currentText,
+  );
+  const dateAudit = auditDirectionalValueEvidence(structuredDiff.date_changes, previousText, currentText);
+  const amountAudit = auditDirectionalValueEvidence(structuredDiff.amount_changes, previousText, currentText);
+
+  if (addedAudit.stripped.length) flags.push("unsupported_added_text");
+  if (removedAudit.stripped.length) flags.push("unsupported_removed_text");
+  if (dateAudit.stripped.length) flags.push("unsupported_date_change");
+  if (amountAudit.stripped.length) flags.push("unsupported_amount_change");
+
+  let before = cleanNullable(result.before || details.before);
+  let after = cleanNullable(result.after || details.after);
+  const beforeKey = sentenceKey(before || "");
+  const afterKey = sentenceKey(after || "");
+  const beforeStillPresent = Boolean(before && textContainsEvidenceSnippet(currentText, before));
+  const afterAlreadyPresent = Boolean(after && textContainsEvidenceSnippet(previousText, after));
+  const beforeWasPresent = Boolean(before && textContainsEvidenceSnippet(previousText, before));
+  const afterIsPresent = Boolean(after && textContainsEvidenceSnippet(currentText, after));
+
+  if (beforeKey && afterKey && beforeKey === afterKey) {
+    flags.push("before_after_identical");
+    before = null;
+    after = null;
+  } else {
+    if (beforeStillPresent && !removedAudit.kept.some((value) => evidenceClaimsOverlap(value, before))) {
+      flags.push("before_text_still_present");
+      before = null;
+    }
+    if (afterAlreadyPresent && !addedAudit.kept.some((value) => evidenceClaimsOverlap(value, after))) {
+      flags.push("after_text_already_present");
+      after = null;
+    }
+    if (before && !beforeWasPresent && evidenceSnippetIsLocatable(before)) {
+      flags.push("before_text_not_found");
+      before = null;
+    }
+    if (after && !afterIsPresent && evidenceSnippetIsLocatable(after)) {
+      flags.push("after_text_not_found");
+      after = null;
+    }
+  }
+
+  if (!before && removedAudit.kept.length && !addedAudit.kept.length) {
+    before = removedAudit.kept[0];
+  }
+  if (!after && addedAudit.kept.length && !removedAudit.kept.length) {
+    after = addedAudit.kept[0];
+  }
+
+  const nextStructuredDiff = {
+    ...structuredDiff,
+    added_text: addedAudit.kept,
+    removed_text: removedAudit.kept,
+    date_changes: dateAudit.kept,
+    amount_changes: amountAudit.kept,
+    noise_flags: unique([
+      ...stringArray(structuredDiff.noise_flags).map(cleanSlug),
+      ...flags.map(cleanSlug),
+    ]).filter(Boolean),
+  };
+
+  const hasSupportedEvidence =
+    nextStructuredDiff.added_text.length > 0 ||
+    nextStructuredDiff.removed_text.length > 0 ||
+    nextStructuredDiff.date_changes.length > 0 ||
+    nextStructuredDiff.amount_changes.length > 0 ||
+    Boolean(before && !textContainsEvidenceSnippet(currentText, before)) ||
+    Boolean(after && !textContainsEvidenceSnippet(previousText, after));
+
+  if (!hasSupportedEvidence) {
+    return {
+      corrected: false,
+      rejected: true,
+      flags: unique(flags.length ? flags : ["evidence_mismatch"]),
+      flag: "evidence_mismatch",
+      reason:
+        "The AI described an award update, but the claimed changed wording was not supported by the previous and current capture text.",
+    };
+  }
+
+  if (!flags.length) {
+    return { corrected: false, rejected: false, flags: [] };
+  }
+
+  const qualityFlags = unique([
+    ...stringArray(result.quality_flags).map(cleanSlug),
+    ...stringArray(details.quality_flags).map(cleanSlug),
+    "evidence_sanity_corrected",
+    ...flags.map(cleanSlug),
+  ]).filter(Boolean);
+  const groundedSummary = evidenceGroundedChangeSummary({
+    source,
+    structuredDiff: nextStructuredDiff,
+    before,
+    after,
+  });
+  const groundedImpact = evidenceGroundedAdvisorImpact(nextStructuredDiff);
+  const changeType = inferVisualChangeType(
+    {
+      ...result,
+      before,
+      after,
+      changed_section: result.changed_section || details.section || nextStructuredDiff.likely_section,
+      reader_summary: groundedSummary || result.reader_summary,
+    },
+    nextStructuredDiff,
+  );
+
+  aiReview.result = {
+    ...result,
+    before,
+    after,
+    change_type: changeType,
+    reader_summary: groundedSummary || result.reader_summary,
+    advisor_impact: groundedImpact || result.advisor_impact,
+    quality_flags: qualityFlags,
+    change_details: {
+      ...details,
+      reader_summary: groundedSummary || details.reader_summary || result.reader_summary,
+      before,
+      after,
+      section: cleanNullable(details.section || result.changed_section || nextStructuredDiff.likely_section),
+      change_type: changeType,
+      advisor_impact: groundedImpact || details.advisor_impact || result.advisor_impact,
+      is_alert_worthy: true,
+      confidence: normalizeConfidence(details.confidence || result.confidence) || "medium",
+      structured_diff: nextStructuredDiff,
+      quality_flags: qualityFlags,
+      generation_status: "generated",
+    },
+  };
+
+  return { corrected: true, rejected: false, flags: qualityFlags.filter((flag) => flags.includes(flag)) };
+}
+
+function auditDirectionalTextEvidence(values, direction, previousText, currentText) {
+  const kept = [];
+  const stripped = [];
+
+  for (const value of dedupeText(stringArray(values))) {
+    const locatable = evidenceSnippetIsLocatable(value);
+    if (!locatable) {
+      kept.push(value);
+      continue;
+    }
+
+    const inPrevious = textContainsEvidenceSnippet(previousText, value);
+    const inCurrent = textContainsEvidenceSnippet(currentText, value);
+    const supported = direction === "added" ? inCurrent && !inPrevious : inPrevious && !inCurrent;
+
+    if (supported) {
+      kept.push(value);
+    } else {
+      stripped.push({
+        value,
+        in_previous: inPrevious,
+        in_current: inCurrent,
+      });
+    }
+  }
+
+  return { kept: kept.slice(0, 8), stripped };
+}
+
+function auditDirectionalValueEvidence(values, previousText, currentText) {
+  const kept = [];
+  const stripped = [];
+
+  for (const value of dedupeText(stringArray(values))) {
+    const clean = cleanText(value);
+    const direction = directionalEvidencePrefix(clean);
+    const phrase = directionalEvidencePhrase(clean);
+    const phraseKey = sentenceKey(phrase);
+    if (phraseKey.length < 4) {
+      kept.push(clean);
+      continue;
+    }
+
+    const inPrevious = textContainsEvidencePhrase(previousText, phrase);
+    const inCurrent = textContainsEvidencePhrase(currentText, phrase);
+    const supported =
+      direction === "added"
+        ? inCurrent && !inPrevious
+        : direction === "removed"
+          ? inPrevious && !inCurrent
+          : !(inPrevious && inCurrent);
+
+    if (supported) {
+      kept.push(clean);
+    } else {
+      stripped.push({
+        value: clean,
+        in_previous: inPrevious,
+        in_current: inCurrent,
+      });
+    }
+  }
+
+  return { kept: kept.slice(0, 8), stripped };
+}
+
+function evidenceSnippetIsLocatable(value) {
+  return sentenceKey(value).length >= 25 || compactEvidenceKey(value).length >= 40;
+}
+
+function textContainsEvidenceSnippet(text, snippet) {
+  if (!evidenceSnippetIsLocatable(snippet)) return false;
+  const snippetKey = sentenceKey(snippet);
+  const textKey = ` ${sentenceKey(text)} `;
+  if (snippetKey.length >= 25 && textKey.includes(` ${snippetKey} `)) return true;
+
+  const compactSnippet = compactEvidenceKey(snippet);
+  return compactSnippet.length >= 40 && compactEvidenceKey(text).includes(compactSnippet);
+}
+
+function textContainsEvidencePhrase(text, phrase) {
+  const phraseKey = sentenceKey(phrase);
+  if (!phraseKey) return false;
+  return ` ${sentenceKey(text)} `.includes(` ${phraseKey} `);
+}
+
+function compactEvidenceKey(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+function directionalEvidencePrefix(value) {
+  const match = cleanText(value).match(/^(added|new|removed|deleted|old|previous)\b/i);
+  if (!match) return null;
+  return ["added", "new"].includes(match[1].toLowerCase()) ? "added" : "removed";
+}
+
+function directionalEvidencePhrase(value) {
+  return cleanText(value)
+    .replace(/^(?:added|new|removed|deleted|old|previous|current)\s*:?\s*/i, "")
+    .trim();
+}
+
+function evidenceClaimsOverlap(left, right) {
+  const leftKey = sentenceKey(left);
+  const rightKey = sentenceKey(right);
+  if (!leftKey || !rightKey) return false;
+  return leftKey.includes(rightKey) || rightKey.includes(leftKey);
+}
+
+function evidenceGroundedChangeSummary({ source, structuredDiff, before, after }) {
+  const section = cleanNullable(structuredDiff.likely_section) || inferSection(
+    [
+      before,
+      after,
+      ...stringArray(structuredDiff.added_text),
+      ...stringArray(structuredDiff.removed_text),
+      ...stringArray(structuredDiff.date_changes),
+      ...stringArray(structuredDiff.amount_changes),
+    ].join(" "),
+  );
+  const sectionText = section ? `${section.toLowerCase()} ` : "";
+  const sourceLabelText = source?.title ? "This source page" : "The source page";
+  const added = stringArray(structuredDiff.added_text);
+  const removed = stringArray(structuredDiff.removed_text);
+
+  if (added.length && removed.length) {
+    return `${sourceLabelText} changed ${sectionText}wording from "${truncate(removed[0], 160)}" to "${truncate(added[0], 160)}".`;
+  }
+  if (removed.length) {
+    return `${sourceLabelText} no longer includes this ${sectionText}wording: "${truncate(removed[0], 200)}".`;
+  }
+  if (added.length) {
+    return `${sourceLabelText} now includes this ${sectionText}wording: "${truncate(added[0], 200)}".`;
+  }
+  if (stringArray(structuredDiff.date_changes).length) {
+    return `${sourceLabelText} has a supported date-related change: ${truncate(stringArray(structuredDiff.date_changes)[0], 180)}.`;
+  }
+  if (stringArray(structuredDiff.amount_changes).length) {
+    return `${sourceLabelText} has a supported funding-related change: ${truncate(stringArray(structuredDiff.amount_changes)[0], 180)}.`;
+  }
+  return null;
+}
+
+function evidenceGroundedAdvisorImpact(structuredDiff) {
+  const section = cleanNullable(structuredDiff.likely_section);
+  if (stringArray(structuredDiff.removed_text).length) {
+    return section
+      ? `Review the ${section.toLowerCase()} wording because a previously captured statement is no longer present.`
+      : "Review this source because a previously captured award statement is no longer present.";
+  }
+  if (stringArray(structuredDiff.added_text).length) {
+    return section
+      ? `Review the ${section.toLowerCase()} wording because the page now includes a new captured statement.`
+      : "Review this source because the page now includes a new captured award statement.";
+  }
+  if (stringArray(structuredDiff.date_changes).length || stringArray(structuredDiff.amount_changes).length) {
+    return "Review the source before advising applicants because a supported date or funding detail changed.";
+  }
+  return null;
 }
 
 function isOpaqueDocumentEvidenceText(value) {
@@ -7411,6 +8031,31 @@ function normalizeAwardRelevance(value) {
   return "unclear";
 }
 
+function normalizeCycleRelevance(value) {
+  const clean = cleanSlug(value);
+  if (["current_or_upcoming", "evergreen", "archived_or_past", "unclear", "not_program_page"].includes(clean)) {
+    return clean;
+  }
+  if (["current", "upcoming", "current_upcoming", "active", "open"].includes(clean)) return "current_or_upcoming";
+  if (["archive", "archived", "past", "past_cycle", "previous", "stale", "closed"].includes(clean)) {
+    return "archived_or_past";
+  }
+  if (["unrelated", "not_a_program_page", "not_program", "not_program_application_page"].includes(clean)) {
+    return "not_program_page";
+  }
+  return "unclear";
+}
+
+function shouldReviewLaterForBaselineFactsRejection(facts, reason) {
+  const awardRelevance = normalizeAwardRelevance(facts?.award_relevance);
+  const cycleRelevance = normalizeCycleRelevance(facts?.cycle_relevance);
+  const confidence = normalizeConfidence(facts?.confidence);
+  if (confidence === "low") return false;
+  if (awardRelevance === "unrelated") return true;
+  if (cycleRelevance === "not_program_page") return true;
+  return reason === "award_relevance_unrelated" || reason === "cycle_relevance_not_program_page";
+}
+
 function jsonObjectOrNull(value) {
   const object = jsonObjectOrEmpty(value);
   return Object.keys(object).length ? object : null;
@@ -7665,11 +8310,13 @@ const aiSystemPrompt = [
   "Compare the two attached screenshot thumbnails first when images are provided. For PDFs or image-free inputs, compare the extracted previous and new text carefully.",
   "Use normalized text as secondary context for screenshots because it can be incomplete or noisy.",
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
-  "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
-  "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
-  ...monitoringPolicyPromptLinesForScope("visual_snapshot_ai"),
-  "Also reject sitewide notices, holiday or operating-hours banners, countdown timers, view counts, post IDs, writer IDs, CAPTCHA/math changes, navigation or FAQ reordering, generic Latest Updates blocks, calendar/conference/admissions-event churn, stale archive pages, and document hash/file-size-only changes unless specific award-relevant text changed.",
-  "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
+    "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
+    "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+    ...monitoringPolicyPromptLinesForScope("visual_snapshot_ai"),
+    "Also reject sitewide notices, holiday or operating-hours banners, countdown timers, view counts, post IDs, writer IDs, CAPTCHA/math changes, navigation or FAQ reordering, generic Latest Updates blocks, calendar/conference/admissions-event churn, stale archive pages, and document hash/file-size-only changes unless specific award-relevant text changed.",
+    "Do not describe text as added if that same wording is already present in the previous capture. Do not describe text as removed if that same wording is still present in the new capture.",
+    "For structured_diff, added_text must be exact wording present in the new capture and absent from the previous capture; removed_text must be exact wording present in the previous capture and absent from the new capture.",
+    "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",
   "advisor_impact should say what an advising office might need to check or update.",
   "If confidence is low, set is_true_change=false unless the changed award fact is explicit.",
@@ -7683,6 +8330,7 @@ const baselineFactsSystemPrompt = [
   "Return valid strict JSON only. Do not include markdown.",
   "Every source page needs a readable display_title and a short page_description, even if the page is only a contact page, FAQ page, PDF, portal page, news page, or unclear/unrelated page.",
   "Extract only facts that are visible or directly supported by the screenshot, PDF text, or normalized page text.",
+  "Classify whether the page is truly about the named program and whether it supports the current/upcoming application cycle, an active evergreen cycle, an archived/past cycle, an unclear cycle, or no program page at all.",
   "Do not guess missing dates, amounts, eligibility, or requirements.",
   "Descriptions should be concise and useful in a page outline.",
 ].join(" ");
@@ -7735,6 +8383,12 @@ const baselineFactsResponseSchema = {
     award_name: { type: "string", nullable: true },
     page_purpose: { type: "string", nullable: true },
     award_relevance: { type: "string", enum: ["primary", "supporting", "unclear", "unrelated"] },
+    cycle_relevance: {
+      type: "string",
+      enum: ["current_or_upcoming", "evergreen", "archived_or_past", "unclear", "not_program_page"],
+    },
+    cycle_relevance_reason: { type: "string", nullable: true },
+    application_cycle: { type: "string", nullable: true },
     deadline: { type: "string", nullable: true },
     opening_date: { type: "string", nullable: true },
     award_amounts: { type: "array", items: { type: "string" } },
@@ -7769,6 +8423,9 @@ const baselineFactsResponseSchema = {
     "award_name",
     "page_purpose",
     "award_relevance",
+    "cycle_relevance",
+    "cycle_relevance_reason",
+    "application_cycle",
     "deadline",
     "opening_date",
     "award_amounts",

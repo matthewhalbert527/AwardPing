@@ -1,11 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import {
-  Activity,
-  AlertTriangle,
-  ChevronDown,
   Inbox,
-  ListChecks,
   SearchCheck,
 } from "lucide-react";
 import { BrandLogo } from "@/components/brand-logo";
@@ -40,8 +36,8 @@ export default async function DashboardLayout({
             </Link>
 
             <div className="dashboard-header-nav-wrap">
-              <Suspense fallback={<DashboardNavFallback isSiteAdmin={isSiteAdmin} />}>
-                <DashboardNav isSiteAdmin={isSiteAdmin} />
+              <Suspense fallback={<DashboardNavFallback />}>
+                <DashboardNav />
               </Suspense>
             </div>
 
@@ -52,7 +48,13 @@ export default async function DashboardLayout({
                   currentOfficeId={officeContext.current.officeId}
                 />
               )}
-              {user && <ProfileMenu email={user.email} fullName={profile?.full_name} />}
+              {user && (
+                <ProfileMenu
+                  email={user.email}
+                  fullName={profile?.full_name}
+                  showAdminLink={isSiteAdmin}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -63,46 +65,20 @@ export default async function DashboardLayout({
   );
 }
 
-function DashboardNavFallback({ isSiteAdmin }: { isSiteAdmin: boolean }) {
+function DashboardNavFallback() {
   return (
     <nav className="dashboard-nav" aria-label="Dashboard navigation">
       <Link
         className="dashboard-nav-link dashboard-nav-link-updates dashboard-nav-link-active"
-        href="/dashboard"
+        href="/updates"
       >
         <Inbox size={16} aria-hidden="true" />
         Updates
       </Link>
-      <Link className="dashboard-nav-link dashboard-nav-link-database" href="/dashboard/awards">
+      <Link className="dashboard-nav-link dashboard-nav-link-database" href="/award-directory">
         <SearchCheck size={16} aria-hidden="true" />
         Award Directory
       </Link>
-      <Link
-        className="dashboard-nav-link dashboard-nav-link-watchlist"
-        href="/dashboard/awards?view=watchlist"
-      >
-        <ListChecks size={16} aria-hidden="true" />
-        Watchlist
-      </Link>
-      {isSiteAdmin && (
-        <div className="dashboard-nav-admin-menu dashboard-nav-admin-menu-static">
-          <Link className="dashboard-nav-link dashboard-nav-link-admin" href="/dashboard/admin">
-            <Activity size={16} aria-hidden="true" />
-            Admin
-            <ChevronDown className="dashboard-nav-caret" size={14} aria-hidden="true" />
-          </Link>
-          <div className="dashboard-nav-admin-dropdown" role="menu">
-            <Link className="dashboard-nav-admin-item" href="/dashboard/admin" role="menuitem">
-              <Activity size={15} aria-hidden="true" />
-              <span>Page data</span>
-            </Link>
-            <Link className="dashboard-nav-admin-item" href="/dashboard/admin/issues" role="menuitem">
-              <AlertTriangle size={15} aria-hidden="true" />
-              <span>Issues</span>
-            </Link>
-          </div>
-        </div>
-      )}
     </nav>
   );
 }

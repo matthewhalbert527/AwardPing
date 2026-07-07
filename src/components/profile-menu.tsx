@@ -2,17 +2,21 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LayoutDashboard, LogOut, Mail, Settings } from "lucide-react";
+import { LayoutDashboard, LogOut, Mail, Settings, ShieldCheck } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export function ProfileMenu({
   email,
   fullName,
   showDashboardLink = false,
+  showAdminLink = false,
+  dashboardHref = "/updates",
 }: {
   email?: string | null;
   fullName?: string | null;
   showDashboardLink?: boolean;
+  showAdminLink?: boolean;
+  dashboardHref?: string;
 }) {
   const router = useRouter();
   const displayName = fullName?.trim() || email || "Profile";
@@ -48,9 +52,15 @@ export function ProfileMenu({
             <p className="truncate px-3 pb-2 pt-1 font-semibold text-[var(--muted)]">{email}</p>
           )}
           {showDashboardLink && (
-            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard">
+            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href={dashboardHref}>
               <LayoutDashboard size={16} aria-hidden="true" />
               Dashboard
+            </Link>
+          )}
+          {showAdminLink && (
+            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/admin">
+              <ShieldCheck size={16} aria-hidden="true" />
+              Admin
             </Link>
           )}
           <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/office">

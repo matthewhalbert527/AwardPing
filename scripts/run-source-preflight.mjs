@@ -1,14 +1,28 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, closeSync, createWriteStream, mkdirSync, openSync } from "node:fs";
+import { appendFileSync, closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
+import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
+const defaultEnvPath = existsSync(resolve(root, ".env.worker.local"))
+  ? ".env.worker.local"
+  : existsSync(resolve(root, ".env.local"))
+    ? ".env.local"
+    : "";
+const envPath = args.env ? String(args.env) : defaultEnvPath;
+const childEnvArgs = envPath ? ["--env", envPath] : [];
+const env = {
+  ...(envPath ? loadEnvFile(resolve(root, envPath)) : {}),
+  ...process.env,
+};
 const apply = boolArg(args.apply, false);
 const skipCleanup = boolArg(args["skip-cleanup"], false);
 const skipPrune = boolArg(args["skip-prune"], false);
+const skipSnapshotHistoryPrune = boolArg(args["skip-snapshot-history-prune"], false);
 const skipTitles = boolArg(args["skip-titles"], false);
 const skipSnapshots = boolArg(args["skip-snapshots"], false);
 const detachedSnapshots = boolArg(args["detached-snapshots"], true);
@@ -16,6 +30,8 @@ const titleLimit = nonNegativeInt(args["title-limit"], 100);
 const snapshotShards = boundedInt(args["snapshot-shards"], 3, 1, 12);
 const snapshotBatchLimit = positiveInt(args["snapshot-batch-limit"], 2500);
 const snapshotLimit = positiveInt(args["snapshot-limit"], 50000);
+const snapshotHistoryPruneKeep = boundedInt(args["snapshot-history-prune-keep"], 2, 1, 20);
+const snapshotHistoryPruneMaxBatches = boundedInt(args["snapshot-history-prune-max-batches"], 100, 1, 500);
 const webConcurrency = boundedInt(args["web-concurrency"], 2, 1, 6);
 const geminiApiMaxCalls = nonNegativeInt(args["gemini-api-max-calls"], 0);
 const costCapUsd = nonNegativeNumber(args["gemini-api-daily-cost-cap-usd"], 2);
@@ -30,6 +46,7 @@ const runStamp = new Date().toISOString().replace(/[:.]/g, "-");
 const summary = {
   started_at: new Date().toISOString(),
   apply,
+  env_path: envPath || null,
   log_dir: logDir,
   phases: [],
   snapshot_processes: [],
@@ -44,6 +61,7 @@ console.log(
       apply,
       skipCleanup,
       skipPrune,
+      skipSnapshotHistoryPrune,
       skipTitles,
       titleLimit,
       skipSnapshots,
@@ -51,6 +69,8 @@ console.log(
       snapshotShards,
       snapshotBatchLimit,
       snapshotLimit,
+      snapshotHistoryPruneKeep,
+      snapshotHistoryPruneMaxBatches,
       webConcurrency,
       geminiApiMaxCalls,
       costCapUsd,
@@ -65,9 +85,23 @@ if (!apply) {
   console.log("DRY_RUN_ONLY: pass --apply=true to move sources to review_later, prune dead rows, and update titles.");
 }
 
+const supabaseHealth = await preflightSupabaseHealth();
+if (!supabaseHealth.ok) {
+  summary.status = "blocked";
+  summary.stop_reason = "supabase_unavailable";
+  summary.supabase_health = supabaseHealth;
+  summary.finished_at = new Date().toISOString();
+  console.log(
+    `SUPABASE_UNAVAILABLE reason=${supabaseHealth.reason} message=${String(supabaseHealth.message || "").slice(0, 500)}`,
+  );
+  console.log(JSON.stringify(summary, null, 2));
+  process.exit(0);
+}
+
 if (!skipCleanup) {
   runPhase("cleanup-source-failures", [
     "scripts/cleanup-source-failures.mjs",
+    ...childEnvArgs,
     `--dry-run=${!apply}`,
     "--include-obvious-active=true",
     "--limit=30000",
@@ -77,14 +111,26 @@ if (!skipCleanup) {
 if (!skipPrune) {
   runPhase("prune-dead-shared-sources", [
     "scripts/prune-dead-shared-sources.mjs",
+    ...childEnvArgs,
     `--apply=${apply}`,
     "--min-failures=3",
+  ]);
+}
+
+if (!skipSnapshotHistoryPrune) {
+  runPhase("prune-snapshot-history", [
+    "scripts/prune-snapshot-history.mjs",
+    ...childEnvArgs,
+    `--apply=${apply}`,
+    `--keep=${snapshotHistoryPruneKeep}`,
+    `--max-batches=${snapshotHistoryPruneMaxBatches}`,
   ]);
 }
 
 if (!skipTitles && titleLimit > 0) {
   runPhase("backfill-source-page-titles", [
     "scripts/backfill-source-page-titles.mjs",
+    ...childEnvArgs,
     `--apply=${apply}`,
     `--limit=${titleLimit}`,
     "--model=gemini-2.5-flash-lite",
@@ -97,6 +143,7 @@ if (!skipSnapshots) {
     const logPath = join(logDir, `awardping-source-preflight-snapshot-${runStamp}-shard-${shardNumber}-of-${snapshotShards}.log`);
     const commandArgs = [
       "scripts/capture-visual-snapshots.mjs",
+      ...childEnvArgs,
       "--all=true",
       "--complete-missing-baselines=true",
       `--complete-missing-batch-limit=${snapshotBatchLimit}`,
@@ -112,6 +159,7 @@ if (!skipSnapshots) {
       "--skip-existing-baseline=true",
       "--r2-snapshot-sync=true",
       "--r2-repair-missing-snapshots=true",
+      "--snapshot-history-prune=true",
       "--discover-pdf-subpages=false",
       "--discover-html-subpages=false",
       "--max-html-subpage-discoveries=0",
@@ -194,6 +242,19 @@ function startDetachedSnapshotShard(shardNumber, shardCount, commandArgs, logPat
   console.log(`PREFLIGHT_SNAPSHOT_STARTED shard=${shardNumber}/${shardCount} pid=${child.pid} log=${logPath}`);
 }
 
+async function preflightSupabaseHealth() {
+  if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    return {
+      ok: false,
+      reason: "missing_supabase_config",
+      message: "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.",
+    };
+  }
+
+  const supabase = createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  return checkSupabaseHealth(supabase);
+}
+
 function parseArgs(values) {
   const parsed = {};
   for (let index = 0; index < values.length; index += 1) {
@@ -214,6 +275,25 @@ function parseArgs(values) {
     }
   }
   return parsed;
+}
+
+function loadEnvFile(path) {
+  if (!existsSync(path)) return {};
+  const values = {};
+  for (const rawLine of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) continue;
+    const equalsIndex = line.indexOf("=");
+    if (equalsIndex === -1) continue;
+
+    const key = line.slice(0, equalsIndex).trim();
+    let value = line.slice(equalsIndex + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[key] = value;
+  }
+  return values;
 }
 
 function boolArg(value, fallback) {
