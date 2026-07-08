@@ -34,6 +34,10 @@ import {
   shouldRejectDiscoveredSource,
 } from "./source-hygiene.mjs";
 import { classifySourceForConsolidation } from "./source-consolidation-core.mjs";
+import {
+  geminiSpendGuardStatus,
+  markGeminiBillingBlocked,
+} from "./lib/gemini-spend-guard.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -6216,6 +6220,16 @@ function recordGeminiApiError(report, kind, httpStatus, body, message) {
   const error = jsonObjectOrEmpty(parsed.error);
   const providerMessage = cleanNullable(error.message) || cleanNullable(message) || "Gemini API request failed.";
   const blocked = isGeminiBillingBlocked(httpStatus, providerMessage);
+  if (blocked) {
+    markGeminiBillingBlocked({
+      archiveRoot,
+      kind,
+      model: aiModel,
+      httpStatus,
+      providerStatus: cleanNullable(error.status),
+      message: providerMessage,
+    });
+  }
   report.gemini_usage.status = blocked ? "blocked" : "error";
   report.gemini_usage.last_error = {
     kind,
@@ -6360,6 +6374,11 @@ function ensureGeminiCliCallAvailable(report, kind) {
 function geminiApiCallAvailable(report) {
   if (aiProvider !== "gemini") return false;
   if (geminiApiMaxCalls && report.gemini_usage.calls >= geminiApiMaxCalls) return false;
+  const guard = geminiSpendGuardStatus({
+    archiveRoot,
+    dailyCostCapUsd: geminiApiDailyCostCapUsd,
+  });
+  if (!guard.allowed) return false;
   if (
     geminiApiDailyCostCapUsd > 0 &&
     nonNegativeNumber(report.gemini_usage.estimated_cost_usd, 0) >= geminiApiDailyCostCapUsd
@@ -6373,8 +6392,17 @@ function ensureGeminiApiCallAvailable(report, kind) {
   if (geminiApiCallAvailable(report)) return;
   const calls = report.gemini_usage.calls || 0;
   const cost = nonNegativeNumber(report.gemini_usage.estimated_cost_usd, 0);
+  const guard = geminiSpendGuardStatus({
+    archiveRoot,
+    dailyCostCapUsd: geminiApiDailyCostCapUsd,
+  });
+  const shared = guard.blocked
+    ? ` billing_blocked=${guard.block?.path || "true"}`
+    : guard.capReached
+      ? ` shared_daily_estimated_usd=${guard.today.estimated_cost_usd.toFixed(4)}/${guard.cap}`
+      : "";
   throw new Error(
-    `Gemini API cap reached before ${kind}. calls=${calls}/${geminiApiMaxCalls || "unlimited"} estimated_usd=${cost.toFixed(4)}/${geminiApiDailyCostCapUsd || "unlimited"}.`,
+    `Gemini API cap reached before ${kind}. calls=${calls}/${geminiApiMaxCalls || "unlimited"} estimated_usd=${cost.toFixed(4)}/${geminiApiDailyCostCapUsd || "unlimited"}.${shared}`,
   );
 }
 

@@ -2,6 +2,10 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
+import {
+  geminiSpendGuardStatus,
+  markGeminiBillingBlocked,
+} from "./lib/gemini-spend-guard.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -211,11 +215,7 @@ async function runOnce() {
         console.log("BASELINE_FACTS cap_reached");
         break;
       }
-      if (
-        aiProvider === "gemini" &&
-        geminiApiDailyCostCapUsd > 0 &&
-        report.gemini_usage.estimated_cost_usd >= geminiApiDailyCostCapUsd
-      ) {
+      if (geminiApiDailyCapReached(report)) {
         report.stop_reason = "gemini_api_cost_cap_reached";
         console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
         break;
@@ -481,10 +481,7 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
       console.log("BASELINE_FACTS cap_reached");
       break;
     }
-    if (
-      geminiApiDailyCostCapUsd > 0 &&
-      report.gemini_usage.estimated_cost_usd >= geminiApiDailyCostCapUsd
-    ) {
+    if (geminiApiDailyCapReached(report)) {
       report.stop_reason = "gemini_api_cost_cap_reached";
       console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
       break;
@@ -518,10 +515,7 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
     ) {
       await queueChunk();
 
-      if (
-        geminiApiDailyCostCapUsd > 0 &&
-        report.gemini_usage.estimated_cost_usd >= geminiApiDailyCostCapUsd
-      ) {
+      if (geminiApiDailyCapReached(report)) {
         report.stop_reason = "gemini_api_cost_cap_reached";
         console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
         break;
@@ -543,6 +537,11 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
 
 async function processGeminiApiBatchChunkGroup(chunks, report, runId) {
   if (!chunks.length) return;
+  if (geminiApiDailyCapReached(report)) {
+    report.stop_reason = "gemini_api_cost_cap_reached";
+    console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
+    return;
+  }
   console.log(
     `BASELINE_FACTS_BATCH_GROUP submitting jobs=${chunks.length} requests=${chunks.reduce(
       (sum, entries) => sum + entries.length,
@@ -851,6 +850,7 @@ async function fetchGeminiBatchJson(url, { method, body, kind }) {
         await sleep(waitMs);
         continue;
       }
+      recordGeminiApiBillingBlock(kind, geminiApiModel, response.status, responseBody, message);
       throw new Error(message);
     } catch (error) {
       if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
@@ -1016,6 +1016,7 @@ async function generateGeminiContentJson({ model, requestBody, requestTimeoutMs,
         continue;
       }
 
+      recordGeminiApiBillingBlock(kind, model, response.status, body, message);
       throw new Error(message);
     } catch (error) {
       if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
@@ -1043,6 +1044,30 @@ function geminiHttpErrorMessage(httpStatus, body) {
 function isGeminiBillingBlocked(httpStatus, message) {
   const clean = String(message || "").toLowerCase();
   return httpStatus === 429 && /\b(prepay|prepayment|credits?\s+are\s+depleted|billing|resource_exhausted)\b/.test(clean);
+}
+
+function recordGeminiApiBillingBlock(kind, model, httpStatus, body, message) {
+  const parsed = parseJsonObject(body) || {};
+  const error = jsonObjectOrEmpty(parsed.error);
+  const providerMessage = cleanNullable(error.message) || cleanNullable(message) || "Gemini API request failed.";
+  if (!isGeminiBillingBlocked(httpStatus, providerMessage)) return;
+  markGeminiBillingBlocked({
+    archiveRoot,
+    kind,
+    model,
+    httpStatus,
+    providerStatus: cleanNullable(error.status),
+    message: providerMessage,
+  });
+}
+
+function geminiApiDailyCapReached(report) {
+  if (aiProvider !== "gemini" || geminiApiDailyCostCapUsd <= 0) return false;
+  if (report.gemini_usage.estimated_cost_usd >= geminiApiDailyCostCapUsd) return true;
+  return !geminiSpendGuardStatus({
+    archiveRoot,
+    dailyCostCapUsd: geminiApiDailyCostCapUsd,
+  }).allowed;
 }
 
 function isRetryableGeminiApiFailure(httpStatus, body) {
