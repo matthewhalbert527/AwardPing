@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { buildChangeEvidence } from "@/lib/change-evidence";
+import { formatCentralDateTime } from "@/lib/time-zone";
 
 type SnapshotObject = {
   key: string;
@@ -671,5 +672,5 @@ function isSourceSnapshotResponse(value: unknown): value is SourceSnapshotRespon
 }
 
 function formatSnapshotDate(value: string) {
-  return new Date(value).toLocaleString();
+  return formatCentralDateTime(value);
 }

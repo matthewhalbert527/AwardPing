@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
+import { formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
@@ -937,11 +938,7 @@ function normalizeUrl(value: string | null | undefined) {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(value));
+  return formatCentralDate(value);
 }
 
 function countLabel(count: number, singular: string) {

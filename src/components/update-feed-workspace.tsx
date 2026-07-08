@@ -10,6 +10,7 @@ import { awardPageTypes, pageTypeLabel, type AwardPageType } from "@/lib/award-d
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { changeDetailsSearchText } from "@/lib/change-details";
 import { readableSourceTitle } from "@/lib/display-text";
+import { formatCentralDate } from "@/lib/time-zone";
 
 export type UpdateFeedRow = {
   id: string;
@@ -321,11 +322,7 @@ function cutoffDate(time: TimeFilter) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  return formatCentralDate(value);
 }
 
 function timeFilterLabel(value: TimeFilter) {

@@ -1,6 +1,7 @@
 import { ExternalLink } from "lucide-react";
 import { buildChangeEvidence } from "@/lib/change-evidence";
 import { readableSourceTitle } from "@/lib/display-text";
+import { formatCentralDateTime } from "@/lib/time-zone";
 import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 
 export function ChangeEvidencePanel({
@@ -167,5 +168,5 @@ export function ChangeEvidencePanel({
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  return formatCentralDateTime(value);
 }

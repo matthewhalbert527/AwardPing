@@ -35,11 +35,6 @@ export function canUseCadence(plan: PlanName, cadence: Cadence) {
 }
 
 export function nextCheckDate(cadence: Cadence, from = new Date()) {
-  const next = new Date(from);
-  if (cadence === "hourly") {
-    next.setHours(next.getHours() + 1);
-  } else {
-    next.setDate(next.getDate() + 1);
-  }
-  return next.toISOString();
+  const intervalMs = cadence === "hourly" ? 60 * 60 * 1000 : 24 * 60 * 60 * 1000;
+  return new Date(from.getTime() + intervalMs).toISOString();
 }

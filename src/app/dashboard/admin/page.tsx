@@ -23,6 +23,7 @@ import {
   MAINTENANCE_PROFILES,
 } from "@/lib/maintenance-profiles";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { formatCentralDateTime } from "@/lib/time-zone";
 
 type AdminClient = SupabaseClient<AwardPingDatabase>;
 type LocalWorkerRun = AwardPingDatabase["public"]["Tables"]["local_worker_runs"]["Row"];
@@ -709,7 +710,7 @@ function cleanText(value: unknown) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  return formatCentralDateTime(value);
 }
 
 function formatNumber(value: number) {

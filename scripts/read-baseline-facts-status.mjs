@@ -10,6 +10,7 @@ const env = {
   ...loadEnvFile(envPath),
   ...process.env,
 };
+const CENTRAL_TIME_ZONE = "America/Chicago";
 
 const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
@@ -132,5 +133,14 @@ function stringValue(value) {
 }
 
 function localDay(value) {
-  return new Date(value).toLocaleDateString("en-CA");
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: CENTRAL_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const byType = new Map(parts.map((part) => [part.type, part.value]));
+  return `${byType.get("year")}-${byType.get("month")}-${byType.get("day")}`;
 }

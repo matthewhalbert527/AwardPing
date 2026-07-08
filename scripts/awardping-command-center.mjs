@@ -3,12 +3,20 @@ import { execFile } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
+import {
+  atomicTasks,
+  maintenanceProfiles,
+  scheduledWorkers,
+  workerLanes,
+  workerProcessPatterns,
+} from "./awardping-worker-catalog.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] || "status";
 const profile = choiceArg(args.profile, ["catchup", "daily", "baseline", "cleanup", "snapshots"], "catchup");
+const taskId = stringArg(args.task, "");
 const apply = boolArg(args.apply, true);
 const baselineCostCapUsd = numberArg(args["baseline-cost-cap-usd"], 10);
 const envPath = stringArg(
@@ -18,17 +26,33 @@ const envPath = stringArg(
 const logRoot = process.env.LOCALAPPDATA
   ? join(process.env.LOCALAPPDATA, "AwardPingWorker", "logs")
   : join(root, "logs");
+const CENTRAL_TIME_ZONE = "America/Chicago";
+const centralDateTimeFormatter = new Intl.DateTimeFormat("en-US", {
+  timeZone: CENTRAL_TIME_ZONE,
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+  timeZoneName: "short",
+});
 
 if (command === "help" || boolArg(args.help, false)) {
   printHelp();
 } else if (command === "profiles") {
   printProfiles();
+} else if (command === "tasks") {
+  printAtomicTasks();
 } else if (command === "status") {
   await printStatus();
 } else if (command === "start") {
   startMaintenance();
 } else if (command === "run") {
   await runMaintenanceForeground();
+} else if (command === "start-task") {
+  startAtomicTaskDetached();
+} else if (command === "run-task") {
+  await runAtomicTaskForeground();
 } else {
   console.error(`Unknown command: ${command}`);
   printHelp();
@@ -41,10 +65,12 @@ async function printStatus() {
   console.log("");
   await printRecentDatabaseRuns();
   await printLocalProcesses();
-  await printScheduledTasks();
+  await printWorkerLanes();
   console.log("");
   console.log("Start catch-up:");
   console.log("  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10");
+  console.log("Start one task:");
+  console.log("  npm run command:center -- start-task --task=baseline-facts");
 }
 
 function startMaintenance() {
@@ -72,6 +98,36 @@ async function runMaintenanceForeground() {
   process.exit(exitCode);
 }
 
+function startAtomicTaskDetached() {
+  const task = findAtomicTask();
+  mkdirSync(logRoot, { recursive: true });
+  const logPath = join(
+    logRoot,
+    `awardping-command-center-task-${timestampForPath(new Date().toISOString())}-${safePathPart(task.id)}.log`,
+  );
+  const output = openSync(logPath, "a");
+  const child = spawn(process.execPath, atomicTaskArgs(task), {
+    cwd: root,
+    detached: true,
+    env: process.env,
+    stdio: ["ignore", output, output],
+    windowsHide: true,
+  });
+  child.unref();
+  closeSync(output);
+
+  console.log(`Started ${task.label} as PID ${child.pid}.`);
+  console.log(`Log: ${logPath}`);
+  console.log("Status:");
+  console.log("  npm run command:center -- status");
+}
+
+async function runAtomicTaskForeground() {
+  const task = findAtomicTask();
+  const exitCode = await runForeground(process.execPath, atomicTaskArgs(task));
+  process.exit(exitCode);
+}
+
 function maintenanceArgs() {
   return [
     "scripts/run-awardping-maintenance.mjs",
@@ -80,6 +136,27 @@ function maintenanceArgs() {
     `--profile=${profile}`,
     `--apply=${apply}`,
     `--baseline-cost-cap-usd=${baselineCostCapUsd}`,
+  ];
+}
+
+function atomicTaskArgs(task) {
+  const run = task.run || {};
+  if (run.kind === "maintenance") {
+    return [
+      "scripts/run-awardping-maintenance.mjs",
+      "--env",
+      envPath,
+      "--profile=daily",
+      `--phases=${(run.phases || []).join(",")}`,
+      `--apply=${apply}`,
+      `--baseline-cost-cap-usd=${baselineCostCapUsd}`,
+    ];
+  }
+  return [
+    ...(run.args || []),
+    ...(run.applyArg ? [`--apply=${apply}`] : []),
+    "--env",
+    envPath,
   ];
 }
 
@@ -123,10 +200,11 @@ async function printRecentDatabaseRuns() {
 }
 
 async function printLocalProcesses() {
+  const pattern = workerProcessPatterns.map(escapeRegex).join("|");
   const script = `
 $rows = Get-CimInstance Win32_Process |
   Where-Object {
-    $_.CommandLine -match 'Run-AwardPing|run-awardping-maintenance|capture-visual-snapshots|baseline-facts|source-quality|backfill-baseline|aggregate-award' -and
+    $_.CommandLine -match ${psString(pattern)} -and
     $_.CommandLine -notmatch 'awardping-command-center'
   } |
   Select-Object ProcessId, CreationDate, CommandLine
@@ -144,20 +222,45 @@ $rows | ConvertTo-Json -Depth 4
   console.log("");
 }
 
-async function printScheduledTasks() {
+async function printWorkerLanes() {
+  const names = scheduledWorkers.map((worker) => psString(worker.taskName)).join(", ");
   const script = `
-$rows = Get-ScheduledTask |
-  Where-Object { $_.TaskName -match 'AwardPing|awardping|PagePing|pageping' -or $_.TaskPath -match 'AwardPing|awardping|PagePing|pageping' } |
-  Select-Object TaskName, State
+function Convert-TaskState($State) {
+  $text = [string]$State
+  if ($text -eq "1") { return "Disabled" }
+  if ($text -eq "2") { return "Queued" }
+  if ($text -eq "3") { return "Ready" }
+  if ($text -eq "4") { return "Running" }
+  return $text
+}
+$names = @(${names})
+$rows = foreach ($name in $names) {
+  $task = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+  [PSCustomObject]@{
+    TaskName = $name
+    State = if ($task) { Convert-TaskState $task.State } else { "Missing" }
+  }
+}
 $rows | ConvertTo-Json -Depth 4
 `;
   const rows = await powershellJson(script);
-  console.log("Scheduled tasks:");
-  if (!rows.length) {
-    console.log("  None found.");
-  } else {
-    for (const row of rows) {
-      console.log(`  ${taskStateLabel(row.State).padEnd(10)} ${row.TaskName}`);
+  const taskByName = new Map(rows.map((row) => [row.TaskName, row]));
+  console.log("Worker lanes:");
+  for (const lane of workerLanes) {
+    console.log(`  ${lane.label}`);
+    for (const profileId of lane.profileIds || []) {
+      const profile = maintenanceProfiles[profileId];
+      if (profile) console.log(`    profile   ${profileId.padEnd(10)} ${profile.label} cost=${profile.cost || "$0 direct AI/API cost."}`);
+    }
+    for (const id of lane.taskIds || []) {
+      const task = atomicTasks.find((candidate) => candidate.id === id);
+      if (task) console.log(`    task      ${id.padEnd(10)} ${task.label} cost=${task.cost || "$0 direct AI/API cost."}`);
+    }
+    for (const workerId of lane.workerIds || []) {
+      const worker = scheduledWorkers.find((candidate) => candidate.id === workerId);
+      if (!worker) continue;
+      const state = taskByName.get(worker.taskName)?.State || "Missing";
+      console.log(`    ${taskStateLabel(state).padEnd(9)} ${worker.label} cost=${worker.cost || "$0 direct AI/API cost."}`);
     }
   }
 }
@@ -226,12 +329,40 @@ function loadEnvFile(path) {
 }
 
 function printProfiles() {
-  console.log(`Profiles:
-  catchup    Source cleanup, missing screenshots, Gemini Batch facts, aggregation, pruning.
-  daily      Normal full daily pass.
-  baseline   Gemini Batch facts and public fact aggregation.
-  cleanup    Source hygiene, aggregation, snapshot retention.
-  snapshots  Visual snapshot refresh.`);
+  console.log("Worker lanes and profiles:");
+  for (const lane of workerLanes) {
+    console.log(`  ${lane.label}`);
+    console.log(`    ${lane.detail}`);
+    for (const profileId of lane.profileIds || []) {
+      const profile = maintenanceProfiles[profileId];
+      if (profile) console.log(`    profile ${profileId.padEnd(9)} ${profile.label} cost=${profile.cost || "$0 direct AI/API cost."}`);
+    }
+    for (const id of lane.taskIds || []) {
+      const task = atomicTasks.find((candidate) => candidate.id === id);
+      if (task) console.log(`    task    ${id.padEnd(9)} ${task.label} cost=${task.cost || "$0 direct AI/API cost."}`);
+    }
+    for (const workerId of lane.workerIds || []) {
+      const worker = scheduledWorkers.find((candidate) => candidate.id === workerId);
+      if (worker) console.log(`    worker  ${workerId.padEnd(9)} ${worker.label} cost=${worker.cost || "$0 direct AI/API cost."}`);
+    }
+  }
+}
+
+function printAtomicTasks() {
+  console.log("Individual tasks:");
+  for (const lane of workerLanes) {
+    const tasks = (lane.taskIds || [])
+      .map((id) => atomicTasks.find((candidate) => candidate.id === id))
+      .filter(Boolean);
+    if (!tasks.length) continue;
+    console.log(`  ${lane.label}`);
+    for (const task of tasks) {
+      const scheduleLabel = task.scheduledWorkerIds?.length
+        ? ` schedules=${task.scheduledWorkerIds.join(",")}`
+        : " manual-only";
+      console.log(`    ${task.id.padEnd(18)} ${task.label}${scheduleLabel} cost=${task.cost || "$0 direct AI/API cost."}`);
+    }
+  }
 }
 
 function printHelp() {
@@ -240,17 +371,24 @@ function printHelp() {
 Usage:
   npm run command:center -- status
   npm run command:center -- profiles
+  npm run command:center -- tasks
   npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10
   npm run command:center -- run --profile=baseline --apply=true
+  npm run command:center -- start-task --task=baseline-facts
+  npm run command:center -- run-task --task=aggregate-facts
 
 Commands:
   status    Show recent Supabase worker rows, local processes, and scheduled tasks.
   start     Start a detached local maintenance run.
   run       Run maintenance in the foreground.
   profiles  List maintenance profiles.
+  tasks     List individual runnable tasks.
+  start-task Start one detached individual task.
+  run-task   Run one individual task in the foreground.
 
 Options:
   --profile=catchup|daily|baseline|cleanup|snapshots
+  --task=health|source-quality|visual-snapshots|visual-missing|baseline-facts|aggregate-facts|award-details|prune-history|localization-repair
   --apply=true|false
   --baseline-cost-cap-usd=10
   --env=.env.worker.local`);
@@ -301,6 +439,14 @@ function numberArg(value, fallback) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+function findAtomicTask() {
+  const task = atomicTasks.find((candidate) => candidate.id === taskId);
+  if (task) return task;
+  console.error(`Unknown task: ${taskId || "(missing)"}`);
+  console.error(`Known tasks: ${atomicTasks.map((candidate) => candidate.id).join(", ")}`);
+  process.exit(1);
+}
+
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -311,7 +457,9 @@ function trimCommand(value) {
 }
 
 function formatDate(value) {
-  return value ? new Date(value).toLocaleString() : "unknown";
+  if (!value) return "unknown";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : centralDateTimeFormatter.format(date);
 }
 
 function taskStateLabel(value) {
@@ -321,6 +469,18 @@ function taskStateLabel(value) {
   if (text === "3") return "Ready";
   if (text === "4") return "Running";
   return text || "Unknown";
+}
+
+function escapeRegex(value) {
+  return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function psString(value) {
+  return `'${String(value || "").replace(/'/g, "''")}'`;
+}
+
+function safePathPart(value) {
+  return String(value || "task").replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "") || "task";
 }
 
 function timestampForPath(value) {

@@ -25,6 +25,7 @@ import {
   type SourceTreeNode,
   type SourceTreeSource,
 } from "@/lib/source-tree";
+import { formatCentralDateTime } from "@/lib/time-zone";
 
 export type SourcePageTreeChange = {
   id: string;
@@ -502,7 +503,7 @@ function SourcePageRow<T extends SourcePageTreeSource>({
   const snapshotSourceId =
     source.sharedAwardSourceId === undefined ? source.id : source.sharedAwardSourceId;
   const checkedLabel = source.lastCheckedAt
-    ? new Date(source.lastCheckedAt).toLocaleString()
+    ? formatCentralDateTime(source.lastCheckedAt)
     : "Not checked yet";
 
   function handleSourceClick() {
@@ -1130,7 +1131,7 @@ function sourceHost(value: string | null | undefined) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  return formatCentralDateTime(value);
 }
 
 function defaultTracked(source: SourcePageTreeSource) {

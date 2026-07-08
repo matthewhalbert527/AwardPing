@@ -11,6 +11,7 @@ import {
   workflowStatusLabels,
 } from "@/lib/award-workflow";
 import { displayAwardSummary } from "@/lib/award-summary";
+import { formatCentralDate } from "@/lib/time-zone";
 
 export type PipelineMember = {
   id: string;
@@ -197,5 +198,5 @@ export function PipelineBoard({
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleDateString();
+  return formatCentralDate(value);
 }

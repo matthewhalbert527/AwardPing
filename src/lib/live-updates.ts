@@ -9,6 +9,7 @@ import { readableSourceTitle } from "@/lib/display-text";
 import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { formatCentralDate } from "@/lib/time-zone";
 
 type SharedChangeRow = Pick<
   Database["public"]["Tables"]["shared_award_change_events"]["Row"],
@@ -150,7 +151,7 @@ export function relativeTimeLabel(value: string) {
   if (diffHours < 24) return `${diffHours}h ago`;
   const diffDays = Math.round(diffHours / 24);
   if (diffDays <= 14) return `${diffDays}d ago`;
-  return new Intl.DateTimeFormat("en", { month: "short", day: "numeric" }).format(date);
+  return formatCentralDate(date, { month: "short", day: "numeric" });
 }
 
 function changeTypeLabel(value: unknown) {

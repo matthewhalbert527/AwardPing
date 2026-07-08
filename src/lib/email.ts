@@ -2,6 +2,7 @@ import { Resend } from "resend";
 import { displayChangeSummary } from "@/lib/change-summary";
 import { appConfig } from "@/lib/config";
 import type { PublicDigestChange } from "@/lib/public-updates-core";
+import { formatCentralDate } from "@/lib/time-zone";
 
 let resend: Resend | null = null;
 
@@ -288,9 +289,5 @@ function logSkippedEmail(kind: string, details: Record<string, unknown>) {
 }
 
 function formatDigestDate(value: string) {
-  return new Intl.DateTimeFormat("en", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  }).format(new Date(value));
+  return formatCentralDate(value);
 }

@@ -38,6 +38,7 @@
     "source:maintenance-status": "node scripts/read-baseline-facts-status.mjs --env .env.worker.local",
     "source:baseline-facts": "node scripts/backfill-baseline-facts.mjs",
     "command:center": "node scripts/awardping-command-center.mjs",
+    "command:center:web": "node scripts/awardping-command-center-web.mjs",
     "award:baseline-details": "node scripts/backfill-award-baseline-details.mjs",
     "award:baseline-facts-aggregate": "node scripts/aggregate-award-baseline-facts.mjs",
     "award:cleanup-contaminated-baseline-facts": "node scripts/cleanup-contaminated-baseline-facts.mjs",

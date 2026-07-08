@@ -13,6 +13,7 @@ import type { Database } from "@/lib/database.types";
 import { editableOfficeName } from "@/lib/office-names";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { formatCentralDate } from "@/lib/time-zone";
 
 type InviteRow = Database["public"]["Tables"]["office_invites"]["Row"];
 
@@ -118,7 +119,7 @@ export default async function OfficePage() {
                     </p>
                   </div>
                   <p className="text-sm text-[var(--muted)]">
-                    Expires {new Date(invite.expires_at).toLocaleDateString()}
+                    Expires {formatCentralDate(invite.expires_at)}
                   </p>
                 </div>
               ))}

@@ -8,6 +8,7 @@ import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/conf
 import type { AdminPageIssue, AdminReviewLaterSource, PageIssueSeverity } from "@/lib/admin-page-issues";
 import { loadAdminPageIssues, loadAdminReviewLaterSources } from "@/lib/admin-page-issues";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { formatCentralDateTime } from "@/lib/time-zone";
 
 export const dynamic = "force-dynamic";
 
@@ -323,7 +324,7 @@ function SeverityPill({ severity }: { severity: PageIssueSeverity }) {
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  return formatCentralDateTime(value);
 }
 
 function formatNumber(value: number) {

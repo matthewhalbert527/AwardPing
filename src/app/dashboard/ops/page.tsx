@@ -15,6 +15,7 @@ import {
 import { readableSourceTitle } from "@/lib/display-text";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { formatCentralDateTime } from "@/lib/time-zone";
 
 type JobRun = Database["public"]["Tables"]["job_runs"]["Row"];
 type LocalWorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
@@ -454,5 +455,5 @@ function StatusPill({ status }: { status: JobRun["status"] | LocalWorkerRun["sta
 }
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString();
+  return formatCentralDateTime(value);
 }
