@@ -12,19 +12,28 @@ export const workerLanes = [
     id: "source-quality",
     label: "Source Quality",
     detail:
-      "Keeps the official source set clean by removing low-quality, duplicate, stale, or noisy pages.",
+      "Keeps the official source set clean with the hardened source-quality gate and suppresses historical noisy change events.",
     profileIds: ["cleanup"],
-    taskIds: ["source-quality", "prune-history"],
+    taskIds: ["source-quality", "change-event-noise", "prune-history"],
     workerIds: ["source-quality"],
   },
   {
     id: "visual-capture",
     label: "Visual Capture",
     detail:
-      "Captures screenshots and visible text for official source pages so page changes can be detected.",
+      "Runs stable capture for already-approved monitorable sources and enqueues review candidates without discovering new sources.",
     profileIds: ["snapshots"],
-    taskIds: ["visual-snapshots"],
+    taskIds: ["visual-snapshots", "visual-review-batch"],
     workerIds: ["visual-shard-1", "visual-shard-2", "visual-shard-3"],
+  },
+  {
+    id: "source-discovery",
+    label: "Source Discovery",
+    detail:
+      "Separates discovery from daily capture, caps candidates, and quality-gates new source rows before they can become public.",
+    profileIds: ["discovery"],
+    taskIds: ["source-discovery"],
+    workerIds: [],
   },
   {
     id: "facts-cycle",
@@ -58,8 +67,8 @@ export const maintenanceProfiles = {
     laneId: "orchestration",
     label: "Daily Maintenance",
     detail:
-      "Runs the normal daily pass for screenshots, page facts, public facts, cleanup, and pruning.",
-    cost: "Gemini API cap: up to $10/day, plus variable Gemini CLI review use for visual changes.",
+      "Runs stable visual capture, enqueues Gemini Batch visual reviews, refreshes facts, applies source-quality/suppression cleanup, and prunes old snapshots.",
+    cost: "Gemini API cap: up to $10/day for batch fact/review work; capture itself does not use synchronous Gemini.",
   },
   baseline: {
     laneId: "facts-cycle",
@@ -72,15 +81,29 @@ export const maintenanceProfiles = {
     laneId: "source-quality",
     label: "Source Cleanup",
     detail:
-      "Runs source hygiene, public fact aggregation, and snapshot pruning without refreshing screenshots.",
+      "Runs the source-quality gate, suppressed/noisy change-event cleanup, public fact aggregation, and snapshot pruning without refreshing screenshots.",
     cost: "$0 direct AI/API cost.",
   },
   snapshots: {
     laneId: "visual-capture",
     label: "Screenshots",
     detail:
-      "Refreshes visual snapshots across open active source pages when screenshot coverage is behind.",
-    cost: "Variable Gemini CLI review use if page changes need AI review; no dollar cap is enforced here.",
+      "Refreshes stable visual snapshots for monitor-eligible source pages and enqueues batch review candidates when changes need AI.",
+    cost: "$0 direct AI/API cost during capture; visual review is processed by the batch task.",
+  },
+  discovery: {
+    laneId: "source-discovery",
+    label: "Source Discovery",
+    detail:
+      "Runs the explicit discovery workflow with strict source-quality gates and per-award/domain/source caps.",
+    cost: "$0 direct AI/API cost unless paired with later baseline-fact extraction.",
+  },
+  "visual-review": {
+    laneId: "visual-capture",
+    label: "Visual Review Batch",
+    detail:
+      "Submits/polls durable Gemini Batch visual-review candidates and publishes only validated applicant-facing changes.",
+    cost: "Gemini Batch API only.",
   },
 };
 
@@ -103,7 +126,7 @@ export const atomicTasks = [
     laneId: "source-quality",
     label: "Source Quality Cleanup",
     detail:
-      "Finds low-quality, duplicate, noisy, stale, or misleading source pages and applies safe cleanup.",
+      "Finds source-quality gate failures and moves ineligible open sources to review_later.",
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "maintenance",
@@ -112,17 +135,56 @@ export const atomicTasks = [
     scheduledWorkerIds: ["source-quality"],
   },
   {
+    id: "change-event-noise",
+    laneId: "source-quality",
+    label: "Change Event Noise Suppression",
+    detail:
+      "Suppresses historical false/noisy change events while keeping the audit trail in the database.",
+    cost: "$0 direct AI/API cost.",
+    run: {
+      kind: "maintenance",
+      phases: ["change-event-noise"],
+    },
+    scheduledWorkerIds: ["source-quality"],
+  },
+  {
     id: "visual-snapshots",
     laneId: "visual-capture",
     label: "Visual Snapshots",
     detail:
-      "Captures current screenshots and visible text for active web source pages across the visual shards.",
-    cost: "Variable Gemini CLI review use if page changes need AI review; no dollar cap is enforced here.",
+      "Captures stable screenshots and visible text for monitor-eligible sources across the visual shards; normal runs do not discover sources.",
+    cost: "$0 direct AI/API cost during capture.",
     run: {
       kind: "maintenance",
       phases: ["visual"],
     },
     scheduledWorkerIds: ["visual-shard-1", "visual-shard-2", "visual-shard-3"],
+  },
+  {
+    id: "visual-review-batch",
+    laneId: "visual-capture",
+    label: "Gemini Visual Review Batch",
+    detail:
+      "Processes the durable visual-review candidate queue with Gemini Batch and publishes only validated changes.",
+    cost: "Gemini Batch API only.",
+    run: {
+      kind: "maintenance",
+      phases: ["visual-review-batch"],
+    },
+    scheduledWorkerIds: [],
+  },
+  {
+    id: "source-discovery",
+    laneId: "source-discovery",
+    label: "Source Discovery",
+    detail:
+      "Runs discovery mode with deterministic identity and source-quality gates before inserting source candidates.",
+    cost: "$0 direct AI/API cost.",
+    run: {
+      kind: "maintenance",
+      phases: ["source-discovery"],
+    },
+    scheduledWorkerIds: [],
   },
   {
     id: "visual-missing",
@@ -255,8 +317,8 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 1",
     label: "Visual Snapshot Shard 1",
     detail:
-      "Captures screenshots and visible text for the first shard of official source pages.",
-    cost: "Variable Gemini CLI review use if page changes need AI review; no dollar cap is enforced here.",
+      "Captures stable screenshots and visible text for the first shard of monitor-eligible source pages.",
+    cost: "$0 direct AI/API cost during capture.",
   },
   {
     id: "visual-shard-2",
@@ -264,8 +326,8 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 2",
     label: "Visual Snapshot Shard 2",
     detail:
-      "Captures screenshots and visible text for the second shard of official source pages.",
-    cost: "Variable Gemini CLI review use if page changes need AI review; no dollar cap is enforced here.",
+      "Captures stable screenshots and visible text for the second shard of monitor-eligible source pages.",
+    cost: "$0 direct AI/API cost during capture.",
   },
   {
     id: "visual-shard-3",
@@ -273,8 +335,8 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 3",
     label: "Visual Snapshot Shard 3",
     detail:
-      "Captures screenshots and visible text for the third shard of official source pages.",
-    cost: "Variable Gemini CLI review use if page changes need AI review; no dollar cap is enforced here.",
+      "Captures stable screenshots and visible text for the third shard of monitor-eligible source pages.",
+    cost: "$0 direct AI/API cost during capture.",
   },
 ];
 

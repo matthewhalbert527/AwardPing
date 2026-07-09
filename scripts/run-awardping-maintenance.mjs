@@ -104,6 +104,7 @@ try {
     if (phase === "health") await runHealth();
     else if (phase === "prune-history") await runPruneHistory();
     else if (phase === "source-quality") await runSourceQuality();
+    else if (phase === "change-event-noise") await runChangeEventNoiseCleanup();
     else if (phase === "source-discovery") await runSourceDiscovery();
     else if (phase === "visual") await runVisualSnapshots(false);
     else if (phase === "visual-missing") await runVisualSnapshots(true);
@@ -159,6 +160,15 @@ async function runSourceQuality() {
     "--aggregate-facts=false",
     "--force-aggregate-facts=false",
     "--stop-on-failure=false",
+  ]);
+}
+
+async function runChangeEventNoiseCleanup() {
+  await runPhase("change-event-noise", [
+    "scripts/cleanup-change-event-noise.mjs",
+    ...envArgs,
+    `--apply=${apply}`,
+    "--limit=100000",
   ]);
 }
 
@@ -357,16 +367,16 @@ function runCommand(commandArgs, logPath) {
 
 function profilePhases(value) {
   if (value === "catchup") {
-    return ["health", "source-quality", "visual-missing", "baseline-facts", "aggregate-facts", "prune-history"];
+    return ["health", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "aggregate-facts", "prune-history"];
   }
   if (value === "baseline") return ["health", "baseline-facts", "aggregate-facts"];
-  if (value === "cleanup") return ["health", "source-quality", "aggregate-facts", "prune-history"];
+  if (value === "cleanup") return ["health", "source-quality", "change-event-noise", "aggregate-facts", "prune-history"];
   if (value === "snapshots") return ["health", "visual"];
   if (value === "visual-review") return ["health", "visual-review-batch"];
   if (value === "discovery") {
     return ["health", "source-quality", "source-discovery", "baseline-facts", "aggregate-facts", "prune-history"];
   }
-  return ["health", "visual", "visual-review-batch", "baseline-facts", "aggregate-facts", "source-quality", "prune-history"];
+  return ["health", "visual", "visual-review-batch", "baseline-facts", "aggregate-facts", "source-quality", "change-event-noise", "prune-history"];
 }
 
 function writeReport() {

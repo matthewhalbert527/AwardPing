@@ -14,6 +14,18 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { countActiveOpenSourcesWithVisualSnapshots } from "@/lib/admin-page-issues";
+import {
+  loadSourceQualityAdminSummary,
+  loadSuppressionSummary,
+  loadVisualReviewBatchSummary,
+  parseLatestWorkerReportMetadata,
+  summarizeAiMode,
+  summarizeCaptureProfile,
+  summarizeDiscovery,
+  summarizePreAiGate,
+  summarizeTextOnlyChanges,
+  type ReasonCount,
+} from "@/lib/admin-maintenance";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
 import {
@@ -101,6 +113,20 @@ export default async function AdminPage() {
 
   const admin = createSupabaseAdminClient();
   const counts = await loadAdminSourceCounts(admin);
+  const [sourceQualityResult, visualReviewBatchResult, suppressionResult] = await Promise.all([
+    loadSourceQualityAdminSummary(admin, counts.recentRuns),
+    loadVisualReviewBatchSummary(admin),
+    loadSuppressionSummary(admin),
+  ]);
+  const workerMetadata = parseLatestWorkerReportMetadata(counts.recentRuns);
+  const sourceQuality = sourceQualityResult.summary;
+  const discovery = summarizeDiscovery(workerMetadata.latestVisualMetadata);
+  const visualReviewBatch = visualReviewBatchResult.summary;
+  const preAiGate = summarizePreAiGate(workerMetadata.latestVisualMetadata);
+  const textOnlyChanges = summarizeTextOnlyChanges(workerMetadata.latestVisualMetadata);
+  const suppression = suppressionResult.summary;
+  const captureProfile = summarizeCaptureProfile(workerMetadata.latestVisualMetadata);
+  const aiMode = summarizeAiMode(workerMetadata.latestVisualMetadata);
   const latestMaintenance = latestMaintenanceRun(counts.recentRuns);
   const renderedAt = new Date().toISOString();
   const metadataPercent = percent(counts.openWithMetadata, counts.openSources);
@@ -109,8 +135,14 @@ export default async function AdminPage() {
     Math.max(1, counts.cycleCoverage.sourcesWithFacts),
   );
   const visualPercent = percent(counts.openWithVisualSnapshots, counts.openSources);
-  const estimatedCatchupCost = counts.openSources * GEMINI_BATCH_COST_PER_SOURCE_USD;
+  const estimatedCatchupCost = sourceQuality.monitorEligibleSources * GEMINI_BATCH_COST_PER_SOURCE_USD;
   const geminiBlocked = recentRunsIncludeGeminiCreditBlock(counts.recentRuns);
+  const allLoadErrors = [
+    ...counts.loadErrors,
+    ...sourceQualityResult.loadErrors,
+    ...visualReviewBatchResult.loadErrors,
+    ...suppressionResult.loadErrors,
+  ];
 
   return (
     <AdminShell>
@@ -132,13 +164,13 @@ export default async function AdminPage() {
         </Link>
       </div>
 
-      {counts.loadErrors.length > 0 && (
+      {allLoadErrors.length > 0 && (
         <section className="card border-[var(--brand-pink)] p-5">
           <div className="flex items-start gap-3">
             <AlertTriangle size={18} aria-hidden="true" />
             <div>
               <h2 className="font-black">Some admin data could not be loaded</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">{counts.loadErrors.join(" ")}</p>
+              <p className="mt-1 text-sm text-[var(--muted)]">{allLoadErrors.join(" ")}</p>
             </div>
           </div>
         </section>
@@ -169,22 +201,36 @@ export default async function AdminPage() {
         <MetricCard
           icon={Database}
           label="Open Sources"
-          value={formatNumber(counts.openSources)}
-          detail={`${formatNumber(counts.activeAwards)} active awards; ${formatNumber(counts.reviewLaterSources)} sources in review later`}
+          value={formatNumber(sourceQuality.openSources)}
+          detail={`${formatNumber(counts.activeAwards)} active awards; source-quality gate is evaluated app-side`}
+        />
+        <MetricCard
+          icon={CheckCircle2}
+          label="Monitor Eligible"
+          value={formatNumber(sourceQuality.monitorEligibleSources)}
+          detail={`${formatNumber(sourceQuality.openRejectedSources)} open sources are rejected before capture/update monitoring`}
+          attention={sourceQuality.openRejectedSources > 0}
         />
         <MetricCard
           icon={Sparkles}
-          label="Cycle Relevance"
-          value={`${cyclePercent}%`}
-          detail={`${formatNumber(counts.cycleCoverage.missingCycleRelevance)} fact rows still need the new current-cycle field`}
-          attention={counts.cycleCoverage.missingCycleRelevance > 0}
+          label="Public / Facts"
+          value={`${formatNumber(sourceQuality.publicEligibleSources)} / ${formatNumber(sourceQuality.factEligibleSources)}`}
+          detail="Sources eligible for public display and award-fact aggregation"
+          attention={sourceQuality.factEligibleSources < sourceQuality.publicEligibleSources}
         />
         <MetricCard
-          icon={Gauge}
-          label="Gemini Catch-Up"
-          value={`~$${formatUsd(estimatedCatchupCost)}`}
-          detail={`${formatNumber(counts.openSources)} open pages at the historical batch average`}
-          attention={geminiBlocked}
+          icon={AlertTriangle}
+          label="Gate Rejected"
+          value={formatNumber(sourceQuality.openRejectedSources)}
+          detail={`${formatNumber(sourceQuality.reviewLaterSources)} sources are already in review_later`}
+          attention={sourceQuality.openRejectedSources > 0}
+        />
+        <MetricCard
+          icon={Database}
+          label="Review Later"
+          value={formatNumber(sourceQuality.reviewLaterSources)}
+          detail="Sources held out of the public/monitoring path for review"
+          attention={sourceQuality.reviewLaterSources > 0}
         />
         <MetricCard
           icon={Clock3}
@@ -221,7 +267,7 @@ export default async function AdminPage() {
               <Sparkles size={18} aria-hidden="true" />
               <h2>Data Coverage</h2>
             </div>
-            <span className="badge">{metadataPercent}% facts</span>
+            <span className="badge">{metadataPercent}% facts / {cyclePercent}% cycle</span>
           </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Metadata" value={`${formatNumber(counts.openWithMetadata)} / ${formatNumber(counts.openSources)}`} />
@@ -241,6 +287,240 @@ export default async function AdminPage() {
               <MiniStat label="Rejected" value={counts.cycleCoverage.rejectedFacts} />
             </div>
           </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <h2>Source Quality</h2>
+            </div>
+            <span className="badge">
+              {sourceQuality.latestCleanupRun?.apply === false
+                ? "Dry run"
+                : sourceQuality.latestCleanupRun?.apply
+                  ? "Applied"
+                  : "Current gate"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Open" value={sourceQuality.openSources} />
+            <MiniStat label="Monitor eligible" value={sourceQuality.monitorEligibleSources} />
+            <MiniStat label="Public eligible" value={sourceQuality.publicEligibleSources} />
+            <MiniStat label="Fact eligible" value={sourceQuality.factEligibleSources} />
+            <MiniStat label="Open rejected" value={sourceQuality.openRejectedSources} attention={sourceQuality.openRejectedSources > 0} />
+            <MiniStat label="Review later" value={sourceQuality.reviewLaterSources} attention={sourceQuality.reviewLaterSources > 0} />
+          </div>
+          {sourceQuality.latestCleanupRun ? (
+            <dl className="admin-detail-grid admin-detail-grid-tight">
+              <Detail label="Latest run" value={sourceQuality.latestCleanupRun.label} />
+              <Detail label="Status" value={statusLabel(sourceQuality.latestCleanupRun.status)} />
+              <Detail label="Candidates" value={formatNullableNumber(sourceQuality.latestCleanupRun.candidatesFound)} />
+              <Detail label="Moved later" value={formatNullableNumber(sourceQuality.latestCleanupRun.movedToReviewLater)} />
+              <Detail label="Skipped/manual" value={formatNullableNumber(sourceQuality.latestCleanupRun.skippedManualProtected)} />
+            </dl>
+          ) : (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+              No structured source-quality cleanup report has been recorded yet; current eligibility is computed live.
+            </p>
+          )}
+          <DetailDisclosure label="Rejected by reason">
+            <ReasonCountList counts={sourceQuality.rejectedByReason} empty="No open sources are currently rejected by the gate." title="Current open rejects" />
+            {sourceQuality.latestCleanupRun && (
+              <ReasonCountList
+                counts={sourceQuality.latestCleanupRun.rejectedByReason}
+                empty="No latest cleanup rejection reason counts were reported."
+                title="Latest cleanup run"
+              />
+            )}
+            <Link className="admin-issue-link mt-3 inline-flex" href="/dashboard/admin/issues?tab=source-quality">
+              Review source-quality rejects
+            </Link>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Database size={18} aria-hidden="true" />
+              <h2>Discovery vs Capture</h2>
+            </div>
+            <span className={discovery.standardCaptureCreatedSources ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {discovery.discoveryMode ? "Discovery mode" : "Capture mode"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Candidates" value={discovery.discoveryCandidates} />
+            <MiniStat label="Rejected quality" value={discovery.discoveryRejectedByQuality} />
+            <MiniStat label="Inserted pending" value={discovery.discoveryInsertedPending} />
+            <MiniStat label="Inserted open" value={discovery.discoveryInsertedOpen} attention={discovery.discoveryInsertedOpen > 0} />
+            <MiniStat label="Rejected identity" value={discovery.discoveryRejectedByIdentity} />
+            <MiniStat label="Existing skipped" value={discovery.discoverySkippedExisting} />
+          </div>
+          {discovery.standardCaptureCreatedSources && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Warning: the latest standard capture report says it created source rows. Capture runs should not discover sources.
+            </p>
+          )}
+          <DetailDisclosure label="Cap hits">
+            <ReasonCountList counts={discovery.capHitsByAward} empty="No per-award cap hits." title="Awards" />
+            <ReasonCountList counts={discovery.capHitsByDomain} empty="No per-domain cap hits." title="Domains" />
+            <ReasonCountList counts={discovery.capHitsBySource} empty="No per-source cap hits." title="Sources" />
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>Gemini Visual Review Batch</h2>
+            </div>
+            <span className={visualReviewBatch.configured ? "badge" : "badge bg-[var(--brand-pink-soft)]"}>
+              {visualReviewBatch.configured ? "Configured" : "Not configured"}
+            </span>
+          </div>
+          {visualReviewBatch.warning && (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">{visualReviewBatch.warning}</p>
+          )}
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            {Object.entries(visualReviewBatch.statusCounts).map(([status, count]) => (
+              <MiniStat key={status} label={labelize(status)} value={count} attention={status === "failed" && count > 0} />
+            ))}
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Latest batch" value={visualReviewBatch.latestBatchName || "None"} />
+            <Detail label="Model" value={visualReviewBatch.model || "Unknown"} />
+            <Detail label="Requests" value={formatNumber(visualReviewBatch.requestCount)} />
+            <Detail label="Submitted" value={formatOptionalDate(visualReviewBatch.submittedAt)} />
+            <Detail label="Completed" value={formatOptionalDate(visualReviewBatch.completedAt)} />
+            <Detail label="Estimated cost" value={`$${formatUsd(visualReviewBatch.estimatedCostUsd)}`} />
+            <Detail label="Actual cost" value={visualReviewBatch.actualCostUsd === null ? "Not reported" : `$${formatUsd(visualReviewBatch.actualCostUsd)}`} />
+          </dl>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Gauge size={18} aria-hidden="true" />
+              <h2>Pre-AI Gate Efficiency</h2>
+            </div>
+            <span className="badge">{preAiGate.trueChangeRate}% true</span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Candidates" value={preAiGate.candidateChanges} />
+            <MiniStat label="Source rejected" value={preAiGate.deterministicSourceRejected} />
+            <MiniStat label="Noise rejected" value={preAiGate.deterministicNoiseRejected} />
+            <MiniStat label="Text queued" value={preAiGate.textOnlyPublishedOrQueued} />
+            <MiniStat label="Visual queued" value={preAiGate.visualOnlyCandidateEnqueued} />
+            <MiniStat label="AI reviewed" value={preAiGate.aiReviewed} />
+            <MiniStat label="AI rejected" value={preAiGate.aiRejected} />
+            <MiniStat label="Published" value={preAiGate.trueChangesPublished} />
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={18} aria-hidden="true" />
+              <h2>Text-only Changes</h2>
+            </div>
+            <span className={textOnlyChanges.needsAttention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {textOnlyChanges.needsAttention ? "Needs attention" : "Handled"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Candidates" value={textOnlyChanges.textOnlyCandidates} />
+            <MiniStat label="Noise rejected" value={textOnlyChanges.textOnlyNoiseRejected} />
+            <MiniStat label="Queued/published" value={textOnlyChanges.textOnlyPublishedOrQueued} />
+            <MiniStat label="Ignored" value={textOnlyChanges.textOnlyIgnored} attention={textOnlyChanges.textOnlyIgnored > 0} />
+          </div>
+          {textOnlyChanges.textOnlyIgnored > 0 && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Text-only ignored should be zero outside explicit debug mode.
+            </p>
+          )}
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={18} aria-hidden="true" />
+              <h2>Suppression</h2>
+            </div>
+            <span className={suppression.configured ? "badge" : "badge bg-[var(--brand-pink-soft)]"}>
+              {suppression.configured ? "Configured" : "Unavailable"}
+            </span>
+          </div>
+          {suppression.warning && (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">{suppression.warning}</p>
+          )}
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Suppressed events" value={suppression.suppressedChangeEvents} attention={suppression.suppressedChangeEvents > 0} />
+            <MiniStat label="Reason types" value={suppression.suppressionReasons.length} />
+          </div>
+          <DetailDisclosure label="Suppression reasons">
+            <ReasonCountList counts={suppression.suppressionReasons} empty="No suppressed event reasons recorded." />
+            <Link className="admin-issue-link mt-3 inline-flex" href="/dashboard/admin/issues?tab=suppressed">
+              Review suppressed events
+            </Link>
+          </DetailDisclosure>
+          <div className="admin-flow-list admin-flow-list-compact">
+            {suppression.latestSuppressedEvents.slice(0, 3).map((event) => (
+              <PipelineRow
+                attention
+                detail={event.summary || event.sourceUrl || "Suppressed change event"}
+                icon={AlertTriangle}
+                key={event.id}
+                status={event.reason || "suppressed"}
+                title={event.sourceTitle || "Suppressed event"}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Activity size={18} aria-hidden="true" />
+              <h2>Capture / R2 Churn</h2>
+            </div>
+            <span className="badge">{captureProfile.captureProfile || "Unknown profile"}</span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Expansion shots" value={captureProfile.expansionScreenshotsTaken} attention={captureProfile.expansionScreenshotsTaken > 0} />
+            <MiniStat label="R2 unchanged skip" value={captureProfile.r2UploadsSkippedUnchanged} />
+            <MiniStat label="R2 noise skip" value={captureProfile.r2UploadsSkippedNoise} />
+            <MiniStat label="Main hash changed" value={captureProfile.mainContentHashChanged} />
+            <MiniStat label="Chrome-only changed" value={captureProfile.chromeOnlyHashChanged} attention={captureProfile.chromeOnlyHashChanged > 0} />
+            <MiniStat label="Scroll wait" value={formatDurationMs(captureProfile.scrollActivationWaitMs)} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Page-ready wait" value={formatDurationMs(captureProfile.pageReadyWaitMs)} />
+            <Detail label="Settle wait" value={formatDurationMs(captureProfile.captureSettleWaitMs)} />
+          </dl>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <ServerCog size={18} aria-hidden="true" />
+              <h2>AI Mode</h2>
+            </div>
+            <span className={aiMode.synchronousBatchPricingWarning ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {aiMode.aiRequired === false ? "AI disabled" : aiMode.aiRequired ? "AI required" : "Unknown"}
+            </span>
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Provider" value={aiMode.aiProvider || "None"} />
+            <Detail label="Disabled reason" value={aiMode.aiDisabledReason || "None"} />
+            <Detail label="Visual review mode" value={aiMode.visualReviewMode || "Unknown"} />
+            <Detail label="Gemini pricing mode" value={aiMode.geminiApiPricingMode || "Unknown"} />
+          </dl>
+          {aiMode.synchronousBatchPricingWarning && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Warning: this run reported batch pricing while using immediate visual review.
+            </p>
+          )}
         </div>
 
         <div className="card admin-section-card admin-dashboard-card">
@@ -335,7 +615,7 @@ export default async function AdminPage() {
             </div>
           </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Open pages" value={counts.openSources} />
+            <MiniStat label="Monitor pages" value={sourceQuality.monitorEligibleSources} />
             <MiniStat label="Avg/page" value={`$${formatUsd(GEMINI_BATCH_COST_PER_SOURCE_USD)}`} />
             <MiniStat label="Estimate" value={`$${formatUsd(estimatedCatchupCost)}`} attention={geminiBlocked} />
             <MiniStat label="Default cap" value={`$${formatUsd(DEFAULT_BASELINE_COST_CAP_USD)}`} />
@@ -610,6 +890,36 @@ function DetailDisclosure({
   );
 }
 
+function ReasonCountList({
+  counts,
+  empty,
+  title,
+}: {
+  counts: ReasonCount[];
+  empty: string;
+  title?: string;
+}) {
+  if (counts.length === 0) {
+    return (
+      <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+        {title ? `${title}: ` : ""}
+        {empty}
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid gap-2">
+      {title && <p className="text-xs font-black uppercase text-[var(--muted)]">{title}</p>}
+      <div className="admin-stat-grid admin-stat-grid-compact">
+        {counts.slice(0, 8).map((item) => (
+          <MiniStat key={item.reason} label={labelize(item.reason)} value={item.count} attention={item.count > 0} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="admin-detail-item">
@@ -713,8 +1023,24 @@ function formatDate(value: string) {
   return formatCentralDateTime(value);
 }
 
+function formatOptionalDate(value: string | null) {
+  return value ? formatDate(value) : "Not reported";
+}
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatNullableNumber(value: number | null) {
+  return value === null ? "Not reported" : formatNumber(value);
+}
+
+function formatDurationMs(value: number) {
+  if (value <= 0) return "0s";
+  if (value < 1000) return `${formatNumber(Math.round(value))}ms`;
+  const seconds = value / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${(seconds / 60).toFixed(1)}m`;
 }
 
 function formatUsd(value: number) {
@@ -722,6 +1048,14 @@ function formatUsd(value: number) {
     minimumFractionDigits: value >= 1 ? 2 : 4,
     maximumFractionDigits: value >= 1 ? 2 : 4,
   });
+}
+
+function labelize(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function percent(value: number, total: number) {

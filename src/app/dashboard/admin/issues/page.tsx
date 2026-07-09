@@ -5,8 +5,17 @@ import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
-import type { AdminPageIssue, AdminReviewLaterSource, PageIssueSeverity } from "@/lib/admin-page-issues";
-import { loadAdminPageIssues, loadAdminReviewLaterSources } from "@/lib/admin-page-issues";
+import type {
+  AdminPageIssue,
+  AdminReviewLaterSource,
+  AdminSuppressedChangeEvent,
+  PageIssueSeverity,
+} from "@/lib/admin-page-issues";
+import {
+  loadAdminPageIssues,
+  loadAdminReviewLaterSources,
+  loadAdminSuppressedChangeEvents,
+} from "@/lib/admin-page-issues";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
@@ -39,15 +48,22 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
   }
 
   const admin = createSupabaseAdminClient();
-  const activeTab = (await searchParams).tab === "review" ? "review" : "active";
-  const [{ summary, issues, loadErrors }, reviewLater] = await Promise.all([
+  const rawTab = (await searchParams).tab;
+  const activeTab =
+    rawTab === "review" || rawTab === "source-quality" || rawTab === "suppressed"
+      ? rawTab
+      : "active";
+  const [{ summary, issues, loadErrors }, reviewLater, suppressedEvents] = await Promise.all([
     loadAdminPageIssues(admin),
     loadAdminReviewLaterSources(admin),
+    loadAdminSuppressedChangeEvents(admin),
   ]);
-  const highCount = issues.filter((issue) => issue.severity === "high").length;
-  const mediumCount = issues.filter((issue) => issue.severity === "medium").length;
-  const lowCount = issues.filter((issue) => issue.severity === "low").length;
-  const allLoadErrors = [...loadErrors, ...reviewLater.loadErrors];
+  const sourceQualityIssues = issues.filter((issue) => issue.area === "Source quality gate");
+  const displayedIssues = activeTab === "source-quality" ? sourceQualityIssues : issues;
+  const highCount = displayedIssues.filter((issue) => issue.severity === "high").length;
+  const mediumCount = displayedIssues.filter((issue) => issue.severity === "medium").length;
+  const lowCount = displayedIssues.filter((issue) => issue.severity === "low").length;
+  const allLoadErrors = [...loadErrors, ...reviewLater.loadErrors, ...suppressedEvents.loadErrors];
 
   return (
     <IssueShell>
@@ -57,7 +73,8 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           <h1 className="admin-page-title">Page issue review</h1>
           <p className="admin-page-copy">
             One place to review source-page errors, blocked pages, repeated capture failures,
-            missing baselines, page-info gaps, and recent worker page errors.
+            source-quality rejections, suppressed noisy events, missing baselines, page-info gaps,
+            and recent worker page errors.
           </p>
           <p className="admin-page-timestamp">Page data refreshed {formatDate(new Date().toISOString())}.</p>
         </div>
@@ -111,6 +128,20 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           detail="Source pages held out for manual troubleshooting"
           attention={summary.reviewLater > 0}
         />
+        <MetricCard
+          icon={Sparkles}
+          label="Source-quality rejected"
+          value={formatNumber(summary.sourceQualityRejected)}
+          detail="Open sources rejected by the hardened monitoring gate"
+          attention={summary.sourceQualityRejected > 0}
+        />
+        <MetricCard
+          icon={Database}
+          label="Suppressed events"
+          value={formatNumber(summary.suppressedChangeEvents)}
+          detail="Historical change events hidden from default/public counts"
+          attention={summary.suppressedChangeEvents > 0}
+        />
       </section>
 
       <nav aria-label="Page issue queue filters" className="admin-subtabs">
@@ -130,36 +161,63 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           Review later
           <span>{formatNumber(reviewLater.sources.length)}</span>
         </Link>
+        <Link
+          aria-current={activeTab === "source-quality" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "source-quality" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=source-quality"
+        >
+          Source quality
+          <span>{formatNumber(sourceQualityIssues.length)}</span>
+        </Link>
+        <Link
+          aria-current={activeTab === "suppressed" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "suppressed" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=suppressed"
+        >
+          Suppressed
+          <span>{formatNumber(suppressedEvents.events.length)}</span>
+        </Link>
       </nav>
 
       <section className="card admin-section-card admin-issue-panel">
         <div className="admin-panel-heading">
           <div className="flex items-center gap-2">
             <AlertTriangle size={18} aria-hidden="true" />
-            <h2>{activeTab === "review" ? "Review later" : "Active review queue"}</h2>
+            <h2>
+              {activeTab === "review"
+                ? "Review later"
+                : activeTab === "source-quality"
+                  ? "Source-quality rejected"
+                  : activeTab === "suppressed"
+                    ? "Suppressed change events"
+                    : "Active review queue"}
+            </h2>
           </div>
-          {activeTab === "active" ? (
+          {activeTab === "active" || activeTab === "source-quality" ? (
             <span className="badge">
               {formatNumber(highCount)} high, {formatNumber(mediumCount)} medium, {formatNumber(lowCount)} low
             </span>
+          ) : activeTab === "suppressed" ? (
+            <span className="badge">{formatNumber(suppressedEvents.events.length)} suppressed</span>
           ) : (
             <span className="badge">{formatNumber(reviewLater.sources.length)} saved</span>
           )}
         </div>
 
-        {activeTab === "active" ? (
+        {activeTab === "active" || activeTab === "source-quality" ? (
           <>
             <div className="admin-stat-grid admin-stat-grid-compact">
               <MiniStat label="Source errors" value={summary.sourceErrors} attention={summary.sourceErrors > 0} />
               <MiniStat label="Award detail errors" value={summary.awardStructureErrors} attention={summary.awardStructureErrors > 0} />
+              <MiniStat label="Source-quality rejects" value={summary.sourceQualityRejected} attention={summary.sourceQualityRejected > 0} />
               <MiniStat label="Worker page errors" value={summary.recentWorkerPageErrors} attention={summary.recentWorkerPageErrors > 0} />
               <MiniStat label="Missing snapshots" value={summary.missingSnapshots} attention={summary.missingSnapshots > 0} />
               <MiniStat label="Missing page info" value={summary.missingPageInfo} attention={summary.missingPageInfo > 0} />
             </div>
 
-            {issues.length > 0 ? (
+            {displayedIssues.length > 0 ? (
               <div className="admin-issue-list">
-                {issues.map((issue) => (
+                {displayedIssues.map((issue) => (
                   <IssueRow issue={issue} key={issue.key} />
                 ))}
               </div>
@@ -169,6 +227,8 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
               </p>
             )}
           </>
+        ) : activeTab === "suppressed" ? (
+          <SuppressedEventList events={suppressedEvents.events} />
         ) : (
           <ReviewLaterList sources={reviewLater.sources} />
         )}
@@ -312,6 +372,44 @@ function ReviewLaterList({ sources }: { sources: AdminReviewLaterSource[] }) {
           </div>
           <time dateTime={source.reviewedAt || undefined}>
             {source.reviewedAt ? formatDate(source.reviewedAt) : "No review time"}
+          </time>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function SuppressedEventList({ events }: { events: AdminSuppressedChangeEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
+        No suppressed change events are currently reported.
+      </p>
+    );
+  }
+
+  return (
+    <div className="admin-issue-list">
+      {events.map((event) => (
+        <article className="admin-issue-row admin-issue-row-low" key={event.id}>
+          <div className="min-w-0">
+            <div className="admin-issue-meta">
+              <span className="admin-severity-pill admin-severity-pill-low">suppressed</span>
+              {event.reason && <span>{event.reason}</span>}
+              {event.source && <span>{event.source}</span>}
+            </div>
+            <h3>{event.sourceTitle}</h3>
+            <p className="admin-issue-message">{event.summary}</p>
+            <div className="admin-issue-actions">
+              {event.sourceUrl && (
+                <a href={event.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">
+                  Source <ExternalLink size={13} aria-hidden="true" />
+                </a>
+              )}
+            </div>
+          </div>
+          <time dateTime={event.suppressedAt || event.detectedAt}>
+            {event.suppressedAt ? formatDate(event.suppressedAt) : formatDate(event.detectedAt)}
           </time>
         </article>
       ))}
