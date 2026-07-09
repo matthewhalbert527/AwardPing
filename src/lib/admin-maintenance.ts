@@ -450,7 +450,7 @@ export async function loadVisualReviewBatchSummary(
   const missingError = countResults.find((result) => result.error && isMissingRelationError(result.error.message));
   if (missingError) {
     const warning = "Visual review queue not configured.";
-    return { summary: visualReviewBatchUnavailable(warning), loadErrors: [warning] };
+    return { summary: visualReviewBatchUnavailable(warning), loadErrors: [] };
   }
 
   const loadErrors = countResults
@@ -467,6 +467,10 @@ export async function loadVisualReviewBatchSummary(
     .order("submitted_at", { ascending: false, nullsFirst: false })
     .limit(1)
     .maybeSingle();
+  if (latestResult.error && isMissingRelationError(latestResult.error.message)) {
+    const warning = "Visual review queue not configured.";
+    return { summary: visualReviewBatchUnavailable(warning), loadErrors: [] };
+  }
   if (latestResult.error?.message) loadErrors.push(latestResult.error.message);
   const latest = objectValue(latestResult.data);
   const batchName = cleanText(latest.gemini_batch_name) || null;
@@ -476,6 +480,10 @@ export async function loadVisualReviewBatchSummary(
       .from("shared_award_visual_review_candidates")
       .select("id", { count: "exact", head: true })
       .eq("gemini_batch_name", batchName);
+    if (requestCountResult.error && isMissingRelationError(requestCountResult.error.message)) {
+      const warning = "Visual review queue not configured.";
+      return { summary: visualReviewBatchUnavailable(warning), loadErrors: [] };
+    }
     if (requestCountResult.error?.message) loadErrors.push(requestCountResult.error.message);
     requestCount = requestCountResult.count || 0;
   }
@@ -614,7 +622,7 @@ export async function loadSuppressionSummary(
     .not("suppressed_at", "is", null);
   if (countResult.error && isMissingRelationError(countResult.error.message)) {
     const warning = "Change-event suppression columns are not configured.";
-    return { summary: suppressionUnavailable(warning), loadErrors: [warning] };
+    return { summary: suppressionUnavailable(warning), loadErrors: [] };
   }
 
   const loadErrors = countResult.error?.message ? [countResult.error.message] : [];
@@ -624,6 +632,10 @@ export async function loadSuppressionSummary(
     .not("suppressed_at", "is", null)
     .order("suppressed_at", { ascending: false, nullsFirst: false })
     .limit(20);
+  if (latestResult.error && isMissingRelationError(latestResult.error.message)) {
+    const warning = "Change-event suppression columns are not configured.";
+    return { summary: suppressionUnavailable(warning), loadErrors: [] };
+  }
   if (latestResult.error?.message) loadErrors.push(latestResult.error.message);
 
   const reasonResult = await admin
@@ -631,6 +643,10 @@ export async function loadSuppressionSummary(
     .select("suppression_reason")
     .not("suppressed_at", "is", null)
     .limit(5000);
+  if (reasonResult.error && isMissingRelationError(reasonResult.error.message)) {
+    const warning = "Change-event suppression columns are not configured.";
+    return { summary: suppressionUnavailable(warning), loadErrors: [] };
+  }
   if (reasonResult.error?.message) loadErrors.push(reasonResult.error.message);
 
   const reasonMap = new Map<string, number>();

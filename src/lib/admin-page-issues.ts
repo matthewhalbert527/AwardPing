@@ -354,7 +354,7 @@ export async function loadAdminSuppressedChangeEvents(
   if (error?.message && isMissingRelationError(error.message)) {
     return {
       events: [],
-      loadErrors: ["Change-event suppression columns are not configured."],
+      loadErrors: [],
     };
   }
 
