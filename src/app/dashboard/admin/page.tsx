@@ -192,6 +192,88 @@ export default async function AdminPage() {
     ...pageAuditResult.warnings,
     ...sourceIntakeResult.warnings,
   ];
+  const visualQueueCount = visualReviewBatch.statusCounts.pending +
+    visualReviewBatch.statusCounts.submitted +
+    visualReviewBatch.statusCounts.processing;
+  const reconciliationQueueCount = reconciliation.queueCounts.pending + reconciliation.queueCounts.processing;
+  const intakeQueueCount = sourceIntake.pending + sourceIntake.inProgress + sourceIntake.needsManualReview;
+  const pageBlockerCount = pageAudit.critical +
+    reconciliation.queueCounts.failed +
+    (reconciliation.latestRun?.awardsPublicationBlocked || 0) +
+    (dailyHealth.awardsPublicationBlocked || 0);
+  const dataQualityAttentionCount = sourceQuality.openRejectedSources +
+    aiCoverage.unreviewed_open_sources +
+    aiCoverage.open_sources_with_award_relevance_unclear +
+    aiCoverage.open_sources_with_award_relevance_unrelated +
+    (aiCoverage.open_category_counts.sibling_but_open || 0) +
+    aiCoverage.open_sources_missing_cycle_relevance;
+  const attentionItems = [
+    {
+      show: geminiBlocked,
+      title: "Gemini credits are blocking AI catch-up",
+      detail: aiCoverage.latest_gemini_billing_quota_blocker?.blocking_reason ||
+        "Recent workers reported Gemini billing, quota, or depleted-credit errors.",
+      status: "blocked",
+      href: null,
+      icon: AlertTriangle,
+    },
+    {
+      show: allLoadErrors.length > 0,
+      title: "Some admin data failed to load",
+      detail: allLoadErrors.slice(0, 2).join(" "),
+      status: "load error",
+      href: null,
+      icon: AlertTriangle,
+    },
+    {
+      show: adminWarnings.length > 0,
+      title: "Optional workflow tables are not fully migrated",
+      detail: adminWarnings.slice(0, 2).join(" "),
+      status: "optional",
+      href: null,
+      icon: AlertTriangle,
+    },
+    {
+      show: pageBlockerCount > 0,
+      title: "Public page publication has blockers",
+      detail: `${formatNumber(pageBlockerCount)} reconciliation or audit blockers need review.`,
+      status: "page audit",
+      href: "/dashboard/admin/issues?category=page_audit_critical",
+      icon: AlertTriangle,
+    },
+    {
+      show: dataQualityAttentionCount > 0,
+      title: "Source quality still needs cleanup",
+      detail: `${formatNumber(dataQualityAttentionCount)} open-source review or relevance issues are still visible to the gate.`,
+      status: "source gate",
+      href: "/dashboard/admin/issues?category=source_quality_rejected_but_monitoring_enabled",
+      icon: Database,
+    },
+    {
+      show: textOnlyChanges.textOnlyIgnored > 0,
+      title: "Text-only changes were ignored",
+      detail: `${formatNumber(textOnlyChanges.textOnlyIgnored)} text-only changes should be classified or explicitly accepted as noise.`,
+      status: "text-only",
+      href: null,
+      icon: AlertTriangle,
+    },
+    {
+      show: dailyHealth.standardCaptureCreatedSources,
+      title: "A capture run created sources",
+      detail: "Discovery should stay separate from standard visual capture runs.",
+      status: "discovery",
+      href: null,
+      icon: AlertTriangle,
+    },
+    {
+      show: intakeQueueCount > 0,
+      title: "Source intake has pending work",
+      detail: `${formatNumber(intakeQueueCount)} intake requests are pending, running, or waiting for manual review.`,
+      status: "intake",
+      href: "/dashboard/admin/source-intake",
+      icon: Database,
+    },
+  ].filter((item) => item.show);
 
   return (
     <AdminShell>
@@ -219,45 +301,362 @@ export default async function AdminPage() {
         </div>
       </div>
 
-      {allLoadErrors.length > 0 && (
-        <section className="card border-[var(--brand-pink)] p-5">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} aria-hidden="true" />
-            <div>
-              <h2 className="font-black">Some admin data could not be loaded</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">{allLoadErrors.join(" ")}</p>
-            </div>
-          </div>
-        </section>
+      {process.env.NEXT_PUBLIC_SHOW_ADMIN_LEGACY === "true" && (
+        <>
+          {allLoadErrors.length > 0 && (
+            <section className="card border-[var(--brand-pink)] p-5">
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <h2 className="font-black">Some admin data could not be loaded</h2>
+                  <p className="mt-1 text-sm text-[var(--muted)]">{allLoadErrors.join(" ")}</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {adminWarnings.length > 0 && (
+            <section className="card p-5">
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <h2 className="font-black">Some workflow tables are optional or not migrated yet</h2>
+                  <p className="mt-1 text-sm text-[var(--muted)]">{adminWarnings.join(" ")}</p>
+                </div>
+              </div>
+            </section>
+          )}
+
+          {geminiBlocked && (
+            <section className="card border-[var(--brand-pink)] p-5">
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={18} aria-hidden="true" />
+                <div>
+                  <h2 className="font-black">Gemini credits need attention</h2>
+                  <p className="mt-1 text-sm text-[var(--muted)]">
+                    Recent worker logs include Gemini prepayment or depleted-credit errors, so catch-up
+                    work will stall until billing is restored.
+                  </p>
+                </div>
+              </div>
+            </section>
+          )}
+        </>
       )}
 
-      {adminWarnings.length > 0 && (
-        <section className="card p-5">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} aria-hidden="true" />
-            <div>
-              <h2 className="font-black">Some workflow tables are optional or not migrated yet</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">{adminWarnings.join(" ")}</p>
-            </div>
-          </div>
-        </section>
-      )}
+      <section className="admin-metric-grid admin-metric-grid-primary">
+        <MetricCard
+          icon={Clock3}
+          label="Runner"
+          value={latestMaintenance ? statusLabel(latestMaintenance.run.status) : "None"}
+          detail={latestMaintenance ? latestMaintenanceDetail(latestMaintenance) : "No command-center run has reported yet."}
+          attention={latestMaintenance?.run.status === "failed"}
+        />
+        <MetricCard
+          icon={Database}
+          label="Source Gate"
+          value={`${formatNumber(sourceQuality.monitorEligibleSources)} / ${formatNumber(sourceQuality.openSources)}`}
+          detail={`${formatNumber(sourceQuality.openRejectedSources)} open sources are blocked before monitoring.`}
+          attention={sourceQuality.openRejectedSources > 0}
+        />
+        <MetricCard
+          icon={Sparkles}
+          label="Public Pages"
+          value={`${aiCoverage.percent_complete_public_award_pages}%`}
+          detail={`${formatNumber(aiCoverage.awards_with_no_public_facts)} active awards still need reconciled public facts.`}
+          attention={aiCoverage.awards_with_no_public_facts > 0 || pageBlockerCount > 0}
+        />
+        <MetricCard
+          icon={Gauge}
+          label="Active Queue"
+          value={formatNumber(visualQueueCount + reconciliationQueueCount + intakeQueueCount)}
+          detail="Visual reviews, reconciliation, and source-intake work waiting or processing."
+          attention={visualQueueCount + reconciliationQueueCount + intakeQueueCount > 0}
+        />
+      </section>
 
-      {geminiBlocked && (
-        <section className="card border-[var(--brand-pink)] p-5">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} aria-hidden="true" />
-            <div>
-              <h2 className="font-black">Gemini credits need attention</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                Recent worker logs include Gemini prepayment or depleted-credit errors, so catch-up
-                work will stall until billing is restored.
+      <section className="admin-dashboard-grid">
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={18} aria-hidden="true" />
+              <h2>Needs Attention</h2>
+            </div>
+            <span className={attentionItems.length > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {attentionItems.length > 0 ? `${attentionItems.length} items` : "Clear"}
+            </span>
+          </div>
+          {attentionItems.length > 0 ? (
+            <div className="admin-flow-list admin-flow-list-compact">
+              {attentionItems.map((item) => {
+                const row = (
+                  <PipelineRow
+                    attention
+                    detail={item.detail}
+                    icon={item.icon}
+                    key={item.title}
+                    status={item.status}
+                    title={item.title}
+                  />
+                );
+                return item.href ? (
+                  <Link className="admin-clean-link" href={item.href} key={item.title}>
+                    {row}
+                  </Link>
+                ) : row;
+              })}
+            </div>
+          ) : (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+              No blocking conditions are visible in the latest worker reports.
+            </p>
+          )}
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Activity size={18} aria-hidden="true" />
+              <h2>Daily Flow</h2>
+            </div>
+            <span className={latestMaintenance?.run.status === "failed" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {latestMaintenance ? statusLabel(latestMaintenance.run.status) : "No report"}
+            </span>
+          </div>
+          <div className="admin-flow-list admin-flow-list-compact">
+            <PipelineRow
+              detail={`${formatNumber(sourceQuality.monitorEligibleSources)} monitorable sources; ${formatNumber(sourceQuality.openRejectedSources)} blocked by quality gate.`}
+              icon={Database}
+              status="source gate"
+              title="1. Clean source set"
+              attention={sourceQuality.openRejectedSources > 0}
+            />
+            <PipelineRow
+              detail={`${captureProfile.captureProfile || "Unknown"} profile; ${formatDurationMs(captureProfile.scrollActivationWaitMs)} scroll wait in latest visual report.`}
+              icon={Activity}
+              status={discovery.discoveryMode ? "discovery mode" : "capture mode"}
+              title="2. Stable capture"
+              attention={dailyHealth.standardCaptureCreatedSources}
+            />
+            <PipelineRow
+              detail={`${formatNumber(preAiGate.candidateChanges)} candidates, ${formatNumber(preAiGate.aiReviewed)} AI-reviewed, ${formatNumber(preAiGate.trueChangesPublished)} published.`}
+              icon={Gauge}
+              status={`${preAiGate.trueChangeRate}% true`}
+              title="3. Pre-AI gate"
+              attention={textOnlyChanges.textOnlyIgnored > 0}
+            />
+            <PipelineRow
+              detail={`${formatNumber(visualQueueCount)} visual reviews and ${formatNumber(reconciliationQueueCount)} award reconciliations are pending or processing.`}
+              icon={Sparkles}
+              status="batch + reconcile"
+              title="4. Review and reconcile"
+              attention={visualQueueCount + reconciliationQueueCount > 0 || reconciliation.queueCounts.failed > 0}
+            />
+            <PipelineRow
+              detail={`${formatNumber(pageAudit.critical)} critical audits; ${formatNumber(suppression.suppressedChangeEvents)} suppressed noisy change events.`}
+              icon={CheckCircle2}
+              status="publish guard"
+              title="5. Audit public pages"
+              attention={pageAudit.critical > 0 || suppressionAndLastKnownGood.publicationBlocked > 0}
+            />
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>Data Quality</h2>
+            </div>
+            <span className={dataQualityAttentionCount > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {dataQualityAttentionCount > 0 ? `${formatNumber(dataQualityAttentionCount)} issues` : "Clean"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Open sources" value={sourceQuality.openSources} />
+            <MiniStat label="Monitor eligible" value={sourceQuality.monitorEligibleSources} />
+            <MiniStat label="Gate rejected" value={sourceQuality.openRejectedSources} attention={sourceQuality.openRejectedSources > 0} />
+            <MiniStat label="Review later" value={sourceQuality.reviewLaterSources} attention={sourceQuality.reviewLaterSources > 0} />
+            <MiniStat label="Metadata" value={`${formatNumber(counts.openWithMetadata)} / ${formatNumber(counts.openSources)}`} />
+            <MiniStat label="Visuals" value={`${visualPercent}%`} attention={counts.openMissingVisualSnapshots > 0} />
+            <MiniStat label="Unreviewed open" value={aiCoverage.unreviewed_open_sources} attention={aiCoverage.unreviewed_open_sources > 0} />
+            <MiniStat label="Unclear/unrelated" value={aiCoverage.open_sources_with_award_relevance_unclear + aiCoverage.open_sources_with_award_relevance_unrelated} attention={aiCoverage.open_sources_with_award_relevance_unclear + aiCoverage.open_sources_with_award_relevance_unrelated > 0} />
+            <MiniStat label="Missing cycle" value={aiCoverage.open_sources_missing_cycle_relevance} attention={aiCoverage.open_sources_missing_cycle_relevance > 0} />
+            <MiniStat label="Audit critical" value={pageAudit.critical} attention={pageAudit.critical > 0} />
+          </div>
+          <DetailDisclosure label="What is being rejected">
+            <ReasonCountList counts={sourceQuality.rejectedByReason} empty="No open sources are currently rejected by the source-quality gate." />
+            <div className="admin-issue-actions mt-3">
+              <Link className="admin-issue-link" href="/dashboard/admin/issues?tab=source-quality">
+                Review source-quality rejects
+              </Link>
+              <Link className="admin-issue-link" href="/dashboard/admin/issues?category=page_audit_critical">
+                Review page blockers
+              </Link>
+            </div>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card admin-maintenance-control-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <PlayCircle size={18} aria-hidden="true" />
+              <h2>Run Workers</h2>
+            </div>
+            <StatusPill status="ready" />
+          </div>
+          <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+            Worker control stays on the Windows PC. Run commands from
+            <span className="font-mono"> C:\Users\matth\Documents\AwardPing Project</span>.
+          </p>
+          <div className="grid gap-3">
+            <CommandLine command="npm run command:center -- status" />
+            <CommandLine command="npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10" />
+            <CommandLine command="npm run command:center -- profiles" />
+          </div>
+          <DetailDisclosure label="Latest report">
+            {latestMaintenance ? (
+              <>
+                <dl className="admin-detail-grid admin-detail-grid-tight">
+                  <Detail label="Profile" value={latestMaintenance.profile || "Unknown"} />
+                  <Detail label="Started" value={formatDate(latestMaintenance.run.started_at)} />
+                  <Detail label="Finished" value={latestMaintenance.run.finished_at ? formatDate(latestMaintenance.run.finished_at) : "Still running"} />
+                  <Detail label="Report" value={latestMaintenance.reportPath || "Supabase status only"} />
+                </dl>
+                <div className="admin-flow-list admin-flow-list-compact">
+                  {latestMaintenance.phases.slice(0, 5).map((phase) => (
+                    <PipelineRow
+                      attention={phase.status === "failed"}
+                      detail={phase.finished_at ? `Finished ${formatDate(phase.finished_at)}` : "Still running"}
+                      icon={phase.status === "failed" ? AlertTriangle : CheckCircle2}
+                      key={`${phase.name}-${phase.started_at}`}
+                      status={statusLabel(phase.status || "running")}
+                      title={phase.name || "phase"}
+                    />
+                  ))}
+                </div>
+              </>
+            ) : (
+              <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+                No local command-center maintenance run has been written to Supabase yet.
               </p>
-            </div>
-          </div>
-        </section>
-      )}
+            )}
+          </DetailDisclosure>
+        </div>
+      </section>
 
+      <section className="card admin-section-card admin-dashboard-card">
+        <div className="admin-panel-heading">
+          <div className="flex items-center gap-2">
+            <ServerCog size={18} aria-hidden="true" />
+            <h2>Advanced Diagnostics</h2>
+          </div>
+          <span className="badge">Collapsed</span>
+        </div>
+        <DetailDisclosure label="Queues and batch workers">
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Visual pending" value={visualReviewBatch.statusCounts.pending} attention={visualReviewBatch.statusCounts.pending > 0} />
+            <MiniStat label="Visual processing" value={visualReviewBatch.statusCounts.processing} attention={visualReviewBatch.statusCounts.processing > 0} />
+            <MiniStat label="Visual failed" value={visualReviewBatch.statusCounts.failed} attention={visualReviewBatch.statusCounts.failed > 0} />
+            <MiniStat label="Reconcile pending" value={reconciliation.queueCounts.pending} attention={reconciliation.queueCounts.pending > 0} />
+            <MiniStat label="Reconcile failed" value={reconciliation.queueCounts.failed} attention={reconciliation.queueCounts.failed > 0} />
+            <MiniStat label="Intake pending" value={sourceIntake.pending} attention={sourceIntake.pending > 0} />
+            <MiniStat label="Manual intake" value={sourceIntake.needsManualReview} attention={sourceIntake.needsManualReview > 0} />
+            <MiniStat label="Page unresolved" value={pageAudit.unresolved} attention={pageAudit.unresolved > 0} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Latest visual batch" value={visualReviewBatch.latestBatchName || "None"} />
+            <Detail label="Visual model" value={visualReviewBatch.model || "Unknown"} />
+            <Detail label="Baseline batch" value={geminiBatchHealth.latestBaselineBatchJob || "None"} />
+            <Detail label="Page audit batch" value={geminiBatchHealth.latestPageAuditBatchJob || pageAudit.latestBatch.name || "None"} />
+            <Detail label="Blocking reason" value={geminiBatchHealth.blockingReason || "None"} />
+            <Detail label="Estimated visual cost" value={`$${formatUsd(visualReviewBatch.estimatedCostUsd)}`} />
+          </dl>
+        </DetailDisclosure>
+        <DetailDisclosure label="Capture and change detection">
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Discovery candidates" value={discovery.discoveryCandidates} />
+            <MiniStat label="Inserted open" value={discovery.discoveryInsertedOpen} attention={discovery.discoveryInsertedOpen > 0} />
+            <MiniStat label="Pre-AI candidates" value={preAiGate.candidateChanges} />
+            <MiniStat label="Noise rejected" value={preAiGate.deterministicNoiseRejected} />
+            <MiniStat label="Text ignored" value={textOnlyChanges.textOnlyIgnored} attention={textOnlyChanges.textOnlyIgnored > 0} />
+            <MiniStat label="Expansion shots" value={captureProfile.expansionScreenshotsTaken} attention={captureProfile.expansionScreenshotsTaken > 0} />
+            <MiniStat label="R2 unchanged skip" value={captureProfile.r2UploadsSkippedUnchanged} />
+            <MiniStat label="Chrome-only changed" value={captureProfile.chromeOnlyHashChanged} attention={captureProfile.chromeOnlyHashChanged > 0} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Capture profile" value={captureProfile.captureProfile || "Unknown"} />
+            <Detail label="Page-ready wait" value={formatDurationMs(captureProfile.pageReadyWaitMs)} />
+            <Detail label="Settle wait" value={formatDurationMs(captureProfile.captureSettleWaitMs)} />
+            <Detail label="Scroll wait" value={formatDurationMs(captureProfile.scrollActivationWaitMs)} />
+          </dl>
+        </DetailDisclosure>
+        <DetailDisclosure label="Expandable sections">
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Detected" value={sectionSummary.detected} />
+            <MiniStat label="Extracted" value={sectionSummary.extracted} attention={sectionSummary.detected > sectionSummary.extracted} />
+            <MiniStat label="Changed" value={sectionSummary.changed} />
+            <MiniStat label="Candidates" value={sectionSummary.candidatesEnqueued} />
+            <MiniStat label="Evidence shots" value={sectionSummary.evidenceScreenshotsTaken} attention={sectionSummary.evidenceScreenshotsTaken > 0 && sectionSummary.profile === "stable-daily"} />
+            <MiniStat label="Main hash includes sections" value={sectionSummary.textIncludedInMainHash === null ? "Unknown" : sectionSummary.textIncludedInMainHash ? "Yes" : "No"} attention={sectionSummary.profile === "stable-daily" && sectionSummary.textIncludedInMainHash === true} />
+          </div>
+        </DetailDisclosure>
+        <DetailDisclosure label="AI mode, suppression, and budget">
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="AI required" value={aiMode.aiRequired === null ? "Unknown" : aiMode.aiRequired ? "Yes" : "No"} />
+            <MiniStat label="Suppressed events" value={suppression.suppressedChangeEvents} attention={suppression.suppressedChangeEvents > 0} />
+            <MiniStat label="Last-known-good" value={suppressionAndLastKnownGood.awardsUsingLastKnownGood} attention={suppressionAndLastKnownGood.awardsUsingLastKnownGood > 0} />
+            <MiniStat label="Catch-up estimate" value={`$${formatUsd(estimatedCatchupCost)}`} attention={geminiBlocked} />
+            <MiniStat label="Default cap" value={`$${formatUsd(DEFAULT_BASELINE_COST_CAP_USD)}`} />
+            <MiniStat label="Avg/page" value={`$${formatUsd(GEMINI_BATCH_COST_PER_SOURCE_USD)}`} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="AI provider" value={aiMode.aiProvider || "None"} />
+            <Detail label="Disabled reason" value={aiMode.aiDisabledReason || "None"} />
+            <Detail label="Visual review mode" value={aiMode.visualReviewMode || "Unknown"} />
+            <Detail label="Gemini pricing mode" value={aiMode.geminiApiPricingMode || "Unknown"} />
+            <Detail label="Backfill status" value={backfillCompletion.status === "unknown" ? "No report" : statusLabel(backfillCompletion.status)} />
+            <Detail label="Backfill blocker" value={backfillCompletion.blockingReason || "None"} />
+          </dl>
+          <ReasonCountList counts={suppression.suppressionReasons} empty="No suppressed event reasons recorded." title="Suppression reasons" />
+        </DetailDisclosure>
+        <DetailDisclosure label="Profiles and recent workers">
+          <div className="admin-flow-list admin-flow-list-compact">
+            {MAINTENANCE_PROFILE_IDS.map((profile) => (
+              <PipelineRow
+                detail={MAINTENANCE_PROFILES[profile].detail}
+                icon={MAINTENANCE_PROFILES[profile].primary ? PlayCircle : Activity}
+                key={profile}
+                status={MAINTENANCE_PROFILES[profile].phases.join(" -> ")}
+                title={MAINTENANCE_PROFILES[profile].label}
+              />
+            ))}
+          </div>
+          <div className="admin-flow-list admin-flow-list-compact">
+            {counts.recentRuns.slice(0, 5).map((run) => (
+              <PipelineRow
+                attention={run.status === "failed"}
+                detail={`${formatDate(run.started_at)}; checked ${formatNumber(run.checked_count)}, changed ${formatNumber(run.changed_count)}, failed ${formatNumber(run.failed_count)}`}
+                icon={run.status === "failed" ? AlertTriangle : Activity}
+                key={run.id}
+                status={statusLabel(run.status)}
+                title={run.worker_name}
+              />
+            ))}
+          </div>
+          <div className="mt-3 grid gap-3">
+            {commandPanelCommands.map((item) => (
+              <div className="grid gap-1" key={item.command}>
+                <p className="text-xs font-black uppercase text-[var(--muted)]">{item.label}</p>
+                <CommandLine command={item.command} />
+              </div>
+            ))}
+          </div>
+        </DetailDisclosure>
+      </section>
+
+      {process.env.NEXT_PUBLIC_SHOW_ADMIN_LEGACY === "true" && (
+        <>
       <section className="admin-metric-grid admin-metric-grid-primary">
         <MetricCard
           icon={ServerCog}
@@ -1000,6 +1399,8 @@ export default async function AdminPage() {
           </p>
         </div>
       </section>
+        </>
+      )}
     </AdminShell>
   );
 }

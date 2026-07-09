@@ -4518,6 +4518,18 @@ a {
   padding: 0.72rem;
 }
 
+.admin-clean-link {
+  color: inherit;
+  display: block;
+  text-decoration: none;
+}
+
+.admin-clean-link:focus-visible {
+  border-radius: 0.5rem;
+  outline: 2px solid var(--brand-burgundy);
+  outline-offset: 3px;
+}
+
 .admin-pipeline-row-attention {
   border-color: color-mix(in srgb, var(--brand-pink) 46%, #ffffff);
 }
