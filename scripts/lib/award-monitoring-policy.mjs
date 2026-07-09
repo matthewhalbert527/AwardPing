@@ -9,14 +9,38 @@ const policyPath = resolve(
   "config",
   "award-monitoring-policy.json",
 );
+const decisionMemoryPath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "..",
+  "config",
+  "award-decision-memory.json",
+);
 
 export const awardMonitoringPolicy = JSON.parse(readFileSync(policyPath, "utf8"));
+export const awardDecisionMemory = JSON.parse(readFileSync(decisionMemoryPath, "utf8"));
 
 const policyFlags = Array.isArray(awardMonitoringPolicy.policy_flags)
   ? awardMonitoringPolicy.policy_flags
   : [];
+const decisionMemoryEntries = Array.isArray(awardDecisionMemory.entries)
+  ? awardDecisionMemory.entries
+  : [];
 
 export function monitoringPolicyPromptLinesForScope(scope) {
+  return [
+    ...policyPromptLinesForScope(scope),
+    ...decisionMemoryPromptLinesForScope(scope),
+  ];
+}
+
+export function decisionMemoryPromptLinesForScope(scope) {
+  return decisionMemoryEntries
+    .filter((entry) => entry.prompt && Array.isArray(entry.prompt_scopes) && entry.prompt_scopes.includes(scope))
+    .map((entry) => `Decision memory (${entry.scope || "global"}:${entry.id || "unnamed"}): ${String(entry.prompt)}`);
+}
+
+function policyPromptLinesForScope(scope) {
   return policyFlags
     .filter((flag) => flag.prompt && Array.isArray(flag.prompt_scopes) && flag.prompt_scopes.includes(scope))
     .map((flag) => String(flag.prompt));

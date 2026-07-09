@@ -19,6 +19,7 @@ const defaultArgs = [
   "scripts/capture-visual-snapshots.mjs",
   ...envArgs,
   "--localization-repair=true",
+  "--capture-profile=localization-repair",
   "--force-r2-snapshot-refresh=true",
   "--r2-snapshot-sync=true",
   "--all=true",

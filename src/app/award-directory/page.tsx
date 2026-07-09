@@ -33,10 +33,23 @@ type SharedChangeDirectoryRow = Pick<
   | "source_page_type"
   | "summary"
   | "change_details"
+  | "suppressed_at"
+  | "suppression_reason"
+  | "suppression_source"
 >;
 type SharedSourceDirectoryRow = Pick<
   Database["public"]["Tables"]["shared_award_sources"]["Row"],
-  "id" | "url" | "admin_review_status"
+  | "id"
+  | "url"
+  | "admin_review_status"
+  | "title"
+  | "display_title"
+  | "page_metadata"
+  | "page_metadata_generated_at"
+  | "page_type"
+  | "source"
+  | "reason"
+  | "submitted_by_user_id"
 >;
 
 export default async function AwardDirectoryPage() {
@@ -99,7 +112,8 @@ const getCachedSharedCatalog = unstable_cache(
       fetchAllSharedAwards(admin),
       admin
         .from("shared_award_change_events")
-        .select("shared_award_id, shared_award_source_id, source_url, source_page_type, summary, change_details")
+        .select("shared_award_id, shared_award_source_id, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source")
+        .is("suppressed_at", null)
         .order("detected_at", { ascending: false })
         .limit(1000),
     ]);
@@ -113,8 +127,8 @@ const getCachedSharedCatalog = unstable_cache(
     ];
     const { data: sourceRows } = sourceIds.length
       ? await admin
-          .from("shared_award_sources")
-          .select("id, url, admin_review_status")
+        .from("shared_award_sources")
+          .select("id, url, admin_review_status, title, display_title, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id")
           .in("id", sourceIds)
       : { data: [] as SharedSourceDirectoryRow[] };
     const changeIsFromOpenSource = activeChangeSourceFilter(

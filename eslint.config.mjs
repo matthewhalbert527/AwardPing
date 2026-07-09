@@ -13,6 +13,7 @@ const eslintConfig = defineConfig([
     "build/**",
     "dist/**",
     "reports/**",
+    "review-bundles/**",
     "tmp/**",
     "AwardPingVisualSnapshots/**",
     "visual-snapshots/**",

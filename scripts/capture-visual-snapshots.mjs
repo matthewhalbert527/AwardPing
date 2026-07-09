@@ -38,6 +38,37 @@ import {
   geminiSpendGuardStatus,
   markGeminiBillingBlocked,
 } from "./lib/gemini-spend-guard.mjs";
+import {
+  estimateGeminiCostUsd as estimateGeminiCostUsdByMode,
+  normalizeGeminiPricingMode,
+} from "./lib/gemini-batch-support.mjs";
+import {
+  buildStableTextBlocks,
+  captureProfileSettings,
+  compareStableCaptureHashes,
+  defaultCaptureProfile,
+  expansionRelevanceModeForSource,
+  normalizeCaptureProfile,
+  shouldUseScrollActivationForSource,
+} from "./lib/capture-stability.mjs";
+import {
+  aiDisabledReasonForOptions,
+  missingAiProviderMessage,
+  runRequiresAiFromOptions,
+  selectAiProvider as selectAiProviderForRun,
+} from "./lib/capture-ai-requirements.mjs";
+import {
+  isMonitorableAwardSource,
+  sourceBaselineFacts,
+  sourceQualityDecision,
+} from "./lib/source-quality.mjs";
+import {
+  buildVisualReviewPromptPayload,
+  buildVisualReviewPromptText,
+  classifyVisualReviewCandidate,
+  normalizeVisualReviewMode,
+  visualReviewCandidateSignature,
+} from "./lib/visual-review-queue.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -45,8 +76,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 6;
-const captureBehaviorName = "scroll-activated-settled-capture-with-layout-metadata";
+const captureBehaviorVersion = 7;
+const captureBehaviorName = "profiled-stable-capture-with-block-hashes";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -93,6 +124,10 @@ const skipExistingBaseline = boolArg(args["skip-existing-baseline"], false);
 const skipExistingBaselineEffective = skipExistingBaseline || completeMissingBaselines;
 const keepUnchanged = boolArg(args["keep-unchanged"], false);
 const keepRejected = boolArg(args["keep-rejected"], false);
+const acceptTextOnlyNoise = boolArg(
+  args["accept-text-only-noise"] ?? env.AWARDPING_ACCEPT_TEXT_ONLY_NOISE,
+  false,
+);
 const reviewOnAiFailure = boolArg(args["review-on-ai-failure"], true);
 const requestedAiProvider = String(args["ai-provider"] || env.AI_PROVIDER || "auto").toLowerCase();
 const defaultGeminiCliPath = env.LOCALAPPDATA
@@ -128,10 +163,6 @@ const geminiApiDailyCostCapUsd = nonNegativeNumber(
 const geminiApiPricingMode = cleanSlug(
   args["gemini-api-pricing-mode"] || env.AWARDPING_GEMINI_API_PRICING_MODE || "standard",
 ) || "standard";
-const interpretVisualChanges = boolArg(
-  args["interpret-visual-changes"] ?? env.AWARDPING_INTERPRET_VISUAL_CHANGES,
-  true,
-);
 const localizationRepair = boolArg(args["localization-repair"] ?? env.AWARDPING_LOCALIZATION_REPAIR, false);
 const forceR2SnapshotRefresh = boolArg(
   args["force-r2-snapshot-refresh"] ?? env.AWARDPING_FORCE_R2_SNAPSHOT_REFRESH,
@@ -145,26 +176,69 @@ const viewportWidth = positiveInt(args["viewport-width"], 1365);
 const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
+const discoveryMode = boolArg(args["discovery-mode"] ?? env.AWARDPING_DISCOVERY_MODE, false);
+const captureProfile = normalizeCaptureProfile(
+  args["capture-profile"] || env.AWARDPING_CAPTURE_PROFILE,
+  defaultCaptureProfile({
+    localizationRepair,
+    discoveryMode,
+    completeMissingBaselines,
+    baselineRefresh,
+    r2BackfillBaselines: boolArg(args["r2-backfill-baselines"], false),
+  }),
+);
+const captureProfileConfig = captureProfileSettings(captureProfile);
 const maxExpansionStateScreenshots = boundedInt(
   args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
-  8,
+  captureProfileConfig.defaultMaxExpansionStateScreenshots,
   0,
   24,
 );
-const discoverPdfSubpages = boolArg(
+const keepRejectedEvidence = boolArg(
+  args["keep-rejected-evidence"] ?? env.AWARDPING_KEEP_REJECTED_EVIDENCE,
+  keepRejected,
+);
+const discoverPdfSubpagesRequested = boolArg(
   args["discover-pdf-subpages"] ?? env.AWARDPING_DISCOVER_PDF_SUBPAGES,
-  !localizationRepair,
+  false,
 );
-const discoverHtmlSubpages = boolArg(
+const discoverHtmlSubpagesRequested = boolArg(
   args["discover-html-subpages"] ?? env.AWARDPING_DISCOVER_HTML_SUBPAGES,
-  !localizationRepair,
+  false,
 );
-const maxHtmlSubpageDiscoveries = boundedInt(
-  args["max-html-subpage-discoveries"] || env.AWARDPING_MAX_HTML_SUBPAGE_DISCOVERIES,
-  8,
+const discoverPdfSubpages = discoveryMode && discoverPdfSubpagesRequested;
+const discoverHtmlSubpages = discoveryMode && discoverHtmlSubpagesRequested;
+const maxHtmlSubpageDiscoveries = discoveryMode
+  ? boundedInt(
+      args["max-html-subpage-discoveries"] || env.AWARDPING_MAX_HTML_SUBPAGE_DISCOVERIES,
+      8,
+      0,
+      25,
+    )
+  : 0;
+const maxNewDiscoveriesPerAward = boundedInt(
+  args["max-discoveries-per-award"] || env.AWARDPING_MAX_DISCOVERIES_PER_AWARD,
+  5,
   0,
-  25,
+  500,
 );
+const maxNewDiscoveriesPerSource = boundedInt(
+  args["max-discoveries-per-source"] || env.AWARDPING_MAX_DISCOVERIES_PER_SOURCE,
+  3,
+  0,
+  100,
+);
+const maxNewDiscoveriesPerDomain = boundedInt(
+  args["max-discoveries-per-domain"] || env.AWARDPING_MAX_DISCOVERIES_PER_DOMAIN,
+  100,
+  0,
+  10_000,
+);
+const discoveryRunState = {
+  byAward: new Map(),
+  bySource: new Map(),
+  byDomain: new Map(),
+};
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
 const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
 const pageReadyTimeoutMs = positiveInt(args["page-ready-timeout-ms"] || env.AWARDPING_PAGE_READY_TIMEOUT_MS, 15_000);
@@ -259,6 +333,22 @@ const r2SnapshotSync = boolArg(
   args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
   r2BackfillBaselines || localizationRepair || forceR2SnapshotRefresh,
 );
+const visualReviewDefaultMode =
+  completeMissingBaselines || localizationRepair || r2BackfillBaselines || forceR2SnapshotRefresh
+    ? "none"
+    : "batch";
+const visualReviewMode = normalizeVisualReviewMode(
+  args["visual-review-mode"] ?? env.AWARDPING_VISUAL_REVIEW_MODE ?? args["interpret-visual-changes"] ?? env.AWARDPING_INTERPRET_VISUAL_CHANGES,
+  visualReviewDefaultMode,
+);
+const interpretVisualChanges = visualReviewMode !== "none";
+const visualReviewBatchModel = cleanText(
+  args["visual-review-model"] ||
+    env.AWARDPING_VISUAL_REVIEW_MODEL ||
+    args.model ||
+    env.AWARDPING_GEMINI_API_MODEL ||
+    "gemini-2.5-flash-lite",
+);
 const snapshotHistoryPrune = boolArg(
   args["snapshot-history-prune"] ?? env.AWARDPING_SNAPSHOT_HISTORY_PRUNE,
   true,
@@ -290,11 +380,15 @@ const r2Endpoint = cleanText(
 );
 const r2AccessKeyId = cleanText(args["r2-access-key-id"] || env.R2_ACCESS_KEY_ID);
 const r2SecretAccessKey = cleanText(args["r2-secret-access-key"] || env.R2_SECRET_ACCESS_KEY);
-const aiProvider = selectAiProvider(requestedAiProvider, {
-  gemini: env.GEMINI_API_KEY,
-  openai: env.OPENAI_API_KEY,
-  geminiCli: geminiCliPath,
-});
+const aiRequired = runRequiresAi();
+const aiDisabledReason = aiRequired ? null : aiDisabledReasonForRun();
+const aiProvider = aiRequired
+  ? selectAiProviderForRun(requestedAiProvider, {
+      gemini: env.GEMINI_API_KEY,
+      openai: env.OPENAI_API_KEY,
+      geminiCli: geminiCliPath,
+    })
+  : null;
 const aiModel = modelForProvider(aiProvider);
 let supabase = null;
 let r2Client = null;
@@ -325,7 +419,7 @@ if (shardIndex >= shardCount) {
   process.exit(1);
 }
 
-if (!aiProvider) {
+if (aiRequired && !aiProvider) {
   console.error(missingAiMessage(requestedAiProvider));
   process.exit(1);
 }
@@ -376,8 +470,10 @@ async function runOnce() {
     finished_at: null,
     status: "running",
     stop_reason: null,
-    ai_provider: aiProvider,
+    ai_provider: aiProvider || (aiRequired ? null : "disabled"),
     ai_model: aiModel,
+    ai_required: aiRequired,
+    ai_disabled_reason: aiDisabledReason,
     env_path: envPath,
     options: {
       limit,
@@ -399,6 +495,9 @@ async function runOnce() {
       skip_existing_baseline: skipExistingBaseline,
       keep_unchanged: keepUnchanged,
       keep_rejected: keepRejected,
+      keep_rejected_evidence: keepRejectedEvidence,
+      accept_text_only_noise: acceptTextOnlyNoise,
+      capture_profile: captureProfile,
       localization_repair: localizationRepair,
       force_r2_snapshot_refresh: forceR2SnapshotRefresh,
       review_on_ai_failure: reviewOnAiFailure,
@@ -406,9 +505,16 @@ async function runOnce() {
       viewport_height: viewportHeight,
       jpeg_quality: jpegQuality,
       thumb_width: thumbWidth,
+      max_expansion_state_screenshots: maxExpansionStateScreenshots,
+      discovery_mode: discoveryMode,
+      discover_pdf_subpages_requested: discoverPdfSubpagesRequested,
+      discover_html_subpages_requested: discoverHtmlSubpagesRequested,
       discover_pdf_subpages: discoverPdfSubpages,
       discover_html_subpages: discoverHtmlSubpages,
       max_html_subpage_discoveries: maxHtmlSubpageDiscoveries,
+      max_discoveries_per_award: maxNewDiscoveriesPerAward,
+      max_discoveries_per_source: maxNewDiscoveriesPerSource,
+      max_discoveries_per_domain: maxNewDiscoveriesPerDomain,
       timeout_ms: timeoutMs,
       page_ready_timeout_ms: pageReadyTimeoutMs,
       capture_settle_stable_ms: captureSettleStableMs,
@@ -444,10 +550,14 @@ async function runOnce() {
       gemini_cli_model: aiProvider === "gemini-cli" ? geminiCliModel : null,
       gemini_cli_safe_models: aiProvider === "gemini-cli" ? geminiCliSafeModels : [],
       allow_unsafe_gemini_cli_model: allowUnsafeGeminiCliModel,
+      ai_required: aiRequired,
+      ai_disabled_reason: aiDisabledReason,
       gemini_cli_max_calls: geminiCliMaxCalls || null,
       gemini_api_max_calls: aiProvider === "gemini" ? geminiApiMaxCalls || null : null,
       gemini_api_daily_cost_cap_usd: aiProvider === "gemini" ? geminiApiDailyCostCapUsd : null,
       gemini_api_pricing_mode: aiProvider === "gemini" ? geminiApiPricingMode : null,
+      visual_review_mode: visualReviewMode,
+      visual_review_model: visualReviewMode === "batch" ? visualReviewBatchModel : aiModel,
       interpret_visual_changes: interpretVisualChanges,
       extract_baseline_info: extractBaselineInfo,
       backfill_baseline_info: backfillBaselineInfo,
@@ -461,7 +571,14 @@ async function runOnce() {
     evidence_sanity_corrected: 0,
     evidence_sanity_rejected: 0,
     text_only_ignored: 0,
+    text_only_candidates: 0,
     deterministic_noise: 0,
+    deterministic_source_rejected: 0,
+    deterministic_noise_rejected: 0,
+    text_only_candidate_enqueued: 0,
+    text_only_noise_rejected: 0,
+    text_only_published_or_queued: 0,
+    visual_only_candidate_enqueued: 0,
     visual_noise: 0,
     review: 0,
     skipped_existing_baseline: 0,
@@ -491,11 +608,29 @@ async function runOnce() {
     pdf_checked: 0,
     pdf_unchanged: 0,
     pdf_changed: 0,
+    capture_profile: captureProfile,
     expanded_controls: 0,
+    expansion_screenshots_taken: 0,
+    expansion_screenshots_pruned: 0,
+    r2_uploads_skipped_unchanged: 0,
+    r2_uploads_skipped_noise: 0,
+    main_content_hash_changed: 0,
+    chrome_only_hash_changed: 0,
     discovered_pdf_candidates: 0,
     discovered_pdf_sources: 0,
     discovered_html_candidates: 0,
     discovered_html_sources: 0,
+    discovery_mode: discoveryMode,
+    discovery_candidates: 0,
+    discovery_rejected_by_quality: 0,
+    discovery_rejected_by_identity: 0,
+    discovery_skipped_existing: 0,
+    discovery_inserted_pending: 0,
+    discovery_inserted_open: 0,
+    discovery_rejection_reasons: {},
+    discovery_cap_hits_by_award: {},
+    discovery_cap_hits_by_domain: {},
+    discovery_cap_hits_by_source: {},
     r2_uploaded: 0,
     r2_rotated: 0,
     r2_failed: 0,
@@ -520,6 +655,10 @@ async function runOnce() {
     baseline_facts_skipped: 0,
     baseline_facts_backfilled: 0,
     visual_interpreted: 0,
+    visual_review_mode: visualReviewMode,
+    visual_review_candidates_queued: 0,
+    visual_review_candidates_existing: 0,
+    visual_review_candidates_failed: 0,
     published_updates: 0,
     publish_duplicates: 0,
     publish_failed: 0,
@@ -936,7 +1075,9 @@ async function processSource(source, context, browserMeta, report) {
       baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
     report.baselined += 1;
-    await maybeSyncR2Snapshot(source, capture, report);
+    await maybeSyncR2Snapshot(source, capture, report, {
+      reason: baseline ? "baseline_refresh" : "initial_baseline",
+    });
     if (localizationRepair) report.localization_repair_baselined += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
@@ -954,7 +1095,7 @@ async function processSource(source, context, browserMeta, report) {
       baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
     report.capture_behavior_refreshed += 1;
-    await maybeSyncR2Snapshot(source, capture, report);
+    await maybeSyncR2Snapshot(source, capture, report, { reason: "capture_behavior_refresh", unchanged: true });
     if (localizationRepair) report.localization_repair_synced += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(
@@ -980,10 +1121,18 @@ async function processSource(source, context, browserMeta, report) {
     return;
   }
 
-  const screenshotChanged = capture.image_hash !== baseline.image_hash;
-  const textChanged = capture.text_hash !== baseline.text_hash;
+  const hashComparison = compareStableCaptureHashes(baseline, capture, { profile: captureProfile });
+  const screenshotChanged = hashComparison.screenshotChanged;
+  const textChanged = hashComparison.textChanged;
+  if (hashComparison.mainContentHashChanged) report.main_content_hash_changed += 1;
+  if (hashComparison.chromeOnlyHashChanged) report.chrome_only_hash_changed += 1;
 
-  if (!screenshotChanged) {
+  if (!screenshotChanged || (hashComparison.chromeOnlyHashChanged && !textChanged)) {
+    if (textChanged) {
+      await processTextOnlyComparison(source, baseline, previous, capture, report);
+      return;
+    }
+
     report.unchanged += 1;
     let baselineUpdatedForFacts = false;
     if (backfillBaselineInfo && !baselineHasFacts(baseline)) {
@@ -999,17 +1148,16 @@ async function processSource(source, context, browserMeta, report) {
         });
         baselineUpdatedForFacts = true;
         report.baseline_facts_backfilled += 1;
-        await maybeSyncR2Snapshot(source, capture, report);
+        await maybeSyncR2Snapshot(source, capture, report, { reason: "baseline_facts_backfill", unchanged: true });
       }
     }
-    await maybeRepairMissingR2Snapshot(source, capture, report);
+    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "unchanged" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    if (textChanged) {
-      report.text_only_ignored += 1;
-      console.log(`UNCHANGED screenshot_match_text_diff_ignored ${sourceLabel(source)}`);
-    } else {
-      console.log(`UNCHANGED ${sourceLabel(source)}`);
-    }
+    console.log(
+      hashComparison.chromeOnlyHashChanged
+        ? `UNCHANGED chrome_only_hash_changed ${sourceLabel(source)}`
+        : `UNCHANGED ${sourceLabel(source)}`,
+    );
     if (!keepUnchanged && !baselineUpdatedForFacts) removeGeneratedCaptureDir(capture.dir);
     return;
   }
@@ -1025,8 +1173,9 @@ async function processSource(source, context, browserMeta, report) {
 
   report.candidate_changes += 1;
   if (!interpretVisualChanges) {
-    await maybeRepairMissingR2Snapshot(source, capture, report);
+    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "visual_interpretation_disabled" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    pruneTransientExpansionStateScreenshots(capture, report);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     console.log(`SKIP visual_interpretation_disabled ${sourceLabel(source)}`);
     return;
@@ -1035,8 +1184,42 @@ async function processSource(source, context, browserMeta, report) {
   if (!deterministic.candidate_change) {
     report.deterministic_noise += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    pruneTransientExpansionStateScreenshots(capture, report);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
     console.log(`NOISE deterministic ${deterministic.reason || "local_diff_rejected"} ${sourceLabel(source)}`);
+    return;
+  }
+
+  const gate = gateVisualReviewCandidateForAi({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic,
+    report,
+  });
+  if (!gate.allowed) {
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    pruneTransientExpansionStateScreenshots(capture, report);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(`NOISE deterministic_gate ${gate.decision.reason || gate.decision.label} ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (visualReviewMode === "batch") {
+    await enqueueVisualReviewCandidate({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic: gate.deterministic,
+      report,
+    });
+    pruneTransientExpansionStateScreenshots(capture, report);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`QUEUED visual_review_batch ${sourceLabel(source)}`);
     return;
   }
 
@@ -1046,7 +1229,7 @@ async function processSource(source, context, browserMeta, report) {
     previous,
     capture,
     diff,
-    deterministic,
+    deterministic: gate.deterministic,
     report,
   });
 }
@@ -1073,7 +1256,7 @@ async function processLocalizationRepairSource(source, baseline, capture, report
     return;
   }
 
-  await maybeSyncR2Snapshot(source, capture, report);
+  await maybeSyncR2Snapshot(source, capture, report, { reason: "localization_repair", unchanged: true });
   writeBaseline(source, capture, {
     reason: "localization_repair",
     previous_baseline: baseline || null,
@@ -1084,6 +1267,180 @@ async function processLocalizationRepairSource(source, baseline, capture, report
   report.unchanged += 1;
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
   console.log(`LOCALIZATION_REPAIR synced ${sourceLabel(source)}`);
+}
+
+async function processTextOnlyComparison(source, baseline, previous, capture, report) {
+  const diff = buildDiffSummary(previous.text || "", capture.text || "", source);
+  const deterministic = {
+    ...classifyDeterministicChange(diff, source),
+    text_only: true,
+    screenshot_changed: false,
+  };
+
+  report.candidate_changes += 1;
+  report.text_only_candidates += 1;
+
+  if (!deterministic.candidate_change) {
+    await finishTextOnlyNoise({
+      source,
+      baseline,
+      capture,
+      report,
+      reason: deterministic.reason || "text_only_deterministic_noise",
+    });
+    return;
+  }
+
+  const gate = gateVisualReviewCandidateForAi({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic,
+    report,
+  });
+
+  if (!gate.allowed) {
+    await finishTextOnlyNoise({
+      source,
+      baseline,
+      capture,
+      report,
+      reason: gate.decision.reason || gate.decision.label || "text_only_gate_noise",
+      decision: gate.decision,
+      countersAlreadyRecorded: true,
+    });
+    return;
+  }
+
+  if (!interpretVisualChanges) {
+    const reviewPath = saveReviewRecord({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic: gate.deterministic,
+      reason: "text_only_visual_review_disabled",
+      aiReview: {
+        provider: "none",
+        model: null,
+        result: null,
+        error: null,
+      },
+    });
+    report.review += 1;
+    report.review_paths.push(toArchiveRelative(reviewPath));
+    pruneTransientExpansionStateScreenshots(capture, report);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`REVIEW text_only_visual_review_disabled ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (visualReviewMode === "batch") {
+    await enqueueVisualReviewCandidate({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic: gate.deterministic,
+      report,
+    });
+    report.text_only_published_or_queued += 1;
+    pruneTransientExpansionStateScreenshots(capture, report);
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`QUEUED text_only_visual_review_batch ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (
+    visualReviewMode === "immediate" &&
+    gate.deterministic.classification === "applicant_fact_change" &&
+    ["gemini-cli", "gemini", "openai"].includes(aiProvider)
+  ) {
+    const trueChangesBefore = report.ai_true_changes;
+    await reviewAndApplyCandidateChange({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic: gate.deterministic,
+      report,
+    });
+    if (report.ai_true_changes > trueChangesBefore) {
+      report.text_only_published_or_queued += 1;
+    }
+    return;
+  }
+
+  const reviewPath = saveReviewRecord({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic: gate.deterministic,
+    reason: "text_only_candidate_requires_batch_or_applicant_fact_immediate_review",
+    aiReview: {
+      provider: "none",
+      model: null,
+      result: null,
+      error: null,
+    },
+  });
+  report.review += 1;
+  report.review_paths.push(toArchiveRelative(reviewPath));
+  pruneTransientExpansionStateScreenshots(capture, report);
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
+  console.log(`REVIEW text_only_candidate ${sourceLabel(source)}`);
+}
+
+async function finishTextOnlyNoise({
+  source,
+  baseline,
+  capture,
+  report,
+  reason,
+  decision = null,
+  countersAlreadyRecorded = false,
+}) {
+  if (!countersAlreadyRecorded) {
+    report.deterministic_noise += 1;
+    report.deterministic_noise_rejected += 1;
+    report.text_only_noise_rejected += 1;
+  }
+
+  const canAcceptNoiseBaseline = !decision?.source_rejected || acceptTextOnlyNoise;
+  if (canAcceptNoiseBaseline && (promote || acceptTextOnlyNoise)) {
+    writeBaseline(source, capture, {
+      reason: `text_only_noise_rejected:${reason}`,
+      previous_baseline_capture: baseline.capture || null,
+      baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
+      baseline_facts_metadata:
+        capture.baseline_facts_metadata || baseline.summary_metadata?.baseline_facts_metadata || null,
+      text_only_noise_decision: decision
+        ? {
+            label: decision.label || null,
+            reason: decision.reason || null,
+            source_rejected: Boolean(decision.source_rejected),
+          }
+        : null,
+    });
+    report.promoted += 1;
+    await maybeSyncR2Snapshot(source, capture, report, {
+      reason: "text_only_noise_rejected",
+      noise: true,
+      unchanged: true,
+    });
+  }
+
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
+  pruneTransientExpansionStateScreenshots(capture, report);
+  if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+  console.log(`NOISE text_only ${reason || "deterministic_rejected"} ${sourceLabel(source)}`);
 }
 
 async function reviewAndApplyCandidateChange({
@@ -1254,7 +1611,7 @@ async function reviewAndApplyCandidateChange({
         baseline_facts_metadata: capture.baseline_facts_metadata || null,
       });
       report.promoted += 1;
-      await maybeSyncR2Snapshot(source, capture, report);
+      await maybeSyncR2Snapshot(source, capture, report, { reason: "ai_approved_true_change" });
     }
 
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
@@ -1264,7 +1621,7 @@ async function reviewAndApplyCandidateChange({
 
   report.ai_rejected += 1;
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
-  if (keepRejected) {
+  if (keepRejectedEvidence) {
     const rejectedPath = saveRejectedRecord({
       source,
       baseline,
@@ -1275,10 +1632,107 @@ async function reviewAndApplyCandidateChange({
       aiReview,
     });
     report.rejected_paths.push(toArchiveRelative(rejectedPath));
+    pruneTransientExpansionStateScreenshots(capture, report);
   } else if (!keepUnchanged) {
     removeGeneratedCaptureDir(capture.dir);
   }
   console.log(`AI REJECTED ${aiReview.result.noise_reason || "not award-relevant"} ${sourceLabel(source)}`);
+}
+
+async function enqueueVisualReviewCandidate({
+  source,
+  baseline,
+  previous,
+  capture,
+  diff,
+  deterministic,
+  report,
+}) {
+  try {
+    const candidateSignature = visualReviewCandidateSignature({
+      source,
+      baseline,
+      capture,
+      diff,
+      deterministic,
+      behaviorVersion: captureBehaviorVersion,
+    });
+    const promptPayload = buildVisualReviewPromptPayload({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic,
+      promptChars,
+      behaviorVersion: captureBehaviorVersion,
+      behaviorName: captureBehaviorName,
+      archiveRelative: toArchiveRelative,
+    });
+    const promptContext = buildVisualReviewPromptText(promptPayload);
+    const row = {
+      shared_award_id: source.shared_award_id,
+      shared_award_source_id: source.id,
+      candidate_signature: candidateSignature,
+      source_url: source.url,
+      source_title: source.title || null,
+      source_page_type: source.page_type || null,
+      previous_snapshot_ref: promptPayload.previous_snapshot_ref || {},
+      new_snapshot_ref: promptPayload.new_snapshot_ref || {},
+      previous_text_hash: baseline?.text_hash || null,
+      new_text_hash: capture?.text_hash || null,
+      previous_image_hash: baseline?.image_hash || null,
+      new_image_hash: capture?.image_hash || null,
+      previous_file_hash: baseline?.file_hash || null,
+      new_file_hash: capture?.file_hash || null,
+      deterministic_diff: diff || {},
+      deterministic_classification: deterministic?.classification || deterministic?.reason || null,
+      prompt_payload: promptPayload,
+      prompt_context: promptContext,
+      status: "pending",
+      gemini_batch_request_key: candidateSignature,
+      model: visualReviewBatchModel,
+      estimated_cost_usd: null,
+      actual_usage: {},
+      worker_metadata: {
+        queued_by: "capture-visual-snapshots",
+        queued_at: new Date().toISOString(),
+        capture_behavior_version: captureBehaviorVersion,
+        capture_behavior_name: captureBehaviorName,
+        visual_review_mode: visualReviewMode,
+      },
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .upsert(row, {
+        onConflict: "candidate_signature",
+        ignoreDuplicates: true,
+      })
+      .select("id,status")
+      .maybeSingle();
+
+    if (error) throw error;
+
+    if (data?.id) {
+      report.visual_review_candidates_queued += 1;
+      return data;
+    }
+
+    report.visual_review_candidates_existing += 1;
+    return null;
+  } catch (error) {
+    report.visual_review_candidates_failed += 1;
+    const message = `Visual review candidate enqueue failed: ${errorMessage(error)}`;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message,
+    });
+    console.log(`QUEUE FAILED ${message} ${sourceLabel(source)}`);
+    throw error;
+  }
 }
 
 async function processPdfComparison(source, baseline, previous, capture, report) {
@@ -1289,7 +1743,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   if (!fileChanged) {
     report.unchanged += 1;
     report.pdf_unchanged += 1;
-    await maybeRepairMissingR2Snapshot(source, capture, report);
+    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "pdf_unchanged" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(textChanged ? `UNCHANGED pdf_file_match_text_diff_ignored ${sourceLabel(source)}` : `UNCHANGED pdf_file_match ${sourceLabel(source)}`);
     if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
@@ -1310,8 +1764,17 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   report.candidate_changes += 1;
   report.pdf_changed += 1;
 
+  if (!interpretVisualChanges) {
+    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "pdf_visual_interpretation_disabled" });
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(`SKIP visual_interpretation_disabled_pdf ${sourceLabel(source)}`);
+    return;
+  }
+
   if (!textChanged) {
     report.deterministic_noise += 1;
+    report.deterministic_noise_rejected += 1;
     if (promote) {
       writeBaseline(source, capture, {
         reason: "pdf_file_hash_changed_text_match_ignored",
@@ -1327,14 +1790,45 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     return;
   }
 
-  if (["gemini-cli", "gemini", "openai"].includes(aiProvider)) {
+  const gate = gateVisualReviewCandidateForAi({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic,
+    report,
+  });
+  if (!gate.allowed) {
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(`NOISE deterministic_gate_pdf ${gate.decision.reason || gate.decision.label} ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (visualReviewMode === "batch") {
+    await enqueueVisualReviewCandidate({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic: gate.deterministic,
+      report,
+    });
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`QUEUED visual_review_batch_pdf ${sourceLabel(source)}`);
+    return;
+  }
+
+  if (visualReviewMode === "immediate" && ["gemini-cli", "gemini", "openai"].includes(aiProvider)) {
     await reviewAndApplyCandidateChange({
       source,
       baseline,
       previous,
       capture,
       diff,
-      deterministic,
+      deterministic: gate.deterministic,
       report,
     });
     return;
@@ -1346,7 +1840,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     previous,
     capture,
     diff,
-    deterministic,
+    deterministic: gate.deterministic,
     reason: "pdf_file_hash_changed",
     aiReview: {
       provider: "none",
@@ -1365,7 +1859,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
       previous_baseline_capture: baseline.capture || null,
     });
     report.promoted += 1;
-    await maybeSyncR2Snapshot(source, capture, report);
+    await maybeSyncR2Snapshot(source, capture, report, { reason: "pdf_review_promoted", unchanged: true });
   }
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
 
@@ -1498,6 +1992,7 @@ async function captureSource(source, context, browserMeta, report) {
   const pagePath = join(captureDir, "page.jpg");
   const thumbPath = join(captureDir, "thumb.jpg");
   const textPath = join(captureDir, "text.txt");
+  const expansionTextPath = join(captureDir, "expansion-text.txt");
   const metaPath = join(captureDir, "meta.json");
   const page = await context.newPage();
 
@@ -1521,7 +2016,10 @@ async function captureSource(source, context, browserMeta, report) {
     }
     await page.addStyleTag({ content: stableCaptureCss }).catch(() => null);
     const hiddenNoise = await hideNoiseElements(page);
-    const expanded = await expandPageForSnapshot(page);
+    const expanded = await expandPageForSnapshot(page, {
+      source,
+      profile: captureProfile,
+    });
     if (report) {
       report.expanded_controls +=
         (expanded?.details_opened || 0) +
@@ -1534,7 +2032,10 @@ async function captureSource(source, context, browserMeta, report) {
         video.removeAttribute("autoplay");
       }
     }).catch(() => null);
-    const scrollActivation = await activateScrollTriggeredContent(page);
+    const scrollActivation = await activateScrollTriggeredContent(page, {
+      source,
+      profile: captureProfile,
+    });
     if (report) {
       if (!scrollActivation.skipped) report.scroll_activation_runs += 1;
       report.scroll_activation_steps += scrollActivation.steps || 0;
@@ -1548,23 +2049,29 @@ async function captureSource(source, context, browserMeta, report) {
       report.capture_settle_wait_ms += pageSettle.waited_ms;
     }
     const counterStability = await waitForLikelyAnimatedCounterStability(page);
-    const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir);
+    const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir, {
+      source,
+      profile: captureProfile,
+    });
     if (report && expansionStateEvidence.states.length) {
       report.expanded_controls += expansionStateEvidence.states.length;
+      report.expansion_screenshots_taken += expansionStateEvidence.states.length;
     }
     if (expansionStateEvidence.states.length) {
       const restored = await expandPageForSnapshot(page);
       expanded.expansion_state_restore = restored;
     }
 
-    const discoveredPdfLinks = discoverPdfSubpages
-      ? await discoverPdfLinksOnPage(page, source)
-      : [];
-    await maybeRecordDiscoveredPdfSources(source, discoveredPdfLinks, expanded, report);
-    const discoveredHtmlLinks = discoverHtmlSubpages
-      ? await discoverHtmlSubpageLinksOnPage(page, source)
-      : [];
-    await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
+    let discoveredPdfLinks = [];
+    let discoveredHtmlLinks = [];
+    if (discoveryMode && discoverPdfSubpages) {
+      discoveredPdfLinks = await discoverPdfLinksOnPage(page, source);
+      await maybeRecordDiscoveredPdfSources(source, discoveredPdfLinks, expanded, report);
+    }
+    if (discoveryMode && discoverHtmlSubpages) {
+      discoveredHtmlLinks = await discoverHtmlSubpageLinksOnPage(page, source);
+      await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
+    }
 
     const pageTitle = await page.title().catch(() => "");
     const finalUrl = page.url();
@@ -1576,7 +2083,15 @@ async function captureSource(source, context, browserMeta, report) {
       device_pixel_ratio: window.devicePixelRatio || 1,
     }));
     const rawText = await page.evaluate(() => document.body?.innerText || "");
-    const text = combinedVisibleTextForCapture(rawText, expansionStateEvidence.states);
+    const stableTextSamples = await extractStableTextBlockSamples(page);
+    const textBlocks = buildStableTextBlocks({
+      rawText,
+      mainText: stableTextSamples.main_text,
+      chromeText: stableTextSamples.nav_header_footer_text,
+      expansionStates: expansionStateEvidence.states,
+      profile: captureProfile,
+    });
+    const text = textBlocks.primary_text;
     const invalidCapture = classifyInvalidPageCapture({
       status: response?.status() || null,
       finalUrl,
@@ -1590,7 +2105,7 @@ async function captureSource(source, context, browserMeta, report) {
         `Invalid capture page: ${invalidCapture.type} HTTP ${response?.status() || "unknown"} final_url=${finalUrl} title=${pageTitle || "untitled"} sample=${invalidCapture.sample}`,
       );
     }
-    const textHash = hashText(text);
+    const textHash = textBlocks.text_hash;
     const pageBuffer = await page.screenshot({
       path: pagePath,
       fullPage: true,
@@ -1602,6 +2117,9 @@ async function captureSource(source, context, browserMeta, report) {
     const thumbnail = await createThumbnail(context, pageBuffer);
     writeFileSync(thumbPath, thumbnail);
     writeFileSync(textPath, `${text}\n`, "utf8");
+    if (textBlocks.expansion_text) {
+      writeFileSync(expansionTextPath, `${textBlocks.expansion_text}\n`, "utf8");
+    }
 
     const meta = {
       version: 1,
@@ -1614,9 +2132,18 @@ async function captureSource(source, context, browserMeta, report) {
       page_title: pageTitle,
       status_code: response?.status() || null,
       status_text: response?.statusText() || null,
+      capture_profile: captureProfile,
       text_hash: textHash,
+      body_text_hash: textBlocks.body_text_hash,
+      main_content_hash: textBlocks.main_content_hash,
+      nav_header_footer_hash: textBlocks.nav_header_footer_hash,
+      expansion_hash: textBlocks.expansion_hash,
       image_hash: imageHash,
       text_length: text.length,
+      body_text_length: textBlocks.body_text.length,
+      main_content_text_length: textBlocks.main_content_text.length,
+      nav_header_footer_text_length: textBlocks.nav_header_footer_text.length,
+      expansion_text_length: textBlocks.expansion_text_length,
       page_bytes: pageBuffer.length,
       thumb_bytes: thumbnail.length,
       dimensions,
@@ -1628,6 +2155,7 @@ async function captureSource(source, context, browserMeta, report) {
       counter_stability: counterStability,
       expanded_content: expanded,
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
+      expansion_text_in_primary_hash: captureProfileConfig.includeExpansionTextInPrimary,
       expansion_state_screenshots: expansionStateEvidence.states.map((state) => ({
         index: state.index,
         tag: state.tag || null,
@@ -1645,6 +2173,7 @@ async function captureSource(source, context, browserMeta, report) {
         page: toArchiveRelative(pagePath),
         thumb: toArchiveRelative(thumbPath),
         text: toArchiveRelative(textPath),
+        expansion_text: textBlocks.expansion_text ? toArchiveRelative(expansionTextPath) : null,
         meta: toArchiveRelative(metaPath),
         expansion_states: expansionStateEvidence.states.map((state) => ({
           label: state.label,
@@ -1661,18 +2190,40 @@ async function captureSource(source, context, browserMeta, report) {
       page_path: pagePath,
       thumb_path: thumbPath,
       text_path: textPath,
+      expansion_text_path: textBlocks.expansion_text ? expansionTextPath : null,
       meta_path: metaPath,
       expansion_state_screenshots: expansionStateEvidence.states,
       text,
+      body_text_hash: textBlocks.body_text_hash,
+      main_content_hash: textBlocks.main_content_hash,
+      nav_header_footer_hash: textBlocks.nav_header_footer_hash,
+      expansion_hash: textBlocks.expansion_hash,
+      body_text_length: textBlocks.body_text.length,
+      main_content_text_length: textBlocks.main_content_text.length,
+      nav_header_footer_text_length: textBlocks.nav_header_footer_text.length,
+      expansion_text_length: textBlocks.expansion_text_length,
     };
   } finally {
     await page.close().catch(() => null);
   }
 }
 
-async function expandPageForSnapshot(page) {
+async function expandPageForSnapshot(page, { source = null, profile = captureProfile } = {}) {
+  const relevanceMode = expansionRelevanceModeForSource(source, profile);
+  if (relevanceMode === "none") {
+    return {
+      details_opened: 0,
+      controls_clicked: 0,
+      panels_forced_open: 0,
+      passes: 0,
+      skipped: true,
+      reason: "capture_profile_minimal_expansion",
+      capture_profile: profile,
+    };
+  }
+
   try {
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async ({ relevanceMode }) => {
       const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
       const clickedKeys = new Set();
       const counts = {
@@ -1740,8 +2291,11 @@ async function expandPageForSnapshot(page) {
           /\baccordion\b/.test(signal) ||
           element.closest(".accordion, [class*='faq' i], [id*='faq' i]");
 
-        const contentRelevant =
-          /\b(faq|question|answer|expand|show|more|details|eligib|requirement|application|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?)\b/i.test(signal);
+        const contentPattern =
+          relevanceMode === "award-content"
+            ? /\b(faq|question|answer|eligib|requirement|application|apply|guideline|instruction|document|pdf|form|materials?)\b/i
+            : /\b(faq|question|answer|expand|show|more|details|eligib|requirement|application|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?)\b/i;
+        const contentRelevant = contentPattern.test(signal);
 
         return Boolean(explicit && contentRelevant);
       }
@@ -1831,25 +2385,36 @@ async function expandPageForSnapshot(page) {
       openClosedDetails();
 
       return counts;
-    });
+    }, { relevanceMode });
     await page.waitForTimeout(350).catch(() => null);
-    return result;
+    return {
+      ...result,
+      capture_profile: profile,
+      relevance_mode: relevanceMode,
+    };
   } catch (error) {
     return {
       details_opened: 0,
       controls_clicked: 0,
       panels_forced_open: 0,
       passes: 0,
+      capture_profile: profile,
+      relevance_mode: relevanceMode,
       error: errorMessage(error),
     };
   }
 }
 
-async function captureExpansionStateEvidence(page, context, captureDir) {
+async function captureExpansionStateEvidence(page, context, captureDir, { source = null, profile = captureProfile } = {}) {
   if (maxExpansionStateScreenshots <= 0) return { states: [], candidates: 0, error: null };
+  if (!captureProfileSettings(profile).allowExpansionScreenshots) {
+    return { states: [], candidates: 0, error: null, skipped: true };
+  }
+  const relevanceMode = expansionRelevanceModeForSource(source, profile);
+  if (relevanceMode === "none") return { states: [], candidates: 0, error: null, skipped: true };
 
   try {
-    const setup = await page.evaluate((maxControls) => {
+    const setup = await page.evaluate(({ maxControls, relevanceMode }) => {
       function textOf(element) {
         return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
       }
@@ -1911,8 +2476,11 @@ async function captureExpansionStateEvidence(page, context, captureDir) {
           element.getAttribute("data-bs-toggle") ||
           element.closest("details, .accordion, [class*='accordion' i], [class*='faq' i], [id*='faq' i], [role='tablist']");
 
-        const contentRelevant =
-          /\b(faq|question|answer|expand|show|more|details|eligib|requirement|criteria|nomination|application|process|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?|amount|tuition|stipend)\b/i.test(signal);
+        const contentPattern =
+          relevanceMode === "award-content"
+            ? /\b(faq|question|answer|eligib|requirement|criteria|nomination|application|process|apply|guideline|instruction|document|pdf|form|materials?|amount|tuition|stipend)\b/i
+            : /\b(faq|question|answer|expand|show|more|details|eligib|requirement|criteria|nomination|application|process|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?|amount|tuition|stipend)\b/i;
+        const contentRelevant = contentPattern.test(signal);
 
         return Boolean(explicit && contentRelevant);
       }
@@ -1955,7 +2523,7 @@ async function captureExpansionStateEvidence(page, context, captureDir) {
         })),
         base_text: document.body?.innerText || "",
       };
-    }, maxExpansionStateScreenshots);
+    }, { maxControls: maxExpansionStateScreenshots, relevanceMode });
 
     const states = [];
     let knownText = setup.base_text || "";
@@ -2069,13 +2637,82 @@ async function captureExpansionStateEvidence(page, context, captureDir) {
   }
 }
 
-function combinedVisibleTextForCapture(rawText, expansionStates) {
-  const parts = [rawText || ""];
-  for (const state of expansionStates || []) {
-    if (!state?.text) continue;
-    parts.push(`Expansion state: ${state.label || "Section"}\n${state.text}`);
-  }
-  return normalizeVisibleText(parts.join("\n\n"));
+async function extractStableTextBlockSamples(page) {
+  return page
+    .evaluate(() => {
+      function textOf(element) {
+        return (element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim();
+      }
+
+      function visible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0
+        );
+      }
+
+      const chromeSelectors = [
+        "header",
+        "nav",
+        "footer",
+        "aside",
+        "[role='navigation']",
+        "[role='banner']",
+        "[role='contentinfo']",
+        ".site-header",
+        ".site-footer",
+        ".navbar",
+        ".navigation",
+        ".menu",
+        ".sidebar",
+      ];
+      const chromeText = [...document.querySelectorAll(chromeSelectors.join(","))]
+        .filter(visible)
+        .map(textOf)
+        .filter(Boolean)
+        .join("\n\n");
+
+      const explicitMain = [...document.querySelectorAll("main, article, [role='main'], #main, #content, .main, .content")]
+        .filter(visible)
+        .map(textOf)
+        .filter(Boolean)
+        .sort((left, right) => right.length - left.length)[0];
+
+      if (explicitMain && explicitMain.length >= 200) {
+        return {
+          main_text: explicitMain,
+          nav_header_footer_text: chromeText,
+        };
+      }
+
+      const clone = document.body?.cloneNode(true);
+      if (clone instanceof HTMLElement) {
+        for (const selector of chromeSelectors) {
+          for (const element of clone.querySelectorAll(selector)) {
+            element.remove();
+          }
+        }
+        return {
+          main_text: textOf(clone),
+          nav_header_footer_text: chromeText,
+        };
+      }
+
+      return {
+        main_text: "",
+        nav_header_footer_text: chromeText,
+      };
+    })
+    .catch(() => ({
+      main_text: "",
+      nav_header_footer_text: "",
+    }));
 }
 
 function textAddsMeaningfulExpansionContent(knownText, candidateText) {
@@ -2151,12 +2788,15 @@ async function waitForMeaningfulPageContent(page) {
   };
 }
 
-async function activateScrollTriggeredContent(page) {
+async function activateScrollTriggeredContent(page, { source = null, profile = captureProfile } = {}) {
   const startedAt = Date.now();
   const before = await pageSettleSnapshot(page);
-  if (!captureScrollActivation) {
+  const shouldActivate = shouldUseScrollActivationForSource(source, profile, captureScrollActivation);
+  if (!shouldActivate) {
     return {
       skipped: true,
+      reason: captureScrollActivation ? "capture_profile_scroll_activation_not_needed" : "capture_scroll_activation_disabled",
+      capture_profile: profile,
       changed: false,
       steps: 0,
       waited_ms: 0,
@@ -2245,6 +2885,7 @@ async function activateScrollTriggeredContent(page) {
     waited_ms: Date.now() - startedAt,
     wait_ms: captureScrollWaitMs,
     final_wait_ms: captureScrollFinalWaitMs,
+    capture_profile: profile,
     step_ratio: captureScrollStepRatio,
     max_steps: captureScrollMaxSteps,
     steps: result.steps || 0,
@@ -2921,9 +3562,249 @@ function distinctiveAwardTokens(value) {
     .slice(0, 10);
 }
 
+function evaluateDiscoveredSourceCandidate(source, link, kind) {
+  const candidate = discoveryCandidateSource(source, link, kind);
+  const quality = sourceQualityDecision(candidate, { purpose: "discovery" });
+  if (!quality.allowed) {
+    return {
+      allowed: false,
+      rejection_type: "quality",
+      reason: quality.reason,
+      candidate,
+      quality,
+    };
+  }
+
+  const identity = discoveryIdentityDecision(source, candidate, link);
+  if (!identity.allowed) {
+    return {
+      allowed: false,
+      rejection_type: "identity",
+      reason: identity.reason,
+      candidate,
+      quality,
+    };
+  }
+
+  return {
+    allowed: true,
+    admin_review_status: identity.admin_review_status,
+    reason: identity.reason,
+    candidate,
+    quality,
+  };
+}
+
+function discoveryCandidateSource(source, link, kind) {
+  const pageType = kind === "pdf" ? "pdf" : link.page_type || "other";
+  return {
+    id: null,
+    shared_award_id: source.shared_award_id,
+    url: link.url,
+    title: link.title,
+    display_title: link.title,
+    page_type: pageType,
+    confidence: kind === "pdf" ? 0.8 : link.confidence || 0.74,
+    reason: link.reason || null,
+    source: "discovery",
+    shared_awards: source.shared_awards || null,
+    page_metadata: link.baseline_facts
+      ? {
+          kind: "source_page_outline",
+          baseline_facts: link.baseline_facts,
+        }
+      : null,
+  };
+}
+
+function discoveryIdentityDecision(source, candidate, link) {
+  if (candidateHasCurrentAwardFacts(candidate)) {
+    return { allowed: true, admin_review_status: "open", reason: "classified_current_award_source" };
+  }
+
+  const awardName = source.shared_awards?.name || "";
+  const directSignal = [candidate.url, candidate.title, link.link_text, candidate.reason]
+    .filter(Boolean)
+    .join(" ");
+  if (hasStrongAwardIdentityOverlap(awardName, directSignal)) {
+    return {
+      allowed: true,
+      admin_review_status: discoveryReviewStatusForMissingFactsCandidate(candidate),
+      reason: "award_token_overlap",
+    };
+  }
+
+  if (parentSourceHasCurrentAwardFacts(source) && hasRelevantDiscoveryAnchor(link, candidate.url)) {
+    return {
+      allowed: true,
+      admin_review_status: discoveryReviewStatusForMissingFactsCandidate(candidate),
+      reason: "primary_source_relevant_anchor",
+    };
+  }
+
+  if (parentSourceCanQueueDiscoveryCandidate(source) && hasRelevantDiscoveryAnchor(link, candidate.url)) {
+    return { allowed: true, admin_review_status: "review_later", reason: "curated_source_relevant_anchor_pending" };
+  }
+
+  return { allowed: false, reason: "missing_award_identity_match" };
+}
+
+function discoveryReviewStatusForMissingFactsCandidate(candidate) {
+  const pageType = normalizedDiscoveryFactKey(candidate.page_type);
+  return ["homepage", "application", "deadline", "requirements", "eligibility", "pdf"].includes(pageType)
+    ? "open"
+    : "review_later";
+}
+
+function candidateHasCurrentAwardFacts(candidate) {
+  const facts = sourceBaselineFacts(candidate);
+  const awardRelevance = normalizedDiscoveryFactKey(facts.award_relevance);
+  const cycleRelevance = normalizedDiscoveryFactKey(facts.cycle_relevance);
+  return (
+    ["primary", "supporting"].includes(awardRelevance) &&
+    !["not_program_page", "archived_or_past", "unclear"].includes(cycleRelevance)
+  );
+}
+
+function parentSourceHasCurrentAwardFacts(source) {
+  const facts = sourceBaselineFacts(source);
+  const awardRelevance = normalizedDiscoveryFactKey(facts.award_relevance);
+  const cycleRelevance = normalizedDiscoveryFactKey(facts.cycle_relevance);
+  return (
+    ["primary", "supporting"].includes(awardRelevance) &&
+    !["not_program_page", "archived_or_past", "unclear"].includes(cycleRelevance)
+  );
+}
+
+function parentSourceCanQueueDiscoveryCandidate(source) {
+  const quality = sourceQualityDecision(source, { purpose: "monitoring" });
+  if (!quality.allowed) return false;
+  const pageType = normalizedDiscoveryFactKey(source.page_type);
+  return ["homepage", "application", "deadline", "requirements", "eligibility", "pdf", "faq"].includes(pageType);
+}
+
+function hasRelevantDiscoveryAnchor(link, url) {
+  return /\b(home|homepage|apply|application|applicant|deadline|due date|eligib|requirements?|guidelines?|instructions?|faq|form|portal|nomination|materials?|documents?|pdf|download|submit|submission)\b/i.test(
+    [url, link.title, link.link_text, link.reason].filter(Boolean).join(" "),
+  );
+}
+
+function hasStrongAwardIdentityOverlap(awardName, value) {
+  const tokens = distinctiveAwardTokens(awardName);
+  if (!tokens.length) return false;
+  const haystack = String(value || "").toLowerCase();
+  const matches = tokens.filter((token) => haystack.includes(token)).length;
+  const required = tokens.length <= 2 ? tokens.length : Math.max(2, Math.ceil(Math.min(tokens.length, 8) * 0.5));
+  return matches >= required;
+}
+
+function normalizedDiscoveryFactKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function discoveredSourceRow(source, link, kind, expanded, decision) {
+  const candidate = decision.candidate;
+  const discoveredAt = new Date().toISOString();
+  const reviewStatus = decision.admin_review_status || "review_later";
+  return {
+    shared_award_id: source.shared_award_id,
+    url: candidate.url,
+    title: candidate.title,
+    page_type: candidate.page_type,
+    confidence: candidate.confidence,
+    reason: [
+      "Found by an explicit discovery-mode visual snapshot run after expanding page content.",
+      `Parent source: ${source.url}`,
+      `Signal: ${link.reason}`,
+      `Discovery gate: ${decision.reason}`,
+      expanded?.controls_clicked ? `Expanded controls: ${expanded.controls_clicked}` : null,
+    ]
+      .filter(Boolean)
+      .join(" "),
+    source: "discovery",
+    admin_review_status: reviewStatus,
+    admin_review_note:
+      reviewStatus === "review_later"
+        ? "Queued by discovery mode for source-quality/admin review before monitoring."
+        : null,
+    page_metadata: {
+      version: 1,
+      kind: "source_discovery_candidate",
+      discovered_at: discoveredAt,
+      discovery_mode: true,
+      discovery_gate_reason: decision.reason,
+      discovery_quality_reason: decision.quality?.reason || null,
+      parent_source_id: source.id || null,
+      parent_source_url: source.url || null,
+      parent_source_title: source.title || null,
+      link_text: link.link_text || null,
+    },
+    next_check_at: reviewStatus === "open" ? discoveredAt : null,
+  };
+}
+
+function reserveDiscoveryCap(source, url, report) {
+  const checks = [
+    {
+      key: String(source.shared_award_id || "unknown_award"),
+      map: discoveryRunState.byAward,
+      max: maxNewDiscoveriesPerAward,
+      reportBucket: report?.discovery_cap_hits_by_award,
+    },
+    {
+      key: String(source.id || source.url || "unknown_source"),
+      map: discoveryRunState.bySource,
+      max: maxNewDiscoveriesPerSource,
+      reportBucket: report?.discovery_cap_hits_by_source,
+    },
+    {
+      key: normalizedHost(url) || "unknown_domain",
+      map: discoveryRunState.byDomain,
+      max: maxNewDiscoveriesPerDomain,
+      reportBucket: report?.discovery_cap_hits_by_domain,
+    },
+  ];
+
+  for (const check of checks) {
+    if ((check.map.get(check.key) || 0) >= check.max) {
+      incrementCounterObject(check.reportBucket, check.key);
+      return false;
+    }
+  }
+
+  for (const check of checks) {
+    check.map.set(check.key, (check.map.get(check.key) || 0) + 1);
+  }
+  return true;
+}
+
+function recordDiscoveryRejection(report, decision) {
+  if (!report) return;
+  if (decision.rejection_type === "quality") {
+    report.discovery_rejected_by_quality += 1;
+  } else {
+    report.discovery_rejected_by_identity += 1;
+  }
+  incrementCounterObject(report.discovery_rejection_reasons, decision.reason || "unknown");
+}
+
+function incrementCounterObject(bucket, key) {
+  if (!bucket) return;
+  bucket[key] = (bucket[key] || 0) + 1;
+}
+
 async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, report) {
+  if (!discoveryMode || !discoverPdfSubpages) return;
   if (!pdfLinks.length) return;
-  if (report) report.discovered_pdf_candidates += pdfLinks.length;
+  if (report) {
+    report.discovered_pdf_candidates += pdfLinks.length;
+    report.discovery_candidates += pdfLinks.length;
+  }
 
   const urls = [...new Set(pdfLinks.map((link) => link.url))];
   const { data: existing, error: existingError } = await supabase
@@ -2944,25 +3825,20 @@ async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, repor
   }
 
   const existingUrls = new Set((existing || []).map((row) => row.url));
-  const rows = pdfLinks
-    .filter((link) => !existingUrls.has(link.url))
-    .map((link) => ({
-      shared_award_id: source.shared_award_id,
-      url: link.url,
-      title: link.title,
-      page_type: "pdf",
-      confidence: 0.8,
-      reason: [
-        "Found by the visual snapshot worker after expanding page content.",
-        `Parent source: ${source.url}`,
-        `Signal: ${link.reason}`,
-        expanded?.controls_clicked ? `Expanded controls: ${expanded.controls_clicked}` : null,
-      ]
-        .filter(Boolean)
-        .join(" "),
-      source: "seed",
-      next_check_at: new Date().toISOString(),
-    }));
+  const rows = [];
+  for (const link of pdfLinks) {
+    if (existingUrls.has(link.url)) {
+      if (report) report.discovery_skipped_existing += 1;
+      continue;
+    }
+    const decision = evaluateDiscoveredSourceCandidate(source, link, "pdf");
+    if (!decision.allowed) {
+      recordDiscoveryRejection(report, decision);
+      continue;
+    }
+    if (!reserveDiscoveryCap(source, link.url, report)) continue;
+    rows.push(discoveredSourceRow(source, link, "pdf", expanded, decision));
+  }
 
   if (!rows.length) return;
 
@@ -2982,8 +3858,13 @@ async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, repor
     return;
   }
 
-  const inserted = data?.length || rows.length;
-  if (report) report.discovered_pdf_sources += inserted;
+  const insertedRows = data?.length ? rows.filter((row) => data.some((inserted) => inserted.url === row.url)) : rows;
+  const inserted = insertedRows.length;
+  if (report) {
+    report.discovered_pdf_sources += inserted;
+    report.discovery_inserted_open += insertedRows.filter((row) => row.admin_review_status === "open").length;
+    report.discovery_inserted_pending += insertedRows.filter((row) => row.admin_review_status !== "open").length;
+  }
   console.log(`DISCOVERED PDF SOURCES inserted=${inserted} parent=${sourceLabel(source)}`);
 }
 
@@ -3215,8 +4096,32 @@ function hasRepeatedUrlSegment(value) {
 }
 
 async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report) {
+  if (!discoveryMode || !discoverHtmlSubpages) return;
   if (!links.length) return;
-  if (report) report.discovered_html_candidates += links.length;
+  if (report) {
+    report.discovered_html_candidates += links.length;
+    report.discovery_candidates += links.length;
+  }
+
+  const urls = [...new Set(links.map((link) => link.url))];
+  const { data: existing, error: existingError } = await supabase
+    .from("shared_award_sources")
+    .select("url")
+    .eq("shared_award_id", source.shared_award_id)
+    .in("url", urls);
+
+  if (existingError) {
+    if (report) {
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message: `HTML subpage discovery lookup failed: ${existingError.message}`,
+      });
+    }
+    return;
+  }
+
+  const existingUrls = new Set((existing || []).map((row) => row.url));
 
   const seenUrls = new Set();
   const rows = [];
@@ -3224,23 +4129,17 @@ async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report)
     const comparableUrl = normalizeComparableUrl(link.url);
     if (seenUrls.has(comparableUrl)) continue;
     seenUrls.add(comparableUrl);
-    rows.push({
-      shared_award_id: source.shared_award_id,
-      url: link.url,
-      title: link.title,
-      page_type: link.page_type,
-      confidence: link.confidence,
-      reason: [
-        "Found by the visual snapshot worker after expanding page content.",
-        `Parent source: ${source.url}`,
-        `Signal: ${link.reason}`,
-        expanded?.controls_clicked ? `Expanded controls: ${expanded.controls_clicked}` : null,
-      ]
-        .filter(Boolean)
-        .join(" "),
-      source: "seed",
-      next_check_at: new Date().toISOString(),
-    });
+    if (existingUrls.has(link.url)) {
+      if (report) report.discovery_skipped_existing += 1;
+      continue;
+    }
+    const decision = evaluateDiscoveredSourceCandidate(source, link, "html");
+    if (!decision.allowed) {
+      recordDiscoveryRejection(report, decision);
+      continue;
+    }
+    if (!reserveDiscoveryCap(source, link.url, report)) continue;
+    rows.push(discoveredSourceRow(source, link, "html", expanded, decision));
   }
 
   if (!rows.length) return;
@@ -3261,8 +4160,13 @@ async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report)
     return;
   }
 
-  const inserted = data?.length || rows.length;
-  if (report) report.discovered_html_sources += inserted;
+  const insertedRows = data?.length ? rows.filter((row) => data.some((inserted) => inserted.url === row.url)) : rows;
+  const inserted = insertedRows.length;
+  if (report) {
+    report.discovered_html_sources += inserted;
+    report.discovery_inserted_open += insertedRows.filter((row) => row.admin_review_status === "open").length;
+    report.discovery_inserted_pending += insertedRows.filter((row) => row.admin_review_status !== "open").length;
+  }
   console.log(`DISCOVERED HTML SOURCES inserted=${inserted} parent=${sourceLabel(source)}`);
 }
 
@@ -3420,8 +4324,26 @@ function readablePdfLinkTitle(link, source) {
   }
 }
 
-async function maybeSyncR2Snapshot(source, capture, report) {
+async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
   if (!r2SnapshotSync) return;
+  const reason = cleanText(options.reason) || "unspecified";
+  const skipNoise = Boolean(options.noise) && !forceR2SnapshotRefresh;
+  const skipUnchanged =
+    Boolean(options.unchanged) &&
+    !forceR2SnapshotRefresh &&
+    !["initial_baseline", "baseline_refresh", "ai_approved_true_change"].includes(reason);
+
+  if (skipNoise) {
+    report.r2_uploads_skipped_noise += 1;
+    console.log(`R2 SKIP noise reason=${reason} ${sourceLabel(source)}`);
+    return false;
+  }
+
+  if (skipUnchanged) {
+    report.r2_uploads_skipped_unchanged += 1;
+    console.log(`R2 SKIP unchanged reason=${reason} ${sourceLabel(source)}`);
+    return false;
+  }
 
   try {
     const result = await syncR2SnapshotPair(source, capture);
@@ -3443,11 +4365,14 @@ async function maybeSyncR2Snapshot(source, capture, report) {
   }
 }
 
-async function maybeRepairMissingR2Snapshot(source, capture, report) {
+async function maybeRepairMissingR2Snapshot(source, capture, report, options = {}) {
   if (!r2SnapshotSync || !r2RepairMissingSnapshots) return false;
   if (existingR2SnapshotSourceIds.has(source.id)) return false;
 
-  const repaired = await maybeSyncR2Snapshot(source, capture, report);
+  const repaired = await maybeSyncR2Snapshot(source, capture, report, {
+    ...options,
+    unchanged: true,
+  });
   if (repaired) {
     report.r2_repaired_missing += 1;
     console.log(`R2 REPAIRED missing_snapshot ${sourceLabel(source)}`);
@@ -3767,8 +4692,28 @@ function baselineFactsMatchSource(source, capture, facts) {
   const awardRelevance = normalizeAwardRelevance(facts.award_relevance);
   const cycleRelevance = normalizeCycleRelevance(facts.cycle_relevance);
   if (awardRelevance === "unrelated") return { ok: false, reason: "award_relevance_unrelated" };
+  if (awardRelevance === "unclear") return { ok: false, reason: "award_relevance_unclear" };
   if (cycleRelevance === "not_program_page") return { ok: false, reason: "cycle_relevance_not_program_page" };
   if (cycleRelevance === "archived_or_past") return { ok: false, reason: "cycle_relevance_archived_or_past" };
+  if (cycleRelevance === "unclear") return { ok: false, reason: "cycle_relevance_unclear" };
+
+  const evidenceQuotes = stringArray(facts.evidence_quotes);
+  if (!evidenceQuotes.length) return { ok: false, reason: "missing_evidence_quotes" };
+
+  const qualityFlags = stringArray(facts.quality_flags).map(cleanSlug);
+  if (normalizeConfidence(facts.confidence) === "high" && qualityFlags.some(isContradictoryHighConfidenceFactFlag)) {
+    return { ok: false, reason: "high_confidence_with_rejection_flags" };
+  }
+
+  const quality = sourceQualityDecision(
+    {
+      ...source,
+      page_metadata: { baseline_facts: facts },
+      page_metadata_generated_at: new Date().toISOString(),
+    },
+    { purpose: "monitoring" },
+  );
+  if (!quality.allowed) return { ok: false, reason: quality.reason };
 
   const expectedTokens = distinctiveSourceTokens([
     source.shared_awards?.name,
@@ -3782,6 +4727,7 @@ function baselineFactsMatchSource(source, capture, facts) {
     facts.award_name,
     facts.page_description,
     facts.page_purpose,
+    ...evidenceQuotes,
     ...(facts.sections || []).flatMap((section) => [section.title, section.description]),
   ].join(" "));
   const overlap = expectedTokens.filter((token) => factTokens.includes(token));
@@ -3838,6 +4784,7 @@ async function syncR2SnapshotPair(source, capture) {
   const latestFiles = captureR2Files(capture);
   const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
   await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
+  await deleteR2ExpansionStateObjects(client, source.id);
 
   const previousObjectKeys = Object.keys(rotatedKeys).length
     ? rotatedKeys
@@ -3869,6 +4816,7 @@ async function syncR2BackfillLatestOnly(source, capture) {
   const client = getR2Client();
   const latestFiles = captureR2Files(capture);
   const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
+  await deleteR2ExpansionStateObjects(client, source.id);
 
   await upsertR2SnapshotRecord(source, capture, {
     latestKeys,
@@ -3996,6 +4944,17 @@ async function deleteR2LatestObjectsNotInCapture(client, sourceId, latestKeys) {
   }
 }
 
+async function deleteR2ExpansionStateObjects(client, sourceId) {
+  const deletes = [];
+  for (const slot of ["latest", "previous"]) {
+    for (let index = 1; index <= 24; index += 1) {
+      const fileName = `expansion-state-${String(index).padStart(2, "0")}.jpg`;
+      deletes.push(deleteR2Object(client, r2SnapshotKey(sourceId, slot, fileName)));
+    }
+  }
+  await Promise.all(deletes);
+}
+
 async function r2ObjectExists(client, key) {
   try {
     await sendR2Command(
@@ -4068,13 +5027,15 @@ function captureR2Files(capture) {
   addIfPresent("pdf", "document.pdf", capture.pdf_path, "application/pdf");
   addIfPresent("text", "text.txt", capture.text_path, "text/plain; charset=utf-8");
   addIfPresent("meta", "meta.json", capture.meta_path, "application/json; charset=utf-8");
-  for (const [index, state] of (capture.expansion_state_screenshots || []).entries()) {
-    addIfPresent(
-      `expansion_state_${String(index + 1).padStart(2, "0")}`,
-      `expansion-state-${String(index + 1).padStart(2, "0")}.jpg`,
-      state.page_path,
-      "image/jpeg",
-    );
+  if (capture.persist_expansion_state_screenshots) {
+    for (const [index, state] of (capture.expansion_state_screenshots || []).entries()) {
+      addIfPresent(
+        `expansion_state_${String(index + 1).padStart(2, "0")}`,
+        `expansion-state-${String(index + 1).padStart(2, "0")}.jpg`,
+        state.page_path,
+        "image/jpeg",
+      );
+    }
   }
 
   return files;
@@ -4084,18 +5045,27 @@ function r2CaptureHashes(capture) {
   return {
     image_hash: capture.image_hash || null,
     text_hash: capture.text_hash || null,
+    body_text_hash: capture.body_text_hash || null,
+    main_content_hash: capture.main_content_hash || null,
+    nav_header_footer_hash: capture.nav_header_footer_hash || null,
+    expansion_hash: capture.expansion_hash || null,
     file_hash: capture.file_hash || null,
   };
 }
 
 function r2CaptureMetadata(capture) {
   return {
+    capture_profile: capture.capture_profile || null,
     final_url: capture.final_url || null,
     page_title: capture.page_title || null,
     status_code: capture.status_code || null,
     status_text: capture.status_text || null,
     content_type: capture.content_type || null,
     text_length: capture.text_length || 0,
+    body_text_length: capture.body_text_length || 0,
+    main_content_text_length: capture.main_content_text_length || 0,
+    nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,
+    expansion_text_length: capture.expansion_text_length || 0,
     file_bytes: capture.file_bytes || null,
     page_bytes: capture.page_bytes || null,
     thumb_bytes: capture.thumb_bytes || null,
@@ -4327,10 +5297,11 @@ async function hideNoiseElements(page) {
 }
 
 async function reviewCandidateWithAi(input) {
+  assertAiAvailable("visual change review");
   if (aiProvider === "gemini-cli") return reviewWithGeminiCli(input);
   if (aiProvider === "gemini") return reviewWithGemini(input);
   if (aiProvider === "openai") return reviewWithOpenAI(input);
-  throw new Error("No AI provider is available.");
+  throw new Error(`${missingAiMessage(requestedAiProvider)} Required for visual change review.`);
 }
 
 async function reviewWithGeminiCli(input) {
@@ -4461,6 +5432,7 @@ async function reviewWithOpenAI(input) {
 
 async function maybeExtractBaselineFacts(source, capture, report, options = {}) {
   if (!extractBaselineInfo) return null;
+  assertAiAvailable("baseline fact extraction");
 
   try {
     const reason = options.reason || "baseline";
@@ -4531,7 +5503,7 @@ async function extractBaselineFactsWithGemini(source, capture, report, reason) {
       ],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 1100,
+        maxOutputTokens: 1200,
         responseMimeType: "application/json",
         responseSchema: baselineFactsResponseSchema,
       },
@@ -4600,14 +5572,17 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "Create a clean readable display_title and a short page_description for this exact source page, even when it is not an eligibility, deadline, or application page.",
     "Extract only facts that are visible or directly supported. Do not guess missing dates, amounts, or requirements.",
     "Return compact JSON with these keys:",
-    "{status, display_title, page_description, page_category, award_name, page_purpose, award_relevance, cycle_relevance, cycle_relevance_reason, application_cycle, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, quality_flags}",
+    "{status, display_title, page_description, page_category, award_name, award_name_seen, page_purpose, award_relevance, cycle_relevance, cycle_relevance_reason, application_cycle, deadline, opening_date, award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections, confidence, evidence_quotes, quality_flags, rejection_reason}",
     "Use arrays for award_amounts, eligibility, requirements, application_materials, how_to_apply, important_dates, documents, contacts, notes, sections.",
     "Every important_dates item must include context plus the date, such as \"Application deadline: January 15, 2027\" or \"Award notifications: May 1\". Do not output bare dates.",
     "sections should list 0 to 8 visible scholarship concepts or page areas with {title, description, status}. Use status unchanged for baseline sections.",
     "award_relevance must be primary, supporting, unclear, or unrelated. Use primary only for the named award/program page or official application, deadline, eligibility, instruction, FAQ, portal, or document page for that same program. Use unrelated for sibling awards/programs, institutional resource/policy pages, event/seminar/news/archive/recipient pages, generic portals, payment/travel/logos/files, or pages that merely share the organization/domain.",
     "cycle_relevance must be current_or_upcoming, evergreen, archived_or_past, unclear, or not_program_page. Use current_or_upcoming for visible current/future cycle, year, deadline, or application instructions. Use evergreen for active official application information without a cycle year. Use archived_or_past for previous calls, past recipients/events, or stale years. Use not_program_page when the page is not about the named program application cycle.",
     "cycle_relevance_reason must be 12 words or fewer. application_cycle should be the visible year, term, or cycle name when present, otherwise null. confidence must be low, medium, or high.",
+    "award_name_seen must be true only when the named award/program or an unmistakable abbreviation appears in the evidence. evidence_quotes must contain 1 to 5 short exact strings copied from the source text or screenshot that justify award_relevance, cycle_relevance, and any extracted facts.",
+    "Default to award_relevance=unclear or cycle_relevance=unclear when uncertain. Default to rejection when uncertain: set status=rejected and rejection_reason when the page is unrelated, unclear, stale, a sibling award, a broad listing/search page, or lacks exact evidence quotes.",
     "Use null for unknown deadline/opening_date/page_purpose.",
+    ...monitoringPolicyPromptLinesForScope("baseline_facts"),
     "",
     `Reason: ${reason}`,
     `Award name: ${source.shared_awards?.name || "Unknown award"}`,
@@ -4641,11 +5616,14 @@ function geminiCliDiffPrompt({ source, baseline, previous, capture, diff, determ
       ? "Compare the two provided screenshot thumbnails first: previous then new. Use normalized text only as secondary context."
       : "This source is a PDF or has no screenshot image. Compare the extracted previous and new text carefully.",
     "Return strict compact JSON only with these keys:",
-    "{is_true_change, noise_reason, reader_summary, advisor_impact, changed_section, confidence, before, after, change_type, structured_diff, quality_flags, updated_baseline_facts}",
+    "{is_true_change, is_alert_worthy, source_relevance, source_relevance_reason, changed_facts, exact_before, exact_after, evidence_location, noise_reason, reader_summary, advisor_impact, changed_section, confidence, before, after, change_type, structured_diff, noise_flags, quality_flags, rejection_reason, updated_baseline_facts}",
     "is_true_change must be true only for concrete award-relevant changes: deadlines, opening/closing dates, eligibility, requirements, nomination/recommendation instructions, documents/PDF/guidelines, award amount/funding, or application instructions.",
+    "Default to rejection when uncertain. source_relevance must be primary or supporting to approve; use unrelated or unclear for sibling awards, broad listings/search pages, stale archives, or pages not clearly about this exact award.",
     "Reject cookie banners, carousels, ads, current-date-only changes, font/reflow/lazy-image changes, navigation/footer/sidebar changes, social widgets, featured-fellow/alumni/profile roster rotations, recipient/news churn, unrelated research/news pages, access/security/404 pages, and file-hash/file-size-only PDF or document changes.",
     ...monitoringPolicyPromptLinesForScope("visual_snapshot_gemini_cli"),
+    "Do not treat page redesign, image changes, popups, navigation, staff/profile/fellow/news rotations, or file metadata as applicant-facing changes. Never use facts from sibling awards or broad search/listing pages.",
     "For PDFs, Word forms, and downloadable files, is_true_change must be false unless you can name the actual changed wording, date, requirement, amount, or applicant instruction. Do not approve a change just because the file bytes, hash, or size changed.",
+    "changed_facts must list only applicant-facing facts. exact_before and exact_after must be exact strings from deterministic diff evidence, or null only when the change is one-sided and the other side is genuinely absent.",
     "Do not describe text as added if that same wording is already present in the previous capture. Do not describe text as removed if that same wording is still present in the new capture.",
     "For structured_diff, added_text must be exact wording present in the new capture and absent from the previous capture; removed_text must be exact wording present in the previous capture and absent from the new capture.",
     "reader_summary should be one or two plain-English advisor-facing sentences when true; otherwise null.",
@@ -4922,15 +5900,24 @@ function writeBaseline(source, capture, details) {
     kind: capture.kind || "webpage",
     capture_behavior_version: capture.kind === "pdf" ? null : captureBehaviorVersion,
     capture_behavior_name: capture.kind === "pdf" ? null : captureBehaviorName,
+    capture_profile: capture.capture_profile || captureProfile,
     source: sourceMetadata(source),
     captured_at: capture.captured_at,
     final_url: capture.final_url,
     page_title: capture.page_title,
     text_hash: capture.text_hash,
+    body_text_hash: capture.body_text_hash || null,
+    main_content_hash: capture.main_content_hash || null,
+    nav_header_footer_hash: capture.nav_header_footer_hash || null,
+    expansion_hash: capture.expansion_hash || null,
     image_hash: capture.image_hash,
     file_hash: capture.file_hash || null,
     file_bytes: capture.file_bytes || null,
     text_length: capture.text_length,
+    body_text_length: capture.body_text_length || null,
+    main_content_text_length: capture.main_content_text_length || null,
+    nav_header_footer_text_length: capture.nav_header_footer_text_length || null,
+    expansion_text_length: capture.expansion_text_length || null,
     dimensions: capture.dimensions,
     hidden_noise_counts: capture.hidden_noise_counts,
     capture: {
@@ -4939,6 +5926,7 @@ function writeBaseline(source, capture, details) {
       thumb: capture.thumb_path ? toArchiveRelative(capture.thumb_path) : null,
       pdf: capture.pdf_path ? toArchiveRelative(capture.pdf_path) : null,
       text: toArchiveRelative(capture.text_path),
+      expansion_text: capture.expansion_text_path ? toArchiveRelative(capture.expansion_text_path) : null,
       meta: toArchiveRelative(capture.meta_path),
     },
     summary_metadata: {
@@ -4950,6 +5938,10 @@ function writeBaseline(source, capture, details) {
         ? {
             captured_at: details.previous_baseline.captured_at || null,
             text_hash: details.previous_baseline.text_hash || null,
+            body_text_hash: details.previous_baseline.body_text_hash || null,
+            main_content_hash: details.previous_baseline.main_content_hash || null,
+            nav_header_footer_hash: details.previous_baseline.nav_header_footer_hash || null,
+            expansion_hash: details.previous_baseline.expansion_hash || null,
             image_hash: details.previous_baseline.image_hash || null,
             file_hash: details.previous_baseline.file_hash || null,
             capture: details.previous_baseline.capture || null,
@@ -4975,6 +5967,7 @@ function readBaselineEvidence(baseline) {
     thumbPath: capture.thumb ? fromArchiveRelative(capture.thumb) : null,
     pdfPath: capture.pdf ? fromArchiveRelative(capture.pdf) : null,
     textPath: fromArchiveRelative(capture.text),
+    expansionTextPath: capture.expansion_text ? fromArchiveRelative(capture.expansion_text) : null,
     metaPath: fromArchiveRelative(capture.meta),
   };
   const requiredPaths =
@@ -5005,6 +5998,7 @@ function captureFromBaseline(baseline) {
     thumb_path: evidence.thumbPath,
     pdf_path: evidence.pdfPath,
     text_path: evidence.textPath,
+    expansion_text_path: evidence.expansionTextPath,
     meta_path: evidence.metaPath,
     text: evidence.text,
     captured_at: baseline.captured_at || meta.captured_at || null,
@@ -5015,6 +6009,14 @@ function captureFromBaseline(baseline) {
     file_hash: baseline.file_hash || meta.file_hash || null,
     file_bytes: baseline.file_bytes || meta.file_bytes || null,
     text_length: baseline.text_length || meta.text_length || 0,
+    body_text_hash: baseline.body_text_hash || meta.body_text_hash || null,
+    main_content_hash: baseline.main_content_hash || meta.main_content_hash || null,
+    nav_header_footer_hash: baseline.nav_header_footer_hash || meta.nav_header_footer_hash || null,
+    expansion_hash: baseline.expansion_hash || meta.expansion_hash || null,
+    body_text_length: baseline.body_text_length || meta.body_text_length || 0,
+    main_content_text_length: baseline.main_content_text_length || meta.main_content_text_length || 0,
+    nav_header_footer_text_length: baseline.nav_header_footer_text_length || meta.nav_header_footer_text_length || 0,
+    expansion_text_length: baseline.expansion_text_length || meta.expansion_text_length || 0,
     dimensions: baseline.dimensions || meta.dimensions || null,
     hidden_noise_counts: baseline.hidden_noise_counts || meta.hidden_noise_counts || null,
     baseline_facts: baseline.summary_metadata?.baseline_facts || meta.baseline_facts || null,
@@ -5136,6 +6138,60 @@ function classifyDeterministicChange(diff, source) {
   };
 }
 
+function gateVisualReviewCandidateForAi({
+  source,
+  baseline,
+  previous,
+  capture,
+  diff,
+  deterministic,
+  report,
+}) {
+  const decision = classifyVisualReviewCandidate({
+    source,
+    baseline,
+    previous,
+    capture,
+    diff,
+    deterministic,
+  });
+
+  if (!decision.allowed) {
+    report.deterministic_noise += 1;
+    if (decision.source_rejected) {
+      report.deterministic_source_rejected += 1;
+    } else {
+      report.deterministic_noise_rejected += 1;
+    }
+    if (decision.candidate_kind === "text_only") {
+      report.text_only_noise_rejected += 1;
+    }
+    return { allowed: false, decision };
+  }
+
+  if (decision.candidate_kind === "visual_only") {
+    report.visual_only_candidate_enqueued += 1;
+  } else {
+    report.text_only_candidate_enqueued += 1;
+  }
+
+  return {
+    allowed: true,
+    decision,
+    deterministic: {
+      ...deterministic,
+      classification: decision.label || deterministic?.classification || "candidate_change",
+      reason: decision.reason || deterministic?.reason || "deterministic_candidate_gate_passed",
+      deterministic_gate: {
+        label: decision.label,
+        reason: decision.reason,
+        candidate_kind: decision.candidate_kind,
+        evidence: decision.evidence || {},
+      },
+    },
+  };
+}
+
 async function loadSources(pageLimit) {
   let pageSize = Math.min(sourceLoadPageSize, pageLimit);
   const sources = [];
@@ -5164,7 +6220,7 @@ async function loadSources(pageLimit) {
     }
 
     const page = data || [];
-    sources.push(...page.filter(sourceMatchesShard));
+    sources.push(...filterMonitorableSourcesForCapture(page.filter(sourceMatchesShard)));
     from += requestedPageSize;
 
     if (page.length < requestedPageSize) {
@@ -5173,6 +6229,32 @@ async function loadSources(pageLimit) {
   }
 
   return sources.slice(0, pageLimit);
+}
+
+function filterMonitorableSourcesForCapture(sources) {
+  const accepted = [];
+  const rejected = new Map();
+
+  for (const source of sources) {
+    if (isMonitorableAwardSource(source)) {
+      accepted.push(source);
+      continue;
+    }
+
+    const reason = sourceQualityDecision(source, { purpose: "monitoring" }).reason;
+    rejected.set(reason, (rejected.get(reason) || 0) + 1);
+  }
+
+  if (rejected.size) {
+    console.log(
+      `SOURCE_QUALITY_SKIP ${[...rejected.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([reason, count]) => `${reason}=${count}`)
+        .join(" ")}`,
+    );
+  }
+
+  return accepted;
 }
 
 function isSupabaseStatementTimeoutLike(error) {
@@ -5379,7 +6461,7 @@ function buildSourcesQuery() {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
     .eq("shared_awards.status", "active")
     .eq("admin_review_status", "open");
@@ -5444,7 +6526,7 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
       initial_count: report.baselined,
-      discovered_count: report.discovered_pdf_sources,
+      discovered_count: report.discovered_pdf_sources + report.discovered_html_sources,
       failed_count: report.failed,
       error: errorMessageValue ? errorMessageValue.slice(0, 1000) : null,
       metadata: visualWorkerMetadata(report),
@@ -5490,7 +6572,7 @@ async function updateWorkerRunMetadata(runId, report) {
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
       initial_count: report.baselined,
-      discovered_count: report.discovered_pdf_sources,
+      discovered_count: report.discovered_pdf_sources + report.discovered_html_sources,
       failed_count: report.failed,
       metadata: visualWorkerMetadata(report),
     })
@@ -5643,7 +6725,7 @@ async function finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, 
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
       initial_count: report.baselined,
-      discovered_count: report.discovered_pdf_sources,
+      discovered_count: report.discovered_pdf_sources + report.discovered_html_sources,
       failed_count: report.failed,
       error: errorMessageValue ? errorMessageValue.slice(0, 1000) : null,
       finished_at: new Date().toISOString(),
@@ -5659,14 +6741,24 @@ function visualWorkerMetadata(report) {
   return {
     kind: "visual_snapshot",
     archive_root: report.archive_root,
+    ai_provider: report.ai_provider,
     ai_model: report.ai_model,
+    ai_required: report.ai_required,
+    ai_disabled_reason: report.ai_disabled_reason,
     options: report.options,
     counts: {
       candidate_changes: report.candidate_changes,
       ai_true_changes: report.ai_true_changes,
       ai_rejected: report.ai_rejected,
       text_only_ignored: report.text_only_ignored,
+      text_only_candidates: report.text_only_candidates,
       deterministic_noise: report.deterministic_noise,
+      deterministic_source_rejected: report.deterministic_source_rejected,
+      deterministic_noise_rejected: report.deterministic_noise_rejected,
+      text_only_candidate_enqueued: report.text_only_candidate_enqueued,
+      text_only_noise_rejected: report.text_only_noise_rejected,
+      text_only_published_or_queued: report.text_only_published_or_queued,
+      visual_only_candidate_enqueued: report.visual_only_candidate_enqueued,
       visual_noise: report.visual_noise,
       review: report.review,
       skipped_existing_baseline: report.skipped_existing_baseline,
@@ -5694,11 +6786,25 @@ function visualWorkerMetadata(report) {
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
+      capture_profile: report.capture_profile,
       expanded_controls: report.expanded_controls,
+      expansion_screenshots_taken: report.expansion_screenshots_taken,
+      expansion_screenshots_pruned: report.expansion_screenshots_pruned,
+      r2_uploads_skipped_unchanged: report.r2_uploads_skipped_unchanged,
+      r2_uploads_skipped_noise: report.r2_uploads_skipped_noise,
+      main_content_hash_changed: report.main_content_hash_changed,
+      chrome_only_hash_changed: report.chrome_only_hash_changed,
       discovered_pdf_candidates: report.discovered_pdf_candidates,
       discovered_pdf_sources: report.discovered_pdf_sources,
       discovered_html_candidates: report.discovered_html_candidates,
       discovered_html_sources: report.discovered_html_sources,
+      discovery_mode: report.discovery_mode,
+      discovery_candidates: report.discovery_candidates,
+      discovery_rejected_by_quality: report.discovery_rejected_by_quality,
+      discovery_rejected_by_identity: report.discovery_rejected_by_identity,
+      discovery_skipped_existing: report.discovery_skipped_existing,
+      discovery_inserted_pending: report.discovery_inserted_pending,
+      discovery_inserted_open: report.discovery_inserted_open,
       promoted: report.promoted,
       r2_uploaded: report.r2_uploaded,
       r2_rotated: report.r2_rotated,
@@ -5717,6 +6823,10 @@ function visualWorkerMetadata(report) {
       baseline_facts_skipped: report.baseline_facts_skipped,
       baseline_facts_backfilled: report.baseline_facts_backfilled,
       visual_interpreted: report.visual_interpreted,
+      visual_review_mode: report.visual_review_mode,
+      visual_review_candidates_queued: report.visual_review_candidates_queued,
+      visual_review_candidates_existing: report.visual_review_candidates_existing,
+      visual_review_candidates_failed: report.visual_review_candidates_failed,
       published_updates: report.published_updates,
       publish_duplicates: report.publish_duplicates,
       publish_failed: report.publish_failed,
@@ -5747,6 +6857,13 @@ function visualWorkerMetadata(report) {
       },
       comparison: {
         candidates: report.candidate_changes,
+        text_only_candidates: report.text_only_candidates,
+        deterministic_source_rejected: report.deterministic_source_rejected,
+        deterministic_noise_rejected: report.deterministic_noise_rejected,
+        text_only_candidate_enqueued: report.text_only_candidate_enqueued,
+        text_only_noise_rejected: report.text_only_noise_rejected,
+        text_only_published_or_queued: report.text_only_published_or_queued,
+        visual_only_candidate_enqueued: report.visual_only_candidate_enqueued,
         interpreted: report.visual_interpreted,
         true_changes: report.ai_true_changes,
         rejected: report.ai_rejected,
@@ -5757,6 +6874,21 @@ function visualWorkerMetadata(report) {
         published_updates: report.published_updates,
         duplicate_updates: report.publish_duplicates,
         failed: report.publish_failed,
+      },
+      discovery: {
+        enabled: report.discovery_mode,
+        pdf_enabled: report.options.discover_pdf_subpages,
+        html_enabled: report.options.discover_html_subpages,
+        candidates: report.discovery_candidates,
+        rejected_by_quality: report.discovery_rejected_by_quality,
+        rejected_by_identity: report.discovery_rejected_by_identity,
+        skipped_existing: report.discovery_skipped_existing,
+        inserted_pending: report.discovery_inserted_pending,
+        inserted_open: report.discovery_inserted_open,
+        rejection_reasons: report.discovery_rejection_reasons,
+        cap_hits_by_award: report.discovery_cap_hits_by_award,
+        cap_hits_by_domain: report.discovery_cap_hits_by_domain,
+        cap_hits_by_source: report.discovery_cap_hits_by_source,
       },
     },
     paths: {
@@ -6167,7 +7299,10 @@ function ensureArchiveDirectories() {
 
 function recordGeminiUsage(report, source, capture, aiReview, kind = "change_interpretation") {
   const usage = aiReview.usage || normalizeGeminiUsage(null);
-  const estimatedCostUsd = estimateGeminiCostUsd(aiReview.model || aiModel, usage);
+  const actualPricingMode = normalizeGeminiPricingMode(geminiApiPricingMode, {
+    endpoint: "generateContent",
+  });
+  const estimatedCostUsd = estimateGeminiCostUsd(aiReview.model || aiModel, usage, actualPricingMode);
   report.gemini_usage.calls += 1;
   report.gemini_usage.prompt_tokens += usage.prompt_tokens;
   report.gemini_usage.candidates_tokens += usage.candidates_tokens;
@@ -6195,7 +7330,8 @@ function recordGeminiUsage(report, source, capture, aiReview, kind = "change_int
     capture_path: toArchiveRelative(capture.dir),
     usage,
     estimated_cost_usd: estimatedCostUsd,
-    pricing_mode: geminiApiPricingMode,
+    pricing_mode: actualPricingMode,
+    configured_pricing_mode: geminiApiPricingMode,
   };
   const summary = appendGeminiUsageRecord(record);
   const today = summary.daily.find((day) => day.date === record.date);
@@ -6429,6 +7565,7 @@ function normalizeBaselineFacts(value) {
     page_description: cleanNullable(parsed.page_description || parsed.short_description || parsed.description),
     page_category: cleanNullable(parsed.page_category || parsed.category),
     award_name: cleanNullable(parsed.award_name),
+    award_name_seen: booleanOrNull(parsed.award_name_seen ?? parsed.awardNameSeen),
     page_purpose: cleanNullable(parsed.page_purpose),
     award_relevance: normalizeAwardRelevance(parsed.award_relevance || parsed.relevance),
     cycle_relevance: normalizeCycleRelevance(
@@ -6449,7 +7586,9 @@ function normalizeBaselineFacts(value) {
     notes: stringArray(parsed.notes).slice(0, 12),
     sections: sectionArray(parsed.sections || parsed.page_sections || parsed.outline).slice(0, 12),
     confidence: normalizeConfidence(parsed.confidence) || "low",
+    evidence_quotes: stringArray(parsed.evidence_quotes || parsed.evidence || parsed.quotes).slice(0, 5),
     quality_flags: stringArray(parsed.quality_flags).map(cleanSlug).filter(Boolean).slice(0, 20),
+    rejection_reason: cleanNullable(parsed.rejection_reason || parsed.noise_reason),
   };
 }
 
@@ -6557,29 +7696,8 @@ function imageMimeType(filePath) {
   return "image/jpeg";
 }
 
-function estimateGeminiCostUsd(model, usage) {
-  const rates = geminiPricePerMillion(model);
-  const inputTokens = usage.prompt_tokens || 0;
-  const outputTokens = (usage.candidates_tokens || 0) + (usage.thoughts_tokens || 0);
-  return roundUsd((inputTokens / 1_000_000) * rates.input + (outputTokens / 1_000_000) * rates.output);
-}
-
-function geminiPricePerMillion(model) {
-  const name = String(model || "").toLowerCase();
-  const batch = geminiApiPricingMode === "batch" || geminiApiPricingMode === "flex";
-  if (name.includes("3.1-flash-lite")) {
-    return batch ? { input: 0.125, output: 0.75 } : { input: 0.25, output: 1.5 };
-  }
-  if (name.includes("3-flash") || name.includes("3.1-flash")) {
-    return batch ? { input: 0.25, output: 1.5 } : { input: 0.5, output: 3 };
-  }
-  if (name.includes("2.5-flash-lite")) {
-    return batch ? { input: 0.05, output: 0.2 } : { input: 0.1, output: 0.4 };
-  }
-  if (name.includes("2.5-flash")) {
-    return batch ? { input: 0.15, output: 1.25 } : { input: 0.3, output: 2.5 };
-  }
-  return batch ? { input: 0.5, output: 2.5 } : { input: 1, output: 5 };
+function estimateGeminiCostUsd(model, usage, pricingMode = "standard") {
+  return estimateGeminiCostUsdByMode(model, usage, pricingMode);
 }
 
 function roundUsd(value) {
@@ -6608,6 +7726,27 @@ function removeGeneratedCaptureDir(dir) {
     throw new Error(`Refusing to remove capture outside archive root: ${resolvedDir}`);
   }
   rmSync(resolvedDir, { recursive: true, force: true });
+}
+
+function pruneTransientExpansionStateScreenshots(capture, report = null) {
+  if (!capture?.expansion_state_screenshots?.length) return 0;
+  if (capture.persist_expansion_state_screenshots) return 0;
+
+  let pruned = 0;
+  for (const state of capture.expansion_state_screenshots) {
+    const filePath = state?.page_path;
+    if (!filePath || !existsSync(filePath)) continue;
+    const resolvedPath = resolve(filePath);
+    if (!isPathInside(resolvedPath, archiveRoot)) continue;
+    rmSync(resolvedPath, { force: true });
+    pruned += 1;
+  }
+
+  if (pruned > 0) {
+    if (report) report.expansion_screenshots_pruned += pruned;
+    capture.expansion_state_screenshots_pruned = pruned;
+  }
+  return pruned;
 }
 
 function isPathInside(candidate, parent) {
@@ -7297,7 +8436,7 @@ function safeUrlForAuditNoise(value) {
 }
 
 function hasApplicantFacingAwardSignalText(value) {
-  return /\b(deadline|due|eligible|eligibility|requirement|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|portal|opens?|closes?)|award amount|stipend|tuition|funding)\b/.test(
+  return /\b(deadline|due|opening date|open(?:s|ing)?|closing date|closes?|eligible|eligibility|requirement|award conditions?|recommendation|transcript|essay|nomination|submit|submission|application (?:deadline|material|materials|portal|instructions?|opens?|closes?)|application materials?|application instructions?|how to apply|documents?|forms?|guidelines?|contact|email|phone|official cycle|cycle status|award amount|stipend|tuition|funding)\b/.test(
     String(value || "").toLowerCase(),
   );
 }
@@ -7407,6 +8546,20 @@ function auditAiReviewAgainstTextEvidence({ source, previous, capture, diff, aiR
   if (removedAudit.stripped.length) flags.push("unsupported_removed_text");
   if (dateAudit.stripped.length) flags.push("unsupported_date_change");
   if (amountAudit.stripped.length) flags.push("unsupported_amount_change");
+
+  if (
+    normalizeConfidence(result.confidence) === "high" &&
+    (dateAudit.stripped.length || amountAudit.stripped.length)
+  ) {
+    return {
+      corrected: false,
+      rejected: true,
+      flags: unique(flags.length ? flags : ["critical_evidence_mismatch"]),
+      flag: "critical_evidence_mismatch",
+      reason:
+        "The AI described a high-confidence deadline, date, amount, or funding change, but the claimed value was not supported by exact added or removed evidence.",
+    };
+  }
 
   let before = cleanNullable(result.before || details.before);
   let after = cleanNullable(result.after || details.after);
@@ -7807,33 +8960,65 @@ function normalizeAiReview(text, context = {}) {
   const isTrueChange =
     typeof parsed.is_true_change === "boolean"
       ? parsed.is_true_change
-      : typeof parsed.is_alert_worthy === "boolean"
-        ? parsed.is_alert_worthy
-        : null;
+      : null;
 
   if (typeof isTrueChange !== "boolean") {
     throw new Error("AI JSON is missing is_true_change.");
   }
+  if (typeof parsed.is_alert_worthy !== "boolean") {
+    throw new Error("AI JSON is missing is_alert_worthy.");
+  }
+  const alertWorthy = Boolean(isTrueChange && parsed.is_alert_worthy);
+  const sourceRelevance = normalizeAwardRelevance(parsed.source_relevance);
+  const changedFacts = normalizeAiReviewChangedFacts(parsed.changed_facts || parsed.changed_award_facts);
+  const exactBefore = cleanNullable(parsed.exact_before ?? parsed.before);
+  const exactAfter = cleanNullable(parsed.exact_after ?? parsed.after);
+  const evidenceLocation = cleanNullable(parsed.evidence_location);
+  const noiseFlags = unique([
+    ...stringArray(parsed.noise_flags).map(cleanSlug),
+    ...stringArray(parsed.quality_flags).map(cleanSlug),
+  ]).filter(Boolean);
 
   if (
-    isTrueChange &&
+    alertWorthy &&
     (!cleanNullable(parsed.reader_summary) || !cleanNullable(parsed.advisor_impact))
   ) {
     throw new Error("AI approved a true change without reader_summary or advisor_impact.");
   }
+  if (alertWorthy && !["primary", "supporting"].includes(sourceRelevance)) {
+    throw new Error(`AI approved a true change with source_relevance=${sourceRelevance}.`);
+  }
+  if (alertWorthy && !changedFacts.length) {
+    throw new Error("AI approved a true change without changed_facts.");
+  }
+  if (alertWorthy && !changedFactsHaveApplicantFacingSignal(changedFacts, parsed, context.diff)) {
+    throw new Error("AI approved a true change without applicant-facing changed_facts.");
+  }
+  if (alertWorthy && !changedFactsHaveExactEvidence({ changedFacts, exactBefore, exactAfter, parsed, diff: context.diff })) {
+    throw new Error("AI approved a true change without exact deterministic evidence.");
+  }
 
   const result = {
-    is_true_change: isTrueChange,
-    noise_reason: cleanNullable(parsed.noise_reason),
+    is_true_change: alertWorthy,
+    is_alert_worthy: alertWorthy,
+    source_relevance: sourceRelevance,
+    source_relevance_reason: cleanNullable(parsed.source_relevance_reason),
+    changed_facts: changedFacts,
+    exact_before: exactBefore,
+    exact_after: exactAfter,
+    evidence_location: evidenceLocation,
+    noise_reason: cleanNullable(parsed.noise_reason || parsed.rejection_reason),
     reader_summary: cleanNullable(parsed.reader_summary),
     advisor_impact: cleanNullable(parsed.advisor_impact),
     changed_section: cleanNullable(parsed.changed_section),
     confidence,
-    before: cleanNullable(parsed.before),
-    after: cleanNullable(parsed.after),
+    before: exactBefore || cleanNullable(parsed.before),
+    after: exactAfter || cleanNullable(parsed.after),
     change_type: cleanSlug(parsed.change_type) || inferVisualChangeType(parsed, context.diff),
     updated_baseline_facts: jsonObjectOrNull(parsed.updated_baseline_facts),
-    quality_flags: stringArray(parsed.quality_flags).map(cleanSlug).filter(Boolean),
+    noise_flags: noiseFlags,
+    rejection_reason: cleanNullable(parsed.rejection_reason),
+    quality_flags: noiseFlags,
   };
 
   result.change_details = visualChangeDetailsFromReview({
@@ -7848,6 +9033,95 @@ function normalizeAiReview(text, context = {}) {
   });
 
   return result;
+}
+
+function normalizeAiReviewChangedFacts(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item === "string") {
+        return {
+          fact: cleanNullable(item),
+          before: null,
+          after: null,
+          added_text: null,
+          removed_text: null,
+          visual_evidence: null,
+        };
+      }
+      const object = jsonObjectOrEmpty(item);
+      return {
+        fact: cleanNullable(object.fact || object.name || object.summary),
+        before: cleanNullable(object.before),
+        after: cleanNullable(object.after),
+        added_text: cleanNullable(object.added_text || object.addedText),
+        removed_text: cleanNullable(object.removed_text || object.removedText),
+        visual_evidence: cleanNullable(object.visual_evidence || object.visualEvidence || object.evidence),
+      };
+    })
+    .filter((fact) => fact.fact || fact.before || fact.after || fact.added_text || fact.removed_text || fact.visual_evidence)
+    .slice(0, 12);
+}
+
+function changedFactsHaveApplicantFacingSignal(changedFacts, parsed, diff) {
+  const text = [
+    parsed?.change_type,
+    parsed?.changed_section,
+    parsed?.section,
+    parsed?.reader_summary,
+    parsed?.advisor_impact,
+    ...(diff?.date_changes || []),
+    ...(diff?.amount_changes || []),
+    ...changedFacts.flatMap((fact) => [
+      fact.fact,
+      fact.before,
+      fact.after,
+      fact.added_text,
+      fact.removed_text,
+      fact.visual_evidence,
+    ]),
+  ].join(" ");
+  return hasApplicantFacingAwardSignalText(text);
+}
+
+function changedFactsHaveExactEvidence({ changedFacts, exactBefore, exactAfter, parsed, diff }) {
+  const addedEvidence = [
+    ...stringArray(diff?.added_text),
+    ...stringArray(diff?.date_changes).filter((value) => /^added\b/i.test(value)),
+    ...stringArray(diff?.amount_changes).filter((value) => /^added\b/i.test(value)),
+    ...stringArray(parsed?.structured_diff?.added_text),
+    ...stringArray(parsed?.structured_diff?.date_changes).filter((value) => /^added\b/i.test(value)),
+    ...stringArray(parsed?.structured_diff?.amount_changes).filter((value) => /^added\b/i.test(value)),
+  ];
+  const removedEvidence = [
+    ...stringArray(diff?.removed_text),
+    ...stringArray(diff?.date_changes).filter((value) => /^removed\b/i.test(value)),
+    ...stringArray(diff?.amount_changes).filter((value) => /^removed\b/i.test(value)),
+    ...stringArray(parsed?.structured_diff?.removed_text),
+    ...stringArray(parsed?.structured_diff?.date_changes).filter((value) => /^removed\b/i.test(value)),
+    ...stringArray(parsed?.structured_diff?.amount_changes).filter((value) => /^removed\b/i.test(value)),
+  ];
+  const hasVisualEvidence = changedFacts.some((fact) => cleanNullable(fact.visual_evidence)) || cleanNullable(parsed?.evidence_location);
+
+  if (exactBefore && !evidenceArrayContains(removedEvidence, exactBefore)) return false;
+  if (exactAfter && !evidenceArrayContains(addedEvidence, exactAfter)) return false;
+
+  return changedFacts.every((fact) => {
+    if (fact.removed_text && evidenceArrayContains(removedEvidence, fact.removed_text)) return true;
+    if (fact.added_text && evidenceArrayContains(addedEvidence, fact.added_text)) return true;
+    if (fact.before && evidenceArrayContains(removedEvidence, fact.before)) return true;
+    if (fact.after && evidenceArrayContains(addedEvidence, fact.after)) return true;
+    return Boolean(fact.visual_evidence && hasVisualEvidence);
+  });
+}
+
+function evidenceArrayContains(haystackValues, needle) {
+  const cleanNeedle = normalizeText(needle).toLowerCase();
+  if (!cleanNeedle || cleanNeedle.length < 3) return false;
+  return haystackValues
+    .map((value) => normalizeText(value).toLowerCase())
+    .filter(Boolean)
+    .some((value) => value.includes(cleanNeedle) || cleanNeedle.includes(value));
 }
 
 function parseJsonObject(text) {
@@ -7906,29 +9180,44 @@ function extractResponseText(data) {
     .trim();
 }
 
-function selectAiProvider(requestedProvider, keys) {
-  const requested = String(requestedProvider || "auto").toLowerCase();
-  if (["gemini-cli", "antigravity", "agy"].includes(requested)) return keys.geminiCli ? "gemini-cli" : null;
-  if (requested === "gemini") return keys.gemini ? "gemini" : null;
-  if (requested === "openai") return keys.openai ? "openai" : null;
-  if (requested !== "auto") return null;
-  if (keys.gemini) return "gemini";
-  if (keys.openai) return "openai";
-  if (keys.geminiCli) return "gemini-cli";
-  return null;
+function runRequiresAi() {
+  return runRequiresAiFromOptions(aiRequirementOptions());
+}
+
+function aiDisabledReasonForRun() {
+  return aiDisabledReasonForOptions(aiRequirementOptions());
+}
+
+function aiRequirementOptions() {
+  return {
+    visualReviewMode,
+    extractBaselineInfo,
+    backfillBaselineInfo,
+    localizationRepair,
+    r2SnapshotSync,
+    r2RepairMissingSnapshots,
+    r2BackfillBaselines,
+    sourceQualityMode:
+      args["source-quality-mode"] ||
+      args["source-quality-ai-mode"] ||
+      env.AWARDPING_SOURCE_QUALITY_MODE ||
+      env.AWARDPING_SOURCE_QUALITY_AI_MODE,
+  };
+}
+
+function assertAiAvailable(action) {
+  if (!runRequiresAi()) {
+    throw new Error(
+      `AI is disabled for this visual snapshot run (${aiDisabledReason || "no_ai_calling_workflow_enabled"}), but code attempted ${action}.`,
+    );
+  }
+  if (!aiProvider) {
+    throw new Error(`${missingAiMessage(requestedAiProvider)} Required for ${action}.`);
+  }
 }
 
 function missingAiMessage(requestedProvider) {
-  if (["gemini-cli", "antigravity", "agy"].includes(requestedProvider)) {
-    return "AWARDPING_GEMINI_CLI_PATH must point to agy.exe when --ai-provider=gemini-cli. AI review is mandatory; refusing to run.";
-  }
-  if (requestedProvider === "gemini") {
-    return "GEMINI_API_KEY is required when --ai-provider=gemini. AI review is mandatory; refusing to run.";
-  }
-  if (requestedProvider === "openai") {
-    return "OPENAI_API_KEY is required when --ai-provider=openai. AI review is mandatory; refusing to run.";
-  }
-  return "GEMINI_API_KEY or OPENAI_API_KEY is required for visual snapshot AI review. AI review is mandatory; refusing to run.";
+  return missingAiProviderMessage(requestedProvider);
 }
 
 function modelForProvider(provider) {
@@ -8018,6 +9307,14 @@ function stringArray(value) {
   return clean ? [clean] : [];
 }
 
+function booleanOrNull(value) {
+  if (typeof value === "boolean") return value;
+  const clean = cleanSlug(value);
+  if (["true", "yes", "1"].includes(clean)) return true;
+  if (["false", "no", "0"].includes(clean)) return false;
+  return null;
+}
+
 function sectionArray(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -8074,14 +9371,47 @@ function normalizeCycleRelevance(value) {
   return "unclear";
 }
 
+function isContradictoryHighConfidenceFactFlag(flag) {
+  const clean = cleanSlug(flag).replace(/-/g, "_");
+  return [
+    "source_mismatch",
+    "unclear",
+    "unrelated",
+    "unrelated_program",
+    "sibling_program",
+    "generic_listing",
+    "search_results",
+    "access_error",
+    "spam",
+    "hacked_page",
+    "pharma_spam",
+  ].includes(clean);
+}
+
 function shouldReviewLaterForBaselineFactsRejection(facts, reason) {
   const awardRelevance = normalizeAwardRelevance(facts?.award_relevance);
   const cycleRelevance = normalizeCycleRelevance(facts?.cycle_relevance);
-  const confidence = normalizeConfidence(facts?.confidence);
-  if (confidence === "low") return false;
+  const flags = new Set(stringArray(facts?.quality_flags).map(cleanSlug));
+  if ([...flags].some((flag) =>
+    [
+      "source_mismatch",
+      "spam",
+      "job_board",
+      "career_page",
+      "search_results",
+      "generic_listing",
+      "sibling_program",
+      "access_error",
+      "hacked_page",
+      "pharma_spam",
+      "unrelated_program",
+    ].includes(flag)
+  )) return true;
   if (awardRelevance === "unrelated") return true;
+  if (awardRelevance === "unclear") return true;
   if (cycleRelevance === "not_program_page") return true;
-  return reason === "award_relevance_unrelated" || reason === "cycle_relevance_not_program_page";
+  if (cycleRelevance === "archived_or_past") return true;
+  return /^(award_relevance_|cycle_relevance_|quality_flag_|baseline_facts_rejected|url_)/.test(String(reason || ""));
 }
 
 function jsonObjectOrNull(value) {
@@ -8116,12 +9446,12 @@ function unique(values) {
 }
 
 function visualHashForCapture(capture) {
-  const hash = capture?.file_hash || capture?.image_hash || capture?.text_hash || "";
+  const hash = capture?.file_hash || capture?.main_content_hash || capture?.image_hash || capture?.text_hash || "";
   return hash ? `visual:${hash}` : "";
 }
 
 function visualHashForBaseline(baseline) {
-  const hash = baseline?.file_hash || baseline?.image_hash || baseline?.text_hash || "";
+  const hash = baseline?.file_hash || baseline?.main_content_hash || baseline?.image_hash || baseline?.text_hash || "";
   return hash ? `visual:${hash}` : "";
 }
 
@@ -8338,17 +9668,22 @@ const aiSystemPrompt = [
   "Compare the two attached screenshot thumbnails first when images are provided. For PDFs or image-free inputs, compare the extracted previous and new text carefully.",
   "Use normalized text as secondary context for screenshots because it can be incomplete or noisy.",
   "Mark is_true_change=true only when a visible screenshot change shows that a concrete award-relevant fact changed.",
-    "True changes include deadline changes, application opening or closing changes, eligibility changes, requirement changes, nomination or recommendation changes, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, or application instruction changes.",
-    "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
-    ...monitoringPolicyPromptLinesForScope("visual_snapshot_ai"),
-    "Also reject sitewide notices, holiday or operating-hours banners, countdown timers, view counts, post IDs, writer IDs, CAPTCHA/math changes, navigation or FAQ reordering, generic Latest Updates blocks, calendar/conference/admissions-event churn, stale archive pages, and document hash/file-size-only changes unless specific award-relevant text changed.",
-    "Do not describe text as added if that same wording is already present in the previous capture. Do not describe text as removed if that same wording is still present in the new capture.",
-    "For structured_diff, added_text must be exact wording present in the new capture and absent from the previous capture; removed_text must be exact wording present in the previous capture and absent from the new capture.",
-    "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
+  "Default to rejection when uncertain.",
+  "True changes include deadline changes, application opening or closing changes, eligibility changes, award conditions, nomination or recommendation changes, application materials, document/PDF/guideline changes, funding/stipend/tuition/award amount changes, contact changes, official cycle status changes, or application instruction changes.",
+  "Reject cookie banners, carousels, ads, donation forms, fundraising widgets, checkout/cart changes, newsletter popups, current-date or last-updated-only changes, animated or count-up statistic counters, KPI or impact-number widgets, font/reflow/lazy-image changes, nav/footer/sidebar changes, social/share widgets, event/news/listing churn, featured-fellow/alumni/profile roster rotations, recipient-news churn, staff/job content, unrelated research/news pages, and unrelated page widgets unless award requirements changed.",
+  ...monitoringPolicyPromptLinesForScope("visual_snapshot_ai"),
+  "Also reject sitewide notices, holiday or operating-hours banners, countdown timers, view counts, post IDs, writer IDs, CAPTCHA/math changes, navigation or FAQ reordering, generic Latest Updates blocks, calendar/conference/admissions-event churn, stale archive pages, and document hash/file-size-only changes unless specific award-relevant text changed.",
+  "Do not treat page redesign, image changes, popups, navigation, staff/profile/fellow/news rotations, or file metadata as applicant-facing changes.",
+  "Never use facts from sibling awards or broad search/listing pages.",
+  "source_relevance must be primary or supporting to approve. Use unrelated or unclear and reject when the page is a sibling award, broad listing/search page, stale archive, or not clearly about this exact award.",
+  "changed_facts must list the exact applicant-facing facts that changed. exact_before and exact_after must be exact strings from deterministic diff evidence, or null only when the change is one-sided and the other side is genuinely absent.",
+  "Do not describe text as added if that same wording is already present in the previous capture. Do not describe text as removed if that same wording is still present in the new capture.",
+  "For structured_diff, added_text must be exact wording present in the new capture and absent from the previous capture; removed_text must be exact wording present in the previous capture and absent from the new capture.",
+  "Do not infer relevance just because words like award, fellowship, grant, application, or deadline appear in unrelated content.",
   "reader_summary should be one or two sentences, plain English, advisor-facing.",
   "advisor_impact should say what an advising office might need to check or update.",
   "If confidence is low, set is_true_change=false unless the changed award fact is explicit.",
-  "Required keys: is_true_change, noise_reason, reader_summary, advisor_impact, changed_section, confidence.",
+  "Required keys: is_true_change, is_alert_worthy, source_relevance, source_relevance_reason, changed_facts, exact_before, exact_after, evidence_location, noise_reason, reader_summary, advisor_impact, changed_section, confidence, noise_flags, rejection_reason.",
   "Use null for unavailable noise_reason, reader_summary, advisor_impact, or changed_section.",
   "confidence must be low, medium, or high.",
 ].join(" ");
@@ -8359,6 +9694,9 @@ const baselineFactsSystemPrompt = [
   "Every source page needs a readable display_title and a short page_description, even if the page is only a contact page, FAQ page, PDF, portal page, news page, or unclear/unrelated page.",
   "Extract only facts that are visible or directly supported by the screenshot, PDF text, or normalized page text.",
   "Classify whether the page is truly about the named program and whether it supports the current/upcoming application cycle, an active evergreen cycle, an archived/past cycle, an unclear cycle, or no program page at all.",
+  "Default to rejection when uncertain. Missing award_relevance or cycle_relevance means unclear.",
+  "Evidence_quotes must be exact short strings copied from the source that support relevance, cycle, and extracted facts.",
+  "Never use facts from sibling awards or broad search/listing pages.",
   "Do not guess missing dates, amounts, eligibility, or requirements.",
   "Descriptions should be concise and useful in a page outline.",
 ].join(" ");
@@ -8367,11 +9705,33 @@ const aiResponseSchema = {
   type: "object",
   properties: {
     is_true_change: { type: "boolean" },
+    is_alert_worthy: { type: "boolean" },
+    source_relevance: { type: "string", enum: ["primary", "supporting", "unclear", "unrelated"] },
+    source_relevance_reason: { type: "string", nullable: true },
+    changed_facts: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          fact: { type: "string" },
+          before: { type: "string", nullable: true },
+          after: { type: "string", nullable: true },
+          added_text: { type: "string", nullable: true },
+          removed_text: { type: "string", nullable: true },
+          visual_evidence: { type: "string", nullable: true },
+        },
+      },
+    },
+    exact_before: { type: "string", nullable: true },
+    exact_after: { type: "string", nullable: true },
+    evidence_location: { type: "string", nullable: true },
     noise_reason: { type: "string", nullable: true },
     reader_summary: { type: "string", nullable: true },
     advisor_impact: { type: "string", nullable: true },
     changed_section: { type: "string", nullable: true },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
+    noise_flags: { type: "array", items: { type: "string" } },
+    rejection_reason: { type: "string", nullable: true },
     before: { type: "string", nullable: true },
     after: { type: "string", nullable: true },
     change_type: { type: "string", nullable: true },
@@ -8393,11 +9753,20 @@ const aiResponseSchema = {
   },
   required: [
     "is_true_change",
+    "is_alert_worthy",
+    "source_relevance",
+    "source_relevance_reason",
+    "changed_facts",
+    "exact_before",
+    "exact_after",
+    "evidence_location",
     "noise_reason",
     "reader_summary",
     "advisor_impact",
     "changed_section",
     "confidence",
+    "noise_flags",
+    "rejection_reason",
   ],
 };
 
@@ -8409,6 +9778,7 @@ const baselineFactsResponseSchema = {
     page_description: { type: "string" },
     page_category: { type: "string" },
     award_name: { type: "string", nullable: true },
+    award_name_seen: { type: "boolean", nullable: true },
     page_purpose: { type: "string", nullable: true },
     award_relevance: { type: "string", enum: ["primary", "supporting", "unclear", "unrelated"] },
     cycle_relevance: {
@@ -8441,7 +9811,9 @@ const baselineFactsResponseSchema = {
       },
     },
     confidence: { type: "string", enum: ["low", "medium", "high"] },
+    evidence_quotes: { type: "array", items: { type: "string" } },
     quality_flags: { type: "array", items: { type: "string" } },
+    rejection_reason: { type: "string", nullable: true },
   },
   required: [
     "status",
@@ -8449,6 +9821,7 @@ const baselineFactsResponseSchema = {
     "page_description",
     "page_category",
     "award_name",
+    "award_name_seen",
     "page_purpose",
     "award_relevance",
     "cycle_relevance",
@@ -8467,7 +9840,9 @@ const baselineFactsResponseSchema = {
     "notes",
     "sections",
     "confidence",
+    "evidence_quotes",
     "quality_flags",
+    "rejection_reason",
   ],
 };
 

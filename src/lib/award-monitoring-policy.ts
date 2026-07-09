@@ -1,9 +1,17 @@
 import awardMonitoringPolicyData from "../../config/award-monitoring-policy.json";
+import awardDecisionMemoryData from "../../config/award-decision-memory.json";
 
 type PolicyFlag = {
   id: string;
   alert_blocking?: boolean;
   persistent?: boolean;
+  prompt?: string;
+  prompt_scopes?: string[];
+};
+
+type DecisionMemoryEntry = {
+  id?: string;
+  scope?: string;
   prompt?: string;
   prompt_scopes?: string[];
 };
@@ -20,10 +28,28 @@ type RelativeAgePolicyInput = {
 };
 
 export const awardMonitoringPolicy = awardMonitoringPolicyData;
+export const awardDecisionMemory = awardDecisionMemoryData;
 
 const policyFlags = (awardMonitoringPolicy.policy_flags || []) as PolicyFlag[];
+const decisionMemoryEntries = (awardDecisionMemory.entries || []) as DecisionMemoryEntry[];
 
 export function monitoringPolicyPromptLinesForScope(scope: string) {
+  return [
+    ...policyPromptLinesForScope(scope),
+    ...decisionMemoryPromptLinesForScope(scope),
+  ];
+}
+
+export function decisionMemoryPromptLinesForScope(scope: string) {
+  return decisionMemoryEntries
+    .filter((entry) => entry.prompt && entry.prompt_scopes?.includes(scope))
+    .map(
+      (entry) =>
+        `Decision memory (${entry.scope || "global"}:${entry.id || "unnamed"}): ${entry.prompt as string}`,
+    );
+}
+
+function policyPromptLinesForScope(scope: string) {
   return policyFlags
     .filter((flag) => flag.prompt && flag.prompt_scopes?.includes(scope))
     .map((flag) => flag.prompt as string);

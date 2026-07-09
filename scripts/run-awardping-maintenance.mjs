@@ -20,7 +20,7 @@ const envPath = args.env
       ? ".env.local"
       : "";
 const envArgs = envPath ? ["--env", envPath] : [];
-const profile = cleanChoice(args.profile, ["daily", "catchup", "baseline", "cleanup", "snapshots"], "daily");
+const profile = cleanChoice(args.profile, ["daily", "catchup", "baseline", "cleanup", "snapshots", "discovery", "visual-review"], "daily");
 const apply = boolArg(args.apply, true);
 const continueOnError = boolArg(args["continue-on-error"], true);
 const runStamp = timestampForPath(new Date().toISOString());
@@ -40,6 +40,15 @@ const visualLimit = positiveInt(args["visual-limit"], 50_000);
 const visualWebConcurrency = boundedInt(args["visual-web-concurrency"], 4, 1, 8);
 const visualDomainDelayMs = positiveInt(args["visual-domain-delay-ms"], 1_500);
 const visualCompleteMissingBatchLimit = positiveInt(args["visual-complete-missing-batch-limit"], 250);
+const visualReviewLimit = positiveInt(args["visual-review-limit"], 1000);
+const visualReviewMaxRequestsPerBatch = positiveInt(args["visual-review-max-requests-per-batch"], 250);
+const visualReviewInlineThreshold = positiveInt(args["visual-review-inline-threshold"], 100);
+const discoveryLimit = positiveInt(args["discovery-limit"], 5_000);
+const discoveryShards = boundedInt(args["discovery-shards"], 1, 1, 12);
+const discoveryMaxHtmlSubpageDiscoveries = boundedInt(args["discovery-max-html-subpage-discoveries"], 8, 0, 25);
+const discoveryMaxPerAward = boundedInt(args["discovery-max-per-award"], 5, 0, 500);
+const discoveryMaxPerSource = boundedInt(args["discovery-max-per-source"], 3, 0, 100);
+const discoveryMaxPerDomain = boundedInt(args["discovery-max-per-domain"], 100, 0, 10_000);
 const baselineLimit = positiveInt(args["baseline-limit"], 50_000);
 const baselineMaxCalls = nonNegativeInt(args["baseline-max-calls"], 50_000);
 const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 10);
@@ -95,8 +104,10 @@ try {
     if (phase === "health") await runHealth();
     else if (phase === "prune-history") await runPruneHistory();
     else if (phase === "source-quality") await runSourceQuality();
+    else if (phase === "source-discovery") await runSourceDiscovery();
     else if (phase === "visual") await runVisualSnapshots(false);
     else if (phase === "visual-missing") await runVisualSnapshots(true);
+    else if (phase === "visual-review-batch") await runVisualReviewBatch();
     else if (phase === "baseline-facts") await runBaselineFacts();
     else if (phase === "aggregate-facts") await runAggregateFacts();
     else {
@@ -167,6 +178,12 @@ async function runVisualSnapshots(completeMissing) {
       `--shard-count=${visualShards}`,
       `--shard-index=${shardIndex}`,
       "--extract-baseline-info=false",
+      completeMissing ? "--capture-profile=baseline-rich" : "--capture-profile=stable-daily",
+      completeMissing ? "--visual-review-mode=none" : "--visual-review-mode=batch",
+      "--discovery-mode=false",
+      "--discover-pdf-subpages=false",
+      "--discover-html-subpages=false",
+      "--max-html-subpage-discoveries=0",
     ];
 
     if (completeMissing) {
@@ -175,8 +192,7 @@ async function runVisualSnapshots(completeMissing) {
         "--skip-existing-baseline=true",
         "--baseline-refresh=true",
         "--interpret-visual-changes=false",
-        "--discover-pdf-subpages=false",
-        "--discover-html-subpages=false",
+        "--visual-review-mode=none",
         `--complete-missing-batch-limit=${visualCompleteMissingBatchLimit}`,
       );
     }
@@ -185,6 +201,49 @@ async function runVisualSnapshots(completeMissing) {
   }
 
   await Promise.all(jobs);
+}
+
+async function runSourceDiscovery() {
+  const jobs = [];
+  for (let shardIndex = 0; shardIndex < discoveryShards; shardIndex += 1) {
+    const phaseName = `source-discovery-shard-${shardIndex + 1}-of-${discoveryShards}`;
+    const commandArgs = [
+      "scripts/capture-visual-snapshots.mjs",
+      ...envArgs,
+      "--all=true",
+      `--limit=${discoveryLimit}`,
+      `--domain-delay-ms=${visualDomainDelayMs}`,
+      `--web-concurrency=${visualWebConcurrency}`,
+      `--shard-count=${discoveryShards}`,
+      `--shard-index=${shardIndex}`,
+      "--extract-baseline-info=false",
+      "--backfill-baseline-info=false",
+      "--capture-profile=discovery",
+      "--interpret-visual-changes=false",
+      "--visual-review-mode=none",
+      "--discovery-mode=true",
+      "--discover-pdf-subpages=true",
+      "--discover-html-subpages=true",
+      `--max-html-subpage-discoveries=${discoveryMaxHtmlSubpageDiscoveries}`,
+      `--max-discoveries-per-award=${discoveryMaxPerAward}`,
+      `--max-discoveries-per-source=${discoveryMaxPerSource}`,
+      `--max-discoveries-per-domain=${discoveryMaxPerDomain}`,
+    ];
+    jobs.push(runPhase(phaseName, commandArgs));
+  }
+
+  await Promise.all(jobs);
+}
+
+async function runVisualReviewBatch() {
+  await runPhase("visual-review-batch", [
+    "scripts/process-visual-review-batch.mjs",
+    ...envArgs,
+    `--limit=${visualReviewLimit}`,
+    `--max-requests-per-batch=${visualReviewMaxRequestsPerBatch}`,
+    `--inline-threshold=${visualReviewInlineThreshold}`,
+    `--apply=${apply}`,
+  ]);
 }
 
 async function runBaselineFacts() {
@@ -197,7 +256,8 @@ async function runBaselineFacts() {
     `--gemini-batch-max-requests=${baselineBatchMaxRequests}`,
     `--gemini-batch-parallel-jobs=${baselineBatchParallelJobs}`,
     `--limit=${baselineLimit}`,
-    `--max-calls=${baselineMaxCalls}`,
+    `--gemini-api-max-requests=${baselineMaxCalls}`,
+    `--gemini-api-max-submitted-requests=${baselineMaxCalls}`,
     `--gemini-api-daily-cost-cap-usd=${baselineCostCapUsd}`,
     `--apply=${apply}`,
   ];
@@ -302,7 +362,11 @@ function profilePhases(value) {
   if (value === "baseline") return ["health", "baseline-facts", "aggregate-facts"];
   if (value === "cleanup") return ["health", "source-quality", "aggregate-facts", "prune-history"];
   if (value === "snapshots") return ["health", "visual"];
-  return ["health", "visual", "baseline-facts", "aggregate-facts", "source-quality", "prune-history"];
+  if (value === "visual-review") return ["health", "visual-review-batch"];
+  if (value === "discovery") {
+    return ["health", "source-quality", "source-discovery", "baseline-facts", "aggregate-facts", "prune-history"];
+  }
+  return ["health", "visual", "visual-review-batch", "baseline-facts", "aggregate-facts", "source-quality", "prune-history"];
 }
 
 function writeReport() {
@@ -319,7 +383,7 @@ async function createMaintenanceWorkerRun() {
     .insert({
       worker_name: "local-maintenance-runner",
       status: "running",
-      ai_provider: phases.includes("baseline-facts") ? "gemini" : null,
+      ai_provider: phases.includes("baseline-facts") || phases.includes("visual-review-batch") ? "gemini" : null,
       initial_count: phases.length,
       metadata: maintenanceRunMetadata(),
     })
@@ -363,6 +427,14 @@ function maintenanceRunMetadata() {
     report_path: reportPath,
     log_dir: logDir,
     env_path: envPath || null,
+    discovery_options: {
+      limit: discoveryLimit,
+      shards: discoveryShards,
+      max_html_subpage_discoveries: discoveryMaxHtmlSubpageDiscoveries,
+      max_per_award: discoveryMaxPerAward,
+      max_per_source: discoveryMaxPerSource,
+      max_per_domain: discoveryMaxPerDomain,
+    },
     phases_requested: phases,
     phases: report.phases.map((phase) => ({
       name: phase.name,

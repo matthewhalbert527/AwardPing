@@ -14,10 +14,12 @@ import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
 import {
+  isPublicAwardSource,
+} from "@/lib/source-quality";
+import {
   canonicalSourceUrlKey,
   displayHomepageForAward,
   filterTrackableOfficialSources,
-  isMonitorableOfficialSource,
 } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
@@ -43,7 +45,11 @@ type SharedSourceRow = Pick<
   | "display_title"
   | "page_description"
   | "page_metadata"
+  | "page_metadata_generated_at"
   | "page_type"
+  | "source"
+  | "reason"
+  | "submitted_by_user_id"
   | "last_checked_at"
 >;
 
@@ -57,6 +63,9 @@ type SharedChangeRow = Pick<
   | "source_page_type"
   | "summary"
   | "change_details"
+  | "suppressed_at"
+  | "suppression_reason"
+  | "suppression_source"
   | "detected_at"
 >;
 
@@ -156,25 +165,26 @@ async function loadPublicAwardPageData(
   const [{ data: sources }, { data: changes }] = await Promise.all([
     admin
       .from("shared_award_sources")
-      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_type, last_checked_at")
+      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id, last_checked_at")
       .eq("shared_award_id", award.id)
       .eq("admin_review_status", "open")
       .order("page_type", { ascending: true })
       .order("created_at", { ascending: true }),
     admin
       .from("shared_award_change_events")
-      .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
+      .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at")
       .eq("shared_award_id", award.id)
+      .is("suppressed_at", null)
       .order("detected_at", { ascending: false })
       .limit(20),
   ]);
 
-  const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[]);
+  const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[])
+    .filter(isPublicAwardSource);
   const changeIsFromOpenSource = activeChangeSourceFilter(officialSources);
   const officialChanges = dedupeChangeSummaries(
     ((changes || []) as SharedChangeRow[]).filter((change) =>
       changeIsFromOpenSource(change) &&
-      isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
       isUsefulChangeForAward({
         awardName: award.name,
         sourceTitle: change.source_title,

@@ -13,24 +13,153 @@ const careerOrProfilePath =
 const paymentOrBursarPath =
   /\/(?:payment|payments|pay|billing|bursar|tuition|1098t|1098-t|tax-form|tax-forms)(?:[?#/]|$)/i;
 const listingPath = /\/(news|events|calendar|tag|category|recipients?|awardees?|fellows?|past-fellows|current-fellows)\b/i;
-const broadProgramSearchPath = /\/(?:find-programs?|program-search|search-programs?|programs\/search|scholarship-search|scholarships\/search|database\/search)(?:[?#/]|$)/i;
+const broadProgramSearchPath =
+  /\/(?:find-programs?|program-search|search-programs?|programs\/search|scholarship-search|scholarships\/search|database\/search)(?:[?#/]|$)/i;
 const trackingQuery = /[?&](share|replytocom|utm_|fbclid|gclid|redirect_to=)/i;
 const nonMonitorableAsset = /\.(jpg|jpeg|png|gif|webp|svg|zip|ics|mp4|mp3|doc|docx|xls|xlsx|ppt|pptx)$/i;
 const badUploadHtmlTerms = /(viagra|levitra|cialis|pharma|casino|xanax|tramadol|pills|essay-writing|payday)/i;
 const phoneNumberPathSegment = /(?:^|\/)\+?(?:\d[\d().-]*){9,}(?:\/|$)/;
-const protectedOfficialSourcePageTypes = new Set([
-  "homepage",
-  "deadline",
-  "application",
-  "eligibility",
-  "requirements",
-  "pdf",
-  "faq",
+
+const rejectedQualityFlags = new Set([
+  "source-mismatch",
+  "spam",
+  "job-board",
+  "career-page",
+  "search-results",
+  "generic-listing",
+  "sibling-program",
+  "access-error",
+  "hacked-page",
+  "pharma-spam",
+  "unrelated-program",
 ]);
+const protectedMissingFactsPageTypes = new Set([
+  "homepage",
+  "application",
+  "deadline",
+  "requirements",
+  "eligibility",
+  "pdf",
+]);
+const manualSourceSignals = new Set([
+  "admin",
+  "manual",
+  "curated",
+  "seed",
+  "user",
+  "source-override",
+  "source_override",
+  "source-overrides",
+  "official",
+]);
+const spamUploadTitle =
+  /\b(viagra|levitra|cialis|pharma|casino|xanax|tramadol|pills|essay writing|payday)\b/i;
 
-export function isInstitutionalDiscoveryUrl(value: string | null | undefined) {
+export function sourceBaselineFacts(source) {
+  const metadata = objectValue(source?.page_metadata);
+  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
+  if (Object.keys(facts).length) return facts;
+  if (metadata.kind || metadata.provider || metadata.model || metadata.baseline_facts_rejected) {
+    return {};
+  }
+  return metadata;
+}
+
+export function sourceQualityDecision(source, { purpose }) {
+  const facts = sourceBaselineFacts(source);
+  const metadata = objectValue(source?.page_metadata);
+  const hasBaselineFacts = Object.keys(facts).length > 0;
+  const metadataExists = sourceMetadataExists(source, metadata);
+  const qualityFlags = normalizedQualityFlags(metadata, facts);
+  const reject = (reason) => ({
+    allowed: false,
+    reason,
+    facts,
+    hasBaselineFacts,
+    metadataExists,
+    qualityFlags,
+  });
+  const allow = (reason = "allowed") => ({
+    allowed: true,
+    reason,
+    facts,
+    hasBaselineFacts,
+    metadataExists,
+    qualityFlags,
+  });
+
+  if (!source?.url) return reject("missing_url");
+
+  if (purpose === "monitoring" || purpose === "discovery") {
+    if (!isMonitorableOfficialSource(source)) return reject("url_not_monitorable");
+  } else if (!isTrackableOfficialSourceUrl(source.url)) {
+    return reject("url_not_public_trackable");
+  }
+
+  const titleSignal = [source.title, source.display_title, metadata.page_title, facts.display_title]
+    .map((value) => String(value || ""))
+    .join(" ");
+  if (isSpamUploadHtmlSource(source.url, titleSignal)) return reject("url_spam_upload_html");
+
+  if (
+    metadata.baseline_facts_rejected === true ||
+    metadata.baselineFactsRejected === true ||
+    objectValue(metadata.baseline_facts_metadata).rejected === true
+  ) {
+    return reject("baseline_facts_rejected");
+  }
+
+  const badFlag = qualityFlags.find((flag) => rejectedQualityFlags.has(flag));
+  if (badFlag) return reject(`quality_flag_${badFlag}`);
+
+  const awardRelevance = hasBaselineFacts ? cleanKey(facts.award_relevance) || "unclear" : "";
+  if (awardRelevance === "unrelated") return reject("award_relevance_unrelated");
+  if (awardRelevance === "unclear" && purpose !== "admin" && purpose !== "debug") {
+    return reject("award_relevance_unclear");
+  }
+
+  const cycleRelevance = hasBaselineFacts ? cleanKey(facts.cycle_relevance) || "unclear" : "";
+  if (cycleRelevance === "not-program-page") return reject("cycle_relevance_not_program_page");
+  if (cycleRelevance === "archived-or-past") return reject("cycle_relevance_archived_or_past");
+  if (cycleRelevance === "unclear" && purpose !== "admin" && purpose !== "debug") {
+    return reject("cycle_relevance_unclear");
+  }
+
+  if (!hasBaselineFacts) {
+    if (purpose === "facts" || purpose === "public") return reject("missing_baseline_facts");
+    if (purpose === "monitoring" && !missingBaselineFactsCanBeMonitored(source)) {
+      return reject("missing_baseline_facts_not_monitorable");
+    }
+  }
+
+  return allow();
+}
+
+export function isPublicAwardSource(source) {
+  return sourceQualityDecision(source, { purpose: "public" }).allowed;
+}
+
+export function isUsableAwardFactSource(source) {
+  return sourceQualityDecision(source, { purpose: "facts" }).allowed;
+}
+
+export function isMonitorableAwardSource(source) {
+  return sourceQualityDecision(source, { purpose: "monitoring" }).allowed;
+}
+
+export function isTrackableOfficialSourceUrl(value) {
+  return Boolean(value) && !isInstitutionalDiscoveryUrl(value) && !isClearlyNonAwardSourceUrl(value);
+}
+
+export function isMonitorableOfficialSource(source) {
+  if (!source?.url || isInstitutionalDiscoveryUrl(source.url)) return false;
+  if (isHardBlockedOfficialSourceUrl(source.url)) return false;
+  if (isClearlyNonAwardSourceUrl(source.url)) return false;
+  return true;
+}
+
+function isInstitutionalDiscoveryUrl(value) {
   if (!value) return false;
-
   try {
     const hostname = new URL(value).hostname.toLowerCase().replace(/^www\./, "");
     return institutionalDiscoveryHosts.has(hostname);
@@ -39,25 +168,7 @@ export function isInstitutionalDiscoveryUrl(value: string | null | undefined) {
   }
 }
 
-export function isTrackableOfficialSourceUrl(value: string | null | undefined) {
-  return Boolean(value) && !isInstitutionalDiscoveryUrl(value) && !isClearlyNonAwardSourceUrl(value);
-}
-
-export function isMonitorableOfficialSource(source: {
-  url: string | null | undefined;
-  page_type?: string | null | undefined;
-}) {
-  if (!source.url || isInstitutionalDiscoveryUrl(source.url)) return false;
-  if (isHardBlockedOfficialSourceUrl(source.url)) return false;
-  if (isClearlyNonAwardSourceUrl(source.url)) return false;
-  return true;
-}
-
-export function isProtectedOfficialSourcePageType(value: string | null | undefined) {
-  return protectedOfficialSourcePageTypes.has(String(value || "").toLowerCase());
-}
-
-export function isClearlyNonAwardSourceUrl(value: string | null | undefined) {
+function isClearlyNonAwardSourceUrl(value) {
   if (!value) return false;
 
   try {
@@ -84,7 +195,7 @@ export function isClearlyNonAwardSourceUrl(value: string | null | undefined) {
   }
 }
 
-export function isHardBlockedOfficialSourceUrl(value: string | null | undefined) {
+function isHardBlockedOfficialSourceUrl(value) {
   if (!value) return false;
 
   try {
@@ -113,7 +224,47 @@ export function isHardBlockedOfficialSourceUrl(value: string | null | undefined)
   }
 }
 
-function isKnownSpamOrAccessUrl(hostname: string, url: URL) {
+function sourceMetadataExists(source, metadata) {
+  return Boolean(
+    source?.page_metadata_generated_at ||
+      Object.keys(metadata).length ||
+      metadata.baseline_facts ||
+      metadata.baselineFacts ||
+      metadata.baseline_facts_rejected,
+  );
+}
+
+function missingBaselineFactsCanBeMonitored(source) {
+  const pageType = cleanKey(source.page_type);
+  if (protectedMissingFactsPageTypes.has(pageType)) return true;
+  const sourceSignal = cleanKey(source.source || source.reason);
+  return manualSourceSignals.has(sourceSignal) || Boolean(source.submitted_by_user_id);
+}
+
+function normalizedQualityFlags(metadata, facts) {
+  return [
+    ...stringArray(facts.quality_flags),
+    ...stringArray(metadata.quality_flags),
+    ...stringArray(objectValue(metadata.baseline_facts_metadata).quality_flags),
+    cleanKey(metadata.rejection_reason),
+  ]
+    .map(cleanKey)
+    .filter(Boolean);
+}
+
+function isSpamUploadHtmlSource(urlValue, titleSignal) {
+  try {
+    const url = new URL(urlValue);
+    return (
+      /\/wp-content\/uploads\/\d{4}\/\d{2}\/[^/]+\.html?$/i.test(url.pathname) &&
+      spamUploadTitle.test(`${titleSignal} ${decodeURIComponent(url.pathname)}`)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isKnownSpamOrAccessUrl(hostname, url) {
   const path = decodeURIComponent(url.pathname || "");
   const fullUrl = decodeURIComponent(url.toString());
 
@@ -132,7 +283,7 @@ function isKnownSpamOrAccessUrl(hostname: string, url: URL) {
   return false;
 }
 
-function isBroadScholarshipDatabaseListingUrl(hostname: string, url: URL) {
+function isBroadScholarshipDatabaseListingUrl(hostname, url) {
   const path = url.pathname.toLowerCase();
   const fullUrl = url.toString().toLowerCase();
   const looksLikeScholarshipDatabase =
@@ -151,7 +302,7 @@ function isBroadScholarshipDatabaseListingUrl(hostname: string, url: URL) {
   );
 }
 
-function isDuplicateOrBroadPdfUrl(hostname: string, pathname: string) {
+function isDuplicateOrBroadPdfUrl(hostname, pathname) {
   return (
     /(^|\.)daad\.de$/.test(hostname) &&
     /\/deutschland\/stipendium\/datenbank\/[^/]+\/21148-scholarship-database\.pdf$/i.test(pathname)
@@ -161,7 +312,7 @@ function isDuplicateOrBroadPdfUrl(hostname: string, pathname: string) {
   );
 }
 
-function isNationalAcademiesNonAwardUrl(hostname: string, url: URL) {
+function isNationalAcademiesNonAwardUrl(hostname, url) {
   const path = url.pathname.toLowerCase().replace(/\/+$/g, "") || "/";
 
   if (hostname === "www8.nationalacademies.org") {
@@ -180,7 +331,7 @@ function isNationalAcademiesNonAwardUrl(hostname: string, url: URL) {
   return /^\/projects(?:\/|$)/.test(path);
 }
 
-function isOpenDataListingOrFacetUrl(hostname: string, url: URL) {
+function isOpenDataListingOrFacetUrl(hostname, url) {
   if (!/(^|\.)open\.alberta\.ca$/.test(hostname)) return false;
   if (/^\/(?:documentation|licence|policy|suggest|dataset|publications)?\/?$/i.test(url.pathname)) {
     return true;
@@ -211,85 +362,21 @@ function isOpenDataListingOrFacetUrl(hostname: string, url: URL) {
   return false;
 }
 
-export function filterTrackableOfficialSources<T extends { url: string }>(sources: T[]) {
-  const byCanonicalUrl = new Map<string, T>();
-
-  for (const source of sources) {
-    if (!isTrackableOfficialSourceUrl(source.url)) continue;
-
-    const key = canonicalSourceUrlKey(source.url);
-    const existing = byCanonicalUrl.get(key);
-    if (!existing || sourcePreferenceScore(source.url) > sourcePreferenceScore(existing.url)) {
-      byCanonicalUrl.set(key, source);
-    }
-  }
-
-  return [...byCanonicalUrl.values()];
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-export function displayHomepageForAward<T extends { url: string; page_type?: string | null }>(
-  homepage: string | null,
-  sources: T[],
-) {
-  if (isTrackableOfficialSourceUrl(homepage)) return homepage;
-
-  const homepageSource = sources.find(
-    (source) => source.page_type === "homepage" && isTrackableOfficialSourceUrl(source.url),
-  );
-  if (homepageSource) return homepageSource.url;
-
-  return sources.find((source) => isTrackableOfficialSourceUrl(source.url))?.url || null;
+function stringArray(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || ""));
+  if (typeof value === "string") return value.split(/[,;|]/);
+  return [];
 }
 
-export function canonicalSourceUrlKey(value: string) {
-  try {
-    const url = new URL(value);
-    const hostname = url.hostname.toLowerCase().replace(/^www\./, "");
-    const pathname = url.pathname
-      .replace(/\/index\.(html?|php|aspx?)$/i, "/")
-      .replace(/\.aspx$/i, "")
-      .replace(/\/+$/g, "")
-      .toLowerCase();
-    const search = canonicalSearchParams(url.searchParams);
-
-    return `${hostname}${pathname || "/"}${search}`;
-  } catch {
-    return value.trim().toLowerCase().replace(/\/+$/g, "");
-  }
-}
-
-function canonicalSearchParams(searchParams: URLSearchParams) {
-  const kept: Array<[string, string]> = [];
-
-  for (const [rawKey, rawValue] of searchParams.entries()) {
-    const key = rawKey.toLowerCase();
-    const value = rawValue.trim();
-    if (!key || key.startsWith("utm_")) continue;
-    if (["fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "share", "replytocom"].includes(key)) continue;
-    if (["lang", "locale", "view", "campaign", "sort"].includes(key)) continue;
-    if (key === "page" && (!value || value === "1")) continue;
-    if (key === "s" && !value) continue;
-    kept.push([key, value.toLowerCase()]);
-  }
-
-  kept.sort(([leftKey, leftValue], [rightKey, rightValue]) =>
-    `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`),
-  );
-  return kept.length ? `?${kept.map(([key, value]) => `${key}=${value}`).join("&")}` : "";
-}
-
-function sourcePreferenceScore(value: string) {
-  try {
-    const url = new URL(value);
-    let score = url.protocol === "https:" ? 2 : 1;
-    if (!url.search) {
-      score += 20;
-    } else {
-      score -= 20;
-    }
-    if (/%0a|%0d/i.test(url.search)) score -= 50;
-    return score;
-  } catch {
-    return 0;
-  }
+function cleanKey(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[^a-z0-9-]+/g, "")
+    .replace(/-+/g, "-");
 }

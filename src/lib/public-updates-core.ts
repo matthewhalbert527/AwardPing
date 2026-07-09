@@ -4,6 +4,7 @@ import {
   displayChangeSummary,
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
+import { isChangeEventSuppressed } from "@/lib/change-event-suppression";
 import { readableSourceTitle } from "@/lib/display-text";
 import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
 
@@ -16,6 +17,9 @@ export type PublicDigestCandidate = {
   source_page_type?: string | null;
   summary: string;
   change_details?: unknown;
+  suppressed_at?: string | null;
+  suppression_reason?: string | null;
+  suppression_source?: string | null;
   detected_at: string;
 };
 
@@ -88,6 +92,7 @@ export function buildPublicDigestChanges(
     .filter((change) => {
       const awardName = awardNameById.get(change.shared_award_id) || null;
       return (
+        !isChangeEventSuppressed(change) &&
         isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
         isUsefulChangeForAward({
           summary: change.summary,

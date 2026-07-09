@@ -60,4 +60,44 @@ describe("source change event filtering", () => {
       }),
     ).toBe(false);
   });
+
+  it("rejects suppressed changes even when the source is still open", () => {
+    const isActiveChange = activeChangeSourceFilter([
+      { id: "source-open", url: "https://example.edu/award" },
+    ]);
+
+    expect(
+      isActiveChange({
+        shared_award_source_id: "source-open",
+        source_url: "https://example.edu/award",
+        suppressed_at: "2026-07-08T00:00:00.000Z",
+        suppression_reason: "file_size_or_loading_time_noise",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects changes from open sources when rich source metadata fails quality", () => {
+    const isActiveChange = activeChangeSourceFilter([
+      {
+        id: "source-open-but-unclear",
+        url: "https://sffilm.org/faq",
+        page_type: "faq",
+        page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+        page_metadata: {
+          kind: "source_page_outline",
+          baseline_facts: {
+            award_relevance: "unclear",
+            cycle_relevance: "unclear",
+          },
+        },
+      },
+    ]);
+
+    expect(
+      isActiveChange({
+        shared_award_source_id: "source-open-but-unclear",
+        source_url: "https://sffilm.org/faq",
+      }),
+    ).toBe(false);
+  });
 });

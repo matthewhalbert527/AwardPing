@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  awardDecisionMemory,
+  decisionMemoryPromptLinesForScope,
   hasRelativeAgeOnlyPolicyChange,
   isAlertBlockingMonitoringPolicyFlag,
   isPersistentMonitoringPolicyFlag,
@@ -12,6 +14,23 @@ describe("award monitoring policy", () => {
 
     expect(prompt).toContain("relative recency label churn");
     expect(prompt).toContain("8 days ago");
+  });
+
+  it("loads user decision memory prompts for baseline facts", () => {
+    const prompt = decisionMemoryPromptLinesForScope("baseline_facts").join(" ");
+
+    expect(awardDecisionMemory.entries.length).toBeGreaterThan(10);
+    expect(prompt).toContain("same named award");
+    expect(prompt).toContain("Do not create, title, or list a monitored source or subpage as Overview");
+    expect(prompt).toContain("Important dates must always include what the date means");
+  });
+
+  it("includes decision memory in combined monitoring prompt lines", () => {
+    const prompt = monitoringPolicyPromptLinesForScope("visual_snapshot_ai").join(" ");
+
+    expect(prompt).toContain("Reject relative recency label churn");
+    expect(prompt).toContain("Reject changes caused by accordions");
+    expect(prompt).toContain("Only call text added");
   });
 
   it("treats relative age timestamp churn as a global alert-blocking flag", () => {

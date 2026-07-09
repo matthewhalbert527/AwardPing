@@ -1,6 +1,10 @@
 import { awardBaselineSummaryParts, displayAwardSummary } from "@/lib/award-summary";
 import type { Json } from "@/lib/database.types";
 import { normalizeImportantDateItems } from "@/lib/important-dates";
+import {
+  isUsableAwardFactSource,
+  sourceBaselineFacts,
+} from "@/lib/source-quality";
 
 export type PublicAwardFacts = {
   overview: string | null;
@@ -22,6 +26,14 @@ export type PublicAwardFacts = {
 
 export type PublicAwardFactSource = {
   page_metadata?: unknown;
+  page_metadata_generated_at?: string | null;
+  page_type?: string | null;
+  source?: string | null;
+  reason?: string | null;
+  submitted_by_user_id?: string | null;
+  url?: string | null;
+  title?: string | null;
+  display_title?: string | null;
   page_description?: string | null;
   last_checked_at?: string | null;
 };
@@ -37,7 +49,8 @@ export function publicAwardFactsFromAward(input: {
     (summaryParts?.facts || []).map((fact) => [normalizeLabel(fact.label), fact.value]),
   );
   const sourceFacts = (input.sources || [])
-    .map((source) => baselineFactsFromMetadata(source.page_metadata))
+    .filter(isUsableAwardFactSource)
+    .map(sourceBaselineFacts)
     .filter((facts) => Object.keys(facts).length > 0);
 
   const eligibility = arrayField(structured.eligibility).length
@@ -126,27 +139,6 @@ export function latestCheckedAt(sources: Array<{ last_checked_at?: string | null
     .filter((value): value is string => Boolean(value))
     .sort()
     .at(-1) || null;
-}
-
-function baselineFactsFromMetadata(value: unknown) {
-  const metadata = objectValue(value);
-  if (
-    metadata.baseline_facts_rejected === true ||
-    objectValue(metadata.baseline_facts_metadata).rejected === true
-  ) {
-    return {};
-  }
-
-  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
-  return baselineFactsAreUsable(facts) ? facts : {};
-}
-
-function baselineFactsAreUsable(facts: Record<string, unknown>) {
-  const relevance = cleanKey(facts.award_relevance);
-  const cycleRelevance = cleanKey(facts.cycle_relevance);
-  if (relevance === "unrelated") return false;
-  if (cycleRelevance === "not_program_page" || cycleRelevance === "archived_or_past") return false;
-  return true;
 }
 
 function splitFact(value: string | null, fallback: string[] = []) {
@@ -324,13 +316,6 @@ function normalizeLabel(value: string) {
 
 function cleanString(value: unknown) {
   return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
-}
-
-function cleanKey(value: unknown) {
-  return cleanString(value)
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

@@ -1,0 +1,497 @@
+import { describe, expect, it } from "vitest";
+import {
+  buildVisualReviewPromptPayload,
+  classifyVisualReviewCandidate,
+  normalizeVisualBatchResult,
+  normalizeVisualReviewMode,
+  validateVisualBatchReview,
+  visualReviewCandidateSignature,
+} from "./lib/visual-review-queue.mjs";
+
+const source = {
+  id: "source-1",
+  shared_award_id: "award-1",
+  url: "https://example.edu/scholarships/example-award/apply",
+  title: "Example Award Application",
+  page_type: "application",
+  admin_review_status: "open",
+  page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+  page_metadata: {
+    baseline_facts: {
+      award_relevance: "primary",
+      cycle_relevance: "current_or_upcoming",
+      display_title: "Example Award Application",
+      quality_flags: [],
+    },
+  },
+};
+
+const candidate = {
+  id: "candidate-1",
+  shared_award_source_id: "source-1",
+  candidate_signature: "signature",
+  deterministic_diff: {
+    added_text: ["Application deadline: March 15, 2027"],
+    removed_text: ["Application deadline: March 1, 2027"],
+  },
+  prompt_payload: {
+    include_images: false,
+    new_text_excerpt: "Application deadline: March 15, 2027",
+    previous_text_excerpt: "Application deadline: March 1, 2027",
+  },
+};
+
+function sourceFixture(overrides = {}) {
+  return {
+    ...source,
+    ...overrides,
+    page_metadata: {
+      ...source.page_metadata,
+      ...(overrides.page_metadata || {}),
+      baseline_facts: {
+        ...source.page_metadata.baseline_facts,
+        ...(overrides.page_metadata?.baseline_facts || {}),
+      },
+    },
+  };
+}
+
+describe("visual review queue helpers", () => {
+  it("normalizes visual review mode values", () => {
+    expect(normalizeVisualReviewMode("batch", "immediate")).toBe("batch");
+    expect(normalizeVisualReviewMode("false", "batch")).toBe("none");
+    expect(normalizeVisualReviewMode("true", "batch")).toBe("batch");
+    expect(normalizeVisualReviewMode("immediate", "batch")).toBe("immediate");
+  });
+
+  it("builds stable signatures from hashes and deterministic diff", () => {
+    const first = visualReviewCandidateSignature({
+      source,
+      baseline: { text_hash: "a", image_hash: "b" },
+      capture: { text_hash: "c", image_hash: "d" },
+      diff: { added_text: ["Application deadline: March 15, 2027"] },
+      deterministic: { classification: "candidate_change" },
+      behaviorVersion: 6,
+    });
+    const second = visualReviewCandidateSignature({
+      source,
+      baseline: { image_hash: "b", text_hash: "a" },
+      capture: { image_hash: "d", text_hash: "c" },
+      diff: { added_text: ["Application deadline: March 15, 2027"] },
+      deterministic: { classification: "candidate_change" },
+      behaviorVersion: 6,
+    });
+    expect(first).toHaveLength(64);
+    expect(second).toBe(first);
+  });
+
+  it("allows a supported primary award fact change", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_award_facts: [
+        {
+          fact: "Application deadline changed",
+          before: "Application deadline: March 1, 2027",
+          after: "Application deadline: March 15, 2027",
+          added_text: "Application deadline: March 15, 2027",
+          removed_text: "Application deadline: March 1, 2027",
+        },
+      ],
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The application deadline changed from March 1 to March 15, 2027.",
+      advisor_impact: "Advisors should update deadline guidance.",
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toEqual({
+      allowed: true,
+      reason: "approved",
+    });
+  });
+
+  it("accepts the strict changed_facts and exact evidence fields", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      source_relevance_reason: "The source is the award application page.",
+      changed_facts: [
+        {
+          fact: "Application deadline changed",
+          before: "Application deadline: March 1, 2027",
+          after: "Application deadline: March 15, 2027",
+        },
+      ],
+      exact_before: "Application deadline: March 1, 2027",
+      exact_after: "Application deadline: March 15, 2027",
+      evidence_location: "Deadline row",
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The application deadline changed from March 1 to March 15, 2027.",
+      advisor_impact: "Advisors should update deadline guidance.",
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toEqual({
+      allowed: true,
+      reason: "approved",
+    });
+  });
+
+  it("rejects unclear source relevance", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "unclear",
+      changed_award_facts: [{ fact: "Deadline changed", added_text: "Application deadline: March 15, 2027" }],
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toMatchObject({
+      allowed: false,
+      reason: "source_relevance_unclear",
+    });
+  });
+
+  it("rejects unsupported changed facts", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_award_facts: [{ fact: "Award amount changed", after: "$5,000" }],
+      exact_before: "Application deadline: March 1, 2027",
+      exact_after: "Application deadline: March 15, 2027",
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Funding",
+      change_type: "funding",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toMatchObject({
+      allowed: false,
+      reason: "changed_facts_not_supported_by_evidence",
+    });
+  });
+
+  it("rejects a high-confidence result when one critical claim lacks exact evidence", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_award_facts: [
+        {
+          fact: "Application deadline changed",
+          before: "Application deadline: March 1, 2027",
+          after: "Application deadline: March 15, 2027",
+        },
+        {
+          fact: "Award amount changed",
+          before: "$4,000",
+          after: "$5,000",
+        },
+      ],
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines and funding",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toMatchObject({
+      allowed: false,
+      reason: "changed_facts_not_supported_by_evidence",
+    });
+  });
+
+  it("rejects source-quality failures at publish time", () => {
+    const badSource = {
+      ...source,
+      url: "https://example.edu/careers/job/profile/123",
+    };
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_award_facts: [{ fact: "Deadline changed", added_text: "Application deadline: March 15, 2027" }],
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+    }, { candidate, source: badSource });
+
+    expect(validateVisualBatchReview({ candidate, source: badSource, result })).toMatchObject({
+      allowed: false,
+    });
+  });
+
+  it("rejects ACLS/JUMP AppSolutions version churn before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source,
+      diff: {
+        added_text: ["JUMP AppSolutions Version 5.1.7"],
+        removed_text: ["JUMP AppSolutions Version 5.1.6"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "popup_modal_noise",
+    });
+  });
+
+  it("rejects Ask LOC security-question pages before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source: sourceFixture({
+        url: "https://ask.loc.gov/security/question",
+        title: "Security Question",
+      }),
+      diff: {
+        added_text: ["Security question answer required"],
+        removed_text: ["Security question"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "access_error",
+      source_rejected: true,
+    });
+  });
+
+  it("rejects unclear SFFILM general FAQ sources before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source: sourceFixture({
+        url: "https://sffilm.org/faq",
+        title: "General FAQ",
+        page_type: "faq",
+        page_metadata: {
+          baseline_facts: {
+            award_relevance: "unclear",
+            cycle_relevance: "current_or_upcoming",
+          },
+        },
+      }),
+      diff: {
+        added_text: ["Frequently asked questions were reordered."],
+        removed_text: ["General questions"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "source_quality_award_relevance_unclear",
+      source_rejected: true,
+    });
+  });
+
+  it("rejects Audubon popup/free app modal changes before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source: sourceFixture({
+        url: "https://example.edu/audubon/scholarship/apply",
+        title: "Audubon Scholarship Application",
+      }),
+      diff: {
+        added_text: ["Download our free app to continue"],
+        removed_text: ["Close"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "popup_modal_noise",
+    });
+  });
+
+  it("rejects PDF file-size/hash changes with no text evidence before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source: sourceFixture({
+        url: "https://example.edu/scholarships/example-award/guide.pdf",
+        title: "Example Award Guide PDF",
+        page_type: "pdf",
+      }),
+      diff: {
+        added_text: [],
+        removed_text: [],
+      },
+      deterministic: { candidate_change: true, reason: "pdf_file_hash_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "pdf_metadata_only",
+    });
+  });
+
+  it("rejects fellow profile/testimonial rotation before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source,
+      diff: {
+        added_text: ["Featured fellow testimonial: I loved the program."],
+        removed_text: ["Featured fellow testimonial: This changed my career."],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "profile_roster_rotation",
+    });
+  });
+
+  it("rejects job board updates before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source: sourceFixture({
+        url: "https://example.edu/careers/jobs/123",
+        title: "Program Coordinator Job",
+      }),
+      diff: {
+        added_text: ["The job posting close date changed."],
+        removed_text: ["Apply now for this job."],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      source_rejected: true,
+    });
+  });
+
+  it("rejects sibling PhRMA Faculty Starter Grants under the wrong award before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source: sourceFixture({
+        shared_awards: { name: "PhRMA Foundation Predoctoral Fellowship" },
+        title: "PhRMA Foundation Predoctoral Fellowship",
+      }),
+      diff: {
+        added_text: ["Faculty Starter Grants application deadline: September 1, 2027"],
+        removed_text: ["Faculty Starter Grants application deadline: August 15, 2027"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "sibling_program_or_cross_award",
+    });
+  });
+
+  it("allows text-only deadline changes without image prompt parts by default", () => {
+    const diff = {
+      added_text: ["Application deadline: April 2, 2027"],
+      removed_text: ["Application deadline: March 15, 2027"],
+    };
+    const deterministic = { candidate_change: true, reason: "award_relevant_terms_or_context" };
+    const decision = classifyVisualReviewCandidate({ source, diff, deterministic });
+    const payload = buildVisualReviewPromptPayload({
+      source,
+      baseline: { text_hash: "old", image_hash: "same" },
+      previous: { text: "Application deadline: March 15, 2027", thumbPath: "previous.jpg" },
+      capture: { text: "Application deadline: April 2, 2027", text_hash: "new", image_hash: "same", thumbPath: "new.jpg" },
+      diff,
+      deterministic: { ...deterministic, classification: decision.label },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      label: "applicant_fact_change",
+      candidate_kind: "text_only",
+    });
+    expect(payload.include_images).toBe(false);
+  });
+
+  it("allows text-only award amount changes", () => {
+    const decision = classifyVisualReviewCandidate({
+      source,
+      diff: {
+        added_text: ["Award amount: $7,500"],
+        removed_text: ["Award amount: $5,000"],
+      },
+      deterministic: { candidate_change: true, reason: "award_relevant_terms_or_context" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      label: "applicant_fact_change",
+      candidate_kind: "text_only",
+    });
+  });
+
+  it("rejects text-only nav/footer churn before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source,
+      diff: {
+        added_text: ["Footer navigation: Privacy Terms Contact Facebook LinkedIn"],
+        removed_text: ["Footer navigation: Privacy Terms Contact Twitter LinkedIn"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "nav_chrome_noise",
+    });
+  });
+
+  it("rejects text-only timestamp/current-date churn before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source,
+      diff: {
+        added_text: ["Last updated July 8, 2026"],
+        removed_text: ["Last updated July 7, 2026"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "nav_chrome_noise",
+      reason: "timestamp_or_countdown_noise",
+    });
+  });
+
+  it("rejects text-only access-denied/login text before AI", () => {
+    const decision = classifyVisualReviewCandidate({
+      source,
+      diff: {
+        added_text: ["Access denied. Login required to continue."],
+        removed_text: ["Example Award application instructions"],
+      },
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      label: "access_error",
+    });
+  });
+});

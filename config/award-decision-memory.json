@@ -1,0 +1,357 @@
+{
+  "version": 1,
+  "name": "AwardPing user decision memory",
+  "updated_at": "2026-07-08",
+  "description": "Conversation-derived global and example decisions that should guide AI interpretation, source quality review, and update filtering across all awards.",
+  "entries": [
+    {
+      "id": "apply_user_feedback_globally",
+      "scope": "global",
+      "decision_type": "operating_principle",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai",
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Apply user corrections as global AwardPing rules unless the correction is explicitly award-specific. Do not treat example pages as one-off exceptions when the same pattern can affect other awards.",
+      "examples": [
+        "If a screenshot example shows irrelevant PDF bloat, clean the same source shape everywhere.",
+        "If a screenshot example shows a false update from expansion state, reject that pattern everywhere."
+      ]
+    },
+    {
+      "id": "persist_page_corrections_to_decision_memory",
+      "scope": "global",
+      "decision_type": "operating_principle",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai",
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Whenever the user corrects a specific award page, source page, field placement, source title, source relevance decision, screenshot localization, or update interpretation, persist the repeatable rule in AwardPing decision memory so future AI review can apply it across the program.",
+      "examples": [
+        "If the user says a page is irrelevant, record the source-shape reason so similar pages are filtered later.",
+        "If the user says a field belongs somewhere else, record the field-placement rule for future baseline extraction.",
+        "If the user says an update is not necessary, record the false-update pattern for future change review."
+      ]
+    },
+    {
+      "id": "same_named_award_source_relevance",
+      "scope": "global",
+      "decision_type": "source_relevance",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "Treat a source as primary or supporting only when it is about the same named award or program being monitored. Sibling awards, broad agency pages, unrelated research, news, jobs, staff, alumni, recipients, events, and pages that merely share the organization or domain should be unrelated or review_later.",
+      "examples": [
+        "A broad Department of Energy opportunities page is not automatically relevant to an ORISE fellowship.",
+        "A National Academies committee meeting page is not relevant to a Gulf Research Program fellowship unless it changes that fellowship."
+      ]
+    },
+    {
+      "id": "split_accidentally_combined_awards",
+      "scope": "global",
+      "decision_type": "award_identity",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "When a page contains multiple distinct awards or opportunities, identify whether each item belongs to the monitored award. Separate named awards should not be merged into one award record; unrelated opportunities should not be used as sources for the current award.",
+      "examples": [
+        "A NASA page with multiple funding opportunities may represent many awards, not one award.",
+        "A Fulbright landing page listing multiple award families should not make every listed opportunity a source for a single award."
+      ]
+    },
+    {
+      "id": "homepage_source_required_when_present",
+      "scope": "global",
+      "decision_type": "source_relevance",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "If an official award homepage, information page, award-info page, main website, or official application overview exists for the same award, keep it as a source and give it the short display title Homepage.",
+      "examples": [
+        "An ACM award nomination page can be the Homepage source when it is the official award information page."
+      ]
+    },
+    {
+      "id": "overview_is_award_landing_not_source",
+      "scope": "global",
+      "decision_type": "page_model",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "Overview is the award landing page synthesized from sources. Do not create, title, or list a monitored source or subpage as Overview unless the official page itself is visibly named Overview.",
+      "examples": [
+        "The left outline should not have Overview under source names.",
+        "Award facts belong on the award overview, not as a duplicated source page named Overview."
+      ]
+    },
+    {
+      "id": "short_ai_source_titles",
+      "scope": "global",
+      "decision_type": "source_title",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "Create concise human source titles that fit in the left outline. Remove repeated organization, award, and program prefixes when the user is already inside that award. Prefer labels such as Homepage, Eligibility, Application Instructions, Conflict of Interest Guidelines, Advice for Nominators, FAQ, or Application Form.",
+      "examples": [
+        "Under ACM Doctoral Dissertation Award, use Conflict of Interest Guidelines instead of ACM Awards Committee Conflict of Interest Guidelines.",
+        "Use Advice for Nominators and Endorsers instead of ACM Awards: Advice for Nominators and Endorsers."
+      ]
+    },
+    {
+      "id": "compact_flat_source_outline",
+      "scope": "global",
+      "decision_type": "public_rendering",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "For award source outlines, prefer a compact flat list of short source names with only useful tags such as PDF and an update mark. Avoid broad repeated category buckets when the short source name is enough.",
+      "examples": [
+        "Do not force sources under large buckets like Application or Documents when the source title itself is clear.",
+        "A PDF should show a PDF tag, not a long category label plus a repeated subtitle."
+      ]
+    },
+    {
+      "id": "source_pages_are_update_history_views",
+      "scope": "global",
+      "decision_type": "public_rendering",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "change_details_ai"
+      ],
+      "prompt": "A source or subpage detail view exists mainly to show whether that page changed and what changed. Do not duplicate the award overview facts on a Homepage/source panel when those facts are already synthesized on the award overview.",
+      "examples": [
+        "Clicking Homepage should show source identity and source update history, not relist the whole award overview."
+      ]
+    },
+    {
+      "id": "award_conditions_not_generic_requirements",
+      "scope": "global",
+      "decision_type": "structured_facts",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "Use Award conditions only for true award constraints, obligations, nomination limits, or eligibility-adjacent rules. Do not put application materials, forms, essays, transcripts, references, CVs, portal sections, or contact/profile fields under requirements or Award conditions.",
+      "examples": [
+        "College transcripts and personal statements are application materials, not award conditions.",
+        "Only the writer's Ph.D. advisor may nominate is an award condition."
+      ]
+    },
+    {
+      "id": "hide_empty_or_materials_only_conditions",
+      "scope": "global",
+      "decision_type": "structured_facts",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts"
+      ],
+      "prompt": "If the page has no true award conditions beyond eligibility and application materials, leave requirements empty instead of filling it with materials or process steps.",
+      "examples": [
+        "Online application submission, essays, references, and transcripts should not cause an Award conditions row."
+      ]
+    },
+    {
+      "id": "important_dates_require_context",
+      "scope": "global",
+      "decision_type": "structured_facts",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "change_details_ai"
+      ],
+      "prompt": "Important dates must always include what the date means. Never output bare dates. If the context cannot be determined, omit the date or place it in notes as unclear.",
+      "examples": [
+        "Use Application deadline: March 15, 2027 instead of March 15, 2027.",
+        "Use Awards announced by: May 1 instead of May 1."
+      ]
+    },
+    {
+      "id": "multi_item_values_are_atomic_arrays",
+      "scope": "global",
+      "decision_type": "structured_facts",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts"
+      ],
+      "prompt": "When a row contains multiple items separated by semicolons, line breaks, or repeated clauses, output atomic array items so the UI can render bullets. Do not preserve long semicolon chains as one value.",
+      "examples": [
+        "Split Essay; transcript; two recommendations into three application_materials items.",
+        "Split multiple award amounts into separate award_amounts items."
+      ]
+    },
+    {
+      "id": "documents_are_applicant_facing_only",
+      "scope": "global",
+      "decision_type": "source_quality",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "Keep documents and PDFs only when they are applicant-facing for the monitored award, such as forms, guides, instructions, eligibility PDFs, or required materials. Move duplicate, archive, roster, annual report, policy, bylaws, data, media, travel, logo, and generic institutional PDFs to review_later.",
+      "examples": [
+        "Recipient lists and alphabetical rosters are not application sources.",
+        "Repeated copies of the same PDF should be deduplicated."
+      ]
+    },
+    {
+      "id": "bad_source_shapes_are_review_later",
+      "scope": "global",
+      "decision_type": "source_quality",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "baseline_facts",
+        "source_quality_ai"
+      ],
+      "prompt": "Generic search pages, tag pages, category pages, listing pages, open-data facets, unrelated event pages, generic portals, payment pages, travel forms, and broad navigation pages should not remain active monitored sources unless they directly contain current applicant-facing information for the same award.",
+      "examples": [
+        "A generic search result page should be review_later.",
+        "A payment link is not an award source unless payment instructions are required for application."
+      ]
+    },
+    {
+      "id": "duplicate_updates_must_be_squashed",
+      "scope": "global",
+      "decision_type": "change_interpretation",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Do not create two public updates for the same underlying factual change. If two detected changes describe the same added, removed, or clarified award fact, merge or suppress the duplicate.",
+      "examples": [
+        "Two EREF recommendation updates describing the same three-recommendation clarification are duplicates.",
+        "Two Henry Clay attendance-policy summaries about the same opt-out change are duplicates."
+      ]
+    },
+    {
+      "id": "accordion_lazy_load_and_slide_in_noise",
+      "scope": "global",
+      "decision_type": "change_interpretation",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Reject changes caused by accordions, collapse or expansion state, delayed slide-in panels, lazy-loaded cards, or screenshots taken before a page fully loaded. Content that was already present but hidden, delayed, or lower on the page is not a meaningful update.",
+      "examples": [
+        "A side panel appearing only after scrolling is not removed content.",
+        "A page section loading late is not an update."
+      ]
+    },
+    {
+      "id": "navigation_order_changes_are_noise",
+      "scope": "global",
+      "decision_type": "change_interpretation",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Reject menu order, FAQ order, sidebar order, link-order, and navigation-label reorder changes unless an applicant-facing award rule, deadline, amount, eligibility condition, or required material actually changed.",
+      "examples": [
+        "Freeman-ASIA Eligibility and FAQ links swapping position is not a meaningful update."
+      ]
+    },
+    {
+      "id": "generic_news_latest_and_events_noise",
+      "scope": "global",
+      "decision_type": "change_interpretation",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Reject generic Latest Updates blocks, news modules, event listings, committee meetings, webinars, and cross-program announcements unless the changed item directly changes applicant-facing information for the monitored award.",
+      "examples": [
+        "A National Academies committee meeting date change is not an update for a Gulf Research Program fellowship.",
+        "A generic upcoming events module adding or removing an event is not an award update."
+      ]
+    },
+    {
+      "id": "changed_section_screenshot_must_match",
+      "scope": "global",
+      "decision_type": "screenshot_localization",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "When screenshot or location evidence is used, the changed section must actually show the text or visual area being described. If localization points to the wrong section, do not invent a visual match; fall back to full screenshot or text-only evidence.",
+      "examples": [
+        "Do not show More like this when the changed committee meeting dates are near the top of the page.",
+        "If American Library Association scholarship updates localize to the wrong section, treat the localization as unreliable."
+      ]
+    },
+    {
+      "id": "no_false_added_or_removed_text",
+      "scope": "global",
+      "decision_type": "change_interpretation",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "visual_snapshot_ai",
+        "visual_snapshot_gemini_cli",
+        "change_details_ai"
+      ],
+      "prompt": "Only call text added if it is present in the current capture and absent from the previous capture. Only call text removed if it is present in the previous capture and absent from the current capture. If both versions still contain the text, it is not an added or removed change.",
+      "examples": [
+        "Do not say an old Letter of Intent instruction was removed if the current page still shows it."
+      ]
+    },
+    {
+      "id": "old_snapshots_graceful_fallback",
+      "scope": "global",
+      "decision_type": "screenshot_localization",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "change_details_ai"
+      ],
+      "prompt": "Older snapshots may not have localization metadata. When exact changed-section metadata is unavailable or unreliable, report that the screenshot is not localized yet or use full screenshot evidence instead of claiming an exact section.",
+      "examples": [
+        "A text-only update is better than showing the wrong crop."
+      ]
+    },
+    {
+      "id": "source_quality_examples_from_review",
+      "scope": "global",
+      "decision_type": "source_quality",
+      "applies_to": "all_awards",
+      "prompt_scopes": [
+        "source_quality_ai",
+        "baseline_facts"
+      ],
+      "prompt": "Use prior reviewed examples as source-quality patterns: ORISE/DOE broad opportunity pages, Fulbright multi-award pages, GIAR recipient PDFs, DAAD repetitive PDFs, and NASA multi-opportunity pages need conservative same-award relevance checks before remaining active sources.",
+      "examples": [
+        "If an award has dozens of broad-domain PDFs, keep only the applicant-facing ones for that award.",
+        "If a page is really about many awards, split or review_later instead of attaching everything to one award."
+      ]
+    }
+  ]
+}

@@ -35,11 +35,18 @@ export type ChangeDetails = {
   reader_summary: string;
   before: string | null;
   after: string | null;
+  exact_before?: string | null;
+  exact_after?: string | null;
   section: string | null;
   change_type: string;
   advisor_impact: string | null;
   is_alert_worthy: boolean;
   confidence: ChangeDetailsConfidence;
+  source_relevance?: "primary" | "supporting" | "unclear" | "unrelated";
+  source_relevance_reason?: string | null;
+  changed_facts?: string[];
+  evidence_location?: string | null;
+  rejection_reason?: string | null;
   structured_diff: StructuredChangeDiff;
   source: ChangeDetailSource;
   quality_flags: string[];
@@ -195,20 +202,47 @@ export function normalizeAiChangeDetails(input: {
     ...input.source,
     ...(objectValue(parsed.source) || {}),
   });
+  const sourceRelevance = normalizeSourceRelevance(parsed.source_relevance);
+  const changedFactRecords = normalizeAiChangedFacts(parsed.changed_facts ?? parsed.changed_award_facts);
+  const changedFacts = changedFactRecords.map((fact) =>
+    [fact.fact, fact.before, fact.after, fact.added_text, fact.removed_text, fact.visual_evidence]
+      .filter(Boolean)
+      .join(" | "),
+  );
+  const exactBefore = nullableCleanText(parsed.exact_before ?? parsed.before);
+  const exactAfter = nullableCleanText(parsed.exact_after ?? parsed.after);
+  const aiAlertWorthy = typeof parsed.is_alert_worthy === "boolean" ? parsed.is_alert_worthy : false;
+  const preflightFlags = aiChangeDetailsRejectionFlags({
+    parsed,
+    sourceRelevance,
+    changedFactRecords,
+    exactBefore,
+    exactAfter,
+    fallback: input.fallback,
+    aiAlertWorthy,
+  });
+  if (preflightFlags.length) {
+    return rejectAiChangeDetails(input.fallback, provider, model, preflightFlags);
+  }
+
   const merged: ChangeDetails = {
     reader_summary:
       cleanShortText(parsed.reader_summary) || input.fallback.reader_summary,
-    before: nullableCleanText(parsed.before) ?? input.fallback.before,
-    after: nullableCleanText(parsed.after) ?? input.fallback.after,
+    before: exactBefore ?? nullableCleanText(parsed.before) ?? input.fallback.before,
+    after: exactAfter ?? nullableCleanText(parsed.after) ?? input.fallback.after,
+    exact_before: exactBefore,
+    exact_after: exactAfter,
     section: nullableCleanText(parsed.section) ?? input.fallback.section,
     change_type: cleanSlugText(parsed.change_type) || input.fallback.change_type,
     advisor_impact:
       nullableCleanText(parsed.advisor_impact) ?? input.fallback.advisor_impact,
-    is_alert_worthy:
-      typeof parsed.is_alert_worthy === "boolean"
-        ? parsed.is_alert_worthy
-        : input.fallback.is_alert_worthy,
-    confidence: normalizeConfidence(parsed.confidence) || input.fallback.confidence,
+    is_alert_worthy: aiAlertWorthy,
+    confidence: normalizeConfidence(parsed.confidence) || "low",
+    source_relevance: sourceRelevance,
+    source_relevance_reason: nullableCleanText(parsed.source_relevance_reason),
+    changed_facts: changedFacts,
+    evidence_location: nullableCleanText(parsed.evidence_location),
+    rejection_reason: nullableCleanText(parsed.rejection_reason),
     structured_diff: normalizeStructuredDiff(
       objectValue(parsed.structured_diff),
       input.fallback.structured_diff,
@@ -217,7 +251,7 @@ export function normalizeAiChangeDetails(input: {
     quality_flags: [],
     generated_at: new Date().toISOString(),
     generation_provider: provider,
-    generation_status: "generated",
+    generation_status: aiAlertWorthy ? "generated" : "rejected",
     generation_model: model,
   };
   const refined = refineContentOnlyChange(merged);
@@ -243,6 +277,168 @@ export function normalizeAiChangeDetails(input: {
   };
 }
 
+type NormalizedAiChangedFact = {
+  fact: string | null;
+  before: string | null;
+  after: string | null;
+  added_text: string | null;
+  removed_text: string | null;
+  visual_evidence: string | null;
+};
+
+function aiChangeDetailsRejectionFlags(input: {
+  parsed: Record<string, unknown>;
+  sourceRelevance: "primary" | "supporting" | "unclear" | "unrelated";
+  changedFactRecords: NormalizedAiChangedFact[];
+  exactBefore: string | null;
+  exactAfter: string | null;
+  fallback: ChangeDetails;
+  aiAlertWorthy: boolean;
+}) {
+  const flags: string[] = [];
+  if (!input.aiAlertWorthy) return flags;
+
+  const requiredKeys = [
+    "source_relevance",
+    "source_relevance_reason",
+    "changed_facts",
+    "exact_before",
+    "exact_after",
+    "evidence_location",
+    "confidence",
+  ];
+  for (const key of requiredKeys) {
+    if (!(key in input.parsed)) flags.push(`ai_missing_${key}`);
+  }
+  if (!["primary", "supporting"].includes(input.sourceRelevance)) {
+    flags.push(`source_relevance_${input.sourceRelevance}`);
+  }
+  if (!input.changedFactRecords.length) flags.push("missing_changed_facts");
+  if (!aiChangedFactsHaveApplicantSignal(input.changedFactRecords, input.parsed, input.fallback)) {
+    flags.push("changed_facts_not_applicant_facing");
+  }
+  if (!aiChangedFactsHaveExactEvidence(input)) {
+    flags.push("changed_facts_not_supported_by_evidence");
+  }
+  if (normalizeConfidence(input.parsed.confidence) === "high" && !input.exactBefore && !input.exactAfter) {
+    flags.push("high_confidence_without_exact_evidence");
+  }
+  return unique(flags);
+}
+
+function rejectAiChangeDetails(
+  fallback: ChangeDetails,
+  provider: ChangeGenerationProvider,
+  model: string | null,
+  flags: string[],
+) {
+  return withGenerationMetadata(
+    {
+      ...fallback,
+      is_alert_worthy: false,
+      confidence: "low",
+      quality_flags: unique([...fallback.quality_flags, ...flags, "ai_rejected"]),
+      generation_status: "rejected",
+    },
+    provider,
+    "rejected",
+    model,
+  );
+}
+
+function normalizeAiChangedFacts(value: unknown): NormalizedAiChangedFact[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): NormalizedAiChangedFact => {
+      if (typeof item === "string") {
+        return {
+          fact: nullableCleanText(item),
+          before: null,
+          after: null,
+          added_text: null,
+          removed_text: null,
+          visual_evidence: null,
+        };
+      }
+      const object = objectValue(item);
+      return {
+        fact: nullableCleanText(object?.fact ?? object?.name ?? object?.summary),
+        before: nullableCleanText(object?.before),
+        after: nullableCleanText(object?.after),
+        added_text: nullableCleanText(object?.added_text ?? object?.addedText),
+        removed_text: nullableCleanText(object?.removed_text ?? object?.removedText),
+        visual_evidence: nullableCleanText(object?.visual_evidence ?? object?.visualEvidence ?? object?.evidence),
+      };
+    })
+    .filter((fact) => fact.fact || fact.before || fact.after || fact.added_text || fact.removed_text || fact.visual_evidence)
+    .slice(0, 12);
+}
+
+function aiChangedFactsHaveApplicantSignal(
+  changedFacts: NormalizedAiChangedFact[],
+  parsed: Record<string, unknown>,
+  fallback: ChangeDetails,
+) {
+  const text = [
+    parsed.change_type,
+    parsed.section,
+    parsed.reader_summary,
+    parsed.advisor_impact,
+    fallback.change_type,
+    fallback.section,
+    ...fallback.structured_diff.date_changes,
+    ...fallback.structured_diff.amount_changes,
+    ...changedFacts.flatMap((fact) => [
+      fact.fact,
+      fact.before,
+      fact.after,
+      fact.added_text,
+      fact.removed_text,
+      fact.visual_evidence,
+    ]),
+  ].join(" ");
+  return hasApplicantFacingChangeSignalText(text);
+}
+
+function aiChangedFactsHaveExactEvidence(input: {
+  changedFactRecords: NormalizedAiChangedFact[];
+  exactBefore: string | null;
+  exactAfter: string | null;
+  fallback: ChangeDetails;
+}) {
+  const removedEvidence = [
+    input.fallback.before,
+    ...input.fallback.structured_diff.removed_text,
+    ...input.fallback.structured_diff.date_changes.filter((change) => /^Removed\b/i.test(change)),
+    ...input.fallback.structured_diff.amount_changes.filter((change) => /^Removed\b/i.test(change)),
+  ].filter((value): value is string => Boolean(value));
+  const addedEvidence = [
+    input.fallback.after,
+    ...input.fallback.structured_diff.added_text,
+    ...input.fallback.structured_diff.date_changes.filter((change) => /^Added\b/i.test(change)),
+    ...input.fallback.structured_diff.amount_changes.filter((change) => /^Added\b/i.test(change)),
+  ].filter((value): value is string => Boolean(value));
+
+  if (input.exactBefore && !evidenceListContains(removedEvidence, input.exactBefore)) return false;
+  if (input.exactAfter && !evidenceListContains(addedEvidence, input.exactAfter)) return false;
+
+  return input.changedFactRecords.every((fact) => {
+    if (fact.removed_text && evidenceListContains(removedEvidence, fact.removed_text)) return true;
+    if (fact.added_text && evidenceListContains(addedEvidence, fact.added_text)) return true;
+    if (fact.before && evidenceListContains(removedEvidence, fact.before)) return true;
+    if (fact.after && evidenceListContains(addedEvidence, fact.after)) return true;
+    return Boolean(fact.visual_evidence);
+  });
+}
+
+function evidenceListContains(haystackValues: string[], needle: string) {
+  const cleanNeedle = normalizeChangeText(needle).toLowerCase();
+  if (!cleanNeedle || cleanNeedle.length < 3) return false;
+  return haystackValues
+    .map((value) => normalizeChangeText(value).toLowerCase())
+    .some((value) => value.includes(cleanNeedle) || cleanNeedle.includes(value));
+}
+
 export function parseChangeDetails(value: unknown): ChangeDetails | null {
   const parsed = parseJsonObject(value);
   if (!parsed) return null;
@@ -253,12 +449,23 @@ export function parseChangeDetails(value: unknown): ChangeDetails | null {
     reader_summary: readerSummary,
     before: nullableCleanText(parsed.before),
     after: nullableCleanText(parsed.after),
+    exact_before: nullableCleanText(parsed.exact_before),
+    exact_after: nullableCleanText(parsed.exact_after),
     section: nullableCleanText(parsed.section),
     change_type: cleanSlugText(parsed.change_type) || "other",
     advisor_impact: nullableCleanText(parsed.advisor_impact),
     is_alert_worthy:
       typeof parsed.is_alert_worthy === "boolean" ? parsed.is_alert_worthy : true,
     confidence: normalizeConfidence(parsed.confidence) || "low",
+    source_relevance: normalizeSourceRelevance(parsed.source_relevance),
+    source_relevance_reason: nullableCleanText(parsed.source_relevance_reason),
+    changed_facts: normalizeAiChangedFacts(parsed.changed_facts ?? parsed.changed_award_facts).map((fact) =>
+      [fact.fact, fact.before, fact.after, fact.added_text, fact.removed_text, fact.visual_evidence]
+        .filter(Boolean)
+        .join(" | "),
+    ),
+    evidence_location: nullableCleanText(parsed.evidence_location),
+    rejection_reason: nullableCleanText(parsed.rejection_reason),
     structured_diff: normalizeStructuredDiff(objectValue(parsed.structured_diff), {
       added_text: [],
       removed_text: [],
@@ -1113,6 +1320,12 @@ function normalizeConfidence(value: unknown): ChangeDetailsConfidence | null {
   const clean = cleanSlugText(value);
   if (clean === "low" || clean === "medium" || clean === "high") return clean;
   return null;
+}
+
+function normalizeSourceRelevance(value: unknown): "primary" | "supporting" | "unclear" | "unrelated" {
+  const clean = cleanSlugText(value);
+  if (clean === "primary" || clean === "supporting" || clean === "unrelated") return clean;
+  return "unclear";
 }
 
 function normalizeGenerationProvider(value: unknown): ChangeGenerationProvider | null {

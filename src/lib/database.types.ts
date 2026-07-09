@@ -406,6 +406,9 @@ export type Database = {
           new_hash: string;
           summary: string;
           change_details: Json;
+          suppressed_at: string | null;
+          suppression_reason: string | null;
+          suppression_source: string | null;
           first_reported_by_office_id: string | null;
           first_reported_by_monitor_id: string | null;
           detected_at: string;
@@ -423,6 +426,9 @@ export type Database = {
           new_hash: string;
           summary: string;
           change_details?: Json;
+          suppressed_at?: string | null;
+          suppression_reason?: string | null;
+          suppression_source?: string | null;
           first_reported_by_office_id?: string | null;
           first_reported_by_monitor_id?: string | null;
           detected_at?: string;
@@ -430,6 +436,9 @@ export type Database = {
         Update: {
           summary?: string;
           change_details?: Json;
+          suppressed_at?: string | null;
+          suppression_reason?: string | null;
+          suppression_source?: string | null;
         };
         Relationships: [];
       };

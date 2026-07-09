@@ -48,11 +48,25 @@ describe("structured change details", () => {
         reader_summary: "LEARN MORE | Applications close April 15, 2026.",
         before: "Applications close April 1, 2026.",
         after: "Applications close April 15, 2026.",
+        exact_before: "Applications close April 1, 2026.",
+        exact_after: "Applications close April 15, 2026.",
         section: "Deadlines",
         change_type: "deadline",
         advisor_impact: "Review the deadline.",
         is_alert_worthy: true,
+        source_relevance: "primary",
+        source_relevance_reason: "The source is the award deadline page.",
+        changed_facts: [
+          {
+            fact: "Application deadline changed",
+            before: "Applications close April 1, 2026.",
+            after: "Applications close April 15, 2026.",
+          },
+        ],
+        evidence_location: "Deadlines",
         confidence: "high",
+        noise_flags: [],
+        rejection_reason: null,
       },
     });
 
@@ -72,11 +86,24 @@ describe("structured change details", () => {
         reader_summary: "The Linda Hall page added a new funding amount: $5,000.",
         before: null,
         after: null,
+        exact_before: null,
+        exact_after: "$5,000",
         section: "Funding",
         change_type: "funding",
         advisor_impact: "Check applicant funding materials.",
         is_alert_worthy: true,
+        source_relevance: "primary",
+        source_relevance_reason: "The source is the award deadline page.",
+        changed_facts: [
+          {
+            fact: "Award amount changed",
+            after: "$5,000",
+          },
+        ],
+        evidence_location: "Funding",
         confidence: "high",
+        noise_flags: [],
+        rejection_reason: null,
         structured_diff: {
           added_text: [],
           removed_text: [],
@@ -90,9 +117,48 @@ describe("structured change details", () => {
     });
 
     expect(details.reader_summary).toBe(fallback.reader_summary);
-    expect(details.quality_flags).toContain("unsupported_structured_fact");
+    expect(details.quality_flags).toContain("changed_facts_not_supported_by_evidence");
     expect(details.quality_flags).toContain("ai_rejected");
     expect(isMeaningfulChangeDetails(details)).toBe(false);
+  });
+
+  it("rejects AI alerts for unclear source relevance", () => {
+    const fallback = buildHeuristicChangeDetails({
+      previousSample: "Applications close April 1, 2026.",
+      nextText: "Applications close April 15, 2026.",
+      source: { source_title: "Deadlines" },
+    });
+    const details = normalizeAiChangeDetails({
+      fallback,
+      value: {
+        reader_summary: "The application deadline changed.",
+        before: "Applications close April 1, 2026.",
+        after: "Applications close April 15, 2026.",
+        exact_before: "Applications close April 1, 2026.",
+        exact_after: "Applications close April 15, 2026.",
+        section: "Deadlines",
+        change_type: "deadline",
+        advisor_impact: "Review the deadline.",
+        is_alert_worthy: true,
+        source_relevance: "unclear",
+        source_relevance_reason: "The page may be a broad listing.",
+        changed_facts: [
+          {
+            fact: "Deadline changed",
+            before: "Applications close April 1, 2026.",
+            after: "Applications close April 15, 2026.",
+          },
+        ],
+        evidence_location: "Deadlines",
+        confidence: "high",
+        noise_flags: [],
+        rejection_reason: null,
+      },
+    });
+
+    expect(details.quality_flags).toContain("source_relevance_unclear");
+    expect(details.quality_flags).toContain("ai_rejected");
+    expect(details.is_alert_worthy).toBe(false);
   });
 
   it("treats top jump-link prefixes before FAQ headings as scrape noise", () => {

@@ -10,6 +10,7 @@ import { displayAwardSummary } from "@/lib/award-summary";
 import type { Database } from "@/lib/database.types";
 import { nextCheckDate, type Cadence } from "@/lib/plans";
 import { normalizeSharedAwardKey } from "@/lib/shared-awards-core";
+import { isMonitorableAwardSource } from "@/lib/source-quality";
 import {
   displayHomepageForAward,
   filterTrackableOfficialSources,
@@ -131,7 +132,7 @@ export async function trackSharedAwardForOffice(input: {
   officeId: string;
   cadence: Cadence;
 }) {
-  const sharedSources = filterTrackableOfficialSources(input.sharedSources);
+  const sharedSources = filterTrackableOfficialSources(input.sharedSources).filter(isMonitorableAwardSource);
   if (sharedSources.length === 0) {
     throw new Error("This shared award does not have official organization source pages yet.");
   }

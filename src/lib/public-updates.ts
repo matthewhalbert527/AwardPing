@@ -41,6 +41,9 @@ type SharedChangeRow = Pick<
   | "source_page_type"
   | "summary"
   | "change_details"
+  | "suppressed_at"
+  | "suppression_reason"
+  | "suppression_source"
   | "detected_at"
 >;
 type SharedSourceStatusRow = Pick<
@@ -357,7 +360,8 @@ async function loadPublicDigestChanges(date: Date) {
   const supabase = createSupabaseAdminClient();
   const { data: changes, error } = await supabase
     .from("shared_award_change_events")
-    .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
+    .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at")
+    .is("suppressed_at", null)
     .gte("detected_at", publicDigestSince(date))
     .order("detected_at", { ascending: false })
     .limit(240);

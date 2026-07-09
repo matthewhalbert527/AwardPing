@@ -8,11 +8,11 @@ import {
 } from "@/lib/change-summary";
 import { activeChangeSourceFilter } from "@/lib/source-change-events";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
-import { getOfficeContext } from "@/lib/offices";
+import { canManageOffice, getOfficeContext } from "@/lib/offices";
+import { isPublicAwardSource } from "@/lib/source-quality";
 import {
   displayHomepageForAward,
   filterTrackableOfficialSources,
-  isMonitorableOfficialSource,
 } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
@@ -22,7 +22,7 @@ type Props = {
   params: Promise<{ id: string }>;
 };
 
-export async function GET(_request: Request, { params }: Props) {
+export async function GET(request: Request, { params }: Props) {
   if (!hasSupabaseConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
@@ -37,7 +37,20 @@ export async function GET(_request: Request, { params }: Props) {
   const { id } = await params;
   const user = await getCurrentUser();
   const officeContext = user ? await getOfficeContext(user) : null;
+  const includeSuppressed =
+    new URL(request.url).searchParams.get("includeSuppressed") === "true" &&
+    Boolean(officeContext && canManageOffice(officeContext.current.role));
   const admin = createSupabaseAdminClient();
+
+  let changesQuery = admin
+    .from("shared_award_change_events")
+    .select(
+      "id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at",
+    )
+    .eq("shared_award_id", id)
+    .order("detected_at", { ascending: false })
+    .limit(50);
+  if (!includeSuppressed) changesQuery = changesQuery.is("suppressed_at", null);
 
   const [
     { data: sharedAward, error: awardError },
@@ -54,18 +67,11 @@ export async function GET(_request: Request, { params }: Props) {
       .maybeSingle(),
     admin
       .from("shared_award_sources")
-      .select("id, shared_award_id, url, title, page_type, last_checked_at, last_error, created_at")
+      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id, last_checked_at, last_error, created_at")
       .eq("shared_award_id", id)
       .eq("admin_review_status", "open")
       .order("created_at", { ascending: true }),
-    admin
-      .from("shared_award_change_events")
-      .select(
-        "id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at",
-      )
-      .eq("shared_award_id", id)
-      .order("detected_at", { ascending: false })
-      .limit(50),
+    changesQuery,
     officeContext
       ? admin
           .from("awards")
@@ -97,12 +103,11 @@ export async function GET(_request: Request, { params }: Props) {
       .map((source) => source.shared_award_source_id)
       .filter((sourceId): sourceId is string => Boolean(sourceId)),
   );
-  const sources = filterTrackableOfficialSources(sharedSources || []);
+  const sources = filterTrackableOfficialSources(sharedSources || []).filter(isPublicAwardSource);
   const changeIsFromOpenSource = activeChangeSourceFilter(sources);
   const changes = dedupeChangeSummaries(
     (sharedChanges || []).filter((change) =>
       changeIsFromOpenSource(change) &&
-      isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
       isUsefulChangeForAward({
         awardName: sharedAward.name,
         sourceTitle: change.source_title,
@@ -137,6 +142,9 @@ export async function GET(_request: Request, { params }: Props) {
           sourcePageType: change.source_page_type,
           summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
           changeDetails: change.change_details,
+          suppressedAt: change.suppressed_at,
+          suppressionReason: change.suppression_reason,
+          suppressionSource: change.suppression_source,
           detectedAt: change.detected_at,
         })),
       })),
@@ -147,6 +155,9 @@ export async function GET(_request: Request, { params }: Props) {
         sourcePageType: change.source_page_type,
         summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
         changeDetails: change.change_details,
+        suppressedAt: change.suppressed_at,
+        suppressionReason: change.suppression_reason,
+        suppressionSource: change.suppression_source,
         detectedAt: change.detected_at,
       })),
     },

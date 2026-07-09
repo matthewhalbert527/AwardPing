@@ -39,6 +39,7 @@
 /START_HERE.md
 /scripts/Update-AwardPingProjectState.ps1
 reports/
+review-bundles/
 tmp/
 tmp-next-dev-*.log
 AwardPingVisualSnapshots/

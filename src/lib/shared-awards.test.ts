@@ -108,7 +108,7 @@ describe("shared awards", () => {
     ]);
   });
 
-  it("filters clearly non-award source URLs without dropping award-like news paths", () => {
+  it("filters clearly non-award source URLs including award-like news/listing paths", () => {
     expect(isClearlyNonAwardSourceUrl("https://onsa.asu.edu/apply")).toBe(false);
     expect(isInstitutionalDiscoveryUrl("https://onsa.asu.edu/apply")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("https://example.org/wp-login.php?redirect_to=/scholarship")).toBe(true);
@@ -116,7 +116,7 @@ describe("shared awards", () => {
     expect(isClearlyNonAwardSourceUrl("https://aas.org/jobregister/ad/db728362")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("https://isi.org/faculty/+18005267022")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("tel:+18005267022")).toBe(true);
-    expect(isClearlyNonAwardSourceUrl("https://www.tylenol.com/news/scholarship")).toBe(false);
+    expect(isClearlyNonAwardSourceUrl("https://www.tylenol.com/news/scholarship")).toBe(true);
     expect(isClearlyNonAwardSourceUrl("https://get.adobe.com/reader/")).toBe(true);
   });
 
@@ -224,13 +224,13 @@ describe("shared awards", () => {
     expect(isMonitorableOfficialSource(openDataDetail)).toBe(true);
   });
 
-  it("lets trusted source page types override generic listing heuristics without overriding hard blocks", () => {
+  it("does not let trusted source page types override generic listing or hard-block heuristics", () => {
     expect(
       isMonitorableOfficialSource({
         url: "https://example.org/events/application-deadline",
         page_type: "deadline",
       }),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isMonitorableOfficialSource({
         url: "https://example.org/wp-login.php?redirect_to=/scholarship",

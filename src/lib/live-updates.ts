@@ -21,6 +21,9 @@ type SharedChangeRow = Pick<
   | "source_page_type"
   | "summary"
   | "change_details"
+  | "suppressed_at"
+  | "suppression_reason"
+  | "suppression_source"
   | "detected_at"
 >;
 
@@ -31,7 +34,17 @@ type SharedAwardLookupRow = Pick<
 
 type SharedSourceLookupRow = Pick<
   Database["public"]["Tables"]["shared_award_sources"]["Row"],
-  "id" | "url" | "admin_review_status"
+  | "id"
+  | "url"
+  | "admin_review_status"
+  | "title"
+  | "display_title"
+  | "page_metadata"
+  | "page_metadata_generated_at"
+  | "page_type"
+  | "source"
+  | "reason"
+  | "submitted_by_user_id"
 >;
 
 export type LiveUpdateItem = {
@@ -54,7 +67,8 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
   const admin = createSupabaseAdminClient();
   const { data: changes, error: changesError } = await admin
     .from("shared_award_change_events")
-    .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
+    .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at")
+    .is("suppressed_at", null)
     .order("detected_at", { ascending: false })
     .limit(Math.max(limit * 8, 160));
 
@@ -77,9 +91,9 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
     ? await admin.from("shared_awards").select("id, name, slug").in("id", awardIds).eq("status", "active")
     : { data: [] as SharedAwardLookupRow[], error: null };
   const { data: sources, error: sourcesError } = sourceIds.length
-    ? await admin
+      ? await admin
         .from("shared_award_sources")
-        .select("id, url, admin_review_status")
+        .select("id, url, admin_review_status, title, display_title, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id")
         .in("id", sourceIds)
     : { data: [] as SharedSourceLookupRow[], error: null };
   if (awardsError) {

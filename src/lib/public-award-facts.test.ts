@@ -1,13 +1,36 @@
 import { describe, expect, it } from "vitest";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 
+function factSource(source: Record<string, unknown>) {
+  const pageMetadata = (source.page_metadata || {}) as Record<string, unknown>;
+  const baselineFacts = pageMetadata.baseline_facts as Record<string, unknown> | undefined;
+  return {
+    url: "https://example.edu/award/apply",
+    page_type: "application",
+    page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+    ...source,
+    page_metadata: baselineFacts
+      ? {
+          ...pageMetadata,
+          baseline_facts: {
+            award_relevance: "primary",
+            cycle_relevance: "evergreen",
+            evidence_quotes: ["Example Award Application"],
+            quality_flags: [],
+            ...baselineFacts,
+          },
+        }
+      : source.page_metadata,
+  };
+}
+
 describe("public award facts", () => {
   it("uses source baseline facts as a fallback for public details", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
       publicFacts: {},
       sources: [
-        {
+        factSource({
           page_metadata: {
             baseline_facts: {
               deadline: "January 29, 2026",
@@ -15,7 +38,7 @@ describe("public award facts", () => {
               application_materials: ["Essays", "Transcript"],
             },
           },
-        },
+        }),
       ],
     });
 
@@ -29,7 +52,7 @@ describe("public award facts", () => {
       summary: null,
       publicFacts: {},
       sources: [
-        {
+        factSource({
           page_metadata: {
             baseline_facts_rejected: true,
             baseline_facts: {
@@ -37,7 +60,7 @@ describe("public award facts", () => {
               eligibility: ["Incorrect applicants"],
             },
           },
-        },
+        }),
       ],
     });
 
@@ -50,30 +73,30 @@ describe("public award facts", () => {
       summary: null,
       publicFacts: {},
       sources: [
-        {
+        factSource({
           page_metadata: {
             baseline_facts: {
               award_relevance: "unrelated",
               deadline: "January 1, 1900",
             },
           },
-        },
-        {
+        }),
+        factSource({
           page_metadata: {
             baseline_facts: {
               cycle_relevance: "archived_or_past",
               eligibility: ["Past recipients only"],
             },
           },
-        },
-        {
+        }),
+        factSource({
           page_metadata: {
             baseline_facts: {
               cycle_relevance: "not_program_page",
               application_materials: ["Logo file"],
             },
           },
-        },
+        }),
       ],
     });
 
@@ -87,14 +110,14 @@ describe("public award facts", () => {
       summary: null,
       publicFacts: {},
       sources: [
-        {
+        factSource({
           page_metadata: {
             baseline_facts: {
               eligibility: ["Students entering U.S.-based Ph.D. programs in ecology and evolution"],
               requirements: ["Undergraduate transcript", "Two recommendation letters"],
             },
           },
-        },
+        }),
       ],
     });
 
@@ -107,7 +130,7 @@ describe("public award facts", () => {
       summary: null,
       publicFacts: {},
       sources: [
-        {
+        factSource({
           page_metadata: {
             baseline_facts: {
               eligibility: [
@@ -133,7 +156,7 @@ describe("public award facts", () => {
               ],
             },
           },
-        },
+        }),
       ],
     });
 
@@ -157,7 +180,7 @@ describe("public award facts", () => {
       summary: null,
       publicFacts: {},
       sources: [
-        {
+        factSource({
           page_metadata: {
             baseline_facts: {
               requirements: [
@@ -170,7 +193,7 @@ describe("public award facts", () => {
               ],
             },
           },
-        },
+        }),
       ],
     });
 

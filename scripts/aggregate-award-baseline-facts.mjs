@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  isUsableAwardFactSource,
+  sourceBaselineFacts,
+} from "./lib/source-quality.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -143,7 +147,7 @@ async function loadAwards() {
 async function loadSourcesByAward() {
   const rows = await loadAllRows(
     "shared_award_sources",
-    "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type",
+    "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id",
     (query) =>
       query
         .eq("admin_review_status", "open")
@@ -153,8 +157,7 @@ async function loadSourcesByAward() {
   const grouped = new Map();
   for (const row of rows) {
     if (!row.shared_award_id) continue;
-    const facts = baselineFacts(row);
-    if (!Object.keys(facts).length) continue;
+    if (!isUsableAwardFactSource(row)) continue;
     const current = grouped.get(row.shared_award_id) || [];
     current.push(row);
     grouped.set(row.shared_award_id, current);
@@ -232,26 +235,7 @@ function aggregateAwardDetails(award, sources) {
 }
 
 function usableAwardSources(sources) {
-  return sources.filter((source) => {
-    const facts = baselineFacts(source);
-    const relevance = cleanSlug(facts.award_relevance);
-    const cycleRelevance = cleanSlug(facts.cycle_relevance);
-    if (relevance === "unrelated") return false;
-    if (cycleRelevance === "not_program_page" || cycleRelevance === "archived_or_past") return false;
-    return Boolean(
-      cleanNullable(facts.deadline) ||
-        cleanNullable(facts.opening_date) ||
-        arrayHasValues(facts.award_amounts) ||
-        arrayHasValues(facts.eligibility) ||
-        arrayHasValues(facts.requirements) ||
-        arrayHasValues(facts.application_materials) ||
-        arrayHasValues(facts.how_to_apply) ||
-        arrayHasValues(facts.important_dates) ||
-        arrayHasValues(facts.documents) ||
-        arrayHasValues(facts.contacts) ||
-        cleanNullable(facts.page_description),
-    );
-  });
+  return sources.filter((source) => isUsableAwardFactSource(source) && sourceHasUsefulFacts(source));
 }
 
 function arrayHasValues(value) {
@@ -590,10 +574,24 @@ function workerMetadata(report) {
 }
 
 function baselineFacts(source) {
-  const metadata = jsonObjectOrEmpty(source.page_metadata);
-  if (metadata.baseline_facts_rejected || metadata.baselineFactsRejected) return {};
-  if (metadata.kind && !metadata.baseline_facts && !metadata.baselineFacts) return {};
-  return jsonObjectOrEmpty(metadata.baseline_facts || metadata.baselineFacts || source.page_metadata);
+  return sourceBaselineFacts(source);
+}
+
+function sourceHasUsefulFacts(source) {
+  const facts = baselineFacts(source);
+  return Boolean(
+    cleanNullable(facts.deadline) ||
+      cleanNullable(facts.opening_date) ||
+      arrayHasValues(facts.award_amounts) ||
+      arrayHasValues(facts.eligibility) ||
+      arrayHasValues(facts.requirements) ||
+      arrayHasValues(facts.application_materials) ||
+      arrayHasValues(facts.how_to_apply) ||
+      arrayHasValues(facts.important_dates) ||
+      arrayHasValues(facts.documents) ||
+      arrayHasValues(facts.contacts) ||
+      cleanNullable(facts.page_description),
+  );
 }
 
 function newestGeneratedAt(sources) {
@@ -742,10 +740,6 @@ function truncate(value, maxLength) {
   const boundary = clean.lastIndexOf(" ", target);
   const clipped = clean.slice(0, boundary > target * 0.65 ? boundary : target).replace(/[.,;:\s]+$/g, "");
   return `${clipped}...`;
-}
-
-function jsonObjectOrEmpty(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function timestampForPath(value) {

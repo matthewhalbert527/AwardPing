@@ -100,6 +100,7 @@ export default async function OpsPage() {
     supabase
       .from("shared_award_change_events")
       .select("*", { count: "exact", head: true })
+      .is("suppressed_at", null)
       .gte("detected_at", sevenDaysAgo),
     supabase
       .from("shared_awards")
@@ -113,7 +114,8 @@ export default async function OpsPage() {
       .limit(8),
     supabase
       .from("shared_award_change_events")
-      .select("id, shared_award_id, source_title, source_url, source_page_type, summary, change_details, detected_at")
+      .select("id, shared_award_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at")
+      .is("suppressed_at", null)
       .order("detected_at", { ascending: false })
       .limit(25),
     supabase
