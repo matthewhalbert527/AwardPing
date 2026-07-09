@@ -111,7 +111,7 @@ async function loadOpenSources() {
     let query = supabase
       .from("shared_award_sources")
       .select(
-        "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id, admin_review_status, created_at",
+        "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, created_at",
       )
       .eq("admin_review_status", "open")
       .order("created_at", { ascending: true })

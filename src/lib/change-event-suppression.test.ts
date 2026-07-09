@@ -8,6 +8,7 @@ const source = {
   page_type: "application",
   admin_review_status: "open",
   page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+  page_metadata_model: "gemini-test",
   page_metadata: {
     baseline_facts: {
       award_relevance: "primary",

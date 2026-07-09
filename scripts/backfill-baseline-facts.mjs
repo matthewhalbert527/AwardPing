@@ -27,6 +27,7 @@ import {
 import {
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -134,6 +135,7 @@ const force = boolArg(args.force, false);
 const includePdf = boolArg(args["include-pdf"], true);
 const includeWeb = boolArg(args["include-web"], true);
 const sourceIdFilter = cleanText(args["source-id"]);
+const sourceIdsFileFilter = sourceIdsFileSet(args["source-ids-file"]);
 const shardCount = positiveInt(args["shard-count"], 1);
 const shardIndex = nonNegativeInt(args["shard-index"], 0);
 const useGeminiBatchApi = aiProvider === "gemini" && geminiApiMode !== "immediate";
@@ -186,6 +188,7 @@ async function runOnce() {
       include_pdf: includePdf,
       include_web: includeWeb,
       source_id: sourceIdFilter || null,
+      source_ids_file: cleanText(args["source-ids-file"]) || null,
       shard_count: shardCount,
       shard_index: shardIndex,
       gemini_cli_model: geminiCliModel,
@@ -209,10 +212,15 @@ async function runOnce() {
     checked: 0,
     extracted: 0,
     applied: 0,
+    awards_queued_for_reconciliation: 0,
+    award_reconciliation_queue_existing: 0,
+    award_reconciliation_queue_failed: 0,
     skipped_existing: 0,
     skipped_ineligible: 0,
     failed: 0,
     stop_reason: null,
+    billing_blocked: false,
+    blocking_reason: null,
     gemini_cli_usage: {
       calls: 0,
       successes: 0,
@@ -275,8 +283,13 @@ async function runOnce() {
 
     if (useGeminiBatchApi) {
       await processGeminiApiBatchTargets(targets, report, runId);
-      report.status = "succeeded";
-      await finishWorkerRun(runId, "succeeded", null, report);
+      report.status = report.billing_blocked ? "blocked" : "succeeded";
+      await finishWorkerRun(
+        runId,
+        report.billing_blocked ? "failed" : "succeeded",
+        report.billing_blocked ? report.blocking_reason : null,
+        report,
+      );
       return;
     }
 
@@ -292,6 +305,7 @@ async function runOnce() {
         console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
         break;
       }
+      if (report.billing_blocked) break;
 
       const baseline = readJsonIfExists(target.baselinePath);
       const capture = captureFromBaseline(baseline);
@@ -343,13 +357,13 @@ async function runOnce() {
         };
         const sanity = baselineFactsMatchSource(source, capture, facts);
         if (!sanity.ok) {
-          if (applyUpdates) await rejectFactsInSupabaseSource(source, facts, metadata, capture, sanity.reason);
+          if (applyUpdates) await rejectFactsInSupabaseSource(source, facts, metadata, capture, sanity.reason, report);
           throw new Error(`Baseline facts rejected: ${sanity.reason}`);
         }
 
         if (applyUpdates) {
           applyFactsToBaseline(target.baselinePath, baseline, facts, metadata);
-          await applyFactsToSupabaseSource(source, facts, metadata, capture);
+          await applyFactsToSupabaseSource(source, facts, metadata, capture, report);
           report.applied += 1;
         }
         report.extracted += 1;
@@ -365,8 +379,13 @@ async function runOnce() {
         if (error.geminiCliUsage) {
           recordGeminiCliUsage(report, source, capture, { usage: error.geminiCliUsage });
         }
-        report.failed += 1;
         const message = errorMessage(error);
+        if (isGeminiBillingOrQuotaErrorMessage(message)) {
+          markReportBillingBlocked(report, message);
+          console.log(`BASELINE_FACTS billing_blocked ${truncate(message, 800)}`);
+          break;
+        }
+        report.failed += 1;
         report.errors.push({
           source_id: source.id,
           source_url: source.url,
@@ -378,8 +397,13 @@ async function runOnce() {
       await maybeUpdateWorkerRun(runId, report);
     }
 
-    report.status = "succeeded";
-    await finishWorkerRun(runId, "succeeded", null, report);
+    report.status = report.billing_blocked ? "blocked" : "succeeded";
+    await finishWorkerRun(
+      runId,
+      report.billing_blocked ? "failed" : "succeeded",
+      report.billing_blocked ? report.blocking_reason : null,
+      report,
+    );
   } catch (error) {
     report.status = "failed";
     report.errors.push({ message: errorMessage(error) });
@@ -401,6 +425,7 @@ function loadBaselineTargets() {
   for (const entry of readdirSync(sourcesRoot, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (sourceIdFilter && entry.name !== sourceIdFilter) continue;
+    if (sourceIdsFileFilter && !sourceIdsFileFilter.has(entry.name)) continue;
     if (shardCount > 1 && stableShard(entry.name, shardCount) !== shardIndex) continue;
     const baselinePath = join(sourcesRoot, entry.name, "baseline.json");
     if (!existsSync(baselinePath)) continue;
@@ -443,6 +468,8 @@ function captureFromBaseline(baseline) {
     thumbPath: capture.thumb ? fromArchiveRelative(capture.thumb) : null,
     pdfPath: capture.pdf ? fromArchiveRelative(capture.pdf) : null,
     textPath: capture.text ? fromArchiveRelative(capture.text) : null,
+    sectionsTextPath: capture.sections_text ? fromArchiveRelative(capture.sections_text) : null,
+    sectionsJsonPath: capture.sections_json ? fromArchiveRelative(capture.sections_json) : null,
     metaPath: capture.meta ? fromArchiveRelative(capture.meta) : null,
   };
   const required = kind === "pdf" ? [paths.pdfPath, paths.textPath, paths.metaPath] : [paths.pagePath, paths.thumbPath, paths.textPath, paths.metaPath];
@@ -457,8 +484,14 @@ function captureFromBaseline(baseline) {
     thumb_path: paths.thumbPath,
     pdf_path: paths.pdfPath,
     text_path: paths.textPath,
+    sections_text_path: paths.sectionsTextPath,
+    sections_json_path: paths.sectionsJsonPath,
     meta_path: paths.metaPath,
     text: readFileSync(paths.textPath, "utf8"),
+    section_text_for_baseline_facts:
+      paths.sectionsTextPath && existsSync(paths.sectionsTextPath)
+        ? readFileSync(paths.sectionsTextPath, "utf8")
+        : "",
     captured_at: baseline.captured_at || meta.captured_at || null,
     final_url: baseline.final_url || meta.final_url || null,
     page_title: baseline.page_title || meta.page_title || null,
@@ -541,6 +574,13 @@ function geminiCliBaselineFactsPrompt(source, capture, reason, options = {}) {
     "",
     "Normalized visible text excerpt:",
     String(capture.text || "").slice(0, textCharLimit),
+    ...(capture.section_text_for_baseline_facts
+      ? [
+          "",
+          "Structured expandable section text excerpt:",
+          String(capture.section_text_for_baseline_facts || "").slice(0, Math.min(6000, textCharLimit)),
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -570,6 +610,7 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
 
   for (const target of targets) {
     if (report.checked >= limit) break;
+    if (report.billing_blocked) break;
     if (geminiApiMaxRequests && report.checked >= geminiApiMaxRequests) {
       report.stop_reason = "gemini_api_request_cap_reached";
       console.log("BASELINE_FACTS gemini_api_request_cap_reached");
@@ -624,6 +665,7 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
     ) {
       await queueChunk();
 
+      if (report.billing_blocked) break;
       if (geminiApiDailyCapReached(report)) {
         report.stop_reason = "gemini_api_cost_cap_reached";
         console.log("BASELINE_FACTS gemini_api_cost_cap_reached");
@@ -639,7 +681,7 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
   if (chunk.length) {
     await queueChunk();
   }
-  if (pendingChunks.length) {
+  if (pendingChunks.length && !report.billing_blocked) {
     await processGeminiApiBatchChunkGroup(pendingChunks, report, runId);
   }
 }
@@ -668,6 +710,11 @@ async function processGeminiApiBatchChunkSafely(entries, report, runId) {
       return;
     } catch (error) {
       const message = errorMessage(error);
+      if (isGeminiBillingOrQuotaErrorMessage(message)) {
+        markReportBillingBlocked(report, message);
+        console.log(`BASELINE_FACTS_BATCH billing_blocked requests=${entries.length} message=${truncate(message, 500)}`);
+        return;
+      }
       if (attempt < maxAttempts && isRetryableGeminiBatchSubmissionFailure(message)) {
         const waitMs = geminiBatchRetryDelayMs(attempt);
         console.log(
@@ -1019,14 +1066,14 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
 
       if (!sanity.ok) {
         if (applyUpdates) {
-          await rejectFactsInSupabaseSource(entry.source, facts, metadata, entry.capture, sanity.reason);
+          await rejectFactsInSupabaseSource(entry.source, facts, metadata, entry.capture, sanity.reason, report);
         }
         throw new Error(`Baseline facts rejected: ${sanity.reason}`);
       }
 
       if (applyUpdates) {
         applyFactsToBaseline(entry.target.baselinePath, entry.baseline, facts, metadata);
-        await applyFactsToSupabaseSource(entry.source, facts, metadata, entry.capture);
+        await applyFactsToSupabaseSource(entry.source, facts, metadata, entry.capture, report);
         report.applied += 1;
       }
       report.extracted += 1;
@@ -1443,6 +1490,29 @@ function isGeminiBillingBlocked(httpStatus, message) {
   return httpStatus === 429 && /\b(prepay|prepayment|credits?\s+are\s+depleted|billing|resource_exhausted)\b/.test(clean);
 }
 
+function isGeminiBillingOrQuotaErrorMessage(message) {
+  const clean = String(message || "").toLowerCase();
+  return /\b(prepay|prepayment|credits?\s+are\s+depleted|billing|resource_exhausted|quota exceeded|quota_exceeded|insufficient.*credits?)\b/.test(
+    clean,
+  );
+}
+
+function markReportBillingBlocked(report, message) {
+  report.billing_blocked = true;
+  report.blocking_reason = truncate(message, 1000);
+  report.stop_reason = "gemini_billing_or_quota_blocked";
+  report.gemini_usage.status = "blocked";
+  report.gemini_usage.last_error = {
+    message: report.blocking_reason,
+    blocked: true,
+    checked_at: new Date().toISOString(),
+  };
+  report.errors.push({
+    message: report.blocking_reason,
+    billing_blocked: true,
+  });
+}
+
 function recordGeminiApiBillingBlock(kind, model, httpStatus, body, message) {
   const parsed = parseJsonObject(body) || {};
   const error = jsonObjectOrEmpty(parsed.error);
@@ -1492,7 +1562,7 @@ function isRetryableGeminiNetworkFailure(error) {
   return /\b(timeout|temporar|econnreset|socket|network|fetch failed|tls|ssl|unavailable)\b/.test(message);
 }
 
-async function applyFactsToSupabaseSource(source, facts, metadata, capture) {
+async function applyFactsToSupabaseSource(source, facts, metadata, capture, report = null) {
   if (!supabase) return;
   const displayTitle = facts.display_title || capture.page_title || source.title || "Source page";
   const description =
@@ -1526,9 +1596,21 @@ async function applyFactsToSupabaseSource(source, facts, metadata, capture) {
     .eq("id", source.id)
     .eq("admin_review_status", "open");
   if (error) throw new Error(`shared_award_sources metadata update failed: ${error.message}`);
+  await queueAwardReconciliationFromBaselineSource({
+    source,
+    report,
+    reason: "baseline_facts_updated",
+    priority: 60,
+    metadata: {
+      baseline_facts_model: metadata.model,
+      baseline_facts_generated_at: metadata.extracted_at,
+      award_relevance: facts.award_relevance || null,
+      cycle_relevance: facts.cycle_relevance || null,
+    },
+  });
 }
 
-async function rejectFactsInSupabaseSource(source, facts, metadata, capture, reason) {
+async function rejectFactsInSupabaseSource(source, facts, metadata, capture, reason, report = null) {
   if (!supabase) return;
   const displayTitle = cleanPageTitle(capture.page_title) || cleanText(source.title) || "Source page";
   const now = new Date().toISOString();
@@ -1570,6 +1652,56 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
     .eq("id", source.id)
     .eq("admin_review_status", "open");
   if (error) throw new Error(`shared_award_sources rejected metadata update failed: ${error.message}`);
+  await queueAwardReconciliationFromBaselineSource({
+    source,
+    report,
+    reason: "baseline_facts_rejected",
+    priority: 55,
+    metadata: {
+      rejection_reason: reason,
+      baseline_facts_model: metadata.model,
+      baseline_facts_generated_at: metadata.extracted_at,
+      award_relevance: facts.award_relevance || null,
+      cycle_relevance: facts.cycle_relevance || null,
+    },
+  });
+}
+
+async function queueAwardReconciliationFromBaselineSource({
+  source,
+  report,
+  reason,
+  priority = 100,
+  metadata = {},
+}) {
+  if (!supabase || !source?.shared_award_id) return null;
+  try {
+    const result = await enqueueAwardReconciliation(supabase, {
+      awardId: source.shared_award_id,
+      reason,
+      sourceIds: [source.id],
+      priority,
+      metadata: {
+        ...metadata,
+        queued_by: "backfill-baseline-facts",
+      },
+    });
+    if (report) {
+      if (result.queued) report.awards_queued_for_reconciliation += 1;
+      else report.award_reconciliation_queue_existing += 1;
+    }
+    return result;
+  } catch (error) {
+    if (report) {
+      report.award_reconciliation_queue_failed += 1;
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message: `Award reconciliation queue failed: ${errorMessage(error)}`,
+      });
+    }
+    return null;
+  }
 }
 
 function applyFactsToBaseline(baselinePath, baseline, facts, metadata) {
@@ -2025,6 +2157,8 @@ function workerMetadata(report) {
     saved_sources: report.saved_sources.slice(-20),
     errors: report.errors.slice(-20),
     stop_reason: report.stop_reason,
+    billing_blocked: Boolean(report.billing_blocked),
+    blocking_reason: report.blocking_reason || null,
   };
 }
 
@@ -2066,6 +2200,21 @@ function loadEnvFile(path) {
     values[key] = value;
   }
   return values;
+}
+
+function sourceIdsFileSet(value) {
+  const filePath = cleanText(value);
+  if (!filePath) return null;
+  const resolved = resolve(root, filePath);
+  if (!existsSync(resolved)) {
+    console.error(`--source-ids-file does not exist: ${resolved}`);
+    process.exit(1);
+  }
+  const ids = readFileSync(resolved, "utf8")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"));
+  return new Set(ids);
 }
 
 function boolArg(value, fallback) {

@@ -20,7 +20,7 @@ const envPath = args.env
       ? ".env.local"
       : "";
 const envArgs = envPath ? ["--env", envPath] : [];
-const profile = cleanChoice(args.profile, ["daily", "catchup", "baseline", "cleanup", "snapshots", "discovery", "visual-review"], "daily");
+const profile = cleanChoice(args.profile, ["daily", "catchup", "baseline", "cleanup", "snapshots", "discovery", "visual-review", "source-intake"], "daily");
 const apply = boolArg(args.apply, true);
 const continueOnError = boolArg(args["continue-on-error"], true);
 const runStamp = timestampForPath(new Date().toISOString());
@@ -49,6 +49,9 @@ const discoveryMaxHtmlSubpageDiscoveries = boundedInt(args["discovery-max-html-s
 const discoveryMaxPerAward = boundedInt(args["discovery-max-per-award"], 5, 0, 500);
 const discoveryMaxPerSource = boundedInt(args["discovery-max-per-source"], 3, 0, 100);
 const discoveryMaxPerDomain = boundedInt(args["discovery-max-per-domain"], 100, 0, 10_000);
+const sourceIntakeLimit = positiveInt(args["source-intake-limit"], profile === "daily" ? 25 : 250);
+const sourceIntakeMaxRequestsPerBatch = positiveInt(args["source-intake-max-requests-per-batch"], 100);
+const sourceIntakeGeminiMode = cleanChoice(args["source-intake-gemini-api-mode"], ["batch", "immediate", "none"], "batch");
 const baselineLimit = positiveInt(args["baseline-limit"], 50_000);
 const baselineMaxCalls = nonNegativeInt(args["baseline-max-calls"], 50_000);
 const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 10);
@@ -62,6 +65,10 @@ const sourceQualitySafety = cleanChoice(args["source-quality-safety"], ["safe", 
 const sourceQualityCleanupTitles = boolArg(args["source-quality-cleanup-titles"], true);
 const aggregateLimit = stringArg(args["aggregate-limit"], "all");
 const aggregateForce = boolArg(args["aggregate-force"], true);
+const reconcileLimit = stringArg(args["reconcile-limit"] || args["aggregate-limit"], "all");
+const reconcileIncludeWarnings = boolArg(args["reconcile-include-warnings"], true);
+const pageAuditLimit = positiveInt(args["page-audit-limit"], 250);
+const pageAuditMaxRequestsPerBatch = positiveInt(args["page-audit-max-requests-per-batch"], 100);
 const pruneKeep = boundedInt(args["prune-keep"], 2, 1, 20);
 const pruneMaxBatches = positiveInt(args["prune-max-batches"], 100);
 
@@ -105,11 +112,14 @@ try {
     else if (phase === "prune-history") await runPruneHistory();
     else if (phase === "source-quality") await runSourceQuality();
     else if (phase === "change-event-noise") await runChangeEventNoiseCleanup();
+    else if (phase === "source-intake") await runSourceIntake();
     else if (phase === "source-discovery") await runSourceDiscovery();
     else if (phase === "visual") await runVisualSnapshots(false);
     else if (phase === "visual-missing") await runVisualSnapshots(true);
     else if (phase === "visual-review-batch") await runVisualReviewBatch();
     else if (phase === "baseline-facts") await runBaselineFacts();
+    else if (phase === "reconcile-awards") await runReconcileAwards();
+    else if (phase === "page-audit-batch") await runPageAuditBatch();
     else if (phase === "aggregate-facts") await runAggregateFacts();
     else {
       await recordSkippedPhase(phase, `Unknown phase "${phase}".`);
@@ -172,6 +182,18 @@ async function runChangeEventNoiseCleanup() {
   ]);
 }
 
+async function runSourceIntake() {
+  await runPhase("source-intake", [
+    "scripts/process-source-intake-requests.mjs",
+    ...envArgs,
+    `--apply=${apply}`,
+    `--limit=${sourceIntakeLimit}`,
+    `--gemini-api-mode=${sourceIntakeGeminiMode}`,
+    `--max-requests-per-batch=${sourceIntakeMaxRequestsPerBatch}`,
+    "--status=pending,queued,failed",
+  ]);
+}
+
 async function runVisualSnapshots(completeMissing) {
   const jobs = [];
   for (let shardIndex = 0; shardIndex < visualShards; shardIndex += 1) {
@@ -189,6 +211,10 @@ async function runVisualSnapshots(completeMissing) {
       `--shard-index=${shardIndex}`,
       "--extract-baseline-info=false",
       completeMissing ? "--capture-profile=baseline-rich" : "--capture-profile=stable-daily",
+      completeMissing ? "--section-extraction-profile=baseline-rich" : "--section-extraction-profile=stable-daily",
+      "--extract-expandable-sections=true",
+      "--include-section-text-in-main-hash=false",
+      "--capture-section-evidence=false",
       completeMissing ? "--visual-review-mode=none" : "--visual-review-mode=batch",
       "--discovery-mode=false",
       "--discover-pdf-subpages=false",
@@ -273,6 +299,26 @@ async function runBaselineFacts() {
   ];
   if (baselineForce) commandArgs.push("--force=true");
   await runPhase("baseline-facts", commandArgs);
+}
+
+async function runReconcileAwards() {
+  await runPhase("reconcile-awards", [
+    "scripts/reconcile-impacted-award-pages.mjs",
+    ...envArgs,
+    `--apply=${apply}`,
+    `--limit=${reconcileLimit}`,
+    `--include-warnings=${reconcileIncludeWarnings}`,
+  ]);
+}
+
+async function runPageAuditBatch() {
+  await runPhase("page-audit-batch", [
+    "scripts/process-page-audit-batch.mjs",
+    ...envArgs,
+    `--apply=${apply}`,
+    `--limit=${pageAuditLimit}`,
+    `--max-requests-per-batch=${pageAuditMaxRequestsPerBatch}`,
+  ]);
 }
 
 async function runAggregateFacts() {
@@ -367,16 +413,28 @@ function runCommand(commandArgs, logPath) {
 
 function profilePhases(value) {
   if (value === "catchup") {
-    return ["health", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "aggregate-facts", "prune-history"];
+    return ["health", "source-intake", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "reconcile-awards", "page-audit-batch", "prune-history"];
   }
-  if (value === "baseline") return ["health", "baseline-facts", "aggregate-facts"];
-  if (value === "cleanup") return ["health", "source-quality", "change-event-noise", "aggregate-facts", "prune-history"];
+  if (value === "baseline") return ["health", "baseline-facts", "reconcile-awards", "page-audit-batch"];
+  if (value === "cleanup") return ["health", "source-quality", "change-event-noise", "reconcile-awards", "prune-history"];
   if (value === "snapshots") return ["health", "visual"];
   if (value === "visual-review") return ["health", "visual-review-batch"];
+  if (value === "source-intake") return ["health", "source-intake", "reconcile-awards", "page-audit-batch"];
   if (value === "discovery") {
-    return ["health", "source-quality", "source-discovery", "baseline-facts", "aggregate-facts", "prune-history"];
+    return ["health", "source-intake", "source-quality", "source-discovery", "baseline-facts", "reconcile-awards", "page-audit-batch", "prune-history"];
   }
-  return ["health", "visual", "visual-review-batch", "baseline-facts", "aggregate-facts", "source-quality", "change-event-noise", "prune-history"];
+  return [
+    "health",
+    "source-intake",
+    "source-quality",
+    "visual",
+    "visual-review-batch",
+    "baseline-facts",
+    "reconcile-awards",
+    "page-audit-batch",
+    "change-event-noise",
+    "prune-history",
+  ];
 }
 
 function writeReport() {
@@ -393,7 +451,7 @@ async function createMaintenanceWorkerRun() {
     .insert({
       worker_name: "local-maintenance-runner",
       status: "running",
-      ai_provider: phases.includes("baseline-facts") || phases.includes("visual-review-batch") ? "gemini" : null,
+      ai_provider: phases.includes("baseline-facts") || phases.includes("visual-review-batch") || phases.includes("page-audit-batch") || phases.includes("source-intake") ? "gemini" : null,
       initial_count: phases.length,
       metadata: maintenanceRunMetadata(),
     })
@@ -444,6 +502,17 @@ function maintenanceRunMetadata() {
       max_per_award: discoveryMaxPerAward,
       max_per_source: discoveryMaxPerSource,
       max_per_domain: discoveryMaxPerDomain,
+    },
+    source_intake_options: {
+      limit: sourceIntakeLimit,
+      gemini_api_mode: sourceIntakeGeminiMode,
+      max_requests_per_batch: sourceIntakeMaxRequestsPerBatch,
+    },
+    reconciliation_options: {
+      limit: reconcileLimit,
+      include_warnings: reconcileIncludeWarnings,
+      page_audit_limit: pageAuditLimit,
+      page_audit_max_requests_per_batch: pageAuditMaxRequestsPerBatch,
     },
     phases_requested: phases,
     phases: report.phases.map((phase) => ({
@@ -579,13 +648,13 @@ function printHelp() {
 Examples:
   node scripts/run-awardping-maintenance.mjs --profile=catchup --apply=true
   node scripts/run-awardping-maintenance.mjs --profile=baseline --baseline-cost-cap-usd=10
-  node scripts/run-awardping-maintenance.mjs --phases=health,baseline-facts,aggregate-facts
+  node scripts/run-awardping-maintenance.mjs --phases=health,baseline-facts,reconcile-awards,page-audit-batch
 
 Profiles:
-  daily      health, visual, baseline-facts, aggregate-facts, source-quality, prune-history
-  catchup    health, source-quality, visual-missing, baseline-facts, aggregate-facts, prune-history
-  baseline   health, baseline-facts, aggregate-facts
-  cleanup    health, source-quality, aggregate-facts, prune-history
+  daily      health, source-quality, visual, visual-review-batch, baseline-facts, reconcile-awards, page-audit-batch, cleanup, prune-history
+  catchup    health, source-quality, visual-missing, baseline-facts, reconcile-awards, page-audit-batch, prune-history
+  baseline   health, baseline-facts, reconcile-awards, page-audit-batch
+  cleanup    health, source-quality, change-event-noise, reconcile-awards, prune-history
   snapshots  health, visual
 
 Useful options:

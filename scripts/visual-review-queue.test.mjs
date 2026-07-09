@@ -16,6 +16,7 @@ const source = {
   page_type: "application",
   admin_review_status: "open",
   page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+  page_metadata_model: "gemini-test",
   page_metadata: {
     baseline_facts: {
       award_relevance: "primary",
@@ -307,7 +308,7 @@ describe("visual review queue helpers", () => {
 
     expect(decision).toMatchObject({
       allowed: false,
-      reason: "source_quality_award_relevance_unclear",
+      reason: "source_quality_ai_review_reviewed_unclear_needs_manual_review_award_relevance_unclear",
       source_rejected: true,
     });
   });
@@ -427,6 +428,56 @@ describe("visual review queue helpers", () => {
       candidate_kind: "text_only",
     });
     expect(payload.include_images).toBe(false);
+  });
+
+  it("keeps expandable-section candidates compact and section-scoped", () => {
+    const diff = {
+      candidate_scope: "expandable_section",
+      section_key: "eligibility",
+      section_label: "Eligibility",
+      section_path: "button#eligibility",
+      previous_section_hash: "old-section",
+      new_section_hash: "new-section",
+      added_text: ["Applicants must be enrolled full time."],
+      removed_text: ["Applicants must be enrolled part time."],
+    };
+    const deterministic = { candidate_change: true, reason: "award_relevant_terms_or_context" };
+    const first = visualReviewCandidateSignature({
+      source,
+      baseline: { text_hash: "old-section", image_hash: "same-page" },
+      capture: { text_hash: "new-section", image_hash: "same-page" },
+      diff,
+      deterministic,
+      behaviorVersion: 8,
+    });
+    const second = visualReviewCandidateSignature({
+      source,
+      baseline: { text_hash: "old-section", image_hash: "same-page" },
+      capture: { text_hash: "new-section", image_hash: "same-page" },
+      diff: { ...diff, section_key: "requirements" },
+      deterministic,
+      behaviorVersion: 8,
+    });
+    const payload = buildVisualReviewPromptPayload({
+      source,
+      baseline: { text_hash: "old-section", image_hash: "same-page" },
+      previous: { text: "Applicants must be enrolled part time." },
+      capture: { text: "Applicants must be enrolled full time.", text_hash: "new-section", image_hash: "same-page" },
+      diff,
+      deterministic,
+    });
+
+    expect(second).not.toBe(first);
+    expect(payload.include_images).toBe(false);
+    expect(payload.section_context).toMatchObject({
+      candidate_scope: "expandable_section",
+      section_key: "eligibility",
+      section_label: "Eligibility",
+    });
+    expect(payload.hashes).toMatchObject({
+      previous_section_hash: "old-section",
+      new_section_hash: "new-section",
+    });
   });
 
   it("allows text-only award amount changes", () => {

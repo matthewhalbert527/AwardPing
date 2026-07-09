@@ -8,6 +8,7 @@ function factSource(source: Record<string, unknown>) {
     url: "https://example.edu/award/apply",
     page_type: "application",
     page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+    page_metadata_model: "gemini-test",
     ...source,
     page_metadata: baselineFacts
       ? {
@@ -25,10 +26,14 @@ function factSource(source: Record<string, unknown>) {
 }
 
 describe("public award facts", () => {
-  it("uses source baseline facts as a fallback for public details", () => {
+  it("uses reconciled public facts for public details", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
-      publicFacts: {},
+      publicFacts: {
+        deadline: "January 29, 2026",
+        eligibility: ["Sophomores and juniors"],
+        application_materials: ["Essays", "Transcript"],
+      },
       sources: [
         factSource({
           page_metadata: {
@@ -108,7 +113,10 @@ describe("public award facts", () => {
   it("does not infer an undergraduate audience from transcript requirements", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
-      publicFacts: {},
+      publicFacts: {
+        eligibility: ["Students entering U.S.-based Ph.D. programs in ecology and evolution"],
+        requirements: ["Undergraduate transcript", "Two recommendation letters"],
+      },
       sources: [
         factSource({
           page_metadata: {
@@ -128,7 +136,29 @@ describe("public award facts", () => {
   it("moves submitted documents out of requirements and into application materials", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
-      publicFacts: {},
+      publicFacts: {
+        eligibility: [
+          "Must be a full-time student",
+          "Research topic must fit with EREF's mission",
+        ],
+        requirements: [
+          "Online application submission.",
+          "Three references required.",
+          "College transcripts (unofficial accepted).",
+          "Personal statement (500 words or less).",
+          "Research statement (500 words or less).",
+          "Complete three questions in Section C.",
+          "Answer all sections of the supporting statement.",
+          "Upload the supporting statement as a PDF document.",
+          "Contact Information.",
+          "Career Interests.",
+          "College Information.",
+          "Three references.",
+        ],
+        application_materials: [
+          "College transcripts",
+        ],
+      },
       sources: [
         factSource({
           page_metadata: {
@@ -178,7 +208,16 @@ describe("public award facts", () => {
   it("only keeps true award conditions in the requirements field", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
-      publicFacts: {},
+      publicFacts: {
+        requirements: [
+          "Academic performance",
+          "Relevance of work to solid waste management science",
+          "Potential for success",
+          "Recipients must submit a final report at the end of the award year.",
+          "Awardees may not hold another major fellowship concurrently.",
+          "Students must maintain full-time enrollment throughout the award period.",
+        ],
+      },
       sources: [
         factSource({
           page_metadata: {

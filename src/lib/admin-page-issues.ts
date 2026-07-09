@@ -25,6 +25,7 @@ type SourceIssueRow = {
   page_description: string | null;
   page_metadata: unknown;
   page_metadata_generated_at: string | null;
+  page_metadata_model: string | null;
   page_type: string;
   reason: string | null;
   source: string | null;
@@ -126,7 +127,7 @@ type CountResult = {
 };
 
 const sourceIssueSelect =
-  "id, shared_award_id, url, title, display_title, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, page_description, page_metadata, page_metadata_generated_at, page_type, reason, source, submitted_by_user_id, last_checked_at, consecutive_failures, last_error, updated_at, shared_awards!inner(id, name, slug, status)";
+  "id, shared_award_id, url, title, display_title, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, reason, source, submitted_by_user_id, last_checked_at, consecutive_failures, last_error, updated_at, shared_awards!inner(id, name, slug, status)";
 
 export async function countActiveOpenSourcesWithVisualSnapshots(
   admin: AdminClient,

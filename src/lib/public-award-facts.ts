@@ -1,10 +1,6 @@
 import { awardBaselineSummaryParts, displayAwardSummary } from "@/lib/award-summary";
 import type { Json } from "@/lib/database.types";
 import { normalizeImportantDateItems } from "@/lib/important-dates";
-import {
-  isUsableAwardFactSource,
-  sourceBaselineFacts,
-} from "@/lib/source-quality";
 
 export type PublicAwardFacts = {
   overview: string | null;
@@ -27,6 +23,7 @@ export type PublicAwardFacts = {
 export type PublicAwardFactSource = {
   page_metadata?: unknown;
   page_metadata_generated_at?: string | null;
+  page_metadata_model?: string | null;
   page_type?: string | null;
   source?: string | null;
   reason?: string | null;
@@ -48,10 +45,10 @@ export function publicAwardFactsFromAward(input: {
   const factMap = new Map(
     (summaryParts?.facts || []).map((fact) => [normalizeLabel(fact.label), fact.value]),
   );
-  const sourceFacts = (input.sources || [])
-    .filter(isUsableAwardFactSource)
-    .map(sourceBaselineFacts)
-    .filter((facts) => Object.keys(facts).length > 0);
+  // Public pages should render the reconciled award-level snapshot. Source
+  // baseline facts are intentionally not merged at read time; they flow through
+  // the reconciliation worker first so sibling pages cannot contaminate facts.
+  const sourceFacts: Array<Record<string, unknown>> = [];
 
   const eligibility = arrayField(structured.eligibility).length
     ? arrayField(structured.eligibility)

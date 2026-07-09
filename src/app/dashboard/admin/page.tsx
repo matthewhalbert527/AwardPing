@@ -158,10 +158,16 @@ export default async function AdminPage() {
             Page data refreshed {formatDate(renderedAt)}.
           </p>
         </div>
-        <Link className="button-secondary" href="/dashboard/admin/issues">
-          <AlertTriangle size={16} aria-hidden="true" />
-          Page Issues
-        </Link>
+        <div className="flex flex-wrap gap-3">
+          <Link className="button-secondary" href="/dashboard/admin/source-intake">
+            <Database size={16} aria-hidden="true" />
+            Source Intake
+          </Link>
+          <Link className="button-secondary" href="/dashboard/admin/issues">
+            <AlertTriangle size={16} aria-hidden="true" />
+            Page Issues
+          </Link>
+        </div>
       </div>
 
       {allLoadErrors.length > 0 && (

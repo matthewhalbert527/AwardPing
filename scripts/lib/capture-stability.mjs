@@ -7,6 +7,12 @@ export const captureProfileNames = [
   "discovery",
 ];
 
+export const sectionExtractionProfileNames = [
+  "stable-daily",
+  "baseline-rich",
+  "evidence",
+];
+
 const awardContentPageTypes = new Set([
   "application",
   "deadline",
@@ -49,6 +55,43 @@ export function normalizeCaptureProfile(value, fallback = "stable-daily") {
   return captureProfileNames.includes(fallback) ? fallback : "stable-daily";
 }
 
+export function defaultSectionExtractionProfile({
+  completeMissingBaselines = false,
+  baselineRefresh = false,
+  r2BackfillBaselines = false,
+} = {}) {
+  if (completeMissingBaselines || baselineRefresh || r2BackfillBaselines) return "baseline-rich";
+  return "stable-daily";
+}
+
+export function normalizeSectionExtractionProfile(value, fallback = "stable-daily") {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+  if (sectionExtractionProfileNames.includes(normalized)) return normalized;
+  return sectionExtractionProfileNames.includes(fallback) ? fallback : "stable-daily";
+}
+
+export function sectionExtractionProfileSettings(profile, overrides = {}) {
+  const normalized = normalizeSectionExtractionProfile(profile);
+  const settings = {
+    profile: normalized,
+    maxControls: normalized === "stable-daily" ? 80 : 160,
+    naturalClicksOnly: normalized === "stable-daily",
+    allowForceOpenFallback: normalized !== "stable-daily",
+    includeInBaselineFacts: normalized === "baseline-rich",
+    captureEvidence: normalized === "evidence",
+  };
+
+  return {
+    ...settings,
+    ...Object.fromEntries(
+      Object.entries(overrides).filter((entry) => entry[1] !== undefined && entry[1] !== null),
+    ),
+  };
+}
+
 export function captureProfileSettings(profile, overrides = {}) {
   const normalized = normalizeCaptureProfile(profile);
   const settings = {
@@ -78,6 +121,7 @@ export function shouldUseScrollActivationForSource(source, profile, requested = 
 
 export function shouldUseExpansionForSource(source, profile) {
   const settings = captureProfileSettings(profile);
+  if (settings.profile === "stable-daily") return false;
   if (settings.allowBroadExpansion) return true;
   return accordionPageTypes.has(cleanKey(source?.page_type));
 }

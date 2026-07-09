@@ -41,6 +41,7 @@ type SharedSourceLookupRow = Pick<
   | "display_title"
   | "page_metadata"
   | "page_metadata_generated_at"
+  | "page_metadata_model"
   | "page_type"
   | "source"
   | "reason"
@@ -93,7 +94,7 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
   const { data: sources, error: sourcesError } = sourceIds.length
       ? await admin
         .from("shared_award_sources")
-        .select("id, url, admin_review_status, title, display_title, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id")
+        .select("id, url, admin_review_status, title, display_title, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id")
         .in("id", sourceIds)
     : { data: [] as SharedSourceLookupRow[], error: null };
   if (awardsError) {

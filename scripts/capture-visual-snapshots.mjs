@@ -47,8 +47,11 @@ import {
   captureProfileSettings,
   compareStableCaptureHashes,
   defaultCaptureProfile,
+  defaultSectionExtractionProfile,
   expansionRelevanceModeForSource,
   normalizeCaptureProfile,
+  normalizeSectionExtractionProfile,
+  sectionExtractionProfileSettings,
   shouldUseScrollActivationForSource,
 } from "./lib/capture-stability.mjs";
 import {
@@ -69,6 +72,7 @@ import {
   normalizeVisualReviewMode,
   visualReviewCandidateSignature,
 } from "./lib/visual-review-queue.mjs";
+import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -76,8 +80,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 7;
-const captureBehaviorName = "profiled-stable-capture-with-block-hashes";
+const captureBehaviorVersion = 8;
+const captureBehaviorName = "profiled-stable-capture-with-structured-sections";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -188,6 +192,27 @@ const captureProfile = normalizeCaptureProfile(
   }),
 );
 const captureProfileConfig = captureProfileSettings(captureProfile);
+const sectionExtractionProfile = normalizeSectionExtractionProfile(
+  args["section-extraction-profile"] || env.AWARDPING_SECTION_EXTRACTION_PROFILE,
+  defaultSectionExtractionProfile({
+    completeMissingBaselines,
+    baselineRefresh,
+    r2BackfillBaselines: boolArg(args["r2-backfill-baselines"], false),
+  }),
+);
+const sectionExtractionConfig = sectionExtractionProfileSettings(sectionExtractionProfile);
+const extractExpandableSections = boolArg(
+  args["extract-expandable-sections"] ?? env.AWARDPING_EXTRACT_EXPANDABLE_SECTIONS,
+  !pdfOnly,
+);
+const includeSectionTextInMainHash = boolArg(
+  args["include-section-text-in-main-hash"] ?? env.AWARDPING_INCLUDE_SECTION_TEXT_IN_MAIN_HASH,
+  false,
+);
+const captureSectionEvidence = boolArg(
+  args["capture-section-evidence"] ?? env.AWARDPING_CAPTURE_SECTION_EVIDENCE,
+  sectionExtractionConfig.captureEvidence,
+);
 const maxExpansionStateScreenshots = boundedInt(
   args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
   captureProfileConfig.defaultMaxExpansionStateScreenshots,
@@ -470,6 +495,8 @@ async function runOnce() {
     finished_at: null,
     status: "running",
     stop_reason: null,
+    billing_blocked: false,
+    blocking_reason: null,
     ai_provider: aiProvider || (aiRequired ? null : "disabled"),
     ai_model: aiModel,
     ai_required: aiRequired,
@@ -498,6 +525,10 @@ async function runOnce() {
       keep_rejected_evidence: keepRejectedEvidence,
       accept_text_only_noise: acceptTextOnlyNoise,
       capture_profile: captureProfile,
+      section_extraction_profile: sectionExtractionProfile,
+      extract_expandable_sections: extractExpandableSections,
+      include_section_text_in_main_hash: includeSectionTextInMainHash,
+      capture_section_evidence: captureSectionEvidence,
       localization_repair: localizationRepair,
       force_r2_snapshot_refresh: forceR2SnapshotRefresh,
       review_on_ai_failure: reviewOnAiFailure,
@@ -609,6 +640,18 @@ async function runOnce() {
     pdf_unchanged: 0,
     pdf_changed: 0,
     capture_profile: captureProfile,
+    section_extraction_profile: sectionExtractionProfile,
+    expandable_section_extraction_enabled: extractExpandableSections,
+    section_baseline_created: 0,
+    expandable_sections_detected: 0,
+    expandable_sections_extracted: 0,
+    expandable_sections_changed: 0,
+    expandable_sections_added: 0,
+    expandable_sections_removed: 0,
+    section_change_candidates_enqueued: 0,
+    section_evidence_screenshots_taken: 0,
+    section_text_included_in_main_hash: includeSectionTextInMainHash,
+    section_text_included_in_baseline_facts: sectionExtractionConfig.includeInBaselineFacts,
     expanded_controls: 0,
     expansion_screenshots_taken: 0,
     expansion_screenshots_pruned: 0,
@@ -659,6 +702,9 @@ async function runOnce() {
     visual_review_candidates_queued: 0,
     visual_review_candidates_existing: 0,
     visual_review_candidates_failed: 0,
+    awards_queued_for_reconciliation: 0,
+    award_reconciliation_queue_existing: 0,
+    award_reconciliation_queue_failed: 0,
     published_updates: 0,
     publish_duplicates: 0,
     publish_failed: 0,
@@ -1052,17 +1098,16 @@ async function processSource(source, context, browserMeta, report) {
     return;
   }
 
+  const baselinePath = baselinePathForSource(source.id);
+  const baseline = readJsonIfExists(baselinePath);
   const pdfSource = isPdfSource(source);
   const capture = pdfSource
     ? await capturePdfSource(source)
-    : await captureSource(source, context, browserMeta, report);
+    : await captureSource(source, context, browserMeta, report, { baseline });
   report.checked += 1;
   if (capture.kind === "pdf") {
     report.pdf_checked += 1;
   }
-
-  const baselinePath = baselinePathForSource(source.id);
-  const baseline = readJsonIfExists(baselinePath);
 
   if (!baseline || baselineRefresh) {
     await maybeExtractBaselineFacts(source, capture, report, {
@@ -1126,6 +1171,13 @@ async function processSource(source, context, browserMeta, report) {
   const textChanged = hashComparison.textChanged;
   if (hashComparison.mainContentHashChanged) report.main_content_hash_changed += 1;
   if (hashComparison.chromeOnlyHashChanged) report.chrome_only_hash_changed += 1;
+
+  if (!textChanged) {
+    const sectionResult = await processExpandableSectionComparison(source, baseline, previous, capture, report, {
+      allowFirstBaseline: !screenshotChanged || hashComparison.chromeOnlyHashChanged,
+    });
+    if (sectionResult.handled) return;
+  }
 
   if (!screenshotChanged || (hashComparison.chromeOnlyHashChanged && !textChanged)) {
     if (textChanged) {
@@ -1396,6 +1448,203 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
   pruneTransientExpansionStateScreenshots(capture, report);
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
   console.log(`REVIEW text_only_candidate ${sourceLabel(source)}`);
+}
+
+async function processExpandableSectionComparison(
+  source,
+  baseline,
+  previous,
+  capture,
+  report,
+  { allowFirstBaseline = true } = {},
+) {
+  if (!extractExpandableSections || capture.kind === "pdf") return { handled: false, reason: "disabled" };
+  const currentSections = Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [];
+  if (!currentSections.length) return { handled: false, reason: "no_sections" };
+
+  const previousSections = baselineSectionMap(baseline);
+  if (!previousSections.size) {
+    if (!allowFirstBaseline) return { handled: false, reason: "missing_section_baseline_visible_change_pending" };
+    writeBaseline(source, capture, {
+      reason: "section_baseline_created",
+      previous_baseline: baseline || null,
+      baseline_facts: baseline?.summary_metadata?.baseline_facts || capture.baseline_facts || null,
+      baseline_facts_metadata:
+        baseline?.summary_metadata?.baseline_facts_metadata || capture.baseline_facts_metadata || null,
+    });
+    report.section_baseline_created += 1;
+    report.unchanged += 1;
+    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "section_baseline_created" });
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`SECTION_BASELINE created sections=${currentSections.length} ${sourceLabel(source)}`);
+    return { handled: true, reason: "section_baseline_created" };
+  }
+
+  const currentMap = new Map(currentSections.map((section) => [section.section_key, section]));
+  const changedSections = [];
+  const addedSections = [];
+  const removedSections = [];
+
+  for (const section of currentSections) {
+    const previousSection = previousSections.get(section.section_key);
+    if (!previousSection) {
+      addedSections.push(section);
+    } else if (previousSection.text_hash && section.text_hash && previousSection.text_hash !== section.text_hash) {
+      changedSections.push({ previousSection, section });
+    }
+  }
+
+  for (const previousSection of previousSections.values()) {
+    if (!currentMap.has(previousSection.section_key)) {
+      removedSections.push(previousSection);
+    }
+  }
+
+  if (!changedSections.length && !addedSections.length && !removedSections.length) {
+    return { handled: false, reason: "sections_unchanged" };
+  }
+
+  report.expandable_sections_changed += changedSections.length;
+  report.expandable_sections_added += addedSections.length;
+  report.expandable_sections_removed += removedSections.length;
+
+  const sectionPairs = [
+    ...changedSections,
+    ...addedSections.map((section) => ({ previousSection: null, section })),
+    ...removedSections.map((previousSection) => ({ previousSection, section: null })),
+  ];
+
+  let queued = 0;
+  let rejectedAsNoise = 0;
+  for (const pair of sectionPairs.slice(0, 24)) {
+    const result = await processOneSectionChange(source, baseline, previous, capture, report, pair);
+    if (result === "queued") queued += 1;
+    if (result === "noise") rejectedAsNoise += 1;
+  }
+
+  if (queued > 0) {
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`QUEUED section_visual_review_batch count=${queued} ${sourceLabel(source)}`);
+    return { handled: true, reason: "section_candidates_queued" };
+  }
+
+  if (rejectedAsNoise > 0 && acceptTextOnlyNoise) {
+    writeBaseline(source, capture, {
+      reason: "section_change_noise_rejected",
+      previous_baseline: baseline || null,
+      baseline_facts: baseline?.summary_metadata?.baseline_facts || capture.baseline_facts || null,
+      baseline_facts_metadata:
+        baseline?.summary_metadata?.baseline_facts_metadata || capture.baseline_facts_metadata || null,
+    });
+    report.unchanged += 1;
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    console.log(`NOISE section_changes_accepted_as_noise count=${rejectedAsNoise} ${sourceLabel(source)}`);
+    return { handled: true, reason: "section_noise_accepted" };
+  }
+
+  await markSharedSourceVisualCheckSucceeded(source, capture, report);
+  if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+  console.log(`NOISE section_changes_rejected count=${rejectedAsNoise} ${sourceLabel(source)}`);
+  return { handled: true, reason: "section_noise_rejected" };
+}
+
+async function processOneSectionChange(source, baseline, previous, capture, report, { previousSection, section }) {
+  const beforeText = previousSection?.text || "";
+  const afterText = section?.text || "";
+  const displaySection = section || previousSection || {};
+  const diff = {
+    ...buildDiffSummary(beforeText, afterText, source),
+    candidate_scope: "expandable_section",
+    section_key: displaySection.section_key || null,
+    section_label: displaySection.label || null,
+    section_path: displaySection.section_path || null,
+    previous_section_hash: previousSection?.text_hash || null,
+    new_section_hash: section?.text_hash || null,
+    exact_before_text: beforeText,
+    exact_after_text: afterText,
+  };
+  const deterministic = {
+    ...classifyDeterministicChange(diff, source),
+    section_change: true,
+    section_key: displaySection.section_key || null,
+  };
+
+  report.candidate_changes += 1;
+
+  const sectionBaseline = {
+    ...baseline,
+    text_hash: previousSection?.text_hash || null,
+    image_hash: baseline?.image_hash || null,
+    file_hash: null,
+  };
+  const previousSectionCapture = {
+    ...previous,
+    text: beforeText,
+    text_hash: previousSection?.text_hash || null,
+    text_length: beforeText.length,
+    section_key: displaySection.section_key || null,
+    section_label: displaySection.label || null,
+  };
+  const currentSectionCapture = {
+    ...capture,
+    text: afterText,
+    text_hash: section?.text_hash || null,
+    text_length: afterText.length,
+    section_key: displaySection.section_key || null,
+    section_label: displaySection.label || null,
+  };
+
+  if (!deterministic.candidate_change) {
+    report.deterministic_noise += 1;
+    report.deterministic_noise_rejected += 1;
+    report.text_only_noise_rejected += 1;
+    return "noise";
+  }
+
+  const gate = gateVisualReviewCandidateForAi({
+    source,
+    baseline: sectionBaseline,
+    previous: previousSectionCapture,
+    capture: currentSectionCapture,
+    diff,
+    deterministic,
+    report,
+  });
+
+  if (!gate.allowed) return "noise";
+
+  if (!interpretVisualChanges || visualReviewMode !== "batch") {
+    const reviewPath = saveReviewRecord({
+      source,
+      baseline: sectionBaseline,
+      previous: previousSectionCapture,
+      capture: currentSectionCapture,
+      diff,
+      deterministic: gate.deterministic,
+      reason: "section_change_requires_batch_review",
+      aiReview: {
+        provider: "none",
+        model: null,
+        result: null,
+        error: null,
+      },
+    });
+    report.review += 1;
+    report.review_paths.push(toArchiveRelative(reviewPath));
+    return "queued";
+  }
+
+  await enqueueVisualReviewCandidate({
+    source,
+    baseline: sectionBaseline,
+    previous: previousSectionCapture,
+    capture: currentSectionCapture,
+    diff,
+    deterministic: gate.deterministic,
+    report,
+  });
+  report.section_change_candidates_enqueued += 1;
+  return "queued";
 }
 
 async function finishTextOnlyNoise({
@@ -1717,6 +1966,18 @@ async function enqueueVisualReviewCandidate({
 
     if (data?.id) {
       report.visual_review_candidates_queued += 1;
+      await queueAwardReconciliationFromSource({
+        source,
+        report,
+        reason: "visual_review_candidate",
+        candidateIds: [data.id],
+        priority: 80,
+        metadata: {
+          candidate_signature: candidateSignature,
+          deterministic_classification: row.deterministic_classification,
+          queued_by: "capture-visual-snapshots",
+        },
+      });
       return data;
     }
 
@@ -1732,6 +1993,39 @@ async function enqueueVisualReviewCandidate({
     });
     console.log(`QUEUE FAILED ${message} ${sourceLabel(source)}`);
     throw error;
+  }
+}
+
+async function queueAwardReconciliationFromSource({
+  source,
+  report,
+  reason,
+  candidateIds = [],
+  priority = 100,
+  metadata = {},
+}) {
+  if (!source?.shared_award_id || !supabase) return null;
+  try {
+    const result = await enqueueAwardReconciliation(supabase, {
+      awardId: source.shared_award_id,
+      reason,
+      sourceIds: [source.id],
+      candidateIds,
+      priority,
+      metadata,
+    });
+    if (result.queued) report.awards_queued_for_reconciliation += 1;
+    else report.award_reconciliation_queue_existing += 1;
+    return result;
+  } catch (error) {
+    report.award_reconciliation_queue_failed += 1;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      message: `Award reconciliation queue failed: ${errorMessage(error)}`,
+    });
+    console.log(`RECONCILE QUEUE FAILED ${errorMessage(error)} ${sourceLabel(source)}`);
+    return null;
   }
 }
 
@@ -1982,7 +2276,7 @@ async function extractPdfText(buffer) {
   }
 }
 
-async function captureSource(source, context, browserMeta, report) {
+async function captureSource(source, context, browserMeta, report, { baseline = null } = {}) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
   const sourceDir = join(archiveRoot, "sources", source.id);
@@ -1993,6 +2287,8 @@ async function captureSource(source, context, browserMeta, report) {
   const thumbPath = join(captureDir, "thumb.jpg");
   const textPath = join(captureDir, "text.txt");
   const expansionTextPath = join(captureDir, "expansion-text.txt");
+  const sectionsTextPath = join(captureDir, "sections.txt");
+  const sectionsJsonPath = join(captureDir, "sections.json");
   const metaPath = join(captureDir, "meta.json");
   const page = await context.newPage();
 
@@ -2120,6 +2416,22 @@ async function captureSource(source, context, browserMeta, report) {
     if (textBlocks.expansion_text) {
       writeFileSync(expansionTextPath, `${textBlocks.expansion_text}\n`, "utf8");
     }
+    const sections = extractExpandableSections
+      ? await extractExpandableSectionsForCapture(page, captureDir, {
+          source,
+          baseline,
+          profile: sectionExtractionProfile,
+          captureEvidence: captureSectionEvidence,
+        })
+      : emptySectionExtractionResult(sectionExtractionProfile, "disabled");
+    const sectionsText = sectionExtractionText(sections.sections);
+    if (sectionsText) writeFileSync(sectionsTextPath, `${sectionsText}\n`, "utf8");
+    writeFileSync(sectionsJsonPath, JSON.stringify(sections, null, 2), "utf8");
+    if (report) {
+      report.expandable_sections_detected += sections.detected || 0;
+      report.expandable_sections_extracted += sections.extracted || 0;
+      report.section_evidence_screenshots_taken += sections.evidence_screenshots_taken || 0;
+    }
 
     const meta = {
       version: 1,
@@ -2138,6 +2450,14 @@ async function captureSource(source, context, browserMeta, report) {
       main_content_hash: textBlocks.main_content_hash,
       nav_header_footer_hash: textBlocks.nav_header_footer_hash,
       expansion_hash: textBlocks.expansion_hash,
+      section_extraction_profile: sectionExtractionProfile,
+      expandable_section_extraction_enabled: extractExpandableSections,
+      expandable_sections_detected: sections.detected || 0,
+      expandable_sections_extracted: sections.extracted || 0,
+      expandable_sections_hash: sections.sections_hash || null,
+      section_text_included_in_main_hash: includeSectionTextInMainHash,
+      section_text_included_in_baseline_facts: sectionExtractionConfig.includeInBaselineFacts,
+      section_evidence_screenshots_taken: sections.evidence_screenshots_taken || 0,
       image_hash: imageHash,
       text_length: text.length,
       body_text_length: textBlocks.body_text.length,
@@ -2174,6 +2494,8 @@ async function captureSource(source, context, browserMeta, report) {
         thumb: toArchiveRelative(thumbPath),
         text: toArchiveRelative(textPath),
         expansion_text: textBlocks.expansion_text ? toArchiveRelative(expansionTextPath) : null,
+        sections_text: sectionsText ? toArchiveRelative(sectionsTextPath) : null,
+        sections_json: toArchiveRelative(sectionsJsonPath),
         meta: toArchiveRelative(metaPath),
         expansion_states: expansionStateEvidence.states.map((state) => ({
           label: state.label,
@@ -2192,6 +2514,12 @@ async function captureSource(source, context, browserMeta, report) {
       text_path: textPath,
       expansion_text_path: textBlocks.expansion_text ? expansionTextPath : null,
       meta_path: metaPath,
+      sections_text_path: sectionsText ? sectionsTextPath : null,
+      sections_json_path: sectionsJsonPath,
+      expandable_sections: sections.sections,
+      expandable_sections_hash: sections.sections_hash || null,
+      section_extraction: sections,
+      section_text_for_baseline_facts: sectionExtractionConfig.includeInBaselineFacts ? sectionsText : "",
       expansion_state_screenshots: expansionStateEvidence.states,
       text,
       body_text_hash: textBlocks.body_text_hash,
@@ -2202,6 +2530,7 @@ async function captureSource(source, context, browserMeta, report) {
       main_content_text_length: textBlocks.main_content_text.length,
       nav_header_footer_text_length: textBlocks.nav_header_footer_text.length,
       expansion_text_length: textBlocks.expansion_text_length,
+      section_text_length: sectionsText.length,
     };
   } finally {
     await page.close().catch(() => null);
@@ -2635,6 +2964,445 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
   } catch (error) {
     return { states: [], candidates: 0, error: errorMessage(error) };
   }
+}
+
+function emptySectionExtractionResult(profile, reason) {
+  return {
+    profile,
+    enabled: false,
+    reason,
+    detected: 0,
+    extracted: 0,
+    sections_hash: "",
+    sections: [],
+    evidence_screenshots_taken: 0,
+    error: null,
+  };
+}
+
+async function extractExpandableSectionsForCapture(
+  page,
+  captureDir,
+  { source = null, baseline = null, profile = sectionExtractionProfile, captureEvidence = false } = {},
+) {
+  const settings = sectionExtractionProfileSettings(profile);
+  const quality = sourceQualityDecision(source, { purpose: "monitoring" });
+  if (!quality.allowed) {
+    return emptySectionExtractionResult(profile, `source_quality_${quality.reason}`);
+  }
+
+  try {
+    const raw = await page.evaluate(async ({ maxControls, allowForceOpenFallback, profileName }) => {
+      const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+
+      function textOf(element) {
+        return (element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim();
+      }
+
+      function visible(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          style.display !== "none" &&
+          style.visibility !== "hidden" &&
+          Number(style.opacity || 1) > 0
+        );
+      }
+
+      function signalFor(element) {
+        return [
+          element.id,
+          element.className,
+          element.getAttribute("aria-label"),
+          element.getAttribute("aria-controls"),
+          element.getAttribute("data-target"),
+          element.getAttribute("data-bs-target"),
+          element.getAttribute("data-toggle"),
+          element.getAttribute("data-bs-toggle"),
+          element.getAttribute("href"),
+          textOf(element),
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+      }
+
+      function targetElementsFor(element) {
+        const selectors = [];
+        for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
+          const value = element.getAttribute(attr);
+          if (!value) continue;
+          for (const token of value.split(/\s+/).filter(Boolean)) {
+            if (token.startsWith("#") && token.length > 1) selectors.push(token);
+            else if (/^[A-Za-z][\w:-]*$/.test(token)) selectors.push(`#${CSS.escape(token)}`);
+          }
+        }
+        return selectors.flatMap((selector) => {
+          try {
+            return [...document.querySelectorAll(selector)];
+          } catch {
+            return [];
+          }
+        });
+      }
+
+      function forcePanelOpen(panel) {
+        if (!(panel instanceof HTMLElement)) return;
+        panel.hidden = false;
+        panel.removeAttribute("hidden");
+        panel.setAttribute("aria-hidden", "false");
+        panel.classList.add("show", "open", "active");
+        panel.style.setProperty("display", "block", "important");
+        panel.style.setProperty("height", "auto", "important");
+        panel.style.setProperty("max-height", "none", "important");
+        panel.style.setProperty("visibility", "visible", "important");
+        panel.style.setProperty("opacity", "1", "important");
+      }
+
+      function isExpandableControl(element) {
+        if (!(element instanceof HTMLElement)) return false;
+        if (!visible(element)) return false;
+        if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
+        const tag = element.tagName.toLowerCase();
+        const href = element.getAttribute("href") || "";
+        if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
+          return false;
+        }
+        const signal = signalFor(element);
+        if (/(menu|nav|navbar|search|login|log in|sign in|subscribe|newsletter|share|print|donate|cart|next|previous|prev|facebook|twitter|linkedin|instagram)/i.test(signal)) {
+          return false;
+        }
+        const explicit =
+          tag === "summary" ||
+          element.getAttribute("aria-expanded") !== null ||
+          element.getAttribute("aria-controls") ||
+          element.getAttribute("data-target") ||
+          element.getAttribute("data-bs-target") ||
+          element.getAttribute("data-toggle") ||
+          element.getAttribute("data-bs-toggle") ||
+          element.closest("details, .accordion, [class*='accordion' i], [class*='faq' i], [id*='faq' i], [role='tablist']");
+        const relevant =
+          /\b(faq|question|answer|eligib|requirement|criteria|condition|nomination|application|process|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?|amount|tuition|stipend|contact)\b/i.test(
+            signal,
+          );
+        return Boolean(explicit && relevant);
+      }
+
+      function sectionContainerText(control, targets) {
+        const targetText = targets.map(textOf).filter(Boolean).join("\n\n");
+        if (targetText) return targetText;
+        const details = control.closest("details");
+        if (details) return textOf(details);
+        const row = control.closest("li, section, article, .accordion-item, [class*='accordion' i], [class*='faq' i], div");
+        return textOf(row).replace(textOf(control), "").trim();
+      }
+
+      const controls = [
+        ...document.querySelectorAll(
+          [
+            "summary",
+            "button",
+            "[role='button']",
+            "[role='tab']",
+            "a[href^='#']",
+            "a[data-toggle]",
+            "a[data-bs-toggle]",
+            "button[data-toggle]",
+            "button[data-bs-toggle]",
+            "[class*='accordion' i]",
+            "[class*='toggle' i]",
+            "[class*='elementor-tab-title' i]",
+            "[class*='e-n-accordion-item-title' i]",
+          ].join(", "),
+        ),
+      ].filter(isExpandableControl);
+
+      const seen = new Set();
+      const uniqueControls = controls.filter((control) => {
+        const key = [
+          control.tagName,
+          control.id,
+          control.getAttribute("aria-controls"),
+          control.getAttribute("href"),
+          textOf(control).slice(0, 140),
+        ].join("|");
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).slice(0, maxControls);
+
+      uniqueControls.forEach((control, index) => {
+        control.setAttribute("data-awardping-section-index", String(index));
+      });
+
+      const sections = [];
+      for (const [index, control] of uniqueControls.entries()) {
+        const beforeExpanded = control.getAttribute("aria-expanded");
+        const beforeOpen = control.closest("details")?.hasAttribute("open") || false;
+        const label = textOf(control).slice(0, 180) || control.getAttribute("aria-label") || `Section ${index + 1}`;
+        const targetsBefore = targetElementsFor(control);
+
+        control.scrollIntoView({ block: "center", inline: "nearest" });
+        await delay(60);
+        try {
+          control.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+          control.click();
+          control.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+        } catch {
+          // Keep collecting other controls.
+        }
+        const details = control.closest("details");
+        if (details) details.setAttribute("open", "");
+        await delay(180);
+
+        let targets = targetElementsFor(control);
+        let text = sectionContainerText(control, targets);
+        let usedFallback = false;
+        if (allowForceOpenFallback && text.length < 40) {
+          for (const panel of targetsBefore) forcePanelOpen(panel);
+          if (details) details.setAttribute("open", "");
+          await delay(120);
+          targets = targetElementsFor(control);
+          text = sectionContainerText(control, targets);
+          usedFallback = true;
+        }
+
+        if (beforeExpanded === "false" && profileName === "stable-daily") {
+          try {
+            control.click();
+          } catch {
+            // Best-effort restore.
+          }
+          control.setAttribute("aria-expanded", "false");
+        }
+        if (!beforeOpen && details && profileName === "stable-daily") details.removeAttribute("open");
+
+        sections.push({
+          index,
+          label,
+          text,
+          path: [
+            control.tagName.toLowerCase(),
+            control.id ? `#${control.id}` : null,
+            control.getAttribute("aria-controls") ? `[aria-controls="${control.getAttribute("aria-controls")}"]` : null,
+            control.getAttribute("href") ? `[href="${control.getAttribute("href")}"]` : null,
+          ].filter(Boolean).join(""),
+          target_count: targets.length,
+          used_force_open_fallback: usedFallback,
+        });
+      }
+
+      return {
+        detected: uniqueControls.length,
+        sections,
+      };
+    }, {
+      maxControls: settings.maxControls,
+      allowForceOpenFallback: settings.allowForceOpenFallback,
+      profileName: settings.profile,
+    });
+
+    const sections = normalizeExtractedSections(raw.sections || []);
+    const result = {
+      profile,
+      enabled: true,
+      detected: raw.detected || 0,
+      extracted: sections.length,
+      sections_hash: hashSectionSnapshots(sections),
+      sections,
+      evidence_screenshots_taken: 0,
+      error: null,
+    };
+
+    if (captureEvidence && baselineHasSectionSnapshots(baseline)) {
+      const previousSections = baselineSectionMap(baseline);
+      const changedSections = sections.filter((section) => {
+        const previous = previousSections.get(section.section_key);
+        return previous && previous.text_hash !== section.text_hash;
+      });
+      result.evidence = await captureSectionEvidenceScreenshots(page, captureDir, changedSections);
+      result.evidence_screenshots_taken = result.evidence.length;
+      const evidenceByKey = new Map(result.evidence.map((item) => [item.section_key, item]));
+      result.sections = sections.map((section) => ({
+        ...section,
+        evidence: evidenceByKey.get(section.section_key) || null,
+      }));
+    }
+
+    return result;
+  } catch (error) {
+    return {
+      ...emptySectionExtractionResult(profile, "error"),
+      enabled: true,
+      error: errorMessage(error),
+    };
+  }
+}
+
+async function captureSectionEvidenceScreenshots(page, captureDir, sections) {
+  if (!sections.length) return [];
+  const evidenceDir = join(captureDir, "section-evidence");
+  mkdirSync(evidenceDir, { recursive: true });
+  const evidence = [];
+
+  for (const section of sections.slice(0, 12)) {
+    const result = await page.evaluate(async ({ index }) => {
+      const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+      function targetElementsFor(element) {
+        const selectors = [];
+        for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
+          const value = element.getAttribute(attr);
+          if (!value) continue;
+          for (const token of value.split(/\s+/).filter(Boolean)) {
+            if (token.startsWith("#") && token.length > 1) selectors.push(token);
+            else if (/^[A-Za-z][\w:-]*$/.test(token)) selectors.push(`#${CSS.escape(token)}`);
+          }
+        }
+        return selectors.flatMap((selector) => {
+          try {
+            return [...document.querySelectorAll(selector)];
+          } catch {
+            return [];
+          }
+        });
+      }
+      function forcePanelOpen(panel) {
+        if (!(panel instanceof HTMLElement)) return;
+        panel.hidden = false;
+        panel.removeAttribute("hidden");
+        panel.setAttribute("aria-hidden", "false");
+        panel.classList.add("show", "open", "active");
+        panel.style.setProperty("display", "block", "important");
+        panel.style.setProperty("height", "auto", "important");
+        panel.style.setProperty("max-height", "none", "important");
+        panel.style.setProperty("visibility", "visible", "important");
+        panel.style.setProperty("opacity", "1", "important");
+      }
+      function rectFor(element) {
+        const rect = element.getBoundingClientRect();
+        return {
+          x: rect.left + window.scrollX,
+          y: rect.top + window.scrollY,
+          right: rect.right + window.scrollX,
+          bottom: rect.bottom + window.scrollY,
+        };
+      }
+      const control = document.querySelector(`[data-awardping-section-index="${index}"]`);
+      if (!(control instanceof HTMLElement)) return null;
+      control.scrollIntoView({ block: "center", inline: "nearest" });
+      await delay(80);
+      try {
+        control.click();
+      } catch {
+        // Best-effort evidence only.
+      }
+      const details = control.closest("details");
+      if (details) details.setAttribute("open", "");
+      const targets = targetElementsFor(control);
+      for (const target of targets) forcePanelOpen(target);
+      await delay(200);
+      const rects = [rectFor(control), ...targets.filter((target) => target instanceof HTMLElement).map(rectFor)];
+      if (details) rects.push(rectFor(details));
+      const left = Math.min(...rects.map((rect) => rect.x));
+      const top = Math.min(...rects.map((rect) => rect.y));
+      const right = Math.max(...rects.map((rect) => rect.right));
+      const bottom = Math.max(...rects.map((rect) => rect.bottom));
+      return {
+        x: Math.max(0, Math.floor(left - 16)),
+        y: Math.max(0, Math.floor(top - 16)),
+        width: Math.max(120, Math.ceil(right - left + 32)),
+        height: Math.max(80, Math.ceil(bottom - top + 32)),
+      };
+    }, { index: section.index });
+
+    if (!result) continue;
+    const fileName = `section-${String(evidence.length + 1).padStart(2, "0")}-${cleanSlug(section.section_key) || "section"}.jpg`;
+    const path = join(evidenceDir, fileName);
+    const clip = {
+      x: result.x,
+      y: result.y,
+      width: Math.min(result.width, 1800),
+      height: Math.min(result.height, 2200),
+    };
+    const buffer = await page.screenshot({
+      path,
+      clip,
+      type: "jpeg",
+      quality: jpegQuality,
+      timeout: timeoutMs,
+    });
+    evidence.push({
+      section_key: section.section_key,
+      section_label: section.label,
+      page: toArchiveRelative(path),
+      page_path: path,
+      image_hash: hashBuffer(buffer),
+      page_bytes: buffer.length,
+      clip,
+    });
+  }
+
+  return evidence;
+}
+
+function normalizeExtractedSections(rawSections) {
+  const seen = new Map();
+  return rawSections
+    .map((section, index) => {
+      const label = cleanText(section.label) || `Section ${index + 1}`;
+      const text = normalizeVisibleText(section.text || "");
+      if (text.length < 20) return null;
+      const baseKey = cleanSlug(section.path || label) || `section-${index + 1}`;
+      const count = seen.get(baseKey) || 0;
+      seen.set(baseKey, count + 1);
+      const sectionKey = count ? `${baseKey}-${count + 1}` : baseKey;
+      return {
+        index: nonNegativeInt(section.index, index),
+        section_key: sectionKey,
+        label,
+        section_path: cleanText(section.path) || null,
+        text,
+        text_hash: hashText(text),
+        text_length: text.length,
+        target_count: nonNegativeInt(section.target_count, 0),
+        used_force_open_fallback: Boolean(section.used_force_open_fallback),
+      };
+    })
+    .filter(Boolean);
+}
+
+function sectionExtractionText(sections = []) {
+  return sections
+    .map((section) => {
+      const label = cleanText(section.label) || "Expandable section";
+      const text = normalizeVisibleText(section.text || "");
+      return text ? `${label}\n${text}` : "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function hashSectionSnapshots(sections = []) {
+  return hashText(
+    sections
+      .map((section) => `${section.section_key}\n${section.label}\n${section.text_hash}`)
+      .join("\n\n"),
+  );
+}
+
+function baselineHasSectionSnapshots(baseline) {
+  return Array.isArray(baseline?.expandable_sections) && baseline.expandable_sections.length > 0;
+}
+
+function baselineSectionMap(baseline) {
+  return new Map(
+    (baseline?.expandable_sections || [])
+      .filter((section) => section?.section_key)
+      .map((section) => [section.section_key, section]),
+  );
 }
 
 async function extractStableTextBlockSamples(page) {
@@ -4418,6 +5186,18 @@ async function publishVisualChangeEvent({ source, baseline, capture, aiReview, r
 
     if (data?.id) {
       report.published_updates += 1;
+      await queueAwardReconciliationFromSource({
+        source,
+        report,
+        reason: "visual_change_published",
+        priority: 70,
+        metadata: {
+          change_event_id: data.id,
+          previous_hash: visualHashForBaseline(baseline),
+          new_hash: visualHashForCapture(capture),
+          queued_by: "capture-visual-snapshots",
+        },
+      });
       console.log(`PUBLISHED visual_update id=${data.id} ${sourceLabel(source)}`);
     } else {
       report.publish_duplicates += 1;
@@ -5605,6 +6385,13 @@ function geminiCliBaselineFactsPrompt(source, capture, reason) {
     "",
     "Normalized visible text excerpt:",
     String(capture.text || "").slice(0, promptChars),
+    ...(capture.section_text_for_baseline_facts
+      ? [
+          "",
+          "Structured expandable section text excerpt:",
+          String(capture.section_text_for_baseline_facts || "").slice(0, 6000),
+        ]
+      : []),
   ].join("\n");
 }
 
@@ -5901,6 +6688,7 @@ function writeBaseline(source, capture, details) {
     capture_behavior_version: capture.kind === "pdf" ? null : captureBehaviorVersion,
     capture_behavior_name: capture.kind === "pdf" ? null : captureBehaviorName,
     capture_profile: capture.capture_profile || captureProfile,
+    section_extraction_profile: capture.section_extraction_profile || sectionExtractionProfile,
     source: sourceMetadata(source),
     captured_at: capture.captured_at,
     final_url: capture.final_url,
@@ -5910,6 +6698,7 @@ function writeBaseline(source, capture, details) {
     main_content_hash: capture.main_content_hash || null,
     nav_header_footer_hash: capture.nav_header_footer_hash || null,
     expansion_hash: capture.expansion_hash || null,
+    expandable_sections_hash: capture.expandable_sections_hash || null,
     image_hash: capture.image_hash,
     file_hash: capture.file_hash || null,
     file_bytes: capture.file_bytes || null,
@@ -5918,6 +6707,8 @@ function writeBaseline(source, capture, details) {
     main_content_text_length: capture.main_content_text_length || null,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || null,
     expansion_text_length: capture.expansion_text_length || null,
+    section_text_length: capture.section_text_length || null,
+    expandable_sections: Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [],
     dimensions: capture.dimensions,
     hidden_noise_counts: capture.hidden_noise_counts,
     capture: {
@@ -5927,6 +6718,8 @@ function writeBaseline(source, capture, details) {
       pdf: capture.pdf_path ? toArchiveRelative(capture.pdf_path) : null,
       text: toArchiveRelative(capture.text_path),
       expansion_text: capture.expansion_text_path ? toArchiveRelative(capture.expansion_text_path) : null,
+      sections_text: capture.sections_text_path ? toArchiveRelative(capture.sections_text_path) : null,
+      sections_json: capture.sections_json_path ? toArchiveRelative(capture.sections_json_path) : null,
       meta: toArchiveRelative(capture.meta_path),
     },
     summary_metadata: {
@@ -5942,6 +6735,7 @@ function writeBaseline(source, capture, details) {
             main_content_hash: details.previous_baseline.main_content_hash || null,
             nav_header_footer_hash: details.previous_baseline.nav_header_footer_hash || null,
             expansion_hash: details.previous_baseline.expansion_hash || null,
+            expandable_sections_hash: details.previous_baseline.expandable_sections_hash || null,
             image_hash: details.previous_baseline.image_hash || null,
             file_hash: details.previous_baseline.file_hash || null,
             capture: details.previous_baseline.capture || null,
@@ -5968,6 +6762,8 @@ function readBaselineEvidence(baseline) {
     pdfPath: capture.pdf ? fromArchiveRelative(capture.pdf) : null,
     textPath: fromArchiveRelative(capture.text),
     expansionTextPath: capture.expansion_text ? fromArchiveRelative(capture.expansion_text) : null,
+    sectionsTextPath: capture.sections_text ? fromArchiveRelative(capture.sections_text) : null,
+    sectionsJsonPath: capture.sections_json ? fromArchiveRelative(capture.sections_json) : null,
     metaPath: fromArchiveRelative(capture.meta),
   };
   const requiredPaths =
@@ -5994,11 +6790,14 @@ function captureFromBaseline(baseline) {
     ...meta,
     kind: evidence.kind,
     dir: baseline.capture?.dir ? fromArchiveRelative(baseline.capture.dir) : dirname(evidence.metaPath),
+    section_extraction_profile: baseline.section_extraction_profile || meta.section_extraction_profile || null,
     page_path: evidence.pagePath,
     thumb_path: evidence.thumbPath,
     pdf_path: evidence.pdfPath,
     text_path: evidence.textPath,
     expansion_text_path: evidence.expansionTextPath,
+    sections_text_path: evidence.sectionsTextPath,
+    sections_json_path: evidence.sectionsJsonPath,
     meta_path: evidence.metaPath,
     text: evidence.text,
     captured_at: baseline.captured_at || meta.captured_at || null,
@@ -6013,10 +6812,18 @@ function captureFromBaseline(baseline) {
     main_content_hash: baseline.main_content_hash || meta.main_content_hash || null,
     nav_header_footer_hash: baseline.nav_header_footer_hash || meta.nav_header_footer_hash || null,
     expansion_hash: baseline.expansion_hash || meta.expansion_hash || null,
+    expandable_sections_hash: baseline.expandable_sections_hash || meta.expandable_sections_hash || null,
     body_text_length: baseline.body_text_length || meta.body_text_length || 0,
     main_content_text_length: baseline.main_content_text_length || meta.main_content_text_length || 0,
     nav_header_footer_text_length: baseline.nav_header_footer_text_length || meta.nav_header_footer_text_length || 0,
     expansion_text_length: baseline.expansion_text_length || meta.expansion_text_length || 0,
+    section_text_length: baseline.section_text_length || meta.section_text_length || 0,
+    expandable_sections:
+      (Array.isArray(baseline.expandable_sections) && baseline.expandable_sections.length
+        ? baseline.expandable_sections
+        : Array.isArray(meta.expandable_sections)
+          ? meta.expandable_sections
+          : []),
     dimensions: baseline.dimensions || meta.dimensions || null,
     hidden_noise_counts: baseline.hidden_noise_counts || meta.hidden_noise_counts || null,
     baseline_facts: baseline.summary_metadata?.baseline_facts || meta.baseline_facts || null,
@@ -6745,6 +7552,9 @@ function visualWorkerMetadata(report) {
     ai_model: report.ai_model,
     ai_required: report.ai_required,
     ai_disabled_reason: report.ai_disabled_reason,
+    stop_reason: report.stop_reason,
+    billing_blocked: Boolean(report.billing_blocked),
+    blocking_reason: report.blocking_reason || null,
     options: report.options,
     counts: {
       candidate_changes: report.candidate_changes,
@@ -6787,6 +7597,18 @@ function visualWorkerMetadata(report) {
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
       capture_profile: report.capture_profile,
+      section_extraction_profile: report.section_extraction_profile,
+      expandable_section_extraction_enabled: report.expandable_section_extraction_enabled,
+      section_baseline_created: report.section_baseline_created,
+      expandable_sections_detected: report.expandable_sections_detected,
+      expandable_sections_extracted: report.expandable_sections_extracted,
+      expandable_sections_changed: report.expandable_sections_changed,
+      expandable_sections_added: report.expandable_sections_added,
+      expandable_sections_removed: report.expandable_sections_removed,
+      section_change_candidates_enqueued: report.section_change_candidates_enqueued,
+      section_evidence_screenshots_taken: report.section_evidence_screenshots_taken,
+      section_text_included_in_main_hash: report.section_text_included_in_main_hash,
+      section_text_included_in_baseline_facts: report.section_text_included_in_baseline_facts,
       expanded_controls: report.expanded_controls,
       expansion_screenshots_taken: report.expansion_screenshots_taken,
       expansion_screenshots_pruned: report.expansion_screenshots_pruned,
@@ -6827,6 +7649,9 @@ function visualWorkerMetadata(report) {
       visual_review_candidates_queued: report.visual_review_candidates_queued,
       visual_review_candidates_existing: report.visual_review_candidates_existing,
       visual_review_candidates_failed: report.visual_review_candidates_failed,
+      awards_queued_for_reconciliation: report.awards_queued_for_reconciliation,
+      award_reconciliation_queue_existing: report.award_reconciliation_queue_existing,
+      award_reconciliation_queue_failed: report.award_reconciliation_queue_failed,
       published_updates: report.published_updates,
       publish_duplicates: report.publish_duplicates,
       publish_failed: report.publish_failed,
@@ -7365,6 +8190,9 @@ function recordGeminiApiError(report, kind, httpStatus, body, message) {
       providerStatus: cleanNullable(error.status),
       message: providerMessage,
     });
+    report.billing_blocked = true;
+    report.blocking_reason = truncate(providerMessage, 1000);
+    report.stop_reason = "gemini_billing_or_quota_blocked";
   }
   report.gemini_usage.status = blocked ? "blocked" : "error";
   report.gemini_usage.last_error = {
@@ -7509,6 +8337,7 @@ function ensureGeminiCliCallAvailable(report, kind) {
 
 function geminiApiCallAvailable(report) {
   if (aiProvider !== "gemini") return false;
+  if (report.billing_blocked) return false;
   if (geminiApiMaxCalls && report.gemini_usage.calls >= geminiApiMaxCalls) return false;
   const guard = geminiSpendGuardStatus({
     archiveRoot,
@@ -7532,6 +8361,11 @@ function ensureGeminiApiCallAvailable(report, kind) {
     archiveRoot,
     dailyCostCapUsd: geminiApiDailyCostCapUsd,
   });
+  if (guard.blocked) {
+    report.billing_blocked = true;
+    report.blocking_reason = guard.block?.message || guard.block?.note || "Gemini billing or quota is blocked.";
+    report.stop_reason = "gemini_billing_or_quota_blocked";
+  }
   const shared = guard.blocked
     ? ` billing_blocked=${guard.block?.path || "true"}`
     : guard.capReached

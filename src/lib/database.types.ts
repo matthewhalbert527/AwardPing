@@ -9,7 +9,24 @@ export type JobRunStatus = "running" | "succeeded" | "failed";
 export type PublicUpdateSubscriberStatus = "pending" | "active" | "unsubscribed";
 export type PublicUpdateDeliveryStatus = "sent" | "failed";
 export type PublicFormRateLimitKind = "subscribe" | "contact" | "source_request";
-export type SourcePageRequestStatus = "pending" | "queued" | "added" | "rejected";
+export type SourcePageRequestStatus =
+  | "pending"
+  | "queued"
+  | "validating"
+  | "capturing"
+  | "ai_review_pending"
+  | "ai_review_submitted"
+  | "ai_review_succeeded"
+  | "matching"
+  | "needs_manual_review"
+  | "added"
+  | "rejected"
+  | "failed";
+export type SourcePageRequestIntakeType =
+  | "award_homepage"
+  | "official_source"
+  | "sponsor_site"
+  | "unknown";
 export type AwardWorkflowStatus =
   | "watching"
   | "needs_review"
@@ -146,6 +163,167 @@ export type Database = {
           next_structure_scan_at?: string;
           structure_scan_error?: string | null;
           updated_at?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_fact_candidates: {
+        Row: {
+          id: string;
+          shared_award_id: string;
+          shared_award_source_id: string | null;
+          source_url: string | null;
+          source_title: string | null;
+          source_role: string | null;
+          source_quality_decision: Json;
+          field_name: string;
+          raw_value: string | null;
+          normalized_value: Json;
+          evidence_quote: string | null;
+          evidence_location: string | null;
+          extracted_at: string | null;
+          model: string | null;
+          confidence: string | null;
+          candidate_status: "pending" | "selected" | "rejected" | "conflicted" | "superseded";
+          rejection_reason: string | null;
+          selected_reason: string | null;
+          metadata: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          shared_award_id: string;
+          shared_award_source_id?: string | null;
+          source_url?: string | null;
+          source_title?: string | null;
+          source_role?: string | null;
+          source_quality_decision?: Json;
+          field_name: string;
+          raw_value?: string | null;
+          normalized_value?: Json;
+          evidence_quote?: string | null;
+          evidence_location?: string | null;
+          extracted_at?: string | null;
+          model?: string | null;
+          confidence?: string | null;
+          candidate_status?: "pending" | "selected" | "rejected" | "conflicted" | "superseded";
+          rejection_reason?: string | null;
+          selected_reason?: string | null;
+          metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          source_quality_decision?: Json;
+          normalized_value?: Json;
+          candidate_status?: "pending" | "selected" | "rejected" | "conflicted" | "superseded";
+          rejection_reason?: string | null;
+          selected_reason?: string | null;
+          metadata?: Json;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      shared_award_page_audits: {
+        Row: {
+          id: string;
+          shared_award_id: string;
+          audit_kind: "deterministic" | "gemini_batch" | "manual" | "regression";
+          audit_status: "passed" | "warnings" | "failed" | "needs_review";
+          severity: "info" | "warning" | "error" | "critical";
+          findings: Json;
+          suggested_fixes: Json;
+          field_conflicts: Json;
+          source_rejections: Json;
+          selected_fact_summary: Json;
+          public_page_snapshot: Json;
+          model: string | null;
+          gemini_batch_name: string | null;
+          gemini_batch_request_key: string | null;
+          ai_result: Json;
+          created_at: string;
+          resolved_at: string | null;
+          resolved_by: string | null;
+          resolution_note: string | null;
+        };
+        Insert: {
+          id?: string;
+          shared_award_id: string;
+          audit_kind?: "deterministic" | "gemini_batch" | "manual" | "regression";
+          audit_status: "passed" | "warnings" | "failed" | "needs_review";
+          severity?: "info" | "warning" | "error" | "critical";
+          findings?: Json;
+          suggested_fixes?: Json;
+          field_conflicts?: Json;
+          source_rejections?: Json;
+          selected_fact_summary?: Json;
+          public_page_snapshot?: Json;
+          model?: string | null;
+          gemini_batch_name?: string | null;
+          gemini_batch_request_key?: string | null;
+          ai_result?: Json;
+          created_at?: string;
+          resolved_at?: string | null;
+          resolved_by?: string | null;
+          resolution_note?: string | null;
+        };
+        Update: {
+          audit_status?: "passed" | "warnings" | "failed" | "needs_review";
+          severity?: "info" | "warning" | "error" | "critical";
+          findings?: Json;
+          suggested_fixes?: Json;
+          field_conflicts?: Json;
+          source_rejections?: Json;
+          selected_fact_summary?: Json;
+          public_page_snapshot?: Json;
+          model?: string | null;
+          gemini_batch_name?: string | null;
+          gemini_batch_request_key?: string | null;
+          ai_result?: Json;
+          resolved_at?: string | null;
+          resolved_by?: string | null;
+          resolution_note?: string | null;
+        };
+        Relationships: [];
+      };
+      shared_award_reconciliation_queue: {
+        Row: {
+          id: string;
+          shared_award_id: string;
+          reason: string;
+          source_ids: string[] | null;
+          candidate_ids: string[] | null;
+          status: "pending" | "processing" | "succeeded" | "failed" | "skipped";
+          priority: number;
+          created_at: string;
+          started_at: string | null;
+          completed_at: string | null;
+          error: string | null;
+          metadata: Json;
+        };
+        Insert: {
+          id?: string;
+          shared_award_id: string;
+          reason: string;
+          source_ids?: string[] | null;
+          candidate_ids?: string[] | null;
+          status?: "pending" | "processing" | "succeeded" | "failed" | "skipped";
+          priority?: number;
+          created_at?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
+          error?: string | null;
+          metadata?: Json;
+        };
+        Update: {
+          source_ids?: string[] | null;
+          candidate_ids?: string[] | null;
+          status?: "pending" | "processing" | "succeeded" | "failed" | "skipped";
+          priority?: number;
+          started_at?: string | null;
+          completed_at?: string | null;
+          error?: string | null;
+          metadata?: Json;
         };
         Relationships: [];
       };
@@ -638,7 +816,24 @@ export type Database = {
           award_name: string;
           homepage_url: string;
           notes: string | null;
+          intake_type: SourcePageRequestIntakeType;
+          submitted_url: string | null;
+          normalized_url: string | null;
+          detected_award_name: string | null;
+          detected_sponsor: string | null;
+          matched_shared_award_id: string | null;
+          created_shared_award_id: string | null;
+          created_source_ids: string[] | null;
           status: SourcePageRequestStatus;
+          status_reason: string | null;
+          ai_review: Json;
+          deterministic_review: Json;
+          discovered_links: Json;
+          capture_metadata: Json;
+          worker_run_id: string | null;
+          processed_at: string | null;
+          failed_at: string | null;
+          error: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -649,7 +844,24 @@ export type Database = {
           award_name: string;
           homepage_url: string;
           notes?: string | null;
+          intake_type?: SourcePageRequestIntakeType;
+          submitted_url?: string | null;
+          normalized_url?: string | null;
+          detected_award_name?: string | null;
+          detected_sponsor?: string | null;
+          matched_shared_award_id?: string | null;
+          created_shared_award_id?: string | null;
+          created_source_ids?: string[] | null;
           status?: SourcePageRequestStatus;
+          status_reason?: string | null;
+          ai_review?: Json;
+          deterministic_review?: Json;
+          discovered_links?: Json;
+          capture_metadata?: Json;
+          worker_run_id?: string | null;
+          processed_at?: string | null;
+          failed_at?: string | null;
+          error?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -658,7 +870,24 @@ export type Database = {
           award_name?: string;
           homepage_url?: string;
           notes?: string | null;
+          intake_type?: SourcePageRequestIntakeType;
+          submitted_url?: string | null;
+          normalized_url?: string | null;
+          detected_award_name?: string | null;
+          detected_sponsor?: string | null;
+          matched_shared_award_id?: string | null;
+          created_shared_award_id?: string | null;
+          created_source_ids?: string[] | null;
           status?: SourcePageRequestStatus;
+          status_reason?: string | null;
+          ai_review?: Json;
+          deterministic_review?: Json;
+          discovered_links?: Json;
+          capture_metadata?: Json;
+          worker_run_id?: string | null;
+          processed_at?: string | null;
+          failed_at?: string | null;
+          error?: string | null;
           updated_at?: string;
         };
         Relationships: [];

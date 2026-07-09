@@ -3,7 +3,10 @@ import {
   buildStableTextBlocks,
   compareStableCaptureHashes,
   defaultCaptureProfile,
+  defaultSectionExtractionProfile,
   normalizeCaptureProfile,
+  normalizeSectionExtractionProfile,
+  sectionExtractionProfileSettings,
   shouldUseExpansionForSource,
   shouldUseScrollActivationForSource,
 } from "./lib/capture-stability.mjs";
@@ -15,6 +18,30 @@ describe("capture stability profiles", () => {
     expect(defaultCaptureProfile({ discoveryMode: true })).toBe("discovery");
     expect(defaultCaptureProfile({ localizationRepair: true })).toBe("localization-repair");
     expect(normalizeCaptureProfile("stable_daily")).toBe("stable-daily");
+    expect(defaultSectionExtractionProfile()).toBe("stable-daily");
+    expect(defaultSectionExtractionProfile({ baselineRefresh: true })).toBe("baseline-rich");
+    expect(normalizeSectionExtractionProfile("baseline_rich")).toBe("baseline-rich");
+  });
+
+  it("uses cheap structured section extraction for daily and richer extraction for baselines", () => {
+    expect(sectionExtractionProfileSettings("stable-daily")).toMatchObject({
+      profile: "stable-daily",
+      naturalClicksOnly: true,
+      allowForceOpenFallback: false,
+      includeInBaselineFacts: false,
+      captureEvidence: false,
+    });
+    expect(sectionExtractionProfileSettings("baseline-rich")).toMatchObject({
+      profile: "baseline-rich",
+      naturalClicksOnly: false,
+      allowForceOpenFallback: true,
+      includeInBaselineFacts: true,
+      captureEvidence: false,
+    });
+    expect(sectionExtractionProfileSettings("evidence")).toMatchObject({
+      profile: "evidence",
+      captureEvidence: true,
+    });
   });
 
   it("isolates expansion-state text from stable daily primary text", () => {
@@ -84,7 +111,7 @@ describe("capture stability profiles", () => {
     const faq = { page_type: "faq" };
 
     expect(shouldUseExpansionForSource(homepage, "stable-daily")).toBe(false);
-    expect(shouldUseExpansionForSource(faq, "stable-daily")).toBe(true);
+    expect(shouldUseExpansionForSource(faq, "stable-daily")).toBe(false);
     expect(shouldUseExpansionForSource(homepage, "baseline-rich")).toBe(true);
     expect(shouldUseScrollActivationForSource(homepage, "stable-daily", true)).toBe(false);
     expect(shouldUseScrollActivationForSource(faq, "stable-daily", true)).toBe(true);

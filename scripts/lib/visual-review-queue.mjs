@@ -278,6 +278,10 @@ export function visualReviewCandidateSignature({
     new_image_hash: capture?.image_hash || null,
     previous_file_hash: baseline?.file_hash || null,
     new_file_hash: capture?.file_hash || null,
+    candidate_scope: diff?.candidate_scope || null,
+    section_key: diff?.section_key || null,
+    previous_section_hash: diff?.previous_section_hash || null,
+    new_section_hash: diff?.new_section_hash || null,
     deterministic_diff: compactDiffSignature(diff),
     deterministic_classification: deterministic?.classification || deterministic?.reason || null,
     behavior_version: behaviorVersion || null,
@@ -329,7 +333,19 @@ export function buildVisualReviewPromptPayload({
       new_image_hash: capture?.image_hash || null,
       previous_file_hash: baseline?.file_hash || null,
       new_file_hash: capture?.file_hash || null,
+      previous_section_hash: diff?.previous_section_hash || null,
+      new_section_hash: diff?.new_section_hash || null,
     },
+    section_context: diff?.candidate_scope === "expandable_section"
+      ? {
+          candidate_scope: "expandable_section",
+          section_key: cleanNullable(diff?.section_key),
+          section_label: cleanNullable(diff?.section_label),
+          section_path: cleanNullable(diff?.section_path),
+          previous_section_hash: cleanNullable(diff?.previous_section_hash),
+          new_section_hash: cleanNullable(diff?.new_section_hash),
+        }
+      : null,
     deterministic_classification: deterministic || {},
     deterministic_diff: diff || {},
     include_images: includeImages,
@@ -382,6 +398,13 @@ export function buildVisualReviewPromptText(payload) {
     "",
     "Deterministic diff summary:",
     stableJsonStringify(payload.deterministic_diff || {}),
+    ...(payload.section_context
+      ? [
+          "",
+          "Changed expandable section context:",
+          stableJsonStringify(payload.section_context),
+        ]
+      : []),
     "",
     "Previous normalized text excerpt:",
     payload.previous_text_excerpt || "",
@@ -486,6 +509,7 @@ export function validateVisualBatchReview({ candidate, source, result }) {
 
 export function changeDetailsFromVisualBatchResult({ candidate, source, result, model }) {
   const structuredDiff = result.structured_diff || normalizeStructuredDiff({}, candidate?.deterministic_diff || {}, source);
+  const sectionContext = candidate?.prompt_payload?.section_context || null;
   return {
     reader_summary:
       cleanNullable(result.reader_summary) ||
@@ -499,6 +523,7 @@ export function changeDetailsFromVisualBatchResult({ candidate, source, result, 
     is_alert_worthy: Boolean(result.is_alert_worthy),
     confidence: normalizeConfidence(result.confidence) || "low",
     structured_diff: structuredDiff,
+    section_context: sectionContext,
     changed_award_facts: normalizeChangedFacts(result.changed_facts || result.changed_award_facts),
     changed_facts: normalizeChangedFacts(result.changed_facts || result.changed_award_facts),
     source_relevance: result.source_relevance || null,
@@ -598,6 +623,10 @@ function shouldIncludeImagesForCandidate({ previous, capture, diff, deterministi
 
 function compactDiffSignature(diff = {}) {
   return {
+    candidate_scope: cleanNullable(diff.candidate_scope),
+    section_key: cleanNullable(diff.section_key),
+    previous_section_hash: cleanNullable(diff.previous_section_hash),
+    new_section_hash: cleanNullable(diff.new_section_hash),
     added_text: stringArray(diff.added_text).slice(0, 12).map(sentenceKey),
     removed_text: stringArray(diff.removed_text).slice(0, 12).map(sentenceKey),
     date_changes: stringArray(diff.date_changes).slice(0, 8).map(sentenceKey),

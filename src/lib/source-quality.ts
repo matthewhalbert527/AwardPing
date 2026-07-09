@@ -2,6 +2,12 @@ import {
   isMonitorableOfficialSource,
   isTrackableOfficialSourceUrl,
 } from "@/lib/source-url-policy";
+import {
+  explainSourceAiReviewStatus,
+  sourceBaselineFacts,
+} from "@/lib/source-ai-review-status";
+
+export { sourceBaselineFacts } from "@/lib/source-ai-review-status";
 
 export type SourceQualityPurpose =
   | "public"
@@ -18,6 +24,7 @@ export type SourceQualitySource = {
   page_description?: string | null;
   page_metadata?: unknown;
   page_metadata_generated_at?: string | null;
+  page_metadata_model?: string | null;
   page_type?: string | null;
   source?: string | null;
   reason?: string | null;
@@ -46,37 +53,8 @@ const rejectedQualityFlags = new Set([
   "pharma-spam",
   "unrelated-program",
 ]);
-const protectedMissingFactsPageTypes = new Set([
-  "homepage",
-  "application",
-  "deadline",
-  "requirements",
-  "eligibility",
-  "pdf",
-]);
-const manualSourceSignals = new Set([
-  "admin",
-  "manual",
-  "curated",
-  "seed",
-  "user",
-  "source-override",
-  "source_override",
-  "source-overrides",
-  "official",
-]);
 const spamUploadTitle =
   /\b(viagra|levitra|cialis|pharma|casino|xanax|tramadol|pills|essay writing|payday)\b/i;
-
-export function sourceBaselineFacts(source: SourceQualitySource | null | undefined) {
-  const metadata = objectValue(source?.page_metadata);
-  const facts = objectValue(metadata.baseline_facts || metadata.baselineFacts);
-  if (Object.keys(facts).length) return facts;
-  if (metadata.kind || metadata.provider || metadata.model || metadata.baseline_facts_rejected) {
-    return {};
-  }
-  return metadata;
-}
 
 export function sourceQualityDecision(
   source: SourceQualitySource | null | undefined,
@@ -120,6 +98,17 @@ export function sourceQualityDecision(
     .join(" ");
   if (isSpamUploadHtmlSource(source.url, titleSignal)) return reject("url_spam_upload_html");
 
+  if (purpose === "public" || purpose === "facts" || purpose === "monitoring") {
+    const review = explainSourceAiReviewStatus(source);
+    if (purpose === "monitoring" && !review.canBeMonitored) {
+      return reject(`ai_review_${review.status}_${review.reason}`);
+    }
+    if ((purpose === "public" || purpose === "facts") && !review.canContributePublicFacts) {
+      return reject(`ai_review_${review.status}_${review.reason}`);
+    }
+    return allow(`ai_review_${review.status}`);
+  }
+
   if (
     metadata.baseline_facts_rejected === true ||
     metadata.baselineFactsRejected === true ||
@@ -142,13 +131,6 @@ export function sourceQualityDecision(
   if (cycleRelevance === "archived-or-past") return reject("cycle_relevance_archived_or_past");
   if (cycleRelevance === "unclear" && purpose !== "admin" && purpose !== "debug") {
     return reject("cycle_relevance_unclear");
-  }
-
-  if (!hasBaselineFacts) {
-    if (purpose === "facts" || purpose === "public") return reject("missing_baseline_facts");
-    if (purpose === "monitoring" && !missingBaselineFactsCanBeMonitored(source)) {
-      return reject("missing_baseline_facts_not_monitorable");
-    }
   }
 
   return allow();
@@ -174,13 +156,6 @@ function sourceMetadataExists(source: SourceQualitySource | null | undefined, me
       metadata.baselineFacts ||
       metadata.baseline_facts_rejected,
   );
-}
-
-function missingBaselineFactsCanBeMonitored(source: SourceQualitySource) {
-  const pageType = cleanKey(source.page_type);
-  if (protectedMissingFactsPageTypes.has(pageType)) return true;
-  const sourceSignal = cleanKey(source.source || source.reason);
-  return manualSourceSignals.has(sourceSignal) || Boolean(source.submitted_by_user_id);
 }
 
 function normalizedQualityFlags(metadata: Record<string, unknown>, facts: Record<string, unknown>) {

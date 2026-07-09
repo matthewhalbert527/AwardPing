@@ -5,10 +5,22 @@ import {
   isUsableAwardFactSource,
   sourceBaselineFacts,
 } from "./lib/source-quality.mjs";
+import {
+  auditPublicAwardPage,
+  buildAwardSummaryFromFacts,
+  buildFactCandidatesFromSources,
+  reconcileAwardFacts,
+} from "./lib/award-fact-reconciliation.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
+
+if (boolArg(args.help, false)) {
+  printHelp();
+  process.exit(0);
+}
+
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
   ...loadEnvFile(envPath),
@@ -52,6 +64,14 @@ async function runOnce() {
     checked: 0,
     extracted: 0,
     applied: 0,
+    awards_reconciled: 0,
+    awards_audit_passed: 0,
+    awards_audit_warnings: 0,
+    awards_audit_failed: 0,
+    awards_publication_blocked: 0,
+    sibling_sources_rejected: 0,
+    deadline_conflicts_detected: 0,
+    stale_cycle_states_corrected: 0,
     skipped_existing: 0,
     no_baseline: 0,
     failed: 0,
@@ -90,15 +110,44 @@ async function runOnce() {
           }
         }
 
-        const details = aggregateAwardDetails(award, usableSources);
-        const websiteSummary = buildWebsiteSummary(award, details);
-        const publicFacts = buildPublicFacts(details);
+        const candidates = buildFactCandidatesFromSources(award, usableSources);
+        const reconciliation = reconcileAwardFacts(award, usableSources, candidates, {
+          generatedAt: new Date().toISOString(),
+        });
+        const audit = auditPublicAwardPage(award, reconciliation.selectedFacts, usableSources, { reconciliation });
+        report.awards_reconciled += 1;
+        if (audit.audit_status === "passed") report.awards_audit_passed += 1;
+        else if (audit.audit_status === "warnings") report.awards_audit_warnings += 1;
+        else report.awards_audit_failed += 1;
+        report.sibling_sources_rejected += reconciliation.rejected.filter((item) => item.reason === "sibling_program_identity_mismatch").length;
+        if (reconciliation.conflicts.some((conflict) => conflict.field_name === "deadline")) report.deadline_conflicts_detected += 1;
+        if (reconciliation.selectedFacts.cycle_status !== "upcoming") report.stale_cycle_states_corrected += 1;
+        if (audit.should_block_publication) {
+          report.awards_publication_blocked += 1;
+          report.saved_awards.push({
+            award_id: award.id,
+            award_name: award.name,
+            source_count: usableSources.length,
+            audit_status: audit.audit_status,
+            blocked: true,
+            findings: audit.findings,
+          });
+          console.log(`AWARD_FACTS blocked audit=${audit.audit_status} findings=${audit.findings.length} ${award.name}`);
+          continue;
+        }
+
+        const details = reconciliation.selectedFacts;
+        const websiteSummary = buildAwardSummaryFromFacts(award, details);
+        const publicFacts = details;
         report.extracted += 1;
         report.saved_awards.push({
           award_id: award.id,
           award_name: award.name,
           source_count: usableSources.length,
           confidence: details.confidence,
+          audit_status: audit.audit_status,
+          rejected_count: reconciliation.rejected.length,
+          conflict_count: reconciliation.conflicts.length,
         });
 
         if (applyUpdates) {
@@ -106,7 +155,7 @@ async function runOnce() {
           report.applied += 1;
         }
 
-        console.log(`AWARD_FACTS aggregated confidence=${details.confidence} sources=${usableSources.length} ${award.name}`);
+        console.log(`AWARD_FACTS reconciled confidence=${details.confidence} sources=${usableSources.length} ${award.name}`);
       } catch (error) {
         report.failed += 1;
         const message = errorMessage(error);
@@ -435,7 +484,7 @@ async function updateAwardSummary(award, details, websiteSummary, publicFacts) {
       summary: websiteSummary,
       public_facts: publicFacts,
       public_facts_generated_at: now,
-      public_facts_model: "source-page-baseline-facts",
+      public_facts_model: "award-fact-reconciliation",
       confidence: confidenceScore(details.confidence),
       last_structure_scan_at: now,
       structure_scan_error: null,
@@ -755,6 +804,20 @@ function errorMessage(error) {
   if (error instanceof Error) return error.message;
   if (error && typeof error === "object" && "message" in error) return String(error.message);
   return String(error || "Unknown error");
+}
+
+function printHelp() {
+  console.log(`Legacy AwardPing public fact aggregation wrapper.
+
+This command now routes through award-level reconciliation and deterministic page audit before publishing.
+
+Options:
+  --limit=all|N
+  --award-id=<uuid>
+  --apply=true|false
+  --force=true|false
+  --env=.env.worker.local
+`);
 }
 
 await runOnce().catch((error) => {

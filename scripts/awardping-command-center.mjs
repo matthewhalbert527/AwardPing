@@ -375,7 +375,7 @@ Usage:
   npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10
   npm run command:center -- run --profile=baseline --apply=true
   npm run command:center -- start-task --task=baseline-facts
-  npm run command:center -- run-task --task=aggregate-facts
+  npm run command:center -- run-task --task=reconcile-awards
 
 Commands:
   status    Show recent Supabase worker rows, local processes, and scheduled tasks.
@@ -387,8 +387,8 @@ Commands:
   run-task   Run one individual task in the foreground.
 
 Options:
-  --profile=catchup|daily|baseline|cleanup|snapshots
-  --task=health|source-quality|visual-snapshots|visual-missing|baseline-facts|aggregate-facts|award-details|prune-history|localization-repair
+  --profile=catchup|daily|baseline|cleanup|snapshots|discovery|visual-review
+  --task=health|source-quality|visual-snapshots|visual-review-batch|visual-missing|baseline-facts|reconcile-awards|page-audit-batch|aggregate-facts|award-details|prune-history|localization-repair
   --apply=true|false
   --baseline-cost-cap-usd=10
   --env=.env.worker.local`);

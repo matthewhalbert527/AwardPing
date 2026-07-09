@@ -21,6 +21,7 @@ function source(overrides: Record<string, unknown>) {
     title: "Application",
     page_type: "application",
     page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+    page_metadata_model: "gemini-test",
     page_metadata: {
       kind: "source_page_outline",
       baseline_facts: currentPrimaryFacts,
@@ -132,20 +133,31 @@ describe("source quality gate", () => {
       },
     });
 
-    expect(sourceQualityDecision(missingRelevance, { purpose: "public" }).reason).toBe("award_relevance_unclear");
-    expect(sourceQualityDecision(missingRelevance, { purpose: "facts" }).reason).toBe("award_relevance_unclear");
-    expect(sourceQualityDecision(missingRelevance, { purpose: "monitoring" }).reason).toBe("award_relevance_unclear");
+    expect(sourceQualityDecision(missingRelevance, { purpose: "public" }).reason).toBe(
+      "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
+    );
+    expect(sourceQualityDecision(missingRelevance, { purpose: "facts" }).reason).toBe(
+      "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
+    );
+    expect(sourceQualityDecision(missingRelevance, { purpose: "monitoring" }).reason).toBe(
+      "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
+    );
   });
 
-  it("does not let missing baseline facts feed public facts but allows protected pages to be monitored", () => {
+  it("does not let missing baseline facts feed public facts or daily monitoring", () => {
     const missingFacts = source({
       page_type: "application",
       page_metadata_generated_at: null,
+      page_metadata_model: null,
       page_metadata: {},
     });
 
-    expect(sourceQualityDecision(missingFacts, { purpose: "facts" }).reason).toBe("missing_baseline_facts");
-    expect(sourceQualityDecision(missingFacts, { purpose: "public" }).reason).toBe("missing_baseline_facts");
-    expect(isMonitorableAwardSource(missingFacts)).toBe(true);
+    expect(sourceQualityDecision(missingFacts, { purpose: "facts" }).reason).toBe(
+      "ai_review_unreviewed_missing_page_metadata_generated_at_and_baseline_facts",
+    );
+    expect(sourceQualityDecision(missingFacts, { purpose: "public" }).reason).toBe(
+      "ai_review_unreviewed_missing_page_metadata_generated_at_and_baseline_facts",
+    );
+    expect(isMonitorableAwardSource(missingFacts)).toBe(false);
   });
 });

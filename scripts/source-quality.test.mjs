@@ -21,6 +21,7 @@ function source(overrides = {}) {
     title: "Application",
     page_type: "application",
     page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+    page_metadata_model: "gemini-test",
     page_metadata: {
       kind: "source_page_outline",
       baseline_facts: currentPrimaryFacts,
@@ -113,9 +114,15 @@ describe("worker source quality gate", () => {
       },
     });
 
-    expect(sourceQualityDecision(missingRelevance, { purpose: "public" }).reason).toBe("award_relevance_unclear");
-    expect(sourceQualityDecision(missingRelevance, { purpose: "facts" }).reason).toBe("award_relevance_unclear");
-    expect(sourceQualityDecision(missingRelevance, { purpose: "monitoring" }).reason).toBe("award_relevance_unclear");
+    expect(sourceQualityDecision(missingRelevance, { purpose: "public" }).reason).toBe(
+      "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
+    );
+    expect(sourceQualityDecision(missingRelevance, { purpose: "facts" }).reason).toBe(
+      "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
+    );
+    expect(sourceQualityDecision(missingRelevance, { purpose: "monitoring" }).reason).toBe(
+      "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
+    );
   });
 
   it("rejects known bad discovery URL shapes before insertion", () => {

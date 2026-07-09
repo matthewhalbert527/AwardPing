@@ -5,6 +5,7 @@ export const MAINTENANCE_PROFILE_IDS = [
   "cleanup",
   "snapshots",
   "discovery",
+  "source-intake",
   "visual-review",
 ] as const;
 
@@ -26,49 +27,56 @@ export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfi
     id: "catchup",
     label: "Catch Up Site",
     detail:
-      "Runs the hardened catch-up pass: source-quality cleanup, missing stable captures, Gemini Batch facts, public aggregation, and retention pruning.",
-    phases: ["health", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "aggregate-facts", "prune-history"],
+      "Runs the hardened catch-up pass: source-quality cleanup, missing stable captures, Gemini Batch facts, award-level reconciliation, page audit, and retention pruning.",
+    phases: ["health", "source-intake", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "reconcile-awards", "page-audit-batch", "prune-history"],
     primary: true,
   },
   daily: {
     id: "daily",
     label: "Daily Maintenance",
     detail:
-      "Runs stable daily capture, queues visual review candidates for Gemini Batch, processes batch results, refreshes facts, applies source-quality cleanup, and prunes old snapshots.",
-    phases: ["health", "visual", "visual-review-batch", "baseline-facts", "aggregate-facts", "source-quality", "change-event-noise", "prune-history"],
+      "Runs limited source intake, source-quality cleanup, stable daily capture with separate expandable-section text comparison, queues Gemini Batch review, refreshes source facts, reconciles impacted awards, audits public pages, and prunes old snapshots.",
+    phases: ["health", "source-intake", "source-quality", "visual", "visual-review-batch", "baseline-facts", "reconcile-awards", "page-audit-batch", "change-event-noise", "prune-history"],
   },
   baseline: {
     id: "baseline",
     label: "Baseline Facts",
-    detail: "Runs Gemini Batch fact extraction and then rebuilds public program facts.",
-    phases: ["health", "baseline-facts", "aggregate-facts"],
+    detail: "Runs Gemini Batch source fact extraction, then reconciles and audits public award pages from evidence-backed facts.",
+    phases: ["health", "baseline-facts", "reconcile-awards", "page-audit-batch"],
   },
   cleanup: {
     id: "cleanup",
     label: "Source Cleanup",
     detail:
-      "Runs the source-quality gate cleanup, noisy change-event suppression cleanup, public fact aggregation, and snapshot pruning without screenshot capture.",
-    phases: ["health", "source-quality", "change-event-noise", "aggregate-facts", "prune-history"],
+      "Runs the source-quality gate cleanup, noisy change-event suppression cleanup, award reconciliation, and snapshot pruning without screenshot capture.",
+    phases: ["health", "source-quality", "change-event-noise", "reconcile-awards", "prune-history"],
   },
   snapshots: {
     id: "snapshots",
     label: "Screenshots",
     detail:
-      "Runs stable capture for already-approved monitorable sources and enqueues visual review candidates without discovering new sources.",
+      "Runs stable capture and cheap expandable-section text extraction for already-approved monitorable sources, then enqueues visual review candidates without discovering new sources.",
     phases: ["health", "visual"],
   },
   discovery: {
     id: "discovery",
     label: "Source Discovery",
     detail:
-      "Runs the separate limited discovery workflow, quality-gates candidates, and queues most new sources for review instead of immediately opening them.",
-    phases: ["health", "source-discovery", "source-quality", "aggregate-facts"],
+      "Runs the separate limited discovery workflow, quality-gates candidates, refreshes source facts, and reconciles affected awards.",
+    phases: ["health", "source-intake", "source-discovery", "source-quality", "baseline-facts", "reconcile-awards", "page-audit-batch"],
+  },
+  "source-intake": {
+    id: "source-intake",
+    label: "Source Intake",
+    detail:
+      "Processes pasted source URLs through capture, deterministic source-quality review, Gemini Batch classification, award match/create, source insertion, and reconciliation.",
+    phases: ["health", "source-intake", "reconcile-awards", "page-audit-batch"],
   },
   "visual-review": {
     id: "visual-review",
     label: "Visual Review Batch",
     detail:
-      "Polls/submits durable Gemini Batch visual-review jobs and publishes only validated true applicant-facing changes.",
+      "Polls/submits durable Gemini Batch visual-review jobs, including compact changed-section diffs, and publishes only validated applicant-facing changes.",
     phases: ["health", "visual-review-batch"],
   },
 };

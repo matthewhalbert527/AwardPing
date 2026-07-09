@@ -12,10 +12,17 @@ import {
   visualReviewResponseSchema,
 } from "./lib/visual-review-queue.mjs";
 import { sourceQualityDecision } from "./lib/source-quality.mjs";
+import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
+
+if (boolArg(args.help, false)) {
+  printHelp();
+  process.exit(0);
+}
+
 const envPath = args.env
   ? resolve(root, String(args.env))
   : existsSync(resolve(root, ".env.worker.local"))
@@ -87,6 +94,9 @@ const report = {
   published: 0,
   publish_duplicates: 0,
   superseded: 0,
+  awards_queued_for_reconciliation: 0,
+  award_reconciliation_queue_existing: 0,
+  award_reconciliation_queue_failed: 0,
   estimated_batch_cost_usd: 0,
   actual_usage: emptyGeminiUsage(),
   batches: [],
@@ -443,7 +453,56 @@ async function publishCandidateResult({ candidate, source, result, usage }) {
     updated_at: now,
   });
 
-  return data?.id ? { status: "published", event_id: data.id } : { status: "duplicate" };
+  if (data?.id) {
+    await queueAwardReconciliationForCandidate({
+      candidate,
+      source,
+      reason: "visual_change_published",
+      candidateIds: [candidate.id],
+      metadata: {
+        change_event_id: data.id,
+        batch_candidate_status: "published",
+      },
+    });
+    return { status: "published", event_id: data.id };
+  }
+
+  return { status: "duplicate" };
+}
+
+async function queueAwardReconciliationForCandidate({
+  candidate,
+  source,
+  reason,
+  candidateIds = [],
+  metadata = {},
+}) {
+  if (!candidate?.shared_award_id) return null;
+  try {
+    const result = await enqueueAwardReconciliation(supabase, {
+      awardId: candidate.shared_award_id,
+      reason,
+      sourceIds: [source?.id || candidate.shared_award_source_id].filter(Boolean),
+      candidateIds,
+      priority: 70,
+      metadata: {
+        ...metadata,
+        queued_by: "process-visual-review-batch",
+        visual_candidate_id: candidate.id,
+      },
+    });
+    if (result.queued) report.awards_queued_for_reconciliation += 1;
+    else report.award_reconciliation_queue_existing += 1;
+    return result;
+  } catch (error) {
+    report.award_reconciliation_queue_failed += 1;
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      message: `Award reconciliation queue failed: ${errorMessage(error)}`,
+    });
+    return null;
+  }
 }
 
 async function markCandidateSucceededDryRun({ candidate, result, usage }) {
@@ -698,7 +757,7 @@ async function loadSourcesById(ids) {
   for (const idChunk of chunks(uniqueIds, 500)) {
     const { data, error } = await supabase
       .from("shared_award_sources")
-      .select("id,shared_award_id,url,title,page_type,source,reason,page_metadata,page_metadata_generated_at,submitted_by_user_id,admin_review_status,shared_awards(name)")
+      .select("id,shared_award_id,url,title,page_type,source,reason,page_metadata,page_metadata_generated_at,page_metadata_model,submitted_by_user_id,admin_review_status,shared_awards(name)")
       .in("id", idChunk);
     if (error) throw new Error(`Load shared award sources failed: ${error.message}`);
     for (const row of data || []) map.set(row.id, row);
@@ -1041,6 +1100,22 @@ function truncate(value, maxLength) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function printHelp() {
+  console.log(`Process Gemini Batch visual-review candidates.
+
+Options:
+  --limit=250
+  --max-requests-per-batch=250
+  --inline-threshold=100
+  --poll=true
+  --submit=true
+  --poll-only=false
+  --submit-only=false
+  --apply=true
+  --env=.env.worker.local
+`);
 }
 
 function roundUsd(value) {

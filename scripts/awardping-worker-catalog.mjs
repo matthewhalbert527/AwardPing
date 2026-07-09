@@ -21,27 +21,27 @@ export const workerLanes = [
     id: "visual-capture",
     label: "Visual Capture",
     detail:
-      "Runs stable capture for already-approved monitorable sources and enqueues review candidates without discovering new sources.",
+      "Runs stable capture plus cheap expandable-section text extraction for already-approved monitorable sources and enqueues review candidates without discovering new sources.",
     profileIds: ["snapshots"],
     taskIds: ["visual-snapshots", "visual-review-batch"],
     workerIds: ["visual-shard-1", "visual-shard-2", "visual-shard-3"],
   },
   {
     id: "source-discovery",
-    label: "Source Discovery",
+    label: "Source Intake & Discovery",
     detail:
-      "Separates discovery from daily capture, caps candidates, and quality-gates new source rows before they can become public.",
-    profileIds: ["discovery"],
-    taskIds: ["source-discovery"],
-    workerIds: [],
+      "Processes pasted source-intake requests, then runs explicit discovery separately from daily capture with strict quality gates.",
+    profileIds: ["source-intake", "discovery"],
+    taskIds: ["source-intake", "source-discovery"],
+    workerIds: ["source-intake"],
   },
   {
     id: "facts-cycle",
     label: "Facts & Cycle Intelligence",
     detail:
-      "Runs Gemini Batch extraction and rebuilds the public program facts used by award pages.",
+      "Runs Gemini Batch source extraction, award-level fact reconciliation, and page audits used by public award pages.",
     profileIds: ["baseline"],
-    taskIds: ["baseline-facts", "aggregate-facts", "award-details"],
+    taskIds: ["baseline-facts", "reconcile-awards", "page-audit-batch", "aggregate-facts", "award-details"],
     workerIds: ["baseline-facts"],
   },
   {
@@ -60,35 +60,35 @@ export const maintenanceProfiles = {
     laneId: "orchestration",
     label: "Catch Up Site",
     detail:
-      "Runs source cleanup, missing screenshots, Gemini Batch facts, public fact aggregation, and snapshot retention after downtime or a large backlog.",
+      "Runs source cleanup, missing screenshots, Gemini Batch facts, award reconciliation, page audit, and snapshot retention after downtime or a large backlog.",
     cost: "Gemini API cap: up to $10/day.",
   },
   daily: {
     laneId: "orchestration",
     label: "Daily Maintenance",
     detail:
-      "Runs stable visual capture, enqueues Gemini Batch visual reviews, refreshes facts, applies source-quality/suppression cleanup, and prunes old snapshots.",
+      "Runs source-quality cleanup, stable visual capture, expandable-section text comparison, Gemini Batch visual reviews, source fact refresh, award reconciliation, page audit, suppression cleanup, and snapshot pruning.",
     cost: "Gemini API cap: up to $10/day for batch fact/review work; capture itself does not use synchronous Gemini.",
   },
   baseline: {
     laneId: "facts-cycle",
     label: "Baseline Facts",
     detail:
-      "Runs Gemini Batch fact extraction and rebuilds public program facts when facts or cycle relevance are behind.",
+      "Runs Gemini Batch source fact extraction, reconciles public award facts, and audits pages when facts or cycle relevance are behind.",
     cost: "Gemini API cap: up to $10/day.",
   },
   cleanup: {
     laneId: "source-quality",
     label: "Source Cleanup",
     detail:
-      "Runs the source-quality gate, suppressed/noisy change-event cleanup, public fact aggregation, and snapshot pruning without refreshing screenshots.",
+      "Runs the source-quality gate, suppressed/noisy change-event cleanup, award reconciliation, and snapshot pruning without refreshing screenshots.",
     cost: "$0 direct AI/API cost.",
   },
   snapshots: {
     laneId: "visual-capture",
     label: "Screenshots",
     detail:
-      "Refreshes stable visual snapshots for monitor-eligible source pages and enqueues batch review candidates when changes need AI.",
+      "Refreshes stable visual snapshots, extracts expandable section text separately from the main hash, and enqueues batch review candidates when changes need AI.",
     cost: "$0 direct AI/API cost during capture; visual review is processed by the batch task.",
   },
   discovery: {
@@ -98,11 +98,18 @@ export const maintenanceProfiles = {
       "Runs the explicit discovery workflow with strict source-quality gates and per-award/domain/source caps.",
     cost: "$0 direct AI/API cost unless paired with later baseline-fact extraction.",
   },
+  "source-intake": {
+    laneId: "source-discovery",
+    label: "Source Intake",
+    detail:
+      "Processes pasted official source URLs: capture, deterministic gate, Gemini Batch classification, award match/create, source insertion, and reconciliation queueing.",
+    cost: "Gemini Batch API for plausible submitted pages.",
+  },
   "visual-review": {
     laneId: "visual-capture",
     label: "Visual Review Batch",
     detail:
-      "Submits/polls durable Gemini Batch visual-review candidates and publishes only validated applicant-facing changes.",
+      "Submits/polls durable Gemini Batch visual-review candidates, using compact section diffs and changed-section crop evidence when needed, then publishes only validated applicant-facing changes.",
     cost: "Gemini Batch API only.",
   },
 };
@@ -152,7 +159,7 @@ export const atomicTasks = [
     laneId: "visual-capture",
     label: "Visual Snapshots",
     detail:
-      "Captures stable screenshots and visible text for monitor-eligible sources across the visual shards; normal runs do not discover sources.",
+      "Captures stable screenshots, visible text, and separate expandable-section text for monitor-eligible sources across the visual shards; normal runs do not discover sources.",
     cost: "$0 direct AI/API cost during capture.",
     run: {
       kind: "maintenance",
@@ -174,6 +181,19 @@ export const atomicTasks = [
     scheduledWorkerIds: [],
   },
   {
+    id: "source-intake",
+    laneId: "source-discovery",
+    label: "Source Intake",
+    detail:
+      "Processes queued pasted URLs, rejects obvious bad pages, submits plausible pages to Gemini Batch, and hands accepted sources to award reconciliation.",
+    cost: "Gemini Batch API for plausible submitted pages.",
+    run: {
+      kind: "maintenance",
+      phases: ["source-intake"],
+    },
+    scheduledWorkerIds: ["source-intake"],
+  },
+  {
     id: "source-discovery",
     laneId: "source-discovery",
     label: "Source Discovery",
@@ -191,7 +211,7 @@ export const atomicTasks = [
     laneId: "repair-recovery",
     label: "Complete Missing Visual Baselines",
     detail:
-      "Backfills missing screenshot/text baselines without interpreting visual changes.",
+      "Backfills missing screenshot/text baselines with baseline-rich expandable-section extraction and no visual interpretation.",
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "maintenance",
@@ -215,13 +235,39 @@ export const atomicTasks = [
   {
     id: "aggregate-facts",
     laneId: "facts-cycle",
-    label: "Public Fact Aggregation",
+    label: "Legacy Public Fact Aggregation",
     detail:
-      "Rebuilds public award facts from extracted source-page baseline facts.",
+      "Legacy fallback that rebuilds public award facts from extracted source-page baseline facts. Prefer award reconciliation.",
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "maintenance",
       phases: ["aggregate-facts"],
+    },
+    scheduledWorkerIds: [],
+  },
+  {
+    id: "reconcile-awards",
+    laneId: "facts-cycle",
+    label: "Reconciled Public Facts",
+    detail:
+      "Selects evidence-backed award-level facts from approved source candidates, rejects sibling-program contamination, and preserves last-known-good pages when audits fail.",
+    cost: "$0 direct AI/API cost.",
+    run: {
+      kind: "maintenance",
+      phases: ["reconcile-awards"],
+    },
+    scheduledWorkerIds: [],
+  },
+  {
+    id: "page-audit-batch",
+    laneId: "facts-cycle",
+    label: "Gemini Page Audit Batch",
+    detail:
+      "Submits only deterministic audit warnings/conflicts to Gemini Batch for a second review; Gemini suggestions must cite exact evidence.",
+    cost: "Gemini Batch API only for flagged award pages.",
+    run: {
+      kind: "maintenance",
+      phases: ["page-audit-batch"],
     },
     scheduledWorkerIds: [],
   },
@@ -303,6 +349,15 @@ export const scheduledWorkers = [
     cost: "$0 direct AI/API cost.",
   },
   {
+    id: "source-intake",
+    laneId: "source-discovery",
+    taskName: "AwardPing Source Intake Processor",
+    label: "Source Intake Processor",
+    detail:
+      "Keeps pasted source-page requests moving through capture, AI review, award matching, and reconciliation.",
+    cost: "Gemini Batch API for plausible submitted pages.",
+  },
+  {
     id: "source-quality",
     laneId: "source-quality",
     taskName: "AwardPing Overnight Source Quality Pass",
@@ -317,7 +372,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 1",
     label: "Visual Snapshot Shard 1",
     detail:
-      "Captures stable screenshots and visible text for the first shard of monitor-eligible source pages.",
+      "Captures stable screenshots, visible text, and separate expandable-section text for the first shard of monitor-eligible source pages.",
     cost: "$0 direct AI/API cost during capture.",
   },
   {
@@ -326,7 +381,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 2",
     label: "Visual Snapshot Shard 2",
     detail:
-      "Captures stable screenshots and visible text for the second shard of monitor-eligible source pages.",
+      "Captures stable screenshots, visible text, and separate expandable-section text for the second shard of monitor-eligible source pages.",
     cost: "$0 direct AI/API cost during capture.",
   },
   {
@@ -335,7 +390,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 3",
     label: "Visual Snapshot Shard 3",
     detail:
-      "Captures stable screenshots and visible text for the third shard of monitor-eligible source pages.",
+      "Captures stable screenshots, visible text, and separate expandable-section text for the third shard of monitor-eligible source pages.",
     cost: "$0 direct AI/API cost during capture.",
   },
 ];
@@ -350,4 +405,5 @@ export const workerProcessPatterns = [
   "source-quality",
   "run-localization-repair",
   "run-overnight-source-quality",
+  "process-source-intake-requests",
 ];

@@ -139,7 +139,7 @@ async function loadSourcesForEvents(events) {
       supabase
         .from("shared_award_sources")
         .select(
-          "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_type,source,reason,submitted_by_user_id,admin_review_status",
+          "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status",
         )
         .in("id", chunk),
     );

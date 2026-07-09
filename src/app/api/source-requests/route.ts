@@ -5,6 +5,7 @@ import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/conf
 import { sendContactFormEmail } from "@/lib/email";
 import { requireOfficeContext } from "@/lib/offices";
 import { ensurePublicFormRateLimit } from "@/lib/public-form-rate-limit";
+import { normalizeSourceIntakeUrl } from "@/lib/source-intake";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { assertPublicHttpUrl } from "@/lib/url-safety";
 
@@ -16,6 +17,18 @@ const sourceRequestSchema = z.object({
   notes: z.string().trim().max(1200).optional(),
   website: z.string().optional(),
 });
+
+const activeIntakeStatuses = [
+  "pending",
+  "queued",
+  "validating",
+  "capturing",
+  "ai_review_pending",
+  "ai_review_submitted",
+  "ai_review_succeeded",
+  "matching",
+  "needs_manual_review",
+] as const;
 
 export async function POST(request: Request) {
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
@@ -69,8 +82,31 @@ export async function POST(request: Request) {
   ]);
   const supabase = createSupabaseAdminClient();
   const awardName = parsed.data.awardName;
-  const homepageUrl = safeUrl.toString();
+  const homepageUrl = normalizeSourceIntakeUrl(safeUrl.toString());
   const notes = parsed.data.notes || null;
+
+  const { data: existingRequest, error: existingError } = await supabase
+    .from("source_page_requests")
+    .select("id,status")
+    .eq("normalized_url", homepageUrl)
+    .ilike("award_name", awardName)
+    .in("status", [...activeIntakeStatuses])
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (existingError) {
+    return NextResponse.json({ ok: false, error: existingError.message }, { status: 500 });
+  }
+
+  if (existingRequest) {
+    return NextResponse.json({
+      ok: true,
+      requestId: existingRequest.id,
+      status: existingRequest.status,
+      message: "That source request is already queued.",
+    });
+  }
 
   const { data, error } = await supabase
     .from("source_page_requests")
@@ -79,7 +115,12 @@ export async function POST(request: Request) {
       office_id: officeContext.current.officeId,
       award_name: awardName,
       homepage_url: homepageUrl,
+      submitted_url: parsed.data.homepageUrl,
+      normalized_url: homepageUrl,
+      intake_type: "award_homepage",
       notes,
+      status: "pending",
+      status_reason: "queued_from_public_source_request",
     })
     .select("id")
     .single();

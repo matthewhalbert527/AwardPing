@@ -164,16 +164,16 @@ try {
       }
 
       if (aggregateFacts && Date.now() < deadlineMs) {
-        const aggregateArgs = [
-          "scripts/aggregate-award-baseline-facts.mjs",
+        const reconcileArgs = [
+          "scripts/reconcile-impacted-award-pages.mjs",
           `--award-id=${award.id}`,
           `--apply=${apply}`,
-          `--force=${forceAggregateFacts}`,
+          "--include-warnings=true",
           "--limit=all",
         ];
-        awardResult.aggregate_exit_code = await runNode(aggregateArgs, { label: `aggregate:${award.slug}` });
+        awardResult.aggregate_exit_code = await runNode(reconcileArgs, { label: `reconcile:${award.slug}` });
         if (awardResult.aggregate_exit_code !== 0) {
-          throw new Error(`Award fact aggregation exited with code ${awardResult.aggregate_exit_code}`);
+          throw new Error(`Award fact reconciliation exited with code ${awardResult.aggregate_exit_code}`);
         }
       }
 
@@ -339,7 +339,7 @@ function printHelp() {
 
 This wraps:
   1. scripts/full-source-cleanup-pass.mjs
-  2. scripts/aggregate-award-baseline-facts.mjs
+  2. scripts/reconcile-impacted-award-pages.mjs
 
 Common commands:
   npm run source:overnight-quality -- --hours=10 --apply=true
@@ -356,8 +356,8 @@ Options:
   --award-slugs=a,b           Process specific awards instead of selecting by volume.
   --safety=full               Pass through to full-source-cleanup-pass; safe or full.
   --cleanup-titles=true       Simplify source display titles while cleaning.
-  --aggregate-facts=true      Rebuild award facts from remaining source baseline facts.
-  --force-aggregate-facts=true Force targeted fact rebuild after source cleanup.
+  --aggregate-facts=true      Legacy flag name; runs award-level reconciliation after source cleanup.
+  --force-aggregate-facts=true Legacy compatibility flag retained in reports.
   --stop-on-failure=false     Continue to the next award after a failure.
 `);
 }

@@ -161,6 +161,7 @@ describe("admin maintenance summaries", () => {
           },
         },
         page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+        page_metadata_model: "gemini-test",
       },
       {
         url: "https://example.edu/award/careers/job-profile",
@@ -173,6 +174,7 @@ describe("admin maintenance summaries", () => {
           },
         },
         page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+        page_metadata_model: "gemini-test",
       },
       {
         url: "https://example.edu/award/faq",
@@ -185,6 +187,7 @@ describe("admin maintenance summaries", () => {
           },
         },
         page_metadata_generated_at: "2026-07-08T00:00:00.000Z",
+        page_metadata_model: "gemini-test",
       },
     ];
 
@@ -196,7 +199,7 @@ describe("admin maintenance summaries", () => {
     expect(summary.factEligibleSources).toBe(1);
     expect(summary.reviewLaterSources).toBe(7);
     expect(summary.rejectedByReason.map((item) => item.reason)).toEqual([
-      "award_relevance_unclear",
+      "ai_review_reviewed_unclear_needs_manual_review_award_relevance_unclear",
       "url_not_monitorable",
     ]);
   });

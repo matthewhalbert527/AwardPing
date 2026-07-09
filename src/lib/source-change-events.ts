@@ -9,6 +9,7 @@ export type OpenSourceReference = {
   display_title?: string | null;
   page_metadata?: unknown;
   page_metadata_generated_at?: string | null;
+  page_metadata_model?: string | null;
   page_type?: string | null;
   source?: string | null;
   reason?: string | null;

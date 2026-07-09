@@ -46,6 +46,7 @@ type SharedSourceRow = Pick<
   | "page_description"
   | "page_metadata"
   | "page_metadata_generated_at"
+  | "page_metadata_model"
   | "page_type"
   | "source"
   | "reason"
@@ -165,7 +166,7 @@ async function loadPublicAwardPageData(
   const [{ data: sources }, { data: changes }] = await Promise.all([
     admin
       .from("shared_award_sources")
-      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_type, source, reason, submitted_by_user_id, last_checked_at")
+      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, last_checked_at")
       .eq("shared_award_id", award.id)
       .eq("admin_review_status", "open")
       .order("page_type", { ascending: true })
