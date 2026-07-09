@@ -651,11 +651,14 @@ Examples:
   node scripts/run-awardping-maintenance.mjs --phases=health,baseline-facts,reconcile-awards,page-audit-batch
 
 Profiles:
-  daily      health, source-quality, visual, visual-review-batch, baseline-facts, reconcile-awards, page-audit-batch, cleanup, prune-history
-  catchup    health, source-quality, visual-missing, baseline-facts, reconcile-awards, page-audit-batch, prune-history
-  baseline   health, baseline-facts, reconcile-awards, page-audit-batch
-  cleanup    health, source-quality, change-event-noise, reconcile-awards, prune-history
-  snapshots  health, visual
+  daily      stable checks, section extraction, queued batch review, reconciliation, deterministic audit, flagged page-audit batch
+  catchup    source intake, source-quality cleanup, missing stable captures, batch facts, reconciliation, audit, retention
+  baseline   baseline-rich fact extraction, reconciliation, deterministic audit, flagged page-audit batch
+  cleanup    source-quality gate cleanup, noisy event suppression, reconciliation, retention pruning
+  snapshots  stable capture and cheap section text extraction only; discovery stays off
+  discovery  separate limited source discovery with strict source-quality gates
+  source-intake  pasted URL capture/review/match/create/reconcile workflow
+  visual-review  durable Gemini Batch visual-review polling/submission
 
 Useful options:
   --apply=true|false

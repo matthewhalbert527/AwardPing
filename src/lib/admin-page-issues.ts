@@ -1,5 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/database.types";
+import {
+  buildSourceAiCoverageRow,
+  workerHasGeminiBlocker,
+} from "@/lib/admin-ai-review-coverage";
+import { pageAuditFindingCategory } from "@/lib/admin-page-audits";
 import { sourceQualityDecision, type SourceQualitySource } from "@/lib/source-quality";
 
 type AdminClient = SupabaseClient<Database>;
@@ -61,6 +66,7 @@ export type PageIssueSeverity = "high" | "medium" | "low";
 
 export type AdminPageIssue = {
   key: string;
+  category: string;
   area: string;
   severity: PageIssueSeverity;
   label: string;
@@ -71,8 +77,13 @@ export type AdminPageIssue = {
   sourceTitle: string;
   sourceUrl: string | null;
   message: string;
+  currentValue: string | null;
+  recommendedAction: string | null;
+  relatedWorkerRunId: string | null;
   checkedAt: string | null;
   failures: number;
+  resolvedAt?: string | null;
+  suppressedAt?: string | null;
 };
 
 export type AdminPageIssueSummary = {
@@ -86,6 +97,7 @@ export type AdminPageIssueSummary = {
   sourceQualityRejected: number;
   suppressedChangeEvents: number;
   queueTotal: number;
+  categoryCounts: Record<string, number>;
 };
 
 export type AdminReviewLaterSource = {
@@ -121,6 +133,12 @@ export type AdminPageIssueLoadResult = {
   loadErrors: string[];
 };
 
+export type AdminPageIssueOptions = {
+  includeResolved?: boolean;
+  includeSuppressed?: boolean;
+  category?: string | null;
+};
+
 type CountResult = {
   count: number;
   error: { message: string } | null;
@@ -132,24 +150,20 @@ const sourceIssueSelect =
 export async function countActiveOpenSourcesWithVisualSnapshots(
   admin: AdminClient,
 ): Promise<CountResult> {
-  try {
-    const [sourceIds, snapshotSourceIds] = await Promise.all([
-      loadActiveOpenSourceIds(admin),
-      loadVisualSnapshotSourceIds(admin),
-    ]);
-    const snapshotSet = new Set(snapshotSourceIds);
-    return {
-      count: sourceIds.filter((id) => snapshotSet.has(id)).length,
-      error: null,
-    };
-  } catch (error) {
-    return { count: 0, error: { message: errorMessage(error) } };
-  }
+  const { count, error } = await admin
+    .from("shared_award_source_visual_snapshots")
+    .select("shared_award_source_id", { count: "exact", head: true })
+    .not("latest_captured_at", "is", null);
+  return {
+    count: count || 0,
+    error: error?.message ? { message: error.message } : null,
+  };
 }
 
 export async function loadAdminPageIssues(
   admin: AdminClient,
   workerRuns?: LocalWorkerRun[],
+  options: AdminPageIssueOptions = {},
 ): Promise<AdminPageIssueLoadResult> {
   const [
     sourceRowsResult,
@@ -254,15 +268,31 @@ export async function loadAdminPageIssues(
   );
   const sourceQualityRejected = await loadSourceQualityRejectedRows(admin, loadErrors);
   const suppressedChangeEvents = await countSuppressedChangeEvents(admin, loadErrors);
+  const aiCoverageIssues = await loadAiCoverageIssues(admin, loadErrors);
+  const awardMissingPublicFactIssues = await loadAwardMissingPublicFactIssues(admin, loadErrors);
+  const reconciliationIssues = await loadReconciliationIssueRows(admin, loadErrors);
+  const pageAuditIssues = await loadPageAuditIssueRows(admin, loadErrors, options);
+  const sourceIntakeIssues = await loadSourceIntakeIssueRows(admin, loadErrors);
+  const workerIssues = geminiWorkerBlockerIssues((workerRunResult.data || []) as LocalWorkerRun[]);
   const sourceIssueIds = new Set(sourceRows.map((row) => row.id));
   const issues = [
     ...sourceRows.map(sourceRowToIssue),
     ...sourceQualityRejected.rows.map(sourceQualityRejectedRowToIssue),
+    ...aiCoverageIssues,
+    ...awardMissingPublicFactIssues,
+    ...reconciliationIssues,
+    ...pageAuditIssues,
+    ...sourceIntakeIssues,
+    ...workerIssues,
     ...awardRows.map(awardRowToIssue),
     ...workerPageErrors
       .filter((issue) => shouldShowWorkerPageError(issue, sourceIssueIds))
       .map((issue) => workerPageErrorToIssue(issue, workerSourcesById.get(issue.sourceId || "") || null)),
   ]
+    .filter((issue) => options.includeResolved || !issue.resolvedAt)
+    .filter((issue) => options.includeSuppressed || !issue.suppressedAt)
+    .filter((issue) => !options.category || issue.category === options.category)
+    .filter(uniqueIssue())
     .sort(comparePageIssues)
     .slice(0, 200);
 
@@ -279,46 +309,11 @@ export async function loadAdminPageIssues(
     reviewLater: await countReviewLaterSources(admin, loadErrors),
     sourceQualityRejected: sourceQualityRejected.count,
     suppressedChangeEvents,
-    queueTotal: (sourceCountResult.count || 0) + (awardCountResult.count || 0) + sourceQualityRejected.count,
+    queueTotal: issues.length,
+    categoryCounts: countIssueCategories(issues),
   };
 
   return { summary, issues, loadErrors };
-}
-
-async function loadActiveOpenSourceIds(admin: AdminClient) {
-  const ids: string[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)")
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .range(from, from + 999);
-    if (error) throw new Error(error.message);
-    const rows = (data || []) as Array<{ id: string | null }>;
-    ids.push(...rows.map((row) => row.id).filter((id): id is string => Boolean(id)));
-    if (rows.length < 1000) break;
-  }
-  return ids;
-}
-
-async function loadVisualSnapshotSourceIds(admin: AdminClient) {
-  const ids: string[] = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await admin
-      .from("shared_award_source_visual_snapshots")
-      .select("shared_award_source_id")
-      .range(from, from + 999);
-    if (error) throw new Error(error.message);
-    const rows = (data || []) as Array<{ shared_award_source_id: string | null }>;
-    ids.push(
-      ...rows
-        .map((row) => row.shared_award_source_id)
-        .filter((id): id is string => Boolean(id)),
-    );
-    if (rows.length < 1000) break;
-  }
-  return ids;
 }
 
 export async function loadAdminReviewLaterSources(
@@ -427,11 +422,293 @@ async function loadSourceQualityRejectedRows(admin: AdminClient, loadErrors: str
   return { count, rows };
 }
 
+async function loadAiCoverageIssues(admin: AdminClient, loadErrors: string[]) {
+  const issues: AdminPageIssue[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin
+      .from("shared_award_sources")
+      .select(sourceIssueSelect)
+      .eq("shared_awards.status", "active")
+      .eq("admin_review_status", "open")
+      .range(from, from + 999);
+    if (error) {
+      loadErrors.push(error.message);
+      break;
+    }
+
+    const rows = (data || []) as unknown as SourceIssueRow[];
+    for (const row of rows) {
+      const coverage = buildSourceAiCoverageRow(
+        {
+          ...sourceRowQualityInput(row),
+          id: row.id,
+          shared_award_id: row.shared_award_id,
+          admin_review_status: row.admin_review_status,
+          last_checked_at: row.last_checked_at,
+        },
+        coverageAward(sourceAward(row)),
+      );
+      const category = aiCoverageIssueCategory(coverage.category);
+      if (!category) continue;
+      issues.push(aiCoverageRowToIssue(row, category, coverage));
+      if (issues.length >= 160) break;
+    }
+    if (rows.length < 1000 || issues.length >= 160) break;
+  }
+  return issues;
+}
+
+async function loadAwardMissingPublicFactIssues(admin: AdminClient, loadErrors: string[]) {
+  const issues: AdminPageIssue[] = [];
+  for (let from = 0; ; from += 1000) {
+    const { data, error } = await admin
+      .from("shared_awards")
+      .select("id,name,slug,official_homepage,public_facts,updated_at")
+      .eq("status", "active")
+      .range(from, from + 999);
+    if (error) {
+      loadErrors.push(error.message);
+      break;
+    }
+    const rows = (data || []) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      if (objectHasKeys(row.public_facts)) continue;
+      issues.push({
+        key: `award-missing-public-facts:${cleanText(row.id)}`,
+        category: "award_missing_public_facts",
+        area: "Award reconciliation",
+        severity: "high",
+        label: "Missing public facts",
+        awardId: cleanText(row.id),
+        awardSlug: cleanText(row.slug) || null,
+        awardName: cleanText(row.name) || "Unknown award",
+        sourceId: null,
+        sourceTitle: "Award public facts",
+        sourceUrl: cleanText(row.official_homepage) || null,
+        message: "This active award does not have reconciled public_facts.",
+        currentValue: "public_facts missing or empty",
+        recommendedAction: "Queue the award for reconciliation and run the page audit before publishing facts.",
+        relatedWorkerRunId: null,
+        checkedAt: cleanText(row.updated_at) || null,
+        failures: 0,
+      });
+      if (issues.length >= 80) break;
+    }
+    if (rows.length < 1000 || issues.length >= 80) break;
+  }
+  return issues;
+}
+
+async function loadReconciliationIssueRows(admin: AdminClient, loadErrors: string[]) {
+  const rawAdmin = admin as unknown as SupabaseClient;
+  const { data, error } = await rawAdmin
+    .from("shared_award_reconciliation_queue")
+    .select("id,shared_award_id,reason,status,error,completed_at,created_at,shared_awards(name,slug,official_homepage)")
+    .in("status", ["failed", "processing"])
+    .order("created_at", { ascending: false })
+    .limit(80);
+  if (error?.message) {
+    if (isMissingRelationError(error.message)) return [];
+    loadErrors.push(error.message);
+    return [];
+  }
+  return ((data || []) as Array<Record<string, unknown>>).map(reconciliationRowToIssue);
+}
+
+async function loadPageAuditIssueRows(
+  admin: AdminClient,
+  loadErrors: string[],
+  options: AdminPageIssueOptions,
+) {
+  const rawAdmin = admin as unknown as SupabaseClient;
+  let query = rawAdmin
+    .from("shared_award_page_audits")
+    .select("id,shared_award_id,audit_status,severity,findings,suggested_fixes,field_conflicts,selected_fact_summary,public_page_snapshot,created_at,resolved_at,shared_awards(name,slug,official_homepage)")
+    .neq("audit_status", "passed")
+    .order("created_at", { ascending: false })
+    .limit(120);
+  if (!options.includeResolved) query = query.is("resolved_at", null);
+  const { data, error } = await query;
+  if (error?.message) {
+    if (isMissingRelationError(error.message)) return [];
+    loadErrors.push(error.message);
+    return [];
+  }
+  return ((data || []) as Array<Record<string, unknown>>).map(pageAuditRowToIssue);
+}
+
+async function loadSourceIntakeIssueRows(admin: AdminClient, loadErrors: string[]) {
+  const rawAdmin = admin as unknown as SupabaseClient;
+  const { data, error } = await rawAdmin
+    .from("source_page_requests")
+    .select("id,award_name,homepage_url,status,status_reason,error,updated_at,worker_run_id")
+    .in("status", ["failed", "needs_manual_review"])
+    .order("updated_at", { ascending: false })
+    .limit(80);
+  if (error?.message) {
+    if (isMissingRelationError(error.message)) return [];
+    loadErrors.push(error.message);
+    return [];
+  }
+  return ((data || []) as Array<Record<string, unknown>>).map(sourceIntakeRowToIssue);
+}
+
+function aiCoverageIssueCategory(category: string) {
+  if (category === "unreviewed" || category === "needs_capture_baseline" || category === "incomplete_review" || category === "review_failed") return "unreviewed_open_source";
+  if (category === "unclear" || category === "needs_manual_review") return "unclear_open_source";
+  if (category === "unrelated_but_open") return "unrelated_source_still_open";
+  if (category === "sibling_but_open") return "sibling_source_still_open";
+  if (category === "missing_cycle_relevance") return "source_missing_cycle_relevance";
+  if (category === "missing_evidence") return "source_missing_evidence";
+  if (category === "generic_listing_but_open") return "source_quality_rejected_but_monitoring_enabled";
+  return null;
+}
+
+function aiCoverageRowToIssue(
+  row: SourceIssueRow,
+  category: string,
+  coverage: ReturnType<typeof buildSourceAiCoverageRow>,
+): AdminPageIssue {
+  const award = sourceAward(row);
+  const severity: PageIssueSeverity =
+    category === "unrelated_source_still_open" ||
+    category === "sibling_source_still_open" ||
+    category === "source_quality_rejected_but_monitoring_enabled"
+      ? "high"
+      : "medium";
+  return {
+    key: `ai-coverage:${category}:${row.id}`,
+    category,
+    area: "AI review coverage",
+    severity,
+    label: labelizeIssueCategory(category),
+    awardId: award?.id || row.shared_award_id,
+    awardSlug: award?.slug || null,
+    awardName: award?.name || "Unknown award",
+    sourceId: row.id,
+    sourceTitle: cleanDisplayTitle(row.display_title || row.title || row.url),
+    sourceUrl: row.url,
+    message: `${coverage.category}: ${coverage.action_reason}.`,
+    currentValue: coverage.ai_status,
+    recommendedAction:
+      coverage.planned_action === "move_to_review_later"
+        ? "Move this source to review_later so it cannot feed facts or monitoring."
+        : coverage.planned_action === "queue_ai_review"
+          ? "Run the AI review coverage backfill in batch mode for this source."
+          : "Review the source metadata and evidence before allowing it to contribute public facts.",
+    relatedWorkerRunId: null,
+    checkedAt: row.page_metadata_generated_at || row.last_checked_at || row.updated_at,
+    failures: row.consecutive_failures || 0,
+  };
+}
+
+function reconciliationRowToIssue(row: Record<string, unknown>): AdminPageIssue {
+  const award = embeddedAward(row.shared_awards);
+  const status = cleanText(row.status);
+  return {
+    key: `reconciliation:${cleanText(row.id)}`,
+    category: "award_reconciliation_failed",
+    area: "Award reconciliation",
+    severity: status === "failed" ? "high" : "medium",
+    label: status === "failed" ? "Reconciliation failed" : "Reconciliation stuck",
+    awardId: cleanText(row.shared_award_id),
+    awardSlug: award.slug,
+    awardName: award.name || "Unknown award",
+    sourceId: null,
+    sourceTitle: cleanText(row.reason) || "Reconciliation queue",
+    sourceUrl: award.officialHomepage,
+    message: cleanText(row.error) || `Queue row is ${status || "not complete"}.`,
+    currentValue: status || null,
+    recommendedAction: "Inspect the reconciliation queue row, rerun reconciliation, and preserve last-known-good facts if the audit is critical.",
+    relatedWorkerRunId: null,
+    checkedAt: cleanText(row.completed_at || row.created_at) || null,
+    failures: status === "failed" ? 1 : 0,
+  };
+}
+
+function pageAuditRowToIssue(row: Record<string, unknown>): AdminPageIssue {
+  const award = embeddedAward(row.shared_awards);
+  const finding = firstAuditFinding(row);
+  const findingCategory = pageAuditFindingCategory(cleanText(finding.code || finding.reason || finding.field_name || finding.message));
+  const category = pageAuditIssueCategory(findingCategory, cleanText(row.severity));
+  return {
+    key: `page-audit:${cleanText(row.id)}`,
+    category,
+    area: "Page audit",
+    severity: pageAuditSeverity(cleanText(row.severity)),
+    label: labelizeIssueCategory(category),
+    awardId: cleanText(row.shared_award_id),
+    awardSlug: award.slug,
+    awardName: award.name || "Unknown award",
+    sourceId: null,
+    sourceTitle: cleanText(finding.source_title || finding.sourceTitle || finding.field_name || "Public page audit"),
+    sourceUrl: award.officialHomepage,
+    message: cleanText(finding.message) || cleanText(findingCategory) || "Page audit finding.",
+    currentValue: cleanText(finding.current_value || finding.currentValue || finding.current) || null,
+    recommendedAction:
+      cleanText(finding.suggested_fix || finding.suggestedFix || finding.expected) ||
+      "Rerun award reconciliation and resolve the audit finding before publishing updated public facts.",
+    relatedWorkerRunId: null,
+    checkedAt: cleanText(row.created_at) || null,
+    failures: 0,
+    resolvedAt: cleanText(row.resolved_at) || null,
+  };
+}
+
+function sourceIntakeRowToIssue(row: Record<string, unknown>): AdminPageIssue {
+  const status = cleanText(row.status);
+  return {
+    key: `source-intake:${cleanText(row.id)}`,
+    category: status === "failed" ? "source_intake_failed" : "source_intake_needs_manual_review",
+    area: "Source intake",
+    severity: status === "failed" ? "high" : "medium",
+    label: status === "failed" ? "Intake failed" : "Manual intake review",
+    awardId: null,
+    awardSlug: null,
+    awardName: cleanText(row.award_name) || "New source request",
+    sourceId: null,
+    sourceTitle: cleanDisplayTitle(cleanText(row.homepage_url) || "Source intake request"),
+    sourceUrl: cleanText(row.homepage_url) || null,
+    message: cleanText(row.error || row.status_reason) || `Source intake status is ${status}.`,
+    currentValue: status,
+    recommendedAction: "Open Source Intake, decide whether to retry, reject, attach to an award, or approve as a new award.",
+    relatedWorkerRunId: cleanText(row.worker_run_id) || null,
+    checkedAt: cleanText(row.updated_at) || null,
+    failures: status === "failed" ? 1 : 0,
+  };
+}
+
+function geminiWorkerBlockerIssues(workerRuns: LocalWorkerRun[]): AdminPageIssue[] {
+  const run = workerRuns.find(workerHasGeminiBlocker);
+  if (!run) return [];
+  const metadata = objectValue(run.metadata);
+  return [{
+    key: `gemini-blocker:${run.id}`,
+    category: "gemini_billing_blocked",
+    area: "Gemini worker health",
+    severity: "high",
+    label: "Gemini blocked",
+    awardId: null,
+    awardSlug: null,
+    awardName: "Gemini Batch / AI workers",
+    sourceId: null,
+    sourceTitle: run.worker_name,
+    sourceUrl: null,
+    message: cleanText(metadata.blocking_reason || metadata.stop_reason || run.error) || "Recent worker run indicates Gemini billing or quota is blocked.",
+    currentValue: run.status,
+    recommendedAction: "Restore Gemini billing/quota, then resume the queued batch/backfill workers.",
+    relatedWorkerRunId: run.id,
+    checkedAt: run.finished_at || run.started_at,
+    failures: 1,
+  }];
+}
+
 function sourceRowToIssue(row: SourceIssueRow): AdminPageIssue {
   const award = sourceAward(row);
   const message = row.last_error || "Latest source check failed.";
   return {
     key: `source:${row.id}`,
+    category: "source_check_failed",
     area: "Source check",
     severity: sourceIssueSeverity(message, row.consecutive_failures),
     label: issueLabel(message),
@@ -442,6 +719,9 @@ function sourceRowToIssue(row: SourceIssueRow): AdminPageIssue {
     sourceTitle: cleanDisplayTitle(row.display_title || row.title || row.url),
     sourceUrl: row.url,
     message,
+    currentValue: row.last_error,
+    recommendedAction: "Open the source, confirm whether it is still official and monitorable, then mark review_later if it is stale or blocked.",
+    relatedWorkerRunId: null,
     checkedAt: row.last_checked_at || row.updated_at,
     failures: row.consecutive_failures || 0,
   };
@@ -452,6 +732,7 @@ function sourceQualityRejectedRowToIssue(row: SourceIssueRow): AdminPageIssue {
   const decision = sourceQualityDecision(sourceRowQualityInput(row), { purpose: "monitoring" });
   return {
     key: `source-quality:${row.id}`,
+    category: "source_quality_rejected_but_monitoring_enabled",
     area: "Source quality gate",
     severity: sourceQualityIssueSeverity(decision.reason),
     label: "Monitoring rejected",
@@ -462,6 +743,9 @@ function sourceQualityRejectedRowToIssue(row: SourceIssueRow): AdminPageIssue {
     sourceTitle: cleanDisplayTitle(row.display_title || row.title || row.url),
     sourceUrl: row.url,
     message: `Rejected before public display, fact aggregation, or monitoring: ${decision.reason}.`,
+    currentValue: decision.reason,
+    recommendedAction: "Move this source to review_later or correct its AI/source-quality metadata before it can monitor or feed public facts.",
+    relatedWorkerRunId: null,
     checkedAt: row.page_metadata_generated_at || row.last_checked_at || row.updated_at,
     failures: row.consecutive_failures || 0,
   };
@@ -503,6 +787,7 @@ function awardRowToIssue(row: AwardIssueRow): AdminPageIssue {
   const message = row.structure_scan_error || "Award detail scan failed.";
   return {
     key: `award:${row.id}`,
+    category: "award_structure_scan_failed",
     area: "Award details",
     severity: awardIssueSeverity(message),
     label: issueLabel(message),
@@ -513,6 +798,9 @@ function awardRowToIssue(row: AwardIssueRow): AdminPageIssue {
     sourceTitle: "Award detail summary",
     sourceUrl: row.official_homepage,
     message,
+    currentValue: row.structure_scan_error,
+    recommendedAction: "Rerun award structure scan or inspect the official homepage if the source shape changed.",
+    relatedWorkerRunId: null,
     checkedAt: row.last_structure_scan_at || row.updated_at,
     failures: 0,
   };
@@ -525,6 +813,7 @@ function workerPageErrorToIssue(
   const award = source ? sourceAward(source) : null;
   return {
     key: issue.key,
+    category: "worker_page_error",
     area: workerArea(issue.message),
     severity: sourceIssueSeverity(issue.message, source?.consecutive_failures || 0),
     label: issueLabel(issue.message),
@@ -535,9 +824,77 @@ function workerPageErrorToIssue(
     sourceTitle: cleanDisplayTitle(source?.display_title || source?.title || issue.sourceUrl || "Worker page error"),
     sourceUrl: issue.sourceUrl || source?.url || null,
     message: issue.message,
+    currentValue: issue.message,
+    recommendedAction: "Review the worker error, then rerun the relevant capture, R2, AI, or publish worker after fixing the source condition.",
+    relatedWorkerRunId: issue.runId,
     checkedAt: issue.startedAt,
     failures: source?.consecutive_failures || 0,
   };
+}
+
+function pageAuditIssueCategory(findingCategory: string, severity: string) {
+  if (findingCategory === "deadline_conflict") return "deadline_conflict";
+  if (findingCategory === "invented_future_deadline") return "invented_future_deadline";
+  if (findingCategory === "stale_cycle_shown_upcoming") return "stale_cycle_shown_upcoming";
+  if (findingCategory === "missing_amount_with_official_evidence") return "missing_amount_with_official_evidence";
+  if (findingCategory === "sibling_source_contamination") return "sibling_source_still_open";
+  if (findingCategory === "generic_listing_used_for_facts") return "public_facts_using_rejected_source";
+  if (severity === "critical") return "page_audit_critical";
+  return findingCategory || "page_audit_critical";
+}
+
+function pageAuditSeverity(value: string): PageIssueSeverity {
+  if (value === "critical" || value === "error") return "high";
+  if (value === "warning") return "medium";
+  return "low";
+}
+
+function firstAuditFinding(row: Record<string, unknown>) {
+  const findings = arrayValue(row.findings);
+  if (findings.length > 0) return objectValue(findings[0]);
+  const conflicts = arrayValue(row.field_conflicts);
+  if (conflicts.length > 0) return objectValue(conflicts[0]);
+  const fixes = arrayValue(row.suggested_fixes);
+  if (fixes.length > 0) return objectValue(fixes[0]);
+  return {};
+}
+
+function embeddedAward(value: unknown) {
+  const object = Array.isArray(value) ? objectValue(value[0]) : objectValue(value);
+  return {
+    name: cleanText(object.name),
+    slug: cleanText(object.slug) || null,
+    officialHomepage: cleanText(object.official_homepage) || null,
+  };
+}
+
+function uniqueIssue() {
+  const seen = new Set<string>();
+  return (issue: AdminPageIssue) => {
+    if (seen.has(issue.key)) return false;
+    seen.add(issue.key);
+    return true;
+  };
+}
+
+function countIssueCategories(issues: AdminPageIssue[]) {
+  const counts: Record<string, number> = {};
+  for (const issue of issues) counts[issue.category] = (counts[issue.category] || 0) + 1;
+  return Object.fromEntries(
+    Object.entries(counts).sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0])),
+  );
+}
+
+function objectHasKeys(value: unknown) {
+  return Object.keys(objectValue(value)).length > 0;
+}
+
+function labelizeIssueCategory(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function collectWorkerPageErrors(workerRuns: LocalWorkerRun[]) {
@@ -580,6 +937,17 @@ function shouldShowWorkerPageError(issue: WorkerPageError, sourceIssueIds: Set<s
 function sourceAward(row: SourceIssueRow) {
   const embedded = row.shared_awards;
   return Array.isArray(embedded) ? embedded[0] || null : embedded;
+}
+
+function coverageAward(award: AwardEmbed | null) {
+  if (!award) return null;
+  return {
+    id: award.id,
+    name: award.name,
+    slug: award.slug,
+    status: award.status,
+    public_facts: null,
+  };
 }
 
 function sourceIssueSeverity(message: string, failures: number): PageIssueSeverity {
@@ -647,14 +1015,6 @@ function dateMs(value: string | null) {
   return Number.isFinite(ms) ? ms : 0;
 }
 
-function errorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (error && typeof error === "object" && "message" in error) {
-    return String((error as { message?: unknown }).message || "Unknown error");
-  }
-  return String(error || "Unknown error");
-}
-
 function isMissingRelationError(message: string) {
   return /schema cache|does not exist|could not find.*column|column .* does not exist|42P01|42703|PGRST/i.test(
     message,
@@ -665,6 +1025,10 @@ function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
 }
 
 function cleanText(value: unknown) {

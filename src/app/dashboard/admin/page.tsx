@@ -14,18 +14,28 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { countActiveOpenSourcesWithVisualSnapshots } from "@/lib/admin-page-issues";
+import { loadAiReviewCoverageSummary } from "@/lib/admin-ai-review-coverage";
 import {
+  adminCommandPanelCommands,
   loadSourceQualityAdminSummary,
   loadSuppressionSummary,
   loadVisualReviewBatchSummary,
   parseLatestWorkerReportMetadata,
+  summarizeBackfillCompletion,
   summarizeAiMode,
   summarizeCaptureProfile,
+  summarizeDailyWorkerHealth,
   summarizeDiscovery,
+  summarizeExpandableSections,
+  summarizeGeminiBatchStatus,
   summarizePreAiGate,
+  summarizeSuppressionAndLastKnownGood,
   summarizeTextOnlyChanges,
   type ReasonCount,
 } from "@/lib/admin-maintenance";
+import { loadPageAuditSummary } from "@/lib/admin-page-audits";
+import { loadAwardReconciliationSummary } from "@/lib/admin-reconciliation";
+import { loadSourceIntakeSummary } from "@/lib/admin-source-intake";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
 import {
@@ -113,20 +123,49 @@ export default async function AdminPage() {
 
   const admin = createSupabaseAdminClient();
   const counts = await loadAdminSourceCounts(admin);
-  const [sourceQualityResult, visualReviewBatchResult, suppressionResult] = await Promise.all([
+  const [
+    sourceQualityResult,
+    visualReviewBatchResult,
+    suppressionResult,
+    aiCoverageResult,
+    reconciliationResult,
+    pageAuditResult,
+    sourceIntakeResult,
+  ] = await Promise.all([
     loadSourceQualityAdminSummary(admin, counts.recentRuns),
     loadVisualReviewBatchSummary(admin),
     loadSuppressionSummary(admin),
+    loadAiReviewCoverageSummary(admin, counts.recentRuns),
+    loadAwardReconciliationSummary(admin, counts.recentRuns),
+    loadPageAuditSummary(admin),
+    loadSourceIntakeSummary(admin, counts.recentRuns),
   ]);
   const workerMetadata = parseLatestWorkerReportMetadata(counts.recentRuns);
   const sourceQuality = sourceQualityResult.summary;
+  const aiCoverage = aiCoverageResult.summary;
+  const reconciliation = reconciliationResult.summary;
+  const pageAudit = pageAuditResult.summary;
+  const sourceIntake = sourceIntakeResult.summary;
   const discovery = summarizeDiscovery(workerMetadata.latestVisualMetadata);
   const visualReviewBatch = visualReviewBatchResult.summary;
   const preAiGate = summarizePreAiGate(workerMetadata.latestVisualMetadata);
   const textOnlyChanges = summarizeTextOnlyChanges(workerMetadata.latestVisualMetadata);
   const suppression = suppressionResult.summary;
   const captureProfile = summarizeCaptureProfile(workerMetadata.latestVisualMetadata);
+  const sectionSummary = summarizeExpandableSections(workerMetadata.latestVisualMetadata);
   const aiMode = summarizeAiMode(workerMetadata.latestVisualMetadata);
+  const backfillCompletion = summarizeBackfillCompletion(workerMetadata.latestBackfillMetadata);
+  const dailyHealth = summarizeDailyWorkerHealth(
+    Object.keys(workerMetadata.latestDailyMetadata).length
+      ? workerMetadata.latestDailyMetadata
+      : workerMetadata.latestMaintenanceMetadata,
+  );
+  const geminiBatchHealth = summarizeGeminiBatchStatus(workerMetadata, visualReviewBatch);
+  const suppressionAndLastKnownGood = summarizeSuppressionAndLastKnownGood(
+    suppression,
+    workerMetadata.latestReconciliationMetadata,
+  );
+  const commandPanelCommands = adminCommandPanelCommands();
   const latestMaintenance = latestMaintenanceRun(counts.recentRuns);
   const renderedAt = new Date().toISOString();
   const metadataPercent = percent(counts.openWithMetadata, counts.openSources);
@@ -142,6 +181,16 @@ export default async function AdminPage() {
     ...sourceQualityResult.loadErrors,
     ...visualReviewBatchResult.loadErrors,
     ...suppressionResult.loadErrors,
+    ...aiCoverageResult.loadErrors,
+    ...reconciliationResult.loadErrors,
+    ...pageAuditResult.loadErrors,
+    ...sourceIntakeResult.loadErrors,
+  ];
+  const adminWarnings = [
+    ...aiCoverageResult.warnings,
+    ...reconciliationResult.warnings,
+    ...pageAuditResult.warnings,
+    ...sourceIntakeResult.warnings,
   ];
 
   return (
@@ -182,6 +231,18 @@ export default async function AdminPage() {
         </section>
       )}
 
+      {adminWarnings.length > 0 && (
+        <section className="card p-5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle size={18} aria-hidden="true" />
+            <div>
+              <h2 className="font-black">Some workflow tables are optional or not migrated yet</h2>
+              <p className="mt-1 text-sm text-[var(--muted)]">{adminWarnings.join(" ")}</p>
+            </div>
+          </div>
+        </section>
+      )}
+
       {geminiBlocked && (
         <section className="card border-[var(--brand-pink)] p-5">
           <div className="flex items-start gap-3">
@@ -206,9 +267,9 @@ export default async function AdminPage() {
         />
         <MetricCard
           icon={Database}
-          label="Open Sources"
-          value={formatNumber(sourceQuality.openSources)}
-          detail={`${formatNumber(counts.activeAwards)} active awards; source-quality gate is evaluated app-side`}
+          label="Open / Eligible"
+          value={`${formatNumber(sourceQuality.openSources)} / ${formatNumber(sourceQuality.monitorEligibleSources)}`}
+          detail={`${formatNumber(counts.activeAwards)} active awards; open is not the same as safe`}
         />
         <MetricCard
           icon={CheckCircle2}
@@ -291,6 +352,170 @@ export default async function AdminPage() {
               <MiniStat label="Not program" value={counts.cycleCoverage.notProgramPage} />
               <MiniStat label="Unclear" value={counts.cycleCoverage.unclear} />
               <MiniStat label="Rejected" value={counts.cycleCoverage.rejectedFacts} />
+            </div>
+          </DetailDisclosure>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 size={18} aria-hidden="true" />
+              <h2>Award Page Reconciliation</h2>
+            </div>
+            <span className={reconciliation.configured ? "badge" : "badge bg-[var(--brand-pink-soft)]"}>
+              {reconciliation.configured ? "Queued" : "Not configured"}
+            </span>
+          </div>
+          {reconciliation.warning && (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">{reconciliation.warning}</p>
+          )}
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Pending" value={reconciliation.queueCounts.pending} attention={reconciliation.queueCounts.pending > 0} />
+            <MiniStat label="Processing" value={reconciliation.queueCounts.processing} attention={reconciliation.queueCounts.processing > 0} />
+            <MiniStat label="Succeeded" value={reconciliation.queueCounts.succeeded} />
+            <MiniStat label="Failed" value={reconciliation.queueCounts.failed} attention={reconciliation.queueCounts.failed > 0} />
+            <MiniStat label="Skipped" value={reconciliation.queueCounts.skipped} />
+            <MiniStat label="Reconciled" value={reconciliation.latestRun?.awardsReconciled || 0} />
+            <MiniStat label="Blocked" value={reconciliation.latestRun?.awardsPublicationBlocked || 0} attention={(reconciliation.latestRun?.awardsPublicationBlocked || 0) > 0} />
+            <MiniStat label="Last-known-good" value={reconciliation.latestRun?.awardsUsedLastKnownGood || 0} attention={(reconciliation.latestRun?.awardsUsedLastKnownGood || 0) > 0} />
+            <MiniStat label="Sibling rejected" value={reconciliation.latestRun?.siblingSourcesRejected || 0} attention={(reconciliation.latestRun?.siblingSourcesRejected || 0) > 0} />
+            <MiniStat label="Deadline conflicts" value={reconciliation.latestRun?.deadlineConflictsDetected || 0} attention={(reconciliation.latestRun?.deadlineConflictsDetected || 0) > 0} />
+            <MiniStat label="Stale cycles fixed" value={reconciliation.latestRun?.staleCycleStatesCorrected || 0} />
+            <MiniStat label="Facts published" value={reconciliation.latestRun?.factsPublished || 0} />
+          </div>
+          <div className="admin-issue-actions">
+            <Link className="admin-issue-link" href="/dashboard/admin/issues?category=award_reconciliation_failed">
+              Failed reconciliation
+            </Link>
+            <Link className="admin-issue-link" href="/dashboard/admin/issues?category=deadline_conflict">
+              Deadline conflicts
+            </Link>
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={18} aria-hidden="true" />
+              <h2>Page Audit</h2>
+            </div>
+            <span className={pageAudit.critical > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {pageAudit.critical > 0 ? `${formatNumber(pageAudit.critical)} critical` : "Audited"}
+            </span>
+          </div>
+          {pageAudit.warning && (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">{pageAudit.warning}</p>
+          )}
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Passed" value={pageAudit.statusCounts.passed} />
+            <MiniStat label="Warnings" value={pageAudit.statusCounts.warnings} attention={pageAudit.statusCounts.warnings > 0} />
+            <MiniStat label="Failed" value={pageAudit.statusCounts.failed} attention={pageAudit.statusCounts.failed > 0} />
+            <MiniStat label="Needs review" value={pageAudit.statusCounts.needs_review} attention={pageAudit.statusCounts.needs_review > 0} />
+            <MiniStat label="Critical" value={pageAudit.severityCounts.critical} attention={pageAudit.severityCounts.critical > 0} />
+            <MiniStat label="Unresolved" value={pageAudit.unresolved} attention={pageAudit.unresolved > 0} />
+          </div>
+          <DetailDisclosure label="Common findings">
+            <ReasonCountList counts={pageAudit.commonFindings} empty="No audit findings recorded." />
+          </DetailDisclosure>
+          <div className="admin-flow-list admin-flow-list-compact">
+            {pageAudit.latestExamples.slice(0, 3).map((audit) => (
+              <PipelineRow
+                attention={audit.severity === "critical" || audit.severity === "error"}
+                detail={audit.finding}
+                icon={audit.severity === "critical" ? AlertTriangle : Activity}
+                key={audit.id}
+                status={audit.severity}
+                title={audit.awardName}
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Database size={18} aria-hidden="true" />
+              <h2>Source Intake</h2>
+            </div>
+            <span className={sourceIntake.configured ? "badge" : "badge bg-[var(--brand-pink-soft)]"}>
+              {sourceIntake.configured ? "Configured" : "Not configured"}
+            </span>
+          </div>
+          {sourceIntake.warning && (
+            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">{sourceIntake.warning}</p>
+          )}
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Pending" value={sourceIntake.pending} attention={sourceIntake.pending > 0} />
+            <MiniStat label="In progress" value={sourceIntake.inProgress} attention={sourceIntake.inProgress > 0} />
+            <MiniStat label="Added" value={sourceIntake.added} />
+            <MiniStat label="Rejected" value={sourceIntake.rejected} />
+            <MiniStat label="Manual review" value={sourceIntake.needsManualReview} attention={sourceIntake.needsManualReview > 0} />
+            <MiniStat label="Failed" value={sourceIntake.failed} attention={sourceIntake.failed > 0} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Latest worker" value={sourceIntake.latestWorker?.status || "Not reported"} />
+            <Detail label="Created sources" value={formatNumber(sourceIntake.latestWorker?.createdOrUpdatedSources || 0)} />
+            <Detail label="Gemini blocker" value={sourceIntake.latestWorker?.blockingReason || "None"} />
+          </dl>
+          <div className="admin-issue-actions">
+            <Link className="admin-issue-link" href="/dashboard/admin/source-intake">
+              Manage source intake
+            </Link>
+            <Link className="admin-issue-link" href="/dashboard/admin/issues?category=source_intake_needs_manual_review">
+              Intake issues
+            </Link>
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>AI Review Coverage</h2>
+            </div>
+            <span className={aiCoverage.completion_passed ? "badge" : "badge bg-[var(--brand-pink-soft)]"}>
+              {aiCoverage.completion_passed ? "Complete" : "Blocked"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat
+              label="Open reviewed"
+              value={`${formatNumber(aiCoverage.open_sources - aiCoverage.unreviewed_open_sources)} / ${formatNumber(aiCoverage.open_sources)}`}
+              attention={aiCoverage.unreviewed_open_sources > 0}
+            />
+            <MiniStat
+              label="All reviewed"
+              value={`${aiCoverage.percent_complete_all_sources}%`}
+              attention={aiCoverage.percent_complete_all_sources < 100}
+            />
+            <MiniStat
+              label="Public pages"
+              value={`${aiCoverage.percent_complete_public_award_pages}%`}
+              attention={aiCoverage.awards_with_no_public_facts > 0}
+            />
+            <MiniStat label="Unreviewed open" value={aiCoverage.unreviewed_open_sources} attention={aiCoverage.unreviewed_open_sources > 0} />
+            <MiniStat label="Unrelated open" value={aiCoverage.open_sources_with_award_relevance_unrelated} attention={aiCoverage.open_sources_with_award_relevance_unrelated > 0} />
+            <MiniStat label="Unclear open" value={aiCoverage.open_sources_with_award_relevance_unclear} attention={aiCoverage.open_sources_with_award_relevance_unclear > 0} />
+            <MiniStat label="Sibling open" value={aiCoverage.open_category_counts.sibling_but_open || 0} attention={(aiCoverage.open_category_counts.sibling_but_open || 0) > 0} />
+            <MiniStat label="Missing cycle" value={aiCoverage.open_sources_missing_cycle_relevance} attention={aiCoverage.open_sources_missing_cycle_relevance > 0} />
+            <MiniStat label="Missing evidence" value={aiCoverage.open_category_counts.missing_evidence || 0} attention={(aiCoverage.open_category_counts.missing_evidence || 0) > 0} />
+            <MiniStat label="Review failed" value={aiCoverage.open_sources_with_review_failed_status} attention={aiCoverage.open_sources_with_review_failed_status > 0} />
+            <MiniStat label="Manual review" value={aiCoverage.open_category_counts.needs_manual_review || 0} attention={(aiCoverage.open_category_counts.needs_manual_review || 0) > 0} />
+            <MiniStat label="Audit critical" value={aiCoverage.critical_page_audit_failures} attention={aiCoverage.critical_page_audit_failures > 0} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Latest coverage pass" value={aiCoverage.latest_backfill_run_status?.status || "Not reported"} />
+            <Detail
+              label="Gemini blocker"
+              value={aiCoverage.latest_gemini_billing_quota_blocker?.blocking_reason || (geminiBlocked ? "Billing or quota blocker detected" : "None")}
+            />
+          </dl>
+          <DetailDisclosure label="Completion blockers">
+            <ReasonCountList counts={objectCounts(aiCoverage.completion_blockers)} empty="No hard completion blockers reported." />
+            <div className="mt-3 grid gap-2">
+              <CommandLine command="node scripts/read-ai-review-coverage.mjs --json" />
+              <CommandLine command="node scripts/backfill-open-source-ai-determinations.mjs --dry-run=true" />
+              <CommandLine command="node scripts/backfill-open-source-ai-determinations.mjs --apply=true --gemini-api-mode=batch --resume" />
             </div>
           </DetailDisclosure>
         </div>
@@ -407,6 +632,36 @@ export default async function AdminPage() {
         <div className="card admin-section-card admin-dashboard-card">
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>Gemini Batch / AI Worker Health</h2>
+            </div>
+            <span className={geminiBatchHealth.billingBlocked || geminiBatchHealth.quotaBlocked ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {geminiBatchHealth.billingBlocked ? "Billing blocked" : geminiBatchHealth.quotaBlocked ? "Quota blocked" : "Ready"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Billing blocked" value={geminiBatchHealth.billingBlocked ? "Yes" : "No"} attention={geminiBatchHealth.billingBlocked} />
+            <MiniStat label="Quota blocked" value={geminiBatchHealth.quotaBlocked ? "Yes" : "No"} attention={geminiBatchHealth.quotaBlocked} />
+            <MiniStat label="Visual queued" value={visualReviewBatch.statusCounts.pending + visualReviewBatch.statusCounts.submitted + visualReviewBatch.statusCounts.processing} />
+            <MiniStat label="Visual failed" value={visualReviewBatch.statusCounts.failed} attention={visualReviewBatch.statusCounts.failed > 0} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Baseline batch" value={geminiBatchHealth.latestBaselineBatchJob || "None"} />
+            <Detail label="Visual batch" value={geminiBatchHealth.latestVisualReviewBatchJob || "None"} />
+            <Detail label="Page audit batch" value={geminiBatchHealth.latestPageAuditBatchJob || pageAudit.latestBatch.name || "None"} />
+            <Detail label="Source intake batch" value={geminiBatchHealth.latestSourceIntakeBatchJob || "None"} />
+            <Detail label="Blocking reason" value={geminiBatchHealth.blockingReason || "None"} />
+          </dl>
+          {geminiBatchHealth.synchronousBatchPricingWarning && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Warning: a run used synchronous Gemini review while reporting batch pricing.
+            </p>
+          )}
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
               <Gauge size={18} aria-hidden="true" />
               <h2>Pre-AI Gate Efficiency</h2>
             </div>
@@ -463,6 +718,8 @@ export default async function AdminPage() {
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Suppressed events" value={suppression.suppressedChangeEvents} attention={suppression.suppressedChangeEvents > 0} />
             <MiniStat label="Reason types" value={suppression.suppressionReasons.length} />
+            <MiniStat label="Last-known-good" value={suppressionAndLastKnownGood.awardsUsingLastKnownGood} attention={suppressionAndLastKnownGood.awardsUsingLastKnownGood > 0} />
+            <MiniStat label="Publication blocked" value={suppressionAndLastKnownGood.publicationBlocked} attention={suppressionAndLastKnownGood.publicationBlocked > 0} />
           </div>
           <DetailDisclosure label="Suppression reasons">
             <ReasonCountList counts={suppression.suppressionReasons} empty="No suppressed event reasons recorded." />
@@ -504,6 +761,74 @@ export default async function AdminPage() {
             <Detail label="Page-ready wait" value={formatDurationMs(captureProfile.pageReadyWaitMs)} />
             <Detail label="Settle wait" value={formatDurationMs(captureProfile.captureSettleWaitMs)} />
           </dl>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Activity size={18} aria-hidden="true" />
+              <h2>Daily Worker Health</h2>
+            </div>
+            <span className={dailyHealth.aiReviewCoverageComplete === false || dailyHealth.textOnlyIgnored > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {dailyHealth.status === "unknown" ? "No report" : statusLabel(dailyHealth.status)}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="AI coverage" value={dailyHealth.aiReviewCoverageComplete === null ? "Unknown" : dailyHealth.aiReviewCoverageComplete ? "Complete" : "Incomplete"} attention={dailyHealth.aiReviewCoverageComplete === false} />
+            <MiniStat label="Unreviewed open" value={dailyHealth.unreviewedOpenSources} attention={dailyHealth.unreviewedOpenSources > 0} />
+            <MiniStat label="Unclear open" value={dailyHealth.unclearOpenSources} attention={dailyHealth.unclearOpenSources > 0} />
+            <MiniStat label="Unrelated open" value={dailyHealth.unrelatedOpenSources} attention={dailyHealth.unrelatedOpenSources > 0} />
+            <MiniStat label="Missing cycle" value={dailyHealth.missingCycleRelevanceSources} attention={dailyHealth.missingCycleRelevanceSources > 0} />
+            <MiniStat label="Queued awards" value={dailyHealth.awardsQueuedForReconciliation} />
+            <MiniStat label="Reconciled" value={dailyHealth.awardsReconciled} attention={dailyHealth.skippedReconciliationAfterImpact} />
+            <MiniStat label="Audit failed" value={dailyHealth.awardsAuditFailed} attention={dailyHealth.awardsAuditFailed > 0} />
+            <MiniStat label="Blocked" value={dailyHealth.awardsPublicationBlocked} attention={dailyHealth.awardsPublicationBlocked > 0} />
+            <MiniStat label="Last-known-good" value={dailyHealth.awardsUsedLastKnownGood} attention={dailyHealth.awardsUsedLastKnownGood > 0} />
+            <MiniStat label="Page audit batch" value={dailyHealth.pageAuditBatchCandidates} />
+            <MiniStat label="Text ignored" value={dailyHealth.textOnlyIgnored} attention={dailyHealth.textOnlyIgnored > 0} />
+          </div>
+          <dl className="admin-detail-grid admin-detail-grid-tight">
+            <Detail label="Discovery mode" value={dailyHealth.discoveryMode === null ? "Unknown" : dailyHealth.discoveryMode ? "On" : "Off"} />
+            <Detail label="Capture profile" value={dailyHealth.captureProfile || "Unknown"} />
+            <Detail label="Section profile" value={dailyHealth.sectionExtractionProfile || "Unknown"} />
+          </dl>
+          {dailyHealth.standardCaptureCreatedSources && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Warning: this daily/capture report says sources were created while discovery was off.
+            </p>
+          )}
+          {dailyHealth.skippedReconciliationAfterImpact && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Warning: awards were queued for reconciliation but no reconciliation completed in this report.
+            </p>
+          )}
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <Database size={18} aria-hidden="true" />
+              <h2>Expandable Sections</h2>
+            </div>
+            <span className={sectionSummary.needsAttention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+              {sectionSummary.enabled === false ? "Disabled" : sectionSummary.profile || "Unknown"}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Detected" value={sectionSummary.detected} />
+            <MiniStat label="Extracted" value={sectionSummary.extracted} attention={sectionSummary.detected > sectionSummary.extracted} />
+            <MiniStat label="Changed" value={sectionSummary.changed} />
+            <MiniStat label="Added" value={sectionSummary.added} />
+            <MiniStat label="Removed" value={sectionSummary.removed} />
+            <MiniStat label="Candidates" value={sectionSummary.candidatesEnqueued} />
+            <MiniStat label="Evidence shots" value={sectionSummary.evidenceScreenshotsTaken} attention={sectionSummary.evidenceScreenshotsTaken > 0 && sectionSummary.profile === "stable-daily"} />
+            <MiniStat label="Main hash includes sections" value={sectionSummary.textIncludedInMainHash === null ? "Unknown" : sectionSummary.textIncludedInMainHash ? "Yes" : "No"} attention={sectionSummary.profile === "stable-daily" && sectionSummary.textIncludedInMainHash === true} />
+          </div>
+          {sectionSummary.profile === "stable-daily" && sectionSummary.textIncludedInMainHash === true && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              Stable daily runs should keep section text out of the main page hash.
+            </p>
+          )}
         </div>
 
         <div className="card admin-section-card admin-dashboard-card">
@@ -616,6 +941,50 @@ export default async function AdminPage() {
         <div className="card admin-section-card admin-dashboard-card">
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
+              <Sparkles size={18} aria-hidden="true" />
+              <h2>Backfill Completion</h2>
+            </div>
+            <span className={backfillCompletion.completionPassed ? "badge" : "badge bg-[var(--brand-pink-soft)]"}>
+              {backfillCompletion.status === "unknown" ? "No report" : statusLabel(backfillCompletion.status)}
+            </span>
+          </div>
+          <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Open scanned" value={backfillCompletion.totalOpenSourcesScanned} />
+            <MiniStat label="Queued AI" value={backfillCompletion.queuedForAiReview} />
+            <MiniStat label="Batch submitted" value={backfillCompletion.submittedToGeminiBatch} />
+            <MiniStat label="Moved later" value={backfillCompletion.movedToReviewLater} />
+            <MiniStat label="Awards queued" value={backfillCompletion.awardsQueuedForReconciliation} />
+            <MiniStat label="Reconciled" value={backfillCompletion.awardsReconciled} />
+            <MiniStat label="Blocked pages" value={backfillCompletion.publicPagesBlocked} attention={backfillCompletion.publicPagesBlocked > 0} />
+            <MiniStat label="Last-known-good" value={backfillCompletion.lastKnownGoodPreserved} attention={backfillCompletion.lastKnownGoodPreserved > 0} />
+          </div>
+          {backfillCompletion.blockingReason && (
+            <p className="text-sm font-black text-[var(--brand-burgundy)]">
+              {backfillCompletion.blockingReason}
+            </p>
+          )}
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
+              <PlayCircle size={18} aria-hidden="true" />
+              <h2>Commands</h2>
+            </div>
+          </div>
+          <div className="grid gap-3">
+            {commandPanelCommands.map((item) => (
+              <div className="grid gap-1" key={item.command}>
+                <p className="text-xs font-black uppercase text-[var(--muted)]">{item.label}</p>
+                <CommandLine command={item.command} />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
               <Gauge size={18} aria-hidden="true" />
               <h2>Catch-Up Budget</h2>
             </div>
@@ -696,7 +1065,7 @@ async function loadAdminSourceCounts(admin: AdminClient): Promise<AdminSourceCou
 
   const openSourceCount = openSources.count || 0;
   const openWithMetadataCount = openWithMetadata.count || 0;
-  const openWithVisualSnapshots = visualSnapshotCount.count || 0;
+  const openWithVisualSnapshots = Math.min(openSourceCount, visualSnapshotCount.count || 0);
   return {
     activeAwards: activeAwards.count || 0,
     openSources: openSourceCount,
@@ -1062,6 +1431,13 @@ function labelize(value: string) {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function objectCounts(value: Record<string, number>): ReasonCount[] {
+  return Object.entries(value)
+    .map(([reason, count]) => ({ reason, count }))
+    .filter((item) => item.count > 0)
+    .sort((left, right) => right.count - left.count || left.reason.localeCompare(right.reason));
 }
 
 function percent(value: number, total: number) {

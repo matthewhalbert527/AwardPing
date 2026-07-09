@@ -4,10 +4,15 @@ import type { Database } from "@/lib/database.types";
 vi.mock("server-only", () => ({}));
 
 import {
+  adminCommandPanelCommands,
   parseLatestWorkerReportMetadata,
+  summarizeBackfillCompletion,
   summarizeAiMode,
   summarizeCaptureProfile,
+  summarizeDailyWorkerHealth,
   summarizeDiscovery,
+  summarizeExpandableSections,
+  summarizeGeminiBatchStatus,
   summarizePreAiGate,
   summarizeSourceQuality,
   summarizeTextOnlyChanges,
@@ -106,6 +111,85 @@ describe("admin maintenance summaries", () => {
       aiDisabledReason: "pure capture",
       synchronousBatchPricingWarning: true,
     });
+    expect(summarizeDailyWorkerHealth(metadata)).toMatchObject({
+      textOnlyIgnored: 2,
+      standardCaptureCreatedSources: true,
+      captureProfile: "stable-daily",
+    });
+  });
+
+  it("summarizes backfill completion and expandable section fields", () => {
+    const backfill = summarizeBackfillCompletion({
+      status: "completed_with_blockers",
+      completion_passed: false,
+      billing_blocked: true,
+      blocking_reason: "credits are depleted",
+      counts: {
+        total_open_sources_scanned: 100,
+        queued_for_ai_review: 12,
+        submitted_to_gemini_batch: 10,
+        moved_to_review_later: 5,
+        awards_queued_for_reconciliation: 4,
+        awards_reconciled: 3,
+        public_pages_blocked: 2,
+        last_known_good_preserved: 2,
+      },
+    });
+    const sections = summarizeExpandableSections({
+      counts: {
+        expandable_section_extraction_enabled: true,
+        section_extraction_profile: "stable-daily",
+        expandable_sections_detected: 8,
+        expandable_sections_extracted: 6,
+        expandable_sections_changed: 1,
+        section_evidence_screenshots_taken: 1,
+        section_text_included_in_main_hash: true,
+      },
+    });
+
+    expect(backfill).toMatchObject({
+      billingBlocked: true,
+      queuedForAiReview: 12,
+      publicPagesBlocked: 2,
+    });
+    expect(sections.needsAttention).toBe(true);
+    expect(sections.detected).toBe(8);
+    expect(sections.extracted).toBe(6);
+  });
+
+  it("summarizes Gemini batch health and exposes admin commands", () => {
+    const latest = parseLatestWorkerReportMetadata([
+      workerRun(
+        {
+          kind: "page_audit_batch",
+          batches: [{ name: "batches/page-audit" }],
+        },
+        { worker_name: "page-audit-batch" },
+      ),
+      workerRun(
+        {
+          kind: "source_intake",
+          batches: [{ name: "batches/intake" }],
+        },
+        { worker_name: "source-intake-worker" },
+      ),
+      workerRun(
+        {
+          billing_blocked: true,
+          blocking_reason: "Gemini prepayment credits are depleted",
+        },
+        { worker_name: "local-open-source-ai-coverage-backfill", error: "Gemini prepayment credits are depleted" },
+      ),
+    ]);
+    const health = summarizeGeminiBatchStatus(latest, summarizeVisualReviewBatch([
+      { status: "submitted", gemini_batch_name: "batches/visual", submitted_at: "2026-07-09T00:00:00.000Z" },
+    ]));
+
+    expect(health.billingBlocked).toBe(true);
+    expect(health.latestVisualReviewBatchJob).toBe("batches/visual");
+    expect(adminCommandPanelCommands().map((item) => item.command)).toContain(
+      "node scripts/read-ai-review-coverage.mjs --json",
+    );
   });
 
   it("counts visual-review batch statuses and latest batch details", () => {

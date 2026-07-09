@@ -37,14 +37,26 @@ export type ReasonCount = {
 export type LatestWorkerReportMetadata = {
   latestRun: LocalWorkerRun | null;
   latestMaintenanceRun: LocalWorkerRun | null;
+  latestDailyRun: LocalWorkerRun | null;
   latestVisualRun: LocalWorkerRun | null;
   latestSourceQualityRun: LocalWorkerRun | null;
   latestVisualReviewRun: LocalWorkerRun | null;
+  latestBackfillRun: LocalWorkerRun | null;
+  latestReconciliationRun: LocalWorkerRun | null;
+  latestPageAuditRun: LocalWorkerRun | null;
+  latestSourceIntakeRun: LocalWorkerRun | null;
+  latestGeminiBlockerRun: LocalWorkerRun | null;
   latestMetadata: Record<string, unknown>;
   latestMaintenanceMetadata: Record<string, unknown>;
+  latestDailyMetadata: Record<string, unknown>;
   latestVisualMetadata: Record<string, unknown>;
   latestSourceQualityMetadata: Record<string, unknown>;
   latestVisualReviewMetadata: Record<string, unknown>;
+  latestBackfillMetadata: Record<string, unknown>;
+  latestReconciliationMetadata: Record<string, unknown>;
+  latestPageAuditMetadata: Record<string, unknown>;
+  latestSourceIntakeMetadata: Record<string, unknown>;
+  latestGeminiBlockerMetadata: Record<string, unknown>;
 };
 
 export type SourceQualitySummary = {
@@ -153,6 +165,83 @@ export type AiModeSummary = {
   visualReviewMode: string | null;
   geminiApiPricingMode: string | null;
   synchronousBatchPricingWarning: boolean;
+};
+
+export type BackfillCompletionSummary = {
+  status: string;
+  completionPassed: boolean | null;
+  billingBlocked: boolean;
+  blockingReason: string | null;
+  totalOpenSourcesScanned: number;
+  queuedForAiReview: number;
+  submittedToGeminiBatch: number;
+  movedToReviewLater: number;
+  awardsQueuedForReconciliation: number;
+  awardsReconciled: number;
+  publicPagesBlocked: number;
+  lastKnownGoodPreserved: number;
+};
+
+export type DailyWorkerHealthSummary = {
+  status: string;
+  profile: string | null;
+  aiReviewCoverageComplete: boolean | null;
+  unreviewedOpenSources: number;
+  unclearOpenSources: number;
+  unrelatedOpenSources: number;
+  missingCycleRelevanceSources: number;
+  awardsQueuedForReconciliation: number;
+  awardsReconciled: number;
+  awardsAuditPassed: number;
+  awardsAuditWarnings: number;
+  awardsAuditFailed: number;
+  awardsPublicationBlocked: number;
+  awardsUsedLastKnownGood: number;
+  pageAuditBatchCandidates: number;
+  sourceIntakeProcessed: number;
+  discoveryMode: boolean | null;
+  captureProfile: string | null;
+  sectionExtractionProfile: string | null;
+  textOnlyIgnored: number;
+  standardCaptureCreatedSources: boolean;
+  skippedReconciliationAfterImpact: boolean;
+};
+
+export type GeminiBatchHealthSummary = {
+  billingBlocked: boolean;
+  quotaBlocked: boolean;
+  blockingReason: string | null;
+  latestBaselineBatchJob: string | null;
+  latestVisualReviewBatchJob: string | null;
+  latestPageAuditBatchJob: string | null;
+  latestSourceIntakeBatchJob: string | null;
+  synchronousBatchPricingWarning: boolean;
+};
+
+export type SuppressionAndLastKnownGoodSummary = {
+  suppressedChangeEvents: number;
+  awardsUsingLastKnownGood: number;
+  publicationBlocked: number;
+};
+
+export type ExpandableSectionSummary = {
+  enabled: boolean | null;
+  profile: string | null;
+  detected: number;
+  extracted: number;
+  changed: number;
+  added: number;
+  removed: number;
+  candidatesEnqueued: number;
+  evidenceScreenshotsTaken: number;
+  textIncludedInMainHash: boolean | null;
+  textIncludedInBaselineFacts: boolean | null;
+  needsAttention: boolean;
+};
+
+export type AdminCommand = {
+  label: string;
+  command: string;
 };
 
 export type MaintenanceRunnerState = {
@@ -292,6 +381,10 @@ export function parseLatestWorkerReportMetadata(runs: LocalWorkerRun[]): LatestW
     const metadata = objectValue(run.metadata);
     return run.worker_name === "local-maintenance-runner" || metadata.kind === "maintenance";
   }) || null;
+  const latestDailyRun = runs.find((run) => {
+    const metadata = objectValue(run.metadata);
+    return cleanText(metadata.profile) === "daily" || cleanText(metadata.kind) === "daily" || run.worker_name.includes("daily");
+  }) || null;
   const latestVisualRun = runs.find((run) => {
     const metadata = objectValue(run.metadata);
     return metadata.kind === "visual_snapshot" || run.worker_name.includes("visual-snapshot");
@@ -308,18 +401,54 @@ export function parseLatestWorkerReportMetadata(runs: LocalWorkerRun[]): LatestW
     if (run.worker_name.includes("visual-review")) return true;
     return maintenancePhases(metadata).some((phase) => phase.name === "visual-review-batch");
   }) || null;
+  const latestBackfillRun = runs.find((run) => {
+    const metadata = objectValue(run.metadata);
+    return run.worker_name.includes("ai-coverage-backfill") ||
+      metadata.kind === "open_source_ai_review_coverage_backfill";
+  }) || null;
+  const latestReconciliationRun = runs.find((run) => {
+    const metadata = objectValue(run.metadata);
+    if (run.worker_name.includes("reconciliation")) return true;
+    if (metadata.kind === "award_page_reconciliation") return true;
+    return maintenancePhases(metadata).some((phase) => phase.name === "reconcile-awards");
+  }) || null;
+  const latestPageAuditRun = runs.find((run) => {
+    const metadata = objectValue(run.metadata);
+    if (run.worker_name.includes("page-audit")) return true;
+    if (metadata.kind === "page_audit_batch") return true;
+    return maintenancePhases(metadata).some((phase) => phase.name === "page-audit-batch");
+  }) || null;
+  const latestSourceIntakeRun = runs.find((run) => {
+    const metadata = objectValue(run.metadata);
+    if (run.worker_name.includes("source-intake")) return true;
+    if (metadata.kind === "source_intake") return true;
+    return maintenancePhases(metadata).some((phase) => phase.name === "source-intake");
+  }) || null;
+  const latestGeminiBlockerRun = runs.find(workerHasGeminiBlocker) || null;
 
   return {
     latestRun,
     latestMaintenanceRun,
+    latestDailyRun,
     latestVisualRun,
     latestSourceQualityRun,
     latestVisualReviewRun,
+    latestBackfillRun,
+    latestReconciliationRun,
+    latestPageAuditRun,
+    latestSourceIntakeRun,
+    latestGeminiBlockerRun,
     latestMetadata: objectValue(latestRun?.metadata),
     latestMaintenanceMetadata: objectValue(latestMaintenanceRun?.metadata),
+    latestDailyMetadata: objectValue(latestDailyRun?.metadata),
     latestVisualMetadata: objectValue(latestVisualRun?.metadata),
     latestSourceQualityMetadata: objectValue(latestSourceQualityRun?.metadata),
     latestVisualReviewMetadata: objectValue(latestVisualReviewRun?.metadata),
+    latestBackfillMetadata: objectValue(latestBackfillRun?.metadata),
+    latestReconciliationMetadata: objectValue(latestReconciliationRun?.metadata),
+    latestPageAuditMetadata: objectValue(latestPageAuditRun?.metadata),
+    latestSourceIntakeMetadata: objectValue(latestSourceIntakeRun?.metadata),
+    latestGeminiBlockerMetadata: objectValue(latestGeminiBlockerRun?.metadata),
   };
 }
 
@@ -327,6 +456,12 @@ export async function loadSourceQualityAdminSummary(
   admin: AdminClient,
   runs: LocalWorkerRun[] = [],
 ): Promise<{ summary: SourceQualitySummary; loadErrors: string[] }> {
+  const reportMetadata = parseLatestWorkerReportMetadata(runs);
+  const reportSummary = sourceQualitySummaryFromReport(reportMetadata);
+  if (reportSummary && process.env.AWARDPING_ADMIN_LIVE_SOURCE_QUALITY_SCAN !== "1") {
+    return { summary: reportSummary, loadErrors: [] };
+  }
+
   const loadErrors: string[] = [];
   const [openSources, reviewLaterSources] = await Promise.all([
     loadActiveSourcesForQuality(admin, "open", loadErrors),
@@ -336,7 +471,7 @@ export async function loadSourceQualityAdminSummary(
     summary: summarizeSourceQuality(
       openSources,
       reviewLaterSources,
-      parseLatestWorkerReportMetadata(runs),
+      reportMetadata,
     ),
     loadErrors,
   };
@@ -375,6 +510,79 @@ export function summarizeSourceQuality(
     reviewLaterSources,
     skippedManualProtected,
     rejectedByReason: reasonCountsFromMap(rejectedByReason),
+    latestCleanupRun: latestSourceQualityCleanupRun(reportMetadata),
+  };
+}
+
+function sourceQualitySummaryFromReport(
+  reportMetadata: LatestWorkerReportMetadata,
+): SourceQualitySummary | null {
+  const metadata =
+    Object.keys(reportMetadata.latestSourceQualityMetadata).length > 0
+      ? reportMetadata.latestSourceQualityMetadata
+      : Object.keys(reportMetadata.latestBackfillMetadata).length > 0
+        ? reportMetadata.latestBackfillMetadata
+        : reportMetadata.latestMaintenanceMetadata;
+  const counts = metadataCounts(metadata);
+  const openSources = numberFromPaths(metadata, [
+    ["counts", "total_open_sources_scanned"],
+    ["counts", "open_sources"],
+    ["final_summary", "open_sources"],
+    ["initial_summary", "open_sources"],
+  ]);
+  if (!openSources) return null;
+
+  const rejectedByReason = reasonCounts(
+    objectValue(
+      objectValue(metadata.rejection_counts).reason ||
+        counts.rejection_counts ||
+        counts.rejected_by_reason ||
+        counts.source_quality_rejection_counts,
+    ),
+  );
+  const explicitRejected = numberFromPaths(metadata, [
+    ["counts", "open_rejected_sources"],
+    ["counts", "candidates_found"],
+    ["counts", "rejected"],
+    ["counts", "moved_to_review_later"],
+  ]);
+  const categoryRejected =
+    numberValue(counts.unrelated_but_open) +
+    numberValue(counts.unclear) +
+    numberValue(counts.sibling_but_open) +
+    numberValue(counts.archived_but_open) +
+    numberValue(counts.not_program_page_but_open) +
+    numberValue(counts.access_error_but_open) +
+    numberValue(counts.generic_listing_but_open);
+  const openRejectedSources = explicitRejected || rejectedByReason.reduce((total, row) => total + row.count, 0) || categoryRejected;
+  const monitorEligibleSources = numberFromPaths(metadata, [
+    ["counts", "monitor_eligible_sources"],
+    ["counts", "complete_accepted"],
+    ["final_summary", "monitor_eligible_sources"],
+  ]) || Math.max(0, openSources - openRejectedSources);
+  const reviewLaterSources = numberFromPaths(metadata, [
+    ["counts", "review_later_sources"],
+    ["final_summary", "review_later_sources"],
+  ]);
+
+  return {
+    openSources,
+    monitorEligibleSources,
+    publicEligibleSources: numberFromPaths(metadata, [
+      ["counts", "public_eligible_sources"],
+      ["final_summary", "public_eligible_sources"],
+    ]) || monitorEligibleSources,
+    factEligibleSources: numberFromPaths(metadata, [
+      ["counts", "fact_eligible_sources"],
+      ["final_summary", "fact_eligible_sources"],
+    ]) || monitorEligibleSources,
+    openRejectedSources: Math.max(0, openSources - monitorEligibleSources),
+    reviewLaterSources,
+    skippedManualProtected: numberFromPaths(metadata, [
+      ["counts", "skipped_manual_protected"],
+      ["counts", "skipped_manual"],
+    ]),
+    rejectedByReason,
     latestCleanupRun: latestSourceQualityCleanupRun(reportMetadata),
   };
 }
@@ -724,6 +932,182 @@ export function summarizeAiMode(metadata: Record<string, unknown>): AiModeSummar
   };
 }
 
+export function summarizeBackfillCompletion(metadata: Record<string, unknown>): BackfillCompletionSummary {
+  return {
+    status: cleanText(metadata.status) || "unknown",
+    completionPassed: boolValue(metadata.completion_passed),
+    billingBlocked: Boolean(boolValue(metadata.billing_blocked)),
+    blockingReason: cleanText(metadata.blocking_reason || metadata.stop_reason) || null,
+    totalOpenSourcesScanned: numberFromPaths(metadata, [
+      ["counts", "total_open_sources_scanned"],
+      ["final_summary", "open_sources"],
+      ["initial_summary", "open_sources"],
+    ]),
+    queuedForAiReview: numberFromPaths(metadata, [["counts", "queued_for_ai_review"]]),
+    submittedToGeminiBatch: numberFromPaths(metadata, [["counts", "submitted_to_gemini_batch"]]),
+    movedToReviewLater: numberFromPaths(metadata, [["counts", "moved_to_review_later"]]),
+    awardsQueuedForReconciliation: numberFromPaths(metadata, [["counts", "awards_queued_for_reconciliation"]]),
+    awardsReconciled: numberFromPaths(metadata, [["counts", "awards_reconciled"]]),
+    publicPagesBlocked: numberFromPaths(metadata, [["counts", "public_pages_blocked"]]),
+    lastKnownGoodPreserved: numberFromPaths(metadata, [["counts", "last_known_good_preserved"]]),
+  };
+}
+
+export function summarizeDailyWorkerHealth(metadata: Record<string, unknown>): DailyWorkerHealthSummary {
+  const counts = metadataCounts(metadata);
+  const finalSummary = objectValue(metadata.final_summary || metadata.coverage_summary);
+  const completionBlockers = objectValue(finalSummary.completion_blockers || metadata.completion_blockers);
+  const discovery = summarizeDiscovery(metadata);
+  const capture = summarizeCaptureProfile(metadata);
+  const section = summarizeExpandableSections(metadata);
+  const awardsQueued = numberFromPaths(metadata, [["counts", "awards_queued_for_reconciliation"]]);
+  const awardsReconciled = numberFromPaths(metadata, [["counts", "awards_reconciled"]]);
+  return {
+    status: cleanText(metadata.status) || "unknown",
+    profile: cleanText(metadata.profile) || null,
+    aiReviewCoverageComplete: boolValue(metadata.ai_review_coverage_complete ?? finalSummary.completion_passed),
+    unreviewedOpenSources: numberValue(
+      metadata.unreviewed_open_sources ??
+        counts.unreviewed_open_sources ??
+        completionBlockers.open_unreviewed,
+    ),
+    unclearOpenSources: numberValue(
+      metadata.unclear_open_sources ??
+        counts.unclear_open_sources ??
+        completionBlockers.open_unclear,
+    ),
+    unrelatedOpenSources: numberValue(
+      metadata.unrelated_open_sources ??
+        counts.unrelated_open_sources ??
+        completionBlockers.open_unrelated,
+    ),
+    missingCycleRelevanceSources: numberValue(
+      metadata.missing_cycle_relevance_sources ??
+        counts.missing_cycle_relevance_sources ??
+        completionBlockers.open_missing_cycle_relevance,
+    ),
+    awardsQueuedForReconciliation: awardsQueued,
+    awardsReconciled,
+    awardsAuditPassed: numberFromPaths(metadata, [["counts", "awards_audit_passed"]]),
+    awardsAuditWarnings: numberFromPaths(metadata, [["counts", "awards_audit_warnings"]]),
+    awardsAuditFailed: numberFromPaths(metadata, [["counts", "awards_audit_failed"]]),
+    awardsPublicationBlocked: numberFromPaths(metadata, [["counts", "awards_publication_blocked"]]),
+    awardsUsedLastKnownGood: numberFromPaths(metadata, [["counts", "awards_used_last_known_good"]]),
+    pageAuditBatchCandidates: numberFromPaths(metadata, [["counts", "page_audit_batch_candidates"]]),
+    sourceIntakeProcessed: numberFromPaths(metadata, [
+      ["counts", "source_intake_processed"],
+      ["counts", "requests_loaded"],
+      ["source_intake", "requests_loaded"],
+    ]),
+    discoveryMode: discovery.discoveryMode,
+    captureProfile: capture.captureProfile,
+    sectionExtractionProfile: section.profile,
+    textOnlyIgnored: summarizeTextOnlyChanges(metadata).textOnlyIgnored,
+    standardCaptureCreatedSources: discovery.standardCaptureCreatedSources,
+    skippedReconciliationAfterImpact: awardsQueued > 0 && awardsReconciled === 0,
+  };
+}
+
+export function summarizeGeminiBatchStatus(
+  reportMetadata: LatestWorkerReportMetadata,
+  visualReviewBatch: VisualReviewBatchSummary,
+): GeminiBatchHealthSummary {
+  const blockerMetadata = reportMetadata.latestGeminiBlockerMetadata;
+  const blockerText = JSON.stringify([
+    reportMetadata.latestGeminiBlockerRun?.error,
+    blockerMetadata,
+  ]).toLowerCase();
+  const pageAuditBatches = objectValue(reportMetadata.latestPageAuditMetadata).batches;
+  const intakeBatches = objectValue(reportMetadata.latestSourceIntakeMetadata).batches;
+  const backfillBaselineWorker = objectValue(reportMetadata.latestBackfillMetadata).baseline_facts_worker;
+  return {
+    billingBlocked: /billing|prepay|prepayment|credits?\s+are\s+depleted/.test(blockerText),
+    quotaBlocked: /quota|resource_exhausted/.test(blockerText),
+    blockingReason:
+      cleanText(blockerMetadata.blocking_reason || blockerMetadata.stop_reason || reportMetadata.latestGeminiBlockerRun?.error) ||
+      null,
+    latestBaselineBatchJob:
+      cleanText(objectValue(backfillBaselineWorker).batch_name) ||
+      cleanText(objectValue(backfillBaselineWorker).gemini_batch_name) ||
+      firstBatchName(objectValue(reportMetadata.latestBackfillMetadata).batches),
+    latestVisualReviewBatchJob: visualReviewBatch.latestBatchName,
+    latestPageAuditBatchJob: firstBatchName(pageAuditBatches),
+    latestSourceIntakeBatchJob: firstBatchName(intakeBatches),
+    synchronousBatchPricingWarning: summarizeAiMode(reportMetadata.latestVisualMetadata).synchronousBatchPricingWarning,
+  };
+}
+
+export function summarizeSuppressionAndLastKnownGood(
+  suppression: SuppressionSummary,
+  reconciliationMetadata: Record<string, unknown>,
+): SuppressionAndLastKnownGoodSummary {
+  return {
+    suppressedChangeEvents: suppression.suppressedChangeEvents,
+    awardsUsingLastKnownGood: numberFromPaths(reconciliationMetadata, [
+      ["counts", "awards_used_last_known_good"],
+      ["counts", "last_known_good_preserved"],
+    ]),
+    publicationBlocked: numberFromPaths(reconciliationMetadata, [
+      ["counts", "awards_publication_blocked"],
+      ["counts", "public_pages_blocked"],
+    ]),
+  };
+}
+
+export function summarizeExpandableSections(metadata: Record<string, unknown>): ExpandableSectionSummary {
+  const counts = metadataCounts(metadata);
+  const options = objectValue(metadata.options);
+  const enabled = boolValue(counts.expandable_section_extraction_enabled ?? options.extract_expandable_sections);
+  const profile = cleanText(counts.section_extraction_profile || options.section_extraction_profile);
+  const textIncludedInMainHash = boolValue(
+    counts.section_text_included_in_main_hash ?? options.include_section_text_in_main_hash,
+  );
+  const detected = numberFromPaths(metadata, [["counts", "expandable_sections_detected"]]);
+  const extracted = numberFromPaths(metadata, [["counts", "expandable_sections_extracted"]]);
+  const changed = numberFromPaths(metadata, [["counts", "expandable_sections_changed"]]);
+  const failures = Math.max(0, detected - extracted);
+  return {
+    enabled,
+    profile: profile || null,
+    detected,
+    extracted,
+    changed,
+    added: numberFromPaths(metadata, [["counts", "expandable_sections_added"]]),
+    removed: numberFromPaths(metadata, [["counts", "expandable_sections_removed"]]),
+    candidatesEnqueued: numberFromPaths(metadata, [["counts", "section_change_candidates_enqueued"]]),
+    evidenceScreenshotsTaken: numberFromPaths(metadata, [["counts", "section_evidence_screenshots_taken"]]),
+    textIncludedInMainHash,
+    textIncludedInBaselineFacts: boolValue(counts.section_text_included_in_baseline_facts),
+    needsAttention: failures > 0 || (profile === "stable-daily" && textIncludedInMainHash === true),
+  };
+}
+
+export function adminCommandPanelCommands(): AdminCommand[] {
+  return [
+    { label: "Read AI review coverage", command: "node scripts/read-ai-review-coverage.mjs --json" },
+    {
+      label: "Backfill AI review dry run",
+      command: "node scripts/backfill-open-source-ai-determinations.mjs --dry-run=true",
+    },
+    {
+      label: "Apply AI review completion",
+      command: "node scripts/backfill-open-source-ai-determinations.mjs --apply=true --gemini-api-mode=batch --resume",
+    },
+    {
+      label: "Process pasted source intake",
+      command: "node scripts/process-source-intake-requests.mjs --apply --limit=50",
+    },
+    {
+      label: "Reconcile impacted awards",
+      command: "node scripts/reconcile-impacted-award-pages.mjs --apply --limit=500",
+    },
+    {
+      label: "Process page audit batch",
+      command: "node scripts/process-page-audit-batch.mjs --apply --limit=500",
+    },
+  ];
+}
+
 async function loadActiveSourcesForQuality(
   admin: AdminClient,
   status: "open" | "review_later",
@@ -813,8 +1197,28 @@ function maintenancePhases(metadata: Record<string, unknown>) {
   return phases.map((phase) => objectValue(phase));
 }
 
+function workerHasGeminiBlocker(run: LocalWorkerRun) {
+  const text = `${run.error || ""} ${JSON.stringify(run.metadata || {})}`.toLowerCase();
+  return /\b(gemini|google ai)\b/.test(text) &&
+    /\b(billing|quota|prepay|prepayment|credits?\s+are\s+depleted|resource_exhausted|blocked)\b/.test(text);
+}
+
 function metadataCounts(metadata: Record<string, unknown>) {
   return objectValue(metadata.counts);
+}
+
+function firstBatchName(value: unknown) {
+  if (typeof value === "string" && value.startsWith("batches/")) return value;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const object = objectValue(item);
+      const name = cleanText(object.name || object.batch_name || object.gemini_batch_name);
+      if (name) return name;
+    }
+    return null;
+  }
+  const object = objectValue(value);
+  return cleanText(object.name || object.batch_name || object.gemini_batch_name) || null;
 }
 
 function getPath(value: unknown, path: string[]) {

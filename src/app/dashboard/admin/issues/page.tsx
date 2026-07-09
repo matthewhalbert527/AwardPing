@@ -22,7 +22,12 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 export const dynamic = "force-dynamic";
 
 type Props = {
-  searchParams: Promise<{ tab?: string }>;
+  searchParams: Promise<{
+    tab?: string;
+    includeResolved?: string;
+    includeSuppressed?: string;
+    category?: string;
+  }>;
 };
 
 export default async function AdminPageIssuesPage({ searchParams }: Props) {
@@ -48,13 +53,17 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
   }
 
   const admin = createSupabaseAdminClient();
-  const rawTab = (await searchParams).tab;
+  const params = await searchParams;
+  const rawTab = params.tab;
+  const includeResolved = truthyParam(params.includeResolved);
+  const includeSuppressed = truthyParam(params.includeSuppressed);
+  const category = typeof params.category === "string" && params.category.trim() ? params.category.trim() : null;
   const activeTab =
     rawTab === "review" || rawTab === "source-quality" || rawTab === "suppressed"
       ? rawTab
       : "active";
   const [{ summary, issues, loadErrors }, reviewLater, suppressedEvents] = await Promise.all([
-    loadAdminPageIssues(admin),
+    loadAdminPageIssues(admin, undefined, { includeResolved, includeSuppressed, category }),
     loadAdminReviewLaterSources(admin),
     loadAdminSuppressedChangeEvents(admin),
   ]);
@@ -73,8 +82,8 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           <h1 className="admin-page-title">Page issue review</h1>
           <p className="admin-page-copy">
             One place to review source-page errors, blocked pages, repeated capture failures,
-            source-quality rejections, suppressed noisy events, missing baselines, page-info gaps,
-            and recent worker page errors.
+            AI-review coverage gaps, sibling/unrelated sources, reconciliation failures, page-audit findings,
+            source-intake blockers, suppressed noisy events, missing baselines, and recent worker page errors.
           </p>
           <p className="admin-page-timestamp">Page data refreshed {formatDate(new Date().toISOString())}.</p>
         </div>
@@ -97,7 +106,7 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           icon={AlertTriangle}
           label="Current issue queue"
           value={formatNumber(summary.queueTotal)}
-          detail={`${formatNumber(summary.sourceErrors)} source errors, ${formatNumber(summary.awardStructureErrors)} award detail issues`}
+          detail={`${formatNumber(highCount)} high, ${formatNumber(mediumCount)} medium, ${formatNumber(lowCount)} low`}
           attention={summary.queueTotal > 0}
         />
         <MetricCard
@@ -142,6 +151,37 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           detail="Historical change events hidden from default/public counts"
           attention={summary.suppressedChangeEvents > 0}
         />
+      </section>
+
+      <section className="card admin-section-card">
+        <div className="admin-panel-heading">
+          <div className="flex items-center gap-2">
+            <Database size={18} aria-hidden="true" />
+            <h2>Workflow Categories</h2>
+          </div>
+          <span className="badge">{category ? labelize(category) : "All categories"}</span>
+        </div>
+        <div className="admin-stat-grid admin-stat-grid-compact">
+          {Object.entries(summary.categoryCounts).slice(0, 12).map(([name, count]) => (
+            <MiniStat key={name} label={labelize(name)} value={count} attention={count > 0 && highSignalCategory(name)} />
+          ))}
+          {Object.keys(summary.categoryCounts).length === 0 && (
+            <MiniStat label="Issues" value={0} />
+          )}
+        </div>
+        <div className="admin-issue-actions mt-3">
+          <Link className="admin-issue-link" href="/dashboard/admin/issues?includeResolved=true">
+            Include resolved
+          </Link>
+          <Link className="admin-issue-link" href="/dashboard/admin/issues?includeSuppressed=true">
+            Include suppressed
+          </Link>
+          {category && (
+            <Link className="admin-issue-link" href="/dashboard/admin/issues">
+              Clear category filter
+            </Link>
+          )}
+        </div>
       </section>
 
       <nav aria-label="Page issue queue filters" className="admin-subtabs">
@@ -306,11 +346,19 @@ function IssueRow({ issue }: { issue: AdminPageIssue }) {
           <SeverityPill severity={issue.severity} />
           <span>{issue.area}</span>
           <span>{issue.label}</span>
+          <span>{labelize(issue.category)}</span>
           {issue.failures > 0 && <span>{formatNumber(issue.failures)} failures</span>}
         </div>
         <h3>{issue.awardName}</h3>
         <p className="admin-issue-source">{issue.sourceTitle}</p>
         <p className="admin-issue-message">{issue.message}</p>
+        {(issue.currentValue || issue.recommendedAction || issue.relatedWorkerRunId) && (
+          <dl className="admin-detail-grid admin-detail-grid-tight mt-3">
+            {issue.currentValue && <Detail label="Current" value={issue.currentValue} />}
+            {issue.recommendedAction && <Detail label="Recommended" value={issue.recommendedAction} />}
+            {issue.relatedWorkerRunId && <Detail label="Worker" value={issue.relatedWorkerRunId} />}
+          </dl>
+        )}
         <div className="admin-issue-actions">
           {issue.awardId && (
             <Link href={dashboardAwardPath(issue.awardSlug, issue.awardName, issue.awardId)} className="admin-issue-link">
@@ -419,6 +467,31 @@ function SuppressedEventList({ events }: { events: AdminSuppressedChangeEvent[] 
 
 function SeverityPill({ severity }: { severity: PageIssueSeverity }) {
   return <span className={`admin-severity-pill admin-severity-pill-${severity}`}>{severity}</span>;
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="admin-detail-item">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
+function truthyParam(value: string | undefined) {
+  return typeof value === "string" && /^(1|true|yes|y)$/i.test(value);
+}
+
+function highSignalCategory(value: string) {
+  return /unrelated|sibling|critical|deadline|billing|failed|rejected|missing|stale|invented/i.test(value);
+}
+
+function labelize(value: string) {
+  return value
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function formatDate(value: string) {

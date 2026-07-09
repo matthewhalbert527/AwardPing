@@ -1,0 +1,69 @@
+import { describe, expect, it, vi } from "vitest";
+import type { Database } from "@/lib/database.types";
+
+vi.mock("server-only", () => ({}));
+
+import { summarizeSourceIntake } from "@/lib/admin-source-intake";
+
+type WorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
+
+function workerRun(metadata: Record<string, unknown>): WorkerRun {
+  return {
+    id: "run-intake",
+    worker_name: "source-intake-worker",
+    status: "failed",
+    ai_provider: "gemini",
+    checked_count: 6,
+    changed_count: 2,
+    unchanged_count: 1,
+    initial_count: 3,
+    discovered_count: 1,
+    failed_count: 1,
+    error: "Gemini credits are depleted",
+    metadata: metadata as WorkerRun["metadata"],
+    started_at: "2026-07-09T00:00:00.000Z",
+    finished_at: "2026-07-09T00:10:00.000Z",
+  };
+}
+
+describe("admin source intake summary", () => {
+  it("counts intake statuses and latest worker metadata", () => {
+    const summary = summarizeSourceIntake(
+      [
+        { status: "pending", count: 2 },
+        { status: "capturing", count: 1 },
+        { status: "ai_review_submitted", count: 3 },
+        { status: "needs_manual_review", count: 4 },
+        { status: "added", count: 5 },
+        { status: "failed", count: 1 },
+      ],
+      [
+        workerRun({
+          kind: "source_intake",
+          status: "failed",
+          requests_loaded: 6,
+          captured: 2,
+          ai_review_submitted: 3,
+          needs_manual_review: 4,
+          created_or_updated_sources: 2,
+          awards_queued_for_reconciliation: 2,
+          billing_blocked: true,
+          blocking_reason: "credits are depleted",
+        }),
+      ],
+    );
+
+    expect(summary.pending).toBe(2);
+    expect(summary.inProgress).toBe(4);
+    expect(summary.needsManualReview).toBe(4);
+    expect(summary.added).toBe(5);
+    expect(summary.failed).toBe(1);
+    expect(summary.latestWorker).toMatchObject({
+      requestsLoaded: 6,
+      createdOrUpdatedSources: 2,
+      awardsQueuedForReconciliation: 2,
+      billingBlocked: true,
+      blockingReason: "credits are depleted",
+    });
+  });
+});
