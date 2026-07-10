@@ -131,7 +131,10 @@ function Test-BaselineFactsWorkerActive {
     Where-Object {
       $_.ProcessId -ne $currentPid -and
       $_.CommandLine -and
-      $_.CommandLine -like "*backfill-baseline-facts.mjs*"
+      (
+        $_.CommandLine -like "*backfill-baseline-facts.mjs*" -or
+        $_.CommandLine -like "*run-awardping-maintenance.mjs*"
+      )
     } |
     Select-Object -First 1
 
