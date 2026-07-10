@@ -112,7 +112,7 @@ export default async function AdminPage() {
       <AdminShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Maintenance</h1>
+          <h1 className="mt-4 text-3xl font-black">Monitoring</h1>
           <p className="mt-2 text-[var(--muted)]">
             Supabase service-role access is not configured for this deployment.
           </p>
@@ -180,12 +180,6 @@ export default async function AdminPage() {
   const visualPercent = percent(counts.openWithVisualSnapshots, counts.openSources);
   const sourceQualityMeasured = sourceQuality.metricMode !== "fast_counts";
   const sourceGateAttention = sourceQualityMeasured && sourceQuality.openRejectedSources > 0;
-  const sourceGateValue = sourceQualityMeasured
-    ? `${formatNumber(sourceQuality.monitorEligibleSources)} / ${formatNumber(sourceQuality.openSources)}`
-    : formatNumber(sourceQuality.openSources);
-  const sourceGateDetail = sourceQualityMeasured
-    ? `${formatNumber(sourceQuality.openRejectedSources)} open sources are blocked before monitoring.`
-    : "Open sources counted quickly; gate eligibility will appear after the next source-quality worker report.";
   const monitorEligibleDisplay = sourceQualityMeasured
     ? formatNumber(sourceQuality.monitorEligibleSources)
     : "Not reported";
@@ -217,21 +211,11 @@ export default async function AdminPage() {
     ...pageAuditResult.warnings,
     ...sourceIntakeResult.warnings,
   ];
-  const visualQueueCount = visualReviewBatch.statusCounts.pending +
-    visualReviewBatch.statusCounts.submitted +
-    visualReviewBatch.statusCounts.processing;
   const reconciliationQueueCount = reconciliation.queueCounts.pending + reconciliation.queueCounts.processing;
-  const intakeQueueCount = sourceIntake.pending + sourceIntake.inProgress + sourceIntake.needsManualReview;
   const pageBlockerCount = pageAudit.critical +
     reconciliation.queueCounts.failed +
     (reconciliation.latestRun?.awardsPublicationBlocked || 0) +
     (dailyHealth.awardsPublicationBlocked || 0);
-  const dataQualityAttentionCount = (sourceQualityMeasured ? sourceQuality.openRejectedSources : 0) +
-    aiCoverage.unreviewed_open_sources +
-    aiCoverage.open_sources_with_award_relevance_unclear +
-    aiCoverage.open_sources_with_award_relevance_unrelated +
-    (aiCoverage.open_category_counts.sibling_but_open || 0) +
-    aiCoverage.open_sources_missing_cycle_relevance;
   const attentionItems = [
     {
       show: geminiBlocked,
@@ -267,12 +251,12 @@ export default async function AdminPage() {
       icon: AlertTriangle,
     },
     {
-      show: dataQualityAttentionCount > 0,
-      title: "Source quality still needs cleanup",
-      detail: `${formatNumber(dataQualityAttentionCount)} open-source review or relevance issues are still visible to the gate.`,
-      status: "source gate",
-      href: "/dashboard/admin/issues?category=source_quality_rejected_but_monitoring_enabled",
-      icon: Database,
+      show: latestMaintenance?.run.status === "failed",
+      title: "The latest monitoring run failed",
+      detail: latestMaintenance?.run.error || "Open technical details for the failed phase and error.",
+      status: "failed",
+      href: null,
+      icon: AlertTriangle,
     },
     {
       show: textOnlyChanges.textOnlyIgnored > 0,
@@ -291,24 +275,40 @@ export default async function AdminPage() {
       icon: AlertTriangle,
     },
     {
-      show: intakeQueueCount > 0,
-      title: "Source intake has pending work",
-      detail: `${formatNumber(intakeQueueCount)} intake requests are pending, running, or waiting for manual review.`,
-      status: "intake",
+      show: sourceIntake.needsManualReview > 0,
+      title: "Source intake needs a decision",
+      detail: `${formatNumber(sourceIntake.needsManualReview)} submitted sources need manual review.`,
+      status: "manual review",
       href: "/dashboard/admin/source-intake",
       icon: Database,
     },
   ].filter((item) => item.show);
+  const setupRunning = latestMaintenance?.run.status === "running" && latestMaintenance.profile === "catchup";
+  const dailyRunning = latestMaintenance?.run.status === "running" && latestMaintenance.profile === "daily";
+  const monitoringMode = attentionItems.length > 0
+    ? "Needs attention"
+    : setupRunning
+      ? "Finishing setup"
+      : dailyRunning
+        ? "Daily check running"
+        : "Daily monitoring";
+  const monitoringModeDetail = attentionItems.length > 0
+    ? "A real blocker or manual decision is listed below."
+    : setupRunning
+      ? "The one-time cleanup is running. Daily monitoring is already scheduled."
+      : dailyRunning
+        ? "Approved source pages are being checked now."
+        : "Approved source pages are checked automatically each evening.";
+  const setupProgressStatus = setupRunning ? "In progress" : backfillCompletion.completionPassed ? "Complete" : "Waiting";
 
   return (
     <AdminShell>
       <div className="admin-page-header">
         <div>
           <span className="badge">Admin</span>
-          <h1 className="admin-page-title">Maintenance</h1>
+          <h1 className="admin-page-title">Monitoring</h1>
           <p className="admin-page-copy">
-            Source cleanup, visual snapshots, Gemini Batch facts, public fact aggregation, and
-            snapshot retention are now organized behind one runner.
+            One clear status for initial setup and the automatic daily source check.
           </p>
           <p className="admin-page-timestamp">
             Page data refreshed {formatDate(renderedAt)}.
@@ -371,32 +371,30 @@ export default async function AdminPage() {
 
       <section className="admin-metric-grid admin-metric-grid-primary">
         <MetricCard
+          icon={Activity}
+          label="System"
+          value={monitoringMode}
+          detail={monitoringModeDetail}
+          attention={attentionItems.length > 0}
+        />
+        <MetricCard
           icon={Clock3}
-          label="Runner"
-          value={latestMaintenance ? statusLabel(latestMaintenance.run.status) : "None"}
-          detail={latestMaintenance ? latestMaintenanceDetail(latestMaintenance) : "No command-center run has reported yet."}
-          attention={latestMaintenance?.run.status === "failed"}
+          label="Daily Check"
+          value={dailyRunning ? "Running now" : "6:00 PM CT"}
+          detail="The approved source set is checked automatically every day."
         />
         <MetricCard
           icon={Database}
-          label="Source Gate"
-          value={sourceGateValue}
-          detail={sourceGateDetail}
-          attention={sourceGateAttention}
+          label="Current Source Set"
+          value={formatNumber(counts.openSources)}
+          detail={`${formatNumber(counts.reviewLaterSources)} excluded sources are outside monitoring, not unfinished work.`}
         />
         <MetricCard
           icon={Sparkles}
-          label="Public Pages"
-          value={`${aiCoverage.percent_complete_public_award_pages}%`}
-          detail={`${formatNumber(aiCoverage.awards_with_no_public_facts)} active awards still need reconciled public facts.`}
-          attention={aiCoverage.awards_with_no_public_facts > 0 || pageBlockerCount > 0}
-        />
-        <MetricCard
-          icon={Gauge}
-          label="Active Queue"
-          value={formatNumber(visualQueueCount + reconciliationQueueCount + intakeQueueCount)}
-          detail="Visual reviews, reconciliation, and source-intake work waiting or processing."
-          attention={visualQueueCount + reconciliationQueueCount + intakeQueueCount > 0}
+          label="Award Pages"
+          value={formatNumber(counts.activeAwards)}
+          detail="Only reconciled, evidence-backed facts are allowed onto public pages."
+          attention={pageBlockerCount > 0}
         />
       </section>
 
@@ -404,11 +402,56 @@ export default async function AdminPage() {
         <div className="card admin-section-card admin-dashboard-card">
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
+              <Activity size={18} aria-hidden="true" />
+              <h2>{setupRunning ? "Initial Setup" : "Monitoring Status"}</h2>
+            </div>
+            <span className="badge">
+              {setupProgressStatus}
+            </span>
+          </div>
+          <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
+            {setupRunning
+              ? "AwardPing is reducing the source set, completing AI review, and rebuilding award pages. This is one temporary setup process, not several separate jobs you need to manage."
+              : "Initial setup is out of the main path. AwardPing can focus on the normal daily source check."}
+          </p>
+          <div className="admin-flow-list admin-flow-list-compact">
+            <PipelineRow
+              detail={`${formatNumber(backfillCompletion.movedToReviewLater)} sources excluded during this setup run. Excluded sources are finished decisions and will not be checked daily.`}
+              icon={Database}
+              status={setupRunning ? "working" : "current"}
+              title="1. Finalize the source set"
+            />
+            <PipelineRow
+              detail={`${formatNumber(backfillCompletion.queuedForAiReview)} sources selected for AI review; ${formatNumber(backfillCompletion.submittedToGeminiBatch)} submitted so far.`}
+              icon={Sparkles}
+              status={backfillCompletion.billingBlocked ? "blocked" : "batch review"}
+              title="2. Complete source review"
+              attention={backfillCompletion.billingBlocked}
+            />
+            <PipelineRow
+              detail={`${formatNumber(reconciliationQueueCount)} impacted awards are waiting or processing. Failed audits preserve the last known good public page.`}
+              icon={CheckCircle2}
+              status={reconciliation.queueCounts.failed > 0 ? "needs attention" : "automatic"}
+              title="3. Rebuild and audit award pages"
+              attention={reconciliation.queueCounts.failed > 0}
+            />
+            <PipelineRow
+              detail="The approved source set will be scanned every evening at 6:00 PM Central after setup finishes."
+              icon={Clock3}
+              status="scheduled"
+              title="4. Continue with daily monitoring"
+            />
+          </div>
+        </div>
+
+        <div className="card admin-section-card admin-dashboard-card">
+          <div className="admin-panel-heading">
+            <div className="flex items-center gap-2">
               <AlertTriangle size={18} aria-hidden="true" />
-              <h2>Needs Attention</h2>
+              <h2>Action Needed</h2>
             </div>
             <span className={attentionItems.length > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-              {attentionItems.length > 0 ? `${attentionItems.length} items` : "Clear"}
+              {attentionItems.length > 0 ? `${attentionItems.length} items` : "None"}
             </span>
           </div>
           {attentionItems.length > 0 ? (
@@ -432,148 +475,49 @@ export default async function AdminPage() {
               })}
             </div>
           ) : (
-            <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
-              No blocking conditions are visible in the latest worker reports.
-            </p>
+            <div className="flex items-start gap-3">
+              <CheckCircle2 size={20} aria-hidden="true" />
+              <div>
+                <p className="font-black">No action is required.</p>
+                <p className="mt-1 text-sm font-semibold leading-6 text-[var(--muted)]">
+                  Expected setup backlog continues automatically and is not treated as an error.
+                </p>
+              </div>
+            </div>
           )}
         </div>
 
         <div className="card admin-section-card admin-dashboard-card">
           <div className="admin-panel-heading">
             <div className="flex items-center gap-2">
-              <Activity size={18} aria-hidden="true" />
-              <h2>Daily Flow</h2>
+              <Clock3 size={18} aria-hidden="true" />
+              <h2>Normal Daily Operation</h2>
             </div>
-            <span className={latestMaintenance?.run.status === "failed" ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-              {latestMaintenance ? statusLabel(latestMaintenance.run.status) : "No report"}
-            </span>
+            <span className="badge">Automatic</span>
           </div>
           <div className="admin-flow-list admin-flow-list-compact">
             <PipelineRow
-              detail={sourceQualityMeasured
-                ? `${formatNumber(sourceQuality.monitorEligibleSources)} monitorable sources; ${formatNumber(sourceQuality.openRejectedSources)} blocked by quality gate.`
-                : "Source-quality eligibility is waiting on the latest worker report; live scan skipped for page speed."}
+              detail="Only approved, award-specific source pages are visited. Excluded pages stay out."
               icon={Database}
-              status="source gate"
-              title="1. Clean source set"
-              attention={sourceGateAttention}
+              status="6:00 PM CT"
+              title="Check approved pages"
             />
             <PipelineRow
-              detail={`${captureProfile.captureProfile || "Unknown"} profile; ${formatDurationMs(captureProfile.scrollActivationWaitMs)} scroll wait in latest visual report.`}
+              detail="Visible content and expandable sections are compared without treating page chrome as an award update."
               icon={Activity}
-              status={discovery.discoveryMode ? "discovery mode" : "capture mode"}
-              title="2. Stable capture"
-              attention={dailyHealth.standardCaptureCreatedSources}
+              status="automatic"
+              title="Compare meaningful content"
             />
             <PipelineRow
-              detail={`${formatNumber(preAiGate.candidateChanges)} candidates, ${formatNumber(preAiGate.aiReviewed)} AI-reviewed, ${formatNumber(preAiGate.trueChangesPublished)} published.`}
-              icon={Gauge}
-              status={`${preAiGate.trueChangeRate}% true`}
-              title="3. Pre-AI gate"
-              attention={textOnlyChanges.textOnlyIgnored > 0}
-            />
-            <PipelineRow
-              detail={`${formatNumber(visualQueueCount)} visual reviews and ${formatNumber(reconciliationQueueCount)} award reconciliations are pending or processing.`}
-              icon={Sparkles}
-              status="batch + reconcile"
-              title="4. Review and reconcile"
-              attention={visualQueueCount + reconciliationQueueCount > 0 || reconciliation.queueCounts.failed > 0}
-            />
-            <PipelineRow
-              detail={`${formatNumber(pageAudit.critical)} critical audits; ${formatNumber(suppression.suppressedChangeEvents)} suppressed noisy change events.`}
+              detail="Only evidence-backed applicant-facing changes can update an award page or create an alert."
               icon={CheckCircle2}
-              status="publish guard"
-              title="5. Audit public pages"
-              attention={pageAudit.critical > 0 || suppressionAndLastKnownGood.publicationBlocked > 0}
+              status="verified"
+              title="Publish verified changes"
             />
-          </div>
-        </div>
-
-        <div className="card admin-section-card admin-dashboard-card">
-          <div className="admin-panel-heading">
-            <div className="flex items-center gap-2">
-              <Sparkles size={18} aria-hidden="true" />
-              <h2>Data Quality</h2>
-            </div>
-            <span className={dataQualityAttentionCount > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-              {dataQualityAttentionCount > 0 ? `${formatNumber(dataQualityAttentionCount)} issues` : "Clean"}
-            </span>
-          </div>
-          <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Open sources" value={sourceQuality.openSources} />
-            <MiniStat label="Monitor eligible" value={monitorEligibleDisplay} />
-            <MiniStat label="Gate rejected" value={openRejectedDisplay} attention={sourceGateAttention} />
-            <MiniStat label="Review later" value={sourceQuality.reviewLaterSources} attention={sourceQuality.reviewLaterSources > 0} />
-            <MiniStat label="Metadata" value={`${formatNumber(counts.openWithMetadata)} / ${formatNumber(counts.openSources)}`} />
-            <MiniStat label="Visuals" value={`${visualPercent}%`} attention={counts.openMissingVisualSnapshots > 0} />
-            <MiniStat label="Unreviewed open" value={aiCoverage.unreviewed_open_sources} attention={aiCoverage.unreviewed_open_sources > 0} />
-            <MiniStat label="Unclear/unrelated" value={aiCoverage.open_sources_with_award_relevance_unclear + aiCoverage.open_sources_with_award_relevance_unrelated} attention={aiCoverage.open_sources_with_award_relevance_unclear + aiCoverage.open_sources_with_award_relevance_unrelated > 0} />
-            <MiniStat label="Missing cycle" value={aiCoverage.open_sources_missing_cycle_relevance} attention={aiCoverage.open_sources_missing_cycle_relevance > 0} />
-            <MiniStat label="Audit critical" value={pageAudit.critical} attention={pageAudit.critical > 0} />
-          </div>
-          <DetailDisclosure label="What is being rejected">
-            <ReasonCountList counts={sourceQuality.rejectedByReason} empty="No open sources are currently rejected by the source-quality gate." />
-            {!sourceQualityMeasured && sourceQuality.metricsWarning ? (
-              <p className="mt-3 text-sm font-semibold leading-6 text-[var(--muted)]">
-                {sourceQuality.metricsWarning}
-              </p>
-            ) : null}
-            <div className="admin-issue-actions mt-3">
-              <Link className="admin-issue-link" href="/dashboard/admin/issues?tab=source-quality">
-                Review source-quality rejects
-              </Link>
-              <Link className="admin-issue-link" href="/dashboard/admin/issues?category=page_audit_critical">
-                Review page blockers
-              </Link>
-            </div>
-          </DetailDisclosure>
-        </div>
-
-        <div className="card admin-section-card admin-dashboard-card admin-maintenance-control-card">
-          <div className="admin-panel-heading">
-            <div className="flex items-center gap-2">
-              <PlayCircle size={18} aria-hidden="true" />
-              <h2>Run Workers</h2>
-            </div>
-            <StatusPill status="ready" />
           </div>
           <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
-            Worker control stays on the Windows PC. Run commands from
-            <span className="font-mono"> C:\Users\matth\Documents\AwardPing Project</span>.
+            {formatNumber(counts.reviewLaterSources)} excluded sources are retained only for audit history. They are not scanned, queued, or counted as work remaining.
           </p>
-          <div className="grid gap-3">
-            <CommandLine command="npm run command:center -- status" />
-            <CommandLine command="npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10" />
-            <CommandLine command="npm run command:center -- profiles" />
-          </div>
-          <DetailDisclosure label="Latest report">
-            {latestMaintenance ? (
-              <>
-                <dl className="admin-detail-grid admin-detail-grid-tight">
-                  <Detail label="Profile" value={latestMaintenance.profile || "Unknown"} />
-                  <Detail label="Started" value={formatDate(latestMaintenance.run.started_at)} />
-                  <Detail label="Finished" value={latestMaintenance.run.finished_at ? formatDate(latestMaintenance.run.finished_at) : "Still running"} />
-                  <Detail label="Report" value={latestMaintenance.reportPath || "Supabase status only"} />
-                </dl>
-                <div className="admin-flow-list admin-flow-list-compact">
-                  {latestMaintenance.phases.slice(0, 5).map((phase) => (
-                    <PipelineRow
-                      attention={phase.status === "failed"}
-                      detail={phase.finished_at ? `Finished ${formatDate(phase.finished_at)}` : "Still running"}
-                      icon={phase.status === "failed" ? AlertTriangle : CheckCircle2}
-                      key={`${phase.name}-${phase.started_at}`}
-                      status={statusLabel(phase.status || "running")}
-                      title={phase.name || "phase"}
-                    />
-                  ))}
-                </div>
-              </>
-            ) : (
-              <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
-                No local command-center maintenance run has been written to Supabase yet.
-              </p>
-            )}
-          </DetailDisclosure>
         </div>
       </section>
 
@@ -581,12 +525,13 @@ export default async function AdminPage() {
         <div className="admin-panel-heading">
           <div className="flex items-center gap-2">
             <ServerCog size={18} aria-hidden="true" />
-            <h2>Advanced Diagnostics</h2>
+            <h2>Technical Details</h2>
           </div>
-          <span className="badge">Collapsed</span>
+          <span className="badge">Optional</span>
         </div>
-        <DetailDisclosure label="Queues and batch workers">
+        <DetailDisclosure label="Pending technical queues">
           <div className="admin-stat-grid admin-stat-grid-compact">
+            <MiniStat label="Excluded sources" value={sourceQuality.reviewLaterSources} />
             <MiniStat label="Visual pending" value={visualReviewBatch.statusCounts.pending} attention={visualReviewBatch.statusCounts.pending > 0} />
             <MiniStat label="Visual processing" value={visualReviewBatch.statusCounts.processing} attention={visualReviewBatch.statusCounts.processing > 0} />
             <MiniStat label="Visual failed" value={visualReviewBatch.statusCounts.failed} attention={visualReviewBatch.statusCounts.failed > 0} />
@@ -605,7 +550,7 @@ export default async function AdminPage() {
             <Detail label="Estimated visual cost" value={`$${formatUsd(visualReviewBatch.estimatedCostUsd)}`} />
           </dl>
         </DetailDisclosure>
-        <DetailDisclosure label="Capture and change detection">
+        <DetailDisclosure label="Capture details">
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Discovery candidates" value={discovery.discoveryCandidates} />
             <MiniStat label="Inserted open" value={discovery.discoveryInsertedOpen} attention={discovery.discoveryInsertedOpen > 0} />
@@ -633,7 +578,7 @@ export default async function AdminPage() {
             <MiniStat label="Main hash includes sections" value={sectionSummary.textIncludedInMainHash === null ? "Unknown" : sectionSummary.textIncludedInMainHash ? "Yes" : "No"} attention={sectionSummary.profile === "stable-daily" && sectionSummary.textIncludedInMainHash === true} />
           </div>
         </DetailDisclosure>
-        <DetailDisclosure label="AI mode, suppression, and budget">
+        <DetailDisclosure label="AI, storage, and budget">
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="AI required" value={aiMode.aiRequired === null ? "Unknown" : aiMode.aiRequired ? "Yes" : "No"} />
             <MiniStat label="Suppressed events" value={suppression.suppressedChangeEvents} attention={suppression.suppressedChangeEvents > 0} />
@@ -652,7 +597,7 @@ export default async function AdminPage() {
           </dl>
           <ReasonCountList counts={suppression.suppressionReasons} empty="No suppressed event reasons recorded." title="Suppression reasons" />
         </DetailDisclosure>
-        <DetailDisclosure label="Profiles and recent workers">
+        <DetailDisclosure label="Maintenance profiles and recent runs">
           <div className="admin-flow-list admin-flow-list-compact">
             {MAINTENANCE_PROFILE_IDS.map((profile) => (
               <PipelineRow

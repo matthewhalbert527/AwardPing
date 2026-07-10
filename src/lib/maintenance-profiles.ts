@@ -25,9 +25,9 @@ export const GEMINI_BATCH_COST_PER_SOURCE_USD = 0.000215;
 export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfile> = {
   catchup: {
     id: "catchup",
-    label: "Catch Up Site",
+    label: "Initial Setup & Repair",
     detail:
-      "Runs the complete hardened catch-up pass: missing captures, open-source AI review completion, source cleanup, Gemini Batch visual review, award reconciliation, page audit, localization repair, and retention pruning.",
+      "Completes the temporary setup backlog, then hands the site back to normal daily monitoring.",
     phases: [
       "health",
       "source-intake",
@@ -45,9 +45,9 @@ export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfi
   },
   daily: {
     id: "daily",
-    label: "Daily Maintenance",
+    label: "Daily Monitoring",
     detail:
-      "Runs limited source intake, source-quality cleanup, stable daily capture with separate expandable-section text comparison, queues Gemini Batch review, refreshes source facts, reconciles impacted awards, audits public pages, and prunes old snapshots.",
+      "Checks approved source pages, compares meaningful content, and publishes only verified applicant-facing changes.",
     phases: ["health", "source-intake", "source-quality", "visual", "visual-review-batch", "baseline-facts", "reconcile-awards", "page-audit-batch", "change-event-noise", "prune-history"],
   },
   baseline: {

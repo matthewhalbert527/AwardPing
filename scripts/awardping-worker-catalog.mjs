@@ -1,9 +1,9 @@
 export const workerLanes = [
   {
     id: "orchestration",
-    label: "Full Maintenance",
+    label: "Monitoring System",
     detail:
-      "Coordinated multi-step runs for catching the site up or doing the normal daily pass.",
+      "One temporary setup mode and one normal daily monitoring mode.",
     profileIds: ["catchup", "daily"],
     taskIds: ["health"],
     workerIds: [],
@@ -58,16 +58,16 @@ export const workerLanes = [
 export const maintenanceProfiles = {
   catchup: {
     laneId: "orchestration",
-    label: "Catch Up Site",
+    label: "Initial Setup & Repair",
     detail:
-      "Runs missing captures, open-source AI review completion, source cleanup, Gemini Batch visual review, award reconciliation, page audit, localization repair, and snapshot retention after downtime or a large backlog.",
+      "Completes the temporary backlog and returns the system to normal daily monitoring.",
     cost: "Gemini API cap: up to $10/day.",
   },
   daily: {
     laneId: "orchestration",
-    label: "Daily Maintenance",
+    label: "Daily Monitoring",
     detail:
-      "Runs source-quality cleanup, stable visual capture, expandable-section text comparison, Gemini Batch visual reviews, source fact refresh, award reconciliation, page audit, suppression cleanup, and snapshot pruning.",
+      "Checks approved pages, compares meaningful content, and publishes only verified changes.",
     cost: "Gemini API cap: up to $10/day for batch fact/review work; capture itself does not use synchronous Gemini.",
   },
   baseline: {
