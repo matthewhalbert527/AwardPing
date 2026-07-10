@@ -166,7 +166,8 @@ export function summarizeAiReviewCoverage({ awards = [], rows = [], pageAudits =
     workerRuns,
     (run) => /baseline.*facts|facts.*baseline/i.test(`${run.worker_name} ${JSON.stringify(run.metadata || {})}`),
   );
-  const latestGeminiBlocker = latestWorker(workerRuns, workerHasGeminiBlocker);
+  const latestGeminiRun = latestWorker(workerRuns, workerUsesGemini);
+  const latestGeminiBlocker = workerHasGeminiBlocker(latestGeminiRun) ? latestGeminiRun : null;
   const criticalPageAuditFailures = pageAudits.filter((audit) =>
     ["failed", "needs_review"].includes(cleanKey(audit.audit_status)) &&
     ["critical", "error"].includes(cleanKey(audit.severity)) &&
@@ -245,8 +246,23 @@ export function completionBlockerCounts({ openRows = [], activeAwards = [], crit
 }
 
 export function workerHasGeminiBlocker(run) {
-  const text = `${run?.error || ""} ${JSON.stringify(run?.metadata || {})}`.toLowerCase();
-  return /\b(gemini|google ai)\b/.test(text) && /\b(billing|quota|prepay|prepayment|credits?\s+are\s+depleted|resource_exhausted|blocked)\b/.test(text);
+  if (!run) return false;
+  const metadata = objectValue(run.metadata);
+  if (metadata.billing_blocked === true) return true;
+  const reason = cleanText(metadata.blocking_reason || metadata.billing_error || metadata.provider_error);
+  const error = cleanText(run.error);
+  const text = `${error} ${reason}`.toLowerCase();
+  if (!text) return false;
+  return /\b(billing|quota|prepay|prepayment|credits?\s+are\s+depleted|resource_exhausted)\b/.test(text);
+}
+
+export function workerUsesGemini(run) {
+  if (!run) return false;
+  if (cleanKey(run.ai_provider) === "gemini") return true;
+  const metadata = objectValue(run.metadata);
+  return /\bgemini\b/i.test(
+    `${run.worker_name || ""} ${run.error || ""} ${metadata.ai_provider || ""} ${metadata.ai_model || ""} ${metadata.blocking_reason || ""}`,
+  );
 }
 
 export function latestWorker(rows, predicate) {

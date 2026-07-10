@@ -41,7 +41,7 @@ export const workerLanes = [
     detail:
       "Runs Gemini Batch source extraction, award-level fact reconciliation, and page audits used by public award pages.",
     profileIds: ["baseline"],
-    taskIds: ["baseline-facts", "reconcile-awards", "page-audit-batch", "aggregate-facts", "award-details"],
+    taskIds: ["ai-review-completion", "baseline-facts", "reconcile-awards", "page-audit-batch", "aggregate-facts", "award-details"],
     workerIds: ["baseline-facts"],
   },
   {
@@ -60,7 +60,7 @@ export const maintenanceProfiles = {
     laneId: "orchestration",
     label: "Catch Up Site",
     detail:
-      "Runs source cleanup, missing screenshots, Gemini Batch facts, award reconciliation, page audit, and snapshot retention after downtime or a large backlog.",
+      "Runs missing captures, open-source AI review completion, source cleanup, Gemini Batch visual review, award reconciliation, page audit, localization repair, and snapshot retention after downtime or a large backlog.",
     cost: "Gemini API cap: up to $10/day.",
   },
   daily: {
@@ -218,6 +218,19 @@ export const atomicTasks = [
       phases: ["visual-missing"],
     },
     scheduledWorkerIds: ["baseline-completion"],
+  },
+  {
+    id: "ai-review-completion",
+    laneId: "facts-cycle",
+    label: "AI Review Completion",
+    detail:
+      "Closes the open-source review gap with Gemini Batch, moves clear rejects to review_later, and queues affected awards for reconciliation.",
+    cost: "Gemini Batch API with the configured daily cap.",
+    run: {
+      kind: "maintenance",
+      phases: ["ai-review-completion"],
+    },
+    scheduledWorkerIds: [],
   },
   {
     id: "baseline-facts",
@@ -401,6 +414,7 @@ export const workerProcessPatterns = [
   "capture-visual-snapshots",
   "baseline-facts",
   "backfill-baseline",
+  "backfill-open-source-ai-determinations",
   "aggregate-award",
   "source-quality",
   "run-localization-repair",

@@ -60,6 +60,8 @@ export type LatestWorkerReportMetadata = {
 };
 
 export type SourceQualitySummary = {
+  metricMode: "worker_report" | "live_scan" | "fast_counts";
+  metricsWarning: string | null;
   openSources: number;
   monitorEligibleSources: number;
   publicEligibleSources: number;
@@ -455,6 +457,7 @@ export function parseLatestWorkerReportMetadata(runs: LocalWorkerRun[]): LatestW
 export async function loadSourceQualityAdminSummary(
   admin: AdminClient,
   runs: LocalWorkerRun[] = [],
+  fallbackCounts: { openSources?: number; reviewLaterSources?: number } = {},
 ): Promise<{ summary: SourceQualitySummary; loadErrors: string[] }> {
   const reportMetadata = parseLatestWorkerReportMetadata(runs);
   const reportSummary = sourceQualitySummaryFromReport(reportMetadata);
@@ -463,6 +466,25 @@ export async function loadSourceQualityAdminSummary(
   }
 
   const loadErrors: string[] = [];
+  if (process.env.AWARDPING_ADMIN_LIVE_SOURCE_QUALITY_SCAN !== "1") {
+    const [openSources, reviewLaterSources] = await Promise.all([
+      typeof fallbackCounts.openSources === "number"
+        ? Promise.resolve(fallbackCounts.openSources)
+        : countSourcesByReviewStatus(admin, "open", loadErrors),
+      typeof fallbackCounts.reviewLaterSources === "number"
+        ? Promise.resolve(fallbackCounts.reviewLaterSources)
+        : countSourcesByReviewStatus(admin, "review_later", loadErrors),
+    ]);
+    return {
+      summary: summarizeSourceQualityFastCounts(
+        openSources,
+        reviewLaterSources,
+        reportMetadata,
+      ),
+      loadErrors,
+    };
+  }
+
   const [openSources, reviewLaterSources] = await Promise.all([
     loadActiveSourcesForQuality(admin, "open", loadErrors),
     countSourcesByReviewStatus(admin, "review_later", loadErrors),
@@ -502,6 +524,8 @@ export function summarizeSourceQuality(
   }
 
   return {
+    metricMode: "live_scan",
+    metricsWarning: null,
     openSources: openSources.length,
     monitorEligibleSources,
     publicEligibleSources,
@@ -510,6 +534,27 @@ export function summarizeSourceQuality(
     reviewLaterSources,
     skippedManualProtected,
     rejectedByReason: reasonCountsFromMap(rejectedByReason),
+    latestCleanupRun: latestSourceQualityCleanupRun(reportMetadata),
+  };
+}
+
+export function summarizeSourceQualityFastCounts(
+  openSources: number,
+  reviewLaterSources = 0,
+  reportMetadata: LatestWorkerReportMetadata = parseLatestWorkerReportMetadata([]),
+): SourceQualitySummary {
+  return {
+    metricMode: "fast_counts",
+    metricsWarning:
+      "Source-quality eligibility was not live-scanned on page load. Run a source-quality cleanup/report worker, or set AWARDPING_ADMIN_LIVE_SOURCE_QUALITY_SCAN=1 for a slower diagnostic scan.",
+    openSources,
+    monitorEligibleSources: 0,
+    publicEligibleSources: 0,
+    factEligibleSources: 0,
+    openRejectedSources: 0,
+    reviewLaterSources,
+    skippedManualProtected: 0,
+    rejectedByReason: [],
     latestCleanupRun: latestSourceQualityCleanupRun(reportMetadata),
   };
 }
@@ -566,6 +611,8 @@ function sourceQualitySummaryFromReport(
   ]);
 
   return {
+    metricMode: "worker_report",
+    metricsWarning: null,
     openSources,
     monitorEligibleSources,
     publicEligibleSources: numberFromPaths(metadata, [

@@ -111,6 +111,27 @@ describe("admin AI review coverage", () => {
     expect(summary.completion_blockers.gemini_billing_blocked).toBe(1);
   });
 
+  it("ignores false billing flags and superseded historical blockers", () => {
+    const current = workerRun(
+      { billing_blocked: false, blocking_reason: null },
+      {
+        id: "run-current",
+        status: "running",
+        started_at: "2026-07-10T18:00:00.000Z",
+        failed_count: 0,
+      },
+    );
+    const historical = workerRun(
+      { billing_blocked: true, blocking_reason: "Gemini credits are depleted" },
+      { id: "run-old", started_at: "2026-07-09T18:00:00.000Z" },
+    );
+
+    expect(workerHasGeminiBlocker(current)).toBe(false);
+    const summary = summarizeAiReviewCoverage({ workerRuns: [current, historical] });
+    expect(summary.latest_gemini_billing_quota_blocker).toBeNull();
+    expect(summary.completion_blockers.gemini_billing_blocked).toBe(0);
+  });
+
   it("builds dashboard coverage from durable worker metadata", () => {
     const summary = summarizeAiReviewCoverageFromWorkerRuns([
       workerRun({

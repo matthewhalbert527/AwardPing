@@ -12,6 +12,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Model -ne "gemini-2.5-flash-lite") {
+  throw "AwardPing Gemini workers must use gemini-2.5-flash-lite."
+}
+if ($BatchMode -ne "batch") {
+  throw "AwardPing Gemini workers must use Batch API mode."
+}
 $InstallRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AppDir = Join-Path $InstallRoot "app"
 $LogDir = Join-Path $InstallRoot "logs"

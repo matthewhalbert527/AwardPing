@@ -15,6 +15,7 @@ import {
   summarizeGeminiBatchStatus,
   summarizePreAiGate,
   summarizeSourceQuality,
+  summarizeSourceQualityFastCounts,
   summarizeTextOnlyChanges,
   summarizeVisualReviewBatch,
 } from "@/lib/admin-maintenance";
@@ -278,6 +279,7 @@ describe("admin maintenance summaries", () => {
     const summary = summarizeSourceQuality(sources, 7);
 
     expect(summary.openSources).toBe(3);
+    expect(summary.metricMode).toBe("live_scan");
     expect(summary.monitorEligibleSources).toBe(1);
     expect(summary.publicEligibleSources).toBe(1);
     expect(summary.factEligibleSources).toBe(1);
@@ -286,5 +288,17 @@ describe("admin maintenance summaries", () => {
       "ai_review_reviewed_unclear_needs_manual_review_award_relevance_unclear",
       "url_not_monitorable",
     ]);
+  });
+
+  it("summarizes source-quality fast counts without implying measured eligibility", () => {
+    const summary = summarizeSourceQualityFastCounts(15678, 71590);
+
+    expect(summary.metricMode).toBe("fast_counts");
+    expect(summary.openSources).toBe(15678);
+    expect(summary.reviewLaterSources).toBe(71590);
+    expect(summary.monitorEligibleSources).toBe(0);
+    expect(summary.openRejectedSources).toBe(0);
+    expect(summary.metricsWarning).toContain("not live-scanned");
+    expect(summary.rejectedByReason).toEqual([]);
   });
 });

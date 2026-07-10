@@ -10,6 +10,7 @@ import {
   sortedEntries,
   summarizeAiReviewCoverage,
   workerHasGeminiBlocker,
+  workerUsesGemini,
 } from "./lib/ai-review-coverage.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { readGeminiBillingBlock } from "./lib/gemini-spend-guard.mjs";
@@ -46,6 +47,11 @@ const sourceIdFilter = cleanText(args["source-id"]);
 const onlyOpen = boolArg(args["only-open"], true);
 const geminiApiMode = cleanSlug(args["gemini-api-mode"] || "batch") || "batch";
 const maxBatchRequests = nonNegativeInt(args["max-batch-requests"], 0);
+const geminiBatchMaxRequests = positiveInt(args["gemini-batch-max-requests"], 250);
+const dailyCostCapUsd = nonNegativeNumber(
+  args["daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
+  10,
+);
 const resume = boolArg(args.resume, true);
 const outputJson = boolArg(args.json, false);
 const outputCsv = boolArg(args.csv, false);
@@ -77,6 +83,8 @@ const report = {
     only_open: onlyOpen,
     gemini_api_mode: geminiApiMode,
     max_batch_requests: maxBatchRequests,
+    gemini_batch_max_requests: geminiBatchMaxRequests,
+    daily_cost_cap_usd: dailyCostCapUsd,
     resume,
     reconcile,
     reconcile_limit: reconcileLimit,
@@ -403,7 +411,8 @@ async function submitBaselineFactsBatch(rows) {
     "--gemini-api-mode=batch",
     `--gemini-api-max-requests=${ids.length}`,
     `--gemini-api-max-submitted-requests=${ids.length}`,
-    `--gemini-batch-max-requests=${Math.max(1, ids.length)}`,
+    `--gemini-batch-max-requests=${Math.min(ids.length, geminiBatchMaxRequests)}`,
+    `--gemini-api-daily-cost-cap-usd=${dailyCostCapUsd}`,
     `--limit=${ids.length}`,
     `--source-ids-file=${sourceIdsPath}`,
     `--apply=${apply ? "true" : "false"}`,
@@ -484,8 +493,8 @@ async function runReconciliation() {
 function detectBillingBlock(workerRuns) {
   const fileBlock = readGeminiBillingBlock(archiveRoot);
   if (fileBlock) return fileBlock.message || `Gemini billing block file exists: ${fileBlock.path}`;
-  const run = (workerRuns || []).find(workerHasGeminiBlocker);
-  if (!run) return null;
+  const run = (workerRuns || []).find(workerUsesGemini);
+  if (!workerHasGeminiBlocker(run)) return null;
   return objectValue(run.metadata).blocking_reason || objectValue(run.metadata).stop_reason || run.error || "gemini_billing_or_quota_blocker_found";
 }
 
@@ -675,6 +684,11 @@ function nonNegativeInt(value, fallback) {
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
 }
 
+function nonNegativeNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
 function positiveInt(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
@@ -754,6 +768,8 @@ Options:
   --only-missing-cycle-relevance         Only sources missing cycle relevance
   --gemini-api-mode=batch|none           Batch AI mode for missing reviews
   --max-batch-requests=<n>               Submit up to n sources to Gemini Batch through baseline-facts worker
+  --gemini-batch-max-requests=<n>        Requests per Gemini Batch job (default 250)
+  --daily-cost-cap-usd=<n>               Estimated Gemini daily spend cap (default 10)
   --resume=true                          Keep durable batch behavior enabled
   --reconcile=true                       Run reconciliation after applying
   --reconcile-limit=<n>                  Limit reconciliation queue processing

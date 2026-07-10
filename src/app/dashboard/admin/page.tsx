@@ -122,7 +122,8 @@ export default async function AdminPage() {
   }
 
   const admin = createSupabaseAdminClient();
-  const counts = await loadAdminSourceCounts(admin);
+  const showLegacyAdmin = process.env.NEXT_PUBLIC_SHOW_ADMIN_LEGACY === "true";
+  const counts = await loadAdminSourceCounts(admin, { includeCycleCoverage: showLegacyAdmin });
   const [
     sourceQualityResult,
     visualReviewBatchResult,
@@ -132,7 +133,10 @@ export default async function AdminPage() {
     pageAuditResult,
     sourceIntakeResult,
   ] = await Promise.all([
-    loadSourceQualityAdminSummary(admin, counts.recentRuns),
+    loadSourceQualityAdminSummary(admin, counts.recentRuns, {
+      openSources: counts.openSources,
+      reviewLaterSources: counts.reviewLaterSources,
+    }),
     loadVisualReviewBatchSummary(admin),
     loadSuppressionSummary(admin),
     loadAiReviewCoverageSummary(admin, counts.recentRuns),
@@ -174,7 +178,28 @@ export default async function AdminPage() {
     Math.max(1, counts.cycleCoverage.sourcesWithFacts),
   );
   const visualPercent = percent(counts.openWithVisualSnapshots, counts.openSources);
-  const estimatedCatchupCost = sourceQuality.monitorEligibleSources * GEMINI_BATCH_COST_PER_SOURCE_USD;
+  const sourceQualityMeasured = sourceQuality.metricMode !== "fast_counts";
+  const sourceGateAttention = sourceQualityMeasured && sourceQuality.openRejectedSources > 0;
+  const sourceGateValue = sourceQualityMeasured
+    ? `${formatNumber(sourceQuality.monitorEligibleSources)} / ${formatNumber(sourceQuality.openSources)}`
+    : formatNumber(sourceQuality.openSources);
+  const sourceGateDetail = sourceQualityMeasured
+    ? `${formatNumber(sourceQuality.openRejectedSources)} open sources are blocked before monitoring.`
+    : "Open sources counted quickly; gate eligibility will appear after the next source-quality worker report.";
+  const monitorEligibleDisplay = sourceQualityMeasured
+    ? formatNumber(sourceQuality.monitorEligibleSources)
+    : "Not reported";
+  const publicEligibleDisplay = sourceQualityMeasured
+    ? formatNumber(sourceQuality.publicEligibleSources)
+    : "Not reported";
+  const factEligibleDisplay = sourceQualityMeasured
+    ? formatNumber(sourceQuality.factEligibleSources)
+    : "Not reported";
+  const openRejectedDisplay = sourceQualityMeasured
+    ? formatNumber(sourceQuality.openRejectedSources)
+    : "Not reported";
+  const catchupSourceEstimate = sourceQualityMeasured ? sourceQuality.monitorEligibleSources : counts.openSources;
+  const estimatedCatchupCost = catchupSourceEstimate * GEMINI_BATCH_COST_PER_SOURCE_USD;
   const geminiBlocked = recentRunsIncludeGeminiCreditBlock(counts.recentRuns);
   const allLoadErrors = [
     ...counts.loadErrors,
@@ -201,7 +226,7 @@ export default async function AdminPage() {
     reconciliation.queueCounts.failed +
     (reconciliation.latestRun?.awardsPublicationBlocked || 0) +
     (dailyHealth.awardsPublicationBlocked || 0);
-  const dataQualityAttentionCount = sourceQuality.openRejectedSources +
+  const dataQualityAttentionCount = (sourceQualityMeasured ? sourceQuality.openRejectedSources : 0) +
     aiCoverage.unreviewed_open_sources +
     aiCoverage.open_sources_with_award_relevance_unclear +
     aiCoverage.open_sources_with_award_relevance_unrelated +
@@ -301,7 +326,7 @@ export default async function AdminPage() {
         </div>
       </div>
 
-      {process.env.NEXT_PUBLIC_SHOW_ADMIN_LEGACY === "true" && (
+      {showLegacyAdmin && (
         <>
           {allLoadErrors.length > 0 && (
             <section className="card border-[var(--brand-pink)] p-5">
@@ -355,9 +380,9 @@ export default async function AdminPage() {
         <MetricCard
           icon={Database}
           label="Source Gate"
-          value={`${formatNumber(sourceQuality.monitorEligibleSources)} / ${formatNumber(sourceQuality.openSources)}`}
-          detail={`${formatNumber(sourceQuality.openRejectedSources)} open sources are blocked before monitoring.`}
-          attention={sourceQuality.openRejectedSources > 0}
+          value={sourceGateValue}
+          detail={sourceGateDetail}
+          attention={sourceGateAttention}
         />
         <MetricCard
           icon={Sparkles}
@@ -425,11 +450,13 @@ export default async function AdminPage() {
           </div>
           <div className="admin-flow-list admin-flow-list-compact">
             <PipelineRow
-              detail={`${formatNumber(sourceQuality.monitorEligibleSources)} monitorable sources; ${formatNumber(sourceQuality.openRejectedSources)} blocked by quality gate.`}
+              detail={sourceQualityMeasured
+                ? `${formatNumber(sourceQuality.monitorEligibleSources)} monitorable sources; ${formatNumber(sourceQuality.openRejectedSources)} blocked by quality gate.`
+                : "Source-quality eligibility is waiting on the latest worker report; live scan skipped for page speed."}
               icon={Database}
               status="source gate"
               title="1. Clean source set"
-              attention={sourceQuality.openRejectedSources > 0}
+              attention={sourceGateAttention}
             />
             <PipelineRow
               detail={`${captureProfile.captureProfile || "Unknown"} profile; ${formatDurationMs(captureProfile.scrollActivationWaitMs)} scroll wait in latest visual report.`}
@@ -474,8 +501,8 @@ export default async function AdminPage() {
           </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Open sources" value={sourceQuality.openSources} />
-            <MiniStat label="Monitor eligible" value={sourceQuality.monitorEligibleSources} />
-            <MiniStat label="Gate rejected" value={sourceQuality.openRejectedSources} attention={sourceQuality.openRejectedSources > 0} />
+            <MiniStat label="Monitor eligible" value={monitorEligibleDisplay} />
+            <MiniStat label="Gate rejected" value={openRejectedDisplay} attention={sourceGateAttention} />
             <MiniStat label="Review later" value={sourceQuality.reviewLaterSources} attention={sourceQuality.reviewLaterSources > 0} />
             <MiniStat label="Metadata" value={`${formatNumber(counts.openWithMetadata)} / ${formatNumber(counts.openSources)}`} />
             <MiniStat label="Visuals" value={`${visualPercent}%`} attention={counts.openMissingVisualSnapshots > 0} />
@@ -486,6 +513,11 @@ export default async function AdminPage() {
           </div>
           <DetailDisclosure label="What is being rejected">
             <ReasonCountList counts={sourceQuality.rejectedByReason} empty="No open sources are currently rejected by the source-quality gate." />
+            {!sourceQualityMeasured && sourceQuality.metricsWarning ? (
+              <p className="mt-3 text-sm font-semibold leading-6 text-[var(--muted)]">
+                {sourceQuality.metricsWarning}
+              </p>
+            ) : null}
             <div className="admin-issue-actions mt-3">
               <Link className="admin-issue-link" href="/dashboard/admin/issues?tab=source-quality">
                 Review source-quality rejects
@@ -655,7 +687,7 @@ export default async function AdminPage() {
         </DetailDisclosure>
       </section>
 
-      {process.env.NEXT_PUBLIC_SHOW_ADMIN_LEGACY === "true" && (
+      {showLegacyAdmin && (
         <>
       <section className="admin-metric-grid admin-metric-grid-primary">
         <MetricCard
@@ -926,7 +958,9 @@ export default async function AdminPage() {
               <h2>Source Quality</h2>
             </div>
             <span className="badge">
-              {sourceQuality.latestCleanupRun?.apply === false
+              {!sourceQualityMeasured
+                ? "Fast counts"
+                : sourceQuality.latestCleanupRun?.apply === false
                 ? "Dry run"
                 : sourceQuality.latestCleanupRun?.apply
                   ? "Applied"
@@ -935,10 +969,10 @@ export default async function AdminPage() {
           </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
             <MiniStat label="Open" value={sourceQuality.openSources} />
-            <MiniStat label="Monitor eligible" value={sourceQuality.monitorEligibleSources} />
-            <MiniStat label="Public eligible" value={sourceQuality.publicEligibleSources} />
-            <MiniStat label="Fact eligible" value={sourceQuality.factEligibleSources} />
-            <MiniStat label="Open rejected" value={sourceQuality.openRejectedSources} attention={sourceQuality.openRejectedSources > 0} />
+            <MiniStat label="Monitor eligible" value={monitorEligibleDisplay} />
+            <MiniStat label="Public eligible" value={publicEligibleDisplay} />
+            <MiniStat label="Fact eligible" value={factEligibleDisplay} />
+            <MiniStat label="Open rejected" value={openRejectedDisplay} attention={sourceGateAttention} />
             <MiniStat label="Review later" value={sourceQuality.reviewLaterSources} attention={sourceQuality.reviewLaterSources > 0} />
           </div>
           {sourceQuality.latestCleanupRun ? (
@@ -951,11 +985,17 @@ export default async function AdminPage() {
             </dl>
           ) : (
             <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
-              No structured source-quality cleanup report has been recorded yet; current eligibility is computed live.
+              {sourceQuality.metricsWarning ||
+                "No structured source-quality cleanup report has been recorded yet."}
             </p>
           )}
           <DetailDisclosure label="Rejected by reason">
             <ReasonCountList counts={sourceQuality.rejectedByReason} empty="No open sources are currently rejected by the gate." title="Current open rejects" />
+            {!sourceQualityMeasured && sourceQuality.metricsWarning ? (
+              <p className="mt-3 text-sm font-semibold leading-6 text-[var(--muted)]">
+                {sourceQuality.metricsWarning}
+              </p>
+            ) : null}
             {sourceQuality.latestCleanupRun && (
               <ReasonCountList
                 counts={sourceQuality.latestCleanupRun.rejectedByReason}
@@ -1389,13 +1429,14 @@ export default async function AdminPage() {
             </div>
           </div>
           <div className="admin-stat-grid admin-stat-grid-compact">
-            <MiniStat label="Monitor pages" value={sourceQuality.monitorEligibleSources} />
+            <MiniStat label="Monitor pages" value={sourceQualityMeasured ? monitorEligibleDisplay : `${formatNumber(catchupSourceEstimate)} max`} />
             <MiniStat label="Avg/page" value={`$${formatUsd(GEMINI_BATCH_COST_PER_SOURCE_USD)}`} />
             <MiniStat label="Estimate" value={`$${formatUsd(estimatedCatchupCost)}`} attention={geminiBlocked} />
             <MiniStat label="Default cap" value={`$${formatUsd(DEFAULT_BASELINE_COST_CAP_USD)}`} />
           </div>
           <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
-            The estimate uses the observed Gemini Batch average from previous AwardPing runs.
+            The estimate uses the observed Gemini Batch average from previous AwardPing runs
+            {sourceQualityMeasured ? "." : " and open-source count as a fast upper bound."}
           </p>
         </div>
       </section>
@@ -1405,7 +1446,10 @@ export default async function AdminPage() {
   );
 }
 
-async function loadAdminSourceCounts(admin: AdminClient): Promise<AdminSourceCounts> {
+async function loadAdminSourceCounts(
+  admin: AdminClient,
+  options: { includeCycleCoverage?: boolean } = {},
+): Promise<AdminSourceCounts> {
   const staleCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
   const [
     activeAwards,
@@ -1449,7 +1493,9 @@ async function loadAdminSourceCounts(admin: AdminClient): Promise<AdminSourceCou
       .lt("last_checked_at", staleCutoff),
     admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(20),
     countActiveOpenSourcesWithVisualSnapshots(admin),
-    loadCycleCoverageResult(admin),
+    options.includeCycleCoverage
+      ? loadCycleCoverageResult(admin)
+      : Promise.resolve({ coverage: emptyCycleCoverage(), error: "" }),
   ]);
 
   const loadErrors = [

@@ -388,7 +388,7 @@ Commands:
 
 Options:
   --profile=catchup|daily|baseline|cleanup|snapshots|discovery|visual-review
-  --task=health|source-quality|visual-snapshots|visual-review-batch|visual-missing|baseline-facts|reconcile-awards|page-audit-batch|aggregate-facts|award-details|prune-history|localization-repair
+  --task=health|source-quality|visual-snapshots|visual-review-batch|visual-missing|ai-review-completion|baseline-facts|reconcile-awards|page-audit-batch|aggregate-facts|award-details|prune-history|localization-repair
   --apply=true|false
   --baseline-cost-cap-usd=10
   --env=.env.worker.local`);

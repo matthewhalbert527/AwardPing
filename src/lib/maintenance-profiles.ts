@@ -27,8 +27,20 @@ export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfi
     id: "catchup",
     label: "Catch Up Site",
     detail:
-      "Runs the hardened catch-up pass: source-quality cleanup, missing stable captures, Gemini Batch facts, award-level reconciliation, page audit, and retention pruning.",
-    phases: ["health", "source-intake", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "reconcile-awards", "page-audit-batch", "prune-history"],
+      "Runs the complete hardened catch-up pass: missing captures, open-source AI review completion, source cleanup, Gemini Batch visual review, award reconciliation, page audit, localization repair, and retention pruning.",
+    phases: [
+      "health",
+      "source-intake",
+      "visual-missing",
+      "ai-review-completion",
+      "source-quality",
+      "visual-review-batch",
+      "reconcile-awards",
+      "page-audit-batch",
+      "change-event-noise",
+      "localization-repair",
+      "prune-history",
+    ],
     primary: true,
   },
   daily: {

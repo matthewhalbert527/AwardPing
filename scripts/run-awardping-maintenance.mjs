@@ -58,6 +58,10 @@ const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 10);
 const baselineBatchMaxRequests = positiveInt(args["baseline-batch-max-requests"], 250);
 const baselineBatchParallelJobs = positiveInt(args["baseline-batch-parallel-jobs"], 4);
 const baselineForce = boolArg(args["baseline-force"], false);
+const aiReviewCompletionMaxBatchRequests = nonNegativeInt(
+  args["ai-review-completion-max-batch-requests"],
+  baselineMaxCalls,
+);
 const sourceQualityHours = positiveNumber(args["source-quality-hours"], 10);
 const sourceQualityMaxAwards = positiveInt(args["source-quality-max-awards"], 90);
 const sourceQualityMinOpenSources = positiveInt(args["source-quality-min-open-sources"], 75);
@@ -117,9 +121,11 @@ try {
     else if (phase === "visual") await runVisualSnapshots(false);
     else if (phase === "visual-missing") await runVisualSnapshots(true);
     else if (phase === "visual-review-batch") await runVisualReviewBatch();
+    else if (phase === "ai-review-completion") await runAiReviewCompletion();
     else if (phase === "baseline-facts") await runBaselineFacts();
     else if (phase === "reconcile-awards") await runReconcileAwards();
     else if (phase === "page-audit-batch") await runPageAuditBatch();
+    else if (phase === "localization-repair") await runLocalizationRepair();
     else if (phase === "aggregate-facts") await runAggregateFacts();
     else {
       await recordSkippedPhase(phase, `Unknown phase "${phase}".`);
@@ -282,6 +288,22 @@ async function runVisualReviewBatch() {
   ]);
 }
 
+async function runAiReviewCompletion() {
+  await runPhase("ai-review-completion", [
+    "scripts/backfill-open-source-ai-determinations.mjs",
+    ...envArgs,
+    `--apply=${apply}`,
+    "--only-open=true",
+    "--gemini-api-mode=batch",
+    `--max-batch-requests=${aiReviewCompletionMaxBatchRequests}`,
+    `--gemini-batch-max-requests=${baselineBatchMaxRequests}`,
+    `--daily-cost-cap-usd=${baselineCostCapUsd}`,
+    "--resume=true",
+    "--reconcile=false",
+    "--force-ai=true",
+  ]);
+}
+
 async function runBaselineFacts() {
   const commandArgs = [
     "scripts/backfill-baseline-facts.mjs",
@@ -318,6 +340,15 @@ async function runPageAuditBatch() {
     `--apply=${apply}`,
     `--limit=${pageAuditLimit}`,
     `--max-requests-per-batch=${pageAuditMaxRequestsPerBatch}`,
+  ]);
+}
+
+async function runLocalizationRepair() {
+  await runPhase("localization-repair", [
+    "scripts/run-localization-repair.mjs",
+    ...envArgs,
+    `--limit=${visualLimit}`,
+    `--web-concurrency=${Math.min(visualWebConcurrency, 2)}`,
   ]);
 }
 
@@ -413,7 +444,19 @@ function runCommand(commandArgs, logPath) {
 
 function profilePhases(value) {
   if (value === "catchup") {
-    return ["health", "source-intake", "source-quality", "change-event-noise", "visual-missing", "baseline-facts", "reconcile-awards", "page-audit-batch", "prune-history"];
+    return [
+      "health",
+      "source-intake",
+      "visual-missing",
+      "ai-review-completion",
+      "source-quality",
+      "visual-review-batch",
+      "reconcile-awards",
+      "page-audit-batch",
+      "change-event-noise",
+      "localization-repair",
+      "prune-history",
+    ];
   }
   if (value === "baseline") return ["health", "baseline-facts", "reconcile-awards", "page-audit-batch"];
   if (value === "cleanup") return ["health", "source-quality", "change-event-noise", "reconcile-awards", "prune-history"];
@@ -451,7 +494,7 @@ async function createMaintenanceWorkerRun() {
     .insert({
       worker_name: "local-maintenance-runner",
       status: "running",
-      ai_provider: phases.includes("baseline-facts") || phases.includes("visual-review-batch") || phases.includes("page-audit-batch") || phases.includes("source-intake") ? "gemini" : null,
+      ai_provider: phases.includes("baseline-facts") || phases.includes("ai-review-completion") || phases.includes("visual-review-batch") || phases.includes("page-audit-batch") || phases.includes("source-intake") ? "gemini" : null,
       initial_count: phases.length,
       metadata: maintenanceRunMetadata(),
     })
@@ -652,7 +695,7 @@ Examples:
 
 Profiles:
   daily      stable checks, section extraction, queued batch review, reconciliation, deterministic audit, flagged page-audit batch
-  catchup    source intake, source-quality cleanup, missing stable captures, batch facts, reconciliation, audit, retention
+  catchup    missing captures, AI review completion, source cleanup, visual Batch review, reconciliation, audit, localization, retention
   baseline   baseline-rich fact extraction, reconciliation, deterministic audit, flagged page-audit batch
   cleanup    source-quality gate cleanup, noisy event suppression, reconciliation, retention pruning
   snapshots  stable capture and cheap section text extraction only; discovery stays off
@@ -666,6 +709,7 @@ Useful options:
   --visual-shards=3
   --baseline-cost-cap-usd=10
   --baseline-limit=50000
+  --ai-review-completion-max-batch-requests=50000
   --source-quality-hours=10
   --source-quality-max-awards=90
 `);

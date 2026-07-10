@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSourceAiCoverageRow,
   summarizeAiReviewCoverage,
+  workerHasGeminiBlocker,
 } from "./lib/ai-review-coverage.mjs";
 
 const award = {
@@ -136,5 +137,33 @@ describe("AI review coverage categorization", () => {
     expect(dirty.completion_blockers.public_awards_missing_facts).toBe(1);
     expect(dirty.completion_blockers.critical_page_audit_failures).toBe(1);
     expect(dirty.completion_blockers.gemini_billing_blocked).toBe(1);
+  });
+
+  it("does not treat false billing metadata or historical blockers as current", () => {
+    const current = {
+      worker_name: "local-baseline-facts-worker",
+      ai_provider: "gemini",
+      status: "running",
+      started_at: "2026-07-10T18:00:00.000Z",
+      error: null,
+      metadata: { billing_blocked: false, blocking_reason: null },
+    };
+    const historical = {
+      worker_name: "local-baseline-facts-worker",
+      ai_provider: "gemini",
+      status: "failed",
+      started_at: "2026-07-09T18:00:00.000Z",
+      error: "Gemini credits are depleted",
+      metadata: { billing_blocked: true },
+    };
+
+    expect(workerHasGeminiBlocker(current)).toBe(false);
+    const summary = summarizeAiReviewCoverage({
+      awards: [award],
+      rows: [buildSourceAiCoverageRow(source(), award)],
+      workerRuns: [current, historical],
+    });
+    expect(summary.latest_gemini_billing_quota_blocker).toBeNull();
+    expect(summary.completion_blockers.gemini_billing_blocked).toBe(0);
   });
 });

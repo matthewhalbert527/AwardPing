@@ -942,6 +942,32 @@ function Register-VisualSnapshotTask {
   }
 }
 
+function Register-BaselineFactsWatchdog {
+  param([string]$InstallRoot)
+
+  Write-Step "Creating AwardPing baseline facts watchdog"
+  $watchdogScript = Join-Path $PSScriptRoot "Watch-AwardPingBaselineFacts.ps1"
+  if (-not (Test-Path -LiteralPath $watchdogScript)) {
+    Write-Host "Baseline facts watchdog script is missing; skipping its task." -ForegroundColor Yellow
+    return
+  }
+
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $watchdogScript `
+    -InstallRoot $InstallRoot `
+    -Install `
+    -Model "gemini-2.5-flash-lite" `
+    -BatchMode "batch" `
+    -BatchMaxRequests 250 `
+    -BatchParallelJobs 4 `
+    -DirectCatchupThreshold 0 `
+    -CostCapUsd 10
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not install AwardPing baseline facts watchdog task."
+  }
+
+  Write-Host "Scheduled task created: AwardPing Baseline Facts Watchdog"
+}
+
 function Register-StartupSupervisorTask {
   param([string]$InstallRoot)
 
@@ -1014,6 +1040,7 @@ Write-LauncherScripts -InstallRoot $InstallRoot
 Install-Dependencies -AppDir $appDir
 Remove-LegacySourceTask -InstallRoot $InstallRoot
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
+Register-BaselineFactsWatchdog -InstallRoot $InstallRoot
 Register-StartupSupervisorTask -InstallRoot $InstallRoot
 
 if ((-not $UpdateOnly) -and $runTest) {

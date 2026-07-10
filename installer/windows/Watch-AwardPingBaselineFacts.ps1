@@ -14,6 +14,12 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Model -ne "gemini-2.5-flash-lite") {
+  throw "AwardPing Gemini workers must use gemini-2.5-flash-lite."
+}
+if ($BatchMode -ne "batch") {
+  throw "AwardPing Gemini workers must use Batch API mode."
+}
 
 function Resolve-InstallRoot {
   param([string]$RequestedRoot)
@@ -305,14 +311,7 @@ function Start-BaselineFacts {
 
 function Get-RestartBatchMode {
   param([object]$Status)
-
-  $loaded = if ($Status) { [int]$Status.Loaded } else { 0 }
-  $processed = if ($Status) { [int]$Status.Processed } else { 0 }
-  $remaining = [Math]::Max(0, $loaded - $processed)
-  if ($BatchMode -eq "batch" -and $loaded -gt 0 -and $remaining -le $DirectCatchupThreshold) {
-    return "immediate"
-  }
-  return $BatchMode
+  return "batch"
 }
 
 function Start-AwardFactsAggregate {
