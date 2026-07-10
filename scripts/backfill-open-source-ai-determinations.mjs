@@ -138,6 +138,7 @@ const workerRunId = await startWorkerRun().catch((error) => {
   report.errors.push({ message: `worker_run_start_failed: ${errorMessage(error)}` });
   return null;
 });
+let lastWorkerUpdateAt = 0;
 
 try {
   const initial = await loadCoverage();
@@ -514,7 +515,6 @@ async function startWorkerRun() {
   return data?.id || null;
 }
 
-let lastWorkerUpdateAt = 0;
 async function maybeUpdateWorkerRun(runId) {
   if (!runId) return;
   const now = Date.now();
