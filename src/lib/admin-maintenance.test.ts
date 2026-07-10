@@ -158,6 +158,26 @@ describe("admin maintenance summaries", () => {
     expect(sections.extracted).toBe(6);
   });
 
+  it("reads live AI coverage progress from worker counters", () => {
+    expect(summarizeBackfillCompletion({
+      status: "running",
+      counters: {
+        total_open_sources_scanned: 15_681,
+        queued_for_ai_review: 6_645,
+        submitted_to_gemini_batch: 250,
+        moved_to_review_later: 5_442,
+        awards_queued_for_reconciliation: 1_484,
+      },
+    })).toMatchObject({
+      status: "running",
+      totalOpenSourcesScanned: 15_681,
+      queuedForAiReview: 6_645,
+      submittedToGeminiBatch: 250,
+      movedToReviewLater: 5_442,
+      awardsQueuedForReconciliation: 1_484,
+    });
+  });
+
   it("summarizes Gemini batch health and exposes admin commands", () => {
     const latest = parseLatestWorkerReportMetadata([
       workerRun(

@@ -986,17 +986,39 @@ export function summarizeBackfillCompletion(metadata: Record<string, unknown>): 
     billingBlocked: Boolean(boolValue(metadata.billing_blocked)),
     blockingReason: cleanText(metadata.blocking_reason || metadata.stop_reason) || null,
     totalOpenSourcesScanned: numberFromPaths(metadata, [
+      ["counters", "total_open_sources_scanned"],
       ["counts", "total_open_sources_scanned"],
       ["final_summary", "open_sources"],
       ["initial_summary", "open_sources"],
     ]),
-    queuedForAiReview: numberFromPaths(metadata, [["counts", "queued_for_ai_review"]]),
-    submittedToGeminiBatch: numberFromPaths(metadata, [["counts", "submitted_to_gemini_batch"]]),
-    movedToReviewLater: numberFromPaths(metadata, [["counts", "moved_to_review_later"]]),
-    awardsQueuedForReconciliation: numberFromPaths(metadata, [["counts", "awards_queued_for_reconciliation"]]),
-    awardsReconciled: numberFromPaths(metadata, [["counts", "awards_reconciled"]]),
-    publicPagesBlocked: numberFromPaths(metadata, [["counts", "public_pages_blocked"]]),
-    lastKnownGoodPreserved: numberFromPaths(metadata, [["counts", "last_known_good_preserved"]]),
+    queuedForAiReview: numberFromPaths(metadata, [
+      ["counters", "queued_for_ai_review"],
+      ["counts", "queued_for_ai_review"],
+    ]),
+    submittedToGeminiBatch: numberFromPaths(metadata, [
+      ["counters", "submitted_to_gemini_batch"],
+      ["counts", "submitted_to_gemini_batch"],
+    ]),
+    movedToReviewLater: numberFromPaths(metadata, [
+      ["counters", "moved_to_review_later"],
+      ["counts", "moved_to_review_later"],
+    ]),
+    awardsQueuedForReconciliation: numberFromPaths(metadata, [
+      ["counters", "awards_queued_for_reconciliation"],
+      ["counts", "awards_queued_for_reconciliation"],
+    ]),
+    awardsReconciled: numberFromPaths(metadata, [
+      ["counters", "awards_reconciled"],
+      ["counts", "awards_reconciled"],
+    ]),
+    publicPagesBlocked: numberFromPaths(metadata, [
+      ["counters", "public_pages_blocked"],
+      ["counts", "public_pages_blocked"],
+    ]),
+    lastKnownGoodPreserved: numberFromPaths(metadata, [
+      ["counters", "last_known_good_preserved"],
+      ["counts", "last_known_good_preserved"],
+    ]),
   };
 }
 

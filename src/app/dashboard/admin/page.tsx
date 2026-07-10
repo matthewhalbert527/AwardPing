@@ -285,14 +285,20 @@ export default async function AdminPage() {
   ].filter((item) => item.show);
   const setupRunning = latestMaintenance?.run.status === "running" && latestMaintenance.profile === "catchup";
   const dailyRunning = latestMaintenance?.run.status === "running" && latestMaintenance.profile === "daily";
-  const monitoringMode = attentionItems.length > 0
+  const systemBlocked = geminiBlocked ||
+    allLoadErrors.length > 0 ||
+    latestMaintenance?.run.status === "failed" ||
+    pageBlockerCount > 0 ||
+    textOnlyChanges.textOnlyIgnored > 0 ||
+    dailyHealth.standardCaptureCreatedSources;
+  const monitoringMode = systemBlocked
     ? "Needs attention"
     : setupRunning
       ? "Finishing setup"
       : dailyRunning
         ? "Daily check running"
         : "Daily monitoring";
-  const monitoringModeDetail = attentionItems.length > 0
+  const monitoringModeDetail = systemBlocked
     ? "A real blocker or manual decision is listed below."
     : setupRunning
       ? "The one-time cleanup is running. Daily monitoring is already scheduled."
@@ -375,7 +381,7 @@ export default async function AdminPage() {
           label="System"
           value={monitoringMode}
           detail={monitoringModeDetail}
-          attention={attentionItems.length > 0}
+          attention={systemBlocked}
         />
         <MetricCard
           icon={Clock3}
@@ -451,7 +457,7 @@ export default async function AdminPage() {
               <h2>Action Needed</h2>
             </div>
             <span className={attentionItems.length > 0 ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
-              {attentionItems.length > 0 ? `${attentionItems.length} items` : "None"}
+              {attentionItems.length > 0 ? `${attentionItems.length} ${attentionItems.length === 1 ? "item" : "items"}` : "None"}
             </span>
           </div>
           {attentionItems.length > 0 ? (
