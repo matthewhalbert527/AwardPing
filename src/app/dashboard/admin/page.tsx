@@ -211,7 +211,6 @@ export default async function AdminPage() {
     ...pageAuditResult.warnings,
     ...sourceIntakeResult.warnings,
   ];
-  const reconciliationQueueCount = reconciliation.queueCounts.pending + reconciliation.queueCounts.processing;
   const pageBlockerCount = pageAudit.critical +
     reconciliation.queueCounts.failed +
     (reconciliation.latestRun?.awardsPublicationBlocked || 0) +
@@ -277,7 +276,7 @@ export default async function AdminPage() {
     {
       show: sourceIntake.needsManualReview > 0,
       title: "Source intake needs a decision",
-      detail: `${formatNumber(sourceIntake.needsManualReview)} submitted sources need manual review.`,
+      detail: `${formatNumber(sourceIntake.needsManualReview)} submitted ${sourceIntake.needsManualReview === 1 ? "source needs" : "sources need"} manual review.`,
       status: "manual review",
       href: "/dashboard/admin/source-intake",
       icon: Database,
@@ -391,7 +390,7 @@ export default async function AdminPage() {
         />
         <MetricCard
           icon={Database}
-          label="Current Source Set"
+          label={setupRunning ? "Sources Being Finalized" : "Approved Source Set"}
           value={formatNumber(counts.openSources)}
           detail={`${formatNumber(counts.reviewLaterSources)} excluded sources are outside monitoring, not unfinished work.`}
         />
@@ -435,7 +434,7 @@ export default async function AdminPage() {
               attention={backfillCompletion.billingBlocked}
             />
             <PipelineRow
-              detail={`${formatNumber(reconciliationQueueCount)} impacted awards are waiting or processing. Failed audits preserve the last known good public page.`}
+              detail="Award page reconciliation and audits run automatically after source review. Failed audits preserve the last known good public page."
               icon={CheckCircle2}
               status={reconciliation.queueCounts.failed > 0 ? "needs attention" : "automatic"}
               title="3. Rebuild and audit award pages"
