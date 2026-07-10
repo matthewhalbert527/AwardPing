@@ -126,7 +126,7 @@ function assertAllowedGeminiCliModel(model, options = {}) {
   if (options.allowUnsafeModel) return;
 
   const requested = normalizeModelLabel(model);
-  const safeModels = (options.safeModels && options.safeModels.length ? options.safeModels : ["Gemini 3.5 Flash (Low)"])
+  const safeModels = (options.safeModels && options.safeModels.length ? options.safeModels : ["gemini-2.5-flash-lite"])
     .map(normalizeModelLabel)
     .filter(Boolean);
 

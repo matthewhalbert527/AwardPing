@@ -7,12 +7,19 @@ const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, args.env) : resolve(root, ".env.local");
 const env = { ...loadEnvFile(envPath), ...process.env };
+const synchronousGeminiDisabled = true;
 const apply = args.apply === true || args.apply === "true";
 const limit = positiveInt(args.limit, 0);
 const awardLike = String(args["award-like"] || "").trim().toLowerCase();
 const urlLike = String(args["url-like"] || "").trim().toLowerCase();
 const sourceId = String(args["source-id"] || "").trim();
-const model = args.model || env.GEMINI_TITLE_MODEL || env.GEMINI_SUMMARY_MODEL || env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+const model = "gemini-2.5-flash-lite";
+
+if (synchronousGeminiDisabled) {
+  throw new Error(
+    "Source page title backfill uses synchronous Gemini and is disabled. Use the batch source-intake/reconciliation pipeline instead.",
+  );
+}
 
 if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
   throw new Error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -112,65 +119,11 @@ async function loadLatestSnapshots(sourceIds) {
 }
 
 async function generateTitle(source, text) {
-  const response = await fetch(
-    "https://generativelanguage.googleapis.com/v1beta/models/" +
-      encodeURIComponent(model) +
-      ":generateContent?key=" +
-      encodeURIComponent(env.GEMINI_API_KEY),
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [
-            {
-              text: [
-                "Create a concise title for one source page in an award-source outline UI.",
-                "Return JSON only: {\"title\":\"...\"}.",
-                "Use 2-7 words, Title Case, and make it specific to this exact page.",
-                "Do not use generic labels like Apply, Learn More, Here, Guidelines, Application, or Source Page.",
-                "Do not simply rewrite the URL. Infer the page's role from the page text.",
-                "Prefer labels such as Application Instructions, Eligibility Requirements, Selection Criteria, Recommendation Guidance, FAQ, Deadline Calendar, Program Overview, Registration Form, or a specific document/topic title.",
-              ].join(" "),
-            },
-          ],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: [
-                  `Award: ${source.shared_awards?.name || "Unknown award"}`,
-                  `Stored title: ${source.title || ""}`,
-                  `Page type: ${source.page_type || "unknown"}`,
-                  `URL: ${source.url}`,
-                  "",
-                  "Page text excerpt:",
-                  text.slice(0, 5000),
-                ].join("\n"),
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.05,
-          maxOutputTokens: 80,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: "object",
-            properties: { title: { type: "string" } },
-            required: ["title"],
-          },
-        },
-      }),
-      signal: AbortSignal.timeout(18_000),
-    },
+  void source;
+  void text;
+  throw new Error(
+    "Source page title backfill uses synchronous Gemini and is disabled. Use the batch source-intake/reconciliation pipeline instead.",
   );
-
-  if (!response.ok) return null;
-  const data = await response.json();
-  return cleanGeneratedSourceTitle(extractGeminiText(data));
 }
 
 function cleanGeneratedSourceTitle(text) {

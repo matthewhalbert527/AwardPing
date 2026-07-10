@@ -27,6 +27,10 @@ import {
 import {
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import {
+  geminiWorkerModel,
+  normalizeGeminiBatchMode,
+} from "./lib/gemini-worker-policy.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
@@ -49,7 +53,7 @@ const geminiCliPath = cleanText(
     env.GEMINI_CLI_PATH ||
     (env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "agy", "bin", "agy.exe") : "agy"),
 );
-const geminiCliModel = cleanText(args["gemini-cli-model"] || env.AWARDPING_GEMINI_CLI_MODEL || "Gemini 3.5 Flash (Low)");
+const geminiCliModel = geminiWorkerModel();
 const geminiCliWorkspaceRoot = resolve(
   String(args["gemini-cli-workspace"] || env.AWARDPING_GEMINI_CLI_WORKSPACE || join(archiveRoot, "gemini-cli-workspace", "baseline-facts")),
 );
@@ -60,16 +64,10 @@ const geminiCliMaxCalls = nonNegativeInt(
     env.AWARDPING_GEMINI_CLI_MAX_CALLS,
   100,
 );
-const geminiCliSafeModels = listArg(args["gemini-cli-safe-models"] || env.AWARDPING_SAFE_GEMINI_CLI_MODELS, ["Gemini 3.5 Flash (Low)"]);
+const geminiCliSafeModels = [geminiWorkerModel()];
 const allowUnsafeGeminiCliModel = boolArg(args["allow-unsafe-gemini-cli-model"] ?? env.AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL, false);
 const aiProvider = selectAiProvider(requestedAiProvider);
-const geminiApiModel = cleanText(
-  args.model ||
-    env.AWARDPING_BASELINE_FACTS_GEMINI_MODEL ||
-    env.GEMINI_MODEL ||
-    env.GEMINI_SUMMARY_MODEL ||
-    "gemini-2.5-flash-lite",
-);
+const geminiApiModel = geminiWorkerModel();
 const dailyCostCapUsd = nonNegativeNumber(
   args["gemini-api-daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
   10,
@@ -84,7 +82,10 @@ const geminiApiMaxSubmittedRequests = nonNegativeInt(
     geminiApiMaxRequests,
   geminiApiMaxRequests,
 );
-const geminiApiMode = cleanSlug(args["gemini-api-mode"] || env.AWARDPING_GEMINI_API_MODE || "batch") || "batch";
+const geminiApiMode = normalizeGeminiBatchMode(
+  args["gemini-api-mode"] || env.AWARDPING_GEMINI_API_MODE || "batch",
+  { context: "Baseline facts" },
+);
 const baselineFactsMaxOutputTokens = boundedInt(
   args["baseline-facts-max-output-tokens"] || env.AWARDPING_BASELINE_FACTS_MAX_OUTPUT_TOKENS,
   1600,
@@ -138,15 +139,10 @@ const sourceIdFilter = cleanText(args["source-id"]);
 const sourceIdsFileFilter = sourceIdsFileSet(args["source-ids-file"]);
 const shardCount = positiveInt(args["shard-count"], 1);
 const shardIndex = nonNegativeInt(args["shard-index"], 0);
-const useGeminiBatchApi = aiProvider === "gemini" && geminiApiMode !== "immediate";
+const useGeminiBatchApi = aiProvider === "gemini";
 
 if (shardIndex >= shardCount) {
   console.error(`--shard-index must be less than --shard-count. Received ${shardIndex}/${shardCount}.`);
-  process.exit(1);
-}
-
-if (aiProvider === "gemini-cli" && !geminiCliPath) {
-  console.error("AWARDPING_GEMINI_CLI_PATH must point to agy.exe.");
   process.exit(1);
 }
 
@@ -156,7 +152,7 @@ if (aiProvider === "gemini" && !env.GEMINI_API_KEY) {
 }
 
 if (!aiProvider) {
-  console.error("GEMINI_API_KEY or AWARDPING_GEMINI_CLI_PATH is required for baseline facts backfill.");
+  console.error("GEMINI_API_KEY is required for Gemini Batch baseline facts backfill.");
   process.exit(1);
 }
 
@@ -1390,92 +1386,17 @@ function geminiInlineErrorMessage(error) {
 }
 
 async function runGeminiApiBaselineFactsAnalysis(source, capture) {
-  const maxJsonAttempts = 3;
-  let retryUsage = emptyGeminiUsage();
-
-  for (let attempt = 1; attempt <= maxJsonAttempts; attempt += 1) {
-    const data = await generateGeminiContentJson({
-      model: geminiApiModel,
-      requestBody: geminiApiBaselineFactsRequest(source, capture, "baseline_facts_backfill"),
-      requestTimeoutMs: geminiCliTimeoutMs,
-      kind: "baseline_facts",
-    });
-    const usage = normalizeGeminiUsage(data.usageMetadata);
-    const rawText = extractGeminiText(data);
-    const parsed = parseJsonObject(rawText);
-    if (parsed) {
-      return {
-        provider: "gemini",
-        model: geminiApiModel,
-        api_mode: "immediate",
-        result: parsed,
-        raw_text: rawText,
-        usage: addGeminiUsage(retryUsage, usage),
-      };
-    }
-
-    retryUsage = addGeminiUsage(retryUsage, usage);
-    if (attempt < maxJsonAttempts) {
-      const waitMs = 1_000 * attempt;
-      console.log(
-        `GEMINI_RETRY kind=baseline_facts_json attempt=${attempt}/${maxJsonAttempts} wait_ms=${waitMs} message=invalid_json raw=${logSnippet(rawText, 240)}`,
-      );
-      await sleep(waitMs);
-      continue;
-    }
-
-    throw new Error(`Gemini API returned invalid JSON: ${truncate(rawText, 500) || "empty response"}`);
-  }
-
-  throw new Error(`Gemini API returned invalid JSON after ${maxJsonAttempts} attempts.`);
+  void source;
+  void capture;
+  throw new Error("Immediate Gemini baseline facts analysis is disabled. Use Gemini Batch mode with gemini-2.5-flash-lite.");
 }
 
 async function generateGeminiContentJson({ model, requestBody, requestTimeoutMs, kind }) {
-  const maxAttempts = 4;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model,
-  )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-      });
-      const body = await response.text().catch(() => "");
-
-      if (response.ok) {
-        return JSON.parse(body);
-      }
-
-      const message = geminiHttpErrorMessage(response.status, body);
-      if (attempt < maxAttempts && isRetryableGeminiApiFailure(response.status, body)) {
-        const waitMs = 1_500 * attempt;
-        console.log(
-          `GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 240)}`,
-        );
-        await sleep(waitMs);
-        continue;
-      }
-
-      recordGeminiApiBillingBlock(kind, model, response.status, body, message);
-      throw new Error(message);
-    } catch (error) {
-      if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
-        const waitMs = 1_500 * attempt;
-        console.log(
-          `GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(errorMessage(error), 240)}`,
-        );
-        await sleep(waitMs);
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  throw new Error(`Gemini API failed after ${maxAttempts} attempts.`);
+  void model;
+  void requestBody;
+  void requestTimeoutMs;
+  void kind;
+  throw new Error("Synchronous Gemini generateContent is disabled. Use Gemini Batch mode with gemini-2.5-flash-lite.");
 }
 
 function geminiHttpErrorMessage(httpStatus, body) {
@@ -2238,10 +2159,9 @@ function listArg(value, fallback = []) {
 function selectAiProvider(requestedProvider) {
   const requested = String(requestedProvider || "auto").toLowerCase();
   if (requested === "gemini") return env.GEMINI_API_KEY ? "gemini" : null;
-  if (["gemini-cli", "antigravity", "agy"].includes(requested)) return geminiCliPath ? "gemini-cli" : null;
+  if (["gemini-cli", "antigravity", "agy"].includes(requested)) return null;
   if (requested !== "auto") return null;
   if (env.GEMINI_API_KEY) return "gemini";
-  if (geminiCliPath) return "gemini-cli";
   return null;
 }
 
@@ -2257,6 +2177,12 @@ function positiveInt(value, fallback) {
 function nonNegativeInt(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? Math.floor(number) : fallback;
+}
+
+function boundedInt(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
 function nonNegativeNumber(value, fallback) {

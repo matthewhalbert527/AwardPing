@@ -20,6 +20,10 @@ import {
   validateIntakeAiDecision,
 } from "./lib/source-intake.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
+import {
+  geminiWorkerModel,
+  normalizeGeminiBatchMode,
+} from "./lib/gemini-worker-policy.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -45,7 +49,10 @@ const statuses = csvList(args.status).length
   : ["pending", "queued", "failed"];
 const dryRun = boolArg(args["dry-run"], !boolArg(args.apply, false));
 const apply = boolArg(args.apply, !dryRun);
-const geminiApiMode = cleanChoice(args["gemini-api-mode"], ["batch", "immediate", "none"], "batch");
+const geminiApiMode = normalizeGeminiBatchMode(args["gemini-api-mode"] || "batch", {
+  allowNone: true,
+  context: "Source intake",
+});
 const createAwards = boolArg(args["create-awards"], true);
 const autoApproveThreshold = numberArg(args["auto-approve-threshold"], 0.85);
 const manualReviewThreshold = numberArg(args["manual-review-threshold"], 0.55);
@@ -53,7 +60,7 @@ const submit = boolArg(args.submit, true);
 const poll = boolArg(args.poll, true);
 const pollOnly = boolArg(args["poll-only"], false);
 const submitOnly = boolArg(args["submit-only"], false);
-const model = cleanNullable(args.model) || "gemini-2.5-flash-lite";
+const model = geminiWorkerModel();
 const maxRequestsPerBatch = positiveInt(args["max-requests-per-batch"], 100);
 const requestTimeoutMs = positiveInt(args["request-timeout-ms"], 120_000);
 const captureTimeoutMs = positiveInt(args["capture-timeout-ms"], 30_000);
@@ -252,13 +259,6 @@ async function processCaptureStage(row) {
           processed_at: new Date().toISOString(),
         });
       }
-      return;
-    }
-
-    if (geminiApiMode === "immediate") {
-      const result = await runImmediateGemini(row, capture, deterministicReview);
-      await finalizeReviewedRequest({ ...row, normalized_url: deterministicReview.normalizedUrl || normalizedUrl }, capture, deterministicReview, result);
-      summary.status = "reviewed_immediate";
       return;
     }
 
@@ -659,19 +659,6 @@ async function upsertAcceptedSource(awardId, sourceLike, row) {
   return data;
 }
 
-async function runImmediateGemini(row, capture, deterministicReview) {
-  const request = buildGeminiIntakeRequest(row, capture, deterministicReview, model).request;
-  const payload = await fetchGeminiJson(geminiGenerateUrl(model), {
-    method: "POST",
-    body: JSON.stringify(request),
-    kind: "source_intake_immediate_review",
-  });
-  const rawText = extractGeminiText(payload);
-  const parsed = parseJsonObject(rawText);
-  if (!parsed) throw new Error("Gemini immediate review returned invalid JSON.");
-  return parsed;
-}
-
 async function markBatchRowsFailed(batchName, message) {
   const { error } = await supabase
     .from("source_page_requests")
@@ -779,11 +766,6 @@ function geminiBatchUrl(value) {
   return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:batchGenerateContent`;
 }
 
-function geminiGenerateUrl(value) {
-  const modelName = String(value || "").replace(/^models\//, "");
-  return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent`;
-}
-
 async function fetchGeminiJson(url, { method, body, kind }) {
   const response = await fetch(url, {
     method,
@@ -845,7 +827,7 @@ Options:
   --status=pending,failed,needs_manual_review
   --apply=true|false
   --dry-run=true|false
-  --gemini-api-mode=batch|immediate|none
+  --gemini-api-mode=batch|none
   --create-awards=true|false
   --auto-approve-threshold=0.85
   --manual-review-threshold=0.55

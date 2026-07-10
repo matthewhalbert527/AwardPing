@@ -13,6 +13,7 @@ import {
 } from "./lib/visual-review-queue.mjs";
 import { sourceQualityDecision } from "./lib/source-quality.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
+import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -55,6 +56,7 @@ const reportPath = args["report"]
 const jsonlDir = args["jsonl-dir"]
   ? resolve(root, String(args["jsonl-dir"]))
   : join(reportDir, "visual-review-batch-jsonl");
+const model = geminiWorkerModel();
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -207,10 +209,10 @@ async function submitPendingCandidates() {
     eligible.push(candidate);
   }
 
-  const byModel = groupBy(eligible, (candidate) => cleanText(candidate.model) || "gemini-2.5-flash-lite");
-  for (const [model, modelCandidates] of byModel) {
+  const byModel = groupBy(eligible, () => model);
+  for (const [modelName, modelCandidates] of byModel) {
     for (const chunk of chunks(modelCandidates, maxRequestsPerBatch)) {
-      await submitCandidateChunk(model, chunk);
+      await submitCandidateChunk(modelName, chunk);
     }
   }
 }

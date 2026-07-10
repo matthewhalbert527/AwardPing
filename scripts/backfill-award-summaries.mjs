@@ -18,20 +18,20 @@ const delayMs = nonNegativeInt(args["delay-ms"], 200);
 const minExistingSummaryChars = positiveInt(args["min-existing-summary-chars"], 80);
 const minSourceTextChars = positiveInt(args["min-source-text-chars"], 450);
 const sourceTextChars = positiveInt(args["source-text-chars"], 9_000);
-const requestedAiProvider = String(args["ai-provider"] || env.AI_PROVIDER || "gemini").toLowerCase();
+const requestedAiProvider = String(args["ai-provider"] || env.AI_PROVIDER || "openai").toLowerCase();
 const aiProvider =
   requestedAiProvider === "auto"
-    ? env.GEMINI_API_KEY
-      ? "gemini"
-      : env.OPENAI_API_KEY
+    ? env.OPENAI_API_KEY
         ? "openai"
         : "false"
-    : requestedAiProvider;
+    : requestedAiProvider === "gemini"
+      ? "false"
+      : requestedAiProvider;
 const aiSummaries =
   args.ai !== "false" &&
   env.LOCAL_WORKER_AI_SUMMARIES !== "false" &&
-  ((aiProvider === "gemini" && Boolean(env.GEMINI_API_KEY)) ||
-    (aiProvider === "openai" && Boolean(env.OPENAI_API_KEY)));
+  aiProvider === "openai" &&
+  Boolean(env.OPENAI_API_KEY);
 const allowHeuristicApply = args["allow-heuristic-apply"] === "true";
 const outputPath =
   args.output ||
@@ -99,7 +99,7 @@ console.log(
 
 if (apply && !aiSummaries && !allowHeuristicApply) {
   throw new Error(
-    "Refusing to apply heuristic-only summaries. Add GEMINI_API_KEY or OPENAI_API_KEY, or pass --allow-heuristic-apply=true after reviewing a dry-run report.",
+    "Refusing to apply heuristic-only summaries. Add OPENAI_API_KEY, use the Gemini Batch reconciliation pipeline, or pass --allow-heuristic-apply=true after reviewing a dry-run report.",
   );
 }
 
@@ -318,68 +318,7 @@ async function generateAwardSummary(award, source) {
   const fallback = heuristicAwardSummary(award, source.text);
   if (!aiSummaries) return fallback;
   if (aiProvider === "openai") return generateWithOpenAI(award, source, fallback);
-  return generateWithGemini(award, source, fallback);
-}
-
-async function generateWithGemini(award, source, fallback) {
-  try {
-    const model = args.model || env.GEMINI_SUMMARY_MODEL || env.GEMINI_MODEL || "gemini-2.5-flash-lite";
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-        model,
-      )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [
-              {
-                text: [
-                  "You write concise award descriptions for a scholarship advising database.",
-                  "Describe the award, fellowship, grant, internship, or program itself, not the web page.",
-                  "Use only the supplied source text and fallback summary.",
-                  "Do not invent dates, award amounts, eligibility rules, or deadlines.",
-                  "Do not mention websites, pages, updates, source text, navigation, forms, or application instructions unless they define the award.",
-                ].join(" "),
-              },
-            ],
-          },
-          contents: [
-            {
-              role: "user",
-              parts: [
-                {
-                  text: [
-                    `Award: ${award.name}`,
-                    `Source title: ${source.title}`,
-                    `Source URL: ${source.url}`,
-                    `Fallback summary: ${fallback}`,
-                    "",
-                    `Source excerpt:\n${source.text}`,
-                    "",
-                    [
-                      "Return exactly one complete sentence of 16-32 words, maximum 220 characters.",
-                      "The sentence must say what the award funds, supports, recognizes, or provides and who it is for.",
-                      "Do not start with 'This page', 'The page', 'The website', or a source-page title.",
-                      "No bullets. No quotation marks.",
-                    ].join(" "),
-                  ].join("\n"),
-                },
-              ],
-            },
-          ],
-          generationConfig: { temperature: 0.05, maxOutputTokens: 90 },
-        }),
-        signal: AbortSignal.timeout(timeoutMs),
-      },
-    );
-    if (!response.ok) return fallback;
-    const data = await response.json();
-    return extractGeminiText(data) || fallback;
-  } catch {
-    return fallback;
-  }
+  return fallback;
 }
 
 async function generateWithOpenAI(award, source, fallback) {
@@ -570,15 +509,6 @@ function resultRow(award, status, source, summary, error) {
       : null,
     error,
   };
-}
-
-function extractGeminiText(data) {
-  return (
-    data?.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text || "")
-      .join(" ")
-      .trim() || ""
-  );
 }
 
 function extractOpenAIText(data) {

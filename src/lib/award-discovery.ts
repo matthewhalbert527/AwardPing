@@ -205,15 +205,6 @@ export async function classifyAwardCandidates(
     fetcher?: typeof fetch;
   } = {},
 ) {
-  const provider = selectAwardAiProvider();
-  if (provider === "gemini") {
-    return classifyAwardCandidatesWithGemini(query, candidates, {
-      apiKey: options.apiKey ?? appConfig.geminiApiKey,
-      model: options.model ?? appConfig.geminiDiscoveryModel,
-      fetcher: options.fetcher,
-    });
-  }
-
   const apiKey = options.apiKey ?? appConfig.openaiApiKey;
   if (!apiKey) {
     throw new Error("OpenAI is not configured.");
@@ -270,93 +261,10 @@ export function hasAwardClassifierConfig() {
 
 export function selectAwardAiProvider(): AwardAiProvider | null {
   const requested = appConfig.aiProvider.toLowerCase();
-  if (requested === "gemini") return appConfig.geminiApiKey ? "gemini" : null;
+  if (requested === "gemini") return null;
   if (requested === "openai") return appConfig.openaiApiKey ? "openai" : null;
-  if (appConfig.geminiApiKey) return "gemini";
   if (appConfig.openaiApiKey) return "openai";
   return null;
-}
-
-async function classifyAwardCandidatesWithGemini(
-  query: string,
-  candidates: SearchCandidate[],
-  options: {
-    apiKey?: string;
-    model?: string;
-    fetcher?: typeof fetch;
-  } = {},
-) {
-  const apiKey = options.apiKey ?? appConfig.geminiApiKey;
-  if (!apiKey) {
-    throw new Error("Gemini is not configured.");
-  }
-
-  const fetcher = options.fetcher ?? fetch;
-  const model = options.model ?? appConfig.geminiDiscoveryModel;
-  const response = await fetcher(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      model,
-    )}:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [
-            {
-              text:
-                "You classify search results for nationally competitive scholarships, fellowships, and awards. Prefer official national sponsor pages. Choose exact pages that update: deadline, application, eligibility, requirements, PDF guides, and FAQs. Do not invent URLs. Return only JSON matching the requested shape.",
-            },
-          ],
-        },
-        contents: [
-          {
-            role: "user",
-            parts: [
-              {
-                text: JSON.stringify({
-                  searchedAward: query,
-                  candidates: candidates.slice(0, 20),
-                  outputShape: {
-                    awardName: "string",
-                    officialHomepage: "string or null",
-                    summary: "string",
-                    confidence: "number from 0 to 1",
-                    candidates: [
-                      {
-                        url: "string",
-                        title: "string",
-                        pageType: awardPageTypes,
-                        confidence: "number from 0 to 1",
-                        reason: "string",
-                        recommendedToTrack: "boolean",
-                      },
-                    ],
-                  },
-                }),
-              },
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 3000,
-          responseMimeType: "application/json",
-        },
-      }),
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(`Gemini classification failed with ${response.status}.`);
-  }
-
-  const json = await response.json();
-  const outputText = extractGeminiOutputText(json);
-  const parsed = awardDiscoveryResultSchema.parse(JSON.parse(outputText));
-  return sanitizeDiscoveryResult(parsed);
 }
 
 export function extractOpenAIOutputText(response: unknown) {

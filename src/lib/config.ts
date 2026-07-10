@@ -1,3 +1,5 @@
+export const geminiBatchOnlyModel = "gemini-2.5-flash-lite";
+
 export const appConfig = {
   name: "AwardPing",
   url: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
@@ -12,15 +14,9 @@ export const appConfig = {
   tavilyApiKey: process.env.TAVILY_API_KEY || "",
   aiProvider: process.env.AI_PROVIDER || "auto",
   geminiApiKey: process.env.GEMINI_API_KEY || "",
-  geminiModel: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
-  geminiDiscoveryModel:
-    process.env.GEMINI_DISCOVERY_MODEL ||
-    process.env.GEMINI_MODEL ||
-    "gemini-2.5-flash-lite",
-  geminiSummaryModel:
-    process.env.GEMINI_SUMMARY_MODEL ||
-    process.env.GEMINI_MODEL ||
-    "gemini-2.5-flash-lite",
+  geminiModel: geminiBatchOnlyModel,
+  geminiDiscoveryModel: geminiBatchOnlyModel,
+  geminiSummaryModel: geminiBatchOnlyModel,
   openaiApiKey: process.env.OPENAI_API_KEY || "",
   openaiDiscoveryModel: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini",
   r2AccountId: textFromEnv("R2_ACCOUNT_ID"),

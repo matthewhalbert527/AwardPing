@@ -53,20 +53,19 @@ export function aiDisabledReasonForOptions(options = {}) {
 
 export function selectAiProvider(requestedProvider, keys = {}) {
   const requested = cleanMode(requestedProvider || "auto");
-  if (["gemini-cli", "antigravity", "agy"].includes(requested)) return keys.geminiCli ? "gemini-cli" : null;
+  if (["gemini-cli", "antigravity", "agy"].includes(requested)) return null;
   if (requested === "gemini") return keys.gemini ? "gemini" : null;
   if (requested === "openai") return keys.openai ? "openai" : null;
   if (requested !== "auto") return null;
   if (keys.gemini) return "gemini";
   if (keys.openai) return "openai";
-  if (keys.geminiCli) return "gemini-cli";
   return null;
 }
 
 export function missingAiProviderMessage(requestedProvider) {
   const requested = cleanMode(requestedProvider || "auto");
   if (["gemini-cli", "antigravity", "agy"].includes(requested)) {
-    return "AWARDPING_GEMINI_CLI_PATH must point to agy.exe when --ai-provider=gemini-cli. AI is required by this run's options; refusing to run.";
+    return "Gemini CLI is disabled by policy. Use Gemini API Batch with gemini-2.5-flash-lite.";
   }
   if (requested === "gemini") {
     return "GEMINI_API_KEY is required when --ai-provider=gemini. AI is required by this run's options; refusing to run.";
@@ -74,5 +73,5 @@ export function missingAiProviderMessage(requestedProvider) {
   if (requested === "openai") {
     return "OPENAI_API_KEY is required when --ai-provider=openai. AI is required by this run's options; refusing to run.";
   }
-  return "GEMINI_API_KEY, OPENAI_API_KEY, or AWARDPING_GEMINI_CLI_PATH is required by this run's options; refusing to run.";
+  return "GEMINI_API_KEY or OPENAI_API_KEY is required by this run's options; refusing to run.";
 }

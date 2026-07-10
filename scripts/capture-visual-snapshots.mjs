@@ -42,6 +42,7 @@ import {
   estimateGeminiCostUsd as estimateGeminiCostUsdByMode,
   normalizeGeminiPricingMode,
 } from "./lib/gemini-batch-support.mjs";
+import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
 import {
   buildStableTextBlocks,
   captureProfileSettings,
@@ -140,18 +141,13 @@ const defaultGeminiCliPath = env.LOCALAPPDATA
 const geminiCliPath = cleanText(
   args["gemini-cli-path"] || env.AWARDPING_GEMINI_CLI_PATH || env.GEMINI_CLI_PATH || defaultGeminiCliPath,
 );
-const geminiCliModel = cleanText(
-  args["gemini-cli-model"] || env.AWARDPING_GEMINI_CLI_MODEL || "Gemini 3.5 Flash (Low)",
-);
+const geminiCliModel = geminiWorkerModel();
 const geminiCliWorkspaceRoot = resolve(
   String(args["gemini-cli-workspace"] || env.AWARDPING_GEMINI_CLI_WORKSPACE || join(archiveRoot, "gemini-cli-workspace")),
 );
 const geminiCliTimeoutMs = positiveInt(args["gemini-cli-timeout-ms"] || env.AWARDPING_GEMINI_CLI_TIMEOUT_MS, 120_000);
 const geminiCliMaxCalls = nonNegativeInt(args["gemini-cli-max-calls"] || env.AWARDPING_GEMINI_CLI_MAX_CALLS, 100);
-const geminiCliSafeModels = listArg(
-  args["gemini-cli-safe-models"] || env.AWARDPING_SAFE_GEMINI_CLI_MODELS,
-  ["Gemini 3.5 Flash (Low)"],
-);
+const geminiCliSafeModels = [geminiWorkerModel()];
 const allowUnsafeGeminiCliModel = boolArg(
   args["allow-unsafe-gemini-cli-model"] ?? env.AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL,
   false,
@@ -366,14 +362,12 @@ const visualReviewMode = normalizeVisualReviewMode(
   args["visual-review-mode"] ?? env.AWARDPING_VISUAL_REVIEW_MODE ?? args["interpret-visual-changes"] ?? env.AWARDPING_INTERPRET_VISUAL_CHANGES,
   visualReviewDefaultMode,
 );
+if (visualReviewMode === "immediate") {
+  console.error("Immediate Gemini visual review is disabled. Use --visual-review-mode=batch or --visual-review-mode=none.");
+  process.exit(1);
+}
 const interpretVisualChanges = visualReviewMode !== "none";
-const visualReviewBatchModel = cleanText(
-  args["visual-review-model"] ||
-    env.AWARDPING_VISUAL_REVIEW_MODEL ||
-    args.model ||
-    env.AWARDPING_GEMINI_API_MODEL ||
-    "gemini-2.5-flash-lite",
-);
+const visualReviewBatchModel = geminiWorkerModel();
 const snapshotHistoryPrune = boolArg(
   args["snapshot-history-prune"] ?? env.AWARDPING_SNAPSHOT_HISTORY_PRUNE,
   true,
@@ -1407,27 +1401,6 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
     return;
   }
 
-  if (
-    visualReviewMode === "immediate" &&
-    gate.deterministic.classification === "applicant_fact_change" &&
-    ["gemini-cli", "gemini", "openai"].includes(aiProvider)
-  ) {
-    const trueChangesBefore = report.ai_true_changes;
-    await reviewAndApplyCandidateChange({
-      source,
-      baseline,
-      previous,
-      capture,
-      diff,
-      deterministic: gate.deterministic,
-      report,
-    });
-    if (report.ai_true_changes > trueChangesBefore) {
-      report.text_only_published_or_queued += 1;
-    }
-    return;
-  }
-
   const reviewPath = saveReviewRecord({
     source,
     baseline,
@@ -1435,7 +1408,7 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
     capture,
     diff,
     deterministic: gate.deterministic,
-    reason: "text_only_candidate_requires_batch_or_applicant_fact_immediate_review",
+    reason: "text_only_candidate_requires_batch_review",
     aiReview: {
       provider: "none",
       model: null,
@@ -2112,19 +2085,6 @@ async function processPdfComparison(source, baseline, previous, capture, report)
     });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`QUEUED visual_review_batch_pdf ${sourceLabel(source)}`);
-    return;
-  }
-
-  if (visualReviewMode === "immediate" && ["gemini-cli", "gemini", "openai"].includes(aiProvider)) {
-    await reviewAndApplyCandidateChange({
-      source,
-      baseline,
-      previous,
-      capture,
-      diff,
-      deterministic: gate.deterministic,
-      report,
-    });
     return;
   }
 
@@ -6116,55 +6076,7 @@ async function reviewWithGeminiCli(input) {
 }
 
 async function reviewWithGemini(input) {
-  ensureGeminiApiCallAvailable(input.report, "change_interpretation");
-  const imageParts = geminiInlineImageParts([input.previous.thumbPath, input.capture.thumb_path]);
-  const data = await generateGeminiContentJson({
-    model: aiModel,
-    requestBody: {
-      systemInstruction: { parts: [{ text: aiSystemPrompt }] },
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: aiUserPrompt(input) },
-            ...imageParts,
-          ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 900,
-        responseMimeType: "application/json",
-        responseSchema: aiResponseSchema,
-      },
-    },
-    requestTimeoutMs: timeoutMs,
-    report: input.report,
-    kind: "change_interpretation",
-  });
-  const usage = normalizeGeminiUsage(data.usageMetadata);
-  const rawText = extractGeminiText(data);
-  let result = null;
-  try {
-    result = normalizeAiReview(rawText, {
-      source: input.source,
-      diff: input.diff,
-      provider: "gemini",
-      model: aiModel,
-    });
-  } catch (error) {
-    error.aiUsage = usage;
-    throw error;
-  }
-
-  return {
-    ok: true,
-    provider: "gemini",
-    model: aiModel,
-    usage,
-    raw_text: rawText,
-    result,
-  };
+  throw new Error("Immediate Gemini visual review is disabled. Use the Gemini Batch visual-review worker.");
 }
 
 async function reviewWithOpenAI(input) {
@@ -6267,50 +6179,7 @@ async function maybeExtractBaselineFacts(source, capture, report, options = {}) 
 }
 
 async function extractBaselineFactsWithGemini(source, capture, report, reason) {
-  ensureGeminiApiCallAvailable(report, "baseline_facts");
-  const data = await generateGeminiContentJson({
-    model: aiModel,
-    requestBody: {
-      systemInstruction: { parts: [{ text: baselineFactsSystemPrompt }] },
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: geminiCliBaselineFactsPrompt(source, capture, reason) },
-            ...geminiInlineImageParts(geminiCliBaselineFactFiles(capture)),
-          ],
-        },
-      ],
-      generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 1200,
-        responseMimeType: "application/json",
-        responseSchema: baselineFactsResponseSchema,
-      },
-    },
-    requestTimeoutMs: timeoutMs,
-    report,
-    kind: "baseline_facts",
-  });
-  const usage = normalizeGeminiUsage(data.usageMetadata);
-  const rawText = extractGeminiText(data);
-  let result = null;
-  try {
-    result = normalizeBaselineFacts(parseJsonObject(rawText) || rawText);
-  } catch (error) {
-    error.aiUsage = usage;
-    throw error;
-  }
-
-  const analysis = {
-    provider: "gemini",
-    model: aiModel,
-    usage,
-    raw_text: rawText,
-    result,
-  };
-  recordGeminiUsage(report, source, capture, analysis, "baseline_facts");
-  return analysis;
+  throw new Error("Immediate Gemini baseline extraction is disabled. Use the Gemini Batch baseline-facts worker.");
 }
 
 async function extractBaselineFactsWithGeminiCli(source, capture, report, reason) {
@@ -8213,47 +8082,12 @@ async function generateGeminiContentJson({
   report,
   kind,
 }) {
-  const maxAttempts = 4;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    model,
-  )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(requestBody),
-        signal: AbortSignal.timeout(requestTimeoutMs),
-      });
-      const body = await response.text().catch(() => "");
-
-      if (response.ok) {
-        return JSON.parse(body);
-      }
-
-      const message = geminiHttpErrorMessage(response.status, body);
-      if (attempt < maxAttempts && isRetryableGeminiApiFailure(response.status, body)) {
-        const waitMs = 1_500 * attempt;
-        console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 240)}`);
-        await sleep(waitMs);
-        continue;
-      }
-
-      recordGeminiApiError(report, kind, response.status, body, message);
-      throw new Error(message);
-    } catch (error) {
-      if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
-        const waitMs = 1_500 * attempt;
-        console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(errorMessage(error), 240)}`);
-        await sleep(waitMs);
-        continue;
-      }
-      throw error;
-    }
-  }
-
-  throw new Error(`Gemini API failed after ${maxAttempts} attempts.`);
+  void model;
+  void requestBody;
+  void requestTimeoutMs;
+  void report;
+  void kind;
+  throw new Error("Synchronous Gemini generateContent is disabled. Use Gemini Batch mode with gemini-2.5-flash-lite.");
 }
 
 function geminiHttpErrorMessage(httpStatus, body) {
@@ -10056,12 +9890,7 @@ function missingAiMessage(requestedProvider) {
 
 function modelForProvider(provider) {
   if (provider === "gemini") {
-    return (
-      env.AWARDPING_VISUAL_GEMINI_MODEL ||
-      env.GEMINI_MODEL ||
-      env.GEMINI_SUMMARY_MODEL ||
-      "gemini-2.5-flash-lite"
-    );
+    return geminiWorkerModel();
   }
   if (provider === "openai") return env.OPENAI_SUMMARY_MODEL || env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini";
   if (provider === "gemini-cli") return geminiCliModel;

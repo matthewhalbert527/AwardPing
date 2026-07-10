@@ -34,10 +34,7 @@ const geminiCliPath = cleanText(
     (env.LOCALAPPDATA ? join(env.LOCALAPPDATA, "agy", "bin", "agy.exe") : "agy"),
 );
 const geminiCliModel = cleanText(
-    args["gemini-cli-model"] ||
-    env.AWARDPING_AWARD_DETAIL_GEMINI_CLI_MODEL ||
-    env.AWARDPING_GEMINI_CLI_MODEL ||
-    "Gemini 3.5 Flash (Low)",
+  "gemini-2.5-flash-lite",
 );
 const geminiCliWorkspaceRoot = resolve(
   String(
@@ -56,7 +53,7 @@ const geminiCliMaxCalls = nonNegativeInt(
 );
 const geminiCliSafeModels = listArg(
   args["gemini-cli-safe-models"] || env.AWARDPING_SAFE_GEMINI_CLI_MODELS,
-  ["Gemini 3.5 Flash (Low)"],
+  ["gemini-2.5-flash-lite"],
 );
 const allowUnsafeGeminiCliModel = boolArg(
   args["allow-unsafe-gemini-cli-model"] ?? env.AWARDPING_ALLOW_UNSAFE_GEMINI_CLI_MODEL,
@@ -73,6 +70,14 @@ const maxSourcesPerAward = boundedInt(args["max-sources-per-award"], 4, 1, 20);
 const sourceTextChars = positiveInt(args["source-text-chars"], 2_500);
 const totalTextChars = positiveInt(args["total-text-chars"], 10_000);
 const heartbeatMinutes = positiveInt(args["heartbeat-minutes"], 5);
+
+const geminiCliDisabledByPolicy = true;
+if (geminiCliDisabledByPolicy) {
+  console.error(
+    "Award baseline details uses Gemini CLI and is disabled by policy. Use Gemini Batch reconciliation/page-audit workers with gemini-2.5-flash-lite.",
+  );
+  process.exit(1);
+}
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");

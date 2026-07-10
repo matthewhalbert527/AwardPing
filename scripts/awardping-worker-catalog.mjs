@@ -274,10 +274,10 @@ export const atomicTasks = [
   {
     id: "award-details",
     laneId: "facts-cycle",
-    label: "Award Detail Extraction",
+    label: "Award Detail Extraction (disabled)",
     detail:
-      "Uses the local Gemini CLI workflow to extract richer award-level details from source baselines.",
-    cost: "Variable Gemini CLI usage; no dollar cap is enforced here.",
+      "Disabled by policy because it used the local Gemini CLI. Use Gemini Batch reconciliation and page-audit workers instead.",
+    cost: "$0 while disabled; Gemini work must use Batch API with gemini-2.5-flash-lite.",
     run: {
       kind: "script",
       args: [

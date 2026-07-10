@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -21,7 +22,7 @@ const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 const geminiApiKey = env.GEMINI_API_KEY;
 const limit = positiveInt(args.limit, 100);
 const maxRequestsPerBatch = positiveInt(args["max-requests-per-batch"], 100);
-const model = cleanNullable(args.model) || "gemini-2.5-flash-lite";
+const model = geminiWorkerModel();
 const apply = boolArg(args.apply, true);
 const submit = boolArg(args.submit, true);
 const poll = boolArg(args.poll, true);

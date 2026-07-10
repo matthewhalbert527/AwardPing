@@ -51,7 +51,7 @@ const discoveryMaxPerSource = boundedInt(args["discovery-max-per-source"], 3, 0,
 const discoveryMaxPerDomain = boundedInt(args["discovery-max-per-domain"], 100, 0, 10_000);
 const sourceIntakeLimit = positiveInt(args["source-intake-limit"], profile === "daily" ? 25 : 250);
 const sourceIntakeMaxRequestsPerBatch = positiveInt(args["source-intake-max-requests-per-batch"], 100);
-const sourceIntakeGeminiMode = cleanChoice(args["source-intake-gemini-api-mode"], ["batch", "immediate", "none"], "batch");
+const sourceIntakeGeminiMode = cleanChoice(args["source-intake-gemini-api-mode"], ["batch", "none"], "batch");
 const baselineLimit = positiveInt(args["baseline-limit"], 50_000);
 const baselineMaxCalls = nonNegativeInt(args["baseline-max-calls"], 50_000);
 const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 10);

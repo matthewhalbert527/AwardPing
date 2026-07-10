@@ -28,76 +28,15 @@ export async function generateChangeDetailsForSource(input: {
     return fallback;
   }
 
-  if (provider === "gemini") {
-    return generateWithGemini(input, fallback);
-  }
-
   return generateWithOpenAI(input, fallback);
 }
 
 function selectAiProvider() {
   const requested = appConfig.aiProvider.toLowerCase();
-  if ((requested === "gemini" || requested === "auto") && appConfig.geminiApiKey) {
-    return "gemini" as const;
-  }
   if ((requested === "openai" || requested === "auto") && appConfig.openaiApiKey) {
     return "openai" as const;
   }
   return null;
-}
-
-async function generateWithGemini(
-  input: {
-    previousSample?: string | null;
-    nextText: string;
-    source?: ChangeDetailSource;
-  },
-  fallback: ChangeDetails,
-) {
-  try {
-    const model = appConfig.geminiSummaryModel || appConfig.geminiModel;
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-        model,
-      )}:generateContent?key=${encodeURIComponent(appConfig.geminiApiKey)}`,
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          systemInstruction: {
-            parts: [{ text: systemPrompt }],
-          },
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: userPrompt(input, fallback) }],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            maxOutputTokens: 700,
-            responseMimeType: "application/json",
-            responseSchema: changeDetailsResponseSchema,
-          },
-        }),
-        signal: AbortSignal.timeout(20_000),
-      },
-    );
-
-    if (!response.ok) return withGenerationFallback(fallback, "gemini", model);
-    const data = await response.json();
-    return normalizeAiChangeDetails({
-      value: jsonValueFromText(extractGeminiText(data)),
-      fallback,
-      source: input.source,
-      provider: "gemini",
-      model,
-    });
-  } catch {
-    return withGenerationFallback(fallback, "gemini", appConfig.geminiSummaryModel || appConfig.geminiModel);
-  }
 }
 
 async function generateWithOpenAI(
@@ -158,66 +97,6 @@ async function generateWithOpenAI(
     return withGenerationFallback(fallback, "openai", appConfig.openaiDiscoveryModel || "gpt-4.1-mini");
   }
 }
-
-const changeDetailsResponseSchema = {
-  type: "object",
-  properties: {
-    reader_summary: { type: "string" },
-    before: { type: "string", nullable: true },
-    after: { type: "string", nullable: true },
-    exact_before: { type: "string", nullable: true },
-    exact_after: { type: "string", nullable: true },
-    section: { type: "string", nullable: true },
-    change_type: { type: "string" },
-    advisor_impact: { type: "string", nullable: true },
-    is_alert_worthy: { type: "boolean" },
-    source_relevance: { type: "string", enum: ["primary", "supporting", "unclear", "unrelated"] },
-    source_relevance_reason: { type: "string", nullable: true },
-    changed_facts: {
-      type: "array",
-      items: {
-        type: "object",
-        properties: {
-          fact: { type: "string" },
-          before: { type: "string", nullable: true },
-          after: { type: "string", nullable: true },
-          added_text: { type: "string", nullable: true },
-          removed_text: { type: "string", nullable: true },
-          visual_evidence: { type: "string", nullable: true },
-        },
-      },
-    },
-    evidence_location: { type: "string", nullable: true },
-    confidence: { type: "string", enum: ["low", "medium", "high"] },
-    noise_flags: {
-      type: "array",
-      items: { type: "string" },
-    },
-    rejection_reason: { type: "string", nullable: true },
-    quality_flags: {
-      type: "array",
-      items: { type: "string" },
-    },
-  },
-  required: [
-    "reader_summary",
-    "before",
-    "after",
-    "exact_before",
-    "exact_after",
-    "section",
-    "change_type",
-    "advisor_impact",
-    "is_alert_worthy",
-    "source_relevance",
-    "source_relevance_reason",
-    "changed_facts",
-    "evidence_location",
-    "confidence",
-    "noise_flags",
-    "rejection_reason",
-  ],
-};
 
 function withGenerationFallback(
   fallback: ChangeDetails,
@@ -345,21 +224,6 @@ function extractResponseText(data: unknown) {
       ) {
         parts.push(contentObject.text);
       }
-    }
-  }
-
-  return parts.join(" ").trim();
-}
-
-function extractGeminiText(data: unknown) {
-  const root = objectValue(data);
-  const parts: string[] = [];
-  for (const candidate of arrayValue(root?.candidates)) {
-    const candidateObject = objectValue(candidate);
-    const content = objectValue(candidateObject?.content);
-    for (const part of arrayValue(content?.parts)) {
-      const partObject = objectValue(part);
-      if (typeof partObject?.text === "string") parts.push(partObject.text);
     }
   }
 
