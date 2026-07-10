@@ -11,6 +11,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { AdminRunReport } from "@/components/admin-run-report";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { countActiveOpenSourcesWithVisualSnapshots } from "@/lib/admin-page-issues";
@@ -35,6 +36,7 @@ import {
 } from "@/lib/admin-maintenance";
 import { loadPageAuditSummary } from "@/lib/admin-page-audits";
 import { loadAwardReconciliationSummary } from "@/lib/admin-reconciliation";
+import { buildAdminRunReportFeed } from "@/lib/admin-run-report";
 import { loadSourceIntakeSummary } from "@/lib/admin-source-intake";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
@@ -172,6 +174,7 @@ export default async function AdminPage() {
   const commandPanelCommands = adminCommandPanelCommands();
   const latestMaintenance = latestMaintenanceRun(counts.recentRuns);
   const renderedAt = new Date().toISOString();
+  const initialRunFeed = buildAdminRunReportFeed(counts.recentRuns, new Date(renderedAt));
   const metadataPercent = percent(counts.openWithMetadata, counts.openSources);
   const cyclePercent = percent(
     counts.cycleCoverage.sourcesWithCycleRelevance,
@@ -402,6 +405,8 @@ export default async function AdminPage() {
           attention={pageBlockerCount > 0}
         />
       </section>
+
+      <AdminRunReport initialFeed={initialRunFeed} />
 
       <section className="admin-dashboard-grid">
         <div className="card admin-section-card admin-dashboard-card">
