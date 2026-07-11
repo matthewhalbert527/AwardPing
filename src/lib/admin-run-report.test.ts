@@ -119,6 +119,82 @@ describe("admin run report", () => {
     });
   });
 
+  it("keeps completed phase totals while the parent maintenance run continues", () => {
+    const runs = [
+      workerRun(
+        {
+          id: "maintenance",
+          worker_name: "local-maintenance-runner",
+          status: "running",
+          finished_at: null,
+          started_at: "2026-07-10T20:00:00.000Z",
+        },
+        { kind: "maintenance", profile: "catchup" },
+      ),
+      workerRun(
+        {
+          id: "coverage-complete",
+          worker_name: "local-open-source-ai-coverage-backfill",
+          status: "succeeded",
+          checked_count: 15_681,
+          finished_at: "2026-07-10T22:00:00.000Z",
+          started_at: "2026-07-10T20:01:00.000Z",
+        },
+        {
+          kind: "open_source_ai_review_coverage_backfill",
+          counters: {
+            moved_to_review_later: 9_036,
+            queued_for_ai_review: 6_645,
+          },
+        },
+      ),
+      workerRun(
+        {
+          id: "daily-visual-complete",
+          worker_name: "local-visual-snapshot-worker-shard-1-of-3",
+          status: "succeeded",
+          checked_count: 1_000,
+          finished_at: "2026-07-10T23:45:00.000Z",
+          started_at: "2026-07-10T23:00:00.000Z",
+        },
+        {
+          kind: "visual_snapshot",
+          counts: {
+            candidate_changes: 4,
+            deterministic_noise_rejected: 3,
+            expandable_sections_extracted: 548,
+          },
+        },
+      ),
+      workerRun(
+        {
+          id: "baseline-active",
+          worker_name: "local-baseline-facts-worker",
+          status: "running",
+          finished_at: null,
+          started_at: "2026-07-10T23:50:00.000Z",
+        },
+        { kind: "baseline_facts", counts: { checked: 0, extracted: 0 } },
+      ),
+    ];
+
+    const feed = buildAdminRunReportFeed(runs, new Date("2026-07-11T00:00:00.000Z"));
+
+    expect(feed.current?.title).toBe("Daily check completed; setup is running");
+    expect(feed.current?.summary).toContain("1,000 source pages checked so far");
+    expect(feed.current?.summary).toContain("9,036 irrelevant or unclear sources excluded");
+    expect(feed.current?.summary).toContain("6,645 sources prepared for Batch review");
+    expect(Object.fromEntries(feed.current?.items.map((reportItem) => [reportItem.key, reportItem.value]) || []))
+      .toMatchObject({
+        checked: 1_000,
+        candidates: 4,
+        noise: 3,
+        sections: 548,
+        excluded: 9_036,
+        "batch-ready": 6_645,
+      });
+  });
+
   it("reports the latest completed overnight daily run and its child work", () => {
     const parent = workerRun(
       {

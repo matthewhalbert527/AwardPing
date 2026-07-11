@@ -73,16 +73,34 @@ function buildCurrentDigest(runs: WorkerRun[], now: Date): RunReportDigest | nul
   });
   if (!active.length) return null;
 
-  const visualRuns = active.filter(isVisualRun);
-  const coverageRuns = active.filter(isAiCoverageRun);
+  const activeMaintenanceRuns = active.filter(isMaintenanceRun);
+  const currentScope = activeMaintenanceRuns.length
+    ? runs.filter((run) => {
+        const startedAt = dateMs(run.started_at);
+        const scopeStart = Math.min(
+          ...activeMaintenanceRuns.map((maintenanceRun) => dateMs(maintenanceRun.started_at)),
+        );
+        return startedAt >= scopeStart && startedAt <= now.getTime();
+      })
+    : active;
+  const visualRuns = currentScope.filter(isVisualRun);
+  const activeVisualRuns = active.filter(isVisualRun);
+  const coverageRuns = currentScope.filter(isAiCoverageRun);
   const maintenanceRuns = active.filter(isMaintenanceRun);
-  const baselineRuns = active.filter(isBaselineFactsRun);
-  const totals = summarizeRuns(active);
-  const hasDaily = visualRuns.length > 0 || maintenanceRuns.some((run) => runProfile(run) === "daily");
+  const baselineRuns = currentScope.filter(isBaselineFactsRun);
+  const totals = summarizeRuns(currentScope);
+  const hasDaily = visualRuns.some(isDailyVisualRun) ||
+    maintenanceRuns.some((run) => runProfile(run) === "daily");
+  const dailyIsRunning = activeVisualRuns.some(isDailyVisualRun) ||
+    maintenanceRuns.some((run) => runProfile(run) === "daily");
   const hasSetup = coverageRuns.length > 0 || maintenanceRuns.some((run) => runProfile(run) === "catchup");
 
   let title = "AwardPing is working";
-  if (hasDaily && hasSetup) title = "Daily check and setup are running";
+  if (hasDaily && hasSetup) {
+    title = dailyIsRunning
+      ? "Daily check and setup are running"
+      : "Daily check completed; setup is running";
+  }
   else if (hasDaily) title = "Daily source check is running";
   else if (hasSetup) title = "Initial setup is running";
   else if (baselineRuns.length) title = "AI fact review is running";

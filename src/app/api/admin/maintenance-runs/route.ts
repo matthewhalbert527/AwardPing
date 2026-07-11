@@ -132,6 +132,24 @@ async function loadWorkerReportRows() {
     ...((visualResult.data || []) as WorkerRun[]),
   ];
 
+  const activeMaintenanceRuns = ((activeResult.data || []) as WorkerRun[])
+    .filter((run) => run.worker_name === "local-maintenance-runner")
+    .sort(
+      (left, right) =>
+        new Date(left.started_at).getTime() - new Date(right.started_at).getTime(),
+    );
+  const activeMaintenanceStart = activeMaintenanceRuns[0]?.started_at;
+  if (activeMaintenanceStart) {
+    const activeChildResult = await admin
+      .from("local_worker_runs")
+      .select(workerRunColumns)
+      .gte("started_at", activeMaintenanceStart)
+      .order("started_at", { ascending: true })
+      .limit(250);
+    if (activeChildResult.error) warningParts.push(activeChildResult.error.message);
+    rows = [...rows, ...((activeChildResult.data || []) as WorkerRun[])];
+  }
+
   const dailyParent = latestCompletedDailyRun((maintenanceResult.data || []) as WorkerRun[]);
   if (dailyParent?.finished_at) {
     const childResult = await admin
