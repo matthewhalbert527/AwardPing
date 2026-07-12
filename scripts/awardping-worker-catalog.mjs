@@ -6,7 +6,7 @@ export const workerLanes = [
       "One temporary setup mode and one normal daily monitoring mode.",
     profileIds: ["catchup", "daily"],
     taskIds: ["health"],
-    workerIds: [],
+    workerIds: ["downstream-queues"],
   },
   {
     id: "source-quality",
@@ -178,7 +178,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["visual-review-batch"],
     },
-    scheduledWorkerIds: [],
+    scheduledWorkerIds: ["downstream-queues"],
   },
   {
     id: "source-intake",
@@ -269,7 +269,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["reconcile-awards"],
     },
-    scheduledWorkerIds: [],
+    scheduledWorkerIds: ["downstream-queues"],
   },
   {
     id: "page-audit-batch",
@@ -334,6 +334,15 @@ export const atomicTasks = [
 ];
 
 export const scheduledWorkers = [
+  {
+    id: "downstream-queues",
+    laneId: "orchestration",
+    taskName: "AwardPing Downstream Queue Pipeline",
+    label: "Hourly Queue Pipeline",
+    detail:
+      "Hourly: polls/submits Gemini Batch change reviews, then reconciles pending award facts and preserves last-known-good pages when audits fail.",
+    cost: "Gemini Batch API for queued change candidates; reconciliation has no direct AI cost.",
+  },
   {
     id: "baseline-completion",
     laneId: "repair-recovery",
@@ -410,6 +419,7 @@ export const scheduledWorkers = [
 
 export const workerProcessPatterns = [
   "Run-AwardPing",
+  "Run-AwardPingDownstreamQueues",
   "run-awardping-maintenance",
   "capture-visual-snapshots",
   "baseline-facts",
@@ -420,4 +430,6 @@ export const workerProcessPatterns = [
   "run-localization-repair",
   "run-overnight-source-quality",
   "process-source-intake-requests",
+  "process-visual-review-batch",
+  "reconcile-impacted-award-pages",
 ];

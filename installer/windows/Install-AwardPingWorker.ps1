@@ -400,6 +400,7 @@ function Write-UninstallScript {
   "AwardPing Overnight Source Quality Pass",
   "AwardPing Baseline Completion Watchdog",
   "AwardPing Baseline Facts Watchdog",
+  "AwardPing Downstream Queue Pipeline",
   "AwardPing Startup Supervisor"
 )
 
@@ -969,6 +970,30 @@ function Register-BaselineFactsWatchdog {
   Write-Host "Scheduled task created: AwardPing Baseline Facts Watchdog"
 }
 
+function Register-DownstreamQueuePipeline {
+  param([string]$InstallRoot)
+
+  Write-Step "Creating AwardPing downstream queue pipeline"
+  $pipelineScript = Join-Path $PSScriptRoot "Run-AwardPingDownstreamQueues.ps1"
+  if (-not (Test-Path -LiteralPath $pipelineScript)) {
+    Write-Host "Downstream queue pipeline script is missing; skipping its task." -ForegroundColor Yellow
+    return
+  }
+
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $pipelineScript `
+    -InstallRoot $InstallRoot `
+    -Install `
+    -IntervalMinutes 60 `
+    -VisualReviewLimit 250 `
+    -VisualReviewBatchSize 25 `
+    -ReconciliationLimit 250
+  if ($LASTEXITCODE -ne 0) {
+    throw "Could not install AwardPing downstream queue pipeline task."
+  }
+
+  Write-Host "Scheduled task created: AwardPing Downstream Queue Pipeline"
+}
+
 function Register-StartupSupervisorTask {
   param([string]$InstallRoot)
 
@@ -1042,6 +1067,7 @@ Install-Dependencies -AppDir $appDir
 Remove-LegacySourceTask -InstallRoot $InstallRoot
 Register-VisualSnapshotTask -InstallRoot $InstallRoot
 Register-BaselineFactsWatchdog -InstallRoot $InstallRoot
+Register-DownstreamQueuePipeline -InstallRoot $InstallRoot
 Register-StartupSupervisorTask -InstallRoot $InstallRoot
 
 if ((-not $UpdateOnly) -and $runTest) {

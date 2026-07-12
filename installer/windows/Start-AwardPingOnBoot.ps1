@@ -199,6 +199,11 @@ try {
     Start-TaskIfIdle -Name "AwardPing Baseline Facts Watchdog" -Reason "startup_resume"
   }
 
+  $downstreamTask = Enable-TaskIfPresent -Name "AwardPing Downstream Queue Pipeline"
+  if ($downstreamTask) {
+    Start-TaskIfIdle -Name "AwardPing Downstream Queue Pipeline" -Reason "startup_resume"
+  }
+
   $latestVisualSchedule = Get-LatestVisualScheduleTime
   foreach ($index in 1..3) {
     $taskName = "AwardPing Visual Snapshot Worker Shard $index"
