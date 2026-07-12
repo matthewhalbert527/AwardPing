@@ -6,6 +6,7 @@ import {
   extractGeminiBatchInlineResponses,
   geminiBatchInlineResponseMap,
   geminiBatchOutputFileNames,
+  geminiInlineError,
   mergeBatchJobRecord,
   normalizeGeminiPricingMode,
   shouldAttachBaselineFactsImage,
@@ -65,6 +66,37 @@ describe("Gemini batch support helpers", () => {
     expect(mapped.responses.get("source-1")).toBeTruthy();
     expect(mapped.duplicateKeys.has("source-1")).toBe(true);
     expect(mapped.missingKeys).toBe(1);
+  });
+
+  it("parses the nested inline response envelope returned by Gemini Batch", () => {
+    const responses = extractGeminiBatchInlineResponses({
+      response: {
+        inlinedResponses: {
+          inlinedResponses: [
+            {
+              metadata: { key: "source-actual" },
+              response: { candidates: [{ content: { parts: [{ text: "{}" }] } }] },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(responses).toHaveLength(1);
+    expect(geminiBatchInlineResponseMap(responses).responses.has("source-actual")).toBe(true);
+  });
+
+  it("surfaces prompt feedback blocks as item errors", () => {
+    expect(
+      geminiInlineError({
+        response: {
+          promptFeedback: { blockReason: "OTHER" },
+        },
+      }),
+    ).toMatchObject({
+      status: "PROMPT_BLOCKED",
+      message: "Gemini prompt blocked: OTHER",
+    });
   });
 
   it("finds file-based batch output references", () => {

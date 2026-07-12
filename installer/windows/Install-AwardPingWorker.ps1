@@ -957,7 +957,7 @@ function Register-BaselineFactsWatchdog {
     -Install `
     -Model "gemini-2.5-flash-lite" `
     -BatchMode "batch" `
-    -BatchMaxRequests 250 `
+    -BatchMaxRequests 25 `
     -BatchParallelJobs 4 `
     -DirectCatchupThreshold 0 `
     -CostCapUsd 10

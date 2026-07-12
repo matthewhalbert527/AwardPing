@@ -4,7 +4,7 @@ param(
   [int]$MaxCalls = 50000,
   [string]$Model = "gemini-2.5-flash-lite",
   [string]$BatchMode = "batch",
-  [int]$BatchMaxRequests = 250,
+  [int]$BatchMaxRequests = 25,
   [int]$BatchParallelJobs = 4,
   [int]$BatchPollSeconds = 30,
   [int]$DirectCatchupThreshold = 1000,
@@ -401,6 +401,12 @@ if ($status.Complete) {
 if ($status.Drained) {
   Write-WatchdogLog "drained_with_failures source=$($status.Source) latest_report=$($status.LatestReport) loaded=$($status.Loaded) processed=$($status.Processed) failed=$($status.Failed)"
   Start-AwardFactsAggregate -Reason "baseline_facts_drained" -StatusKey "$($status.LatestReport)|failed=$($status.Failed)"
+  if (Test-BaselineFactsWorkerActive) {
+    Write-WatchdogLog "drained_followup_waiting active=true latest_report=$($status.LatestReport)"
+    exit 0
+  }
+  Write-WatchdogLog "drained_followup_restarting latest_report=$($status.LatestReport) failed=$($status.Failed)"
+  Start-BaselineFacts
   exit 0
 }
 

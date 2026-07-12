@@ -61,10 +61,16 @@ export function extractGeminiBatchInlineResponses(data) {
   const direct = [
     response.inlinedResponses,
     response.inlined_responses,
+    response.inlinedResponses?.inlinedResponses,
+    response.inlined_responses?.inlined_responses,
     output.inlinedResponses,
     output.inlined_responses,
+    output.inlinedResponses?.inlinedResponses,
+    output.inlined_responses?.inlined_responses,
     data?.dest?.inlinedResponses,
     data?.dest?.inlined_responses,
+    data?.dest?.inlinedResponses?.inlinedResponses,
+    data?.dest?.inlined_responses?.inlined_responses,
   ].find(Array.isArray);
   return direct || [];
 }
@@ -118,6 +124,16 @@ export function geminiInlineResponsePayload(response) {
 }
 
 export function geminiInlineError(response) {
+  const payload = geminiInlineResponsePayload(response);
+  const promptFeedback = payload?.promptFeedback || payload?.prompt_feedback;
+  const blockReason = cleanText(promptFeedback?.blockReason || promptFeedback?.block_reason);
+  if (blockReason) {
+    return {
+      message: `Gemini prompt blocked: ${blockReason}`,
+      status: "PROMPT_BLOCKED",
+      prompt_feedback: promptFeedback,
+    };
+  }
   return response?.error || response?.response?.error || response?.status?.error || null;
 }
 

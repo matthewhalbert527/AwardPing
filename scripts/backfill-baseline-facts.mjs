@@ -28,6 +28,10 @@ import {
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
 import {
+  baselineFactsRejectionDisposition,
+  baselineReviewPreflightDecision,
+} from "./lib/baseline-facts-candidates.mjs";
+import {
   geminiWorkerModel,
   normalizeGeminiBatchMode,
 } from "./lib/gemini-worker-policy.mjs";
@@ -94,7 +98,7 @@ const baselineFactsMaxOutputTokens = boundedInt(
 );
 const geminiBatchMaxRequests = positiveInt(
   args["gemini-batch-max-requests"] || env.AWARDPING_GEMINI_BATCH_MAX_REQUESTS,
-  250,
+  25,
 );
 const geminiBatchParallelJobs = positiveInt(
   args["gemini-batch-parallel-jobs"] || env.AWARDPING_GEMINI_BATCH_PARALLEL_JOBS,
@@ -133,6 +137,7 @@ const geminiBatchTimeoutMinutes = positiveInt(
 const limit = positiveInt(args.limit, 100);
 const applyUpdates = boolArg(args.apply, true);
 const force = boolArg(args.force, false);
+const verboseSkips = boolArg(args["verbose-skips"], false);
 const includePdf = boolArg(args["include-pdf"], true);
 const includeWeb = boolArg(args["include-web"], true);
 const sourceIdFilter = cleanText(args["source-id"]);
@@ -181,6 +186,7 @@ async function runOnce() {
       limit,
       apply: applyUpdates,
       force,
+      verbose_skips: verboseSkips,
       include_pdf: includePdf,
       include_web: includeWeb,
       source_id: sourceIdFilter || null,
@@ -205,6 +211,10 @@ async function runOnce() {
       gemini_batch_timeout_minutes: useGeminiBatchApi ? geminiBatchTimeoutMinutes : null,
     },
     loaded_baselines: 0,
+    loaded_source_records: 0,
+    missing_local_baselines: 0,
+    scanned_targets: 0,
+    eligible_candidates: 0,
     checked: 0,
     extracted: 0,
     applied: 0,
@@ -213,6 +223,7 @@ async function runOnce() {
     award_reconciliation_queue_failed: 0,
     skipped_existing: 0,
     skipped_ineligible: 0,
+    skip_reasons: {},
     failed: 0,
     stop_reason: null,
     billing_blocked: false,
@@ -267,8 +278,11 @@ async function runOnce() {
     }
 
     runId = await startWorkerRun(report);
-    const targets = loadBaselineTargets();
+    const sourceRecords = await loadBaselineReviewSources();
+    report.loaded_source_records = sourceRecords?.size || 0;
+    const targets = loadBaselineTargets(sourceRecords);
     report.loaded_baselines = targets.length;
+    report.missing_local_baselines = Math.max(0, report.loaded_source_records - targets.length);
     const capLabel =
       aiProvider === "gemini"
         ? `api_max_requests=${geminiApiMaxRequests || "none"} api_max_submitted_requests=${geminiApiMaxSubmittedRequests || "none"}`
@@ -303,24 +317,34 @@ async function runOnce() {
       }
       if (report.billing_blocked) break;
 
+      report.scanned_targets += 1;
       const baseline = readJsonIfExists(target.baselinePath);
+      const source = target.source || sourceFromBaseline(baseline);
+      if (!baseline || !source) {
+        report.skipped_ineligible += 1;
+        recordSkipReason(report, "missing_baseline_or_source");
+        await maybeUpdateWorkerRun(runId, report);
+        continue;
+      }
+      const preflight = baselineReviewPreflightDecision({
+        source,
+        hasExistingFacts: baselineHasFacts(baseline),
+        force,
+      });
+      if (!preflight.shouldReview) {
+        recordPreflightSkip(report, preflight.reason, source);
+        await maybeUpdateWorkerRun(runId, report);
+        continue;
+      }
       const capture = captureFromBaseline(baseline);
-      const source = sourceFromBaseline(baseline);
-      if (!baseline || !capture || !source) {
+      if (!capture) {
         report.skipped_ineligible += 1;
-        continue;
-      }
-      const quality = sourceQualityDecision(source, { purpose: "monitoring" });
-      if (!quality.allowed) {
-        report.skipped_ineligible += 1;
-        console.log(`BASELINE_FACTS skipped source_quality=${quality.reason} ${sourceLabel(source)}`);
-        continue;
-      }
-      if (!force && baselineHasFacts(baseline)) {
-        report.skipped_existing += 1;
+        recordSkipReason(report, "missing_capture_files");
+        await maybeUpdateWorkerRun(runId, report);
         continue;
       }
 
+      report.eligible_candidates += 1;
       report.checked += 1;
       try {
         const analysis =
@@ -413,32 +437,73 @@ async function runOnce() {
   }
 }
 
-function loadBaselineTargets() {
+async function loadBaselineReviewSources() {
+  if (!supabase) return null;
+
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    let query = supabase
+      .from("shared_award_sources")
+      .select(
+        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,created_at",
+      )
+      .order("id", { ascending: true })
+      .range(from, from + 999);
+    if (sourceIdFilter) query = query.eq("id", sourceIdFilter);
+    else query = query.eq("admin_review_status", "open");
+
+    const { data, error } = await query;
+    if (error) throw new Error(`Load baseline review sources failed: ${error.message}`);
+    for (const source of data || []) {
+      if (sourceIdsFileFilter && !sourceIdsFileFilter.has(source.id)) continue;
+      rows.push(source);
+    }
+    if (!data || data.length < 1000 || sourceIdFilter) break;
+  }
+
+  return new Map(rows.map((source) => [source.id, source]));
+}
+
+function loadBaselineTargets(sourceRecords = null) {
   const sourcesRoot = join(archiveRoot, "sources");
   if (!existsSync(sourcesRoot)) return [];
 
   const targets = [];
-  for (const entry of readdirSync(sourcesRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    if (sourceIdFilter && entry.name !== sourceIdFilter) continue;
-    if (sourceIdsFileFilter && !sourceIdsFileFilter.has(entry.name)) continue;
-    if (shardCount > 1 && stableShard(entry.name, shardCount) !== shardIndex) continue;
-    const baselinePath = join(sourcesRoot, entry.name, "baseline.json");
+  const entries = sourceRecords
+    ? [...sourceRecords.entries()].map(([sourceId, source]) => ({ sourceId, source }))
+    : readdirSync(sourcesRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => ({ sourceId: entry.name, source: null }));
+
+  for (const entry of entries) {
+    if (sourceIdFilter && entry.sourceId !== sourceIdFilter) continue;
+    if (sourceIdsFileFilter && !sourceIdsFileFilter.has(entry.sourceId)) continue;
+    if (shardCount > 1 && stableShard(entry.sourceId, shardCount) !== shardIndex) continue;
+    const baselinePath = join(sourcesRoot, entry.sourceId, "baseline.json");
     if (!existsSync(baselinePath)) continue;
 
     const baseline = readJsonIfExists(baselinePath);
     const kind = baseline?.kind || (baseline?.capture?.pdf ? "pdf" : "webpage");
     if (!includePdf && kind === "pdf") continue;
     if (!includeWeb && kind !== "pdf") continue;
+    const baselineSource = sourceFromBaseline(baseline);
+    const source = entry.source
+      ? {
+          ...baselineSource,
+          ...entry.source,
+          shared_awards: baselineSource?.shared_awards || null,
+        }
+      : baselineSource;
     targets.push({
-      sourceId: entry.name,
+      sourceId: entry.sourceId,
       baselinePath,
+      source,
       sortKey: [
         baselineHasFacts(baseline) ? "1" : "0",
-        baseline?.source?.award_name || "",
-        baseline?.source?.title || "",
-        baseline?.source?.url || "",
-        entry.name,
+        source?.shared_awards?.name || baseline?.source?.award_name || "",
+        source?.title || baseline?.source?.title || "",
+        source?.url || baseline?.source?.url || "",
+        entry.sourceId,
       ].join("\t"),
     });
   }
@@ -588,23 +653,26 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
   let batchState = loadGeminiBatchState();
   batchState = await reconcileUnfinishedGeminiBatchJobs(batchState, targets, report, runId);
   const activeRequestKeys = activeBatchRequestKeys(batchState);
+  const activeJobs = unfinishedBatchJobs(batchState);
+  const availableJobSlots = Math.max(0, geminiBatchParallelJobs - activeJobs.length);
+  if (availableJobSlots === 0) {
+    report.stop_reason = "gemini_batch_jobs_processing";
+    console.log(`BASELINE_FACTS_BATCH processing jobs=${activeJobs.length} no_submission_slots=true`);
+    return;
+  }
   let chunk = [];
   let chunkBytes = geminiBatchEnvelopeBytes([]);
-  let pendingChunks = [];
+  const pendingChunks = [];
 
-  const queueChunk = async () => {
+  const queueChunk = () => {
     if (!chunk.length) return;
     pendingChunks.push(chunk);
     chunk = [];
     chunkBytes = geminiBatchEnvelopeBytes([]);
-
-    if (pendingChunks.length >= geminiBatchParallelJobs) {
-      await processGeminiApiBatchChunkGroup(pendingChunks, report, runId);
-      pendingChunks = [];
-    }
   };
 
   for (const target of targets) {
+    if (pendingChunks.length >= availableJobSlots) break;
     if (report.checked >= limit) break;
     if (report.billing_blocked) break;
     if (geminiApiMaxRequests && report.checked >= geminiApiMaxRequests) {
@@ -623,28 +691,35 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
       break;
     }
 
+    report.scanned_targets += 1;
     const baseline = readJsonIfExists(target.baselinePath);
+    const source = target.source || sourceFromBaseline(baseline);
+    if (!baseline || !source) {
+      report.skipped_ineligible += 1;
+      recordSkipReason(report, "missing_baseline_or_source");
+      await maybeUpdateWorkerRun(runId, report);
+      continue;
+    }
+    const preflight = baselineReviewPreflightDecision({
+      source,
+      hasExistingFacts: baselineHasFacts(baseline),
+      force,
+      activeBatchRequest: activeRequestKeys.has(source.id),
+    });
+    if (!preflight.shouldReview) {
+      recordPreflightSkip(report, preflight.reason, source);
+      await maybeUpdateWorkerRun(runId, report);
+      continue;
+    }
     const capture = captureFromBaseline(baseline);
-    const source = sourceFromBaseline(baseline);
-    if (!baseline || !capture || !source) {
+    if (!capture) {
       report.skipped_ineligible += 1;
-      continue;
-    }
-    const quality = sourceQualityDecision(source, { purpose: "monitoring" });
-    if (!quality.allowed) {
-      report.skipped_ineligible += 1;
-      console.log(`BASELINE_FACTS skipped source_quality=${quality.reason} ${sourceLabel(source)}`);
-      continue;
-    }
-    if (!force && baselineHasFacts(baseline)) {
-      report.skipped_existing += 1;
-      continue;
-    }
-    if (activeRequestKeys.has(source.id)) {
-      console.log(`BASELINE_FACTS skipped active_batch_request ${sourceLabel(source)}`);
+      recordSkipReason(report, "missing_capture_files");
+      await maybeUpdateWorkerRun(runId, report);
       continue;
     }
 
+    report.eligible_candidates += 1;
     const batchEntry = geminiBatchEntryForBaselineFacts(source, capture);
     const batchEntryBytes = Buffer.byteLength(JSON.stringify(batchEntry), "utf8") + 2;
     if (batchEntryBytes > geminiBatchMaxInlineBytes * 4) {
@@ -659,7 +734,9 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
       chunk.length > 0 &&
       (chunk.length >= geminiBatchMaxRequests || chunkBytes + batchEntryBytes > geminiBatchMaxInlineBytes)
     ) {
-      await queueChunk();
+      queueChunk();
+
+      if (pendingChunks.length >= availableJobSlots) break;
 
       if (report.billing_blocked) break;
       if (geminiApiDailyCapReached(report)) {
@@ -672,17 +749,22 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
     report.checked += 1;
     chunk.push({ target, baseline, capture, source, batchEntry });
     chunkBytes += batchEntryBytes;
+    if (chunk.length >= geminiBatchMaxRequests || chunkBytes >= geminiBatchMaxInlineBytes) {
+      queueChunk();
+    }
+    await maybeUpdateWorkerRun(runId, report);
   }
 
-  if (chunk.length) {
-    await queueChunk();
-  }
+  if (chunk.length && pendingChunks.length < availableJobSlots) queueChunk();
   if (pendingChunks.length && !report.billing_blocked) {
-    await processGeminiApiBatchChunkGroup(pendingChunks, report, runId);
+    await processGeminiApiBatchChunkGroup(pendingChunks, report, runId, { waitForCompletion: false });
+    if (report.gemini_usage.batch_submitted_requests > 0) {
+      report.stop_reason = "gemini_batch_jobs_submitted";
+    }
   }
 }
 
-async function processGeminiApiBatchChunkGroup(chunks, report, runId) {
+async function processGeminiApiBatchChunkGroup(chunks, report, runId, { waitForCompletion = true } = {}) {
   if (!chunks.length) return;
   if (geminiApiDailyCapReached(report)) {
     report.stop_reason = "gemini_api_cost_cap_reached";
@@ -695,14 +777,18 @@ async function processGeminiApiBatchChunkGroup(chunks, report, runId) {
       0,
     )}`,
   );
-  await Promise.all(chunks.map((entries) => processGeminiApiBatchChunkSafely(entries, report, runId)));
+  await Promise.all(
+    chunks.map((entries) =>
+      processGeminiApiBatchChunkSafely(entries, report, runId, { waitForCompletion })
+    ),
+  );
 }
 
-async function processGeminiApiBatchChunkSafely(entries, report, runId) {
+async function processGeminiApiBatchChunkSafely(entries, report, runId, { waitForCompletion = true } = {}) {
   const maxAttempts = 6;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      await processGeminiApiBatchChunk(entries, report, runId);
+      await processGeminiApiBatchChunk(entries, report, runId, { waitForCompletion });
       return;
     } catch (error) {
       const message = errorMessage(error);
@@ -855,7 +941,7 @@ function entriesForBatchStateJob(job, targetsBySourceId) {
     if (!target?.baselinePath || !existsSync(target.baselinePath)) continue;
     const baseline = readJsonIfExists(target.baselinePath);
     const capture = captureFromBaseline(baseline);
-    const source = sourceFromBaseline(baseline);
+    const source = target.source || sourceFromBaseline(baseline);
     if (!baseline || !capture || !source) continue;
     entries.push({
       target,
@@ -885,7 +971,7 @@ function isGeminiBatchSucceeded(state) {
   return new Set(["JOB_STATE_SUCCEEDED", "BATCH_STATE_SUCCEEDED"]).has(state);
 }
 
-async function processGeminiApiBatchChunk(entries, report, runId) {
+async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompletion = true } = {}) {
   const displayName = `awardping-baseline-facts-${timestampForPath(new Date().toISOString())}`;
   const requests = entries.map((entry) => entry.batchEntry);
   const inputMode = batchInputModeForRequests(requests, {
@@ -926,6 +1012,7 @@ async function processGeminiApiBatchChunk(entries, report, runId) {
   });
   console.log(`BASELINE_FACTS_BATCH submitted job=${batchName} requests=${entries.length} mode=${inputMode}`);
   await maybeUpdateWorkerRun(runId, report);
+  if (!waitForCompletion) return;
 
   let completed;
   try {
@@ -1535,10 +1622,21 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
   if (!supabase) return;
   const displayTitle = cleanPageTitle(capture.page_title) || cleanText(source.title) || "Source page";
   const now = new Date().toISOString();
+  const disposition = baselineFactsRejectionDisposition({ facts, reason });
+  const existingMetadata = source.page_metadata && typeof source.page_metadata === "object" && !Array.isArray(source.page_metadata)
+    ? source.page_metadata
+    : {};
+  const existingQualityFlags = stringArray(existingMetadata.quality_flags);
+  const qualityFlags = [
+    ...existingQualityFlags,
+    ...stringArray(facts.quality_flags),
+    ...(disposition.addSourceMismatch ? ["source-mismatch"] : []),
+  ];
   const update = {
     display_title: displayTitle,
     page_description: null,
     page_metadata: {
+      ...existingMetadata,
       version: 1,
       kind: "source_page_outline",
       provider: metadata.provider,
@@ -1548,16 +1646,18 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
       capture_kind: capture.kind || "webpage",
       final_url: capture.final_url || null,
       page_title: capture.page_title || null,
+      baseline_facts: null,
       baseline_facts_rejected: true,
+      baseline_facts_review_status: disposition.status,
       rejection_reason: reason,
-      quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
+      quality_flags: [...new Set(qualityFlags)],
     },
     page_metadata_generated_at: metadata.extracted_at,
     page_metadata_model: metadata.model,
     updated_at: now,
   };
 
-  if (shouldReviewLaterForBaselineFactsRejection(facts, reason)) {
+  if (disposition.reviewLater) {
     update.admin_review_status = "review_later";
     update.admin_review_note = truncate(
       `Auto-cleaned by baseline facts (${reason}): Gemini classified this page as award_relevance=${facts.award_relevance}, cycle_relevance=${facts.cycle_relevance}.`,
@@ -2056,12 +2156,17 @@ function workerMetadata(report) {
     options: report.options,
     counts: {
       loaded_baselines: report.loaded_baselines,
+      loaded_source_records: report.loaded_source_records,
+      missing_local_baselines: report.missing_local_baselines,
+      scanned_targets: report.scanned_targets,
+      eligible_candidates: report.eligible_candidates,
       checked: report.checked,
       extracted: report.extracted,
       applied: report.applied,
       skipped_existing: report.skipped_existing,
       skipped_ineligible: report.skipped_ineligible,
       failed: report.failed,
+      skip_reasons: report.skip_reasons,
     },
     visual_pipeline: {
       extraction: {
@@ -2357,6 +2462,23 @@ function estimateGeminiCostUsd(model, usage, pricingMode = "standard") {
   return estimateGeminiCostUsdByMode(model, usage, pricingMode);
 }
 
+function recordPreflightSkip(report, reason, source) {
+  if (reason === "existing_complete_ai_review" || reason === "active_batch_request") {
+    report.skipped_existing += 1;
+  } else {
+    report.skipped_ineligible += 1;
+  }
+  recordSkipReason(report, reason);
+  if (verboseSkips) {
+    console.log(`BASELINE_FACTS skipped reason=${reason} ${sourceLabel(source)}`);
+  }
+}
+
+function recordSkipReason(report, reason) {
+  const key = cleanSlug(reason) || "unknown";
+  report.skip_reasons[key] = (report.skip_reasons[key] || 0) + 1;
+}
+
 function roundUsd(value) {
   return Math.round(nonNegativeNumber(value, 0) * 1_000_000) / 1_000_000;
 }
@@ -2404,32 +2526,6 @@ function isContradictoryHighConfidenceFactFlag(flag) {
     "hacked_page",
     "pharma_spam",
   ].includes(clean);
-}
-
-function shouldReviewLaterForBaselineFactsRejection(facts, reason) {
-  const awardRelevance = normalizeAwardRelevance(facts?.award_relevance);
-  const cycleRelevance = normalizeCycleRelevance(facts?.cycle_relevance);
-  const flags = new Set(stringArray(facts?.quality_flags).map(cleanSlug));
-  if ([...flags].some((flag) =>
-    [
-      "source_mismatch",
-      "spam",
-      "job_board",
-      "career_page",
-      "search_results",
-      "generic_listing",
-      "sibling_program",
-      "access_error",
-      "hacked_page",
-      "pharma_spam",
-      "unrelated_program",
-    ].includes(flag)
-  )) return true;
-  if (awardRelevance === "unrelated") return true;
-  if (awardRelevance === "unclear") return true;
-  if (cycleRelevance === "not_program_page") return true;
-  if (cycleRelevance === "archived_or_past") return true;
-  return /^(award_relevance_|cycle_relevance_|quality_flag_|baseline_facts_rejected|url_)/.test(String(reason || ""));
 }
 
 function stringArray(value) {

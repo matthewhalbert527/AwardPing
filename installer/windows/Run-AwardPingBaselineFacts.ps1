@@ -3,7 +3,7 @@ param(
   [int]$MaxCalls = 50000,
   [string]$Model = "gemini-2.5-flash-lite",
   [string]$BatchMode = "batch",
-  [int]$BatchMaxRequests = 250,
+  [int]$BatchMaxRequests = 25,
   [int]$BatchParallelJobs = 4,
   [int]$BatchPollSeconds = 30,
   [decimal]$CostCapUsd = 10,
