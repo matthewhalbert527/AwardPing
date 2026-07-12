@@ -9,7 +9,7 @@ param(
   [int]$BatchPollSeconds = 30,
   [int]$DirectCatchupThreshold = 1000,
   [decimal]$CostCapUsd = 10,
-  [int]$IntervalMinutes = 5,
+  [int]$IntervalMinutes = 60,
   [switch]$Install
 )
 

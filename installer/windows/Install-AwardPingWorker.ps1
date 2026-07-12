@@ -959,6 +959,7 @@ function Register-BaselineFactsWatchdog {
     -BatchMode "batch" `
     -BatchMaxRequests 25 `
     -BatchParallelJobs 4 `
+    -IntervalMinutes 60 `
     -DirectCatchupThreshold 0 `
     -CostCapUsd 10
   if ($LASTEXITCODE -ne 0) {

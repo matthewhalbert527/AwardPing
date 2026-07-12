@@ -349,7 +349,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Baseline Facts Watchdog",
     label: "Baseline Facts Watchdog",
     detail:
-      "Keeps Gemini Batch page-fact extraction moving until source-page facts are caught up.",
+      "Checks hourly and keeps Gemini Batch page-fact extraction moving until source-page facts are caught up.",
     cost: "Gemini API cap: up to $10/day.",
   },
   {
