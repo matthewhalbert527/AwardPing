@@ -104,6 +104,8 @@ export type ReconciledAwardFacts = {
     selected_candidate_ids: string[];
     rejected_count: number;
     conflict_count: number;
+    preserved_fields?: string[];
+    review_flags?: string[];
   };
 };
 
@@ -472,10 +474,11 @@ export function auditPublicAwardPage(
   if (!selectedFacts.award_amounts.length && officialAmountCandidates.length) {
     findings.push({
       code: "missing_amount_with_official_evidence",
-      severity: "error",
-      message: "An official award-specific source contains amount evidence, but no amount was selected.",
+      severity: "warning",
+      message: "An official award-specific source contains amount evidence, but no amount was selected. Keep any last-known-good amount and review it without blocking other verified fields.",
       field_name: "award_amounts",
     });
+    suggested_fixes.push({ field_name: "award_amounts", reason: "review_official_amount_evidence" });
   }
 
   const source_rejections = (reconciliation?.sourceRejections || []).map((item) => ({
@@ -586,6 +589,52 @@ export function buildAwardSummaryFromFacts(award: ReconciliationAward, facts: Re
   addFact(parts, "Contacts", facts.contacts);
   parts.push(`Baseline detail confidence: ${facts.confidence || "medium"}.`);
   return truncate(parts.filter(Boolean).join(" "), 2800);
+}
+
+export function preserveLastKnownGoodAmountFacts(
+  selectedFacts: ReconciledAwardFacts,
+  previousPublicFacts: unknown,
+): ReconciledAwardFacts {
+  const previous = objectRecord(previousPublicFacts);
+  const previousAwardAmounts = uniqueStrings(arrayField(previous.award_amounts ?? previous.award_amount));
+  const previousStipend = cleanString(previous.stipend) || null;
+  const previousAllowance = cleanString(previous.travel_research_allowance) || null;
+  const preservedFields: string[] = [];
+
+  let awardAmounts = selectedFacts.award_amounts;
+  let stipend = selectedFacts.stipend;
+  let travelResearchAllowance = selectedFacts.travel_research_allowance;
+  if (!awardAmounts.length && previousAwardAmounts.length) {
+    awardAmounts = previousAwardAmounts;
+    preservedFields.push("award_amounts");
+  }
+  if (!stipend && previousStipend) {
+    stipend = previousStipend;
+    preservedFields.push("stipend");
+  }
+  if (!travelResearchAllowance && previousAllowance) {
+    travelResearchAllowance = previousAllowance;
+    preservedFields.push("travel_research_allowance");
+  }
+
+  if (!preservedFields.length) return selectedFacts;
+  return {
+    ...selectedFacts,
+    award_amounts: awardAmounts,
+    stipend,
+    travel_research_allowance: travelResearchAllowance,
+    reconciliation: {
+      ...selectedFacts.reconciliation,
+      preserved_fields: uniqueStrings([
+        ...(selectedFacts.reconciliation.preserved_fields || []),
+        ...preservedFields,
+      ]),
+      review_flags: uniqueStrings([
+        ...(selectedFacts.reconciliation.review_flags || []),
+        "amount_preserved_pending_review",
+      ]),
+    },
+  };
 }
 
 function selectedFactsFromSelections(
@@ -815,6 +864,12 @@ function arrayField(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap((item) => arrayField(item));
   const clean = cleanString(value);
   return clean ? splitFactItems(clean) : [];
+}
+
+function objectRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function splitFactItems(value: unknown) {

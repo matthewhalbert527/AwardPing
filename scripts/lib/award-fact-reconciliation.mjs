@@ -233,7 +233,15 @@ export function auditPublicAwardPage(award, selectedFacts, sources, options = {}
     const source = sourceForCandidate(candidate, sources);
     return canonicalFieldName(candidate.field_name) === "award_amounts" && sourceCanContributeField(source, "award_amounts", award);
   });
-  if (!(selectedFacts.award_amounts || []).length && officialAmountCandidates.length) findings.push({ code: "missing_amount_with_official_evidence", severity: "error", message: "An official award-specific source contains amount evidence, but no amount was selected.", field_name: "award_amounts" });
+  if (!(selectedFacts.award_amounts || []).length && officialAmountCandidates.length) {
+    findings.push({
+      code: "missing_amount_with_official_evidence",
+      severity: "warning",
+      message: "An official award-specific source contains amount evidence, but no amount was selected. Keep any last-known-good amount and review it without blocking other verified fields.",
+      field_name: "award_amounts",
+    });
+    suggested_fixes.push({ field_name: "award_amounts", reason: "review_official_amount_evidence" });
+  }
   const severity = maxFindingSeverity(findings);
   const shouldBlock = severity === "critical" || severity === "error";
   return {
@@ -332,6 +340,49 @@ export function buildAwardSummaryFromFacts(award, facts) {
   addFact(parts, "Contacts", facts.contacts);
   parts.push(`Baseline detail confidence: ${facts.confidence || "medium"}.`);
   return truncate(parts.filter(Boolean).join(" "), 2800);
+}
+
+export function preserveLastKnownGoodAmountFacts(selectedFacts, previousPublicFacts) {
+  const previous = objectRecord(previousPublicFacts);
+  const previousAwardAmounts = uniqueStrings(arrayField(previous.award_amounts ?? previous.award_amount));
+  const previousStipend = cleanString(previous.stipend) || null;
+  const previousAllowance = cleanString(previous.travel_research_allowance) || null;
+  const preservedFields = [];
+  let awardAmounts = selectedFacts.award_amounts || [];
+  let stipend = selectedFacts.stipend || null;
+  let travelResearchAllowance = selectedFacts.travel_research_allowance || null;
+
+  if (!awardAmounts.length && previousAwardAmounts.length) {
+    awardAmounts = previousAwardAmounts;
+    preservedFields.push("award_amounts");
+  }
+  if (!stipend && previousStipend) {
+    stipend = previousStipend;
+    preservedFields.push("stipend");
+  }
+  if (!travelResearchAllowance && previousAllowance) {
+    travelResearchAllowance = previousAllowance;
+    preservedFields.push("travel_research_allowance");
+  }
+  if (!preservedFields.length) return selectedFacts;
+
+  return {
+    ...selectedFacts,
+    award_amounts: awardAmounts,
+    stipend,
+    travel_research_allowance: travelResearchAllowance,
+    reconciliation: {
+      ...selectedFacts.reconciliation,
+      preserved_fields: uniqueStrings([
+        ...(selectedFacts.reconciliation?.preserved_fields || []),
+        ...preservedFields,
+      ]),
+      review_flags: uniqueStrings([
+        ...(selectedFacts.reconciliation?.review_flags || []),
+        "amount_preserved_pending_review",
+      ]),
+    },
+  };
 }
 
 export async function enqueueAwardReconciliation(supabase, { awardId, reason, sourceIds = [], candidateIds = [], priority = 100, metadata = {} }) {
@@ -559,6 +610,10 @@ function arrayField(value) {
   if (Array.isArray(value)) return value.flatMap((item) => arrayField(item));
   const clean = cleanString(value);
   return clean ? splitFactItems(clean) : [];
+}
+
+function objectRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
 function splitFactItems(value) {

@@ -853,8 +853,13 @@ function Install-Dependencies {
   for ($attempt = 1; $attempt -le 2; $attempt += 1) {
     Remove-DirectoryWithRetry -Path $nodeModules
     & npm ci --omit=dev
-    if ($LASTEXITCODE -eq 0) {
+    $missingDependencies = Get-MissingWorkerRuntimeDependencies -AppDir $AppDir
+    if ($LASTEXITCODE -eq 0 -and $missingDependencies.Count -eq 0) {
       return
+    }
+
+    if ($LASTEXITCODE -eq 0) {
+      Write-Host "npm completed but required worker modules are missing: $($missingDependencies -join ', ')" -ForegroundColor Yellow
     }
 
     if ($attempt -lt 2) {
@@ -863,6 +868,21 @@ function Install-Dependencies {
   }
 
   throw "npm install failed."
+}
+
+function Get-MissingWorkerRuntimeDependencies {
+  param([string]$AppDir)
+
+  $requiredPackages = @(
+    "@aws-sdk\client-s3",
+    "@aws-sdk\s3-request-presigner",
+    "@supabase\supabase-js",
+    "playwright-core",
+    "undici"
+  )
+  return @($requiredPackages | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $AppDir "node_modules\$_\package.json"))
+  })
 }
 
 function Remove-DirectoryWithRetry {
@@ -986,7 +1006,9 @@ function Register-DownstreamQueuePipeline {
     -IntervalMinutes 60 `
     -VisualReviewLimit 250 `
     -VisualReviewBatchSize 25 `
-    -ReconciliationLimit 250
+    -ReconciliationLimit 250 `
+    -PageAuditLimit 250 `
+    -PageAuditBatchSize 50
   if ($LASTEXITCODE -ne 0) {
     throw "Could not install AwardPing downstream queue pipeline task."
   }

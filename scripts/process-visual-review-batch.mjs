@@ -13,6 +13,14 @@ import {
 } from "./lib/visual-review-queue.mjs";
 import { sourceQualityDecision } from "./lib/source-quality.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
+import {
+  extractGeminiBatchInlineResponses,
+  extractGeminiUsageMetadata,
+  geminiBatchInlineResponseMap,
+  geminiBatchOutputFileNames,
+  geminiInlineError,
+  geminiInlineResponsePayload,
+} from "./lib/gemini-batch-support.mjs";
 import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -45,6 +53,7 @@ const submit = boolArg(args.submit, true);
 const apply = boolArg(args.apply, true);
 const pollOnly = boolArg(args["poll-only"], false);
 const submitOnly = boolArg(args["submit-only"], false);
+const recoverMissingBatchResponses = boolArg(args["recover-missing-batch-responses"], true);
 const requestTimeoutMs = positiveInt(args["request-timeout-ms"], 120_000);
 const reportDir = args["report-dir"]
   ? resolve(root, String(args["report-dir"]))
@@ -85,6 +94,7 @@ const report = {
     poll,
     submit,
     apply,
+    recover_missing_batch_responses: recoverMissingBatchResponses,
   },
   pending_visual_reviews: 0,
   submitted_jobs: 0,
@@ -96,6 +106,7 @@ const report = {
   published: 0,
   publish_duplicates: 0,
   superseded: 0,
+  recovered_missing_batch_responses: 0,
   awards_queued_for_reconciliation: 0,
   award_reconciliation_queue_existing: 0,
   award_reconciliation_queue_failed: 0,
@@ -131,13 +142,15 @@ try {
 async function pollExistingBatches() {
   const { data, error } = await supabase
     .from("shared_award_visual_review_candidates")
-    .select("gemini_batch_name,model,status")
-    .in("status", ["submitted", "processing"])
+    .select("gemini_batch_name,model,status,rejection_reason")
+    .in("status", recoverMissingBatchResponses ? ["submitted", "processing", "failed"] : ["submitted", "processing"])
     .not("gemini_batch_name", "is", null)
     .limit(10_000);
   if (error) throw new Error(`Load submitted visual review batches failed: ${error.message}`);
 
-  const batchNames = unique((data || []).map((row) => row.gemini_batch_name));
+  const batchNames = unique((data || [])
+    .filter((row) => row.status !== "failed" || row.rejection_reason === "missing_batch_response")
+    .map((row) => row.gemini_batch_name));
   for (const batchName of batchNames) {
     const job = await fetchGeminiJson(`https://generativelanguage.googleapis.com/v1beta/${batchName}`, {
       method: "GET",
@@ -269,14 +282,17 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
     .from("shared_award_visual_review_candidates")
     .select("*")
     .eq("gemini_batch_name", batchName)
-    .in("status", ["submitted", "processing", "succeeded"]);
+    .in("status", recoverMissingBatchResponses ? ["submitted", "processing", "succeeded", "failed"] : ["submitted", "processing", "succeeded"]);
   if (error) throw new Error(`Load visual review candidates for ${batchName} failed: ${error.message}`);
 
-  const candidates = data || [];
+  const candidates = (data || []).filter((candidate) =>
+    candidate.status !== "failed" || candidate.rejection_reason === "missing_batch_response"
+  );
   const sourcesById = await loadSourcesById(candidates.map((candidate) => candidate.shared_award_source_id));
   const responseMap = await geminiBatchResponseMap(job);
 
   for (const candidate of candidates) {
+    const recoveringMissingResponse = candidate.status === "failed" && candidate.rejection_reason === "missing_batch_response";
     const responseItem = responseMap.get(candidate.id) || responseMap.get(candidate.gemini_batch_request_key);
     if (!responseItem) {
       await markCandidate(candidate.id, {
@@ -289,6 +305,8 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       batchReport.failed += 1;
       continue;
     }
+
+    if (recoveringMissingResponse) report.recovered_missing_batch_responses += 1;
 
     const itemError = geminiInlineError(responseItem);
     if (itemError) {
@@ -551,7 +569,7 @@ function geminiBatchRequestForCandidate(candidate) {
       ],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 1600,
+        maxOutputTokens: 900,
         responseMimeType: "application/json",
         responseSchema: visualReviewResponseSchema,
       },
@@ -653,52 +671,7 @@ async function geminiBatchResponseMap(job) {
     }
   }
 
-  const mapped = new Map();
-  for (const response of responses) {
-    const key = geminiBatchInlineResponseKey(response);
-    if (key) mapped.set(key, response);
-  }
-  return mapped;
-}
-
-function extractGeminiBatchInlineResponses(data) {
-  const direct = [
-    data?.response?.inlinedResponses,
-    data?.response?.inlined_responses,
-    data?.response?.output?.inlinedResponses,
-    data?.response?.output?.inlined_responses,
-    data?.dest?.inlinedResponses,
-    data?.dest?.inlined_responses,
-  ].find(Array.isArray);
-  return direct || [];
-}
-
-function geminiBatchOutputFileNames(data) {
-  const names = [];
-  for (const rootValue of [
-    data?.response?.output,
-    data?.response?.dest,
-    data?.response?.outputConfig,
-    data?.response?.output_config,
-    data?.output,
-    data?.dest,
-  ]) {
-    collectFileNames(rootValue, names, new Set());
-  }
-  return unique(names).filter((name) => /^files\//.test(name));
-}
-
-function collectFileNames(value, names, seen) {
-  if (!value || typeof value !== "object") return;
-  if (seen.has(value)) return;
-  seen.add(value);
-  for (const [key, child] of Object.entries(value)) {
-    if (typeof child === "string" && /(?:fileName|file_name|output|dest)/i.test(key) && /^files\//.test(child)) {
-      names.push(child);
-    } else if (typeof child === "object") {
-      collectFileNames(child, names, seen);
-    }
-  }
+  return geminiBatchInlineResponseMap(responses).responses;
 }
 
 async function downloadGeminiFileText(fileName) {
@@ -876,24 +849,6 @@ function isGeminiBatchSucceeded(state) {
   return new Set(["JOB_STATE_SUCCEEDED", "BATCH_STATE_SUCCEEDED"]).has(state);
 }
 
-function geminiBatchInlineResponseKey(response) {
-  return cleanText(
-    response?.metadata?.key ||
-      response?.metadata?.request_key ||
-      response?.requestMetadata?.key ||
-      response?.request_metadata?.key ||
-      response?.key,
-  );
-}
-
-function geminiInlineResponsePayload(response) {
-  return response?.response || response?.generateContentResponse || response?.generate_content_response || response;
-}
-
-function geminiInlineError(response) {
-  return response?.error || response?.response?.error || response?.status?.error || null;
-}
-
 function geminiBatchErrorMessage(data) {
   return geminiInlineErrorMessage(data?.error || data?.response?.error || data?.metadata?.error);
 }
@@ -913,13 +868,7 @@ function extractGeminiText(data) {
 }
 
 function extractUsageMetadata(responseItem) {
-  return (
-    responseItem?.response?.usageMetadata ||
-    responseItem?.response?.usage_metadata ||
-    responseItem?.usageMetadata ||
-    responseItem?.usage_metadata ||
-    {}
-  );
+  return extractGeminiUsageMetadata(responseItem);
 }
 
 function normalizeGeminiUsage(metadata) {

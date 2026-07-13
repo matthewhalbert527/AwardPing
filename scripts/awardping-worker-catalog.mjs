@@ -340,8 +340,8 @@ export const scheduledWorkers = [
     taskName: "AwardPing Downstream Queue Pipeline",
     label: "Hourly Queue Pipeline",
     detail:
-      "Hourly: polls/submits Gemini Batch change reviews, then reconciles pending award facts and preserves last-known-good pages when audits fail.",
-    cost: "Gemini Batch API for queued change candidates; reconciliation has no direct AI cost.",
+      "Hourly: recovers and submits Gemini Batch change reviews, reconciles pending award facts, preserves last-known-good amounts for review, and processes flagged page audits.",
+    cost: "Gemini Batch API for queued change candidates and flagged page audits; reconciliation has no direct AI cost.",
   },
   {
     id: "baseline-completion",

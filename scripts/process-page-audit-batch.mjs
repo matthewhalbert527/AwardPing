@@ -1,7 +1,14 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
+import {
+  extractGeminiBatchInlineResponses,
+  geminiBatchInlineResponseMap,
+  geminiBatchOutputFileNames,
+  geminiInlineError,
+  geminiInlineResponsePayload,
+} from "./lib/gemini-batch-support.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -32,7 +39,35 @@ const reportDir = args["report-dir"] ? resolve(root, String(args["report-dir"]))
 const reportPath = args.report
   ? resolve(root, String(args.report))
   : join(reportDir, `page-audit-batch-${timestampForPath(new Date().toISOString())}.json`);
+const journalPath = args.journal
+  ? resolve(root, String(args.journal))
+  : join(reportDir, "page-audit-batch-journal.json");
 const requestTimeoutMs = positiveInt(args["request-timeout-ms"], 120_000);
+const pageAuditResponseSchema = {
+  type: "object",
+  properties: {
+    audit_status: { type: "string", enum: ["passed", "warnings", "failed", "needs_review"] },
+    severity: { type: "string", enum: ["info", "warning", "error", "critical"] },
+    findings: compactAuditStringArray("Up to four concise, evidence-bound findings."),
+    suggested_fixes: compactAuditStringArray("Up to four concise fixes citing an exact quote, source, or candidate id."),
+    source_rejections: compactAuditStringArray("Up to four source rejection decisions with a specific reason."),
+    field_corrections: compactAuditStringArray("Up to four evidence-backed field corrections."),
+    organization_corrections: compactAuditStringArray("Up to four concise page organization corrections."),
+    should_block_publication: { type: "boolean" },
+    confidence: { type: "string", enum: ["high", "medium", "low"] },
+  },
+  required: [
+    "audit_status",
+    "severity",
+    "findings",
+    "suggested_fixes",
+    "source_rejections",
+    "field_corrections",
+    "organization_corrections",
+    "should_block_publication",
+    "confidence",
+  ],
+};
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -45,24 +80,30 @@ if (!geminiApiKey && (submit || poll)) {
 
 mkdirSync(reportDir, { recursive: true });
 const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+let batchJournal = loadBatchJournal();
 const report = {
   started_at: new Date().toISOString(),
   finished_at: null,
   status: "running",
   env_path: envPath,
   report_path: reportPath,
-  options: { limit, max_requests_per_batch: maxRequestsPerBatch, model, apply, submit, poll },
+  options: { limit, max_requests_per_batch: maxRequestsPerBatch, model, apply, submit, poll, journal_path: journalPath },
   page_audit_batch_candidates: 0,
   submitted_jobs: 0,
   submitted_audits: 0,
   reconciled: 0,
   failed: 0,
+  skipped_existing_audits: 0,
+  retrying_failed_audits: 0,
+  recovered_unpersisted_jobs: 0,
+  dry_run_audits: 0,
   errors: [],
   batches: [],
 };
 
 writeReport();
 try {
+  if (apply) await recoverUnpersistedBatchJobs();
   if (poll && !submitOnly) await pollExistingBatches();
   if (submit && !pollOnly) await submitFlaggedAudits();
   report.status = "succeeded";
@@ -119,6 +160,17 @@ async function pollExistingBatches() {
         batchReport.failed += 1;
         continue;
       }
+      const itemError = geminiInlineError(item);
+      if (itemError) {
+        await updateAudit(audit.id, {
+          ai_result: { error: geminiInlineErrorMessage(itemError) },
+          audit_status: "needs_review",
+          severity: "error",
+        });
+        report.failed += 1;
+        batchReport.failed += 1;
+        continue;
+      }
       const rawText = extractGeminiText(geminiInlineResponsePayload(item));
       const result = parseJsonObject(rawText);
       if (!result) {
@@ -135,7 +187,7 @@ async function pollExistingBatches() {
 }
 
 async function submitFlaggedAudits() {
-  const { data, error, count } = await supabase
+  const { data, error } = await supabase
     .from("shared_award_page_audits")
     .select("*", { count: "exact" })
     .eq("audit_kind", "deterministic")
@@ -147,11 +199,78 @@ async function submitFlaggedAudits() {
     if (isMissingTableError(error)) return;
     throw new Error(`Load flagged page audits failed: ${error.message}`);
   }
-  const audits = data || [];
-  report.page_audit_batch_candidates = count || audits.length;
+  const latestByAward = new Map();
+  for (const audit of data || []) {
+    if (!latestByAward.has(audit.shared_award_id)) latestByAward.set(audit.shared_award_id, audit);
+  }
+  const latestAudits = [...latestByAward.values()];
+  const existingRequests = await loadExistingBatchRequestState(latestAudits.map((audit) => audit.id));
+  const audits = latestAudits.filter((audit) => !existingRequests.blocked.has(audit.id));
+  report.page_audit_batch_candidates = audits.length;
+  report.skipped_existing_audits += existingRequests.blocked.size;
+  report.retrying_failed_audits += audits.filter((audit) => existingRequests.retryable.has(audit.id)).length;
+  if (!apply) {
+    report.dry_run_audits += audits.length;
+    return;
+  }
   for (const chunk of chunks(audits, maxRequestsPerBatch)) {
     await submitAuditChunk(chunk);
   }
+}
+
+async function recoverUnpersistedBatchJobs() {
+  for (const entry of batchJournal.jobs.filter((job) => !job.persisted_at)) {
+    const requestKeys = unique(entry.request_keys);
+    if (!entry.batch_name || !requestKeys.length) continue;
+    const audits = [];
+    for (const requestChunk of chunks(requestKeys, 200)) {
+      const { data, error } = await supabase
+        .from("shared_award_page_audits")
+        .select("*")
+        .eq("audit_kind", "deterministic")
+        .in("id", requestChunk);
+      if (error) throw new Error(`Recover page audit journal inputs failed: ${error.message}`);
+      audits.push(...(data || []));
+    }
+    if (audits.length !== requestKeys.length) {
+      throw new Error(`Recover page audit journal failed for ${entry.batch_name}: expected ${requestKeys.length} deterministic audits, found ${audits.length}.`);
+    }
+    await persistPageAuditBatchRows(entry.batch_name, pageAuditRowsForBatch(audits, entry.batch_name));
+    markJournalJobPersisted(entry.batch_name);
+    report.recovered_unpersisted_jobs += 1;
+  }
+}
+
+async function loadExistingBatchRequestState(requestKeys) {
+  const rowsByRequestKey = new Map();
+  for (const requestChunk of chunks(unique(requestKeys), 200)) {
+    if (!requestChunk.length) continue;
+    const { data, error } = await supabase
+      .from("shared_award_page_audits")
+      .select("gemini_batch_request_key,ai_result")
+      .eq("audit_kind", "gemini_batch")
+      .in("gemini_batch_request_key", requestChunk);
+    if (error) throw new Error(`Load existing page audit Batch requests failed: ${error.message}`);
+    for (const row of data || []) {
+      if (!row.gemini_batch_request_key) continue;
+      const rows = rowsByRequestKey.get(row.gemini_batch_request_key) || [];
+      rows.push(row);
+      rowsByRequestKey.set(row.gemini_batch_request_key, rows);
+    }
+  }
+
+  const blocked = new Set();
+  const retryable = new Set();
+  for (const [requestKey, rows] of rowsByRequestKey) {
+    const hasActiveAttempt = rows.some((row) => row.ai_result === null || row.ai_result === undefined);
+    const hasSuccessfulAttempt = rows.some((row) => !pageAuditResultIsRetryableFailure(row.ai_result));
+    if (hasActiveAttempt || hasSuccessfulAttempt || rows.length >= 2) {
+      blocked.add(requestKey);
+    } else {
+      retryable.add(requestKey);
+    }
+  }
+  return { blocked, retryable };
 }
 
 async function submitAuditChunk(audits) {
@@ -165,8 +284,9 @@ async function submitAuditChunk(audits) {
       contents: [{ role: "user", parts: [{ text: buildPrompt(audit) }] }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 1400,
+        maxOutputTokens: 1600,
         responseMimeType: "application/json",
+        responseSchema: pageAuditResponseSchema,
       },
     },
     metadata: { key: audit.id, deterministic_audit_id: audit.id },
@@ -179,29 +299,57 @@ async function submitAuditChunk(audits) {
   const batchName = geminiBatchJobName(batch);
   if (!batchName) throw new Error(`Gemini page audit batch did not return a batch name: ${JSON.stringify(batch).slice(0, 500)}`);
 
-  if (apply) {
-    const rows = audits.map((audit) => ({
-      shared_award_id: audit.shared_award_id,
-      audit_kind: "gemini_batch",
-      audit_status: "needs_review",
-      severity: audit.severity || "warning",
-      findings: audit.findings || [],
-      suggested_fixes: audit.suggested_fixes || [],
-      field_conflicts: audit.field_conflicts || [],
-      source_rejections: audit.source_rejections || [],
-      selected_fact_summary: audit.selected_fact_summary || {},
-      public_page_snapshot: audit.public_page_snapshot || {},
-      model,
-      gemini_batch_name: batchName,
-      gemini_batch_request_key: audit.id,
-    }));
-    const { error } = await supabase.from("shared_award_page_audits").insert(rows);
-    if (error) throw new Error(`Persist page audit batch rows failed: ${error.message}`);
-  }
-
   report.submitted_jobs += 1;
   report.submitted_audits += audits.length;
-  report.batches.push({ name: batchName, model, submitted_audits: audits.length });
+  report.batches.push({ name: batchName, model, submitted_audits: audits.length, persisted: false });
+  recordJournalJob(batchName, audits.map((audit) => audit.id));
+  writeReport();
+
+  await persistPageAuditBatchRows(batchName, pageAuditRowsForBatch(audits, batchName));
+  markJournalJobPersisted(batchName);
+  report.batches.at(-1).persisted = true;
+  writeReport();
+}
+
+function pageAuditRowsForBatch(audits, batchName) {
+  return audits.map((audit) => ({
+    shared_award_id: audit.shared_award_id,
+    audit_kind: "gemini_batch",
+    audit_status: "needs_review",
+    severity: audit.severity || "warning",
+    findings: audit.findings || [],
+    suggested_fixes: audit.suggested_fixes || [],
+    field_conflicts: audit.field_conflicts || [],
+    source_rejections: audit.source_rejections || [],
+    selected_fact_summary: audit.selected_fact_summary || {},
+    public_page_snapshot: audit.public_page_snapshot || {},
+    model,
+    gemini_batch_name: batchName,
+    gemini_batch_request_key: audit.id,
+  }));
+}
+
+async function persistPageAuditBatchRows(batchName, rows) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const { data: existing, error: loadError } = await supabase
+      .from("shared_award_page_audits")
+      .select("gemini_batch_request_key")
+      .eq("audit_kind", "gemini_batch")
+      .eq("gemini_batch_name", batchName);
+    if (loadError) {
+      lastError = loadError;
+    } else {
+      const existingKeys = new Set((existing || []).map((row) => row.gemini_batch_request_key).filter(Boolean));
+      const missingRows = rows.filter((row) => !existingKeys.has(row.gemini_batch_request_key));
+      if (!missingRows.length) return;
+      const { error: insertError } = await supabase.from("shared_award_page_audits").insert(missingRows);
+      if (!insertError) return;
+      lastError = insertError;
+    }
+    if (attempt < 4) await sleep(attempt * 1_500);
+  }
+  throw new Error(`Persist page audit batch rows failed for ${batchName}: ${lastError?.message || "unknown Supabase error"}`);
 }
 
 function buildPrompt(audit) {
@@ -209,6 +357,7 @@ function buildPrompt(audit) {
     "Audit this reconciled public award page. Default to needs_review when uncertain.",
     "Reject sibling sources, unsupported descriptions, invented dates, stale cycle states, rejected-source facts, vague materials, and generic listing facts.",
     "Apply suggestions only if supported by candidate ids, exact evidence quotes, or the supplied public page snapshot.",
+    "Return only the four most important items in each list. Keep every list item under 160 characters.",
     "Required JSON:",
     '{"audit_status":"passed|warnings|failed|needs_review","severity":"info|warning|error|critical","findings":[],"suggested_fixes":[],"source_rejections":[],"field_corrections":[],"organization_corrections":[],"should_block_publication":true,"confidence":"high|medium|low"}',
     "Deterministic audit:",
@@ -260,29 +409,59 @@ function geminiBatchUrl(value) {
 }
 
 async function fetchGeminiJson(url, { method, body, kind }) {
-  const response = await fetch(url, {
-    method,
-    headers: { "content-type": "application/json", "x-goog-api-key": geminiApiKey },
-    body,
-    signal: AbortSignal.timeout(requestTimeoutMs),
-  });
-  const text = await response.text().catch(() => "");
-  if (!response.ok) throw new Error(`Gemini ${kind} failed: ${response.status} ${text.slice(0, 500)}`);
-  return JSON.parse(text);
+  const maxAttempts = 4;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method,
+        headers: { "content-type": "application/json", "x-goog-api-key": geminiApiKey },
+        body,
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+      const text = await response.text().catch(() => "");
+      if (response.ok) return JSON.parse(text);
+      const message = `Gemini ${kind} failed: ${response.status} ${text.slice(0, 500)}`;
+      if (attempt >= maxAttempts || ![408, 409, 429, 500, 502, 503, 504].includes(response.status)) throw new Error(message);
+      await sleep(attempt * 1_500);
+    } catch (error) {
+      if (attempt >= maxAttempts || !/(fetch failed|network|timeout|econnreset|etimedout|socket|high demand)/i.test(errorMessage(error))) throw error;
+      await sleep(attempt * 1_500);
+    }
+  }
+  throw new Error(`Gemini ${kind} failed after ${maxAttempts} attempts.`);
 }
 
 async function geminiBatchResponseMap(job) {
-  const responses = job?.response?.responses || job?.metadata?.responses || job?.responses || [];
-  const map = new Map();
-  for (const response of responses) {
-    const key = response?.metadata?.key || response?.key || response?.request?.metadata?.key;
-    if (key) map.set(key, response);
+  const responses = [...extractGeminiBatchInlineResponses(job)];
+  for (const fileName of geminiBatchOutputFileNames(job)) {
+    const text = await downloadGeminiFileText(fileName);
+    for (const line of text.split(/\r?\n/)) {
+      const parsed = parseJsonObject(line);
+      if (parsed) responses.push(parsed);
+    }
   }
-  return map;
+  return geminiBatchInlineResponseMap(responses).responses;
 }
 
-function geminiInlineResponsePayload(item) {
-  return item?.response || item?.generateContentResponse || item;
+async function downloadGeminiFileText(fileName) {
+  const urls = [
+    `https://generativelanguage.googleapis.com/v1beta/${fileName}:download?alt=media&key=${encodeURIComponent(geminiApiKey)}`,
+    `https://generativelanguage.googleapis.com/v1beta/${fileName}?alt=media&key=${encodeURIComponent(geminiApiKey)}`,
+  ];
+  let lastError = null;
+  for (const url of urls) {
+    const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(requestTimeoutMs) });
+    const text = await response.text().catch(() => "");
+    if (response.ok) return text;
+    lastError = `${response.status} ${text}`;
+  }
+  throw new Error(`Gemini file download failed for ${fileName}: ${lastError || "unknown error"}`);
+}
+
+function geminiInlineErrorMessage(error) {
+  if (!error) return "No error details returned.";
+  if (typeof error === "string") return error;
+  return cleanNullable(error.message || error.status || JSON.stringify(error)) || "Unknown Gemini item error.";
 }
 
 function extractGeminiText(payload) {
@@ -312,6 +491,43 @@ function geminiBatchErrorMessage(job) {
 
 function writeReport() {
   writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
+}
+
+function loadBatchJournal() {
+  if (!existsSync(journalPath)) return { version: 1, jobs: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(journalPath, "utf8"));
+    return {
+      version: 1,
+      jobs: Array.isArray(parsed?.jobs) ? parsed.jobs.filter((job) => !job.persisted_at) : [],
+    };
+  } catch (error) {
+    throw new Error(`Load page audit Batch journal failed: ${errorMessage(error)}`);
+  }
+}
+
+function recordJournalJob(batchName, requestKeys) {
+  if (!batchJournal.jobs.some((job) => job.batch_name === batchName)) {
+    batchJournal.jobs.push({
+      batch_name: batchName,
+      model,
+      request_keys: unique(requestKeys),
+      submitted_at: new Date().toISOString(),
+      persisted_at: null,
+    });
+  }
+  writeBatchJournal();
+}
+
+function markJournalJobPersisted(batchName) {
+  batchJournal.jobs = batchJournal.jobs.filter((job) => job.batch_name !== batchName);
+  writeBatchJournal();
+}
+
+function writeBatchJournal() {
+  const temporaryPath = `${journalPath}.tmp`;
+  writeFileSync(temporaryPath, JSON.stringify(batchJournal, null, 2), "utf8");
+  renameSync(temporaryPath, journalPath);
 }
 
 function parseArgs(values) {
@@ -386,6 +602,21 @@ function cleanChoice(value, allowed, fallback) {
   return allowed.includes(clean) ? clean : fallback;
 }
 
+function compactAuditStringArray(description) {
+  return {
+    type: "array",
+    description,
+    maxItems: 4,
+    items: { type: "string" },
+  };
+}
+
+function pageAuditResultIsRetryableFailure(value) {
+  if (!value || typeof value !== "object") return false;
+  const error = cleanNullable(value.error);
+  return error === "invalid_json" || error === "missing_batch_response";
+}
+
 function chunks(values, size) {
   const result = [];
   for (let index = 0; index < values.length; index += size) result.push(values.slice(index, index + size));
@@ -406,6 +637,10 @@ function timestampForPath(value) {
 
 function errorMessage(error) {
   return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function printHelp() {

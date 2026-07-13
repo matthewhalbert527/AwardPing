@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   auditPublicAwardPage,
   buildFactCandidatesFromSources,
+  preserveLastKnownGoodAmountFacts,
   reconcileAwardFacts,
   type ReconciliationAward,
   type ReconciliationSource,
@@ -149,5 +150,56 @@ describe("award fact reconciliation", () => {
       { reconciliation },
     );
     expect(contaminated.should_block_publication).toBe(true);
+  });
+
+  it("publishes other verified fields while preserving a last-known-good amount for review", () => {
+    const official = source({
+      id: "official-amount",
+      title: award.name,
+      display_title: award.name,
+      page_metadata: {
+        baseline_facts: {
+          status: "succeeded",
+          display_title: award.name,
+          page_description: "Dissertation fellowships supporting graduate students in American art.",
+          award_name_seen: true,
+          award_relevance: "primary",
+          cycle_relevance: "evergreen",
+          confidence: "high",
+          evidence_quotes: [award.name, "$38,000 stipend"],
+          award_amounts: ["$38,000 stipend"],
+          eligibility: ["Graduate students completing dissertations in American art"],
+          quality_flags: [],
+        },
+      },
+    });
+    const sources = [official];
+    const reconciliation = reconcileAwardFacts(
+      award,
+      sources,
+      buildFactCandidatesFromSources(award, sources),
+      { now: "2026-07-13T00:00:00.000Z" },
+    );
+    const selectedWithoutAmount = {
+      ...reconciliation.selectedFacts,
+      award_amounts: [],
+      stipend: null,
+      travel_research_allowance: null,
+    };
+    const audit = auditPublicAwardPage(award, selectedWithoutAmount, sources, { reconciliation });
+    const publishable = preserveLastKnownGoodAmountFacts(selectedWithoutAmount, {
+      award_amounts: ["$37,000 prior-cycle stipend"],
+      stipend: "$37,000",
+    });
+
+    expect(audit.audit_status).toBe("warnings");
+    expect(audit.should_block_publication).toBe(false);
+    expect(audit.findings).toContainEqual(expect.objectContaining({
+      code: "missing_amount_with_official_evidence",
+      severity: "warning",
+    }));
+    expect(publishable.award_amounts).toEqual(["$37,000 prior-cycle stipend"]);
+    expect(publishable.stipend).toBe("$37,000");
+    expect(publishable.reconciliation.review_flags).toContain("amount_preserved_pending_review");
   });
 });

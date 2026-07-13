@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   auditPublicAwardPage,
   buildAwardSummaryFromFacts,
   buildFactCandidatesFromSources,
+  preserveLastKnownGoodAmountFacts,
   reconcileAwardFacts,
 } from "./lib/award-fact-reconciliation.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
@@ -38,6 +40,7 @@ const onlyFailed = boolArg(args["only-failed"], false);
 const dryRun = boolArg(args["dry-run"], !boolArg(args.apply, false));
 const apply = boolArg(args.apply, !dryRun);
 const includeWarnings = boolArg(args["include-warnings"], true);
+const processingTimeoutMinutes = positiveInt(args["processing-timeout-minutes"], 45);
 const json = boolArg(args.json, false);
 const reportDir = args["report-dir"] ? resolve(root, String(args["report-dir"])) : join(root, "reports");
 const reportPath = args.report
@@ -59,6 +62,7 @@ const report = {
     dry_run: dryRun,
     apply,
     include_warnings: includeWarnings,
+    processing_timeout_minutes: processingTimeoutMinutes,
   },
   queue_rows_loaded: 0,
   awards_checked: 0,
@@ -68,6 +72,7 @@ const report = {
   awards_audit_failed: 0,
   awards_publication_blocked: 0,
   awards_used_last_known_good: 0,
+  awards_amounts_preserved_for_review: 0,
   sibling_sources_rejected: 0,
   deadline_conflicts_detected: 0,
   stale_cycle_states_corrected: 0,
@@ -78,6 +83,7 @@ const report = {
   selected_candidates: 0,
   rejected_candidates: 0,
   source_rejections: 0,
+  stale_processing_rows_requeued: 0,
   errors: [],
   awards: [],
 };
@@ -117,6 +123,8 @@ async function targetQueueRows() {
     }];
   }
 
+  if (apply && onlyPending) await recoverStaleProcessingQueueRows();
+
   let query = supabase
     .from("shared_award_reconciliation_queue")
     .select("*")
@@ -134,6 +142,26 @@ async function targetQueueRows() {
     throw new Error(`Load reconciliation queue failed: ${error.message}`);
   }
   return data || [];
+}
+
+async function recoverStaleProcessingQueueRows() {
+  const cutoff = new Date(Date.now() - processingTimeoutMinutes * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from("shared_award_reconciliation_queue")
+    .update({
+      status: "pending",
+      started_at: null,
+      completed_at: null,
+      error: "requeued_after_stale_processing_timeout",
+    })
+    .eq("status", "processing")
+    .lt("started_at", cutoff)
+    .select("id");
+  if (error) {
+    if (isMissingTableError(error)) return;
+    throw new Error(`Recover stale reconciliation rows failed: ${error.message}`);
+  }
+  report.stale_processing_rows_requeued = (data || []).length;
 }
 
 async function processQueueRow(queueRow) {
@@ -154,6 +182,10 @@ async function processQueueRow(queueRow) {
     if (!loadedCandidates.length) report.generated_candidates += candidates.length;
     const reconciliation = reconcileAwardFacts(award, sources, candidates, { now: new Date() });
     const audit = auditPublicAwardPage(award, reconciliation.selectedFacts, sources, { reconciliation, now: new Date() });
+    const publishableFacts = preserveLastKnownGoodAmountFacts(reconciliation.selectedFacts, award.public_facts);
+    const preservedAmountFields = (publishableFacts.reconciliation.preserved_fields || [])
+      .filter((field) => ["award_amounts", "stipend", "travel_research_allowance"].includes(field));
+    const amountPreservedForReview = preservedAmountFields.length > 0;
     const shouldPublish = !audit.should_block_publication && (audit.audit_status === "passed" || includeWarnings);
     const conflictFields = new Set(reconciliation.conflicts.map((conflict) => conflict.field_name));
 
@@ -179,22 +211,23 @@ async function processQueueRow(queueRow) {
       audit_status: audit.audit_status,
       severity: audit.severity,
       findings: audit.findings,
+      amount_preserved_for_review: amountPreservedForReview,
+      preserved_amount_fields: preservedAmountFields,
       published: false,
       blocked: audit.should_block_publication,
     };
     report.awards.push(awardSummary);
 
     if (apply) {
-      await persistAudit(award, audit, reconciliation).catch((error) => {
-        report.errors.push({ award_id: award.id, message: `audit_persist_failed: ${errorMessage(error)}` });
-      });
+      await persistAudit(award, audit, publishableFacts);
       if (loadedCandidates.length) await updateCandidateStatuses(reconciliation, conflictFields);
     }
 
     if (shouldPublish) {
       report.awards_reconciled += 1;
+      if (amountPreservedForReview) report.awards_amounts_preserved_for_review += 1;
       if (apply) {
-        await publishAwardFacts(award, reconciliation.selectedFacts);
+        await publishAwardFacts(award, publishableFacts);
         awardSummary.published = true;
         report.facts_published += 1;
       } else {
@@ -294,12 +327,11 @@ async function updateCandidate(id, patch) {
   if (error) throw new Error(`Update fact candidate failed: ${error.message}`);
 }
 
-async function persistAudit(award, audit, reconciliation) {
-  const { error } = await supabase
-    .from("shared_award_page_audits")
-    .insert({
-      shared_award_id: award.id,
-      audit_kind: "deterministic",
+async function persistAudit(award, audit, publicPageSnapshot) {
+  const reconciliationAuditSignature = crypto
+    .createHash("sha256")
+    .update(JSON.stringify(stableAuditSignatureValue({
+      award_id: award.id,
       audit_status: audit.audit_status,
       severity: audit.severity,
       findings: audit.findings,
@@ -307,10 +339,48 @@ async function persistAudit(award, audit, reconciliation) {
       field_conflicts: audit.field_conflicts,
       source_rejections: audit.source_rejections,
       selected_fact_summary: audit.selected_fact_summary,
-      public_page_snapshot: reconciliation.selectedFacts,
-      model: "award-fact-reconciliation",
-    });
-  if (error) throw new Error(error.message);
+      public_page_snapshot: publicPageSnapshot,
+    })))
+    .digest("hex");
+  const storedSnapshot = {
+    ...(publicPageSnapshot && typeof publicPageSnapshot === "object" ? publicPageSnapshot : {}),
+    reconciliation_audit_signature: reconciliationAuditSignature,
+  };
+  const row = {
+    shared_award_id: award.id,
+    audit_kind: "deterministic",
+    audit_status: audit.audit_status,
+    severity: audit.severity,
+    findings: audit.findings,
+    suggested_fixes: audit.suggested_fixes,
+    field_conflicts: audit.field_conflicts,
+    source_rejections: audit.source_rejections,
+    selected_fact_summary: audit.selected_fact_summary,
+    public_page_snapshot: storedSnapshot,
+    model: "award-fact-reconciliation",
+  };
+
+  let lastError = null;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const { data: existing, error: loadError } = await supabase
+      .from("shared_award_page_audits")
+      .select("id")
+      .eq("shared_award_id", award.id)
+      .eq("audit_kind", "deterministic")
+      .contains("public_page_snapshot", { reconciliation_audit_signature: reconciliationAuditSignature })
+      .limit(1);
+    if (loadError) {
+      lastError = loadError;
+    } else if ((existing || []).length) {
+      return;
+    } else {
+      const { error: insertError } = await supabase.from("shared_award_page_audits").insert(row);
+      if (!insertError) return;
+      lastError = insertError;
+    }
+    if (attempt < 4) await sleep(attempt * 1_500);
+  }
+  throw new Error(`Persist deterministic page audit failed: ${lastError?.message || "unknown Supabase error"}`);
 }
 
 async function publishAwardFacts(award, facts) {
@@ -412,6 +482,29 @@ function errorMessage(error) {
   return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function stableAuditSignatureValue(value) {
+  if (Array.isArray(value)) return value.map(stableAuditSignatureValue);
+  if (!value || typeof value !== "object") return value;
+  const volatileKeys = new Set([
+    "captured_at",
+    "checked_at",
+    "created_at",
+    "generated_at",
+    "reconciliation_audit_signature",
+    "updated_at",
+  ]);
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !volatileKeys.has(key))
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, stableAuditSignatureValue(nested)]),
+  );
+}
+
 function printHelp() {
   console.log(`Reconcile impacted AwardPing public award pages.
 
@@ -424,6 +517,7 @@ Options:
   --dry-run=true
   --apply=false
   --include-warnings=true
+  --processing-timeout-minutes=45
   --json=false
 `);
 }
