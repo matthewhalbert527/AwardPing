@@ -344,6 +344,9 @@ export function buildVisualReviewPromptPayload({
           section_path: cleanNullable(diff?.section_path),
           previous_section_hash: cleanNullable(diff?.previous_section_hash),
           new_section_hash: cleanNullable(diff?.new_section_hash),
+          section_addition_confirmed: diff?.section_addition_confirmed === true,
+          section_removal_confirmed: diff?.section_removal_confirmed === true,
+          section_presence_evidence: diff?.section_presence_evidence || null,
         }
       : null,
     deterministic_classification: deterministic || {},
@@ -371,6 +374,7 @@ export function buildVisualReviewPromptText(payload) {
     "Never use facts from sibling awards or broad search/listing pages.",
     ...monitoringPolicyPromptLinesForScope("visual_review_batch"),
     "Do not infer a change from a page title, layout movement, menu expansion/collapse, or generic page refresh.",
+    "For an expandable-section addition or removal, reject unless deterministic evidence explicitly marks section_addition_confirmed or section_removal_confirmed true. A missing extraction is not proof that a section was removed.",
     "Every approved changed_facts item must include exact added_text or removed_text from the deterministic diff, or a specific visual_evidence phrase when the screenshot changed but text extraction did not capture the changed section.",
     "exact_before and exact_after must be exact strings from deterministic diff evidence, or null only when the change is one-sided and the other side is genuinely absent.",
     "source_relevance must be primary or supporting only when this exact page is about the named award or a directly supporting official source for it.",
@@ -458,6 +462,40 @@ export function normalizeVisualBatchResult(value, { candidate = null, source = n
   };
 }
 
+export function expandableSectionCandidateRejectReason(candidate) {
+  const deterministicDiff =
+    candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
+  if (deterministicDiff.candidate_scope !== "expandable_section") return null;
+
+  const oneSidedRemoval = Boolean(
+    deterministicDiff.previous_section_hash && !deterministicDiff.new_section_hash,
+  );
+  const oneSidedAddition = Boolean(
+    !deterministicDiff.previous_section_hash && deterministicDiff.new_section_hash,
+  );
+  if (oneSidedRemoval && deterministicDiff.section_removal_confirmed !== true) {
+    return "unconfirmed_expandable_section_removal";
+  }
+  if (oneSidedAddition && deterministicDiff.section_addition_confirmed !== true) {
+    return "unconfirmed_expandable_section_addition";
+  }
+
+  const presenceEvidence = deterministicDiff.section_presence_evidence || {};
+  if (
+    oneSidedRemoval &&
+    (presenceEvidence.current_label_present || presenceEvidence.current_body_present)
+  ) {
+    return "expandable_section_still_present";
+  }
+  if (
+    oneSidedAddition &&
+    (presenceEvidence.previous_label_present || presenceEvidence.previous_body_present)
+  ) {
+    return "expandable_section_previously_present";
+  }
+  return null;
+}
+
 export function validateVisualBatchReview({ candidate, source, result }) {
   const reject = (reason) => ({ allowed: false, reason });
   const quality = sourceQualityDecision(source, { purpose: "monitoring" });
@@ -470,6 +508,9 @@ export function validateVisualBatchReview({ candidate, source, result }) {
   if (!["primary", "supporting"].includes(result.source_relevance)) {
     return reject(`source_relevance_${result.source_relevance || "missing"}`);
   }
+
+  const sectionRejectReason = expandableSectionCandidateRejectReason(candidate);
+  if (sectionRejectReason) return reject(sectionRejectReason);
 
   const rejectFlag = stringArray(result.noise_flags)
     .map(cleanKey)

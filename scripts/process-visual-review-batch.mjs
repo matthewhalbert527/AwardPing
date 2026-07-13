@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import {
   buildVisualReviewPromptText,
   changeDetailsFromVisualBatchResult,
+  expandableSectionCandidateRejectReason,
   fileToInlineGeminiPart,
   normalizeVisualBatchResult,
   stableJsonStringify,
@@ -757,6 +758,8 @@ function preSubmissionRejectReason(candidate, source) {
   if (source.admin_review_status && source.admin_review_status !== "open") return `source_not_open_${source.admin_review_status}`;
   const quality = sourceQualityDecision(source, { purpose: "monitoring" });
   if (!quality.allowed) return `source_quality_${quality.reason}`;
+  const sectionRejectReason = expandableSectionCandidateRejectReason(candidate);
+  if (sectionRejectReason) return sectionRejectReason;
   if (!candidate.prompt_context && !candidate.prompt_payload) return "missing_prompt_payload";
   return null;
 }

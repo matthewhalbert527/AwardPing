@@ -56,6 +56,10 @@ import {
   shouldUseScrollActivationForSource,
 } from "./lib/capture-stability.mjs";
 import {
+  canonicalizeExpandableSections,
+  sectionPresenceEvidence,
+} from "./lib/expandable-section-identity.mjs";
+import {
   aiDisabledReasonForOptions,
   missingAiProviderMessage,
   runRequiresAiFromOptions,
@@ -642,6 +646,10 @@ async function runOnce() {
     expandable_sections_changed: 0,
     expandable_sections_added: 0,
     expandable_sections_removed: 0,
+    expandable_section_identity_migrations: 0,
+    section_addition_presence_conflicts: 0,
+    section_removal_presence_conflicts: 0,
+    section_change_candidates_blocked_unconfirmed: 0,
     section_change_candidates_enqueued: 0,
     section_evidence_screenshots_taken: 0,
     section_text_included_in_main_hash: includeSectionTextInMainHash,
@@ -1432,10 +1440,16 @@ async function processExpandableSectionComparison(
   { allowFirstBaseline = true } = {},
 ) {
   if (!extractExpandableSections || capture.kind === "pdf") return { handled: false, reason: "disabled" };
-  const currentSections = Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [];
+  const currentSections = canonicalizeExpandableSections(capture.expandable_sections);
   if (!currentSections.length) return { handled: false, reason: "no_sections" };
 
-  const previousSections = baselineSectionMap(baseline);
+  const rawPreviousSections = Array.isArray(baseline?.expandable_sections) ? baseline.expandable_sections : [];
+  const canonicalPreviousSections = canonicalizeExpandableSections(rawPreviousSections);
+  const previousSections = new Map(
+    canonicalPreviousSections
+      .filter((section) => section?.section_key)
+      .map((section) => [section.section_key, section]),
+  );
   if (!previousSections.size) {
     if (!allowFirstBaseline) return { handled: false, reason: "missing_section_baseline_visible_change_pending" };
     writeBaseline(source, capture, {
@@ -1457,11 +1471,33 @@ async function processExpandableSectionComparison(
   const changedSections = [];
   const addedSections = [];
   const removedSections = [];
+  report.expandable_section_identity_migrations += rawPreviousSections.filter((section, index) =>
+    Boolean(
+      section?.section_key &&
+        canonicalPreviousSections[index]?.section_key &&
+        section.section_key !== canonicalPreviousSections[index].section_key,
+    ),
+  ).length;
 
   for (const section of currentSections) {
     const previousSection = previousSections.get(section.section_key);
     if (!previousSection) {
-      addedSections.push(section);
+      const presenceEvidence = sectionPresenceEvidence({
+        changeKind: "added",
+        section,
+        previousPageText: previous.text,
+        currentPageText: capture.text,
+        previousMainContentHash: baseline.main_content_hash,
+        currentMainContentHash: capture.main_content_hash,
+        extractionEnabled: capture.section_extraction?.enabled,
+        extractionError: capture.section_extraction?.error,
+      });
+      if (presenceEvidence.confirmed) {
+        addedSections.push({ section, presenceEvidence });
+      } else {
+        report.section_addition_presence_conflicts += 1;
+        report.section_change_candidates_blocked_unconfirmed += 1;
+      }
     } else if (previousSection.text_hash && section.text_hash && previousSection.text_hash !== section.text_hash) {
       changedSections.push({ previousSection, section });
     }
@@ -1469,7 +1505,22 @@ async function processExpandableSectionComparison(
 
   for (const previousSection of previousSections.values()) {
     if (!currentMap.has(previousSection.section_key)) {
-      removedSections.push(previousSection);
+      const presenceEvidence = sectionPresenceEvidence({
+        changeKind: "removed",
+        section: previousSection,
+        previousPageText: previous.text,
+        currentPageText: capture.text,
+        previousMainContentHash: baseline.main_content_hash,
+        currentMainContentHash: capture.main_content_hash,
+        extractionEnabled: capture.section_extraction?.enabled,
+        extractionError: capture.section_extraction?.error,
+      });
+      if (presenceEvidence.confirmed) {
+        removedSections.push({ previousSection, presenceEvidence });
+      } else {
+        report.section_removal_presence_conflicts += 1;
+        report.section_change_candidates_blocked_unconfirmed += 1;
+      }
     }
   }
 
@@ -1483,8 +1534,16 @@ async function processExpandableSectionComparison(
 
   const sectionPairs = [
     ...changedSections,
-    ...addedSections.map((section) => ({ previousSection: null, section })),
-    ...removedSections.map((previousSection) => ({ previousSection, section: null })),
+    ...addedSections.map(({ section, presenceEvidence }) => ({
+      previousSection: null,
+      section,
+      presenceEvidence,
+    })),
+    ...removedSections.map(({ previousSection, presenceEvidence }) => ({
+      previousSection,
+      section: null,
+      presenceEvidence,
+    })),
   ];
 
   let queued = 0;
@@ -1521,7 +1580,14 @@ async function processExpandableSectionComparison(
   return { handled: true, reason: "section_noise_rejected" };
 }
 
-async function processOneSectionChange(source, baseline, previous, capture, report, { previousSection, section }) {
+async function processOneSectionChange(
+  source,
+  baseline,
+  previous,
+  capture,
+  report,
+  { previousSection, section, presenceEvidence = null },
+) {
   const beforeText = previousSection?.text || "";
   const afterText = section?.text || "";
   const displaySection = section || previousSection || {};
@@ -1535,6 +1601,9 @@ async function processOneSectionChange(source, baseline, previous, capture, repo
     new_section_hash: section?.text_hash || null,
     exact_before_text: beforeText,
     exact_after_text: afterText,
+    section_addition_confirmed: previousSection ? null : presenceEvidence?.confirmed === true,
+    section_removal_confirmed: section ? null : presenceEvidence?.confirmed === true,
+    section_presence_evidence: presenceEvidence,
   };
   const deterministic = {
     ...classifyDeterministicChange(diff, source),
@@ -1543,6 +1612,14 @@ async function processOneSectionChange(source, baseline, previous, capture, repo
   };
 
   report.candidate_changes += 1;
+
+  if ((!previousSection || !section) && presenceEvidence?.confirmed !== true) {
+    report.deterministic_noise += 1;
+    report.deterministic_noise_rejected += 1;
+    report.text_only_noise_rejected += 1;
+    report.section_change_candidates_blocked_unconfirmed += 1;
+    return "noise";
+  }
 
   const sectionBaseline = {
     ...baseline,
@@ -3309,19 +3386,13 @@ async function captureSectionEvidenceScreenshots(page, captureDir, sections) {
 }
 
 function normalizeExtractedSections(rawSections) {
-  const seen = new Map();
-  return rawSections
+  const normalized = rawSections
     .map((section, index) => {
       const label = cleanText(section.label) || `Section ${index + 1}`;
       const text = normalizeVisibleText(section.text || "");
       if (text.length < 20) return null;
-      const baseKey = cleanSlug(section.path || label) || `section-${index + 1}`;
-      const count = seen.get(baseKey) || 0;
-      seen.set(baseKey, count + 1);
-      const sectionKey = count ? `${baseKey}-${count + 1}` : baseKey;
       return {
         index: nonNegativeInt(section.index, index),
-        section_key: sectionKey,
         label,
         section_path: cleanText(section.path) || null,
         text,
@@ -3332,6 +3403,7 @@ function normalizeExtractedSections(rawSections) {
       };
     })
     .filter(Boolean);
+  return canonicalizeExpandableSections(normalized);
 }
 
 function sectionExtractionText(sections = []) {
@@ -3347,7 +3419,7 @@ function sectionExtractionText(sections = []) {
 
 function hashSectionSnapshots(sections = []) {
   return hashText(
-    sections
+    canonicalizeExpandableSections(sections)
       .map((section) => `${section.section_key}\n${section.label}\n${section.text_hash}`)
       .join("\n\n"),
   );
@@ -3359,7 +3431,7 @@ function baselineHasSectionSnapshots(baseline) {
 
 function baselineSectionMap(baseline) {
   return new Map(
-    (baseline?.expandable_sections || [])
+    canonicalizeExpandableSections(baseline?.expandable_sections)
       .filter((section) => section?.section_key)
       .map((section) => [section.section_key, section]),
   );
@@ -7474,6 +7546,10 @@ function visualWorkerMetadata(report) {
       expandable_sections_changed: report.expandable_sections_changed,
       expandable_sections_added: report.expandable_sections_added,
       expandable_sections_removed: report.expandable_sections_removed,
+      expandable_section_identity_migrations: report.expandable_section_identity_migrations,
+      section_addition_presence_conflicts: report.section_addition_presence_conflicts,
+      section_removal_presence_conflicts: report.section_removal_presence_conflicts,
+      section_change_candidates_blocked_unconfirmed: report.section_change_candidates_blocked_unconfirmed,
       section_change_candidates_enqueued: report.section_change_candidates_enqueued,
       section_evidence_screenshots_taken: report.section_evidence_screenshots_taken,
       section_text_included_in_main_hash: report.section_text_included_in_main_hash,

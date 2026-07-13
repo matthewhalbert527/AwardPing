@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildVisualReviewPromptPayload,
   classifyVisualReviewCandidate,
+  expandableSectionCandidateRejectReason,
   normalizeVisualBatchResult,
   normalizeVisualReviewMode,
   validateVisualBatchReview,
@@ -544,5 +545,110 @@ describe("visual review queue helpers", () => {
       allowed: false,
       label: "access_error",
     });
+  });
+
+  it("rejects an unconfirmed expandable-section removal after AI review", () => {
+    const removedText = "Application deadline: February 5, 2025.";
+    const decision = validateVisualBatchReview({
+      source,
+      candidate: {
+        ...candidate,
+        deterministic_diff: {
+          candidate_scope: "expandable_section",
+          section_label: "What is the application deadline?",
+          previous_section_hash: "old-section",
+          new_section_hash: null,
+          section_removal_confirmed: false,
+          removed_text: [removedText],
+          added_text: [],
+        },
+      },
+      result: {
+        is_true_change: true,
+        is_alert_worthy: true,
+        source_relevance: "primary",
+        confidence: "high",
+        noise_flags: [],
+        changed_facts: [{ fact: "deadline", removed_text: removedText }],
+        exact_before: removedText,
+        exact_after: null,
+        reader_summary: "The application deadline was removed.",
+        section: "Application deadline",
+        change_type: "removed",
+      },
+    });
+
+    expect(decision).toEqual({
+      allowed: false,
+      reason: "unconfirmed_expandable_section_removal",
+    });
+  });
+
+  it("rejects an unconfirmed expandable-section removal before Batch submission", () => {
+    expect(
+      expandableSectionCandidateRejectReason({
+        deterministic_diff: {
+          candidate_scope: "expandable_section",
+          previous_section_hash: "old-section",
+          new_section_hash: null,
+          section_removal_confirmed: false,
+        },
+      }),
+    ).toBe("unconfirmed_expandable_section_removal");
+  });
+
+  it("rejects a claimed removal when the current page still contains the section", () => {
+    expect(
+      expandableSectionCandidateRejectReason({
+        deterministic_diff: {
+          candidate_scope: "expandable_section",
+          previous_section_hash: "old-section",
+          new_section_hash: null,
+          section_removal_confirmed: true,
+          section_presence_evidence: {
+            current_label_present: true,
+          },
+        },
+      }),
+    ).toBe("expandable_section_still_present");
+  });
+
+  it("allows a confirmed expandable-section removal with exact evidence", () => {
+    const removedText = "Application deadline: February 5, 2025.";
+    const decision = validateVisualBatchReview({
+      source,
+      candidate: {
+        ...candidate,
+        deterministic_diff: {
+          candidate_scope: "expandable_section",
+          section_label: "What is the application deadline?",
+          previous_section_hash: "old-section",
+          new_section_hash: null,
+          section_removal_confirmed: true,
+          section_presence_evidence: {
+            confirmed: true,
+            current_label_present: false,
+            current_body_present: false,
+          },
+          removed_text: [removedText],
+          added_text: [],
+        },
+      },
+      result: {
+        is_true_change: true,
+        is_alert_worthy: true,
+        source_relevance: "primary",
+        confidence: "high",
+        noise_flags: [],
+        changed_facts: [{ fact: "deadline", removed_text: removedText }],
+        exact_before: removedText,
+        exact_after: null,
+        reader_summary: "The application deadline was removed.",
+        section: "Application deadline",
+        change_type: "removed",
+      },
+    });
+
+    expect(decision).toEqual({ allowed: true, reason: "approved" });
   });
 });
