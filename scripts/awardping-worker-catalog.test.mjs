@@ -17,4 +17,16 @@ describe("AwardPing worker catalog automation", () => {
 
     expect(health?.scheduledWorkerIds).not.toContain("downstream-queues");
   });
+
+  it("exposes the one-time catch-up as an operator-run batch-only task", () => {
+    const catchup = atomicTasks.find((task) => task.id === "one-time-catchup");
+
+    expect(catchup?.run).toMatchObject({
+      kind: "script",
+      args: ["scripts/run-one-time-catchup.mjs"],
+      applyArg: true,
+    });
+    expect(catchup?.scheduledWorkerIds).toEqual([]);
+    expect(catchup?.cost).toContain("gemini-2.5-flash-lite");
+  });
 });

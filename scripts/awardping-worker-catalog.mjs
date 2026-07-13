@@ -5,7 +5,7 @@ export const workerLanes = [
     detail:
       "One temporary setup mode and one normal daily monitoring mode.",
     profileIds: ["catchup", "daily"],
-    taskIds: ["health"],
+    taskIds: ["health", "one-time-catchup"],
     workerIds: ["downstream-queues"],
   },
   {
@@ -125,6 +125,20 @@ export const atomicTasks = [
     run: {
       kind: "maintenance",
       phases: ["health"],
+    },
+    scheduledWorkerIds: [],
+  },
+  {
+    id: "one-time-catchup",
+    laneId: "orchestration",
+    label: "One-Time Catch-Up",
+    detail:
+      "Forecasts and drains the temporary source-review, missing-baseline, reconciliation, page-audit, and visual-review backlog, then exits so only daily monitoring remains.",
+    cost: "Gemini Batch only with gemini-2.5-flash-lite; forecasts live time and cost before applying.",
+    run: {
+      kind: "script",
+      args: ["scripts/run-one-time-catchup.mjs"],
+      applyArg: true,
     },
     scheduledWorkerIds: [],
   },

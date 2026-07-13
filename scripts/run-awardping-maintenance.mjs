@@ -233,6 +233,8 @@ async function runVisualSnapshots(completeMissing) {
         "--complete-missing-baselines=true",
         "--skip-existing-baseline=true",
         "--baseline-refresh=true",
+        "--r2-snapshot-sync=true",
+        "--r2-repair-missing-snapshots=true",
         "--interpret-visual-changes=false",
         "--visual-review-mode=none",
         `--complete-missing-batch-limit=${visualCompleteMissingBatchLimit}`,

@@ -387,6 +387,44 @@ export function preserveLastKnownGoodAmountFacts(selectedFacts, previousPublicFa
 
 export async function enqueueAwardReconciliation(supabase, { awardId, reason, sourceIds = [], candidateIds = [], priority = 100, metadata = {} }) {
   if (!awardId) return { queued: false, reason: "missing_award_id" };
+  const { data: existing, error: existingError } = await supabase
+    .from("shared_award_reconciliation_queue")
+    .select("id,reason,source_ids,candidate_ids,priority,metadata,status")
+    .eq("shared_award_id", awardId)
+    .in("status", ["pending", "processing"])
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (existingError) {
+    if (/does not exist|schema cache|relation .* not found/i.test(existingError.message || "")) {
+      return { queued: false, reason: "queue_table_missing" };
+    }
+    throw new Error(`Load active award reconciliation failed: ${existingError.message}`);
+  }
+  if (existing?.id) {
+    const patch = {
+      source_ids: unique([...(existing.source_ids || []), ...sourceIds]).filter(Boolean),
+      candidate_ids: unique([...(existing.candidate_ids || []), ...candidateIds]).filter(Boolean),
+      priority: Math.min(Number(existing.priority) || 100, Number(priority) || 100),
+      metadata: {
+        ...(existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}),
+        ...metadata,
+        coalesced_reasons: unique([
+          ...(Array.isArray(existing.metadata?.coalesced_reasons)
+            ? existing.metadata.coalesced_reasons.filter(Boolean)
+            : []),
+          existing.reason,
+          reason,
+        ]),
+      },
+    };
+    const { error: updateError } = await supabase
+      .from("shared_award_reconciliation_queue")
+      .update(patch)
+      .eq("id", existing.id);
+    if (updateError) throw new Error(`Update active award reconciliation failed: ${updateError.message}`);
+    return { queued: false, coalesced: true, id: existing.id, status: existing.status };
+  }
   const payload = {
     shared_award_id: awardId,
     reason,
@@ -398,11 +436,21 @@ export async function enqueueAwardReconciliation(supabase, { awardId, reason, so
   };
   const { data, error } = await supabase
     .from("shared_award_reconciliation_queue")
-    .upsert(payload, { onConflict: "shared_award_id,reason,status", ignoreDuplicates: true })
+    .insert(payload)
     .select("id")
     .maybeSingle();
   if (error) {
     if (/does not exist|schema cache|relation .* not found/i.test(error.message || "")) return { queued: false, reason: "queue_table_missing" };
+    if (error.code === "23505" || /duplicate key|unique constraint/i.test(error.message || "")) {
+      const { data: raced } = await supabase
+        .from("shared_award_reconciliation_queue")
+        .select("id,status")
+        .eq("shared_award_id", awardId)
+        .in("status", ["pending", "processing"])
+        .limit(1)
+        .maybeSingle();
+      return { queued: false, coalesced: true, id: raced?.id || null, status: raced?.status || null };
+    }
     throw new Error(`Queue award reconciliation failed: ${error.message}`);
   }
   return { queued: Boolean(data?.id), id: data?.id || null };

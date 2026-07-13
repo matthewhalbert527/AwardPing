@@ -48,6 +48,7 @@ const onlyOpen = boolArg(args["only-open"], true);
 const geminiApiMode = cleanSlug(args["gemini-api-mode"] || "batch") || "batch";
 const maxBatchRequests = nonNegativeInt(args["max-batch-requests"], 0);
 const geminiBatchMaxRequests = positiveInt(args["gemini-batch-max-requests"], 250);
+const geminiBatchParallelJobs = positiveInt(args["gemini-batch-parallel-jobs"], 4);
 const dailyCostCapUsd = nonNegativeNumber(
   args["daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
   10,
@@ -84,6 +85,7 @@ const report = {
     gemini_api_mode: geminiApiMode,
     max_batch_requests: maxBatchRequests,
     gemini_batch_max_requests: geminiBatchMaxRequests,
+    gemini_batch_parallel_jobs: geminiBatchParallelJobs,
     daily_cost_cap_usd: dailyCostCapUsd,
     resume,
     reconcile,
@@ -413,6 +415,7 @@ async function submitBaselineFactsBatch(rows) {
     `--gemini-api-max-requests=${ids.length}`,
     `--gemini-api-max-submitted-requests=${ids.length}`,
     `--gemini-batch-max-requests=${Math.min(ids.length, geminiBatchMaxRequests)}`,
+    `--gemini-batch-parallel-jobs=${geminiBatchParallelJobs}`,
     `--gemini-api-daily-cost-cap-usd=${dailyCostCapUsd}`,
     `--limit=${ids.length}`,
     `--source-ids-file=${sourceIdsPath}`,
@@ -769,6 +772,7 @@ Options:
   --gemini-api-mode=batch|none           Batch AI mode for missing reviews
   --max-batch-requests=<n>               Submit up to n sources to Gemini Batch through baseline-facts worker
   --gemini-batch-max-requests=<n>        Requests per Gemini Batch job (default 250)
+  --gemini-batch-parallel-jobs=<n>       Concurrent Gemini Batch jobs (default 4)
   --daily-cost-cap-usd=<n>               Estimated Gemini daily spend cap (default 10)
   --resume=true                          Keep durable batch behavior enabled
   --reconcile=true                       Run reconciliation after applying
