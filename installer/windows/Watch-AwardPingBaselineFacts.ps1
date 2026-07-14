@@ -141,6 +141,22 @@ function Test-BaselineFactsWorkerActive {
   return [bool]$activeProcess
 }
 
+function Test-OneTimeCatchupActive {
+  $currentPid = $PID
+  $activeProcess = Get-CimInstance Win32_Process -Filter "name = 'node.exe' OR name = 'powershell.exe'" |
+    Where-Object {
+      $_.ProcessId -ne $currentPid -and
+      $_.CommandLine -and
+      (
+        $_.CommandLine -like "*run-one-time-catchup.mjs*" -or
+        $_.CommandLine -like "*backfill-open-source-ai-determinations.mjs*"
+      )
+    } |
+    Select-Object -First 1
+
+  return [bool]$activeProcess
+}
+
 function Read-JsonIfExists {
   param([string]$Path)
 
@@ -378,6 +394,11 @@ function Get-ProgressAggregateStatusKey {
 
 if ($Install) {
   Install-WatchdogTask
+  exit 0
+}
+
+if (Test-OneTimeCatchupActive) {
+  Write-WatchdogLog "one_time_catchup_active no_restart=true"
   exit 0
 }
 
