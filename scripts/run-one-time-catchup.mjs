@@ -218,6 +218,7 @@ async function drainSourceAiReview() {
     if (!beforeCount) return;
     if (captureBaselineBacklog(before) > 0) await drainMissingVisualBaselines();
     await ensureGeminiBudget();
+    const activeBatchesBefore = activeBaselineBatchJobs();
 
     const child = await runChild(`source-ai-review-cycle-${cycle}`, [
       "scripts/backfill-open-source-ai-determinations.mjs",
@@ -251,7 +252,7 @@ async function drainSourceAiReview() {
     await updateTicker("source-ai-review", after);
     if (!afterCount) return;
     if (afterCount < beforeCount) stagnantCycles = 0;
-    else if (!activeBatches && !submitted) stagnantCycles += 1;
+    else if (!activeBatches || (submitted > 0 && activeBatchesBefore === 0)) stagnantCycles += 1;
     if (stagnantCycles >= maxNoProgressCycles) {
       throw new CatchupPausedError(
         "paused_no_progress",
@@ -603,9 +604,15 @@ async function runChild(name, commandArgs) {
 
 function activeBaselineBatchJobs() {
   const batchState = readJsonIfExists(baselineBatchStatePath);
-  return (batchState?.jobs || []).filter((job) =>
-    ["submitted", "processing", "pending", "running"].includes(String(job.status || "").toLowerCase()),
-  ).length;
+  return (batchState?.jobs || []).filter((job) => {
+    const status = String(job.status || "").toLowerCase();
+    if (["submitted", "processing", "pending", "running"].includes(status)) return true;
+    return (
+      status === "succeeded" &&
+      String(job.input_mode || "").toLowerCase() === "jsonl_file" &&
+      !job.reconciled_at
+    );
+  }).length;
 }
 
 function captureBaselineBacklog(snapshot) {

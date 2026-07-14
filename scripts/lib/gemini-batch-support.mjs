@@ -78,6 +78,9 @@ export function extractGeminiBatchInlineResponses(data) {
 export function geminiBatchOutputFileNames(data) {
   const names = [];
   for (const value of [
+    data?.metadata?.output,
+    data?.metadata?.dest,
+    data?.response,
     data?.response?.output,
     data?.response?.dest,
     data?.response?.outputConfig,
@@ -88,6 +91,13 @@ export function geminiBatchOutputFileNames(data) {
     collectFileNames(value, names, new Set());
   }
   return unique(names).filter((name) => /^files\//.test(name));
+}
+
+export function geminiBatchJsonlRequest(entry) {
+  const key = geminiBatchInlineResponseKey(entry);
+  const request = objectValue(entry?.request);
+  if (!key || !Object.keys(request).length) return entry;
+  return { key, request };
 }
 
 export function geminiBatchInlineResponseMap(responses) {
@@ -184,8 +194,46 @@ export function unfinishedBatchJobs(state) {
   );
 }
 
+export function batchJobsAwaitingReconciliation(state) {
+  const jobs = Array.isArray(state?.jobs) ? state.jobs : [];
+  return jobs.filter((job) => {
+    const status = cleanSlug(job?.status);
+    if (["submitted", "processing"].includes(status)) return true;
+    return (
+      status === "succeeded" &&
+      cleanSlug(job?.input_mode) === "jsonl_file" &&
+      !job?.reconciled_at &&
+      Array.isArray(job?.request_keys) &&
+      job.request_keys.length > 0
+    );
+  });
+}
+
+export function latestRequestKeysByBatchJob(jobs) {
+  const claimed = new Set();
+  const keysByJob = new Map();
+  const ordered = [...(Array.isArray(jobs) ? jobs : [])].sort((left, right) =>
+    String(right?.submitted_at || "").localeCompare(String(left?.submitted_at || "")),
+  );
+  for (const job of ordered) {
+    const keys = [];
+    for (const key of Array.isArray(job?.request_keys) ? job.request_keys : []) {
+      const clean = cleanText(key);
+      if (!clean || claimed.has(clean)) continue;
+      claimed.add(clean);
+      keys.push(clean);
+    }
+    keysByJob.set(job?.batch_name || job?.display_name, keys);
+  }
+  return keysByJob;
+}
+
 export function activeBatchRequestKeys(state) {
-  return new Set(unfinishedBatchJobs(state).flatMap((job) => Array.isArray(job.request_keys) ? job.request_keys : []));
+  return new Set(
+    batchJobsAwaitingReconciliation(state).flatMap((job) =>
+      Array.isArray(job.request_keys) ? job.request_keys : []
+    ),
+  );
 }
 
 export function submittedRequestCapReached({ submitted = 0, pending = 0, cap = 0 } = {}) {
@@ -199,7 +247,11 @@ function collectFileNames(value, names, seen) {
   if (seen.has(value)) return;
   seen.add(value);
   for (const [key, child] of Object.entries(value)) {
-    if (typeof child === "string" && /(?:fileName|file_name|output|dest)/i.test(key) && /^files\//.test(child)) {
+    if (
+      typeof child === "string" &&
+      /(?:fileName|file_name|responsesFile|responses_file|output|dest)/i.test(key) &&
+      /^files\//.test(child)
+    ) {
       names.push(child);
     } else if (child && typeof child === "object") {
       collectFileNames(child, names, seen);

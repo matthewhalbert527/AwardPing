@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   activeBatchRequestKeys,
+  batchJobsAwaitingReconciliation,
   batchInputModeForRequests,
   estimateGeminiCostUsd,
   extractGeminiBatchInlineResponses,
   geminiBatchInlineResponseMap,
+  geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
   mergeBatchJobRecord,
+  latestRequestKeysByBatchJob,
   normalizeGeminiPricingMode,
   shouldAttachBaselineFactsImage,
   submittedRequestCapReached,
@@ -109,6 +112,61 @@ describe("Gemini batch support helpers", () => {
         },
       }),
     ).toEqual(["files/output-jsonl"]);
+
+    expect(
+      geminiBatchOutputFileNames({
+        metadata: {
+          output: { responsesFile: "files/current-metadata-output" },
+        },
+        response: {
+          responsesFile: "files/current-response-output",
+        },
+      }),
+    ).toEqual(["files/current-metadata-output", "files/current-response-output"]);
+  });
+
+  it("writes documented keyed JSONL requests while preserving inline metadata envelopes", () => {
+    const entry = {
+      request: { contents: [{ parts: [{ text: "hello" }] }] },
+      metadata: { key: "source-1", source_url: "https://example.com" },
+    };
+
+    expect(geminiBatchJsonlRequest(entry)).toEqual({
+      key: "source-1",
+      request: entry.request,
+    });
+    expect(entry.metadata.source_url).toBe("https://example.com");
+  });
+
+  it("recovers only the newest completed file result for duplicate request keys", () => {
+    const state = {
+      jobs: [
+        {
+          batch_name: "batches/older",
+          status: "succeeded",
+          input_mode: "jsonl_file",
+          submitted_at: "2026-07-14T01:00:00Z",
+          request_keys: ["source-1", "source-2"],
+        },
+        {
+          batch_name: "batches/newer",
+          status: "succeeded",
+          input_mode: "jsonl_file",
+          submitted_at: "2026-07-14T02:00:00Z",
+          request_keys: ["source-1", "source-2"],
+        },
+      ],
+    };
+
+    const awaiting = batchJobsAwaitingReconciliation(state);
+    const latest = latestRequestKeysByBatchJob(awaiting);
+    expect(awaiting).toHaveLength(2);
+    expect(latest.get("batches/newer")).toEqual(["source-1", "source-2"]);
+    expect(latest.get("batches/older")).toEqual([]);
+    expect([...activeBatchRequestKeys(state)].sort()).toEqual(["source-1", "source-2"]);
+
+    state.jobs[1].reconciled_at = "2026-07-14T03:00:00Z";
+    expect(batchJobsAwaitingReconciliation(state)).toHaveLength(1);
   });
 
   it("switches oversized batches to JSONL file mode", () => {

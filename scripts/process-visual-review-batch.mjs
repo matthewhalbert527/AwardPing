@@ -18,6 +18,7 @@ import {
   extractGeminiBatchInlineResponses,
   extractGeminiUsageMetadata,
   geminiBatchInlineResponseMap,
+  geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
   geminiInlineResponsePayload,
@@ -613,7 +614,7 @@ async function createGeminiBatchJob({ model, requests, displayName, mode }) {
 
 async function uploadGeminiJsonlRequests({ requests, displayName }) {
   const path = join(jsonlDir, `${displayName}.jsonl`);
-  const body = requests.map((request) => JSON.stringify(request)).join("\n") + "\n";
+  const body = requests.map((request) => JSON.stringify(geminiBatchJsonlRequest(request))).join("\n") + "\n";
   writeFileSync(path, body, "utf8");
   const bytes = Buffer.from(body, "utf8");
   const startResponse = await fetch(

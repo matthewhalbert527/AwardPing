@@ -9,6 +9,7 @@ import {
 } from "./lib/gemini-spend-guard.mjs";
 import {
   activeBatchRequestKeys,
+  batchJobsAwaitingReconciliation,
   baselineFactsPromptCharLimit,
   batchInputModeForRequests,
   estimateGeminiCostUsd as estimateGeminiCostUsdByMode,
@@ -16,10 +17,12 @@ import {
   extractGeminiBatchInlineResponses as extractGeminiBatchInlineResponsesShared,
   extractGeminiUsageMetadata,
   geminiBatchInlineResponseMap as geminiBatchInlineResponseMapShared,
+  geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
   geminiInlineResponsePayload,
   mergeBatchJobRecord,
+  latestRequestKeysByBatchJob,
   shouldAttachBaselineFactsImage,
   submittedRequestCapReached,
   unfinishedBatchJobs,
@@ -651,8 +654,12 @@ function geminiCliBaselineFactFiles(capture) {
 
 async function processGeminiApiBatchTargets(targets, report, runId) {
   let batchState = loadGeminiBatchState();
-  batchState = await reconcileUnfinishedGeminiBatchJobs(batchState, targets, report, runId);
-  const activeRequestKeys = activeBatchRequestKeys(batchState);
+  const reconciliation = await reconcileUnfinishedGeminiBatchJobs(batchState, targets, report, runId);
+  batchState = reconciliation.state;
+  const activeRequestKeys = new Set([
+    ...activeBatchRequestKeys(batchState),
+    ...reconciliation.reconciledRequestKeys,
+  ]);
   const activeJobs = unfinishedBatchJobs(batchState);
   const availableJobSlots = Math.max(0, geminiBatchParallelJobs - activeJobs.length);
   if (availableJobSlots === 0) {
@@ -857,13 +864,31 @@ function upsertGeminiBatchStateJob(record) {
 }
 
 async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId) {
-  const unfinished = unfinishedBatchJobs(state);
-  if (!unfinished.length) return state;
+  const awaiting = batchJobsAwaitingReconciliation(state);
+  if (!awaiting.length) return { state, reconciledRequestKeys: new Set() };
 
   const targetsBySourceId = new Map(targets.map((target) => [target.sourceId, target]));
+  const latestKeysByJob = latestRequestKeysByBatchJob(awaiting);
+  const ordered = [...awaiting].sort((left, right) =>
+    String(right?.submitted_at || "").localeCompare(String(left?.submitted_at || "")),
+  );
+  const reconciledRequestKeys = new Set();
   let nextState = state;
-  for (const job of unfinished) {
+  for (const job of ordered) {
     if (!job.batch_name) continue;
+    const latestRequestKeys = latestKeysByJob.get(job.batch_name) || [];
+    if (!latestRequestKeys.length) {
+      nextState = mergeBatchJobRecord(nextState, {
+        ...job,
+        status: "succeeded",
+        reconciled_at: new Date().toISOString(),
+        reconciliation_status: "superseded_duplicate_requests",
+        superseded_request_count: Array.isArray(job.request_keys) ? job.request_keys.length : 0,
+      });
+      saveGeminiBatchState(nextState);
+      console.log(`BASELINE_FACTS_BATCH existing_superseded job=${job.batch_name}`);
+      continue;
+    }
     const completed = await fetchGeminiBatchJson(
       `https://generativelanguage.googleapis.com/v1beta/${job.batch_name}`,
       { method: "GET", kind: "batch_poll_existing" },
@@ -895,13 +920,15 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
       continue;
     }
 
-    const entries = entriesForBatchStateJob(job, targetsBySourceId);
+    const entries = entriesForBatchStateJob(job, targetsBySourceId, new Set(latestRequestKeys));
     if (!entries.length) {
       nextState = mergeBatchJobRecord(nextState, {
         ...job,
         status: "succeeded",
         completed_at: new Date().toISOString(),
         output_ref: geminiBatchOutputRef(completed),
+        reconciled_at: new Date().toISOString(),
+        reconciliation_status: "no_local_entries",
       });
       saveGeminiBatchState(nextState);
       console.log(`BASELINE_FACTS_BATCH existing_no_local_entries job=${job.batch_name}`);
@@ -909,18 +936,38 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
     }
 
     report.checked += entries.length;
-    await applyGeminiApiBatchResponses({
-      batchName: job.batch_name,
-      completed,
-      entries,
-      report,
-      runId,
-    });
+    let reconciliationResult;
+    try {
+      reconciliationResult = await applyGeminiApiBatchResponses({
+        batchName: job.batch_name,
+        completed,
+        entries,
+        report,
+        runId,
+      });
+    } catch (error) {
+      const message = errorMessage(error);
+      nextState = mergeBatchJobRecord(nextState, {
+        ...job,
+        status: "processing",
+        output_ref: geminiBatchOutputRef(completed),
+        error: message,
+      });
+      saveGeminiBatchState(nextState);
+      report.errors.push({ batch_name: job.batch_name, message });
+      console.log(`BASELINE_FACTS_BATCH existing_reconcile_deferred job=${job.batch_name} message=${truncate(message, 500)}`);
+      continue;
+    }
+    for (const entry of entries) reconciledRequestKeys.add(entry.source.id);
     nextState = mergeBatchJobRecord(nextState, {
       ...job,
       status: "succeeded",
       completed_at: new Date().toISOString(),
       output_ref: geminiBatchOutputRef(completed),
+      reconciled_at: new Date().toISOString(),
+      reconciliation_status: reconciliationResult.failed > 0 ? "completed_with_item_failures" : "completed",
+      reconciliation_result: reconciliationResult,
+      error: null,
     });
     saveGeminiBatchState(nextState);
     console.log(`BASELINE_FACTS_BATCH existing_reconciled job=${job.batch_name} requests=${entries.length}`);
@@ -928,14 +975,15 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
   }
 
   saveGeminiBatchState(nextState);
-  return nextState;
+  return { state: nextState, reconciledRequestKeys };
 }
 
-function entriesForBatchStateJob(job, targetsBySourceId) {
+function entriesForBatchStateJob(job, targetsBySourceId, allowedKeys = null) {
   const entries = [];
   const contexts = Array.isArray(job.request_contexts) ? job.request_contexts : [];
   const keys = Array.isArray(job.request_keys) ? job.request_keys : [];
   for (const key of keys) {
+    if (allowedKeys && !allowedKeys.has(key)) continue;
     const context = contexts.find((item) => item?.source_id === key) || {};
     const target = targetsBySourceId.get(key) || (context.baseline_path ? { sourceId: key, baselinePath: context.baseline_path } : null);
     if (!target?.baselinePath || !existsSync(target.baselinePath)) continue;
@@ -1049,8 +1097,9 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     return;
   }
 
+  let reconciliationResult;
   try {
-    await applyGeminiApiBatchResponses({
+    reconciliationResult = await applyGeminiApiBatchResponses({
       batchName,
       completed,
       entries,
@@ -1075,12 +1124,30 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     status: "succeeded",
     completed_at: new Date().toISOString(),
     output_ref: geminiBatchOutputRef(completed),
+    reconciled_at: new Date().toISOString(),
+    reconciliation_status: reconciliationResult.failed > 0 ? "completed_with_item_failures" : "completed",
+    reconciliation_result: reconciliationResult,
+    error: null,
   });
 }
 
 async function applyGeminiApiBatchResponses({ batchName, completed, entries, report, runId }) {
   const responses = await geminiBatchResponses(completed);
   const responseByKey = geminiBatchInlineResponseMap(responses);
+  const missingEntryKeys = entries
+    .map((entry) => entry.source.id)
+    .filter((key) => !responseByKey.responses.has(key));
+  const duplicateEntryKeys = entries
+    .map((entry) => entry.source.id)
+    .filter((key) => responseByKey.duplicateKeys.has(key));
+  if (!responses.length) {
+    throw new Error(`Gemini batch ${batchName} returned no readable inline or file responses.`);
+  }
+  if (missingEntryKeys.length || duplicateEntryKeys.length) {
+    throw new Error(
+      `Gemini batch ${batchName} response mapping failed: missing=${missingEntryKeys.length} duplicate=${duplicateEntryKeys.length}.`,
+    );
+  }
   if (responses.length !== entries.length) {
     console.log(
       `BASELINE_FACTS_BATCH response_count_mismatch job=${batchName} expected=${entries.length} actual=${responses.length}`,
@@ -1092,6 +1159,7 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
     );
   }
 
+  const result = { processed: entries.length, extracted: 0, applied: 0, failed: 0 };
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     const inlineResponse = responseByKey.responses.get(entry.source.id) || null;
@@ -1158,8 +1226,10 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
         applyFactsToBaseline(entry.target.baselinePath, entry.baseline, facts, metadata);
         await applyFactsToSupabaseSource(entry.source, facts, metadata, entry.capture, report);
         report.applied += 1;
+        result.applied += 1;
       }
       report.extracted += 1;
+      result.extracted += 1;
       report.saved_sources.push({
         source_id: entry.source.id,
         award_name: entry.source.shared_awards?.name || null,
@@ -1170,6 +1240,7 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
       console.log(`BASELINE_FACTS extracted confidence=${facts.confidence} ${sourceLabel(entry.source)}`);
     } catch (error) {
       report.failed += 1;
+      result.failed += 1;
       report.gemini_usage.batch_failures += 1;
       const message = errorMessage(error);
       report.errors.push({
@@ -1182,6 +1253,7 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
   }
 
   await maybeUpdateWorkerRun(runId, report);
+  return result;
 }
 
 function geminiBatchEntryForBaselineFacts(source, capture) {
@@ -1272,7 +1344,7 @@ async function createGeminiBatchJob({ requests, displayName, mode }) {
 async function uploadGeminiJsonlRequests({ requests, displayName }) {
   mkdirSync(geminiBatchJsonlDir, { recursive: true });
   const jsonlPath = join(geminiBatchJsonlDir, `${displayName}.jsonl`);
-  const body = requests.map((request) => JSON.stringify(request)).join("\n") + "\n";
+  const body = requests.map((request) => JSON.stringify(geminiBatchJsonlRequest(request))).join("\n") + "\n";
   writeFileSync(jsonlPath, body, "utf8");
   const bytes = Buffer.from(body, "utf8");
   const startResponse = await fetch(
@@ -1807,6 +1879,7 @@ function baselineFactsMatchSource(source, capture, facts) {
       ...source,
       page_metadata: { baseline_facts: facts },
       page_metadata_generated_at: new Date().toISOString(),
+      page_metadata_model: geminiApiModel,
     },
     { purpose: "monitoring" },
   );
