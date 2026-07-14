@@ -69,7 +69,10 @@ const reconcileBatchSize = boundedInt(args["reconcile-batch-size"], 500, 1, 2_00
 const pageAuditBatchSize = boundedInt(args["page-audit-batch-size"], 100, 1, 250);
 const pageAuditLimit = boundedInt(args["page-audit-limit"], 2_000, 1, 10_000);
 const visualReviewLimit = boundedInt(args["visual-review-limit"], 2_000, 1, 10_000);
-const visualShards = boundedInt(args["visual-shards"], 3, 1, 8);
+// R2 repair loads the current snapshot index before capture. Keep this stage
+// serialized so parallel repair shards do not contend for the same Supabase
+// connection path and turn transient fetch failures into false no-progress.
+const visualShards = boundedInt(args["visual-shards"], 1, 1, 8);
 const visualMissingBatchLimit = boundedInt(args["visual-missing-batch-limit"], 250, 1, 1_000);
 const includeHousekeeping = boolArg(args["include-housekeeping"], true);
 const archiveRoot = resolve(String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || "D:\\AwardPingVisualSnapshots"));
@@ -274,7 +277,7 @@ async function drainMissingVisualBaselines() {
       `--visual-shards=${visualShards}`,
       "--visual-limit=50000",
       `--visual-complete-missing-batch-limit=${visualMissingBatchLimit}`,
-      "--continue-on-error=true",
+      "--continue-on-error=false",
     ]);
     const after = await liveSnapshot();
     const afterCount = captureBaselineBacklog(after);
@@ -766,6 +769,7 @@ function newState() {
       max_runtime_hours: maxRuntimeHours,
       source_batch_size: sourceBatchSize,
       source_parallel_jobs: sourceParallelJobs,
+      visual_shards: visualShards,
     },
     stages: {},
     commands: [],
@@ -948,7 +952,7 @@ Options:
   --source-parallel-jobs=4        Parallel source-fact Batch jobs
   --reconcile-batch-size=500      Awards reconciled per deterministic pass
   --page-audit-batch-size=100     Requests per page-audit Batch job
-  --visual-shards=3               Missing-baseline capture shards
+  --visual-shards=1               Serialized R2 missing-baseline repair shard
   --include-housekeeping=true     Suppress historical noise and prune snapshots
   --state=<path>                  Durable resume state path
   --report=<path>                 Final report path
