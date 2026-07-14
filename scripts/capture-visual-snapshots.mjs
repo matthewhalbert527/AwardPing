@@ -15,9 +15,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
-  CopyObjectCommand,
   DeleteObjectCommand,
-  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -43,6 +41,16 @@ import {
   normalizeGeminiPricingMode,
 } from "./lib/gemini-batch-support.mjs";
 import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
+import {
+  atomicWriteJson,
+  withVisualBaselineLockAsync,
+} from "./lib/visual-baseline-lock.mjs";
+import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
+import {
+  rotatedVisualSnapshotHistory,
+  visualSnapshotKeysToDeleteAfterCas,
+  visualSnapshotUploadedKeysToDeleteAfterLostCas,
+} from "./lib/visual-snapshot-history.mjs";
 import {
   buildStableTextBlocks,
   captureProfileSettings,
@@ -70,13 +78,21 @@ import {
   sourceBaselineFacts,
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import { insertedDiscoveryRows } from "./lib/source-discovery-write.mjs";
 import {
   buildVisualReviewPromptPayload,
   buildVisualReviewPromptText,
   classifyVisualReviewCandidate,
+  currentMonitoringPolicyAuditIdentity,
+  currentVisualReviewPolicyIdentity,
   normalizeVisualReviewMode,
   visualReviewCandidateSignature,
+  visualReviewEvidenceSignature,
 } from "./lib/visual-review-queue.mjs";
+import {
+  findVisualRejectionLedgerMatch,
+  touchVisualRejectionLedgerMatch,
+} from "./lib/visual-rejection-ledger.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
@@ -427,13 +443,6 @@ let existingR2SnapshotSourceIds = new Set();
 let knownBrokenSourceIds = null;
 let lastBaselineCoverageProgressUpdateAt = 0;
 let lastBaselineCoverageProgressProcessed = 0;
-const r2SnapshotSlots = [
-  { name: "page", fileName: "page.jpg", contentType: "image/jpeg" },
-  { name: "thumb", fileName: "thumb.jpg", contentType: "image/jpeg" },
-  { name: "pdf", fileName: "document.pdf", contentType: "application/pdf" },
-  { name: "text", fileName: "text.txt", contentType: "text/plain; charset=utf-8" },
-  { name: "meta", fileName: "meta.json", contentType: "application/json; charset=utf-8" },
-];
 const crawlerUserAgent =
   cleanText(args["crawler-user-agent"] || env.AWARDPING_CRAWLER_USER_AGENT) ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -500,6 +509,8 @@ async function runOnce() {
   const reportPath = join(root, "reports", `visual-snapshot-run-${runStamp}.json`);
   const report = {
     archive_root: archiveRoot,
+    monitoring_policy: currentVisualReviewPolicyIdentity(),
+    monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
     started_at: startedAt,
     finished_at: null,
     status: "running",
@@ -717,6 +728,8 @@ async function runOnce() {
     visual_review_candidates_queued: 0,
     visual_review_candidates_existing: 0,
     visual_review_candidates_failed: 0,
+    visual_review_rejected_evidence_absorbed: 0,
+    visual_rejection_ledger_unavailable: 0,
     awards_queued_for_reconciliation: 0,
     award_reconciliation_queue_existing: 0,
     award_reconciliation_queue_failed: 0,
@@ -1058,6 +1071,15 @@ async function backfillR2Baselines(sources, workerRunId, report, coverageSources
 }
 
 async function backfillOneR2Baseline(source, report) {
+  return withVisualBaselineLockAsync({
+    archiveRoot,
+    sourceId: source.id,
+    timeoutMs: 5 * 60_000,
+    operation: () => backfillOneR2BaselineUnlocked(source, report),
+  });
+}
+
+async function backfillOneR2BaselineUnlocked(source, report) {
   const baseline = readJsonIfExists(baselinePathForSource(source.id));
   const capture = captureFromBaseline(baseline);
   if (!capture) {
@@ -1096,6 +1118,15 @@ async function backfillOneR2Baseline(source, report) {
 }
 
 async function processSource(source, context, browserMeta, report) {
+  return withVisualBaselineLockAsync({
+    archiveRoot,
+    sourceId: source.id,
+    timeoutMs: 5 * 60_000,
+    operation: () => processSourceUnlocked(source, context, browserMeta, report),
+  });
+}
+
+async function processSourceUnlocked(source, context, browserMeta, report) {
   const hygiene = shouldRejectDiscoveredSource({
     ...source,
     award_name: source.shared_awards?.name || "",
@@ -1275,7 +1306,7 @@ async function processSource(source, context, browserMeta, report) {
   }
 
   if (visualReviewMode === "batch") {
-    await enqueueVisualReviewCandidate({
+    const queueResult = await enqueueVisualReviewCandidate({
       source,
       baseline,
       previous,
@@ -1286,7 +1317,14 @@ async function processSource(source, context, browserMeta, report) {
     });
     pruneTransientExpansionStateScreenshots(capture, report);
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`QUEUED visual_review_batch ${sourceLabel(source)}`);
+    if (queueResult?.absorbed) {
+      if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+      console.log(`ABSORBED visual_review_rejected_evidence ${sourceLabel(source)}`);
+    } else if (queueResult?.existing) {
+      console.log(`EXISTING visual_review_candidate ${sourceLabel(source)}`);
+    } else {
+      console.log(`QUEUED visual_review_batch ${sourceLabel(source)}`);
+    }
     return;
   }
 
@@ -1406,7 +1444,7 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
   }
 
   if (visualReviewMode === "batch") {
-    await enqueueVisualReviewCandidate({
+    const queueResult = await enqueueVisualReviewCandidate({
       source,
       baseline,
       previous,
@@ -1415,10 +1453,17 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
       deterministic: gate.deterministic,
       report,
     });
-    report.text_only_published_or_queued += 1;
     pruneTransientExpansionStateScreenshots(capture, report);
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`QUEUED text_only_visual_review_batch ${sourceLabel(source)}`);
+    if (queueResult?.absorbed) {
+      if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+      console.log(`ABSORBED text_only_visual_rejected_evidence ${sourceLabel(source)}`);
+    } else if (queueResult?.existing) {
+      console.log(`EXISTING text_only_visual_candidate ${sourceLabel(source)}`);
+    } else {
+      report.text_only_published_or_queued += 1;
+      console.log(`QUEUED text_only_visual_review_batch ${sourceLabel(source)}`);
+    }
     return;
   }
 
@@ -1561,16 +1606,27 @@ async function processExpandableSectionComparison(
 
   let queued = 0;
   let rejectedAsNoise = 0;
+  let absorbed = 0;
+  let existing = 0;
   for (const pair of sectionPairs.slice(0, 24)) {
     const result = await processOneSectionChange(source, baseline, previous, capture, report, pair);
     if (result === "queued") queued += 1;
     if (result === "noise") rejectedAsNoise += 1;
+    if (result === "absorbed") absorbed += 1;
+    if (result === "existing") existing += 1;
   }
 
   if (queued > 0) {
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`QUEUED section_visual_review_batch count=${queued} ${sourceLabel(source)}`);
     return { handled: true, reason: "section_candidates_queued" };
+  }
+
+  if (absorbed > 0 || existing > 0) {
+    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    if (existing === 0 && !keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(`ABSORBED section_visual_evidence absorbed=${absorbed} existing=${existing} ${sourceLabel(source)}`);
+    return { handled: true, reason: existing ? "section_candidates_existing" : "section_rejected_evidence_absorbed" };
   }
 
   if (rejectedAsNoise > 0 && acceptTextOnlyNoise) {
@@ -1697,7 +1753,7 @@ async function processOneSectionChange(
     return "queued";
   }
 
-  await enqueueVisualReviewCandidate({
+  const queueResult = await enqueueVisualReviewCandidate({
     source,
     baseline: sectionBaseline,
     previous: previousSectionCapture,
@@ -1706,6 +1762,8 @@ async function processOneSectionChange(
     deterministic: gate.deterministic,
     report,
   });
+  if (queueResult?.absorbed) return "absorbed";
+  if (queueResult?.existing) return "existing";
   report.section_change_candidates_enqueued += 1;
   return "queued";
 }
@@ -1961,6 +2019,40 @@ async function enqueueVisualReviewCandidate({
   report,
 }) {
   try {
+    const monitoringPolicy = currentVisualReviewPolicyIdentity();
+    const evidenceSignature = visualReviewEvidenceSignature({
+      source,
+      baseline,
+      capture,
+      diff,
+      deterministic,
+      behaviorVersion: captureBehaviorVersion,
+    });
+    try {
+      const ledger = await findVisualRejectionLedgerMatch(supabase, {
+        sourceId: source?.id,
+        evidenceSignature,
+        policyHash: monitoringPolicy?.hash,
+      });
+      if (ledger.unavailable) {
+        report.visual_rejection_ledger_unavailable += 1;
+      } else if (ledger.match) {
+        await touchVisualRejectionLedgerMatch(supabase, ledger.match);
+        report.visual_review_rejected_evidence_absorbed += 1;
+        return {
+          absorbed: true,
+          evidence_signature: evidenceSignature,
+          rejection_reason: ledger.match.rejection_reason || "previously_policy_rejected",
+        };
+      }
+    } catch (ledgerError) {
+      report.visual_rejection_ledger_unavailable += 1;
+      report.errors.push({
+        source_id: source?.id || null,
+        source_url: source?.url || null,
+        message: `Visual rejection ledger lookup failed: ${errorMessage(ledgerError)}`,
+      });
+    }
     const candidateSignature = visualReviewCandidateSignature({
       source,
       baseline,
@@ -2012,6 +2104,9 @@ async function enqueueVisualReviewCandidate({
         capture_behavior_version: captureBehaviorVersion,
         capture_behavior_name: captureBehaviorName,
         visual_review_mode: visualReviewMode,
+        monitoring_policy: monitoringPolicy,
+        monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+        evidence_signature: evidenceSignature,
       },
       updated_at: new Date().toISOString(),
     };
@@ -2038,6 +2133,9 @@ async function enqueueVisualReviewCandidate({
         metadata: {
           candidate_signature: candidateSignature,
           deterministic_classification: row.deterministic_classification,
+          monitoring_policy: monitoringPolicy,
+          monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+          evidence_signature: evidenceSignature,
           queued_by: "capture-visual-snapshots",
         },
       });
@@ -2045,7 +2143,11 @@ async function enqueueVisualReviewCandidate({
     }
 
     report.visual_review_candidates_existing += 1;
-    return null;
+    return {
+      existing: true,
+      duplicate: true,
+      candidate_signature: candidateSignature,
+    };
   } catch (error) {
     report.visual_review_candidates_failed += 1;
     const message = `Visual review candidate enqueue failed: ${errorMessage(error)}`;
@@ -2164,7 +2266,7 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   }
 
   if (visualReviewMode === "batch") {
-    await enqueueVisualReviewCandidate({
+    const queueResult = await enqueueVisualReviewCandidate({
       source,
       baseline,
       previous,
@@ -2174,7 +2276,14 @@ async function processPdfComparison(source, baseline, previous, capture, report)
       report,
     });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`QUEUED visual_review_batch_pdf ${sourceLabel(source)}`);
+    if (queueResult?.absorbed) {
+      if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+      console.log(`ABSORBED visual_review_rejected_evidence_pdf ${sourceLabel(source)}`);
+    } else if (queueResult?.existing) {
+      console.log(`EXISTING visual_review_candidate_pdf ${sourceLabel(source)}`);
+    } else {
+      console.log(`QUEUED visual_review_batch_pdf ${sourceLabel(source)}`);
+    }
     return;
   }
 
@@ -4427,7 +4536,7 @@ function discoveryCandidateSource(source, link, kind) {
     page_type: pageType,
     confidence: kind === "pdf" ? 0.8 : link.confidence || 0.74,
     reason: link.reason || null,
-    source: "discovery",
+    source: "admin",
     shared_awards: source.shared_awards || null,
     page_metadata: link.baseline_facts
       ? {
@@ -4547,7 +4656,7 @@ function discoveredSourceRow(source, link, kind, expanded, decision) {
     ]
       .filter(Boolean)
       .join(" "),
-    source: "discovery",
+    source: "admin",
     admin_review_status: reviewStatus,
     admin_review_note:
       reviewStatus === "review_later"
@@ -4679,7 +4788,7 @@ async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, repor
     return;
   }
 
-  const insertedRows = data?.length ? rows.filter((row) => data.some((inserted) => inserted.url === row.url)) : rows;
+  const insertedRows = insertedDiscoveryRows(rows, data);
   const inserted = insertedRows.length;
   if (report) {
     report.discovered_pdf_sources += inserted;
@@ -4981,7 +5090,7 @@ async function maybeRecordDiscoveredHtmlSources(source, links, expanded, report)
     return;
   }
 
-  const insertedRows = data?.length ? rows.filter((row) => data.some((inserted) => inserted.url === row.url)) : rows;
+  const insertedRows = insertedDiscoveryRows(rows, data);
   const inserted = insertedRows.length;
   if (report) {
     report.discovered_html_sources += inserted;
@@ -5616,35 +5725,27 @@ function distinctiveSourceTokens(value) {
 async function syncR2SnapshotPair(source, capture) {
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
-  const rotatedKeys = await rotateR2LatestToPrevious(client, source.id);
   const latestFiles = captureR2Files(capture);
-  const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
-  await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
-  await deleteR2ExpansionStateObjects(client, source.id);
-
-  const previousObjectKeys = Object.keys(rotatedKeys).length
-    ? rotatedKeys
-    : {};
-  const previousHashes = Object.keys(rotatedKeys).length
-    ? jsonObjectOrEmpty(existingRecord?.latest_hashes)
-    : {};
-  const previousMetadata = Object.keys(rotatedKeys).length
-    ? jsonObjectOrEmpty(existingRecord?.latest_metadata)
-    : {};
-
-  await upsertR2SnapshotRecord(source, capture, {
+  const latestKeys = await uploadR2CaptureFiles(
+    client,
+    source.id,
+    latestFiles,
+    immutableR2CaptureVersion(capture),
+  );
+  const history = rotatedVisualSnapshotHistory(existingRecord, latestKeys);
+  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+    expectedRecord: existingRecord,
     latestKeys,
-    previousObjectKeys,
-    previousHashes,
-    previousMetadata,
-    previousCapturedAt: Object.keys(rotatedKeys).length
-      ? existingRecord?.latest_captured_at || null
-      : null,
+    previousObjectKeys: history.previous_object_keys,
+    previousHashes: history.previous_hashes,
+    previousMetadata: history.previous_metadata,
+    previousCapturedAt: history.previous_captured_at,
   });
+  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
 
   return {
     uploaded: Object.keys(latestKeys).length,
-    rotated: Object.keys(rotatedKeys).length,
+    rotated: Object.keys(history.previous_object_keys).length,
   };
 }
 
@@ -5652,9 +5753,12 @@ async function syncR2LocalizationLatest(source, capture) {
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   const latestFiles = captureR2Files(capture);
-  const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
-  await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
-  await deleteR2ExpansionStateObjects(client, source.id, ["latest"]);
+  const latestKeys = await uploadR2CaptureFiles(
+    client,
+    source.id,
+    latestFiles,
+    immutableR2CaptureVersion(capture),
+  );
 
   const hadPrevious = Object.keys(jsonObjectOrEmpty(existingRecord?.previous_object_keys)).length > 0;
   const previousObjectKeys = resetPreviousSnapshot
@@ -5670,17 +5774,15 @@ async function syncR2LocalizationLatest(source, capture) {
     ? null
     : existingRecord?.previous_captured_at || null;
 
-  await upsertR2SnapshotRecord(source, capture, {
+  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+    expectedRecord: existingRecord,
     latestKeys,
     previousObjectKeys,
     previousHashes,
     previousMetadata,
     previousCapturedAt,
   });
-
-  if (resetPreviousSnapshot) {
-    await deleteR2SnapshotVersionObjects(client, source.id, "previous");
-  }
+  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
 
   return {
     uploaded: Object.keys(latestKeys).length,
@@ -5691,17 +5793,27 @@ async function syncR2LocalizationLatest(source, capture) {
 
 async function syncR2BackfillLatestOnly(source, capture) {
   const client = getR2Client();
+  const existingRecord = await loadR2SnapshotRecord(source.id);
+  if (Object.keys(jsonObjectOrEmpty(existingRecord?.latest_object_keys)).length) {
+    return { uploaded: 0, rotated: 0, skippedExisting: true };
+  }
   const latestFiles = captureR2Files(capture);
-  const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
-  await deleteR2ExpansionStateObjects(client, source.id);
+  const latestKeys = await uploadR2CaptureFiles(
+    client,
+    source.id,
+    latestFiles,
+    immutableR2CaptureVersion(capture),
+  );
 
-  await upsertR2SnapshotRecord(source, capture, {
+  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+    expectedRecord: existingRecord,
     latestKeys,
     previousObjectKeys: {},
     previousHashes: {},
     previousMetadata: {},
     previousCapturedAt: null,
   });
+  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
 
   return {
     uploaded: Object.keys(latestKeys).length,
@@ -5757,7 +5869,7 @@ async function loadR2SnapshotRecord(sourceId) {
   const { data, error } = await supabase
     .from("shared_award_source_visual_snapshots")
     .select(
-      "latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata",
+      "latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
     )
     .eq("shared_award_source_id", sourceId)
     .maybeSingle();
@@ -5766,37 +5878,9 @@ async function loadR2SnapshotRecord(sourceId) {
   return data || null;
 }
 
-async function rotateR2LatestToPrevious(client, sourceId) {
-  const rotatedKeys = {};
-
-  for (const slot of r2SnapshotSlots) {
-    const latestKey = r2SnapshotKey(sourceId, "latest", slot.fileName);
-    const previousKey = r2SnapshotKey(sourceId, "previous", slot.fileName);
-
-    if (await r2ObjectExists(client, latestKey)) {
-      await sendR2Command(
-        client,
-        () => new CopyObjectCommand({
-          Bucket: r2Bucket,
-          CopySource: `${r2Bucket}/${latestKey}`,
-          Key: previousKey,
-          ContentType: slot.contentType,
-          MetadataDirective: "COPY",
-        }),
-        `copy ${latestKey}`,
-      );
-      rotatedKeys[slot.name] = previousKey;
-    } else {
-      await deleteR2Object(client, previousKey);
-    }
-  }
-
-  return rotatedKeys;
-}
-
-async function uploadR2CaptureFiles(client, sourceId, files) {
+async function uploadR2CaptureFiles(client, sourceId, files, version) {
   const uploaded = await Promise.all(files.map(async (file) => {
-    const key = r2SnapshotKey(sourceId, "latest", file.fileName);
+    const key = `visual-snapshots/sources/${sourceId}/captures/${version}/${file.fileName}`;
     await sendR2Command(
       client,
       () => new PutObjectCommand({
@@ -5813,52 +5897,11 @@ async function uploadR2CaptureFiles(client, sourceId, files) {
   return Object.fromEntries(uploaded);
 }
 
-async function deleteR2LatestObjectsNotInCapture(client, sourceId, latestKeys) {
-  const activeFileNames = new Set(
-    Object.values(latestKeys).map((key) => String(key).split("/").pop()),
-  );
-
-  for (const slot of r2SnapshotSlots) {
-    if (activeFileNames.has(slot.fileName)) continue;
-    await deleteR2Object(client, r2SnapshotKey(sourceId, "latest", slot.fileName));
-  }
-}
-
-async function deleteR2ExpansionStateObjects(client, sourceId, versions = ["latest", "previous"]) {
-  const deletes = [];
-  for (const slot of versions) {
-    for (let index = 1; index <= 24; index += 1) {
-      const fileName = `expansion-state-${String(index).padStart(2, "0")}.jpg`;
-      deletes.push(deleteR2Object(client, r2SnapshotKey(sourceId, slot, fileName)));
-    }
-  }
-  await Promise.all(deletes);
-}
-
-async function deleteR2SnapshotVersionObjects(client, sourceId, version) {
-  await Promise.all(
-    r2SnapshotSlots.map((slot) =>
-      deleteR2Object(client, r2SnapshotKey(sourceId, version, slot.fileName)),
-    ),
-  );
-  await deleteR2ExpansionStateObjects(client, sourceId, [version]);
-}
-
-async function r2ObjectExists(client, key) {
-  try {
-    await sendR2Command(
-      client,
-      () => new HeadObjectCommand({
-        Bucket: r2Bucket,
-        Key: key,
-      }),
-      `head ${key}`,
-    );
-    return true;
-  } catch (error) {
-    if (isR2NotFoundError(error)) return false;
-    throw error;
-  }
+function immutableR2CaptureVersion(capture) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    captured_at: capture?.captured_at || null,
+    hashes: r2CaptureHashes(capture),
+  })).digest("hex").slice(0, 32);
 }
 
 async function deleteR2Object(client, key) {
@@ -5877,31 +5920,42 @@ async function deleteR2Object(client, key) {
 }
 
 async function upsertR2SnapshotRecord(source, capture, snapshot) {
-  const { error } = await supabase
-    .from("shared_award_source_visual_snapshots")
-    .upsert(
-      {
-        shared_award_source_id: source.id,
-        shared_award_id: source.shared_award_id,
-        source_url: source.url,
-        source_title: source.title || null,
-        source_page_type: source.page_type || null,
-        kind: capture.kind || "webpage",
-        bucket: r2Bucket,
-        latest_captured_at: capture.captured_at,
-        latest_object_keys: snapshot.latestKeys,
-        latest_hashes: r2CaptureHashes(capture),
-        latest_metadata: r2CaptureMetadata(capture),
-        previous_captured_at: snapshot.previousCapturedAt,
-        previous_object_keys: snapshot.previousObjectKeys,
-        previous_hashes: snapshot.previousHashes,
-        previous_metadata: snapshot.previousMetadata,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "shared_award_source_id" },
-    );
-
-  if (error) throw new Error(describeSupabaseError(error, "upsert R2 visual snapshot record"));
+  const snapshotRow = {
+    shared_award_source_id: source.id,
+    shared_award_id: source.shared_award_id,
+    source_url: source.url,
+    source_title: source.title || null,
+    source_page_type: source.page_type || null,
+    kind: capture.kind || "webpage",
+    bucket: r2Bucket,
+    latest_captured_at: capture.captured_at,
+    latest_object_keys: snapshot.latestKeys,
+    latest_hashes: r2CaptureHashes(capture),
+    latest_metadata: r2CaptureMetadata(capture),
+    previous_captured_at: snapshot.previousCapturedAt,
+    previous_object_keys: snapshot.previousObjectKeys,
+    previous_hashes: snapshot.previousHashes,
+    previous_metadata: snapshot.previousMetadata,
+    updated_at: new Date().toISOString(),
+  };
+  const advanced = await advanceVisualSnapshotPointer(supabase, {
+    existing: snapshot.expectedRecord,
+    snapshot: snapshotRow,
+  });
+  if (!advanced) {
+    const current = await loadR2SnapshotRecord(source.id);
+    const orphanKeys = visualSnapshotUploadedKeysToDeleteAfterLostCas({
+      uploaded: snapshot.latestKeys,
+      current,
+    });
+    await Promise.all(orphanKeys.map((key) => deleteR2Object(getR2Client(), key)));
+    throw new Error("Visual snapshot pointer compare-and-set lost to another source writer.");
+  }
+  return visualSnapshotKeysToDeleteAfterCas({
+    pointerAdvanced: advanced,
+    existing: snapshot.expectedRecord,
+    next: snapshotRow,
+  });
 }
 
 function captureR2Files(capture) {
@@ -6002,10 +6056,6 @@ function captureLocalizationMetadata(capture) {
     capture_behavior_version: capture.capture_behavior_version || null,
     captured_at: capture.captured_at || null,
   };
-}
-
-function r2SnapshotKey(sourceId, version, fileName) {
-  return `visual-snapshots/sources/${sourceId}/${version}/${fileName}`;
 }
 
 function jsonObjectOrEmpty(value) {
@@ -6728,7 +6778,17 @@ function copyEvidenceFiles(targetDir, previous, capture) {
 function writeBaseline(source, capture, details) {
   const baselinePath = baselinePathForSource(source.id);
   mkdirSync(dirname(baselinePath), { recursive: true });
-  const existingSummary = readJsonIfExists(baselinePath)?.summary_metadata || {};
+  const existingBaseline = readJsonIfExists(baselinePath);
+  const existingCapturedAt = Date.parse(String(existingBaseline?.captured_at || ""));
+  const candidateCapturedAt = Date.parse(String(capture?.captured_at || ""));
+  if (
+    Number.isFinite(existingCapturedAt) &&
+    Number.isFinite(candidateCapturedAt) &&
+    existingCapturedAt > candidateCapturedAt
+  ) {
+    return false;
+  }
+  const existingSummary = existingBaseline?.summary_metadata || {};
   const baseline = {
     version: 1,
     kind: capture.kind || "webpage",
@@ -6797,7 +6857,8 @@ function writeBaseline(source, capture, details) {
         null,
     },
   };
-  writeFileSync(baselinePath, JSON.stringify(baseline, null, 2), "utf8");
+  atomicWriteJson(baselinePath, baseline);
+  return true;
 }
 
 function readBaselineEvidence(baseline) {
@@ -7614,6 +7675,9 @@ function visualWorkerMetadata(report) {
   return {
     kind: "visual_snapshot",
     archive_root: report.archive_root,
+    monitoring_policy: report.monitoring_policy || currentVisualReviewPolicyIdentity(),
+    monitoring_policy_bundle:
+      report.monitoring_policy_bundle || currentMonitoringPolicyAuditIdentity(),
     ai_provider: report.ai_provider,
     ai_model: report.ai_model,
     ai_required: report.ai_required,
@@ -7720,6 +7784,9 @@ function visualWorkerMetadata(report) {
       visual_review_candidates_queued: report.visual_review_candidates_queued,
       visual_review_candidates_existing: report.visual_review_candidates_existing,
       visual_review_candidates_failed: report.visual_review_candidates_failed,
+      visual_review_rejected_evidence_absorbed:
+        report.visual_review_rejected_evidence_absorbed,
+      visual_rejection_ledger_unavailable: report.visual_rejection_ledger_unavailable,
       awards_queued_for_reconciliation: report.awards_queued_for_reconciliation,
       award_reconciliation_queue_existing: report.award_reconciliation_queue_existing,
       award_reconciliation_queue_failed: report.award_reconciliation_queue_failed,

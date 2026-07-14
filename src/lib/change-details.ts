@@ -678,7 +678,14 @@ function qualityFlagsForDiff(input: {
   if (input.sampleExpansion) flags.push("sample_expansion");
   if (hasRawScrapeSignals(changedText)) flags.push("raw_scrape_signal");
   if (looksLikeOrphanPunctuation(changedText)) flags.push("orphan_punctuation");
-  if (looksLikeProfileOrTestimonialRotationText(changedText)) {
+  if (
+    !input.addedDates.length &&
+    !input.removedDates.length &&
+    !input.addedAmounts.length &&
+    !input.removedAmounts.length &&
+    !hasApplicationRequirementSignal(changedText) &&
+    looksLikeProfileOrTestimonialRotationText(changedText)
+  ) {
     flags.push("profile_testimonial_change");
   }
   if (

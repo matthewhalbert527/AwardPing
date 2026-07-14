@@ -11,6 +11,15 @@ import {
   buildFactCandidatesFromSources,
   reconcileAwardFacts,
 } from "./lib/award-fact-reconciliation.mjs";
+import {
+  applyAwardFactScanWatermark,
+  awardFactsAreCurrent,
+  awardFactScanWatermark,
+} from "./lib/award-fact-aggregation-window.mjs";
+import {
+  applyAscendingAwardKeyset,
+  awardCursorAfterPage,
+} from "./lib/award-keyset-pagination.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -43,7 +52,7 @@ const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
 
 async function runOnce() {
   mkdirSync(join(root, "reports"), { recursive: true });
-  const startedAt = new Date().toISOString();
+  const startedAt = awardFactScanWatermark();
   const runStamp = timestampForPath(startedAt);
   const reportPath = join(root, "reports", `award-baseline-facts-aggregate-${runStamp}.json`);
   const report = {
@@ -58,6 +67,7 @@ async function runOnce() {
       apply: applyUpdates,
       force,
       award_id: awardIdFilter || null,
+      source_scan_watermark: startedAt,
     },
     loaded_awards: 0,
     source_fact_pages: 0,
@@ -83,7 +93,7 @@ async function runOnce() {
   try {
     const awards = await loadAwards();
     report.loaded_awards = awards.length;
-    const sourcesByAward = await loadSourcesByAward();
+    const sourcesByAward = await loadSourcesByAward(startedAt);
     report.source_fact_pages = [...sourcesByAward.values()].reduce((sum, rows) => sum + rows.length, 0);
     await updateWorkerRun(runId, report);
     console.log(
@@ -101,13 +111,12 @@ async function runOnce() {
         }
 
         const newestSourceGeneratedAt = newestGeneratedAt(usableSources);
-        if (!force && award.last_structure_scan_at && newestSourceGeneratedAt) {
-          const awardScanAt = new Date(award.last_structure_scan_at).getTime();
-          const sourceScanAt = new Date(newestSourceGeneratedAt).getTime();
-          if (Number.isFinite(awardScanAt) && Number.isFinite(sourceScanAt) && awardScanAt >= sourceScanAt) {
-            report.skipped_existing += 1;
-            continue;
-          }
+        if (
+          !force &&
+          awardFactsAreCurrent(award.last_structure_scan_at, newestSourceGeneratedAt)
+        ) {
+          report.skipped_existing += 1;
+          continue;
         }
 
         const candidates = buildFactCandidatesFromSources(award, usableSources);
@@ -151,7 +160,13 @@ async function runOnce() {
         });
 
         if (applyUpdates) {
-          await updateAwardSummary(award, details, websiteSummary, publicFacts);
+          await updateAwardSummary(
+            award,
+            details,
+            websiteSummary,
+            publicFacts,
+            startedAt,
+          );
           report.applied += 1;
         }
 
@@ -181,28 +196,58 @@ async function runOnce() {
 }
 
 async function loadAwards() {
-  const awards = await loadAllRows(
-    "shared_awards",
-    "id, name, slug, official_homepage, summary, public_facts, confidence, status, last_structure_scan_at, created_at",
-    (query) => {
-      query = query.eq("status", "active").order("created_at", { ascending: true });
-      if (awardIdFilter) query = query.eq("id", awardIdFilter);
-      return query;
-    },
-  );
+  const awards = [];
+  const pageSize = 1000;
+  let cursor = null;
+  for (;;) {
+    let query = supabase
+      .from("shared_awards")
+      .select(
+        "id, name, slug, official_homepage, summary, public_facts, confidence, status, last_structure_scan_at, created_at",
+      )
+      .eq("status", "active");
+    if (awardIdFilter) query = query.eq("id", awardIdFilter);
+    query = applyAscendingAwardKeyset(query, "created_at", cursor).limit(pageSize);
+    const { data, error } = await query;
+    if (error) throw new Error(describeSupabaseError(error, "load shared_awards"));
+    const page = data || [];
+    awards.push(...page);
+    if (page.length < pageSize) break;
+    cursor = awardCursorAfterPage(page, "created_at", cursor);
+  }
   return limit === "all" ? awards : awards.slice(0, limit);
 }
 
-async function loadSourcesByAward() {
-  const rows = await loadAllRows(
-    "shared_award_sources",
-    "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id",
-    (query) =>
-      query
-        .eq("admin_review_status", "open")
-        .not("page_metadata_generated_at", "is", null)
-        .order("page_metadata_generated_at", { ascending: false }),
-  );
+async function loadSourcesByAward(scanWatermark) {
+  const rows = [];
+  const pageSize = 1000;
+  let cursor = null;
+  for (;;) {
+    let query = supabase
+      .from("shared_award_sources")
+      .select(
+        "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id",
+      )
+      .eq("admin_review_status", "open")
+      .not("page_metadata_generated_at", "is", null)
+      .order("page_metadata_generated_at", { ascending: false });
+    query = applyAwardFactScanWatermark(query, scanWatermark)
+      .order("id", { ascending: true })
+      .limit(pageSize);
+    if (cursor) {
+      const generatedAt = JSON.stringify(cursor.generatedAt);
+      query = query.or(
+        `page_metadata_generated_at.lt.${generatedAt},and(page_metadata_generated_at.eq.${generatedAt},id.gt.${cursor.id})`,
+      );
+    }
+    const { data, error } = await query;
+    if (error) throw new Error(describeSupabaseError(error, "load shared_award_sources"));
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    const last = page.at(-1);
+    cursor = { generatedAt: last.page_metadata_generated_at, id: last.id };
+  }
   const grouped = new Map();
   for (const row of rows) {
     if (!row.shared_award_id) continue;
@@ -212,20 +257,6 @@ async function loadSourcesByAward() {
     grouped.set(row.shared_award_id, current);
   }
   return grouped;
-}
-
-async function loadAllRows(table, columns, buildQuery) {
-  const pageSize = 1000;
-  const rows = [];
-  for (let from = 0; ; from += pageSize) {
-    let query = supabase.from(table).select(columns).range(from, from + pageSize - 1);
-    query = buildQuery ? buildQuery(query) : query;
-    const { data, error } = await query;
-    if (error) throw new Error(describeSupabaseError(error, `load ${table}`));
-    rows.push(...(data || []));
-    if (!data || data.length < pageSize) break;
-  }
-  return rows;
 }
 
 function aggregateAwardDetails(award, sources) {
@@ -476,7 +507,13 @@ function buildPublicFacts(details) {
   };
 }
 
-async function updateAwardSummary(award, details, websiteSummary, publicFacts) {
+async function updateAwardSummary(
+  award,
+  details,
+  websiteSummary,
+  publicFacts,
+  scanWatermark,
+) {
   const now = new Date().toISOString();
   const { error } = await supabase
     .from("shared_awards")
@@ -486,7 +523,7 @@ async function updateAwardSummary(award, details, websiteSummary, publicFacts) {
       public_facts_generated_at: now,
       public_facts_model: "award-fact-reconciliation",
       confidence: confidenceScore(details.confidence),
-      last_structure_scan_at: now,
+      last_structure_scan_at: scanWatermark,
       structure_scan_error: null,
       updated_at: now,
     })

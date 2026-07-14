@@ -6,6 +6,7 @@ import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { canonicalAwardPath } from "@/lib/award-slugs";
+import { awardDirectorySharedCatalogCacheTag } from "@/lib/cache-tags";
 import { dedupeChangeSummaries, isUsefulChangeForAward } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
@@ -145,7 +146,10 @@ const getCachedSharedCatalog = unstable_cache(
     );
   },
   ["award-directory-shared-catalog-v3"],
-  { revalidate: 300 },
+  {
+    revalidate: 300,
+    tags: [awardDirectorySharedCatalogCacheTag],
+  },
 );
 
 async function fetchAllSharedAwards(supabase: SupabaseAdminClient) {

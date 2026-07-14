@@ -35,6 +35,17 @@ export type AwardWorkflowStatus =
   | "done";
 export type AwardPriority = "normal" | "high";
 export type AwardTaskStatus = "todo" | "done";
+export type MonitoringFeedbackReasonCode =
+  | "capture_noise"
+  | "content_churn"
+  | "duplicate_update"
+  | "out_of_scope"
+  | "not_applicant_facing"
+  | "other";
+export type MonitoringFeedbackScope = "event" | "source" | "award" | "global";
+export type MonitoringFeedbackPromotionStatus =
+  | "pending_review"
+  | "already_active";
 
 export type Database = {
   public: {
@@ -324,6 +335,126 @@ export type Database = {
           completed_at?: string | null;
           error?: string | null;
           metadata?: Json;
+        };
+        Relationships: [];
+      };
+      shared_award_visual_rejection_ledger: {
+        Row: {
+          id: string;
+          shared_award_source_id: string;
+          candidate_id: string | null;
+          evidence_signature: string;
+          policy_id: string | null;
+          policy_version: string | null;
+          policy_hash: string;
+          rejection_reason: string;
+          previous_text_hash: string | null;
+          new_text_hash: string | null;
+          previous_image_hash: string | null;
+          new_image_hash: string | null;
+          previous_file_hash: string | null;
+          new_file_hash: string | null;
+          comparison_snapshot_ref: Json;
+          deterministic_diff: Json;
+          first_rejected_at: string;
+          last_seen_at: string;
+          seen_count: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          shared_award_source_id: string;
+          candidate_id?: string | null;
+          evidence_signature: string;
+          policy_id?: string | null;
+          policy_version?: string | null;
+          policy_hash: string;
+          rejection_reason: string;
+          previous_text_hash?: string | null;
+          new_text_hash?: string | null;
+          previous_image_hash?: string | null;
+          new_image_hash?: string | null;
+          previous_file_hash?: string | null;
+          new_file_hash?: string | null;
+          comparison_snapshot_ref?: Json;
+          deterministic_diff?: Json;
+          first_rejected_at?: string;
+          last_seen_at?: string;
+          seen_count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          shared_award_source_id?: string;
+          candidate_id?: string | null;
+          evidence_signature?: string;
+          policy_id?: string | null;
+          policy_version?: string | null;
+          policy_hash?: string;
+          rejection_reason?: string;
+          previous_text_hash?: string | null;
+          new_text_hash?: string | null;
+          previous_image_hash?: string | null;
+          new_image_hash?: string | null;
+          previous_file_hash?: string | null;
+          new_file_hash?: string | null;
+          comparison_snapshot_ref?: Json;
+          deterministic_diff?: Json;
+          first_rejected_at?: string;
+          last_seen_at?: string;
+          seen_count?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_visual_rejection_ledger_candidate_id_fkey";
+            columns: ["candidate_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_visual_review_candidates";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_visual_rejection_ledger_shared_award_source_id_fkey";
+            columns: ["shared_award_source_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      monitoring_policy_sweep_state: {
+        Row: {
+          sweep_key: string;
+          policy_hash: string;
+          cursor_detected_at: string | null;
+          cursor_event_id: string | null;
+          scanned_count: number;
+          cycle_started_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          sweep_key: string;
+          policy_hash: string;
+          cursor_detected_at?: string | null;
+          cursor_event_id?: string | null;
+          scanned_count?: number;
+          cycle_started_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          sweep_key?: string;
+          policy_hash?: string;
+          cursor_detected_at?: string | null;
+          cursor_event_id?: string | null;
+          scanned_count?: number;
+          cycle_started_at?: string;
+          created_at?: string;
+          updated_at?: string;
         };
         Relationships: [];
       };
@@ -619,6 +750,149 @@ export type Database = {
           suppression_source?: string | null;
         };
         Relationships: [];
+      };
+      monitoring_feedback: {
+        Row: {
+          id: string;
+          request_id: string;
+          feedback_kind: "not_an_update";
+          actor_user_id: string;
+          actor_email: string;
+          event_id: string;
+          source_id: string | null;
+          award_id: string;
+          event_summary: string | null;
+          event_source_url: string | null;
+          event_source_title: string | null;
+          event_source_page_type: string | null;
+          event_detected_at: string | null;
+          event_evidence: Json;
+          reason_code: MonitoringFeedbackReasonCode;
+          note: string | null;
+          requested_scope: MonitoringFeedbackScope;
+          policy_rule_id: string | null;
+          policy_identity: string;
+          policy_version: string;
+          policy_hash: string;
+          policy_config_version: number | null;
+          decision_memory_version: number | null;
+          promotion_status: MonitoringFeedbackPromotionStatus;
+          suppression_applied_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          request_id: string;
+          feedback_kind?: "not_an_update";
+          actor_user_id: string;
+          actor_email: string;
+          event_id: string;
+          source_id?: string | null;
+          award_id: string;
+          event_summary?: string | null;
+          event_source_url?: string | null;
+          event_source_title?: string | null;
+          event_source_page_type?: string | null;
+          event_detected_at?: string | null;
+          event_evidence?: Json;
+          reason_code: MonitoringFeedbackReasonCode;
+          note?: string | null;
+          requested_scope?: MonitoringFeedbackScope;
+          policy_rule_id?: string | null;
+          policy_identity: string;
+          policy_version: string;
+          policy_hash: string;
+          policy_config_version?: number | null;
+          decision_memory_version?: number | null;
+          promotion_status: MonitoringFeedbackPromotionStatus;
+          suppression_applied_at: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          request_id?: string;
+          feedback_kind?: "not_an_update";
+          actor_user_id?: string;
+          actor_email?: string;
+          event_id?: string;
+          source_id?: string | null;
+          award_id?: string;
+          event_summary?: string | null;
+          event_source_url?: string | null;
+          event_source_title?: string | null;
+          event_source_page_type?: string | null;
+          event_detected_at?: string | null;
+          event_evidence?: Json;
+          reason_code?: MonitoringFeedbackReasonCode;
+          note?: string | null;
+          requested_scope?: MonitoringFeedbackScope;
+          policy_rule_id?: string | null;
+          policy_identity?: string;
+          policy_version?: string;
+          policy_hash?: string;
+          policy_config_version?: number | null;
+          decision_memory_version?: number | null;
+          promotion_status?: MonitoringFeedbackPromotionStatus;
+          suppression_applied_at?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      monitoring_feedback_promotions: {
+        Row: {
+          id: string;
+          request_id: string;
+          feedback_id: string;
+          actor_user_id: string;
+          actor_email: string;
+          policy_rule_id: string;
+          policy_identity: string;
+          policy_version: string;
+          policy_hash: string;
+          policy_config_version: number | null;
+          decision_memory_version: number | null;
+          note: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          request_id: string;
+          feedback_id: string;
+          actor_user_id: string;
+          actor_email: string;
+          policy_rule_id: string;
+          policy_identity: string;
+          policy_version: string;
+          policy_hash: string;
+          policy_config_version?: number | null;
+          decision_memory_version?: number | null;
+          note?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          request_id?: string;
+          feedback_id?: string;
+          actor_user_id?: string;
+          actor_email?: string;
+          policy_rule_id?: string;
+          policy_identity?: string;
+          policy_version?: string;
+          policy_hash?: string;
+          policy_config_version?: number | null;
+          decision_memory_version?: number | null;
+          note?: string | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "monitoring_feedback_promotions_feedback_id_fkey";
+            columns: ["feedback_id"];
+            isOneToOne: true;
+            referencedRelation: "monitoring_feedback";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       office_members: {
         Row: {
@@ -1425,6 +1699,87 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      list_pending_monitoring_feedback: {
+        Args: {
+          p_limit?: number | null;
+        };
+        Returns: Array<{
+          feedback_id: string;
+          event_id: string;
+          source_id: string | null;
+          award_id: string;
+          event_summary: string | null;
+          event_source_url: string | null;
+          event_source_title: string | null;
+          event_source_page_type: string | null;
+          event_detected_at: string | null;
+          event_evidence: Json;
+          reason_code: MonitoringFeedbackReasonCode;
+          note: string | null;
+          requested_scope: MonitoringFeedbackScope;
+          policy_rule_id: string | null;
+          policy_version: string;
+          actor_email: string;
+          created_at: string;
+          total_pending: number;
+        }>;
+      };
+      record_monitoring_feedback_promotion: {
+        Args: {
+          p_request_id: string;
+          p_feedback_id: string;
+          p_actor_user_id: string;
+          p_actor_email: string;
+          p_policy_rule_id: string;
+          p_policy_identity: string;
+          p_policy_version: string;
+          p_policy_hash: string;
+          p_policy_config_version: number | null;
+          p_decision_memory_version: number | null;
+          p_note?: string | null;
+        };
+        Returns: Array<{
+          promotion_id: string;
+          promoted_feedback_id: string;
+          active_policy_rule_id: string;
+          promoted_at: string;
+        }>;
+      };
+      record_monitoring_false_positive: {
+        Args: {
+          p_request_id: string;
+          p_event_id: string;
+          p_actor_user_id: string;
+          p_actor_email: string;
+          p_reason_code: MonitoringFeedbackReasonCode;
+          p_policy_identity: string;
+          p_policy_version: string;
+          p_policy_hash: string;
+          p_policy_config_version: number | null;
+          p_decision_memory_version: number | null;
+          p_note?: string | null;
+          p_requested_scope?: MonitoringFeedbackScope;
+          p_policy_rule_id?: string | null;
+        };
+        Returns: Array<{
+          feedback_id: string;
+          suppressed_event_id: string;
+          award_id: string;
+          source_id: string | null;
+          suppressed_at: string;
+          promotion_status: MonitoringFeedbackPromotionStatus;
+          recorded_reason_code: MonitoringFeedbackReasonCode;
+          recorded_note: string | null;
+          recorded_requested_scope: MonitoringFeedbackScope;
+          recorded_policy_rule_id: string | null;
+          recorded_event_summary: string | null;
+          recorded_event_source_url: string | null;
+          recorded_event_source_title: string | null;
+          recorded_event_source_page_type: string | null;
+          recorded_event_detected_at: string | null;
+          recorded_event_evidence: Json;
+        }>;
+      };
       ensure_default_office_for_user: {
         Args: {
           target_user_id: string;

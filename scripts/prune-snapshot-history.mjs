@@ -128,7 +128,7 @@ async function callPruneRpc(task, shouldApply) {
     throw new Error(
       [
         `Snapshot history prune RPC failed for ${task.label}: ${describeSupabaseError(error)}`,
-        "Make sure migration 20260706180000_snapshot_history_retention.sql has been applied.",
+        "Make sure migration 20260706214422_snapshot_history_retention.sql has been applied.",
       ].join(" "),
     );
   }

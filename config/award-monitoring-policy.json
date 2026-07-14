@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "AwardPing global monitoring policy",
-  "updated_at": "2026-07-03",
+  "updated_at": "2026-07-14",
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",
     "Apply policy globally across all awards unless a rule explicitly says it is award-specific.",
@@ -22,6 +22,11 @@
       "label": "Relative recency label churn",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "relative-age-only",
+        "relative-age-timestamp-churn",
+        "recency-label-churn"
+      ],
       "scopes": [
         "change_details",
         "public_rendering",
@@ -31,7 +36,8 @@
       "prompt_scopes": [
         "change_details_ai",
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject relative recency label churn on news/listing items, such as '8 days ago' becoming '9 days ago', unless a concrete applicant-facing award fact also changed.",
       "examples": [
@@ -44,9 +50,15 @@
       "label": "Current-date or last-updated-only churn",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "current-date-only",
+        "current-date-only-churn",
+        "last-updated-only"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject current-date-only, generated timestamp, last-updated-only, updated-date, post-id, writer-id, and view-count churn unless a concrete applicant-facing award fact also changed."
     },
@@ -55,10 +67,16 @@
       "label": "Recipient, finalist, alumni, or press churn",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "recipient-news",
+        "news-event-recipient-noise",
+        "recipient-news-change"
+      ],
       "prompt_scopes": [
         "change_details_ai",
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject news, press, alumni-highlight, shared-from, recipient, finalist, cohort, student profile, and awardee churn unless it changes applicant-facing award rules."
     },
@@ -67,9 +85,16 @@
       "label": "Profile, testimonial, roster, or carousel rotation",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "profile-rotation",
+        "roster-rotation",
+        "profile-testimonial-change",
+        "profile-roster-rotation"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject rotating testimonials, featured fellows, alumni/profile rosters, speaker bios, staff/team rosters, and profile/story text unless application requirements, deadlines, eligibility, or funding changed."
     },
@@ -78,9 +103,15 @@
       "label": "Document metadata or file-only change",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "document-metadata-only-change",
+        "pdf-metadata-only",
+        "file-size-only"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject PDF, Word, downloadable-file hash, byte-size, and metadata-only changes unless the actual changed wording, date, requirement, amount, or applicant instruction is visible and can be named."
     },
@@ -89,9 +120,16 @@
       "label": "Donation, fundraising, checkout, or sponsorship widget",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "fundraising-form-change",
+        "donation-prompt",
+        "donation-widget",
+        "sponsorship-widget"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject donation, fundraising, checkout/cart, gift amount, donor, sponsor, and sponsorship widget changes unless applicant-facing award information changed."
     },
@@ -100,9 +138,16 @@
       "label": "Navigation, sidebar, FAQ order, or layout-only change",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "navigation-or-reorder-only-change",
+        "nav-chrome-noise",
+        "style-reflow",
+        "layout-only-change"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject navigation, footer, sidebar, social/share widget, FAQ order, link order, content reordering, font, reflow, lazy-image, and layout-only changes unless a concrete award fact changed."
     },
@@ -111,9 +156,15 @@
       "label": "Calendar, conference, admissions-event, or generic event churn",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "calendar-event-noise",
+        "calendar-listing-churn",
+        "generic-event-churn"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject calendar, conference, admissions-event, webinar, workshop, event registration, and news/event listing churn unless award deadlines, applications, eligibility, funding, or requirements changed."
     },
@@ -122,9 +173,16 @@
       "label": "Transient site chrome or notice",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "site-chrome-or-transient-notice",
+        "popup-modal-noise",
+        "cookie-banner",
+        "lazy-load-expansion-noise"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject cookie banners, consent popups, ads, newsletter popups, CAPTCHA/math questions, sitewide notices, holiday or operating-hours banners, countdown timers, access notices, and unrelated page widgets unless award requirements changed."
     },
@@ -133,9 +191,15 @@
       "label": "Animated statistic or impact-number counter",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "animated-stat-counter",
+        "count-up-statistic",
+        "impact-number-drift"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject animated or count-up statistic counters, KPI widgets, impact-number widgets, and loading-state number drift unless an award amount or applicant-facing funding fact changed."
     },
@@ -144,10 +208,17 @@
       "label": "Access, security, or error page",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "source-access-error",
+        "access-error",
+        "security-question",
+        "captcha"
+      ],
       "prompt_scopes": [
         "change_details_ai",
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject access denied, forbidden, security challenge, not found, source error, and source access recovery pages as non-updates."
     },
@@ -156,8 +227,14 @@
       "label": "Raw scrape artifact",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "raw-scrape-signal",
+        "raw-scrape-artifact",
+        "leaked-markup"
+      ],
       "prompt_scopes": [
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Reject raw scrape artifacts, leaked markup, jump-link prefixes, menu blobs, CTAs, and vague fragments such as LEARN MORE."
     },
@@ -166,9 +243,15 @@
       "label": "Generic latest-updates block",
       "alert_blocking": true,
       "persistent": true,
+      "aliases": [
+        "generic-latest-updates-block",
+        "latest-updates-block",
+        "generic-latest-news"
+      ],
       "prompt_scopes": [
         "visual_snapshot_ai",
-        "visual_snapshot_gemini_cli"
+        "visual_snapshot_gemini_cli",
+        "visual_review_batch"
       ],
       "prompt": "Reject generic Latest Updates blocks and cross-program latest-news sidebars unless the changed item is the monitored award's applicant-facing information."
     },
@@ -176,55 +259,138 @@
       "id": "sample_expansion",
       "label": "Sample expansion or recrawl-length change",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "sample-expansion",
+        "recrawl-length-change"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject sample-expansion and recrawl-length changes when a longer capture merely reveals pre-existing surrounding content and no concrete applicant-facing award fact changed."
     },
     {
       "id": "no_actual_changed_fact",
       "label": "No concrete changed fact",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "no-actual-changed-fact",
+        "before-after-identical",
+        "after-text-already-present",
+        "before-text-still-present",
+        "missing-changed-award-facts"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject a candidate when no concrete applicant-facing fact can be named as changed between the before and after evidence."
     },
     {
       "id": "unsupported_structured_fact",
       "label": "Unsupported AI structured fact",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "unsupported-structured-fact",
+        "unsupported-added-text",
+        "unsupported-removed-text",
+        "unsupported-date-change",
+        "unsupported-amount-change",
+        "before-text-not-found",
+        "after-text-not-found",
+        "changed-facts-not-supported-by-evidence",
+        "exact-before-after-not-supported-by-evidence"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject structured dates, amounts, eligibility rules, requirements, or instructions that are inferred but not supported by the before-and-after evidence."
     },
     {
       "id": "format_only_change",
       "label": "Formatting-only text change",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "format-only-change",
+        "formatting-only-change",
+        "punctuation-only-change"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject whitespace, punctuation, capitalization, styling, wrapping, and other format-only differences unless they change the meaning of an applicant-facing award fact."
     },
     {
       "id": "context_only_change",
       "label": "Context-only or container-only change",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "context-only-change",
+        "container-only-change"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject context-only or container-only differences when the compared applicant-facing fact itself is unchanged."
     },
     {
       "id": "indistinct_truncated_snippet",
       "label": "Indistinct truncated evidence",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "indistinct-truncated-snippet",
+        "truncated-evidence"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject vague or truncated snippets that do not contain enough before-and-after evidence to identify a concrete applicant-facing change."
     },
     {
       "id": "orphan_punctuation",
       "label": "Orphan punctuation",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "orphan-punctuation",
+        "punctuation-only"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject orphan punctuation and punctuation-only additions or removals as non-updates."
     },
     {
       "id": "vague_summary",
       "label": "Vague summary",
       "alert_blocking": true,
-      "persistent": false
+      "persistent": false,
+      "aliases": [
+        "vague-summary",
+        "generic-page-update-noise"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Reject a candidate whose summary is too vague to state exactly what applicant-facing fact changed."
     },
     {
       "id": "ai_invalid_json",
       "label": "Invalid AI JSON",
       "alert_blocking": true,
-      "persistent": true
+      "persistent": true,
+      "aliases": [
+        "ai-invalid-json",
+        "invalid-ai-json"
+      ],
+      "prompt_scopes": [
+        "visual_review_batch"
+      ],
+      "prompt": "Return valid schema-compliant JSON; an invalid or incomplete review result must not approve a public update."
     }
   ],
   "source_quality_stipulations": [

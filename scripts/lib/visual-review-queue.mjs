@@ -1,6 +1,14 @@
 import crypto from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { monitoringPolicyPromptLinesForScope } from "./award-monitoring-policy.mjs";
+import {
+  awardMonitoringPolicyIdentity,
+  hasRelativeAgeOnlyPolicyChange,
+  isAlertBlockingMonitoringPolicyFlag,
+  monitoringPolicyFlagIdForAlias,
+  monitoringPolicyPromptLinesForScope,
+  visualReviewBatchPolicyIdentity,
+} from "./award-monitoring-policy.mjs";
+import { changeEventSuppressionDecision } from "./change-event-suppression.mjs";
 import { sourceBaselineFacts, sourceQualityDecision } from "./source-quality.mjs";
 
 export const visualReviewResponseSchema = {
@@ -167,6 +175,12 @@ const lazyLoadPattern =
   /\b(?:more like this|similar activities|load more|show more|read more|expanded|collapsed|accordion|lazy loaded|related content|you may also like)\b/i;
 const timestampNoisePattern =
   /\b(?:current date|today is|last updated|updated on|updated at|generated on|copyright|countdown|days? left|hours? left|minutes? left|\d+\s*(?:days?|hours?|minutes?)\s*(?:ago|left|remaining))\b/i;
+const conditionalApplicantSourceShapePattern =
+  /\b(?:profile|profiles|recipients?|awardees?|testimonial|news|press release|events? calendar)\b|\/(?:profile|profiles|recipients?|awardees?|news|press|events?|calendar)(?:[/?#]|$)/i;
+const alwaysBlockedApplicantSourceShapePattern =
+  /\b(?:jobs?|careers?|employment|search results?|payment|bursar|1098t|security question|access denied|login|sign in)\b|\/(?:jobs?|careers?|employment|search|results|listing|list|directory|database|payment|payments|bursar|1098t|login|signin|sign-in)(?:[/?#]|$)/i;
+const strictApplicantFacingEvidencePattern =
+  /\b(?:application deadline|deadline|due date|opening date|applications? (?:open|close|are open|are due)|closing date|award amount|funding|stipend|tuition|eligib(?:ility|le)|application requirements?|award conditions?|letters? of recommendation|transcript|essay|nomination|application materials?|required documents?|how to apply|apply by|submit by|application portal|application instructions?|citizenship|gpa|interview)\b/i;
 
 export function normalizeVisualReviewMode(value, fallback = "batch") {
   if (value === undefined || value === null || value === "") return fallback;
@@ -188,6 +202,11 @@ export function classifyVisualReviewCandidate({
 } = {}) {
   const quality = sourceQualityDecision(source, { purpose: "monitoring" });
   const evidence = candidateEvidence({ diff, deterministic, baseline, previous, capture });
+  const applicantSourceEscape = visualReviewConditionalSourceApplicantEscape({
+    source,
+    changedText: evidence.changed_text,
+    quality,
+  });
   const reject = (label, reason, extra = {}) => ({
     allowed: false,
     label,
@@ -205,7 +224,7 @@ export function classifyVisualReviewCandidate({
     ...extra,
   });
 
-  if (!quality.allowed) {
+  if (!quality.allowed && !applicantSourceEscape.allowed) {
     return reject(sourceNoiseClassFromSource(source, evidence.changed_text)?.label || labelForSourceQualityReason(quality.reason), `source_quality_${quality.reason}`, {
       source_rejected: true,
       source_quality: quality,
@@ -213,7 +232,7 @@ export function classifyVisualReviewCandidate({
   }
 
   const sourceNoise = sourceNoiseClassFromSource(source, evidence.changed_text);
-  if (sourceNoise) {
+  if (sourceNoise && !applicantSourceEscape.allowed) {
     return reject(sourceNoise.label, sourceNoise.reason, {
       source_rejected: true,
       source_noise: sourceNoise,
@@ -262,7 +281,64 @@ export function classifyVisualReviewCandidate({
   return reject("text_only_candidate", "text_only_noise_without_applicant_signal");
 }
 
+export function visualReviewConditionalSourceApplicantEscape({
+  source,
+  candidate = null,
+  changedText = "",
+  quality = null,
+} = {}) {
+  const effectiveQuality = quality || sourceQualityDecision(source, { purpose: "monitoring" });
+  const deterministicDiff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
+  const evidenceText = normalizeText([
+    changedText,
+    ...stringArray(deterministicDiff.added_text),
+    ...stringArray(deterministicDiff.removed_text),
+    ...stringArray(deterministicDiff.date_changes),
+    ...stringArray(deterministicDiff.amount_changes),
+  ].join(" "));
+  const sourceText = normalizeText([
+    source?.url,
+    source?.title,
+    source?.display_title,
+    source?.page_type,
+  ].join(" "));
+  const allowed =
+    effectiveQuality?.allowed === false &&
+    effectiveQuality.reason === "url_not_monitorable" &&
+    conditionalApplicantSourceShapePattern.test(sourceText) &&
+    !alwaysBlockedApplicantSourceShapePattern.test(sourceText) &&
+    strictApplicantFacingEvidencePattern.test(evidenceText);
+  return {
+    allowed,
+    reason: allowed ? "conditional_source_shape_with_applicant_evidence" : null,
+  };
+}
+
 export function visualReviewCandidateSignature({
+  source,
+  baseline,
+  capture,
+  diff,
+  deterministic,
+  behaviorVersion,
+  policyIdentity = visualReviewBatchPolicyIdentity,
+}) {
+  const evidenceSignature = visualReviewEvidenceSignature({
+    source,
+    baseline,
+    capture,
+    diff,
+    deterministic,
+    behaviorVersion,
+  });
+  return crypto.createHash("sha256").update(stableJsonStringify({
+    evidence_signature: evidenceSignature,
+    occurrence_identity: visualReviewOccurrenceIdentity(capture),
+    monitoring_policy: normalizePolicyIdentity(policyIdentity),
+  })).digest("hex");
+}
+
+export function visualReviewEvidenceSignature({
   source,
   baseline,
   capture,
@@ -271,7 +347,7 @@ export function visualReviewCandidateSignature({
   behaviorVersion,
 }) {
   const payload = {
-    source_id: source?.id || null,
+    source_context: visualReviewSourcePromptContext(source),
     previous_text_hash: baseline?.text_hash || null,
     new_text_hash: capture?.text_hash || null,
     previous_image_hash: baseline?.image_hash || null,
@@ -287,6 +363,292 @@ export function visualReviewCandidateSignature({
     behavior_version: behaviorVersion || null,
   };
   return crypto.createHash("sha256").update(stableJsonStringify(payload)).digest("hex");
+}
+
+export function visualReviewEvidenceSignatureFromStoredCandidate(candidate) {
+  const promptSource = objectValue(candidate?.prompt_payload?.source);
+  return visualReviewEvidenceSignature({
+    source: {
+      ...promptSource,
+      id: candidate?.shared_award_source_id || promptSource.id || null,
+      url: promptSource.url || candidate?.source_url || null,
+      title: promptSource.title || candidate?.source_title || null,
+      page_type: promptSource.page_type || candidate?.source_page_type || null,
+    },
+    baseline: {
+      text_hash: candidate?.previous_text_hash,
+      image_hash: candidate?.previous_image_hash,
+      file_hash: candidate?.previous_file_hash,
+    },
+    capture: {
+      text_hash: candidate?.new_text_hash,
+      image_hash: candidate?.new_image_hash,
+      file_hash: candidate?.new_file_hash,
+    },
+    diff: candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {},
+    deterministic: {
+      classification: candidate?.deterministic_classification ||
+        candidate?.prompt_payload?.deterministic_classification?.classification ||
+        candidate?.prompt_payload?.deterministic_classification?.reason ||
+        null,
+    },
+    behaviorVersion:
+      candidate?.prompt_payload?.behavior_version ||
+      candidate?.worker_metadata?.capture_behavior_version ||
+      null,
+  });
+}
+
+export function visualReviewCandidateSignatureFromStoredCandidate(
+  candidate,
+  policyIdentity = visualReviewBatchPolicyIdentity,
+) {
+  return crypto.createHash("sha256").update(stableJsonStringify({
+    evidence_signature: visualReviewEvidenceSignatureFromStoredCandidate(candidate),
+    occurrence_identity: visualReviewOccurrenceIdentity(
+      objectValue(candidate?.new_snapshot_ref).captured_at
+        ? candidate.new_snapshot_ref
+        : candidate?.prompt_payload?.new_snapshot_ref,
+    ),
+    monitoring_policy: normalizePolicyIdentity(policyIdentity),
+  })).digest("hex");
+}
+
+export function rebuildVisualReviewCandidateForCurrentPolicy(
+  candidate,
+  { source = null } = {},
+) {
+  const promptPayload = refreshVisualReviewPromptPayloadPolicy({
+    ...objectValue(candidate?.prompt_payload),
+    ...(source ? { source: visualReviewSourcePromptContext(source) } : {}),
+  });
+  return {
+    candidate_signature: visualReviewCandidateSignatureFromStoredCandidate(
+      { ...candidate, prompt_payload: promptPayload },
+      visualReviewBatchPolicyIdentity,
+    ),
+    prompt_payload: promptPayload,
+    prompt_context: buildVisualReviewPromptText(promptPayload),
+    monitoring_policy: currentVisualReviewPolicyIdentity(),
+    source_context: objectValue(promptPayload.source),
+  };
+}
+
+export function visualReviewSourcePromptContext(source) {
+  const directBaselineFacts = objectValue(source?.baseline_facts);
+  return {
+    id: source?.id || null,
+    shared_award_id: source?.shared_award_id || null,
+    award_name: source?.award_name || source?.shared_awards?.name || null,
+    title: source?.title || null,
+    url: source?.url || null,
+    page_type: source?.page_type || null,
+    baseline_facts: Object.keys(directBaselineFacts).length
+      ? directBaselineFacts
+      : sourceBaselineFacts(source),
+  };
+}
+
+export function currentVisualReviewPolicyIdentity() {
+  return normalizePolicyIdentity(visualReviewBatchPolicyIdentity);
+}
+
+export function currentMonitoringPolicyAuditIdentity() {
+  return normalizePolicyIdentity(awardMonitoringPolicyIdentity);
+}
+
+export function refreshVisualReviewPromptPayloadPolicy(payload = {}) {
+  return {
+    ...objectValue(payload),
+    monitoring_policy: currentVisualReviewPolicyIdentity(),
+    monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+  };
+}
+
+export function visualReviewCandidatePolicyFreshness(candidate, { requireIdentity = true } = {}) {
+  const activePolicy = currentVisualReviewPolicyIdentity();
+  const submittedPolicy = normalizePolicyIdentity(
+    candidate?.worker_metadata?.monitoring_policy || candidate?.prompt_payload?.monitoring_policy,
+  );
+  if (!submittedPolicy) {
+    return {
+      allowed: !requireIdentity,
+      reason: requireIdentity ? "missing_submission_policy_identity" : "policy_identity_not_recorded",
+      active_policy: activePolicy,
+      submitted_policy: null,
+    };
+  }
+  if (!samePolicyIdentity(submittedPolicy, activePolicy)) {
+    return {
+      allowed: false,
+      reason: "policy_changed_since_batch_submission",
+      active_policy: activePolicy,
+      submitted_policy: submittedPolicy,
+    };
+  }
+  return {
+    allowed: true,
+    reason: "current_policy",
+    active_policy: activePolicy,
+    submitted_policy: submittedPolicy,
+  };
+}
+
+export function canonicalVisualReviewSourceUrl(value) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+  try {
+    const parsed = new URL(raw);
+    parsed.hash = "";
+    parsed.hostname = parsed.hostname.toLowerCase();
+    if (
+      (parsed.protocol === "https:" && parsed.port === "443") ||
+      (parsed.protocol === "http:" && parsed.port === "80")
+    ) {
+      parsed.port = "";
+    }
+    const entries = [...parsed.searchParams.entries()]
+      .filter(([key]) => !/^utm_|^(?:fbclid|gclid|mc_cid|mc_eid)$/i.test(key))
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) =>
+        leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue));
+    parsed.search = "";
+    for (const [key, value] of entries) parsed.searchParams.append(key, value);
+    parsed.pathname = parsed.pathname.replace(/\/{2,}/g, "/").replace(/\/$/, "") || "/";
+    return parsed.toString();
+  } catch {
+    return raw.replace(/#.*$/, "").replace(/\/$/, "").toLowerCase();
+  }
+}
+
+export function visualReviewSourceIdentityFreshness(candidate, source) {
+  const capturedSourceUrl = canonicalVisualReviewSourceUrl(
+    candidate?.prompt_payload?.source?.url || candidate?.source_url,
+  );
+  const currentSourceUrl = canonicalVisualReviewSourceUrl(source?.url);
+  if (capturedSourceUrl && currentSourceUrl && capturedSourceUrl !== currentSourceUrl) {
+    return {
+      allowed: false,
+      reason: "source_url_changed_since_capture",
+      captured_source_url: capturedSourceUrl,
+      current_source_url: currentSourceUrl,
+    };
+  }
+  return {
+    allowed: true,
+    reason: capturedSourceUrl && currentSourceUrl
+      ? "source_url_identity_current"
+      : "source_url_identity_unavailable",
+    captured_source_url: capturedSourceUrl,
+    current_source_url: currentSourceUrl,
+  };
+}
+
+export function visualReviewFailureRetryDecision(candidate, { maxRetries = 3 } = {}) {
+  const retryCount = Math.max(
+    0,
+    Number.parseInt(candidate?.worker_metadata?.failure_retry_count, 10) || 0,
+  );
+  if (candidate?.status !== "failed") {
+    return { retry: false, reason: "candidate_not_failed", retry_count: retryCount };
+  }
+  if (normalizeText(candidate?.rejection_reason) === "missing_batch_response") {
+    return { retry: false, reason: "awaiting_missing_batch_response_recovery", retry_count: retryCount };
+  }
+  if (
+    normalizeText(candidate?.rejection_reason) ===
+    "manual_recovery_required_possible_external_batch_created"
+  ) {
+    return { retry: false, reason: "possible_external_batch_requires_manual_recovery", retry_count: retryCount };
+  }
+  if (retryCount >= Math.max(0, Number(maxRetries) || 0)) {
+    return { retry: false, reason: "failure_retry_limit_reached", retry_count: retryCount };
+  }
+  return {
+    retry: true,
+    reason: "ordinary_failure_retryable",
+    retry_count: retryCount,
+    next_retry_count: retryCount + 1,
+  };
+}
+
+export function visualReviewStaleClaimRecoveryDecision(candidate) {
+  if (candidate?.status !== "processing" || candidate?.gemini_batch_name) {
+    return { action: "none", reason: "not_an_unpersisted_submission_claim" };
+  }
+  const metadata = objectValue(candidate?.worker_metadata);
+  if (metadata.batch_create_started_at) {
+    return {
+      action: "fail_closed",
+      reason: "possible_external_batch_created",
+      batch_display_name: cleanNullable(metadata.batch_display_name),
+      batch_create_started_at: cleanNullable(metadata.batch_create_started_at),
+    };
+  }
+  return { action: "requeue", reason: "stale_claim_before_batch_create" };
+}
+
+export function visualReviewEnclosingCaptureIdentity(candidate) {
+  const ref = objectValue(
+    Object.keys(objectValue(candidate?.new_snapshot_ref)).length
+      ? candidate.new_snapshot_ref
+      : candidate?.prompt_payload?.new_snapshot_ref,
+  );
+  const localPaths = objectValue(ref.local_paths);
+  const captureDir = objectValue(ref.capture_dir);
+  const meta = objectValue(localPaths.meta);
+  const stablePath = normalizeText(
+    captureDir.archive_relative ||
+      captureDir.path ||
+      meta.archive_relative ||
+      meta.path,
+  );
+  if (stablePath) return `path:${stablePath.toLowerCase()}`;
+  return `capture:${[
+    normalizeText(ref.captured_at),
+    normalizeText(ref.final_url),
+    normalizeText(candidate?.new_file_hash || ref.file_hash),
+    normalizeText(candidate?.new_image_hash || ref.image_hash),
+  ].join("|").toLowerCase()}`;
+}
+
+export function visualReviewBatchCreateFailureDisposition({
+  kind,
+  httpStatus = null,
+  networkFailure = false,
+} = {}) {
+  const batchCreate = /^batch_create(?:_|$)/.test(normalizeText(kind));
+  const status = Number(httpStatus);
+  const ambiguousStatus = [408, 409, 500, 502, 503, 504].includes(status);
+  if (batchCreate && (networkFailure || ambiguousStatus)) {
+    return {
+      action: "fail_closed",
+      reason: "possible_external_batch_created",
+    };
+  }
+  return {
+    action: "retry_or_release",
+    reason: "provider_creation_not_ambiguous",
+  };
+}
+
+export function visualReviewBatchPollFailureDisposition({
+  kind,
+  httpStatus = null,
+} = {}) {
+  const batchPoll = /^batch_poll(?:_|$)/.test(normalizeText(kind));
+  const status = Number(httpStatus);
+  if (batchPoll && [404, 410].includes(status)) {
+    return {
+      action: "fail_for_bounded_retry",
+      reason: "provider_batch_permanently_missing",
+      http_status: status,
+    };
+  }
+  return {
+    action: "preserve_batch_reference",
+    reason: "provider_batch_state_uncertain",
+    http_status: Number.isFinite(status) && status > 0 ? status : null,
+  };
 }
 
 export function buildVisualReviewPromptPayload({
@@ -315,15 +677,12 @@ export function buildVisualReviewPromptPayload({
     version: 1,
     behavior_version: behaviorVersion || null,
     behavior_name: behaviorName || null,
-    source: {
-      id: source?.id || null,
-      shared_award_id: source?.shared_award_id || null,
-      award_name: source?.shared_awards?.name || null,
-      title: source?.title || null,
-      url: source?.url || null,
-      page_type: source?.page_type || null,
+    monitoring_policy: currentVisualReviewPolicyIdentity(),
+    monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+    source: visualReviewSourcePromptContext({
+      ...objectValue(source),
       baseline_facts: baselineFacts,
-    },
+    }),
     previous_snapshot_ref: previousRef,
     new_snapshot_ref: newRef,
     hashes: {
@@ -364,6 +723,7 @@ export function buildVisualReviewPromptPayload({
 }
 
 export function buildVisualReviewPromptText(payload) {
+  const activePolicyIdentity = currentVisualReviewPolicyIdentity();
   return [
     "You are reviewing an official scholarship/fellowship award source page for AwardPing.",
     "Return strict JSON only. Do not use markdown.",
@@ -381,6 +741,9 @@ export function buildVisualReviewPromptText(payload) {
     "",
     "Required JSON keys:",
     "{is_true_change, is_alert_worthy, source_relevance, source_relevance_reason, changed_facts, exact_before, exact_after, evidence_location, before, after, section, change_type, confidence, noise_flags, rejection_reason, reader_summary, advisor_impact, structured_diff}",
+    "",
+    "Active monitoring policy identity (this supersedes any policy metadata captured with the queued candidate):",
+    stableJsonStringify(activePolicyIdentity),
     "",
     "Award/source context:",
     stableJsonStringify(payload.source),
@@ -499,10 +862,22 @@ export function expandableSectionCandidateRejectReason(candidate) {
 export function validateVisualBatchReview({ candidate, source, result }) {
   const reject = (reason) => ({ allowed: false, reason });
   const quality = sourceQualityDecision(source, { purpose: "monitoring" });
-  if (!quality.allowed) return reject(`source_quality_${quality.reason}`);
+  const applicantSourceEscape = visualReviewConditionalSourceApplicantEscape({
+    source,
+    candidate,
+    quality,
+  });
+  if (!quality.allowed && !applicantSourceEscape.allowed) {
+    return reject(`source_quality_${quality.reason}`);
+  }
 
+  const policyFlag = alertBlockingPolicyFlag(result);
   if (!result?.is_true_change || !result?.is_alert_worthy) {
-    return reject(result?.rejection_reason || "not_alert_worthy");
+    return reject(
+      policyFlag
+        ? `policy_flag_${policyFlag}`
+        : result?.rejection_reason || "not_alert_worthy",
+    );
   }
   if (!["medium", "high"].includes(result.confidence)) return reject("low_confidence");
   if (!["primary", "supporting"].includes(result.source_relevance)) {
@@ -511,6 +886,12 @@ export function validateVisualBatchReview({ candidate, source, result }) {
 
   const sectionRejectReason = expandableSectionCandidateRejectReason(candidate);
   if (sectionRejectReason) return reject(sectionRejectReason);
+
+  if (policyFlag) return reject(`policy_flag_${policyFlag}`);
+
+  if (resultLooksLikeRelativeAgeOnlyPolicyChange({ candidate, result })) {
+    return reject("policy_flag_relative_age_timestamp_churn");
+  }
 
   const rejectFlag = stringArray(result.noise_flags)
     .map(cleanKey)
@@ -543,35 +924,122 @@ export function validateVisualBatchReview({ candidate, source, result }) {
   ].join(" "));
 
   if (looksLikeRejectedNoise(combined)) return reject("known_noise_pattern");
-  if (!hasAwardChangeSignal(combined)) return reject("missing_award_change_signal");
+  const deterministicDiff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
+  const deterministicEvidence = normalizeText([
+    ...stringArray(deterministicDiff.added_text),
+    ...stringArray(deterministicDiff.removed_text),
+    ...stringArray(deterministicDiff.date_changes),
+    ...stringArray(deterministicDiff.amount_changes),
+  ].join(" "));
+  if (deterministicEvidence) {
+    if (!strictApplicantFacingEvidencePattern.test(deterministicEvidence)) {
+      return reject("missing_deterministic_applicant_fact_signal");
+    }
+  } else {
+    const reviewedVisualOnly = Boolean(
+      candidate?.prompt_payload?.include_images &&
+      facts.some((fact) => cleanNullable(fact.visual_evidence)),
+    );
+    if (!reviewedVisualOnly) return reject("missing_reviewed_visual_evidence");
+  }
 
   return { allowed: true, reason: "approved" };
 }
 
+export function latestVisualReviewPolicyDecision({
+  candidate,
+  source,
+  result,
+  changeDetails = null,
+  requirePolicyIdentity = true,
+} = {}) {
+  const policyIdentity = currentVisualReviewPolicyIdentity();
+  const freshness = visualReviewCandidatePolicyFreshness(candidate, {
+    requireIdentity: requirePolicyIdentity,
+  });
+  if (!freshness.allowed) {
+    return {
+      allowed: false,
+      reason: freshness.reason,
+      policy_identity: policyIdentity,
+      submitted_policy_identity: freshness.submitted_policy,
+      guard: "policy_freshness",
+    };
+  }
+  const validation = validateVisualBatchReview({ candidate, source, result });
+  if (!validation.allowed) {
+    return {
+      allowed: false,
+      reason: validation.reason,
+      policy_identity: policyIdentity,
+      guard: "visual_review_validation",
+    };
+  }
+
+  const details = changeDetails || changeDetailsFromVisualBatchResult({
+    candidate,
+    source,
+    result,
+    model: candidate?.model,
+  });
+  const suppression = changeEventSuppressionDecision(
+    {
+      shared_award_id: candidate?.shared_award_id || source?.shared_award_id || null,
+      shared_award_source_id: candidate?.shared_award_source_id || source?.id || null,
+      source_url: source?.url || candidate?.source_url || null,
+      source_title: source?.title || candidate?.source_title || null,
+      source_page_type: source?.page_type || candidate?.source_page_type || null,
+      summary: details.reader_summary || null,
+      change_details: details,
+    },
+    source,
+  );
+  if (suppression.suppressed) {
+    return {
+      allowed: false,
+      reason: suppression.reason || "change_event_suppressed",
+      policy_identity: policyIdentity,
+      guard: "change_event_suppression",
+    };
+  }
+
+  return {
+    allowed: true,
+    reason: "approved",
+    policy_identity: policyIdentity,
+    guard: "latest_policy",
+  };
+}
+
 export function changeDetailsFromVisualBatchResult({ candidate, source, result, model }) {
-  const structuredDiff = result.structured_diff || normalizeStructuredDiff({}, candidate?.deterministic_diff || {}, source);
+  const deterministicDiff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
+  const structuredDiff = normalizeStructuredDiff(
+    { noise_flags: result?.noise_flags },
+    deterministicDiff,
+    source,
+  );
+  const publicClaims = evidenceDerivedPublicClaims({ candidate, result, structuredDiff });
   const sectionContext = candidate?.prompt_payload?.section_context || null;
   return {
-    reader_summary:
-      cleanNullable(result.reader_summary) ||
-      cleanNullable(result.advisor_impact) ||
-      "An award source page changed.",
-    before: cleanNullable(result.before),
-    after: cleanNullable(result.after),
-    section: cleanNullable(result.section || structuredDiff.likely_section),
-    change_type: cleanKey(result.change_type) || inferChangeType(result, structuredDiff),
-    advisor_impact: cleanNullable(result.advisor_impact),
+    reader_summary: publicClaims.reader_summary,
+    before: publicClaims.before,
+    after: publicClaims.after,
+    section: cleanNullable(structuredDiff.likely_section),
+    change_type: publicClaims.change_type,
+    advisor_impact: publicClaims.advisor_impact,
     is_alert_worthy: Boolean(result.is_alert_worthy),
     confidence: normalizeConfidence(result.confidence) || "low",
     structured_diff: structuredDiff,
     section_context: sectionContext,
-    changed_award_facts: normalizeChangedFacts(result.changed_facts || result.changed_award_facts),
-    changed_facts: normalizeChangedFacts(result.changed_facts || result.changed_award_facts),
+    changed_award_facts: publicClaims.changed_facts,
+    changed_facts: publicClaims.changed_facts,
     source_relevance: result.source_relevance || null,
-    source_relevance_reason: result.source_relevance_reason || null,
-    exact_before: cleanNullable(result.exact_before || result.before),
-    exact_after: cleanNullable(result.exact_after || result.after),
-    evidence_location: result.evidence_location || null,
+    source_relevance_reason: result.source_relevance
+      ? `The reviewed source was classified as ${normalizeSourceRelevance(result.source_relevance)}.`
+      : null,
+    exact_before: publicClaims.before,
+    exact_after: publicClaims.after,
+    evidence_location: cleanNullable(structuredDiff.likely_section),
     source: {
       award_name: source?.shared_awards?.name || candidate?.prompt_payload?.source?.award_name || null,
       source_title: source?.title || candidate?.source_title || null,
@@ -580,15 +1048,44 @@ export function changeDetailsFromVisualBatchResult({ candidate, source, result, 
     },
     quality_flags: unique(["visual_snapshot_batch_review", ...stringArray(result.noise_flags)]),
     candidate_signature: candidate?.candidate_signature || null,
+    monitoring_policy: currentVisualReviewPolicyIdentity(),
+    monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+    queued_monitoring_policy: normalizePolicyIdentity(
+      candidate?.prompt_payload?.monitoring_policy,
+    ),
+    submission_monitoring_policy: normalizePolicyIdentity(candidate?.worker_metadata?.monitoring_policy),
     generated_at: new Date().toISOString(),
     generation_provider: "gemini_batch",
     generation_status: "generated",
     generation_model: model || candidate?.model || null,
+    public_claims_provenance: {
+      source: "deterministic_diff",
+      model_narrative_published: false,
+    },
   };
 }
 
 export function visualHashFromCandidate(candidate, side) {
   const prefix = side === "previous" ? "previous" : "new";
+  const diff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
+  if (diff.candidate_scope === "expandable_section") {
+    const sectionKey = normalizeText(diff.section_key || diff.section_label || "unknown_section");
+    const sectionHash = diff[`${prefix}_section_hash`] ||
+      candidate?.prompt_payload?.hashes?.[`${prefix}_section_hash`] ||
+      `__${prefix}_section_absent__`;
+    const identity = crypto.createHash("sha256").update(stableJsonStringify({
+      scope: "expandable_section",
+      section_key: sectionKey,
+      side: prefix,
+      section_hash: sectionHash,
+      occurrence_identity: visualReviewOccurrenceIdentity(
+        objectValue(candidate?.new_snapshot_ref).captured_at
+          ? candidate.new_snapshot_ref
+          : candidate?.prompt_payload?.new_snapshot_ref,
+      ),
+    })).digest("hex");
+    return `visual-section:${identity}`;
+  }
   const hash =
     candidate?.[`${prefix}_file_hash`] ||
     candidate?.[`${prefix}_image_hash`] ||
@@ -597,7 +1094,31 @@ export function visualHashFromCandidate(candidate, side) {
     candidate?.prompt_payload?.hashes?.[`${prefix}_image_hash`] ||
     candidate?.prompt_payload?.hashes?.[`${prefix}_text_hash`] ||
     "";
-  return hash ? `visual:${hash}` : "";
+  if (!hash) return "";
+  const occurrenceIdentity = visualReviewOccurrenceIdentity(
+    objectValue(candidate?.new_snapshot_ref).captured_at
+      ? candidate.new_snapshot_ref
+      : candidate?.prompt_payload?.new_snapshot_ref,
+  );
+  if (!occurrenceIdentity) return `visual:${hash}`;
+  return `visual:${crypto.createHash("sha256").update(stableJsonStringify({
+    hash,
+    side: prefix,
+    occurrence_identity: occurrenceIdentity,
+  })).digest("hex")}`;
+}
+
+function visualReviewOccurrenceIdentity(capture) {
+  const value = objectValue(capture);
+  const localPaths = objectValue(value.local_paths);
+  const captureDir = objectValue(value.capture_dir);
+  const identity = {
+    captured_at: value.captured_at || null,
+    capture_dir: value.dir || captureDir.archive_relative || captureDir.path || null,
+    meta_path: objectValue(localPaths.meta).archive_relative || objectValue(localPaths.meta).path || null,
+  };
+  if (!Object.values(identity).some(Boolean)) return null;
+  return crypto.createHash("sha256").update(stableJsonStringify(identity)).digest("hex");
 }
 
 export function stableJsonStringify(value) {
@@ -883,23 +1404,179 @@ function normalizeChangedFacts(values) {
     .slice(0, 12);
 }
 
+function evidenceDerivedPublicClaims({ candidate, result, structuredDiff }) {
+  const addedEvidence = directionalEvidenceValues(structuredDiff, "added");
+  const removedEvidence = directionalEvidenceValues(structuredDiff, "removed");
+  const rawFacts = normalizeChangedFacts(result?.changed_facts || result?.changed_award_facts);
+  const changedFacts = rawFacts
+    .map((fact) => {
+      const addedText = supportedEvidenceValue(fact.added_text, addedEvidence);
+      const removedText = supportedEvidenceValue(fact.removed_text, removedEvidence);
+      const after = supportedEvidenceValue(fact.after, addedEvidence) || addedText;
+      const before = supportedEvidenceValue(fact.before, removedEvidence) || removedText;
+      const hasReviewedVisualEvidence = Boolean(
+        cleanNullable(fact.visual_evidence) && candidate?.prompt_payload?.include_images,
+      );
+      if (!before && !after && !hasReviewedVisualEvidence) return null;
+      const changeType = evidenceChangeType({
+        addedText: [after, addedText],
+        removedText: [before, removedText],
+        structuredDiff,
+        visualOnly: hasReviewedVisualEvidence && !before && !after,
+      });
+      return {
+        fact: evidenceFactLabel(changeType),
+        before: before || null,
+        after: after || null,
+        added_text: addedText || null,
+        removed_text: removedText || null,
+        visual_evidence: hasReviewedVisualEvidence
+          ? "The queued before-and-after screenshots were reviewed."
+          : null,
+      };
+    })
+    .filter(Boolean);
+
+  if (!changedFacts.length && (addedEvidence.length || removedEvidence.length)) {
+    const before = supportedEvidenceValue(result?.exact_before || result?.before, removedEvidence) || removedEvidence[0] || null;
+    const after = supportedEvidenceValue(result?.exact_after || result?.after, addedEvidence) || addedEvidence[0] || null;
+    const changeType = evidenceChangeType({
+      addedText: [after],
+      removedText: [before],
+      structuredDiff,
+    });
+    changedFacts.push({
+      fact: evidenceFactLabel(changeType),
+      before,
+      after,
+      added_text: after,
+      removed_text: before,
+      visual_evidence: null,
+    });
+  }
+
+  const primary = changedFacts[0] || null;
+  const before =
+    supportedEvidenceValue(result?.exact_before || result?.before, removedEvidence) ||
+    primary?.before ||
+    primary?.removed_text ||
+    null;
+  const after =
+    supportedEvidenceValue(result?.exact_after || result?.after, addedEvidence) ||
+    primary?.after ||
+    primary?.added_text ||
+    null;
+  const changeType = evidenceChangeType({
+    addedText: changedFacts.flatMap((fact) => [fact.after, fact.added_text]),
+    removedText: changedFacts.flatMap((fact) => [fact.before, fact.removed_text]),
+    structuredDiff,
+    visualOnly: Boolean(primary?.visual_evidence && !before && !after),
+  });
+  const readerSummary = changedFacts.length
+    ? changedFacts.slice(0, 3).map(evidenceFactSummary).join(" ")
+    : "An applicant-facing visual change was confirmed in the queued before-and-after screenshots.";
+
+  return {
+    reader_summary: readerSummary,
+    advisor_impact: evidenceAdvisorImpact(changeType),
+    before,
+    after,
+    change_type: changeType,
+    changed_facts: changedFacts.slice(0, 12),
+  };
+}
+
+function directionalEvidenceValues(structuredDiff, direction) {
+  const direct = direction === "added"
+    ? stringArray(structuredDiff?.added_text)
+    : stringArray(structuredDiff?.removed_text);
+  const prefix = direction === "added" ? /^(?:added|new)\s*[:\-]?\s*/i : /^(?:removed|old)\s*[:\-]?\s*/i;
+  const directional = [
+    ...stringArray(structuredDiff?.date_changes),
+    ...stringArray(structuredDiff?.amount_changes),
+  ]
+    .filter((value) => prefix.test(value))
+    .map((value) => normalizeText(value).replace(prefix, ""))
+    .filter(Boolean);
+  return unique([...direct, ...directional].map(normalizeText).filter(Boolean));
+}
+
+function supportedEvidenceValue(value, evidenceValues) {
+  const clean = cleanNullable(value);
+  if (!clean) return null;
+  return textContainsEvidence(evidenceValues, clean) ? clean : null;
+}
+
+function evidenceChangeType({ addedText = [], removedText = [], structuredDiff = {}, visualOnly = false }) {
+  if (visualOnly) return "visual";
+  const text = normalizeText([
+    ...addedText,
+    ...removedText,
+    ...stringArray(structuredDiff.date_changes),
+    ...stringArray(structuredDiff.amount_changes),
+  ].join(" ")).toLowerCase();
+  if (/\b(deadline|due|opening date|closing date|applications? (?:open|close))\b/.test(text)) return "deadline";
+  if (
+    stringArray(structuredDiff.amount_changes).length ||
+    /(?:[$€£]\s?\d|\b(?:amount|funding|stipend|tuition|award value|prize)\b)/.test(text)
+  ) return "funding";
+  if (/\b(eligible|eligibility|citizenship|gpa|academic standing|award condition)\b/.test(text)) return "eligibility";
+  if (/\b(requirement|recommendation|transcript|essay|nomination|materials?|documents?|guidelines?)\b/.test(text)) return "requirements";
+  if (/\b(apply|application|submit|submission|portal|instructions?)\b/.test(text)) return "application";
+  return "other";
+}
+
+function evidenceFactLabel(changeType) {
+  return {
+    deadline: "Application deadline or cycle date",
+    funding: "Award amount or funding",
+    eligibility: "Applicant eligibility",
+    requirements: "Application requirements or materials",
+    application: "Application instructions",
+    visual: "Applicant-facing visual content",
+    other: "Applicant-facing award information",
+  }[changeType] || "Applicant-facing award information";
+}
+
+function evidenceFactSummary(fact) {
+  const label = fact.fact || "Applicant-facing award information";
+  const before = publicEvidenceExcerpt(fact.before || fact.removed_text);
+  const after = publicEvidenceExcerpt(fact.after || fact.added_text);
+  if (before && after) return `${label} changed from “${before}” to “${after}”.`;
+  if (after) return `${label} now includes “${after}”.`;
+  if (before) return `${label} no longer includes “${before}”.`;
+  return `${label} changed in the reviewed before-and-after screenshots.`;
+}
+
+function evidenceAdvisorImpact(changeType) {
+  return {
+    deadline: "Review advising calendars and applicant deadline guidance.",
+    funding: "Review applicant-facing funding guidance.",
+    eligibility: "Review eligibility guidance before advising applicants.",
+    requirements: "Review application requirements and applicant materials guidance.",
+    application: "Review applicant instructions and submission guidance.",
+    visual: "Review the confirmed visual change before advising applicants.",
+    other: "Review the cited source evidence before advising applicants.",
+  }[changeType] || "Review the cited source evidence before advising applicants.";
+}
+
+function publicEvidenceExcerpt(value, maxLength = 220) {
+  const text = normalizeText(value);
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
 function exactBeforeAfterSupportedByEvidence({ result, candidate }) {
   const diff = candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {};
   const addedText = [
     ...stringArray(diff.added_text),
     ...stringArray(diff.date_changes).filter((value) => cleanKey(value).startsWith("added")),
     ...stringArray(diff.amount_changes).filter((value) => cleanKey(value).startsWith("added")),
-    ...stringArray(result?.structured_diff?.added_text),
-    ...stringArray(result?.structured_diff?.date_changes).filter((value) => cleanKey(value).startsWith("added")),
-    ...stringArray(result?.structured_diff?.amount_changes).filter((value) => cleanKey(value).startsWith("added")),
   ];
   const removedText = [
     ...stringArray(diff.removed_text),
     ...stringArray(diff.date_changes).filter((value) => cleanKey(value).startsWith("removed")),
     ...stringArray(diff.amount_changes).filter((value) => cleanKey(value).startsWith("removed")),
-    ...stringArray(result?.structured_diff?.removed_text),
-    ...stringArray(result?.structured_diff?.date_changes).filter((value) => cleanKey(value).startsWith("removed")),
-    ...stringArray(result?.structured_diff?.amount_changes).filter((value) => cleanKey(value).startsWith("removed")),
   ];
 
   if (result?.exact_before && !textContainsEvidence(removedText, result.exact_before)) return false;
@@ -913,17 +1590,11 @@ function changedFactHasEvidence({ fact, result, candidate }) {
     ...stringArray(diff.added_text),
     ...stringArray(diff.date_changes).filter((value) => cleanKey(value).startsWith("added")),
     ...stringArray(diff.amount_changes).filter((value) => cleanKey(value).startsWith("added")),
-    ...stringArray(result?.structured_diff?.added_text),
-    ...stringArray(result?.structured_diff?.date_changes).filter((value) => cleanKey(value).startsWith("added")),
-    ...stringArray(result?.structured_diff?.amount_changes).filter((value) => cleanKey(value).startsWith("added")),
   ];
   const removedText = [
     ...stringArray(diff.removed_text),
     ...stringArray(diff.date_changes).filter((value) => cleanKey(value).startsWith("removed")),
     ...stringArray(diff.amount_changes).filter((value) => cleanKey(value).startsWith("removed")),
-    ...stringArray(result?.structured_diff?.removed_text),
-    ...stringArray(result?.structured_diff?.date_changes).filter((value) => cleanKey(value).startsWith("removed")),
-    ...stringArray(result?.structured_diff?.amount_changes).filter((value) => cleanKey(value).startsWith("removed")),
   ];
   if (fact.added_text && textContainsEvidence(addedText, fact.added_text)) return true;
   if (fact.removed_text && textContainsEvidence(removedText, fact.removed_text)) return true;
@@ -989,12 +1660,6 @@ function looksLikeRejectedNoise(value) {
   );
 }
 
-function hasAwardChangeSignal(value) {
-  return /\b(deadline|due|open|close|application|apply|eligib|requirement|condition|recommendation|transcript|essay|nomination|funding|stipend|tuition|award amount|amount|document|guideline|form|materials?|citizenship|gpa|interview|selection)\b/i.test(
-    value,
-  );
-}
-
 function parseJsonObject(text) {
   const clean = String(text || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
   if (!clean) return null;
@@ -1055,6 +1720,72 @@ function normalizeText(value) {
 
 function cleanKey(value) {
   return normalizeText(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function alertBlockingPolicyFlag(result) {
+  for (const rawFlag of [
+    ...stringArray(result?.noise_flags),
+    ...stringArray(result?.quality_flags),
+    ...stringArray(result?.structured_diff?.noise_flags),
+    result?.rejection_reason,
+  ]) {
+    const candidates = unique([
+      cleanKey(rawFlag),
+      cleanKey(rawFlag).replace(/-/g, "_"),
+      String(rawFlag || "").trim().toLowerCase(),
+    ]);
+    const matching = candidates
+      .map((flag) => monitoringPolicyFlagIdForAlias(flag))
+      .find((flag) => flag && isAlertBlockingMonitoringPolicyFlag(flag));
+    if (matching) return matching;
+  }
+  return null;
+}
+
+function resultLooksLikeRelativeAgeOnlyPolicyChange({ candidate, result }) {
+  const structured = objectValue(result?.structured_diff);
+  const deterministic = objectValue(
+    candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff,
+  );
+  return hasRelativeAgeOnlyPolicyChange({
+    readerSummary: result?.reader_summary,
+    section: result?.section,
+    before: result?.exact_before || result?.before,
+    after: result?.exact_after || result?.after,
+    addedText: stringArray(structured.added_text).length
+      ? structured.added_text
+      : deterministic.added_text,
+    removedText: stringArray(structured.removed_text).length
+      ? structured.removed_text
+      : deterministic.removed_text,
+    dateChanges: stringArray(structured.date_changes).length
+      ? structured.date_changes
+      : deterministic.date_changes,
+    amountChanges: stringArray(structured.amount_changes).length
+      ? structured.amount_changes
+      : deterministic.amount_changes,
+  });
+}
+
+function normalizePolicyIdentity(value) {
+  const identity = objectValue(value);
+  if (!Object.keys(identity).length) return null;
+  return {
+    id: cleanNullable(identity.id),
+    version: cleanNullable(identity.version),
+    hash: cleanNullable(identity.hash),
+    policyVersion: cleanNullable(identity.policyVersion),
+    decisionMemoryVersion: cleanNullable(identity.decisionMemoryVersion),
+  };
+}
+
+function samePolicyIdentity(left, right) {
+  if (!left || !right) return false;
+  if (left.hash && right.hash) return left.hash === right.hash;
+  if (left.id && right.id) return left.id === right.id;
+  return left.version === right.version &&
+    left.policyVersion === right.policyVersion &&
+    left.decisionMemoryVersion === right.decisionMemoryVersion;
 }
 
 function sentenceKey(value) {

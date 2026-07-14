@@ -1,15 +1,25 @@
 # R2 Visual Snapshots
 
-AwardPing can store the two newest visual captures for each shared source page in
-Cloudflare R2:
+AwardPing stores immutable visual capture objects in Cloudflare R2 and keeps the
+two active generations for each shared source in the database pointer row:
 
 - `latest` is the current baseline or newest promoted meaningful update.
 - `previous` is the promoted capture that was `latest` before that.
 
-Normal daily scans do not upload every successful scrape. They upload to R2 only
-when a source is first baselined, manually baseline-refreshed, or promoted as a
-meaningful update. Unchanged captures, AI-rejected changes, low-confidence review
-items, and transient review-only captures stay out of R2.
+Objects are written under capture-specific keys such as
+`visual-snapshots/sources/<source-id>/captures/<capture-hash>/page.jpg` or
+`.../approved/<approval-hash>/page.jpg`. The worker uploads every required object
+first, atomically advances the database pointer with an `updated_at` compare-and-set,
+and only then deletes objects that fell out of the two-generation history. A lost
+compare-and-set deletes only the losing upload's objects that are not referenced by
+the winning pointer. It never overwrites an object that another worker is serving.
+
+Normal scheduled scans upload to R2 only when a source is first baselined,
+manually baseline-refreshed, or promoted as a meaningful update. Unchanged
+captures, AI-rejected changes, low-confidence review items, and transient
+review-only captures stay out of R2. The per-source publication lease and local
+baseline mutex serialize the local baseline, R2 pointer, event, and reconciliation
+side effects across the 6 PM scan and hourly completed-result recovery.
 
 The bucket should stay private. AwardPing reads from it by generating short-lived
 signed URLs from the server.
@@ -62,11 +72,13 @@ the existing local baselines as R2 `latest`:
 npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000 --r2-backfill-baselines=true --r2-backfill-concurrency=12
 ```
 
-The backfill uses a first-upload fast path by default. It skips sources that
-already have R2 `latest` objects, uploads files concurrently, and does not rotate
-or check `previous` objects. A benchmark on this PC uploaded 73 baselines in
-13.3 seconds at concurrency 12.
+The backfill uses a first-upload fast path by default. It skips sources whose
+database pointer already has `latest` objects, uploads capture-specific immutable
+files concurrently, and advances an empty pointer without manufacturing a
+`previous` generation.
 
-Then the next normal 2 AM scan will rotate those objects to `previous` and upload
-the new capture as `latest` only for sources where the worker promotes a
-meaningful update.
+The next normal 6 PM scan rotates the exact old `latest` object keys, hashes, and
+metadata into `previous` in the pointer row only when it promotes a meaningful
+update. Completed Gemini results are retained on the candidate row, so a local,
+R2, event, or reconciliation failure retries from that stored result without
+another model call.

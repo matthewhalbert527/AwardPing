@@ -1,8 +1,14 @@
 import Link from "next/link";
 import { AlertTriangle, Database, ExternalLink, Eye, Sparkles } from "lucide-react";
+import {
+  AdminMonitoringFeedbackPendingList,
+  type AdminPendingMonitoringFeedback,
+} from "@/components/admin-monitoring-feedback-pending-list";
+import { AdminNotAnUpdateControl } from "@/components/admin-not-an-update-control";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
+import { alertBlockingMonitoringPolicyFlagIds } from "@/lib/award-monitoring-policy";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type {
@@ -28,6 +34,16 @@ type Props = {
     includeSuppressed?: string;
     category?: string;
   }>;
+};
+
+type AdminRecentChangeEvent = {
+  id: string;
+  awardId: string;
+  sourceId: string | null;
+  sourceTitle: string;
+  sourceUrl: string;
+  summary: string;
+  detectedAt: string;
 };
 
 export default async function AdminPageIssuesPage({ searchParams }: Props) {
@@ -59,12 +75,23 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
   const includeSuppressed = truthyParam(params.includeSuppressed);
   const category = typeof params.category === "string" && params.category.trim() ? params.category.trim() : null;
   const activeTab =
-    rawTab === "review" || rawTab === "source-quality" || rawTab === "suppressed"
+    rawTab === "review" ||
+    rawTab === "source-quality" ||
+    rawTab === "updates" ||
+    rawTab === "suppressed"
       ? rawTab
       : "active";
-  const [{ summary, issues, loadErrors }, reviewLater, suppressedEvents] = await Promise.all([
+  const [
+    { summary, issues, loadErrors },
+    reviewLater,
+    recentUpdates,
+    pendingFeedback,
+    suppressedEvents,
+  ] = await Promise.all([
     loadAdminPageIssues(admin, undefined, { includeResolved, includeSuppressed, category }),
     loadAdminReviewLaterSources(admin),
+    loadAdminRecentChangeEvents(admin),
+    loadAdminPendingMonitoringFeedback(admin),
     loadAdminSuppressedChangeEvents(admin),
   ]);
   const sourceQualityIssues = issues.filter((issue) => issue.area === "Source quality gate");
@@ -72,7 +99,13 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
   const highCount = displayedIssues.filter((issue) => issue.severity === "high").length;
   const mediumCount = displayedIssues.filter((issue) => issue.severity === "medium").length;
   const lowCount = displayedIssues.filter((issue) => issue.severity === "low").length;
-  const allLoadErrors = [...loadErrors, ...reviewLater.loadErrors, ...suppressedEvents.loadErrors];
+  const allLoadErrors = [
+    ...loadErrors,
+    ...reviewLater.loadErrors,
+    ...recentUpdates.loadErrors,
+    ...pendingFeedback.loadErrors,
+    ...suppressedEvents.loadErrors,
+  ];
 
   return (
     <IssueShell>
@@ -151,6 +184,13 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           detail="Historical change events hidden from default/public counts"
           attention={summary.suppressedChangeEvents > 0}
         />
+        <MetricCard
+          icon={Sparkles}
+          label="Pending policy feedback"
+          value={formatNumber(pendingFeedback.total)}
+          detail="False-positive corrections awaiting reviewed rule promotion"
+          attention={pendingFeedback.total > 0}
+        />
       </section>
 
       <section className="card admin-section-card">
@@ -210,6 +250,14 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           <span>{formatNumber(sourceQualityIssues.length)}</span>
         </Link>
         <Link
+          aria-current={activeTab === "updates" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "updates" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=updates"
+        >
+          Recent updates
+          <span>{formatNumber(recentUpdates.events.length)}</span>
+        </Link>
+        <Link
           aria-current={activeTab === "suppressed" ? "page" : undefined}
           className={`admin-subtab ${activeTab === "suppressed" ? "admin-subtab-active" : ""}`}
           href="/dashboard/admin/issues?tab=suppressed"
@@ -228,6 +276,8 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
                 ? "Review later"
                 : activeTab === "source-quality"
                   ? "Source-quality rejected"
+                  : activeTab === "updates"
+                    ? "Recent updates and policy feedback"
                   : activeTab === "suppressed"
                     ? "Suppressed change events"
                     : "Active review queue"}
@@ -236,6 +286,10 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
           {activeTab === "active" || activeTab === "source-quality" ? (
             <span className="badge">
               {formatNumber(highCount)} high, {formatNumber(mediumCount)} medium, {formatNumber(lowCount)} low
+            </span>
+          ) : activeTab === "updates" ? (
+            <span className="badge">
+              {formatNumber(pendingFeedback.total)} pending review
             </span>
           ) : activeTab === "suppressed" ? (
             <span className="badge">{formatNumber(suppressedEvents.events.length)} suppressed</span>
@@ -267,6 +321,12 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
               </p>
             )}
           </>
+        ) : activeTab === "updates" ? (
+          <RecentUpdateReview
+            events={recentUpdates.events}
+            feedback={pendingFeedback.feedback}
+            feedbackTotal={pendingFeedback.total}
+          />
         ) : activeTab === "suppressed" ? (
           <SuppressedEventList events={suppressedEvents.events} />
         ) : (
@@ -427,6 +487,79 @@ function ReviewLaterList({ sources }: { sources: AdminReviewLaterSource[] }) {
   );
 }
 
+function RecentUpdateReview({
+  events,
+  feedback,
+  feedbackTotal,
+}: {
+  events: AdminRecentChangeEvent[];
+  feedback: AdminPendingMonitoringFeedback[];
+  feedbackTotal: number;
+}) {
+  return (
+    <div className="grid gap-7">
+      <AdminMonitoringFeedbackPendingList
+        feedback={feedback}
+        feedbackTotal={feedbackTotal}
+        policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
+      />
+
+      <div>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-lg font-black">Recent unsuppressed updates</h3>
+            <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
+              Mark a false positive here to hide it immediately and preserve the
+              correction for policy review.
+            </p>
+          </div>
+          <span className="badge">{formatNumber(events.length)} shown</span>
+        </div>
+
+        {events.length > 0 ? (
+          <div className="admin-issue-list">
+            {events.map((event) => (
+              <article className="admin-issue-row admin-issue-row-low" key={event.id}>
+                <div className="min-w-0">
+                  <div className="admin-issue-meta">
+                    <span className="admin-severity-pill admin-severity-pill-low">
+                      active update
+                    </span>
+                    <span>Event {event.id}</span>
+                  </div>
+                  <h3>{event.sourceTitle}</h3>
+                  <p className="admin-issue-message">{event.summary}</p>
+                  <div className="admin-issue-actions">
+                    {event.sourceUrl && (
+                      <a
+                        className="admin-issue-link"
+                        href={event.sourceUrl}
+                        rel="noreferrer"
+                        target="_blank"
+                      >
+                        Source <ExternalLink size={13} aria-hidden="true" />
+                      </a>
+                    )}
+                  </div>
+                  <AdminNotAnUpdateControl
+                    eventId={event.id}
+                    policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
+                  />
+                </div>
+                <time dateTime={event.detectedAt}>{formatDate(event.detectedAt)}</time>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
+            No unsuppressed change events are currently reported.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function SuppressedEventList({ events }: { events: AdminSuppressedChangeEvent[] }) {
   if (events.length === 0) {
     return (
@@ -476,6 +609,84 @@ function Detail({ label, value }: { label: string; value: string }) {
       <dd>{value}</dd>
     </div>
   );
+}
+
+async function loadAdminRecentChangeEvents(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+): Promise<{ events: AdminRecentChangeEvent[]; loadErrors: string[] }> {
+  const { data, error } = await admin
+    .from("shared_award_change_events")
+    .select(
+      "id, shared_award_id, shared_award_source_id, source_title, source_url, summary, detected_at",
+    )
+    .is("suppressed_at", null)
+    .order("detected_at", { ascending: false })
+    .limit(100);
+
+  return {
+    events: (data || []).map((row) => ({
+      id: row.id,
+      awardId: row.shared_award_id,
+      sourceId: row.shared_award_source_id,
+      sourceTitle: row.source_title || row.source_url || "Untitled source",
+      sourceUrl: row.source_url,
+      summary: row.summary,
+      detectedAt: row.detected_at,
+    })),
+    loadErrors: error?.message ? [error.message] : [],
+  };
+}
+
+async function loadAdminPendingMonitoringFeedback(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+): Promise<{
+  feedback: AdminPendingMonitoringFeedback[];
+  total: number;
+  loadErrors: string[];
+}> {
+  const { data, error } = await admin.rpc("list_pending_monitoring_feedback", {
+    p_limit: 100,
+  });
+
+  if (error) {
+    return {
+      feedback: [],
+      total: 0,
+      loadErrors: [
+        /list_pending_monitoring_feedback|monitoring_feedback|schema cache|42P01|PGRST/i.test(
+          error.message,
+        )
+          ? "Monitoring feedback is not migrated for this deployment yet."
+          : error.message,
+      ],
+    };
+  }
+
+  const rows = data || [];
+
+  return {
+    feedback: rows.map((row) => ({
+      id: row.feedback_id,
+      eventId: row.event_id,
+      sourceId: row.source_id,
+      awardId: row.award_id,
+      eventSummary: row.event_summary,
+      eventSourceUrl: row.event_source_url,
+      eventSourceTitle: row.event_source_title,
+      eventSourcePageType: row.event_source_page_type,
+      eventDetectedAt: row.event_detected_at,
+      eventEvidence: row.event_evidence,
+      reasonCode: row.reason_code,
+      note: row.note,
+      requestedScope: row.requested_scope,
+      policyRuleId: row.policy_rule_id,
+      policyVersion: row.policy_version,
+      actorEmail: row.actor_email,
+      createdAt: row.created_at,
+    })),
+    total: Number(rows[0]?.total_pending || 0),
+    loadErrors: [],
+  };
 }
 
 function truthyParam(value: string | undefined) {

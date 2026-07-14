@@ -1,19 +1,44 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import {
   buildVisualReviewPromptText,
   changeDetailsFromVisualBatchResult,
+  currentMonitoringPolicyAuditIdentity,
+  currentVisualReviewPolicyIdentity,
   expandableSectionCandidateRejectReason,
   fileToInlineGeminiPart,
+  latestVisualReviewPolicyDecision,
   normalizeVisualBatchResult,
-  stableJsonStringify,
-  validateVisualBatchReview,
+  rebuildVisualReviewCandidateForCurrentPolicy,
+  refreshVisualReviewPromptPayloadPolicy,
   visualHashFromCandidate,
+  visualReviewBatchCreateFailureDisposition,
+  visualReviewBatchPollFailureDisposition,
+  visualReviewFailureRetryDecision,
   visualReviewResponseSchema,
+  visualReviewConditionalSourceApplicantEscape,
+  visualReviewSourceIdentityFreshness,
+  visualReviewStaleClaimRecoveryDecision,
 } from "./lib/visual-review-queue.mjs";
+import { assertVisualReviewBatchPolicyCoverage } from "./lib/award-monitoring-policy.mjs";
+import { recordVisualRejectionLedger } from "./lib/visual-rejection-ledger.mjs";
+import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-claim.mjs";
+import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
+import {
+  compareVisualCandidateOrder,
+  findBlockingPriorVisualPublication,
+} from "./lib/visual-publication-order.mjs";
 import { sourceQualityDecision } from "./lib/source-quality.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
+import {
+  captureFromVisualReviewCandidate,
+  promoteApprovedVisualBaselineLocal,
+  promoteApprovedVisualBaselineR2,
+  visualBaselinePublicationDecision,
+} from "./lib/visual-baseline-promotion.mjs";
+import { withVisualBaselineLockAsync } from "./lib/visual-baseline-lock.mjs";
 import {
   extractGeminiBatchInlineResponses,
   extractGeminiUsageMetadata,
@@ -44,9 +69,27 @@ const env = {
   ...process.env,
 };
 
+const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
+
 const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 const geminiApiKey = env.GEMINI_API_KEY;
+const archiveRoot = resolve(
+  String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || args["archive-dir"] || defaultArchiveRoot),
+);
+const r2SnapshotSync = boolArg(
+  args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
+  false,
+);
+const r2Bucket = String(args["r2-bucket"] || env.R2_BUCKET || "awardping-snapshots").trim();
+const r2AccountId = cleanText(args["r2-account-id"] || env.R2_ACCOUNT_ID);
+const r2Endpoint = cleanText(
+  args["r2-endpoint"] ||
+    env.R2_ENDPOINT ||
+    (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : ""),
+);
+const r2AccessKeyId = cleanText(args["r2-access-key-id"] || env.R2_ACCESS_KEY_ID);
+const r2SecretAccessKey = cleanText(args["r2-secret-access-key"] || env.R2_SECRET_ACCESS_KEY);
 const limit = positiveInt(args.limit, 250);
 const maxRequestsPerBatch = positiveInt(args["max-requests-per-batch"], 250);
 const inlineThreshold = positiveInt(args["inline-threshold"], 100);
@@ -56,6 +99,12 @@ const apply = boolArg(args.apply, true);
 const pollOnly = boolArg(args["poll-only"], false);
 const submitOnly = boolArg(args["submit-only"], false);
 const recoverMissingBatchResponses = boolArg(args["recover-missing-batch-responses"], true);
+const maxFailureRetries = nonNegativeInt(args["max-failure-retries"], 3);
+const staleClaimMinutes = positiveInt(args["stale-claim-minutes"], 15);
+const publicationClaimStaleMinutes = positiveInt(
+  args["publication-claim-stale-minutes"],
+  30,
+);
 const requestTimeoutMs = positiveInt(args["request-timeout-ms"], 120_000);
 const reportDir = args["report-dir"]
   ? resolve(root, String(args["report-dir"]))
@@ -68,6 +117,10 @@ const jsonlDir = args["jsonl-dir"]
   ? resolve(root, String(args["jsonl-dir"]))
   : join(reportDir, "visual-review-batch-jsonl");
 const model = geminiWorkerModel();
+const monitoringPolicy = currentVisualReviewPolicyIdentity();
+const monitoringPolicyBundle = currentMonitoringPolicyAuditIdentity();
+
+assertVisualReviewBatchPolicyCoverage();
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -76,6 +129,13 @@ if (!supabaseUrl || !serviceRoleKey) {
 
 if (!geminiApiKey) {
   console.error("GEMINI_API_KEY is required to process visual review batches.");
+  process.exit(1);
+}
+
+if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)) {
+  console.error(
+    "R2 baseline promotion is enabled, but R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.",
+  );
   process.exit(1);
 }
 
@@ -89,6 +149,24 @@ const report = {
   status: "running",
   env_path: envPath,
   report_path: reportPath,
+  monitoring_policy: monitoringPolicy,
+  monitoring_policy_bundle: monitoringPolicyBundle,
+  baseline_advancement: {
+    rejected_candidates_advance_baseline: false,
+    approved_whole_page_candidates_advance_baseline: true,
+    expandable_section_candidates_advance_enclosing_whole_page_baseline: true,
+    reason: "advance_enclosing_full_capture_after_any_approved_candidate_preserve_rejected_only_captures",
+    archive_root: archiveRoot,
+    r2_snapshot_sync: r2SnapshotSync,
+    local_promoted: 0,
+    local_already_current: 0,
+    local_skipped: 0,
+    local_failed: 0,
+    r2_promoted: 0,
+    r2_already_current: 0,
+    r2_skipped: 0,
+    r2_failed: 0,
+  },
   options: {
     limit,
     max_requests_per_batch: maxRequestsPerBatch,
@@ -97,6 +175,9 @@ const report = {
     submit,
     apply,
     recover_missing_batch_responses: recoverMissingBatchResponses,
+    max_failure_retries: maxFailureRetries,
+    stale_claim_minutes: staleClaimMinutes,
+    publication_claim_stale_minutes: publicationClaimStaleMinutes,
   },
   pending_visual_reviews: 0,
   submitted_jobs: 0,
@@ -108,7 +189,24 @@ const report = {
   published: 0,
   publish_duplicates: 0,
   superseded: 0,
+  requeued_for_current_policy: 0,
+  requeued_for_current_source_context: 0,
+  rejection_ledger_recorded: 0,
+  rejection_ledger_unavailable: 0,
   recovered_missing_batch_responses: 0,
+  retried_failed_candidates: 0,
+  retry_exhausted_candidates: 0,
+  recovered_stale_submission_claims: 0,
+  manual_recovery_required_claims: 0,
+  submission_claim_conflicts: 0,
+  submission_claims_released: 0,
+  submission_claims_lost_after_batch_create: 0,
+  publication_claims_acquired: 0,
+  publication_claim_conflicts: 0,
+  recovered_stale_publication_claims: 0,
+  stored_publication_retry_errors: 0,
+  source_url_changed_since_capture: 0,
+  baseline_promotion_pending: 0,
   awards_queued_for_reconciliation: 0,
   award_reconciliation_queue_existing: 0,
   award_reconciliation_queue_failed: 0,
@@ -142,10 +240,16 @@ try {
 }
 
 async function pollExistingBatches() {
+  if (apply) await reconcileStoredSucceededCandidates();
   const { data, error } = await supabase
     .from("shared_award_visual_review_candidates")
     .select("gemini_batch_name,model,status,rejection_reason")
-    .in("status", recoverMissingBatchResponses ? ["submitted", "processing", "failed"] : ["submitted", "processing"])
+    .in(
+      "status",
+      recoverMissingBatchResponses
+        ? ["submitted", "processing", "failed"]
+        : ["submitted", "processing"],
+    )
     .not("gemini_batch_name", "is", null)
     .limit(10_000);
   if (error) throw new Error(`Load submitted visual review batches failed: ${error.message}`);
@@ -154,43 +258,150 @@ async function pollExistingBatches() {
     .filter((row) => row.status !== "failed" || row.rejection_reason === "missing_batch_response")
     .map((row) => row.gemini_batch_name));
   for (const batchName of batchNames) {
-    const job = await fetchGeminiJson(`https://generativelanguage.googleapis.com/v1beta/${batchName}`, {
-      method: "GET",
-      kind: "batch_poll",
-    });
-    const state = geminiBatchState(job);
     const batchReport = {
       name: batchName,
-      state,
+      state: null,
       reconciled: 0,
       rejected: 0,
       failed: 0,
       published: 0,
+      publication_claim_conflicts: 0,
       mode: "poll",
     };
     report.batches.push(batchReport);
+    try {
+      const job = await fetchGeminiJson(`https://generativelanguage.googleapis.com/v1beta/${batchName}`, {
+        method: "GET",
+        kind: "batch_poll",
+      });
+      const state = geminiBatchState(job);
+      batchReport.state = state;
 
-    if (!isGeminiBatchDone(state)) {
-      report.processing_jobs += 1;
-      await markBatchRowsProcessing(batchName);
-      console.log(`VISUAL_REVIEW_BATCH processing job=${batchName} state=${state || "unknown"}`);
-      continue;
-    }
+      if (!isGeminiBatchDone(state)) {
+        report.processing_jobs += 1;
+        await markBatchRowsProcessing(batchName);
+        console.log(`VISUAL_REVIEW_BATCH processing job=${batchName} state=${state || "unknown"}`);
+        continue;
+      }
 
-    if (!isGeminiBatchSucceeded(state)) {
-      const message = geminiBatchErrorMessage(job);
-      await markBatchRowsFailed(batchName, message);
+      if (!isGeminiBatchSucceeded(state)) {
+        const message = geminiBatchErrorMessage(job);
+        await markBatchRowsFailed(batchName, message);
+        batchReport.failed += 1;
+        report.failed += 1;
+        console.log(`VISUAL_REVIEW_BATCH failed job=${batchName} state=${state} message=${truncate(message, 240)}`);
+        continue;
+      }
+
+      await reconcileCompletedBatch(batchName, job, batchReport);
+    } catch (error) {
+      const message = errorMessage(error);
+      const pollFailure = visualReviewBatchPollFailureDisposition({
+        kind: error?.geminiRequestKind || "batch_poll",
+        httpStatus: error?.geminiHttpStatus,
+      });
+      if (pollFailure.action === "fail_for_bounded_retry") {
+        const missingReason = `gemini_batch_permanently_missing_http_${pollFailure.http_status}`;
+        await markBatchRowsFailed(batchName, missingReason);
+        batchReport.state = missingReason;
+      } else {
+        batchReport.state = "poll_error";
+      }
+      batchReport.error = message;
       batchReport.failed += 1;
       report.failed += 1;
-      console.log(`VISUAL_REVIEW_BATCH failed job=${batchName} state=${state} message=${truncate(message, 240)}`);
-      continue;
+      report.errors.push({
+        batch_name: batchName,
+        stage: "batch_poll_or_reconcile",
+        message,
+      });
+      console.error(
+        `VISUAL_REVIEW_BATCH_POLL_FAILED job=${batchName} message=${truncate(message, 240)}`,
+      );
     }
+  }
+}
 
-    await reconcileCompletedBatch(batchName, job, batchReport);
+async function reconcileStoredSucceededCandidates() {
+  const staleBefore = new Date(
+    Date.now() - publicationClaimStaleMinutes * 60_000,
+  ).toISOString();
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("*")
+    .eq("status", "succeeded")
+    .not("ai_result", "is", null)
+    // Rows finalized as retry-pending receive a new updated_at. Ordering by
+    // that retry timestamp rotates an old failing window behind untouched
+    // results, while fresh cross-process claims do not consume the window.
+    .or(
+      `publication_claim_token.is.null,publication_claimed_at.is.null,publication_claimed_at.lt.${staleBefore}`,
+    )
+    .order("updated_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(Math.max(limit, 500));
+  if (error) throw new Error(`Load stored visual publication retries failed: ${error.message}`);
+  const candidates = (data || []).filter((candidate) =>
+    Object.keys(objectValue(candidate.ai_result)).length,
+  );
+  const sources = await loadSourcesById(
+    candidates.map((candidate) => candidate.shared_award_source_id),
+  );
+  for (const candidate of candidates) {
+    try {
+      const usage = normalizeGeminiUsage(candidate.actual_usage);
+      const result = candidate.ai_result;
+      const claim = await claimCompletedCandidatePublication(candidate, result, usage);
+      if (!claim.acquired) {
+        report.publication_claim_conflicts += 1;
+        continue;
+      }
+      report.publication_claims_acquired += 1;
+      if (claim.recovered) report.recovered_stale_publication_claims += 1;
+      const publishResult = await publishCandidateResult({
+        candidate: claim.candidate,
+        source: sources.get(candidate.shared_award_source_id),
+        result,
+        usage,
+        publicationClaimToken: claim.claim_token,
+      });
+      if (publishResult.status === "published") report.published += 1;
+      else if (publishResult.status === "duplicate") report.publish_duplicates += 1;
+      else if (publishResult.status === "superseded") report.superseded += 1;
+      else if (publishResult.status === "rejected") report.rejected += 1;
+      else if (publishResult.status === "requeued") {
+        if (publishResult.reason === "source_context_changed_since_batch_submission") {
+          report.requeued_for_current_source_context += 1;
+        } else {
+          report.requeued_for_current_policy += 1;
+        }
+      }
+      else if (publishResult.status === "retry_pending") {
+        report.baseline_promotion_pending += 1;
+        report.succeeded += 1;
+      } else report.succeeded += 1;
+    } catch (error) {
+      // Leave any acquired claim intact. Its stale-claim lease is the
+      // fail-closed recovery boundary, and one broken source must not prevent
+      // later stored results from being reconciled in this run.
+      report.stored_publication_retry_errors += 1;
+      report.errors.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        stage: "stored_publication_retry",
+        message: errorMessage(error),
+      });
+      console.error(
+        `VISUAL_REVIEW_STORED_RETRY_FAILED candidate=${candidate.id} source=${candidate.shared_award_source_id} message=${truncate(errorMessage(error), 240)}`,
+      );
+    }
   }
 }
 
 async function submitPendingCandidates() {
+  await recoverStaleSubmissionClaims();
+  await requeueRetryableFailures();
+
   const { data, error, count } = await supabase
     .from("shared_award_visual_review_candidates")
     .select("*", { count: "exact" })
@@ -208,11 +419,28 @@ async function submitPendingCandidates() {
 
   const sourcesById = await loadSourcesById(candidates.map((candidate) => candidate.shared_award_source_id));
   const eligible = [];
-  for (const candidate of candidates) {
-    const source = sourcesById.get(candidate.shared_award_source_id);
-    const rejectReason = preSubmissionRejectReason(candidate, source);
+  for (const loadedCandidate of candidates) {
+    const source = sourcesById.get(loadedCandidate.shared_award_source_id);
+    const sourceIdentity = visualReviewSourceIdentityFreshness(loadedCandidate, source);
+    if (!sourceIdentity.allowed) {
+      await markCandidate(loadedCandidate.id, {
+        status: "superseded",
+        rejection_reason: sourceIdentity.reason,
+        worker_metadata: workerMetadataForCandidate(loadedCandidate, {
+          source_identity_guard: sourceIdentity,
+          baseline_advanced: false,
+          recapture_required: true,
+        }),
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      report.superseded += 1;
+      report.source_url_changed_since_capture += 1;
+      continue;
+    }
+    const rejectReason = preSubmissionRejectReason(loadedCandidate, source);
     if (rejectReason) {
-      await markCandidate(candidate.id, {
+      await markCandidate(loadedCandidate.id, {
         status: "rejected",
         rejection_reason: rejectReason,
         completed_at: new Date().toISOString(),
@@ -221,6 +449,8 @@ async function submitPendingCandidates() {
       report.rejected += 1;
       continue;
     }
+    const candidate = await persistPendingCandidateForCurrentPolicy(loadedCandidate, source);
+    if (!candidate) continue;
     eligible.push(candidate);
   }
 
@@ -232,51 +462,455 @@ async function submitPendingCandidates() {
   }
 }
 
-async function submitCandidateChunk(model, candidates) {
-  const requests = candidates.map((candidate) => geminiBatchRequestForCandidate(candidate));
-  const mode = requests.length > inlineThreshold ? "jsonl_file" : "inline";
-  const displayName = `awardping-visual-review-${timestampForPath(new Date().toISOString())}-${model.replace(/[^a-z0-9._-]+/gi, "-")}`;
-  const batch = await createGeminiBatchJob({
-    model,
-    requests,
-    displayName,
-    mode,
-  });
-  const batchName = geminiBatchJobName(batch);
-  if (!batchName) throw new Error(`Gemini batch creation did not return a batch name: ${JSON.stringify(batch).slice(0, 500)}`);
+async function recoverStaleSubmissionClaims() {
+  const cutoff = new Date(Date.now() - staleClaimMinutes * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("*")
+    .eq("status", "processing")
+    .is("gemini_batch_name", null)
+    .lt("updated_at", cutoff)
+    .limit(Math.max(limit, 500));
+  if (error) throw new Error(`Load stale visual submission claims failed: ${error.message}`);
+
+  for (const candidate of data || []) {
+    const now = new Date().toISOString();
+    const recoveryDecision = visualReviewStaleClaimRecoveryDecision(candidate);
+    if (recoveryDecision.action === "fail_closed") {
+      const { data: failedClosed, error: failClosedError } = await supabase
+        .from("shared_award_visual_review_candidates")
+        .update({
+          status: "failed",
+          rejection_reason: "manual_recovery_required_possible_external_batch_created",
+          worker_metadata: workerMetadataForCandidate(candidate, {
+            stale_submission_claim_failed_closed_at: now,
+            submission_claim_recovery: recoveryDecision,
+          }),
+          completed_at: now,
+          updated_at: now,
+        })
+        .eq("id", candidate.id)
+        .eq("status", "processing")
+        .is("gemini_batch_name", null)
+        .lt("updated_at", cutoff)
+        .select("id")
+        .maybeSingle();
+      if (failClosedError) throw new Error(`Fail stale visual submission claim closed failed: ${failClosedError.message}`);
+      if (failedClosed) report.manual_recovery_required_claims += 1;
+      continue;
+    }
+    if (recoveryDecision.action !== "requeue") continue;
+    const { data: recovered, error: recoverError } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: "pending",
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          stale_submission_claim_recovered_at: now,
+          stale_submission_claim_token: candidate.worker_metadata?.submission_claim_token || null,
+          submission_claim_token: null,
+        }),
+        updated_at: now,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .lt("updated_at", cutoff)
+      .select("id")
+      .maybeSingle();
+    if (recoverError) throw new Error(`Recover stale visual submission claim failed: ${recoverError.message}`);
+    if (recovered) report.recovered_stale_submission_claims += 1;
+  }
+}
+
+async function requeueRetryableFailures() {
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("*")
+    .eq("status", "failed")
+    .order("updated_at", { ascending: true })
+    .limit(Math.max(limit, 500));
+  if (error) throw new Error(`Load failed visual review candidates failed: ${error.message}`);
+
+  for (const candidate of data || []) {
+    const decision = visualReviewFailureRetryDecision(candidate, {
+      maxRetries: maxFailureRetries,
+    });
+    if (!decision.retry) {
+      if (decision.reason === "failure_retry_limit_reached") {
+        report.retry_exhausted_candidates += 1;
+      }
+      continue;
+    }
+    const now = new Date().toISOString();
+    const failureHistory = [
+      ...(Array.isArray(candidate.worker_metadata?.failure_history)
+        ? candidate.worker_metadata.failure_history
+        : []),
+      {
+        failed_at: candidate.completed_at || candidate.updated_at || null,
+        reason: candidate.rejection_reason || "unknown_failure",
+        batch_name: candidate.gemini_batch_name || null,
+        model: candidate.model || null,
+      },
+    ].slice(-10);
+    const { data: requeued, error: requeueError } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: "pending",
+        gemini_batch_name: null,
+        model: null,
+        submitted_at: null,
+        completed_at: null,
+        published_at: null,
+        ai_result: null,
+        actual_usage: {},
+        rejection_reason: null,
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          failure_retry_count: decision.next_retry_count,
+          failure_history: failureHistory,
+          failure_requeued_at: now,
+          submission_claim_token: null,
+        }),
+        updated_at: now,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "failed")
+      .select("id")
+      .maybeSingle();
+    if (requeueError) throw new Error(`Requeue failed visual review candidate failed: ${requeueError.message}`);
+    if (requeued) report.retried_failed_candidates += 1;
+  }
+}
+
+async function persistPendingCandidateForCurrentPolicy(candidate, source) {
+  const rebuilt = rebuildVisualReviewCandidateForCurrentPolicy(candidate, { source });
+  const storedPolicy = objectValue(candidate?.prompt_payload?.monitoring_policy);
+  const storedPolicyBundle = objectValue(candidate?.prompt_payload?.monitoring_policy_bundle);
+  const policyNeedsRefresh =
+    cleanText(storedPolicy.hash) !== cleanText(monitoringPolicy.hash);
+  const effectiveContextNeedsRefresh =
+    candidate.candidate_signature !== rebuilt.candidate_signature ||
+    candidate.gemini_batch_request_key !== rebuilt.candidate_signature ||
+    policyNeedsRefresh ||
+    candidate.prompt_context !== rebuilt.prompt_context;
+  const needsRefresh =
+    effectiveContextNeedsRefresh ||
+    cleanText(storedPolicyBundle.hash) !== cleanText(monitoringPolicyBundle.hash);
+  if (!needsRefresh) return candidate;
+
+  const conflict = await findCandidateWithSignature(
+    rebuilt.candidate_signature,
+    candidate.id,
+  );
+  if (conflict) {
+    await markCandidate(candidate.id, {
+      status: "superseded",
+      rejection_reason: `current_policy_candidate_exists:${conflict.id}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        superseded_by_candidate_id: conflict.id,
+        superseded_during_pending_policy_refresh: true,
+      }),
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    report.superseded += 1;
+    return null;
+  }
 
   const now = new Date().toISOString();
-  const ids = candidates.map((candidate) => candidate.id);
-  const { error } = await supabase
+  const patch = {
+    candidate_signature: rebuilt.candidate_signature,
+    gemini_batch_request_key: rebuilt.candidate_signature,
+    source_url: rebuilt.source_context.url || candidate.source_url,
+    source_title: rebuilt.source_context.title || candidate.source_title,
+    source_page_type: rebuilt.source_context.page_type || candidate.source_page_type,
+    prompt_payload: rebuilt.prompt_payload,
+    prompt_context: rebuilt.prompt_context,
+    worker_metadata: workerMetadataForCandidate(candidate, {
+      pending_policy_refreshed_at: now,
+      pending_policy_refreshed_from: storedPolicy,
+      prompt_rebuilt_from_current_policy: true,
+    }),
+    updated_at: now,
+  };
+  const { data, error } = await supabase
     .from("shared_award_visual_review_candidates")
-    .update({
-      status: "submitted",
-      gemini_batch_name: batchName,
+    .update(patch)
+    .eq("id", candidate.id)
+    .eq("status", "pending")
+    .select("*")
+    .maybeSingle();
+  if (error) {
+    if (error.code === "23505") {
+      const racedConflict = await findCandidateWithSignature(
+        rebuilt.candidate_signature,
+        candidate.id,
+      );
+      if (racedConflict) {
+        await markCandidate(candidate.id, {
+          status: "superseded",
+          rejection_reason: `current_policy_candidate_exists:${racedConflict.id}`,
+          worker_metadata: workerMetadataForCandidate(candidate, {
+            superseded_by_candidate_id: racedConflict.id,
+            superseded_during_pending_policy_refresh: true,
+          }),
+          completed_at: now,
+          updated_at: now,
+        });
+        report.superseded += 1;
+        return null;
+      }
+    }
+    throw new Error(`Refresh pending visual candidate policy failed: ${error.message}`);
+  }
+  if (!data) return null;
+  if (effectiveContextNeedsRefresh) {
+    if (policyNeedsRefresh) report.requeued_for_current_policy += 1;
+    else report.requeued_for_current_source_context += 1;
+  }
+  return data;
+}
+
+async function findCandidateWithSignature(candidateSignature, excludedId) {
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("id,status")
+    .eq("candidate_signature", candidateSignature)
+    .neq("id", excludedId)
+    .limit(1)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Check current-policy visual candidate failed: ${error.message}`);
+  }
+  return data || null;
+}
+
+async function submitCandidateChunk(model, candidates) {
+  const claimToken = crypto.randomUUID();
+  const claimedAt = new Date().toISOString();
+  const displayName = `awardping-visual-review-${timestampForPath(claimedAt)}-${claimToken.slice(0, 8)}-${model.replace(/[^a-z0-9._-]+/gi, "-")}`;
+  const claimedCandidates = [];
+  for (const candidate of candidates) {
+    const { data: claimed, error: claimError } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: "processing",
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          submission_claim_token: claimToken,
+          submission_claimed_at: claimedAt,
+          submission_claimed_by: "process-visual-review-batch",
+          batch_display_name: displayName,
+        }),
+        updated_at: claimedAt,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "pending")
+      .is("gemini_batch_name", null)
+      .select("*")
+      .maybeSingle();
+    if (claimError) throw new Error(`Claim visual review candidate ${candidate.id} failed: ${claimError.message}`);
+    if (claimed) claimedCandidates.push(claimed);
+    else report.submission_claim_conflicts += 1;
+  }
+  if (!claimedCandidates.length) return;
+
+  const requests = claimedCandidates.map((candidate) => geminiBatchRequestForCandidate(candidate));
+  const mode = requests.length > inlineThreshold ? "jsonl_file" : "inline";
+  let batch;
+  try {
+    batch = await createGeminiBatchJob({
       model,
-      submitted_at: now,
-      updated_at: now,
-      worker_metadata: {
-        submitted_by: "process-visual-review-batch",
-        submitted_at: now,
-        batch_input_mode: mode,
-        display_name: displayName,
-      },
-    })
-    .in("id", ids);
-  if (error) throw new Error(`Persist Gemini batch ${batchName} failed: ${error.message}`);
+      requests,
+      displayName,
+      mode,
+      beforeCreate: () => markSubmissionClaimsCreateStarted(
+        claimedCandidates,
+        claimToken,
+      ),
+    });
+  } catch (error) {
+    if (error?.possibleExternalBatchCreated) {
+      await failSubmissionClaimsClosed(claimedCandidates, claimToken, error);
+    } else {
+      await releaseSubmissionClaims(claimedCandidates, claimToken, error);
+    }
+    throw error;
+  }
+  const batchName = geminiBatchJobName(batch);
+  if (!batchName) {
+    const error = new Error(`Gemini batch creation did not return a batch name: ${JSON.stringify(batch).slice(0, 500)}`);
+    error.possibleExternalBatchCreated = true;
+    await failSubmissionClaimsClosed(claimedCandidates, claimToken, error);
+    throw error;
+  }
+
+  const now = new Date().toISOString();
+  const submittedCandidates = [];
+  for (const candidate of claimedCandidates) {
+    const submittedCandidate = await persistSubmittedClaim({
+      candidate,
+      claimToken,
+      batchName,
+      model,
+      mode,
+      displayName,
+      submittedAt: now,
+    });
+    if (submittedCandidate) submittedCandidates.push(submittedCandidate);
+    else report.submission_claims_lost_after_batch_create += 1;
+  }
 
   report.submitted_jobs += 1;
-  report.submitted_candidates += candidates.length;
-  const estimated = candidates.reduce((total, candidate) => total + estimateCandidateBatchCostUsd(model, candidate), 0);
+  report.submitted_candidates += submittedCandidates.length;
+  const estimated = claimedCandidates.reduce((total, candidate) => total + estimateCandidateBatchCostUsd(model, candidate), 0);
   report.estimated_batch_cost_usd = roundUsd(report.estimated_batch_cost_usd + estimated);
   report.batches.push({
     name: batchName,
     model,
     mode,
-    submitted_candidates: candidates.length,
+    requested_candidates: claimedCandidates.length,
+    submitted_candidates: submittedCandidates.length,
+    lost_claims: claimedCandidates.length - submittedCandidates.length,
     estimated_cost_usd: roundUsd(estimated),
   });
-  console.log(`VISUAL_REVIEW_BATCH submitted job=${batchName} model=${model} candidates=${candidates.length} mode=${mode}`);
+  console.log(`VISUAL_REVIEW_BATCH submitted job=${batchName} model=${model} candidates=${submittedCandidates.length}/${claimedCandidates.length} mode=${mode}`);
+}
+
+async function persistSubmittedClaim({
+  candidate,
+  claimToken,
+  batchName,
+  model,
+  mode,
+  displayName,
+  submittedAt,
+}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 4; attempt += 1) {
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: "submitted",
+        gemini_batch_name: batchName,
+        model,
+        submitted_at: submittedAt,
+        updated_at: submittedAt,
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          submitted_by: "process-visual-review-batch",
+          submitted_at: submittedAt,
+          batch_input_mode: mode,
+          display_name: displayName,
+          batch_display_name: displayName,
+          submission_claim_token: claimToken,
+          prompt_rebuilt_from_current_policy: true,
+        }),
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .contains("worker_metadata", { submission_claim_token: claimToken })
+      .select("*")
+      .maybeSingle();
+    if (!error) return data || null;
+    lastError = error;
+    if (attempt < 4) await sleep(attempt * 500);
+  }
+  throw new Error(
+    `Persist Gemini batch ${batchName} candidate ${candidate.id} failed after retries: ${lastError?.message || "unknown error"}`,
+  );
+}
+
+async function markSubmissionClaimsCreateStarted(candidates, claimToken) {
+  const startedAt = new Date().toISOString();
+  for (const candidate of candidates) {
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          batch_create_started_at: startedAt,
+        }),
+        updated_at: startedAt,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .contains("worker_metadata", { submission_claim_token: claimToken })
+      .select("id")
+      .maybeSingle();
+    if (error) {
+      throw new Error(`Mark Gemini create start for ${candidate.id} failed: ${error.message}`);
+    }
+    if (!data) {
+      throw new Error(`Submission claim ${candidate.id} was lost before Gemini create POST.`);
+    }
+  }
+}
+
+async function releaseSubmissionClaims(candidates, claimToken, cause) {
+  const now = new Date().toISOString();
+  for (const candidate of candidates) {
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: "pending",
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          submission_claim_token: null,
+          submission_claim_released_at: now,
+          submission_claim_release_reason: truncate(errorMessage(cause), 800),
+          batch_create_started_at: null,
+          batch_create_failed_at: now,
+        }),
+        updated_at: now,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .contains("worker_metadata", { submission_claim_token: claimToken })
+      .select("id")
+      .maybeSingle();
+    if (error) {
+      report.errors.push({
+        candidate_id: candidate.id,
+        message: `Release visual submission claim failed: ${error.message}`,
+      });
+      continue;
+    }
+    if (data) report.submission_claims_released += 1;
+  }
+}
+
+async function failSubmissionClaimsClosed(candidates, claimToken, cause) {
+  const now = new Date().toISOString();
+  for (const candidate of candidates) {
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: "failed",
+        rejection_reason: "manual_recovery_required_possible_external_batch_created",
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          submission_claim_failed_closed_at: now,
+          possible_external_batch_error: truncate(errorMessage(cause), 800),
+          manual_recovery_batch_display_name:
+            candidate.worker_metadata?.batch_display_name || null,
+        }),
+        completed_at: now,
+        updated_at: now,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .contains("worker_metadata", { submission_claim_token: claimToken })
+      .select("id")
+      .maybeSingle();
+    if (error) {
+      report.errors.push({
+        candidate_id: candidate.id,
+        message: `Fail ambiguous visual submission claim closed failed: ${error.message}`,
+      });
+      continue;
+    }
+    if (data) report.manual_recovery_required_claims += 1;
+  }
 }
 
 async function reconcileCompletedBatch(batchName, job, batchReport) {
@@ -284,7 +918,8 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
     .from("shared_award_visual_review_candidates")
     .select("*")
     .eq("gemini_batch_name", batchName)
-    .in("status", recoverMissingBatchResponses ? ["submitted", "processing", "succeeded", "failed"] : ["submitted", "processing", "succeeded"]);
+    .in("status", recoverMissingBatchResponses ? ["submitted", "processing", "succeeded", "failed"] : ["submitted", "processing", "succeeded"])
+    .order("created_at", { ascending: true });
   if (error) throw new Error(`Load visual review candidates for ${batchName} failed: ${error.message}`);
 
   const candidates = (data || []).filter((candidate) =>
@@ -295,63 +930,90 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
 
   for (const candidate of candidates) {
     const recoveringMissingResponse = candidate.status === "failed" && candidate.rejection_reason === "missing_batch_response";
-    const responseItem = responseMap.get(candidate.id) || responseMap.get(candidate.gemini_batch_request_key);
-    if (!responseItem) {
-      await markCandidate(candidate.id, {
-        status: "failed",
-        rejection_reason: "missing_batch_response",
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      report.failed += 1;
-      batchReport.failed += 1;
-      continue;
+    const storedResult = candidate.status === "succeeded" &&
+      Object.keys(objectValue(candidate.ai_result)).length
+      ? candidate.ai_result
+      : null;
+    let usage = normalizeGeminiUsage(candidate.actual_usage);
+    let result = storedResult;
+    if (!storedResult) {
+      const responseItem = responseMap.get(candidate.id) || responseMap.get(candidate.gemini_batch_request_key);
+      if (!responseItem) {
+        await markCandidate(candidate.id, {
+          status: "failed",
+          rejection_reason: "missing_batch_response",
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        report.failed += 1;
+        batchReport.failed += 1;
+        continue;
+      }
+
+      if (recoveringMissingResponse) report.recovered_missing_batch_responses += 1;
+      const itemError = geminiInlineError(responseItem);
+      if (itemError) {
+        await markCandidate(candidate.id, {
+          status: "failed",
+          rejection_reason: geminiInlineErrorMessage(itemError),
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        report.failed += 1;
+        batchReport.failed += 1;
+        continue;
+      }
+
+      usage = normalizeGeminiUsage(extractUsageMetadata(responseItem));
+      const rawText = extractGeminiText(geminiInlineResponsePayload(responseItem));
+      try {
+        result = normalizeVisualBatchResult(rawText, {
+          candidate,
+          source: sourcesById.get(candidate.shared_award_source_id),
+        });
+      } catch (error) {
+        await markCandidate(candidate.id, {
+          status: "failed",
+          ai_result: {
+            raw_text: rawText,
+            parse_error: errorMessage(error),
+          },
+          rejection_reason: `invalid_ai_json: ${errorMessage(error)}`,
+          actual_usage: usage,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        report.failed += 1;
+        batchReport.failed += 1;
+        continue;
+      }
     }
 
-    if (recoveringMissingResponse) report.recovered_missing_batch_responses += 1;
-
-    const itemError = geminiInlineError(responseItem);
-    if (itemError) {
-      await markCandidate(candidate.id, {
-        status: "failed",
-        rejection_reason: geminiInlineErrorMessage(itemError),
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      report.failed += 1;
-      batchReport.failed += 1;
-      continue;
-    }
-
-    const usage = normalizeGeminiUsage(extractUsageMetadata(responseItem));
-    const rawText = extractGeminiText(geminiInlineResponsePayload(responseItem));
-    let result;
-    try {
-      result = normalizeVisualBatchResult(rawText, {
-        candidate,
-        source: sourcesById.get(candidate.shared_award_source_id),
-      });
-    } catch (error) {
-      await markCandidate(candidate.id, {
-        status: "failed",
-        ai_result: {
-          raw_text: rawText,
-          parse_error: errorMessage(error),
-        },
-        rejection_reason: `invalid_ai_json: ${errorMessage(error)}`,
-        actual_usage: usage,
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      report.failed += 1;
-      batchReport.failed += 1;
-      continue;
+    let publicationClaim = null;
+    if (apply) {
+      publicationClaim = await claimCompletedCandidatePublication(candidate, result, usage);
+      if (!publicationClaim.acquired) {
+        report.publication_claim_conflicts += 1;
+        batchReport.publication_claim_conflicts += 1;
+        continue;
+      }
+      report.publication_claims_acquired += 1;
+      if (publicationClaim.recovered) {
+        report.recovered_stale_publication_claims += 1;
+      }
     }
 
     addUsage(report.actual_usage, usage);
+    const publishCandidate = publicationClaim?.candidate || candidate;
     const source = sourcesById.get(candidate.shared_award_source_id);
     const publishResult = apply
-      ? await publishCandidateResult({ candidate, source, result, usage })
+      ? await publishCandidateResult({
+          candidate: publishCandidate,
+          source,
+          result,
+          usage,
+          publicationClaimToken: publicationClaim.claim_token,
+        })
       : await markCandidateSucceededDryRun({ candidate, result, usage });
     batchReport.reconciled += 1;
     if (publishResult.status === "published") {
@@ -364,16 +1026,78 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
     } else if (publishResult.status === "rejected") {
       report.rejected += 1;
       batchReport.rejected += 1;
+    } else if (publishResult.status === "requeued") {
+      if (publishResult.reason === "source_context_changed_since_batch_submission") {
+        report.requeued_for_current_source_context += 1;
+      } else {
+        report.requeued_for_current_policy += 1;
+      }
+    } else if (publishResult.status === "retry_pending") {
+      report.baseline_promotion_pending += 1;
+      report.succeeded += 1;
     } else {
       report.succeeded += 1;
     }
   }
 }
 
-async function publishCandidateResult({ candidate, source, result, usage }) {
+async function claimCompletedCandidatePublication(candidate, result, usage) {
+  const now = new Date().toISOString();
+  return acquireVisualReviewPublicationClaim({
+    candidate,
+    claimToken: crypto.randomUUID(),
+    now,
+    staleAfterMs: publicationClaimStaleMinutes * 60_000,
+    metadata: {
+      monitoring_policy: monitoringPolicy,
+      monitoring_policy_bundle: monitoringPolicyBundle,
+    },
+    candidatePatch: {
+      ai_result: result,
+      actual_usage: usage,
+      completed_at: now,
+    },
+    compareAndSet: async ({ expected, patch }) => {
+      let query = supabase
+        .from("shared_award_visual_review_candidates")
+        .update(patch)
+        .eq("id", expected.id)
+        .eq("status", expected.status)
+        .eq("updated_at", expected.updated_at);
+      query = expected.publication_claim_token
+        ? query.eq("publication_claim_token", expected.publication_claim_token)
+        : query.is("publication_claim_token", null);
+      const { data, error } = await query.select("*").maybeSingle();
+      if (error) {
+        if (error.code === "23505") return null;
+        throw new Error(`Claim completed visual candidate publication failed: ${error.message}`);
+      }
+      return data || null;
+    },
+  });
+}
+
+async function publishCandidateResult(args) {
+  const sourceId = args?.source?.id || args?.candidate?.shared_award_source_id;
+  if (!sourceId) return publishCandidateResultUnlocked(args);
+  return withVisualBaselineLockAsync({
+    archiveRoot,
+    sourceId,
+    timeoutMs: 5 * 60_000,
+    operation: () => publishCandidateResultUnlocked(args),
+  });
+}
+
+async function publishCandidateResultUnlocked({
+  candidate,
+  source,
+  result,
+  usage,
+  publicationClaimToken,
+}) {
   const now = new Date().toISOString();
   if (!source) {
-    await markCandidate(candidate.id, {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "rejected",
       ai_result: result,
       actual_usage: usage,
@@ -385,7 +1109,7 @@ async function publishCandidateResult({ candidate, source, result, usage }) {
   }
 
   if (source.admin_review_status && source.admin_review_status !== "open") {
-    await markCandidate(candidate.id, {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "rejected",
       ai_result: result,
       actual_usage: usage,
@@ -396,29 +1120,61 @@ async function publishCandidateResult({ candidate, source, result, usage }) {
     return { status: "rejected", reason: "source_not_open" };
   }
 
-  if (await hasNewerCandidate(candidate)) {
-    await markCandidate(candidate.id, {
+  const sourceIdentity = visualReviewSourceIdentityFreshness(candidate, source);
+  if (!sourceIdentity.allowed) {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "superseded",
       ai_result: result,
       actual_usage: usage,
-      rejection_reason: "newer_candidate_exists_for_source",
+      rejection_reason: sourceIdentity.reason,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        source_identity_guard: sourceIdentity,
+        baseline_advanced: false,
+        recapture_required: true,
+      }),
       completed_at: now,
       updated_at: now,
     });
-    return { status: "superseded", reason: "newer_candidate_exists" };
+    report.source_url_changed_since_capture += 1;
+    return { status: "superseded", reason: sourceIdentity.reason };
   }
 
-  const validation = validateVisualBatchReview({ candidate, source, result });
-  if (!validation.allowed) {
-    await markCandidate(candidate.id, {
-      status: "rejected",
+  const priorPublication = await findPriorNonterminalPublication(candidate);
+  if (priorPublication) {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded",
       ai_result: result,
       actual_usage: usage,
-      rejection_reason: validation.reason,
+      rejection_reason: `source_publication_order_pending:${priorPublication.id}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        baseline_advanced: false,
+        blocked_by_prior_publication_candidate_id: priorPublication.id,
+        source_publication_order_guard: true,
+        reuse_completed_batch_response: true,
+      }),
       completed_at: now,
       updated_at: now,
     });
-    return { status: "rejected", reason: validation.reason };
+    return { status: "retry_pending", reason: "prior_source_publication_pending" };
+  }
+
+  const currentContextCandidate = rebuildVisualReviewCandidateForCurrentPolicy(candidate, {
+    source,
+  });
+  if (currentContextCandidate.candidate_signature !== candidate.candidate_signature) {
+    return requeueCandidateForCurrentPolicy({
+      candidate,
+      source,
+      policyDecision: {
+        allowed: false,
+        reason: "source_context_changed_since_batch_submission",
+        policy_identity: monitoringPolicy,
+        guard: "source_context_freshness",
+      },
+      usage,
+      now,
+      publicationClaimToken,
+    });
   }
 
   const changeDetails = changeDetailsFromVisualBatchResult({
@@ -427,15 +1183,130 @@ async function publishCandidateResult({ candidate, source, result, usage }) {
     result,
     model: candidate.model,
   });
+  const policyDecision = latestVisualReviewPolicyDecision({
+    candidate,
+    source,
+    result,
+    changeDetails,
+  });
+  if (!policyDecision.allowed) {
+    if (policyDecision.guard === "policy_freshness") {
+      return requeueCandidateForCurrentPolicy({
+        candidate,
+        source,
+        policyDecision,
+        usage,
+        now,
+        publicationClaimToken,
+      });
+    }
+    let ledgerResult = null;
+    try {
+      ledgerResult = await recordVisualRejectionLedger(supabase, {
+        candidate,
+        policyIdentity: monitoringPolicy,
+        rejectionReason: policyDecision.reason,
+        now,
+      });
+      if (ledgerResult.recorded) report.rejection_ledger_recorded += 1;
+      else if (ledgerResult.reason === "ledger_table_missing") {
+        report.rejection_ledger_unavailable += 1;
+      }
+    } catch (ledgerError) {
+      report.rejection_ledger_unavailable += 1;
+      report.errors.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        message: `Visual rejection ledger write failed: ${errorMessage(ledgerError)}`,
+      });
+    }
+    // A rejected capture can be a transient access page or incomplete render. Keep the
+    // last-known-good local/R2 baseline; the policy-aware signature prevents identical
+    // evidence from being resubmitted until either the evidence or policy changes.
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "rejected",
+      ai_result: {
+        ...result,
+        policy_guard: policyDecision,
+        rejection_ledger: ledgerResult,
+      },
+      actual_usage: usage,
+      rejection_reason: policyDecision.reason,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision,
+        baseline_advanced: false,
+        baseline_advancement_reason: "preserve_last_known_good_local_and_r2_baseline",
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "rejected", reason: policyDecision.reason };
+  }
+
+  const baselinePromotion = await promoteApprovedBaselineForCandidate({
+    candidate,
+    source,
+    now,
+  });
+  const baselinePublication = visualBaselinePublicationDecision({
+    candidate,
+    local: baselinePromotion.local,
+    r2: baselinePromotion.r2,
+    r2Required: r2SnapshotSync,
+  });
+  if (baselinePublication.action === "supersede") {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "superseded",
+      ai_result: result,
+      actual_usage: usage,
+      rejection_reason: `baseline_promotion_superseded:${baselinePublication.reason}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision,
+        baseline_advanced: false,
+        baseline_promotion: baselinePromotion,
+        baseline_publication_guard: baselinePublication,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "superseded", reason: baselinePublication.reason };
+  }
+  if (baselinePublication.action === "retry") {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded",
+      ai_result: result,
+      actual_usage: usage,
+      rejection_reason: `baseline_promotion_pending:${baselinePublication.reason}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision,
+        baseline_advanced: false,
+        baseline_promotion: baselinePromotion,
+        baseline_publication_guard: baselinePublication,
+        reuse_completed_batch_response: true,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "retry_pending", reason: baselinePublication.reason };
+  }
+
   const previousHash = visualHashFromCandidate(candidate, "previous");
   const newHash = visualHashFromCandidate(candidate, "new");
-  const { data, error } = await supabase
-    .from("shared_award_change_events")
-    .upsert(
-      {
+  const eventIdentity = {
+    shared_award_id: candidate.shared_award_id,
+    source_url: source.url || candidate.source_url,
+    previous_hash: previousHash,
+    new_hash: newHash,
+  };
+  const publication = await persistVisualChangeAndReconciliation({
+    eventIdentity,
+    upsertEvent: async () => {
+      const { data, error } = await supabase
+        .from("shared_award_change_events")
+        .upsert({
         shared_award_id: candidate.shared_award_id,
         shared_award_source_id: candidate.shared_award_source_id,
-        source_url: source.url || candidate.source_url,
+        source_url: eventIdentity.source_url,
         source_title: source.title || candidate.source_title || null,
         source_page_type: source.page_type || candidate.source_page_type || null,
         previous_snapshot_id: null,
@@ -445,51 +1316,86 @@ async function publishCandidateResult({ candidate, source, result, usage }) {
         summary: changeDetails.reader_summary,
         change_details: changeDetails,
         detected_at: now,
-      },
-      {
-        onConflict: "shared_award_id,source_url,previous_hash,new_hash",
-        ignoreDuplicates: true,
-      },
-    )
-    .select("id")
-    .maybeSingle();
-
-  if (error) {
-    await markCandidate(candidate.id, {
-      status: "failed",
-      ai_result: result,
-      actual_usage: usage,
-      rejection_reason: `publish_failed: ${error.message}`,
-      completed_at: now,
-      updated_at: now,
-    });
-    throw new Error(`Publish visual review candidate ${candidate.id} failed: ${error.message}`);
-  }
-
-  await markCandidate(candidate.id, {
-    status: "published",
-    ai_result: result,
-    actual_usage: usage,
-    completed_at: now,
-    published_at: now,
-    updated_at: now,
-  });
-
-  if (data?.id) {
-    await queueAwardReconciliationForCandidate({
+        }, {
+          onConflict: "shared_award_id,source_url,previous_hash,new_hash",
+          ignoreDuplicates: true,
+        })
+        .select("id")
+        .maybeSingle();
+      if (error) throw new Error(`Change event upsert failed: ${error.message}`);
+      return data || null;
+    },
+    findExistingEvent: async () => {
+      let query = supabase
+        .from("shared_award_change_events")
+        .select("id")
+        .eq("shared_award_id", eventIdentity.shared_award_id)
+        .eq("source_url", eventIdentity.source_url);
+      query = query
+        .eq("previous_hash", eventIdentity.previous_hash)
+        .eq("new_hash", eventIdentity.new_hash);
+      const { data, error } = await query.limit(1).maybeSingle();
+      if (error) throw new Error(`Resolve existing change event failed: ${error.message}`);
+      return data || null;
+    },
+    enqueueReconciliation: async (eventId) => queueAwardReconciliationForCandidate({
       candidate,
       source,
       reason: "visual_change_published",
       candidateIds: [candidate.id],
       metadata: {
-        change_event_id: data.id,
-        batch_candidate_status: "published",
+        change_event_id: eventId,
+        batch_candidate_status: "publication_claimed",
       },
+    }),
+  });
+
+  if (publication.action !== "publish") {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded",
+      ai_result: result,
+      actual_usage: usage,
+      rejection_reason: `publish_retry_pending:${publication.reason}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision,
+        baseline_advanced: true,
+        baseline_promotion: baselinePromotion,
+        change_event_id: publication.event_id || null,
+        change_event_publication: publication,
+        reuse_completed_batch_response: true,
+      }),
+      completed_at: now,
+      updated_at: now,
     });
-    return { status: "published", event_id: data.id };
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      message: `Publish visual review candidate retry pending: ${publication.error || publication.reason}`,
+    });
+    return { status: "retry_pending", reason: publication.reason };
   }
 
-  return { status: "duplicate" };
+  await markPublicationCandidate(candidate, publicationClaimToken, {
+    status: "published",
+    ai_result: result,
+    actual_usage: usage,
+    worker_metadata: workerMetadataForCandidate(candidate, {
+      policy_guard: policyDecision,
+      baseline_advanced: Boolean(
+        baselinePromotion.local?.promoted || baselinePromotion.local?.already_current,
+      ),
+      baseline_promotion: baselinePromotion,
+      change_event_id: publication.event_id,
+      reconciliation: publication.reconciliation,
+    }),
+    completed_at: now,
+    published_at: now,
+    updated_at: now,
+  });
+
+  return publication.duplicate
+    ? { status: "duplicate", event_id: publication.event_id }
+    : { status: "published", event_id: publication.event_id };
 }
 
 async function queueAwardReconciliationForCandidate({
@@ -514,7 +1420,15 @@ async function queueAwardReconciliationForCandidate({
       },
     });
     if (result.queued) report.awards_queued_for_reconciliation += 1;
-    else report.award_reconciliation_queue_existing += 1;
+    else if (result.id) report.award_reconciliation_queue_existing += 1;
+    else {
+      report.award_reconciliation_queue_failed += 1;
+      report.errors.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        message: `Award reconciliation queue not durable: ${result.reason || "missing_queue_id"}`,
+      });
+    }
     return result;
   } catch (error) {
     report.award_reconciliation_queue_failed += 1;
@@ -525,6 +1439,109 @@ async function queueAwardReconciliationForCandidate({
     });
     return null;
   }
+}
+
+async function promoteApprovedBaselineForCandidate({ candidate, source, now }) {
+  let localRaw;
+  try {
+    localRaw = promoteApprovedVisualBaselineLocal({
+      candidate,
+      source,
+      archiveRoot,
+      approved: true,
+      now,
+    });
+  } catch (error) {
+    report.baseline_advancement.local_failed += 1;
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: source.id,
+      message: `Approved local baseline promotion failed: ${errorMessage(error)}`,
+    });
+    return {
+      local: { promoted: false, reason: "local_promotion_error", error: errorMessage(error) },
+      r2: { promoted: false, reason: "local_promotion_required" },
+    };
+  }
+
+  const local = compactBaselinePromotionResult(localRaw);
+  if (localRaw.promoted) report.baseline_advancement.local_promoted += 1;
+  else if (localRaw.already_current) report.baseline_advancement.local_already_current += 1;
+  else if (localRaw.reason === "approved_snapshot_files_missing") {
+    report.baseline_advancement.local_failed += 1;
+  } else {
+    report.baseline_advancement.local_skipped += 1;
+  }
+
+  if (!localRaw.promoted && !localRaw.already_current) {
+    return {
+      local,
+      r2: { promoted: false, reason: "whole_page_local_baseline_not_advanced" },
+    };
+  }
+
+  let capture = localRaw.capture;
+  if (!capture) {
+    try {
+      capture = captureFromVisualReviewCandidate(candidate, archiveRoot);
+    } catch (error) {
+      report.baseline_advancement.r2_failed += r2SnapshotSync ? 1 : 0;
+      return {
+        local,
+        r2: {
+          promoted: false,
+          reason: "capture_reconstruction_failed",
+          error: errorMessage(error),
+        },
+      };
+    }
+  }
+
+  try {
+    const r2Raw = await promoteApprovedVisualBaselineR2({
+      candidate,
+      source,
+      capture,
+      supabase,
+      approved: true,
+      now,
+      config: {
+        enabled: r2SnapshotSync,
+        bucket: r2Bucket,
+        endpoint: r2Endpoint,
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+    const r2 = compactBaselinePromotionResult(r2Raw);
+    if (r2Raw.promoted) report.baseline_advancement.r2_promoted += 1;
+    else if (r2Raw.already_current) report.baseline_advancement.r2_already_current += 1;
+    else report.baseline_advancement.r2_skipped += 1;
+    return { local, r2 };
+  } catch (error) {
+    report.baseline_advancement.r2_failed += 1;
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: source.id,
+      message: `Approved R2 baseline promotion failed: ${errorMessage(error)}`,
+    });
+    return {
+      local,
+      r2: { promoted: false, reason: "r2_promotion_error", error: errorMessage(error) },
+    };
+  }
+}
+
+function compactBaselinePromotionResult(value) {
+  return {
+    promoted: Boolean(value?.promoted),
+    already_current: Boolean(value?.already_current),
+    reason: value?.reason || null,
+    baseline_path: value?.baseline_path || null,
+    missing_paths: Array.isArray(value?.missing_paths) ? value.missing_paths : undefined,
+    uploaded: Number(value?.uploaded || 0),
+    rotated: Number(value?.rotated || 0),
+  };
 }
 
 async function markCandidateSucceededDryRun({ candidate, result, usage }) {
@@ -541,8 +1558,8 @@ async function markCandidateSucceededDryRun({ candidate, result, usage }) {
 }
 
 function geminiBatchRequestForCandidate(candidate) {
-  const promptPayload = candidate.prompt_payload || {};
-  const promptText = candidate.prompt_context || buildVisualReviewPromptText(promptPayload);
+  const promptPayload = refreshVisualReviewPromptPayloadPolicy(candidate.prompt_payload || {});
+  const promptText = buildVisualReviewPromptText(promptPayload);
   const parts = [{ text: promptText }];
   if (promptPayload.include_images) {
     for (const path of [
@@ -579,13 +1596,17 @@ function geminiBatchRequestForCandidate(candidate) {
     metadata: {
       key: candidate.id,
       candidate_signature: candidate.candidate_signature,
+      monitoring_policy_id: monitoringPolicy?.id || null,
+      monitoring_policy_version: monitoringPolicy?.version || null,
+      monitoring_policy_hash: monitoringPolicy?.hash || null,
     },
   };
 }
 
-async function createGeminiBatchJob({ model, requests, displayName, mode }) {
+async function createGeminiBatchJob({ model, requests, displayName, mode, beforeCreate }) {
   if (mode === "jsonl_file") {
     const fileName = await uploadGeminiJsonlRequests({ requests, displayName });
+    await beforeCreate();
     return fetchGeminiJson(geminiBatchUrl(model), {
       method: "POST",
       body: JSON.stringify({
@@ -598,6 +1619,7 @@ async function createGeminiBatchJob({ model, requests, displayName, mode }) {
     });
   }
 
+  await beforeCreate();
   return fetchGeminiJson(geminiBatchUrl(model), {
     method: "POST",
     body: JSON.stringify({
@@ -708,14 +1730,35 @@ async function fetchGeminiJson(url, { method, body, kind }) {
       if (response.ok) return JSON.parse(responseBody);
 
       const message = geminiHttpErrorMessage(response.status, responseBody);
+      const createDisposition = visualReviewBatchCreateFailureDisposition({
+        kind,
+        httpStatus: response.status,
+      });
+      if (createDisposition.action === "fail_closed") {
+        throw possibleExternalBatchCreatedError(message, {
+          kind,
+          httpStatus: response.status,
+        });
+      }
       if (attempt < maxAttempts && isRetryableGeminiFailure(response.status, responseBody)) {
         const waitMs = attempt * 1500;
         console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 240)}`);
         await sleep(waitMs);
         continue;
       }
-      throw new Error(message);
+      const definiteError = new Error(message);
+      definiteError.safeToReleaseBatchClaim = true;
+      definiteError.geminiHttpStatus = Number(response.status);
+      definiteError.geminiRequestKind = cleanText(kind);
+      throw definiteError;
     } catch (error) {
+      if (error?.possibleExternalBatchCreated) throw error;
+      if (
+        /^batch_create(?:_|$)/.test(cleanText(kind)) &&
+        !error?.safeToReleaseBatchClaim
+      ) {
+        throw possibleExternalBatchCreatedError(errorMessage(error), { kind });
+      }
       if (attempt < maxAttempts && isRetryableNetworkFailure(error)) {
         const waitMs = attempt * 1500;
         console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(errorMessage(error), 240)}`);
@@ -726,6 +1769,15 @@ async function fetchGeminiJson(url, { method, body, kind }) {
     }
   }
   throw new Error(`Gemini request failed after ${maxAttempts} attempts.`);
+}
+
+function possibleExternalBatchCreatedError(message, metadata = {}) {
+  const error = new Error(
+    `Gemini Batch create outcome is ambiguous; manual recovery is required: ${message}`,
+  );
+  error.possibleExternalBatchCreated = true;
+  error.batchCreateMetadata = metadata;
+  return error;
 }
 
 async function loadSourcesById(ids) {
@@ -742,26 +1794,49 @@ async function loadSourcesById(ids) {
   return map;
 }
 
-async function hasNewerCandidate(candidate) {
+async function findPriorNonterminalPublication(candidate) {
   const { data, error } = await supabase
     .from("shared_award_visual_review_candidates")
-    .select("id")
+    .select("id,status,created_at,rejection_reason,worker_metadata,new_snapshot_ref,new_file_hash,new_image_hash,prompt_payload")
     .eq("shared_award_source_id", candidate.shared_award_source_id)
-    .gt("created_at", candidate.created_at)
-    .in("status", ["pending", "submitted", "processing", "succeeded", "published"])
-    .limit(1);
-  if (error) throw new Error(`Check superseded visual candidate failed: ${error.message}`);
-  return Boolean((data || []).length);
+    .in("status", ["pending", "submitted", "processing", "succeeded", "failed"])
+    .neq("id", candidate.id)
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(1000);
+  if (error) {
+    throw new Error(`Check prior visual publication retries failed: ${error.message}`);
+  }
+  const eligible = (data || []).filter((earlierCandidate) =>
+    compareVisualCandidateOrder(earlierCandidate, candidate) < 0 && (
+      earlierCandidate.status !== "failed" || (
+        recoverMissingBatchResponses &&
+        earlierCandidate.rejection_reason === "missing_batch_response"
+      )
+    ),
+  );
+  return findBlockingPriorVisualPublication(candidate, eligible);
 }
 
 function preSubmissionRejectReason(candidate, source) {
   if (!source) return "missing_source";
   if (source.admin_review_status && source.admin_review_status !== "open") return `source_not_open_${source.admin_review_status}`;
   const quality = sourceQualityDecision(source, { purpose: "monitoring" });
-  if (!quality.allowed) return `source_quality_${quality.reason}`;
+  const applicantSourceEscape = visualReviewConditionalSourceApplicantEscape({
+    source,
+    candidate,
+    quality,
+  });
+  if (!quality.allowed && !applicantSourceEscape.allowed) {
+    return `source_quality_${quality.reason}`;
+  }
   const sectionRejectReason = expandableSectionCandidateRejectReason(candidate);
   if (sectionRejectReason) return sectionRejectReason;
-  if (!candidate.prompt_context && !candidate.prompt_payload) return "missing_prompt_payload";
+  if (
+    !candidate.prompt_payload ||
+    typeof candidate.prompt_payload !== "object" ||
+    Array.isArray(candidate.prompt_payload)
+  ) return "missing_prompt_payload";
   return null;
 }
 
@@ -797,6 +1872,45 @@ async function markCandidate(id, patch) {
     .update(patch)
     .eq("id", id);
   if (error) throw new Error(`Update visual review candidate ${id} failed: ${error.message}`);
+}
+
+async function markPublicationCandidate(candidate, publicationClaimToken, patch) {
+  const token = cleanText(publicationClaimToken);
+  if (!token) {
+    throw new Error(`Publication claim token is required for candidate ${candidate?.id || "unknown"}.`);
+  }
+  const guardedPatch = publicationFinalizationPatch(candidate, token, patch);
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .update(guardedPatch)
+    .eq("id", candidate.id)
+    .eq("status", "succeeded")
+    .eq("publication_claim_token", token)
+    .select("id")
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Finalize visual publication claim ${candidate.id} failed: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`Visual publication claim ${candidate.id} was lost before finalization.`);
+  }
+  return data;
+}
+
+function publicationFinalizationPatch(candidate, publicationClaimToken, patch) {
+  const completedAt = patch?.updated_at || new Date().toISOString();
+  return {
+    ...patch,
+    publication_claim_token: null,
+    publication_claimed_at: null,
+    worker_metadata: workerMetadataForCandidate(candidate, {
+      ...objectValue(patch?.worker_metadata),
+      publication_claim_token: null,
+      publication_claim_last_token: publicationClaimToken,
+      publication_claim_completed_at: completedAt,
+      publication_claim_outcome: patch?.status || null,
+    }),
+  };
 }
 
 async function refreshStatusCounts() {
@@ -905,7 +2019,8 @@ function addUsage(target, usage) {
 }
 
 function estimateCandidateBatchCostUsd(model, candidate) {
-  const promptChars = String(candidate.prompt_context || stableJsonStringify(candidate.prompt_payload || {})).length;
+  const promptPayload = refreshVisualReviewPromptPayloadPolicy(candidate.prompt_payload || {});
+  const promptChars = buildVisualReviewPromptText(promptPayload).length;
   const estimatedInputTokens = Math.ceil(promptChars / 4);
   const estimatedOutputTokens = 800;
   const rates = geminiBatchPricePerMillion(model);
@@ -1026,6 +2141,109 @@ function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
+function workerMetadataForCandidate(candidate, patch = {}) {
+  return {
+    ...objectValue(candidate?.worker_metadata),
+    ...patch,
+    monitoring_policy: monitoringPolicy,
+    monitoring_policy_bundle: monitoringPolicyBundle,
+  };
+}
+
+async function requeueCandidateForCurrentPolicy({
+  candidate,
+  source,
+  policyDecision,
+  usage,
+  now,
+  publicationClaimToken,
+}) {
+  const rebuilt = rebuildVisualReviewCandidateForCurrentPolicy(candidate, { source });
+  const currentSignature = rebuilt.candidate_signature;
+
+  const existing = await findCandidateWithSignature(currentSignature, candidate.id);
+  if (existing) {
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "superseded",
+      ai_result: {
+        stale_policy_guard: policyDecision,
+      },
+      actual_usage: usage,
+      rejection_reason: `current_policy_candidate_exists:${existing.id}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision,
+        superseded_by_candidate_id: existing.id,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "superseded", reason: "current_policy_candidate_exists" };
+  }
+
+  const patch = publicationFinalizationPatch(candidate, publicationClaimToken, {
+    candidate_signature: currentSignature,
+    gemini_batch_request_key: currentSignature,
+    source_url: rebuilt.source_context.url || candidate.source_url,
+    source_title: rebuilt.source_context.title || candidate.source_title,
+    source_page_type: rebuilt.source_context.page_type || candidate.source_page_type,
+    prompt_payload: rebuilt.prompt_payload,
+    prompt_context: rebuilt.prompt_context,
+    status: "pending",
+    gemini_batch_name: null,
+    model: null,
+    submitted_at: null,
+    completed_at: null,
+    published_at: null,
+    ai_result: {
+      stale_policy_guard: policyDecision,
+    },
+    actual_usage: usage,
+    rejection_reason: null,
+    worker_metadata: workerMetadataForCandidate(candidate, {
+      requeued_at: now,
+      requeued_from_batch: candidate.gemini_batch_name || null,
+      requeue_reason: policyDecision.reason,
+      prompt_rebuilt_from_current_policy: true,
+    }),
+    updated_at: now,
+  });
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .update(patch)
+    .eq("id", candidate.id)
+    .eq("status", "succeeded")
+    .eq("publication_claim_token", publicationClaimToken)
+    .select("id")
+    .maybeSingle();
+  if (error) {
+    if (error.code === "23505") {
+      const racedConflict = await findCandidateWithSignature(currentSignature, candidate.id);
+      if (racedConflict) {
+        await markPublicationCandidate(candidate, publicationClaimToken, {
+          status: "superseded",
+          ai_result: {
+            stale_policy_guard: policyDecision,
+          },
+          actual_usage: usage,
+          rejection_reason: `current_policy_candidate_exists:${racedConflict.id}`,
+          worker_metadata: workerMetadataForCandidate(candidate, {
+            policy_guard: policyDecision,
+            superseded_by_candidate_id: racedConflict.id,
+          }),
+          completed_at: now,
+          updated_at: now,
+        });
+        return { status: "superseded", reason: "current_policy_candidate_exists" };
+      }
+    }
+    throw new Error(`Requeue visual candidate for current policy failed: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error(`Visual publication claim ${candidate.id} was lost before policy requeue.`);
+  }
+  return { status: "requeued", reason: policyDecision.reason };
+}
+
 function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
@@ -1069,6 +2287,11 @@ Options:
   --poll-only=false
   --submit-only=false
   --apply=true
+  --max-failure-retries=3
+  --stale-claim-minutes=15
+  --publication-claim-stale-minutes=30
+  --archive-dir=D:\\AwardPingVisualSnapshots
+  --r2-snapshot-sync=false
   --env=.env.worker.local
 `);
 }

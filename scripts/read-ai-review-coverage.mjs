@@ -8,6 +8,10 @@ import {
   sortedEntries,
   summarizeAiReviewCoverage,
 } from "./lib/ai-review-coverage.mjs";
+import {
+  applyAscendingAwardKeyset,
+  awardCursorAfterPage,
+} from "./lib/award-keyset-pagination.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -94,39 +98,53 @@ if (outputJson) {
 
 async function loadAwards() {
   const rows = [];
-  for (let from = 0; ; from += 1000) {
+  const pageSize = 1000;
+  let cursor = null;
+  for (;;) {
     let query = supabase
       .from("shared_awards")
-      .select("id,name,slug,status,public_facts,public_facts_generated_at")
-      .order("name", { ascending: true })
-      .range(from, from + 999);
+      .select("id,name,slug,status,public_facts,public_facts_generated_at");
     if (awardIdFilter) query = query.eq("id", awardIdFilter);
     if (onlyPublicAwards) query = query.eq("status", "active");
+    query = applyAscendingAwardKeyset(query, "name", cursor).limit(pageSize);
     const { data, error } = await query;
     if (error) throw new Error(`Load shared awards failed: ${error.message}`);
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < pageSize) break;
+    cursor = awardCursorAfterPage(page, "name", cursor);
   }
   return rows;
 }
 
 async function loadSources() {
   const rows = [];
-  for (let from = 0; ; from += 1000) {
+  let cursor = null;
+  for (;;) {
     let query = supabase
       .from("shared_award_sources")
       .select(
         "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,last_checked_at,last_error,created_at",
       )
       .order("created_at", { ascending: true })
-      .range(from, from + 999);
+      .order("id", { ascending: true })
+      .limit(1000);
     if (awardIdFilter) query = query.eq("shared_award_id", awardIdFilter);
     if (sourceIdFilter) query = query.eq("id", sourceIdFilter);
     if (onlyOpen) query = query.eq("admin_review_status", "open");
+    if (cursor) {
+      const createdAt = JSON.stringify(cursor.createdAt);
+      query = query.or(
+        `created_at.gt.${createdAt},and(created_at.eq.${createdAt},id.gt.${cursor.id})`,
+      );
+    }
     const { data, error } = await query;
     if (error) throw new Error(`Load shared award sources failed: ${error.message}`);
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
+    const page = data || [];
+    rows.push(...page);
+    if (page.length < 1000) break;
+    const last = page.at(-1);
+    cursor = { createdAt: last.created_at, id: last.id };
   }
   return rows;
 }

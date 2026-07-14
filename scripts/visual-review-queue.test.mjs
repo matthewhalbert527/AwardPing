@@ -1,12 +1,30 @@
 import { describe, expect, it } from "vitest";
 import {
   buildVisualReviewPromptPayload,
+  buildVisualReviewPromptText,
+  canonicalVisualReviewSourceUrl,
+  changeDetailsFromVisualBatchResult,
   classifyVisualReviewCandidate,
+  currentMonitoringPolicyAuditIdentity,
+  currentVisualReviewPolicyIdentity,
   expandableSectionCandidateRejectReason,
+  latestVisualReviewPolicyDecision,
   normalizeVisualBatchResult,
   normalizeVisualReviewMode,
+  rebuildVisualReviewCandidateForCurrentPolicy,
   validateVisualBatchReview,
+  visualReviewCandidatePolicyFreshness,
+  visualReviewBatchCreateFailureDisposition,
+  visualReviewBatchPollFailureDisposition,
   visualReviewCandidateSignature,
+  visualReviewCandidateSignatureFromStoredCandidate,
+  visualReviewEvidenceSignature,
+  visualReviewEvidenceSignatureFromStoredCandidate,
+  visualReviewEnclosingCaptureIdentity,
+  visualReviewFailureRetryDecision,
+  visualReviewSourceIdentityFreshness,
+  visualReviewStaleClaimRecoveryDecision,
+  visualHashFromCandidate,
 } from "./lib/visual-review-queue.mjs";
 
 const source = {
@@ -40,6 +58,7 @@ const candidate = {
     include_images: false,
     new_text_excerpt: "Application deadline: March 15, 2027",
     previous_text_excerpt: "Application deadline: March 1, 2027",
+    monitoring_policy: currentVisualReviewPolicyIdentity(),
   },
 };
 
@@ -59,6 +78,180 @@ function sourceFixture(overrides = {}) {
 }
 
 describe("visual review queue helpers", () => {
+  it("uses section identity before shared whole-page hashes for event uniqueness", () => {
+    const fixture = (sectionKey, previousHash, newHash) => ({
+      previous_image_hash: "shared-old-image",
+      new_image_hash: "shared-new-image",
+      deterministic_diff: {
+        candidate_scope: "expandable_section",
+        section_key: sectionKey,
+        previous_section_hash: previousHash,
+        new_section_hash: newHash,
+      },
+    });
+    const eligibility = fixture("eligibility", "old-a", "new-a");
+    const deadline = fixture("deadline", "old-b", "new-b");
+    expect(visualHashFromCandidate(eligibility, "previous")).not.toBe(
+      visualHashFromCandidate(deadline, "previous"),
+    );
+    expect(visualHashFromCandidate(eligibility, "new")).not.toBe(
+      visualHashFromCandidate(deadline, "new"),
+    );
+  });
+
+  it("treats harmless URL normalization as the same captured source identity", () => {
+    expect(canonicalVisualReviewSourceUrl("HTTPS://Example.edu/apply/?utm_source=test#deadline"))
+      .toBe("https://example.edu/apply");
+    expect(visualReviewSourceIdentityFreshness({
+      source_url: "https://example.edu/apply/",
+      prompt_payload: { source: { url: "https://example.edu/apply/" } },
+    }, { url: "https://example.edu/apply" })).toMatchObject({
+      allowed: true,
+      reason: "source_url_identity_current",
+    });
+  });
+
+  it("invalidates evidence captured for a different source URL", () => {
+    expect(visualReviewSourceIdentityFreshness({
+      source_url: "https://example.edu/old-award",
+      prompt_payload: { source: { url: "https://example.edu/old-award" } },
+    }, { url: "https://example.edu/different-award" })).toEqual({
+      allowed: false,
+      reason: "source_url_changed_since_capture",
+      captured_source_url: "https://example.edu/old-award",
+      current_source_url: "https://example.edu/different-award",
+    });
+  });
+
+  it("retries bounded ordinary failures but leaves missing responses for recovery", () => {
+    expect(visualReviewFailureRetryDecision({
+      status: "failed",
+      rejection_reason: "invalid_ai_json: unexpected token",
+      worker_metadata: { failure_retry_count: 1 },
+    })).toMatchObject({
+      retry: true,
+      next_retry_count: 2,
+    });
+    expect(visualReviewFailureRetryDecision({
+      status: "failed",
+      rejection_reason: "missing_batch_response",
+    })).toMatchObject({
+      retry: false,
+      reason: "awaiting_missing_batch_response_recovery",
+    });
+    expect(visualReviewFailureRetryDecision({
+      status: "failed",
+      rejection_reason: "provider failed",
+      worker_metadata: { failure_retry_count: 3 },
+    })).toMatchObject({
+      retry: false,
+      reason: "failure_retry_limit_reached",
+    });
+    expect(visualReviewFailureRetryDecision({
+      status: "failed",
+      rejection_reason: "manual_recovery_required_possible_external_batch_created",
+    })).toMatchObject({
+      retry: false,
+      reason: "possible_external_batch_requires_manual_recovery",
+    });
+  });
+
+  it("fails stale post-create claims closed instead of duplicating paid Batch work", () => {
+    expect(visualReviewStaleClaimRecoveryDecision({
+      status: "processing",
+      gemini_batch_name: null,
+      worker_metadata: {
+        batch_display_name: "awardping-visual-review-before-post",
+      },
+    })).toEqual({
+      action: "requeue",
+      reason: "stale_claim_before_batch_create",
+    });
+    expect(visualReviewStaleClaimRecoveryDecision({
+      status: "processing",
+      gemini_batch_name: null,
+      worker_metadata: {
+        batch_display_name: "awardping-visual-review-crash-window",
+        batch_create_started_at: "2026-07-14T20:00:00.000Z",
+      },
+    })).toEqual({
+      action: "fail_closed",
+      reason: "possible_external_batch_created",
+      batch_display_name: "awardping-visual-review-crash-window",
+      batch_create_started_at: "2026-07-14T20:00:00.000Z",
+    });
+    expect(visualReviewStaleClaimRecoveryDecision({
+      status: "processing",
+      gemini_batch_name: null,
+      worker_metadata: {},
+    })).toEqual({
+      action: "requeue",
+      reason: "stale_claim_before_batch_create",
+    });
+  });
+
+  it("groups expandable-section siblings by their immutable enclosing capture", () => {
+    const first = {
+      new_text_hash: "section-a",
+      new_snapshot_ref: {
+        capture_dir: { archive_relative: "sources/source-1/captures/capture-1" },
+      },
+    };
+    const second = {
+      new_text_hash: "section-b",
+      new_snapshot_ref: {
+        capture_dir: { archive_relative: "sources/source-1/captures/capture-1" },
+      },
+    };
+    expect(visualReviewEnclosingCaptureIdentity(first)).toBe(
+      visualReviewEnclosingCaptureIdentity(second),
+    );
+  });
+
+  it("fails ambiguous Batch-create POST outcomes closed", () => {
+    expect(visualReviewBatchCreateFailureDisposition({
+      kind: "batch_create_inline",
+      httpStatus: 503,
+    })).toEqual({
+      action: "fail_closed",
+      reason: "possible_external_batch_created",
+    });
+    expect(visualReviewBatchCreateFailureDisposition({
+      kind: "batch_create_file",
+      networkFailure: true,
+    })).toEqual({
+      action: "fail_closed",
+      reason: "possible_external_batch_created",
+    });
+    expect(visualReviewBatchCreateFailureDisposition({
+      kind: "batch_poll",
+      httpStatus: 503,
+    })).toMatchObject({ action: "retry_or_release" });
+  });
+
+  it("releases only definitively missing provider batches for bounded retry", () => {
+    expect(visualReviewBatchPollFailureDisposition({
+      kind: "batch_poll",
+      httpStatus: 404,
+    })).toEqual({
+      action: "fail_for_bounded_retry",
+      reason: "provider_batch_permanently_missing",
+      http_status: 404,
+    });
+    expect(visualReviewBatchPollFailureDisposition({
+      kind: "batch_poll",
+      httpStatus: 410,
+    })).toMatchObject({ action: "fail_for_bounded_retry" });
+    expect(visualReviewBatchPollFailureDisposition({
+      kind: "batch_poll",
+      httpStatus: 503,
+    })).toMatchObject({ action: "preserve_batch_reference" });
+    expect(visualReviewBatchPollFailureDisposition({
+      kind: "batch_create_inline",
+      httpStatus: 404,
+    })).toMatchObject({ action: "preserve_batch_reference" });
+  });
+
   it("normalizes visual review mode values", () => {
     expect(normalizeVisualReviewMode("batch", "immediate")).toBe("batch");
     expect(normalizeVisualReviewMode("false", "batch")).toBe("none");
@@ -85,6 +278,290 @@ describe("visual review queue helpers", () => {
     });
     expect(first).toHaveLength(64);
     expect(second).toBe(first);
+  });
+
+  it("allows the same exact transition to recur in a later capture occurrence", () => {
+    const input = {
+      source,
+      baseline: { text_hash: "closed" },
+      diff: { added_text: ["Applications are open"] },
+      deterministic: { classification: "candidate_change" },
+      behaviorVersion: 6,
+    };
+    const first = visualReviewCandidateSignature({
+      ...input,
+      capture: { text_hash: "open", captured_at: "2026-07-14T18:00:00.000Z" },
+    });
+    const nextCycle = visualReviewCandidateSignature({
+      ...input,
+      capture: { text_hash: "open", captured_at: "2027-07-14T18:00:00.000Z" },
+    });
+    expect(nextCycle).not.toBe(first);
+  });
+
+  it("incorporates monitoring policy identity into candidate signatures", () => {
+    const input = {
+      source,
+      baseline: { text_hash: "old" },
+      capture: { text_hash: "new" },
+      diff: { added_text: ["Application deadline: March 15, 2027"] },
+      deterministic: { classification: "candidate_change" },
+      behaviorVersion: 6,
+    };
+    const first = visualReviewCandidateSignature({
+      ...input,
+      policyIdentity: { id: "award-monitoring-policy", version: "1", hash: "hash-one" },
+    });
+    const second = visualReviewCandidateSignature({
+      ...input,
+      policyIdentity: { id: "award-monitoring-policy", version: "2", hash: "hash-two" },
+    });
+
+    expect(second).not.toBe(first);
+  });
+
+  it("keeps evidence identity stable while policy identity rekeys the candidate", () => {
+    const input = {
+      source,
+      baseline: { text_hash: "old", image_hash: "same" },
+      capture: { text_hash: "new", image_hash: "same" },
+      diff: { added_text: ["Application deadline: March 15, 2027"] },
+      deterministic: { classification: "applicant_fact_change" },
+      behaviorVersion: 6,
+    };
+    const evidence = visualReviewEvidenceSignature(input);
+    const first = visualReviewCandidateSignature({
+      ...input,
+      policyIdentity: { id: "policy-one", version: "1", hash: "hash-one" },
+    });
+    const second = visualReviewCandidateSignature({
+      ...input,
+      policyIdentity: { id: "policy-two", version: "2", hash: "hash-two" },
+    });
+
+    expect(evidence).toHaveLength(64);
+    expect(first).not.toBe(second);
+  });
+
+  it("includes the reviewed source baseline/localization context in evidence identity", () => {
+    const baseline = { text_hash: "old", image_hash: "same" };
+    const capture = { text_hash: "new", image_hash: "same", text: "Application deadline: March 15, 2027" };
+    const previous = { text: "Application deadline: March 1, 2027" };
+    const diff = {
+      added_text: ["Application deadline: March 15, 2027"],
+      removed_text: ["Application deadline: March 1, 2027"],
+    };
+    const deterministic = { classification: "applicant_fact_change" };
+    const promptPayload = buildVisualReviewPromptPayload({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic,
+      behaviorVersion: 6,
+    });
+    const stored = {
+      shared_award_source_id: source.id,
+      source_url: source.url,
+      source_title: source.title,
+      source_page_type: source.page_type,
+      previous_text_hash: baseline.text_hash,
+      new_text_hash: capture.text_hash,
+      previous_image_hash: baseline.image_hash,
+      new_image_hash: capture.image_hash,
+      deterministic_diff: diff,
+      deterministic_classification: deterministic.classification,
+      prompt_payload: promptPayload,
+    };
+    const original = visualReviewEvidenceSignature({
+      source,
+      baseline,
+      capture,
+      diff,
+      deterministic,
+      behaviorVersion: 6,
+    });
+    expect(visualReviewEvidenceSignatureFromStoredCandidate(stored)).toBe(original);
+
+    const relocalizedSource = sourceFixture({
+      page_metadata: {
+        baseline_facts: {
+          display_title: "Example Award — Official Application",
+          award_relevance: "primary",
+          cycle_relevance: "current_or_upcoming",
+        },
+      },
+    });
+    expect(visualReviewEvidenceSignature({
+      source: relocalizedSource,
+      baseline,
+      capture,
+      diff,
+      deterministic,
+      behaviorVersion: 6,
+    })).not.toBe(original);
+    const rebuilt = rebuildVisualReviewCandidateForCurrentPolicy(stored, {
+      source: relocalizedSource,
+    });
+    expect(rebuilt.source_context.baseline_facts.display_title).toBe(
+      "Example Award — Official Application",
+    );
+    expect(rebuilt.candidate_signature).not.toBe(
+      visualReviewCandidateSignatureFromStoredCandidate(stored),
+    );
+  });
+
+  it("separates the effective Batch identity from the full audit bundle identity", () => {
+    expect(currentVisualReviewPolicyIdentity().id).toMatch(/^awardping-visual-review-batch@/);
+    expect(currentMonitoringPolicyAuditIdentity().id).toMatch(/^awardping-monitoring-policy@/);
+    expect(currentVisualReviewPolicyIdentity()).not.toEqual(currentMonitoringPolicyAuditIdentity());
+
+    const input = {
+      source,
+      baseline: { text_hash: "old" },
+      capture: { text_hash: "new" },
+      diff: { added_text: ["Application deadline: March 15, 2027"] },
+      deterministic: { classification: "applicant_fact_change" },
+      behaviorVersion: 6,
+    };
+    expect(visualReviewCandidateSignature(input)).toBe(
+      visualReviewCandidateSignature({
+        ...input,
+        policyIdentity: currentVisualReviewPolicyIdentity(),
+      }),
+    );
+    expect(visualReviewCandidateSignature(input)).not.toBe(
+      visualReviewCandidateSignature({
+        ...input,
+        policyIdentity: currentMonitoringPolicyAuditIdentity(),
+      }),
+    );
+  });
+
+  it("rekeys and rebuilds a stale stored candidate for the current effective policy", () => {
+    const stalePolicy = { id: "stale-policy", version: "1", hash: "stale-hash" };
+    const stored = {
+      ...candidate,
+      candidate_signature: "stale-signature",
+      gemini_batch_request_key: "stale-signature",
+      previous_text_hash: "old",
+      new_text_hash: "new",
+      previous_image_hash: "same",
+      new_image_hash: "same",
+      deterministic_classification: "applicant_fact_change",
+      deterministic_diff: {
+        added_text: ["Application deadline: March 15, 2027"],
+        removed_text: ["Application deadline: March 1, 2027"],
+      },
+      prompt_payload: {
+        ...candidate.prompt_payload,
+        behavior_version: 6,
+        monitoring_policy: stalePolicy,
+      },
+      worker_metadata: {
+        capture_behavior_version: 6,
+        monitoring_policy: stalePolicy,
+      },
+    };
+    const rebuilt = rebuildVisualReviewCandidateForCurrentPolicy(stored);
+
+    expect(rebuilt.monitoring_policy).toEqual(currentVisualReviewPolicyIdentity());
+    expect(rebuilt.prompt_payload.monitoring_policy).toEqual(currentVisualReviewPolicyIdentity());
+    expect(rebuilt.prompt_payload.monitoring_policy_bundle).toEqual(
+      currentMonitoringPolicyAuditIdentity(),
+    );
+    expect(rebuilt.prompt_context).toContain(currentVisualReviewPolicyIdentity().hash);
+    expect(rebuilt.prompt_context).not.toContain("stale-hash");
+    expect(rebuilt.candidate_signature).toBe(
+      visualReviewCandidateSignatureFromStoredCandidate(stored),
+    );
+    expect(rebuilt.candidate_signature).not.toBe(stored.candidate_signature);
+    expect(visualReviewEvidenceSignatureFromStoredCandidate(stored)).toHaveLength(64);
+  });
+
+  it("rebuilds prompt policy instructions from the active policy identity", () => {
+    const activePolicy = currentVisualReviewPolicyIdentity();
+    const prompt = buildVisualReviewPromptText({
+      source: { id: source.id, award_name: "Example Award" },
+      monitoring_policy: { id: "stale-policy", version: "stale", hash: "stale-hash" },
+    });
+
+    expect(prompt).toContain(activePolicy.hash);
+    expect(prompt).not.toContain("stale-hash");
+  });
+
+  it("blocks a Batch result when policy changed after submission", () => {
+    expect(visualReviewCandidatePolicyFreshness({
+      ...candidate,
+      worker_metadata: {
+        monitoring_policy: {
+          id: "old-policy",
+          version: "1",
+          hash: "old-policy-hash",
+        },
+      },
+    })).toMatchObject({
+      allowed: false,
+      reason: "policy_changed_since_batch_submission",
+      active_policy: currentVisualReviewPolicyIdentity(),
+    });
+  });
+
+  it.each([
+    ["donation_prompt", "fundraising_form_change"],
+    ["unsupported_added_text", "unsupported_structured_fact"],
+    ["before_text_not_found", "unsupported_structured_fact"],
+    ["after_text_already_present", "no_actual_changed_fact"],
+    ["before_text_still_present", "no_actual_changed_fact"],
+  ])("rejects legacy Batch noise flag %s as canonical policy %s", (alias, expected) => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_award_facts: [{
+        fact: "Application deadline changed",
+        before: "Application deadline: March 1, 2027",
+        after: "Application deadline: March 15, 2027",
+      }],
+      exact_before: "Application deadline: March 1, 2027",
+      exact_after: "Application deadline: March 15, 2027",
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [alias],
+      rejection_reason: null,
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toEqual({
+      allowed: false,
+      reason: `policy_flag_${expected}`,
+    });
+  });
+
+  it("canonicalizes a legacy policy reason when the model already rejected it", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: false,
+      is_alert_worthy: false,
+      source_relevance: "primary",
+      changed_award_facts: [],
+      exact_before: null,
+      exact_after: null,
+      before: null,
+      after: null,
+      section: null,
+      change_type: "other",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: "donation_prompt",
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toEqual({
+      allowed: false,
+      reason: "policy_flag_fundraising_form_change",
+    });
   });
 
   it("allows a supported primary award fact change", () => {
@@ -195,6 +672,145 @@ describe("visual review queue helpers", () => {
     });
   });
 
+  it("requires the applicant-facing signal to come from deterministic text evidence", () => {
+    const genericCandidate = {
+      ...candidate,
+      deterministic_diff: {
+        added_text: ["Updated content block"],
+        removed_text: ["Previous content block"],
+      },
+    };
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_facts: [{
+        fact: "The application deadline changed to March 15, 2027",
+        before: "Previous content block",
+        after: "Updated content block",
+      }],
+      exact_before: "Previous content block",
+      exact_after: "Updated content block",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The application deadline changed to March 15, 2027.",
+      advisor_impact: "Update deadline guidance.",
+    }, { candidate: genericCandidate, source });
+
+    expect(validateVisualBatchReview({ candidate: genericCandidate, source, result })).toEqual({
+      allowed: false,
+      reason: "missing_deterministic_applicant_fact_signal",
+    });
+  });
+
+  it("does not let model-authored structured diff fabricate its own evidence", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_facts: [{
+        fact: "Award amount changed",
+        before: "$1,000",
+        after: "$50,000",
+      }],
+      exact_before: "$1,000",
+      exact_after: "$50,000",
+      evidence_location: "Funding",
+      before: "$1,000",
+      after: "$50,000",
+      section: "Funding",
+      change_type: "funding",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The award amount changed from $1,000 to $50,000.",
+      advisor_impact: "Advisors should update funding guidance.",
+      structured_diff: {
+        added_text: ["$50,000"],
+        removed_text: ["$1,000"],
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toEqual({
+      allowed: false,
+      reason: "exact_before_after_not_supported_by_evidence",
+    });
+  });
+
+  it("publishes only deterministic structured diff entries from a mixed valid result", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_facts: [{
+        fact: "The deadline changed and the award amount rose to $50,000",
+        before: "Application deadline: March 1, 2027",
+        after: "Application deadline: March 15, 2027",
+      }],
+      exact_before: "Application deadline: March 1, 2027",
+      exact_after: "Application deadline: March 15, 2027",
+      evidence_location: "Funding section showing $50,000",
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      section: "Deadlines and funding",
+      change_type: "funding",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The deadline changed and the award amount rose to $50,000.",
+      advisor_impact: "Tell applicants the award now pays $50,000.",
+      structured_diff: {
+        added_text: ["Application deadline: March 15, 2027", "$50,000"],
+        removed_text: ["Application deadline: March 1, 2027", "$1,000"],
+        date_changes: [],
+        amount_changes: ["Added $50,000", "Removed $1,000"],
+        noise_flags: [],
+      },
+    }, { candidate, source });
+
+    expect(validateVisualBatchReview({ candidate, source, result })).toEqual({
+      allowed: true,
+      reason: "approved",
+    });
+
+    const details = changeDetailsFromVisualBatchResult({
+      candidate,
+      source,
+      result,
+      model: "gemini-test",
+    });
+    expect(details.structured_diff).toMatchObject({
+      added_text: candidate.deterministic_diff.added_text,
+      removed_text: candidate.deterministic_diff.removed_text,
+      date_changes: [],
+      amount_changes: [],
+    });
+    expect(JSON.stringify(details.structured_diff)).not.toContain("$50,000");
+    expect(JSON.stringify(details.structured_diff)).not.toContain("$1,000");
+    expect(details.changed_facts).toEqual([{
+      fact: "Application deadline or cycle date",
+      before: "Application deadline: March 1, 2027",
+      after: "Application deadline: March 15, 2027",
+      added_text: null,
+      removed_text: null,
+      visual_evidence: null,
+    }]);
+    expect(details.change_type).toBe("deadline");
+    expect(details.reader_summary).toContain("March 15, 2027");
+    expect(details.public_claims_provenance).toEqual({
+      source: "deterministic_diff",
+      model_narrative_published: false,
+    });
+    expect(JSON.stringify(details)).not.toContain("$50,000");
+    expect(JSON.stringify(details)).not.toContain("$1,000");
+  });
+
   it("rejects a high-confidence result when one critical claim lacks exact evidence", () => {
     const result = normalizeVisualBatchResult({
       is_true_change: true,
@@ -248,6 +864,45 @@ describe("visual review queue helpers", () => {
 
     expect(validateVisualBatchReview({ candidate, source: badSource, result })).toMatchObject({
       allowed: false,
+    });
+  });
+
+  it("keeps deterministic deadline evidence on a conditional event-page source", () => {
+    const eventSource = sourceFixture({
+      url: "https://example.edu/events/example-award-deadline",
+      title: "Example Award deadline event",
+      page_type: "event",
+    });
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_facts: [{
+        fact: "Application deadline changed",
+        before: "Application deadline: March 1, 2027",
+        after: "Application deadline: March 15, 2027",
+      }],
+      exact_before: "Application deadline: March 1, 2027",
+      exact_after: "Application deadline: March 15, 2027",
+      section: "Deadline",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The application deadline changed.",
+    }, { candidate, source: eventSource });
+
+    expect(validateVisualBatchReview({ candidate, source: eventSource, result })).toEqual({
+      allowed: true,
+      reason: "approved",
+    });
+    expect(classifyVisualReviewCandidate({
+      source: eventSource,
+      diff: candidate.deterministic_diff,
+      deterministic: { candidate_change: true, reason: "text_changed" },
+    })).toMatchObject({
+      allowed: true,
+      label: "applicant_fact_change",
     });
   });
 
@@ -529,6 +1184,81 @@ describe("visual review queue helpers", () => {
       label: "nav_chrome_noise",
       reason: "timestamp_or_countdown_noise",
     });
+  });
+
+  it("reapplies the latest relative-age suppression policy before publication", () => {
+    const relativeAgeCandidate = {
+      ...candidate,
+      deterministic_diff: {
+        added_text: ["Latest news posted 9 days ago"],
+        removed_text: ["Latest news posted 8 days ago"],
+      },
+    };
+    const result = {
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      confidence: "high",
+      noise_flags: [],
+      changed_facts: [
+        {
+          fact: "Latest news recency label changed",
+          added_text: "Latest news posted 9 days ago",
+          removed_text: "Latest news posted 8 days ago",
+        },
+      ],
+      exact_before: "Latest news posted 8 days ago",
+      exact_after: "Latest news posted 9 days ago",
+      before: "Latest news posted 8 days ago",
+      after: "Latest news posted 9 days ago",
+      reader_summary: "The latest news label changed from 8 days ago to 9 days ago.",
+      section: "Latest news",
+      change_type: "other",
+      structured_diff: relativeAgeCandidate.deterministic_diff,
+    };
+
+    expect(latestVisualReviewPolicyDecision({
+      candidate: relativeAgeCandidate,
+      source,
+      result,
+    })).toMatchObject({
+      allowed: false,
+      reason: "policy_flag_relative_age_timestamp_churn",
+      guard: "visual_review_validation",
+    });
+  });
+
+  it("records active and queued policy identities in published change details", () => {
+    const result = normalizeVisualBatchResult({
+      is_true_change: true,
+      is_alert_worthy: true,
+      source_relevance: "primary",
+      changed_facts: [{ fact: "Deadline changed", added_text: "Application deadline: March 15, 2027" }],
+      exact_before: "Application deadline: March 1, 2027",
+      exact_after: "Application deadline: March 15, 2027",
+      section: "Deadlines",
+      change_type: "deadline",
+      confidence: "high",
+      noise_flags: [],
+      rejection_reason: null,
+      reader_summary: "The application deadline changed.",
+    }, { candidate, source });
+    const queuedPolicy = { id: "queued-policy", version: "1", hash: "queued-hash" };
+    const details = changeDetailsFromVisualBatchResult({
+      candidate: {
+        ...candidate,
+        prompt_payload: {
+          ...candidate.prompt_payload,
+          monitoring_policy: queuedPolicy,
+        },
+      },
+      source,
+      result,
+      model: "gemini-test",
+    });
+
+    expect(details.monitoring_policy).toEqual(currentVisualReviewPolicyIdentity());
+    expect(details.queued_monitoring_policy).toMatchObject(queuedPolicy);
   });
 
   it("rejects text-only access-denied/login text before AI", () => {

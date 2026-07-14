@@ -1,7 +1,7 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "AwardPing user decision memory",
-  "updated_at": "2026-07-08",
+  "updated_at": "2026-07-14",
   "description": "Conversation-derived global and example decisions that should guide AI interpretation, source quality review, and update filtering across all awards.",
   "entries": [
     {
@@ -14,7 +14,8 @@
         "source_quality_ai",
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Apply user corrections as global AwardPing rules unless the correction is explicitly award-specific. Do not treat example pages as one-off exceptions when the same pattern can affect other awards.",
       "examples": [
@@ -32,7 +33,8 @@
         "source_quality_ai",
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Whenever the user corrects a specific award page, source page, field placement, source title, source relevance decision, screenshot localization, or update interpretation, persist the repeatable rule in AwardPing decision memory so future AI review can apply it across the program.",
       "examples": [
@@ -137,7 +139,8 @@
       "applies_to": "all_awards",
       "prompt_scopes": [
         "baseline_facts",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "A source or subpage detail view exists mainly to show whether that page changed and what changed. Do not duplicate the award overview facts on a Homepage/source panel when those facts are already synthesized on the award overview.",
       "examples": [
@@ -179,7 +182,8 @@
       "applies_to": "all_awards",
       "prompt_scopes": [
         "baseline_facts",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Important dates must always include what the date means. Never output bare dates. If the context cannot be determined, omit the date or place it in notes as unclear.",
       "examples": [
@@ -239,7 +243,8 @@
       "prompt_scopes": [
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Do not create two public updates for the same underlying factual change. If two detected changes describe the same added, removed, or clarified award fact, merge or suppress the duplicate.",
       "examples": [
@@ -255,7 +260,8 @@
       "prompt_scopes": [
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Reject changes caused by accordions, collapse or expansion state, delayed slide-in panels, lazy-loaded cards, or screenshots taken before a page fully loaded. Content that was already present but hidden, delayed, or lower on the page is not a meaningful update.",
       "examples": [
@@ -271,7 +277,8 @@
       "prompt_scopes": [
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Reject menu order, FAQ order, sidebar order, link-order, and navigation-label reorder changes unless an applicant-facing award rule, deadline, amount, eligibility condition, or required material actually changed.",
       "examples": [
@@ -286,7 +293,8 @@
       "prompt_scopes": [
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Reject generic Latest Updates blocks, news modules, event listings, committee meetings, webinars, and cross-program announcements unless the changed item directly changes applicant-facing information for the monitored award.",
       "examples": [
@@ -302,7 +310,8 @@
       "prompt_scopes": [
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "When screenshot or location evidence is used, the changed section must actually show the text or visual area being described. If localization points to the wrong section, do not invent a visual match; fall back to full screenshot or text-only evidence.",
       "examples": [
@@ -318,7 +327,8 @@
       "prompt_scopes": [
         "visual_snapshot_ai",
         "visual_snapshot_gemini_cli",
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Only call text added if it is present in the current capture and absent from the previous capture. Only call text removed if it is present in the previous capture and absent from the current capture. If both versions still contain the text, it is not an added or removed change.",
       "examples": [
@@ -331,7 +341,8 @@
       "decision_type": "screenshot_localization",
       "applies_to": "all_awards",
       "prompt_scopes": [
-        "change_details_ai"
+        "change_details_ai",
+        "visual_review_batch"
       ],
       "prompt": "Older snapshots may not have localization metadata. When exact changed-section metadata is unavailable or unreliable, report that the screenshot is not localized yet or use full screenshot evidence instead of claiming an exact section.",
       "examples": [

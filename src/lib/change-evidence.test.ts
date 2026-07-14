@@ -144,7 +144,7 @@ describe("change evidence", () => {
     expect(evidence.advisorImpact).toBeNull();
   });
 
-  it("keeps multiple structured supporting excerpts for profile and roster rotations", () => {
+  it("hides structured evidence for globally rejected profile and roster rotations", () => {
     const evidence = buildChangeEvidence({
       sourceUrl: "https://pdsoros.org/guidance-for-recommenders/",
       sourceTitle: "Guidance For Recommenders",
@@ -190,17 +190,16 @@ describe("change evidence", () => {
       },
     });
 
-    expect(evidence.descriptionSourceLabel).toBe("AI-generated description");
-    expect(evidence.changeTypeLabel).toBe("Content");
-    expect(evidence.confidenceLabel).toBe("Medium confidence");
-    expect(evidence.currentSnippets).toEqual([
-      "Featured Fellows Anbinh Phan Director of Global Government Affairs, Walmart Anbinh Phan is an immigrant from Malaysia.",
-      "Fellowship awarded in 2007 to support work towards a JD in Law at Georgetown University Edward Pham Deputy Director, Vi Rx@Stanford, Stanford Biosecurity and Pandemic Preparedness Initiative Edward Pham is an immigrant from Viet Nam.",
-    ]);
-    expect(evidence.previousSnippets).toEqual([
-      "Featured Fellows Safia Zyla MIP, Stanford University Safia Zyla is an immigrant from Ethiopia.",
-      "Fellowship awarded in 2025 to support work towards an MIP in International Policy at Stanford University Corinna Zygourakis Assistant Professor, Department of Neurosurgery at Stanford University School of Medicine Corinna Zygourakis is the child of immigrants from Greece.",
-    ]);
+    expect(evidence.descriptionSourceLabel).toBeNull();
+    expect(evidence.changeTypeLabel).toBeNull();
+    expect(evidence.confidenceLabel).toBeNull();
+    expect(evidence.currentSnippets).toEqual([]);
+    expect(evidence.previousSnippets).toEqual([]);
+    expect(evidence.hasStructuredEvidence).toBe(false);
+    expect(evidence.hasSnapshotEvidence).toBe(false);
+    expect(evidence.summarySnippet).toBe(
+      "No award-relevant wording changed in the stored excerpt.",
+    );
   });
 
   it("repairs missing sentence spacing in structured snippets", () => {
@@ -659,7 +658,7 @@ describe("change evidence", () => {
     expect(evidence.afterSnippet).toBeNull();
   });
 
-  it("does not show unrelated previous snapshot text when no removed snippet exists", () => {
+  it("hides profile-only snapshot text when no applicant-facing fact changed", () => {
     const evidence = buildChangeEvidence({
       sourceUrl: "https://www.americancouncils.org/research-assessment/studies-and-reports",
       sourceTitle: "Studies and Reports",
@@ -696,13 +695,12 @@ describe("change evidence", () => {
       },
     });
 
-    expect(evidence.hasStructuredEvidence).toBe(true);
+    expect(evidence.hasStructuredEvidence).toBe(false);
+    expect(evidence.hasSnapshotEvidence).toBe(false);
     expect(evidence.summarySnippet).toBe(
-      "The Studies and Reports page refreshed profile, testimonial, or roster content; no application requirements, deadlines, eligibility, or funding text changed.",
+      "No award-relevant wording changed in the stored excerpt.",
     );
-    expect(evidence.afterSnippet).toBe(
-      "Donna Christian, Senior Fellow, Center for Applied Linguistics, Washington, DCMs.",
-    );
+    expect(evidence.afterSnippet).toBeNull();
     expect(evidence.beforeSnippet).toBeNull();
   });
 

@@ -642,10 +642,15 @@ async function loadRows(table, select, configure = null, options = {}) {
   const limit = options.limit || 100_000;
   const orderBy = options.orderBy || "id";
   const ascending = options.ascending !== false;
-  for (let from = 0; rows.length < limit; from += pageSize) {
+  let cursor = null;
+  while (rows.length < limit) {
+    const requestSize = Math.min(pageSize, limit - rows.length);
     let query = supabase.from(table).select(select);
     if (configure) query = configure(query);
-    query = query.order(orderBy, { ascending }).range(from, Math.min(from + pageSize - 1, limit - 1));
+    query = query.order(orderBy, { ascending }).limit(requestSize);
+    if (cursor !== null) {
+      query = ascending ? query.gt(orderBy, cursor) : query.lt(orderBy, cursor);
+    }
     const { data, error } = await query;
     if (error) {
       if (options.optional && isMissingTableError(error)) return [];
@@ -653,7 +658,9 @@ async function loadRows(table, select, configure = null, options = {}) {
     }
     const page = data || [];
     rows.push(...page);
-    if (page.length < pageSize) break;
+    if (page.length < requestSize) break;
+    cursor = page.at(-1)?.[orderBy] ?? null;
+    if (cursor === null) break;
   }
   return rows.slice(0, limit);
 }

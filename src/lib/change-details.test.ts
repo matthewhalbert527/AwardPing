@@ -913,7 +913,7 @@ describe("structured change details", () => {
     expect(isMeaningfulChangeDetails(details)).toBe(false);
   });
 
-  it("summarizes testimonial/profile rotations without pasting quote blobs", () => {
+  it("globally rejects testimonial/profile rotations without pasting quote blobs", () => {
     const details = buildHeuristicChangeDetails({
       source: {
         source_title: "Summer Institute",
@@ -926,14 +926,32 @@ describe("structured change details", () => {
       generatedAt: "2026-05-30T17:30:00.000Z",
     });
 
-    expect(details.is_alert_worthy).toBe(true);
-    expect(details.change_type).toBe("content_update");
+    expect(details.is_alert_worthy).toBe(false);
+    expect(details.change_type).toBe("noise");
     expect(details.quality_flags).toContain("profile_testimonial_change");
     expect(details.reader_summary).toBe(
-      "The Summer Institute page refreshed profile, testimonial, or roster content; no application requirements, deadlines, eligibility, or funding text changed.",
+      "No award-relevant wording changed in the stored excerpt.",
     );
     expect(details.reader_summary).not.toContain("Lynda Boyle");
     expect(details.reader_summary).not.toContain("Jon Resendez");
+  });
+
+  it("keeps mixed applicant-facing changes when testimonial text also rotates", () => {
+    const details = buildHeuristicChangeDetails({
+      source: {
+        source_title: "Example Fellowship",
+        page_type: "application",
+      },
+      previousSample:
+        'Testimonial: "My fellowship changed my career." Applications are due March 1, 2027.',
+      nextText:
+        'Testimonial: "My fellowship launched my career." Applications are due March 15, 2027.',
+      generatedAt: "2026-07-14T20:00:00.000Z",
+    });
+
+    expect(details.is_alert_worthy).toBe(true);
+    expect(details.quality_flags).not.toContain("profile_testimonial_change");
+    expect(details.structured_diff.date_changes.length).toBeGreaterThan(0);
   });
 
   it("refines stored testimonial/profile change details at render time", () => {

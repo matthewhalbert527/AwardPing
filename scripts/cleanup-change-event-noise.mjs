@@ -1,7 +1,20 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { changeEventSuppressionDecision } from "./lib/change-event-suppression.mjs";
+import { changeEventSuppressionPolicyIdentity } from "./lib/award-monitoring-policy.mjs";
+import {
+  isMissingMonitoringPolicySweepStateError,
+  monitoringPolicySweepCursorAfterRows,
+  monitoringPolicySweepKey,
+  monitoringPolicySweepKeysetFilter,
+  monitoringPolicySweepStart,
+  monitoringPolicySweepStateTable,
+} from "./lib/change-event-sweep-state.mjs";
+import {
+  changeEventSuppressionDecision,
+  changeEventSuppressionRulesRequiringEvidenceOrAi,
+  deterministicChangeEventSuppressionPolicyFlagIds,
+} from "./lib/change-event-suppression.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -20,6 +33,7 @@ const sourceIdFilter = cleanText(args["source-id"]);
 const limit = positiveInt(args.limit, 10_000);
 const batchSize = positiveInt(args["batch-size"], 500);
 const suppressionSource = cleanText(args["suppression-source"]) || "cleanup-change-event-noise";
+const sweepKey = monitoringPolicySweepKey({ awardId: awardIdFilter, sourceId: sourceIdFilter });
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -35,12 +49,33 @@ await run().catch((error) => {
 
 async function run() {
   const startedAt = new Date().toISOString();
-  const events = await loadCandidateEvents();
+  const stateResult = await loadSweepState();
+  const sweepStart = monitoringPolicySweepStart(
+    stateResult.state,
+    changeEventSuppressionPolicyIdentity.hash,
+  );
+  const eventWindow = await loadCandidateEvents(sweepStart.cursor);
+  const events = eventWindow.rows;
   const sources = await loadSourcesForEvents(events);
   const report = {
     started_at: startedAt,
     finished_at: null,
     apply: applyUpdates,
+    monitoring_policy: changeEventSuppressionPolicyIdentity,
+    suppression_coverage: {
+      evaluation_mode: "retro_sweep",
+      deterministic_text_matchers: deterministicChangeEventSuppressionPolicyFlagIds,
+      requires_queued_evidence_or_ai_when_not_explicit:
+        changeEventSuppressionRulesRequiringEvidenceOrAi,
+    },
+    sweep: {
+      key: sweepKey,
+      state_available: !stateResult.unavailable,
+      policy_changed_reset: sweepStart.reset,
+      starting_cursor: sweepStart.cursor,
+      ending_cursor: eventWindow.cursor,
+      cursor_persisted: false,
+    },
     filters: {
       award_id: awardIdFilter || null,
       source_id: sourceIdFilter || null,
@@ -59,7 +94,9 @@ async function run() {
   const suppressible = [];
   for (const event of events) {
     const source = event.shared_award_source_id ? sources.get(event.shared_award_source_id) || null : null;
-    const decision = changeEventSuppressionDecision(event, source);
+    const decision = changeEventSuppressionDecision(event, source, {
+      mode: "retro_sweep",
+    });
     if (!decision.suppressed) {
       report.kept_events += 1;
       continue;
@@ -103,21 +140,39 @@ async function run() {
     }
   }
 
+  if (applyUpdates && report.failed === 0 && !stateResult.unavailable) {
+    await persistSweepState({
+      previousState: stateResult.state,
+      sweepStart,
+      cursor: eventWindow.cursor,
+      scannedCount: sweepStart.scanned_count + events.length,
+      now: new Date().toISOString(),
+    });
+    report.sweep.cursor_persisted = true;
+  }
+
   report.finished_at = new Date().toISOString();
   console.log(JSON.stringify(report, null, 2));
 }
 
-async function loadCandidateEvents() {
+async function loadCandidateEvents(startingCursor = null) {
   const rows = [];
-  for (let from = 0; rows.length < limit; from += batchSize) {
+  let cursor = startingCursor;
+  while (rows.length < limit) {
+    const pageLimit = Math.min(batchSize, limit - rows.length);
     let query = supabase
       .from("shared_award_change_events")
       .select(
         "id,shared_award_id,shared_award_source_id,source_title,source_url,source_page_type,summary,change_details,detected_at,suppressed_at,suppression_reason,suppression_source",
       )
       .is("suppressed_at", null)
-      .order("detected_at", { ascending: false })
-      .range(from, Math.min(from + batchSize - 1, limit - 1));
+      .not("detected_at", "is", null)
+      .order("detected_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(pageLimit);
+
+    const keysetFilter = monitoringPolicySweepKeysetFilter(cursor);
+    if (keysetFilter) query = query.or(keysetFilter);
 
     if (awardIdFilter) query = query.eq("shared_award_id", awardIdFilter);
     if (sourceIdFilter) query = query.eq("shared_award_source_id", sourceIdFilter);
@@ -126,9 +181,49 @@ async function loadCandidateEvents() {
     if (error) throw new Error(`Load change events failed: ${error.message || JSON.stringify(error)}`);
     if (!data?.length) break;
     rows.push(...data);
-    if (data.length < batchSize) break;
+    cursor = monitoringPolicySweepCursorAfterRows(data, cursor);
+    if (data.length < pageLimit) break;
   }
-  return rows.slice(0, limit);
+  return { rows: rows.slice(0, limit), cursor };
+}
+
+async function loadSweepState() {
+  const { data, error } = await supabase
+    .from(monitoringPolicySweepStateTable)
+    .select(
+      "sweep_key,policy_hash,cursor_detected_at,cursor_event_id,scanned_count,cycle_started_at",
+    )
+    .eq("sweep_key", sweepKey)
+    .maybeSingle();
+  if (error) {
+    if (isMissingMonitoringPolicySweepStateError(error)) {
+      return { state: null, unavailable: true };
+    }
+    throw new Error(`Load monitoring policy sweep state failed: ${error.message}`);
+  }
+  return { state: data || null, unavailable: false };
+}
+
+async function persistSweepState({ previousState, sweepStart, cursor, scannedCount, now }) {
+  const policyChanged = sweepStart.reset;
+  const { error } = await supabase
+    .from(monitoringPolicySweepStateTable)
+    .upsert(
+      {
+        sweep_key: sweepKey,
+        policy_hash: changeEventSuppressionPolicyIdentity.hash,
+        cursor_detected_at: cursor?.detected_at || null,
+        cursor_event_id: cursor?.event_id || null,
+        scanned_count: scannedCount,
+        cycle_started_at:
+          policyChanged || !previousState?.cycle_started_at
+            ? now
+            : previousState.cycle_started_at,
+        updated_at: now,
+      },
+      { onConflict: "sweep_key" },
+    );
+  if (error) throw new Error(`Persist monitoring policy sweep state failed: ${error.message}`);
 }
 
 async function loadSourcesForEvents(events) {

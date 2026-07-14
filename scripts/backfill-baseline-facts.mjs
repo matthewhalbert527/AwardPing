@@ -444,24 +444,28 @@ async function loadBaselineReviewSources() {
   if (!supabase) return null;
 
   const rows = [];
-  for (let from = 0; ; from += 1000) {
+  let lastId = null;
+  for (;;) {
     let query = supabase
       .from("shared_award_sources")
       .select(
         "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,created_at",
       )
       .order("id", { ascending: true })
-      .range(from, from + 999);
+      .limit(1000);
     if (sourceIdFilter) query = query.eq("id", sourceIdFilter);
     else query = query.eq("admin_review_status", "open");
+    if (lastId) query = query.gt("id", lastId);
 
     const { data, error } = await query;
     if (error) throw new Error(`Load baseline review sources failed: ${error.message}`);
-    for (const source of data || []) {
+    const page = data || [];
+    for (const source of page) {
       if (sourceIdsFileFilter && !sourceIdsFileFilter.has(source.id)) continue;
       rows.push(source);
     }
-    if (!data || data.length < 1000 || sourceIdFilter) break;
+    if (page.length < 1000 || sourceIdFilter) break;
+    lastId = page.at(-1).id;
   }
 
   return new Map(rows.map((source) => [source.id, source]));

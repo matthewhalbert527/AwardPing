@@ -106,8 +106,9 @@ async function run() {
 async function loadOpenSources() {
   const rows = [];
   const pageSize = 1000;
+  let cursor = null;
 
-  for (let from = 0; ; from += pageSize) {
+  for (;;) {
     let query = supabase
       .from("shared_award_sources")
       .select(
@@ -115,16 +116,26 @@ async function loadOpenSources() {
       )
       .eq("admin_review_status", "open")
       .order("created_at", { ascending: true })
-      .range(from, from + pageSize - 1);
+      .order("id", { ascending: true })
+      .limit(pageSize);
 
     if (awardIdFilter) query = query.eq("shared_award_id", awardIdFilter);
     if (sourceIdFilter) query = query.eq("id", sourceIdFilter);
+    if (cursor) {
+      const createdAt = JSON.stringify(cursor.createdAt);
+      query = query.or(
+        `created_at.gt.${createdAt},and(created_at.eq.${createdAt},id.gt.${cursor.id})`,
+      );
+    }
 
     const { data, error } = await query;
     if (error) throw new Error(`Load open sources failed: ${error.message}`);
-    rows.push(...(data || []));
+    const page = data || [];
+    rows.push(...page);
     if (limit && rows.length >= limit) return rows.slice(0, limit);
-    if (!data || data.length < pageSize) break;
+    if (page.length < pageSize) break;
+    const last = page.at(-1);
+    cursor = { createdAt: last.created_at, id: last.id };
   }
 
   return rows;

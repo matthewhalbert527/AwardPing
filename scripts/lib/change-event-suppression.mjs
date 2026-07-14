@@ -1,4 +1,10 @@
 import { sourceQualityDecision } from "./source-quality.mjs";
+import {
+  hasRelativeAgeOnlyPolicyChange,
+  isAlertBlockingMonitoringPolicyFlag,
+  isPersistentMonitoringPolicyFlag,
+  monitoringPolicyFlagIdForAlias,
+} from "./award-monitoring-policy.mjs";
 
 const rejectedNoiseFlags = new Set([
   "access-error",
@@ -49,10 +55,24 @@ const rejectedNoiseFlags = new Set([
   "style_reflow",
 ]);
 
+const correctedEvidenceDiagnosticFlags = new Set([
+  "unsupported-added-text",
+  "unsupported-removed-text",
+  "unsupported-date-change",
+  "unsupported-amount-change",
+  "before-after-identical",
+  "before-text-still-present",
+  "after-text-already-present",
+  "before-text-not-found",
+  "after-text-not-found",
+]);
+
 const applicantSignalPattern =
-  /\b(application deadline|deadline|due date|opening date|opens?|closing date|closes?|award amount|amount|funding|stipend|tuition|eligib|requirements?|award conditions?|recommendation|transcript|essay|nomination|materials?|documents?|form|how to apply|apply by|submit by)\b/i;
-const badSourcePattern =
-  /\b(job|jobs|career|careers|employment|search results?|listing|payment|bursar|1098t|security question|access denied|login|sign in|profile|profiles|recipients?|awardees?|testimonial|news|press release)\b|\/(?:jobs?|careers?|employment|search|results|listing|list|directory|database|payment|payments|bursar|1098t|login|signin|sign-in|profile|profiles|recipients?|awardees?|news|events?)(?:[/?#]|$)/i;
+  /\b(?:application deadline|deadline|due date|opening date|applications?(?: period| cycle| status)? (?:is |are |has |have |will )?(?:now )?(?:open|opened|close|closed|closing|due)|closing date|award amount|funding|stipend|tuition|eligib(?:ility|le)|application requirements?|award conditions?|letters? of recommendation|transcript|essay|nomination|application materials?|required documents?|how to apply|apply by|submit by|application portal|application instructions?|citizenship|gpa|interview)\b/i;
+const alwaysBadSourcePattern =
+  /\b(?:jobs?|careers?|employment|search results?|payment|bursar|1098t|security question|access denied|login|sign in)\b|\/(?:jobs?|careers?|employment|search|results|listing|list|directory|database|payment|payments|bursar|1098t|login|signin|sign-in)(?:[/?#]|$)/i;
+const conditionalSourceShapePattern =
+  /\b(?:profile|profiles|recipients?|awardees?|testimonial|news|press release|events? calendar)\b|\/(?:profile|profiles|recipients?|awardees?|news|press|events?|calendar)(?:[/?#]|$)/i;
 const noiseSummaryPatterns = [
   { reason: "file_size_or_loading_time_noise", pattern: /\b(?:file size|pdf file size|loading time|load time|hash only|metadata only)\b/i },
   { reason: "security_question_or_access_noise", pattern: /\b(?:security question|access denied|login required|authentication required|captcha|forbidden)\b/i },
@@ -62,6 +82,39 @@ const noiseSummaryPatterns = [
   { reason: "generic_page_update_noise", pattern: /\b(?:page (?:content )?(?:changed|updated|refreshed)|website content changed|visual update detected|detected change)\b/i },
 ];
 
+export const deterministicChangeEventSuppressionPolicyFlagIds = Object.freeze([
+  "relative_age_timestamp_churn",
+  "current_date_only_churn",
+  "recipient_news_change",
+  "profile_roster_rotation",
+  "document_metadata_only_change",
+  "fundraising_form_change",
+  "navigation_or_reorder_only_change",
+  "calendar_event_noise",
+  "site_chrome_or_transient_notice",
+  "animated_stat_counter",
+  "source_access_error",
+  "raw_scrape_signal",
+  "generic_latest_updates_block",
+  "sample_expansion",
+  "no_actual_changed_fact",
+  "unsupported_structured_fact",
+  "format_only_change",
+  "context_only_change",
+  "indistinct_truncated_snippet",
+  "orphan_punctuation",
+  "vague_summary",
+  "ai_invalid_json",
+]);
+
+export const changeEventSuppressionRulesRequiringEvidenceOrAi = Object.freeze([
+  "sample_expansion",
+  "no_actual_changed_fact",
+  "unsupported_structured_fact",
+  "context_only_change",
+  "indistinct_truncated_snippet",
+]);
+
 export function isChangeEventSuppressed(change) {
   if (!change) return false;
   if (change.suppressed_at) return true;
@@ -69,50 +122,34 @@ export function isChangeEventSuppressed(change) {
   return Boolean(details.suppressed_at || details.suppression_reason);
 }
 
-export function changeEventSuppressionDecision(change, source = null) {
+export function changeEventSuppressionDecision(change, source = null, options = {}) {
+  const retroSweep = options.mode === "retro_sweep";
   if (isChangeEventSuppressed(change)) {
     return { suppressed: true, reason: change.suppression_reason || "already_suppressed" };
   }
-  if (change.shared_award_source_id && !source) {
+  if (!retroSweep && change.shared_award_source_id && !source) {
     return { suppressed: true, reason: "source_missing" };
   }
-  if (source?.admin_review_status && source.admin_review_status !== "open") {
+  if (!retroSweep && source?.admin_review_status && source.admin_review_status !== "open") {
     return { suppressed: true, reason: `source_status_${cleanKey(source.admin_review_status)}` };
-  }
-  if (source) {
-    const quality = sourceQualityDecision(source, { purpose: "monitoring" });
-    if (!quality.allowed) return { suppressed: true, reason: `source_quality_${quality.reason}` };
   }
 
   const details = objectValue(change.change_details);
-  if (details.is_alert_worthy === false || details.isAlertWorthy === false) {
-    return { suppressed: true, reason: "not_alert_worthy" };
-  }
-  if (cleanKey(details.generation_status) === "rejected") {
-    return { suppressed: true, reason: "generation_status_rejected" };
-  }
-
-  const flag = changeEventQualityFlags(details).find((value) => rejectedNoiseFlags.has(value));
-  if (flag) return { suppressed: true, reason: `quality_flag_${flag}` };
-
+  const detailsStructured = objectValue(details.structured_diff);
   const sourceText = normalizeText([
     change.source_url,
     change.source_title,
     change.source_page_type,
-    source?.url,
-    source?.title,
-    source?.display_title,
-    source?.page_type,
+    ...(retroSweep
+      ? []
+      : [source?.url, source?.title, source?.display_title, source?.page_type]),
   ].join(" "));
-  if (badSourcePattern.test(sourceText)) {
-    return { suppressed: true, reason: "source_shape_noise" };
-  }
-
-  const detailsStructured = objectValue(details.structured_diff);
   const summaryText = normalizeText([
     change.summary,
     details.reader_summary,
     details.advisor_impact,
+    details.exact_before,
+    details.exact_after,
     details.before,
     details.after,
     details.section,
@@ -120,12 +157,90 @@ export function changeEventSuppressionDecision(change, source = null) {
     ...stringArray(detailsStructured.noise_flags),
     ...stringArray(detailsStructured.added_text),
     ...stringArray(detailsStructured.removed_text),
+    ...stringArray(detailsStructured.date_changes),
+    ...stringArray(detailsStructured.amount_changes),
   ].join(" "));
   const hasApplicantSignal = applicantSignalPattern.test(summaryText);
+  const deterministicEvidenceText = normalizeText([
+    ...stringArray(detailsStructured.added_text),
+    ...stringArray(detailsStructured.removed_text),
+    ...stringArray(detailsStructured.date_changes),
+    ...stringArray(detailsStructured.amount_changes),
+  ].join(" "));
+  const hasDeterministicApplicantSignal = applicantSignalPattern.test(deterministicEvidenceText);
+
+  if (source && !retroSweep) {
+    const quality = sourceQualityDecision(source, { purpose: "monitoring" });
+    const applicantEvidenceEscapesConditionalShape =
+      quality.reason === "url_not_monitorable" &&
+      conditionalSourceShapePattern.test(sourceText) &&
+      hasDeterministicApplicantSignal;
+    if (!quality.allowed && !applicantEvidenceEscapesConditionalShape) {
+      return { suppressed: true, reason: `source_quality_${quality.reason}` };
+    }
+  }
+
+  if (details.is_alert_worthy === false || details.isAlertWorthy === false) {
+    return { suppressed: true, reason: "not_alert_worthy" };
+  }
+  if (cleanKey(details.generation_status) === "rejected") {
+    return { suppressed: true, reason: "generation_status_rejected" };
+  }
+
+  const qualityFlags = changeEventQualityFlags(details);
+  const preservesCorrectedEvidence = hasSupportedCorrectedEvidence(details);
+  const flag = qualityFlags
+    .map((value) => ({
+      value,
+      policyId: monitoringPolicyFlagIdForAlias(value),
+    }))
+    .find(
+      ({ value, policyId }) =>
+        !(preservesCorrectedEvidence && correctedEvidenceDiagnosticFlags.has(value)) &&
+        (rejectedNoiseFlags.has(value) ||
+          Boolean(
+            policyId &&
+              isAlertBlockingMonitoringPolicyFlag(policyId) &&
+              isPersistentMonitoringPolicyFlag(policyId),
+          )),
+    );
+  if (flag) {
+    const policyFlag =
+      flag.policyId &&
+      isAlertBlockingMonitoringPolicyFlag(flag.policyId) &&
+      isPersistentMonitoringPolicyFlag(flag.policyId);
+    return {
+      suppressed: true,
+      reason: `${policyFlag ? "policy_flag" : "quality_flag"}_${policyFlagId(flag.policyId || flag.value)}`,
+    };
+  }
+
+  if (
+    alwaysBadSourcePattern.test(sourceText) ||
+    (conditionalSourceShapePattern.test(sourceText) && !hasDeterministicApplicantSignal)
+  ) {
+    return { suppressed: true, reason: "source_shape_noise" };
+  }
+
   for (const item of noiseSummaryPatterns) {
     if (item.pattern.test(summaryText) && !hasApplicantSignal) {
       return { suppressed: true, reason: item.reason };
     }
+  }
+
+  const detectedPolicyFlag = textDetectedPolicyFlag({
+    details,
+    structured: detailsStructured,
+    summaryText,
+    hasApplicantSignal,
+    hasDeterministicApplicantSignal,
+  });
+  if (
+    detectedPolicyFlag &&
+    isAlertBlockingMonitoringPolicyFlag(detectedPolicyFlag) &&
+    isPersistentMonitoringPolicyFlag(detectedPolicyFlag)
+  ) {
+    return { suppressed: true, reason: `policy_flag_${detectedPolicyFlag}` };
   }
 
   return { suppressed: false, reason: null };
@@ -140,6 +255,134 @@ function changeEventQualityFlags(details) {
     cleanKey(details.noise_reason),
     cleanKey(details.rejection_reason),
   ].map(cleanKey).filter(Boolean);
+}
+
+function textDetectedPolicyFlag({
+  details,
+  structured,
+  summaryText,
+  hasApplicantSignal,
+  hasDeterministicApplicantSignal,
+}) {
+  if (
+    cleanKey(details.generation_status) === "invalid-json" ||
+    /\b(?:invalid ai json|ai (?:returned|produced) invalid json|json parse (?:error|failure))\b/i.test(summaryText)
+  ) return "ai_invalid_json";
+
+  if (
+    /\b(?:access denied|security challenge|security question|captcha|forbidden|error 403|error 404|page not found|service unavailable)\b/i.test(summaryText) ||
+    (!hasApplicantSignal && /\b(?:authentication (?:is )?required|login (?:is )?required|required to log in)\b/i.test(summaryText))
+  ) return "source_access_error";
+
+  if (
+    /\b(?:no actual (?:changed )?fact|no concrete (?:changed )?fact|before and after (?:text )?(?:are )?identical|claimed (?:new|added) text (?:was )?already present|claimed removed text (?:is|was) still present|nothing applicant-facing changed)\b/i.test(summaryText)
+  ) return "no_actual_changed_fact";
+
+  if (
+    /\b(?:unsupported structured fact|changed facts? (?:are |were )?not supported by (?:the )?evidence|exact before(?:-and-| and )after (?:is |was |are |were )?not supported by (?:the )?evidence|(?:added|removed|date|amount) (?:text |change |fact )?(?:is |was )?unsupported|before text not found|after text not found)\b/i.test(summaryText)
+  ) return "unsupported_structured_fact";
+
+  if (hasRelativeAgeOnlyPolicyChange({
+    readerSummary: details.reader_summary,
+    section: details.section,
+    before: details.exact_before || details.before,
+    after: details.exact_after || details.after,
+    addedText: structured.added_text,
+    removedText: structured.removed_text,
+    dateChanges: structured.date_changes,
+    amountChanges: structured.amount_changes,
+  })) return "relative_age_timestamp_churn";
+
+  if (!hasApplicantSignal) {
+    if (
+      /\b(?:current date|today's date|(?:open|closed) today|last updated|generated (?:on|at)|copyright year|post id|writer id|view count|countdown)\b/i.test(summaryText)
+    ) return "current_date_only_churn";
+    if (
+      /\b(?:recipient|awardee|winner|finalist|alumni|fellow)\b.{0,50}\b(?:announced|announcement|news|story|profile|roster|list|changed|updated|rotated)\b|\b(?:news item|press release)\b/i.test(summaryText)
+    ) return "recipient_news_change";
+    if (
+      /\b(?:profile|testimonial|roster|carousel|featured (?:fellow|student|recipient)|alumni story|student story)\b.{0,60}\b(?:changed|updated|refreshed|rotated|reordered|new|removed)\b/i.test(summaryText)
+    ) return "profile_roster_rotation";
+    if (
+      /\b(?:pdf |document )?(?:file size|metadata|hash|modified timestamp|creation date)(?: only| changed| updated)|\bmetadata-only\b/i.test(summaryText)
+    ) return "document_metadata_only_change";
+    if (
+      /\b(?:donat(?:e|ion)|fundrais(?:e|er|ing)|give now|giving form|checkout|shopping cart|gift amount|donor form|sponsor(?:ship)? (?:form|widget))\b/i.test(summaryText)
+    ) return "fundraising_form_change";
+    if (
+      /\b(?:navigation|nav menu|footer|header|sidebar|breadcrumb|faq|frequently asked questions|link order|reorder(?:ed|ing)?|layout|style reflow|font|line wrap)\b.{0,60}\b(?:changed|updated|refreshed|moved|reordered|only)\b/i.test(summaryText)
+    ) return "navigation_or_reorder_only_change";
+    if (
+      /\b(?:calendar|conference|admissions event|webinar|workshop|event registration|events? listing)\b.{0,60}\b(?:changed|updated|added|removed|refreshed|rotated)\b/i.test(summaryText)
+    ) return "calendar_event_noise";
+    if (
+      /\b(?:cookie|consent|privacy banner|popup|pop-up|modal|newsletter prompt|advertisement|captcha widget|sitewide notice|holiday hours|office hours|transient notice|loading state)\b.{0,60}\b(?:changed|updated|appeared|disappeared|opened|closed|refreshed|rotated|only)\b/i.test(summaryText)
+    ) return "site_chrome_or_transient_notice";
+    if (
+      /\b(?:animated|count-up|counter|impact number|kpi|statistic)\b.{0,60}\b(?:changed|drift|loaded|loading|animation|incremented)\b/i.test(summaryText)
+    ) return "animated_stat_counter";
+    if (
+      /\b(?:raw scrape|scrape artifact|leaked markup|html markup|jump links?|menu blob|learn more links?)\b/i.test(summaryText)
+    ) return "raw_scrape_signal";
+    if (
+      /\b(?:latest updates?|latest news|news sidebar|cross-program updates?)\b.{0,60}\b(?:changed|updated|refreshed|rotated|added|removed)\b/i.test(summaryText)
+    ) return "generic_latest_updates_block";
+    if (
+      /\b(?:sample expansion|recrawl length|crawl length|pre-existing surrounding content|more of the same page was captured)\b/i.test(summaryText)
+    ) return "sample_expansion";
+  }
+
+  if (
+    !hasDeterministicApplicantSignal &&
+    /\b(?:(?:format|formatting|whitespace|capitalization|punctuation|line wrapping|styling)(?:[- ]only| alone)|only (?:the )?(?:format|formatting|whitespace|capitalization|punctuation|line wrapping|styling) changed|only .{0,60}\b(?:format|formatting|whitespace|capitalization|punctuation|line wrapping|styling) changed)\b/i.test(summaryText)
+  ) return "format_only_change";
+  if (
+    !hasDeterministicApplicantSignal &&
+    /\b(?:context-only|container-only|only (?:the )?(?:context|container) changed|surrounding context changed but (?:the )?fact (?:did not|does not|was unchanged))\b/i.test(summaryText)
+  ) return "context_only_change";
+  if (
+    !hasDeterministicApplicantSignal &&
+    /\b(?:indistinct|truncated (?:snippet|evidence|text)|insufficient (?:evidence|context)|snippet too vague|cannot determine from (?:the )?(?:snippet|evidence))\b/i.test(summaryText)
+  ) return "indistinct_truncated_snippet";
+  if (
+    !hasDeterministicApplicantSignal &&
+    /\b(?:orphan punctuation|punctuation mark (?:appeared|disappeared) by itself|standalone punctuation)\b/i.test(summaryText)
+  ) return "orphan_punctuation";
+  if (
+    !hasApplicantSignal &&
+    /\b(?:the )?(?:page|website|content) (?:changed|updated|refreshed)(?: without (?:a )?specific|,? but no specific| generally| visually)?\b/i.test(summaryText)
+  ) return "vague_summary";
+
+  return null;
+}
+
+function hasSupportedCorrectedEvidence(details) {
+  if (details.is_alert_worthy !== true || cleanKey(details.generation_status) !== "generated") {
+    return false;
+  }
+  const qualityFlags = stringArray(details.quality_flags).map(cleanKey).filter(Boolean);
+  if (
+    !qualityFlags.includes("evidence-sanity-corrected") ||
+    !qualityFlags.includes("visual-snapshot-comparison")
+  ) {
+    return false;
+  }
+
+  const structured = objectValue(details.structured_diff);
+  if (
+    [
+      ...stringArray(structured.added_text),
+      ...stringArray(structured.removed_text),
+      ...stringArray(structured.date_changes),
+      ...stringArray(structured.amount_changes),
+    ].some((value) => normalizeText(value))
+  ) {
+    return true;
+  }
+
+  const before = normalizeText(details.exact_before || details.before).toLowerCase();
+  const after = normalizeText(details.exact_after || details.after).toLowerCase();
+  return Boolean((before || after) && (!before || !after || before !== after));
 }
 
 function objectValue(value) {
@@ -163,4 +406,8 @@ function cleanKey(value) {
     .replace(/[\s_]+/g, "-")
     .replace(/[^a-z0-9-]+/g, "")
     .replace(/-+/g, "-");
+}
+
+function policyFlagId(value) {
+  return cleanKey(value).replace(/-/g, "_");
 }

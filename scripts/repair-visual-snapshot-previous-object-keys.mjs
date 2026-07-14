@@ -27,11 +27,13 @@ let offset = 0;
 let scanned = 0;
 let repairable = 0;
 let repaired = 0;
+let conflicts = 0;
 
 while (true) {
   const { data, error } = await supabase
     .from("shared_award_source_visual_snapshots")
-    .select("shared_award_source_id,previous_captured_at,previous_object_keys")
+    .select("shared_award_source_id,previous_captured_at,previous_object_keys,updated_at")
+    .order("shared_award_source_id", { ascending: true })
     .range(offset, offset + pageSize - 1);
 
   if (error) throw new Error(`Snapshot scan failed: ${error.message}`);
@@ -46,16 +48,26 @@ while (true) {
     repairable += 1;
     if (!apply) continue;
 
-    const { error: updateError } = await supabase
+    let update = supabase
       .from("shared_award_source_visual_snapshots")
       .update({
         previous_object_keys: fixedKeys,
         updated_at: new Date().toISOString(),
       })
       .eq("shared_award_source_id", row.shared_award_source_id);
+    update = row.updated_at
+      ? update.eq("updated_at", row.updated_at)
+      : update.is("updated_at", null);
+    const { data: updated, error: updateError } = await update
+      .select("shared_award_source_id")
+      .maybeSingle();
 
     if (updateError) {
       throw new Error(`Repair failed for ${row.shared_award_source_id}: ${updateError.message}`);
+    }
+    if (!updated) {
+      conflicts += 1;
+      continue;
     }
     repaired += 1;
   }
@@ -69,6 +81,7 @@ console.log(JSON.stringify({
   scanned,
   repairable,
   repaired,
+  conflicts,
 }, null, 2));
 
 function previousKeysForPreviousSlot(keys) {
