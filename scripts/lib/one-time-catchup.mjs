@@ -106,7 +106,7 @@ export function estimateOneTimeCatchup({
   backlog,
   recentBaselineWorkerRuns = [],
   currentGeminiSpendUsd = 0,
-  dailyCostCapUsd = 10,
+  dailyCostCapUsd = 15,
   sourceBatchSize = 250,
   sourceParallelJobs = 4,
   pageAuditBatchSize = 100,

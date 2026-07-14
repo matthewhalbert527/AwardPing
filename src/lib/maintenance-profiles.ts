@@ -19,7 +19,7 @@ export type MaintenanceProfile = {
   primary?: boolean;
 };
 
-export const DEFAULT_BASELINE_COST_CAP_USD = 10;
+export const DEFAULT_BASELINE_COST_CAP_USD = 15;
 export const GEMINI_BATCH_COST_PER_SOURCE_USD = 0.000215;
 
 export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfile> = {

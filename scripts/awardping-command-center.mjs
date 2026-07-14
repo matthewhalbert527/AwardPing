@@ -18,7 +18,7 @@ const command = args._[0] || "status";
 const profile = choiceArg(args.profile, ["catchup", "daily", "baseline", "cleanup", "snapshots"], "catchup");
 const taskId = stringArg(args.task, "");
 const apply = boolArg(args.apply, true);
-const baselineCostCapUsd = numberArg(args["baseline-cost-cap-usd"], 10);
+const baselineCostCapUsd = numberArg(args["baseline-cost-cap-usd"], 15);
 const envPath = stringArg(
   args.env,
   existsSync(resolve(root, ".env.worker.local")) ? ".env.worker.local" : ".env.local",
@@ -68,7 +68,7 @@ async function printStatus() {
   await printWorkerLanes();
   console.log("");
   console.log("Start catch-up:");
-  console.log("  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10");
+  console.log("  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=15");
   console.log("Start one task:");
   console.log("  npm run command:center -- start-task --task=baseline-facts");
 }
@@ -372,7 +372,7 @@ Usage:
   npm run command:center -- status
   npm run command:center -- profiles
   npm run command:center -- tasks
-  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10
+  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=15
   npm run command:center -- run --profile=baseline --apply=true
   npm run command:center -- start-task --task=baseline-facts
   npm run command:center -- run-task --task=reconcile-awards
@@ -390,7 +390,7 @@ Options:
   --profile=catchup|daily|baseline|cleanup|snapshots|discovery|visual-review
   --task=health|source-quality|visual-snapshots|visual-review-batch|visual-missing|ai-review-completion|baseline-facts|reconcile-awards|page-audit-batch|aggregate-facts|award-details|prune-history|localization-repair
   --apply=true|false
-  --baseline-cost-cap-usd=10
+  --baseline-cost-cap-usd=15
   --env=.env.worker.local`);
 }
 

@@ -61,21 +61,21 @@ export const maintenanceProfiles = {
     label: "Initial Setup & Repair",
     detail:
       "Completes the temporary backlog and returns the system to normal daily monitoring.",
-    cost: "Gemini API cap: up to $10/day.",
+    cost: "Gemini API cap: up to $15/day.",
   },
   daily: {
     laneId: "orchestration",
     label: "Daily Monitoring",
     detail:
       "Checks approved pages, compares meaningful content, and publishes only verified changes.",
-    cost: "Gemini API cap: up to $10/day for batch fact/review work; capture itself does not use synchronous Gemini.",
+    cost: "Gemini API cap: up to $15/day for batch fact/review work; capture itself does not use synchronous Gemini.",
   },
   baseline: {
     laneId: "facts-cycle",
     label: "Baseline Facts",
     detail:
       "Runs Gemini Batch source fact extraction, reconciles public award facts, and audits pages when facts or cycle relevance are behind.",
-    cost: "Gemini API cap: up to $10/day.",
+    cost: "Gemini API cap: up to $15/day.",
   },
   cleanup: {
     laneId: "source-quality",
@@ -252,7 +252,7 @@ export const atomicTasks = [
     label: "Baseline Fact Extraction",
     detail:
       "Runs Gemini Batch page-fact extraction for source pages so cycle relevance and application facts can be computed.",
-    cost: "Gemini API cap: up to $10/day.",
+    cost: "Gemini API cap: up to $15/day.",
     run: {
       kind: "maintenance",
       phases: ["baseline-facts"],
@@ -373,7 +373,7 @@ export const scheduledWorkers = [
     label: "Baseline Facts Watchdog",
     detail:
       "Checks hourly and keeps Gemini Batch page-fact extraction moving until source-page facts are caught up.",
-    cost: "Gemini API cap: up to $10/day.",
+    cost: "Gemini API cap: up to $15/day.",
   },
   {
     id: "localization-repair",

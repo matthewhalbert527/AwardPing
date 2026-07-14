@@ -23,17 +23,15 @@ if (!supabaseUrl || !serviceRoleKey) {
       message: "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.",
     }),
   );
-  process.exit(0);
+} else {
+  const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+  const health = await checkSupabaseHealth(supabase, {
+    table: stringArg(args.table, "shared_awards"),
+    timeoutMs: positiveInt(args["timeout-ms"], 15_000),
+  });
+
+  console.log(JSON.stringify(health, null, 2));
 }
-
-const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
-const health = await checkSupabaseHealth(supabase, {
-  table: stringArg(args.table, "shared_awards"),
-  timeoutMs: positiveInt(args["timeout-ms"], 15_000),
-});
-
-console.log(JSON.stringify(health, null, 2));
-process.exit(0);
 
 function parseArgs(values) {
   const parsed = {};

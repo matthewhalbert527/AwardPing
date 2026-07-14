@@ -51,7 +51,7 @@ const geminiBatchMaxRequests = positiveInt(args["gemini-batch-max-requests"], 25
 const geminiBatchParallelJobs = positiveInt(args["gemini-batch-parallel-jobs"], 4);
 const dailyCostCapUsd = nonNegativeNumber(
   args["daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
-  10,
+  15,
 );
 const resume = boolArg(args.resume, true);
 const outputJson = boolArg(args.json, false);

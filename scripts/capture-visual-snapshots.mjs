@@ -326,7 +326,7 @@ const sourceLoadPageSize = boundedInt(
 );
 const minSourceLoadPageSize = boundedInt(
   args["min-source-load-page-size"] || env.AWARDPING_MIN_SOURCE_LOAD_PAGE_SIZE,
-  10,
+  15,
   1,
   250,
 );

@@ -74,7 +74,7 @@ const aiProvider = selectAiProvider(requestedAiProvider);
 const geminiApiModel = geminiWorkerModel();
 const dailyCostCapUsd = nonNegativeNumber(
   args["gemini-api-daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
-  10,
+  15,
 );
 const geminiApiMaxRequests = nonNegativeInt(
   args["gemini-api-max-requests"] || args["max-calls"] || env.AWARDPING_GEMINI_API_MAX_REQUESTS,

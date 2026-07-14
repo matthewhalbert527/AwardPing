@@ -709,7 +709,7 @@ export default async function AdminPage() {
           </p>
           <div className="grid gap-3">
             <CommandLine command="npm run command:center -- status" />
-            <CommandLine command="npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=10" />
+            <CommandLine command="npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=15" />
             <CommandLine command="npm run command:center -- profiles" />
           </div>
         </div>
