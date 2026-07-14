@@ -170,6 +170,10 @@ const geminiApiPricingMode = cleanSlug(
   args["gemini-api-pricing-mode"] || env.AWARDPING_GEMINI_API_PRICING_MODE || "standard",
 ) || "standard";
 const localizationRepair = boolArg(args["localization-repair"] ?? env.AWARDPING_LOCALIZATION_REPAIR, false);
+const resetPreviousSnapshot = boolArg(
+  args["reset-previous-snapshot"] ?? env.AWARDPING_RESET_PREVIOUS_SNAPSHOT,
+  false,
+);
 const forceR2SnapshotRefresh = boolArg(
   args["force-r2-snapshot-refresh"] ?? env.AWARDPING_FORCE_R2_SNAPSHOT_REFRESH,
   localizationRepair,
@@ -449,6 +453,11 @@ if (aiRequired && !aiProvider) {
   process.exit(1);
 }
 
+if (resetPreviousSnapshot && !localizationRepair) {
+  console.error("--reset-previous-snapshot=true is allowed only during localization repair.");
+  process.exit(1);
+}
+
 if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)) {
   console.error(
     "R2 snapshot sync is enabled, but R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.",
@@ -530,6 +539,7 @@ async function runOnce() {
       include_section_text_in_main_hash: includeSectionTextInMainHash,
       capture_section_evidence: captureSectionEvidence,
       localization_repair: localizationRepair,
+      reset_previous_snapshot: resetPreviousSnapshot,
       force_r2_snapshot_refresh: forceR2SnapshotRefresh,
       review_on_ai_failure: reviewOnAiFailure,
       viewport_width: viewportWidth,
@@ -680,6 +690,7 @@ async function runOnce() {
     discovery_cap_hits_by_source: {},
     r2_uploaded: 0,
     r2_rotated: 0,
+    r2_previous_snapshots_reset: 0,
     r2_failed: 0,
     r2_skipped_existing: 0,
     r2_repaired_missing: 0,
@@ -5161,6 +5172,7 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
       : await syncR2SnapshotPair(source, capture);
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
+    report.r2_previous_snapshots_reset += result.previousReset || 0;
     existingR2SnapshotSourceIds.add(source.id);
     console.log(`R2 SNAPSHOT uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
     return true;
@@ -5644,17 +5656,36 @@ async function syncR2LocalizationLatest(source, capture) {
   await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
   await deleteR2ExpansionStateObjects(client, source.id, ["latest"]);
 
+  const hadPrevious = Object.keys(jsonObjectOrEmpty(existingRecord?.previous_object_keys)).length > 0;
+  const previousObjectKeys = resetPreviousSnapshot
+    ? {}
+    : jsonObjectOrEmpty(existingRecord?.previous_object_keys);
+  const previousHashes = resetPreviousSnapshot
+    ? {}
+    : jsonObjectOrEmpty(existingRecord?.previous_hashes);
+  const previousMetadata = resetPreviousSnapshot
+    ? {}
+    : jsonObjectOrEmpty(existingRecord?.previous_metadata);
+  const previousCapturedAt = resetPreviousSnapshot
+    ? null
+    : existingRecord?.previous_captured_at || null;
+
   await upsertR2SnapshotRecord(source, capture, {
     latestKeys,
-    previousObjectKeys: jsonObjectOrEmpty(existingRecord?.previous_object_keys),
-    previousHashes: jsonObjectOrEmpty(existingRecord?.previous_hashes),
-    previousMetadata: jsonObjectOrEmpty(existingRecord?.previous_metadata),
-    previousCapturedAt: existingRecord?.previous_captured_at || null,
+    previousObjectKeys,
+    previousHashes,
+    previousMetadata,
+    previousCapturedAt,
   });
+
+  if (resetPreviousSnapshot) {
+    await deleteR2SnapshotVersionObjects(client, source.id, "previous");
+  }
 
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: 0,
+    previousReset: resetPreviousSnapshot && hadPrevious ? 1 : 0,
   };
 }
 
@@ -5802,6 +5833,15 @@ async function deleteR2ExpansionStateObjects(client, sourceId, versions = ["late
     }
   }
   await Promise.all(deletes);
+}
+
+async function deleteR2SnapshotVersionObjects(client, sourceId, version) {
+  await Promise.all(
+    r2SnapshotSlots.map((slot) =>
+      deleteR2Object(client, r2SnapshotKey(sourceId, version, slot.fileName)),
+    ),
+  );
+  await deleteR2ExpansionStateObjects(client, sourceId, [version]);
 }
 
 async function r2ObjectExists(client, key) {
@@ -7660,6 +7700,7 @@ function visualWorkerMetadata(report) {
       promoted: report.promoted,
       r2_uploaded: report.r2_uploaded,
       r2_rotated: report.r2_rotated,
+      r2_previous_snapshots_reset: report.r2_previous_snapshots_reset,
       r2_failed: report.r2_failed,
       r2_skipped_existing: report.r2_skipped_existing,
       r2_repaired_missing: report.r2_repaired_missing,

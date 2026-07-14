@@ -159,4 +159,23 @@ describe("one-time catch-up planning", () => {
     expect(completion.automated_complete).toBe(false);
     expect(completion.automated_blockers.snapshot_localization_latest_pending).toBe(12);
   });
+
+  it("keeps catch-up open until unlocalized historical screenshots are reset", () => {
+    const forecast = estimateOneTimeCatchup({
+      backlog: {
+        snapshot_localization_latest_pending: 211,
+        snapshot_localization_work_pending: 747,
+      },
+      localizationShards: 3,
+    });
+    const completion = catchupCompletionDecision({
+      snapshot_localization_historical_unavailable: 747,
+    });
+
+    expect(forecast.snapshot_localization_sources).toBe(747);
+    expect(completion.automated_complete).toBe(false);
+    expect(
+      completion.automated_blockers.snapshot_localization_historical_unavailable,
+    ).toBe(747);
+  });
 });

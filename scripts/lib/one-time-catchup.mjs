@@ -99,6 +99,9 @@ export function summarizeOneTimeCatchupBacklog({
     snapshot_localization_historical_unavailable: localizationAudited
       ? nonNegativeInt(localization.historical_layout_unavailable, 0)
       : 0,
+    snapshot_localization_work_pending: localizationAudited
+      ? nonNegativeInt(localization.work_source_count, 0)
+      : monitorEligibleRows.length,
     snapshot_localization_exact_coverage_percent: localizationAudited
       ? nonNegativeNumber(localization.exact_coverage_percent, 0)
       : 0,
@@ -141,7 +144,10 @@ export function estimateOneTimeCatchup({
   const pageAuditWaves = pageAuditRequests ? Math.ceil(pageAuditRequests / Math.max(1, pageAuditBatchSize)) : 0;
   const visualMissing = nonNegativeInt(backlog?.monitor_eligible_missing_visuals, 0);
   const reconciliationAwards = nonNegativeInt(backlog?.awards_to_seed_for_reconciliation, 0);
-  const localizationSources = nonNegativeInt(backlog?.snapshot_localization_latest_pending, 0);
+  const localizationSources = nonNegativeInt(
+    backlog?.snapshot_localization_work_pending ?? backlog?.snapshot_localization_latest_pending,
+    0,
+  );
 
   const sourceLowMinutes = sourceWaves * Math.max(15, observedWaveMinutes * 0.7);
   const sourceHighMinutes = sourceWaves * Math.max(60, observedWaveMinutes * 2);
@@ -214,6 +220,10 @@ export function catchupCompletionDecision(backlog = {}) {
     ),
     snapshot_localization_latest_pending: nonNegativeInt(
       backlog.snapshot_localization_latest_pending,
+      0,
+    ),
+    snapshot_localization_historical_unavailable: nonNegativeInt(
+      backlog.snapshot_localization_historical_unavailable,
       0,
     ),
   };

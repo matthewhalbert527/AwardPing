@@ -97,15 +97,23 @@ try {
   });
 
   const summary = summarizeSnapshotLocalization(rows);
+  const repairSourceIds = rows
+    .filter((row) => row.latest.repair_needed || row.previous.repair_needed)
+    .map((row) => row.source_id);
+  const historicalResetSourceIds = rows
+    .filter((row) => row.previous.status === "historical_layout_unavailable")
+    .map((row) => row.source_id);
+  const workSourceIds = [...new Set([...repairSourceIds, ...historicalResetSourceIds])].sort();
   const report = {
     version: 1,
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     apply,
     ...summary,
-    repair_source_ids: rows
-      .filter((row) => row.latest.repair_needed || row.previous.repair_needed)
-      .map((row) => row.source_id),
+    repair_source_ids: repairSourceIds,
+    historical_reset_source_ids: historicalResetSourceIds,
+    work_source_ids: workSourceIds,
+    work_source_count: workSourceIds.length,
     samples: {
       repair_needed: rows.filter((row) => row.latest.repair_needed || row.previous.repair_needed).slice(0, 20),
       historical_layout_unavailable: rows
