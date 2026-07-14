@@ -474,7 +474,7 @@ async function liveSnapshot() {
       "shared_award_source_visual_snapshots",
       "shared_award_source_id,latest_object_keys,updated_at",
       null,
-      { optional: true },
+      { optional: true, orderBy: "shared_award_source_id" },
     ),
     loadRows(
       "local_worker_runs",
@@ -513,9 +513,12 @@ async function loadRows(table, select, configure = null, options = {}) {
   const rows = [];
   const pageSize = 1_000;
   const limit = options.limit || 100_000;
+  const orderBy = options.orderBy || "id";
+  const ascending = options.ascending !== false;
   for (let from = 0; rows.length < limit; from += pageSize) {
-    let query = supabase.from(table).select(select).range(from, Math.min(from + pageSize - 1, limit - 1));
+    let query = supabase.from(table).select(select);
     if (configure) query = configure(query);
+    query = query.order(orderBy, { ascending }).range(from, Math.min(from + pageSize - 1, limit - 1));
     const { data, error } = await query;
     if (error) {
       if (options.optional && isMissingTableError(error)) return [];
