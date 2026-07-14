@@ -142,4 +142,21 @@ describe("one-time catch-up planning", () => {
     expect(completion.safe_manual_review_items).toBe(12);
     expect(ONE_TIME_CATCHUP_BATCH_MODE).toBe("batch");
   });
+
+  it("includes localization repair in the forecast and completion gate", () => {
+    const forecast = estimateOneTimeCatchup({
+      backlog: { snapshot_localization_latest_pending: 3_000 },
+      localizationShards: 3,
+    });
+    const completion = catchupCompletionDecision({
+      snapshot_localization_audit_pending: 0,
+      snapshot_localization_latest_pending: 12,
+    });
+
+    expect(forecast.snapshot_localization_sources).toBe(3_000);
+    expect(forecast.estimated_snapshot_localization_hours.low).toBe(1.1);
+    expect(forecast.estimated_snapshot_localization_hours.high).toBe(2.8);
+    expect(completion.automated_complete).toBe(false);
+    expect(completion.automated_blockers.snapshot_localization_latest_pending).toBe(12);
+  });
 });

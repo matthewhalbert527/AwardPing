@@ -51,15 +51,31 @@ export async function GET(request: Request, { params }: Props) {
     return NextResponse.json({ error: "This snapshot is not available." }, { status: user ? 403 : 404 });
   }
 
-  const [latestObjects, previousObjects] = await Promise.all([
+  const [latestObjects, previousObjects, latestMetaResult, previousMetaResult] = await Promise.all([
     createSignedSnapshotObjects(snapshot.latest_object_keys),
     createSignedSnapshotObjects(snapshot.previous_object_keys),
+    loadSnapshotMeta(snapshot.latest_object_keys),
+    loadSnapshotMeta(snapshot.previous_object_keys),
   ]);
   const requestUrl = new URL(request.url);
-  const [latestFocusRatio, previousFocusRatio] = await Promise.all([
-    snapshotFocusRatio(snapshot.latest_object_keys, requestUrl.searchParams.getAll("latest")),
-    snapshotFocusRatio(snapshot.previous_object_keys, requestUrl.searchParams.getAll("previous")),
-  ]);
+  const imagesMatch = snapshotImageHash(snapshot.latest_hashes) === snapshotImageHash(snapshot.previous_hashes) &&
+    Boolean(snapshotImageHash(snapshot.latest_hashes));
+  const latestFocus = snapshotFocusResult({
+    metaResult: latestMetaResult,
+    fallbackMetaResult: imagesMatch ? previousMetaResult : null,
+    snippets: requestUrl.searchParams.getAll("latest"),
+    objectKeys: snapshot.latest_object_keys,
+    recordMetadata: snapshot.latest_metadata,
+    version: "latest",
+  });
+  const previousFocus = snapshotFocusResult({
+    metaResult: previousMetaResult,
+    fallbackMetaResult: imagesMatch ? latestMetaResult : null,
+    snippets: requestUrl.searchParams.getAll("previous"),
+    objectKeys: snapshot.previous_object_keys,
+    recordMetadata: snapshot.previous_metadata,
+    version: "previous",
+  });
 
   return NextResponse.json({
     source_id: snapshot.shared_award_source_id,
@@ -75,14 +91,18 @@ export async function GET(request: Request, { params }: Props) {
       hashes: snapshot.latest_hashes,
       metadata: snapshot.latest_metadata,
       objects: latestObjects,
-      focus_ratio: latestFocusRatio,
+      focus_ratio: latestFocus.ratio,
+      localization_status: latestFocus.status,
+      localization_reason: latestFocus.reason,
     },
     previous: {
       captured_at: snapshot.previous_captured_at,
       hashes: snapshot.previous_hashes,
       metadata: snapshot.previous_metadata,
       objects: previousObjects,
-      focus_ratio: previousFocusRatio,
+      focus_ratio: previousFocus.ratio,
+      localization_status: previousFocus.status,
+      localization_reason: previousFocus.reason,
     },
   });
 }
@@ -139,28 +159,102 @@ function jsonObject(value: Json) {
     : {};
 }
 
-async function snapshotFocusRatio(objectKeys: Json, snippets: string[]) {
+async function loadSnapshotMeta(objectKeys: Json) {
   const metaKey = objectKey(objectKeys, "meta");
-  const cleanSnippets = snippets.map(cleanSnippet).filter(Boolean).slice(0, 5);
-  if (!metaKey || cleanSnippets.length === 0) return null;
-
+  if (!metaKey) return { meta: null, error: null };
   try {
-    const meta = JSON.parse(await readR2ObjectText(metaKey)) as Record<string, unknown>;
-    const layoutSample = layoutSampleFromMeta(meta);
-    const scrollHeight = scrollHeightFromMeta(meta);
-    if (!layoutSample || !scrollHeight) return null;
-    const top = bestLayoutTop(layoutSample, cleanSnippets);
-    if (top === null) return null;
-    return Math.max(0, Math.min(1, top / Math.max(1, scrollHeight)));
+    return {
+      meta: JSON.parse(await readR2ObjectText(metaKey)) as Record<string, unknown>,
+      error: null,
+    };
   } catch {
-    return null;
+    return { meta: null, error: "Snapshot metadata could not be read." };
   }
+}
+
+function snapshotFocusResult({
+  metaResult,
+  fallbackMetaResult,
+  snippets,
+  objectKeys,
+  recordMetadata,
+  version,
+}: {
+  metaResult: { meta: Record<string, unknown> | null; error: string | null };
+  fallbackMetaResult: { meta: Record<string, unknown> | null; error: string | null } | null;
+  snippets: string[];
+  objectKeys: Json;
+  recordMetadata: Json;
+  version: "latest" | "previous";
+}) {
+  const cleanSnippets = snippets.map(cleanSnippet).filter(Boolean).slice(0, 5);
+  if (!hasVisualSnapshotObject(objectKeys)) {
+    return { ratio: null, status: "not_applicable", reason: "No screenshot image is retained." };
+  }
+  if (cleanSnippets.length === 0) {
+    return { ratio: null, status: "not_requested", reason: "No exact change text was supplied." };
+  }
+
+  const candidates = [
+    { result: metaResult, status: "localized" },
+    { result: fallbackMetaResult, status: "localized_via_identical_version" },
+  ];
+  let hadLayout = false;
+  for (const candidate of candidates) {
+    if (!candidate.result?.meta) continue;
+    const layoutSample = layoutSampleFromMeta(candidate.result.meta);
+    const scrollHeight = scrollHeightFromMeta(candidate.result.meta);
+    if (!layoutSample || !scrollHeight) continue;
+    hadLayout = true;
+    const top = bestLayoutTop(layoutSample, cleanSnippets);
+    if (top === null) continue;
+    return {
+      ratio: Math.max(0, Math.min(1, top / Math.max(1, scrollHeight))),
+      status: candidate.status,
+      reason: candidate.status === "localized"
+        ? "Exact change text matched this screenshot's layout metadata."
+        : "Exact change text matched layout metadata from the identical retained version.",
+    };
+  }
+
+  if (hadLayout) {
+    return {
+      ratio: null,
+      status: "evidence_not_found",
+      reason: "The exact change text was not found in this retained screenshot.",
+    };
+  }
+  const localization = jsonObject(jsonObject(recordMetadata).localization as Json);
+  if (localization.status === "capture_layout_unavailable") {
+    return {
+      ratio: null,
+      status: "capture_layout_unavailable",
+      reason: "The page produced no searchable visual layout during localization capture.",
+    };
+  }
+  return {
+    ratio: null,
+    status: version === "previous" ? "historical_layout_unavailable" : "repair_needed",
+    reason: version === "previous"
+      ? "This historical screenshot predates location metadata."
+      : metaResult.error || "This screenshot still needs localization metadata.",
+  };
 }
 
 function objectKey(objectKeys: Json, name: string) {
   const keys = jsonObject(objectKeys);
   const key = keys[name];
   return typeof key === "string" && key ? key : null;
+}
+
+function hasVisualSnapshotObject(objectKeys: Json) {
+  return Boolean(objectKey(objectKeys, "page") || objectKey(objectKeys, "thumb"));
+}
+
+function snapshotImageHash(value: Json) {
+  const hashes = jsonObject(value);
+  const hash = hashes.image_hash;
+  return typeof hash === "string" ? hash : "";
 }
 
 function layoutSampleFromMeta(meta: Record<string, unknown>) {

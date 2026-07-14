@@ -27,7 +27,7 @@ export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfi
     id: "catchup",
     label: "Initial Setup & Repair",
     detail:
-      "Completes the temporary setup backlog, then hands the site back to normal daily monitoring.",
+      "Completes the temporary source, fact, review, reconciliation, and current snapshot localization backlog, then hands the site back to normal daily monitoring.",
     phases: [
       "health",
       "source-intake",

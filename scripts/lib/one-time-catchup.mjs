@@ -13,6 +13,7 @@ export function summarizeOneTimeCatchupBacklog({
   reconciliationQueue = [],
   visualReviewCandidates = [],
   visualSnapshotSourceIds = new Set(),
+  snapshotLocalization = null,
 } = {}) {
   const activeAwards = awards.filter((award) => award?.status === "active");
   const activeAwardIds = new Set(activeAwards.map((award) => award.id));
@@ -68,6 +69,8 @@ export function summarizeOneTimeCatchupBacklog({
   );
   const awardsMissingPublicFacts = activeAwards.filter((award) => !objectHasKeys(award.public_facts));
   const categoryCounts = countBy(coverageRows, (row) => row.category);
+  const localization = objectValue(snapshotLocalization);
+  const localizationAudited = localization.audited === true;
 
   const backlog = {
     active_awards: activeAwards.length,
@@ -89,6 +92,16 @@ export function summarizeOneTimeCatchupBacklog({
     visual_review_queue: visualQueueRows.length,
     visual_review_estimated_cost_usd: roundUsd(visualEstimatedCostUsd),
     source_category_counts: categoryCounts,
+    snapshot_localization_audit_pending: localizationAudited ? 0 : 1,
+    snapshot_localization_latest_pending: localizationAudited
+      ? nonNegativeInt(localization.latest_repair_needed, 0)
+      : monitorEligibleRows.length,
+    snapshot_localization_historical_unavailable: localizationAudited
+      ? nonNegativeInt(localization.historical_layout_unavailable, 0)
+      : 0,
+    snapshot_localization_exact_coverage_percent: localizationAudited
+      ? nonNegativeNumber(localization.exact_coverage_percent, 0)
+      : 0,
   };
 
   return {
@@ -110,6 +123,7 @@ export function estimateOneTimeCatchup({
   sourceBatchSize = 250,
   sourceParallelJobs = 4,
   pageAuditBatchSize = 100,
+  localizationShards = 3,
 } = {}) {
   const sourceCostPerRequestUsd = observedSourceCostPerRequest(recentBaselineWorkerRuns);
   const observedWaveMinutes = observedSourceBatchWaveMinutes(recentBaselineWorkerRuns);
@@ -127,6 +141,7 @@ export function estimateOneTimeCatchup({
   const pageAuditWaves = pageAuditRequests ? Math.ceil(pageAuditRequests / Math.max(1, pageAuditBatchSize)) : 0;
   const visualMissing = nonNegativeInt(backlog?.monitor_eligible_missing_visuals, 0);
   const reconciliationAwards = nonNegativeInt(backlog?.awards_to_seed_for_reconciliation, 0);
+  const localizationSources = nonNegativeInt(backlog?.snapshot_localization_latest_pending, 0);
 
   const sourceLowMinutes = sourceWaves * Math.max(15, observedWaveMinutes * 0.7);
   const sourceHighMinutes = sourceWaves * Math.max(60, observedWaveMinutes * 2);
@@ -138,8 +153,11 @@ export function estimateOneTimeCatchup({
   const auditHighMinutes = pageAuditWaves * 45;
   const housekeepingLowMinutes = 20;
   const housekeepingHighMinutes = 60;
-  const lowMinutes = sourceLowMinutes + captureLowMinutes + reconciliationLowMinutes + auditLowMinutes + housekeepingLowMinutes;
-  const highMinutes = sourceHighMinutes + captureHighMinutes + reconciliationHighMinutes + auditHighMinutes + housekeepingHighMinutes;
+  const localizationWorkers = Math.max(1, nonNegativeInt(localizationShards, 3));
+  const localizationLowMinutes = (localizationSources * 4) / 60 / localizationWorkers;
+  const localizationHighMinutes = (localizationSources * 10) / 60 / localizationWorkers;
+  const lowMinutes = sourceLowMinutes + captureLowMinutes + reconciliationLowMinutes + auditLowMinutes + localizationLowMinutes + housekeepingLowMinutes;
+  const highMinutes = sourceHighMinutes + captureHighMinutes + reconciliationHighMinutes + auditHighMinutes + localizationHighMinutes + housekeepingHighMinutes;
   const cap = nonNegativeNumber(dailyCostCapUsd, 0);
   const spent = nonNegativeNumber(currentGeminiSpendUsd, 0);
   const billingWindows = cap > 0 ? Math.max(1, Math.ceil((spent + estimatedCostUsd) / cap)) : 1;
@@ -164,6 +182,12 @@ export function estimateOneTimeCatchup({
     current_gemini_spend_usd: roundUsd(spent),
     daily_cost_cap_usd: roundUsd(cap),
     estimated_billing_windows: billingWindows,
+    snapshot_localization_sources: localizationSources,
+    snapshot_localization_shards: localizationWorkers,
+    estimated_snapshot_localization_hours: {
+      low: roundOne(localizationLowMinutes / 60),
+      high: roundOne(localizationHighMinutes / 60),
+    },
     observed_source_batch_wave_minutes: roundOne(observedWaveMinutes),
     expected_time_hours: {
       low: roundOne(lowMinutes / 60),
@@ -184,9 +208,21 @@ export function catchupCompletionDecision(backlog = {}) {
     awards_never_audited: nonNegativeInt(backlog.awards_never_audited, 0),
     page_audit_batch_in_flight: nonNegativeInt(backlog.page_audit_batch_in_flight, 0),
     visual_review_queue: nonNegativeInt(backlog.visual_review_queue, 0),
+    snapshot_localization_audit_pending: nonNegativeInt(
+      backlog.snapshot_localization_audit_pending,
+      0,
+    ),
+    snapshot_localization_latest_pending: nonNegativeInt(
+      backlog.snapshot_localization_latest_pending,
+      0,
+    ),
   };
   const automatedComplete = Object.values(automatedBlockers).every((value) => value === 0);
   const manualReviewCount = nonNegativeInt(backlog.latest_unresolved_audit_errors, 0);
+  const historicalLocalizationFallbacks = nonNegativeInt(
+    backlog.snapshot_localization_historical_unavailable,
+    0,
+  );
   return {
     automated_complete: automatedComplete,
     steady_state_ready: automatedComplete,
@@ -197,6 +233,7 @@ export function catchupCompletionDecision(backlog = {}) {
       : "catchup_required",
     automated_blockers: automatedBlockers,
     safe_manual_review_items: manualReviewCount,
+    historical_localization_fallbacks: historicalLocalizationFallbacks,
   };
 }
 

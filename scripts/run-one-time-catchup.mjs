@@ -73,6 +73,7 @@ const visualReviewLimit = boundedInt(args["visual-review-limit"], 2_000, 1, 10_0
 // serialized so parallel repair shards do not contend for the same Supabase
 // connection path and turn transient fetch failures into false no-progress.
 const visualShards = boundedInt(args["visual-shards"], 1, 1, 8);
+const localizationShards = boundedInt(args["localization-shards"], 3, 1, 8);
 const visualMissingBatchLimit = boundedInt(args["visual-missing-batch-limit"], 250, 1, 1_000);
 const includeHousekeeping = boolArg(args["include-housekeeping"], true);
 const archiveRoot = resolve(String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || "D:\\AwardPingVisualSnapshots"));
@@ -84,6 +85,7 @@ const reportPath = args.report
   ? resolve(root, String(args.report))
   : join(reportDir, `one-time-catchup-${timestampForPath(new Date().toISOString())}.json`);
 const latestReportPath = join(reportDir, "one-time-catchup-latest.json");
+const localizationRepairIdsPath = join(reportDir, "snapshot-localization-repair-source-ids.json");
 const logDir = args["log-dir"]
   ? resolve(String(args["log-dir"]))
   : process.env.LOCALAPPDATA
@@ -163,6 +165,7 @@ try {
   await runStage("award-reconciliation", drainAwardReconciliation);
   await runStage("visual-review-batch", drainVisualReviewBatch);
   await runStage("page-audit-batch", drainPageAuditBatch);
+  await runStage("snapshot-localization", drainSnapshotLocalization);
   if (includeHousekeeping) {
     await runStage("change-event-noise", async () => {
       await runChild("change-event-noise", [
@@ -416,6 +419,84 @@ async function drainPageAuditBatch() {
   }
 }
 
+async function drainSnapshotLocalization() {
+  ensureRuntimeAvailable();
+  const before = await auditSnapshotLocalization("before");
+  if (!nonNegativeInt(before.latest_repair_needed, 0)) {
+    state.localization = { ...before, audited: true };
+    writeState();
+    return;
+  }
+
+  const repairSourceIds = Array.isArray(before.repair_source_ids)
+    ? before.repair_source_ids.filter(Boolean)
+    : [];
+  if (!repairSourceIds.length) {
+    throw new Error(
+      `Localization audit reported ${before.latest_repair_needed} repairs but supplied no source IDs.`,
+    );
+  }
+  atomicWriteJson(localizationRepairIdsPath, repairSourceIds);
+
+  const repairChildren = Array.from({ length: localizationShards }, (_, shardIndex) =>
+    runChild(`snapshot-localization-shard-${shardIndex + 1}-of-${localizationShards}`, [
+      "scripts/run-localization-repair.mjs",
+      `--env=${envPath}`,
+      `--shard-count=${localizationShards}`,
+      `--shard-index=${shardIndex}`,
+      `--source-ids-file=${localizationRepairIdsPath}`,
+      "--section-extraction-profile=stable-daily",
+      "--extract-expandable-sections=true",
+      "--include-section-text-in-main-hash=false",
+      "--capture-section-evidence=false",
+    ]),
+  );
+  await Promise.all(repairChildren);
+
+  const after = await auditSnapshotLocalization("after");
+  state.localization = {
+    ...after,
+    audited: true,
+    repair_started_with: nonNegativeInt(before.latest_repair_needed, 0),
+    repaired_in_pass: Math.max(
+      0,
+      nonNegativeInt(before.latest_repair_needed, 0) - nonNegativeInt(after.latest_repair_needed, 0),
+    ),
+  };
+  writeState();
+  recordCycle("snapshot-localization", {
+    before: nonNegativeInt(before.latest_repair_needed, 0),
+    after: nonNegativeInt(after.latest_repair_needed, 0),
+    exact_coverage_percent: nonNegativeNumber(after.exact_coverage_percent, 0),
+    historical_layout_unavailable: nonNegativeInt(after.historical_layout_unavailable, 0),
+  });
+  await updateTicker("snapshot-localization", await liveSnapshot());
+
+  if (nonNegativeInt(after.latest_repair_needed, 0)) {
+    throw new CatchupPausedError(
+      "paused_snapshot_localization",
+      `${after.latest_repair_needed} current screenshots still need safe localization metadata; ` +
+        `${after.historical_layout_unavailable || 0} older retained screenshots have an explicit historical fallback.`,
+    );
+  }
+}
+
+async function auditSnapshotLocalization(label) {
+  const child = await runChild(`snapshot-localization-audit-${label}`, [
+    "scripts/read-snapshot-localization-coverage.mjs",
+    `--env=${envPath}`,
+    "--limit=100000",
+    "--concurrency=20",
+    "--apply=false",
+  ]);
+  const report = readReportFromOutput(
+    child.output,
+    /SNAPSHOT_LOCALIZATION_COVERAGE_REPORT\s+(.+)$/m,
+  );
+  if (!report) throw new Error(`Snapshot localization ${label} audit did not produce a report.`);
+  return report;
+}
+
 async function runStage(name, action) {
   const previous = state.stages[name];
   if (resume && previous?.status === "succeeded") {
@@ -496,6 +577,7 @@ async function liveSnapshot() {
     reconciliationQueue: queueRows,
     visualReviewCandidates: visualCandidates,
     visualSnapshotSourceIds,
+    snapshotLocalization: state.localization || null,
   });
   const spend = geminiSpendGuardStatus({ archiveRoot, dailyCostCapUsd });
   const forecast = estimateOneTimeCatchup({
@@ -506,6 +588,7 @@ async function liveSnapshot() {
     sourceBatchSize,
     sourceParallelJobs,
     pageAuditBatchSize,
+    localizationShards,
   });
   return { summary, forecast, spend };
 }
@@ -697,7 +780,7 @@ function workerMetadata(stage, snapshot) {
     started_at: state.started_at,
     updated_at: new Date().toISOString(),
     completed_stages: completedStageCount(),
-    total_stages: includeHousekeeping ? 11 : 9,
+    total_stages: includeHousekeeping ? 12 : 10,
     backlog: snapshot?.summary?.backlog || state.current_backlog || null,
     forecast: snapshot?.forecast || state.forecast || null,
     completion: snapshot?.summary?.completion || state.completion || null,
@@ -748,10 +831,12 @@ function printForecast(snapshot) {
   console.log("ONE_TIME_CATCHUP_FORECAST");
   console.log(`  open_sources=${backlog.open_sources} source_ai_reviews=${backlog.source_ai_reviews} move_review_later=${backlog.sources_to_review_later}`);
   console.log(`  monitor_sources=${backlog.monitor_eligible_sources} missing_visuals=${backlog.monitor_eligible_missing_visuals}`);
+  console.log(`  localization_latest_pending=${backlog.snapshot_localization_latest_pending} historical_fallbacks=${backlog.snapshot_localization_historical_unavailable}`);
   console.log(`  active_awards=${backlog.active_awards} missing_public_facts=${backlog.awards_missing_public_facts} never_reconciled=${backlog.awards_never_reconciled}`);
   console.log(`  latest_failed_reconciliations=${backlog.reconciliation_latest_failed_awards} unresolved_audit_errors=${backlog.latest_unresolved_audit_errors}`);
   console.log(`  gemini_model=${forecast.model} mode=${forecast.gemini_mode} estimated_cost=$${forecast.estimated_total_cost_usd.toFixed(2)} range=$${forecast.estimated_cost_range_usd.low.toFixed(2)}-$${forecast.estimated_cost_range_usd.high.toFixed(2)}`);
   console.log(`  expected_time=${forecast.expected_time_hours.low}-${forecast.expected_time_hours.high}h conservative_external_batch_sla=${forecast.conservative_external_batch_sla_hours}h`);
+  console.log(`  localization_time=${forecast.estimated_snapshot_localization_hours.low}-${forecast.estimated_snapshot_localization_hours.high}h shards=${forecast.snapshot_localization_shards}`);
 }
 
 function printCompletion(snapshot) {
@@ -780,6 +865,7 @@ function newState() {
       source_batch_size: sourceBatchSize,
       source_parallel_jobs: sourceParallelJobs,
       visual_shards: visualShards,
+      localization_shards: localizationShards,
     },
     stages: {},
     commands: [],
@@ -787,6 +873,7 @@ function newState() {
     initial_backlog: null,
     current_backlog: null,
     forecast: null,
+    localization: null,
     completion: null,
     error: null,
   };
@@ -963,6 +1050,7 @@ Options:
   --reconcile-batch-size=500      Awards reconciled per deterministic pass
   --page-audit-batch-size=100     Requests per page-audit Batch job
   --visual-shards=1               Serialized R2 missing-baseline repair shard
+  --localization-shards=3         Parallel domain-sharded localization repair workers
   --include-housekeeping=true     Suppress historical noise and prune snapshots
   --state=<path>                  Durable resume state path
   --report=<path>                 Final report path

@@ -20,6 +20,8 @@ type SnapshotObject = {
 type SnapshotSide = {
   captured_at: string | null;
   focus_ratio?: number | null;
+  localization_status?: string | null;
+  localization_reason?: string | null;
   kind?: "webpage" | "pdf" | string;
   objects: Record<string, SnapshotObject>;
 };
@@ -436,7 +438,7 @@ function SnapshotBody({
         <SnapshotFrameActions
           activeVersion={version}
           canShowPrevious={canShowPrevious}
-          hasFocusTarget={focusRatio !== null}
+          localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio)}
           openLabel="Open PDF"
           openUrl={primaryObject.url}
           onVersionChange={onVersionChange}
@@ -456,7 +458,7 @@ function SnapshotBody({
       <SnapshotFrameActions
         activeVersion={version}
         canShowPrevious={canShowPrevious}
-        hasFocusTarget={focusRatio !== null}
+        localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio)}
         openLabel="Open image"
         openUrl={primaryObject.url}
         onVersionChange={onVersionChange}
@@ -512,7 +514,7 @@ function SnapshotInlineBody({
     <div className="source-snapshot-inline">
       <div className="source-snapshot-inline-actions">
         <div className="source-snapshot-version-control">
-          <span>{focusRatio !== null ? "Changed section" : "Screenshot not localized yet"}</span>
+          <span>{snapshotLocalizationLabel(activeSnapshot, focusRatio)}</span>
           <div className="source-snapshot-tabs source-snapshot-inline-tabs" aria-label="Screenshot version">
             <SnapshotTab
               active={resolvedVersion === "latest"}
@@ -558,14 +560,14 @@ function SnapshotInlineBody({
 function SnapshotFrameActions({
   activeVersion,
   canShowPrevious,
-  hasFocusTarget,
+  localizationLabel,
   openLabel,
   openUrl,
   onVersionChange,
 }: {
   activeVersion: SnapshotVersion;
   canShowPrevious: boolean;
-  hasFocusTarget: boolean;
+  localizationLabel: string;
   openLabel: string;
   openUrl: string;
   onVersionChange: (version: SnapshotVersion) => void;
@@ -573,7 +575,7 @@ function SnapshotFrameActions({
   return (
     <div className="source-snapshot-frame-actions">
       <div className="source-snapshot-version-control">
-        <span>{hasFocusTarget ? "Changed section" : "Screenshot not localized yet"}</span>
+        <span>{localizationLabel}</span>
         <div className="source-snapshot-tabs" aria-label="Screenshot version">
           <SnapshotTab
             active={activeVersion === "latest"}
@@ -673,4 +675,22 @@ function isSourceSnapshotResponse(value: unknown): value is SourceSnapshotRespon
 
 function formatSnapshotDate(value: string) {
   return formatCentralDateTime(value);
+}
+
+function snapshotLocalizationLabel(snapshot: SnapshotSide | null, focusRatio: number | null) {
+  if (focusRatio !== null) return "Changed section";
+  switch (snapshot?.localization_status) {
+    case "historical_layout_unavailable":
+      return "Historical screenshot has no location data";
+    case "capture_layout_unavailable":
+      return "Screenshot has no usable page layout";
+    case "evidence_not_found":
+      return "Changed text not found in this screenshot";
+    case "not_requested":
+      return "No exact change text available";
+    case "not_applicable":
+      return "Screenshot location unavailable";
+    default:
+      return "Screenshot localization pending";
+  }
 }

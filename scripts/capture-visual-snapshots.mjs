@@ -108,6 +108,8 @@ const shardCount = boundedInt(args["shard-count"] || env.AWARDPING_VISUAL_SHARD_
 const shardIndex = nonNegativeInt(args["shard-index"] || env.AWARDPING_VISUAL_SHARD_INDEX, 0);
 const includeNotDue = boolArg(args.all, false) || boolArg(args["include-not-due"], false);
 const sourceIdFilter = cleanText(args["source-id"]);
+const sourceIdsFile = cleanText(args["source-ids-file"]);
+const sourceIdsFilter = loadSourceIdsFilter(sourceIdsFile);
 const sourceUrlFilter = cleanText(args["source-url"]);
 const awardFilter = cleanText(args.award);
 const continuous = boolArg(args.continuous, false);
@@ -2509,6 +2511,14 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       page_readiness: pageReadiness,
       scroll_activation: scrollActivation,
       page_settle: pageSettle,
+      localization: captureLocalizationMetadata({
+        kind: "webpage",
+        capture_profile: captureProfile,
+        capture_behavior_version: captureBehaviorVersion,
+        captured_at: capturedAt,
+        dimensions,
+        page_settle: pageSettle,
+      }),
       counter_stability: counterStability,
       expanded_content: expanded,
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
@@ -5146,7 +5156,9 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
   }
 
   try {
-    const result = await syncR2SnapshotPair(source, capture);
+    const result = localizationRepair
+      ? await syncR2LocalizationLatest(source, capture)
+      : await syncR2SnapshotPair(source, capture);
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
     existingR2SnapshotSourceIds.add(source.id);
@@ -5624,6 +5636,28 @@ async function syncR2SnapshotPair(source, capture) {
   };
 }
 
+async function syncR2LocalizationLatest(source, capture) {
+  const client = getR2Client();
+  const existingRecord = await loadR2SnapshotRecord(source.id);
+  const latestFiles = captureR2Files(capture);
+  const latestKeys = await uploadR2CaptureFiles(client, source.id, latestFiles);
+  await deleteR2LatestObjectsNotInCapture(client, source.id, latestKeys);
+  await deleteR2ExpansionStateObjects(client, source.id, ["latest"]);
+
+  await upsertR2SnapshotRecord(source, capture, {
+    latestKeys,
+    previousObjectKeys: jsonObjectOrEmpty(existingRecord?.previous_object_keys),
+    previousHashes: jsonObjectOrEmpty(existingRecord?.previous_hashes),
+    previousMetadata: jsonObjectOrEmpty(existingRecord?.previous_metadata),
+    previousCapturedAt: existingRecord?.previous_captured_at || null,
+  });
+
+  return {
+    uploaded: Object.keys(latestKeys).length,
+    rotated: 0,
+  };
+}
+
 async function syncR2BackfillLatestOnly(source, capture) {
   const client = getR2Client();
   const latestFiles = captureR2Files(capture);
@@ -5692,7 +5726,7 @@ async function loadR2SnapshotRecord(sourceId) {
   const { data, error } = await supabase
     .from("shared_award_source_visual_snapshots")
     .select(
-      "latest_captured_at, latest_object_keys, latest_hashes, latest_metadata",
+      "latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata",
     )
     .eq("shared_award_source_id", sourceId)
     .maybeSingle();
@@ -5759,9 +5793,9 @@ async function deleteR2LatestObjectsNotInCapture(client, sourceId, latestKeys) {
   }
 }
 
-async function deleteR2ExpansionStateObjects(client, sourceId) {
+async function deleteR2ExpansionStateObjects(client, sourceId, versions = ["latest", "previous"]) {
   const deletes = [];
-  for (const slot of ["latest", "previous"]) {
+  for (const slot of versions) {
     for (let index = 1; index <= 24; index += 1) {
       const fileName = `expansion-state-${String(index).padStart(2, "0")}.jpg`;
       deletes.push(deleteR2Object(client, r2SnapshotKey(sourceId, slot, fileName)));
@@ -5898,6 +5932,35 @@ function r2CaptureMetadata(capture) {
     pdf_text_error: capture.pdf_text_error || null,
     baseline_facts: capture.baseline_facts || null,
     baseline_facts_metadata: capture.baseline_facts_metadata || null,
+    localization: capture.localization || captureLocalizationMetadata(capture),
+  };
+}
+
+function captureLocalizationMetadata(capture) {
+  const pageSettle = jsonObjectOrEmpty(capture.page_settle);
+  const after = jsonObjectOrEmpty(pageSettle.after);
+  const dimensions = jsonObjectOrEmpty(capture.dimensions);
+  const hasLayoutSample = Boolean(cleanText(pageSettle.after_layout_sample));
+  const hasScrollHeight = Boolean(
+    nonNegativeNumber(dimensions.scroll_height, 0) ||
+      nonNegativeNumber(after.scroll_height, 0),
+  );
+  const exact = capture.kind !== "pdf" && hasLayoutSample && hasScrollHeight;
+  const repairAttempted = cleanText(capture.capture_profile) === "localization-repair";
+  return {
+    status: capture.kind === "pdf"
+      ? "not_applicable_pdf"
+      : exact
+        ? "ready"
+        : repairAttempted
+          ? "capture_layout_unavailable"
+          : "metadata_missing",
+    exact,
+    accounted_for: capture.kind === "pdf" || exact || repairAttempted,
+    layout_sample_present: hasLayoutSample,
+    scroll_height_present: hasScrollHeight,
+    capture_behavior_version: capture.capture_behavior_version || null,
+    captured_at: capture.captured_at || null,
   };
 }
 
@@ -6944,6 +7007,9 @@ function gateVisualReviewCandidateForAi({
 }
 
 async function loadSources(pageLimit) {
+  if (sourceIdsFilter.size) {
+    return loadSourcesByIds(pageLimit);
+  }
   let pageSize = Math.min(sourceLoadPageSize, pageLimit);
   const sources = [];
 
@@ -6979,6 +7045,18 @@ async function loadSources(pageLimit) {
     }
   }
 
+  return sources.slice(0, pageLimit);
+}
+
+async function loadSourcesByIds(pageLimit) {
+  const ids = [...sourceIdsFilter].slice(0, pageLimit);
+  const sources = [];
+  for (let index = 0; index < ids.length; index += 100) {
+    const chunk = ids.slice(index, index + 100);
+    const { data, error } = await buildSourcesQuery(chunk).range(0, chunk.length - 1);
+    if (error) throw new Error(describeSupabaseError(error, "load filtered shared award sources"));
+    sources.push(...filterMonitorableSourcesForCapture((data || []).filter(sourceMatchesShard)));
+  }
   return sources.slice(0, pageLimit);
 }
 
@@ -7208,7 +7286,7 @@ function sourceSortKey(source) {
   ].join("\t");
 }
 
-function buildSourcesQuery() {
+function buildSourcesQuery(sourceIds = []) {
   let query = supabase
     .from("shared_award_sources")
     .select(
@@ -7216,6 +7294,10 @@ function buildSourcesQuery() {
     )
     .eq("shared_awards.status", "active")
     .eq("admin_review_status", "open");
+
+  if (sourceIds.length) {
+    query = query.in("id", sourceIds);
+  }
 
   if (localizationRepair) {
     query = query.order("id", { ascending: true });
@@ -10210,6 +10292,27 @@ function nextVisualSourceCheckDate() {
 
 function escapeLike(value) {
   return value.replaceAll("\\", "\\\\").replaceAll("%", "\\%").replaceAll("_", "\\_");
+}
+
+function loadSourceIdsFilter(value) {
+  if (!value) return new Set();
+  const path = isAbsolute(value) ? value : resolve(root, value);
+  if (!existsSync(path)) throw new Error(`Source IDs file does not exist: ${path}`);
+  const raw = readFileSync(path, "utf8").trim();
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw);
+    const values = Array.isArray(parsed)
+      ? parsed
+      : Array.isArray(parsed?.repair_source_ids)
+        ? parsed.repair_source_ids
+        : Array.isArray(parsed?.source_ids)
+          ? parsed.source_ids
+          : [];
+    return new Set(values.map(cleanText).filter(Boolean));
+  } catch {
+    return new Set(raw.split(/\r?\n|,/).map(cleanText).filter(Boolean));
+  }
 }
 
 function parseArgs(values) {

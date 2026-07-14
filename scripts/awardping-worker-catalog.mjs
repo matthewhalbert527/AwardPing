@@ -133,7 +133,7 @@ export const atomicTasks = [
     laneId: "orchestration",
     label: "One-Time Catch-Up",
     detail:
-      "Forecasts and drains the temporary source-review, missing-baseline, reconciliation, page-audit, and visual-review backlog, then exits so only daily monitoring remains.",
+      "Forecasts and drains source review, missing baselines, reconciliation, page and visual review, and current snapshot localization, then exits so only daily monitoring remains.",
     cost: "Gemini Batch only with gemini-2.5-flash-lite; forecasts live time and cost before applying.",
     run: {
       kind: "script",
