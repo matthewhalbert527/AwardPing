@@ -26,9 +26,47 @@ Then:
 2. Paste the Gemini API key when prompted.
 3. Accept the Scheduled Task when prompted.
 
-The old hosted `awardping-worker-windows.zip` updater has been retired. Update
-the worker by editing this repo and copying changed worker files into
-`%LOCALAPPDATA%\AwardPingWorker\app` on this PC.
+The old hosted `awardping-worker-windows.zip` updater has been retired. Do not
+copy individual files into the installed `app` folder. That misses root runner
+scripts, dependency changes, and Scheduled Task updates.
+
+## Safe Worker Update
+
+Deploy a reviewed revision in this order:
+
+1. Apply and verify its Supabase migrations.
+2. Run the repository tests and commit the exact revision being deployed.
+3. From that revision, run:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1" -UpdateOnly
+   ```
+
+   Update mode builds and validates a complete staged app and npm dependency
+   tree before it pauses anything. It then pauses only AwardPing tasks and
+   worker processes whose command lines target this exact install root, copies
+   local environment/report state, and switches complete app directories. A
+   workspace catch-up running from this repository is outside that process
+   scope and is not stopped. If staging fails, the installed app is untouched;
+   a completed switch keeps the prior complete app temporarily as a rollback.
+
+   Updated and newly created tasks are registered disabled until every wrapper,
+   action target, runtime script, dependency, and task definition validates.
+   On success, current task actions and settings are installed while each
+   existing task keeps its prior schedule, principal, enabled state, and
+   running state. Legacy tasks are retired only after that task-set commit. On
+   failure, newly created tasks are removed and the complete original task XML
+   set is restored exactly. Tasks remain disabled if neither the old nor new
+   app is complete enough to run. The installer also refuses to overwrite a
+   fixed AwardPing task or Startup-folder launcher owned by another install
+   root or a custom Task Scheduler path.
+4. Compare repository and installed hashes for both policy JSON files and the
+   policy, suppression, visual-review, capture, and baseline worker scripts.
+   Confirm the three visual shard tasks still run daily at 6 PM and the
+   downstream task runs hourly with `SuppressionSweepLimit` in its action.
+5. Inspect the first downstream log after deployment. It must show, in order,
+   `visual-review-batch`, `change-event-suppression-sweep`,
+   `award-reconciliation`, and `page-audit-batch`, with a zero final exit code.
 
 ## Baseline Completion Watchdog
 

@@ -10,7 +10,8 @@ param(
   [int]$DirectCatchupThreshold = 1000,
   [decimal]$CostCapUsd = 10,
   [int]$IntervalMinutes = 60,
-  [switch]$Install
+  [switch]$Install,
+  [switch]$InstallDisabled
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +92,7 @@ function Install-WatchdogTask {
   $settings.DisallowStartIfOnBatteries = $false
   $settings.StopIfGoingOnBatteries = $false
   $settings.Hidden = $true
+  if ($InstallDisabled) { $settings.Enabled = $false }
 
   Register-ScheduledTask `
     -TaskName $taskName `

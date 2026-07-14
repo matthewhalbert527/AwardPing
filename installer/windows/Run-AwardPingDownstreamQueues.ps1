@@ -3,10 +3,13 @@ param(
   [int]$IntervalMinutes = 60,
   [int]$VisualReviewLimit = 250,
   [int]$VisualReviewBatchSize = 25,
+  [int]$SuppressionSweepLimit = 10000,
+  [int]$SuppressionSweepBatchSize = 500,
   [int]$ReconciliationLimit = 250,
   [int]$PageAuditLimit = 250,
   [int]$PageAuditBatchSize = 50,
-  [switch]$Install
+  [switch]$Install,
+  [switch]$InstallDisabled
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,7 +54,7 @@ function Install-PipelineTask {
 
   $action = New-ScheduledTaskAction `
     -Execute "powershell.exe" `
-    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -VisualReviewLimit $VisualReviewLimit -VisualReviewBatchSize $VisualReviewBatchSize -ReconciliationLimit $ReconciliationLimit -PageAuditLimit $PageAuditLimit -PageAuditBatchSize $PageAuditBatchSize"
+    -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -VisualReviewLimit $VisualReviewLimit -VisualReviewBatchSize $VisualReviewBatchSize -SuppressionSweepLimit $SuppressionSweepLimit -SuppressionSweepBatchSize $SuppressionSweepBatchSize -ReconciliationLimit $ReconciliationLimit -PageAuditLimit $PageAuditLimit -PageAuditBatchSize $PageAuditBatchSize"
   $trigger = New-ScheduledTaskTrigger `
     -Once `
     -At (Get-Date).AddMinutes(1) `
@@ -64,16 +67,17 @@ function Install-PipelineTask {
   $settings.DisallowStartIfOnBatteries = $false
   $settings.StopIfGoingOnBatteries = $false
   $settings.Hidden = $true
+  if ($InstallDisabled) { $settings.Enabled = $false }
 
   Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Polls/submits Gemini Batch visual reviews, reconciles pending public award facts, and processes flagged page audits." `
+    -Description "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy to existing updates, reconciles pending public award facts, and processes flagged page audits." `
     -Force | Out-Null
 
-  Write-PipelineLog "installed task=$TaskName interval_minutes=$IntervalMinutes visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize"
+  Write-PipelineLog "installed task=$TaskName interval_minutes=$IntervalMinutes visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize suppression_sweep_limit=$SuppressionSweepLimit suppression_sweep_batch_size=$SuppressionSweepBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize"
 }
 
 function Test-PipelineLockActive {
@@ -136,10 +140,14 @@ if (Test-PipelineLockActive) {
 }
 
 $visualReviewScript = Join-Path $AppDir "scripts\process-visual-review-batch.mjs"
+$suppressionSweepScript = Join-Path $AppDir "scripts\cleanup-change-event-noise.mjs"
 $reconciliationScript = Join-Path $AppDir "scripts\reconcile-impacted-award-pages.mjs"
 $pageAuditScript = Join-Path $AppDir "scripts\process-page-audit-batch.mjs"
 if (-not (Test-Path -LiteralPath $visualReviewScript)) {
   throw "Missing visual review Batch worker: $visualReviewScript"
+}
+if (-not (Test-Path -LiteralPath $suppressionSweepScript)) {
+  throw "Missing change-event suppression sweep: $suppressionSweepScript"
 }
 if (-not (Test-Path -LiteralPath $reconciliationScript)) {
   throw "Missing award reconciliation worker: $reconciliationScript"
@@ -153,9 +161,10 @@ $script:NodePath = (Get-Command node.exe -ErrorAction Stop).Source
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $runLog = Join-Path $LogDir "awardping-downstream-queues-$stamp.log"
 Set-Content -LiteralPath $LockPath -Value "pid=$PID started=$(Get-Date -Format o) log=$runLog" -Encoding ASCII
-Set-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_START pid=$PID started=$(Get-Date -Format o) visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize" -Encoding UTF8
+Set-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_START pid=$PID started=$(Get-Date -Format o) visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize suppression_sweep_limit=$SuppressionSweepLimit suppression_sweep_batch_size=$SuppressionSweepBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize" -Encoding UTF8
 
 $visualExit = 1
+$suppressionExit = 1
 $reconciliationExit = 1
 $pageAuditExit = 1
 try {
@@ -169,6 +178,18 @@ try {
       "--inline-threshold=$VisualReviewBatchSize",
       "--poll=true",
       "--submit=true",
+      "--apply=true"
+    ) `
+    -RunLog $runLog
+
+  $suppressionExit = Invoke-NodeStep `
+    -Name "change-event-suppression-sweep" `
+    -ScriptPath $suppressionSweepScript `
+    -Arguments @(
+      "--env", ".env.worker.local",
+      "--limit=$SuppressionSweepLimit",
+      "--batch-size=$SuppressionSweepBatchSize",
+      "--suppression-source=scheduled-downstream-policy-sweep",
       "--apply=true"
     ) `
     -RunLog $runLog
@@ -203,7 +224,7 @@ try {
   Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
 }
 
-$exitCode = if ($visualExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0) { 0 } else { 1 }
-Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode visual_exit=$visualExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit finished=$(Get-Date -Format o)" -Encoding UTF8
-Write-PipelineLog "finished exit_code=$exitCode visual_exit=$visualExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit run_log=$runLog"
+$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0) { 0 } else { 1 }
+Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit finished=$(Get-Date -Format o)" -Encoding UTF8
+Write-PipelineLog "finished exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit run_log=$runLog"
 exit $exitCode

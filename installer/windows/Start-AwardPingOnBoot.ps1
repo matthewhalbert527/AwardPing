@@ -1,6 +1,7 @@
 param(
   [string]$InstallRoot = "",
-  [switch]$Install
+  [switch]$Install,
+  [switch]$InstallDisabled
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,6 +57,7 @@ function Install-StartupTask {
   $settings.DisallowStartIfOnBatteries = $false
   $settings.StopIfGoingOnBatteries = $false
   $settings.Hidden = $true
+  if ($InstallDisabled) { $settings.Enabled = $false }
 
   try {
     Register-ScheduledTask `
@@ -70,6 +72,10 @@ function Install-StartupTask {
     Write-StartupLog "installed task=$TaskName install_root=$InstallRoot"
   } catch {
     Write-StartupLog "task_install_failed_using_startup_folder task=$TaskName message=$($_.Exception.Message)"
+    if ($InstallDisabled) {
+      Write-StartupLog "startup_folder_fallback_deferred_until_update_commit task=$TaskName"
+      return
+    }
     Install-StartupFolderLauncher -TargetScript $targetScript
   }
 }
