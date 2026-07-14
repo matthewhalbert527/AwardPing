@@ -8,6 +8,13 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const foreignKeyIndexMigration = readFileSync(
+  new URL(
+    "../supabase/migrations/20260714223500_index_visual_rejection_candidate_fk.sql",
+    import.meta.url,
+  ),
+  "utf8",
+);
 
 describe("monitoring worker state migration", () => {
   it("serializes publication and baseline side effects per source", () => {
@@ -47,6 +54,13 @@ describe("monitoring worker state migration", () => {
     expect(migration).toContain(
       "shared_award_source_id uuid not null references public.shared_award_sources(id) on delete cascade",
     );
+    expect(foreignKeyIndexMigration).toContain(
+      "shared_award_visual_rejection_ledger_candidate_idx",
+    );
+    expect(foreignKeyIndexMigration).toContain(
+      "on public.shared_award_visual_rejection_ledger (candidate_id)",
+    );
+    expect(foreignKeyIndexMigration).toContain("where candidate_id is not null");
   });
 
   it("creates a paired timestamp-and-id cursor for bounded retro sweeps", () => {
