@@ -5662,7 +5662,10 @@ function getR2Client() {
 
 async function loadExistingR2SnapshotSourceIds(sourceIds) {
   const existing = new Set();
-  const chunkSize = 500;
+  // Supabase/PostgREST encodes `.in()` values in the GET query string. A
+  // 500-item UUID batch can exceed proxy URL limits and surface as a generic
+  // `fetch failed`, even while normal health queries succeed.
+  const chunkSize = 100;
 
   for (let index = 0; index < sourceIds.length; index += chunkSize) {
     const chunk = sourceIds.slice(index, index + chunkSize);
