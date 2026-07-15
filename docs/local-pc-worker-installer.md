@@ -64,7 +64,8 @@ Deploy a reviewed revision in this order:
    policy, suppression, visual-review, capture, and baseline worker scripts.
    Confirm the three visual shard tasks still run daily at 6 PM and the
    downstream task runs hourly with `SuppressionSweepLimit` in its action.
-5. Inspect the first downstream log after deployment. It must show, in order,
+5. Inspect the first downstream log after deployment. It must show the
+   independent `visual-nightly-report` finalizer first, followed in order by
    `visual-review-batch`, `change-event-suppression-sweep`,
    `award-reconciliation`, and `page-audit-batch`, with a zero final exit code.
 
@@ -153,6 +154,50 @@ Logs are written to:
 ```text
 %LOCALAPPDATA%\AwardPingWorker\logs
 ```
+
+## 6 PM Capture Reports
+
+The three scheduled visual shards share one Chicago monitoring date and report
+independently. A process can exit successfully while individual pages fail, so
+the report keeps execution status separate from operational health:
+
+- `healthy`: all three shards reported and no failure was recorded.
+- `degraded`: all three shards reported, but one or more source or downstream
+  failures need attention.
+- `failed`: a shard stopped or was blocked.
+- `incomplete`: the scan window ended without all three shard reports.
+
+Each shard writes an atomic start record, refreshes its heartbeat while it is
+active, and finishes with `run_health`, grouped failures, and a `repair_plan`.
+A stale heartbeat is reported separately from a shard that never launched.
+After every scheduled shard finishes, the worker atomically rebuilds:
+
+```text
+%LOCALAPPDATA%\AwardPingWorker\app\reports\visual-nightly-report-YYYY-MM-DD.json
+%LOCALAPPDATA%\AwardPingWorker\app\reports\visual-nightly-report-latest.json
+```
+
+The final report keeps only the newest attempt for each shard, so a retry does
+not double-count the scan. It lists a safe recovery for every failure class and
+never recommends changing a baseline simply to make an error disappear.
+The hourly downstream task runs the same locked finalizer before its queue work,
+so a common-cause launch failure still produces a three-shards-missing report
+after the 6 PM launch grace period. Rebuilds read only the due monitoring window,
+not the full report history.
+
+To read the latest local report and the three Scheduled Task results, run
+`6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`. To rebuild or print a report directly from
+the installed app:
+
+```powershell
+Push-Location "$env:LOCALAPPDATA\AwardPingWorker\app"
+npm run source:visual-nightly-report
+Pop-Location
+```
+
+The Admin dashboard shows the same operational view from
+`local_worker_runs.metadata`: three shard rows, captured-page and failure
+totals, failure groups, and the corresponding guarded repair instructions.
 
 ## Uninstall Scheduled Task
 

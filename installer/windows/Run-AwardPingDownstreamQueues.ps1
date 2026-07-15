@@ -74,7 +74,7 @@ function Install-PipelineTask {
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy to existing updates, reconciles pending public award facts, and processes flagged page audits." `
+    -Description "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy, reconciles pending public award facts, processes flagged page audits, and finalizes the 6 PM capture report." `
     -Force | Out-Null
 
   Write-PipelineLog "installed task=$TaskName interval_minutes=$IntervalMinutes visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize suppression_sweep_limit=$SuppressionSweepLimit suppression_sweep_batch_size=$SuppressionSweepBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize"
@@ -143,6 +143,7 @@ $visualReviewScript = Join-Path $AppDir "scripts\process-visual-review-batch.mjs
 $suppressionSweepScript = Join-Path $AppDir "scripts\cleanup-change-event-noise.mjs"
 $reconciliationScript = Join-Path $AppDir "scripts\reconcile-impacted-award-pages.mjs"
 $pageAuditScript = Join-Path $AppDir "scripts\process-page-audit-batch.mjs"
+$nightlyReportScript = Join-Path $AppDir "scripts\report-visual-nightly.mjs"
 if (-not (Test-Path -LiteralPath $visualReviewScript)) {
   throw "Missing visual review Batch worker: $visualReviewScript"
 }
@@ -154,6 +155,9 @@ if (-not (Test-Path -LiteralPath $reconciliationScript)) {
 }
 if (-not (Test-Path -LiteralPath $pageAuditScript)) {
   throw "Missing page audit Batch worker: $pageAuditScript"
+}
+if (-not (Test-Path -LiteralPath $nightlyReportScript)) {
+  throw "Missing 6 PM capture report finalizer: $nightlyReportScript"
 }
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -167,7 +171,17 @@ $visualExit = 1
 $suppressionExit = 1
 $reconciliationExit = 1
 $pageAuditExit = 1
+$nightlyReportExit = 1
 try {
+  $nightlyReportExit = Invoke-NodeStep `
+    -Name "visual-nightly-report" `
+    -ScriptPath $nightlyReportScript `
+    -Arguments @(
+      "--reports-dir", (Join-Path $AppDir "reports"),
+      "--write=true"
+    ) `
+    -RunLog $runLog
+
   $visualExit = Invoke-NodeStep `
     -Name "visual-review-batch" `
     -ScriptPath $visualReviewScript `
@@ -220,11 +234,12 @@ try {
       "--apply=true"
     ) `
     -RunLog $runLog
+
 } finally {
   Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
 }
 
-$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0) { 0 } else { 1 }
-Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit finished=$(Get-Date -Format o)" -Encoding UTF8
-Write-PipelineLog "finished exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit run_log=$runLog"
+$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0 -and $nightlyReportExit -eq 0) { 0 } else { 1 }
+Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit finished=$(Get-Date -Format o)" -Encoding UTF8
+Write-PipelineLog "finished exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit run_log=$runLog"
 exit $exitCode

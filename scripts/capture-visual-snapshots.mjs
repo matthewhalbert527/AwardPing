@@ -2,15 +2,12 @@
 import crypto from "node:crypto";
 import {
   appendFileSync,
-  closeSync,
   copyFileSync,
   existsSync,
   mkdirSync,
-  openSync,
   readdirSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -46,6 +43,16 @@ import {
   atomicWriteJson,
   withVisualBaselineLockAsync,
 } from "./lib/visual-baseline-lock.mjs";
+import {
+  acquireFileLock,
+  annotateVisualRunReport,
+  buildNightlyVisualReport,
+  buildVisualRunReportSummary,
+  isDailyVisualShardReport,
+  monitoringDateForTimestamp,
+  monitoringDateForVisualReportFilename,
+  shouldReplaceLatestNightlyReport,
+} from "./lib/visual-capture-run-report.mjs";
 import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
 import {
   refreshedLatestVisualSnapshotHistory,
@@ -125,6 +132,11 @@ const brokenSourcesCsvPath = join(brokenSourcesDir, "broken-sources-current.csv"
 const limit = positiveInt(args.limit, 25);
 const shardCount = boundedInt(args["shard-count"] || env.AWARDPING_VISUAL_SHARD_COUNT, 1, 1, 64);
 const shardIndex = nonNegativeInt(args["shard-index"] || env.AWARDPING_VISUAL_SHARD_INDEX, 0);
+const requestedRunTrigger = cleanText(args["run-trigger"] || env.AWARDPING_VISUAL_RUN_TRIGGER).toLowerCase();
+const runTrigger = ["scheduled", "maintenance", "manual"].includes(requestedRunTrigger)
+  ? requestedRunTrigger
+  : "manual";
+const requestedRunCohortId = cleanText(args["run-cohort-id"] || env.AWARDPING_VISUAL_RUN_COHORT_ID);
 const includeNotDue = boolArg(args.all, false) || boolArg(args["include-not-due"], false);
 const sourceIdFilter = cleanText(args["source-id"]);
 const sourceIdsFile = cleanText(args["source-ids-file"]);
@@ -521,12 +533,36 @@ async function runOnce() {
 
   const startedAt = new Date().toISOString();
   const runStamp = timestampForPath(startedAt);
-  const reportPath = join(root, "reports", `visual-snapshot-run-${runStamp}.json`);
+  const attemptId = crypto.randomUUID();
+  const monitoringDate = monitoringDateForTimestamp(startedAt);
+  const runCohortId = requestedRunCohortId || (
+    runTrigger === "scheduled"
+      ? `visual-nightly:${monitoringDate}`
+      : `visual-${runTrigger}:${runStamp}`
+  );
+  const reportPath = join(
+    root,
+    "reports",
+    `visual-snapshot-run-${runStamp}-shard-${shardIndex + 1}-${attemptId.slice(0, 8)}.json`,
+  );
   const report = {
+    report_schema_version: 2,
     archive_root: archiveRoot,
     monitoring_policy: currentVisualReviewPolicyIdentity(),
     monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+    run_identity: {
+      workflow: "visual_capture",
+      trigger: runTrigger,
+      cohort_id: runCohortId,
+      monitoring_date: monitoringDate,
+      timezone: "America/Chicago",
+      shard_count: shardCount,
+      shard_index: shardIndex,
+      attempt_id: attemptId,
+    },
+    worker_run_id: null,
     started_at: startedAt,
+    heartbeat_at: startedAt,
     finished_at: null,
     status: "running",
     stop_reason: null,
@@ -542,6 +578,8 @@ async function runOnce() {
       shard_count: shardCount,
       shard_index: shardCount > 1 ? shardIndex : null,
       shard_key: shardCount > 1 ? "source_url_hostname" : null,
+      run_trigger: runTrigger,
+      run_cohort_id: runCohortId,
       include_not_due: includeNotDue,
       source_id: sourceIdFilter || null,
       source_url: sourceUrlFilter || null,
@@ -778,12 +816,17 @@ async function runOnce() {
       note: "Gemini CLI / Antigravity does not expose exact token or account quota usage in worker logs. Check the Gemini account usage page for the account-level monthly allowance.",
     },
     errors: [],
+    run_health: null,
+    failure_groups: [],
+    repair_plan: { requires_operator: false, actions: [] },
     saved_change_paths: [],
     review_paths: [],
     rejected_paths: [],
   };
 
-  const heartbeat = startRunHeartbeat(report);
+  atomicWriteJson(reportPath, report);
+  console.log(`REPORT_STARTED ${reportPath}`);
+  const heartbeat = startRunHeartbeat(report, reportPath);
   const browserStates = new Set();
   const browserStatesByWorker = new Map();
   let workerRunId = null;
@@ -941,6 +984,7 @@ async function runOnce() {
     }
 
     workerRunId = await startWorkerRun(report);
+    report.worker_run_id = workerRunId;
     let sources = await loadSources(limit);
     coverageSources = sources;
     report.baseline_coverage_start = summarizeBaselineCoverage(coverageSources);
@@ -1044,16 +1088,59 @@ async function runOnce() {
       await maybePruneSnapshotHistory(report);
     }
     report.finished_at = new Date().toISOString();
-    mkdirSync(dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
+    report.heartbeat_at = report.finished_at;
+    annotateVisualRunReport(report);
+    atomicWriteJson(reportPath, report);
     console.log(`REPORT ${reportPath}`);
+    await maybeWriteNightlyVisualReport(report, reportPath);
   }
 }
 
-function startRunHeartbeat(report) {
+async function maybeWriteNightlyVisualReport(report, reportPath) {
+  if (!isDailyVisualShardReport(report)) return;
+
+  const reportDir = dirname(reportPath);
+  const monitoringDate = report.run_identity?.monitoring_date ||
+    monitoringDateForTimestamp(report.started_at);
+  let releaseLock = null;
+  try {
+    releaseLock = await acquireFileLock(join(reportDir, "visual-nightly-report.lock"));
+    const reports = readdirSync(reportDir)
+      .filter((name) => /^visual-snapshot-run-.*\.json$/i.test(name))
+      .filter((name) => {
+        const filenameDate = monitoringDateForVisualReportFilename(name);
+        return !filenameDate || filenameDate === monitoringDate;
+      })
+      .map((name) => readJsonIfExists(join(reportDir, name)))
+      .filter(Boolean);
+    const nightlyReport = buildNightlyVisualReport(reports, {
+      monitoringDate,
+      generatedAt: report.finished_at,
+    });
+    const datedPath = join(reportDir, `visual-nightly-report-${monitoringDate}.json`);
+    const latestPath = join(reportDir, "visual-nightly-report-latest.json");
+    atomicWriteJson(datedPath, nightlyReport);
+    if (shouldReplaceLatestNightlyReport(readJsonIfExists(latestPath), nightlyReport)) {
+      atomicWriteJson(latestPath, nightlyReport);
+    }
+    console.log(`NIGHTLY_REPORT ${datedPath} status=${nightlyReport.status}`);
+  } catch (error) {
+    console.log(`NIGHTLY_REPORT_FAILED ${errorMessage(error)}`);
+  } finally {
+    releaseLock?.();
+  }
+}
+
+function startRunHeartbeat(report, reportPath) {
   const intervalMs = heartbeatMinutes * 60 * 1000;
   const startedAtMs = Date.now();
   const timer = setInterval(() => {
+    report.heartbeat_at = new Date().toISOString();
+    try {
+      atomicWriteJson(reportPath, report);
+    } catch (error) {
+      console.log(`REPORT_HEARTBEAT_FAILED ${errorMessage(error)}`);
+    }
     const elapsedMinutes = Math.round((Date.now() - startedAtMs) / 60_000);
     const processed =
       report.checked + report.failed + report.skipped_existing_baseline + report.skipped_pdf;
@@ -7294,6 +7381,14 @@ async function loadSources(pageLimit) {
         continue;
       }
       if (sources.length > 0 && isSupabaseTransientLoadError(error)) {
+        if (runTrigger === "scheduled") {
+          throw new Error(
+            `Scheduled source load incomplete after ${sources.length} rows: ${describeSupabaseError(
+              error,
+              "load shared award sources",
+            )}`,
+          );
+        }
         console.warn(
           `SOURCE_LOAD_PARTIAL using loaded=${sources.length} after ${describeSupabaseError(
             error,
@@ -7852,8 +7947,12 @@ async function finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, 
 }
 
 function visualWorkerMetadata(report) {
+  const structuredReport = buildVisualRunReportSummary(report);
   return {
+    report_schema_version: 2,
     kind: "visual_snapshot",
+    heartbeat_at: new Date().toISOString(),
+    run_identity: report.run_identity,
     archive_root: report.archive_root,
     monitoring_policy: report.monitoring_policy || currentVisualReviewPolicyIdentity(),
     monitoring_policy_bundle:
@@ -8040,6 +8139,9 @@ function visualWorkerMetadata(report) {
       review: report.review_paths.slice(0, 20),
       rejected: report.rejected_paths.slice(0, 20),
     },
+    run_health: structuredReport.run_health,
+    failure_groups: structuredReport.failure_groups,
+    repair_plan: structuredReport.repair_plan,
     errors: report.errors.slice(0, 20),
   };
 }
@@ -8107,43 +8209,6 @@ async function recordBrokenSourceFailure(source, message) {
   console.log(`BROKEN_SOURCE recorded status=${statusCode || "unknown"} ${sourceLabel(source)}`);
 }
 
-async function acquireFileLock(lockPath, timeoutMs = 30_000) {
-  const startedAt = Date.now();
-
-  while (true) {
-    try {
-      const fd = openSync(lockPath, "wx");
-      writeFileSync(fd, `pid=${process.pid} started=${new Date().toISOString()}\n`, "utf8");
-      return () => {
-        try {
-          closeSync(fd);
-        } catch {
-          // ignore close failures during process shutdown
-        }
-        rmSync(lockPath, { force: true });
-      };
-    } catch (error) {
-      if (error?.code !== "EEXIST") throw error;
-
-      try {
-        const ageMs = Date.now() - statSync(lockPath).mtimeMs;
-        if (ageMs > 2 * 60 * 1000) {
-          rmSync(lockPath, { force: true });
-          continue;
-        }
-      } catch {
-        rmSync(lockPath, { force: true });
-        continue;
-      }
-
-      if (Date.now() - startedAt > timeoutMs) {
-        throw new Error(`Timed out waiting for file lock: ${lockPath}`);
-      }
-      await sleep(100 + Math.floor(Math.random() * 150));
-    }
-  }
-}
-
 function parseHttpStatusFromMessage(message) {
   const match = String(message || "").match(/\bHTTP\s+(\d{3})(?:\s+([^\n\r]+))?/i);
   return {
@@ -8158,12 +8223,12 @@ function failureTypeFromMessage(message, statusCode) {
   if (lower.includes("security_challenge") || lower.includes("robot challenge")) return "security_challenge";
   if (lower.includes("soft_404") || lower.includes("page not found")) return "soft_404";
   if (lower.includes("access_blocked") || lower.includes("access denied")) return "access_blocked";
-  if (statusCode) return `http_${statusCode}`;
   if (lower.includes("err_http_response_code_failure")) return "http_response_failure";
   if (lower.includes("timeout")) return "timeout";
   if (lower.includes("pdf download failed")) return "pdf_download_failed";
   if (lower.includes("net::err_name_not_resolved")) return "dns_error";
   if (lower.includes("net::err_connection")) return "connection_error";
+  if (statusCode && statusCode >= 400) return `http_${statusCode}`;
   return "capture_failure";
 }
 

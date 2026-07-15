@@ -195,7 +195,7 @@ describe("admin run report", () => {
       });
   });
 
-  it("reports the latest completed overnight daily run and its child work", () => {
+  it("reports the completed 6 PM triad without mixing in maintenance work", () => {
     const parent = workerRun(
       {
         id: "daily-parent",
@@ -206,27 +206,30 @@ describe("admin run report", () => {
       },
       { kind: "maintenance", profile: "daily" },
     );
-    const visual = workerRun(
+    const visuals = [0, 1, 2].map((shardIndex) => workerRun(
       {
-        id: "daily-visual",
+        id: `daily-visual-${shardIndex}`,
+        worker_name: `local-visual-snapshot-worker-shard-${shardIndex + 1}-of-3`,
         status: "succeeded",
-        checked_count: 1_200,
-        failed_count: 7,
-        started_at: "2026-07-09T23:00:02.000Z",
-        finished_at: "2026-07-10T05:55:00.000Z",
+        checked_count: 400,
+        failed_count: shardIndex === 0 ? 7 : 0,
+        started_at: `2026-07-09T23:00:0${shardIndex}.000Z`,
+        finished_at: `2026-07-10T05:5${shardIndex}:00.000Z`,
       },
       {
         kind: "visual_snapshot",
-        counts: { candidate_changes: 12, published_updates: 2 },
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex },
+        baseline_coverage: { start: { loaded_sources: 400 } },
       },
-    );
+    ));
 
-    const feed = buildAdminRunReportFeed([parent, visual], new Date("2026-07-10T12:00:00.000Z"));
+    const feed = buildAdminRunReportFeed([parent, ...visuals], new Date("2026-07-10T12:00:00.000Z"));
 
     expect(feed.current).toBeNull();
-    expect(feed.overnight?.summary).toContain("checked 1,200 source pages");
-    expect(feed.overnight?.summary).toContain("published 2 verified updates");
+    expect(feed.overnight?.summary).toContain("captured 1,200 pages");
+    expect(feed.overnight?.summary).toContain("7 source failures");
     expect(feed.overnight?.items.find((item) => item.key === "failures")?.value).toBe(7);
+    expect(feed.overnight?.status).toBe("degraded");
   });
 
   it("plainly reports an overnight run that recorded no useful work", () => {
@@ -268,5 +271,222 @@ describe("admin run report", () => {
     );
 
     expect(buildAdminRunReportFeed([stale], new Date("2026-07-10T12:00:00.000Z")).current).toBeNull();
+  });
+
+  it("reports the complete scheduled triad as degraded and includes safe repairs", () => {
+    const runs = [0, 1, 2].map((shardIndex) => workerRun(
+      {
+        id: `shard-${shardIndex}`,
+        worker_name: `local-visual-snapshot-worker-shard-${shardIndex + 1}-of-3`,
+        checked_count: shardIndex === 0 ? 98 : 100,
+        failed_count: shardIndex === 0 ? 2 : 0,
+        started_at: `2026-07-14T23:00:0${shardIndex}.000Z`,
+        finished_at: `2026-07-14T23:30:0${shardIndex}.000Z`,
+      },
+      {
+        kind: "visual_snapshot",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex },
+        run_health: {
+          status: shardIndex === 0 ? "degraded" : "healthy",
+          incident_count: shardIndex === 0 ? 2 : 0,
+        },
+        baseline_coverage: { start: { loaded_sources: 100 } },
+        failure_groups: shardIndex === 0 ? [{
+          code: "rate_limited",
+          label: "Source rate-limited the scan",
+          severity: "warning",
+          count: 2,
+          source_id_count: 2,
+          retry_mode: "automatic_next_scan",
+          repair_code: "backoff_then_retry",
+          solution: "Allow the next scheduled retry with backoff.",
+        }] : [],
+      },
+    ));
+
+    const report = buildAdminRunReportFeed(
+      runs,
+      new Date("2026-07-15T12:00:00.000Z"),
+    ).visualNightly;
+
+    expect(report).toMatchObject({
+      monitoringDate: "2026-07-14",
+      status: "degraded",
+      expectedShards: 3,
+      observedShards: 3,
+      completedShards: 3,
+      missingShards: [],
+      loaded: 300,
+      checked: 298,
+      failed: 2,
+      incidents: 2,
+    });
+    expect(report?.failureGroups).toEqual([
+      expect.objectContaining({
+        code: "rate_limited",
+        count: 2,
+        retryMode: "automatic_next_scan",
+        solution: "Allow the next scheduled retry with backoff.",
+      }),
+    ]);
+  });
+
+  it("does not call a nightly scan successful when a shard is missing", () => {
+    const runs = [0, 2].map((shardIndex) => workerRun(
+      {
+        id: `shard-${shardIndex}`,
+        worker_name: `local-visual-snapshot-worker-shard-${shardIndex + 1}-of-3`,
+        checked_count: 100,
+        started_at: `2026-07-14T23:00:0${shardIndex}.000Z`,
+        finished_at: `2026-07-14T23:30:0${shardIndex}.000Z`,
+      },
+      {
+        kind: "visual_snapshot",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex },
+        run_health: { status: "healthy", incident_count: 0 },
+      },
+    ));
+
+    const report = buildAdminRunReportFeed(
+      runs,
+      new Date("2026-07-15T04:30:00.000Z"),
+    ).visualNightly;
+
+    expect(report).toMatchObject({
+      status: "incomplete",
+      completedShards: 2,
+      missingShards: [2],
+    });
+  });
+
+  it("uses only the latest attempt per shard and ignores maintenance shards", () => {
+    const olderFailure = workerRun(
+      {
+        id: "old-failure",
+        worker_name: "local-visual-snapshot-worker-shard-1-of-3",
+        status: "failed",
+        failed_count: 1,
+        started_at: "2026-07-14T23:00:00.000Z",
+        finished_at: "2026-07-14T23:10:00.000Z",
+      },
+      {
+        kind: "visual_snapshot",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: 0 },
+      },
+    );
+    const retry = workerRun(
+      {
+        id: "retry",
+        worker_name: "local-visual-snapshot-worker-shard-1-of-3",
+        checked_count: 100,
+        started_at: "2026-07-15T00:00:00.000Z",
+        finished_at: "2026-07-15T00:20:00.000Z",
+      },
+      {
+        kind: "visual_snapshot",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: 0 },
+      },
+    );
+    const shardTwo = workerRun(
+      {
+        id: "shard-two",
+        worker_name: "local-visual-snapshot-worker-shard-2-of-3",
+        checked_count: 100,
+        started_at: "2026-07-14T23:00:01.000Z",
+      },
+      { kind: "visual_snapshot", run_identity: { trigger: "scheduled", shard_count: 3, shard_index: 1 } },
+    );
+    const shardThree = workerRun(
+      {
+        id: "shard-three",
+        worker_name: "local-visual-snapshot-worker-shard-3-of-3",
+        checked_count: 100,
+        started_at: "2026-07-14T23:00:02.000Z",
+      },
+      { kind: "visual_snapshot", run_identity: { trigger: "scheduled", shard_count: 3, shard_index: 2 } },
+    );
+    const maintenance = workerRun(
+      {
+        id: "maintenance-shard",
+        worker_name: "local-visual-snapshot-worker-shard-2-of-3",
+        checked_count: 999,
+        started_at: "2026-07-15T01:00:00.000Z",
+      },
+      { kind: "visual_snapshot", run_identity: { trigger: "maintenance", shard_count: 3, shard_index: 1 } },
+    );
+    const untaggedCatchup = workerRun(
+      {
+        id: "untagged-catchup",
+        worker_name: "local-visual-snapshot-worker-shard-1-of-3",
+        checked_count: 999,
+        started_at: "2026-07-15T04:43:00.000Z",
+      },
+      { kind: "visual_snapshot" },
+    );
+
+    const report = buildAdminRunReportFeed(
+      [olderFailure, retry, shardTwo, shardThree, maintenance, untaggedCatchup],
+      new Date("2026-07-15T12:00:00.000Z"),
+    ).visualNightly;
+
+    expect(report).toMatchObject({ status: "healthy", checked: 300, failed: 0 });
+    expect(report?.shards.find((shard) => shard.shardNumber === 1)?.runId).toBe("retry");
+  });
+
+  it("reports the latest due window as missed instead of showing a stale success", () => {
+    const prior = [0, 1, 2].map((shardIndex) => workerRun(
+      {
+        id: `prior-${shardIndex}`,
+        worker_name: `local-visual-snapshot-worker-shard-${shardIndex + 1}-of-3`,
+        checked_count: 100,
+        started_at: `2026-07-13T23:00:0${shardIndex}.000Z`,
+      },
+      { kind: "visual_snapshot", run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex } },
+    ));
+
+    const report = buildAdminRunReportFeed(
+      prior,
+      new Date("2026-07-15T12:00:00.000Z"),
+    ).visualNightly;
+
+    expect(report).toMatchObject({
+      monitoringDate: "2026-07-14",
+      status: "missed",
+      observedShards: 0,
+      missingShards: [1, 2, 3],
+    });
+    expect(report?.failureGroups).toEqual([
+      expect.objectContaining({ code: "missing_shard", count: 3 }),
+    ]);
+  });
+
+  it("marks a running shard with a stale heartbeat as stalled and failed", () => {
+    const stalled = workerRun(
+      {
+        id: "stalled-shard",
+        worker_name: "local-visual-snapshot-worker-shard-1-of-3",
+        status: "running",
+        finished_at: null,
+        started_at: "2026-07-14T23:00:00.000Z",
+      },
+      {
+        kind: "visual_snapshot",
+        heartbeat_at: "2026-07-15T04:00:00.000Z",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: 0 },
+      },
+    );
+
+    const feed = buildAdminRunReportFeed(
+      [stalled],
+      new Date("2026-07-15T04:30:00.000Z"),
+    );
+    const report = feed.visualNightly;
+
+    expect(feed.current).toBeNull();
+    expect(report?.status).toBe("failed");
+    expect(report?.shards[0]).toMatchObject({ status: "failed", stalled: true });
+    expect(report?.failureGroups).toEqual([
+      expect.objectContaining({ code: "stalled_shard", count: 1 }),
+    ]);
   });
 });

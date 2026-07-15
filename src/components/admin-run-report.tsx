@@ -2,7 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Activity, AlertTriangle, CheckCircle2, Clock3 } from "lucide-react";
-import type { AdminRunReportFeed, RunReportDigest } from "@/lib/admin-run-report";
+import type {
+  AdminRunReportFeed,
+  RunReportDigest,
+  VisualNightlyReport,
+  VisualNightlyStatus,
+} from "@/lib/admin-run-report";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
 type MaintenanceStatusResponse = {
@@ -66,7 +71,7 @@ export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFee
   }, []);
 
   const primary = feed.current || feed.overnight;
-  const badgeLabel = feed.current ? "Live" : "Last overnight";
+  const badgeLabel = feed.current ? "Live" : feed.visualNightly ? "6 PM scan" : "Last overnight";
 
   return (
     <section className="card admin-section-card admin-run-report">
@@ -103,9 +108,9 @@ export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFee
             </div>
           )}
 
-          {feed.current && feed.overnight && (
+          {feed.current && feed.overnight && !feed.overnight.isRunning && (
             <div className="admin-run-report-previous">
-              {feed.overnight.status === "failed" ? (
+              {["failed", "degraded"].includes(feed.overnight.status) ? (
                 <AlertTriangle size={16} aria-hidden="true" />
               ) : (
                 <CheckCircle2 size={16} aria-hidden="true" />
@@ -116,6 +121,8 @@ export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFee
               </div>
             </div>
           )}
+
+          {feed.visualNightly && <VisualNightlyDetails report={feed.visualNightly} />}
         </>
       ) : (
         <p className="text-sm font-semibold leading-6 text-[var(--muted)]">
@@ -131,6 +138,67 @@ export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFee
   );
 }
 
+function VisualNightlyDetails({ report }: { report: VisualNightlyReport }) {
+  return (
+    <div className="admin-visual-nightly">
+      <div className="admin-visual-nightly-heading">
+        <div>
+          <strong>6 PM capture report · {formatMonitoringDate(report.monitoringDate)}</strong>
+          <p>{report.summary}</p>
+        </div>
+        <span className={`badge admin-visual-nightly-badge admin-visual-nightly-badge-${report.status}`}>
+          {nightlyStatusLabel(report.status)}
+        </span>
+      </div>
+
+      <div className="admin-visual-nightly-summary" aria-label="6 PM capture totals">
+        <span><strong>{report.completedShards}/{report.expectedShards}</strong> shards complete</span>
+        <span><strong>{formatNumber(report.loaded)}</strong> sources loaded</span>
+        <span><strong>{formatNumber(report.checked)}</strong> pages captured</span>
+        <span><strong>{formatNumber(report.failed)}</strong> source failures</span>
+        <span><strong>{formatPercent(report.failureRatePercent)}</strong> failures / loaded</span>
+      </div>
+
+      <div className="admin-visual-nightly-shards" aria-label="6 PM capture shards">
+        {Array.from({ length: report.expectedShards }, (_, index) => {
+          const shardNumber = index + 1;
+          const shard = report.shards.find((candidate) => candidate.shardNumber === shardNumber);
+          return (
+            <div className={`admin-visual-nightly-shard ${shard ? `admin-visual-nightly-shard-${shard.status}` : "admin-visual-nightly-shard-missing"}`} key={shardNumber}>
+              <div>
+                <strong>Shard {shardNumber}</strong>
+                <span>{shard ? shard.stalled ? "Stalled" : nightlyStatusLabel(shard.status) : "Missing"}</span>
+              </div>
+              <small>
+                {shard
+                  ? `${formatNumber(shard.checked)} captured · ${formatNumber(shard.failed)} failed`
+                  : "No run reported for this shard"}
+              </small>
+            </div>
+          );
+        })}
+      </div>
+
+      {report.failureGroups.length > 0 && (
+        <div className="admin-visual-nightly-actions">
+          <strong>Failures and safe repairs</strong>
+          <div>
+            {report.failureGroups.map((group) => (
+              <article key={group.code}>
+                <div>
+                  <strong>{formatNumber(group.count)} × {group.label}</strong>
+                  <span>{retryModeLabel(group.retryMode)}</span>
+                </div>
+                <p>{group.solution}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RunTime({ digest }: { digest: RunReportDigest }) {
   if (digest.isRunning) {
     return (
@@ -143,7 +211,7 @@ function RunTime({ digest }: { digest: RunReportDigest }) {
 
   return (
     <span className="admin-run-report-time">
-      {digest.status === "failed" ? (
+      {["failed", "degraded"].includes(digest.status) ? (
         <AlertTriangle size={14} aria-hidden="true" />
       ) : (
         <CheckCircle2 size={14} aria-hidden="true" />
@@ -151,6 +219,49 @@ function RunTime({ digest }: { digest: RunReportDigest }) {
       {digest.finishedAt ? `Finished ${formatCentralDateTime(digest.finishedAt)}` : "Finished"}
     </span>
   );
+}
+
+function nightlyStatusLabel(status: VisualNightlyStatus | "healthy" | "degraded" | "failed" | "running") {
+  const labels: Record<string, string> = {
+    scheduled: "Scheduled",
+    running: "Running",
+    healthy: "Healthy",
+    degraded: "Needs attention",
+    failed: "Failed",
+    incomplete: "Incomplete",
+    missed: "Missed",
+  };
+  return labels[status] || status;
+}
+
+function retryModeLabel(value: string) {
+  const labels: Record<string, string> = {
+    automatic_next_scan: "Automatic next-scan retry",
+    automatic_then_manual: "Retry once, then inspect",
+    operator_guarded: "Operator verification required",
+    manual_source_review: "Manual source review",
+    resume_idempotently: "Resume the failed handoff only",
+    retry_failed_stage: "Retry the failed stage only",
+    repair_then_restart_shard: "Repair dependency, then restart shard",
+    targeted_evidence_repair: "Targeted evidence repair",
+    manual_investigation: "Manual investigation",
+  };
+  return labels[value] || value.replaceAll("_", " ");
+}
+
+function formatMonitoringDate(value: string) {
+  const parsed = new Date(`${value}T12:00:00-05:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "America/Chicago",
+  }).format(parsed);
+}
+
+function formatPercent(value: number) {
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)}%`;
 }
 
 function formatNumber(value: number) {

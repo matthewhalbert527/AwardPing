@@ -1414,6 +1414,7 @@ async function loadAdminSourceCounts(
     sourceErrors,
     staleChecks,
     recentRuns,
+    recentVisualRuns,
     visualSnapshotCount,
     cycleCoverageResult,
   ] = await Promise.all([
@@ -1447,6 +1448,12 @@ async function loadAdminSourceCounts(
       .eq("admin_review_status", "open")
       .lt("last_checked_at", staleCutoff),
     admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(20),
+    admin
+      .from("local_worker_runs")
+      .select("*")
+      .like("worker_name", "%visual-snapshot-worker-shard%")
+      .order("started_at", { ascending: false })
+      .limit(100),
     countActiveOpenSourcesWithVisualSnapshots(admin),
     options.includeCycleCoverage
       ? loadCycleCoverageResult(admin)
@@ -1461,6 +1468,7 @@ async function loadAdminSourceCounts(
     sourceErrors.error?.message,
     staleChecks.error?.message,
     recentRuns.error?.message,
+    recentVisualRuns.error?.message,
     visualSnapshotCount.error?.message,
     cycleCoverageResult.error,
   ].filter((message): message is string => Boolean(message));
@@ -1479,9 +1487,20 @@ async function loadAdminSourceCounts(
     sourceErrors: sourceErrors.count || 0,
     staleChecks: staleChecks.count || 0,
     cycleCoverage: cycleCoverageResult.coverage,
-    recentRuns: (recentRuns.data || []) as LocalWorkerRun[],
+    recentRuns: mergeWorkerRuns(
+      (recentRuns.data || []) as LocalWorkerRun[],
+      (recentVisualRuns.data || []) as LocalWorkerRun[],
+    ),
     loadErrors,
   };
+}
+
+function mergeWorkerRuns(...groups: LocalWorkerRun[][]) {
+  return [...new Map(
+    groups.flat().map((run) => [run.id, run]),
+  ).values()].sort(
+    (left, right) => new Date(right.started_at).getTime() - new Date(left.started_at).getTime(),
+  );
 }
 
 async function loadCycleCoverageResult(admin: AdminClient) {

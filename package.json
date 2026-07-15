@@ -32,6 +32,7 @@
     "source:reconcile-listings": "node scripts/reconcile-listing-opportunities.mjs",
     "source:backfill-slug-aliases": "node scripts/backfill-award-slug-aliases.mjs",
     "source:visual-snapshots": "node scripts/capture-visual-snapshots.mjs",
+    "source:visual-nightly-report": "node scripts/report-visual-nightly.mjs",
     "source:visual-review-batch": "node scripts/process-visual-review-batch.mjs",
     "source:visual-review-status": "node scripts/read-visual-review-batch-status.mjs",
     "source:intake": "node scripts/process-source-intake-requests.mjs",

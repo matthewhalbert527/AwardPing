@@ -33,6 +33,18 @@ const installerDocs = readFileSync(
   resolve(root, "docs", "local-pc-worker-installer.md"),
   "utf8",
 );
+const maintenanceRunner = readFileSync(
+  resolve(root, "scripts", "run-awardping-maintenance.mjs"),
+  "utf8",
+);
+const captureWorker = readFileSync(
+  resolve(root, "scripts", "capture-visual-snapshots.mjs"),
+  "utf8",
+);
+const nightlyReporter = readFileSync(
+  resolve(root, "scripts", "report-visual-nightly.mjs"),
+  "utf8",
+);
 
 function extractPowerShellFunction(source, name, nextName) {
   const start = source.indexOf(`function ${name} {`);
@@ -322,9 +334,16 @@ describe("Windows worker update safety", () => {
     const sweepIndex = downstream.indexOf('-Name "change-event-suppression-sweep"');
     const reconciliationIndex = downstream.indexOf('-Name "award-reconciliation"');
     const auditIndex = downstream.indexOf('-Name "page-audit-batch"');
+    const nightlyReportIndex = downstream.indexOf('-Name "visual-nightly-report"');
     expect(sweepIndex).toBeGreaterThan(visualIndex);
     expect(reconciliationIndex).toBeGreaterThan(sweepIndex);
     expect(auditIndex).toBeGreaterThan(reconciliationIndex);
+    expect(nightlyReportIndex).toBeGreaterThan(0);
+    expect(visualIndex).toBeGreaterThan(nightlyReportIndex);
+    expect(downstream).toContain('scripts\\report-visual-nightly.mjs');
+    expect(downstream).toContain('$nightlyReportExit -eq 0');
+    expect(captureWorker).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
+    expect(nightlyReporter).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
   });
 
   it("documents the complete update command instead of manual app-file copying", () => {
@@ -334,6 +353,25 @@ describe("Windows worker update safety", () => {
     expect(installerDocs).toContain("complete staged app");
     expect(installerDocs).toContain("workspace catch-up");
     expect(installerDocs).toMatch(/Do not\r?\ncopy individual files/);
+  });
+
+  it("wires the three 6 PM shards into scheduled cohort reporting", () => {
+    expect(installer).toContain("-ShardIndex $shardIndex -RunTrigger scheduled");
+    expect(installer).toContain('"--run-trigger"');
+    expect(installer).toContain('`$RunTrigger');
+    expect(installer).toContain("scripts\\lib\\visual-capture-run-report.mjs");
+    expect(installer).toContain("scripts\\report-visual-nightly.mjs");
+    expect(installer).toContain("visual-nightly-report-latest.json");
+    expect(installer).toContain("Failures / loaded sources");
+    expect(installerDocs).toContain("6 PM Capture Reports");
+    expect(installerDocs).toContain("newest attempt for each shard");
+    expect(maintenanceRunner).toContain('"--run-trigger=maintenance"');
+    expect(maintenanceRunner).toContain("--run-cohort-id=${maintenanceRun?.id");
+    const nightlyWriterStart = captureWorker.indexOf("async function maybeWriteNightlyVisualReport");
+    const nightlyWriterEnd = captureWorker.indexOf("function startRunHeartbeat", nightlyWriterStart);
+    const nightlyWriter = captureWorker.slice(nightlyWriterStart, nightlyWriterEnd);
+    expect(nightlyWriter.indexOf("try {")).toBeLessThan(nightlyWriter.indexOf("await acquireFileLock"));
+    expect(nightlyWriter).toContain("releaseLock?.()");
   });
 
   it("publishes the overnight policy bundle as a quiesced rollback transaction", () => {

@@ -681,6 +681,8 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $InstallRoot "Run-AwardPingDownstreamQueues.ps1"),
       (Join-Path $InstallRoot "Start-AwardPingOnBoot.ps1"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
+      (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
       (Join-Path $AppDir "scripts\backfill-baseline-facts.mjs"),
       (Join-Path $AppDir "scripts\process-visual-review-batch.mjs"),
       (Join-Path $AppDir "scripts\cleanup-change-event-noise.mjs"),
@@ -738,6 +740,8 @@ function Get-AwardPingInstalledRuntimeProblems {
     if (-not [string]::IsNullOrWhiteSpace($AppSourceRoot)) {
       foreach ($relativePath in @(
         "scripts\capture-visual-snapshots.mjs",
+        "scripts\lib\visual-capture-run-report.mjs",
+        "scripts\report-visual-nightly.mjs",
         "scripts\backfill-baseline-facts.mjs",
         "scripts\process-visual-review-batch.mjs",
         "scripts\cleanup-change-event-noise.mjs",
@@ -833,7 +837,7 @@ function Get-AwardPingTaskRestoreXml {
     }
     $descriptionNode = $document.SelectSingleNode("/task:Task/task:RegistrationInfo/task:Description", $namespace)
     if ($descriptionNode) {
-      $descriptionNode.InnerText = "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy to existing updates, reconciles pending public award facts, and processes flagged page audits."
+      $descriptionNode.InnerText = "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy, reconciles pending public award facts, processes flagged page audits, and finalizes the 6 PM capture report."
     }
   }
 
@@ -1390,7 +1394,9 @@ param(
   [int]`$MaxRestarts = 3,
   [int]`$CompleteMissingBatchLimit = 250,
   [int]`$ShardCount = 1,
-  [int]`$ShardIndex = 0
+  [int]`$ShardIndex = 0,
+  [ValidateSet("scheduled", "maintenance", "manual")]
+  [string]`$RunTrigger = "manual"
 )
 
 `$ErrorActionPreference = "Stop"
@@ -1464,6 +1470,8 @@ if (-not (Test-Path -LiteralPath `$workerScript)) {
   [string]`$ShardCount,
   "--shard-index",
   [string]`$ShardIndex,
+  "--run-trigger",
+  `$RunTrigger,
   "--extract-baseline-info=false"
 )
 if (`$All) { `$workerArgs += "--all=true" }
@@ -1489,7 +1497,7 @@ if (`$CompleteMissingBaselines) {
 }
 Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath" -Encoding ASCII
 `$exitCode = 1
-Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
+Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
 try {
   `$attempt = 0
   do {
@@ -1580,6 +1588,7 @@ pause
 `$LogDir = Join-Path `$InstallRoot "logs"
 `$LockPath = Join-Path `$InstallRoot "visual-worker.lock"
 `$ReportDir = Join-Path `$InstallRoot "app\reports"
+`$NightlyReportPath = Join-Path `$ReportDir "visual-nightly-report-latest.json"
 
 function Count-Matches {
   param(
@@ -1623,6 +1632,7 @@ function Read-JsonIfExists {
 `$reportLine = `$lines | Select-String -Pattern "^REPORT " | Select-Object -Last 1
 `$reportPath = if (`$reportLine) { `$reportLine.Line -replace "^REPORT\s+", "" } else { "" }
 `$report = Read-JsonIfExists -Path `$reportPath
+`$nightlyReport = Read-JsonIfExists -Path `$NightlyReportPath
 
 if (-not `$running -and -not `$report -and (Test-Path `$ReportDir)) {
   `$latestReport = Get-ChildItem -Path `$ReportDir -Filter "visual-snapshot-run-*.json" -ErrorAction SilentlyContinue |
@@ -1695,12 +1705,34 @@ if (`$report) {
   }
 }
 
+if (`$nightlyReport) {
+  Write-Host ""
+  Write-Host "Latest 6 PM capture report"
+  Write-Host "Monitoring date: `$(`$nightlyReport.monitoring_date)"
+  Write-Host "Operational status: `$(`$nightlyReport.status)"
+  Write-Host "Shards complete: `$(`$nightlyReport.completed_shards) / `$(`$nightlyReport.expected_shards)"
+  if (@(`$nightlyReport.missing_shards).Count -gt 0) {
+    Write-Host "Missing shards: `$(@(`$nightlyReport.missing_shards) -join ', ')"
+  }
+  Write-Host "Sources loaded: `$(`$nightlyReport.totals.loaded_sources)"
+  Write-Host "Pages captured: `$(`$nightlyReport.totals.pages_captured)"
+  Write-Host "Source failures: `$(`$nightlyReport.totals.source_failures)"
+  Write-Host "Failures / loaded sources: `$(`$nightlyReport.totals.failure_rate_percent)%"
+  foreach (`$failureGroup in @(`$nightlyReport.failure_groups)) {
+    Write-Host ""
+    Write-Host "`$(`$failureGroup.count) x `$(`$failureGroup.label) [`$(`$failureGroup.retry_mode)]"
+    Write-Host "Solution: `$(`$failureGroup.solution)"
+  }
+  Write-Host "Nightly report: `$NightlyReportPath"
+}
+
 Write-Host ""
-`$taskInfo = Get-ScheduledTaskInfo -TaskName "AwardPing Visual Snapshot Worker" -ErrorAction SilentlyContinue
-if (`$taskInfo) {
-  Write-Host "Scheduled task next run: `$(`$taskInfo.NextRunTime)"
-  Write-Host "Scheduled task last run: `$(`$taskInfo.LastRunTime)"
-  Write-Host "Scheduled task last result: `$(`$taskInfo.LastTaskResult)"
+foreach (`$shardNumber in 1..3) {
+  `$taskName = "AwardPing Visual Snapshot Worker Shard `$shardNumber"
+  `$taskInfo = Get-ScheduledTaskInfo -TaskName `$taskName -ErrorAction SilentlyContinue
+  if (`$taskInfo) {
+    Write-Host "`$taskName next=`$(`$taskInfo.NextRunTime) last=`$(`$taskInfo.LastRunTime) result=`$(`$taskInfo.LastTaskResult)"
+  }
 }
 "@
 
@@ -1923,7 +1955,7 @@ function Register-VisualSnapshotTask {
 
   for ($shardIndex = 0; $shardIndex -lt 3; $shardIndex += 1) {
     $taskName = "AwardPing Visual Snapshot Worker Shard $($shardIndex + 1)"
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000 -WebConcurrency 3 -ShardCount 3 -ShardIndex $shardIndex"
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000 -WebConcurrency 3 -ShardCount 3 -ShardIndex $shardIndex -RunTrigger scheduled"
     $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
     $settings.DisallowStartIfOnBatteries = $false

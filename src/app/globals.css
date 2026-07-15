@@ -4358,6 +4358,149 @@ a {
   color: var(--brand);
 }
 
+.admin-visual-nightly {
+  display: grid;
+  gap: 0.62rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid rgba(215, 225, 239, 0.95);
+}
+
+.admin-visual-nightly-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  align-items: flex-start;
+}
+
+.admin-visual-nightly-heading > div > strong,
+.admin-visual-nightly-actions > strong {
+  color: var(--foreground);
+  font-size: 0.8rem;
+  font-weight: 930;
+}
+
+.admin-visual-nightly-heading p {
+  margin-top: 0.18rem;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 680;
+  line-height: 1.45;
+}
+
+.admin-visual-nightly-badge-degraded,
+.admin-visual-nightly-badge-failed,
+.admin-visual-nightly-badge-incomplete,
+.admin-visual-nightly-badge-missed {
+  background: var(--brand-pink-soft);
+  color: var(--brand);
+}
+
+.admin-visual-nightly-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.38rem 0.9rem;
+  color: #657187;
+  font-size: 0.69rem;
+  font-weight: 720;
+}
+
+.admin-visual-nightly-summary strong {
+  color: var(--foreground);
+  font-weight: 920;
+}
+
+.admin-visual-nightly-shards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.admin-visual-nightly-shard {
+  display: grid;
+  gap: 0.28rem;
+  min-width: 0;
+  padding: 0.55rem 0.62rem;
+  border: 1px solid rgba(215, 225, 239, 0.95);
+  border-radius: 0.65rem;
+  background: rgba(248, 250, 253, 0.82);
+}
+
+.admin-visual-nightly-shard > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.admin-visual-nightly-shard strong,
+.admin-visual-nightly-shard span {
+  font-size: 0.7rem;
+  font-weight: 900;
+}
+
+.admin-visual-nightly-shard span,
+.admin-visual-nightly-shard small {
+  color: #718096;
+}
+
+.admin-visual-nightly-shard small {
+  font-size: 0.66rem;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
+.admin-visual-nightly-shard-degraded,
+.admin-visual-nightly-shard-failed,
+.admin-visual-nightly-shard-missing {
+  border-color: color-mix(in srgb, var(--brand) 25%, #d7e1ef);
+  background: color-mix(in srgb, var(--brand-pink-soft) 42%, white);
+}
+
+.admin-visual-nightly-actions {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.admin-visual-nightly-actions > div {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.admin-visual-nightly-actions article {
+  display: grid;
+  gap: 0.24rem;
+  padding: 0.56rem 0.62rem;
+  border-left: 3px solid var(--brand);
+  border-radius: 0 0.5rem 0.5rem 0;
+  background: color-mix(in srgb, var(--brand-pink-soft) 36%, white);
+}
+
+.admin-visual-nightly-actions article > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.28rem 0.7rem;
+}
+
+.admin-visual-nightly-actions article strong {
+  color: var(--foreground);
+  font-size: 0.71rem;
+  font-weight: 920;
+}
+
+.admin-visual-nightly-actions article span {
+  color: var(--brand);
+  font-size: 0.65rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.admin-visual-nightly-actions article p {
+  color: #616e82;
+  font-size: 0.69rem;
+  font-weight: 680;
+  line-height: 1.45;
+}
+
 .admin-dashboard-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -4969,6 +5112,18 @@ a {
 
   .admin-run-report-item:nth-child(odd) {
     border-left: 0;
+  }
+
+  .admin-visual-nightly-heading {
+    display: grid;
+  }
+
+  .admin-visual-nightly-heading .badge {
+    justify-self: start;
+  }
+
+  .admin-visual-nightly-shards {
+    grid-template-columns: 1fr;
   }
 
   .admin-page-title {

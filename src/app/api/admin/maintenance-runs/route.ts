@@ -118,7 +118,7 @@ async function loadWorkerReportRows() {
       .like("worker_name", "%visual-snapshot-worker-shard%")
       .neq("status", "running")
       .order("started_at", { ascending: false })
-      .limit(18),
+      .limit(100),
   ]);
 
   const warningParts = [
