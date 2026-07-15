@@ -15,10 +15,12 @@ const coverageHelper = readFileSync(
 );
 
 describe("historical event visual evidence script wiring", () => {
-  it("is dry-run by default and uses the single idempotent backfill RPC only with --apply", () => {
+  it("is dry-run by default and selects the strict or snapshotted-legacy idempotent RPC only with --apply", () => {
     expect(backfill).toContain("const apply = boolArg(args.apply, false)");
-    expect(backfill).toContain("publishEvidence: apply ? (evidence) => backfillEvidence(event.id, evidence) : null");
-    expect(backfill).toContain('supabase.rpc("backfill_shared_award_visual_event_evidence"');
+    expect(backfill).toContain("publishEvidence: apply");
+    expect(backfill).toContain('"backfill_legacy_shared_award_visual_event_evidence"');
+    expect(backfill).toContain('"backfill_shared_award_visual_event_evidence"');
+    expect(backfill).toContain("const { data, error } = await supabase.rpc(rpc");
     expect(backfill).toContain("p_event_id: eventId");
     expect(backfill).toContain("p_evidence: backfillEvidenceRpcPayload(evidence)");
     expect(backfill).toContain("executeHistoricalBackfillStep({");
@@ -42,6 +44,10 @@ describe("historical event visual evidence script wiring", () => {
     expect(backfillHelper).toContain('visualHashFromCandidate(candidate, "new")');
     expect(backfill).toContain("preparePublishedVisualEventEvidence({");
     expect(backfill).toContain("historical: true");
+    expect(backfill).toContain("legacyFallback");
+    expect(backfill).toContain('from("shared_award_legacy_visual_evidence_eligibility")');
+    expect(backfillHelper).toContain('methods.has("candidate_signature")');
+    expect(backfillHelper).toContain('methods.has("reverse_worker_metadata")');
   });
 
   it("reports operator-safe repair guidance for unresolved and operational failures", () => {

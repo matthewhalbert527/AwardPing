@@ -33,6 +33,7 @@ export async function preparePublishedVisualEventEvidence({
   artifactStore = null,
   now = new Date().toISOString(),
   historical = false,
+  legacyFallback = false,
 } = {}) {
   assertCandidateIdentity(candidate, source);
   const ownsStore = !artifactStore;
@@ -47,6 +48,7 @@ export async function preparePublishedVisualEventEvidence({
           archiveRoot,
           store,
           historical,
+          legacyFallback,
         });
       } catch (error) {
         if (!historical || !isDeterministicVisualArtifactError(error)) throw error;
@@ -252,11 +254,15 @@ async function prepareSide({
   archiveRoot,
   store,
   historical,
+  legacyFallback,
 }) {
   const resolved = resolveCandidateVisualEvidenceSide({ candidate, side, archiveRoot });
   if (!resolved.ref) {
     if (!historical) throw new Error(`Candidate ${candidate.id} has no ${side} snapshot reference.`);
     return unavailableHistoricalSide(side, "unavailable_image_missing", "The historical candidate has no retained snapshot reference.");
+  }
+  if (legacyFallback) {
+    return prepareLegacyFallbackSide({ side, candidate, resolved, store });
   }
   validateCandidateArtifactManifest({ candidate, side, resolved, historical });
   preflightCandidateArtifactBytes({ candidate, side, resolved, historical });
@@ -559,6 +565,218 @@ async function createAndUploadVerifiedCrop({
     source_image_object_key: sourceImage.object_key,
     source_image_sha256: sourceImageSha256,
     source_image_byte_length: imageBody.length,
+  };
+}
+
+async function prepareLegacyFallbackSide({ side, candidate, resolved, store }) {
+  if (resolved.kind !== "webpage") {
+    throw new DeterministicVisualArtifactError(
+      `Legacy candidate ${candidate.id} ${side} is not a webpage screenshot.`,
+      "legacy_fallback_not_webpage",
+    );
+  }
+  const expectedImageHash = cleanText(resolved.expected_main_hash).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(expectedImageHash)) {
+    throw new DeterministicVisualArtifactError(
+      `Legacy candidate ${candidate.id} ${side} has no candidate-bound image hash.`,
+      "candidate_visual_identity_missing",
+    );
+  }
+  const main = resolved.states.find((state) => state.kind === "main") || null;
+  if (!main?.image_path || !existsSync(main.image_path)) {
+    throw new DeterministicVisualArtifactError(
+      `Legacy candidate ${candidate.id} ${side} full screenshot is missing.`,
+      "visual_artifact_missing",
+    );
+  }
+  const mainImage = await uploadImageState({
+    store,
+    candidateId: candidate.id,
+    side,
+    state: main,
+    role: "main-full",
+    expectedSha256: expectedImageHash,
+    expectedByteLength: null,
+    requireExpectedManifest: false,
+    historical: true,
+  });
+  const originalMetadata = inspectLegacyOriginalMetadata(resolved);
+  const retainedText = inspectLegacyTextArtifact({ candidate, side, resolved });
+  const text = retainedText.status === "verified"
+    ? await uploadPathArtifact({
+        store,
+        candidateId: candidate.id,
+        side,
+        role: "text",
+        path: retainedText.path,
+        contentType: "text/plain; charset=utf-8",
+        expectedSha256: retainedText.expected_sha256,
+        expectedByteLength: retainedText.actual_byte_length,
+        requireExpectedManifest: true,
+        required: true,
+      })
+    : null;
+  const capturedAt = cleanText(resolved.ref?.captured_at || candidate.created_at) || null;
+  if (!capturedAt || !Number.isFinite(Date.parse(capturedAt))) {
+    throw new DeterministicVisualArtifactError(
+      `Legacy candidate ${candidate.id} ${side} has no stable capture timestamp.`,
+      "legacy_capture_timestamp_missing",
+    );
+  }
+  const recoveryMetadata = {
+    version: 1,
+    kind: "webpage",
+    recovery_contract: "pre-immutable-full-screenshot-fallback-v1",
+    candidate_id: candidate.id,
+    candidate_signature: candidate.candidate_signature,
+    change_event_id: cleanText(objectValue(candidate.worker_metadata).change_event_id) || null,
+    side,
+    captured_at: capturedAt,
+    image: {
+      sha256: mainImage.artifact.sha256,
+      byte_length: mainImage.artifact.byte_length,
+      width: mainImage.artifact.width,
+      height: mainImage.artifact.height,
+    },
+    candidate_hashes: {
+      image_hash: expectedImageHash,
+      text_hash: retainedText.expected_sha256,
+    },
+    original_metadata_status: originalMetadata.status,
+    original_metadata: originalMetadata.manifest,
+    retained_text_status: retainedText.status,
+    retained_text: {
+      expected_sha256: retainedText.expected_sha256,
+      actual_sha256: retainedText.actual_sha256,
+      actual_byte_length: retainedText.actual_byte_length,
+    },
+    localization_status: "full_screenshot_fallback",
+    exact_overlap: false,
+  };
+  const metadataBody = Buffer.from(`${stableManifestJson(recoveryMetadata)}\n`, "utf8");
+  const metadata = await uploadBufferArtifact({
+    store,
+    candidateId: candidate.id,
+    side,
+    role: "recovery-metadata",
+    body: metadataBody,
+    contentType: "application/json; charset=utf-8",
+    extension: "json",
+  });
+  const mainState = {
+    state_id: "main",
+    kind: "main",
+    label: null,
+    image: mainImage.artifact,
+    geometry: null,
+    geometry_hash: null,
+  };
+  return {
+    capture: {
+      full: mainImage.artifact,
+      metadata,
+      crop: null,
+      captured_at: capturedAt,
+      capture_hashes: {
+        image_hash: expectedImageHash,
+        text_hash: retainedText.status === "verified" ? retainedText.expected_sha256 : null,
+        file_hash: null,
+        layout_hash: null,
+      },
+      state_id: "main",
+      kind: "webpage",
+      main_full: mainImage.artifact,
+      thumbnail: null,
+      text,
+      layout: null,
+      states: [mainState],
+      legacy_recovery: {
+        original_metadata_status: originalMetadata.status,
+        text_identity_status: retainedText.status,
+        expected_text_hash: retainedText.expected_sha256,
+        actual_text_hash: retainedText.actual_sha256,
+      },
+    },
+    localization: localizationManifest({
+      side,
+      status: "full_screenshot_fallback",
+      required: true,
+      exact_overlap: false,
+      reason:
+        `The exact crop is unavailable for this pre-manifest candidate; the candidate-hash-bound full screenshot is shown. Original metadata status: ${originalMetadata.status}.`,
+    }),
+  };
+}
+
+function inspectLegacyTextArtifact({ candidate, side, resolved }) {
+  const expectedSha256 = cleanText(
+    side === "previous" ? candidate.previous_text_hash : candidate.new_text_hash,
+  ).toLowerCase() || null;
+  const path = cleanText(resolved?.file_refs?.text?.path);
+  if (!expectedSha256) {
+    return {
+      status: "not_recorded",
+      path: null,
+      expected_sha256: null,
+      actual_sha256: null,
+      actual_byte_length: null,
+    };
+  }
+  if (!path || !existsSync(path)) {
+    return {
+      status: "missing",
+      path: null,
+      expected_sha256: expectedSha256,
+      actual_sha256: null,
+      actual_byte_length: null,
+    };
+  }
+  const body = readFileSync(path);
+  const actualSha256 = sha256Buffer(body);
+  return {
+    status: actualSha256 === expectedSha256 ? "verified" : "sha256_mismatch",
+    path,
+    expected_sha256: expectedSha256,
+    actual_sha256: actualSha256,
+    actual_byte_length: body.length,
+  };
+}
+
+function inspectLegacyOriginalMetadata(resolved) {
+  const path = cleanText(resolved?.file_refs?.meta?.path);
+  const expectedSha256 = cleanText(resolved?.file_refs?.meta?.sha256).toLowerCase() || null;
+  const expectedByteLength = nonNegativeSafeInteger(resolved?.file_refs?.meta?.byte_length);
+  if (!path || !existsSync(path)) {
+    return {
+      status: "missing",
+      manifest: { expected_sha256: expectedSha256, expected_byte_length: expectedByteLength },
+    };
+  }
+  const body = readFileSync(path);
+  const actualSha256 = sha256Buffer(body);
+  let readableJson = true;
+  try {
+    JSON.parse(body.toString("utf8"));
+  } catch {
+    readableJson = false;
+  }
+  const status = expectedByteLength !== null && body.length !== expectedByteLength
+    ? "byte_length_mismatch"
+    : expectedSha256 && actualSha256 !== expectedSha256
+      ? "sha256_mismatch"
+      : !readableJson
+        ? "unreadable_json"
+        : "retained_untrusted_pre_manifest";
+  return {
+    status,
+    manifest: {
+      expected_sha256: expectedSha256,
+      expected_byte_length: expectedByteLength,
+      actual_sha256: actualSha256,
+      actual_byte_length: body.length,
+      readable_json: readableJson,
+      retained_as_authoritative_metadata: false,
+    },
   };
 }
 

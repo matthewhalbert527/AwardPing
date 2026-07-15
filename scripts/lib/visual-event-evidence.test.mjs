@@ -156,6 +156,108 @@ describe("published visual event evidence", () => {
     expect(evidence.localization.sides.previous.status).toBe("unavailable_exact_text_not_found");
   });
 
+  it("recovers a candidate-hash-bound legacy screenshot with canonical metadata and no crop", async () => {
+    const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-event-legacy-recovery-"));
+    temporary.push(archiveRoot);
+    const previous = await captureFixture(archiveRoot, "previous", "Deadline February 1");
+    const current = await captureFixture(archiveRoot, "current", "Deadline March 1");
+    previous.ref.local_paths.meta.byte_length += 7;
+    previous.ref.local_paths.meta.bytes += 7;
+    for (const ref of [previous.ref, current.ref]) {
+      delete ref.artifact_manifest;
+      delete ref.artifact_manifest_digest;
+    }
+    const candidate = {
+      ...candidateFixture(previous, current),
+      status: "published",
+      created_at: "2026-07-15T19:00:00.000Z",
+      worker_metadata: { change_event_id: "event-legacy-1" },
+      prompt_payload: {},
+    };
+    const store = memoryStore();
+
+    const evidence = await preparePublishedVisualEventEvidence({
+      candidate,
+      source: { id: "source-1", shared_award_id: "award-1" },
+      changeDetails: { exact_before: "Deadline February 1", exact_after: "Deadline March 1" },
+      archiveRoot,
+      artifactStore: store,
+      historical: true,
+      legacyFallback: true,
+    });
+
+    expect(evidence.evidence_status).toBe("full_screenshot_fallback");
+    expect(evidence.previous_capture).toMatchObject({
+      crop: null,
+      full: { sha256: candidate.previous_image_hash },
+      main_full: { sha256: candidate.previous_image_hash },
+      state_id: "main",
+      states: [{ state_id: "main", kind: "main", geometry: null }],
+      legacy_recovery: {
+        original_metadata_status: "byte_length_mismatch",
+        text_identity_status: "verified",
+        expected_text_hash: candidate.previous_text_hash,
+        actual_text_hash: candidate.previous_text_hash,
+      },
+    });
+    expect(evidence.previous_capture.localization).toBeUndefined();
+    expect(evidence.localization.sides.previous).toMatchObject({
+      status: "full_screenshot_fallback",
+      exact_overlap: false,
+      matched_rects: [],
+    });
+    const metadataUpload = store.putCalls.find((item) =>
+      item.key === evidence.previous_capture.metadata.object_key
+    );
+    expect(JSON.parse(metadataUpload.body.toString("utf8"))).toMatchObject({
+      recovery_contract: "pre-immutable-full-screenshot-fallback-v1",
+      change_event_id: "event-legacy-1",
+      original_metadata_status: "byte_length_mismatch",
+      retained_text_status: "verified",
+      exact_overlap: false,
+    });
+  });
+
+  it("keeps a legacy screenshot but does not claim a mutated retained text file", async () => {
+    const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-event-legacy-text-mismatch-"));
+    temporary.push(archiveRoot);
+    const previous = await captureFixture(archiveRoot, "previous", "Deadline February 1");
+    const current = await captureFixture(archiveRoot, "current", "Deadline March 1");
+    const candidate = {
+      ...candidateFixture(previous, current),
+      status: "published",
+      created_at: "2026-07-15T19:00:00.000Z",
+      worker_metadata: { change_event_id: "event-legacy-2" },
+      prompt_payload: {},
+    };
+    writeFileSync(previous.ref.local_paths.text.path, "mutated after review");
+    for (const ref of [previous.ref, current.ref]) {
+      delete ref.artifact_manifest;
+      delete ref.artifact_manifest_digest;
+    }
+
+    const evidence = await preparePublishedVisualEventEvidence({
+      candidate,
+      source: { id: "source-1", shared_award_id: "award-1" },
+      changeDetails: { exact_before: "Deadline February 1", exact_after: "Deadline March 1" },
+      archiveRoot,
+      artifactStore: memoryStore(),
+      historical: true,
+      legacyFallback: true,
+    });
+
+    expect(evidence.previous_capture.full.sha256).toBe(candidate.previous_image_hash);
+    expect(evidence.previous_capture.text).toBeNull();
+    expect(evidence.previous_capture.capture_hashes.text_hash).toBeNull();
+    expect(evidence.previous_capture.legacy_recovery).toMatchObject({
+      text_identity_status: "sha256_mismatch",
+      expected_text_hash: candidate.previous_text_hash,
+      actual_text_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    expect(evidence.previous_capture.legacy_recovery.actual_text_hash)
+      .not.toBe(candidate.previous_text_hash);
+  });
+
   it("rejects a screenshot whose bytes do not match the candidate hash", async () => {
     const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-event-mismatch-"));
     temporary.push(archiveRoot);
@@ -515,6 +617,8 @@ function candidateFixture(previous, current) {
     shared_award_source_id: "source-1",
     previous_image_hash: previous.hash,
     new_image_hash: current.hash,
+    previous_text_hash: previous.ref.text_hash,
+    new_text_hash: current.ref.text_hash,
     previous_snapshot_ref: previous.ref,
     new_snapshot_ref: current.ref,
     prompt_payload: {

@@ -6,6 +6,52 @@ import {
 import { requiredChangeEventLocalizationSides } from "./snapshot-localization.mjs";
 import { visualHashFromCandidate } from "./visual-review-queue.mjs";
 
+export const LEGACY_VISUAL_EVIDENCE_CANDIDATE_CUTOFF = "2026-07-15T20:15:00.000Z";
+
+export function requiresLegacyVisualEvidenceBackfill(candidate = {}) {
+  const createdAt = Date.parse(cleanText(candidate.created_at));
+  if (
+    cleanText(candidate.status) !== "published" ||
+    !Number.isFinite(createdAt) ||
+    createdAt >= Date.parse(LEGACY_VISUAL_EVIDENCE_CANDIDATE_CUTOFF)
+  ) {
+    return false;
+  }
+  const previous = objectValue(candidate.previous_snapshot_ref);
+  const current = objectValue(candidate.new_snapshot_ref);
+  const prompt = objectValue(candidate.prompt_payload);
+  const promptPrevious = objectValue(prompt.previous_snapshot_ref);
+  const promptCurrent = objectValue(prompt.new_snapshot_ref);
+  const hashes = objectValue(prompt.hashes);
+  return [
+    previous.artifact_manifest,
+    current.artifact_manifest,
+    promptPrevious.artifact_manifest,
+    promptCurrent.artifact_manifest,
+  ].every((manifest) => !Object.keys(objectValue(manifest)).length) &&
+    !cleanText(previous.artifact_manifest_digest) &&
+    !cleanText(current.artifact_manifest_digest) &&
+    !cleanText(promptPrevious.artifact_manifest_digest) &&
+    !cleanText(promptCurrent.artifact_manifest_digest) &&
+    !cleanText(hashes.previous_artifact_manifest_digest) &&
+    !cleanText(hashes.new_artifact_manifest_digest);
+}
+
+export function isSnapshottedLegacyVisualEvidenceBackfill({
+  event = {},
+  candidate = {},
+  resolutionMethods = [],
+  eligibility = null,
+} = {}) {
+  const methods = new Set(Array.isArray(resolutionMethods) ? resolutionMethods : []);
+  return requiresLegacyVisualEvidenceBackfill(candidate) &&
+    methods.has("candidate_signature") &&
+    methods.has("reverse_worker_metadata") &&
+    cleanText(eligibility?.change_event_id) === cleanText(event.id) &&
+    cleanText(eligibility?.visual_review_candidate_id) === cleanText(candidate.id) &&
+    cleanText(eligibility?.candidate_signature) === cleanText(candidate.candidate_signature);
+}
+
 export function candidateSignatureFromEvent(event = {}) {
   return cleanText(objectValue(event.change_details).candidate_signature) || null;
 }

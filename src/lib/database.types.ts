@@ -483,6 +483,61 @@ export type Database = {
           },
         ];
       };
+      shared_award_legacy_visual_evidence_eligibility: {
+        Row: {
+          visual_review_candidate_id: string;
+          change_event_id: string;
+          shared_award_id: string;
+          shared_award_source_id: string;
+          candidate_signature: string;
+          candidate_created_at: string;
+          previous_image_hash: string;
+          current_image_hash: string;
+          previous_text_hash: string | null;
+          current_text_hash: string | null;
+          candidate_identity_sha256: string;
+          event_identity_sha256: string;
+          eligibility_seal_sha256: string;
+          previous_snapshot_inventory: Json;
+          current_snapshot_inventory: Json;
+          snapshotted_at: string;
+        };
+        Insert: {
+          visual_review_candidate_id: string;
+          change_event_id: string;
+          shared_award_id: string;
+          shared_award_source_id: string;
+          candidate_signature: string;
+          candidate_created_at: string;
+          previous_image_hash: string;
+          current_image_hash: string;
+          previous_text_hash?: string | null;
+          current_text_hash?: string | null;
+          candidate_identity_sha256: string;
+          event_identity_sha256: string;
+          eligibility_seal_sha256: string;
+          previous_snapshot_inventory: Json;
+          current_snapshot_inventory: Json;
+          snapshotted_at?: string;
+        };
+        Update: Record<string, never>;
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_legacy_visual_evidence_eligibility_visual_review_candidate_id_fkey";
+            columns: ["visual_review_candidate_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_visual_review_candidates";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_legacy_visual_evidence_eligibility_change_event_id_fkey";
+            columns: ["change_event_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_change_events";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       shared_award_visual_rejection_ledger: {
         Row: {
           id: string;
@@ -1938,6 +1993,17 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      backfill_legacy_shared_award_visual_event_evidence: {
+        Args: {
+          p_event_id: string;
+          p_evidence: Json;
+        };
+        Returns: Array<{
+          change_event_id: string;
+          evidence_id: string;
+          inserted: boolean;
+        }>;
+      };
       backfill_shared_award_visual_event_evidence: {
         Args: {
           p_event_id: string;

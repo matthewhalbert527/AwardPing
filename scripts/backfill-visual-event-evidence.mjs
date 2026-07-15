@@ -13,9 +13,11 @@ import {
   executeHistoricalBackfillStep,
   historicalArtifactUnrecoverableEvidence,
   historicalBackfillRepairPlan,
+  isSnapshottedLegacyVisualEvidenceBackfill,
   matchHistoricalTerminalLossConfirmation,
   normalizePreparedHistoricalEvidence,
   parseHistoricalTerminalLossConfirmations,
+  requiresLegacyVisualEvidenceBackfill,
   resolveHistoricalEventCandidate,
 } from "./lib/visual-event-evidence-backfill.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
@@ -85,6 +87,7 @@ const candidateSelect = [
   "new_snapshot_ref", "previous_text_hash", "new_text_hash", "previous_image_hash",
   "new_image_hash", "previous_file_hash", "new_file_hash", "deterministic_diff",
   "prompt_payload", "worker_metadata", "status",
+  "created_at",
 ].join(",");
 const startedAt = new Date().toISOString();
 const report = {
@@ -147,6 +150,14 @@ try {
 
       const inputs = candidateInputs.get(event.id) || {};
       const resolution = resolveHistoricalEventCandidate({ event, ...inputs });
+      const legacyContractMissing = resolution.resolved &&
+        requiresLegacyVisualEvidenceBackfill(resolution.candidate);
+      const legacyFallback = resolution.resolved && isSnapshottedLegacyVisualEvidenceBackfill({
+        event,
+        candidate: resolution.candidate,
+        resolutionMethods: resolution.methods,
+        eligibility: inputs.legacyEligibility,
+      });
       const resolutionTerminalLossConfirmation = matchHistoricalTerminalLossConfirmation({
         confirmation: terminalLossConfirmations.get(event.id),
         currentReasonCode: resolution.reason_code,
@@ -181,6 +192,18 @@ try {
               resolution_methods: [],
             };
           }
+          if (legacyContractMissing && !legacyFallback) {
+            return {
+              evidence: null,
+              outcome: "legacy_eligibility_snapshot_missing",
+              issue_reason: "This pre-manifest candidate lacks the exact signature, reverse binding, or one-time eligibility snapshot required by the legacy compatibility contract.",
+              repair_reason_code: "legacy_eligibility_snapshot_missing",
+              count_unresolved: true,
+              retryable: true,
+              publishable: false,
+              resolution_methods: resolution.methods,
+            };
+          }
           const candidate = resolution.candidate;
           const prepared = await preparePublishedVisualEventEvidence({
             candidate,
@@ -189,6 +212,7 @@ try {
             archiveRoot,
             artifactStore,
             historical: true,
+            legacyFallback,
             now: startedAt,
           });
           const normalized = normalizePreparedHistoricalEvidence({ event, candidate, evidence: prepared });
@@ -232,7 +256,9 @@ try {
             repair_reason_code: normalized.reason_code || null,
             count_unresolved: !normalized.recoverable,
             partial: normalized.partial === true,
-            resolution_methods: resolution.methods,
+            resolution_methods: legacyFallback
+              ? [...resolution.methods, "legacy_eligibility_registry"]
+              : resolution.methods,
           };
         },
         recoverDeterministicFailure: async (error) => {
@@ -270,7 +296,9 @@ try {
             resolution_methods: [...resolution.methods, "operator_terminal_loss_confirmation"],
           };
         },
-        publishEvidence: apply ? (evidence) => backfillEvidence(event.id, evidence) : null,
+        publishEvidence: apply
+          ? (evidence) => backfillEvidence(event.id, evidence, legacyFallback)
+          : null,
         advance: () => advanceCompletedEvent(event.id),
       });
       const {
@@ -431,13 +459,17 @@ async function loadExistingEvidenceIds(eventIds) {
 async function loadCandidateInputs(events, concurrency) {
   const directIds = unique(events.map((event) => cleanText(event.visual_review_candidate_id)).filter(Boolean));
   const signatures = unique(events.map(candidateSignatureFromEvent).filter(Boolean));
-  const [directRows, signatureRows] = await Promise.all([
+  const [directRows, signatureRows, eligibilityRows] = await Promise.all([
     loadCandidatesBy("id", directIds),
     loadCandidatesBy("candidate_signature", signatures),
+    loadLegacyEligibility(events.map((event) => event.id)),
   ]);
   const byId = groupBy(directRows, (candidate) => candidate.id);
   const bySignature = groupBy(signatureRows, (candidate) => candidate.candidate_signature);
   const reverseByEvent = new Map();
+  const eligibilityByEvent = new Map(
+    eligibilityRows.map((row) => [row.change_event_id, row]),
+  );
   await promisePool(events, concurrency, async (event) => {
     const { data, error } = await supabase
       .from("shared_award_visual_review_candidates")
@@ -452,7 +484,21 @@ async function loadCandidateInputs(events, concurrency) {
     directCandidates: byId.get(event.visual_review_candidate_id) || [],
     signatureCandidates: bySignature.get(candidateSignatureFromEvent(event)) || [],
     reverseCandidates: reverseByEvent.get(event.id) || [],
+    legacyEligibility: eligibilityByEvent.get(event.id) || null,
   }]));
+}
+
+async function loadLegacyEligibility(eventIds) {
+  const rows = [];
+  for (const chunk of chunks(eventIds, 100)) {
+    const { data, error } = await supabase
+      .from("shared_award_legacy_visual_evidence_eligibility")
+      .select("change_event_id,visual_review_candidate_id,candidate_signature,eligibility_seal_sha256")
+      .in("change_event_id", chunk);
+    if (error) throw new Error(`Legacy eligibility lookup failed: ${error.message}`);
+    rows.push(...(data || []));
+  }
+  return rows;
 }
 
 async function loadCandidatesBy(column, values) {
@@ -469,8 +515,18 @@ async function loadCandidatesBy(column, values) {
   return rows;
 }
 
-async function backfillEvidence(eventId, evidence) {
-  const { data, error } = await supabase.rpc("backfill_shared_award_visual_event_evidence", {
+async function backfillEvidence(eventId, evidence, legacyFallback) {
+  const legacyRecoverableStatuses = new Set([
+    "full_screenshot_fallback",
+    "unavailable_exact_text_missing",
+    "unavailable_geometry_missing",
+    "unavailable_image_missing",
+    "unavailable_ambiguous",
+  ]);
+  const rpc = legacyFallback && legacyRecoverableStatuses.has(evidence?.evidence_status)
+    ? "backfill_legacy_shared_award_visual_event_evidence"
+    : "backfill_shared_award_visual_event_evidence";
+  const { data, error } = await supabase.rpc(rpc, {
     p_event_id: eventId,
     p_evidence: backfillEvidenceRpcPayload(evidence),
   });
@@ -525,7 +581,8 @@ function operationalBackfillFailure(error) {
     message.includes("load existing event evidence failed") ||
     message.includes("candidate id lookup failed") ||
     message.includes("candidate candidate_signature lookup failed") ||
-    message.includes("reverse candidate lookup failed")
+    message.includes("reverse candidate lookup failed") ||
+    message.includes("legacy eligibility lookup failed")
   ) {
     return {
       reason_code: "backfill_database_dependency_failure",

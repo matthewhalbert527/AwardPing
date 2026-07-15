@@ -8,13 +8,55 @@ import {
   executeHistoricalBackfillStep,
   historicalArtifactUnrecoverableEvidence,
   historicalBackfillRepairPlan,
+  isSnapshottedLegacyVisualEvidenceBackfill,
   matchHistoricalTerminalLossConfirmation,
   normalizePreparedHistoricalEvidence,
   parseHistoricalTerminalLossConfirmations,
   resolveHistoricalEventCandidate,
+  requiresLegacyVisualEvidenceBackfill,
 } from "./visual-event-evidence-backfill.mjs";
 
 describe("historical visual event evidence backfill", () => {
+  it("routes only migration-snapshotted pre-manifest candidates with both exact bindings", () => {
+    const candidate = candidateRow({
+      status: "published",
+      created_at: "2026-07-15T20:14:59.999Z",
+      previous_snapshot_ref: {},
+      new_snapshot_ref: {},
+      prompt_payload: {},
+    });
+    const event = eventRow({ change_details: { candidate_signature: candidate.candidate_signature } });
+    const eligibility = {
+      change_event_id: event.id,
+      visual_review_candidate_id: candidate.id,
+      candidate_signature: candidate.candidate_signature,
+    };
+
+    expect(requiresLegacyVisualEvidenceBackfill(candidate)).toBe(true);
+    expect(isSnapshottedLegacyVisualEvidenceBackfill({
+      event,
+      candidate,
+      resolutionMethods: ["candidate_signature", "reverse_worker_metadata"],
+      eligibility,
+    })).toBe(true);
+    expect(isSnapshottedLegacyVisualEvidenceBackfill({
+      event,
+      candidate,
+      resolutionMethods: ["reverse_worker_metadata"],
+      eligibility,
+    })).toBe(false);
+    expect(isSnapshottedLegacyVisualEvidenceBackfill({
+      event,
+      candidate,
+      resolutionMethods: ["candidate_signature", "reverse_worker_metadata"],
+      eligibility: null,
+    })).toBe(false);
+    expect(requiresLegacyVisualEvidenceBackfill({
+      ...candidate,
+      created_at: "2026-07-15T20:15:00.000Z",
+    })).toBe(false);
+  });
+
   it.each([
     ["direct_fk", { direct: true }],
     ["candidate_signature", { signature: true }],
