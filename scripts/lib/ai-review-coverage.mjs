@@ -256,6 +256,30 @@ export function workerHasGeminiBlocker(run) {
   return /\b(billing|quota|prepay|prepayment|credits?\s+are\s+depleted|resource_exhausted)\b/.test(text);
 }
 
+export function geminiBillingBlockReason(reportValue) {
+  const report = objectValue(reportValue);
+  const explicitMessages = [
+    report.blocking_reason,
+    report.billing_error,
+    report.provider_error,
+    report.error,
+    ...(Array.isArray(report.errors)
+      ? report.errors.flatMap((entry) => {
+          const error = objectValue(entry);
+          return [error.message, error.error, error.blocking_reason];
+        })
+      : []),
+  ]
+    .map(cleanText)
+    .filter(Boolean);
+  const detected = explicitMessages.find((message) =>
+    /\b(billing|quota|prepay|prepayment|credits?\s+are\s+depleted|resource_exhausted)\b/i.test(message),
+  );
+  if (detected) return detected;
+  if (report.billing_blocked === true) return cleanText(report.blocking_reason) || "gemini_billing_blocked";
+  return null;
+}
+
 export function workerUsesGemini(run) {
   if (!run) return false;
   if (cleanKey(run.ai_provider) === "gemini") return true;

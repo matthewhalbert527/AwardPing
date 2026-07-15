@@ -6,6 +6,7 @@ import {
   buildSourceAiCoverageRow,
   cleanText,
   countBy,
+  geminiBillingBlockReason,
   objectValue,
   sortedEntries,
   summarizeAiReviewCoverage,
@@ -465,16 +466,18 @@ async function submitBaselineFactsBatch(rows) {
       blocking_reason: baselineReport?.blocking_reason || baselineReport?.stop_reason || null,
     };
     report.submitted_to_gemini_batch = baselineReport?.gemini_usage?.batch_submitted_requests || 0;
-    if (baselineReport?.billing_blocked || /billing|quota|prepay|credits.*depleted|RESOURCE_EXHAUSTED/i.test(JSON.stringify(baselineReport))) {
+    const billingBlockReason = geminiBillingBlockReason(baselineReport);
+    if (billingBlockReason) {
       report.billing_blocked = true;
-      report.blocking_reason = baselineReport.blocking_reason || baselineReport.stop_reason || "gemini_batch_blocked";
+      report.blocking_reason = billingBlockReason;
     }
   }
   if (result.status !== 0) {
     const message = `${result.stderr || result.stdout || "baseline facts worker failed"}`;
-    if (/billing|quota|prepay|credits.*depleted|RESOURCE_EXHAUSTED/i.test(message)) {
+    const billingBlockReason = geminiBillingBlockReason({ provider_error: message });
+    if (billingBlockReason) {
       report.billing_blocked = true;
-      report.blocking_reason = truncate(message, 500);
+      report.blocking_reason = truncate(billingBlockReason, 500);
       return;
     }
     throw new Error(`Baseline facts batch worker failed with status ${result.status}: ${truncate(message, 1000)}`);

@@ -66,6 +66,35 @@ const hardRejectedFlags = new Set([
 
 const acceptedAwardRelevance = new Set(["primary", "supporting"]);
 const acceptedCycleRelevance = new Set(["current-or-upcoming", "evergreen"]);
+const legacyBaselineFactKeys = new Set([
+  "status",
+  "display_title",
+  "page_description",
+  "page_category",
+  "award_name",
+  "award_name_seen",
+  "page_purpose",
+  "award_relevance",
+  "cycle_relevance",
+  "cycle_relevance_reason",
+  "application_cycle",
+  "deadline",
+  "opening_date",
+  "award_amounts",
+  "eligibility",
+  "requirements",
+  "application_materials",
+  "how_to_apply",
+  "important_dates",
+  "documents",
+  "contacts",
+  "notes",
+  "sections",
+  "confidence",
+  "evidence_quotes",
+  "quality_flags",
+  "rejection_reason",
+]);
 
 export function sourceBaselineFacts(source: SourceAiReviewSource | null | undefined) {
   const metadata = objectValue(source?.page_metadata);
@@ -74,7 +103,7 @@ export function sourceBaselineFacts(source: SourceAiReviewSource | null | undefi
   if (metadata.kind || metadata.provider || metadata.model || metadata.baseline_facts_rejected) {
     return {};
   }
-  return metadata;
+  return hasLegacyBaselineFactShape(metadata) ? metadata : {};
 }
 
 export function getSourceAiReviewStatus(source: SourceAiReviewSource | null | undefined) {
@@ -295,6 +324,10 @@ function normalizedQualityFlags(metadata: Record<string, unknown>, facts: Record
   ]
     .map(cleanKey)
     .filter(Boolean);
+}
+
+function hasLegacyBaselineFactShape(metadata: Record<string, unknown>) {
+  return Object.keys(metadata).some((key) => legacyBaselineFactKeys.has(key));
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

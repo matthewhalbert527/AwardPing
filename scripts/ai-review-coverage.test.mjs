@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildSourceAiCoverageRow,
+  geminiBillingBlockReason,
   summarizeAiReviewCoverage,
   workerHasGeminiBlocker,
 } from "./lib/ai-review-coverage.mjs";
@@ -165,5 +166,23 @@ describe("AI review coverage categorization", () => {
     });
     expect(summary.latest_gemini_billing_quota_blocker).toBeNull();
     expect(summary.completion_blockers.gemini_billing_blocked).toBe(0);
+  });
+
+  it("detects billing only from a true flag or explicit error text", () => {
+    expect(
+      geminiBillingBlockReason({
+        status: "succeeded",
+        billing_blocked: false,
+        blocking_reason: null,
+        errors: [],
+      }),
+    ).toBeNull();
+    expect(
+      geminiBillingBlockReason({
+        billing_blocked: false,
+        errors: [{ message: "Gemini API RESOURCE_EXHAUSTED: quota depleted" }],
+      }),
+    ).toContain("RESOURCE_EXHAUSTED");
+    expect(geminiBillingBlockReason({ billing_blocked: true })).toBe("gemini_billing_blocked");
   });
 });

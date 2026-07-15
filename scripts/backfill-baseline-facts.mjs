@@ -23,6 +23,7 @@ import {
   geminiInlineResponsePayload,
   mergeBatchJobRecord,
   latestRequestKeysByBatchJob,
+  parseGeminiModelJsonObject,
   shouldAttachBaselineFactsImage,
   submittedRequestCapReached,
   unfinishedBatchJobs,
@@ -1183,7 +1184,7 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
 
       const usage = normalizeGeminiUsage(extractGeminiUsageMetadata(inlineResponse));
       const rawText = extractGeminiText(response);
-      const parsed = parseJsonObject(rawText);
+      const parsed = parseGeminiModelJsonObject(rawText);
       if (!parsed) {
         throw new Error(`Gemini batch returned invalid JSON: ${truncate(rawText, 500) || "empty response"}`);
       }

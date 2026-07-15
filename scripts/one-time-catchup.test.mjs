@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   catchupCompletionDecision,
   estimateOneTimeCatchup,
+  nextSourceAiStagnantCycles,
   ONE_TIME_CATCHUP_BATCH_MODE,
   ONE_TIME_CATCHUP_MODEL,
   observedSourceCostPerRequest,
@@ -160,6 +161,28 @@ describe("one-time catch-up planning", () => {
     expect(completion.automated_blockers.snapshot_localization_latest_pending).toBe(12);
   });
 
+  it("counts pre-review evidence capture only until a source has a snapshot", () => {
+    const unreviewed = acceptedSource({
+      id: "source-needs-evidence",
+      page_metadata: null,
+      page_metadata_generated_at: null,
+      page_metadata_model: null,
+    });
+    const withoutSnapshot = summarizeOneTimeCatchupBacklog({
+      awards: [{ id: "award-1", status: "active", name: "Example Fellowship", public_facts: {} }],
+      sources: [unreviewed],
+    });
+    const withSnapshot = summarizeOneTimeCatchupBacklog({
+      awards: [{ id: "award-1", status: "active", name: "Example Fellowship", public_facts: {} }],
+      sources: [unreviewed],
+      visualSnapshotSourceIds: new Set([unreviewed.id]),
+    });
+
+    expect(withoutSnapshot.backlog.sources_needing_capture_baseline).toBe(1);
+    expect(withoutSnapshot.backlog.monitor_eligible_missing_visuals).toBe(0);
+    expect(withSnapshot.backlog.sources_needing_capture_baseline).toBe(0);
+  });
+
   it("keeps catch-up open until unlocalized historical screenshots are reset", () => {
     const forecast = estimateOneTimeCatchup({
       backlog: {
@@ -177,5 +200,30 @@ describe("one-time catch-up planning", () => {
     expect(
       completion.automated_blockers.snapshot_localization_historical_unavailable,
     ).toBe(747);
+  });
+
+  it("does not count active or newly submitted AI batches as stagnant", () => {
+    expect(
+      nextSourceAiStagnantCycles({ previous: 2, before: 100, after: 90 }),
+    ).toBe(0);
+    expect(
+      nextSourceAiStagnantCycles({
+        previous: 2,
+        before: 100,
+        after: 100,
+        activeBatches: 1,
+      }),
+    ).toBe(2);
+    expect(
+      nextSourceAiStagnantCycles({
+        previous: 2,
+        before: 100,
+        after: 100,
+        submitted: 25,
+      }),
+    ).toBe(2);
+    expect(
+      nextSourceAiStagnantCycles({ previous: 2, before: 100, after: 100 }),
+    ).toBe(3);
   });
 });

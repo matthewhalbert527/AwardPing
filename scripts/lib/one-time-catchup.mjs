@@ -6,6 +6,19 @@ export const ONE_TIME_CATCHUP_BATCH_MODE = "batch";
 const DEFAULT_SOURCE_COST_PER_REQUEST_USD = 0.002;
 const DEFAULT_PAGE_AUDIT_COST_PER_REQUEST_USD = 0.00035;
 
+export function nextSourceAiStagnantCycles({
+  previous = 0,
+  before = 0,
+  after = 0,
+  activeBatches = 0,
+  submitted = 0,
+} = {}) {
+  if (Number(after) < Number(before)) return 0;
+  const current = Math.max(0, Math.floor(Number(previous) || 0));
+  if (Number(activeBatches) > 0 || Number(submitted) > 0) return current;
+  return current + 1;
+}
+
 export function summarizeOneTimeCatchupBacklog({
   awards = [],
   sources = [],
@@ -31,6 +44,9 @@ export function summarizeOneTimeCatchupBacklog({
     ? visualSnapshotSourceIds
     : new Set(visualSnapshotSourceIds || []);
   const monitorEligibleMissingVisuals = monitorEligibleRows.filter((row) => !snapshotIds.has(row.source_id));
+  const sourceAiEvidenceMissingVisuals = sourceAiRows.filter(
+    (row) => !row.monitor_eligible && !snapshotIds.has(row.source_id),
+  );
 
   const queueRows = reconciliationQueue.filter((row) => activeAwardIds.has(row.shared_award_id));
   const latestQueueByAward = latestRowsBy(queueRows, "shared_award_id");
@@ -79,7 +95,7 @@ export function summarizeOneTimeCatchupBacklog({
     sources_to_review_later: sourceReviewLaterRows.length,
     monitor_eligible_sources: monitorEligibleRows.length,
     monitor_eligible_missing_visuals: monitorEligibleMissingVisuals.length,
-    sources_needing_capture_baseline: nonNegativeInt(categoryCounts.needs_capture_baseline, 0),
+    sources_needing_capture_baseline: sourceAiEvidenceMissingVisuals.length,
     awards_missing_public_facts: awardsMissingPublicFacts.length,
     reconciliation_active_rows: activeQueueRows.length,
     reconciliation_latest_failed_awards: latestFailedReconciliations.length,
@@ -111,6 +127,7 @@ export function summarizeOneTimeCatchupBacklog({
     backlog,
     source_ai_rows: sourceAiRows,
     source_review_later_rows: sourceReviewLaterRows,
+    source_ai_evidence_missing_visual_rows: sourceAiEvidenceMissingVisuals,
     monitor_eligible_missing_visual_rows: monitorEligibleMissingVisuals,
     latest_failed_reconciliation_rows: latestFailedReconciliations,
     unresolved_audit_rows: latestUnresolvedAuditErrors,
@@ -142,7 +159,9 @@ export function estimateOneTimeCatchup({
   const sourceRequestsPerWave = Math.max(1, sourceBatchSize * sourceParallelJobs);
   const sourceWaves = sourceRequests ? Math.ceil(sourceRequests / sourceRequestsPerWave) : 0;
   const pageAuditWaves = pageAuditRequests ? Math.ceil(pageAuditRequests / Math.max(1, pageAuditBatchSize)) : 0;
-  const visualMissing = nonNegativeInt(backlog?.monitor_eligible_missing_visuals, 0);
+  const visualMissing =
+    nonNegativeInt(backlog?.monitor_eligible_missing_visuals, 0) +
+    nonNegativeInt(backlog?.sources_needing_capture_baseline, 0);
   const reconciliationAwards = nonNegativeInt(backlog?.awards_to_seed_for_reconciliation, 0);
   const localizationSources = nonNegativeInt(
     backlog?.snapshot_localization_work_pending ?? backlog?.snapshot_localization_latest_pending,

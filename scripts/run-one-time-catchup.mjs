@@ -16,6 +16,7 @@ import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs"
 import { geminiSpendGuardStatus } from "./lib/gemini-spend-guard.mjs";
 import {
   estimateOneTimeCatchup,
+  nextSourceAiStagnantCycles,
   ONE_TIME_CATCHUP_BATCH_MODE,
   ONE_TIME_CATCHUP_MODEL,
   summarizeOneTimeCatchupBacklog,
@@ -85,6 +86,14 @@ const reportPath = args.report
   ? resolve(root, String(args.report))
   : join(reportDir, `one-time-catchup-${timestampForPath(new Date().toISOString())}.json`);
 const latestReportPath = join(reportDir, "one-time-catchup-latest.json");
+const sourceAiEvidenceIdsPath = join(
+  reportDir,
+  "one-time-catchup-source-ai-evidence-source-ids.json",
+);
+const sourceAiEvidencePendingIdsPath = join(
+  reportDir,
+  "one-time-catchup-source-ai-evidence-pending-source-ids.json",
+);
 const localizationHistoricalResetIdsPath = join(
   reportDir,
   "snapshot-localization-historical-reset-source-ids.json",
@@ -132,6 +141,22 @@ if (
 } else {
   state.resumed_at = new Date().toISOString();
   state.status = "running";
+  state.finished_at = null;
+  state.error = null;
+  state.options = {
+    ...state.options,
+    apply,
+    forecast_only: forecastOnly,
+    model: ONE_TIME_CATCHUP_MODEL,
+    gemini_mode: ONE_TIME_CATCHUP_BATCH_MODE,
+    daily_cost_cap_usd: dailyCostCapUsd,
+    poll_seconds: pollSeconds,
+    max_runtime_hours: maxRuntimeHours,
+    source_batch_size: sourceBatchSize,
+    source_parallel_jobs: sourceParallelJobs,
+    visual_shards: visualShards,
+    localization_shards: localizationShards,
+  };
 }
 
 try {
@@ -157,6 +182,7 @@ try {
   await runStage("health", async () => {
     await runChild("health", ["scripts/check-supabase-health.mjs", `--env=${envPath}`]);
   });
+  await runStage("source-ai-local-evidence", drainSourceAiEvidence);
   await runStage("missing-visual-baselines-before-ai", drainMissingVisualBaselines);
   await runStage("source-ai-review", drainSourceAiReview);
   await runStage("source-quality-cleanup", async () => {
@@ -220,16 +246,22 @@ try {
 }
 
 async function drainSourceAiReview() {
+  // Re-audit on every invocation, including a resumed state whose standalone
+  // evidence stage was already marked succeeded. R2 presence is not proof that
+  // the local files needed to construct the AI request are still intact.
+  await drainSourceAiEvidence();
   let stagnantCycles = 0;
   for (let cycle = 1; ; cycle += 1) {
     ensureRuntimeAvailable();
-    const before = await liveSnapshot();
-    const beforeCount = before.summary.backlog.source_ai_reviews + before.summary.backlog.sources_to_review_later;
+    let before = await liveSnapshot();
+    if (monitorBaselineBacklog(before) > 0) {
+      await drainMissingVisualBaselines();
+      before = await liveSnapshot();
+    }
+    const beforeCount =
+      before.summary.backlog.source_ai_reviews + before.summary.backlog.sources_to_review_later;
     if (!beforeCount) return;
-    if (captureBaselineBacklog(before) > 0) await drainMissingVisualBaselines();
     await ensureGeminiBudget();
-    const activeBatchesBefore = activeBaselineBatchJobs();
-
     const child = await runChild(`source-ai-review-cycle-${cycle}`, [
       "scripts/backfill-open-source-ai-determinations.mjs",
       `--env=${envPath}`,
@@ -261,8 +293,13 @@ async function drainSourceAiReview() {
     });
     await updateTicker("source-ai-review", after);
     if (!afterCount) return;
-    if (afterCount < beforeCount) stagnantCycles = 0;
-    else if (!activeBatches || (submitted > 0 && activeBatchesBefore === 0)) stagnantCycles += 1;
+    stagnantCycles = nextSourceAiStagnantCycles({
+      previous: stagnantCycles,
+      before: beforeCount,
+      after: afterCount,
+      activeBatches,
+      submitted,
+    });
     if (stagnantCycles >= maxNoProgressCycles) {
       throw new CatchupPausedError(
         "paused_no_progress",
@@ -273,12 +310,128 @@ async function drainSourceAiReview() {
   }
 }
 
+async function drainSourceAiEvidence() {
+  let stagnantCycles = 0;
+  for (let cycle = 1; ; cycle += 1) {
+    ensureRuntimeAvailable();
+    const before = await liveSnapshot();
+    const sourceIds = sourceAiSourceIds(before);
+    if (!sourceIds.length) return;
+    atomicWriteJson(sourceAiEvidenceIdsPath, sourceIds);
+
+    const beforeRepair = await inspectAndRepairSourceAiEvidence({
+      cycle,
+      sourceIdsPath: sourceAiEvidenceIdsPath,
+      sourceIds,
+      label: "before",
+    });
+    const pendingSourceIds = incompleteEvidenceSourceIds(beforeRepair, sourceIds);
+    const beforeCount = pendingSourceIds.length;
+    if (!beforeCount) {
+      await verifySourceAiEvidenceComplete(sourceIds);
+      await updateTicker("source-ai-local-evidence", before);
+      return;
+    }
+
+    atomicWriteJson(sourceAiEvidencePendingIdsPath, pendingSourceIds);
+    await runChild(`source-ai-evidence-capture-${cycle}`, [
+      "scripts/capture-visual-snapshots.mjs",
+      `--env=${envPath}`,
+      "--all=true",
+      `--limit=${pendingSourceIds.length}`,
+      `--source-ids-file=${sourceAiEvidencePendingIdsPath}`,
+      "--complete-missing-baselines=true",
+      `--complete-missing-batch-limit=${visualMissingBatchLimit}`,
+      "--skip-existing-baseline=true",
+      "--baseline-refresh=true",
+      "--ai-review-evidence-capture=true",
+      "--extract-baseline-info=false",
+      "--interpret-visual-changes=false",
+      "--visual-review-mode=none",
+      "--discovery-mode=false",
+      "--discover-pdf-subpages=false",
+      "--discover-html-subpages=false",
+      "--max-html-subpage-discoveries=0",
+      "--r2-snapshot-sync=true",
+      "--r2-repair-missing-snapshots=true",
+      "--web-concurrency=3",
+    ]);
+
+    const after = await liveSnapshot();
+    const afterSourceIds = sourceAiSourceIds(after);
+    atomicWriteJson(sourceAiEvidenceIdsPath, afterSourceIds);
+    const afterRepair = await inspectAndRepairSourceAiEvidence({
+      cycle,
+      sourceIdsPath: sourceAiEvidenceIdsPath,
+      sourceIds: afterSourceIds,
+      label: "after",
+    });
+    const afterCount = incompleteEvidenceSourceIds(afterRepair, afterSourceIds).length;
+    recordCycle("source-ai-local-evidence", {
+      cycle,
+      before: beforeCount,
+      after: afterCount,
+      repaired_before_capture: beforeRepair.repaired || 0,
+      repaired_after_capture: afterRepair.repaired || 0,
+    });
+    await updateTicker("source-ai-local-evidence", after);
+    if (!afterCount) {
+      await verifySourceAiEvidenceComplete(afterSourceIds);
+      return;
+    }
+    stagnantCycles = afterCount < beforeCount ? 0 : stagnantCycles + 1;
+    if (stagnantCycles >= 2) {
+      throw new CatchupPausedError(
+        "paused_source_ai_evidence",
+        `${afterCount} source AI reviews still lack complete local evidence after ${cycle} capture cycles.`,
+      );
+    }
+  }
+}
+
+async function inspectAndRepairSourceAiEvidence({ cycle, sourceIdsPath, sourceIds, label }) {
+  if (!sourceIds.length) {
+    return { scanned: 0, repaired: 0, evidence_incomplete: 0, rows: [] };
+  }
+  const child = await runChild(`source-ai-evidence-repair-${label}-${cycle}`, [
+    "scripts/repair-local-baseline-evidence.mjs",
+    `--env=${envPath}`,
+    "--apply=true",
+    `--source-ids-file=${sourceIdsPath}`,
+    `--limit=${sourceIds.length}`,
+  ]);
+  const report = readReportFromOutput(
+    child.output,
+    /LOCAL_BASELINE_EVIDENCE_REPORT\s+(.+)$/m,
+  );
+  if (!report) throw new Error("Local baseline evidence repair did not produce a report.");
+  if (nonNegativeInt(report.scanned, 0) !== sourceIds.length) {
+    throw new Error(
+      `Local baseline evidence repair scanned ${report.scanned || 0} of ${sourceIds.length} sources.`,
+    );
+  }
+  return report;
+}
+
+async function verifySourceAiEvidenceComplete(sourceIds) {
+  if (!sourceIds.length) return;
+  atomicWriteJson(sourceAiEvidenceIdsPath, sourceIds);
+  await runChild("source-ai-evidence-final-audit", [
+    "scripts/repair-local-baseline-evidence.mjs",
+    `--env=${envPath}`,
+    "--apply=false",
+    "--require-complete=true",
+    `--source-ids-file=${sourceAiEvidenceIdsPath}`,
+    `--limit=${sourceIds.length}`,
+  ]);
+}
+
 async function drainMissingVisualBaselines() {
   let stagnantCycles = 0;
   for (let cycle = 1; ; cycle += 1) {
     ensureRuntimeAvailable();
     const before = await liveSnapshot();
-    const beforeCount = captureBaselineBacklog(before);
+    const beforeCount = monitorBaselineBacklog(before);
     if (!beforeCount) return;
     await runChild(`missing-visual-baselines-${cycle}`, [
       "scripts/run-awardping-maintenance.mjs",
@@ -291,7 +444,7 @@ async function drainMissingVisualBaselines() {
       "--continue-on-error=false",
     ]);
     const after = await liveSnapshot();
-    const afterCount = captureBaselineBacklog(after);
+    const afterCount = monitorBaselineBacklog(after);
     recordCycle("missing-visual-baselines", { cycle, before: beforeCount, after: afterCount });
     await updateTicker("missing-visual-baselines", after);
     if (!afterCount) return;
@@ -748,12 +901,26 @@ function activeBaselineBatchJobs() {
   }).length;
 }
 
-function captureBaselineBacklog(snapshot) {
+function monitorBaselineBacklog(snapshot) {
   const backlog = snapshot?.summary?.backlog || {};
-  return (
-    nonNegativeInt(backlog.monitor_eligible_missing_visuals, 0) +
-    nonNegativeInt(backlog.sources_needing_capture_baseline, 0)
-  );
+  return nonNegativeInt(backlog.monitor_eligible_missing_visuals, 0);
+}
+
+function sourceAiSourceIds(snapshot) {
+  return [...new Set(
+    (snapshot?.summary?.source_ai_rows || [])
+      .map((row) => row?.source_id)
+      .filter(Boolean),
+  )].sort();
+}
+
+function incompleteEvidenceSourceIds(report, selectedSourceIds) {
+  const selected = new Set(selectedSourceIds);
+  return [...new Set(
+    (report?.rows || [])
+      .filter((row) => row?.evidence_complete !== true && selected.has(row?.source_id))
+      .map((row) => row.source_id),
+  )].sort();
 }
 
 function recordCycle(stage, cycle) {
@@ -830,7 +997,7 @@ function workerMetadata(stage, snapshot) {
     started_at: state.started_at,
     updated_at: new Date().toISOString(),
     completed_stages: completedStageCount(),
-    total_stages: includeHousekeeping ? 12 : 10,
+    total_stages: includeHousekeeping ? 13 : 11,
     backlog: snapshot?.summary?.backlog || state.current_backlog || null,
     forecast: snapshot?.forecast || state.forecast || null,
     completion: snapshot?.summary?.completion || state.completion || null,

@@ -4,6 +4,7 @@ import {
   getSourceAiReviewStatus,
   sourceCanBeMonitored,
   sourceCanContributePublicFacts,
+  sourceBaselineFacts,
   sourceHasClearAiDetermination,
   sourceNeedsAiReview,
   sourceNeedsManualReview,
@@ -46,6 +47,27 @@ describe("worker source AI review status", () => {
     expect(getSourceAiReviewStatus(unreviewed)).toBe("unreviewed");
     expect(sourceNeedsAiReview(unreviewed)).toBe(true);
     expect(sourceCanBeMonitored(unreviewed)).toBe(false);
+  });
+
+  it("does not mistake queue bookkeeping for legacy baseline facts", () => {
+    const queued = source({
+      page_metadata_generated_at: null,
+      page_metadata_model: null,
+      page_metadata: {
+        ai_review_coverage_backfill: {
+          action: "queue_ai_review",
+          category: "unreviewed",
+        },
+      },
+    });
+
+    const explanation = explainSourceAiReviewStatus(queued);
+    expect(explanation.status).toBe("unreviewed");
+    expect(explanation.hasBaselineFacts).toBe(false);
+    expect(sourceBaselineFacts(queued)).toEqual({});
+
+    const legacy = source({ page_metadata: primaryCurrentFacts });
+    expect(sourceBaselineFacts(legacy)).toEqual(primaryCurrentFacts);
   });
 
   it("accepts primary current and supporting evergreen facts", () => {

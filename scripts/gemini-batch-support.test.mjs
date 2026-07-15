@@ -12,6 +12,7 @@ import {
   mergeBatchJobRecord,
   latestRequestKeysByBatchJob,
   normalizeGeminiPricingMode,
+  parseGeminiModelJsonObject,
   shouldAttachBaselineFactsImage,
   submittedRequestCapReached,
   unfinishedBatchJobs,
@@ -100,6 +101,28 @@ describe("Gemini batch support helpers", () => {
       status: "PROMPT_BLOCKED",
       message: "Gemini prompt blocked: OTHER",
     });
+  });
+
+  it("parses Gemini model objects and singleton-array envelopes", () => {
+    expect(parseGeminiModelJsonObject('{"status":"success"}')).toEqual({ status: "success" });
+    expect(parseGeminiModelJsonObject('[{"status":"success"}]')).toEqual({ status: "success" });
+    expect(parseGeminiModelJsonObject('```json\n[{"status":"success"}]\n```')).toEqual({ status: "success" });
+  });
+
+  it("rejects ambiguous or non-object Gemini model results", () => {
+    for (const value of [
+      "",
+      "not JSON",
+      "[]",
+      "[{}, {}]",
+      "[1]",
+      "[[{}]]",
+      '"text"',
+      "null",
+      '{"status":',
+    ]) {
+      expect(parseGeminiModelJsonObject(value)).toBeNull();
+    }
   });
 
   it("finds file-based batch output references", () => {

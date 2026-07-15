@@ -147,6 +147,29 @@ export function geminiInlineError(response) {
   return response?.error || response?.response?.error || response?.status?.error || null;
 }
 
+export function parseGeminiModelJsonObject(text) {
+  const clean = String(text || "").trim().replace(/^\uFEFF/, "");
+  if (!clean) return null;
+
+  const candidates = [clean];
+  const fenced = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+
+  for (const candidate of [...new Set(candidates.filter(Boolean))]) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isJsonObject(parsed)) return parsed;
+      if (Array.isArray(parsed) && parsed.length === 1 && isJsonObject(parsed[0])) {
+        return parsed[0];
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+
+  return null;
+}
+
 export function extractGeminiUsageMetadata(responseItem) {
   const payload = geminiInlineResponsePayload(responseItem);
   return (
@@ -261,6 +284,10 @@ function collectFileNames(value, names, seen) {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function isJsonObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function unique(values) {

@@ -73,8 +73,8 @@ import {
   runRequiresAiFromOptions,
   selectAiProvider as selectAiProviderForRun,
 } from "./lib/capture-ai-requirements.mjs";
+import { inspectLocalBaselineEvidence } from "./lib/local-baseline-evidence.mjs";
 import {
-  isMonitorableAwardSource,
   sourceBaselineFacts,
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
@@ -115,6 +115,7 @@ const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 const archiveRoot = resolve(
   String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || args["archive-dir"] || defaultArchiveRoot),
 );
+const localBaselineEvidenceCache = new Map();
 const brokenSourcesDir = join(archiveRoot, "broken-sources");
 const brokenSourcesCurrentPath = join(brokenSourcesDir, "broken-sources-current.json");
 const brokenSourcesJsonlPath = join(brokenSourcesDir, "broken-sources-events.jsonl");
@@ -139,6 +140,7 @@ const promote = boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
 const completeMissingBaselines = boolArg(args["complete-missing-baselines"], false);
+const aiReviewEvidenceCapture = boolArg(args["ai-review-evidence-capture"], false);
 const completeMissingBatchLimit = completeMissingBaselines
   ? positiveInt(args["complete-missing-batch-limit"] || env.AWARDPING_COMPLETE_MISSING_BATCH_LIMIT, 250)
   : 0;
@@ -467,6 +469,16 @@ if (resetPreviousSnapshot && !localizationRepair) {
   process.exit(1);
 }
 
+if (aiReviewEvidenceCapture && !completeMissingBaselines) {
+  console.error("--ai-review-evidence-capture=true requires --complete-missing-baselines=true.");
+  process.exit(1);
+}
+
+if (aiReviewEvidenceCapture && !sourceIdFilter && sourceIdsFilter.size === 0) {
+  console.error("--ai-review-evidence-capture=true requires --source-id or --source-ids-file.");
+  process.exit(1);
+}
+
 if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)) {
   console.error(
     "R2 snapshot sync is enabled, but R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.",
@@ -502,6 +514,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
 
 async function runOnce() {
+  localBaselineEvidenceCache.clear();
   ensureArchiveDirectories();
 
   const startedAt = new Date().toISOString();
@@ -536,6 +549,7 @@ async function runOnce() {
       pdf_only: pdfOnly,
       web_only: webOnly,
       complete_missing_baselines: completeMissingBaselines,
+      ai_review_evidence_capture: aiReviewEvidenceCapture,
       complete_missing_batch_limit: completeMissingBatchLimit || null,
       prioritize_missing_baselines: prioritizeMissingBaselines,
       prioritize_issue_sources: prioritizeIssueSources,
@@ -1784,8 +1798,9 @@ async function finishTextOnlyNoise({
   }
 
   const canAcceptNoiseBaseline = !decision?.source_rejected || acceptTextOnlyNoise;
+  let baselinePromoted = false;
   if (canAcceptNoiseBaseline && (promote || acceptTextOnlyNoise)) {
-    writeBaseline(source, capture, {
+    baselinePromoted = writeBaseline(source, capture, {
       reason: `text_only_noise_rejected:${reason}`,
       previous_baseline_capture: baseline.capture || null,
       baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
@@ -1799,7 +1814,7 @@ async function finishTextOnlyNoise({
           }
         : null,
     });
-    report.promoted += 1;
+    if (baselinePromoted) report.promoted += 1;
     await maybeSyncR2Snapshot(source, capture, report, {
       reason: "text_only_noise_rejected",
       noise: true,
@@ -1809,7 +1824,7 @@ async function finishTextOnlyNoise({
 
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
   pruneTransientExpansionStateScreenshots(capture, report);
-  if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+  if (!keepUnchanged && !baselinePromoted) removeGeneratedCaptureDir(capture.dir);
   console.log(`NOISE text_only ${reason || "deterministic_rejected"} ${sourceLabel(source)}`);
 }
 
@@ -2234,18 +2249,19 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   if (!textChanged) {
     report.deterministic_noise += 1;
     report.deterministic_noise_rejected += 1;
+    let baselinePromoted = false;
     if (promote) {
-      writeBaseline(source, capture, {
+      baselinePromoted = writeBaseline(source, capture, {
         reason: "pdf_file_hash_changed_text_match_ignored",
         previous_baseline_capture: baseline.capture || null,
         baseline_facts: capture.baseline_facts || null,
         baseline_facts_metadata: capture.baseline_facts_metadata || null,
       });
-      report.promoted += 1;
+      if (baselinePromoted) report.promoted += 1;
     }
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`NOISE pdf_file_hash_changed_text_match_ignored ${sourceLabel(source)}`);
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    if (!keepUnchanged && !baselinePromoted) removeGeneratedCaptureDir(capture.dir);
     return;
   }
 
@@ -6858,10 +6874,22 @@ function writeBaseline(source, capture, details) {
     },
   };
   atomicWriteJson(baselinePath, baseline);
+  localBaselineEvidenceCache.set(source.id, true);
   return true;
 }
 
 function readBaselineEvidence(baseline) {
+  const evidence = baselineEvidenceStatus(baseline);
+  if (!evidence.ok) return evidence;
+  return {
+    ...evidence,
+    text: readFileSync(evidence.textPath, "utf8"),
+    meta: readJsonIfExists(evidence.metaPath),
+  };
+}
+
+function baselineEvidenceStatus(baseline) {
+  if (!baseline || typeof baseline !== "object") return { ok: false, missing: ["baseline"] };
   const capture = baseline.capture || {};
   const kind = baseline.kind || (capture.pdf ? "pdf" : "webpage");
   const paths = {
@@ -6883,8 +6911,6 @@ function readBaselineEvidence(baseline) {
     ok: true,
     kind,
     ...paths,
-    text: readFileSync(paths.textPath, "utf8"),
-    meta: readJsonIfExists(paths.metaPath),
   };
 }
 
@@ -7166,12 +7192,15 @@ function filterMonitorableSourcesForCapture(sources) {
   const rejected = new Map();
 
   for (const source of sources) {
-    if (isMonitorableAwardSource(source)) {
+    const decision = aiReviewEvidenceCapture
+      ? sourceQualityDecision(source, { purpose: "discovery" })
+      : sourceQualityDecision(source, { purpose: "monitoring" });
+    if (decision.allowed) {
       accepted.push(source);
       continue;
     }
 
-    const reason = sourceQualityDecision(source, { purpose: "monitoring" }).reason;
+    const reason = decision.reason;
     rejected.set(reason, (rejected.get(reason) || 0) + 1);
   }
 
@@ -7222,7 +7251,16 @@ function formatShardLabel() {
 }
 
 function hasBaselineForSource(source) {
-  return existsSync(baselinePathForSource(source.id));
+  if (localBaselineEvidenceCache.has(source.id)) {
+    return localBaselineEvidenceCache.get(source.id);
+  }
+  const inspection = inspectLocalBaselineEvidence({
+    archiveRoot,
+    sourceId: source.id,
+  });
+  const complete = inspection.evidence_complete === true;
+  localBaselineEvidenceCache.set(source.id, complete);
+  return complete;
 }
 
 function needsMissingBaselineCompletion(source) {
@@ -8662,7 +8700,25 @@ function removeGeneratedCaptureDir(dir) {
   if (!isPathInside(resolvedDir, archiveRoot)) {
     throw new Error(`Refusing to remove capture outside archive root: ${resolvedDir}`);
   }
+  if (captureDirIsReferencedByCurrentBaseline(resolvedDir)) {
+    console.log(`PRESERVE baseline_referenced_capture ${toArchiveRelative(resolvedDir)}`);
+    return false;
+  }
   rmSync(resolvedDir, { recursive: true, force: true });
+  return true;
+}
+
+function captureDirIsReferencedByCurrentBaseline(captureDir) {
+  const relativeDir = relative(archiveRoot, resolve(captureDir)).replace(/\\/g, "/");
+  const match = relativeDir.match(/^sources\/([^/]+)\/captures\/[^/]+$/);
+  if (!match) return false;
+  const baseline = readJsonIfExists(baselinePathForSource(match[1]));
+  const baselineCaptureDir = baseline?.capture?.dir;
+  if (!baselineCaptureDir) return false;
+  return (
+    resolve(fromArchiveRelative(baselineCaptureDir)).toLowerCase() ===
+    resolve(captureDir).toLowerCase()
+  );
 }
 
 function pruneTransientExpansionStateScreenshots(capture, report = null) {
