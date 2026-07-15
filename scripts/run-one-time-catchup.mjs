@@ -246,18 +246,17 @@ try {
 }
 
 async function drainSourceAiReview() {
-  // Re-audit on every invocation, including a resumed state whose standalone
-  // evidence stage was already marked succeeded. R2 presence is not proof that
-  // the local files needed to construct the AI request are still intact.
-  await drainSourceAiEvidence();
   let stagnantCycles = 0;
   for (let cycle = 1; ; cycle += 1) {
     ensureRuntimeAvailable();
     let before = await liveSnapshot();
     if (monitorBaselineBacklog(before) > 0) {
       await drainMissingVisualBaselines();
-      before = await liveSnapshot();
     }
+    // Baseline completion can enqueue new AI reviews. Re-run the local evidence
+    // gate after that producer on every cycle, including resumed review stages.
+    await drainSourceAiEvidence({ tickerStage: "source-ai-review" });
+    before = await liveSnapshot();
     const beforeCount =
       before.summary.backlog.source_ai_reviews + before.summary.backlog.sources_to_review_later;
     if (!beforeCount) return;
@@ -310,11 +309,14 @@ async function drainSourceAiReview() {
   }
 }
 
-async function drainSourceAiEvidence() {
+async function drainSourceAiEvidence({ tickerStage = "source-ai-local-evidence" } = {}) {
   let stagnantCycles = 0;
   for (let cycle = 1; ; cycle += 1) {
     ensureRuntimeAvailable();
     const before = await liveSnapshot();
+    if (state.current_stage !== tickerStage) {
+      await updateTicker(tickerStage, before);
+    }
     const sourceIds = sourceAiSourceIds(before);
     if (!sourceIds.length) return;
     atomicWriteJson(sourceAiEvidenceIdsPath, sourceIds);
@@ -329,7 +331,6 @@ async function drainSourceAiEvidence() {
     const beforeCount = pendingSourceIds.length;
     if (!beforeCount) {
       await verifySourceAiEvidenceComplete(sourceIds);
-      await updateTicker("source-ai-local-evidence", before);
       return;
     }
 
@@ -374,7 +375,7 @@ async function drainSourceAiEvidence() {
       repaired_before_capture: beforeRepair.repaired || 0,
       repaired_after_capture: afterRepair.repaired || 0,
     });
-    await updateTicker("source-ai-local-evidence", after);
+    await updateTicker(tickerStage, after);
     if (!afterCount) {
       await verifySourceAiEvidenceComplete(afterSourceIds);
       return;

@@ -71,14 +71,55 @@ describe("visual baseline evidence retention", () => {
     const reviewStage = catchupSource.indexOf(
       'runStage("source-ai-review", drainSourceAiReview)',
     );
+    expect(evidenceStage).toBeGreaterThan(-1);
+    expect(reviewStage).toBeGreaterThan(evidenceStage);
+    expect(catchupSource).toContain('"--ai-review-evidence-capture=true"');
+    expect(catchupSource).toContain('"--require-complete=true"');
+  });
+
+  it("re-audits local evidence inside every source AI cycle after queue-producing prep", () => {
     const reviewFunctionStart = catchupSource.indexOf("async function drainSourceAiReview");
     const evidenceFunctionStart = catchupSource.indexOf("async function drainSourceAiEvidence");
     const reviewFunction = catchupSource.slice(reviewFunctionStart, evidenceFunctionStart);
+    const loopStart = reviewFunction.indexOf("for (let cycle = 1; ; cycle += 1)");
+    const beforeLoop = reviewFunction.slice(0, loopStart);
+    const loop = reviewFunction.slice(loopStart);
+    const baselineDrain = loop.indexOf("await drainMissingVisualBaselines()");
+    const evidenceDrain = loop.indexOf(
+      'await drainSourceAiEvidence({ tickerStage: "source-ai-review" })',
+    );
+    const budgetGuard = loop.indexOf("await ensureGeminiBudget()");
+    const paidReview = loop.indexOf("source-ai-review-cycle-${cycle}");
 
-    expect(evidenceStage).toBeGreaterThan(-1);
-    expect(reviewStage).toBeGreaterThan(evidenceStage);
-    expect(reviewFunction).toContain("await drainSourceAiEvidence()");
-    expect(catchupSource).toContain('"--ai-review-evidence-capture=true"');
-    expect(catchupSource).toContain('"--require-complete=true"');
+    expect(loopStart).toBeGreaterThan(-1);
+    expect(beforeLoop).not.toContain("drainSourceAiEvidence");
+    expect(baselineDrain).toBeGreaterThan(-1);
+    expect(evidenceDrain).toBeGreaterThan(baselineDrain);
+    expect(budgetGuard).toBeGreaterThan(evidenceDrain);
+    expect(paidReview).toBeGreaterThan(budgetGuard);
+  });
+
+  it("keeps the source AI review stage active during its nested evidence gate", () => {
+    const evidenceFunctionStart = catchupSource.indexOf("async function drainSourceAiEvidence");
+    const repairFunctionStart = catchupSource.indexOf(
+      "async function inspectAndRepairSourceAiEvidence",
+    );
+    const evidenceFunction = catchupSource.slice(evidenceFunctionStart, repairFunctionStart);
+    const entrySnapshot = evidenceFunction.indexOf("const before = await liveSnapshot()");
+    const entryTickerGuard = evidenceFunction.indexOf(
+      "if (state.current_stage !== tickerStage)",
+    );
+    const entryTicker = evidenceFunction.indexOf("await updateTicker(tickerStage, before)");
+    const sourceSelection = evidenceFunction.indexOf("const sourceIds = sourceAiSourceIds(before)");
+    const emptyReturn = evidenceFunction.indexOf("if (!sourceIds.length) return");
+
+    expect(evidenceFunction).toContain(
+      'tickerStage = "source-ai-local-evidence"',
+    );
+    expect(entryTickerGuard).toBeGreaterThan(entrySnapshot);
+    expect(entryTicker).toBeGreaterThan(entryTickerGuard);
+    expect(sourceSelection).toBeGreaterThan(entryTicker);
+    expect(emptyReturn).toBeGreaterThan(sourceSelection);
+    expect(evidenceFunction.match(/updateTicker\(tickerStage/g)).toHaveLength(2);
   });
 });
