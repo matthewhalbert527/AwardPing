@@ -417,6 +417,7 @@ function ChangesPanel({
                 <p>{change.summary}</p>
                 {showSnapshotPreviews && (
                   <SourceSnapshotInlinePreview
+                    changeEventId={change.id}
                     changeDetails={change.changeDetails}
                     changeSummary={change.summary}
                     sourceId={change.sourceId || sourceIdFallback}
@@ -425,6 +426,7 @@ function ChangesPanel({
                   />
                 )}
                 <ChangeEvidencePanel
+                  changeEventId={change.id}
                   changeDetails={change.changeDetails}
                   compact
                   detectedAt={change.detectedAt}

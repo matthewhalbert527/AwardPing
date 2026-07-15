@@ -66,4 +66,27 @@ describe("stored visual publication retry wiring", () => {
     expect(body).toContain("requeued_for_current_source_context += 1");
     expect(body).toContain("requeued_for_current_policy += 1");
   });
+
+  it("publishes only through the atomic immutable-evidence RPC", () => {
+    const publishStart = source.indexOf("async function publishCandidateResult(");
+    const publishEnd = source.indexOf("async function queueAwardReconciliationForCandidate", publishStart);
+    const body = source.slice(publishStart, publishEnd);
+    const evidence = body.indexOf("await preparePublishedVisualEventEvidence");
+    const rpc = body.indexOf('supabase.rpc("publish_shared_award_visual_event"');
+    const candidatePublished = body.indexOf('status: "published"', rpc);
+
+    expect(evidence).toBeGreaterThan(-1);
+    expect(rpc).toBeGreaterThan(evidence);
+    expect(candidatePublished).toBeGreaterThan(rpc);
+    expect(body).toContain("change_event_evidence_id: publication.evidence_id");
+    expect(body).toContain("event_evidence_not_durable");
+    expect(source).not.toContain('.from("shared_award_change_events")');
+  });
+
+  it("uses capture identity timestamps so an equivalent retry remains equivalent", () => {
+    expect(source).toContain("const eventDetectedAt =");
+    expect(source).toContain("candidate?.new_snapshot_ref?.captured_at");
+    expect(source).toContain("generated_at: eventDetectedAt");
+    expect(source).toContain("detected_at: eventDetectedAt");
+  });
 });

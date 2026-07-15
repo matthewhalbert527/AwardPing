@@ -215,6 +215,9 @@ export function UpdateFeedWorkspace({
                   changeDetails={change.changeDetails}
                 />
                 <ChangeEvidencePanel
+                  changeEventId={
+                    change.kind === "shared" ? change.changeId || change.id : null
+                  }
                   compact
                   sourceId={change.sourceId}
                   sourceUrl={change.sourceUrl}

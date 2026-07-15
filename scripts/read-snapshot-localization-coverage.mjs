@@ -111,7 +111,10 @@ try {
     .map((row) => row.source_id);
   const workSourceIds = [...new Set(repairSourceIds)].sort();
   const report = {
-    version: 1,
+    version: 2,
+    report_type: "legacy_source_pointer_layout_maintenance",
+    verified_event_crop_metric: false,
+    verified_event_crop_report_command: "node scripts/read-event-visual-evidence-coverage.mjs",
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     apply,

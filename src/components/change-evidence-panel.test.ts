@@ -7,6 +7,7 @@ describe("ChangeEvidencePanel", () => {
   it("combines summary evidence and source metadata in one update details disclosure", () => {
     const html = renderToStaticMarkup(
       createElement(ChangeEvidencePanel, {
+        changeEventId: "change-1",
         sourceId: "source-1",
         sourceUrl: "https://example.edu/award",
         sourceTitle: "Application page",
@@ -57,5 +58,19 @@ describe("ChangeEvidencePanel", () => {
     expect(html).not.toContain("Source details");
     expect(html).not.toContain("<dt>Status</dt>");
     expect(html).not.toContain("stored snapshot text");
+  });
+
+  it("offers event-scoped evidence even when no mutable source snapshot ID is available", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChangeEvidencePanel, {
+        changeEventId: "change-1",
+        sourceId: null,
+        sourceUrl: "https://example.edu/award",
+        sourceTitle: "Application page",
+        summary: "The application deadline changed.",
+      }),
+    );
+
+    expect(html).toContain("Snapshot");
   });
 });

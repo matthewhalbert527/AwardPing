@@ -354,6 +354,49 @@ describe("Windows worker update safety", () => {
     expect(restoreIndex).toBeGreaterThan(validationIndex);
   });
 
+  it("validates the immutable visual-evidence runtime closure and native crop dependency", () => {
+    for (const relativePath of [
+      "scripts\\lib\\expansion-state-isolation.mjs",
+      "scripts\\lib\\visible-text-geometry.mjs",
+      "scripts\\lib\\visual-event-localization.mjs",
+      "scripts\\lib\\visual-snapshot-history.mjs",
+      "scripts\\lib\\visual-review-queue.mjs",
+      "scripts\\lib\\visual-change-publication.mjs",
+      "scripts\\lib\\visual-event-evidence.mjs",
+      "scripts\\read-event-visual-evidence-coverage.mjs",
+      "scripts\\lib\\event-visual-evidence-coverage.mjs",
+      "scripts\\backfill-visual-event-evidence.mjs",
+      "scripts\\lib\\visual-event-evidence-backfill.mjs",
+      "scripts\\lib\\snapshot-localization.mjs",
+    ]) {
+      expect(installer.split(`"${relativePath}"`).length - 1).toBeGreaterThanOrEqual(2);
+    }
+    expect(installer).toContain('"sharp",');
+  });
+
+  it("requires a complete syntactically valid R2 configuration before tasks resume", () => {
+    const validator = extractPowerShellFunction(
+      installer,
+      "Test-R2WorkerConfiguration",
+      "Read-R2WorkerConfiguration",
+    );
+    const result = runPowerShell([
+      validator,
+      "$blank = Test-R2WorkerConfiguration -Bucket 'awardping-snapshots' -AccountId '' -Endpoint '' -AccessKeyId '' -SecretAccessKey ''",
+      "$badEndpoint = Test-R2WorkerConfiguration -Bucket 'awardping-snapshots' -AccountId '' -Endpoint 'http://example.test' -AccessKeyId 'key' -SecretAccessKey 'secret'",
+      "$valid = Test-R2WorkerConfiguration -Bucket 'awardping-snapshots' -AccountId ('a' * 32) -Endpoint '' -AccessKeyId 'key' -SecretAccessKey 'secret'",
+      'Write-Output "BLANK=$($blank.Ok) BAD_ENDPOINT=$($badEndpoint.Ok) VALID=$($valid.Ok)"',
+    ].join("\n"));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("BLANK=False BAD_ENDPOINT=False VALID=True");
+    expect(installer).toContain("$r2Configuration = Read-R2WorkerConfiguration");
+    expect(installer).toContain("invalid worker R2 configuration");
+    expect(installer).toContain('Read-WorkerEnvValues -Path $workerEnvPath');
+    expect(installer).toContain("Copy-AwardPingMutableAppState -CurrentAppDir $appDir -StagingAppDir $stagingAppDir");
+    expect(installer).not.toContain("Update-only mode: enter R2");
+  });
+
   it("limits forced process shutdown to command lines rooted in the installed worker", () => {
     expect(installer).toContain("Get-InstalledAwardPingWorkerProcesses");
     expect(installer).toContain("$normalizedRoot\\app\\scripts\\");
@@ -425,6 +468,8 @@ describe("Windows worker update safety", () => {
     expect(installerDocs).toContain("change-event-suppression-sweep");
     expect(installerDocs).toContain("complete staged app");
     expect(installerDocs).toContain("workspace catch-up");
+    expect(installerDocs).toContain("Cloudflare R2 account ID");
+    expect(installerDocs).toContain("preserves the existing R2 credentials");
     expect(installerDocs).toMatch(/Do not\r?\ncopy individual files/);
   });
 

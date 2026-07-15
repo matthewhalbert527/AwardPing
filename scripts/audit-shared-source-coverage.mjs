@@ -16,12 +16,14 @@ const sampleLimit = positiveInt(args["sample-limit"], 40);
 const supabase = createSupabaseClient();
 const [awards, sources] = await Promise.all([
   loadAll("shared_awards", "id,name,official_homepage,status,updated_at"),
-  loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,updated_at"),
+  loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,admin_review_status,updated_at"),
 ]);
 
 const activeAwards = awards.filter((award) => award.status === "active");
 const activeAwardIds = new Set(activeAwards.map((award) => award.id));
-const activeSources = sources.filter((source) => activeAwardIds.has(source.shared_award_id));
+const activeSources = sources.filter(
+  (source) => activeAwardIds.has(source.shared_award_id) && source.admin_review_status !== "review_later",
+);
 const badSources = activeSources
   .map((source) => ({ ...source, reason: nonAwardReason(source.url, source.title) }))
   .filter((source) => source.reason);
@@ -33,8 +35,10 @@ let homepageRepairs = buildHomepageRepairs(currentAwards, groupBy(currentSources
 if (applyCleanup) {
   await cleanupSources([...badSources, ...duplicateSources.map((item) => item.remove)].filter(Boolean));
   currentSources = (
-    await loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,updated_at")
-  ).filter((source) => activeAwardIds.has(source.shared_award_id));
+    await loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,admin_review_status,updated_at")
+  ).filter(
+    (source) => activeAwardIds.has(source.shared_award_id) && source.admin_review_status !== "review_later",
+  );
 
   homepageRepairs = buildHomepageRepairs(currentAwards, groupBy(currentSources, (source) => source.shared_award_id));
   await cleanupAwardHomepages(homepageRepairs);
@@ -88,17 +92,17 @@ console.log(
 );
 
 async function cleanupSources(rows) {
-  const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))];
-  const urls = [...new Set(rows.map((row) => row.url).filter(Boolean))];
-  if (!ids.length && !urls.length) return;
-
-  await deleteWhereIn("shared_award_change_events", "shared_award_source_id", ids);
-  await deleteWhereIn("shared_award_change_events", "source_url", urls);
-  await deleteWhereIn("shared_award_source_snapshots", "shared_award_source_id", ids);
-  await deleteWhereIn("shared_award_source_snapshots", "source_url", urls);
-  await deleteWhereIn("monitors", "shared_award_source_id", ids);
-  await deleteWhereIn("award_sources", "shared_award_source_id", ids);
-  await deleteWhereIn("shared_award_sources", "id", ids);
+  for (const sourceId of [...new Set(rows.map((row) => row.id).filter(Boolean))]) {
+    const { data, error } = await supabase.rpc("retire_shared_award_source_preserving_visual_history", {
+      p_source_id: sourceId,
+      p_reason: "Retired by shared-source coverage cleanup; immutable update and visual history were preserved.",
+      p_actor: "awardping-shared-source-coverage-cleanup",
+    });
+    const result = Array.isArray(data) ? data[0] : data;
+    if (error || !result?.source_id) {
+      throw new Error(`Retire shared source ${sourceId}: ${error?.message || "no durable result"}`);
+    }
+  }
 }
 
 async function cleanupAwardHomepages(repairs) {
@@ -109,12 +113,6 @@ async function cleanupAwardHomepages(repairs) {
       .eq("id", repair.award.id);
     if (error) throw new Error(`shared_awards.official_homepage ${repair.award.id}: ${error.message}`);
   }
-}
-
-async function deleteWhereIn(table, column, values) {
-  if (!values.length) return;
-  const { error } = await supabase.from(table).delete().in(column, values);
-  if (error) throw new Error(`${table}.${column}: ${error.message}`);
 }
 
 function renderReport({ awardsWithCounts, buckets, badSources, duplicateSources, homepageRepairs }) {

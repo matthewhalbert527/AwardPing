@@ -1,3 +1,7 @@
+import crypto from "node:crypto";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   buildVisualReviewPromptPayload,
@@ -20,6 +24,7 @@ import {
   visualReviewCandidateSignatureFromStoredCandidate,
   visualReviewEvidenceSignature,
   visualReviewEvidenceSignatureFromStoredCandidate,
+  visualSnapshotArtifactManifestDigest,
   visualReviewEnclosingCaptureIdentity,
   visualReviewFailureRetryDecision,
   visualReviewSourceIdentityFreshness,
@@ -1072,8 +1077,8 @@ describe("visual review queue helpers", () => {
     const payload = buildVisualReviewPromptPayload({
       source,
       baseline: { text_hash: "old", image_hash: "same" },
-      previous: { text: "Application deadline: March 15, 2027", thumbPath: "previous.jpg" },
-      capture: { text: "Application deadline: April 2, 2027", text_hash: "new", image_hash: "same", thumbPath: "new.jpg" },
+      previous: { text: "Application deadline: March 15, 2027" },
+      capture: { text: "Application deadline: April 2, 2027", text_hash: "new", image_hash: "same" },
       diff,
       deterministic: { ...deterministic, classification: decision.label },
     });
@@ -1381,4 +1386,412 @@ describe("visual review queue helpers", () => {
 
     expect(decision).toEqual({ allowed: true, reason: "approved" });
   });
+
+  it("carries immutable main and opened-section image/layout refs on both snapshot sides", () => {
+    const fixture = createVisualArtifactFixture();
+    try {
+      const payload = buildVisualReviewPromptPayload({
+        source,
+        baseline: fixture.baseline,
+        previous: fixture.previous,
+        capture: fixture.capture,
+        diff: candidate.deterministic_diff,
+        deterministic: { candidate_change: true },
+        archiveRelative: fixture.archiveRelative,
+      });
+
+      expect(payload.previous_snapshot_ref).toMatchObject({
+        image_hash: fixture.hashes.previousImage,
+        layout_hash: "previous-layout-hash",
+        local_paths: {
+          layout: {
+            archive_relative: "previous/layout.json",
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            byte_length: expect.any(Number),
+          },
+        },
+        visual_states: [
+          {
+            state_id: "main",
+            kind: "main",
+            geometry_hash: "previous-layout-hash",
+            local_paths: {
+              image: { archive_relative: "previous/page.jpg", sha256: fixture.hashes.previousImage },
+              layout: { archive_relative: "previous/layout.json", byte_length: expect.any(Number) },
+            },
+          },
+          {
+            state_id: "expansion-state-01",
+            kind: "expansion_state",
+            image_hash: fixture.hashes.previousStateImage,
+            geometry_hash: "previous-state-layout",
+          },
+        ],
+      });
+      expect(payload.new_snapshot_ref).toMatchObject({
+        image_hash: fixture.hashes.currentImage,
+        layout_hash: "current-layout-hash",
+        visual_states: [
+          {
+            state_id: "main",
+            kind: "main",
+            metadata: {
+              screenshot: { image_hash: fixture.hashes.currentImage, pixel_width: 1365 },
+            },
+          },
+          {
+            state_id: "expansion-state-02",
+            kind: "expansion_state",
+            image_hash: fixture.hashes.currentStateImage,
+            geometry_hash: "current-state-layout",
+            local_paths: {
+              image: { archive_relative: "current/expansion-state-02.jpg", byte_length: expect.any(Number) },
+              layout: {
+                archive_relative: "current/expansion-state-02-layout.json",
+                sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+              },
+            },
+          },
+        ],
+      });
+      expect(payload.new_snapshot_ref.metadata.text_geometry).not.toHaveProperty("nodes");
+      expect(payload.previous_snapshot_ref.artifact_manifest).toMatchObject({
+        version: 1,
+        complete: true,
+        digest: payload.previous_snapshot_ref.artifact_manifest_digest,
+        missing_roles: [],
+      });
+      expect(payload.new_snapshot_ref.artifact_manifest_digest).toMatch(/^[a-f0-9]{64}$/);
+      expect(payload.hashes).toMatchObject({
+        previous_artifact_manifest_digest: payload.previous_snapshot_ref.artifact_manifest_digest,
+        new_artifact_manifest_digest: payload.new_snapshot_ref.artifact_manifest_digest,
+      });
+      for (const snapshotRef of [payload.previous_snapshot_ref, payload.new_snapshot_ref]) {
+        for (const role of ["page", "thumb", "text", "layout", "meta"]) {
+          expect(snapshotRef.local_paths[role]).toMatchObject({
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            byte_length: expect.any(Number),
+          });
+        }
+        for (const state of snapshotRef.visual_states) {
+          expect(state.local_paths.image).toMatchObject({
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            byte_length: expect.any(Number),
+          });
+          expect(state.local_paths.layout).toMatchObject({
+            sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+            byte_length: expect.any(Number),
+          });
+        }
+      }
+      expect(JSON.stringify(payload.new_snapshot_ref.artifact_manifest)).not.toContain(fixture.root);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("binds same-length metadata and layout replacements into manifest and candidate signatures", () => {
+    const fixture = createVisualArtifactFixture();
+    const deterministic = { classification: "candidate_change" };
+    const behaviorVersion = 9;
+    const buildPayload = () => buildVisualReviewPromptPayload({
+      source,
+      baseline: fixture.baseline,
+      previous: fixture.previous,
+      capture: fixture.capture,
+      diff: candidate.deterministic_diff,
+      deterministic,
+      behaviorVersion,
+      archiveRelative: fixture.archiveRelative,
+    });
+    const evidenceSignature = (payload) => visualReviewEvidenceSignature({
+      source,
+      baseline: fixture.baseline,
+      capture: fixture.capture,
+      previousSnapshotRef: payload.previous_snapshot_ref,
+      newSnapshotRef: payload.new_snapshot_ref,
+      diff: candidate.deterministic_diff,
+      deterministic,
+      behaviorVersion,
+    });
+    const candidateSignature = (payload) => visualReviewCandidateSignature({
+      source,
+      baseline: fixture.baseline,
+      capture: fixture.capture,
+      previousSnapshotRef: payload.previous_snapshot_ref,
+      newSnapshotRef: payload.new_snapshot_ref,
+      diff: candidate.deterministic_diff,
+      deterministic,
+      behaviorVersion,
+    });
+
+    try {
+      const originalPayload = buildPayload();
+      const originalEvidenceSignature = evidenceSignature(originalPayload);
+      const originalCandidateSignature = candidateSignature(originalPayload);
+      const stored = {
+        shared_award_source_id: source.id,
+        source_url: source.url,
+        source_title: source.title,
+        source_page_type: source.page_type,
+        previous_snapshot_ref: originalPayload.previous_snapshot_ref,
+        new_snapshot_ref: originalPayload.new_snapshot_ref,
+        previous_text_hash: fixture.baseline.text_hash,
+        new_text_hash: fixture.capture.text_hash,
+        previous_image_hash: fixture.baseline.image_hash,
+        new_image_hash: fixture.capture.image_hash,
+        previous_file_hash: null,
+        new_file_hash: null,
+        deterministic_diff: candidate.deterministic_diff,
+        deterministic_classification: deterministic.classification,
+        prompt_payload: originalPayload,
+      };
+      expect(visualReviewEvidenceSignatureFromStoredCandidate(stored)).toBe(originalEvidenceSignature);
+      expect(visualReviewCandidateSignatureFromStoredCandidate(stored)).toBe(originalCandidateSignature);
+      expect(visualSnapshotArtifactManifestDigest(originalPayload.new_snapshot_ref)).toBe(
+        originalPayload.new_snapshot_ref.artifact_manifest_digest,
+      );
+
+      const originalMeta = readFileSync(fixture.paths.currentMeta);
+      writeFileSync(fixture.paths.currentMeta, Buffer.alloc(originalMeta.length, 0x6d));
+      expect(readFileSync(fixture.paths.currentMeta)).toHaveLength(originalMeta.length);
+      const metadataReplacedPayload = buildPayload();
+      expect(metadataReplacedPayload.new_snapshot_ref.artifact_manifest_digest).not.toBe(
+        originalPayload.new_snapshot_ref.artifact_manifest_digest,
+      );
+      expect(evidenceSignature(metadataReplacedPayload)).not.toBe(originalEvidenceSignature);
+      expect(candidateSignature(metadataReplacedPayload)).not.toBe(originalCandidateSignature);
+
+      const originalLayout = readFileSync(fixture.paths.currentLayout);
+      const replacementLayout = Buffer.from(layoutJson(
+        "current-layout-hash",
+        fixture.hashes.currentImage,
+        "CURRENT-MAIN",
+      ));
+      expect(replacementLayout).toHaveLength(originalLayout.length);
+      writeFileSync(fixture.paths.currentLayout, replacementLayout);
+      const layoutReplacedPayload = buildPayload();
+      expect(layoutReplacedPayload.new_snapshot_ref.artifact_manifest_digest).not.toBe(
+        metadataReplacedPayload.new_snapshot_ref.artifact_manifest_digest,
+      );
+      expect(evidenceSignature(layoutReplacedPayload)).not.toBe(evidenceSignature(metadataReplacedPayload));
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("byte-binds PDF, text, and metadata artifact refs", () => {
+    const root = mkdtempSync(join(tmpdir(), "awardping-visual-pdf-artifacts-"));
+    const write = (name, value) => {
+      const path = join(root, name);
+      writeFileSync(path, value);
+      return path;
+    };
+    try {
+      const previousPdf = write("previous.pdf", "%PDF-previous");
+      const currentPdf = write("current.pdf", "%PDF-current!");
+      const previousFileHash = sha256File(previousPdf);
+      const currentFileHash = sha256File(currentPdf);
+      const payload = buildVisualReviewPromptPayload({
+        source,
+        baseline: { file_hash: previousFileHash, text_hash: "previous-pdf-text" },
+        previous: {
+          kind: "pdf",
+          pdfPath: previousPdf,
+          textPath: write("previous.txt", "Previous PDF text"),
+          metaPath: write("previous-meta.json", '{"side":"previous"}'),
+        },
+        capture: {
+          kind: "pdf",
+          file_hash: currentFileHash,
+          text_hash: "current-pdf-text",
+          pdf_path: currentPdf,
+          text_path: write("current.txt", "Current PDF text"),
+          meta_path: write("current-meta.json", '{"side":"current"}'),
+        },
+        diff: candidate.deterministic_diff,
+        deterministic: { classification: "candidate_change" },
+        archiveRelative: (path) => path.slice(root.length + 1).replace(/\\/g, "/"),
+      });
+      expect(payload.previous_snapshot_ref.local_paths.pdf).toMatchObject({
+        sha256: previousFileHash,
+        byte_length: readFileSync(previousPdf).length,
+      });
+      expect(payload.new_snapshot_ref.local_paths.pdf).toMatchObject({
+        sha256: currentFileHash,
+        byte_length: readFileSync(currentPdf).length,
+      });
+      expect(payload.previous_snapshot_ref.artifact_manifest_digest).toMatch(/^[a-f0-9]{64}$/);
+      expect(payload.new_snapshot_ref.artifact_manifest_digest).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when semantic image or geometry hashes disagree with retained bytes", () => {
+    const imageFixture = createVisualArtifactFixture();
+    try {
+      imageFixture.capture.image_hash = "0".repeat(64);
+      expect(() => buildVisualReviewPromptPayload({
+        source,
+        baseline: imageFixture.baseline,
+        previous: imageFixture.previous,
+        capture: imageFixture.capture,
+        diff: candidate.deterministic_diff,
+        deterministic: { classification: "candidate_change" },
+        archiveRelative: imageFixture.archiveRelative,
+      })).toThrow(/main image hash does not match/i);
+    } finally {
+      imageFixture.cleanup();
+    }
+
+    const geometryFixture = createVisualArtifactFixture();
+    try {
+      geometryFixture.capture.layout_hash = "different-geometry-hash";
+      expect(() => buildVisualReviewPromptPayload({
+        source,
+        baseline: geometryFixture.baseline,
+        previous: geometryFixture.previous,
+        capture: geometryFixture.capture,
+        diff: candidate.deterministic_diff,
+        deterministic: { classification: "candidate_change" },
+        archiveRelative: geometryFixture.archiveRelative,
+      })).toThrow(/geometry hash does not match/i);
+    } finally {
+      geometryFixture.cleanup();
+    }
+  });
 });
+
+function createVisualArtifactFixture() {
+  const root = mkdtempSync(join(tmpdir(), "awardping-visual-artifacts-"));
+  const previousDir = join(root, "previous");
+  const currentDir = join(root, "current");
+  mkdirSync(previousDir, { recursive: true });
+  mkdirSync(currentDir, { recursive: true });
+  const write = (dir, name, value) => {
+    const path = join(dir, name);
+    writeFileSync(path, value);
+    return path;
+  };
+
+  const previousPage = write(previousDir, "page.jpg", "previous-main-image-bytes");
+  const previousStatePage = write(previousDir, "expansion-state-01.jpg", "previous-state-image-bytes");
+  const currentPage = write(currentDir, "page.jpg", "current-main-image-bytes");
+  const currentStatePage = write(currentDir, "expansion-state-02.jpg", "current-state-image-bytes");
+  const hashes = {
+    previousImage: sha256File(previousPage),
+    previousStateImage: sha256File(previousStatePage),
+    currentImage: sha256File(currentPage),
+    currentStateImage: sha256File(currentStatePage),
+  };
+  const previousLayout = write(previousDir, "layout.json", layoutJson(
+    "previous-layout-hash",
+    hashes.previousImage,
+    "previous-main",
+  ));
+  const previousStateLayout = write(previousDir, "expansion-state-01-layout.json", layoutJson(
+    "previous-state-layout",
+    hashes.previousStateImage,
+    "previous-state",
+  ));
+  const currentLayout = write(currentDir, "layout.json", layoutJson(
+    "current-layout-hash",
+    hashes.currentImage,
+    "current-main",
+  ));
+  const currentStateLayout = write(currentDir, "expansion-state-02-layout.json", layoutJson(
+    "current-state-layout",
+    hashes.currentStateImage,
+    "current-state",
+  ));
+
+  const previous = {
+    kind: "webpage",
+    dir: previousDir,
+    captured_at: "2026-07-14T18:00:00.000Z",
+    pagePath: previousPage,
+    thumbPath: write(previousDir, "thumb.jpg", "previous-thumb-bytes"),
+    textPath: write(previousDir, "text.txt", "Previous award text\n"),
+    layoutPath: previousLayout,
+    metaPath: write(previousDir, "meta.json", '{"capture":"previous"}'),
+    image_hash: hashes.previousImage,
+    layout_hash: "previous-layout-hash",
+    expansionStateScreenshots: [{
+      state_id: "expansion-state-01",
+      index: 3,
+      label: "Eligibility",
+      captured_at: "2026-07-14T18:00:01.000Z",
+      image_hash: hashes.previousStateImage,
+      layout_hash: "previous-state-layout",
+      page_path: previousStatePage,
+      layout_path: previousStateLayout,
+    }],
+  };
+  const capture = {
+    kind: "webpage",
+    dir: currentDir,
+    captured_at: "2026-07-15T18:00:00.000Z",
+    page_path: currentPage,
+    thumb_path: write(currentDir, "thumb.jpg", "current-thumb-bytes"),
+    text_path: write(currentDir, "text.txt", "Current award text\n"),
+    layout_path: currentLayout,
+    meta_path: write(currentDir, "meta.json", '{"capture":"current!"}'),
+    text_hash: "current-text-hash",
+    image_hash: hashes.currentImage,
+    layout_hash: "current-layout-hash",
+    text_geometry: {
+      coordinate_space: "document-css-pixels",
+      geometry_hash: "current-layout-hash",
+      screenshot: { image_hash: hashes.currentImage, pixel_width: 1365, pixel_height: 4000 },
+      nodes: [{ order: 0, text: "Do not duplicate full layout geometry in the queue row." }],
+    },
+    expansion_state_screenshots: [{
+      state_id: "expansion-state-02",
+      index: 5,
+      label: "Application materials",
+      captured_at: "2026-07-15T18:00:01.000Z",
+      image_hash: hashes.currentStateImage,
+      layout_hash: "current-state-layout",
+      page_path: currentStatePage,
+      layout_path: currentStateLayout,
+      text_geometry: {
+        coordinate_space: "document-css-pixels",
+        geometry_hash: "current-state-layout",
+        screenshot: { image_hash: hashes.currentStateImage, pixel_width: 1365, pixel_height: 4200 },
+      },
+    }],
+  };
+  return {
+    root,
+    previous,
+    capture,
+    baseline: {
+      image_hash: hashes.previousImage,
+      layout_hash: "previous-layout-hash",
+      text_hash: "previous-text-hash",
+    },
+    hashes,
+    paths: {
+      previousLayout,
+      currentLayout,
+      previousMeta: previous.metaPath,
+      currentMeta: capture.meta_path,
+    },
+    archiveRelative: (path) => path.slice(root.length + 1).replace(/\\/g, "/"),
+    cleanup: () => rmSync(root, { recursive: true, force: true }),
+  };
+}
+
+function layoutJson(geometryHash, imageHash, marker) {
+  return JSON.stringify({
+    geometry_hash: geometryHash,
+    screenshot: { image_hash: imageHash },
+    marker,
+    nodes: [],
+  });
+}
+
+function sha256File(path) {
+  return crypto.createHash("sha256").update(readFileSync(path)).digest("hex");
+}

@@ -346,6 +346,125 @@ function Suspend-AwardPingStartupLauncherForUpdate {
   }
 }
 
+function Test-R2WorkerConfiguration {
+  param(
+    [string]$Bucket,
+    [string]$AccountId,
+    [string]$Endpoint,
+    [string]$AccessKeyId,
+    [string]$SecretAccessKey
+  )
+
+  $Bucket = [string]$Bucket
+  $AccountId = [string]$AccountId
+  $Endpoint = [string]$Endpoint
+  $AccessKeyId = [string]$AccessKeyId
+  $SecretAccessKey = [string]$SecretAccessKey
+
+  $Bucket = $Bucket.Trim()
+  $AccountId = $AccountId.Trim()
+  $Endpoint = $Endpoint.Trim()
+  $AccessKeyId = $AccessKeyId.Trim()
+  $SecretAccessKey = $SecretAccessKey.Trim()
+
+  if ([string]::IsNullOrWhiteSpace($Bucket)) {
+    return @{ Ok = $false; Message = "R2_BUCKET is required for immutable event evidence." }
+  }
+  if (
+    $Bucket.Length -lt 3 -or
+    $Bucket.Length -gt 63 -or
+    $Bucket -notmatch "^[a-z0-9][a-z0-9.-]*[a-z0-9]$" -or
+    $Bucket.Contains("..")
+  ) {
+    return @{ Ok = $false; Message = "R2_BUCKET must be a 3-63 character lowercase bucket name without spaces or consecutive periods." }
+  }
+  if ([string]::IsNullOrWhiteSpace($AccountId) -and [string]::IsNullOrWhiteSpace($Endpoint)) {
+    return @{ Ok = $false; Message = "R2_ACCOUNT_ID or R2_ENDPOINT is required for immutable event evidence." }
+  }
+  if (-not [string]::IsNullOrWhiteSpace($AccountId) -and $AccountId -notmatch "^[a-fA-F0-9]{32}$") {
+    return @{ Ok = $false; Message = "R2_ACCOUNT_ID must be the 32-character hexadecimal Cloudflare account ID." }
+  }
+  if ([string]::IsNullOrWhiteSpace($AccessKeyId)) {
+    return @{ Ok = $false; Message = "R2_ACCESS_KEY_ID is required for immutable event evidence." }
+  }
+  if ([string]::IsNullOrWhiteSpace($SecretAccessKey)) {
+    return @{ Ok = $false; Message = "R2_SECRET_ACCESS_KEY is required for immutable event evidence." }
+  }
+
+  $resolvedEndpoint = $Endpoint
+  if ([string]::IsNullOrWhiteSpace($resolvedEndpoint)) {
+    $resolvedEndpoint = "https://${AccountId}.r2.cloudflarestorage.com"
+  }
+  $endpointUri = $null
+  if (
+    -not [System.Uri]::TryCreate($resolvedEndpoint, [System.UriKind]::Absolute, [ref]$endpointUri) -or
+    $endpointUri.Scheme -ne "https" -or
+    [string]::IsNullOrWhiteSpace($endpointUri.Host)
+  ) {
+    return @{ Ok = $false; Message = "R2_ENDPOINT must be an absolute HTTPS endpoint when supplied." }
+  }
+
+  return @{
+    Ok = $true
+    Message = "R2 configuration is complete and its endpoint is syntactically valid."
+    Endpoint = $resolvedEndpoint
+  }
+}
+
+function Read-R2WorkerConfiguration {
+  while ($true) {
+    $bucket = Read-Default "Cloudflare R2 bucket" "awardping-snapshots"
+    $accountId = Read-PlainSecret "Paste Cloudflare R2 account ID"
+    $accessKeyId = Read-PlainSecret "Paste Cloudflare R2 access key ID"
+    $secretAccessKey = Read-PlainSecret "Paste Cloudflare R2 secret access key"
+    $result = Test-R2WorkerConfiguration `
+      -Bucket $bucket `
+      -AccountId $accountId `
+      -Endpoint "" `
+      -AccessKeyId $accessKeyId `
+      -SecretAccessKey $secretAccessKey
+    if ($result.Ok) {
+      Write-Host $result.Message -ForegroundColor Green
+      return [pscustomobject]@{
+        Bucket = $bucket.Trim()
+        AccountId = $accountId.Trim()
+        Endpoint = ""
+        AccessKeyId = $accessKeyId.Trim()
+        SecretAccessKey = $secretAccessKey.Trim()
+      }
+    }
+
+    Write-Host $result.Message -ForegroundColor Yellow
+    Write-Host "Enter the complete R2 configuration again; scheduled publication remains disabled until it validates." -ForegroundColor Yellow
+  }
+}
+
+function Read-WorkerEnvValues {
+  param([string]$Path)
+
+  $values = @{}
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return $values
+  }
+
+  foreach ($line in Get-Content -LiteralPath $Path -ErrorAction Stop) {
+    if ($line -match "^\s*([^#][^=]*)=(.*)$") {
+      $value = $matches[2].Trim()
+      if (
+        $value.Length -ge 2 -and
+        (
+          ($value.StartsWith('"') -and $value.EndsWith('"')) -or
+          ($value.StartsWith("'") -and $value.EndsWith("'"))
+        )
+      ) {
+        $value = $value.Substring(1, $value.Length - 2)
+      }
+      $values[$matches[1].Trim()] = $value
+    }
+  }
+  return $values
+}
+
 function Complete-AwardPingStartupLauncherUpdate {
   param(
     [object]$Snapshot,
@@ -651,10 +770,22 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $InstallRoot "Run-AwardPingDownstreamQueues.ps1"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
+      (Join-Path $AppDir "scripts\lib\expansion-state-isolation.mjs"),
+      (Join-Path $AppDir "scripts\lib\visible-text-geometry.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-event-localization.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-snapshot-history.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-review-queue.mjs"),
       (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
       (Join-Path $AppDir "scripts\backfill-baseline-facts.mjs"),
       (Join-Path $AppDir "scripts\process-source-intake-requests.mjs"),
       (Join-Path $AppDir "scripts\process-visual-review-batch.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-change-publication.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-event-evidence.mjs"),
+      (Join-Path $AppDir "scripts\read-event-visual-evidence-coverage.mjs"),
+      (Join-Path $AppDir "scripts\lib\event-visual-evidence-coverage.mjs"),
+      (Join-Path $AppDir "scripts\backfill-visual-event-evidence.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-event-evidence-backfill.mjs"),
+      (Join-Path $AppDir "scripts\lib\snapshot-localization.mjs"),
       (Join-Path $AppDir "scripts\cleanup-change-event-noise.mjs"),
       (Join-Path $AppDir "scripts\reconcile-impacted-award-pages.mjs"),
       (Join-Path $AppDir "scripts\process-page-audit-batch.mjs"),
@@ -692,6 +823,20 @@ function Get-AwardPingInstalledRuntimeProblems {
     $problems += "missing worker runtime dependency: $dependency"
   }
 
+  $workerEnvPath = Join-Path $AppDir ".env.worker.local"
+  if (Test-Path -LiteralPath $workerEnvPath -PathType Leaf) {
+    $workerEnv = Read-WorkerEnvValues -Path $workerEnvPath
+    $r2Validation = Test-R2WorkerConfiguration `
+      -Bucket ([string]$workerEnv["R2_BUCKET"]) `
+      -AccountId ([string]$workerEnv["R2_ACCOUNT_ID"]) `
+      -Endpoint ([string]$workerEnv["R2_ENDPOINT"]) `
+      -AccessKeyId ([string]$workerEnv["R2_ACCESS_KEY_ID"]) `
+      -SecretAccessKey ([string]$workerEnv["R2_SECRET_ACCESS_KEY"])
+    if (-not $r2Validation.Ok) {
+      $problems += "invalid worker R2 configuration: $($r2Validation.Message)"
+    }
+  }
+
   if ($RequireManagedRuntime) {
     $hashPairs = @()
     if (-not [string]::IsNullOrWhiteSpace($InstallerSourceDirectory)) {
@@ -708,10 +853,22 @@ function Get-AwardPingInstalledRuntimeProblems {
       foreach ($relativePath in @(
         "scripts\capture-visual-snapshots.mjs",
         "scripts\lib\visual-capture-run-report.mjs",
+        "scripts\lib\expansion-state-isolation.mjs",
+        "scripts\lib\visible-text-geometry.mjs",
+        "scripts\lib\visual-event-localization.mjs",
+        "scripts\lib\visual-snapshot-history.mjs",
+        "scripts\lib\visual-review-queue.mjs",
         "scripts\report-visual-nightly.mjs",
         "scripts\backfill-baseline-facts.mjs",
         "scripts\process-source-intake-requests.mjs",
         "scripts\process-visual-review-batch.mjs",
+        "scripts\lib\visual-change-publication.mjs",
+        "scripts\lib\visual-event-evidence.mjs",
+        "scripts\read-event-visual-evidence-coverage.mjs",
+        "scripts\lib\event-visual-evidence-coverage.mjs",
+        "scripts\backfill-visual-event-evidence.mjs",
+        "scripts\lib\visual-event-evidence-backfill.mjs",
+        "scripts\lib\snapshot-localization.mjs",
         "scripts\cleanup-change-event-noise.mjs",
         "scripts\reconcile-impacted-award-pages.mjs",
         "scripts\process-page-audit-batch.mjs",
@@ -1230,7 +1387,12 @@ function Write-EnvFile {
     [string]$Path,
     [string]$SupabaseUrl,
     [string]$SupabaseServiceRoleKey,
-    [string]$GeminiApiKey
+    [string]$GeminiApiKey,
+    [string]$R2Bucket,
+    [string]$R2AccountId,
+    [string]$R2Endpoint,
+    [string]$R2AccessKeyId,
+    [string]$R2SecretAccessKey
   )
 
   Write-Step "Writing local worker environment"
@@ -1251,10 +1413,11 @@ AWARDPING_R2_OPERATION_RETRIES=5
 AWARDPING_R2_REPAIR_MISSING_SNAPSHOTS=true
 
 AWARDPING_R2_SNAPSHOT_SYNC=false
-R2_BUCKET=awardping-snapshots
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
+R2_BUCKET=$R2Bucket
+R2_ACCOUNT_ID=$R2AccountId
+R2_ENDPOINT=$R2Endpoint
+R2_ACCESS_KEY_ID=$R2AccessKeyId
+R2_SECRET_ACCESS_KEY=$R2SecretAccessKey
 "@
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
@@ -1285,6 +1448,7 @@ function Update-ExistingEnvFileDefaults {
     "AWARDPING_R2_SNAPSHOT_SYNC" = "false"
     "R2_BUCKET" = "awardping-snapshots"
     "R2_ACCOUNT_ID" = ""
+    "R2_ENDPOINT" = ""
     "R2_ACCESS_KEY_ID" = ""
     "R2_SECRET_ACCESS_KEY" = ""
   }
@@ -1837,6 +2001,7 @@ function Get-MissingWorkerRuntimeDependencies {
     "@aws-sdk\s3-request-presigner",
     "@supabase\supabase-js",
     "playwright-core",
+    "sharp",
     "undici"
   )
   return @($requiredPackages | Where-Object {
@@ -2108,9 +2273,19 @@ try {
     Copy-AppFiles -SourceRoot $sourceRoot -AppDir $appDir
     $supabaseServiceRoleKey = Read-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
+    $r2Configuration = Read-R2WorkerConfiguration
     $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
     Write-Host "The three 6 PM visual shards and hourly report/intake/downstream pipeline will be scheduled. Legacy catch-up workers will be removed."
-    Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey
+    Write-EnvFile `
+      -Path $envPath `
+      -SupabaseUrl $SupabaseUrl `
+      -SupabaseServiceRoleKey $supabaseServiceRoleKey `
+      -GeminiApiKey $geminiApiKey `
+      -R2Bucket $r2Configuration.Bucket `
+      -R2AccountId $r2Configuration.AccountId `
+      -R2Endpoint $r2Configuration.Endpoint `
+      -R2AccessKeyId $r2Configuration.AccessKeyId `
+      -R2SecretAccessKey $r2Configuration.SecretAccessKey
     Install-Dependencies -AppDir $appDir
   }
 

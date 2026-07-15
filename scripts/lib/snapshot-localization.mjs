@@ -3,6 +3,8 @@ export const SNAPSHOT_LOCALIZATION_READY = new Set([
   "ready_via_identical_peer",
 ]);
 
+export const VERIFIED_EVENT_CROP_STATUS = "verified";
+
 export function classifySnapshotLocalization({
   version,
   objectKeys,
@@ -119,8 +121,10 @@ export function summarizeSnapshotLocalization(rows = []) {
   const r2Errors = visualSides.filter((side) => side.status === "r2_meta_error").length;
 
   return {
+    metric_scope: "source_pointer_layout_metadata_not_event_crop",
     source_count: rows.length,
     visual_versions_required: visualSides.length,
+    searchable_layout_versions: exact,
     exact_localization_versions: exact,
     accounted_for_versions: accountedFor,
     repair_needed_versions: repairNeeded,
@@ -129,11 +133,225 @@ export function summarizeSnapshotLocalization(rows = []) {
     historical_layout_unavailable: historicalUnavailable,
     r2_meta_errors: r2Errors,
     exact_coverage_percent: percent(exact, visualSides.length),
+    searchable_layout_coverage_percent: percent(exact, visualSides.length),
     accounted_for_percent: percent(accountedFor, visualSides.length),
     automated_localization_complete: latestRepairNeeded === 0 && previousRepairNeeded === 0,
     all_versions_exactly_localizable: visualSides.length === exact,
     by_status: byStatus,
   };
+}
+
+export function classifyChangeEventVisualEvidence({
+  event = {},
+  evidence = null,
+  artifactChecks = {},
+} = {}) {
+  const eventRequiredSides = requiredChangeEventLocalizationSides(event);
+  const evidenceRequirement = evidenceLocalizationRequiredSides(evidence);
+  const requiredSides = evidenceRequirement.authoritative
+    ? evidenceRequirement.sides
+    : eventRequiredSides;
+  const requiredSideMismatch = evidenceRequirement.authoritative &&
+    !sameStringSet(requiredSides, eventRequiredSides);
+  if (!evidence?.change_event_id) {
+    return {
+      event_id: event?.id || null,
+      status: "missing_evidence_binding",
+      immutable_binding: false,
+      required_side_source: "event_change_details",
+      required_side_mismatch: false,
+      event_required_sides: eventRequiredSides,
+      required_sides: requiredSides,
+      sides: Object.fromEntries(requiredSides.map((side) => [side, {
+        status: "missing_evidence_binding",
+        verified_crop: false,
+        retained_full: false,
+      }])),
+    };
+  }
+
+  const localization = objectValue(evidence.localization);
+  const localizationSides = objectValue(localization.sides);
+  const sides = {};
+  for (const side of ["previous", "current"]) {
+    const required = requiredSides.includes(side);
+    const capture = objectValue(evidence[`${side}_capture`]);
+    const full = objectValue(capture.full);
+    const crop = objectValue(capture.crop);
+    const localized = objectValue(localizationSides[side]);
+    const checks = objectValue(artifactChecks[side]);
+    const retainedFull = validArtifactManifest(full) && checks.full === true;
+    const cropArtifactVerified = validArtifactManifest(crop) && checks.crop === true;
+    const exactOverlap = localized.exact_overlap === true && crop.exact_overlap === true;
+    const verifiedCrop = required && localized.status === VERIFIED_EVENT_CROP_STATUS &&
+      exactOverlap && cropArtifactVerified;
+
+    let status = "not_required";
+    if (required && verifiedCrop) status = VERIFIED_EVENT_CROP_STATUS;
+    else if (required && retainedFull) status = cleanText(localized.status) || "full_screenshot_fallback";
+    else if (required) status = cleanText(localized.status) || "unavailable_image_missing";
+    else if (retainedFull) status = "retained_full_not_localization_target";
+
+    sides[side] = {
+      status,
+      required,
+      verified_crop: verifiedCrop,
+      retained_full: retainedFull,
+      exact_overlap: exactOverlap,
+      crop_artifact_verified: cropArtifactVerified,
+      reason: cleanText(localized.reason) || null,
+    };
+  }
+
+  const requiredResults = requiredSides.map((side) => sides[side]);
+  const verifiedRequired = requiredResults.filter((side) => side.verified_crop).length;
+  const retainedFullSides = Object.values(sides).filter((side) => side.retained_full).length;
+  const evidenceStatus = cleanText(evidence.evidence_status);
+  return {
+    event_id: event?.id || evidence.change_event_id,
+    status: requiredResults.length && verifiedRequired === requiredResults.length
+      ? VERIFIED_EVENT_CROP_STATUS
+      : evidenceStatus || (retainedFullSides ? "full_screenshot_fallback" : "unavailable_image_missing"),
+    immutable_binding: true,
+    candidate_bound: Boolean(cleanText(evidence.visual_review_candidate_id)),
+    historical: Boolean(evidence.backfilled_at),
+    required_side_source: evidenceRequirement.authoritative
+      ? "immutable_evidence"
+      : "event_change_details",
+    required_side_mismatch: requiredSideMismatch,
+    event_required_sides: eventRequiredSides,
+    required_sides: requiredSides,
+    sides,
+  };
+}
+
+export function summarizeChangeEventVisualEvidence(rows = []) {
+  const eventCount = rows.length;
+  const boundEvents = rows.filter((row) => row.immutable_binding).length;
+  const candidateBoundEvents = rows.filter((row) => row.candidate_bound).length;
+  const eventsWithExactLocalizationTarget = rows.filter(
+    (row) => (row.required_sides || []).length > 0,
+  );
+  const eventsWithoutExactLocalizationTarget = rows.filter(
+    (row) => (row.required_sides || []).length === 0,
+  );
+  const sideRows = rows.flatMap((row) =>
+    (row.required_sides || []).map((side) => ({ event: row, side: row.sides?.[side] || {} })),
+  );
+  const verifiedCropSides = sideRows.filter(({ side }) => side.verified_crop).length;
+  const fullFallbackSides = sideRows.filter(
+    ({ side }) => !side.verified_crop && side.retained_full,
+  ).length;
+  const unavailableSides = sideRows.filter(
+    ({ side }) => !side.verified_crop && !side.retained_full,
+  ).length;
+  const retainedFullSides = rows.flatMap((row) => Object.values(row.sides || {}))
+    .filter((side) => side.retained_full).length;
+  const byStatus = countBy(rows, (row) => row.status || "unknown");
+  const requiredSideMismatches = rows.filter((row) => row.required_side_mismatch).length;
+
+  return {
+    published_event_count: eventCount,
+    immutable_evidence_event_count: boundEvents,
+    candidate_bound_event_count: candidateBoundEvents,
+    missing_evidence_event_count: eventCount - boundEvents,
+    events_with_exact_localization_target: eventsWithExactLocalizationTarget.length,
+    events_without_exact_localization_target: eventsWithoutExactLocalizationTarget.length,
+    events_without_exact_localization_target_by_status: countBy(
+      eventsWithoutExactLocalizationTarget,
+      (row) => row.status || "unknown",
+    ),
+    required_localization_sides: sideRows.length,
+    verified_event_crop_sides: verifiedCropSides,
+    full_screenshot_fallback_sides: fullFallbackSides,
+    unavailable_event_sides: unavailableSides,
+    retained_full_capture_sides: retainedFullSides,
+    immutable_evidence_coverage_percent: percent(boundEvents, eventCount),
+    verified_event_crop_coverage_percent: sideRows.length
+      ? percent(verifiedCropSides, sideRows.length)
+      : null,
+    all_required_event_crops_verified: sideRows.length
+      ? sideRows.length === verifiedCropSides
+      : null,
+    exact_localization_target_status: sideRows.length
+      ? "applicable"
+      : "not_applicable_no_exact_wording",
+    no_exact_localization_target_solution: eventsWithoutExactLocalizationTarget.length
+      ? "Add exact before/after wording to the event change details, then backfill from its bound visual-review candidate when retained artifacts permit it."
+      : null,
+    required_side_mismatch_events: requiredSideMismatches,
+    required_side_mismatch_solution: requiredSideMismatches
+      ? "Keep the immutable evidence requirement authoritative for coverage, then repair the event change details so its exact directional wording agrees with the published evidence."
+      : null,
+    by_status: byStatus,
+  };
+}
+
+export function requiredChangeEventLocalizationSides(event = {}) {
+  const details = objectValue(event.change_details);
+  const structured = objectValue(details.structured_diff);
+  const facts = Array.isArray(details.changed_facts)
+    ? details.changed_facts
+    : Array.isArray(details.changed_award_facts)
+      ? details.changed_award_facts
+      : [];
+  const hasPrevious = Boolean(
+    hasTextValue(details.exact_before) ||
+    hasTextValue(details.before) ||
+    hasTextValue(structured.removed_text) ||
+    facts.some((fact) =>
+      hasTextValue(objectValue(fact).removed_text) || hasTextValue(objectValue(fact).before)
+    ),
+  );
+  const hasCurrent = Boolean(
+    hasTextValue(details.exact_after) ||
+    hasTextValue(details.after) ||
+    hasTextValue(structured.added_text) ||
+    facts.some((fact) =>
+      hasTextValue(objectValue(fact).added_text) || hasTextValue(objectValue(fact).after)
+    ),
+  );
+  if (hasPrevious || hasCurrent) {
+    return [hasPrevious ? "previous" : null, hasCurrent ? "current" : null].filter(Boolean);
+  }
+  return [];
+}
+
+function evidenceLocalizationRequiredSides(evidence) {
+  if (!evidence?.change_event_id) return { authoritative: false, sides: [] };
+  const localizationSides = objectValue(objectValue(evidence.localization).sides);
+  const values = ["previous", "current"].map((side) => ({
+    side,
+    value: objectValue(localizationSides[side]),
+  }));
+  const hasExplicitRequirement = values.some(({ value }) => typeof value.required === "boolean");
+  if (hasExplicitRequirement) {
+    return {
+      authoritative: true,
+      sides: values.filter(({ value }) => value.required === true).map(({ side }) => side),
+    };
+  }
+  const hasStatuses = values.some(({ value }) => cleanText(value.status));
+  if (!hasStatuses) return { authoritative: false, sides: [] };
+  return {
+    authoritative: true,
+    sides: values.filter(({ value }) => {
+      const status = cleanText(value.status);
+      return Boolean(status) && status !== "not_required" && status !== "not_applicable_pdf" &&
+        !status.startsWith("unavailable_not_required_");
+    }).map(({ side }) => side),
+  };
+}
+
+function hasTextValue(value) {
+  if (Array.isArray(value)) return value.some(hasTextValue);
+  return Boolean(cleanText(value));
+}
+
+function sameStringSet(left, right) {
+  const leftSet = new Set(left || []);
+  const rightSet = new Set(right || []);
+  return leftSet.size === rightSet.size && [...leftSet].every((value) => rightSet.has(value));
 }
 
 export function hasLayoutMetadata(value) {
@@ -186,6 +404,15 @@ function percent(numerator, denominator) {
 function positiveNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function validArtifactManifest(value) {
+  const artifact = objectValue(value);
+  return Boolean(
+    cleanText(artifact.object_key) &&
+    /^[a-f0-9]{64}$/i.test(cleanText(artifact.sha256)) &&
+    positiveNumber(artifact.byte_length),
+  );
 }
 
 function objectValue(value) {

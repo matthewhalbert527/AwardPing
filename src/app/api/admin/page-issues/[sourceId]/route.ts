@@ -70,7 +70,7 @@ export async function DELETE(_request: Request, { params }: Props) {
   const admin = createSupabaseAdminClient();
   const { data: source, error: lookupError } = await admin
     .from("shared_award_sources")
-    .select("id, shared_award_id, url")
+    .select("id")
     .eq("id", sourceId)
     .maybeSingle();
 
@@ -82,33 +82,20 @@ export async function DELETE(_request: Request, { params }: Props) {
     return NextResponse.json({ error: "Source page was not found." }, { status: 404 });
   }
 
-  const errors: string[] = [];
-  await deleteById(admin, "shared_award_change_events", source.id, errors);
-  await deleteByAwardAndUrl(admin, "shared_award_change_events", source.shared_award_id, source.url, errors);
-  await deleteById(admin, "shared_award_source_snapshots", source.id, errors);
-  await deleteByAwardAndUrl(admin, "shared_award_source_snapshots", source.shared_award_id, source.url, errors);
-  await deleteById(admin, "shared_award_source_visual_snapshots", source.id, errors, "shared_award_source_id");
-  await deleteById(admin, "monitors", source.id, errors);
-  await deleteById(admin, "award_sources", source.id, errors);
-
-  const { error: homepageError } = await admin
-    .from("shared_awards")
-    .update({ official_homepage: null, updated_at: new Date().toISOString() })
-    .eq("id", source.shared_award_id)
-    .eq("official_homepage", source.url);
-  if (homepageError) errors.push(homepageError.message);
-
-  const { error: sourceError } = await admin
-    .from("shared_award_sources")
-    .delete()
-    .eq("id", source.id);
-  if (sourceError) errors.push(sourceError.message);
-
-  if (errors.length > 0) {
-    return NextResponse.json({ error: errors.join(" ") }, { status: 500 });
+  const { data, error } = await admin.rpc("retire_shared_award_source_preserving_visual_history", {
+    p_source_id: source.id,
+    p_reason: "Retired from Admin Page Issues; immutable update and visual history were preserved.",
+    p_actor: setupError.user?.email || "awardping-admin-page-issues",
+  });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+  const retirement = Array.isArray(data) ? data[0] : data;
+  if (!retirement?.source_id) {
+    return NextResponse.json({ error: "Source retirement did not return a durable result." }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, retired: true, retirement });
 }
 
 async function validateAdminRequest() {
@@ -142,35 +129,4 @@ async function validateAdminRequest() {
   }
 
   return { response: null, user };
-}
-
-async function deleteById(
-  admin: ReturnType<typeof createSupabaseAdminClient>,
-  table:
-    | "shared_award_change_events"
-    | "shared_award_source_snapshots"
-    | "shared_award_source_visual_snapshots"
-    | "monitors"
-    | "award_sources",
-  sourceId: string,
-  errors: string[],
-  column = "shared_award_source_id",
-) {
-  const { error } = await admin.from(table).delete().eq(column, sourceId);
-  if (error) errors.push(error.message);
-}
-
-async function deleteByAwardAndUrl(
-  admin: ReturnType<typeof createSupabaseAdminClient>,
-  table: "shared_award_change_events" | "shared_award_source_snapshots",
-  sharedAwardId: string,
-  sourceUrl: string,
-  errors: string[],
-) {
-  const { error } = await admin
-    .from(table)
-    .delete()
-    .eq("shared_award_id", sharedAwardId)
-    .eq("source_url", sourceUrl);
-  if (error) errors.push(error.message);
 }

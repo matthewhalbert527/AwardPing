@@ -4,14 +4,17 @@
 
 - Installs the AwardPing worker under `%LOCALAPPDATA%\AwardPingWorker`.
 - Installs Node.js LTS with `winget` if Node is missing.
-- Prompts for the Supabase `service_role` key and Gemini API key.
+- Prompts for the Supabase `service_role` key, Gemini API key, and the complete
+  Cloudflare R2 bucket/account/access-key configuration used to retain immutable
+  published evidence.
 - Writes those values to `.env.worker.local` on the PC.
 - Installs npm dependencies.
 - Runs a one-page visual snapshot test.
 - Creates Windows Scheduled Tasks named `AwardPing Visual Snapshot Worker Shard 1-3`
   that run the screenshot/PDF checker daily.
 - Creates `AwardPing Downstream Queue Pipeline` for hourly report finalization,
-  source intake, review, suppression, reconciliation, and page audits.
+  source intake, review, immutable event-evidence publication, suppression,
+  reconciliation, and page audits.
 
 ## Windows Install
 
@@ -26,7 +29,11 @@ Then:
 1. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
    key when prompted.
 2. Paste the Gemini API key when prompted.
-3. Accept the four permanent Scheduled Tasks when prompted.
+3. Enter the Cloudflare R2 bucket and paste the Cloudflare R2 account ID, access
+   key ID, and secret access key. The installer keeps the four permanent tasks
+   disabled unless the configuration is complete and resolves to an HTTPS R2
+   endpoint.
+4. Accept the four permanent Scheduled Tasks when prompted.
 
 The old hosted `awardping-worker-windows.zip` updater has been retired. Do not
 copy individual files into the installed `app` folder. That misses root runner
@@ -45,7 +52,10 @@ Deploy a reviewed revision in this order:
    ```
 
    Update mode builds and validates a complete staged app and npm dependency
-   tree before it pauses anything. It then pauses only AwardPing tasks and
+   tree before it pauses anything. It preserves the existing R2 credentials
+   with the rest of `.env.worker.local`, validates that the retained R2
+   configuration is still complete, and never prompts for or replaces those
+   secrets. It then pauses only AwardPing tasks and
    worker processes whose command lines target this exact install root, copies
    local environment/report state, and switches complete app directories. A
    workspace catch-up running from this repository is outside that process
@@ -63,7 +73,9 @@ Deploy a reviewed revision in this order:
    fixed AwardPing task owned by another install root or a custom Task Scheduler
    path, and leaves unrelated Startup-folder launchers untouched.
 4. Compare repository and installed hashes for both policy JSON files and the
-   policy, suppression, visual-review, capture, and baseline worker scripts.
+   policy, suppression, visual-review, capture, immutable-evidence,
+   evidence-coverage/backfill, and baseline worker scripts. Confirm the staged
+   dependency validation includes the native `sharp` crop package.
    Confirm the three visual shard tasks still run daily at 6 PM and the
    downstream task runs hourly with `SuppressionSweepLimit` in its action.
 5. Inspect the first downstream log after deployment. It must show the
@@ -81,6 +93,23 @@ suppression, reconciliation, and page-audit work. Failed intake requests wait
 for an operator-selected retry instead of cycling forever. This keeps new award
 and source submissions moving continuously without turning one-time build work
 into another permanent watchdog.
+
+Each web capture expands eligible sections, scrolls and suppresses known noise,
+waits for the final page state, and then records visible text-node rectangles
+immediately before the screenshot. Both the screenshot and the structured
+geometry include matching hashes and actual pixel dimensions. Opened accordion
+states are captured separately when needed. An expansion-state geometry failure
+does not discard an otherwise valid page capture, but it does degrade the 6 PM
+report with the affected source and a bounded repair recommendation.
+
+An accepted review is not public until the hourly worker has copied every
+candidate-referenced artifact to permanent, content-addressed storage, created
+real previous/current crops for exact localized wording, and atomically bound
+the immutable evidence to the change event. If exact localization fails, the
+event keeps its own full screenshot and an honest unavailable status. The
+worker report distinguishes verified crop sides, full-image fallbacks, and
+evidence upload/publication failures and includes a safe solution for each
+failure.
 
 Each intake run writes eligible, loaded, attempted, completed, and deferred
 counts for polling, capture, submission, and reconciliation. Terminal request
@@ -171,6 +200,29 @@ Pop-Location
 The Admin dashboard shows the same operational view from
 `local_worker_runs.metadata`: three shard rows, captured-page and failure
 totals, failure groups, and the corresponding guarded repair instructions.
+
+To audit published evidence itself rather than source-pointer layout metadata:
+
+```powershell
+Push-Location "$env:LOCALAPPDATA\AwardPingWorker\app"
+npm run source:visual-evidence-coverage -- --env .env.worker.local
+Pop-Location
+```
+
+Historical evidence recovery is an operator-only, dry-run-by-default command;
+it is not another scheduled worker:
+
+```powershell
+npm run source:backfill-visual-event-evidence -- --env .env.worker.local
+npm run source:backfill-visual-event-evidence -- --env .env.worker.local --apply=true
+```
+
+Repairable linkage or archive gaps never become immutable “unrecoverable” rows
+automatically. Apply mode reports all pending event IDs, continues recovering
+independent later events, and leaves its contiguous checkpoint before the first
+gap. Recording terminal loss requires an event-specific reviewed JSON file with
+the current reason code, reason, actor, and confirmation timestamp, passed with
+`--terminal-loss-confirmations <path>`.
 
 ## Uninstall Scheduled Task
 

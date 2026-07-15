@@ -35,6 +35,8 @@
     "source:visual-nightly-report": "node scripts/report-visual-nightly.mjs",
     "source:visual-review-batch": "node scripts/process-visual-review-batch.mjs",
     "source:visual-review-status": "node scripts/read-visual-review-batch-status.mjs",
+    "source:visual-evidence-coverage": "node scripts/read-event-visual-evidence-coverage.mjs",
+    "source:backfill-visual-event-evidence": "node scripts/backfill-visual-event-evidence.mjs",
     "source:intake": "node scripts/process-source-intake-requests.mjs",
     "source:maintenance": "node scripts/run-awardping-maintenance.mjs",
     "source:localization-repair": "node scripts/run-localization-repair.mjs",
@@ -70,6 +72,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "resend": "^6.12.3",
+    "sharp": "^0.34.5",
     "undici": "8.7.0",
     "zod": "^4.4.3"
   },

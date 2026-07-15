@@ -33,7 +33,7 @@ export function visualSnapshotKeysToDeleteAfterCas({
     ...Object.values(objectValue(existing?.latest_object_keys)),
     ...Object.values(objectValue(existing?.previous_object_keys)),
   ].filter(Boolean))]
-    .filter((key) => !retained.has(key));
+    .filter((key) => !retained.has(key) && isDeletableVisualSnapshotKey(key));
 }
 
 export function visualSnapshotUploadedKeysToDeleteAfterLostCas({
@@ -45,7 +45,15 @@ export function visualSnapshotUploadedKeysToDeleteAfterLostCas({
     ...Object.values(objectValue(current?.previous_object_keys)),
   ].filter(Boolean));
   return [...new Set(Object.values(objectValue(uploaded)).filter(Boolean))]
-    .filter((key) => !retained.has(key));
+    .filter((key) => !retained.has(key) && isDeletableVisualSnapshotKey(key));
+}
+
+export function isPublishedVisualEvidenceKey(value) {
+  return String(value || "").replace(/^\/+/, "").startsWith("visual-snapshots/published/");
+}
+
+export function isDeletableVisualSnapshotKey(value) {
+  return Boolean(value) && !isPublishedVisualEvidenceKey(value);
 }
 
 function objectValue(value) {

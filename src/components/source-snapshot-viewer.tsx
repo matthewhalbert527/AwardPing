@@ -15,18 +15,40 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 type SnapshotObject = {
   key: string;
   url: string;
+  content_type?: string | null;
+  width?: number | null;
+  height?: number | null;
+  clip?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null;
 };
 
 type SnapshotSide = {
   captured_at: string | null;
   focus_ratio?: number | null;
+  exact_overlap?: boolean;
   localization_status?: string | null;
   localization_reason?: string | null;
-  kind?: "webpage" | "pdf" | string;
+  kind?: "webpage" | "image" | "pdf" | string;
   objects: Record<string, SnapshotObject>;
 };
 
 type SourceSnapshotResponse = {
+  change_event_id?: string | null;
+  evidence_scope?: "change_event" | "source_current";
+  evidence_status?: string | null;
+  localization_direction?:
+    | "added"
+    | "removed"
+    | "changed"
+    | "mixed"
+    | "previous"
+    | "current"
+    | "both"
+    | "none";
   source_url: string;
   source_title: string | null;
   source_page_type: string | null;
@@ -38,6 +60,7 @@ type SourceSnapshotResponse = {
 type SnapshotVersion = "latest" | "previous";
 
 export function SourceSnapshotViewerButton({
+  changeEventId,
   changeDetectedAt,
   changeDetails,
   changeSummary,
@@ -46,6 +69,7 @@ export function SourceSnapshotViewerButton({
   sourceUrl,
   sourcePageTypeLabel,
 }: {
+  changeEventId?: string | null;
   sourceId: string | null | undefined;
   sourceTitle: string;
   sourceUrl: string;
@@ -92,7 +116,8 @@ export function SourceSnapshotViewerButton({
   );
 
   async function openViewer() {
-    if (!sourceId) return;
+    const requestPath = snapshotRequestPath(sourceId, evidence, changeEventId);
+    if (!requestPath) return;
 
     setOpen(true);
     setLoading(true);
@@ -100,7 +125,7 @@ export function SourceSnapshotViewerButton({
     setActiveVersion("latest");
 
     try {
-      const response = await fetch(snapshotRequestPath(sourceId, evidence), {
+      const response = await fetch(requestPath, {
         cache: "no-store",
       });
       const body = (await response.json().catch(() => null)) as
@@ -114,7 +139,15 @@ export function SourceSnapshotViewerButton({
         return;
       }
 
-      setSnapshot(body as SourceSnapshotResponse);
+      const loaded = body as SourceSnapshotResponse;
+      setSnapshot(loaded);
+      if (
+        (snapshotInitialVersion(loaded.localization_direction) === "previous" ||
+          !hasSnapshotObjects(loaded.latest)) &&
+        hasSnapshotObjects(loaded.previous)
+      ) {
+        setActiveVersion("previous");
+      }
     } catch {
       setSnapshot(null);
       setError("Snapshot unavailable.");
@@ -123,7 +156,7 @@ export function SourceSnapshotViewerButton({
     }
   }
 
-  if (!sourceId) return null;
+  if (!sourceId && !changeEventId) return null;
 
   return (
     <>
@@ -196,6 +229,7 @@ export function SourceSnapshotViewerButton({
               loading={loading}
               canShowPrevious={canShowPrevious}
               onVersionChange={setActiveVersion}
+              evidenceScope={snapshot?.evidence_scope || "source_current"}
               title={snapshot?.source_title || sourceTitle}
               version={activeVersion}
             />
@@ -207,12 +241,14 @@ export function SourceSnapshotViewerButton({
 }
 
 export function SourceSnapshotInlinePreview({
+  changeEventId,
   changeDetails,
   changeSummary,
   sourceId,
   sourceTitle,
   sourceUrl,
 }: {
+  changeEventId?: string | null;
   sourceId: string | null | undefined;
   sourceTitle: string;
   sourceUrl: string;
@@ -234,8 +270,8 @@ export function SourceSnapshotInlinePreview({
     [changeDetails, changeSummary, sourceTitle, sourceUrl],
   );
   const requestPath = useMemo(
-    () => (sourceId ? snapshotRequestPath(sourceId, evidence) : null),
-    [evidence, sourceId],
+    () => snapshotRequestPath(sourceId, evidence, changeEventId),
+    [changeEventId, evidence, sourceId],
   );
   const snapshot = snapshotState?.requestPath === requestPath
     ? snapshotState.snapshot
@@ -273,7 +309,7 @@ export function SourceSnapshotInlinePreview({
     return () => controller.abort();
   }, [requestPath]);
 
-  if (!sourceId || !requestPath) return null;
+  if ((!sourceId && !changeEventId) || !requestPath) return null;
 
   if (!requestFinished) {
     return (
@@ -291,7 +327,9 @@ export function SourceSnapshotInlinePreview({
     return (
       <div className="source-snapshot-inline source-snapshot-inline-state">
         <ImageIcon size={16} aria-hidden="true" />
-        Screenshot preview not captured yet.
+        {changeEventId
+          ? "Exact visual evidence is unavailable for this update."
+          : "Screenshot preview not captured yet."}
       </div>
     );
   }
@@ -381,6 +419,7 @@ function SnapshotTab({
 function SnapshotBody({
   activeSnapshot,
   canShowPrevious,
+  evidenceScope,
   error,
   loading,
   onVersionChange,
@@ -389,6 +428,7 @@ function SnapshotBody({
 }: {
   activeSnapshot: SnapshotSide | null;
   canShowPrevious: boolean;
+  evidenceScope: "change_event" | "source_current";
   error: string | null;
   loading: boolean;
   onVersionChange: (version: SnapshotVersion) => void;
@@ -438,7 +478,8 @@ function SnapshotBody({
         <SnapshotFrameActions
           activeVersion={version}
           canShowPrevious={canShowPrevious}
-          localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio)}
+          currentLabel={evidenceScope === "change_event" ? "Current" : "Latest"}
+          localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio, evidenceScope)}
           openLabel="Open PDF"
           openUrl={primaryObject.url}
           onVersionChange={onVersionChange}
@@ -458,7 +499,8 @@ function SnapshotBody({
       <SnapshotFrameActions
         activeVersion={version}
         canShowPrevious={canShowPrevious}
-        localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio)}
+        currentLabel={evidenceScope === "change_event" ? "Current" : "Latest"}
+        localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio, evidenceScope)}
         openLabel="Open image"
         openUrl={primaryObject.url}
         onVersionChange={onVersionChange}
@@ -482,7 +524,9 @@ function SnapshotInlineBody({
   snapshot: SourceSnapshotResponse;
   title: string;
 }) {
-  const [activeVersion, setActiveVersion] = useState<SnapshotVersion>("latest");
+  const [activeVersion, setActiveVersion] = useState<SnapshotVersion>(
+    snapshotInitialVersion(snapshot.localization_direction),
+  );
   const frameRef = useRef<HTMLDivElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
   const latestAvailable = hasSnapshotObjects(snapshot.latest);
@@ -514,12 +558,18 @@ function SnapshotInlineBody({
     <div className="source-snapshot-inline">
       <div className="source-snapshot-inline-actions">
         <div className="source-snapshot-version-control">
-          <span>{snapshotLocalizationLabel(activeSnapshot, focusRatio)}</span>
+          <span>
+            {snapshotLocalizationLabel(
+              activeSnapshot,
+              focusRatio,
+              snapshot.evidence_scope || "source_current",
+            )}
+          </span>
           <div className="source-snapshot-tabs source-snapshot-inline-tabs" aria-label="Screenshot version">
             <SnapshotTab
               active={resolvedVersion === "latest"}
               disabled={!latestAvailable}
-              label="Latest"
+              label={snapshot.evidence_scope === "change_event" ? "Current" : "Latest"}
               onSelect={() => setActiveVersion("latest")}
             />
             <SnapshotTab
@@ -545,7 +595,7 @@ function SnapshotInlineBody({
         <div className="source-snapshot-inline-frame" ref={frameRef}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            alt={`${title} ${resolvedVersion} changed section screenshot`}
+            alt={`${title} ${resolvedVersion} snapshot`}
             className="source-snapshot-inline-image"
             ref={imageRef}
             src={primaryObject.url}
@@ -560,6 +610,7 @@ function SnapshotInlineBody({
 function SnapshotFrameActions({
   activeVersion,
   canShowPrevious,
+  currentLabel,
   localizationLabel,
   openLabel,
   openUrl,
@@ -567,6 +618,7 @@ function SnapshotFrameActions({
 }: {
   activeVersion: SnapshotVersion;
   canShowPrevious: boolean;
+  currentLabel: string;
   localizationLabel: string;
   openLabel: string;
   openUrl: string;
@@ -579,7 +631,7 @@ function SnapshotFrameActions({
         <div className="source-snapshot-tabs" aria-label="Screenshot version">
           <SnapshotTab
             active={activeVersion === "latest"}
-            label="Latest"
+            label={currentLabel}
             onSelect={() => onVersionChange("latest")}
           />
           <SnapshotTab
@@ -598,7 +650,15 @@ function SnapshotFrameActions({
   );
 }
 
-function snapshotRequestPath(sourceId: string, evidence: ReturnType<typeof buildChangeEvidence>) {
+export function snapshotRequestPath(
+  sourceId: string | null | undefined,
+  evidence: ReturnType<typeof buildChangeEvidence>,
+  changeEventId?: string | null,
+) {
+  if (changeEventId) {
+    return `/api/change-events/${encodeURIComponent(changeEventId)}/visual-evidence`;
+  }
+  if (!sourceId) return null;
   const params = new URLSearchParams();
   for (const snippet of snapshotFocusSnippets("latest", evidence)) {
     params.append("latest", snippet);
@@ -651,16 +711,31 @@ function uniqueStrings(values: string[]) {
   return [...new Set(values)];
 }
 
-function selectPrimarySnapshotObject(snapshot: SnapshotSide | null) {
+export function selectPrimarySnapshotObject(snapshot: SnapshotSide | null) {
   if (!snapshot) return null;
+  if (snapshot.exact_overlap && snapshot.objects.crop) {
+    return { kind: "image" as const, evidenceKind: "verified_crop" as const, ...snapshot.objects.crop };
+  }
+  if (snapshot.objects.full) {
+    const kind = snapshot.kind === "pdf" || snapshot.objects.full.content_type?.includes("pdf")
+      ? "pdf" as const
+      : "image" as const;
+    return { kind, evidenceKind: "event_full" as const, ...snapshot.objects.full };
+  }
   if (snapshot.objects.page) return { kind: "image" as const, ...snapshot.objects.page };
   if (snapshot.objects.thumb) return { kind: "image" as const, ...snapshot.objects.thumb };
   if (snapshot.objects.pdf) return { kind: "pdf" as const, ...snapshot.objects.pdf };
   return null;
 }
 
+export function snapshotInitialVersion(
+  direction: SourceSnapshotResponse["localization_direction"],
+): SnapshotVersion {
+  return direction === "removed" || direction === "previous" ? "previous" : "latest";
+}
+
 function hasSnapshotObjects(snapshot: SnapshotSide) {
-  return Object.values(snapshot.objects || {}).some((value) => Boolean(value?.url));
+  return Boolean(selectPrimarySnapshotObject(snapshot));
 }
 
 function isSourceSnapshotResponse(value: unknown): value is SourceSnapshotResponse {
@@ -677,8 +752,18 @@ function formatSnapshotDate(value: string) {
   return formatCentralDateTime(value);
 }
 
-function snapshotLocalizationLabel(snapshot: SnapshotSide | null, focusRatio: number | null) {
-  if (focusRatio !== null) return "Changed section";
+export function snapshotLocalizationLabel(
+  snapshot: SnapshotSide | null,
+  focusRatio: number | null,
+  evidenceScope: "change_event" | "source_current" = "source_current",
+) {
+  if (evidenceScope === "change_event") {
+    if (snapshot?.exact_overlap && snapshot.objects.crop) return "Verified exact change area";
+    const reason = String(snapshot?.localization_reason || "").trim();
+    if (reason) return `Full event screenshot - ${reason}`;
+    return "Full event screenshot - exact change location unavailable";
+  }
+  if (focusRatio !== null) return "Approximate text match in this retained source snapshot";
   switch (snapshot?.localization_status) {
     case "historical_layout_unavailable":
       return "Historical screenshot has no location data";

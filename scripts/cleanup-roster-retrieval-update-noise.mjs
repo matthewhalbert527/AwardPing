@@ -44,10 +44,10 @@ const sources = await loadRowsById(
   "id,title,display_title,url,page_type,admin_review_status",
 );
 
-let deletedEvents = 0;
+let suppressedEvents = 0;
 let markedSourcesReviewLater = 0;
 if (apply) {
-  deletedEvents = await deleteRowsByIds("shared_award_change_events", likelyNoiseEvents.map((event) => event.id));
+  suppressedEvents = await suppressEventRowsByIds(likelyNoiseEvents.map((event) => event.id));
   markedSourcesReviewLater = await markSourcesReviewLater(sourceIdsToQuarantine);
 }
 
@@ -80,7 +80,8 @@ const report = {
   scanned_candidate_events: candidateEvents.length,
   likely_roster_retrieval_noise_events: likelyNoiseEvents.length,
   sources_to_quarantine: sourceIdsToQuarantine.length,
-  deleted_events: deletedEvents,
+  deleted_events: 0,
+  suppressed_events: suppressedEvents,
   marked_sources_review_later: markedSourcesReviewLater,
   awards: [...byAward.values()].map((row) => ({
     ...row,
@@ -183,11 +184,22 @@ async function loadRowsById(table, ids, select) {
   return rows;
 }
 
-async function deleteRowsByIds(table, ids) {
+async function suppressEventRowsByIds(ids) {
   let count = 0;
   for (const chunk of chunks(unique(ids), 100)) {
-    const { data, error } = await withRetry(() => supabase.from(table).delete().in("id", chunk).select("id"));
-    if (error) throw new Error(`Delete ${table} failed: ${error.message || JSON.stringify(error)}`);
+    const { data, error } = await withRetry(() =>
+      supabase
+        .from("shared_award_change_events")
+        .update({
+          suppressed_at: now,
+          suppression_reason: "Roster retrieval/as-of noise suppressed; immutable event evidence was preserved.",
+          suppression_source: "awardping-roster-retrieval-noise-cleanup",
+        })
+        .in("id", chunk)
+        .is("suppressed_at", null)
+        .select("id"),
+    );
+    if (error) throw new Error(`Suppress shared_award_change_events failed: ${error.message || JSON.stringify(error)}`);
     count += data?.length || 0;
   }
   return count;

@@ -45,15 +45,18 @@ const result = {
   issue_events_from_audit: issueIds.length,
   source_rows_to_review_later: sourcesToReviewLater.length,
   deleted_events: 0,
+  suppressed_events: 0,
   marked_sources_review_later: 0,
   still_live_issue_events: null,
+  still_unsuppressed_issue_events: null,
   still_open_review_later_sources: null,
 };
 
 if (apply) {
-  result.deleted_events = await deleteEvents(issueIds);
+  result.suppressed_events = await suppressEvents(issueIds, now);
   result.marked_sources_review_later = await markSourcesReviewLater(sourcesToReviewLater, now);
   result.still_live_issue_events = await countRowsByIds("shared_award_change_events", issueIds);
+  result.still_unsuppressed_issue_events = await countUnsuppressedEvents(issueIds);
   result.still_open_review_later_sources = await countOpenSourcesByIds(sourcesToReviewLater);
 }
 
@@ -104,18 +107,37 @@ function isKnownNonAwardChromeSource(url) {
   );
 }
 
-async function deleteEvents(ids) {
-  let deleted = 0;
+async function suppressEvents(ids, suppressedAt) {
+  let suppressed = 0;
   for (const chunk of chunks(ids, 100)) {
     const { data, error } = await supabase
       .from("shared_award_change_events")
-      .delete()
+      .update({
+        suppressed_at: suppressedAt,
+        suppression_reason: "Suppressed by recent update accuracy cleanup; immutable event evidence was preserved.",
+        suppression_source: "awardping-recent-update-accuracy-cleanup",
+      })
       .in("id", chunk)
+      .is("suppressed_at", null)
       .select("id");
-    if (error) throw new Error(`Delete shared_award_change_events failed: ${error.message}`);
-    deleted += data?.length || 0;
+    if (error) throw new Error(`Suppress shared_award_change_events failed: ${error.message}`);
+    suppressed += data?.length || 0;
   }
-  return deleted;
+  return suppressed;
+}
+
+async function countUnsuppressedEvents(ids) {
+  let count = 0;
+  for (const chunk of chunks(ids, 100)) {
+    const { count: chunkCount, error } = await supabase
+      .from("shared_award_change_events")
+      .select("id", { count: "exact", head: true })
+      .in("id", chunk)
+      .is("suppressed_at", null);
+    if (error) throw new Error(`Count unsuppressed change events failed: ${error.message}`);
+    count += chunkCount || 0;
+  }
+  return count;
 }
 
 async function markSourcesReviewLater(ids, reviewedAt) {

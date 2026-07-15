@@ -31,7 +31,7 @@ const [awards, sources, userAwards, monitors, awardSources, snapshots, changes] 
   loadAll("shared_awards", "id,name,official_homepage,status,updated_at"),
   loadAll(
     "shared_award_sources",
-    "id,shared_award_id,url,title,page_type,confidence,source,last_error,last_checked_at,next_check_at,consecutive_failures,updated_at",
+    "id,shared_award_id,url,title,page_type,confidence,source,last_error,last_checked_at,next_check_at,consecutive_failures,admin_review_status,updated_at",
   ),
   loadOptionalAll("awards", "id,shared_award_id"),
   loadOptionalAll("monitors", "id,shared_award_source_id"),
@@ -42,7 +42,9 @@ const [awards, sources, userAwards, monitors, awardSources, snapshots, changes] 
 
 const activeAwards = awards.filter((award) => award.status === "active");
 const activeAwardIds = new Set(activeAwards.map((award) => award.id));
-const activeSources = sources.filter((source) => activeAwardIds.has(source.shared_award_id));
+const activeSources = sources.filter(
+  (source) => activeAwardIds.has(source.shared_award_id) && source.admin_review_status !== "review_later",
+);
 const trackedCountsByAwardId = countBy(userAwards.filter((award) => award.shared_award_id), (award) => award.shared_award_id);
 const updateCountsByAwardId = countBy(changes.filter((change) => change.shared_award_id), (change) => change.shared_award_id);
 
@@ -73,7 +75,8 @@ if (removeSafe) {
   if (apply && safeRows.length) {
     await cleanupSources(safeRows.map((row) => row.source));
     const homepageResult = await repairRemovedHomepages(safeRows.map((row) => row.source));
-    removalResult.deletedRows = safeRows.length;
+    removalResult.deletedRows = 0;
+    removalResult.retiredRows = safeRows.length;
     removalResult.homepageRepairs = homepageResult;
   }
 }
@@ -151,7 +154,7 @@ function renderMarkdownReport() {
     lines.push(`- Dependent award sources: ${dependencyCounts.awardSources}`);
     lines.push(`- Dependent snapshots by id/url: ${dependencyCounts.snapshotsById}/${dependencyCounts.snapshotsByUrl}`);
     lines.push(`- Dependent change events by id/url: ${dependencyCounts.changesById}/${dependencyCounts.changesByUrl}`);
-    if (!apply) lines.push("- Dry run only. Re-run with `-- --apply=true` to delete safe rows.");
+    if (!apply) lines.push("- Dry run only. Re-run with `-- --apply=true` to retire safe rows while preserving history.");
     lines.push("");
   }
 
@@ -297,17 +300,17 @@ function countDependencies(sourceRows, tables) {
 }
 
 async function cleanupSources(rows) {
-  const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))];
-  const urls = [...new Set(rows.map((row) => row.url).filter(Boolean))];
-  if (!ids.length && !urls.length) return;
-
-  await deleteWhereIn("shared_award_change_events", "shared_award_source_id", ids);
-  await deleteWhereIn("shared_award_change_events", "source_url", urls);
-  await deleteWhereIn("shared_award_source_snapshots", "shared_award_source_id", ids);
-  await deleteWhereIn("shared_award_source_snapshots", "source_url", urls);
-  await deleteWhereIn("monitors", "shared_award_source_id", ids);
-  await deleteWhereIn("award_sources", "shared_award_source_id", ids);
-  await deleteWhereIn("shared_award_sources", "id", ids);
+  for (const sourceId of [...new Set(rows.map((row) => row.id).filter(Boolean))]) {
+    const { data, error } = await supabase.rpc("retire_shared_award_source_preserving_visual_history", {
+      p_source_id: sourceId,
+      p_reason: "Retired by post-crawl source cleanup; immutable update and visual history were preserved.",
+      p_actor: "awardping-post-crawl-cleanup",
+    });
+    const result = Array.isArray(data) ? data[0] : data;
+    if (error || !result?.source_id) {
+      throw new Error(`Retire shared source ${sourceId}: ${error?.message || "no durable result"}`);
+    }
+  }
 }
 
 async function repairRemovedHomepages(removedRows) {
@@ -341,15 +344,6 @@ async function repairRemovedHomepages(removedRows) {
   }
 
   return repaired;
-}
-
-async function deleteWhereIn(table, column, values) {
-  const uniqueValues = [...new Set(values.filter(Boolean))];
-  for (const batch of chunk(uniqueValues, 100)) {
-    if (!batch.length) continue;
-    const { error } = await supabase.from(table).delete().in(column, batch);
-    if (error) throw new Error(`${table}.${column}: ${error.message}`);
-  }
 }
 
 async function loadAll(table, select) {
@@ -405,14 +399,6 @@ function countBy(values, getKey) {
     counts.set(key, (counts.get(key) || 0) + 1);
   }
   return counts;
-}
-
-function chunk(values, size) {
-  const chunks = [];
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size));
-  }
-  return chunks;
 }
 
 function loadEnvFile(path) {

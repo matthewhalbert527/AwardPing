@@ -5,6 +5,7 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 
 export function ChangeEvidencePanel({
+  changeEventId,
   sourceId,
   sourceUrl,
   sourceTitle,
@@ -14,6 +15,7 @@ export function ChangeEvidencePanel({
   detectedAt,
   compact = false,
 }: {
+  changeEventId?: string | null;
   sourceId?: string | null;
   sourceUrl?: string | null;
   sourceTitle?: string | null;
@@ -35,9 +37,10 @@ export function ChangeEvidencePanel({
     <details className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
       <summary>View change explanation</summary>
       <div className="change-evidence-body">
-        {sourceId && sourceUrl ? (
+        {(changeEventId || sourceId) && sourceUrl ? (
           <div className="change-evidence-highlight-link">
             <SourceSnapshotViewerButton
+              changeEventId={changeEventId}
               changeDetectedAt={detectedAt}
               changeDetails={changeDetails}
               changeSummary={summary}

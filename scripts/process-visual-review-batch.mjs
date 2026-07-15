@@ -26,6 +26,7 @@ import { assertVisualReviewBatchPolicyCoverage } from "./lib/award-monitoring-po
 import { recordVisualRejectionLedger } from "./lib/visual-rejection-ledger.mjs";
 import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-claim.mjs";
 import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
+import { preparePublishedVisualEventEvidence } from "./lib/visual-event-evidence.mjs";
 import {
   compareVisualCandidateOrder,
   findBlockingPriorVisualPublication,
@@ -139,6 +140,16 @@ if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAc
   process.exit(1);
 }
 
+if (
+  apply && poll && !submitOnly &&
+  (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)
+) {
+  console.error(
+    "Publishing visual changes requires R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY so immutable event evidence can be retained.",
+  );
+  process.exit(1);
+}
+
 mkdirSync(reportDir, { recursive: true });
 mkdirSync(jsonlDir, { recursive: true });
 
@@ -207,6 +218,12 @@ const report = {
   stored_publication_retry_errors: 0,
   source_url_changed_since_capture: 0,
   baseline_promotion_pending: 0,
+  event_evidence_verified: 0,
+  event_evidence_full_fallback: 0,
+  event_evidence_upload_failed: 0,
+  verified_event_crop_sides: 0,
+  unavailable_event_crop_sides: 0,
+  event_evidence_failures: [],
   awards_queued_for_reconciliation: 0,
   award_reconciliation_queue_existing: 0,
   award_reconciliation_queue_failed: 0,
@@ -1177,12 +1194,20 @@ async function publishCandidateResultUnlocked({
     });
   }
 
-  const changeDetails = changeDetailsFromVisualBatchResult({
-    candidate,
-    source,
-    result,
-    model: candidate.model,
-  });
+  const eventDetectedAt =
+    candidate?.new_snapshot_ref?.captured_at ||
+    candidate?.prompt_payload?.new_snapshot_ref?.captured_at ||
+    candidate?.created_at ||
+    now;
+  const changeDetails = {
+    ...changeDetailsFromVisualBatchResult({
+      candidate,
+      source,
+      result,
+      model: candidate.model,
+    }),
+    generated_at: eventDetectedAt,
+  };
   const policyDecision = latestVisualReviewPolicyDecision({
     candidate,
     source,
@@ -1290,6 +1315,62 @@ async function publishCandidateResultUnlocked({
     return { status: "retry_pending", reason: baselinePublication.reason };
   }
 
+  let eventEvidence;
+  try {
+    eventEvidence = await preparePublishedVisualEventEvidence({
+      candidate,
+      source,
+      changeDetails,
+      archiveRoot,
+      now,
+      config: {
+        bucket: r2Bucket,
+        endpoint: r2Endpoint,
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+  } catch (error) {
+    const message = errorMessage(error);
+    report.event_evidence_upload_failed += 1;
+    report.event_evidence_failures.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      stage: "prepare_and_verify_permanent_artifacts",
+      reason: message,
+      solution: visualEventEvidenceFailureSolution(message),
+    });
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      message: `Permanent visual event evidence failed: ${message}`,
+    });
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded",
+      ai_result: result,
+      actual_usage: usage,
+      rejection_reason: "publish_retry_pending:event_evidence_not_durable",
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        policy_guard: policyDecision,
+        baseline_advanced: true,
+        baseline_promotion: baselinePromotion,
+        event_evidence_error: message,
+        reuse_completed_batch_response: true,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "retry_pending", reason: "event_evidence_not_durable" };
+  }
+  const eventEvidenceSides = Object.values(eventEvidence.localization?.sides || {});
+  const requiredEvidenceSides = eventEvidenceSides.filter((side) => side?.required === true);
+  const verifiedEvidenceSideCount = requiredEvidenceSides.filter(
+    (side) => side?.status === "verified" && side?.exact_overlap === true,
+  ).length;
+  const unavailableEvidenceSideCount = requiredEvidenceSides.filter(
+    (side) => side?.status !== "verified" || side?.exact_overlap !== true,
+  ).length;
+
   const previousHash = visualHashFromCandidate(candidate, "previous");
   const newHash = visualHashFromCandidate(candidate, "new");
   const eventIdentity = {
@@ -1300,43 +1381,27 @@ async function publishCandidateResultUnlocked({
   };
   const publication = await persistVisualChangeAndReconciliation({
     eventIdentity,
-    upsertEvent: async () => {
-      const { data, error } = await supabase
-        .from("shared_award_change_events")
-        .upsert({
-        shared_award_id: candidate.shared_award_id,
-        shared_award_source_id: candidate.shared_award_source_id,
-        source_url: eventIdentity.source_url,
-        source_title: source.title || candidate.source_title || null,
-        source_page_type: source.page_type || candidate.source_page_type || null,
-        previous_snapshot_id: null,
-        new_snapshot_id: null,
-        previous_hash: previousHash,
-        new_hash: newHash,
-        summary: changeDetails.reader_summary,
-        change_details: changeDetails,
-        detected_at: now,
-        }, {
-          onConflict: "shared_award_id,source_url,previous_hash,new_hash",
-          ignoreDuplicates: true,
-        })
-        .select("id")
-        .maybeSingle();
-      if (error) throw new Error(`Change event upsert failed: ${error.message}`);
-      return data || null;
-    },
-    findExistingEvent: async () => {
-      let query = supabase
-        .from("shared_award_change_events")
-        .select("id")
-        .eq("shared_award_id", eventIdentity.shared_award_id)
-        .eq("source_url", eventIdentity.source_url);
-      query = query
-        .eq("previous_hash", eventIdentity.previous_hash)
-        .eq("new_hash", eventIdentity.new_hash);
-      const { data, error } = await query.limit(1).maybeSingle();
-      if (error) throw new Error(`Resolve existing change event failed: ${error.message}`);
-      return data || null;
+    publishEventWithEvidence: async () => {
+      const { data, error } = await supabase.rpc("publish_shared_award_visual_event", {
+        p_event: {
+          visual_review_candidate_id: candidate.id,
+          shared_award_id: candidate.shared_award_id,
+          shared_award_source_id: candidate.shared_award_source_id,
+          source_url: eventIdentity.source_url,
+          source_title: source.title || candidate.source_title || null,
+          source_page_type: source.page_type || candidate.source_page_type || null,
+          previous_snapshot_id: null,
+          new_snapshot_id: null,
+          previous_hash: previousHash,
+          new_hash: newHash,
+          summary: changeDetails.reader_summary,
+          change_details: changeDetails,
+          detected_at: eventDetectedAt,
+        },
+        p_evidence: eventEvidence,
+      });
+      if (error) throw new Error(`Atomic visual event/evidence publication failed: ${error.message}`);
+      return Array.isArray(data) ? data[0] || null : data || null;
     },
     enqueueReconciliation: async (eventId) => queueAwardReconciliationForCandidate({
       candidate,
@@ -1351,6 +1416,15 @@ async function publishCandidateResultUnlocked({
   });
 
   if (publication.action !== "publish") {
+    if (publication.reason === "change_event_evidence_publication_error") {
+      report.event_evidence_failures.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        stage: "atomic_event_evidence_binding",
+        reason: publication.error || publication.reason,
+        solution: visualEventEvidenceFailureSolution(publication.error || publication.reason),
+      });
+    }
     await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "succeeded",
       ai_result: result,
@@ -1361,6 +1435,7 @@ async function publishCandidateResultUnlocked({
         baseline_advanced: true,
         baseline_promotion: baselinePromotion,
         change_event_id: publication.event_id || null,
+        change_event_evidence_id: publication.evidence_id || null,
         change_event_publication: publication,
         reuse_completed_batch_response: true,
       }),
@@ -1375,6 +1450,11 @@ async function publishCandidateResultUnlocked({
     return { status: "retry_pending", reason: publication.reason };
   }
 
+  report.verified_event_crop_sides += verifiedEvidenceSideCount;
+  report.unavailable_event_crop_sides += unavailableEvidenceSideCount;
+  if (eventEvidence.evidence_status === "verified") report.event_evidence_verified += 1;
+  else report.event_evidence_full_fallback += 1;
+
   await markPublicationCandidate(candidate, publicationClaimToken, {
     status: "published",
     ai_result: result,
@@ -1386,6 +1466,7 @@ async function publishCandidateResultUnlocked({
       ),
       baseline_promotion: baselinePromotion,
       change_event_id: publication.event_id,
+      change_event_evidence_id: publication.evidence_id,
       reconciliation: publication.reconciliation,
     }),
     completed_at: now,
@@ -2273,6 +2354,23 @@ function truncate(value, maxLength) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function visualEventEvidenceFailureSolution(value) {
+  const message = cleanText(value).toLowerCase();
+  if (/hash mismatch|identity mismatch|conflicts with this publication/.test(message)) {
+    return "Quarantine this candidate, preserve its files for audit, and recapture the source through the normal 6 PM review path. Never relink it to a different screenshot or overwrite immutable evidence.";
+  }
+  if (/missing|no .*snapshot reference|not retained/.test(message)) {
+    return "Keep the update unpublished, verify the candidate archive paths, and recapture the source through normal review if the exact candidate artifacts cannot be restored.";
+  }
+  if (/r2|permanent visual evidence verification|bucket|credentials|headobject|putobject/.test(message)) {
+    return "Verify the worker R2 bucket, endpoint, credentials, and object write/read permissions, then retry the same candidate; content-addressed uploads are safe to repeat.";
+  }
+  if (/publish_shared_award_visual_event|atomic visual event/.test(message)) {
+    return "Verify the immutable-evidence migration is applied, inspect the candidate/event identity mismatch, and retry without editing an existing evidence row.";
+  }
+  return "Inspect the candidate's immutable full images, metadata, geometry binding, and R2 verification result; repair the failed dependency and retry the same candidate without substituting source-pointer images.";
 }
 
 function printHelp() {

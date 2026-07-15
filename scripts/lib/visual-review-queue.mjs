@@ -318,6 +318,8 @@ export function visualReviewCandidateSignature({
   source,
   baseline,
   capture,
+  previousSnapshotRef = null,
+  newSnapshotRef = null,
   diff,
   deterministic,
   behaviorVersion,
@@ -327,13 +329,15 @@ export function visualReviewCandidateSignature({
     source,
     baseline,
     capture,
+    previousSnapshotRef,
+    newSnapshotRef,
     diff,
     deterministic,
     behaviorVersion,
   });
   return crypto.createHash("sha256").update(stableJsonStringify({
     evidence_signature: evidenceSignature,
-    occurrence_identity: visualReviewOccurrenceIdentity(capture),
+    occurrence_identity: visualReviewOccurrenceIdentity(newSnapshotRef || capture),
     monitoring_policy: normalizePolicyIdentity(policyIdentity),
   })).digest("hex");
 }
@@ -342,6 +346,8 @@ export function visualReviewEvidenceSignature({
   source,
   baseline,
   capture,
+  previousSnapshotRef = null,
+  newSnapshotRef = null,
   diff,
   deterministic,
   behaviorVersion,
@@ -354,6 +360,8 @@ export function visualReviewEvidenceSignature({
     new_image_hash: capture?.image_hash || null,
     previous_file_hash: baseline?.file_hash || null,
     new_file_hash: capture?.file_hash || null,
+    previous_artifact_manifest_digest: visualSnapshotArtifactManifestDigest(previousSnapshotRef),
+    new_artifact_manifest_digest: visualSnapshotArtifactManifestDigest(newSnapshotRef),
     candidate_scope: diff?.candidate_scope || null,
     section_key: diff?.section_key || null,
     previous_section_hash: diff?.previous_section_hash || null,
@@ -367,6 +375,8 @@ export function visualReviewEvidenceSignature({
 
 export function visualReviewEvidenceSignatureFromStoredCandidate(candidate) {
   const promptSource = objectValue(candidate?.prompt_payload?.source);
+  const previousSnapshotRef = storedVisualSnapshotRef(candidate, "previous");
+  const newSnapshotRef = storedVisualSnapshotRef(candidate, "current");
   return visualReviewEvidenceSignature({
     source: {
       ...promptSource,
@@ -385,6 +395,8 @@ export function visualReviewEvidenceSignatureFromStoredCandidate(candidate) {
       image_hash: candidate?.new_image_hash,
       file_hash: candidate?.new_file_hash,
     },
+    previousSnapshotRef,
+    newSnapshotRef,
     diff: candidate?.deterministic_diff || candidate?.prompt_payload?.deterministic_diff || {},
     deterministic: {
       classification: candidate?.deterministic_classification ||
@@ -692,6 +704,8 @@ export function buildVisualReviewPromptPayload({
       new_image_hash: capture?.image_hash || null,
       previous_file_hash: baseline?.file_hash || null,
       new_file_hash: capture?.file_hash || null,
+      previous_artifact_manifest_digest: previousRef.artifact_manifest_digest || null,
+      new_artifact_manifest_digest: newRef.artifact_manifest_digest || null,
       previous_section_hash: diff?.previous_section_hash || null,
       new_section_hash: diff?.new_section_hash || null,
     },
@@ -1126,6 +1140,8 @@ export function stableJsonStringify(value) {
 }
 
 function snapshotRef(captureLike, hashLike, archiveRelative) {
+  const visualStates = snapshotVisualStateRefs(captureLike, hashLike, archiveRelative);
+  const mainState = visualStates.find((state) => state.kind === "main") || null;
   const ref = {
     captured_at: captureLike?.captured_at || hashLike?.captured_at || null,
     final_url: captureLike?.final_url || hashLike?.final_url || null,
@@ -1133,45 +1149,269 @@ function snapshotRef(captureLike, hashLike, archiveRelative) {
     kind: captureLike?.kind || hashLike?.kind || null,
     text_hash: hashLike?.text_hash || captureLike?.text_hash || null,
     image_hash: hashLike?.image_hash || captureLike?.image_hash || null,
+    layout_hash:
+      captureLike?.layout_hash ||
+      hashLike?.layout_hash ||
+      captureLike?.meta?.layout_hash ||
+      mainState?.geometry_hash ||
+      null,
     file_hash: hashLike?.file_hash || captureLike?.file_hash || null,
     local_paths: {
       page: pathRef(captureLike?.pagePath || captureLike?.page_path, archiveRelative),
       thumb: pathRef(captureLike?.thumbPath || captureLike?.thumb_path, archiveRelative),
       pdf: pathRef(captureLike?.pdfPath || captureLike?.pdf_path, archiveRelative),
       text: pathRef(captureLike?.textPath || captureLike?.text_path, archiveRelative),
+      layout: pathRef(captureLike?.layoutPath || captureLike?.layout_path, archiveRelative),
       meta: pathRef(captureLike?.metaPath || captureLike?.meta_path, archiveRelative),
     },
-    capture_dir: pathRef(captureLike?.dir, archiveRelative),
+    visual_states: visualStates,
+    capture_dir: directoryRef(captureLike?.dir, archiveRelative),
     metadata: {
       status_code: captureLike?.status_code || null,
       content_type: captureLike?.content_type || null,
       page_count: captureLike?.page_count || null,
       dimensions: captureLike?.dimensions || null,
       hidden_noise_counts: captureLike?.hidden_noise_counts || null,
+      text_geometry: visualSnapshotGeometryReference(
+        captureLike?.text_geometry || captureLike?.meta?.text_geometry,
+        captureLike?.layout_hash || hashLike?.layout_hash || mainState?.geometry_hash,
+      ),
       localization: captureLike?.localization || captureLike?.location_metadata || null,
     },
   };
+  validateSnapshotArtifactSemantics(ref);
+  const artifactManifest = visualSnapshotArtifactManifest(ref);
+  ref.artifact_manifest = artifactManifest;
+  ref.artifact_manifest_digest = artifactManifest.digest;
   return ref;
 }
 
+function snapshotVisualStateRefs(captureLike, hashLike, archiveRelative) {
+  const states = [];
+  const pagePath = captureLike?.pagePath || captureLike?.page_path;
+  const layoutPath = captureLike?.layoutPath || captureLike?.layout_path;
+  const mainGeometry = objectValue(captureLike?.text_geometry || captureLike?.meta?.text_geometry);
+  const mainImageHash = hashLike?.image_hash || captureLike?.image_hash || null;
+  if (pagePath) {
+    states.push({
+      state_id: "main",
+      kind: "main",
+      index: 0,
+      label: null,
+      image_hash: mainImageHash,
+      geometry_hash:
+        captureLike?.layout_hash ||
+        hashLike?.layout_hash ||
+        captureLike?.meta?.layout_hash ||
+        mainGeometry.geometry_hash ||
+        null,
+      local_paths: {
+        image: pathRef(pagePath, archiveRelative),
+        layout: pathRef(layoutPath, archiveRelative),
+      },
+      metadata: visualStateGeometryMetadata(mainGeometry, captureLike?.captured_at),
+    });
+  }
+
+  const expansionStates = Array.isArray(captureLike?.expansion_state_screenshots)
+    ? captureLike.expansion_state_screenshots
+    : Array.isArray(captureLike?.expansionStateScreenshots)
+      ? captureLike.expansionStateScreenshots
+      : [];
+  for (const [index, state] of expansionStates.entries()) {
+    const geometry = objectValue(state?.text_geometry);
+    const statePagePath = state?.pagePath || state?.page_path;
+    const stateLayoutPath = state?.layoutPath || state?.layout_path;
+    if (!statePagePath) continue;
+    states.push({
+      state_id: cleanNullable(state?.state_id) || `expansion-state-${String(index + 1).padStart(2, "0")}`,
+      kind: "expansion_state",
+      index: Number.isFinite(Number(state?.index)) ? Number(state.index) : index,
+      label: cleanNullable(state?.label),
+      image_hash: cleanNullable(state?.image_hash),
+      geometry_hash: cleanNullable(state?.layout_hash || geometry.geometry_hash),
+      local_paths: {
+        image: pathRef(statePagePath, archiveRelative),
+        layout: pathRef(stateLayoutPath, archiveRelative),
+      },
+      metadata: {
+        ...visualStateGeometryMetadata(geometry, state?.captured_at),
+        isolation: objectValue(state?.isolation),
+      },
+    });
+  }
+  return states;
+}
+
+function visualStateGeometryMetadata(geometry, capturedAt) {
+  const value = objectValue(geometry);
+  return {
+    captured_at: cleanNullable(capturedAt || value.captured_at),
+    coordinate_space: cleanNullable(value.coordinate_space) || "document-css-pixels",
+    screenshot: objectValue(value.screenshot),
+  };
+}
+
+function visualSnapshotGeometryReference(geometry, fallbackHash = null) {
+  const value = objectValue(geometry);
+  const geometryHash = cleanNullable(value.geometry_hash || fallbackHash);
+  if (!geometryHash && !Object.keys(value).length) return null;
+  return {
+    version: Number(value.version || 1),
+    status: cleanNullable(value.status) || (Number(value.run_count || 0) > 0 ? "ready" : null),
+    geometry_hash: geometryHash,
+    coordinate_space: cleanNullable(value.coordinate_space) || "document-css-pixels",
+    node_count: Number(value.node_count || 0),
+    run_count: Number(value.run_count || 0),
+    document: objectValue(value.document),
+    viewport: objectValue(value.viewport),
+    screenshot: objectValue(value.screenshot),
+  };
+}
+
+export function visualSnapshotArtifactManifest(snapshotRef) {
+  const ref = objectValue(snapshotRef);
+  const paths = objectValue(ref.local_paths);
+  const artifacts = [];
+  const missingRoles = [];
+  const add = (role, value) => {
+    if (!value) return;
+    const artifact = objectValue(value);
+    const sha256 = normalizeText(artifact.sha256).toLowerCase();
+    const byteLength = Number(artifact.byte_length ?? artifact.bytes);
+    if (!/^[a-f0-9]{64}$/.test(sha256) || !Number.isSafeInteger(byteLength) || byteLength < 0) {
+      missingRoles.push(role);
+      return;
+    }
+    artifacts.push({ role, sha256, byte_length: byteLength });
+  };
+
+  for (const role of ["page", "thumb", "pdf", "text", "layout", "meta"]) {
+    add(role, paths[role]);
+  }
+  for (const [index, state] of arrayValue(ref.visual_states).entries()) {
+    const stateValue = objectValue(state);
+    const stateId = normalizeText(stateValue.state_id) || `state-${index + 1}`;
+    const statePaths = objectValue(stateValue.local_paths);
+    add(`visual_state:${stateId}:image`, statePaths.image);
+    add(`visual_state:${stateId}:layout`, statePaths.layout);
+  }
+
+  artifacts.sort((left, right) =>
+    left.role.localeCompare(right.role) ||
+    left.sha256.localeCompare(right.sha256) ||
+    left.byte_length - right.byte_length,
+  );
+  missingRoles.sort();
+  const manifestPayload = { version: 1, artifacts };
+  const complete = missingRoles.length === 0;
+  const digest = complete && artifacts.length
+    ? crypto.createHash("sha256").update(stableJsonStringify(manifestPayload)).digest("hex")
+    : null;
+  return {
+    ...manifestPayload,
+    complete,
+    digest,
+    missing_roles: missingRoles,
+  };
+}
+
+export function visualSnapshotArtifactManifestDigest(snapshotRef) {
+  return visualSnapshotArtifactManifest(snapshotRef).digest;
+}
+
+function validateSnapshotArtifactSemantics(snapshotRef) {
+  const ref = objectValue(snapshotRef);
+  const paths = objectValue(ref.local_paths);
+  assertSemanticFileHash("main image", ref.image_hash, paths.page);
+  assertSemanticFileHash("PDF", ref.file_hash, paths.pdf);
+
+  for (const [index, state] of arrayValue(ref.visual_states).entries()) {
+    const value = objectValue(state);
+    const stateId = normalizeText(value.state_id) || `state-${index + 1}`;
+    const statePaths = objectValue(value.local_paths);
+    assertSemanticFileHash(`visual state ${stateId} image`, value.image_hash, statePaths.image);
+    validateLayoutSemanticHashes({
+      stateId,
+      layoutRef: statePaths.layout,
+      geometryHash: value.geometry_hash,
+      imageHash: value.image_hash,
+    });
+  }
+}
+
+function assertSemanticFileHash(role, semanticHash, artifactRef) {
+  if (!artifactRef) return;
+  if (!normalizeText(semanticHash)) {
+    throw new Error(`Visual review candidate ${role} is missing its semantic hash.`);
+  }
+  const expected = normalizeText(semanticHash).toLowerCase();
+  const actual = normalizeText(objectValue(artifactRef).sha256).toLowerCase();
+  if (expected !== actual) {
+    throw new Error(`Visual review candidate ${role} hash does not match the captured artifact bytes.`);
+  }
+}
+
+function validateLayoutSemanticHashes({ stateId, layoutRef, geometryHash, imageHash }) {
+  const ref = objectValue(layoutRef);
+  if (!Object.keys(ref).length) return;
+  let layout;
+  try {
+    layout = JSON.parse(readFileSync(ref.path, "utf8"));
+  } catch (error) {
+    throw new Error(`Visual review candidate state ${stateId} layout is not readable JSON: ${error.message}`);
+  }
+  const actualGeometryHash = normalizeText(layout?.geometry_hash);
+  const expectedGeometryHash = normalizeText(geometryHash);
+  if (!expectedGeometryHash || !actualGeometryHash || actualGeometryHash !== expectedGeometryHash) {
+    throw new Error(`Visual review candidate state ${stateId} geometry hash does not match its layout artifact.`);
+  }
+  const boundImageHash = normalizeText(objectValue(layout?.screenshot).image_hash);
+  const expectedImageHash = normalizeText(imageHash);
+  if (!expectedImageHash || !boundImageHash || boundImageHash !== expectedImageHash) {
+    throw new Error(`Visual review candidate state ${stateId} layout is not bound to its image artifact.`);
+  }
+}
+
 function pathRef(path, archiveRelative) {
+  if (!path) return null;
+  try {
+    const body = readFileSync(path);
+    const byteLength = body.length;
+    return {
+      path,
+      archive_relative: archiveRelative(path),
+      exists: true,
+      bytes: byteLength,
+      byte_length: byteLength,
+      sha256: crypto.createHash("sha256").update(body).digest("hex"),
+    };
+  } catch (error) {
+    throw new Error(`Visual review candidate artifact is unavailable at ${path}: ${error.message}`);
+  }
+}
+
+function directoryRef(path, archiveRelative) {
   if (!path) return null;
   const ref = {
     path,
     archive_relative: archiveRelative(path),
     exists: false,
-    bytes: null,
   };
   try {
-    if (existsSync(path)) {
-      const stats = statSync(path);
-      ref.exists = true;
-      ref.bytes = stats.size;
-    }
+    ref.exists = existsSync(path) && statSync(path).isDirectory();
   } catch {
-    // Best-effort evidence metadata only.
+    // The capture directory is contextual metadata, not a reviewed artifact.
   }
   return ref;
+}
+
+function storedVisualSnapshotRef(candidate, side) {
+  const key = side === "previous" ? "previous_snapshot_ref" : "new_snapshot_ref";
+  const direct = objectValue(candidate?.[key]);
+  if (Object.keys(direct).length) return direct;
+  const prompt = objectValue(objectValue(candidate?.prompt_payload)[key]);
+  return Object.keys(prompt).length ? prompt : null;
 }
 
 function shouldIncludeImagesForCandidate({ previous, capture, diff, deterministic }) {
@@ -1700,6 +1940,10 @@ function normalizeSourceRelevance(value) {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function arrayValue(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function stringArray(value) {

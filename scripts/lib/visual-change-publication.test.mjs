@@ -2,16 +2,14 @@ import { describe, expect, it } from "vitest";
 import { persistVisualChangeAndReconciliation } from "./visual-change-publication.mjs";
 
 describe("visual change publication", () => {
-  it("recovers a crash after event insertion by resolving the duplicate and enqueueing", async () => {
-    let event = null;
+  it("recovers after durable event evidence exists but reconciliation was interrupted", async () => {
     let enqueueAttempts = 0;
     const dependencies = {
-      upsertEvent: async () => {
-        if (event) return null;
-        event = { id: "event-1" };
-        return event;
-      },
-      findExistingEvent: async () => event,
+      publishEventWithEvidence: async () => ({
+        change_event_id: "event-1",
+        evidence_id: "event-1",
+        inserted: enqueueAttempts === 0,
+      }),
       enqueueReconciliation: async () => {
         enqueueAttempts += 1;
         return enqueueAttempts === 1 ? null : { queued: true, id: "queue-1" };
@@ -23,6 +21,7 @@ describe("visual change publication", () => {
       action: "retry",
       reason: "award_reconciliation_enqueue_failed",
       event_id: "event-1",
+      evidence_id: "event-1",
       duplicate: false,
     });
 
@@ -35,29 +34,37 @@ describe("visual change publication", () => {
     });
   });
 
-  it("does not publish when a duplicate event cannot be resolved", async () => {
+  it("does not publish when the atomic publication has no immutable evidence row", async () => {
     expect(await persistVisualChangeAndReconciliation({
-      upsertEvent: async () => null,
-      findExistingEvent: async () => null,
+      publishEventWithEvidence: async () => ({
+        change_event_id: "event-without-evidence",
+        evidence_id: null,
+        inserted: true,
+      }),
       enqueueReconciliation: async () => {
-        throw new Error("must not enqueue without an event");
+        throw new Error("must not enqueue without evidence");
       },
     })).toMatchObject({
       action: "retry",
-      reason: "change_event_identity_unresolved",
+      reason: "change_event_evidence_not_durable",
+      event_id: "event-without-evidence",
     });
   });
 
   it("keeps enqueue failures retryable instead of terminal-publishing", async () => {
     expect(await persistVisualChangeAndReconciliation({
-      upsertEvent: async () => ({ id: "event-2" }),
-      findExistingEvent: async () => null,
+      publishEventWithEvidence: async () => ({
+        change_event_id: "event-2",
+        evidence_id: "event-2",
+        inserted: true,
+      }),
       enqueueReconciliation: async () => {
         throw new Error("queue unavailable");
       },
     })).toMatchObject({
       action: "retry",
-      reason: "change_event_publication_error",
+      reason: "award_reconciliation_enqueue_error",
+      event_id: "event-2",
       error: "queue unavailable",
     });
   });
@@ -72,10 +79,13 @@ describe("visual change publication", () => {
     let resolvedIdentity = null;
     const result = await persistVisualChangeAndReconciliation({
       eventIdentity: identity,
-      upsertEvent: async () => null,
-      findExistingEvent: async (receivedIdentity) => {
+      publishEventWithEvidence: async (receivedIdentity) => {
         resolvedIdentity = receivedIdentity;
-        return { id: "event-empty-hashes" };
+        return {
+          change_event_id: "event-empty-hashes",
+          evidence_id: "event-empty-hashes",
+          inserted: false,
+        };
       },
       enqueueReconciliation: async () => ({ queued: true, id: "queue-empty" }),
     });
@@ -89,8 +99,11 @@ describe("visual change publication", () => {
 
   it("retries when the reconciliation queue is unavailable", async () => {
     expect(await persistVisualChangeAndReconciliation({
-      upsertEvent: async () => ({ id: "event-queue-missing" }),
-      findExistingEvent: async () => null,
+      publishEventWithEvidence: async () => ({
+        change_event_id: "event-queue-missing",
+        evidence_id: "event-queue-missing",
+        inserted: true,
+      }),
       enqueueReconciliation: async () => ({
         queued: false,
         reason: "queue_table_missing",
@@ -104,8 +117,11 @@ describe("visual change publication", () => {
 
   it("retries a raced coalesce until the durable queue row ID resolves", async () => {
     expect(await persistVisualChangeAndReconciliation({
-      upsertEvent: async () => ({ id: "event-race" }),
-      findExistingEvent: async () => null,
+      publishEventWithEvidence: async () => ({
+        change_event_id: "event-race",
+        evidence_id: "event-race",
+        inserted: true,
+      }),
       enqueueReconciliation: async () => ({
         queued: false,
         coalesced: true,

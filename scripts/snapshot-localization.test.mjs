@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyChangeEventVisualEvidence,
   classifySnapshotLocalization,
   hasLayoutMetadata,
+  summarizeChangeEventVisualEvidence,
   summarizeSnapshotLocalization,
 } from "./lib/snapshot-localization.mjs";
 
@@ -110,6 +112,10 @@ describe("snapshot localization coverage", () => {
     expect(summary.automated_localization_complete).toBe(true);
     expect(summary.historical_layout_unavailable).toBe(1);
     expect(summary.accounted_for_percent).toBe(100);
+    expect(summary).toMatchObject({
+      metric_scope: "source_pointer_layout_metadata_not_event_crop",
+      searchable_layout_coverage_percent: 50,
+    });
   });
 
   it("keeps current screenshots without layout metadata in the repair backlog", () => {
@@ -151,5 +157,174 @@ describe("snapshot localization coverage", () => {
     expect(result.exact).toBe(false);
     expect(result.accounted_for).toBe(true);
     expect(result.repair_needed).toBe(false);
+  });
+});
+
+describe("published event crop coverage", () => {
+  const artifact = (name) => ({
+    object_key: `visual-snapshots/published/candidate/${name}.jpg`,
+    sha256: "a".repeat(64),
+    byte_length: 120,
+    content_type: "image/jpeg",
+  });
+  const event = {
+    id: "event-1",
+    change_details: {
+      exact_before: "Applications close February 1.",
+      exact_after: "Applications close March 1.",
+    },
+  };
+
+  it("does not count layout metadata or an unchecked crop as verified", () => {
+    const result = classifyChangeEventVisualEvidence({
+      event,
+      evidence: {
+        change_event_id: "event-1",
+        evidence_status: "verified",
+        previous_capture: { full: artifact("previous-full"), crop: artifact("previous-crop") },
+        current_capture: { full: artifact("current-full"), crop: artifact("current-crop") },
+        localization: {
+          sides: {
+            previous: { status: "verified", exact_overlap: true },
+            current: { status: "verified", exact_overlap: true },
+          },
+        },
+      },
+      artifactChecks: {
+        previous: { full: true, crop: false },
+        current: { full: true, crop: false },
+      },
+    });
+
+    expect(result.sides.previous.verified_crop).toBe(false);
+    expect(result.sides.current.verified_crop).toBe(false);
+    expect(summarizeChangeEventVisualEvidence([result])).toMatchObject({
+      required_localization_sides: 2,
+      verified_event_crop_sides: 0,
+      verified_event_crop_coverage_percent: 0,
+      full_screenshot_fallback_sides: 2,
+    });
+  });
+
+  it("requires directional exact overlap and verified retained crop objects", () => {
+    const result = classifyChangeEventVisualEvidence({
+      event,
+      evidence: {
+        change_event_id: "event-1",
+        visual_review_candidate_id: "candidate-1",
+        evidence_status: "verified",
+        previous_capture: {
+          full: artifact("previous-full"),
+          crop: { ...artifact("previous-crop"), exact_overlap: true },
+        },
+        current_capture: {
+          full: artifact("current-full"),
+          crop: { ...artifact("current-crop"), exact_overlap: true },
+        },
+        localization: {
+          sides: {
+            previous: { status: "verified", exact_overlap: true },
+            current: { status: "verified", exact_overlap: true },
+          },
+        },
+      },
+      artifactChecks: {
+        previous: { full: true, crop: true },
+        current: { full: true, crop: true },
+      },
+    });
+
+    expect(summarizeChangeEventVisualEvidence([result])).toMatchObject({
+      immutable_evidence_event_count: 1,
+      candidate_bound_event_count: 1,
+      verified_event_crop_sides: 2,
+      verified_event_crop_coverage_percent: 100,
+    });
+  });
+
+  it("marks historical events without evidence instead of borrowing source pointers", () => {
+    const result = classifyChangeEventVisualEvidence({ event, evidence: null });
+    expect(result.status).toBe("missing_evidence_binding");
+    expect(result.sides.previous.retained_full).toBe(false);
+    expect(result.sides.current.retained_full).toBe(false);
+  });
+
+  it("reports no exact-wording denominator as not applicable instead of perfect coverage", () => {
+    const result = classifyChangeEventVisualEvidence({
+      event: {
+        id: "event-without-exact-wording",
+        change_details: { summary: "The page changed visually." },
+      },
+      evidence: null,
+    });
+
+    expect(summarizeChangeEventVisualEvidence([result])).toMatchObject({
+      events_with_exact_localization_target: 0,
+      events_without_exact_localization_target: 1,
+      events_without_exact_localization_target_by_status: { missing_evidence_binding: 1 },
+      required_localization_sides: 0,
+      verified_event_crop_coverage_percent: null,
+      all_required_event_crops_verified: null,
+      exact_localization_target_status: "not_applicable_no_exact_wording",
+    });
+  });
+
+  it("uses immutable evidence requirements and reports stale event-side metadata", () => {
+    const currentCrop = { ...artifact("current-crop"), exact_overlap: true };
+    const result = classifyChangeEventVisualEvidence({
+      event: {
+        id: "event-structured-diff",
+        change_details: {},
+      },
+      evidence: {
+        change_event_id: "event-structured-diff",
+        visual_review_candidate_id: "candidate-structured-diff",
+        evidence_status: "verified",
+        previous_capture: { full: artifact("previous-full"), crop: null },
+        current_capture: { full: artifact("current-full"), crop: currentCrop },
+        localization: {
+          direction: "added",
+          sides: {
+            previous: { status: "not_required", required: false, exact_overlap: false },
+            current: { status: "verified", required: true, exact_overlap: true },
+          },
+        },
+      },
+      artifactChecks: {
+        previous: { full: true, crop: false },
+        current: { full: true, crop: true },
+      },
+    });
+
+    expect(result).toMatchObject({
+      required_sides: ["current"],
+      required_side_source: "immutable_evidence",
+      required_side_mismatch: true,
+      event_required_sides: [],
+      sides: { current: { verified_crop: true } },
+    });
+    expect(summarizeChangeEventVisualEvidence([result])).toMatchObject({
+      required_localization_sides: 1,
+      verified_event_crop_sides: 1,
+      verified_event_crop_coverage_percent: 100,
+      required_side_mismatch_events: 1,
+    });
+  });
+
+  it("derives missing-evidence sides from structured directional wording", () => {
+    const result = classifyChangeEventVisualEvidence({
+      event: {
+        id: "event-structured-only",
+        change_details: {
+          structured_diff: {
+            removed_text: ["Deadline February 1"],
+            added_text: ["Deadline March 1"],
+          },
+        },
+      },
+      evidence: null,
+    });
+
+    expect(result.required_sides).toEqual(["previous", "current"]);
   });
 });

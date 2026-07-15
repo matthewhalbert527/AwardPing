@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   refreshedLatestVisualSnapshotHistory,
+  isPublishedVisualEvidenceKey,
   rotatedVisualSnapshotHistory,
   visualSnapshotKeysToDeleteAfterCas,
   visualSnapshotUploadedKeysToDeleteAfterLostCas,
@@ -83,5 +84,25 @@ describe("immutable visual snapshot history", () => {
         previous_object_keys: { page: "previous/page.jpg" },
       },
     })).toEqual(["loser/page.jpg"]);
+  });
+
+  it("categorically protects permanent published evidence from pointer cleanup", () => {
+    const published = "visual-snapshots/published/candidate-1/previous/main/full.jpg";
+    expect(isPublishedVisualEvidenceKey(published)).toBe(true);
+    expect(visualSnapshotKeysToDeleteAfterCas({
+      pointerAdvanced: true,
+      existing: {
+        latest_object_keys: { page: published },
+        previous_object_keys: { page: "generation-1/page.jpg" },
+      },
+      next: {
+        latest_object_keys: { page: "generation-3/page.jpg" },
+        previous_object_keys: { page: "generation-2/page.jpg" },
+      },
+    })).toEqual(["generation-1/page.jpg"]);
+    expect(visualSnapshotUploadedKeysToDeleteAfterLostCas({
+      uploaded: { page: published },
+      current: {},
+    })).toEqual([]);
   });
 });

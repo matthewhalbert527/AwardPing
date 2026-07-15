@@ -581,8 +581,9 @@ function SourcePageRow<T extends SourcePageTreeSource>({
 
         {!summaryMode && (showSnapshotActions || rowActions) && (
           <div className="source-tree-row-actions">
-            {showSnapshotActions && snapshotSourceId && (
+            {showSnapshotActions && (latestChange?.id || snapshotSourceId) && (
               <SourceSnapshotViewerButton
+                changeEventId={latestChange?.id}
                 changeDetectedAt={latestChange?.detectedAt}
                 changeDetails={latestChange?.changeDetails}
                 changeSummary={latestChange?.summary}
@@ -659,8 +660,9 @@ function SourcePageDetailPanel<T extends SourcePageTreeSource>({
 
         {(showSnapshotActions || rowActions) && (
           <div className="source-tree-row-actions">
-            {showSnapshotActions && snapshotSourceId && (
+            {showSnapshotActions && (selectedChange?.id || snapshotSourceId) && (
               <SourceSnapshotViewerButton
+                changeEventId={selectedChange?.id}
                 changeDetectedAt={selectedChange?.detectedAt}
                 changeDetails={selectedChange?.changeDetails}
                 changeSummary={selectedChange?.summary}
@@ -717,6 +719,7 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
               changeDetails={change.changeDetails}
             />
             <SourceSnapshotInlinePreview
+              changeEventId={change.id}
               changeDetails={change.changeDetails}
               changeSummary={change.summary}
               sourceId={snapshotSourceId}
@@ -724,6 +727,7 @@ function SourcePageDetails<T extends SourcePageTreeSource>({
               sourceUrl={change.sourceUrl}
             />
             <ChangeEvidencePanel
+              changeEventId={change.id}
               compact
               sourceId={snapshotSourceId}
               sourceUrl={change.sourceUrl}

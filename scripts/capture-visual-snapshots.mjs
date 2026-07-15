@@ -18,6 +18,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
+import sharp from "sharp";
 import { deterministicNoiseBaselineDisposition } from "./lib/deterministic-noise-disposition.mjs";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import {
@@ -60,6 +61,12 @@ import {
   visualSnapshotKeysToDeleteAfterCas,
   visualSnapshotUploadedKeysToDeleteAfterLostCas,
 } from "./lib/visual-snapshot-history.mjs";
+import { bindVisualTextGeometry } from "./lib/visual-event-localization.mjs";
+import { captureVisibleTextGeometry } from "./lib/visible-text-geometry.mjs";
+import {
+  verifyExpansionStateIsolation,
+  withIsolatedExpansionStatePage,
+} from "./lib/expansion-state-isolation.mjs";
 import {
   buildStableTextBlocks,
   captureProfileSettings,
@@ -110,8 +117,8 @@ const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 8;
-const captureBehaviorName = "profiled-stable-capture-with-structured-sections";
+const captureBehaviorVersion = 9;
+const captureBehaviorName = "final-state-text-node-geometry-with-open-sections";
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -251,9 +258,12 @@ const captureSectionEvidence = boolArg(
   args["capture-section-evidence"] ?? env.AWARDPING_CAPTURE_SECTION_EVIDENCE,
   sectionExtractionConfig.captureEvidence,
 );
+const defaultMaxExpansionStateScreenshots = captureProfile === "stable-daily"
+  ? 8
+  : captureProfileConfig.defaultMaxExpansionStateScreenshots;
 const maxExpansionStateScreenshots = boundedInt(
   args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
-  captureProfileConfig.defaultMaxExpansionStateScreenshots,
+  defaultMaxExpansionStateScreenshots,
   0,
   24,
 );
@@ -1452,15 +1462,9 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
 
-  await reviewAndApplyCandidateChange({
-    source,
-    baseline,
-    previous,
-    capture,
-    diff,
-    deterministic: gate.deterministic,
-    report,
-  });
+  throw new Error(
+    `Unsupported visual review mode \"${visualReviewMode}\": published changes require a retained batch candidate with immutable evidence.`,
+  );
 }
 
 async function processLocalizationRepairSource(source, baseline, capture, report) {
@@ -2052,202 +2056,6 @@ async function finishSafeDeterministicNoise({
   return { absorbed: baselinePromoted, disposition: baselineDisposition.reason };
 }
 
-async function reviewAndApplyCandidateChange({
-  source,
-  baseline,
-  previous,
-  capture,
-  diff,
-  deterministic,
-  report,
-}) {
-  const aiReview = await reviewCandidateWithAi({
-    source,
-    baseline,
-    previous,
-    capture,
-    diff,
-    deterministic,
-    report,
-  }).catch((error) => ({
-    ok: false,
-    error: errorMessage(error),
-    provider: aiProvider,
-    model: aiModel,
-    usage: error.aiUsage || error.geminiCliUsage || null,
-    raw_text: error.geminiCliRawText || null,
-  }));
-
-  recordAiReviewUsage(report, source, capture, aiReview);
-
-  if (!aiReview.ok) {
-    if (reviewOnAiFailure) {
-      const reviewPath = saveReviewRecord({
-        source,
-        baseline,
-        previous,
-        capture,
-        diff,
-        deterministic,
-        reason: `ai_failure: ${aiReview.error}`,
-        aiReview,
-      });
-      report.review += 1;
-      report.review_paths.push(toArchiveRelative(reviewPath));
-      await markSharedSourceVisualCheckSucceeded(source, capture, report);
-      console.log(`REVIEW ai_failure ${sourceLabel(source)}`);
-    } else {
-      await markSharedSourceVisualCheckSucceeded(source, capture, report);
-      if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
-    }
-    return;
-  }
-
-  report.visual_interpreted += 1;
-
-  if (aiReview.result.updated_baseline_facts) {
-    attachBaselineFactsToCapture(capture, aiReview.result.updated_baseline_facts, {
-      reason: "change_interpretation",
-      provider: aiReview.provider,
-      model: aiReview.model,
-      analysis_path: aiReview.analysis_path || null,
-    });
-  }
-
-  if (aiReview.result.confidence === "low") {
-    const reviewPath = saveReviewRecord({
-      source,
-      baseline,
-      previous,
-      capture,
-      diff,
-      deterministic,
-      reason: "low_confidence",
-      aiReview,
-    });
-    report.review += 1;
-    report.review_paths.push(toArchiveRelative(reviewPath));
-    await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`REVIEW low_confidence ${sourceLabel(source)}`);
-    return;
-  }
-
-  if (aiReview.result.is_true_change && aiReviewLooksLikeAnimatedCounterChange(aiReview)) {
-    markAiReviewAsNoise(
-      aiReview,
-      "animated_stat_counter",
-      "Animated statistic counters or impact-number widgets changed while the page was loading.",
-    );
-  }
-  if (aiReview.result.is_true_change && aiReviewLooksLikeProfileRosterChange(aiReview)) {
-    markAiReviewAsNoise(
-      aiReview,
-      "profile_roster_rotation",
-      "Profile, featured-fellow, alumni, or recipient roster content changed without applicant-facing award information changing.",
-    );
-  }
-  if (aiReview.result.is_true_change && aiReviewLooksLikeDocumentMetadataOnlyChange(aiReview)) {
-    markAiReviewAsNoise(
-      aiReview,
-      "document_metadata_only_change",
-      "The document file changed, but no concrete award-relevant wording change was identified.",
-    );
-  }
-  if (aiReview.result.is_true_change && aiReviewLooksLikeFundraisingOnlyChange(aiReview)) {
-    markAiReviewAsNoise(
-      aiReview,
-      "fundraising_form_change",
-      "Donation, fundraising, or checkout widgets changed without applicant-facing award information changing.",
-    );
-  }
-  if (aiReview.result.is_true_change && aiReviewLooksLikeRelativeAgeOnlyChange(aiReview)) {
-    markAiReviewAsNoise(
-      aiReview,
-      "relative_age_timestamp_churn",
-      "Only relative recency labels such as '8 days ago' changed; no applicant-facing award information changed.",
-    );
-  }
-  if (aiReview.result.is_true_change) {
-    const auditNoise = aiReviewLooksLikePublishedAuditNoise(aiReview, source);
-    if (auditNoise) {
-      markAiReviewAsNoise(aiReview, auditNoise.flag, auditNoise.reason);
-    }
-  }
-  if (aiReview.result.is_true_change) {
-    const evidenceAudit = auditAiReviewAgainstTextEvidence({
-      source,
-      previous,
-      capture,
-      diff,
-      aiReview,
-    });
-    if (evidenceAudit.rejected) {
-      report.evidence_sanity_rejected += 1;
-      markAiReviewAsNoise(aiReview, evidenceAudit.flag, evidenceAudit.reason);
-      console.log(`AI_EVIDENCE_REJECTED ${evidenceAudit.flag} ${sourceLabel(source)}`);
-    } else if (evidenceAudit.corrected) {
-      report.evidence_sanity_corrected += 1;
-      console.log(`AI_EVIDENCE_CORRECTED ${evidenceAudit.flags.join(",")} ${sourceLabel(source)}`);
-    }
-  }
-
-  if (aiReview.result.is_true_change) {
-    const changePath = saveTrueChange({
-      source,
-      baseline,
-      previous,
-      capture,
-      diff,
-      deterministic,
-      aiReview,
-    });
-    report.ai_true_changes += 1;
-    report.saved_change_paths.push(toArchiveRelative(changePath));
-
-    await publishVisualChangeEvent({
-      source,
-      baseline,
-      capture,
-      aiReview,
-      report,
-    });
-
-    if (promote) {
-      writeBaseline(source, capture, {
-        reason: "ai_approved_true_change",
-        previous_baseline_capture: baseline.capture || null,
-        baseline_facts: capture.baseline_facts || null,
-        baseline_facts_metadata: capture.baseline_facts_metadata || null,
-      });
-      report.promoted += 1;
-      await maybeSyncR2Snapshot(source, capture, report, { reason: "ai_approved_true_change" });
-    }
-
-    await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`AI TRUE ${aiReview.result.reader_summary || sourceLabel(source)}`);
-    return;
-  }
-
-  report.ai_rejected += 1;
-  await markSharedSourceVisualCheckSucceeded(source, capture, report);
-  if (keepRejectedEvidence) {
-    const rejectedPath = saveRejectedRecord({
-      source,
-      baseline,
-      previous,
-      capture,
-      diff,
-      deterministic,
-      aiReview,
-    });
-    report.rejected_paths.push(toArchiveRelative(rejectedPath));
-    pruneTransientExpansionStateScreenshots(capture, report);
-  } else if (!keepUnchanged) {
-    removeGeneratedCaptureDir(capture.dir);
-  }
-  console.log(`AI REJECTED ${aiReview.result.noise_reason || "not award-relevant"} ${sourceLabel(source)}`);
-}
-
 async function enqueueVisualReviewCandidate({
   source,
   baseline,
@@ -2259,10 +2067,26 @@ async function enqueueVisualReviewCandidate({
 }) {
   try {
     const monitoringPolicy = currentVisualReviewPolicyIdentity();
+    const promptPayload = buildVisualReviewPromptPayload({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff,
+      deterministic,
+      promptChars,
+      behaviorVersion: captureBehaviorVersion,
+      behaviorName: captureBehaviorName,
+      archiveRelative: toArchiveRelative,
+    });
+    const previousSnapshotRef = promptPayload.previous_snapshot_ref || null;
+    const newSnapshotRef = promptPayload.new_snapshot_ref || null;
     const evidenceSignature = visualReviewEvidenceSignature({
       source,
       baseline,
       capture,
+      previousSnapshotRef,
+      newSnapshotRef,
       diff,
       deterministic,
       behaviorVersion: captureBehaviorVersion,
@@ -2296,21 +2120,11 @@ async function enqueueVisualReviewCandidate({
       source,
       baseline,
       capture,
+      previousSnapshotRef,
+      newSnapshotRef,
       diff,
       deterministic,
       behaviorVersion: captureBehaviorVersion,
-    });
-    const promptPayload = buildVisualReviewPromptPayload({
-      source,
-      baseline,
-      previous,
-      capture,
-      diff,
-      deterministic,
-      promptChars,
-      behaviorVersion: captureBehaviorVersion,
-      behaviorName: captureBehaviorName,
-      archiveRelative: toArchiveRelative,
     });
     const promptContext = buildVisualReviewPromptText(promptPayload);
     const row = {
@@ -2362,6 +2176,7 @@ async function enqueueVisualReviewCandidate({
     if (error) throw error;
 
     if (data?.id) {
+      capture.persist_expansion_state_screenshots = true;
       report.visual_review_candidates_queued += 1;
       await queueAwardReconciliationFromSource({
         source,
@@ -2382,6 +2197,7 @@ async function enqueueVisualReviewCandidate({
     }
 
     report.visual_review_candidates_existing += 1;
+    capture.persist_expansion_state_screenshots = true;
     return {
       existing: true,
       duplicate: true,
@@ -2688,6 +2504,7 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
   const expansionTextPath = join(captureDir, "expansion-text.txt");
   const sectionsTextPath = join(captureDir, "sections.txt");
   const sectionsJsonPath = join(captureDir, "sections.json");
+  const layoutPath = join(captureDir, "layout.json");
   const metaPath = join(captureDir, "meta.json");
   const page = await context.newPage();
 
@@ -2710,7 +2527,41 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       report.page_ready_wait_ms += pageReadiness.waited_ms;
     }
     await page.addStyleTag({ content: stableCaptureCss }).catch(() => null);
-    const hiddenNoise = await hideNoiseElements(page);
+    const initialHiddenNoise = await hideNoiseElements(page);
+    // Capture each collapsed-section state before the whole-page expansion pass.
+    // That keeps each candidate independent instead of inheriting panels forced
+    // open for the main full-page capture.
+    const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir, {
+      source,
+      profile: captureProfile,
+    });
+    if (report && expansionStateEvidence.error) {
+      const message = `Capture geometry expansion-state evidence unavailable: ${expansionStateEvidence.error}`;
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        message,
+      });
+      console.log(`LOCALIZATION EVIDENCE ${message} ${sourceLabel(source)}`);
+    }
+    if (report && expansionStateEvidence.failures?.length) {
+      for (const failure of expansionStateEvidence.failures) {
+        const message =
+          `Capture geometry expansion-state isolation unavailable for "${failure.label || failure.selector || "unknown control"}": ` +
+          `${failure.error}`;
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          message,
+          expansion_state_failure: failure,
+        });
+        console.log(`LOCALIZATION EVIDENCE ${message} ${sourceLabel(source)}`);
+      }
+    }
+    if (report && expansionStateEvidence.states.length) {
+      report.expanded_controls += expansionStateEvidence.states.length;
+      report.expansion_screenshots_taken += expansionStateEvidence.states.length;
+    }
     const expanded = await expandPageForSnapshot(page, {
       source,
       profile: captureProfile,
@@ -2727,35 +2578,11 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         video.removeAttribute("autoplay");
       }
     }).catch(() => null);
-    const scrollActivation = await activateScrollTriggeredContent(page, {
+    const initialScrollActivation = await activateScrollTriggeredContent(page, {
       source,
       profile: captureProfile,
     });
-    if (report) {
-      if (!scrollActivation.skipped) report.scroll_activation_runs += 1;
-      report.scroll_activation_steps += scrollActivation.steps || 0;
-      report.scroll_activation_wait_ms += scrollActivation.waited_ms || 0;
-      if (scrollActivation.changed) report.scroll_activation_changed += 1;
-    }
-    const pageSettle = await waitForPageSettledForSnapshot(page);
-    if (report) {
-      if (pageSettle.waited_ms > 0) report.capture_settle_waits += 1;
-      if (pageSettle.timed_out) report.capture_settle_timeouts += 1;
-      report.capture_settle_wait_ms += pageSettle.waited_ms;
-    }
-    const counterStability = await waitForLikelyAnimatedCounterStability(page);
-    const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir, {
-      source,
-      profile: captureProfile,
-    });
-    if (report && expansionStateEvidence.states.length) {
-      report.expanded_controls += expansionStateEvidence.states.length;
-      report.expansion_screenshots_taken += expansionStateEvidence.states.length;
-    }
-    if (expansionStateEvidence.states.length) {
-      const restored = await expandPageForSnapshot(page);
-      expanded.expansion_state_restore = restored;
-    }
+    await waitForPageSettledForSnapshot(page);
 
     let discoveredPdfLinks = [];
     let discoveredHtmlLinks = [];
@@ -2766,6 +2593,32 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     if (discoveryMode && discoverHtmlSubpages) {
       discoveredHtmlLinks = await discoverHtmlSubpageLinksOnPage(page, source);
       await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
+    }
+
+    // Expansion-state evidence and discovery can mutate page state. Re-establish the
+    // final deterministic page once, then capture searchable text-node geometry and
+    // the screenshot back-to-back so their coordinates cannot describe different DOMs.
+    const finalExpanded = await expandPageForSnapshot(page, {
+      source,
+      profile: captureProfile,
+    });
+    expanded.final_state = finalExpanded;
+    const scrollActivation = await activateScrollTriggeredContent(page, {
+      source,
+      profile: captureProfile,
+    });
+    const finalHiddenNoise = await hideNoiseElements(page);
+    const hiddenNoise = mergeCountObjects(initialHiddenNoise, finalHiddenNoise);
+    const counterStability = await waitForLikelyAnimatedCounterStability(page);
+    const pageSettle = await waitForPageSettledForSnapshot(page);
+    if (report) {
+      if (!scrollActivation.skipped) report.scroll_activation_runs += 1;
+      report.scroll_activation_steps += scrollActivation.steps || 0;
+      report.scroll_activation_wait_ms += scrollActivation.waited_ms || 0;
+      if (scrollActivation.changed || initialScrollActivation.changed) report.scroll_activation_changed += 1;
+      if (pageSettle.waited_ms > 0) report.capture_settle_waits += 1;
+      if (pageSettle.timed_out) report.capture_settle_timeouts += 1;
+      report.capture_settle_wait_ms += pageSettle.waited_ms;
     }
 
     const pageTitle = await page.title().catch(() => "");
@@ -2801,6 +2654,10 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       );
     }
     const textHash = textBlocks.text_hash;
+    const finalTextGeometry = await captureStructuredVisibleTextGeometry(page, {
+      capturedAt,
+      stateId: "main",
+    });
     const pageBuffer = await page.screenshot({
       path: pagePath,
       fullPage: true,
@@ -2809,6 +2666,16 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       timeout: timeoutMs,
     });
     const imageHash = hashBuffer(pageBuffer);
+    const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry, {
+      stateId: "main",
+    });
+    const textGeometry = bindVisualTextGeometry(finalTextGeometry, {
+      capturedAt,
+      imageHash,
+      imageRef: toArchiveRelative(pagePath),
+      screenshot: screenshotBinding,
+    });
+    writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
     const thumbnail = await createThumbnail(context, pageBuffer);
     writeFileSync(thumbPath, thumbnail);
     writeFileSync(textPath, `${text}\n`, "utf8");
@@ -2858,6 +2725,7 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       section_text_included_in_baseline_facts: sectionExtractionConfig.includeInBaselineFacts,
       section_evidence_screenshots_taken: sections.evidence_screenshots_taken || 0,
       image_hash: imageHash,
+      layout_hash: textGeometry.geometry_hash,
       text_length: text.length,
       body_text_length: textBlocks.body_text.length,
       main_content_text_length: textBlocks.main_content_text.length,
@@ -2871,6 +2739,7 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       page_readiness: pageReadiness,
       scroll_activation: scrollActivation,
       page_settle: pageSettle,
+      text_geometry: textGeometryReference(textGeometry, layoutPath),
       localization: captureLocalizationMetadata({
         kind: "webpage",
         capture_profile: captureProfile,
@@ -2878,22 +2747,30 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         captured_at: capturedAt,
         dimensions,
         page_settle: pageSettle,
+        text_geometry: textGeometry,
       }),
       counter_stability: counterStability,
       expanded_content: expanded,
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
+      expansion_state_attempted: expansionStateEvidence.attempted || 0,
       expansion_text_in_primary_hash: captureProfileConfig.includeExpansionTextInPrimary,
       expansion_state_screenshots: expansionStateEvidence.states.map((state) => ({
+        state_id: state.state_id,
         index: state.index,
         tag: state.tag || null,
         label: state.label,
         page: state.page,
         image_hash: state.image_hash,
+        layout: state.layout,
+        layout_hash: state.layout_hash,
+        text_geometry: textGeometryReference(state.text_geometry, state.layout_path),
         text_hash: state.text_hash,
         text_length: state.text_length,
         page_bytes: state.page_bytes,
+        isolation: state.isolation || null,
       })),
       expansion_state_error: expansionStateEvidence.error || null,
+      expansion_state_failures: expansionStateEvidence.failures || [],
       discovered_pdf_links: discoveredPdfLinks.slice(0, 20),
       discovered_html_links: discoveredHtmlLinks.slice(0, 20),
       files: {
@@ -2903,10 +2780,13 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         expansion_text: textBlocks.expansion_text ? toArchiveRelative(expansionTextPath) : null,
         sections_text: sectionsText ? toArchiveRelative(sectionsTextPath) : null,
         sections_json: toArchiveRelative(sectionsJsonPath),
+        layout: toArchiveRelative(layoutPath),
         meta: toArchiveRelative(metaPath),
         expansion_states: expansionStateEvidence.states.map((state) => ({
+          state_id: state.state_id,
           label: state.label,
           page: state.page,
+          layout: state.layout,
         })),
       },
     };
@@ -2920,6 +2800,9 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       thumb_path: thumbPath,
       text_path: textPath,
       expansion_text_path: textBlocks.expansion_text ? expansionTextPath : null,
+      layout_path: layoutPath,
+      layout_hash: textGeometry.geometry_hash,
+      text_geometry: textGeometry,
       meta_path: metaPath,
       sections_text_path: sectionsText ? sectionsTextPath : null,
       sections_json_path: sectionsJsonPath,
@@ -2945,7 +2828,10 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
 }
 
 async function expandPageForSnapshot(page, { source = null, profile = captureProfile } = {}) {
-  const relevanceMode = expansionRelevanceModeForSource(source, profile);
+  const configuredRelevanceMode = expansionRelevanceModeForSource(source, profile);
+  const relevanceMode = configuredRelevanceMode === "none" && ["stable-daily", "localization-repair"].includes(profile)
+    ? "award-content"
+    : configuredRelevanceMode;
   if (relevanceMode === "none") {
     return {
       details_opened: 0,
@@ -3031,7 +2917,8 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
           relevanceMode === "award-content"
             ? /\b(faq|question|answer|eligib|requirement|application|apply|guideline|instruction|document|pdf|form|materials?)\b/i
             : /\b(faq|question|answer|expand|show|more|details|eligib|requirement|application|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?)\b/i;
-        const contentRelevant = contentPattern.test(signal);
+        const targetSignal = panelTargetsFor(element).map((panel) => textOf(panel)).join(" ");
+        const contentRelevant = contentPattern.test(`${signal} ${targetSignal}`);
 
         return Boolean(explicit && contentRelevant);
       }
@@ -3077,6 +2964,20 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
         if (before) counts.panels_forced_open += 1;
       }
 
+      // Accordion libraries commonly close an earlier item when a later item is
+      // clicked. Re-open every safe target after all click side effects so the
+      // final geometry and full-page screenshot include the relevant wording.
+      const finalControls = [
+        ...document.querySelectorAll(
+          "button, [role='button'], a[data-toggle], a[data-bs-toggle], button[data-toggle], button[data-bs-toggle]",
+        ),
+      ].filter(isSafeExpandableControl);
+      for (const control of finalControls.slice(0, 120)) {
+        control.setAttribute("aria-expanded", "true");
+        const details = control.closest("details");
+        if (details) details.setAttribute("open", "");
+        for (const panel of panelTargetsFor(control)) forcePanelOpen(panel);
+      }
       openClosedDetails();
 
       for (let pass = 0; pass < 3; pass += 1) {
@@ -3142,12 +3043,19 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
 }
 
 async function captureExpansionStateEvidence(page, context, captureDir, { source = null, profile = captureProfile } = {}) {
-  if (maxExpansionStateScreenshots <= 0) return { states: [], candidates: 0, error: null };
-  if (!captureProfileSettings(profile).allowExpansionScreenshots) {
-    return { states: [], candidates: 0, error: null, skipped: true };
+  if (maxExpansionStateScreenshots <= 0) {
+    return { states: [], candidates: 0, attempted: 0, failures: [], error: null };
   }
-  const relevanceMode = expansionRelevanceModeForSource(source, profile);
-  if (relevanceMode === "none") return { states: [], candidates: 0, error: null, skipped: true };
+  const configuredRelevanceMode = expansionRelevanceModeForSource(source, profile);
+  const relevanceMode = configuredRelevanceMode === "none" && ["stable-daily", "localization-repair"].includes(profile)
+    ? "award-content"
+    : configuredRelevanceMode;
+  if (!captureProfileSettings(profile).allowExpansionScreenshots && relevanceMode === "none") {
+    return { states: [], candidates: 0, attempted: 0, failures: [], error: null, skipped: true };
+  }
+  if (relevanceMode === "none") {
+    return { states: [], candidates: 0, attempted: 0, failures: [], error: null, skipped: true };
+  }
 
   try {
     const setup = await page.evaluate(({ maxControls, relevanceMode }) => {
@@ -3186,6 +3094,44 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
         );
       }
 
+      function controlledTextFor(element) {
+        const values = [];
+        for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
+          const value = element.getAttribute(attr);
+          if (!value) continue;
+          for (const token of value.split(/\s+/).filter(Boolean)) {
+            const selector = token.startsWith("#")
+              ? token
+              : /^[A-Za-z][\w:-]*$/.test(token)
+                ? `#${CSS.escape(token)}`
+                : null;
+            if (!selector) continue;
+            try {
+              for (const target of document.querySelectorAll(selector)) values.push(textOf(target));
+            } catch {
+              // Ignore malformed third-party selectors.
+            }
+          }
+        }
+        return values.join(" ");
+      }
+
+      function selectorFor(element) {
+        if (element.id) return `#${CSS.escape(element.id)}`;
+        const parts = [];
+        let current = element;
+        while (current && current !== document.documentElement) {
+          const tag = current.tagName.toLowerCase();
+          const siblings = current.parentElement
+            ? [...current.parentElement.children].filter((sibling) => sibling.tagName === current.tagName)
+            : [];
+          const position = siblings.indexOf(current) + 1;
+          parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${position})` : tag);
+          current = current.parentElement;
+        }
+        return `html>${parts.join(">")}`;
+      }
+
       function isExpandableStateControl(element) {
         if (!(element instanceof HTMLElement)) return false;
         if (!isVisible(element)) return false;
@@ -3214,9 +3160,9 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
 
         const contentPattern =
           relevanceMode === "award-content"
-            ? /\b(faq|question|answer|eligib|requirement|criteria|nomination|application|process|apply|guideline|instruction|document|pdf|form|materials?|amount|tuition|stipend)\b/i
-            : /\b(faq|question|answer|expand|show|more|details|eligib|requirement|criteria|nomination|application|process|apply|deadline|guideline|instruction|document|pdf|form|award|grant|materials?|amount|tuition|stipend)\b/i;
-        const contentRelevant = contentPattern.test(signal);
+            ? /\b(faq|questions?|answers?|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|guidelines?|instructions?|documents?|pdf|forms?|materials?|amount|tuition|stipend)\b/i
+            : /\b(faq|questions?|answers?|expand|show|more|details|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|deadlines?|guidelines?|instructions?|documents?|pdf|forms?|awards?|grants?|materials?|amount|tuition|stipend)\b/i;
+        const contentRelevant = contentPattern.test(`${signal} ${controlledTextFor(element)}`);
 
         return Boolean(explicit && contentRelevant);
       }
@@ -3246,130 +3192,137 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
         .filter(isExpandableStateControl)
         .slice(0, maxControls);
 
-      controls.forEach((control, index) => {
-        control.setAttribute("data-awardping-expansion-state-index", String(index));
-      });
-
       return {
         candidates: controls.length,
         labels: controls.map((control, index) => ({
           index,
           tag: control.tagName,
+          selector: selectorFor(control),
+          id: control.id || null,
           label: textOf(control).slice(0, 120) || control.getAttribute("aria-label") || `Section ${index + 1}`,
+          aria_controls: control.getAttribute("aria-controls") || null,
+          data_target: control.getAttribute("data-target") || control.getAttribute("data-bs-target") || null,
+          href: control.getAttribute("href") || null,
         })),
         base_text: document.body?.innerText || "",
       };
     }, { maxControls: maxExpansionStateScreenshots, relevanceMode });
 
     const states = [];
-    let knownText = setup.base_text || "";
+    const failures = [];
+    const navigationUrl = cleanText(page.url()) || cleanText(source?.url);
     for (const candidate of setup.labels || []) {
-      const state = await page.evaluate(async (index) => {
-        const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
-
-        function textOf(element) {
-          return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
-        }
-
-        function panelTargetsFor(element) {
-          const selectors = [];
-          for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
-            const value = element.getAttribute(attr);
-            if (!value) continue;
-            for (const token of value.split(/\s+/).filter(Boolean)) {
-              if (token.startsWith("#") && token.length > 1) selectors.push(token);
-              else if (/^[A-Za-z][\w:-]*$/.test(token)) selectors.push(`#${CSS.escape(token)}`);
-            }
-          }
-          return selectors.flatMap((selector) => {
-            try {
-              return [...document.querySelectorAll(selector)];
-            } catch {
-              return [];
-            }
-          });
-        }
-
-        function forcePanelOpen(panel) {
-          if (!(panel instanceof HTMLElement)) return;
-          panel.hidden = false;
-          panel.removeAttribute("hidden");
-          panel.setAttribute("aria-hidden", "false");
-          panel.classList.add("show", "open", "active");
-          panel.style.setProperty("display", "block", "important");
-          panel.style.setProperty("height", "auto", "important");
-          panel.style.setProperty("max-height", "none", "important");
-          panel.style.setProperty("visibility", "visible", "important");
-          panel.style.setProperty("opacity", "1", "important");
-        }
-
-        const control = document.querySelector(`[data-awardping-expansion-state-index="${index}"]`);
-        if (!(control instanceof HTMLElement)) {
-          return { index, label: `Section ${index + 1}`, text: "", clicked: false, targets: 0 };
-        }
-
-        control.scrollIntoView({ block: "start", inline: "nearest" });
-        await delay(80);
-        try {
-          control.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-          control.click();
-          control.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-        } catch {
-          // Keep collecting text and screenshots from other controls.
-        }
-        const parentDetails = control.closest("details");
-        if (parentDetails) parentDetails.setAttribute("open", "");
-        control.setAttribute("aria-expanded", "true");
-        const targets = panelTargetsFor(control);
-        for (const panel of targets) forcePanelOpen(panel);
-        await delay(220);
-
-        return {
-          index,
-          tag: control.tagName,
-          label: textOf(control).slice(0, 120) || control.getAttribute("aria-label") || `Section ${index + 1}`,
-          text: document.body?.innerText || "",
-          clicked: true,
-          targets: targets.length,
-        };
-      }, candidate.index);
-
-      const stateText = state?.text || "";
-      const isNativeSummaryState = String(state?.tag || "").toUpperCase() === "SUMMARY";
-      if (!isNativeSummaryState && !textAddsMeaningfulExpansionContent(knownText, stateText)) continue;
-
       const stateNumber = states.length + 1;
+      const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
       const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
       const pagePath = join(captureDir, fileName);
-      await page.waitForLoadState("networkidle", { timeout: Math.min(3_000, timeoutMs) }).catch(() => null);
-      const pageBuffer = await page.screenshot({
-        path: pagePath,
-        fullPage: true,
-        type: "jpeg",
-        quality: jpegQuality,
-        timeout: timeoutMs,
-      });
+      const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
+      try {
+        const state = await withIsolatedExpansionStatePage({
+        context,
+        url: navigationUrl,
+        descriptor: candidate,
+        descriptors: setup.labels,
+        timeoutMs,
+        preparePage: async (statePage) => {
+          await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
+          await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
+          if (delayMs > 0) await statePage.waitForTimeout(delayMs);
+          await waitForMeaningfulPageContent(statePage);
+          await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
+          await hideNoiseElements(statePage);
+          await statePage.evaluate(() => {
+            for (const video of document.querySelectorAll("video")) {
+              video.pause?.();
+              video.removeAttribute("autoplay");
+            }
+          }).catch(() => null);
+        },
+        capture: async (statePage, openedIsolation) => {
+          await activateScrollTriggeredContent(statePage, { source, profile });
+          await hideNoiseElements(statePage);
+          await waitForPageSettledForSnapshot(statePage);
+          const isolation = await verifyExpansionStateIsolation(statePage, {
+            descriptor: candidate,
+            descriptors: setup.labels,
+          });
+          if (!isolation.verified) {
+            throw new Error(
+              `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
+            );
+          }
+          const stateCapturedAt = new Date().toISOString();
+          const finalStateText = await statePage.evaluate(() => document.body?.innerText || "");
+          const stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+            capturedAt: stateCapturedAt,
+            stateId,
+          });
+          const pageBuffer = await statePage.screenshot({
+            path: pagePath,
+            fullPage: true,
+            type: "jpeg",
+            quality: jpegQuality,
+            timeout: timeoutMs,
+          });
+          const imageHash = hashBuffer(pageBuffer);
+          const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
+            stateId,
+          });
+          const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
+            capturedAt: stateCapturedAt,
+            imageHash,
+            imageRef: toArchiveRelative(pagePath),
+            screenshot: screenshotBinding,
+          });
+          writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
 
-      const normalizedText = normalizeVisibleText(stateText);
-      states.push({
-        index: state.index,
-        tag: state.tag || null,
-        label: cleanText(state.label) || `Section ${stateNumber}`,
-        page: toArchiveRelative(pagePath),
-        page_path: pagePath,
-        image_hash: hashBuffer(pageBuffer),
-        page_bytes: pageBuffer.length,
-        text: normalizedText,
-        text_hash: hashText(normalizedText),
-        text_length: normalizedText.length,
-        targets: state.targets || 0,
-      });
-      knownText = `${knownText}\n\n${stateText}`;
+          const normalizedText = normalizeVisibleText(finalStateText);
+          return {
+            state_id: stateId,
+            index: candidate.index,
+            tag: candidate.tag || null,
+            label: cleanText(candidate.label) || `Section ${stateNumber}`,
+            page: toArchiveRelative(pagePath),
+            page_path: pagePath,
+            image_hash: imageHash,
+            layout: toArchiveRelative(layoutPath),
+            layout_path: layoutPath,
+            layout_hash: textGeometry.geometry_hash,
+            text_geometry: textGeometry,
+            captured_at: stateCapturedAt,
+            page_bytes: pageBuffer.length,
+            text: normalizedText,
+            text_hash: hashText(normalizedText),
+            text_length: normalizedText.length,
+            targets: candidate.aria_controls || candidate.data_target ? 1 : 0,
+            isolation: {
+              ...openedIsolation,
+              ...isolation,
+              fresh_page: true,
+            },
+          };
+        },
+        });
+        states.push(state);
+      } catch (error) {
+        failures.push({
+          index: candidate.index,
+          label: candidate.label || null,
+          selector: candidate.selector || null,
+          error: errorMessage(error),
+        });
+      }
     }
 
-    return { states, candidates: setup.candidates || 0, error: null };
+    return {
+      states,
+      candidates: setup.candidates || 0,
+      attempted: setup.labels?.length || 0,
+      failures,
+      error: null,
+    };
   } catch (error) {
-    return { states: [], candidates: 0, error: errorMessage(error) };
+    return { states: [], candidates: 0, attempted: 0, failures: [], error: errorMessage(error) };
   }
 }
 
@@ -3478,6 +3431,13 @@ async function extractExpandableSectionsForCapture(
         if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
           return false;
         }
+        const interactive = ["button", "summary", "a"].includes(tag) ||
+          ["button", "tab"].includes(element.getAttribute("role")) ||
+          element.hasAttribute("onclick") || element.hasAttribute("tabindex") ||
+          element.hasAttribute("aria-expanded") || element.hasAttribute("aria-controls") ||
+          element.hasAttribute("data-target") || element.hasAttribute("data-bs-target") ||
+          element.hasAttribute("data-toggle") || element.hasAttribute("data-bs-toggle");
+        if (!interactive) return false;
         const signal = signalFor(element);
         if (/(menu|nav|navbar|search|login|log in|sign in|subscribe|newsletter|share|print|donate|cart|next|previous|prev|facebook|twitter|linkedin|instagram)/i.test(signal)) {
           return false;
@@ -4140,6 +4100,78 @@ async function forceScrollRevealElementsVisible(page) {
       selectors: [],
       error: errorMessage(error),
     }));
+}
+
+async function captureStructuredVisibleTextGeometry(page, { capturedAt = null, stateId = "main" } = {}) {
+  try {
+    return await captureVisibleTextGeometry(page, {
+      capturedAt,
+      stateId,
+    });
+  } catch (error) {
+    throw new Error(`Capture geometry failed for screenshot state "${stateId}": ${errorMessage(error)}`, {
+      cause: error,
+    });
+  }
+}
+async function screenshotBindingFromBuffer(buffer, geometry, { stateId = "main" } = {}) {
+  try {
+    const metadata = await sharp(buffer).metadata();
+    const pixelWidth = positiveInt(metadata.width, 0);
+    const pixelHeight = positiveInt(metadata.height, 0);
+    if (!pixelWidth || !pixelHeight) {
+      throw new Error("Sharp did not return positive JPEG dimensions.");
+    }
+    return screenshotBindingFromGeometry(geometry, {
+      pixel_width: pixelWidth,
+      pixel_height: pixelHeight,
+    });
+  } catch (error) {
+    throw new Error(`Capture geometry image binding failed for screenshot state "${stateId}": ${errorMessage(error)}`, {
+      cause: error,
+    });
+  }
+}
+
+function screenshotBindingFromGeometry(geometry, imageMetadata = {}) {
+  const documentSize = geometry?.document || {};
+  const devicePixelRatio = nonNegativeNumber(geometry?.device_pixel_ratio, 1) || 1;
+  const cssWidth = nonNegativeNumber(documentSize.width, viewportWidth) || viewportWidth;
+  const cssHeight = nonNegativeNumber(documentSize.height, viewportHeight) || viewportHeight;
+  return {
+    css_width: cssWidth,
+    css_height: cssHeight,
+    pixel_width: positiveInt(imageMetadata.pixel_width, Math.max(1, Math.round(cssWidth * devicePixelRatio))),
+    pixel_height: positiveInt(imageMetadata.pixel_height, Math.max(1, Math.round(cssHeight * devicePixelRatio))),
+  };
+}
+
+function textGeometryReference(geometry, layoutPath = null) {
+  if (!geometry || typeof geometry !== "object") return null;
+  return {
+    version: geometry.version || 1,
+    status: geometry.run_count > 0 ? "ready" : "unavailable_no_visible_text_nodes",
+    geometry_hash: geometry.geometry_hash || null,
+    coordinate_space: geometry.coordinate_space || "document-css-pixels",
+    node_count: geometry.node_count || 0,
+    run_count: geometry.run_count || 0,
+    document: geometry.document || null,
+    viewport: geometry.viewport || null,
+    screenshot: geometry.screenshot || null,
+    file: layoutPath ? toArchiveRelative(layoutPath) : null,
+  };
+}
+
+function mergeCountObjects(...values) {
+  const merged = {};
+  for (const value of values) {
+    for (const [key, count] of Object.entries(value || {})) {
+      const number = Number(count);
+      if (!Number.isFinite(number) || number <= 0) continue;
+      merged[key] = (merged[key] || 0) + number;
+    }
+  }
+  return merged;
 }
 
 async function waitForPageSettledForSnapshot(page) {
@@ -5553,73 +5585,6 @@ async function maybeRepairMissingR2Snapshot(source, capture, report, options = {
   return repaired;
 }
 
-async function publishVisualChangeEvent({ source, baseline, capture, aiReview, report }) {
-  const detectedAt = new Date().toISOString();
-
-  try {
-    const changeDetails = aiReview.result.change_details || visualChangeDetailsFromReview({
-      source,
-      diff: {},
-      aiReview,
-    });
-    const { data, error } = await supabase
-      .from("shared_award_change_events")
-      .upsert(
-        {
-          shared_award_id: source.shared_award_id,
-          shared_award_source_id: source.id,
-          source_url: source.url,
-          source_title: source.title || null,
-          source_page_type: source.page_type || null,
-          previous_snapshot_id: null,
-          new_snapshot_id: null,
-          previous_hash: visualHashForBaseline(baseline),
-          new_hash: visualHashForCapture(capture),
-          summary: aiReview.result.reader_summary || changeDetails.reader_summary,
-          change_details: changeDetails,
-          detected_at: detectedAt,
-        },
-        {
-          onConflict: "shared_award_id,source_url,previous_hash,new_hash",
-          ignoreDuplicates: true,
-        },
-      )
-      .select("id")
-      .maybeSingle();
-
-    if (error) throw error;
-
-    if (data?.id) {
-      report.published_updates += 1;
-      await queueAwardReconciliationFromSource({
-        source,
-        report,
-        reason: "visual_change_published",
-        priority: 70,
-        metadata: {
-          change_event_id: data.id,
-          previous_hash: visualHashForBaseline(baseline),
-          new_hash: visualHashForCapture(capture),
-          queued_by: "capture-visual-snapshots",
-        },
-      });
-      console.log(`PUBLISHED visual_update id=${data.id} ${sourceLabel(source)}`);
-    } else {
-      report.publish_duplicates += 1;
-      console.log(`PUBLISHED duplicate_ignored ${sourceLabel(source)}`);
-    }
-  } catch (error) {
-    report.publish_failed += 1;
-    const message = `Visual change publish failed: ${errorMessage(error)}`;
-    report.errors.push({
-      source_id: source.id,
-      source_url: source.url,
-      message,
-    });
-    console.log(`PUBLISH FAILED ${message} ${sourceLabel(source)}`);
-  }
-}
-
 async function markSharedSourceVisualCheckSucceeded(source, capture, report = null) {
   const now = new Date().toISOString();
   const { error } = await supabase
@@ -6208,6 +6173,7 @@ function captureR2Files(capture) {
   addIfPresent("thumb", "thumb.jpg", capture.thumb_path, "image/jpeg");
   addIfPresent("pdf", "document.pdf", capture.pdf_path, "application/pdf");
   addIfPresent("text", "text.txt", capture.text_path, "text/plain; charset=utf-8");
+  addIfPresent("layout", "layout.json", capture.layout_path, "application/json; charset=utf-8");
   addIfPresent("meta", "meta.json", capture.meta_path, "application/json; charset=utf-8");
   if (capture.persist_expansion_state_screenshots) {
     for (const [index, state] of (capture.expansion_state_screenshots || []).entries()) {
@@ -6216,6 +6182,12 @@ function captureR2Files(capture) {
         `expansion-state-${String(index + 1).padStart(2, "0")}.jpg`,
         state.page_path,
         "image/jpeg",
+      );
+      addIfPresent(
+        `expansion_state_${String(index + 1).padStart(2, "0")}_layout`,
+        `expansion-state-${String(index + 1).padStart(2, "0")}-layout.json`,
+        state.layout_path,
+        "application/json; charset=utf-8",
       );
     }
   }
@@ -6231,6 +6203,7 @@ function r2CaptureHashes(capture) {
     main_content_hash: capture.main_content_hash || null,
     nav_header_footer_hash: capture.nav_header_footer_hash || null,
     expansion_hash: capture.expansion_hash || null,
+    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
     file_hash: capture.file_hash || null,
   };
 }
@@ -6252,15 +6225,25 @@ function r2CaptureMetadata(capture) {
     page_bytes: capture.page_bytes || null,
     thumb_bytes: capture.thumb_bytes || null,
     dimensions: capture.dimensions || null,
+    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    text_geometry: capture.text_geometry
+      ? textGeometryReference(capture.text_geometry, capture.layout_path)
+      : null,
     page_count: capture.page_count || null,
     expansion_state_count: capture.expansion_state_screenshots?.length || 0,
     expansion_state_screenshots:
       capture.expansion_state_screenshots?.map((state) => ({
+        state_id: state.state_id || null,
         label: state.label,
         image_hash: state.image_hash,
+        layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+        text_geometry: state.text_geometry
+          ? textGeometryReference(state.text_geometry, state.layout_path)
+          : null,
         text_hash: state.text_hash,
         text_length: state.text_length,
         page_bytes: state.page_bytes,
+        isolation: state.isolation || null,
       })) || [],
     pdf_text_error: capture.pdf_text_error || null,
     baseline_facts: capture.baseline_facts || null,
@@ -6274,23 +6257,32 @@ function captureLocalizationMetadata(capture) {
   const pageSettle = jsonObjectOrEmpty(capture.page_settle);
   const after = jsonObjectOrEmpty(pageSettle.after);
   const dimensions = jsonObjectOrEmpty(capture.dimensions);
+  const textGeometry = jsonObjectOrEmpty(capture.text_geometry);
+  const geometryScreenshot = jsonObjectOrEmpty(textGeometry.screenshot);
   const hasLayoutSample = Boolean(cleanText(pageSettle.after_layout_sample));
   const hasScrollHeight = Boolean(
     nonNegativeNumber(dimensions.scroll_height, 0) ||
       nonNegativeNumber(after.scroll_height, 0),
   );
-  const exact = capture.kind !== "pdf" && hasLayoutSample && hasScrollHeight;
+  const geometryReady = Boolean(
+    cleanText(textGeometry.geometry_hash) &&
+      cleanText(geometryScreenshot.image_hash) &&
+      nonNegativeNumber(textGeometry.run_count, 0) > 0,
+  );
   const repairAttempted = cleanText(capture.capture_profile) === "localization-repair";
   return {
     status: capture.kind === "pdf"
       ? "not_applicable_pdf"
-      : exact
-        ? "ready"
+      : geometryReady
+        ? "geometry_ready"
         : repairAttempted
           ? "capture_layout_unavailable"
           : "metadata_missing",
-    exact,
-    accounted_for: capture.kind === "pdf" || exact || repairAttempted,
+    exact: false,
+    accounted_for: capture.kind === "pdf" || geometryReady || repairAttempted,
+    geometry_ready: geometryReady,
+    geometry_hash: cleanText(textGeometry.geometry_hash) || null,
+    bound_image_hash: cleanText(geometryScreenshot.image_hash) || null,
     layout_sample_present: hasLayoutSample,
     scroll_height_present: hasScrollHeight,
     capture_behavior_version: capture.capture_behavior_version || null,
@@ -6438,6 +6430,7 @@ async function hideNoiseElements(page) {
 
     function hide(element, reason) {
       if (!(element instanceof HTMLElement)) return;
+      if (element.hasAttribute("data-awardping-hidden-noise")) return;
       const signal = selectorSignals(element);
       if (isProtectedMainContent(element, signal)) return;
       counts[reason] = (counts[reason] || 0) + 1;
@@ -7051,6 +7044,10 @@ function writeBaseline(source, capture, details) {
     expansion_hash: capture.expansion_hash || null,
     expandable_sections_hash: capture.expandable_sections_hash || null,
     image_hash: capture.image_hash,
+    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    text_geometry: capture.text_geometry
+      ? textGeometryReference(capture.text_geometry, capture.layout_path)
+      : null,
     file_hash: capture.file_hash || null,
     file_bytes: capture.file_bytes || null,
     text_length: capture.text_length,
@@ -7071,7 +7068,19 @@ function writeBaseline(source, capture, details) {
       expansion_text: capture.expansion_text_path ? toArchiveRelative(capture.expansion_text_path) : null,
       sections_text: capture.sections_text_path ? toArchiveRelative(capture.sections_text_path) : null,
       sections_json: capture.sections_json_path ? toArchiveRelative(capture.sections_json_path) : null,
+      layout: capture.layout_path ? toArchiveRelative(capture.layout_path) : null,
       meta: toArchiveRelative(capture.meta_path),
+      expansion_states: (capture.expansion_state_screenshots || []).map((state) => ({
+        state_id: state.state_id || null,
+        index: state.index,
+        label: state.label || null,
+        captured_at: state.captured_at || null,
+        image_hash: state.image_hash || null,
+        layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+        isolation: state.isolation || null,
+        page: state.page_path ? toArchiveRelative(state.page_path) : state.page || null,
+        layout: state.layout_path ? toArchiveRelative(state.layout_path) : state.layout || null,
+      })),
     },
     summary_metadata: {
       reason: details.reason,
@@ -7129,6 +7138,13 @@ function baselineEvidenceStatus(baseline) {
     expansionTextPath: capture.expansion_text ? fromArchiveRelative(capture.expansion_text) : null,
     sectionsTextPath: capture.sections_text ? fromArchiveRelative(capture.sections_text) : null,
     sectionsJsonPath: capture.sections_json ? fromArchiveRelative(capture.sections_json) : null,
+    layoutPath: capture.layout ? fromArchiveRelative(capture.layout) : null,
+    expansionStateScreenshots: (Array.isArray(capture.expansion_states) ? capture.expansion_states : [])
+      .map((state) => ({
+        ...state,
+        page_path: state?.page ? fromArchiveRelative(state.page) : null,
+        layout_path: state?.layout ? fromArchiveRelative(state.layout) : null,
+      })),
     metaPath: fromArchiveRelative(capture.meta),
   };
   const requiredPaths =
@@ -7161,6 +7177,8 @@ function captureFromBaseline(baseline) {
     expansion_text_path: evidence.expansionTextPath,
     sections_text_path: evidence.sectionsTextPath,
     sections_json_path: evidence.sectionsJsonPath,
+    layout_path: evidence.layoutPath,
+    expansion_state_screenshots: evidence.expansionStateScreenshots,
     meta_path: evidence.metaPath,
     text: evidence.text,
     captured_at: baseline.captured_at || meta.captured_at || null,
@@ -7168,6 +7186,7 @@ function captureFromBaseline(baseline) {
     page_title: baseline.page_title || meta.page_title || null,
     text_hash: baseline.text_hash || meta.text_hash || null,
     image_hash: baseline.image_hash || meta.image_hash || baseline.file_hash || null,
+    layout_hash: baseline.layout_hash || meta.layout_hash || null,
     file_hash: baseline.file_hash || meta.file_hash || null,
     file_bytes: baseline.file_bytes || meta.file_bytes || null,
     text_length: baseline.text_length || meta.text_length || 0,
@@ -8935,12 +8954,15 @@ function pruneTransientExpansionStateScreenshots(capture, report = null) {
 
   let pruned = 0;
   for (const state of capture.expansion_state_screenshots) {
-    const filePath = state?.page_path;
-    if (!filePath || !existsSync(filePath)) continue;
-    const resolvedPath = resolve(filePath);
-    if (!isPathInside(resolvedPath, archiveRoot)) continue;
-    rmSync(resolvedPath, { force: true });
-    pruned += 1;
+    let imagePruned = false;
+    for (const filePath of [state?.page_path, state?.layout_path]) {
+      if (!filePath || !existsSync(filePath)) continue;
+      const resolvedPath = resolve(filePath);
+      if (!isPathInside(resolvedPath, archiveRoot)) continue;
+      rmSync(resolvedPath, { force: true });
+      if (filePath === state?.page_path) imagePruned = true;
+    }
+    if (imagePruned) pruned += 1;
   }
 
   if (pruned > 0) {

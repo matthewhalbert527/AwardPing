@@ -46,6 +46,24 @@ export type MonitoringFeedbackScope = "event" | "source" | "award" | "global";
 export type MonitoringFeedbackPromotionStatus =
   | "pending_review"
   | "already_active";
+export type VisualReviewCandidateStatus =
+  | "pending"
+  | "submitted"
+  | "processing"
+  | "succeeded"
+  | "rejected"
+  | "failed"
+  | "published"
+  | "superseded";
+export type ChangeEventVisualEvidenceStatus =
+  | "verified"
+  | "unavailable_exact_text_missing"
+  | "unavailable_geometry_missing"
+  | "unavailable_image_missing"
+  | "unavailable_ambiguous"
+  | "historical_artifact_unrecoverable"
+  | "full_screenshot_fallback"
+  | "not_applicable_pdf";
 
 export type Database = {
   public: {
@@ -337,6 +355,133 @@ export type Database = {
           metadata?: Json;
         };
         Relationships: [];
+      };
+      shared_award_visual_review_candidates: {
+        Row: {
+          id: string;
+          shared_award_id: string;
+          shared_award_source_id: string;
+          candidate_signature: string;
+          source_url: string;
+          source_title: string | null;
+          source_page_type: AwardPageType | null;
+          previous_snapshot_ref: Json;
+          new_snapshot_ref: Json;
+          previous_text_hash: string | null;
+          new_text_hash: string | null;
+          previous_image_hash: string | null;
+          new_image_hash: string | null;
+          previous_file_hash: string | null;
+          new_file_hash: string | null;
+          deterministic_diff: Json;
+          deterministic_classification: string | null;
+          prompt_payload: Json;
+          prompt_context: string | null;
+          status: VisualReviewCandidateStatus;
+          gemini_batch_name: string | null;
+          gemini_batch_request_key: string | null;
+          model: string | null;
+          created_at: string;
+          updated_at: string;
+          submitted_at: string | null;
+          completed_at: string | null;
+          published_at: string | null;
+          ai_result: Json | null;
+          rejection_reason: string | null;
+          estimated_cost_usd: number | null;
+          actual_usage: Json;
+          worker_metadata: Json;
+          publication_claim_token: string | null;
+          publication_claimed_at: string | null;
+        };
+        Insert: {
+          id?: string;
+          shared_award_id: string;
+          shared_award_source_id: string;
+          candidate_signature: string;
+          source_url: string;
+          source_title?: string | null;
+          source_page_type?: AwardPageType | null;
+          previous_snapshot_ref?: Json;
+          new_snapshot_ref?: Json;
+          previous_text_hash?: string | null;
+          new_text_hash?: string | null;
+          previous_image_hash?: string | null;
+          new_image_hash?: string | null;
+          previous_file_hash?: string | null;
+          new_file_hash?: string | null;
+          deterministic_diff?: Json;
+          deterministic_classification?: string | null;
+          prompt_payload?: Json;
+          prompt_context?: string | null;
+          status?: VisualReviewCandidateStatus;
+          gemini_batch_name?: string | null;
+          gemini_batch_request_key?: string | null;
+          model?: string | null;
+          created_at?: string;
+          updated_at?: string;
+          submitted_at?: string | null;
+          completed_at?: string | null;
+          published_at?: string | null;
+          ai_result?: Json | null;
+          rejection_reason?: string | null;
+          estimated_cost_usd?: number | null;
+          actual_usage?: Json;
+          worker_metadata?: Json;
+          publication_claim_token?: string | null;
+          publication_claimed_at?: string | null;
+        };
+        Update: {
+          shared_award_id?: string;
+          shared_award_source_id?: string;
+          candidate_signature?: string;
+          source_url?: string;
+          source_title?: string | null;
+          source_page_type?: AwardPageType | null;
+          previous_snapshot_ref?: Json;
+          new_snapshot_ref?: Json;
+          previous_text_hash?: string | null;
+          new_text_hash?: string | null;
+          previous_image_hash?: string | null;
+          new_image_hash?: string | null;
+          previous_file_hash?: string | null;
+          new_file_hash?: string | null;
+          deterministic_diff?: Json;
+          deterministic_classification?: string | null;
+          prompt_payload?: Json;
+          prompt_context?: string | null;
+          status?: VisualReviewCandidateStatus;
+          gemini_batch_name?: string | null;
+          gemini_batch_request_key?: string | null;
+          model?: string | null;
+          updated_at?: string;
+          submitted_at?: string | null;
+          completed_at?: string | null;
+          published_at?: string | null;
+          ai_result?: Json | null;
+          rejection_reason?: string | null;
+          estimated_cost_usd?: number | null;
+          actual_usage?: Json;
+          worker_metadata?: Json;
+          publication_claim_token?: string | null;
+          publication_claimed_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_visual_review_candidates_shared_award_id_fkey";
+            columns: ["shared_award_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_awards";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_visual_review_candidates_shared_award_source_id_fkey";
+            columns: ["shared_award_source_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       shared_award_visual_rejection_ledger: {
         Row: {
@@ -701,6 +846,89 @@ export type Database = {
         };
         Relationships: [];
       };
+      shared_award_change_event_visual_evidence: {
+        Row: {
+          change_event_id: string;
+          id: string;
+          shared_award_id: string;
+          shared_award_source_id: string | null;
+          visual_review_candidate_id: string | null;
+          candidate_signature: string | null;
+          bucket: string | null;
+          evidence_status: ChangeEventVisualEvidenceStatus;
+          previous_capture: Json;
+          current_capture: Json;
+          localization: Json;
+          evidence_schema_version: string;
+          created_at: string;
+          verified_at: string | null;
+          backfilled_at: string | null;
+        };
+        Insert: {
+          change_event_id: string;
+          id?: string;
+          shared_award_id: string;
+          shared_award_source_id?: string | null;
+          visual_review_candidate_id?: string | null;
+          candidate_signature?: string | null;
+          bucket?: string | null;
+          evidence_status: ChangeEventVisualEvidenceStatus;
+          previous_capture?: Json;
+          current_capture?: Json;
+          localization?: Json;
+          evidence_schema_version?: string;
+          created_at?: string;
+          verified_at?: string | null;
+          backfilled_at?: string | null;
+        };
+        Update: {
+          change_event_id?: string;
+          id?: string;
+          shared_award_id?: string;
+          shared_award_source_id?: string | null;
+          visual_review_candidate_id?: string | null;
+          candidate_signature?: string | null;
+          bucket?: string | null;
+          evidence_status?: ChangeEventVisualEvidenceStatus;
+          previous_capture?: Json;
+          current_capture?: Json;
+          localization?: Json;
+          evidence_schema_version?: string;
+          created_at?: string;
+          verified_at?: string | null;
+          backfilled_at?: string | null;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_change_event_visual_evidence_change_event_id_fkey";
+            columns: ["change_event_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_change_events";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_change_event_visual_evidence_shared_award_id_fkey";
+            columns: ["shared_award_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_awards";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_change_event_visual_evidence_shared_award_source_id_fkey";
+            columns: ["shared_award_source_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_change_event_visual_evidence_visual_review_candidate_id_fkey";
+            columns: ["visual_review_candidate_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_visual_review_candidates";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
       shared_award_change_events: {
         Row: {
           id: string;
@@ -718,6 +946,7 @@ export type Database = {
           suppressed_at: string | null;
           suppression_reason: string | null;
           suppression_source: string | null;
+          visual_review_candidate_id: string | null;
           first_reported_by_office_id: string | null;
           first_reported_by_monitor_id: string | null;
           detected_at: string;
@@ -738,6 +967,7 @@ export type Database = {
           suppressed_at?: string | null;
           suppression_reason?: string | null;
           suppression_source?: string | null;
+          visual_review_candidate_id?: string | null;
           first_reported_by_office_id?: string | null;
           first_reported_by_monitor_id?: string | null;
           detected_at?: string;
@@ -748,8 +978,17 @@ export type Database = {
           suppressed_at?: string | null;
           suppression_reason?: string | null;
           suppression_source?: string | null;
+          visual_review_candidate_id?: string | null;
         };
-        Relationships: [];
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_change_events_visual_review_candidate_id_fkey";
+            columns: ["visual_review_candidate_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_visual_review_candidates";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       monitoring_feedback: {
         Row: {
@@ -1699,6 +1938,43 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      backfill_shared_award_visual_event_evidence: {
+        Args: {
+          p_event_id: string;
+          p_evidence: Json;
+        };
+        Returns: Array<{
+          change_event_id: string;
+          evidence_id: string;
+          inserted: boolean;
+        }>;
+      };
+      publish_shared_award_visual_event: {
+        Args: {
+          p_event: Json;
+          p_evidence: Json;
+        };
+        Returns: Array<{
+          change_event_id: string;
+          evidence_id: string;
+          inserted: boolean;
+        }>;
+      };
+      retire_shared_award_source_preserving_visual_history: {
+        Args: {
+          p_source_id: string;
+          p_reason: string;
+          p_actor: string;
+        };
+        Returns: Array<{
+          source_id: string;
+          matched_event_count: number;
+          newly_suppressed_event_count: number;
+          already_suppressed_event_count: number;
+          already_retired: boolean;
+          homepage_cleared: boolean;
+        }>;
+      };
       list_pending_monitoring_feedback: {
         Args: {
           p_limit?: number | null;
