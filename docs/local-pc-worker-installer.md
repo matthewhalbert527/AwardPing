@@ -10,6 +10,8 @@
 - Runs a one-page visual snapshot test.
 - Creates Windows Scheduled Tasks named `AwardPing Visual Snapshot Worker Shard 1-3`
   that run the screenshot/PDF checker daily.
+- Creates `AwardPing Downstream Queue Pipeline` for hourly report finalization,
+  source intake, review, suppression, reconciliation, and page audits.
 
 ## Windows Install
 
@@ -24,7 +26,7 @@ Then:
 1. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
    key when prompted.
 2. Paste the Gemini API key when prompted.
-3. Accept the Scheduled Task when prompted.
+3. Accept the four permanent Scheduled Tasks when prompted.
 
 The old hosted `awardping-worker-windows.zip` updater has been retired. Do not
 copy individual files into the installed `app` folder. That misses root runner
@@ -58,46 +60,44 @@ Deploy a reviewed revision in this order:
    failure, newly created tasks are removed and the complete original task XML
    set is restored exactly. Tasks remain disabled if neither the old nor new
    app is complete enough to run. The installer also refuses to overwrite a
-   fixed AwardPing task or Startup-folder launcher owned by another install
-   root or a custom Task Scheduler path.
+   fixed AwardPing task owned by another install root or a custom Task Scheduler
+   path, and leaves unrelated Startup-folder launchers untouched.
 4. Compare repository and installed hashes for both policy JSON files and the
    policy, suppression, visual-review, capture, and baseline worker scripts.
    Confirm the three visual shard tasks still run daily at 6 PM and the
    downstream task runs hourly with `SuppressionSweepLimit` in its action.
 5. Inspect the first downstream log after deployment. It must show the
    independent `visual-nightly-report` finalizer first, followed in order by
-   `visual-review-batch`, `change-event-suppression-sweep`,
+   bounded `source-intake`, `visual-review-batch`, `change-event-suppression-sweep`,
    `award-reconciliation`, and `page-audit-batch`, with a zero final exit code.
 
-## Baseline Completion Watchdog
+## Permanent and Catch-up Work
 
-While backfilling missing visual baselines, install the watchdog from this repo:
+The permanent worker schedule contains only the three 6 PM capture shards and
+the hourly downstream pipeline. The hourly pipeline first finalizes the due
+capture report, then processes up to 25 queued source-intake requests and polls
+at most five existing AI batches within a ten-minute budget before review,
+suppression, reconciliation, and page-audit work. Failed intake requests wait
+for an operator-selected retry instead of cycling forever. This keeps new award
+and source submissions moving continuously without turning one-time build work
+into another permanent watchdog.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Watch-AwardPingBaselineCompletion.ps1" -InstallRoot "$env:LOCALAPPDATA\AwardPingWorker" -Install
-```
+Each intake run writes eligible, loaded, attempted, completed, and deferred
+counts for polling, capture, submission, and reconciliation. Terminal request
+failures remain stopped until an operator chooses a safe retry. If Gemini Batch
+creation cannot be confirmed, the request is failed closed for manual review;
+generic Retry and Rerun AI actions stay blocked so the external job cannot be
+submitted twice. The Admin Source Intake card shows per-stage progress, claim
+conflicts, stale/manual recovery counts, the latest blocker, and the
+operator-review queue.
 
-That creates a Windows Scheduled Task named
-`AwardPing Baseline Completion Watchdog`. It checks every five minutes and
-restarts `Run-AwardPingVisualSnapshots.ps1 -CompleteMissingBaselines` if the
-baseline-completion worker stopped before actionable missing baselines reached
-zero.
-
-## Baseline Page-Info Watchdog
-
-While backfilling Gemini page information from saved screenshots/PDFs, install
-the page-info watchdog from this repo:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Watch-AwardPingBaselineFacts.ps1" -InstallRoot "$env:LOCALAPPDATA\AwardPingWorker" -Install
-```
-
-That creates a Windows Scheduled Task named
-`AwardPing Baseline Facts Watchdog`. It checks every five minutes and restarts
-`Run-AwardPingBaselineFacts.ps1` if the Gemini page-info extraction stopped
-before all local baselines have facts. It skips pages already extracted. If the
-daily Gemini API cost cap is reached, it pauses for the rest of the day instead
-of immediately restarting and spending past the cap.
+The updater retires `AwardPing Baseline Completion Watchdog`, `AwardPing
+Baseline Facts Watchdog`, `AwardPing Overnight Source Quality Pass`, and the
+`AwardPing Startup Supervisor` task/Startup-folder launcher, plus any old
+standalone source-intake or localization watchdog. Baseline, source quality,
+and localization repair scripts remain targeted catch-up tools only;
+run them deliberately for a bounded repair rather than reinstalling a recurring
+task.
 
 The Supabase key must be an elevated AwardPing project key from Supabase Project
 Settings -> API. Use either the legacy JWT `service_role` key or a newer
@@ -107,33 +107,6 @@ installing dependencies.
 
 The installer hides pasted keys while you type. They are still stored in the PC's
 local `.env.worker.local` file because the worker needs them to run.
-
-## Nightly Source Quality Pass
-
-To run the cleanup/accuracy pass every night beside the normal 6 PM visual
-snapshot runner, install the separate scheduled task:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingOvernightSourceQuality.ps1"
-```
-
-That creates a Windows Scheduled Task named
-`AwardPing Overnight Source Quality Pass`. By default it runs daily at 6 PM local
-time for up to 10 hours, applies the source cleanup, short-title cleanup, missing
-homepage cleanup, and aggregate award fact refresh, and writes logs under
-`%LOCALAPPDATA%\AwardPingWorker\logs`.
-
-To run it manually after installation, double-click:
-
-```text
-9-RUN-OVERNIGHT-SOURCE-QUALITY-NOW.bat
-```
-
-Useful install options:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingOvernightSourceQuality.ps1" -At "6pm" -Hours 10 -MaxAwards 90 -MinOpenSources 75
-```
 
 ## Manual Run
 
@@ -205,5 +178,5 @@ totals, failure groups, and the corresponding guarded repair instructions.
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Uninstall-AwardPingWorker.ps1"
 ```
 
-That removes the Scheduled Task. Delete `%LOCALAPPDATA%\AwardPingWorker` if you also
+That removes the AwardPing Scheduled Tasks. Delete `%LOCALAPPDATA%\AwardPingWorker` if you also
 want to remove logs and local env files.

@@ -280,9 +280,7 @@ function Get-AwardPingManagedTaskNames {
     "AwardPing Visual Snapshot Worker Shard 1",
     "AwardPing Visual Snapshot Worker Shard 2",
     "AwardPing Visual Snapshot Worker Shard 3",
-    "AwardPing Baseline Facts Watchdog",
-    "AwardPing Downstream Queue Pipeline",
-    "AwardPing Startup Supervisor"
+    "AwardPing Downstream Queue Pipeline"
   )
 }
 
@@ -312,17 +310,6 @@ function Assert-AwardPingManagedTaskRegistrationScope {
     }
   }
 
-  $startupDirectory = [Environment]::GetFolderPath("Startup")
-  if (-not [string]::IsNullOrWhiteSpace($startupDirectory)) {
-    $startupLauncher = Join-Path $startupDirectory "AwardPing Startup Supervisor.vbs"
-    if (Test-Path -LiteralPath $startupLauncher) {
-      $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
-      $launcherContent = (Get-Content -LiteralPath $startupLauncher -Raw -ErrorAction Stop).Replace("/", "\")
-      if ($launcherContent.IndexOf("$normalizedRoot\", [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
-        throw "Refusing to overwrite startup launcher '$startupLauncher' because it does not target this install root: $InstallRoot"
-      }
-    }
-  }
 }
 
 function Suspend-AwardPingStartupLauncherForUpdate {
@@ -338,6 +325,12 @@ function Suspend-AwardPingStartupLauncherForUpdate {
 
   $originalPath = Join-Path $startupDirectory "AwardPing Startup Supervisor.vbs"
   if (-not (Test-Path -LiteralPath $originalPath)) {
+    return [pscustomobject]@{ WasPresent = $false; OriginalPath = $originalPath; DisabledPath = $null }
+  }
+
+  $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
+  $launcherContent = (Get-Content -LiteralPath $originalPath -Raw -ErrorAction Stop).Replace("/", "\")
+  if ($launcherContent.IndexOf("$normalizedRoot\", [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
     return [pscustomobject]@{ WasPresent = $false; OriginalPath = $originalPath; DisabledPath = $null }
   }
 
@@ -357,7 +350,6 @@ function Complete-AwardPingStartupLauncherUpdate {
   param(
     [object]$Snapshot,
     [bool]$UpdateCommitted,
-    [bool]$StartupTaskInstalled,
     [bool]$RestoreOperationalState
   )
 
@@ -368,7 +360,7 @@ function Complete-AwardPingStartupLauncherUpdate {
     throw "Startup-launcher snapshot is missing: $($Snapshot.DisabledPath)"
   }
 
-  if ($UpdateCommitted -and $StartupTaskInstalled) {
+  if ($UpdateCommitted) {
     Remove-Item -LiteralPath $Snapshot.DisabledPath -Force -ErrorAction Stop
     return
   }
@@ -405,11 +397,7 @@ function Get-AwardPingTaskSnapshotsForUpdate {
       WasEnabled = $wasEnabled
       WasRunning = [string]$task.State -eq "Running"
       ExistedBeforeUpdate = $true
-      RestoreAfterUpdate = [string]$task.TaskName -notin @(
-        "AwardPing Local Source Worker",
-        "AwardPing Local Worker Auto Update",
-        "AwardPing Visual Snapshot Worker"
-      )
+      RestoreAfterUpdate = [string]$task.TaskName -in @(Get-AwardPingManagedTaskNames)
     }
   }
 
@@ -657,33 +645,15 @@ function Get-AwardPingInstalledRuntimeProblems {
     (Join-Path $AppDir ".env.worker.local"),
     (Join-Path $AppDir "package.json")
   )
-  $startupDirectory = [Environment]::GetFolderPath("Startup")
-  if (-not [string]::IsNullOrWhiteSpace($startupDirectory)) {
-    $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
-    $startupLaunchers = @(Get-ChildItem `
-      -LiteralPath $startupDirectory `
-      -Filter "AwardPing Startup Supervisor.vbs*" `
-      -File `
-      -ErrorAction SilentlyContinue)
-    foreach ($startupLauncher in $startupLaunchers) {
-      $launcherContent = (Get-Content -LiteralPath $startupLauncher.FullName -Raw -ErrorAction Stop).Replace("/", "\")
-      if ($launcherContent.IndexOf("$normalizedRoot\", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        $requiredPaths += $startupLauncher.FullName
-        $requiredPaths += (Join-Path $InstallRoot "Start-AwardPingOnBoot.ps1")
-      }
-    }
-  }
   if ($RequireManagedRuntime) {
     $requiredPaths += @(
       (Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"),
-      (Join-Path $InstallRoot "Watch-AwardPingBaselineFacts.ps1"),
-      (Join-Path $InstallRoot "Run-AwardPingBaselineFacts.ps1"),
       (Join-Path $InstallRoot "Run-AwardPingDownstreamQueues.ps1"),
-      (Join-Path $InstallRoot "Start-AwardPingOnBoot.ps1"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
       (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
       (Join-Path $AppDir "scripts\backfill-baseline-facts.mjs"),
+      (Join-Path $AppDir "scripts\process-source-intake-requests.mjs"),
       (Join-Path $AppDir "scripts\process-visual-review-batch.mjs"),
       (Join-Path $AppDir "scripts\cleanup-change-event-noise.mjs"),
       (Join-Path $AppDir "scripts\reconcile-impacted-award-pages.mjs"),
@@ -726,10 +696,7 @@ function Get-AwardPingInstalledRuntimeProblems {
     $hashPairs = @()
     if (-not [string]::IsNullOrWhiteSpace($InstallerSourceDirectory)) {
       foreach ($fileName in @(
-        "Watch-AwardPingBaselineFacts.ps1",
-        "Run-AwardPingBaselineFacts.ps1",
-        "Run-AwardPingDownstreamQueues.ps1",
-        "Start-AwardPingOnBoot.ps1"
+        "Run-AwardPingDownstreamQueues.ps1"
       )) {
         $hashPairs += [pscustomobject]@{
           Source = Join-Path $InstallerSourceDirectory $fileName
@@ -743,6 +710,7 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\visual-capture-run-report.mjs",
         "scripts\report-visual-nightly.mjs",
         "scripts\backfill-baseline-facts.mjs",
+        "scripts\process-source-intake-requests.mjs",
         "scripts\process-visual-review-batch.mjs",
         "scripts\cleanup-change-event-noise.mjs",
         "scripts\reconcile-impacted-award-pages.mjs",
@@ -837,7 +805,7 @@ function Get-AwardPingTaskRestoreXml {
     }
     $descriptionNode = $document.SelectSingleNode("/task:Task/task:RegistrationInfo/task:Description", $namespace)
     if ($descriptionNode) {
-      $descriptionNode.InnerText = "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy, reconciles pending public award facts, processes flagged page audits, and finalizes the 6 PM capture report."
+      $descriptionNode.InnerText = "Finalizes the 6 PM capture report, processes bounded source intake, polls/submits visual reviews, reapplies suppression policy, reconciles award facts, and processes flagged page audits."
     }
   }
 
@@ -1090,10 +1058,7 @@ function Get-AwardPingManagedRootRuntimeNames {
   return @(
     "Uninstall-AwardPingWorker.ps1",
     "Run-AwardPingVisualSnapshots.ps1",
-    "Watch-AwardPingBaselineFacts.ps1",
-    "Run-AwardPingBaselineFacts.ps1",
     "Run-AwardPingDownstreamQueues.ps1",
-    "Start-AwardPingOnBoot.ps1",
     "Show-AwardPingVisualStatus.ps1",
     "Show-AwardPingGeminiUsage.ps1",
     "3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat",
@@ -1361,6 +1326,8 @@ function Write-UninstallScript {
   "AwardPing Overnight Source Quality Pass",
   "AwardPing Baseline Completion Watchdog",
   "AwardPing Baseline Facts Watchdog",
+  "AwardPing Localization Repair Watchdog",
+  "AwardPing Source Intake Processor",
   "AwardPing Downstream Queue Pipeline",
   "AwardPing Startup Supervisor"
 )
@@ -1814,7 +1781,7 @@ $InstallRoot
 Use:
 3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat
   Runs the disk-backed visual screenshot checker across all source pages.
-  The daily scheduled visual task uses the same runner.
+  The three daily 6 PM visual shard tasks use the same runner.
 
 4-SHOW-GEMINI-USAGE.bat
   Shows AwardPing Gemini usage recorded by this PC, grouped by day and month.
@@ -1897,51 +1864,98 @@ function Remove-DirectoryWithRetry {
   }
 }
 
-function Remove-LegacySourceTask {
-  param([string]$InstallRoot)
-
-  Write-Step "Removing legacy scheduled tasks"
-  foreach ($taskName in @(
-    "AwardPing Local Source Worker",
-    "AwardPing Local Worker Auto Update",
-    "AwardPing Visual Snapshot Worker"
-  )) {
-    $tasks = @(Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue | Where-Object {
-      Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot
-    })
-    if ($tasks.Count -gt 0) {
-      foreach ($task in $tasks) {
-        $taskPath = if ([string]::IsNullOrWhiteSpace([string]$task.TaskPath)) { "\" } else { [string]$task.TaskPath }
-        Stop-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
-        Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
-        Write-Host "Removed legacy scheduled task: $taskPath$($task.TaskName)"
-      }
-    } else {
-      Write-Host "Legacy scheduled task is not present for this install: $taskName"
-    }
-  }
-
-  foreach ($fileName in @(
+function Get-AwardPingRetiredArtifactRelativePaths {
+  return @(
     "Run-AwardPingWorker.ps1",
     "worker.lock",
     "1-RUN-DEEP-CRAWL-AGAIN.bat",
     "2-RUN-90-MINUTE-CHECK-NOW.bat",
     "2-RUN-HOURLY-CHECK-NOW.bat",
     "RUN-DAILY-CHECK-NOW.bat",
-    "RUN-DEEP-CRAWL-ALL.bat"
-  )) {
-    $legacyPath = Join-Path $InstallRoot $fileName
-    if (Test-Path $legacyPath) {
-      Remove-Item -LiteralPath $legacyPath -Force -ErrorAction SilentlyContinue
-      Write-Host "Removed legacy launcher: $fileName"
+    "RUN-DEEP-CRAWL-ALL.bat",
+    "Start-AwardPingOnBoot.ps1",
+    "Watch-AwardPingBaselineCompletion.ps1",
+    "Watch-AwardPingBaselineFacts.ps1",
+    "Run-AwardPingBaselineFacts.ps1",
+    "baseline-facts-worker.lock",
+    "app\scripts\run-local-source-worker.mjs"
+  )
+}
+
+function Remove-LegacySourceTask {
+  param([string]$InstallRoot)
+
+  Write-Step "Removing legacy scheduled tasks"
+  $managedTaskNames = @(Get-AwardPingManagedTaskNames)
+  $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+      [string]$_.TaskName -like "AwardPing*" -and
+      [string]$_.TaskName -notin $managedTaskNames -and
+      (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
+  })
+  foreach ($task in $tasks) {
+    $taskPath = if ([string]::IsNullOrWhiteSpace([string]$task.TaskPath)) { "\" } else { [string]$task.TaskPath }
+    Stop-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+    Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
+    Write-Host "Removed retired scheduled task: $taskPath$($task.TaskName)"
+  }
+
+  foreach ($relativePath in @(Get-AwardPingRetiredArtifactRelativePaths)) {
+    $legacyPath = Join-Path $InstallRoot $relativePath
+    if (Test-Path -LiteralPath $legacyPath) {
+      Remove-Item -LiteralPath $legacyPath -Force -ErrorAction Stop
+      Write-Host "Removed retired worker artifact: $relativePath"
     }
   }
 
-  $legacyWorkerScript = Join-Path $InstallRoot "app\scripts\run-local-source-worker.mjs"
-  if (Test-Path $legacyWorkerScript) {
-    Remove-Item -LiteralPath $legacyWorkerScript -Force -ErrorAction SilentlyContinue
-    Write-Host "Removed legacy source/text worker script from installed app."
+  $startupDirectory = [Environment]::GetFolderPath("Startup")
+  if (-not [string]::IsNullOrWhiteSpace($startupDirectory)) {
+    $startupLauncher = Join-Path $startupDirectory "AwardPing Startup Supervisor.vbs"
+    if (Test-Path -LiteralPath $startupLauncher) {
+      $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
+      $launcherContent = (Get-Content -LiteralPath $startupLauncher -Raw -ErrorAction Stop).Replace("/", "\")
+      if ($launcherContent.IndexOf("$normalizedRoot\", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        Remove-Item -LiteralPath $startupLauncher -Force -ErrorAction Stop
+        Write-Host "Removed retired Startup-folder supervisor launcher."
+      }
+    }
   }
+}
+
+function Get-AwardPingRetiredArtifactProblems {
+  param([string]$InstallRoot)
+
+  $problems = @()
+  $managedTaskNames = @(Get-AwardPingManagedTaskNames)
+  $remainingTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+      [string]$_.TaskName -like "AwardPing*" -and
+      [string]$_.TaskName -notin $managedTaskNames -and
+      (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
+  })
+  foreach ($task in $remainingTasks) {
+    $taskPath = if ([string]::IsNullOrWhiteSpace([string]$task.TaskPath)) { "\" } else { [string]$task.TaskPath }
+    $problems += "retired scheduled task remains: $taskPath$($task.TaskName)"
+  }
+
+  foreach ($relativePath in @(Get-AwardPingRetiredArtifactRelativePaths)) {
+    $path = Join-Path $InstallRoot $relativePath
+    if (Test-Path -LiteralPath $path) {
+      $problems += "retired worker artifact remains: $path"
+    }
+  }
+
+  $startupDirectory = [Environment]::GetFolderPath("Startup")
+  if (-not [string]::IsNullOrWhiteSpace($startupDirectory)) {
+    $launcher = Join-Path $startupDirectory "AwardPing Startup Supervisor.vbs"
+    if (Test-Path -LiteralPath $launcher) {
+      $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
+      $content = (Get-Content -LiteralPath $launcher -Raw -ErrorAction Stop).Replace("/", "\")
+      if ($content.IndexOf("$normalizedRoot\", [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        $problems += "retired Startup-folder launcher remains: $launcher"
+      }
+    }
+  }
+
+  return $problems
 }
 
 function Register-VisualSnapshotTask {
@@ -1965,40 +1979,6 @@ function Register-VisualSnapshotTask {
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC. Domain shard $($shardIndex + 1) of 3." -Force | Out-Null
     Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
   }
-}
-
-function Register-BaselineFactsWatchdog {
-  param(
-    [string]$InstallRoot,
-    [bool]$RegisterDisabled
-  )
-
-  Write-Step "Creating AwardPing baseline facts watchdog"
-  $watchdogScript = Join-Path $PSScriptRoot "Watch-AwardPingBaselineFacts.ps1"
-  if (-not (Test-Path -LiteralPath $watchdogScript)) {
-    Write-Host "Baseline facts watchdog script is missing; skipping its task." -ForegroundColor Yellow
-    return
-  }
-
-  $watchdogInstallArguments = @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $watchdogScript,
-    "-InstallRoot", $InstallRoot,
-    "-Install",
-    "-Model", "gemini-2.5-flash-lite",
-    "-BatchMode", "batch",
-    "-BatchMaxRequests", "25",
-    "-BatchParallelJobs", "4",
-    "-IntervalMinutes", "60",
-    "-DirectCatchupThreshold", "0",
-    "-CostCapUsd", "10"
-  )
-  if ($RegisterDisabled) { $watchdogInstallArguments += "-InstallDisabled" }
-  & powershell.exe @watchdogInstallArguments
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not install AwardPing baseline facts watchdog task."
-  }
-
-  Write-Host "Scheduled task created: AwardPing Baseline Facts Watchdog"
 }
 
 function Register-DownstreamQueuePipeline {
@@ -2036,41 +2016,6 @@ function Register-DownstreamQueuePipeline {
   }
 
   Write-Host "Scheduled task created: AwardPing Downstream Queue Pipeline"
-}
-
-function Register-StartupSupervisorTask {
-  param(
-    [string]$InstallRoot,
-    [bool]$RegisterDisabled
-  )
-
-  Write-Step "Creating AwardPing startup supervisor task"
-  $sourceScript = Join-Path $PSScriptRoot "Start-AwardPingOnBoot.ps1"
-  if (-not (Test-Path -LiteralPath $sourceScript)) {
-    Write-Host "Startup supervisor script is missing; skipping startup supervisor task." -ForegroundColor Yellow
-    return
-  }
-
-  $startupInstallArguments = @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $sourceScript,
-    "-InstallRoot", $InstallRoot,
-    "-Install"
-  )
-  if ($RegisterDisabled) { $startupInstallArguments += "-InstallDisabled" }
-  & powershell.exe @startupInstallArguments
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not install AwardPing startup supervisor task."
-  }
-
-  $registeredTasks = @(Get-ScheduledTask -TaskName "AwardPing Startup Supervisor" -ErrorAction SilentlyContinue | Where-Object {
-    Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot
-  })
-  if ($RegisterDisabled -and $registeredTasks.Count -eq 0) {
-    $script:StartupSupervisorFallbackDeferred = $true
-    Write-Host "Startup-folder fallback will be refreshed after the task update commits."
-  } else {
-    Write-Host "Scheduled task created: AwardPing Startup Supervisor at Windows sign-in"
-  }
 }
 
 $packageRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -2121,7 +2066,6 @@ $rollbackOperationalState = $true
 $taskSnapshotCaptured = $false
 $rootRuntimeSnapshotCaptured = $false
 $runtimeRollbackSucceeded = $false
-$script:StartupSupervisorFallbackDeferred = $false
 $updateToken = "{0}-{1}" -f $PID, [Guid]::NewGuid().ToString("N")
 $stagingAppDir = Join-Path $InstallRoot ".app-update-$updateToken"
 $backupAppDir = Join-Path $InstallRoot ".app-rollback-$updateToken"
@@ -2129,6 +2073,7 @@ $failedAppDir = Join-Path $InstallRoot ".app-failed-$updateToken"
 $rootRuntimeSnapshotDir = Join-Path $InstallRoot ".root-runtime-rollback-$updateToken"
 $rootRuntimeSnapshot = $null
 $startupLauncherSnapshot = $null
+$strictRetirementCommitted = $false
 
 try {
   if ($UpdateOnly) {
@@ -2155,25 +2100,61 @@ try {
     $appUpdateCommitted = $true
     Write-Host "Update-only mode: switched to a complete app/dependency tree and kept existing keys."
   } else {
+    Disable-AwardPingTasksForInstallRoot -InstallRoot $InstallRoot
+    Wait-ForAwardPingWorkerProcessesToStop -InstallRoot $InstallRoot
+    $startupLauncherSnapshot = Suspend-AwardPingStartupLauncherForUpdate `
+      -InstallRoot $InstallRoot `
+      -UpdateToken $updateToken
     Copy-AppFiles -SourceRoot $sourceRoot -AppDir $appDir
     $supabaseServiceRoleKey = Read-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
-    Write-Host "Only the daily visual screenshot checker will be scheduled. The legacy hourly source/text worker will be removed."
+    Write-Host "The three 6 PM visual shards and hourly report/intake/downstream pipeline will be scheduled. Legacy catch-up workers will be removed."
     Write-EnvFile -Path $envPath -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $supabaseServiceRoleKey -GeminiApiKey $geminiApiKey
     Install-Dependencies -AppDir $appDir
   }
 
   Write-UninstallScript -InstallRoot $InstallRoot
   Write-LauncherScripts -InstallRoot $InstallRoot
-  Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $UpdateOnly
-  Register-BaselineFactsWatchdog -InstallRoot $InstallRoot -RegisterDisabled $UpdateOnly
+  Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $true
   Register-DownstreamQueuePipeline `
     -InstallRoot $InstallRoot `
     -SuppressionSweepLimit $SuppressionSweepLimit `
     -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
-    -RegisterDisabled $UpdateOnly
-  Register-StartupSupervisorTask -InstallRoot $InstallRoot -RegisterDisabled $UpdateOnly
+    -RegisterDisabled $true
+
+  if (-not $UpdateOnly) {
+    $finalizationSnapshots = @(Get-AwardPingTaskSnapshotsForFinalization `
+      -InitialSnapshots @() `
+      -InstallRoot $InstallRoot)
+    $runtimeProblems = @(Get-AwardPingInstalledRuntimeProblems `
+      -InstallRoot $InstallRoot `
+      -AppDir $appDir `
+      -TaskSnapshots $finalizationSnapshots `
+      -RequireManagedRuntime $true `
+      -InstallerSourceDirectory $PSScriptRoot `
+      -AppSourceRoot ([string]$sourceRoot))
+    if ($runtimeProblems.Count -gt 0) {
+      throw "The installed worker is not complete enough to enable scheduled tasks: $($runtimeProblems -join ' | ')"
+    }
+    Remove-LegacySourceTask -InstallRoot $InstallRoot
+    $retirementProblems = @(Get-AwardPingRetiredArtifactProblems -InstallRoot $InstallRoot)
+    if ($retirementProblems.Count -gt 0) {
+      throw "Retired AwardPing artifacts remain after cleanup: $($retirementProblems -join ' | ')"
+    }
+    Restore-AwardPingTasksAfterUpdate `
+      -Snapshots $finalizationSnapshots `
+      -SuppressionSweepLimit $SuppressionSweepLimit `
+      -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
+      -ApplyTaskDefinitionUpdates $true `
+      -RestoreOperationalState $true
+    $taskUpdateCommitted = $true
+    Complete-AwardPingStartupLauncherUpdate `
+      -Snapshot $startupLauncherSnapshot `
+      -UpdateCommitted $true `
+      -RestoreOperationalState $true
+    $strictRetirementCommitted = $true
+  }
 } catch {
   $installFailure = $_
 } finally {
@@ -2186,7 +2167,7 @@ try {
         $runtimeProblems = @(Get-AwardPingInstalledRuntimeProblems `
           -InstallRoot $InstallRoot `
           -AppDir $appDir `
-          -TaskSnapshots $finalizationSnapshots `
+          -TaskSnapshots @($finalizationSnapshots | Where-Object { $_.RestoreAfterUpdate }) `
           -RequireManagedRuntime $true `
           -InstallerSourceDirectory $PSScriptRoot `
           -AppSourceRoot ([string]$sourceRoot))
@@ -2284,15 +2265,10 @@ try {
       }
     }
 
-    $startupTaskInstalled = @(
-      Get-ScheduledTask -TaskName "AwardPing Startup Supervisor" -ErrorAction SilentlyContinue |
-        Where-Object { Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot }
-    ).Count -gt 0
     try {
       Complete-AwardPingStartupLauncherUpdate `
         -Snapshot $startupLauncherSnapshot `
         -UpdateCommitted $taskUpdateCommitted `
-        -StartupTaskInstalled $startupTaskInstalled `
         -RestoreOperationalState ($taskUpdateCommitted -or $rollbackOperationalState)
     } catch {
       if ($taskUpdateCommitted) {
@@ -2323,6 +2299,24 @@ try {
     }
   }
 
+  if ((-not $UpdateOnly) -and $installFailure) {
+    try {
+      Disable-AwardPingTasksForInstallRoot -InstallRoot $InstallRoot
+      Wait-ForAwardPingWorkerProcessesToStop -InstallRoot $InstallRoot
+    } catch {
+      $priorInstallMessage = $installFailure.Exception.Message
+      try {
+        throw "$priorInstallMessage. Disabling the incomplete fresh install also failed: $($_.Exception.Message)"
+      } catch {
+        $installFailure = $_
+      }
+    }
+    Complete-AwardPingStartupLauncherUpdate `
+      -Snapshot $startupLauncherSnapshot `
+      -UpdateCommitted $false `
+      -RestoreOperationalState $false
+  }
+
   if (Test-Path -LiteralPath $stagingAppDir) {
     try {
       Remove-DirectoryWithRetry -Path $stagingAppDir
@@ -2343,23 +2337,15 @@ try {
   }
 }
 
-if ($UpdateOnly -and $taskUpdateCommitted -and -not $installFailure -and -not $restoreFailure -and $script:StartupSupervisorFallbackDeferred) {
-  try {
-    $startupScript = Join-Path $PSScriptRoot "Start-AwardPingOnBoot.ps1"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $startupScript -InstallRoot $InstallRoot -Install
-    if ($LASTEXITCODE -ne 0) {
-      throw "Startup supervisor fallback exited with code $LASTEXITCODE."
-    }
-  } catch {
-    Write-Host "The worker update committed, but the startup supervisor fallback could not be refreshed: $($_.Exception.Message)" -ForegroundColor Yellow
-  }
-}
-
-if (-not $installFailure -and -not $restoreFailure) {
+if (-not $installFailure -and -not $restoreFailure -and -not $strictRetirementCommitted) {
   try {
     Remove-LegacySourceTask -InstallRoot $InstallRoot
+    $retirementProblems = @(Get-AwardPingRetiredArtifactProblems -InstallRoot $InstallRoot)
+    if ($retirementProblems.Count -gt 0) {
+      throw ($retirementProblems -join " | ")
+    }
   } catch {
-    Write-Host "The worker update committed, but legacy-task cleanup was incomplete: $($_.Exception.Message)" -ForegroundColor Yellow
+    throw "The worker update committed, but retired-artifact cleanup was incomplete: $($_.Exception.Message)"
   }
 }
 

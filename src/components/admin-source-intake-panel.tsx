@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { SourcePageRequestIntakeType, SourcePageRequestStatus } from "@/lib/database.types";
 import { sourceIntakeTypes } from "@/lib/source-intake";
+import { sourceIntakeActionAllowedWithContext } from "@/lib/source-intake-operator-actions";
 
 export type SourceIntakeRequestView = {
   id: string;
@@ -201,6 +202,11 @@ function SourceIntakeRow({
   const deterministic = objectValue(request.deterministic_review);
   const ai = objectValue(request.ai_review);
   const matchedAward = request.matched_shared_award_id ? awardById.get(request.matched_shared_award_id) : null;
+  const actionContext = { statusReason: request.status_reason, aiReview: request.ai_review };
+  const canAttach = sourceIntakeActionAllowedWithContext("attach_to_award", request.status, actionContext);
+  const canRetry = sourceIntakeActionAllowedWithContext("retry", request.status, actionContext);
+  const canRerunAi = sourceIntakeActionAllowedWithContext("rerun_ai_review", request.status, actionContext);
+  const canReject = sourceIntakeActionAllowedWithContext("reject", request.status, actionContext);
   return (
     <article className={`admin-pipeline-row ${attentionStatus(request.status) ? "admin-pipeline-row-attention" : ""}`}>
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -228,6 +234,7 @@ function SourceIntakeRow({
           <select
             className="input"
             value={selectedAwardId}
+            disabled={actionBusy || !canAttach}
             onChange={(event) => setSelectedAwardId(event.target.value)}
           >
             <option value="">Attach to award...</option>
@@ -240,19 +247,19 @@ function SourceIntakeRow({
           <div className="flex flex-wrap gap-2">
             <button
               className="button-secondary"
-              disabled={actionBusy || !selectedAwardId}
+              disabled={actionBusy || !canAttach || !selectedAwardId}
               type="button"
               onClick={() => onAction(request.id, "attach_to_award", selectedAwardId)}
             >
               Attach
             </button>
-            <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "retry")}>
+            <button className="button-secondary" disabled={actionBusy || !canRetry} type="button" onClick={() => onAction(request.id, "retry")}>
               Retry
             </button>
-            <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
+            <button className="button-secondary" disabled={actionBusy || !canRerunAi} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
               Rerun AI
             </button>
-            <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "reject")}>
+            <button className="button-secondary" disabled={actionBusy || !canReject} type="button" onClick={() => onAction(request.id, "reject")}>
               Reject
             </button>
           </div>

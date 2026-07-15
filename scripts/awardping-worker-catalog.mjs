@@ -3,7 +3,7 @@ export const workerLanes = [
     id: "orchestration",
     label: "Monitoring System",
     detail:
-      "One temporary setup mode and one normal daily monitoring mode.",
+      "Operator-run catch-up plus the permanent 6 PM capture and hourly downstream schedule.",
     profileIds: ["catchup", "daily"],
     taskIds: ["health", "one-time-catchup"],
     workerIds: ["downstream-queues"],
@@ -12,10 +12,10 @@ export const workerLanes = [
     id: "source-quality",
     label: "Source Quality",
     detail:
-      "Keeps the official source set clean with the hardened source-quality gate and suppresses historical noisy change events.",
+      "Operator-run source cleanup tools plus the suppression policy enforced by the hourly downstream pipeline.",
     profileIds: ["cleanup"],
     taskIds: ["source-quality", "change-event-noise", "prune-history"],
-    workerIds: ["source-quality"],
+    workerIds: [],
   },
   {
     id: "visual-capture",
@@ -33,7 +33,7 @@ export const workerLanes = [
       "Processes pasted source-intake requests, then runs explicit discovery separately from daily capture with strict quality gates.",
     profileIds: ["source-intake", "discovery"],
     taskIds: ["source-intake", "source-discovery"],
-    workerIds: ["source-intake"],
+    workerIds: [],
   },
   {
     id: "facts-cycle",
@@ -42,7 +42,7 @@ export const workerLanes = [
       "Runs Gemini Batch source extraction, award-level fact reconciliation, and page audits used by public award pages.",
     profileIds: ["baseline"],
     taskIds: ["ai-review-completion", "baseline-facts", "reconcile-awards", "page-audit-batch", "aggregate-facts", "award-details"],
-    workerIds: ["baseline-facts"],
+    workerIds: [],
   },
   {
     id: "repair-recovery",
@@ -51,7 +51,7 @@ export const workerLanes = [
       "Specialized repair lanes for missing visual baselines and localized capture sync problems.",
     profileIds: [],
     taskIds: ["visual-missing", "localization-repair"],
-    workerIds: ["baseline-completion", "localization-repair"],
+    workerIds: [],
   },
 ];
 
@@ -60,7 +60,7 @@ export const maintenanceProfiles = {
     laneId: "orchestration",
     label: "Initial Setup & Repair",
     detail:
-      "Completes the temporary backlog and returns the system to normal daily monitoring.",
+      "Completes a temporary backlog and returns the system to its permanent 6 PM capture and hourly downstream schedule.",
     cost: "Gemini API cap: up to $15/day.",
   },
   daily: {
@@ -133,7 +133,7 @@ export const atomicTasks = [
     laneId: "orchestration",
     label: "One-Time Catch-Up",
     detail:
-      "Forecasts and drains source review, missing baselines, reconciliation, page and visual review, and current snapshot localization, then exits so only daily monitoring remains.",
+      "Forecasts and drains source review, missing baselines, reconciliation, page and visual review, and current snapshot localization, then exits so only the permanent 6 PM and hourly schedule remains.",
     cost: "Gemini Batch only with gemini-2.5-flash-lite; forecasts live time and cost before applying.",
     run: {
       kind: "script",
@@ -145,7 +145,7 @@ export const atomicTasks = [
   {
     id: "source-quality",
     laneId: "source-quality",
-    label: "Source Quality Cleanup",
+    label: "Source Quality Cleanup (operator-only)",
     detail:
       "Finds source-quality gate failures and moves ineligible open sources to review_later.",
     cost: "$0 direct AI/API cost.",
@@ -153,7 +153,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["source-quality"],
     },
-    scheduledWorkerIds: ["source-quality"],
+    scheduledWorkerIds: [],
   },
   {
     id: "change-event-noise",
@@ -166,7 +166,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["change-event-noise"],
     },
-    scheduledWorkerIds: ["source-quality"],
+    scheduledWorkerIds: ["downstream-queues"],
   },
   {
     id: "visual-snapshots",
@@ -205,7 +205,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["source-intake"],
     },
-    scheduledWorkerIds: ["source-intake"],
+    scheduledWorkerIds: ["downstream-queues"],
   },
   {
     id: "source-discovery",
@@ -231,7 +231,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["visual-missing"],
     },
-    scheduledWorkerIds: ["baseline-completion"],
+    scheduledWorkerIds: [],
   },
   {
     id: "ai-review-completion",
@@ -257,7 +257,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["baseline-facts"],
     },
-    scheduledWorkerIds: ["baseline-facts"],
+    scheduledWorkerIds: [],
   },
   {
     id: "aggregate-facts",
@@ -296,7 +296,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["page-audit-batch"],
     },
-    scheduledWorkerIds: [],
+    scheduledWorkerIds: ["downstream-queues"],
   },
   {
     id: "award-details",
@@ -333,7 +333,7 @@ export const atomicTasks = [
     laneId: "repair-recovery",
     label: "Localization Repair",
     detail:
-      "Re-syncs localized web captures only when the current page still matches the existing baseline.",
+      "Operator-only targeted localization repair; changed pages return to normal capture/review instead of being absorbed.",
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "script",
@@ -343,7 +343,7 @@ export const atomicTasks = [
         "--web-concurrency=1",
       ],
     },
-    scheduledWorkerIds: ["localization-repair"],
+    scheduledWorkerIds: [],
   },
 ];
 
@@ -354,53 +354,8 @@ export const scheduledWorkers = [
     taskName: "AwardPing Downstream Queue Pipeline",
     label: "Hourly Queue Pipeline",
     detail:
-      "Hourly: recovers and submits Gemini Batch change reviews, reconciles pending award facts, preserves last-known-good amounts for review, and processes flagged page audits.",
+      "Hourly: finalizes the 6 PM report, processes bounded source intake, handles visual review and suppression, reconciles award facts, and processes flagged page audits.",
     cost: "Gemini Batch API for queued change candidates and flagged page audits; reconciliation has no direct AI cost.",
-  },
-  {
-    id: "baseline-completion",
-    laneId: "repair-recovery",
-    taskName: "AwardPing Baseline Completion Watchdog",
-    label: "Baseline Completion Watchdog",
-    detail:
-      "Completes missing screenshot/text baselines until visual coverage is caught up.",
-    cost: "$0 direct AI/API cost.",
-  },
-  {
-    id: "baseline-facts",
-    laneId: "facts-cycle",
-    taskName: "AwardPing Baseline Facts Watchdog",
-    label: "Baseline Facts Watchdog",
-    detail:
-      "Checks hourly and keeps Gemini Batch page-fact extraction moving until source-page facts are caught up.",
-    cost: "Gemini API cap: up to $15/day.",
-  },
-  {
-    id: "localization-repair",
-    laneId: "repair-recovery",
-    taskName: "AwardPing Localization Repair Watchdog",
-    label: "Localization Repair Watchdog",
-    detail:
-      "Re-syncs localized web captures when the page still matches the known baseline; skips changed pages, PDFs, and missing baselines.",
-    cost: "$0 direct AI/API cost.",
-  },
-  {
-    id: "source-intake",
-    laneId: "source-discovery",
-    taskName: "AwardPing Source Intake Processor",
-    label: "Source Intake Processor",
-    detail:
-      "Keeps pasted source-page requests moving through capture, AI review, award matching, and reconciliation.",
-    cost: "Gemini Batch API for plausible submitted pages.",
-  },
-  {
-    id: "source-quality",
-    laneId: "source-quality",
-    taskName: "AwardPing Overnight Source Quality Pass",
-    label: "Overnight Source Quality",
-    detail:
-      "Runs the longer source hygiene pass that cleans low-quality, duplicate, or noisy source pages.",
-    cost: "$0 direct AI/API cost.",
   },
   {
     id: "visual-shard-1",

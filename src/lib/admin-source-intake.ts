@@ -21,6 +21,21 @@ export const sourceIntakeStatuses: SourcePageRequestStatus[] = [
   "failed",
 ];
 
+export type SourceIntakeStageProgress = {
+  eligible: number | null;
+  loaded: number;
+  selected: number | null;
+  attempted: number;
+  completed: number;
+  deferred: number;
+  windowed: boolean;
+};
+
+export type SourceIntakeStageCounts = Record<
+  "poll" | "capture" | "submit" | "reconcile",
+  SourceIntakeStageProgress
+>;
+
 export type SourceIntakeSummary = {
   configured: boolean;
   warning: string | null;
@@ -49,6 +64,15 @@ export type SourceIntakeSummary = {
     factCandidatesInserted: number;
     awardsQueuedForReconciliation: number;
     failed: number;
+    captureClaimConflicts: number;
+    reconcileClaimConflicts: number;
+    submissionClaimConflicts: number;
+    submissionClaimsLostAfterBatchCreate: number;
+    manualRecoveryRequired: number;
+    staleCaptureRequestsRequeued: number;
+    staleReconcileClaimsRequeued: number;
+    staleMatchingRequestsFailedClosed: number;
+    stageCounts: SourceIntakeStageCounts | null;
     billingBlocked: boolean;
     blockingReason: string | null;
   } | null;
@@ -173,25 +197,55 @@ export function latestSourceIntakeWorker(workerRuns: LocalWorkerRun[]): SourceIn
   });
   if (!run) return null;
   const metadata = objectValue(run.metadata);
+  const counters = objectValue(metadata.counters);
   const counts = objectValue(metadata.counts);
+  const stageCounts = objectValue(metadata.stage_counts);
   return {
     id: run.id,
     status: cleanText(metadata.status) || run.status,
     startedAt: cleanText(run.started_at || metadata.started_at) || null,
     finishedAt: cleanText(run.finished_at || metadata.finished_at) || null,
-    requestsLoaded: numberFromAny(metadata.requests_loaded, counts.requests_loaded, run.checked_count),
-    captured: numberFromAny(metadata.captured, counts.captured),
-    deterministicRejected: numberFromAny(metadata.deterministic_rejected, counts.deterministic_rejected),
-    aiReviewPending: numberFromAny(metadata.ai_review_pending, counts.ai_review_pending, run.initial_count),
-    aiReviewSubmitted: numberFromAny(metadata.ai_review_submitted, counts.ai_review_submitted),
-    aiReviewSucceeded: numberFromAny(metadata.ai_review_succeeded, counts.ai_review_succeeded),
-    needsManualReview: numberFromAny(metadata.needs_manual_review, counts.needs_manual_review, run.unchanged_count),
-    matchedExistingAwards: numberFromAny(metadata.matched_existing_awards, counts.matched_existing_awards),
-    createdAwards: numberFromAny(metadata.created_awards, counts.created_awards, run.discovered_count),
-    createdOrUpdatedSources: numberFromAny(metadata.created_or_updated_sources, counts.created_or_updated_sources, run.changed_count),
-    factCandidatesInserted: numberFromAny(metadata.fact_candidates_inserted, counts.fact_candidates_inserted),
-    awardsQueuedForReconciliation: numberFromAny(metadata.awards_queued_for_reconciliation, counts.awards_queued_for_reconciliation),
-    failed: numberFromAny(metadata.failed, counts.failed, run.failed_count),
+    requestsLoaded: numberFromAny(metadata.requests_loaded, counters.requests_loaded, counts.requests_loaded, run.checked_count),
+    captured: numberFromAny(metadata.captured, counters.captured, counts.captured),
+    deterministicRejected: numberFromAny(metadata.deterministic_rejected, counters.deterministic_rejected, counts.deterministic_rejected),
+    aiReviewPending: numberFromAny(metadata.ai_review_pending, counters.ai_review_pending, counts.ai_review_pending, run.initial_count),
+    aiReviewSubmitted: numberFromAny(metadata.ai_review_submitted, counters.ai_review_submitted, counts.ai_review_submitted),
+    aiReviewSucceeded: numberFromAny(metadata.ai_review_succeeded, counters.ai_review_succeeded, counts.ai_review_succeeded),
+    needsManualReview: numberFromAny(metadata.needs_manual_review, counters.needs_manual_review, counts.needs_manual_review, run.unchanged_count),
+    matchedExistingAwards: numberFromAny(metadata.matched_existing_awards, counters.matched_existing_awards, counts.matched_existing_awards),
+    createdAwards: numberFromAny(metadata.created_awards, counters.created_awards, counts.created_awards, run.discovered_count),
+    createdOrUpdatedSources: numberFromAny(metadata.created_or_updated_sources, counters.created_or_updated_sources, counts.created_or_updated_sources, run.changed_count),
+    factCandidatesInserted: numberFromAny(metadata.fact_candidates_inserted, counters.fact_candidates_inserted, counts.fact_candidates_inserted),
+    awardsQueuedForReconciliation: numberFromAny(metadata.awards_queued_for_reconciliation, counters.awards_queued_for_reconciliation, counts.awards_queued_for_reconciliation),
+    failed: numberFromAny(metadata.failed, counters.failed, counts.failed, run.failed_count),
+    captureClaimConflicts: numberFromAny(metadata.capture_claim_conflicts, counters.capture_claim_conflicts),
+    reconcileClaimConflicts: numberFromAny(metadata.reconcile_claim_conflicts, counters.reconcile_claim_conflicts),
+    submissionClaimConflicts: numberFromAny(metadata.submission_claim_conflicts, counters.submission_claim_conflicts),
+    submissionClaimsLostAfterBatchCreate: numberFromAny(
+      metadata.submission_claims_lost_after_batch_create,
+      counters.submission_claims_lost_after_batch_create,
+    ),
+    manualRecoveryRequired: numberFromAny(metadata.manual_recovery_required, counters.manual_recovery_required),
+    staleCaptureRequestsRequeued: numberFromAny(
+      metadata.stale_capture_requests_requeued,
+      counters.stale_capture_requests_requeued,
+    ),
+    staleReconcileClaimsRequeued: numberFromAny(
+      metadata.stale_reconcile_claims_requeued,
+      counters.stale_reconcile_claims_requeued,
+    ),
+    staleMatchingRequestsFailedClosed: numberFromAny(
+      metadata.stale_matching_requests_failed_closed,
+      counters.stale_matching_requests_failed_closed,
+    ),
+    stageCounts: Object.keys(stageCounts).length
+      ? {
+          poll: sourceIntakeStageProgress(stageCounts.poll),
+          capture: sourceIntakeStageProgress(stageCounts.capture),
+          submit: sourceIntakeStageProgress(stageCounts.submit),
+          reconcile: sourceIntakeStageProgress(stageCounts.reconcile),
+        }
+      : null,
     billingBlocked: Boolean(metadata.billing_blocked),
     blockingReason: cleanText(metadata.blocking_reason || metadata.stop_reason || run.error) || null,
   };
@@ -224,6 +278,19 @@ function cleanSourceIntakeStatus(value: unknown): SourcePageRequestStatus | null
 
 function maintenancePhases(metadata: Record<string, unknown>) {
   return (Array.isArray(metadata.phases) ? metadata.phases : []).map((phase) => objectValue(phase));
+}
+
+function sourceIntakeStageProgress(value: unknown): SourceIntakeStageProgress {
+  const stage = objectValue(value);
+  return {
+    eligible: nullableNumber(stage.eligible),
+    loaded: numberFromAny(stage.loaded),
+    selected: nullableNumber(stage.selected),
+    attempted: numberFromAny(stage.attempted),
+    completed: numberFromAny(stage.completed),
+    deferred: numberFromAny(stage.deferred),
+    windowed: Boolean(stage.windowed),
+  };
 }
 
 function numberFromAny(...values: unknown[]) {

@@ -74,7 +74,7 @@ function Install-PipelineTask {
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Polls/submits Gemini Batch visual reviews, reapplies current suppression policy, reconciles pending public award facts, processes flagged page audits, and finalizes the 6 PM capture report." `
+    -Description "Finalizes the 6 PM capture report, processes bounded source intake, polls/submits visual reviews, reapplies suppression policy, reconciles award facts, and processes flagged page audits." `
     -Force | Out-Null
 
   Write-PipelineLog "installed task=$TaskName interval_minutes=$IntervalMinutes visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize suppression_sweep_limit=$SuppressionSweepLimit suppression_sweep_batch_size=$SuppressionSweepBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize"
@@ -144,6 +144,7 @@ $suppressionSweepScript = Join-Path $AppDir "scripts\cleanup-change-event-noise.
 $reconciliationScript = Join-Path $AppDir "scripts\reconcile-impacted-award-pages.mjs"
 $pageAuditScript = Join-Path $AppDir "scripts\process-page-audit-batch.mjs"
 $nightlyReportScript = Join-Path $AppDir "scripts\report-visual-nightly.mjs"
+$sourceIntakeScript = Join-Path $AppDir "scripts\process-source-intake-requests.mjs"
 if (-not (Test-Path -LiteralPath $visualReviewScript)) {
   throw "Missing visual review Batch worker: $visualReviewScript"
 }
@@ -159,6 +160,9 @@ if (-not (Test-Path -LiteralPath $pageAuditScript)) {
 if (-not (Test-Path -LiteralPath $nightlyReportScript)) {
   throw "Missing 6 PM capture report finalizer: $nightlyReportScript"
 }
+if (-not (Test-Path -LiteralPath $sourceIntakeScript)) {
+  throw "Missing source intake processor: $sourceIntakeScript"
+}
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $script:NodePath = (Get-Command node.exe -ErrorAction Stop).Source
@@ -172,6 +176,7 @@ $suppressionExit = 1
 $reconciliationExit = 1
 $pageAuditExit = 1
 $nightlyReportExit = 1
+$sourceIntakeExit = 1
 try {
   $nightlyReportExit = Invoke-NodeStep `
     -Name "visual-nightly-report" `
@@ -179,6 +184,22 @@ try {
     -Arguments @(
       "--reports-dir", (Join-Path $AppDir "reports"),
       "--write=true"
+    ) `
+    -RunLog $runLog
+
+  $sourceIntakeExit = Invoke-NodeStep `
+    -Name "source-intake" `
+    -ScriptPath $sourceIntakeScript `
+    -Arguments @(
+      "--env", ".env.worker.local",
+      "--limit=25",
+      "--gemini-api-mode=batch",
+      "--max-requests-per-batch=100",
+      "--poll-batch-limit=5",
+      "--request-timeout-ms=30000",
+      "--time-budget-ms=600000",
+      "--status=pending,queued",
+      "--apply=true"
     ) `
     -RunLog $runLog
 
@@ -239,7 +260,7 @@ try {
   Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
 }
 
-$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0 -and $nightlyReportExit -eq 0) { 0 } else { 1 }
-Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit finished=$(Get-Date -Format o)" -Encoding UTF8
-Write-PipelineLog "finished exit_code=$exitCode visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit run_log=$runLog"
+$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0 -and $nightlyReportExit -eq 0 -and $sourceIntakeExit -eq 0) { 0 } else { 1 }
+Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode source_intake_exit=$sourceIntakeExit visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit finished=$(Get-Date -Format o)" -Encoding UTF8
+Write-PipelineLog "finished exit_code=$exitCode source_intake_exit=$sourceIntakeExit visual_exit=$visualExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit run_log=$runLog"
 exit $exitCode

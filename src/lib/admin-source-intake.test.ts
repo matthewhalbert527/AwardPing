@@ -66,4 +66,70 @@ describe("admin source intake summary", () => {
       blockingReason: "credits are depleted",
     });
   });
+
+  it("reads the counters shape emitted by the source-intake worker", () => {
+    const summary = summarizeSourceIntake([], [
+      workerRun({
+        kind: "source_intake",
+        status: "succeeded_with_deferred_work",
+        counters: {
+          requests_loaded: 9,
+          captured: 8,
+          deterministic_rejected: 2,
+          ai_review_pending: 3,
+          ai_review_submitted: 4,
+          ai_review_succeeded: 5,
+          needs_manual_review: 1,
+          matched_existing_awards: 6,
+          created_awards: 2,
+          created_or_updated_sources: 7,
+          fact_candidates_inserted: 11,
+          awards_queued_for_reconciliation: 6,
+          failed: 3,
+          capture_claim_conflicts: 2,
+          reconcile_claim_conflicts: 1,
+          submission_claim_conflicts: 4,
+          submission_claims_lost_after_batch_create: 1,
+          manual_recovery_required: 3,
+          stale_capture_requests_requeued: 2,
+          stale_reconcile_claims_requeued: 1,
+          stale_matching_requests_failed_closed: 1,
+        },
+        stage_counts: {
+          poll: { eligible: null, loaded: 5, selected: 3, attempted: 3, completed: 3, deferred: 2, windowed: true },
+          capture: { eligible: 9, loaded: 9, attempted: 5, completed: 5, deferred: 4, windowed: false },
+          submit: { eligible: 8, loaded: 4, attempted: 4, completed: 4, deferred: 4, windowed: false },
+          reconcile: { eligible: null, loaded: 6, attempted: 2, completed: 2, deferred: 4, windowed: true },
+        },
+        stop_reason: "time_budget_exhausted:capture",
+      }),
+    ]);
+
+    expect(summary.latestWorker).toMatchObject({
+      status: "succeeded_with_deferred_work",
+      requestsLoaded: 9,
+      captured: 8,
+      deterministicRejected: 2,
+      aiReviewSubmitted: 4,
+      aiReviewSucceeded: 5,
+      factCandidatesInserted: 11,
+      awardsQueuedForReconciliation: 6,
+      failed: 3,
+      captureClaimConflicts: 2,
+      reconcileClaimConflicts: 1,
+      submissionClaimConflicts: 4,
+      submissionClaimsLostAfterBatchCreate: 1,
+      manualRecoveryRequired: 3,
+      staleCaptureRequestsRequeued: 2,
+      staleReconcileClaimsRequeued: 1,
+      staleMatchingRequestsFailedClosed: 1,
+      stageCounts: {
+        poll: { eligible: null, loaded: 5, selected: 3, attempted: 3, completed: 3, deferred: 2, windowed: true },
+        capture: { eligible: 9, loaded: 9, selected: null, attempted: 5, completed: 5, deferred: 4, windowed: false },
+        submit: { eligible: 8, loaded: 4, selected: null, attempted: 4, completed: 4, deferred: 4, windowed: false },
+        reconcile: { eligible: null, loaded: 6, selected: null, attempted: 2, completed: 2, deferred: 4, windowed: true },
+      },
+      blockingReason: "time_budget_exhausted:capture",
+    });
+  });
 });

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
+import { sourceIntakeActionAllowedWithContext } from "@/lib/source-intake-operator-actions";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -44,10 +45,38 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ ok: false, error: patch.error }, { status: 400 });
   }
 
+  const { data: current, error: currentError } = await admin
+    .from("source_page_requests")
+    .select("status,status_reason,ai_review,updated_at")
+    .eq("id", id)
+    .maybeSingle();
+  if (currentError) {
+    return NextResponse.json({ ok: false, error: currentError.message }, { status: 500 });
+  }
+  if (!current) {
+    return NextResponse.json({ ok: false, error: "Source intake request not found." }, { status: 404 });
+  }
+  if (
+    !sourceIntakeActionAllowedWithContext(parsed.data.action, current.status, {
+      statusReason: current.status_reason,
+      aiReview: current.ai_review,
+    })
+  ) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: `This request is ${current.status}. Active or ambiguous Gemini submissions must finish or be resolved before that action.`,
+      },
+      { status: 409 },
+    );
+  }
+
   const { data, error } = await admin
     .from("source_page_requests")
     .update(patch.value)
     .eq("id", id)
+    .eq("status", current.status)
+    .eq("updated_at", current.updated_at)
     .select("*")
     .maybeSingle();
 
@@ -55,7 +84,10 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
   }
   if (!data) {
-    return NextResponse.json({ ok: false, error: "Source intake request not found." }, { status: 404 });
+    return NextResponse.json(
+      { ok: false, error: "This request changed while the action was being applied. Refresh and try again." },
+      { status: 409 },
+    );
   }
 
   return NextResponse.json({ ok: true, request: data });

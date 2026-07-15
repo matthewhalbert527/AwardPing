@@ -12,12 +12,8 @@ const downstream = readFileSync(
   resolve(root, "installer", "windows", "Run-AwardPingDownstreamQueues.ps1"),
   "utf8",
 );
-const baselineWatchdog = readFileSync(
-  resolve(root, "installer", "windows", "Watch-AwardPingBaselineFacts.ps1"),
-  "utf8",
-);
-const startupSupervisor = readFileSync(
-  resolve(root, "installer", "windows", "Start-AwardPingOnBoot.ps1"),
+const sourceIntakeWorker = readFileSync(
+  resolve(root, "scripts", "process-source-intake-requests.mjs"),
   "utf8",
 );
 const overnightInstaller = readFileSync(
@@ -245,12 +241,12 @@ describe("Windows worker update safety", () => {
       "$snapshot = New-AwardPingRootRuntimeSnapshot -InstallRoot $root -SnapshotDirectory $snapshotPath",
       "Switch-ToStagedAwardPingApp -CurrentAppDir $app -StagingAppDir $stage -BackupAppDir $backup",
       "Set-Content -LiteralPath (Join-Path $root 'Run-AwardPingVisualSnapshots.ps1') -Value 'new-wrapper'",
-      "Set-Content -LiteralPath (Join-Path $root 'Start-AwardPingOnBoot.ps1') -Value 'new-only-wrapper'",
+      "Set-Content -LiteralPath (Join-Path $root 'Show-AwardPingVisualStatus.ps1') -Value 'new-only-wrapper'",
       "Restore-AwardPingAppAfterFailedUpdate -CurrentAppDir $app -BackupAppDir $backup -FailedAppDir $failed",
       "Restore-AwardPingRootRuntimeSnapshot -InstallRoot $root -Snapshot $snapshot -Token 'test'",
       "'APP=' + (Get-Content -LiteralPath (Join-Path $app 'generation.txt') -Raw).Trim()",
       "'WRAPPER=' + (Get-Content -LiteralPath (Join-Path $root 'Run-AwardPingVisualSnapshots.ps1') -Raw).Trim()",
-      "'NEW_ONLY_EXISTS=' + (Test-Path -LiteralPath (Join-Path $root 'Start-AwardPingOnBoot.ps1'))",
+      "'NEW_ONLY_EXISTS=' + (Test-Path -LiteralPath (Join-Path $root 'Show-AwardPingVisualStatus.ps1'))",
       "Remove-Item -LiteralPath $root -Recurse -Force",
     ].join("\n");
     const result = runPowerShell(simulation);
@@ -286,17 +282,60 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).not.toContain("UNEXPECTED_SUCCESS");
   });
 
-  it("registers every update task disabled until the task transaction commits", () => {
-    expect(installer).toContain("-RegisterDisabled $UpdateOnly");
+  it("registers every permanent task disabled until fresh-install or update validation commits", () => {
+    expect(installer).toContain("Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $true");
+    expect(installer).toContain("-RegisterDisabled $true");
     expect(installer).toContain("if ($RegisterDisabled) { $settings.Enabled = $false }");
-    expect(baselineWatchdog).toContain("[switch]$InstallDisabled");
-    expect(baselineWatchdog).toContain("if ($InstallDisabled) { $settings.Enabled = $false }");
     expect(downstream).toContain("[switch]$InstallDisabled");
     expect(downstream).toContain("if ($InstallDisabled) { $settings.Enabled = $false }");
-    expect(startupSupervisor).toContain("[switch]$InstallDisabled");
-    expect(startupSupervisor).toContain("startup_folder_fallback_deferred_until_update_commit");
     expect(installer).not.toContain("-InstallDisabled:$RegisterDisabled");
-    expect(installer).toContain('$startupInstallArguments += "-InstallDisabled"');
+  });
+
+  it("retires catch-up watchdogs and the startup supervisor from the permanent task set", () => {
+    expect(installer).not.toContain("Register-BaselineFactsWatchdog -InstallRoot");
+    expect(installer).not.toContain("Register-StartupSupervisorTask -InstallRoot");
+    const cleanup = extractPowerShellFunction(
+      installer,
+      "Remove-LegacySourceTask",
+      "Get-AwardPingRetiredArtifactProblems",
+    );
+    const retirementValidation = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingRetiredArtifactProblems",
+      "Register-VisualSnapshotTask",
+    );
+    expect(cleanup).toContain('[string]$_.TaskName -like "AwardPing*"');
+    expect(cleanup).toContain('[string]$_.TaskName -notin $managedTaskNames');
+    expect(cleanup).toContain("Get-AwardPingRetiredArtifactRelativePaths");
+    expect(cleanup).toContain("Remove-Item -LiteralPath $legacyPath -Force -ErrorAction Stop");
+    expect(cleanup).toContain('"AwardPing Startup Supervisor.vbs"');
+    expect(retirementValidation).toContain('[string]$_.TaskName -notin $managedTaskNames');
+    expect(retirementValidation).toContain("Get-AwardPingRetiredArtifactRelativePaths");
+    expect(installer).toContain('"app\\scripts\\run-local-source-worker.mjs"');
+    expect(installer).toContain('"Watch-AwardPingBaselineCompletion.ps1"');
+    expect(installer).toContain('"baseline-facts-worker.lock"');
+    expect(installer).toContain("RestoreAfterUpdate = [string]$task.TaskName -in @(Get-AwardPingManagedTaskNames)");
+    expect(installer).toContain("Retired AwardPing artifacts remain after cleanup");
+    expect(installer).toContain("retired-artifact cleanup was incomplete");
+    expect(installer).toContain("$strictRetirementCommitted = $true");
+    expect(installer).toContain(
+      "-TaskSnapshots @($finalizationSnapshots | Where-Object { $_.RestoreAfterUpdate })",
+    );
+    const registrationScope = extractPowerShellFunction(
+      installer,
+      "Assert-AwardPingManagedTaskRegistrationScope",
+      "Suspend-AwardPingStartupLauncherForUpdate",
+    );
+    const startupSuspend = extractPowerShellFunction(
+      installer,
+      "Suspend-AwardPingStartupLauncherForUpdate",
+      "Complete-AwardPingStartupLauncherUpdate",
+    );
+    expect(registrationScope).not.toContain("AwardPing Startup Supervisor.vbs");
+    expect(startupSuspend).toContain('launcherContent.IndexOf("$normalizedRoot\\"');
+    expect(startupSuspend.indexOf("return [pscustomobject]@{ WasPresent = $false")).toBeLessThan(
+      startupSuspend.indexOf("Move-Item -LiteralPath $originalPath"),
+    );
   });
 
   it("validates installed wrappers, action targets, app scripts, and dependencies before resume", () => {
@@ -335,13 +374,47 @@ describe("Windows worker update safety", () => {
     const reconciliationIndex = downstream.indexOf('-Name "award-reconciliation"');
     const auditIndex = downstream.indexOf('-Name "page-audit-batch"');
     const nightlyReportIndex = downstream.indexOf('-Name "visual-nightly-report"');
+    const sourceIntakeIndex = downstream.indexOf('-Name "source-intake"');
     expect(sweepIndex).toBeGreaterThan(visualIndex);
     expect(reconciliationIndex).toBeGreaterThan(sweepIndex);
     expect(auditIndex).toBeGreaterThan(reconciliationIndex);
     expect(nightlyReportIndex).toBeGreaterThan(0);
-    expect(visualIndex).toBeGreaterThan(nightlyReportIndex);
+    expect(sourceIntakeIndex).toBeGreaterThan(nightlyReportIndex);
+    expect(visualIndex).toBeGreaterThan(sourceIntakeIndex);
     expect(downstream).toContain('scripts\\report-visual-nightly.mjs');
+    expect(downstream).toContain('scripts\\process-source-intake-requests.mjs');
+    expect(downstream).toContain('"--poll-batch-limit=5"');
+    expect(downstream).toContain('"--request-timeout-ms=30000"');
+    expect(downstream).toContain('"--time-budget-ms=600000"');
+    expect(downstream).toContain('"--status=pending,queued"');
+    expect(downstream).not.toContain('"--status=pending,queued,failed"');
     expect(downstream).toContain('$nightlyReportExit -eq 0');
+    expect(downstream).toContain('$sourceIntakeExit -eq 0');
+    expect(sourceIntakeWorker).toContain('positiveInt(args["poll-batch-limit"], 25)');
+    expect(sourceIntakeWorker).toContain('positiveInt(args["time-budget-ms"], 15 * 60_000)');
+    expect(sourceIntakeWorker).toContain(': ["pending", "queued"];');
+    expect(sourceIntakeWorker).toContain('.slice(0, pollBatchLimit)');
+    expect(sourceIntakeWorker).toContain('if (!hasTimeBudget("reconcile")) break;');
+    expect(sourceIntakeWorker).toContain('time_budget_exhausted: report.time_budget_exhausted');
+    expect(sourceIntakeWorker).toContain('if (isTimeBudgetExhaustion(error))');
+    expect(sourceIntakeWorker).toContain('deadlineLimited && isAbortTimeout(error)');
+    expect(sourceIntakeWorker).toContain('void finishHardBudgetStop();');
+    expect(sourceIntakeWorker).toContain('async function finishHardBudgetStop()');
+    expect(sourceIntakeWorker).toContain('stale_matching_failed_closed_operator_retry_required');
+    expect(sourceIntakeWorker).toContain('await touchSubmittedBatchRows(batchName)');
+    expect(sourceIntakeWorker).toContain('Source intake capture only accepts pending or queued requests.');
+    expect(maintenanceRunner).toContain('"--status=pending,queued"');
+    expect(maintenanceRunner).not.toContain('"--status=pending,queued,failed"');
+    expect(sourceIntakeWorker).toContain('async function claimIdleRequest(row)');
+    expect(sourceIntakeWorker).toContain('query = withObservedUpdatedAt(query, row.updated_at)');
+    expect(sourceIntakeWorker).toContain('async function claimSubmittedResponse(row, batchName)');
+    expect(sourceIntakeWorker).toContain('extractGeminiBatchInlineResponses(job)');
+    expect(sourceIntakeWorker).toContain('geminiBatchInlineResponseMap(');
+    expect(sourceIntakeWorker).toContain('geminiInlineError(responseItem)');
+    expect(sourceIntakeWorker).not.toContain('job?.response?.responses || job?.metadata?.responses');
+    expect(sourceIntakeWorker).toContain('.eq("worker_run_id", workerRunId)');
+    expect(sourceIntakeWorker).toContain('if (!apply) return;\n  const { error } = await supabase');
+    expect(sourceIntakeWorker).toContain('report.errors.length || report.failed > 0 || report.submission_claims_lost_after_batch_create > 0');
     expect(captureWorker).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
     expect(nightlyReporter).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
   });

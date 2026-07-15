@@ -196,7 +196,7 @@ async function runSourceIntake() {
     `--limit=${sourceIntakeLimit}`,
     `--gemini-api-mode=${sourceIntakeGeminiMode}`,
     `--max-requests-per-batch=${sourceIntakeMaxRequestsPerBatch}`,
-    "--status=pending,queued,failed",
+    "--status=pending,queued",
   ]);
 }
 

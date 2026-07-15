@@ -37,7 +37,7 @@ import {
 import { loadPageAuditSummary } from "@/lib/admin-page-audits";
 import { loadAwardReconciliationSummary } from "@/lib/admin-reconciliation";
 import { buildAdminRunReportFeed } from "@/lib/admin-run-report";
-import { loadSourceIntakeSummary } from "@/lib/admin-source-intake";
+import { loadSourceIntakeSummary, type SourceIntakeStageProgress } from "@/lib/admin-source-intake";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database as AwardPingDatabase, Json } from "@/lib/database.types";
 import {
@@ -841,6 +841,19 @@ export default async function AdminPage() {
           <dl className="admin-detail-grid admin-detail-grid-tight">
             <Detail label="Latest worker" value={sourceIntake.latestWorker?.status || "Not reported"} />
             <Detail label="Created sources" value={formatNumber(sourceIntake.latestWorker?.createdOrUpdatedSources || 0)} />
+            <Detail label="Poll batches" value={formatSourceIntakeStage(sourceIntake.latestWorker?.stageCounts?.poll)} />
+            <Detail label="Capture requests" value={formatSourceIntakeStage(sourceIntake.latestWorker?.stageCounts?.capture)} />
+            <Detail label="Submit requests" value={formatSourceIntakeStage(sourceIntake.latestWorker?.stageCounts?.submit)} />
+            <Detail label="Reconcile requests" value={formatSourceIntakeStage(sourceIntake.latestWorker?.stageCounts?.reconcile)} />
+            <Detail label="Capture claim conflicts" value={formatNumber(sourceIntake.latestWorker?.captureClaimConflicts || 0)} />
+            <Detail label="Reconcile claim conflicts" value={formatNumber(sourceIntake.latestWorker?.reconcileClaimConflicts || 0)} />
+            <Detail label="Submission claim conflicts" value={formatNumber(sourceIntake.latestWorker?.submissionClaimConflicts || 0)} />
+            <Detail label="Lost after Batch create" value={formatNumber(sourceIntake.latestWorker?.submissionClaimsLostAfterBatchCreate || 0)} />
+            <Detail label="Manual recovery required" value={formatNumber(sourceIntake.latestWorker?.manualRecoveryRequired || 0)} />
+            <Detail
+              label="Stale recovery"
+              value={formatSourceIntakeStaleRecovery(sourceIntake.latestWorker)}
+            />
             <Detail label="Gemini blocker" value={sourceIntake.latestWorker?.blockingReason || "None"} />
           </dl>
           <div className="admin-issue-actions">
@@ -1825,6 +1838,19 @@ function formatOptionalDate(value: string | null) {
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatSourceIntakeStage(stage: SourceIntakeStageProgress | null | undefined) {
+  if (!stage) return "Not reported";
+  const eligible = stage.eligible ?? stage.loaded;
+  const selected = stage.selected === null ? "" : ` · ${formatNumber(stage.selected)} selected`;
+  const scope = stage.windowed ? " in loaded window" : "";
+  return `${formatNumber(stage.completed)}/${formatNumber(eligible)} complete${scope} · ${formatNumber(stage.loaded)} loaded${selected} · ${formatNumber(stage.attempted)} attempted · ${formatNumber(stage.deferred)} deferred`;
+}
+
+function formatSourceIntakeStaleRecovery(worker: Awaited<ReturnType<typeof loadSourceIntakeSummary>>["summary"]["latestWorker"]) {
+  if (!worker) return "Not reported";
+  return `${formatNumber(worker.staleCaptureRequestsRequeued)} capture requeued · ${formatNumber(worker.staleReconcileClaimsRequeued)} reconcile requeued · ${formatNumber(worker.staleMatchingRequestsFailedClosed)} matching failed closed`;
 }
 
 function formatNullableNumber(value: number | null) {

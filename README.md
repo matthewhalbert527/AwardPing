@@ -61,14 +61,15 @@ uses AI only when a visual candidate needs review.
 npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000
 ```
 
-The legacy local text-change worker has been retired. Daily checking should use
-`Run-AwardPingVisualSnapshots.ps1`, which is scheduled on the crawler PC for
-6:00 PM.
+The legacy local text-change worker has been retired. Three visual-capture
+shards run on the crawler PC at 6:00 PM. An hourly downstream task finalizes the
+capture report, processes bounded source intake, reviews candidates, reapplies
+suppression policy, reconciles award facts, and handles flagged page audits.
 
-The Windows worker now lives on the crawler PC directly. Make code changes in
-this repo, copy the changed worker files into `%LOCALAPPDATA%\AwardPingWorker\app`
-when needed, then deploy Vercel and push Git. The old hosted worker zip updater
-has been retired.
+Update the Windows worker from a reviewed repository revision with
+`Install-AwardPingWorker.ps1 -UpdateOnly`; do not copy individual files into the
+installed app. The complete install and update runbook is in
+`docs/local-pc-worker-installer.md`.
 
 ## Private Beta Launch
 
