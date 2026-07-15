@@ -58,6 +58,10 @@ describe("visual baseline evidence retention", () => {
       "sources = aiReviewEvidenceCapture\n        ? missingTargets\n        : missingTargets.filter",
     );
     expect(source).toContain("retry_known_broken=${aiReviewEvidenceCapture}");
+    expect(source).toContain(
+      'hygiene.action === "review_later" || !aiReviewEvidenceCapture || failures < 2',
+    );
+    expect(source).toContain('reason: "repeated_evidence_capture_failure"');
   });
 
   it("repairs and verifies local evidence before submitting source AI review", () => {

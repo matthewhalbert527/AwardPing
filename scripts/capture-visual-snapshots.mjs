@@ -5463,6 +5463,14 @@ async function markSharedSourceVisualCheckFailed(source, message) {
       failure_type: failureType,
     },
   );
+  const finalHygiene =
+    hygiene.action === "review_later" || !aiReviewEvidenceCapture || failures < 2
+      ? hygiene
+      : {
+          action: "review_later",
+          reason: "repeated_evidence_capture_failure",
+          note: `Source could not provide the local evidence required for AI review after ${failures} attempts: ${message}`,
+        };
   const update = {
     last_checked_at: now,
     next_check_at: nextVisualSourceCheckDate(),
@@ -5471,15 +5479,15 @@ async function markSharedSourceVisualCheckFailed(source, message) {
     updated_at: now,
   };
 
-  if (hygiene.action === "review_later") {
+  if (finalHygiene.action === "review_later") {
     update.admin_review_status = "review_later";
     update.admin_review_note = truncate(
-      `Auto-cleaned by visual worker (${hygiene.reason}): ${hygiene.note || message}`,
+      `Auto-cleaned by visual worker (${finalHygiene.reason}): ${finalHygiene.note || message}`,
       1000,
     );
     update.admin_reviewed_at = now;
     update.admin_reviewed_by = "awardping-worker";
-    console.log(`SOURCE_REVIEW_LATER reason=${hygiene.reason} ${sourceLabel(source)}`);
+    console.log(`SOURCE_REVIEW_LATER reason=${finalHygiene.reason} ${sourceLabel(source)}`);
   }
 
   const { error } = await supabase
