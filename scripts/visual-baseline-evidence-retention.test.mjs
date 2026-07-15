@@ -54,6 +54,10 @@ describe("visual baseline evidence retention", () => {
     );
     expect(body).toContain('sourceQualityDecision(source, { purpose: "discovery" })');
     expect(body).toContain('sourceQualityDecision(source, { purpose: "monitoring" })');
+    expect(source).toContain(
+      "sources = aiReviewEvidenceCapture\n        ? missingTargets\n        : missingTargets.filter",
+    );
+    expect(source).toContain("retry_known_broken=${aiReviewEvidenceCapture}");
   });
 
   it("repairs and verifies local evidence before submitting source AI review", () => {

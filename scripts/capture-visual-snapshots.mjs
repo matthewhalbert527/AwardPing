@@ -971,21 +971,33 @@ async function runOnce() {
 
     if (completeMissingBaselines) {
       const missingTargets = sources.filter((source) => needsMissingBaselineCompletion(source));
-      sources = missingTargets.filter((source) => !isKnownBrokenSource(source));
       const totalMissingTargets = missingTargets.length;
-      const knownBrokenMissingTargets = totalMissingTargets - sources.length;
+      const knownBrokenMissingTargets = missingTargets.filter(isKnownBrokenSource).length;
+      // The ordinary completion scan avoids hammering known-broken URLs. The
+      // explicit pre-AI evidence lane is different: every selected source gets
+      // a bounded retry so a continuing failure can be durably moved out of
+      // the AI/monitoring queue by the normal failure classifier.
+      sources = aiReviewEvidenceCapture
+        ? missingTargets
+        : missingTargets.filter((source) => !isKnownBrokenSource(source));
+      const actionableMissingTargets = aiReviewEvidenceCapture
+        ? totalMissingTargets
+        : totalMissingTargets - knownBrokenMissingTargets;
       if (completeMissingBatchLimit && sources.length > completeMissingBatchLimit) {
         sources = sources.slice(0, completeMissingBatchLimit);
       }
       report.baseline_completion = {
         total_missing_targets: totalMissingTargets,
-        actionable_missing_targets: totalMissingTargets - knownBrokenMissingTargets,
+        actionable_missing_targets: actionableMissingTargets,
         known_broken_missing_targets: knownBrokenMissingTargets,
+        retried_known_broken_targets: aiReviewEvidenceCapture
+          ? sources.filter(isKnownBrokenSource).length
+          : 0,
         batch_targets: sources.length,
         batch_limit: completeMissingBatchLimit || null,
       };
       console.log(
-        `BASELINE_COMPLETION targets=${sources.length} total_missing_targets=${totalMissingTargets} actionable_missing_targets=${totalMissingTargets - knownBrokenMissingTargets} known_broken_missing_targets=${knownBrokenMissingTargets} batch_limit=${completeMissingBatchLimit || "all"}`,
+        `BASELINE_COMPLETION targets=${sources.length} total_missing_targets=${totalMissingTargets} actionable_missing_targets=${actionableMissingTargets} known_broken_missing_targets=${knownBrokenMissingTargets} retry_known_broken=${aiReviewEvidenceCapture} batch_limit=${completeMissingBatchLimit || "all"}`,
       );
     }
 
