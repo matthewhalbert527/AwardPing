@@ -1,27 +1,30 @@
 import Link from "next/link";
-import { AlertTriangle, Database, ExternalLink, Eye, Sparkles } from "lucide-react";
-import {
-  AdminMonitoringFeedbackPendingList,
-  type AdminPendingMonitoringFeedback,
-} from "@/components/admin-monitoring-feedback-pending-list";
+import { AlertTriangle, ExternalLink, Inbox, Plus, ScrollText } from "lucide-react";
 import { AdminNotAnUpdateControl } from "@/components/admin-not-an-update-control";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
+import { AdminRunReport } from "@/components/admin-run-report";
+import {
+  type AdminPendingMonitoringFeedback,
+} from "@/components/admin-monitoring-feedback-pending-list";
+import { OperatorActionInbox } from "@/components/operator-action-inbox";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
 import { alertBlockingMonitoringPolicyFlagIds } from "@/lib/award-monitoring-policy";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
-import type {
-  AdminPageIssue,
-  AdminReviewLaterSource,
-  AdminSuppressedChangeEvent,
-  PageIssueSeverity,
-} from "@/lib/admin-page-issues";
+import type { Database } from "@/lib/database.types";
+import type { AdminReviewLaterSource, AdminSuppressedChangeEvent } from "@/lib/admin-page-issues";
 import {
   loadAdminPageIssues,
   loadAdminReviewLaterSources,
   loadAdminSuppressedChangeEvents,
 } from "@/lib/admin-page-issues";
+import { buildAdminRunReportFeed } from "@/lib/admin-run-report";
+import {
+  buildOperatorActionInbox,
+  type OperatorDigestDeliveryFailureInput,
+  type OperatorVisualReviewFailureInput,
+} from "@/lib/operator-action-inbox";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
@@ -30,9 +33,6 @@ export const dynamic = "force-dynamic";
 type Props = {
   searchParams: Promise<{
     tab?: string;
-    includeResolved?: string;
-    includeSuppressed?: string;
-    category?: string;
   }>;
 };
 
@@ -46,7 +46,9 @@ type AdminRecentChangeEvent = {
   detectedAt: string;
 };
 
-export default async function AdminPageIssuesPage({ searchParams }: Props) {
+type LocalWorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
+
+export default async function AdminActionInboxPage({ searchParams }: Props) {
   if (!hasSupabaseConfig()) return <SetupNotice />;
 
   const user = await requireUser();
@@ -59,9 +61,9 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
       <IssueShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Page issue review</h1>
+          <h1 className="mt-4 text-3xl font-black">Action Inbox</h1>
           <p className="mt-2 text-[var(--muted)]">
-            Supabase service-role access is not configured, so page issue details cannot be loaded.
+            Supabase service-role access is not configured, so operator actions cannot be loaded.
           </p>
         </div>
       </IssueShell>
@@ -70,269 +72,144 @@ export default async function AdminPageIssuesPage({ searchParams }: Props) {
 
   const admin = createSupabaseAdminClient();
   const params = await searchParams;
-  const rawTab = params.tab;
-  const includeResolved = truthyParam(params.includeResolved);
-  const includeSuppressed = truthyParam(params.includeSuppressed);
-  const category = typeof params.category === "string" && params.category.trim() ? params.category.trim() : null;
   const activeTab =
-    rawTab === "review" ||
-    rawTab === "source-quality" ||
-    rawTab === "updates" ||
-    rawTab === "suppressed"
-      ? rawTab
-      : "active";
+    params.tab === "updates" || params.tab === "suppressed" || params.tab === "excluded"
+      ? params.tab
+      : "inbox";
+  const renderedAt = new Date();
+  const workerRunsResult = await admin
+    .from("local_worker_runs")
+    .select("*")
+    .order("started_at", { ascending: false })
+    .limit(200);
+  const workerRuns = (workerRunsResult.data || []) as LocalWorkerRun[];
+  const runReport = buildAdminRunReportFeed(workerRuns, renderedAt);
+
   const [
-    { summary, issues, loadErrors },
+    pageIssues,
     reviewLater,
-    recentUpdates,
     pendingFeedback,
+    visualReviewFailures,
+    deliveryFailures,
+    recentUpdates,
     suppressedEvents,
   ] = await Promise.all([
-    loadAdminPageIssues(admin, undefined, { includeResolved, includeSuppressed, category }),
+    loadAdminPageIssues(admin, workerRuns, { includeLegacyDiagnostics: false }),
     loadAdminReviewLaterSources(admin),
-    loadAdminRecentChangeEvents(admin),
     loadAdminPendingMonitoringFeedback(admin),
+    loadAdminVisualReviewFailures(admin),
+    loadAdminFailedPublicUpdateDeliveries(admin),
+    loadAdminRecentChangeEvents(admin),
     loadAdminSuppressedChangeEvents(admin),
   ]);
-  const sourceQualityIssues = issues.filter((issue) => issue.area === "Source quality gate");
-  const displayedIssues = activeTab === "source-quality" ? sourceQualityIssues : issues;
-  const highCount = displayedIssues.filter((issue) => issue.severity === "high").length;
-  const mediumCount = displayedIssues.filter((issue) => issue.severity === "medium").length;
-  const lowCount = displayedIssues.filter((issue) => issue.severity === "low").length;
-  const allLoadErrors = [
-    ...loadErrors,
+  const actionLoadErrors = [
+    workerRunsResult.error?.message,
+    ...pageIssues.loadErrors,
+    ...pendingFeedback.loadErrors,
+    ...visualReviewFailures.loadErrors,
+    ...deliveryFailures.loadErrors,
+  ].filter((message): message is string => Boolean(message));
+  const historyLoadErrors = [
     ...reviewLater.loadErrors,
     ...recentUpdates.loadErrors,
-    ...pendingFeedback.loadErrors,
     ...suppressedEvents.loadErrors,
-  ];
+  ].filter((message): message is string => Boolean(message));
+  const actionItems = buildOperatorActionInbox({
+    issues: pageIssues.issues,
+    pendingFeedback: pendingFeedback.feedback,
+    nightlyFailureGroups: runReport.visualNightly?.failureGroups || [],
+    nightlyReportedAt:
+      runReport.visualNightly?.finishedAt ||
+      runReport.visualNightly?.startedAt ||
+      null,
+    visualReviewFailures: visualReviewFailures.failures,
+    digestDeliveryFailures: deliveryFailures.failures,
+    loadErrors: actionLoadErrors,
+    now: renderedAt,
+  });
 
   return (
     <IssueShell>
       <div className="admin-page-header">
         <div>
           <span className="badge">Admin</span>
-          <h1 className="admin-page-title">Page issue review</h1>
+          <h1 className="admin-page-title">Action Inbox</h1>
           <p className="admin-page-copy">
-            One place to review source-page errors, blocked pages, repeated capture failures,
-            AI-review coverage gaps, sibling/unrelated sources, reconciliation failures, page-audit findings,
-            source-intake blockers, suppressed noisy events, missing baselines, and recent worker page errors.
+            One plain-language queue for failures and decisions. Automatic retries stay visible, but normal pending work and old technical completion counters stay out.
           </p>
-          <p className="admin-page-timestamp">Page data refreshed {formatDate(new Date().toISOString())}.</p>
+          <p className="admin-page-timestamp">
+            Refreshed {formatDate(renderedAt.toISOString())}.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          <Link className="button-secondary" href="/dashboard/admin/source-intake">
+            <Plus size={16} aria-hidden="true" />
+            Add a source
+          </Link>
+          <Link className="button-secondary" href="/dashboard/admin/issues?tab=updates">
+            <ScrollText size={16} aria-hidden="true" />
+            Review updates
+          </Link>
         </div>
       </div>
 
-      {allLoadErrors.length > 0 && (
-        <section className="card admin-section-card border-[var(--brand-pink)]">
-          <div className="flex items-start gap-3">
-            <AlertTriangle size={18} aria-hidden="true" />
-            <div>
-              <h2 className="font-black">Some issue data could not be loaded</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">{allLoadErrors.join(" ")}</p>
-            </div>
-          </div>
-        </section>
-      )}
-
-      <section className="admin-metric-grid admin-metric-grid-primary">
-        <MetricCard
-          icon={AlertTriangle}
-          label="Current issue queue"
-          value={formatNumber(summary.queueTotal)}
-          detail={`${formatNumber(highCount)} high, ${formatNumber(mediumCount)} medium, ${formatNumber(lowCount)} low`}
-          attention={summary.queueTotal > 0}
-        />
-        <MetricCard
-          icon={Database}
-          label="Persistent failures"
-          value={formatNumber(summary.persistentSourceErrors)}
-          detail="Active source pages with 3 or more consecutive failures"
-          attention={summary.persistentSourceErrors > 0}
-        />
-        <MetricCard
-          icon={Eye}
-          label="Missing snapshots"
-          value={formatNumber(summary.missingSnapshots)}
-          detail="Active source pages without a published latest snapshot row"
-          attention={summary.missingSnapshots > 0}
-        />
-        <MetricCard
-          icon={Sparkles}
-          label="Missing page info"
-          value={formatNumber(summary.missingPageInfo)}
-          detail="Active source pages without extracted page facts"
-          attention={summary.missingPageInfo > 0}
-        />
-        <MetricCard
-          icon={AlertTriangle}
-          label="Review later"
-          value={formatNumber(summary.reviewLater)}
-          detail="Source pages held out for manual troubleshooting"
-          attention={summary.reviewLater > 0}
-        />
-        <MetricCard
-          icon={Sparkles}
-          label="Source-quality rejected"
-          value={formatNumber(summary.sourceQualityRejected)}
-          detail="Open sources rejected by the hardened monitoring gate"
-          attention={summary.sourceQualityRejected > 0}
-        />
-        <MetricCard
-          icon={Database}
-          label="Suppressed events"
-          value={formatNumber(summary.suppressedChangeEvents)}
-          detail="Historical change events hidden from default/public counts"
-          attention={summary.suppressedChangeEvents > 0}
-        />
-        <MetricCard
-          icon={Sparkles}
-          label="Pending policy feedback"
-          value={formatNumber(pendingFeedback.total)}
-          detail="False-positive corrections awaiting reviewed rule promotion"
-          attention={pendingFeedback.total > 0}
-        />
-      </section>
-
-      <section className="card admin-section-card">
-        <div className="admin-panel-heading">
-          <div className="flex items-center gap-2">
-            <Database size={18} aria-hidden="true" />
-            <h2>Workflow Categories</h2>
-          </div>
-          <span className="badge">{category ? labelize(category) : "All categories"}</span>
-        </div>
-        <div className="admin-stat-grid admin-stat-grid-compact">
-          {Object.entries(summary.categoryCounts).slice(0, 12).map(([name, count]) => (
-            <MiniStat key={name} label={labelize(name)} value={count} attention={count > 0 && highSignalCategory(name)} />
-          ))}
-          {Object.keys(summary.categoryCounts).length === 0 && (
-            <MiniStat label="Issues" value={0} />
-          )}
-        </div>
-        <div className="admin-issue-actions mt-3">
-          <Link className="admin-issue-link" href="/dashboard/admin/issues?includeResolved=true">
-            Include resolved
-          </Link>
-          <Link className="admin-issue-link" href="/dashboard/admin/issues?includeSuppressed=true">
-            Include suppressed
-          </Link>
-          {category && (
-            <Link className="admin-issue-link" href="/dashboard/admin/issues">
-              Clear category filter
-            </Link>
-          )}
-        </div>
-      </section>
-
-      <nav aria-label="Page issue queue filters" className="admin-subtabs">
+      <nav aria-label="Action Inbox views" className="admin-subtabs">
         <Link
-          aria-current={activeTab === "active" ? "page" : undefined}
-          className={`admin-subtab ${activeTab === "active" ? "admin-subtab-active" : ""}`}
+          aria-current={activeTab === "inbox" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "inbox" ? "admin-subtab-active" : ""}`}
           href="/dashboard/admin/issues"
         >
-          Active queue
-          <span>{formatNumber(issues.length)}</span>
-        </Link>
-        <Link
-          aria-current={activeTab === "review" ? "page" : undefined}
-          className={`admin-subtab ${activeTab === "review" ? "admin-subtab-active" : ""}`}
-          href="/dashboard/admin/issues?tab=review"
-        >
-          Review later
-          <span>{formatNumber(reviewLater.sources.length)}</span>
-        </Link>
-        <Link
-          aria-current={activeTab === "source-quality" ? "page" : undefined}
-          className={`admin-subtab ${activeTab === "source-quality" ? "admin-subtab-active" : ""}`}
-          href="/dashboard/admin/issues?tab=source-quality"
-        >
-          Source quality
-          <span>{formatNumber(sourceQualityIssues.length)}</span>
+          <Inbox size={15} aria-hidden="true" />
+          Action Inbox
         </Link>
         <Link
           aria-current={activeTab === "updates" ? "page" : undefined}
           className={`admin-subtab ${activeTab === "updates" ? "admin-subtab-active" : ""}`}
           href="/dashboard/admin/issues?tab=updates"
         >
-          Recent updates
-          <span>{formatNumber(recentUpdates.events.length)}</span>
+          Update review
         </Link>
         <Link
           aria-current={activeTab === "suppressed" ? "page" : undefined}
           className={`admin-subtab ${activeTab === "suppressed" ? "admin-subtab-active" : ""}`}
           href="/dashboard/admin/issues?tab=suppressed"
         >
-          Suppressed
-          <span>{formatNumber(suppressedEvents.events.length)}</span>
+          Suppressed history
+        </Link>
+        <Link
+          aria-current={activeTab === "excluded" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "excluded" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=excluded"
+        >
+          Excluded sources
         </Link>
       </nav>
 
-      <section className="card admin-section-card admin-issue-panel">
-        <div className="admin-panel-heading">
-          <div className="flex items-center gap-2">
-            <AlertTriangle size={18} aria-hidden="true" />
-            <h2>
-              {activeTab === "review"
-                ? "Review later"
-                : activeTab === "source-quality"
-                  ? "Source-quality rejected"
-                  : activeTab === "updates"
-                    ? "Recent updates and policy feedback"
-                  : activeTab === "suppressed"
-                    ? "Suppressed change events"
-                    : "Active review queue"}
-            </h2>
-          </div>
-          {activeTab === "active" || activeTab === "source-quality" ? (
-            <span className="badge">
-              {formatNumber(highCount)} high, {formatNumber(mediumCount)} medium, {formatNumber(lowCount)} low
-            </span>
-          ) : activeTab === "updates" ? (
-            <span className="badge">
-              {formatNumber(pendingFeedback.total)} pending review
-            </span>
-          ) : activeTab === "suppressed" ? (
-            <span className="badge">{formatNumber(suppressedEvents.events.length)} suppressed</span>
-          ) : (
-            <span className="badge">{formatNumber(reviewLater.sources.length)} saved</span>
-          )}
-        </div>
-
-        {activeTab === "active" || activeTab === "source-quality" ? (
-          <>
-            <div className="admin-stat-grid admin-stat-grid-compact">
-              <MiniStat label="Source errors" value={summary.sourceErrors} attention={summary.sourceErrors > 0} />
-              <MiniStat label="Award detail errors" value={summary.awardStructureErrors} attention={summary.awardStructureErrors > 0} />
-              <MiniStat label="Source-quality rejects" value={summary.sourceQualityRejected} attention={summary.sourceQualityRejected > 0} />
-              <MiniStat label="Worker page errors" value={summary.recentWorkerPageErrors} attention={summary.recentWorkerPageErrors > 0} />
-              <MiniStat label="Missing snapshots" value={summary.missingSnapshots} attention={summary.missingSnapshots > 0} />
-              <MiniStat label="Missing page info" value={summary.missingPageInfo} attention={summary.missingPageInfo > 0} />
-            </div>
-
-            {displayedIssues.length > 0 ? (
-              <div className="admin-issue-list">
-                {displayedIssues.map((issue) => (
-                  <IssueRow issue={issue} key={issue.key} />
-                ))}
-              </div>
-            ) : (
-              <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
-                No page-level issues are currently reported.
-              </p>
-            )}
-          </>
-        ) : activeTab === "updates" ? (
-          <RecentUpdateReview
-            events={recentUpdates.events}
-            feedback={pendingFeedback.feedback}
-            feedbackTotal={pendingFeedback.total}
+      {activeTab === "inbox" ? (
+        <>
+          <AdminRunReport compact initialFeed={runReport} />
+          <OperatorActionInbox
+            items={actionItems}
+            policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
           />
-        ) : activeTab === "suppressed" ? (
-          <SuppressedEventList events={suppressedEvents.events} />
-        ) : (
-          <ReviewLaterList sources={reviewLater.sources} />
-        )}
-      </section>
+        </>
+      ) : (
+        <section className="card admin-section-card admin-issue-panel">
+          {historyLoadErrors.length > 0 && (
+            <div className="operator-history-load-warning" role="status">
+              <AlertTriangle size={17} aria-hidden="true" />
+              Some history data could not be loaded. Return to the Action Inbox for the full failure evidence.
+            </div>
+          )}
+          {activeTab === "updates" ? (
+            <RecentUpdateReview events={recentUpdates.events} />
+          ) : activeTab === "excluded" ? (
+            <ExcludedSourceList sources={reviewLater.sources} />
+          ) : (
+            <SuppressedEventList events={suppressedEvents.events} />
+          )}
+        </section>
+      )}
     </IssueShell>
   );
 }
@@ -346,7 +223,7 @@ function AccessDenied({ configured }: { configured: boolean }) {
     <IssueShell>
       <div className="card p-6">
         <span className="badge">Admin</span>
-        <h1 className="mt-4 text-3xl font-black">Page issue review</h1>
+        <h1 className="mt-4 text-3xl font-black">Action Inbox</h1>
         <p className="mt-2 text-[var(--muted)]">
           This page is limited to AwardPing site admins
           {configured ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}
@@ -356,206 +233,55 @@ function AccessDenied({ configured }: { configured: boolean }) {
   );
 }
 
-function MetricCard({
-  icon: Icon,
-  label,
-  value,
-  detail,
-  attention = false,
-}: {
-  icon: typeof AlertTriangle;
-  label: string;
-  value: React.ReactNode;
-  detail: string;
-  attention?: boolean;
-}) {
+function RecentUpdateReview({ events }: { events: AdminRecentChangeEvent[] }) {
   return (
-    <div className={`admin-metric-card ${attention ? "admin-metric-card-attention" : ""}`}>
-      <div className="admin-metric-head">
-        <p className="admin-metric-label">{label}</p>
-        <Icon size={17} aria-hidden="true" />
-      </div>
-      <p className="admin-metric-value">{value}</p>
-      <p className="admin-metric-detail">{detail}</p>
-    </div>
-  );
-}
-
-function MiniStat({
-  label,
-  value,
-  attention = false,
-}: {
-  label: string;
-  value: string | number;
-  attention?: boolean;
-}) {
-  return (
-    <div className={`admin-mini-stat ${attention ? "admin-mini-stat-attention" : ""}`}>
-      <p className="admin-mini-stat-label">{label}</p>
-      <p className="admin-mini-stat-value">{typeof value === "number" ? formatNumber(value) : value}</p>
-    </div>
-  );
-}
-
-function IssueRow({ issue }: { issue: AdminPageIssue }) {
-  return (
-    <article className={`admin-issue-row admin-issue-row-${issue.severity}`}>
-      <div className="min-w-0">
-        <div className="admin-issue-meta">
-          <SeverityPill severity={issue.severity} />
-          <span>{issue.area}</span>
-          <span>{issue.label}</span>
-          <span>{labelize(issue.category)}</span>
-          {issue.failures > 0 && <span>{formatNumber(issue.failures)} failures</span>}
-        </div>
-        <h3>{issue.awardName}</h3>
-        <p className="admin-issue-source">{issue.sourceTitle}</p>
-        <p className="admin-issue-message">{issue.message}</p>
-        {(issue.currentValue || issue.recommendedAction || issue.relatedWorkerRunId) && (
-          <dl className="admin-detail-grid admin-detail-grid-tight mt-3">
-            {issue.currentValue && <Detail label="Current" value={issue.currentValue} />}
-            {issue.recommendedAction && <Detail label="Recommended" value={issue.recommendedAction} />}
-            {issue.relatedWorkerRunId && <Detail label="Worker" value={issue.relatedWorkerRunId} />}
-          </dl>
-        )}
-        <div className="admin-issue-actions">
-          {issue.awardId && (
-            <Link href={dashboardAwardPath(issue.awardSlug, issue.awardName, issue.awardId)} className="admin-issue-link">
-              Award page
-            </Link>
-          )}
-          {issue.sourceUrl && (
-            <a href={issue.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">
-              Source <ExternalLink size={13} aria-hidden="true" />
-            </a>
-          )}
-        </div>
-        <AdminPageIssueActions
-          mode="active"
-          sourceId={issue.sourceId}
-          sourceTitle={issue.sourceTitle}
-        />
-      </div>
-      <time dateTime={issue.checkedAt || undefined}>{issue.checkedAt ? formatDate(issue.checkedAt) : "No check time"}</time>
-    </article>
-  );
-}
-
-function ReviewLaterList({ sources }: { sources: AdminReviewLaterSource[] }) {
-  if (sources.length === 0) {
-    return (
-      <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
-        No source pages have been saved for later troubleshooting.
-      </p>
-    );
-  }
-
-  return (
-    <div className="admin-issue-list">
-      {sources.map((source) => (
-        <article className="admin-issue-row admin-issue-row-medium" key={source.id}>
-          <div className="min-w-0">
-            <div className="admin-issue-meta">
-              <span className="admin-severity-pill admin-severity-pill-medium">review</span>
-              {source.failures > 0 && <span>{formatNumber(source.failures)} failures</span>}
-              {source.reviewedBy && <span>{source.reviewedBy}</span>}
-            </div>
-            <h3>{source.awardName}</h3>
-            <p className="admin-issue-source">{source.sourceTitle}</p>
-            <p className="admin-issue-message">{source.note || source.message}</p>
-            <div className="admin-issue-actions">
-              <Link href={dashboardAwardPath(source.awardSlug, source.awardName, source.awardId)} className="admin-issue-link">
-                Award page
-              </Link>
-              <a href={source.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">
-                Source <ExternalLink size={13} aria-hidden="true" />
-              </a>
-            </div>
-            <AdminPageIssueActions
-              mode="review"
-              sourceId={source.id}
-              sourceTitle={source.sourceTitle}
-            />
-          </div>
-          <time dateTime={source.reviewedAt || undefined}>
-            {source.reviewedAt ? formatDate(source.reviewedAt) : "No review time"}
-          </time>
-        </article>
-      ))}
-    </div>
-  );
-}
-
-function RecentUpdateReview({
-  events,
-  feedback,
-  feedbackTotal,
-}: {
-  events: AdminRecentChangeEvent[];
-  feedback: AdminPendingMonitoringFeedback[];
-  feedbackTotal: number;
-}) {
-  return (
-    <div className="grid gap-7">
-      <AdminMonitoringFeedbackPendingList
-        feedback={feedback}
-        feedbackTotal={feedbackTotal}
-        policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
-      />
-
-      <div>
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h3 className="text-lg font-black">Recent unsuppressed updates</h3>
-            <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-              Mark a false positive here to hide it immediately and preserve the
-              correction for policy review.
-            </p>
-          </div>
-          <span className="badge">{formatNumber(events.length)} shown</span>
-        </div>
-
-        {events.length > 0 ? (
-          <div className="admin-issue-list">
-            {events.map((event) => (
-              <article className="admin-issue-row admin-issue-row-low" key={event.id}>
-                <div className="min-w-0">
-                  <div className="admin-issue-meta">
-                    <span className="admin-severity-pill admin-severity-pill-low">
-                      active update
-                    </span>
-                    <span>Event {event.id}</span>
-                  </div>
-                  <h3>{event.sourceTitle}</h3>
-                  <p className="admin-issue-message">{event.summary}</p>
-                  <div className="admin-issue-actions">
-                    {event.sourceUrl && (
-                      <a
-                        className="admin-issue-link"
-                        href={event.sourceUrl}
-                        rel="noreferrer"
-                        target="_blank"
-                      >
-                        Source <ExternalLink size={13} aria-hidden="true" />
-                      </a>
-                    )}
-                  </div>
-                  <AdminNotAnUpdateControl
-                    eventId={event.id}
-                    policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
-                  />
-                </div>
-                <time dateTime={event.detectedAt}>{formatDate(event.detectedAt)}</time>
-              </article>
-            ))}
-          </div>
-        ) : (
-          <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
-            No unsuppressed change events are currently reported.
+    <div>
+      <div className="admin-panel-heading">
+        <div>
+          <h2>Review recent published updates</h2>
+          <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
+            If an update is not real, hide it here and send the evidence into the Action Inbox for reviewed global policy promotion.
           </p>
-        )}
+        </div>
       </div>
+
+      {events.length > 0 ? (
+        <div className="admin-issue-list">
+          {events.map((event) => (
+            <article className="admin-issue-row admin-issue-row-low" key={event.id}>
+              <div className="min-w-0">
+                <div className="admin-issue-meta">
+                  <span className="admin-severity-pill admin-severity-pill-low">published update</span>
+                  <span>Event {event.id}</span>
+                </div>
+                <h3>{event.sourceTitle}</h3>
+                <p className="admin-issue-message">{event.summary}</p>
+                <div className="admin-issue-actions">
+                  {safeExternalUrl(event.sourceUrl) && (
+                    <a
+                      className="admin-issue-link"
+                      href={event.sourceUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Source <ExternalLink size={13} aria-hidden="true" />
+                    </a>
+                  )}
+                </div>
+                <AdminNotAnUpdateControl
+                  eventId={event.id}
+                  policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
+                />
+              </div>
+              <time dateTime={event.detectedAt}>{formatDate(event.detectedAt)}</time>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
+          No unsuppressed change events are currently reported.
+        </p>
+      )}
     </div>
   );
 }
@@ -563,50 +289,102 @@ function RecentUpdateReview({
 function SuppressedEventList({ events }: { events: AdminSuppressedChangeEvent[] }) {
   if (events.length === 0) {
     return (
-      <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
+      <p className="text-sm font-semibold text-[var(--muted)]">
         No suppressed change events are currently reported.
       </p>
     );
   }
 
   return (
-    <div className="admin-issue-list">
-      {events.map((event) => (
-        <article className="admin-issue-row admin-issue-row-low" key={event.id}>
-          <div className="min-w-0">
-            <div className="admin-issue-meta">
-              <span className="admin-severity-pill admin-severity-pill-low">suppressed</span>
-              {event.reason && <span>{event.reason}</span>}
-              {event.source && <span>{event.source}</span>}
-            </div>
-            <h3>{event.sourceTitle}</h3>
-            <p className="admin-issue-message">{event.summary}</p>
-            <div className="admin-issue-actions">
-              {event.sourceUrl && (
-                <a href={event.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">
-                  Source <ExternalLink size={13} aria-hidden="true" />
-                </a>
+    <div>
+      <div className="admin-panel-heading">
+        <div>
+          <h2>Suppressed update history</h2>
+          <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
+            Audit history only. These are not open operator actions.
+          </p>
+        </div>
+      </div>
+      <div className="admin-issue-list">
+        {events.map((event) => (
+          <article className="admin-issue-row admin-issue-row-low" key={event.id}>
+            <div className="min-w-0">
+              <div className="admin-issue-meta">
+                <span className="admin-severity-pill admin-severity-pill-low">suppressed</span>
+                {event.reason && <span>{event.reason}</span>}
+                {event.source && <span>{event.source}</span>}
+              </div>
+              <h3>{event.sourceTitle}</h3>
+              <p className="admin-issue-message">{event.summary}</p>
+              {safeExternalUrl(event.sourceUrl) && (
+                <div className="admin-issue-actions">
+                  <a href={event.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">
+                    Source <ExternalLink size={13} aria-hidden="true" />
+                  </a>
+                </div>
               )}
             </div>
-          </div>
-          <time dateTime={event.suppressedAt || event.detectedAt}>
-            {event.suppressedAt ? formatDate(event.suppressedAt) : formatDate(event.detectedAt)}
-          </time>
-        </article>
-      ))}
+            <time dateTime={event.suppressedAt || event.detectedAt}>
+              {formatDate(event.suppressedAt || event.detectedAt)}
+            </time>
+          </article>
+        ))}
+      </div>
     </div>
   );
 }
 
-function SeverityPill({ severity }: { severity: PageIssueSeverity }) {
-  return <span className={`admin-severity-pill admin-severity-pill-${severity}`}>{severity}</span>;
-}
-
-function Detail({ label, value }: { label: string; value: string }) {
+function ExcludedSourceList({ sources }: { sources: AdminReviewLaterSource[] }) {
   return (
-    <div className="admin-detail-item">
-      <dt>{label}</dt>
-      <dd>{value}</dd>
+    <div>
+      <div className="admin-panel-heading">
+        <div>
+          <h2>Excluded source history</h2>
+          <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
+            These are completed monitoring decisions, not open actions. Restore a source only if new evidence makes it official and monitorable again.
+          </p>
+        </div>
+      </div>
+      {sources.length > 0 ? (
+        <div className="admin-issue-list">
+          {sources.map((source) => (
+            <article className="admin-issue-row admin-issue-row-low" key={source.id}>
+              <div className="min-w-0">
+                <div className="admin-issue-meta">
+                  <span className="admin-severity-pill admin-severity-pill-low">excluded</span>
+                  {source.failures > 0 && <span>{source.failures} failures</span>}
+                  {source.reviewedBy && <span>{source.reviewedBy}</span>}
+                </div>
+                <h3>{source.awardName}</h3>
+                <p className="admin-issue-source">{source.sourceTitle}</p>
+                <p className="admin-issue-message">{source.note || source.message}</p>
+                <div className="admin-issue-actions">
+                  <Link href={dashboardAwardPath(source.awardSlug, source.awardName, source.awardId)} className="admin-issue-link">
+                    Award page
+                  </Link>
+                  {safeExternalUrl(source.sourceUrl) && (
+                    <a href={source.sourceUrl} className="admin-issue-link" target="_blank" rel="noreferrer">
+                      Source <ExternalLink size={13} aria-hidden="true" />
+                    </a>
+                  )}
+                </div>
+                <AdminPageIssueActions
+                  mode="review"
+                  sourceId={source.id}
+                  sourceTitle={source.sourceTitle}
+                />
+              </div>
+              <time dateTime={source.reviewedAt || undefined}>
+                {source.reviewedAt ? formatDate(source.reviewedAt) : "Review time unavailable"}
+              </time>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <p className="mt-4 text-sm font-semibold text-[var(--muted)]">
+          No sources are currently excluded from monitoring.
+        </p>
+      )}
     </div>
   );
 }
@@ -645,7 +423,7 @@ async function loadAdminPendingMonitoringFeedback(
   loadErrors: string[];
 }> {
   const { data, error } = await admin.rpc("list_pending_monitoring_feedback", {
-    p_limit: 100,
+    p_limit: 500,
   });
 
   if (error) {
@@ -663,7 +441,7 @@ async function loadAdminPendingMonitoringFeedback(
   }
 
   const rows = data || [];
-
+  const total = Number(rows[0]?.total_pending || 0);
   return {
     feedback: rows.map((row) => ({
       id: row.feedback_id,
@@ -684,31 +462,90 @@ async function loadAdminPendingMonitoringFeedback(
       actorEmail: row.actor_email,
       createdAt: row.created_at,
     })),
-    total: Number(rows[0]?.total_pending || 0),
-    loadErrors: [],
+    total,
+    loadErrors: total > rows.length
+      ? [`${total - rows.length} additional policy corrections are not shown because the inbox response reached its limit.`]
+      : [],
   };
 }
 
-function truthyParam(value: string | undefined) {
-  return typeof value === "string" && /^(1|true|yes|y)$/i.test(value);
+async function loadAdminVisualReviewFailures(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+): Promise<{ failures: OperatorVisualReviewFailureInput[]; loadErrors: string[] }> {
+  const { data, error, count } = await admin
+    .from("shared_award_visual_review_candidates")
+    .select(
+      "id, shared_award_id, shared_award_source_id, source_title, source_url, candidate_signature, rejection_reason, gemini_batch_name, model, estimated_cost_usd, worker_metadata, updated_at",
+      { count: "exact" },
+    )
+    .eq("status", "failed")
+    .order("updated_at", { ascending: true })
+    .limit(500);
+
+  return {
+    failures: (data || []).map((row) => ({
+      id: row.id,
+      awardId: row.shared_award_id,
+      sourceId: row.shared_award_source_id,
+      sourceTitle: row.source_title || row.source_url || "Visual review candidate",
+      sourceUrl: row.source_url,
+      candidateSignature: row.candidate_signature,
+      rejectionReason: row.rejection_reason,
+      batchName: row.gemini_batch_name,
+      model: row.model,
+      estimatedCostUsd: row.estimated_cost_usd,
+      workerMetadata: row.worker_metadata,
+      updatedAt: row.updated_at,
+    })),
+    loadErrors: [
+      error?.message,
+      (count || 0) > (data || []).length
+        ? `${(count || 0) - (data || []).length} additional visual-review failures are not shown because the inbox reached its 500-item limit.`
+        : null,
+    ].filter((message): message is string => Boolean(message)),
+  };
 }
 
-function highSignalCategory(value: string) {
-  return /unrelated|sibling|critical|deadline|billing|failed|rejected|missing|stale|invented/i.test(value);
+async function loadAdminFailedPublicUpdateDeliveries(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+): Promise<{ failures: OperatorDigestDeliveryFailureInput[]; loadErrors: string[] }> {
+  const { data, error, count } = await admin
+    .from("public_update_deliveries")
+    .select("id, digest_key, recipient, recipient_hash, change_event_ids, error, created_at", { count: "exact" })
+    .eq("status", "failed")
+    .order("created_at", { ascending: true })
+    .limit(500);
+
+  return {
+    failures: (data || []).map((row) => ({
+      id: row.id,
+      deliveryType: "digest",
+      digestKey: row.digest_key,
+      recipient: row.recipient,
+      recipientHash: row.recipient_hash,
+      changeEventCount: row.change_event_ids.length,
+      error: row.error,
+      createdAt: row.created_at,
+    })),
+    loadErrors: [
+      error?.message,
+      (count || 0) > (data || []).length
+        ? `${(count || 0) - (data || []).length} additional public digest failures are not shown because the inbox reached its 500-item limit.`
+        : null,
+    ].filter((message): message is string => Boolean(message)),
+  };
 }
 
-function labelize(value: string) {
-  return value
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+function safeExternalUrl(value: string | null) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function formatDate(value: string) {
   return formatCentralDateTime(value);
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("en-US").format(value);
 }

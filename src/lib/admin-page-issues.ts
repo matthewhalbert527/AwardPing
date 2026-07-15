@@ -137,6 +137,7 @@ export type AdminPageIssueOptions = {
   includeResolved?: boolean;
   includeSuppressed?: boolean;
   category?: string | null;
+  includeLegacyDiagnostics?: boolean;
 };
 
 type CountResult = {
@@ -165,6 +166,7 @@ export async function loadAdminPageIssues(
   workerRuns?: LocalWorkerRun[],
   options: AdminPageIssueOptions = {},
 ): Promise<AdminPageIssueLoadResult> {
+  const includeLegacyDiagnostics = options.includeLegacyDiagnostics !== false;
   const [
     sourceRowsResult,
     sourceCountResult,
@@ -178,50 +180,64 @@ export async function loadAdminPageIssues(
   ] = await Promise.all([
     admin
       .from("shared_award_sources")
-      .select(sourceIssueSelect)
+      .select(sourceIssueSelect, { count: "exact" })
       .eq("shared_awards.status", "active")
       .eq("admin_review_status", "open")
       .not("last_error", "is", null)
       .order("consecutive_failures", { ascending: false })
       .order("updated_at", { ascending: false })
-      .limit(80),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .not("last_error", "is", null),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .not("last_error", "is", null)
-      .gte("consecutive_failures", 3),
-    admin
-      .from("shared_awards")
-      .select("id, name, slug, official_homepage, structure_scan_error, last_structure_scan_at, updated_at")
-      .eq("status", "active")
-      .not("structure_scan_error", "is", null)
-      .order("updated_at", { ascending: false })
-      .limit(80),
-    admin
-      .from("shared_awards")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "active")
-      .not("structure_scan_error", "is", null),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open"),
-    admin
-      .from("shared_award_sources")
-      .select("id, shared_awards!inner(status)", { count: "exact", head: true })
-      .eq("shared_awards.status", "active")
-      .eq("admin_review_status", "open")
-      .not("page_metadata_generated_at", "is", null),
-    countActiveOpenSourcesWithVisualSnapshots(admin),
+      .limit(500),
+    includeLegacyDiagnostics
+      ? admin
+          .from("shared_award_sources")
+          .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+          .eq("shared_awards.status", "active")
+          .eq("admin_review_status", "open")
+          .not("last_error", "is", null)
+      : Promise.resolve({ count: 0, error: null }),
+    includeLegacyDiagnostics
+      ? admin
+          .from("shared_award_sources")
+          .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+          .eq("shared_awards.status", "active")
+          .eq("admin_review_status", "open")
+          .not("last_error", "is", null)
+          .gte("consecutive_failures", 3)
+      : Promise.resolve({ count: 0, error: null }),
+    includeLegacyDiagnostics
+      ? admin
+          .from("shared_awards")
+          .select("id, name, slug, official_homepage, structure_scan_error, last_structure_scan_at, updated_at")
+          .eq("status", "active")
+          .not("structure_scan_error", "is", null)
+          .order("updated_at", { ascending: false })
+          .limit(80)
+      : Promise.resolve({ data: [] as AwardIssueRow[], error: null }),
+    includeLegacyDiagnostics
+      ? admin
+          .from("shared_awards")
+          .select("id", { count: "exact", head: true })
+          .eq("status", "active")
+          .not("structure_scan_error", "is", null)
+      : Promise.resolve({ count: 0, error: null }),
+    includeLegacyDiagnostics
+      ? admin
+          .from("shared_award_sources")
+          .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+          .eq("shared_awards.status", "active")
+          .eq("admin_review_status", "open")
+      : Promise.resolve({ count: 0, error: null }),
+    includeLegacyDiagnostics
+      ? admin
+          .from("shared_award_sources")
+          .select("id, shared_awards!inner(status)", { count: "exact", head: true })
+          .eq("shared_awards.status", "active")
+          .eq("admin_review_status", "open")
+          .not("page_metadata_generated_at", "is", null)
+      : Promise.resolve({ count: 0, error: null }),
+    includeLegacyDiagnostics
+      ? countActiveOpenSourcesWithVisualSnapshots(admin)
+      : Promise.resolve({ count: 0, error: null }),
     workerRuns
       ? Promise.resolve({ data: workerRuns, error: null })
       : admin.from("local_worker_runs").select("*").order("started_at", { ascending: false }).limit(20),
@@ -242,6 +258,11 @@ export async function loadAdminPageIssues(
   const sourceRows = ((sourceRowsResult.data || []) as unknown as SourceIssueRow[]).filter((row) =>
     Boolean(row.last_error),
   );
+  if ((sourceRowsResult.count || 0) > sourceRows.length) {
+    loadErrors.push(
+      `${(sourceRowsResult.count || 0) - sourceRows.length} additional source failures are not shown because the inbox reached its 500-item source limit.`,
+    );
+  }
   const awardRows = ((awardRowsResult.data || []) as AwardIssueRow[]).filter((row) =>
     Boolean(row.structure_scan_error),
   );
@@ -266,16 +287,22 @@ export async function loadAdminPageIssues(
   const workerSourcesById = new Map(
     (((workerSourcesResult.data || []) as unknown as SourceIssueRow[]).map((row) => [row.id, row])),
   );
-  const sourceQualityRejected = await loadSourceQualityRejectedRows(admin, loadErrors);
-  const suppressedChangeEvents = await countSuppressedChangeEvents(admin, loadErrors);
-  const aiCoverageIssues = await loadAiCoverageIssues(admin, loadErrors);
+  const sourceQualityRejected = includeLegacyDiagnostics
+    ? await loadSourceQualityRejectedRows(admin, loadErrors)
+    : { count: 0, rows: [] as SourceIssueRow[] };
+  const suppressedChangeEvents = includeLegacyDiagnostics
+    ? await countSuppressedChangeEvents(admin, loadErrors)
+    : 0;
+  const aiCoverageIssues = includeLegacyDiagnostics
+    ? await loadAiCoverageIssues(admin, loadErrors)
+    : [];
   const awardMissingPublicFactIssues = await loadAwardMissingPublicFactIssues(admin, loadErrors);
   const reconciliationIssues = await loadReconciliationIssueRows(admin, loadErrors);
   const pageAuditIssues = await loadPageAuditIssueRows(admin, loadErrors, options);
   const sourceIntakeIssues = await loadSourceIntakeIssueRows(admin, loadErrors);
   const workerIssues = geminiWorkerBlockerIssues((workerRunResult.data || []) as LocalWorkerRun[]);
   const sourceIssueIds = new Set(sourceRows.map((row) => row.id));
-  const issues = [
+  const allIssues = [
     ...sourceRows.map(sourceRowToIssue),
     ...sourceQualityRejected.rows.map(sourceQualityRejectedRowToIssue),
     ...aiCoverageIssues,
@@ -293,20 +320,25 @@ export async function loadAdminPageIssues(
     .filter((issue) => options.includeSuppressed || !issue.suppressedAt)
     .filter((issue) => !options.category || issue.category === options.category)
     .filter(uniqueIssue())
-    .sort(comparePageIssues)
-    .slice(0, 200);
+    .sort(comparePageIssues);
+  const issues = allIssues.slice(0, 1000);
+  if (allIssues.length > issues.length) {
+    loadErrors.push(
+      `${allIssues.length - issues.length} additional operator actions are not shown because the inbox reached its 1,000-item limit.`,
+    );
+  }
 
   const activeSourceCount = activeSourceCountResult.count || 0;
   const visualSnapshotCount = visualSnapshotCountResult.count || 0;
   const activeMetadataCount = activeMetadataCountResult.count || 0;
   const summary = {
-    sourceErrors: sourceCountResult.count || 0,
+    sourceErrors: sourceCountResult.count || sourceRowsResult.count || 0,
     persistentSourceErrors: persistentSourceCountResult.count || 0,
     awardStructureErrors: awardCountResult.count || 0,
     recentWorkerPageErrors: workerPageErrors.length,
     missingSnapshots: Math.max(0, activeSourceCount - visualSnapshotCount),
     missingPageInfo: Math.max(0, activeSourceCount - activeMetadataCount),
-    reviewLater: await countReviewLaterSources(admin, loadErrors),
+    reviewLater: includeLegacyDiagnostics ? await countReviewLaterSources(admin, loadErrors) : 0,
     sourceQualityRejected: sourceQualityRejected.count,
     suppressedChangeEvents,
     queueTotal: issues.length,
@@ -460,6 +492,21 @@ async function loadAiCoverageIssues(admin: AdminClient, loadErrors: string[]) {
 
 async function loadAwardMissingPublicFactIssues(admin: AdminClient, loadErrors: string[]) {
   const issues: AdminPageIssue[] = [];
+  const rawAdmin = admin as unknown as SupabaseClient;
+  const activeQueueResult = await rawAdmin
+    .from("shared_award_reconciliation_queue")
+    .select("shared_award_id")
+    .in("status", ["pending", "processing", "failed"])
+    .limit(5000);
+  if (activeQueueResult.error?.message) {
+    loadErrors.push(activeQueueResult.error.message);
+    return issues;
+  }
+  const awardsAlreadyQueued = new Set(
+    ((activeQueueResult.data || []) as Array<Record<string, unknown>>)
+      .map((row) => cleanText(row.shared_award_id))
+      .filter(Boolean),
+  );
   for (let from = 0; ; from += 1000) {
     const { data, error } = await admin
       .from("shared_awards")
@@ -473,6 +520,7 @@ async function loadAwardMissingPublicFactIssues(admin: AdminClient, loadErrors: 
     const rows = (data || []) as Array<Record<string, unknown>>;
     for (const row of rows) {
       if (objectHasKeys(row.public_facts)) continue;
+      if (awardsAlreadyQueued.has(cleanText(row.id))) continue;
       issues.push({
         key: `award-missing-public-facts:${cleanText(row.id)}`,
         category: "award_missing_public_facts",
@@ -492,27 +540,40 @@ async function loadAwardMissingPublicFactIssues(admin: AdminClient, loadErrors: 
         checkedAt: cleanText(row.updated_at) || null,
         failures: 0,
       });
-      if (issues.length >= 80) break;
     }
-    if (rows.length < 1000 || issues.length >= 80) break;
+    if (rows.length < 1000) break;
   }
   return issues;
 }
 
 async function loadReconciliationIssueRows(admin: AdminClient, loadErrors: string[]) {
   const rawAdmin = admin as unknown as SupabaseClient;
-  const { data, error } = await rawAdmin
+  const { data, error, count } = await rawAdmin
     .from("shared_award_reconciliation_queue")
-    .select("id,shared_award_id,reason,status,error,completed_at,created_at,shared_awards(name,slug,official_homepage)")
+    .select(
+      "id,shared_award_id,reason,status,error,started_at,completed_at,created_at,shared_awards(name,slug,official_homepage)",
+      { count: "exact" },
+    )
     .in("status", ["failed", "processing"])
     .order("created_at", { ascending: false })
-    .limit(80);
+    .limit(500);
   if (error?.message) {
     if (isMissingRelationError(error.message)) return [];
     loadErrors.push(error.message);
     return [];
   }
-  return ((data || []) as Array<Record<string, unknown>>).map(reconciliationRowToIssue);
+  if ((count || 0) > (data || []).length) {
+    loadErrors.push(
+      `${(count || 0) - (data || []).length} additional reconciliation rows are not shown because the inbox reached its 500-row limit.`,
+    );
+  }
+  const staleBefore = Date.now() - 45 * 60 * 1000;
+  return ((data || []) as Array<Record<string, unknown>>)
+    .filter((row) => {
+      if (cleanText(row.status) === "failed") return true;
+      return dateMs(cleanText(row.started_at || row.created_at) || null) <= staleBefore;
+    })
+    .map(reconciliationRowToIssue);
 }
 
 async function loadPageAuditIssueRows(
@@ -523,32 +584,45 @@ async function loadPageAuditIssueRows(
   const rawAdmin = admin as unknown as SupabaseClient;
   let query = rawAdmin
     .from("shared_award_page_audits")
-    .select("id,shared_award_id,audit_status,severity,findings,suggested_fixes,field_conflicts,selected_fact_summary,public_page_snapshot,created_at,resolved_at,shared_awards(name,slug,official_homepage)")
+    .select(
+      "id,shared_award_id,audit_status,severity,findings,suggested_fixes,field_conflicts,selected_fact_summary,public_page_snapshot,created_at,resolved_at,shared_awards(name,slug,official_homepage)",
+      { count: "exact" },
+    )
     .neq("audit_status", "passed")
     .order("created_at", { ascending: false })
-    .limit(120);
+    .limit(500);
   if (!options.includeResolved) query = query.is("resolved_at", null);
-  const { data, error } = await query;
+  const { data, error, count } = await query;
   if (error?.message) {
     if (isMissingRelationError(error.message)) return [];
     loadErrors.push(error.message);
     return [];
+  }
+  if ((count || 0) > (data || []).length) {
+    loadErrors.push(
+      `${(count || 0) - (data || []).length} additional page-audit findings are not shown because the inbox reached its 500-row limit.`,
+    );
   }
   return ((data || []) as Array<Record<string, unknown>>).map(pageAuditRowToIssue);
 }
 
 async function loadSourceIntakeIssueRows(admin: AdminClient, loadErrors: string[]) {
   const rawAdmin = admin as unknown as SupabaseClient;
-  const { data, error } = await rawAdmin
+  const { data, error, count } = await rawAdmin
     .from("source_page_requests")
-    .select("id,award_name,homepage_url,status,status_reason,error,updated_at,worker_run_id")
+    .select("id,award_name,homepage_url,status,status_reason,error,updated_at,worker_run_id", { count: "exact" })
     .in("status", ["failed", "needs_manual_review"])
     .order("updated_at", { ascending: false })
-    .limit(80);
+    .limit(500);
   if (error?.message) {
     if (isMissingRelationError(error.message)) return [];
     loadErrors.push(error.message);
     return [];
+  }
+  if ((count || 0) > (data || []).length) {
+    loadErrors.push(
+      `${(count || 0) - (data || []).length} additional source-intake actions are not shown because the inbox reached its 500-row limit.`,
+    );
   }
   return ((data || []) as Array<Record<string, unknown>>).map(sourceIntakeRowToIssue);
 }
@@ -621,7 +695,7 @@ function reconciliationRowToIssue(row: Record<string, unknown>): AdminPageIssue 
     currentValue: status || null,
     recommendedAction: "Inspect the reconciliation queue row, rerun reconciliation, and preserve last-known-good facts if the audit is critical.",
     relatedWorkerRunId: null,
-    checkedAt: cleanText(row.completed_at || row.created_at) || null,
+    checkedAt: cleanText(row.completed_at || row.started_at || row.created_at) || null,
     failures: status === "failed" ? 1 : 0,
   };
 }

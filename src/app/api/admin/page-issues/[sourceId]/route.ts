@@ -84,7 +84,7 @@ export async function DELETE(_request: Request, { params }: Props) {
 
   const { data, error } = await admin.rpc("retire_shared_award_source_preserving_visual_history", {
     p_source_id: source.id,
-    p_reason: "Retired from Admin Page Issues; immutable update and visual history were preserved.",
+    p_reason: "Retired from the Action Inbox; immutable update and visual history were preserved.",
     p_actor: setupError.user?.email || "awardping-admin-page-issues",
   });
   if (error) {

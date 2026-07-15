@@ -17,12 +17,19 @@ type MaintenanceStatusResponse = {
   error?: string;
 };
 
-export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFeed }) {
+export function AdminRunReport({
+  compact = false,
+  initialFeed,
+}: {
+  compact?: boolean;
+  initialFeed: AdminRunReportFeed;
+}) {
   const [feed, setFeed] = useState(initialFeed);
   const [refreshWarning, setRefreshWarning] = useState("");
   const feedRef = useRef(initialFeed);
 
   useEffect(() => {
+    if (compact) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let controller: AbortController | null = null;
@@ -68,10 +75,14 @@ export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFee
       if (timer) clearTimeout(timer);
       controller?.abort();
     };
-  }, []);
+  }, [compact]);
 
   const primary = feed.current || feed.overnight;
   const badgeLabel = feed.current ? "Live" : feed.visualNightly ? "6 PM scan" : "Last overnight";
+
+  if (compact) {
+    return <CompactSixPmReport feed={feed} refreshWarning={refreshWarning} />;
+  }
 
   return (
     <section className="card admin-section-card admin-run-report">
@@ -130,6 +141,56 @@ export function AdminRunReport({ initialFeed }: { initialFeed: AdminRunReportFee
         </p>
       )}
 
+      <div className="admin-run-report-footer">
+        <span>Updated {formatTime(feed.generatedAt)}</span>
+        {refreshWarning && <span className="admin-run-report-warning">{refreshWarning}</span>}
+      </div>
+    </section>
+  );
+}
+
+function CompactSixPmReport({
+  feed,
+  refreshWarning,
+}: {
+  feed: AdminRunReportFeed;
+  refreshWarning: string;
+}) {
+  const report = feed.visualNightly;
+  return (
+    <section className="card operator-scan-report" aria-labelledby="operator-scan-report-title">
+      <div className="operator-scan-report-heading">
+        <div>
+          <p>Permanent daily workflow</p>
+          <h2 id="operator-scan-report-title">6 PM scan report</h2>
+        </div>
+        <span className={`badge ${report ? `admin-visual-nightly-badge-${report.status}` : ""}`}>
+          {report ? nightlyStatusLabel(report.status) : "Not recorded"}
+        </span>
+      </div>
+      <div aria-atomic="true" aria-live="polite">
+        {report ? (
+          <>
+            <p className="operator-scan-report-summary">{report.summary}</p>
+            <p className="operator-scan-report-evidence">
+              {report.completedShards}/{report.expectedShards} shards completed · {formatNumber(report.checked)} pages captured · {formatNumber(report.failed)} failed
+            </p>
+            {report.failureGroups.length > 0 ? (
+              <p className="operator-scan-report-note operator-scan-report-note-attention">
+                Failure details and safe repairs are consolidated in the Action Inbox below.
+              </p>
+            ) : (
+              <p className="operator-scan-report-note">
+                No 6 PM failure group needs an operator decision.
+              </p>
+            )}
+          </>
+        ) : (
+          <p className="operator-scan-report-summary">
+            No scheduled 6 PM shard report has been recorded yet.
+          </p>
+        )}
+      </div>
       <div className="admin-run-report-footer">
         <span>Updated {formatTime(feed.generatedAt)}</span>
         {refreshWarning && <span className="admin-run-report-warning">{refreshWarning}</span>}

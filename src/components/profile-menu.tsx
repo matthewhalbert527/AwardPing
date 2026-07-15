@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LayoutDashboard, LogOut, Mail, Settings, ShieldCheck } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -19,6 +20,8 @@ export function ProfileMenu({
   dashboardHref?: string;
 }) {
   const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
   const displayName = fullName?.trim() || email || "Profile";
   const initials = initialsForProfile(fullName || email);
   const avatar = avatarColor();
@@ -31,9 +34,24 @@ export function ProfileMenu({
   }
 
   return (
-    <div className="group relative">
+    <div
+      className="relative"
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          setOpen(false);
+          event.currentTarget.querySelector<HTMLButtonElement>("button")?.focus();
+        }
+      }}
+    >
       <button
+        aria-controls={menuId}
+        aria-expanded={open}
+        aria-haspopup="true"
         className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-white/70 p-0 font-black text-white shadow-[0_14px_34px_rgba(108,90,146,0.26)] transition hover:-translate-y-0.5"
+        onClick={() => setOpen((current) => !current)}
         type="button"
         aria-label={`Profile menu for ${displayName}`}
         style={{
@@ -43,7 +61,10 @@ export function ProfileMenu({
       >
         {initials}
       </button>
-      <div className="absolute right-0 top-full z-50 hidden w-64 pt-2 group-hover:block group-focus-within:block">
+      <div
+        className={`absolute right-0 top-full z-50 w-64 pt-2 ${open ? "block" : "hidden"}`}
+        id={menuId}
+      >
         <div className="rounded-2xl border border-[var(--line)] bg-white p-2 text-sm shadow-[0_24px_60px_rgba(22,34,74,0.14)]">
           {fullName && (
             <p className="truncate px-3 pt-2 font-black text-[var(--foreground)]">{fullName}</p>
@@ -52,22 +73,22 @@ export function ProfileMenu({
             <p className="truncate px-3 pb-2 pt-1 font-semibold text-[var(--muted)]">{email}</p>
           )}
           {showDashboardLink && (
-            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href={dashboardHref}>
+            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href={dashboardHref} onClick={() => setOpen(false)}>
               <LayoutDashboard size={16} aria-hidden="true" />
               Dashboard
             </Link>
           )}
           {showAdminLink && (
-            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/admin">
+            <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/admin/issues" onClick={() => setOpen(false)}>
               <ShieldCheck size={16} aria-hidden="true" />
-              Admin
+              Action Inbox
             </Link>
           )}
-          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/office">
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/office" onClick={() => setOpen(false)}>
             <Settings size={16} aria-hidden="true" />
             Settings
           </Link>
-          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/contact">
+          <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/contact" onClick={() => setOpen(false)}>
             <Mail size={16} aria-hidden="true" />
             Contact
           </Link>

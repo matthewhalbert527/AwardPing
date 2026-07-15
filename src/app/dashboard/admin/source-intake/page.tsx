@@ -75,8 +75,8 @@ export default async function AdminSourceIntakePage() {
             sources into reconciliation and monitoring.
           </p>
         </div>
-        <Link className="button-secondary" href="/dashboard/admin">
-          Back to Maintenance
+        <Link className="button-secondary" href="/dashboard/admin/issues">
+          Back to Action Inbox
         </Link>
       </div>
 

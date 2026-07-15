@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { RotateCcw, Search, Trash2 } from "lucide-react";
+import { Archive, RotateCcw, Search } from "lucide-react";
 
 type Props = {
   sourceId: string | null;
@@ -20,7 +20,7 @@ export function AdminPageIssueActions({ sourceId, mode, sourceTitle }: Props) {
   }
 
   async function moveToReview() {
-    const note = window.prompt("Optional note for the review tab:", "");
+    const note = window.prompt("Optional note explaining why this source should leave monitoring:", "");
     if (note === null) return;
     await runAction("review_later", "PATCH", {
       action: "review_later",
@@ -34,7 +34,7 @@ export function AdminPageIssueActions({ sourceId, mode, sourceTitle }: Props) {
 
   async function remove() {
     const confirmed = window.confirm(
-      `Delete this page from AwardPing?\n\n${sourceTitle}\n\nThis removes the shared page, its site-facing update history, and linked watchlist monitors for this source.`,
+      `Retire this source from AwardPing?\n\n${sourceTitle}\n\nThis removes it from active monitoring and linked watchlists. Published updates and immutable visual evidence are preserved.`,
     );
     if (!confirmed) return;
     await runAction("delete", "DELETE");
@@ -94,10 +94,10 @@ export function AdminPageIssueActions({ sourceId, mode, sourceTitle }: Props) {
         onClick={remove}
         type="button"
       >
-        <Trash2 size={13} aria-hidden="true" />
-        {busyAction === "delete" ? "Deleting" : "Delete"}
+        <Archive size={13} aria-hidden="true" />
+        {busyAction === "delete" ? "Retiring" : "Retire source"}
       </button>
-      {message && <p className="admin-issue-action-error">{message}</p>}
+      {message && <p aria-live="polite" className="admin-issue-action-error">{message}</p>}
     </div>
   );
 }
