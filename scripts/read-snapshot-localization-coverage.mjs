@@ -100,10 +100,16 @@ try {
   const repairSourceIds = rows
     .filter((row) => row.latest.repair_needed || row.previous.repair_needed)
     .map((row) => row.source_id);
-  const historicalResetSourceIds = rows
+  const historicalFallbackSourceIds = rows
     .filter((row) => row.previous.status === "historical_layout_unavailable")
     .map((row) => row.source_id);
-  const workSourceIds = [...new Set([...repairSourceIds, ...historicalResetSourceIds])].sort();
+  const latestRepairSourceIds = rows
+    .filter((row) => row.latest.repair_needed)
+    .map((row) => row.source_id);
+  const previousRepairSourceIds = rows
+    .filter((row) => row.previous.repair_needed)
+    .map((row) => row.source_id);
+  const workSourceIds = [...new Set(repairSourceIds)].sort();
   const report = {
     version: 1,
     started_at: startedAt,
@@ -111,7 +117,9 @@ try {
     apply,
     ...summary,
     repair_source_ids: repairSourceIds,
-    historical_reset_source_ids: historicalResetSourceIds,
+    latest_repair_source_ids: latestRepairSourceIds,
+    previous_repair_source_ids: previousRepairSourceIds,
+    historical_fallback_source_ids: historicalFallbackSourceIds,
     work_source_ids: workSourceIds,
     work_source_count: workSourceIds.length,
     samples: {

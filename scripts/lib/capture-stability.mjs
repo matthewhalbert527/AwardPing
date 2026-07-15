@@ -94,14 +94,19 @@ export function sectionExtractionProfileSettings(profile, overrides = {}) {
 
 export function captureProfileSettings(profile, overrides = {}) {
   const normalized = normalizeCaptureProfile(profile);
+  // Localization repair must reproduce the ordinary monitoring capture pixel-for-pixel.
+  // The repair worker keeps its own profile name for audit metadata, but broad expansion
+  // or scroll behavior would make its image hash differ from the stable-daily baseline
+  // and prevent the metadata-only repair from ever being applied safely.
+  const stableRender = ["stable-daily", "localization-repair"].includes(normalized);
   const settings = {
     profile: normalized,
     includeExpansionTextInPrimary: normalized === "baseline-rich",
-    useMainContentHashForComparison: normalized === "stable-daily",
-    allowExpansionScreenshots: normalized !== "stable-daily",
-    allowBroadExpansion: normalized !== "stable-daily",
-    allowScrollActivation: normalized !== "stable-daily",
-    defaultMaxExpansionStateScreenshots: normalized === "stable-daily" ? 0 : normalized === "discovery" ? 3 : 8,
+    useMainContentHashForComparison: stableRender,
+    allowExpansionScreenshots: !stableRender,
+    allowBroadExpansion: !stableRender,
+    allowScrollActivation: !stableRender,
+    defaultMaxExpansionStateScreenshots: stableRender ? 0 : normalized === "discovery" ? 3 : 8,
   };
 
   return {
@@ -121,7 +126,7 @@ export function shouldUseScrollActivationForSource(source, profile, requested = 
 
 export function shouldUseExpansionForSource(source, profile) {
   const settings = captureProfileSettings(profile);
-  if (settings.profile === "stable-daily") return false;
+  if (["stable-daily", "localization-repair"].includes(settings.profile)) return false;
   if (settings.allowBroadExpansion) return true;
   return accordionPageTypes.has(cleanKey(source?.page_type));
 }

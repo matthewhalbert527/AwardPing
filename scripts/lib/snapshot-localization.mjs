@@ -36,7 +36,26 @@ export function classifySnapshotLocalization({
     };
   }
 
+  if (sameVisualHash(hashes, peerHashes) && hasLayoutMetadata(peerMeta)) {
+    return {
+      status: "ready_via_identical_peer",
+      reason: "The identical retained screenshot version has searchable layout metadata.",
+      exact: true,
+      accounted_for: true,
+      repair_needed: false,
+    };
+  }
+
   if (metaError) {
+    if (version === "previous") {
+      return {
+        status: "historical_layout_unavailable",
+        reason: `Historical snapshot metadata could not be read and cannot be safely reconstructed: ${cleanText(metaError)}`,
+        exact: false,
+        accounted_for: true,
+        repair_needed: false,
+      };
+    }
     return {
       status: "r2_meta_error",
       reason: cleanText(metaError) || "The snapshot metadata could not be read from R2.",
@@ -50,16 +69,6 @@ export function classifySnapshotLocalization({
     return {
       status: "ready",
       reason: "The retained screenshot has searchable layout metadata.",
-      exact: true,
-      accounted_for: true,
-      repair_needed: false,
-    };
-  }
-
-  if (sameVisualHash(hashes, peerHashes) && hasLayoutMetadata(peerMeta)) {
-    return {
-      status: "ready_via_identical_peer",
-      reason: "The identical retained screenshot version has searchable layout metadata.",
       exact: true,
       accounted_for: true,
       repair_needed: false,

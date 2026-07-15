@@ -38,6 +38,25 @@ describe("snapshot localization coverage", () => {
     expect(result.exact).toBe(true);
   });
 
+  it.each(["latest", "previous"])(
+    "uses an identical localized peer before treating %s metadata errors as unresolved",
+    (version) => {
+      const result = classifySnapshotLocalization({
+        version,
+        objectKeys: imageObjects,
+        hashes: { image_hash: "same-image" },
+        meta: null,
+        metaError: "R2 metadata object could not be read",
+        peerHashes: { image_hash: "same-image" },
+        peerMeta: localizedMeta,
+      });
+
+      expect(result.status).toBe("ready_via_identical_peer");
+      expect(result.exact).toBe(true);
+      expect(result.repair_needed).toBe(false);
+    },
+  );
+
   it("accounts for non-reconstructable historical screenshots without calling them exact", () => {
     const result = classifySnapshotLocalization({
       version: "previous",
@@ -52,6 +71,45 @@ describe("snapshot localization coverage", () => {
     expect(result.accounted_for).toBe(true);
     expect(result.exact).toBe(false);
     expect(result.repair_needed).toBe(false);
+  });
+
+  it("treats an unreadable historical metadata object as a truthful fallback", () => {
+    const result = classifySnapshotLocalization({
+      version: "previous",
+      objectKeys: imageObjects,
+      hashes: { image_hash: "historical-image" },
+      meta: null,
+      metaError: "R2 object not found",
+    });
+
+    expect(result.status).toBe("historical_layout_unavailable");
+    expect(result.accounted_for).toBe(true);
+    expect(result.repair_needed).toBe(false);
+  });
+
+  it("completes automated localization when only a truthful historical fallback remains", () => {
+    const summary = summarizeSnapshotLocalization([
+      {
+        latest: classifySnapshotLocalization({
+          version: "latest",
+          objectKeys: imageObjects,
+          hashes: { image_hash: "current-image" },
+          meta: localizedMeta,
+        }),
+        previous: classifySnapshotLocalization({
+          version: "previous",
+          objectKeys: imageObjects,
+          hashes: { image_hash: "historical-image" },
+          meta: {},
+          peerHashes: { image_hash: "current-image" },
+          peerMeta: localizedMeta,
+        }),
+      },
+    ]);
+
+    expect(summary.automated_localization_complete).toBe(true);
+    expect(summary.historical_layout_unavailable).toBe(1);
+    expect(summary.accounted_for_percent).toBe(100);
   });
 
   it("keeps current screenshots without layout metadata in the repair backlog", () => {

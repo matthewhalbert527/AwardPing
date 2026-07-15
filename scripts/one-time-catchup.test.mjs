@@ -161,6 +161,15 @@ describe("one-time catch-up planning", () => {
     expect(completion.automated_blockers.snapshot_localization_latest_pending).toBe(12);
   });
 
+  it("keeps previous-version metadata errors in the completion gate", () => {
+    const completion = catchupCompletionDecision({
+      snapshot_localization_previous_pending: 2,
+    });
+
+    expect(completion.automated_complete).toBe(false);
+    expect(completion.automated_blockers.snapshot_localization_previous_pending).toBe(2);
+  });
+
   it("counts pre-review evidence capture only until a source has a snapshot", () => {
     const unreviewed = acceptedSource({
       id: "source-needs-evidence",
@@ -183,11 +192,11 @@ describe("one-time catch-up planning", () => {
     expect(withSnapshot.backlog.sources_needing_capture_baseline).toBe(0);
   });
 
-  it("keeps catch-up open until unlocalized historical screenshots are reset", () => {
+  it("reports truthful historical localization fallbacks without blocking catch-up", () => {
     const forecast = estimateOneTimeCatchup({
       backlog: {
         snapshot_localization_latest_pending: 211,
-        snapshot_localization_work_pending: 747,
+        snapshot_localization_work_pending: 211,
       },
       localizationShards: 3,
     });
@@ -195,11 +204,12 @@ describe("one-time catch-up planning", () => {
       snapshot_localization_historical_unavailable: 747,
     });
 
-    expect(forecast.snapshot_localization_sources).toBe(747);
-    expect(completion.automated_complete).toBe(false);
-    expect(
-      completion.automated_blockers.snapshot_localization_historical_unavailable,
-    ).toBe(747);
+    expect(forecast.snapshot_localization_sources).toBe(211);
+    expect(completion.automated_complete).toBe(true);
+    expect(completion.historical_localization_fallbacks).toBe(747);
+    expect(completion.automated_blockers).not.toHaveProperty(
+      "snapshot_localization_historical_unavailable",
+    );
   });
 
   it("does not count active or newly submitted AI batches as stagnant", () => {

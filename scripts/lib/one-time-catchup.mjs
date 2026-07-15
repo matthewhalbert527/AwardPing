@@ -112,11 +112,18 @@ export function summarizeOneTimeCatchupBacklog({
     snapshot_localization_latest_pending: localizationAudited
       ? nonNegativeInt(localization.latest_repair_needed, 0)
       : monitorEligibleRows.length,
+    snapshot_localization_previous_pending: localizationAudited
+      ? nonNegativeInt(localization.previous_repair_needed, 0)
+      : 0,
     snapshot_localization_historical_unavailable: localizationAudited
       ? nonNegativeInt(localization.historical_layout_unavailable, 0)
       : 0,
     snapshot_localization_work_pending: localizationAudited
-      ? nonNegativeInt(localization.work_source_count, 0)
+      ? nonNegativeInt(
+          localization.repair_needed_versions,
+          nonNegativeInt(localization.latest_repair_needed, 0) +
+            nonNegativeInt(localization.previous_repair_needed, 0),
+        )
       : monitorEligibleRows.length,
     snapshot_localization_exact_coverage_percent: localizationAudited
       ? nonNegativeNumber(localization.exact_coverage_percent, 0)
@@ -241,8 +248,8 @@ export function catchupCompletionDecision(backlog = {}) {
       backlog.snapshot_localization_latest_pending,
       0,
     ),
-    snapshot_localization_historical_unavailable: nonNegativeInt(
-      backlog.snapshot_localization_historical_unavailable,
+    snapshot_localization_previous_pending: nonNegativeInt(
+      backlog.snapshot_localization_previous_pending,
       0,
     ),
   };

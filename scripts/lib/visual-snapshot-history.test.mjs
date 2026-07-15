@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  refreshedLatestVisualSnapshotHistory,
   rotatedVisualSnapshotHistory,
   visualSnapshotKeysToDeleteAfterCas,
   visualSnapshotUploadedKeysToDeleteAfterLostCas,
@@ -42,6 +43,33 @@ describe("immutable visual snapshot history", () => {
       existing: beforeThird,
       next: afterThird,
     })).toEqual(["generation-1/page.jpg"]);
+  });
+
+  it("refreshes latest metadata without rotating or deleting historical previous objects", () => {
+    const existing = {
+      latest_object_keys: { page: "latest-old/page.jpg", meta: "latest-old/meta.json" },
+      previous_captured_at: "2026-07-13T18:00:00.000Z",
+      previous_object_keys: { page: "historical/page.jpg", meta: "historical/meta.json" },
+      previous_hashes: { image_hash: "historical-image" },
+      previous_metadata: { capture_profile: "legacy" },
+    };
+    const preserved = refreshedLatestVisualSnapshotHistory(existing);
+    const next = {
+      latest_object_keys: { page: "latest-new/page.jpg", meta: "latest-new/meta.json" },
+      ...preserved,
+    };
+
+    expect(preserved).toEqual({
+      previous_captured_at: existing.previous_captured_at,
+      previous_object_keys: existing.previous_object_keys,
+      previous_hashes: existing.previous_hashes,
+      previous_metadata: existing.previous_metadata,
+    });
+    expect(visualSnapshotKeysToDeleteAfterCas({
+      pointerAdvanced: true,
+      existing,
+      next,
+    })).toEqual(["latest-old/page.jpg", "latest-old/meta.json"]);
   });
 
   it("removes only an unreferenced upload after a lost pointer CAS", () => {

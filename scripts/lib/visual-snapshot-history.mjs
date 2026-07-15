@@ -10,6 +10,15 @@ export function rotatedVisualSnapshotHistory(existing, latestObjectKeys) {
   };
 }
 
+export function refreshedLatestVisualSnapshotHistory(existing, { resetPrevious = false } = {}) {
+  return {
+    previous_captured_at: resetPrevious ? null : existing?.previous_captured_at || null,
+    previous_object_keys: resetPrevious ? {} : objectValue(existing?.previous_object_keys),
+    previous_hashes: resetPrevious ? {} : objectValue(existing?.previous_hashes),
+    previous_metadata: resetPrevious ? {} : objectValue(existing?.previous_metadata),
+  };
+}
+
 export function visualSnapshotKeysToDeleteAfterCas({
   pointerAdvanced,
   existing,

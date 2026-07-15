@@ -21,6 +21,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
+import { deterministicNoiseBaselineDisposition } from "./lib/deterministic-noise-disposition.mjs";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import {
   aiReviewLooksLikeRelativeAgeOnlyChange,
@@ -47,6 +48,7 @@ import {
 } from "./lib/visual-baseline-lock.mjs";
 import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
 import {
+  refreshedLatestVisualSnapshotHistory,
   rotatedVisualSnapshotHistory,
   visualSnapshotKeysToDeleteAfterCas,
   visualSnapshotUploadedKeysToDeleteAfterLostCas,
@@ -688,6 +690,7 @@ async function runOnce() {
     section_removal_presence_conflicts: 0,
     section_change_candidates_blocked_unconfirmed: 0,
     section_change_candidates_enqueued: 0,
+    section_change_candidates_overflow: 0,
     section_evidence_screenshots_taken: 0,
     section_text_included_in_main_hash: includeSectionTextInMainHash,
     section_text_included_in_baseline_facts: sectionExtractionConfig.includeInBaselineFacts,
@@ -1306,11 +1309,13 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
   }
 
   if (!deterministic.candidate_change) {
-    report.deterministic_noise += 1;
-    await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    pruneTransientExpansionStateScreenshots(capture, report);
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
-    console.log(`NOISE deterministic ${deterministic.reason || "local_diff_rejected"} ${sourceLabel(source)}`);
+    await finishSafeDeterministicNoise({
+      source,
+      baseline,
+      capture,
+      report,
+      reason: deterministic.reason || "local_diff_rejected",
+    });
     return;
   }
 
@@ -1324,10 +1329,16 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     report,
   });
   if (!gate.allowed) {
-    await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    pruneTransientExpansionStateScreenshots(capture, report);
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
-    console.log(`NOISE deterministic_gate ${gate.decision.reason || gate.decision.label} ${sourceLabel(source)}`);
+    await finishSafeDeterministicNoise({
+      source,
+      baseline,
+      capture,
+      report,
+      reason: gate.decision.reason || gate.decision.label || "deterministic_gate_noise",
+      decision: gate.decision,
+      countersAlreadyRecorded: true,
+      textOnly: gate.decision.candidate_kind === "text_only",
+    });
     return;
   }
 
@@ -1412,12 +1423,13 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
   report.text_only_candidates += 1;
 
   if (!deterministic.candidate_change) {
-    await finishTextOnlyNoise({
+    await finishSafeDeterministicNoise({
       source,
       baseline,
       capture,
       report,
       reason: deterministic.reason || "text_only_deterministic_noise",
+      textOnly: true,
     });
     return;
   }
@@ -1433,7 +1445,7 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
   });
 
   if (!gate.allowed) {
-    await finishTextOnlyNoise({
+    await finishSafeDeterministicNoise({
       source,
       baseline,
       capture,
@@ -1441,6 +1453,7 @@ async function processTextOnlyComparison(source, baseline, previous, capture, re
       reason: gate.decision.reason || gate.decision.label || "text_only_gate_noise",
       decision: gate.decision,
       countersAlreadyRecorded: true,
+      textOnly: true,
     });
     return;
   }
@@ -1632,14 +1645,55 @@ async function processExpandableSectionComparison(
 
   let queued = 0;
   let rejectedAsNoise = 0;
+  let preservedLastKnownGood = 0;
   let absorbed = 0;
   let existing = 0;
-  for (const pair of sectionPairs.slice(0, 24)) {
+  let representativeNoiseDecision = null;
+  const sectionReviewLimit = 24;
+  const evaluatedSectionPairs = sectionPairs.slice(0, sectionReviewLimit);
+  const unreviewedSectionPairs = Math.max(0, sectionPairs.length - evaluatedSectionPairs.length);
+  for (const pair of evaluatedSectionPairs) {
     const result = await processOneSectionChange(source, baseline, previous, capture, report, pair);
-    if (result === "queued") queued += 1;
-    if (result === "noise") rejectedAsNoise += 1;
-    if (result === "absorbed") absorbed += 1;
-    if (result === "existing") existing += 1;
+    const outcome = typeof result === "string" ? result : result?.outcome;
+    if (outcome === "queued") queued += 1;
+    if (outcome === "noise") {
+      rejectedAsNoise += 1;
+      representativeNoiseDecision ||= result?.decision || null;
+    }
+    if (outcome === "preserve_last_known_good") preservedLastKnownGood += 1;
+    if (outcome === "absorbed") absorbed += 1;
+    if (outcome === "existing") existing += 1;
+  }
+
+  if (unreviewedSectionPairs > 0) {
+    report.section_change_candidates_overflow += unreviewedSectionPairs;
+    const reviewPath = saveReviewRecord({
+      source,
+      baseline,
+      previous,
+      capture,
+      diff: {
+        ...buildDiffSummary(previous.text || "", capture.text || "", source),
+        candidate_scope: "expandable_section_overflow",
+        section_change_count: sectionPairs.length,
+        evaluated_section_change_count: evaluatedSectionPairs.length,
+        unevaluated_section_change_count: unreviewedSectionPairs,
+      },
+      deterministic: {
+        classification: "section_review_overflow",
+        reason: "section_candidate_limit_exceeded",
+        candidate_change: true,
+      },
+      reason: "section_candidate_limit_exceeded_preserve_last_known_good",
+      aiReview: {
+        provider: "none",
+        model: null,
+        result: null,
+        error: null,
+      },
+    });
+    report.review += 1;
+    report.review_paths.push(toArchiveRelative(reviewPath));
   }
 
   if (queued > 0) {
@@ -1655,18 +1709,46 @@ async function processExpandableSectionComparison(
     return { handled: true, reason: existing ? "section_candidates_existing" : "section_rejected_evidence_absorbed" };
   }
 
-  if (rejectedAsNoise > 0 && acceptTextOnlyNoise) {
-    writeBaseline(source, capture, {
-      reason: "section_change_noise_rejected",
-      previous_baseline: baseline || null,
-      baseline_facts: baseline?.summary_metadata?.baseline_facts || capture.baseline_facts || null,
-      baseline_facts_metadata:
-        baseline?.summary_metadata?.baseline_facts_metadata || capture.baseline_facts_metadata || null,
+  if (unreviewedSectionPairs > 0) {
+    await finishSafeDeterministicNoise({
+      source,
+      baseline,
+      capture,
+      report,
+      reason: "section_candidate_limit_exceeded",
+      decision: representativeNoiseDecision,
+      countersAlreadyRecorded: true,
+      textOnly: true,
+      comparisonComplete: false,
     });
-    report.unchanged += 1;
+    return { handled: true, reason: "section_candidate_overflow_preserved" };
+  }
+
+  if (preservedLastKnownGood > 0) {
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
-    console.log(`NOISE section_changes_accepted_as_noise count=${rejectedAsNoise} ${sourceLabel(source)}`);
-    return { handled: true, reason: "section_noise_accepted" };
+    pruneTransientExpansionStateScreenshots(capture, report);
+    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    console.log(
+      `PRESERVED last_known_good section_evidence count=${preservedLastKnownGood} ${sourceLabel(source)}`,
+    );
+    return { handled: true, reason: "section_last_known_good_preserved" };
+  }
+
+  if (rejectedAsNoise > 0) {
+    const disposition = await finishSafeDeterministicNoise({
+      source,
+      baseline,
+      capture,
+      report,
+      reason: "section_change_deterministic_noise",
+      decision: representativeNoiseDecision,
+      countersAlreadyRecorded: true,
+      textOnly: true,
+    });
+    return {
+      handled: true,
+      reason: disposition.absorbed ? "section_noise_absorbed" : "section_noise_preserved",
+    };
   }
 
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
@@ -1713,7 +1795,10 @@ async function processOneSectionChange(
     report.deterministic_noise_rejected += 1;
     report.text_only_noise_rejected += 1;
     report.section_change_candidates_blocked_unconfirmed += 1;
-    return "noise";
+    return {
+      outcome: "preserve_last_known_good",
+      reason: "unconfirmed_section_presence",
+    };
   }
 
   const sectionBaseline = {
@@ -1743,7 +1828,14 @@ async function processOneSectionChange(
     report.deterministic_noise += 1;
     report.deterministic_noise_rejected += 1;
     report.text_only_noise_rejected += 1;
-    return "noise";
+    return {
+      outcome: "noise",
+      decision: {
+        label: deterministic.classification || "likely_noise",
+        reason: deterministic.reason || "section_deterministic_noise",
+        source_rejected: false,
+      },
+    };
   }
 
   const gate = gateVisualReviewCandidateForAi({
@@ -1756,7 +1848,17 @@ async function processOneSectionChange(
     report,
   });
 
-  if (!gate.allowed) return "noise";
+  if (!gate.allowed) {
+    return gate.decision?.source_rejected
+      ? {
+          outcome: "preserve_last_known_good",
+          reason: gate.decision.reason || "section_source_rejected",
+        }
+      : {
+          outcome: "noise",
+          decision: gate.decision,
+        };
+  }
 
   if (!interpretVisualChanges || visualReviewMode !== "batch") {
     const reviewPath = saveReviewRecord({
@@ -1794,7 +1896,7 @@ async function processOneSectionChange(
   return "queued";
 }
 
-async function finishTextOnlyNoise({
+async function finishSafeDeterministicNoise({
   source,
   baseline,
   capture,
@@ -1802,42 +1904,65 @@ async function finishTextOnlyNoise({
   reason,
   decision = null,
   countersAlreadyRecorded = false,
+  textOnly = false,
+  comparisonComplete = true,
 }) {
   if (!countersAlreadyRecorded) {
     report.deterministic_noise += 1;
     report.deterministic_noise_rejected += 1;
-    report.text_only_noise_rejected += 1;
+    if (textOnly) report.text_only_noise_rejected += 1;
   }
 
-  const canAcceptNoiseBaseline = !decision?.source_rejected || acceptTextOnlyNoise;
+  const baselineDisposition = deterministicNoiseBaselineDisposition({
+    sourceRejected: Boolean(decision?.source_rejected),
+    promote,
+    acceptTextOnlyNoise,
+    comparisonComplete,
+  });
   let baselinePromoted = false;
-  if (canAcceptNoiseBaseline && (promote || acceptTextOnlyNoise)) {
+  if (baselineDisposition.advance) {
+    const monitoringDisposition = {
+      classification: "deterministic_noise",
+      label: decision?.label || null,
+      reason,
+      source_rejected: Boolean(decision?.source_rejected),
+      text_only: textOnly,
+    };
+    capture.monitoring_disposition = monitoringDisposition;
     baselinePromoted = writeBaseline(source, capture, {
-      reason: `text_only_noise_rejected:${reason}`,
-      previous_baseline_capture: baseline.capture || null,
-      baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
+      reason: `deterministic_noise_absorbed:${reason}`,
+      previous_baseline: baseline,
+      previous_baseline_capture: baseline?.capture || null,
+      baseline_facts: capture.baseline_facts || baseline?.summary_metadata?.baseline_facts || null,
       baseline_facts_metadata:
-        capture.baseline_facts_metadata || baseline.summary_metadata?.baseline_facts_metadata || null,
-      text_only_noise_decision: decision
-        ? {
-            label: decision.label || null,
-            reason: decision.reason || null,
-            source_rejected: Boolean(decision.source_rejected),
-          }
-        : null,
+        capture.baseline_facts_metadata || baseline?.summary_metadata?.baseline_facts_metadata || null,
+      monitoring_disposition: monitoringDisposition,
     });
     if (baselinePromoted) report.promoted += 1;
-    await maybeSyncR2Snapshot(source, capture, report, {
-      reason: "text_only_noise_rejected",
-      noise: true,
-      unchanged: true,
-    });
+    if (baselinePromoted) {
+      await maybeSyncR2Snapshot(source, capture, report, {
+        reason: "deterministic_noise_absorbed",
+        noise: textOnly,
+        unchanged: textOnly,
+      });
+    }
   }
 
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
   pruneTransientExpansionStateScreenshots(capture, report);
   if (!keepUnchanged && !baselinePromoted) removeGeneratedCaptureDir(capture.dir);
-  console.log(`NOISE text_only ${reason || "deterministic_rejected"} ${sourceLabel(source)}`);
+  if (baselinePromoted) {
+    console.log(
+      `ABSORBED deterministic_noise scope=${textOnly ? "text_only" : "whole_page"} ` +
+        `reason=${reason || "deterministic_rejected"} ${sourceLabel(source)}`,
+    );
+  } else {
+    console.log(
+      `PRESERVED last_known_good deterministic_noise disposition=${baselineDisposition.reason} ` +
+        `reason=${reason || "deterministic_rejected"} ${sourceLabel(source)}`,
+    );
+  }
+  return { absorbed: baselinePromoted, disposition: baselineDisposition.reason };
 }
 
 async function reviewAndApplyCandidateChange({
@@ -5797,26 +5922,17 @@ async function syncR2LocalizationLatest(source, capture) {
   );
 
   const hadPrevious = Object.keys(jsonObjectOrEmpty(existingRecord?.previous_object_keys)).length > 0;
-  const previousObjectKeys = resetPreviousSnapshot
-    ? {}
-    : jsonObjectOrEmpty(existingRecord?.previous_object_keys);
-  const previousHashes = resetPreviousSnapshot
-    ? {}
-    : jsonObjectOrEmpty(existingRecord?.previous_hashes);
-  const previousMetadata = resetPreviousSnapshot
-    ? {}
-    : jsonObjectOrEmpty(existingRecord?.previous_metadata);
-  const previousCapturedAt = resetPreviousSnapshot
-    ? null
-    : existingRecord?.previous_captured_at || null;
+  const history = refreshedLatestVisualSnapshotHistory(existingRecord, {
+    resetPrevious: resetPreviousSnapshot,
+  });
 
   const staleKeys = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
-    previousObjectKeys,
-    previousHashes,
-    previousMetadata,
-    previousCapturedAt,
+    previousObjectKeys: history.previous_object_keys,
+    previousHashes: history.previous_hashes,
+    previousMetadata: history.previous_metadata,
+    previousCapturedAt: history.previous_captured_at,
   });
   await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
 
@@ -6062,6 +6178,7 @@ function r2CaptureMetadata(capture) {
     pdf_text_error: capture.pdf_text_error || null,
     baseline_facts: capture.baseline_facts || null,
     baseline_facts_metadata: capture.baseline_facts_metadata || null,
+    monitoring_disposition: capture.monitoring_disposition || null,
     localization: capture.localization || captureLocalizationMetadata(capture),
   };
 }
@@ -6803,6 +6920,10 @@ function copyEvidenceFiles(targetDir, previous, capture) {
   copyIfPresent("new_pdf", capture.pdf_path, "new-document.pdf");
   copyIfPresent("previous_text", previous.textPath, "previous-text.txt");
   copyIfPresent("new_text", capture.text_path, "new-text.txt");
+  copyIfPresent("previous_sections_text", previous.sectionsTextPath, "previous-sections.txt");
+  copyIfPresent("new_sections_text", capture.sections_text_path, "new-sections.txt");
+  copyIfPresent("previous_sections_json", previous.sectionsJsonPath, "previous-sections.json");
+  copyIfPresent("new_sections_json", capture.sections_json_path, "new-sections.json");
   copyIfPresent("previous_meta", previous.metaPath, "previous-meta.json");
   copyIfPresent("new_meta", capture.meta_path, "new-meta.json");
 
@@ -6891,6 +7012,7 @@ function writeBaseline(source, capture, details) {
         capture.baseline_facts_metadata ||
         existingSummary.baseline_facts_metadata ||
         null,
+      monitoring_disposition: details.monitoring_disposition || null,
     },
   };
   atomicWriteJson(baselinePath, baseline);
@@ -7798,6 +7920,7 @@ function visualWorkerMetadata(report) {
       section_removal_presence_conflicts: report.section_removal_presence_conflicts,
       section_change_candidates_blocked_unconfirmed: report.section_change_candidates_blocked_unconfirmed,
       section_change_candidates_enqueued: report.section_change_candidates_enqueued,
+      section_change_candidates_overflow: report.section_change_candidates_overflow,
       section_evidence_screenshots_taken: report.section_evidence_screenshots_taken,
       section_text_included_in_main_hash: report.section_text_included_in_main_hash,
       section_text_included_in_baseline_facts: report.section_text_included_in_baseline_facts,

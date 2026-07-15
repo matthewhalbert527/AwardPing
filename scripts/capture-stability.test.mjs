@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildStableTextBlocks,
+  captureProfileSettings,
   compareStableCaptureHashes,
   defaultCaptureProfile,
   defaultSectionExtractionProfile,
@@ -112,8 +113,26 @@ describe("capture stability profiles", () => {
 
     expect(shouldUseExpansionForSource(homepage, "stable-daily")).toBe(false);
     expect(shouldUseExpansionForSource(faq, "stable-daily")).toBe(false);
+    expect(shouldUseExpansionForSource(homepage, "localization-repair")).toBe(false);
+    expect(shouldUseExpansionForSource(faq, "localization-repair")).toBe(false);
     expect(shouldUseExpansionForSource(homepage, "baseline-rich")).toBe(true);
     expect(shouldUseScrollActivationForSource(homepage, "stable-daily", true)).toBe(false);
     expect(shouldUseScrollActivationForSource(faq, "stable-daily", true)).toBe(true);
+    expect(shouldUseScrollActivationForSource(homepage, "localization-repair", true)).toBe(false);
+    expect(shouldUseScrollActivationForSource(faq, "localization-repair", true)).toBe(true);
+  });
+
+  it("renders localization repair like the stable daily monitor", () => {
+    const daily = captureProfileSettings("stable-daily");
+    const repair = captureProfileSettings("localization-repair");
+
+    expect(repair).toMatchObject({
+      profile: "localization-repair",
+      useMainContentHashForComparison: daily.useMainContentHashForComparison,
+      allowExpansionScreenshots: daily.allowExpansionScreenshots,
+      allowBroadExpansion: daily.allowBroadExpansion,
+      allowScrollActivation: daily.allowScrollActivation,
+      defaultMaxExpansionStateScreenshots: daily.defaultMaxExpansionStateScreenshots,
+    });
   });
 });

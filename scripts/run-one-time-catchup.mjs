@@ -94,10 +94,6 @@ const sourceAiEvidencePendingIdsPath = join(
   reportDir,
   "one-time-catchup-source-ai-evidence-pending-source-ids.json",
 );
-const localizationHistoricalResetIdsPath = join(
-  reportDir,
-  "snapshot-localization-historical-reset-source-ids.json",
-);
 const localizationCurrentRepairIdsPath = join(
   reportDir,
   "snapshot-localization-current-repair-source-ids.json",
@@ -530,6 +526,7 @@ async function drainVisualReviewBatch() {
       "--max-requests-per-batch=250",
       "--inline-threshold=100",
       "--apply=true",
+      "--r2-snapshot-sync=true",
     ]);
     const after = await liveSnapshot();
     const afterCount = after.summary.backlog.visual_review_queue;
@@ -583,84 +580,59 @@ async function drainPageAuditBatch() {
 async function drainSnapshotLocalization() {
   ensureRuntimeAvailable();
   const before = await auditSnapshotLocalization("before");
-  if (
-    !nonNegativeInt(before.latest_repair_needed, 0) &&
-    !nonNegativeInt(before.historical_layout_unavailable, 0)
-  ) {
+  const beforeRepairCount = localizationRepairCount(before);
+  if (!beforeRepairCount) {
     state.localization = { ...before, audited: true };
     writeState();
     return;
   }
 
-  const historicalResetSourceIds = Array.isArray(before.historical_reset_source_ids)
-    ? before.historical_reset_source_ids.filter(Boolean)
-    : [];
-  const historicalResetSet = new Set(historicalResetSourceIds);
   const currentRepairSourceIds = Array.isArray(before.repair_source_ids)
-    ? before.repair_source_ids.filter((sourceId) => sourceId && !historicalResetSet.has(sourceId))
+    ? before.repair_source_ids.filter(Boolean)
     : [];
-  if (!historicalResetSourceIds.length && !currentRepairSourceIds.length) {
+  if (!currentRepairSourceIds.length) {
     throw new Error(
-      `Localization audit reported ${before.latest_repair_needed} current repairs and ` +
-        `${before.historical_layout_unavailable} historical resets but supplied no source IDs.`,
+      `Localization audit reported ${beforeRepairCount} retained screenshot repairs but supplied no source IDs.`,
     );
   }
 
-  if (historicalResetSourceIds.length) {
-    atomicWriteJson(localizationHistoricalResetIdsPath, historicalResetSourceIds);
-    await runLocalizationShards({
-      label: "historical-reset",
-      sourceIdsPath: localizationHistoricalResetIdsPath,
-      resetPrevious: true,
-    });
-  }
-  if (currentRepairSourceIds.length) {
-    atomicWriteJson(localizationCurrentRepairIdsPath, currentRepairSourceIds);
-    await runLocalizationShards({
-      label: "current-repair",
-      sourceIdsPath: localizationCurrentRepairIdsPath,
-      resetPrevious: false,
-    });
-  }
+  atomicWriteJson(localizationCurrentRepairIdsPath, currentRepairSourceIds);
+  await runLocalizationShards({
+    label: "current-repair",
+    sourceIdsPath: localizationCurrentRepairIdsPath,
+  });
 
-  const after = await auditSnapshotLocalization("after");
+  const firstPass = await auditSnapshotLocalization("after");
   state.localization = {
-    ...after,
+    ...firstPass,
     audited: true,
-    repair_started_with: nonNegativeInt(before.latest_repair_needed, 0),
+    repair_started_with: beforeRepairCount,
     repaired_in_pass: Math.max(
       0,
-      nonNegativeInt(before.latest_repair_needed, 0) - nonNegativeInt(after.latest_repair_needed, 0),
-    ),
-    historical_reset_started_with: nonNegativeInt(before.historical_layout_unavailable, 0),
-    historical_reset_in_pass: Math.max(
-      0,
-      nonNegativeInt(before.historical_layout_unavailable, 0) -
-        nonNegativeInt(after.historical_layout_unavailable, 0),
+      beforeRepairCount - localizationRepairCount(firstPass),
     ),
   };
   writeState();
+  const after = firstPass;
+
   recordCycle("snapshot-localization", {
-    before: nonNegativeInt(before.latest_repair_needed, 0),
-    after: nonNegativeInt(after.latest_repair_needed, 0),
+    before: beforeRepairCount,
+    after: localizationRepairCount(after),
     exact_coverage_percent: nonNegativeNumber(after.exact_coverage_percent, 0),
     historical_layout_unavailable: nonNegativeInt(after.historical_layout_unavailable, 0),
   });
   await updateTicker("snapshot-localization", await liveSnapshot());
 
-  if (
-    nonNegativeInt(after.latest_repair_needed, 0) ||
-    nonNegativeInt(after.historical_layout_unavailable, 0)
-  ) {
+  if (localizationRepairCount(after)) {
     throw new CatchupPausedError(
       "paused_snapshot_localization",
-      `${after.latest_repair_needed} current screenshots still need safe localization metadata; ` +
-        `${after.historical_layout_unavailable || 0} unlocalized historical screenshots still need reset.`,
+      `${after.repair_needed_versions} retained screenshots still need safe localization metadata ` +
+        `(${after.latest_repair_needed} current, ${after.previous_repair_needed} previous).`,
     );
   }
 }
 
-async function runLocalizationShards({ label, sourceIdsPath, resetPrevious }) {
+async function runLocalizationShards({ label, sourceIdsPath }) {
   const children = Array.from({ length: localizationShards }, (_, shardIndex) =>
     runChild(`snapshot-localization-${label}-shard-${shardIndex + 1}-of-${localizationShards}`, [
       "scripts/run-localization-repair.mjs",
@@ -672,10 +644,18 @@ async function runLocalizationShards({ label, sourceIdsPath, resetPrevious }) {
       "--extract-expandable-sections=true",
       "--include-section-text-in-main-hash=false",
       "--capture-section-evidence=false",
-      `--reset-previous-snapshot=${resetPrevious}`,
+      "--reset-previous-snapshot=false",
     ]),
   );
   await Promise.all(children);
+}
+
+function localizationRepairCount(report) {
+  return nonNegativeInt(
+    report?.repair_needed_versions,
+    nonNegativeInt(report?.latest_repair_needed, 0) +
+      nonNegativeInt(report?.previous_repair_needed, 0),
+  );
 }
 
 async function auditSnapshotLocalization(label) {
@@ -1049,7 +1029,7 @@ function printForecast(snapshot) {
   console.log("ONE_TIME_CATCHUP_FORECAST");
   console.log(`  open_sources=${backlog.open_sources} source_ai_reviews=${backlog.source_ai_reviews} move_review_later=${backlog.sources_to_review_later}`);
   console.log(`  monitor_sources=${backlog.monitor_eligible_sources} missing_visuals=${backlog.monitor_eligible_missing_visuals}`);
-  console.log(`  localization_latest_pending=${backlog.snapshot_localization_latest_pending} historical_reset_pending=${backlog.snapshot_localization_historical_unavailable} localization_work=${backlog.snapshot_localization_work_pending}`);
+  console.log(`  localization_latest_pending=${backlog.snapshot_localization_latest_pending} localization_previous_pending=${backlog.snapshot_localization_previous_pending} historical_fallbacks=${backlog.snapshot_localization_historical_unavailable} localization_work=${backlog.snapshot_localization_work_pending}`);
   console.log(`  active_awards=${backlog.active_awards} missing_public_facts=${backlog.awards_missing_public_facts} never_reconciled=${backlog.awards_never_reconciled}`);
   console.log(`  latest_failed_reconciliations=${backlog.reconciliation_latest_failed_awards} unresolved_audit_errors=${backlog.latest_unresolved_audit_errors}`);
   console.log(`  gemini_model=${forecast.model} mode=${forecast.gemini_mode} estimated_cost=$${forecast.estimated_total_cost_usd.toFixed(2)} range=$${forecast.estimated_cost_range_usd.low.toFixed(2)}-$${forecast.estimated_cost_range_usd.high.toFixed(2)}`);

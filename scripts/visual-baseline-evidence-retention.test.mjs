@@ -16,12 +16,60 @@ function functionBody(name, nextName) {
   return source.slice(start, end === -1 ? undefined : end);
 }
 
+function catchupFunctionBody(name, nextName) {
+  const start = catchupSource.indexOf(`function ${name}`);
+  const end = catchupSource.indexOf(`function ${nextName}`, start + 1);
+  return catchupSource.slice(start, end === -1 ? undefined : end);
+}
+
 describe("visual baseline evidence retention", () => {
-  it("never deletes a text-noise capture after promoting it to baseline", () => {
-    const body = functionBody("finishTextOnlyNoise", "reviewAndApplyCandidateChange");
+  it("absorbs safe deterministic noise without deleting its promoted evidence", () => {
+    const body = functionBody("finishSafeDeterministicNoise", "reviewAndApplyCandidateChange");
 
     expect(body).toContain("baselinePromoted = writeBaseline");
+    expect(body).toContain("deterministic_noise_absorbed");
+    expect(body).toContain("monitoring_disposition");
+    expect(body).toContain("noise: textOnly");
+    expect(body).toContain("unchanged: textOnly");
     expect(body).toContain("if (!keepUnchanged && !baselinePromoted)");
+    expect(body).toContain("deterministicNoiseBaselineDisposition");
+    expect(body).toContain("if (baselinePromoted)");
+    expect(body).toContain("PRESERVED last_known_good deterministic_noise");
+  });
+
+  it("routes whole-page deterministic noise through the global absorption path", () => {
+    const body = functionBody("processSourceUnlocked", "processLocalizationRepairSource");
+    const deterministicNoise = body.indexOf("if (!deterministic.candidate_change)");
+    const absorption = body.indexOf("await finishSafeDeterministicNoise", deterministicNoise);
+    const visualGate = body.indexOf("const gate = gateVisualReviewCandidateForAi", deterministicNoise);
+
+    expect(deterministicNoise).toBeGreaterThan(-1);
+    expect(absorption).toBeGreaterThan(deterministicNoise);
+    expect(absorption).toBeLessThan(visualGate);
+  });
+
+  it("absorbs all-noise section changes only after queued and existing candidates are excluded", () => {
+    const body = functionBody("processExpandableSectionComparison", "processOneSectionChange");
+    const queuedGuard = body.indexOf("if (queued > 0)");
+    const existingGuard = body.indexOf("if (absorbed > 0 || existing > 0)");
+    const overflowGuard = body.indexOf("if (unreviewedSectionPairs > 0)", existingGuard);
+    const preserveGuard = body.indexOf("if (preservedLastKnownGood > 0)");
+    const noiseGuard = body.indexOf("if (rejectedAsNoise > 0)");
+    const absorption = body.indexOf("await finishSafeDeterministicNoise", noiseGuard);
+
+    expect(queuedGuard).toBeGreaterThan(-1);
+    expect(existingGuard).toBeGreaterThan(queuedGuard);
+    expect(overflowGuard).toBeGreaterThan(existingGuard);
+    expect(preserveGuard).toBeGreaterThan(overflowGuard);
+    expect(noiseGuard).toBeGreaterThan(preserveGuard);
+    expect(absorption).toBeGreaterThan(noiseGuard);
+    expect(body).toContain('if (outcome === "preserve_last_known_good")');
+    expect(body).toContain('reason: "section_candidate_limit_exceeded_preserve_last_known_good"');
+    expect(body).toContain("comparisonComplete: false");
+
+    const sectionChange = functionBody("processOneSectionChange", "finishSafeDeterministicNoise");
+    expect(sectionChange).toContain('outcome: "preserve_last_known_good"');
+    expect(sectionChange).toContain('reason: "unconfirmed_section_presence"');
   });
 
   it("never deletes a PDF capture after promoting a text-equivalent file", () => {
@@ -29,6 +77,15 @@ describe("visual baseline evidence retention", () => {
 
     expect(body).toContain("baselinePromoted = writeBaseline");
     expect(body).toContain("if (!keepUnchanged && !baselinePromoted)");
+  });
+
+  it("copies expandable-section evidence before an overflow capture can be cleaned up", () => {
+    const copyEvidence = functionBody("copyEvidenceFiles", "writeBaseline");
+
+    expect(copyEvidence).toContain('"previous_sections_text"');
+    expect(copyEvidence).toContain('"new_sections_text"');
+    expect(copyEvidence).toContain('"previous_sections_json"');
+    expect(copyEvidence).toContain('"new_sections_json"');
   });
 
   it("defends the deletion boundary and treats dangling pointers as missing", () => {
@@ -121,5 +178,22 @@ describe("visual baseline evidence retention", () => {
     expect(sourceSelection).toBeGreaterThan(entryTicker);
     expect(emptyReturn).toBeGreaterThan(sourceSelection);
     expect(evidenceFunction.match(/updateTicker\(tickerStage/g)).toHaveLength(2);
+  });
+
+  it("preserves historical R2 pointers during an explicit latest-only refresh", () => {
+    const localization = functionBody("syncR2LocalizationLatest", "syncR2BackfillLatestOnly");
+    const visualReview = catchupFunctionBody("drainVisualReviewBatch", "drainPageAuditBatch");
+
+    expect(visualReview).toContain('"--r2-snapshot-sync=true"');
+    expect(localization).toContain("refreshedLatestVisualSnapshotHistory");
+  });
+
+  it("never rotates an existing pointer from the missing-snapshot repair path", () => {
+    const repair = functionBody("maybeRepairMissingR2Snapshot", "publishVisualChangeEvent");
+
+    expect(repair).toContain("if (existingR2SnapshotSourceIds.has(source.id)) return false");
+    expect(repair).toContain("await maybeSyncR2Snapshot");
+    expect(source).not.toContain("r2LatestOnlyRefresh");
+    expect(source).not.toContain("r2-latest-only-refresh");
   });
 });
