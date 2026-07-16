@@ -9,6 +9,10 @@ import {
   visualReviewBatchPolicyIdentity,
 } from "./award-monitoring-policy.mjs";
 import { changeEventSuppressionDecision } from "./change-event-suppression.mjs";
+import {
+  INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+  initialOfficialDocumentApplicantEvidenceDecision,
+} from "./initial-official-document.mjs";
 import { sourceBaselineFacts, sourceQualityDecision } from "./source-quality.mjs";
 
 export const visualReviewResponseSchema = {
@@ -943,6 +947,15 @@ export function validateVisualBatchReview({ candidate, source, result }) {
     return reject(`source_quality_${quality.reason}`);
   }
 
+  const isInitialOfficialDocument =
+    cleanKey(candidate?.candidate_scope) === cleanKey(INITIAL_OFFICIAL_DOCUMENT_SCOPE);
+  const initialDocumentApplicantEvidence = isInitialOfficialDocument
+    ? initialOfficialDocumentApplicantEvidenceDecision({ candidate, source, result })
+    : null;
+  if (isInitialOfficialDocument && !initialDocumentApplicantEvidence.allowed) {
+    return reject(initialDocumentApplicantEvidence.reason);
+  }
+
   const policyFlag = alertBlockingPolicyFlag(result);
   if (!result?.is_true_change || !result?.is_alert_worthy) {
     return reject(
@@ -1004,7 +1017,10 @@ export function validateVisualBatchReview({ candidate, source, result }) {
     ...stringArray(deterministicDiff.amount_changes),
   ].join(" "));
   if (deterministicEvidence) {
-    if (!strictApplicantFacingEvidencePattern.test(deterministicEvidence)) {
+    if (
+      !strictApplicantFacingEvidencePattern.test(deterministicEvidence) &&
+      !initialDocumentApplicantEvidence?.allowed
+    ) {
       return reject("missing_deterministic_applicant_fact_signal");
     }
   } else {

@@ -235,6 +235,7 @@ function checkMigrations() {
     "20260716150000_initial_official_document_events.sql",
     "20260716152833_source_intake_fact_candidate_idempotency.sql",
     "20260716161529_r2_baseline_recovery_quarantine.sql",
+    "20260716171409_recover_rejected_initial_document_candidates.sql",
   ];
 
   for (const file of expected) {
@@ -275,6 +276,34 @@ function checkMigrations() {
     pass("Shared award catalog migration is present.");
   } else {
     fail("Shared award catalog migration is missing.");
+  }
+
+  const initialDocumentRecovery = readIfExists(
+    "supabase/migrations/20260716171409_recover_rejected_initial_document_candidates.sql",
+  );
+  const requiredInitialDocumentRecoveryContracts = [
+    "recover_rejected_initial_official_document_candidate",
+    "missing_deterministic_applicant_fact_signal",
+    "p_expected_candidate_signature text",
+    "p_expected_candidate_evidence_signature text",
+    "p_expected_quarantine_evidence_hash text",
+    "v_quarantine.status <> 'quarantined'",
+    "manual_quarantine_operator_assignments",
+    "quarantine_resolves_only_after_publication",
+    "to service_role",
+  ];
+  const missingInitialDocumentRecoveryContracts =
+    requiredInitialDocumentRecoveryContracts.filter(
+      (contract) => !initialDocumentRecovery.includes(contract),
+    );
+  if (missingInitialDocumentRecoveryContracts.length === 0) {
+    pass(
+      "Initial official-document recovery migration is zero-charge, CAS-bound, and leaves quarantine open until publication.",
+    );
+  } else {
+    fail(
+      `Initial official-document recovery migration is incomplete; missing ${missingInitialDocumentRecoveryContracts.join(", ")}.`,
+    );
   }
 
   const sharedHistory = readIfExists("supabase/migrations/0008_shared_award_history.sql");
@@ -418,7 +447,7 @@ function checkMigrations() {
     "admin_review_status = 'open'",
     "v_reopen_source :=",
     "v_source.admin_reviewed_by = 'awardping-r2-baseline-recovery'",
-    "p_evidence -> 'restored_missing_baseline' is distinct from 'true'::jsonb",
+    "p_evidence -> 'rehydrated' is distinct from 'true'::jsonb",
     "p_evidence -> 'creates_api_charge' is distinct from 'false'::jsonb",
     "p_evidence -> 'used_live_fetch' is distinct from 'false'::jsonb",
     "to service_role",
@@ -460,10 +489,10 @@ function checkRedirects() {
     fail("/pricing should redirect to /signup for the free beta.");
   }
 
-  if (/redirect\(["']\/dashboard["']\)/.test(billing)) {
-    pass("/dashboard/billing redirects to /dashboard.");
+  if (/redirect\(["']\/updates["']\)/.test(billing)) {
+    pass("/dashboard/billing redirects to /updates.");
   } else {
-    fail("/dashboard/billing should redirect to /dashboard for the free beta.");
+    fail("/dashboard/billing should redirect to /updates for the consolidated free beta.");
   }
 }
 

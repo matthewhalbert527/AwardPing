@@ -412,6 +412,15 @@ export function initialOfficialDocumentPublicationDecision({ candidate, source, 
   if (!exactAfter || !addedText.includes(exactAfter)) {
     return reject("exact_added_wording_not_bound_to_deterministic_diff");
   }
+  const attestedApplicantEvidenceQuote = normalizeInitialDocumentText(
+    objectValue(promptAttestation.body).applicant_evidence_quote,
+  );
+  if (!attestedApplicantEvidenceQuote || exactAfter !== attestedApplicantEvidenceQuote) {
+    return reject("exact_added_wording_not_bound_to_attested_applicant_evidence");
+  }
+  if (!applicantFacingEvidencePattern.test(attestedApplicantEvidenceQuote)) {
+    return reject("attested_applicant_evidence_not_applicant_facing");
+  }
   if (cleanText(storedResult.exact_before ?? storedResult.before)) {
     return reject("first_observation_must_not_claim_previous_wording");
   }
@@ -481,6 +490,29 @@ export function initialOfficialDocumentPublicationDecision({ candidate, source, 
         model_narrative_published: false,
       },
     },
+  };
+}
+
+/**
+ * Narrow bridge between the deterministic first-observation contract and the
+ * generic visual-review policy. Ordinary content changes still need to match
+ * the generic applicant-fact vocabulary. A first-observed official PDF may use
+ * different applicant-facing wording only after the complete publication
+ * guard has rebound that exact wording to the immutable sealed attestation.
+ */
+export function initialOfficialDocumentApplicantEvidenceDecision({ candidate, source, result } = {}) {
+  const publicationDecision = initialOfficialDocumentPublicationDecision({
+    candidate,
+    source,
+    result,
+  });
+  if (!publicationDecision.allowed) return publicationDecision;
+
+  return {
+    allowed: true,
+    reason: "approved_attestation_bound_initial_document_applicant_evidence",
+    evidence_quote: publicationDecision.change_details.exact_after,
+    attestation_sha256: publicationDecision.previous_hash,
   };
 }
 

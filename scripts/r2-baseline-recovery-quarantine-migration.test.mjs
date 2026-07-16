@@ -105,6 +105,12 @@ describe("R2 baseline-recovery quarantine migration", () => {
     expect(launchCheck).toContain("record_r2_baseline_recovery_quarantine");
     expect(launchCheck).toContain("resolve_r2_baseline_recovery_quarantine");
     expect(launchCheck).toContain("preserve_r2_baseline_recovery_quarantine");
+    expect(launchCheck).toContain(
+      "p_evidence -> 'rehydrated' is distinct from 'true'::jsonb",
+    );
+    expect(launchCheck).not.toContain(
+      "p_evidence -> 'restored_missing_baseline' is distinct from 'true'::jsonb",
+    );
     expect(databaseTypes).toContain("record_r2_baseline_recovery_quarantine:");
     expect(databaseTypes).toContain("resolve_r2_baseline_recovery_quarantine:");
     expect(runbook).toContain(`\`${migrationName}\``);

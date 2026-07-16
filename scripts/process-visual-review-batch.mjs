@@ -44,6 +44,7 @@ import {
   initialOfficialDocumentPublicationDecision,
   initialOfficialDocumentSourceIdentityDecision,
 } from "./lib/initial-official-document.mjs";
+import { initialDocumentCurrentPolicyShadow } from "./lib/initial-document-recovery.mjs";
 import {
   compareVisualCandidateOrder,
   findBlockingPriorVisualPublication,
@@ -266,6 +267,11 @@ const report = {
   initial_official_document_acquisition_restore_attempted: 0,
   initial_official_document_acquisition_restore_succeeded: 0,
   initial_official_document_acquisition_restore_failed: 0,
+  initial_official_document_zero_charge_recovery_candidates: 0,
+  initial_official_document_zero_charge_recovered: 0,
+  initial_official_document_zero_charge_recovery_skipped: 0,
+  initial_official_document_zero_charge_recovery_conflicts: 0,
+  initial_official_document_zero_charge_recovery_operator_owned: 0,
   verified_event_crop_sides: 0,
   unavailable_event_crop_sides: 0,
   event_evidence_failures: [],
@@ -306,7 +312,18 @@ try {
 }
 
 async function pollExistingBatches() {
-  if (apply) await reconcileStoredSucceededCandidates();
+  if (apply) {
+    const recoveredCandidateIds =
+      await recoverRejectedInitialOfficialDocumentCandidates();
+    const policyRefreshedRecoveredCandidateIds =
+      await reconcileStoredSucceededCandidates(recoveredCandidateIds);
+    if (policyRefreshedRecoveredCandidateIds.length) {
+      await reconcileStoredSucceededCandidates(
+        policyRefreshedRecoveredCandidateIds,
+        { priorityOnly: true },
+      );
+    }
+  }
   const { data, error } = await supabase
     .from("shared_award_visual_review_candidates")
     .select("gemini_batch_name,model,status,rejection_reason")
@@ -389,31 +406,268 @@ async function pollExistingBatches() {
   }
 }
 
-async function reconcileStoredSucceededCandidates() {
-  const staleBefore = new Date(
-    Date.now() - publicationClaimStaleMinutes * 60_000,
-  ).toISOString();
+async function recoverRejectedInitialOfficialDocumentCandidates() {
   const { data, error } = await supabase
     .from("shared_award_visual_review_candidates")
     .select("*")
-    .eq("status", "succeeded")
-    .not("ai_result", "is", null)
-    // Rows finalized as retry-pending receive a new updated_at. Ordering by
-    // that retry timestamp rotates an old failing window behind untouched
-    // results, while fresh cross-process claims do not consume the window.
-    .or(
-      `publication_claim_token.is.null,publication_claimed_at.is.null,publication_claimed_at.lt.${staleBefore}`,
-    )
+    .eq("candidate_scope", INITIAL_OFFICIAL_DOCUMENT_SCOPE)
+    .eq("status", "rejected")
+    .eq("rejection_reason", "missing_deterministic_applicant_fact_signal")
     .order("updated_at", { ascending: true })
     .order("id", { ascending: true })
     .limit(Math.max(limit, 500));
-  if (error) throw new Error(`Load stored visual publication retries failed: ${error.message}`);
-  const candidates = (data || []).filter((candidate) =>
-    Object.keys(objectValue(candidate.ai_result)).length,
-  );
+  if (error) {
+    throw new Error(`Load recoverable initial-document candidates failed: ${error.message}`);
+  }
+
+  const candidates = data || [];
+  report.initial_official_document_zero_charge_recovery_candidates += candidates.length;
+  if (!candidates.length) return [];
   const sources = await loadSourcesById(
     candidates.map((candidate) => candidate.shared_award_source_id),
   );
+  const recoveredCandidateIds = [];
+
+  for (const candidate of candidates) {
+    try {
+      const source = sources.get(candidate.shared_award_source_id);
+      const result = objectValue(candidate.ai_result);
+      const candidateEvidenceSignature = cleanText(
+        objectValue(candidate.worker_metadata).evidence_signature,
+      );
+      const { data: quarantine, error: quarantineError } = await supabase
+        .from("manual_quarantine_registry")
+        .select("id,status,reason_code,evidence_hash")
+        .eq("quarantine_key", `initial-document:${candidate.source_acquisition_id}`)
+        .maybeSingle();
+      if (quarantineError) {
+        throw new Error(
+          `Load initial-document recovery quarantine failed: ${quarantineError.message}`,
+        );
+      }
+      let assignment = null;
+      if (quarantine?.id) {
+        const { data: loadedAssignment, error: assignmentError } = await supabase
+          .from("manual_quarantine_operator_assignments")
+          .select("quarantine_id,assigned_to_user_id,assigned_to_email")
+          .eq("quarantine_id", quarantine.id)
+          .maybeSingle();
+        if (assignmentError) {
+          throw new Error(
+            `Load initial-document recovery quarantine assignment failed: ${assignmentError.message}`,
+          );
+        }
+        assignment = loadedAssignment || null;
+      }
+      if (quarantine?.status === "in_review" || assignment?.quarantine_id) {
+        report.initial_official_document_zero_charge_recovery_skipped += 1;
+        report.initial_official_document_zero_charge_recovery_operator_owned += 1;
+        report.errors.push({
+          candidate_id: candidate.id,
+          source_id: candidate.shared_award_source_id,
+          source_acquisition_id: candidate.source_acquisition_id,
+          quarantine_id: quarantine?.id || null,
+          stage: "initial_document_zero_charge_recovery_operator_owned",
+          message:
+            "Automatic recovery left this candidate unchanged because its quarantine is assigned or already in review.",
+          assigned_to_user_id: assignment?.assigned_to_user_id || null,
+          assigned_to_email: assignment?.assigned_to_email || null,
+          creates_api_charge: false,
+          solution:
+            "The assigned operator should inspect the immutable candidate and current policy result. Do not replace the retained document or submit another paid review unless its sealed intake evidence is invalid.",
+        });
+        continue;
+      }
+      if (
+        !quarantine?.id ||
+        quarantine.status !== "quarantined" ||
+        quarantine.reason_code !== "missing_deterministic_applicant_fact_signal" ||
+        !candidateEvidenceSignature ||
+        !candidate.source_acquisition_id
+      ) {
+        report.initial_official_document_zero_charge_recovery_skipped += 1;
+        report.errors.push({
+          candidate_id: candidate.id,
+          source_id: candidate.shared_award_source_id,
+          source_acquisition_id: candidate.source_acquisition_id,
+          quarantine_id: quarantine?.id || null,
+          stage: "initial_document_zero_charge_recovery_quarantine_mismatch",
+          message:
+            "Automatic recovery left this candidate unchanged because its exact unassigned quarantine or candidate evidence signature was missing or changed.",
+          creates_api_charge: false,
+          solution:
+            "Inspect the candidate, acquisition, and quarantine evidence hashes. Preserve all immutable evidence and repair only the durable quarantine linkage before retrying.",
+        });
+        continue;
+      }
+
+      const publicationDecision = initialOfficialDocumentPublicationDecision({
+        candidate,
+        source,
+        result,
+      });
+      if (!publicationDecision.allowed) {
+        report.initial_official_document_zero_charge_recovery_skipped += 1;
+        report.errors.push({
+          candidate_id: candidate.id,
+          source_id: candidate.shared_award_source_id,
+          source_acquisition_id: candidate.source_acquisition_id,
+          quarantine_id: quarantine.id,
+          quarantine_evidence_hash: quarantine.evidence_hash,
+          stage: "initial_document_zero_charge_recovery_publication_guard",
+          message:
+            `Current immutable first-document validation rejected this historical recovery: ${publicationDecision.reason}.`,
+          creates_api_charge: false,
+          solution:
+            "Leave the candidate and quarantine unchanged. Inspect the sealed acquisition and exact attestation evidence; repairing local evidence is free and must not replace or rewrite the retained document.",
+        });
+        continue;
+      }
+      const eventTimes = initialOfficialDocumentEventTimes({ candidate });
+      const currentPolicyShadow = initialDocumentCurrentPolicyShadow(candidate);
+      const policyDecision = latestVisualReviewPolicyDecision({
+        candidate: currentPolicyShadow,
+        source,
+        result,
+        changeDetails: {
+          ...publicationDecision.change_details,
+          first_observed_at: eventTimes.first_observed_at,
+          recognized_at: eventTimes.recognized_at,
+          generated_at: eventTimes.generated_at,
+        },
+      });
+      if (!policyDecision.allowed) {
+        report.initial_official_document_zero_charge_recovery_skipped += 1;
+        if (policyDecision.guard === "change_event_suppression") {
+          report.errors.push({
+            candidate_id: candidate.id,
+            source_id: candidate.shared_award_source_id,
+            source_acquisition_id: candidate.source_acquisition_id,
+            quarantine_id: quarantine.id,
+            stage: "initial_document_zero_charge_recovery_policy_suppressed",
+            message:
+              `Current global policy intentionally suppresses this historical recovery: ${policyDecision.reason}.`,
+            creates_api_charge: false,
+            solution:
+              "Review the current suppression evidence before resolving the older actionable quarantine; do not requeue or replace the immutable candidate automatically.",
+          });
+        } else {
+          report.errors.push({
+            candidate_id: candidate.id,
+            source_id: candidate.shared_award_source_id,
+            source_acquisition_id: candidate.source_acquisition_id,
+            quarantine_id: quarantine.id,
+            quarantine_evidence_hash: quarantine.evidence_hash,
+            stage: "initial_document_zero_charge_recovery_current_policy",
+            message:
+              `Current global policy rejected this historical recovery: ${policyDecision.reason}.`,
+            policy_guard: policyDecision,
+            creates_api_charge: false,
+            solution:
+              "Leave the immutable candidate and quarantine unchanged. Review the exact current-policy evidence before any manual action; do not submit AI or replace the retained document.",
+          });
+        }
+        continue;
+      }
+
+      const { data: recovered, error: recoveryError } = await supabase.rpc(
+        "recover_rejected_initial_official_document_candidate",
+        {
+          p_candidate_id: candidate.id,
+          p_acquisition_id: candidate.source_acquisition_id,
+          p_expected_candidate_signature: candidate.candidate_signature,
+          p_expected_candidate_evidence_signature: candidateEvidenceSignature,
+          p_expected_quarantine_evidence_hash: quarantine.evidence_hash,
+          p_policy_guard: policyDecision,
+        },
+      );
+      if (recoveryError) {
+        if (["23503", "23514", "40001"].includes(recoveryError.code)) {
+          throw new Error(
+            `Rejected initial-document recovery CAS refused candidate ${candidate.id} ` +
+              `(${recoveryError.code}): ${recoveryError.message}`,
+          );
+        }
+        throw new Error(
+          `Recover rejected initial-document candidate failed: ${recoveryError.message}`,
+        );
+      }
+      const row = Array.isArray(recovered) ? recovered[0] || null : recovered || null;
+      if (row?.candidate_id !== candidate.id || row?.recovered !== true) {
+        throw new Error(
+          `Rejected initial-document candidate ${candidate.id} was not recovered atomically.`,
+        );
+      }
+      recoveredCandidateIds.push(candidate.id);
+      report.initial_official_document_zero_charge_recovered += 1;
+    } catch (error) {
+      report.initial_official_document_zero_charge_recovery_conflicts += 1;
+      report.errors.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        source_acquisition_id: candidate.source_acquisition_id,
+        stage: "initial_document_zero_charge_recovery",
+        message: errorMessage(error),
+        solution:
+          "Leave the immutable candidate and quarantine unchanged. Inspect the exact CAS evidence before any manual action; this recovery must never submit AI or replace the retained document.",
+      });
+    }
+  }
+
+  return recoveredCandidateIds;
+}
+
+async function reconcileStoredSucceededCandidates(
+  priorityCandidateIds = [],
+  { priorityOnly = false } = {},
+) {
+  const staleBefore = new Date(
+    Date.now() - publicationClaimStaleMinutes * 60_000,
+  ).toISOString();
+  let priorityCandidates = [];
+  if (priorityCandidateIds.length) {
+    const { data: priorityData, error: priorityError } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .select("*")
+      .in("id", priorityCandidateIds)
+      .eq("status", "succeeded")
+      .not("ai_result", "is", null);
+    if (priorityError) {
+      throw new Error(
+        `Load recovered initial-document publication candidates failed: ${priorityError.message}`,
+      );
+    }
+    priorityCandidates = priorityData || [];
+  }
+  let data = [];
+  if (!priorityOnly) {
+    const { data: loaded, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .select("*")
+      .eq("status", "succeeded")
+      .not("ai_result", "is", null)
+      // Rows finalized as retry-pending receive a new updated_at. Ordering by
+      // that retry timestamp rotates an old failing window behind untouched
+      // results, while fresh cross-process claims do not consume the window.
+      .or(
+        `publication_claim_token.is.null,publication_claimed_at.is.null,publication_claimed_at.lt.${staleBefore}`,
+      )
+      .order("updated_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(Math.max(limit, 500));
+    if (error) throw new Error(`Load stored visual publication retries failed: ${error.message}`);
+    data = loaded || [];
+  }
+  const candidates = [...new Map(
+    [...priorityCandidates, ...(data || [])]
+      .filter((candidate) => Object.keys(objectValue(candidate.ai_result)).length)
+      .map((candidate) => [candidate.id, candidate]),
+  ).values()];
+  const sources = await loadSourcesById(
+    candidates.map((candidate) => candidate.shared_award_source_id),
+  );
+  const priorityCandidateIdSet = new Set(priorityCandidateIds);
+  const policyRefreshedPriorityCandidateIds = [];
   for (const candidate of candidates) {
     try {
       const usage = candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE
@@ -439,6 +693,12 @@ async function reconcileStoredSucceededCandidates() {
       else if (publishResult.status === "superseded") report.superseded += 1;
       else if (publishResult.status === "rejected") report.rejected += 1;
       else if (publishResult.status === "requeued") {
+        if (
+          candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE &&
+          priorityCandidateIdSet.has(candidate.id)
+        ) {
+          policyRefreshedPriorityCandidateIds.push(candidate.id);
+        }
         if (publishResult.reason === "source_context_changed_since_batch_submission") {
           report.requeued_for_current_source_context += 1;
         } else {
@@ -465,6 +725,7 @@ async function reconcileStoredSucceededCandidates() {
       );
     }
   }
+  return policyRefreshedPriorityCandidateIds;
 }
 
 async function submitPendingCandidates() {
@@ -2370,6 +2631,7 @@ async function publishInitialOfficialDocumentCandidate({
       change_event_evidence_id: publication.evidence_id,
       reconciliation: publication.reconciliation,
       creates_api_charge: false,
+      rejection_disposition: "resolved_by_initial_document_publication",
     }),
     completed_at: now,
     published_at: now,

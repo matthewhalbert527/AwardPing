@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   INITIAL_OFFICIAL_DOCUMENT_SCOPE,
   buildInitialOfficialDocumentCandidate,
+  initialOfficialDocumentApplicantEvidenceDecision,
   initialOfficialDocumentPublicationDecision,
   initialOfficialDocumentSourceIdentityDecision,
 } from "./initial-official-document.mjs";
@@ -10,10 +11,15 @@ import {
   currentVisualReviewPolicyIdentity,
   latestVisualReviewPolicyDecision,
   rebuildInitialOfficialDocumentCandidateForCurrentPolicy,
+  validateVisualBatchReview,
   visualReviewCandidatePolicyFreshness,
 } from "./visual-review-queue.mjs";
 
 const applicantQuote = "Applications are due March 15, 2027.";
+const marshallApplicantQuotes = [
+  "Candidates must also include a brief outline of why they have chosen their second-choice courses and institutions. (500 words maximum)",
+  "Candidates must indicate their first- and second-choice courses for each year of projected study as part of their Marshall application.",
+];
 
 function eligibleInput(overrides = {}) {
   const input = {
@@ -331,6 +337,20 @@ describe("initial official document publication", () => {
     page_type: "pdf",
     shared_awards: { name: "Example Award" },
   };
+  const reviewedSource = {
+    ...source,
+    page_metadata_generated_at: "2026-07-16T00:00:00.000Z",
+    page_metadata_model: "sealed-intake-review",
+    page_metadata: {
+      baseline_facts: {
+        award_relevance: "primary",
+        cycle_relevance: "current_or_upcoming",
+        confidence: "high",
+        display_title: "2027 guidance",
+        quality_flags: [],
+      },
+    },
+  };
 
   it("creates explicit first-observation details and hash identity", () => {
     const candidate = storedCandidate();
@@ -435,6 +455,149 @@ describe("initial official document publication", () => {
       source,
       result: invented.result,
     })).toMatchObject({ allowed: false, reason: "first_observation_must_not_claim_previous_wording" });
+  });
+
+  it.each(marshallApplicantQuotes)(
+    "accepts sealed Marshall first-observation wording outside the generic vocabulary: %s",
+    (quote) => {
+      const input = eligibleInput({
+        review: { evidence_quotes: [quote] },
+        capture: { text: `Official 2027 Marshall guidance\n\n${quote}` },
+      });
+      const candidate = storedCandidate(input);
+      const publicationDecision = initialOfficialDocumentPublicationDecision({
+        candidate,
+        source: reviewedSource,
+        result: candidate.result,
+      });
+
+      expect(publicationDecision).toMatchObject({
+        allowed: true,
+        change_details: { exact_after: quote },
+      });
+      expect(initialOfficialDocumentApplicantEvidenceDecision({
+        candidate,
+        source: reviewedSource,
+        result: candidate.result,
+      })).toMatchObject({
+        allowed: true,
+        reason: "approved_attestation_bound_initial_document_applicant_evidence",
+        evidence_quote: quote,
+      });
+      expect(validateVisualBatchReview({
+        candidate,
+        source: reviewedSource,
+        result: candidate.result,
+      })).toEqual({ allowed: true, reason: "approved" });
+      expect(latestVisualReviewPolicyDecision({
+        candidate,
+        source: reviewedSource,
+        result: candidate.result,
+        changeDetails: publicationDecision.change_details,
+      })).toMatchObject({
+        allowed: true,
+        reason: "approved",
+        guard: "latest_policy",
+      });
+    },
+  );
+
+  it.each(marshallApplicantQuotes)(
+    "does not let ordinary content-change candidates use the sealed-document exception: %s",
+    (quote) => {
+      const candidate = storedCandidate(eligibleInput({
+        review: { evidence_quotes: [quote] },
+        capture: { text: quote },
+      }));
+      candidate.candidate_scope = "content_change";
+
+      expect(validateVisualBatchReview({
+        candidate,
+        source: reviewedSource,
+        result: candidate.result,
+      })).toEqual({
+        allowed: false,
+        reason: "missing_deterministic_applicant_fact_signal",
+      });
+    },
+  );
+
+  it("rejects attestation and exact-quote tampering before applying the initial-document exception", () => {
+    const quote = marshallApplicantQuotes[0];
+    const input = eligibleInput({
+      review: { evidence_quotes: [quote] },
+      capture: { text: quote },
+    });
+    const tamperedAttestation = storedCandidate(input);
+    tamperedAttestation.prompt_payload.first_observation_attestation.canonical_json += " ";
+    expect(validateVisualBatchReview({
+      candidate: tamperedAttestation,
+      source: reviewedSource,
+      result: tamperedAttestation.result,
+    })).toEqual({
+      allowed: false,
+      reason: "first_observation_attestation_hash_mismatch",
+    });
+
+    const tamperedQuote = storedCandidate(input);
+    const replacement = "Candidates must now choose an unrelated option.";
+    tamperedQuote.deterministic_diff.added_text = [replacement];
+    tamperedQuote.deterministic_diff.exact_after = replacement;
+    tamperedQuote.result.exact_after = replacement;
+    tamperedQuote.result.after = replacement;
+    expect(initialOfficialDocumentApplicantEvidenceDecision({
+      candidate: tamperedQuote,
+      source: reviewedSource,
+      result: tamperedQuote.result,
+    })).toEqual({
+      allowed: false,
+      reason: "exact_added_wording_not_bound_to_attested_applicant_evidence",
+    });
+    expect(validateVisualBatchReview({
+      candidate: tamperedQuote,
+      source: reviewedSource,
+      result: tamperedQuote.result,
+    })).toEqual({
+      allowed: false,
+      reason: "exact_added_wording_not_bound_to_attested_applicant_evidence",
+    });
+
+    const coherentlyRehashedNonApplicant = storedCandidate(input);
+    const attestation = coherentlyRehashedNonApplicant.prompt_payload.first_observation_attestation;
+    const nonApplicantQuote = "The document uses a blue cover and contains twelve numbered pages.";
+    const canonicalJson = attestation.canonical_json.replace(
+      JSON.stringify(quote),
+      JSON.stringify(nonApplicantQuote),
+    );
+    const canonicalBody = JSON.parse(canonicalJson);
+    const attestationSha256 = createHash("sha256").update(canonicalJson, "utf8").digest("hex");
+    attestation.body = canonicalBody;
+    attestation.canonical_json = canonicalJson;
+    attestation.sha256 = attestationSha256;
+    attestation.byte_length = Buffer.byteLength(canonicalJson, "utf8");
+    coherentlyRehashedNonApplicant.prompt_payload.hashes.first_observation_attestation_sha256 =
+      attestationSha256;
+    coherentlyRehashedNonApplicant.deterministic_diff.added_text = [nonApplicantQuote];
+    coherentlyRehashedNonApplicant.deterministic_diff.exact_after = nonApplicantQuote;
+    coherentlyRehashedNonApplicant.result.exact_after = nonApplicantQuote;
+    coherentlyRehashedNonApplicant.result.after = nonApplicantQuote;
+
+    expect(initialOfficialDocumentApplicantEvidenceDecision({
+      candidate: coherentlyRehashedNonApplicant,
+      source: reviewedSource,
+      result: coherentlyRehashedNonApplicant.result,
+    })).toEqual({
+      allowed: false,
+      reason: "attested_applicant_evidence_not_applicant_facing",
+    });
+    expect(validateVisualBatchReview({
+      candidate: coherentlyRehashedNonApplicant,
+      source: reviewedSource,
+      result: coherentlyRehashedNonApplicant.result,
+    })).toEqual({
+      allowed: false,
+      reason: "attested_applicant_evidence_not_applicant_facing",
+    });
   });
 
   it("requeues stale deterministic candidates under the current policy identity without a paid review", () => {

@@ -3461,6 +3461,20 @@ export type Database = {
         };
         Returns: boolean;
       };
+      recover_rejected_initial_official_document_candidate: {
+        Args: {
+          p_candidate_id: string;
+          p_acquisition_id: string;
+          p_expected_candidate_signature: string;
+          p_expected_candidate_evidence_signature: string;
+          p_expected_quarantine_evidence_hash: string;
+          p_policy_guard: Json;
+        };
+        Returns: Array<{
+          candidate_id: string;
+          recovered: boolean;
+        }>;
+      };
       record_r2_baseline_recovery_quarantine: {
         Args: {
           p_source_id: string;

@@ -77,10 +77,16 @@ describe("private-beta initial official-document migration gate", () => {
       "OK     Migration 20260716152833_source_intake_fact_candidate_idempotency.sql is present.",
     );
     expect(result.stdout).toContain(
+      "OK     Migration 20260716171409_recover_rejected_initial_document_candidates.sql is present.",
+    );
+    expect(result.stdout).toContain(
       "OK     Initial official-document migration includes immutable intake provenance, discovery state, publication, and quarantine surfaces.",
     );
     expect(result.stdout).toContain(
       "OK     Source-intake fact replay migration includes stable request/field/value identity and uniqueness guards.",
+    );
+    expect(result.stdout).toContain(
+      "OK     Initial official-document recovery migration is zero-charge, CAS-bound, and leaves quarantine open until publication.",
     );
   });
 
@@ -95,6 +101,9 @@ describe("private-beta initial official-document migration gate", () => {
     );
     expect(runbook).toContain(
       "`20260716152833_source_intake_fact_candidate_idempotency.sql`",
+    );
+    expect(runbook).toContain(
+      "`20260716171409_recover_rejected_initial_document_candidates.sql`",
     );
     expect(runbook).toContain("migration list --linked");
     expect(runbook).not.toContain(

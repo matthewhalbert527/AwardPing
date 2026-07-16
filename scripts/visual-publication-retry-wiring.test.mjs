@@ -9,7 +9,7 @@ const source = readFileSync(
 describe("stored visual publication retry wiring", () => {
   it("processes durable succeeded results before any Gemini batch GET", () => {
     const pollStart = source.indexOf("async function pollExistingBatches()");
-    const localRetry = source.indexOf("await reconcileStoredSucceededCandidates()", pollStart);
+    const localRetry = source.indexOf("await reconcileStoredSucceededCandidates(", pollStart);
     const providerGet = source.indexOf("const job = await fetchGeminiJson", pollStart);
     expect(localRetry).toBeGreaterThan(pollStart);
     expect(providerGet).toBeGreaterThan(localRetry);
@@ -18,7 +18,7 @@ describe("stored visual publication retry wiring", () => {
   });
 
   it("rotates retry-pending rows and isolates per-candidate failures", () => {
-    const retryStart = source.indexOf("async function reconcileStoredSucceededCandidates()");
+    const retryStart = source.indexOf("async function reconcileStoredSucceededCandidates(");
     const retryEnd = source.indexOf("async function submitPendingCandidates()", retryStart);
     const body = source.slice(retryStart, retryEnd);
     expect(body).toContain('.order("updated_at", { ascending: true })');
@@ -33,7 +33,7 @@ describe("stored visual publication retry wiring", () => {
   it("isolates an unavailable provider batch so later polling and submission continue", () => {
     const pollStart = source.indexOf("async function pollExistingBatches()");
     const pollEnd = source.indexOf(
-      "async function reconcileStoredSucceededCandidates()",
+      "async function reconcileStoredSucceededCandidates(",
       pollStart,
     );
     const body = source.slice(pollStart, pollEnd);
@@ -59,7 +59,7 @@ describe("stored visual publication retry wiring", () => {
   });
 
   it("tracks stored results that are requeued for current policy or source context", () => {
-    const retryStart = source.indexOf("async function reconcileStoredSucceededCandidates()");
+    const retryStart = source.indexOf("async function reconcileStoredSucceededCandidates(");
     const retryEnd = source.indexOf("async function submitPendingCandidates()", retryStart);
     const body = source.slice(retryStart, retryEnd);
     expect(body).toContain('publishResult.status === "requeued"');

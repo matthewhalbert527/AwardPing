@@ -537,6 +537,7 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\gemini-batch-support.mjs",
       "scripts\\lib\\r2-baseline-rehydration.mjs",
       "scripts\\lib\\source-intake.mjs",
+      "scripts\\lib\\initial-document-recovery.mjs",
       "scripts\\evaluate-public-page-audit-canaries.mjs",
     ]) {
       expect(installer.split(`"${relativePath}"`).length - 1).toBeGreaterThanOrEqual(2);
