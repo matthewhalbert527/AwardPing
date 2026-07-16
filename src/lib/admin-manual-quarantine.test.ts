@@ -189,6 +189,36 @@ describe("admin manual quarantine loader", () => {
     expect(result.loadErrors).toEqual([]);
   });
 
+  it("loads an exact summary without materializing every case", async () => {
+    const admin = mockAdmin({
+      state: {
+        data: {
+          ...authoritativeState(),
+          quarantined_work_remaining: 292,
+        },
+        error: null,
+      },
+      items: {
+        data: Array.from({ length: 292 }, (_, index) => ({
+          ...registryRow(),
+          id: `quarantine-${index}`,
+        })),
+        error: null,
+        count: 292,
+      },
+    });
+
+    const result = await loadAdminManualQuarantine(admin, {
+      includeItems: false,
+      now: new Date("2026-07-15T22:00:00.000Z"),
+    });
+
+    expect(result.registryAvailable).toBe(true);
+    expect(result.total).toBe(292);
+    expect(result.items).toEqual([]);
+    expect(result.summary.quarantinedWorkRemaining).toBe(292);
+  });
+
   it("falls back to raw repair queues when a registry query fails", async () => {
     const admin = mockAdmin({
       state: {

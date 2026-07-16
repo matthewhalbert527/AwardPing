@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   AlertTriangle,
   Archive,
@@ -8,17 +7,35 @@ import {
   History,
   ShieldAlert,
 } from "lucide-react";
+import { AdminManualQuarantineBacklogBoard } from "@/components/admin-manual-quarantine-backlog-board";
 import type {
   AdminManualQuarantineCategorySummary,
   AdminManualQuarantineLoadResult,
 } from "@/lib/admin-manual-quarantine";
+import type {
+  AdminManualQuarantineBacklogLoadResult,
+  AdminManualQuarantineBacklogQuery,
+  AdminManualQuarantineSavedViewsLoadResult,
+} from "@/lib/admin-manual-quarantine-backlog";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
 type Props = {
+  backlogResult: AdminManualQuarantineBacklogLoadResult;
+  currentUserEmail: string;
+  currentUserId: string;
+  query: AdminManualQuarantineBacklogQuery;
   result: AdminManualQuarantineLoadResult;
+  savedViewsResult: AdminManualQuarantineSavedViewsLoadResult;
 };
 
-export function AdminManualQuarantineBoard({ result }: Props) {
+export function AdminManualQuarantineBoard({
+  backlogResult,
+  currentUserEmail,
+  currentUserId,
+  query,
+  result,
+  savedViewsResult,
+}: Props) {
   const { summary } = result;
   const historicalImported = summary.historicalInventoryStatus === "complete";
   const completionReportedAt = summary.completionReportedAt
@@ -42,7 +59,7 @@ export function AdminManualQuarantineBoard({ result }: Props) {
       <div className="card operator-inbox-summary">
         <div>
           <p className="operator-inbox-kicker">
-            Durable accounting, not another work queue
+            Truthful completion plus one repair backlog
           </p>
           <h2 id="manual-quarantine-title">5. Manual Quarantine</h2>
           <p>{statusCopy}</p>
@@ -199,19 +216,13 @@ export function AdminManualQuarantineBoard({ result }: Props) {
         </div>
       )}
 
-      <div className="card operator-inbox-recommendation">
-        <div>
-          <span>Where repairs happen</span>
-          <h4>Use #3 Action Inbox for the safe next step</h4>
-          <p>
-            Manual Quarantine keeps the accounting honest. It does not create a
-            second set of repair controls or trigger paid API work.
-          </p>
-        </div>
-        <Link className="button-secondary" href="/dashboard/admin/issues">
-          Open Action Inbox
-        </Link>
-      </div>
+      <AdminManualQuarantineBacklogBoard
+        currentUserEmail={currentUserEmail}
+        currentUserId={currentUserId}
+        query={query}
+        result={backlogResult}
+        savedViews={savedViewsResult}
+      />
     </section>
   );
 }

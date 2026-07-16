@@ -86,12 +86,31 @@ independent manual-quarantine lane refreshes database-backed cases without a
 paid API request. Its lease, timeout, retry clock, and oldest-item target are
 independent from every other lane.
 
+The operator backlog reads those cases through a service-role-only exact-count
+contract. The default repair group is the full tuple of normalized source
+domain, evidence-failure code, policy identity and reason, and likely repair;
+single-dimension domain, evidence, policy, and repair views are optional
+rollups. Counts are computed before pagination and cross-checked against the
+durable registry state, so a 25-row page or a capped legacy query is never
+presented as the total. Every pagination link carries the registry sync
+timestamp, the transactional operator-backlog revision, and the first page's
+fixed age clock. It fails closed if registry membership, assignment, review
+status, source/award display data, or the requested snapshot identity changes
+mid-review, so offset pages cannot silently skip or duplicate work.
+
+Individual operator assignment is stored separately from functional ownership
+so a registry refresh cannot erase it. Saved filters, grouping, sort, and page
+size are scoped to the authenticated admin. Bulk controls are deliberately
+limited to evidence-bound assignment, clearing one's own assignment, and
+starting review. They are transactional, idempotent, append-only audited, and
+cannot retry, resolve, delete, or create an API charge.
+
 ## Admin Workflows
 
-- **3. Action Inbox** is the single operator queue. Each item shows severity and public impact, the failure reason, age, functional owner, what retries automatically, whether that retry creates an API charge, the recommended safe action, retained evidence, and the exact policy identity/version/hash. A post-sweep inactive rule is high severity and blocked, with feedback-promotion lane rollback/deactivation repair—not a protected or resolvable state.
+- **3. Action Inbox** is the single operator entry point. Each ordinary item shows severity and public impact, the failure reason, age, functional owner, what retries automatically, whether that retry creates an API charge, the recommended safe action, retained evidence, and the exact policy identity/version/hash. Manual Quarantine appears once here as an exact total plus grouped-backlog link instead of hundreds of flat duplicate cards. A post-sweep inactive rule is high severity and blocked, with feedback-promotion lane rollback/deactivation repair—not a protected or resolvable state.
 - **4. Verified Promotions** is the plain-language nine-step promotion board. Each cluster appears once with recurrence, affected source count, evidence signature/domain template/reason, legitimate collisions, known-real fixtures, current activation state, gate reports, failure details, safe fixes, and only the operator controls legal at that state. At step 8, it explains that the next normal zero-charge feedback-promotion lane attestation unlocks Resolve; it never implies another 6 PM scan is needed.
 
-- **5. Manual Quarantine** is the durable accounting view. It shows the four completion facts above, groups linked public-page evidence into one understandable repair case, lists terminal visual cases separately, and keeps historical limitations visible without mixing them into actionable work. Operator actions remain in **3. Action Inbox**.
+- **5. Manual Quarantine** is the detailed operator backlog behind that single inbox entry. It keeps the four completion facts and historical limitations visible, then shows exact totals, paginated repair groups, paginated cases, age, functional and individual ownership, saved views, and only the no-charge bulk actions that are safe for the selected evidence revision. It labels award-homepage domain fallbacks honestly and never treats the length of a capped result page as the total.
 - **6. Evidence Recovery** reports R2-to-local cache recovery. The worker may restore only the exact immutable generation whose source ID, capture time, kind, hashes, metadata, and required objects match the retained baseline. It stages and verifies the complete generation before an atomic pointer change. A mismatch is refused and the last-known-good baseline remains untouched.
 - **7. Lanes & Spending** shows each downstream lane separately: lease, timeout, oldest-item SLA, retry time, backlog, and last failure. It also shows the two account-wide paid budgets—**New page review** and **Changed page review**—with effective cap, reserved, spent, remaining, UTC reset time, and database policy source.
 

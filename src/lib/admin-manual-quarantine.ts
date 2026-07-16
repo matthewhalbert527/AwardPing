@@ -142,12 +142,14 @@ const DEFAULT_FRESHNESS_WINDOW_MS = 2 * 60 * 60 * 1_000;
 type AdminManualQuarantineLoadOptions = {
   now?: Date;
   freshnessWindowMs?: number;
+  includeItems?: boolean;
 };
 
 export async function loadAdminManualQuarantine(
   admin: AdminClient,
   options: AdminManualQuarantineLoadOptions = {},
 ): Promise<AdminManualQuarantineLoadResult> {
+  const includeItems = options.includeItems !== false;
   const [stateResult, itemsResult] = await Promise.all([
     admin
       .from("manual_quarantine_registry_state")
@@ -156,7 +158,9 @@ export async function loadAdminManualQuarantine(
       )
       .eq("registry_key", "one_time_catchup")
       .maybeSingle(),
-    loadAllActionableQuarantineRows(admin),
+    includeItems
+      ? loadAllActionableQuarantineRows(admin)
+      : loadActionableQuarantineCount(admin),
   ]);
 
   const missingRegistry = [
@@ -218,10 +222,25 @@ export async function loadAdminManualQuarantine(
 
   return {
     summary,
-    items: rows.map(mapManualQuarantineItem),
+    items: includeItems ? rows.map(mapManualQuarantineItem) : [],
     total,
     registryAvailable: true,
     loadErrors,
+  };
+}
+
+async function loadActionableQuarantineCount(admin: AdminClient) {
+  const result = await admin
+    .from("manual_quarantine_registry")
+    .select("id", { count: "exact" })
+    .eq("requires_action", true)
+    .in("status", ["quarantined", "in_review"])
+    .range(0, 0);
+
+  return {
+    data: [] as ManualQuarantineRegistryRow[],
+    error: result.error,
+    count: result.count,
   };
 }
 

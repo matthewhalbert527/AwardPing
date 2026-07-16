@@ -162,6 +162,46 @@ function promotionCluster(
 }
 
 describe("operator action inbox", () => {
+  it("collapses the exact quarantine backlog into one grouped action", () => {
+    const items = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [quarantineItem(), quarantineItem({ id: "quarantine-2" })],
+      manualQuarantineBacklog: {
+        exactTotal: 292,
+        exactClusterTotal: 61,
+        evidenceRecords: 527,
+        terminalCases: 292,
+        unassignedCases: 292,
+        chargeGatedCases: 57,
+        oldestObservedAt: "2026-06-15T12:00:00.000Z",
+        registrySyncedAt: "2026-07-15T17:55:00.000Z",
+      },
+      now,
+    });
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "manual-quarantine:backlog",
+      sourceKind: "manual_quarantine",
+      title: "292 quarantined cases in 61 repair groups",
+      recommendedAction: {
+        href: "/dashboard/admin/issues?tab=quarantine",
+      },
+      charge: {
+        level: "may_charge",
+        label: "No charge for queue actions",
+      },
+      publicImpact: {
+        level: "unknown",
+        label: "Case-specific public impact",
+      },
+    });
+    expect(items[0].publicImpact.detail).not.toContain("protected");
+    expect(items[0].publicImpact.detail).not.toContain("delayed");
+    expect(items[0].evidence).toContainEqual({ label: "Exact cases", value: "292" });
+    expect(JSON.stringify(items[0])).not.toContain("quarantine-2");
+  });
+
   it("turns each actionable quarantine case into one evidence-bound operator action", () => {
     const [item] = buildOperatorActionInbox({
       issues: [],

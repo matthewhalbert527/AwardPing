@@ -111,6 +111,28 @@ export type ManualQuarantineCompletionStatus =
   | "not_reported"
   | "automated_work_remaining"
   | "automated_work_clear";
+export type ManualQuarantineOpenStatus = "quarantined" | "in_review";
+export type ManualQuarantineOperatorAction =
+  | "assign_to_me"
+  | "unassign"
+  | "start_review";
+export type ManualQuarantineBacklogGroupBy =
+  | "repair_group"
+  | "domain"
+  | "evidence_failure"
+  | "policy_reason"
+  | "likely_repair";
+export type ManualQuarantineBacklogSort =
+  | "oldest"
+  | "newest"
+  | "priority"
+  | "domain";
+export type ManualQuarantineBacklogAgeBucket =
+  | "under_24h"
+  | "one_to_three_days"
+  | "four_to_seven_days"
+  | "eight_to_thirty_days"
+  | "over_thirty_days";
 
 export type Database = {
   public: {
@@ -954,6 +976,167 @@ export type Database = {
             referencedColumns: ["id"];
           },
         ];
+      };
+      manual_quarantine_operator_assignments: {
+        Row: {
+          quarantine_id: string;
+          assigned_to_user_id: string;
+          assigned_to_email: string;
+          assigned_by_user_id: string | null;
+          assigned_by_email: string;
+          assigned_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          quarantine_id: string;
+          assigned_to_user_id: string;
+          assigned_to_email: string;
+          assigned_by_user_id?: string | null;
+          assigned_by_email: string;
+          assigned_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          quarantine_id?: string;
+          assigned_to_user_id?: string;
+          assigned_to_email?: string;
+          assigned_by_user_id?: string | null;
+          assigned_by_email?: string;
+          assigned_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "manual_quarantine_operator_assignments_quarantine_id_fkey";
+            columns: ["quarantine_id"];
+            isOneToOne: true;
+            referencedRelation: "manual_quarantine_registry";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      manual_quarantine_saved_views: {
+        Row: {
+          id: string;
+          user_id: string;
+          user_email: string;
+          name: string;
+          name_key: string;
+          filters: Json;
+          group_by: ManualQuarantineBacklogGroupBy;
+          sort_key: ManualQuarantineBacklogSort;
+          page_size: number;
+          view_version: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          user_email: string;
+          name: string;
+          filters?: Json;
+          group_by?: ManualQuarantineBacklogGroupBy;
+          sort_key?: ManualQuarantineBacklogSort;
+          page_size?: number;
+          view_version?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          user_email?: string;
+          name?: string;
+          filters?: Json;
+          group_by?: ManualQuarantineBacklogGroupBy;
+          sort_key?: ManualQuarantineBacklogSort;
+          page_size?: number;
+          view_version?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      manual_quarantine_operator_action_events: {
+        Row: {
+          id: number;
+          request_id: string;
+          quarantine_id: string;
+          action: ManualQuarantineOperatorAction;
+          actor_user_id: string | null;
+          actor_email: string;
+          previous_status: ManualQuarantineOpenStatus;
+          next_status: ManualQuarantineOpenStatus;
+          previous_assignee_email: string | null;
+          next_assignee_email: string | null;
+          selection_hash: string;
+          changed: boolean;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          request_id: string;
+          quarantine_id: string;
+          action: ManualQuarantineOperatorAction;
+          actor_user_id?: string | null;
+          actor_email: string;
+          previous_status: ManualQuarantineOpenStatus;
+          next_status: ManualQuarantineOpenStatus;
+          previous_assignee_email?: string | null;
+          next_assignee_email?: string | null;
+          selection_hash: string;
+          changed: boolean;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          request_id?: string;
+          quarantine_id?: string;
+          action?: ManualQuarantineOperatorAction;
+          actor_user_id?: string | null;
+          actor_email?: string;
+          previous_status?: ManualQuarantineOpenStatus;
+          next_status?: ManualQuarantineOpenStatus;
+          previous_assignee_email?: string | null;
+          next_assignee_email?: string | null;
+          selection_hash?: string;
+          changed?: boolean;
+          metadata?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "manual_quarantine_operator_action_events_quarantine_id_fkey";
+            columns: ["quarantine_id"];
+            isOneToOne: false;
+            referencedRelation: "manual_quarantine_registry";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      manual_quarantine_backlog_state: {
+        Row: {
+          state_key: "operator_backlog";
+          revision: number;
+          updated_at: string;
+        };
+        Insert: {
+          state_key: "operator_backlog";
+          revision?: number;
+          updated_at?: string;
+        };
+        Update: {
+          state_key?: "operator_backlog";
+          revision?: number;
+          updated_at?: string;
+        };
+        Relationships: [];
       };
       monitoring_policy_sweep_state: {
         Row: {
@@ -2749,6 +2932,79 @@ export type Database = {
           p_reservation_id: string;
         };
         Returns: Json;
+      };
+      list_manual_quarantine_backlog: {
+        Args: {
+          p_page?: number;
+          p_page_size?: number;
+          p_cluster_page?: number;
+          p_cluster_page_size?: number;
+          p_group_by?: ManualQuarantineBacklogGroupBy;
+          p_sort?: ManualQuarantineBacklogSort;
+          p_domains?: string[] | null;
+          p_evidence_failures?: string[] | null;
+          p_policy_reasons?: string[] | null;
+          p_repairs?: string[] | null;
+          p_owners?: string[] | null;
+          p_statuses?: ManualQuarantineOpenStatus[] | null;
+          p_age_bucket?: ManualQuarantineBacklogAgeBucket | null;
+          p_search?: string | null;
+          p_expected_synced_at?: string | null;
+          p_expected_revision?: number | null;
+          p_as_of_at?: string | null;
+        };
+        Returns: Json;
+      };
+      apply_manual_quarantine_bulk_action: {
+        Args: {
+          p_request_id: string;
+          p_cases: Json;
+          p_action: ManualQuarantineOperatorAction;
+          p_actor_user_id: string;
+          p_actor_email: string;
+        };
+        Returns: Json;
+      };
+      save_manual_quarantine_saved_view: {
+        Args: {
+          p_user_id: string;
+          p_user_email: string;
+          p_name: string;
+          p_filters: Json;
+          p_group_by: ManualQuarantineBacklogGroupBy;
+          p_sort: ManualQuarantineBacklogSort;
+          p_page_size: number;
+          p_view_id?: string | null;
+        };
+        Returns: Array<{
+          saved_view_id: string;
+          saved_view_name: string;
+          saved_filters: Json;
+          saved_group_by: ManualQuarantineBacklogGroupBy;
+          saved_sort: ManualQuarantineBacklogSort;
+          saved_page_size: number;
+          saved_updated_at: string;
+        }>;
+      };
+      delete_manual_quarantine_saved_view: {
+        Args: { p_view_id: string; p_user_id: string };
+        Returns: boolean;
+      };
+      manual_quarantine_source_domain: {
+        Args: { p_url: string };
+        Returns: string;
+      };
+      manual_quarantine_evidence_failure_code: {
+        Args: { p_category: string; p_reason_code: string };
+        Returns: string;
+      };
+      manual_quarantine_policy_reason_code: {
+        Args: { p_category: string; p_public_impact: string };
+        Returns: string;
+      };
+      manual_quarantine_likely_repair_code: {
+        Args: { p_category: string; p_reason_code: string };
+        Returns: string;
       };
       manual_quarantine_evidence_hash: {
         Args: { p_evidence: Json };

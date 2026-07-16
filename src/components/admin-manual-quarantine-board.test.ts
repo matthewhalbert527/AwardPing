@@ -1,15 +1,25 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AdminManualQuarantineBoard } from "@/components/admin-manual-quarantine-board";
 import type { AdminManualQuarantineLoadResult } from "@/lib/admin-manual-quarantine";
+import {
+  defaultAdminManualQuarantineBacklogQuery,
+  type AdminManualQuarantineBacklogLoadResult,
+  type AdminManualQuarantineSavedViewsLoadResult,
+} from "@/lib/admin-manual-quarantine-backlog";
 import { formatCentralDateTime } from "@/lib/time-zone";
+
+vi.mock("@/components/admin-manual-quarantine-backlog-board", () => ({
+  AdminManualQuarantineBacklogBoard: () =>
+    createElement("div", { "data-testid": "quarantine-backlog" }, "Exact grouped backlog"),
+}));
 
 describe("AdminManualQuarantineBoard", () => {
   it("explains the four completion measures and grouped case evidence plainly", () => {
     const html = renderToStaticMarkup(
       createElement(AdminManualQuarantineBoard, {
-        result: quarantineResult(),
+        ...boardProps(quarantineResult()),
       }),
     );
 
@@ -36,8 +46,7 @@ describe("AdminManualQuarantineBoard", () => {
     expect(html).toContain("452");
     expect(html).toContain("Visual review");
     expect(html).toContain("Historical screenshot limits");
-    expect(html).toContain("Use #3 Action Inbox for the safe next step");
-    expect(html).toContain('href="/dashboard/admin/issues"');
+    expect(html).toContain("Exact grouped backlog");
   });
 
   it("says Not imported instead of displaying a false historical zero", () => {
@@ -54,7 +63,7 @@ describe("AdminManualQuarantineBoard", () => {
     };
 
     const html = renderToStaticMarkup(
-      createElement(AdminManualQuarantineBoard, { result }),
+      createElement(AdminManualQuarantineBoard, boardProps(result)),
     );
 
     expect(html).toContain("Not imported");
@@ -69,7 +78,7 @@ describe("AdminManualQuarantineBoard", () => {
     result.summary.quarantinedWorkRemaining = 0;
 
     const html = renderToStaticMarkup(
-      createElement(AdminManualQuarantineBoard, { result }),
+      createElement(AdminManualQuarantineBoard, boardProps(result)),
     );
 
     expect(html).toContain("Registry unavailable");
@@ -92,7 +101,7 @@ describe("AdminManualQuarantineBoard", () => {
     result.summary.lastSyncedAt = "2026-07-15T21:05:00.000Z";
 
     const html = renderToStaticMarkup(
-      createElement(AdminManualQuarantineBoard, { result }),
+      createElement(AdminManualQuarantineBoard, boardProps(result)),
     );
 
     expect(html).toContain(
@@ -108,7 +117,7 @@ describe("AdminManualQuarantineBoard", () => {
     result.summary.completionReportedAt = null;
 
     const html = renderToStaticMarkup(
-      createElement(AdminManualQuarantineBoard, { result }),
+      createElement(AdminManualQuarantineBoard, boardProps(result)),
     );
 
     expect(html).toContain(">Not reported<");
@@ -117,11 +126,30 @@ describe("AdminManualQuarantineBoard", () => {
   });
 });
 
+function boardProps(result: AdminManualQuarantineLoadResult) {
+  return {
+    backlogResult: {
+      available: false,
+      backlog: {} as AdminManualQuarantineBacklogLoadResult["backlog"],
+      loadErrors: [],
+    },
+    currentUserEmail: "operator@example.com",
+    currentUserId: "30000000-0000-4000-8000-000000000003",
+    query: defaultAdminManualQuarantineBacklogQuery(),
+    result,
+    savedViewsResult: {
+      available: true,
+      loadErrors: [],
+      views: [],
+    } satisfies AdminManualQuarantineSavedViewsLoadResult,
+  };
+}
+
 function quarantineResult(): AdminManualQuarantineLoadResult {
   return {
     registryAvailable: true,
     items: [],
-    total: 683,
+    total: 293,
     loadErrors: [],
     summary: {
       automatedWorkClear: true,

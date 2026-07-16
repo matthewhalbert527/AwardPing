@@ -218,7 +218,10 @@ npm run source:sync-manual-quarantine -- --env .env.worker.local --historical-re
 The import verifies that the report count exactly matches its unique source
 IDs, hashes the report, and fails closed if any source cannot be bound to its
 retained previous object keys and hashes. Actions remain in **3. Action
-Inbox**; **5. Manual Quarantine** is the simple, durable accounting view.
+Inbox** as one exact grouped-backlog entry; **5. Manual Quarantine** is the
+detailed, paginated repair view. Its totals come from the full registry before
+pagination, its default clusters bind domain + evidence failure + policy reason
++ likely repair, and its assignment/start-review controls cannot retry or spend.
 
 ## Verified Feedback Promotions
 

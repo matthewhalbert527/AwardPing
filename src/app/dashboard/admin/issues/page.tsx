@@ -14,6 +14,13 @@ import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { loadAdminManualQuarantine } from "@/lib/admin-manual-quarantine";
+import {
+  defaultAdminManualQuarantineBacklogQuery,
+  loadAdminManualQuarantineBacklog,
+  loadAdminManualQuarantineSavedViews,
+  parseAdminManualQuarantineBacklogQuery,
+  type AdminManualQuarantineBacklogSearchParams,
+} from "@/lib/admin-manual-quarantine-backlog";
 import type { AdminReviewLaterSource, AdminSuppressedChangeEvent } from "@/lib/admin-page-issues";
 import {
   loadAdminPageIssues,
@@ -37,9 +44,7 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 export const dynamic = "force-dynamic";
 
 type Props = {
-  searchParams: Promise<{
-    tab?: string;
-  }>;
+  searchParams: Promise<AdminManualQuarantineBacklogSearchParams>;
 };
 
 type AdminRecentChangeEvent = {
@@ -88,8 +93,19 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     params.tab === "excluded"
       ? params.tab
       : "inbox";
+  const backlogQuery =
+    activeTab === "quarantine"
+      ? parseAdminManualQuarantineBacklogQuery(params)
+      : defaultAdminManualQuarantineBacklogQuery();
   const renderedAt = new Date();
-  const [workerRunsResult, recoveryWorkerRunsResult, manualQuarantine] = await Promise.all([
+  const [
+    workerRunsResult,
+    recoveryWorkerRunsResult,
+    manualQuarantine,
+    manualQuarantineBacklog,
+    manualQuarantineSavedViews,
+    quarantinedVisualCandidates,
+  ] = await Promise.all([
     admin
       .from("local_worker_runs")
       .select("*")
@@ -101,11 +117,27 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       .in("worker_name", [...scheduledVisualRecoveryWorkerNames])
       .order("started_at", { ascending: false })
       .limit(30),
-    loadAdminManualQuarantine(admin),
+    loadAdminManualQuarantine(admin, { includeItems: false }),
+    loadAdminManualQuarantineBacklog(admin, backlogQuery),
+    loadAdminManualQuarantineSavedViews(admin, user.id),
+    loadQuarantinedVisualCandidateIds(admin),
   ]);
   const workerRuns = (workerRunsResult.data || []) as LocalWorkerRun[];
   const recoveryWorkerRuns = (recoveryWorkerRunsResult.data || []) as LocalWorkerRun[];
   const runReport = buildAdminRunReportFeed(workerRuns, renderedAt);
+  const visualQuarantineRevisionMatches =
+    manualQuarantineBacklog.available &&
+    quarantinedVisualCandidates.revision !== null &&
+    quarantinedVisualCandidates.revision ===
+      manualQuarantineBacklog.backlog.backlogRevision;
+  const visualQuarantineRevisionErrors =
+    manualQuarantineBacklog.available &&
+    quarantinedVisualCandidates.revision !== null &&
+    !visualQuarantineRevisionMatches
+      ? [
+          "The quarantine backlog changed while visual-review failures were being matched. Fallback failures remain visible until the next refresh.",
+        ]
+      : [];
 
   const [
     pageIssues,
@@ -119,7 +151,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   ] = await Promise.all([
     loadAdminPageIssues(admin, workerRuns, {
       includeLegacyDiagnostics: false,
-      includeQuarantinedDiagnostics: !manualQuarantine.registryAvailable,
+      includeQuarantinedDiagnostics: !manualQuarantineBacklog.available,
     }),
     loadAdminReviewLaterSources(admin),
     loadAdminMonitoringFeedbackPromotionClusters(admin),
@@ -141,6 +173,9 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     ...visualReviewFailures.loadErrors,
     ...deliveryFailures.loadErrors,
     ...manualQuarantine.loadErrors,
+    ...manualQuarantineBacklog.loadErrors,
+    ...quarantinedVisualCandidates.loadErrors,
+    ...visualQuarantineRevisionErrors,
     ...workerOperations.loadErrors,
   ].filter((message): message is string => Boolean(message));
   const historyLoadErrors = [
@@ -148,19 +183,29 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     ...recentUpdates.loadErrors,
     ...suppressedEvents.loadErrors,
   ].filter((message): message is string => Boolean(message));
-  const quarantinedVisualCandidateIds = new Set(
-    manualQuarantine.items
-      .map((item) => item.visualCandidateId)
-      .filter((id): id is string => Boolean(id)),
-  );
   const actionItems = buildOperatorActionInbox({
     issues: pageIssues.issues,
-    manualQuarantineItems: manualQuarantine.items,
+    manualQuarantineBacklog:
+      manualQuarantineBacklog.available &&
+      manualQuarantineBacklog.backlog.unfilteredExactTotal > 0
+        ? {
+            exactTotal: manualQuarantineBacklog.backlog.unfilteredExactTotal,
+            exactClusterTotal: manualQuarantineBacklog.backlog.exactClusterTotal,
+            evidenceRecords: manualQuarantineBacklog.backlog.evidenceRecords,
+            terminalCases: manualQuarantineBacklog.backlog.terminalCases,
+            unassignedCases: manualQuarantineBacklog.backlog.unassignedCases,
+            chargeGatedCases: manualQuarantineBacklog.backlog.chargeGatedCases,
+            oldestObservedAt: manualQuarantineBacklog.backlog.oldestObservedAt,
+            registrySyncedAt: manualQuarantineBacklog.backlog.registrySyncedAt,
+          }
+        : null,
     promotionClusters: promotionClusters.clusters,
     nightlyFailureGroups: runReport.visualNightly?.failureGroups || [],
     nightlyReportedAt: runReport.visualNightly?.finishedAt || runReport.visualNightly?.startedAt || null,
     visualReviewFailures: visualReviewFailures.failures.filter(
-      (failure) => !quarantinedVisualCandidateIds.has(failure.id),
+      (failure) =>
+        !visualQuarantineRevisionMatches ||
+        !quarantinedVisualCandidates.ids.has(failure.id),
     ),
     digestDeliveryFailures: deliveryFailures.failures,
     downstreamLanes: workerOperations.lanes,
@@ -278,7 +323,14 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           />
         </>
       ) : activeTab === "quarantine" ? (
-        <AdminManualQuarantineBoard result={manualQuarantine} />
+        <AdminManualQuarantineBoard
+          backlogResult={manualQuarantineBacklog}
+          currentUserEmail={user.email || ""}
+          currentUserId={user.id}
+          query={backlogQuery}
+          result={manualQuarantine}
+          savedViewsResult={manualQuarantineSavedViews}
+        />
       ) : activeTab === "recovery" ? (
         <AdminWorkerOperationsBoard result={workerOperations} view="recovery" now={renderedAt.toISOString()} />
       ) : activeTab === "operations" ? (
@@ -563,6 +615,114 @@ async function loadAdminFailedPublicUpdateDeliveries(admin: ReturnType<typeof cr
         : null,
     ].filter((message): message is string => Boolean(message)),
   };
+}
+
+async function loadQuarantinedVisualCandidateIds(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+): Promise<{ ids: Set<string>; loadErrors: string[]; revision: number | null }> {
+  const ids = new Set<string>();
+  const pageSize = 1_000;
+  let expectedTotal: number | null = null;
+  const startingRevision = await loadManualQuarantineBacklogRevision(admin);
+
+  if (!startingRevision.ok) {
+    return {
+      ids: new Set<string>(),
+      loadErrors: [startingRevision.error],
+      revision: null,
+    };
+  }
+
+  for (let start = 0; ; start += pageSize) {
+    const result = await admin
+      .from("manual_quarantine_registry")
+      .select("visual_review_candidate_id", { count: "exact" })
+      .eq("requires_action", true)
+      .in("status", ["quarantined", "in_review"])
+      .not("visual_review_candidate_id", "is", null)
+      .order("visual_review_candidate_id", { ascending: true })
+      .range(start, start + pageSize - 1);
+
+    if (result.error) {
+      return {
+        // A partial exclusion set could hide fallback failures that were not
+        // yet reached. Fail open to possible duplicates instead of omissions.
+        ids: new Set<string>(),
+        loadErrors: [
+          `Quarantined visual-review candidates could not be excluded from the fallback failure list: ${result.error.message}.`,
+        ],
+        revision: null,
+      };
+    }
+
+    const rows = result.data || [];
+    const pageTotal = Number(result.count);
+    if (
+      result.count === null ||
+      !Number.isSafeInteger(pageTotal) ||
+      pageTotal < 0 ||
+      pageTotal < start + rows.length
+    ) {
+      return {
+        ids: new Set<string>(),
+        loadErrors: [
+          "The exact quarantined visual-review count was unavailable, so fallback failures were not excluded.",
+        ],
+        revision: null,
+      };
+    }
+    if (expectedTotal === null) expectedTotal = pageTotal;
+    if (pageTotal !== expectedTotal) {
+      return {
+        ids: new Set<string>(),
+        loadErrors: [
+          "The quarantine registry changed while visual-review candidates were being matched. Refresh before acting on fallback visual failures.",
+        ],
+        revision: null,
+      };
+    }
+    rows.forEach((row) => {
+      if (row.visual_review_candidate_id) ids.add(row.visual_review_candidate_id);
+    });
+    if (start + rows.length >= expectedTotal || rows.length < pageSize) break;
+  }
+
+  const endingRevision = await loadManualQuarantineBacklogRevision(admin);
+  if (!endingRevision.ok || endingRevision.revision !== startingRevision.revision) {
+    return {
+      ids: new Set<string>(),
+      loadErrors: [
+        endingRevision.ok
+          ? "The quarantine registry changed while visual-review candidates were being matched. Refresh before acting on fallback visual failures."
+          : endingRevision.error,
+      ],
+      revision: null,
+    };
+  }
+
+  return { ids, loadErrors: [], revision: endingRevision.revision };
+}
+
+async function loadManualQuarantineBacklogRevision(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+): Promise<
+  | { ok: true; revision: number }
+  | { ok: false; error: string }
+> {
+  const result = await admin
+    .from("manual_quarantine_backlog_state")
+    .select("revision")
+    .eq("state_key", "operator_backlog")
+    .maybeSingle();
+  const revision = Number(result.data?.revision);
+  if (result.error || !Number.isSafeInteger(revision) || revision <= 0) {
+    return {
+      ok: false,
+      error:
+        "The quarantine backlog revision could not be verified, so fallback visual failures were not excluded.",
+    };
+  }
+  return { ok: true, revision };
 }
 
 function safeExternalUrl(value: string | null) {

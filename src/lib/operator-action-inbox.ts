@@ -134,9 +134,21 @@ export type OperatorDigestDeliveryFailureInput = {
   createdAt: string;
 };
 
+export type OperatorManualQuarantineBacklogInput = {
+  exactTotal: number;
+  exactClusterTotal: number;
+  evidenceRecords: number;
+  terminalCases: number;
+  unassignedCases: number;
+  chargeGatedCases: number;
+  oldestObservedAt: string | null;
+  registrySyncedAt: string | null;
+};
+
 export type BuildOperatorActionInboxInput = {
   issues: AdminPageIssue[];
   manualQuarantineItems?: AdminManualQuarantineItem[];
+  manualQuarantineBacklog?: OperatorManualQuarantineBacklogInput | null;
   promotionClusters?: MonitoringFeedbackPromotionCluster[];
   nightlyFailureGroups?: OperatorNightlyFailureInput[];
   nightlyReportedAt?: string | null;
@@ -158,6 +170,7 @@ const retiredIssueCategories = new Set([
 export function buildOperatorActionInbox({
   issues,
   manualQuarantineItems = [],
+  manualQuarantineBacklog = null,
   promotionClusters = [],
   nightlyFailureGroups = [],
   nightlyReportedAt = null,
@@ -168,9 +181,11 @@ export function buildOperatorActionInbox({
   now = new Date(),
 }: BuildOperatorActionInboxInput) {
   const items = [
-    ...manualQuarantineItems
-      .filter((item) => item.requiresAction && item.status !== "resolved")
-      .map((item) => manualQuarantineToAction(item, now)),
+    ...(manualQuarantineBacklog
+      ? [manualQuarantineBacklogToAction(manualQuarantineBacklog, now)]
+      : manualQuarantineItems
+          .filter((item) => item.requiresAction && item.status !== "resolved")
+          .map((item) => manualQuarantineToAction(item, now))),
     ...issues
       .filter((issue) => !retiredIssueCategories.has(issue.category))
       .map((issue) => pageIssueToAction(issue, now)),
@@ -361,6 +376,87 @@ function downstreamLaneToAction(lane: AdminDownstreamLane, now: Date): OperatorA
       version: "v1",
       hash: null,
       description: lane.policySource,
+    },
+    award: null,
+    source: null,
+    action: { kind: "none" },
+  };
+}
+
+function manualQuarantineBacklogToAction(
+  backlog: OperatorManualQuarantineBacklogInput,
+  now: Date,
+): OperatorActionInboxItem {
+  const exactTotal = Math.max(0, Math.trunc(backlog.exactTotal));
+  const clusterTotal = Math.max(0, Math.trunc(backlog.exactClusterTotal));
+  const unassignedCases = Math.max(0, Math.trunc(backlog.unassignedCases));
+  const chargeGatedCases = Math.max(0, Math.trunc(backlog.chargeGatedCases));
+  const evidenceRecords = Math.max(0, Math.trunc(backlog.evidenceRecords));
+  const terminalCases = Math.max(0, Math.trunc(backlog.terminalCases));
+  const clusterLabel = clusterTotal === 1 ? "repair group" : "repair groups";
+  const caseLabel = exactTotal === 1 ? "case" : "cases";
+
+  return {
+    schemaVersion: operatorActionInboxSchemaVersion,
+    id: "manual-quarantine:backlog",
+    fingerprint: `manual-quarantine:backlog:${backlog.registrySyncedAt || "unsynced"}:${exactTotal}:${clusterTotal}`,
+    sourceKind: "manual_quarantine",
+    severity: terminalCases > 0 ? "high" : "medium",
+    severityLabel: terminalCases > 0 ? "Important" : "Routine",
+    state: "needs_operator",
+    stateLabel: stateLabel("needs_operator"),
+    title: `${exactTotal.toLocaleString("en-US")} quarantined ${caseLabel} in ${clusterTotal.toLocaleString("en-US")} ${clusterLabel}`,
+    context: `${unassignedCases.toLocaleString("en-US")} unassigned; grouped by common source, evidence failure, policy reason, and likely repair`,
+    failureReason:
+      "These cases exhausted their safe automated path. They are grouped into repair-sized work so an operator can address repeated failures together without hiding the exact case total.",
+    occurredAt: backlog.oldestObservedAt,
+    ageLabel: formatOperatorActionAge(backlog.oldestObservedAt, now),
+    owner: {
+      label: "Manual Quarantine",
+      detail: `${unassignedCases.toLocaleString("en-US")} ${unassignedCases === 1 ? "case still needs" : "cases still need"} an individual owner. Functional ownership remains attached to every case.`,
+    },
+    publicImpact: {
+      level: "unknown",
+      label: "Case-specific public impact",
+      detail:
+        "The grouped summary does not infer an impact mix. Open the backlog to see each case's exact public-impact status.",
+    },
+    retry: {
+      automatic: false,
+      label: "No — review the grouped cases",
+      detail:
+        "Opening, filtering, assigning, or starting review never retries work. Any later retry remains case-specific and policy-gated.",
+    },
+    charge: {
+      level: chargeGatedCases > 0 ? "may_charge" : "none",
+      label: "No charge for queue actions",
+      detail:
+        chargeGatedCases > 0
+          ? `${chargeGatedCases.toLocaleString("en-US")} ${chargeGatedCases === 1 ? "case is" : "cases are"} gated before any paid review. The available bulk actions create no API charge.`
+          : "The available queue and bulk actions create no API charge.",
+    },
+    recommendedAction: {
+      label: "Open the grouped quarantine backlog",
+      detail:
+        "Start with unassigned or oldest repair groups, assign a bounded selection, and move only reviewed cases into in-review status.",
+      href: "/dashboard/admin/issues?tab=quarantine",
+    },
+    evidence: compactEvidence([
+      ["Exact cases", String(exactTotal)],
+      ["Exact repair groups", String(clusterTotal)],
+      ["Linked evidence records", String(evidenceRecords)],
+      ["Terminal cases", String(terminalCases)],
+      ["Unassigned cases", String(unassignedCases)],
+      ["Charge-gated cases", String(chargeGatedCases)],
+      ["Oldest observed", backlog.oldestObservedAt],
+      ["Registry synced", backlog.registrySyncedAt],
+    ]),
+    policy: {
+      id: "awardping-manual-quarantine",
+      version: "operator-backlog-v1",
+      hash: null,
+      description:
+        "Exact durable quarantine accounting with evidence-bound, no-charge bulk assignment and review controls.",
     },
     award: null,
     source: null,
