@@ -237,6 +237,7 @@ function checkMigrations() {
     "20260716161529_r2_baseline_recovery_quarantine.sql",
     "20260716171409_recover_rejected_initial_document_candidates.sql",
     "20260716174800_fix_initial_document_publication_evidence_contract.sql",
+    "20260716181500_secure_visual_candidate_publication_trigger.sql",
   ];
 
   for (const file of expected) {
@@ -335,6 +336,33 @@ function checkMigrations() {
   } else {
     fail(
       `Initial official-document publication evidence repair is incomplete; missing ${missingInitialDocumentPublicationEvidenceRepairContracts.join(", ")}.`,
+    );
+  }
+
+  const visualCandidatePublicationTriggerRepair = readIfExists(
+    "supabase/migrations/20260716181500_secure_visual_candidate_publication_trigger.sql",
+  );
+  const requiredVisualCandidatePublicationTriggerRepairContracts = [
+    "awardping_freeze_published_visual_candidate_event_binding()",
+    "pg_catalog.pg_get_functiondef(proc.oid)",
+    "awardping_validate_candidate_snapshot_manifest",
+    "security definer",
+    "set search_path = ''",
+    "v_owner in ('anon', 'authenticated', 'service_role')",
+    "from public, anon, authenticated",
+    "to service_role",
+  ];
+  const missingVisualCandidatePublicationTriggerRepairContracts =
+    requiredVisualCandidatePublicationTriggerRepairContracts.filter(
+      (contract) => !visualCandidatePublicationTriggerRepair.includes(contract),
+    );
+  if (missingVisualCandidatePublicationTriggerRepairContracts.length === 0) {
+    pass(
+      "Published candidate finalization runs its immutable-evidence trigger with trusted owner privileges while private manifest validators remain unexposed.",
+    );
+  } else {
+    fail(
+      `Published candidate finalization privilege repair is incomplete; missing ${missingVisualCandidatePublicationTriggerRepairContracts.join(", ")}.`,
     );
   }
 
