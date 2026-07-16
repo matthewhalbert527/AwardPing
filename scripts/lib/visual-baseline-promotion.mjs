@@ -2,11 +2,14 @@ import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
+import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 import { advanceVisualSnapshotPointer } from "./visual-snapshot-pointer.mjs";
 import {
   rotatedVisualSnapshotHistory,
@@ -19,6 +22,7 @@ const r2Slots = [
   { name: "thumb", fileName: "thumb.jpg", contentType: "image/jpeg" },
   { name: "pdf", fileName: "document.pdf", contentType: "application/pdf" },
   { name: "text", fileName: "text.txt", contentType: "text/plain; charset=utf-8" },
+  { name: "layout", fileName: "layout.json", contentType: "application/json; charset=utf-8" },
   { name: "meta", fileName: "meta.json", contentType: "application/json; charset=utf-8" },
 ];
 
@@ -31,11 +35,7 @@ export function visualBaselinePromotionDecision({
   if (!approved) return { promote: false, reason: "candidate_not_approved" };
   const ref = candidateSnapshotRef(candidate);
   const hashes = snapshot
-    ? {
-        text_hash: snapshot.text_hash || null,
-        image_hash: snapshot.image_hash || null,
-        file_hash: snapshot.file_hash || null,
-      }
+    ? captureHashes(snapshot)
     : candidateSnapshotHashes(candidate, ref);
   if (!ref || !Object.values(hashes).some(Boolean)) {
     return { promote: false, reason: "missing_approved_snapshot_reference" };
@@ -45,6 +45,7 @@ export function visualBaselinePromotionDecision({
   }
   const existingCapturedAt = timestampValue(existingBaseline?.captured_at);
   const candidateCapturedAt = timestampValue(snapshot?.captured_at || ref.captured_at);
+  const repairsMissingGeometry = canRepairMissingGeometry(existingBaseline, hashes);
   if (existingCapturedAt && candidateCapturedAt && existingCapturedAt > candidateCapturedAt) {
     return { promote: false, reason: "newer_whole_page_baseline_exists" };
   }
@@ -52,7 +53,8 @@ export function visualBaselinePromotionDecision({
     existingCapturedAt &&
     candidateCapturedAt &&
     existingCapturedAt === candidateCapturedAt &&
-    !sameSnapshotHashes(existingBaseline, hashes)
+    !sameSnapshotHashes(existingBaseline, hashes) &&
+    !repairsMissingGeometry
   ) {
     return { promote: false, reason: "same_timestamp_baseline_conflict" };
   }
@@ -110,9 +112,7 @@ export function promoteApprovedVisualBaselineLocal({
   if (!decision.promote) {
     return { promoted: false, baseline_path: baselinePath, ...decision };
   }
-  const requiredPaths = capture.kind === "pdf"
-    ? [capture.pdf_path, capture.text_path, capture.meta_path]
-    : [capture.page_path, capture.thumb_path, capture.text_path, capture.meta_path];
+  const requiredPaths = requiredCapturePaths(capture);
   const missingPaths = requiredPaths.filter((path) => !path || !existsSync(path));
   if (missingPaths.length) {
     return {
@@ -122,6 +122,16 @@ export function promoteApprovedVisualBaselineLocal({
       missing_paths: missingPaths,
     };
   }
+  const missingGeometryMetadata = missingApprovedGeometryMetadata(capture);
+  if (missingGeometryMetadata.length) {
+    return {
+      promoted: false,
+      reason: "approved_snapshot_geometry_metadata_missing",
+      baseline_path: baselinePath,
+      missing_metadata: missingGeometryMetadata,
+    };
+  }
+  verifyApprovedCaptureArtifacts(capture);
 
   const baseline = buildBaseline({
     candidate,
@@ -179,9 +189,7 @@ export async function promoteApprovedVisualBaselineR2({
     if (loadError) throw new Error(`Load R2 visual baseline failed: ${loadError.message}`);
 
     const candidateHashes = captureHashes(capture);
-    const requiredSlots = capture.kind === "pdf"
-      ? ["pdf", "text", "meta"]
-      : ["page", "thumb", "text", "meta"];
+    const requiredSlots = requiredR2Slots(capture);
     const existingKeys = objectValue(existing?.latest_object_keys);
     const hashesCurrent = sameSnapshotHashes(existing?.latest_hashes, candidateHashes);
     const existingPointerComplete = requiredSlots.every((slot) => cleanText(existingKeys[slot]));
@@ -190,10 +198,13 @@ export async function promoteApprovedVisualBaselineR2({
     }
     const existingCapturedAt = timestampValue(existing?.latest_captured_at);
     const candidateCapturedAt = timestampValue(capture.captured_at);
+    const repairsMissingGeometry =
+      sameCoreSnapshotHashes(existing?.latest_hashes, candidateHashes) &&
+      (!existingPointerComplete || canRepairMissingGeometry(existing?.latest_hashes, candidateHashes));
     if (
       existingCapturedAt && candidateCapturedAt &&
       (existingCapturedAt > candidateCapturedAt ||
-        (existingCapturedAt === candidateCapturedAt && !hashesCurrent))
+        (existingCapturedAt === candidateCapturedAt && !hashesCurrent && !repairsMissingGeometry))
     ) {
       return { promoted: false, reason: "newer_or_conflicting_r2_baseline_exists" };
     }
@@ -208,15 +219,29 @@ export async function promoteApprovedVisualBaselineR2({
         missing_slots: missingSlots,
       };
     }
+    const missingGeometryMetadata = missingApprovedGeometryMetadata(capture);
+    if (missingGeometryMetadata.length) {
+      return {
+        promoted: false,
+        reason: "approved_snapshot_geometry_metadata_missing",
+        missing_metadata: missingGeometryMetadata,
+      };
+    }
+    const verifiedArtifacts = verifyApprovedCaptureArtifacts(capture);
     const immutableVersion = approvedR2SnapshotVersion({ candidate, capture });
     const latestObjectKeys = {};
     for (const file of files) {
       const key = approvedR2SnapshotKey(source.id, immutableVersion, file.fileName);
+      const body = verifiedArtifacts.get(file.name)?.body;
+      if (!body) {
+        throw new Error(`Approved snapshot artifact ${file.name} was not retained after verification.`);
+      }
       await client.send(new PutObjectCommand({
         Bucket: config.bucket,
         Key: key,
-        Body: readFileSync(file.path),
+        Body: body,
         ContentType: file.contentType,
+        Metadata: { sha256: createHash("sha256").update(body).digest("hex") },
       }));
       latestObjectKeys[file.name] = key;
     }
@@ -309,15 +334,13 @@ function candidateSnapshotHashes(candidate, ref = candidateSnapshotRef(candidate
 }
 
 export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
+  const safeArchiveRoot = resolveArchiveRoot(archiveRoot);
   const ref = candidateSnapshotRef(candidate) || {};
   const paths = objectValue(ref.local_paths);
-  const metaPath = resolvePathRef(paths.meta, archiveRoot);
+  const metaPath = resolvePathRef(paths.meta, safeArchiveRoot);
   const meta = readJsonIfExists(metaPath) || {};
   const metaFiles = objectValue(meta.files);
-  const sectionsJsonPath = resolvePathRef(
-    metaFiles.sections_json ? { archive_relative: metaFiles.sections_json } : null,
-    archiveRoot,
-  );
+  const sectionsJsonPath = resolveArchiveFile(metaFiles.sections_json, safeArchiveRoot);
   const sectionsDocument = readJsonValueIfExists(sectionsJsonPath);
   const expandableSections = Array.isArray(meta.expandable_sections)
     ? meta.expandable_sections
@@ -342,31 +365,57 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
         image_hash: candidateHashes.image_hash || meta.image_hash || null,
         file_hash: candidateHashes.file_hash || meta.file_hash || null,
       };
+  const layoutPath = resolvePathRef(paths.layout, safeArchiveRoot) || resolveArchiveFile(metaFiles.layout, safeArchiveRoot);
+  const expansionStateScreenshots = approvedExpansionStates({
+    ref,
+    meta,
+    metaFiles,
+    archiveRoot: safeArchiveRoot,
+  });
+  const mainState = Array.isArray(ref.visual_states)
+    ? objectValue(ref.visual_states.find((state) => cleanText(state?.kind) === "main"))
+    : {};
+  const mainStatePaths = objectValue(mainState.local_paths);
+  const artifactBindings = {
+    page: artifactBinding(paths.page || mainStatePaths.image),
+    thumb: artifactBinding(paths.thumb),
+    pdf: artifactBinding(paths.pdf),
+    text: artifactBinding(paths.text),
+    layout: artifactBinding(paths.layout || mainStatePaths.layout),
+    meta: artifactBinding(paths.meta),
+  };
+  for (const [index, state] of expansionStateScreenshots.entries()) {
+    const suffix = String(index + 1).padStart(2, "0");
+    artifactBindings[`expansion_state_${suffix}`] = state.page_artifact || null;
+    artifactBindings[`expansion_state_${suffix}_layout`] = state.layout_artifact || null;
+  }
   return {
     ...meta,
-    kind: cleanText(ref.kind || meta.kind) || (resolvePathRef(paths.pdf, archiveRoot) ? "pdf" : "webpage"),
+    kind: cleanText(ref.kind || meta.kind) || (resolvePathRef(paths.pdf, safeArchiveRoot) ? "pdf" : "webpage"),
     captured_at: ref.captured_at || meta.captured_at || null,
     final_url: ref.final_url || meta.final_url || null,
     page_title: ref.page_title || meta.page_title || null,
     text_hash: hashes.text_hash,
     image_hash: hashes.image_hash,
+    layout_hash:
+      cleanText(ref.layout_hash || meta.layout_hash || ref.metadata?.text_geometry?.geometry_hash) || null,
     file_hash: hashes.file_hash,
-    dir: resolvePathRef(ref.capture_dir, archiveRoot),
-    page_path: resolvePathRef(paths.page, archiveRoot),
-    thumb_path: resolvePathRef(paths.thumb, archiveRoot),
-    pdf_path: resolvePathRef(paths.pdf, archiveRoot),
-    text_path: resolvePathRef(paths.text, archiveRoot),
+    text_geometry: meta.text_geometry || ref.metadata?.text_geometry || null,
+    localization: meta.localization || ref.metadata?.localization || null,
+    archive_root: safeArchiveRoot,
+    artifact_bindings: artifactBindings,
+    dir: resolvePathRef(ref.capture_dir, safeArchiveRoot, { kind: "directory" }),
+    page_path: resolvePathRef(paths.page, safeArchiveRoot),
+    thumb_path: resolvePathRef(paths.thumb, safeArchiveRoot),
+    pdf_path: resolvePathRef(paths.pdf, safeArchiveRoot),
+    text_path: resolvePathRef(paths.text, safeArchiveRoot),
+    layout_path: layoutPath,
     meta_path: metaPath,
-    expansion_text_path: resolvePathRef(
-      metaFiles.expansion_text ? { archive_relative: metaFiles.expansion_text } : null,
-      archiveRoot,
-    ),
-    sections_text_path: resolvePathRef(
-      metaFiles.sections_text ? { archive_relative: metaFiles.sections_text } : null,
-      archiveRoot,
-    ),
+    expansion_text_path: resolveArchiveFile(metaFiles.expansion_text, safeArchiveRoot),
+    sections_text_path: resolveArchiveFile(metaFiles.sections_text, safeArchiveRoot),
     sections_json_path: sectionsJsonPath,
     expandable_sections: expandableSections,
+    expansion_state_screenshots: expansionStateScreenshots,
   };
 }
 
@@ -398,7 +447,10 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
     expansion_hash: capture.expansion_hash || null,
     expandable_sections_hash: capture.expandable_sections_hash || null,
     image_hash: capture.image_hash || null,
+    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    expansion_states_hash: approvedExpansionStatesHash(capture),
     file_hash: capture.file_hash || null,
+    text_geometry: capture.text_geometry || null,
     file_bytes: capture.file_bytes || null,
     text_length: capture.text_length || null,
     body_text_length: capture.body_text_length || null,
@@ -415,10 +467,12 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
       thumb: archiveRelative(capture.thumb_path, archiveRoot),
       pdf: archiveRelative(capture.pdf_path, archiveRoot),
       text: archiveRelative(capture.text_path, archiveRoot),
+      layout: archiveRelative(capture.layout_path, archiveRoot),
       expansion_text: archiveRelative(capture.expansion_text_path, archiveRoot),
       sections_text: archiveRelative(capture.sections_text_path, archiveRoot),
       sections_json: archiveRelative(capture.sections_json_path, archiveRoot),
       meta: archiveRelative(capture.meta_path, archiveRoot),
+      expansion_states: approvedExpansionStateMetadata(capture, archiveRoot),
     },
     summary_metadata: {
       reason: "batch_approved_true_change",
@@ -453,21 +507,285 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
   };
 }
 
-function resolvePathRef(value, archiveRoot) {
+function resolveArchiveRoot(archiveRoot) {
+  const configuredRoot = cleanText(archiveRoot);
+  if (!configuredRoot) {
+    throw new Error("Approved snapshot archive root is required.");
+  }
+  const root = resolve(configuredRoot);
+  let rootStats;
+  try {
+    rootStats = lstatSync(root);
+  } catch (error) {
+    throw new Error(`Approved snapshot archive root is unavailable at ${root}: ${error.message}`);
+  }
+  if (rootStats.isSymbolicLink()) {
+    throw new Error(`Approved snapshot archive root must not be a symbolic link: ${root}`);
+  }
+  if (!rootStats.isDirectory()) {
+    throw new Error(`Approved snapshot archive root is not a directory: ${root}`);
+  }
+  return realpathSync(root);
+}
+
+function resolvePathRef(value, archiveRoot, { kind = "file" } = {}) {
   const ref = typeof value === "string" ? { path: value } : objectValue(value);
+  if (!Object.keys(ref).length) return null;
+  const root = resolveArchiveRoot(archiveRoot);
   const direct = cleanText(ref.path);
-  if (direct && isAbsolute(direct)) return direct;
-  const archive = cleanText(ref.archive_relative || direct);
-  return archive ? resolve(archiveRoot, archive) : null;
+  const archive = cleanText(ref.archive_relative);
+
+  if (direct && isAbsolute(direct)) {
+    const absoluteDirect = resolve(direct);
+    if (pathEntryExists(absoluteDirect)) {
+      return validateArchivePath(absoluteDirect, root, { kind, mustExist: true });
+    }
+    // Absolute paths are machine-local hints. When an archive-relative key was
+    // retained, it is authoritative and survives a moved/re-hydrated archive.
+    if (!archive) {
+      return validateArchivePath(absoluteDirect, root, { kind, mustExist: false });
+    }
+  }
+
+  const archivePath = archive || direct;
+  if (!archivePath) return null;
+  if (isAbsolute(archivePath)) {
+    throw new Error(`Approved snapshot archive-relative path must be relative: ${archivePath}`);
+  }
+  return validateArchivePath(resolve(root, archivePath), root, {
+    kind,
+    mustExist: pathEntryExists(resolve(root, archivePath)),
+  });
 }
 
 function archiveRelative(path, archiveRoot) {
   if (!path) return null;
-  return relative(resolve(archiveRoot), resolve(path));
+  const root = resolveArchiveRoot(archiveRoot);
+  const entryExists = pathEntryExists(path);
+  const safePath = validateArchivePath(path, root, {
+    kind: entryExists && lstatSync(path).isDirectory() ? "directory" : "file",
+    mustExist: entryExists,
+  });
+  return relative(root, safePath).split(sep).join("/");
+}
+
+function resolveArchiveFile(path, archiveRoot) {
+  if (!path) return null;
+  return resolvePathRef(
+    isAbsolute(cleanText(path)) ? { path } : { archive_relative: path },
+    archiveRoot,
+  );
+}
+
+function validateArchivePath(path, archiveRoot, { kind = "file", mustExist = true } = {}) {
+  const root = resolveArchiveRoot(archiveRoot);
+  const candidate = resolve(path);
+  if (!pathIsWithin(candidate, root)) {
+    throw new Error(`Approved snapshot artifact resolves outside the archive root: ${candidate}`);
+  }
+  assertNoSymlinkComponents(candidate, root);
+  if (!pathEntryExists(candidate)) {
+    if (mustExist) {
+      throw new Error(`Approved snapshot artifact is unavailable at ${candidate}`);
+    }
+    return candidate;
+  }
+  const stats = lstatSync(candidate);
+  if (stats.isSymbolicLink()) {
+    throw new Error(`Approved snapshot artifact must not be a symbolic link: ${candidate}`);
+  }
+  if (kind === "directory" ? !stats.isDirectory() : !stats.isFile()) {
+    throw new Error(`Approved snapshot ${kind} has the wrong filesystem type: ${candidate}`);
+  }
+  const real = realpathSync(candidate);
+  if (!pathIsWithin(real, root)) {
+    throw new Error(`Approved snapshot artifact resolves outside the archive root: ${candidate}`);
+  }
+  return real;
+}
+
+function pathIsWithin(path, root) {
+  const pathFromRoot = relative(root, path);
+  return pathFromRoot === "" || (
+    pathFromRoot !== ".." &&
+    !pathFromRoot.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromRoot)
+  );
+}
+
+function assertNoSymlinkComponents(path, archiveRoot) {
+  const pathFromRoot = relative(archiveRoot, path);
+  let cursor = archiveRoot;
+  for (const segment of pathFromRoot.split(sep).filter(Boolean)) {
+    cursor = join(cursor, segment);
+    if (!pathEntryExists(cursor)) break;
+    if (lstatSync(cursor).isSymbolicLink()) {
+      throw new Error(`Approved snapshot artifact path contains a symbolic link: ${cursor}`);
+    }
+  }
+}
+
+function pathEntryExists(path) {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function artifactBinding(value) {
+  const ref = objectValue(value);
+  if (!Object.keys(ref).length) return null;
+  const byteLength = Number(ref.byte_length ?? ref.bytes);
+  return {
+    sha256: cleanText(ref.sha256).toLowerCase() || null,
+    byte_length: Number.isSafeInteger(byteLength) && byteLength >= 0 ? byteLength : null,
+  };
+}
+
+function approvedExpansionStates({ ref, meta, metaFiles, archiveRoot }) {
+  const referencedStates = Array.isArray(ref.visual_states)
+    ? ref.visual_states.filter((state) => cleanText(state?.kind) !== "main")
+    : [];
+  const metadataStates = Array.isArray(meta.expansion_state_screenshots)
+    ? meta.expansion_state_screenshots
+    : [];
+  const fileStates = Array.isArray(metaFiles.expansion_states)
+    ? metaFiles.expansion_states
+    : [];
+  const primaryStates = referencedStates.length
+    ? referencedStates
+    : metadataStates.length
+      ? metadataStates
+      : fileStates;
+  return primaryStates.map((primary, index) => {
+    const stateId = cleanText(primary?.state_id) || null;
+    const referenced = stateByIdentity(referencedStates, stateId, index);
+    const metadata = stateByIdentity(metadataStates, stateId, index);
+    const files = stateByIdentity(fileStates, stateId, index);
+    const referencedPaths = objectValue(referenced.local_paths);
+    const pagePath =
+      resolvePathRef(referencedPaths.image, archiveRoot) ||
+      resolveArchiveFile(metadata.page || files.page, archiveRoot);
+    const layoutPath =
+      resolvePathRef(referencedPaths.layout, archiveRoot) ||
+      resolveArchiveFile(metadata.layout || files.layout, archiveRoot);
+    const geometry = objectValue(metadata.text_geometry);
+    return {
+      ...metadata,
+      state_id: cleanText(referenced.state_id || metadata.state_id || files.state_id) || null,
+      index: Number.isFinite(Number(metadata.index ?? referenced.index))
+        ? Number(metadata.index ?? referenced.index)
+        : index,
+      label: cleanText(referenced.label || metadata.label || files.label) || null,
+      captured_at:
+        cleanText(metadata.captured_at || referenced.metadata?.captured_at || ref.captured_at) || null,
+      image_hash: cleanText(referenced.image_hash || metadata.image_hash) || null,
+      layout_hash:
+        cleanText(referenced.geometry_hash || metadata.layout_hash || geometry.geometry_hash) || null,
+      page_path: pagePath,
+      layout_path: layoutPath,
+      page_artifact: artifactBinding(referencedPaths.image),
+      layout_artifact: artifactBinding(referencedPaths.layout),
+      text_geometry: Object.keys(geometry).length ? geometry : null,
+    };
+  });
+}
+
+function stateByIdentity(states, stateId, index) {
+  const byId = stateId
+    ? states.find((state) => cleanText(state?.state_id) === stateId)
+    : null;
+  return objectValue(byId || states[index]);
+}
+
+function approvedExpansionStateValues(capture) {
+  return Array.isArray(capture?.expansion_state_screenshots)
+    ? capture.expansion_state_screenshots
+    : [];
+}
+
+function approvedExpansionStateMetadata(capture, archiveRoot) {
+  return approvedExpansionStateValues(capture).map((state, index) => ({
+    state_id: state.state_id || null,
+    index: Number.isFinite(Number(state.index)) ? Number(state.index) : index,
+    label: state.label || null,
+    captured_at: state.captured_at || capture.captured_at || null,
+    image_hash: state.image_hash || null,
+    layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+    text_geometry: state.text_geometry || null,
+    text_hash: state.text_hash || null,
+    text_length: state.text_length ?? null,
+    page_bytes: state.page_bytes ?? null,
+    isolation: state.isolation || null,
+    page: archiveRelative(state.page_path, archiveRoot),
+    layout: archiveRelative(state.layout_path, archiveRoot),
+  }));
+}
+
+function approvedExpansionStatesHash(capture) {
+  const identity = approvedExpansionStateValues(capture).map((state, index) => ({
+    state_id: cleanText(state.state_id) || null,
+    index: Number.isFinite(Number(state.index)) ? Number(state.index) : index,
+    image_hash: cleanText(state.image_hash) || null,
+    layout_hash: cleanText(state.layout_hash || state.text_geometry?.geometry_hash) || null,
+  }));
+  return identity.length
+    ? createHash("sha256").update(JSON.stringify(identity)).digest("hex")
+    : null;
+}
+
+function requiredCapturePaths(capture) {
+  if (capture.kind === "pdf") {
+    return [capture.pdf_path, capture.text_path, capture.meta_path];
+  }
+  return [
+    capture.page_path,
+    capture.thumb_path,
+    capture.text_path,
+    capture.layout_path,
+    capture.meta_path,
+    ...approvedExpansionStateValues(capture).flatMap((state) => [state.page_path, state.layout_path]),
+  ];
+}
+
+function requiredR2Slots(capture) {
+  if (capture.kind === "pdf") return ["pdf", "text", "meta"];
+  return [
+    "page",
+    "thumb",
+    "text",
+    "layout",
+    "meta",
+    ...approvedExpansionStateValues(capture).flatMap((_, index) => {
+      const suffix = String(index + 1).padStart(2, "0");
+      return [`expansion_state_${suffix}`, `expansion_state_${suffix}_layout`];
+    }),
+  ];
+}
+
+function missingApprovedGeometryMetadata(capture) {
+  if (capture.kind === "pdf") {
+    return ["file_hash", "text_hash"].filter((field) => !cleanText(capture[field]));
+  }
+  const missing = ["image_hash", "text_hash"].filter((field) => !cleanText(capture[field]));
+  if (!cleanText(capture.layout_hash || capture.text_geometry?.geometry_hash)) {
+    missing.push("layout_hash");
+  }
+  for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
+    const prefix = `expansion_state_${String(index + 1).padStart(2, "0")}`;
+    if (!cleanText(state.state_id)) missing.push(`${prefix}.state_id`);
+    if (!cleanText(state.image_hash)) missing.push(`${prefix}.image_hash`);
+    if (!cleanText(state.layout_hash || state.text_geometry?.geometry_hash)) {
+      missing.push(`${prefix}.layout_hash`);
+    }
+  }
+  return missing;
 }
 
 function captureFiles(capture) {
-  return r2Slots
+  const files = r2Slots
     .map((slot) => ({
       ...slot,
       path: {
@@ -475,10 +793,177 @@ function captureFiles(capture) {
         thumb: capture.thumb_path,
         pdf: capture.pdf_path,
         text: capture.text_path,
+        layout: capture.layout_path,
         meta: capture.meta_path,
       }[slot.name],
     }))
-    .filter((file) => file.path && existsSync(file.path));
+    .filter((file) => file.path && pathEntryExists(file.path));
+  for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
+    const suffix = String(index + 1).padStart(2, "0");
+    if (state.page_path && pathEntryExists(state.page_path)) {
+      files.push({
+        name: `expansion_state_${suffix}`,
+        fileName: `expansion-state-${suffix}.jpg`,
+        contentType: "image/jpeg",
+        path: state.page_path,
+      });
+    }
+    if (state.layout_path && pathEntryExists(state.layout_path)) {
+      files.push({
+        name: `expansion_state_${suffix}_layout`,
+        fileName: `expansion-state-${suffix}-layout.json`,
+        contentType: "application/json; charset=utf-8",
+        path: state.layout_path,
+      });
+    }
+  }
+  return files;
+}
+
+function verifyApprovedCaptureArtifacts(capture) {
+  const archiveRoot = resolveArchiveRoot(capture?.archive_root);
+  const files = captureFiles(capture);
+  const filesByName = new Map(files.map((file) => [file.name, file]));
+  const missingSlots = requiredR2Slots(capture).filter((slot) => !filesByName.has(slot));
+  if (missingSlots.length) {
+    throw new Error(
+      `Approved snapshot artifact verification failed: missing ${missingSlots.join(", ")}.`,
+    );
+  }
+
+  const bindings = objectValue(capture.artifact_bindings);
+  const verified = new Map();
+  for (const file of files) {
+    const binding = objectValue(bindings[file.name]);
+    const declaredSha256 = cleanText(binding.sha256).toLowerCase();
+    const declaredByteLength = Number(binding.byte_length ?? binding.bytes);
+    if (!isSha256(declaredSha256) || !Number.isSafeInteger(declaredByteLength) || declaredByteLength < 0) {
+      throw new Error(
+        `Approved snapshot artifact verification failed for ${file.name}: immutable SHA-256 and byte length are required.`,
+      );
+    }
+    const path = validateArchivePath(file.path, archiveRoot, { kind: "file", mustExist: true });
+    const body = readFileSync(path);
+    const actualSha256 = sha256(body);
+    if (body.length !== declaredByteLength) {
+      throw new Error(
+        `Approved snapshot artifact verification failed for ${file.name}: byte length does not match the retained artifact.`,
+      );
+    }
+    if (actualSha256 !== declaredSha256) {
+      throw new Error(
+        `Approved snapshot artifact verification failed for ${file.name}: SHA-256 does not match the retained artifact.`,
+      );
+    }
+    verified.set(file.name, {
+      body,
+      path,
+      sha256: actualSha256,
+      byte_length: body.length,
+    });
+  }
+
+  if (capture.kind === "pdf") {
+    assertSemanticArtifactHash({
+      role: "PDF",
+      expected: capture.file_hash,
+      actual: verified.get("pdf")?.sha256,
+    });
+  } else {
+    assertSemanticArtifactHash({
+      role: "main image",
+      expected: capture.image_hash,
+      actual: verified.get("page")?.sha256,
+    });
+    verifyGeometryArtifact({
+      role: "main layout",
+      body: verified.get("layout")?.body,
+      expectedGeometryHash: capture.layout_hash || capture.text_geometry?.geometry_hash,
+      expectedImageHash: capture.image_hash,
+    });
+    for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
+      const suffix = String(index + 1).padStart(2, "0");
+      assertSemanticArtifactHash({
+        role: `expansion state ${state.state_id || suffix} image`,
+        expected: state.image_hash,
+        actual: verified.get(`expansion_state_${suffix}`)?.sha256,
+      });
+      verifyGeometryArtifact({
+        role: `expansion state ${state.state_id || suffix} layout`,
+        body: verified.get(`expansion_state_${suffix}_layout`)?.body,
+        expectedGeometryHash: state.layout_hash || state.text_geometry?.geometry_hash,
+        expectedImageHash: state.image_hash,
+      });
+    }
+  }
+
+  const textBody = verified.get("text")?.body;
+  let storedText;
+  try {
+    storedText = new TextDecoder("utf-8", { fatal: true }).decode(textBody);
+  } catch (error) {
+    throw new Error(`Approved snapshot artifact verification failed for text: invalid UTF-8 (${error.message}).`);
+  }
+  const semanticText = storedText.replace(/\r?\n$/u, "");
+  assertSemanticArtifactHash({
+    role: "text",
+    expected: capture.text_hash,
+    actual: sha256(Buffer.from(semanticText, "utf8")),
+  });
+
+  return verified;
+}
+
+function verifyGeometryArtifact({ role, body, expectedGeometryHash, expectedImageHash }) {
+  const geometryHash = normalizedSha256(expectedGeometryHash);
+  const imageHash = normalizedSha256(expectedImageHash);
+  if (!geometryHash || !imageHash) {
+    throw new Error(
+      `Approved snapshot artifact verification failed for ${role}: valid geometry and image hashes are required.`,
+    );
+  }
+  let geometry;
+  try {
+    geometry = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch (error) {
+    throw new Error(
+      `Approved snapshot artifact verification failed for ${role}: layout is not valid UTF-8 JSON (${error.message}).`,
+    );
+  }
+  if (normalizedSha256(geometry?.geometry_hash) !== geometryHash) {
+    throw new Error(
+      `Approved snapshot artifact verification failed for ${role}: geometry hash does not match the layout artifact.`,
+    );
+  }
+  const binding = verifyVisualTextGeometryBinding(geometry, imageHash);
+  if (!binding.valid) {
+    throw new Error(
+      `Approved snapshot artifact verification failed for ${role}: ${binding.reason}.`,
+    );
+  }
+}
+
+function assertSemanticArtifactHash({ role, expected, actual }) {
+  const expectedHash = normalizedSha256(expected);
+  const actualHash = normalizedSha256(actual);
+  if (!expectedHash || !actualHash || expectedHash !== actualHash) {
+    throw new Error(
+      `Approved snapshot artifact verification failed for ${role}: semantic hash does not match the retained artifact.`,
+    );
+  }
+}
+
+function normalizedSha256(value) {
+  const hash = cleanText(value).toLowerCase();
+  return isSha256(hash) ? hash : null;
+}
+
+function isSha256(value) {
+  return /^[a-f0-9]{64}$/u.test(String(value || ""));
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function captureHashes(capture) {
@@ -489,6 +974,8 @@ function captureHashes(capture) {
     main_content_hash: capture.main_content_hash || null,
     nav_header_footer_hash: capture.nav_header_footer_hash || null,
     expansion_hash: capture.expansion_hash || null,
+    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    expansion_states_hash: approvedExpansionStatesHash(capture),
     file_hash: capture.file_hash || null,
   };
 }
@@ -510,10 +997,33 @@ function captureMetadata(capture) {
     page_bytes: capture.page_bytes || null,
     thumb_bytes: capture.thumb_bytes || null,
     dimensions: capture.dimensions || null,
+    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    text_geometry: capture.text_geometry || null,
+    expansion_state_count: approvedExpansionStateValues(capture).length,
+    expansion_state_screenshots: approvedExpansionStateValues(capture).map((state, index) => ({
+      state_id: state.state_id || null,
+      index: Number.isFinite(Number(state.index)) ? Number(state.index) : index,
+      label: state.label || null,
+      captured_at: state.captured_at || capture.captured_at || null,
+      image_hash: state.image_hash || null,
+      layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+      text_geometry: state.text_geometry || null,
+      text_hash: state.text_hash || null,
+      text_length: state.text_length ?? null,
+      page_bytes: state.page_bytes ?? null,
+      isolation: state.isolation || null,
+    })),
     page_count: capture.page_count || null,
     baseline_facts: capture.baseline_facts || null,
     baseline_facts_metadata: capture.baseline_facts_metadata || null,
     localization: capture.localization || null,
+    localization_evidence: capture.kind === "webpage"
+      ? {
+          status: "exact_geometry_available",
+          main_layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+          expansion_state_count: approvedExpansionStateValues(capture).length,
+        }
+      : { status: "not_applicable" },
     promoted_by: "process-visual-review-batch",
   };
 }
@@ -533,11 +1043,35 @@ function approvedR2SnapshotKey(sourceId, version, fileName) {
 
 function sameSnapshotHashes(value, expected) {
   const actual = objectValue(value);
+  const compared = [
+    "text_hash",
+    "image_hash",
+    "file_hash",
+    "layout_hash",
+    "expansion_states_hash",
+  ].filter(
+    (key) => cleanText(expected?.[key]),
+  );
+  return Boolean(compared.length) && compared.every(
+    (key) => cleanText(actual[key]) === cleanText(expected[key]),
+  );
+}
+
+function sameCoreSnapshotHashes(value, expected) {
+  const actual = objectValue(value);
   const compared = ["text_hash", "image_hash", "file_hash"].filter(
     (key) => cleanText(expected?.[key]),
   );
   return Boolean(compared.length) && compared.every(
     (key) => cleanText(actual[key]) === cleanText(expected[key]),
+  );
+}
+
+function canRepairMissingGeometry(value, expected) {
+  if (!sameCoreSnapshotHashes(value, expected)) return false;
+  const actual = objectValue(value);
+  return ["layout_hash", "expansion_states_hash"].some(
+    (key) => cleanText(expected?.[key]) && !cleanText(actual[key]),
   );
 }
 

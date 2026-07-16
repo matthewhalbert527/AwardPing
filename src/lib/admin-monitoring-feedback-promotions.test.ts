@@ -94,7 +94,7 @@ describe("admin verified promotion loader", () => {
         latest_attempt_evidence: {
           status: "failed",
           summary: "History pagination failed after page 12.",
-          safe_action: "Repair the history query and retry the hourly worker.",
+          safe_action: "Repair the history query and retry the feedback-promotion lane.",
         },
       }),
     );
@@ -103,7 +103,7 @@ describe("admin verified promotion loader", () => {
       status: "failed",
       requested_stage: "historical_shadow_test",
       summary: "History pagination failed after page 12.",
-      safe_action: "Repair the history query and retry the hourly worker.",
+      safe_action: "Repair the history query and retry the feedback-promotion lane.",
       failure_reason: "database timeout",
     });
     expect(cluster.shadowReport).toBeNull();

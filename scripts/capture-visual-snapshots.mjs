@@ -91,6 +91,7 @@ import {
   selectAiProvider as selectAiProviderForRun,
 } from "./lib/capture-ai-requirements.mjs";
 import { inspectLocalBaselineEvidence } from "./lib/local-baseline-evidence.mjs";
+import { rehydrateLocalBaselineFromR2 } from "./lib/r2-baseline-rehydration.mjs";
 import {
   sourceBaselineFacts,
   sourceQualityDecision,
@@ -208,7 +209,7 @@ const geminiApiMaxCalls = nonNegativeInt(
 );
 const geminiApiDailyCostCapUsd = nonNegativeNumber(
   args["gemini-api-daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
-  10,
+  5,
 );
 const geminiApiPricingMode = cleanSlug(
   args["gemini-api-pricing-mode"] || env.AWARDPING_GEMINI_API_PRICING_MODE || "standard",
@@ -664,6 +665,7 @@ async function runOnce() {
       r2_operation_retries: r2OperationRetries,
       r2_repair_missing_snapshots: r2RepairMissingSnapshots,
       r2_snapshot_sync: r2SnapshotSync,
+      r2_rehydrate_local_cache: r2SnapshotSync,
       r2_bucket: r2SnapshotSync ? r2Bucket : null,
       snapshot_history_prune: snapshotHistoryPrune,
       snapshot_history_prune_keep: snapshotHistoryPruneKeep,
@@ -781,6 +783,15 @@ async function runOnce() {
     r2_repaired_missing: 0,
     r2_known_existing: 0,
     r2_known_missing: 0,
+    r2_rehydrate_local_cache: 0,
+    r2_rehydrated_local: 0,
+    r2_rehydrated_local_exact_geometry: 0,
+    r2_rehydrated_local_evidence_only: 0,
+    r2_rehydrated_local_latest: 0,
+    r2_rehydrated_local_previous: 0,
+    r2_rehydration_refused: 0,
+    r2_rehydration_failed: 0,
+    r2_rehydration_reasons: {},
     snapshot_history_prune: {
       enabled: snapshotHistoryPrune,
       keep: snapshotHistoryPruneKeep,
@@ -1214,12 +1225,100 @@ async function backfillOneR2Baseline(source, report) {
   });
 }
 
+async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
+  if (!r2SnapshotSync || !baseline || baselineEvidenceStatus(baseline).ok) {
+    return { baseline, attempted: false, failureReason: null };
+  }
+
+  report.r2_rehydrate_local_cache += 1;
+  let result;
+  try {
+    const snapshotRecord = await loadR2SnapshotRecord(source.id);
+    const client = getR2Client();
+    result = await rehydrateLocalBaselineFromR2({
+      archiveRoot,
+      source,
+      baseline,
+      snapshotRecord,
+      bucket: r2Bucket,
+      client,
+      sendCommand: (createCommand, label) => sendR2Command(client, createCommand, label),
+    });
+  } catch (error) {
+    result = {
+      rehydrated: false,
+      reason: "r2_snapshot_record_load_failed",
+      detail: errorMessage(error),
+    };
+  }
+
+  if (result.rehydrated) {
+    report.r2_rehydrated_local += 1;
+    if (result.localization_status === "exact_geometry_available") {
+      report.r2_rehydrated_local_exact_geometry += 1;
+    } else if (String(result.localization_status || "").startsWith("evidence_only_")) {
+      report.r2_rehydrated_local_evidence_only += 1;
+    }
+    if (result.generation === "latest") report.r2_rehydrated_local_latest += 1;
+    if (result.generation === "previous") report.r2_rehydrated_local_previous += 1;
+    localBaselineEvidenceCache.set(source.id, true);
+    console.log(
+      `R2 LOCAL REHYDRATED generation=${result.generation} artifacts=${result.artifact_count} ${sourceLabel(source)}`,
+    );
+    return {
+      baseline: result.baseline,
+      attempted: true,
+      failureReason: null,
+      generation: result.generation,
+    };
+  }
+
+  const reason = cleanText(result.reason) || "r2_local_rehydration_failed";
+  if (isR2RehydrationOperationalFailure(reason)) report.r2_rehydration_failed += 1;
+  else report.r2_rehydration_refused += 1;
+  incrementCounterObject(report.r2_rehydration_reasons, reason);
+  console.log(
+    `R2 LOCAL REHYDRATION FAILED reason=${reason} detail=${truncate(result.detail || "unavailable", 500)} ${sourceLabel(source)}`,
+  );
+  return {
+    baseline,
+    attempted: true,
+    failureReason: reason,
+  };
+}
+
+function isR2RehydrationOperationalFailure(reason) {
+  return new Set([
+    "r2_snapshot_record_load_failed",
+    "r2_object_download_failed",
+    "r2_object_body_missing",
+    "r2_local_rehydration_failed",
+  ]).has(reason);
+}
+
+function incompleteLocalBaselineError(evidence, recovery) {
+  const missing = Array.isArray(evidence?.missing) && evidence.missing.length
+    ? evidence.missing.join(", ")
+    : "required evidence";
+  const recoveryDetail = recovery?.failureReason
+    ? ` Exact R2 recovery failed (${recovery.failureReason}); the baseline was left untouched.`
+    : " The baseline was left untouched.";
+  return new Error(
+    `Baseline exists but evidence is missing (${missing}).${recoveryDetail} Rerun with --baseline-refresh=true only after confirming the source.`,
+  );
+}
+
 async function backfillOneR2BaselineUnlocked(source, report) {
-  const baseline = readJsonIfExists(baselinePathForSource(source.id));
+  let baseline = readJsonIfExists(baselinePathForSource(source.id));
+  const recovery = await maybeRehydrateIncompleteLocalBaseline(source, baseline, report);
+  baseline = recovery.baseline;
   const capture = captureFromBaseline(baseline);
   if (!capture) {
     report.failed += 1;
-    const message = "Baseline exists but could not be loaded for R2 backfill.";
+    const recoveryDetail = recovery.failureReason
+      ? ` Exact R2 recovery failed (${recovery.failureReason}).`
+      : "";
+    const message = `Baseline exists but could not be loaded for R2 backfill.${recoveryDetail}`;
     report.errors.push({
       source_id: source.id,
       source_url: source.url,
@@ -1280,7 +1379,17 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
   }
 
   const baselinePath = baselinePathForSource(source.id);
-  const baseline = readJsonIfExists(baselinePath);
+  let baseline = readJsonIfExists(baselinePath);
+  const recovery = baselineRefresh
+    ? { baseline, failureReason: null }
+    : await maybeRehydrateIncompleteLocalBaseline(source, baseline, report);
+  baseline = recovery.baseline;
+  const recoveredEvidence = baseline && !baselineRefresh
+    ? baselineEvidenceStatus(baseline)
+    : null;
+  if (recoveredEvidence && !recoveredEvidence.ok) {
+    throw incompleteLocalBaselineError(recoveredEvidence, recovery);
+  }
   const pdfSource = isPdfSource(source);
   const capture = pdfSource
     ? await capturePdfSource(source)
@@ -1288,6 +1397,13 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
   report.checked += 1;
   if (capture.kind === "pdf") {
     report.pdf_checked += 1;
+  }
+
+  const previous = baseline && !baselineRefresh
+    ? readBaselineEvidence(baseline)
+    : null;
+  if (previous && !previous.ok) {
+    throw incompleteLocalBaselineError(previous, recovery);
   }
 
   if (!baseline || baselineRefresh) {
@@ -1333,13 +1449,6 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
   if (localizationRepair) {
     await processLocalizationRepairSource(source, baseline, capture, report);
     return;
-  }
-
-  const previous = readBaselineEvidence(baseline);
-  if (!previous.ok) {
-    throw new Error(
-      `Baseline exists but evidence is missing (${previous.missing.join(", ")}). Rerun with --baseline-refresh=true after confirming the source.`,
-    );
   }
 
   if (capture.kind === "pdf" || previous.kind === "pdf") {
@@ -6133,7 +6242,7 @@ async function loadR2SnapshotRecord(sourceId) {
   const { data, error } = await supabase
     .from("shared_award_source_visual_snapshots")
     .select(
-      "latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
+      "shared_award_source_id, shared_award_id, kind, bucket, source_url, latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
     )
     .eq("shared_award_source_id", sourceId)
     .maybeSingle();
@@ -7190,6 +7299,18 @@ function baselineEvidenceStatus(baseline) {
   if (!baseline || typeof baseline !== "object") return { ok: false, missing: ["baseline"] };
   const capture = baseline.capture || {};
   const kind = baseline.kind || (capture.pdf ? "pdf" : "webpage");
+  const r2LocalizationStatus = String(
+    baseline.summary_metadata?.r2_local_rehydration?.localization_status || "",
+  ).trim();
+  const mainGeometryIntentionallyUnavailable =
+    r2LocalizationStatus === "evidence_only_geometry_unavailable";
+  const expansionGeometryIntentionallyIncomplete = new Set([
+    "evidence_only_geometry_unavailable",
+    "evidence_only_expansion_geometry_incomplete",
+  ]).has(r2LocalizationStatus);
+  const captureExpansionStates = Array.isArray(capture.expansion_states)
+    ? capture.expansion_states
+    : [];
   const paths = {
     pagePath: capture.page ? fromArchiveRelative(capture.page) : null,
     thumbPath: capture.thumb ? fromArchiveRelative(capture.thumb) : null,
@@ -7199,7 +7320,7 @@ function baselineEvidenceStatus(baseline) {
     sectionsTextPath: capture.sections_text ? fromArchiveRelative(capture.sections_text) : null,
     sectionsJsonPath: capture.sections_json ? fromArchiveRelative(capture.sections_json) : null,
     layoutPath: capture.layout ? fromArchiveRelative(capture.layout) : null,
-    expansionStateScreenshots: (Array.isArray(capture.expansion_states) ? capture.expansion_states : [])
+    expansionStateScreenshots: captureExpansionStates
       .map((state) => ({
         ...state,
         page_path: state?.page ? fromArchiveRelative(state.page) : null,
@@ -7207,14 +7328,62 @@ function baselineEvidenceStatus(baseline) {
       })),
     metaPath: fromArchiveRelative(capture.meta),
   };
-  const requiredPaths =
-    kind === "pdf" ? [paths.pdfPath, paths.textPath, paths.metaPath] : [paths.pagePath, paths.thumbPath, paths.textPath, paths.metaPath];
-  const missing = requiredPaths.filter((value) => !value || !existsSync(value));
+  const requiredPaths = kind === "pdf"
+    ? [
+        ["pdf", paths.pdfPath],
+        ["text", paths.textPath],
+        ["meta", paths.metaPath],
+      ]
+    : [
+        ["page", paths.pagePath],
+        ["thumb", paths.thumbPath],
+        ["text", paths.textPath],
+        ["meta", paths.metaPath],
+        ...(!mainGeometryIntentionallyUnavailable ? [["layout", paths.layoutPath]] : []),
+      ];
+  const missing = requiredPaths
+    .filter(([, value]) => !value || !existsSync(value))
+    .map(([label]) => label);
+
+  const meta = paths.metaPath && existsSync(paths.metaPath)
+    ? readJsonIfExists(paths.metaPath)
+    : null;
+  const metadataExpansionStates = Array.isArray(meta?.expansion_state_screenshots)
+    ? meta.expansion_state_screenshots
+    : [];
+  const metadataFileExpansionStates = Array.isArray(meta?.files?.expansion_states)
+    ? meta.files.expansion_states
+    : [];
+  const expectedExpansionStateCount = Math.max(
+    captureExpansionStates.length,
+    metadataExpansionStates.length,
+    metadataFileExpansionStates.length,
+    Number.isInteger(meta?.expansion_state_count) && meta.expansion_state_count >= 0
+      ? meta.expansion_state_count
+      : 0,
+    Number.isInteger(baseline.summary_metadata?.r2_local_rehydration?.expected_expansion_states) &&
+      baseline.summary_metadata.r2_local_rehydration.expected_expansion_states >= 0
+      ? baseline.summary_metadata.r2_local_rehydration.expected_expansion_states
+      : 0,
+  );
+  if (kind !== "pdf" && !expansionGeometryIntentionallyIncomplete) {
+    for (let index = 0; index < expectedExpansionStateCount; index += 1) {
+      const state = paths.expansionStateScreenshots[index];
+      const suffix = String(index + 1).padStart(2, "0");
+      if (!state?.page_path || !existsSync(state.page_path)) {
+        missing.push(`expansion_state_${suffix}_page`);
+      }
+      if (!state?.layout_path || !existsSync(state.layout_path)) {
+        missing.push(`expansion_state_${suffix}_layout`);
+      }
+    }
+  }
   if (missing.length) return { ok: false, missing };
 
   return {
     ok: true,
     kind,
+    localizationStatus: r2LocalizationStatus || "exact_geometry_available",
     ...paths,
   };
 }
@@ -7574,7 +7743,10 @@ function hasBaselineForSource(source) {
     archiveRoot,
     sourceId: source.id,
   });
-  const complete = inspection.evidence_complete === true;
+  const baseline = inspection.evidence_complete === true
+    ? readJsonIfExists(baselinePathForSource(source.id))
+    : null;
+  const complete = inspection.evidence_complete === true && baselineEvidenceStatus(baseline).ok;
   localBaselineEvidenceCache.set(source.id, complete);
   return complete;
 }
@@ -8137,6 +8309,15 @@ function visualWorkerMetadata(report) {
       r2_repaired_missing: report.r2_repaired_missing,
       r2_known_existing: report.r2_known_existing,
       r2_known_missing: report.r2_known_missing,
+      r2_rehydrate_local_cache: report.r2_rehydrate_local_cache,
+      r2_rehydrated_local: report.r2_rehydrated_local,
+      r2_rehydrated_local_exact_geometry: report.r2_rehydrated_local_exact_geometry,
+      r2_rehydrated_local_evidence_only: report.r2_rehydrated_local_evidence_only,
+      r2_rehydrated_local_latest: report.r2_rehydrated_local_latest,
+      r2_rehydrated_local_previous: report.r2_rehydrated_local_previous,
+      r2_rehydration_refused: report.r2_rehydration_refused,
+      r2_rehydration_failed: report.r2_rehydration_failed,
+      r2_rehydration_reasons: report.r2_rehydration_reasons,
       localization_repair_synced: report.localization_repair_synced,
       localization_repair_baselined: report.localization_repair_baselined,
       localization_repair_skipped_changed: report.localization_repair_skipped_changed,

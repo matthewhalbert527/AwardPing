@@ -178,7 +178,7 @@ describe("AdminVerifiedPromotionControl", () => {
 
     expect(activeHtml).toContain("Rollback deployment required");
     expect(activeHtml).toContain("Deactivate this rule");
-    expect(activeHtml).toContain("checks the rollback identities hourly at no API charge");
+    expect(activeHtml).toContain("checks the rollback identities on the next feedback-promotion lane run at no API charge");
     expect(rolledBackHtml).toContain("Rollback verification in progress");
     expect(rolledBackHtml).toContain("Keep this candidate inactive");
     expect(rolledBackHtml).not.toContain("Activation deployment required");
@@ -193,12 +193,12 @@ describe("AdminVerifiedPromotionControl", () => {
     const deactivatedHtml = renderControl("retroactive_sweep", false, false);
     const resolvedHtml = renderControl("resolved");
 
-    expect(waitingHtml).toContain("Final hourly attestation pending");
+    expect(waitingHtml).toContain("Final feedback-promotion attestation pending");
     expect(waitingHtml).toContain("Resolve stays locked");
     expect(waitingHtml).not.toContain("Resolve verified pattern");
     expect(sweepHtml).toContain("Resolve verified pattern");
     expect(sweepHtml).toContain("completed sweep artifact");
-    expect(sweepHtml).toContain("next normal hourly, zero-charge matching worker attestation");
+    expect(sweepHtml).toContain("next zero-charge matching feedback-promotion lane attestation");
     expect(sweepHtml).toContain("does not require another 6 PM scan");
     expect(deactivatedHtml).toContain("Rule deactivation detected");
     expect(deactivatedHtml).toContain("Do not resolve this cluster");
@@ -222,7 +222,7 @@ describe("AdminVerifiedPromotionControl", () => {
     expect(html).toContain("matcher/verifier bundle changed");
     expect(html).toContain("restore the exact inactive app and worker deployment");
     expect(html).toContain("Do not resolve this cluster");
-    expect(html).not.toContain("Final hourly attestation pending");
+    expect(html).not.toContain("Final feedback-promotion attestation pending");
   });
 });
 

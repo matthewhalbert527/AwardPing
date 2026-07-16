@@ -71,7 +71,7 @@ export const seoPages: SeoPage[] = [
       "A simple update tracker for nationally competitive award offices, honors colleges, and advisors.",
     h1: "Deadline tracking for award offices",
     intro:
-      "AwardPing is built for the practical office workflow: maintain a watchlist of public award pages, check them hourly, and keep a record of detected updates.",
+      "AwardPing is built for the practical office workflow: maintain a watchlist of public award pages, check them on the scheduled daily scan, and keep a record of detected updates.",
     bullets: [
       "Built for advisor-managed watchlists",
       "Track campus and external award pages",

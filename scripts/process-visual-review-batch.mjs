@@ -43,12 +43,28 @@ import { withVisualBaselineLockAsync } from "./lib/visual-baseline-lock.mjs";
 import {
   extractGeminiBatchInlineResponses,
   extractGeminiUsageMetadata,
+  geminiBatchExactMappingComplete,
+  geminiBatchUsageAccounting,
   geminiBatchInlineResponseMap,
   geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
   geminiInlineResponsePayload,
 } from "./lib/gemini-batch-support.mjs";
+import {
+  GEMINI_PAID_LANES,
+  GeminiBudgetUnavailableError,
+  estimateGeminiMaximumBatchRequestsCostUsd,
+  geminiActiveWorkReservation,
+  loadGeminiSpendReservation,
+  markGeminiSpendCreateStarted,
+  releaseGeminiSpendReservation,
+  releaseUnsubmittedGeminiSpendReservationByKey,
+  reserveGeminiSpend,
+  settleGeminiSpendReservation,
+  submitGeminiSpendReservation,
+  terminalGeminiSettlement,
+} from "./lib/gemini-spend-ledger.mjs";
 import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -208,6 +224,7 @@ const report = {
   retried_failed_candidates: 0,
   retry_exhausted_candidates: 0,
   recovered_stale_submission_claims: 0,
+  provider_batch_bindings_recovered: 0,
   manual_recovery_required_claims: 0,
   submission_claim_conflicts: 0,
   submission_claims_released: 0,
@@ -228,6 +245,10 @@ const report = {
   award_reconciliation_queue_existing: 0,
   award_reconciliation_queue_failed: 0,
   estimated_batch_cost_usd: 0,
+  budget_deferred_candidates: 0,
+  active_work_deferred_candidates: 0,
+  spend_reservations_created: 0,
+  spend_reservations_settled: 0,
   actual_usage: emptyGeminiUsage(),
   batches: [],
   errors: [],
@@ -303,6 +324,7 @@ async function pollExistingBatches() {
 
       if (!isGeminiBatchSucceeded(state)) {
         const message = geminiBatchErrorMessage(job);
+        await settleVisualBatchSpend(batchName, { terminalState: state });
         await markBatchRowsFailed(batchName, message);
         batchReport.failed += 1;
         report.failed += 1;
@@ -492,7 +514,70 @@ async function recoverStaleSubmissionClaims() {
 
   for (const candidate of data || []) {
     const now = new Date().toISOString();
-    const recoveryDecision = visualReviewStaleClaimRecoveryDecision(candidate);
+    let reservation = null;
+    let reservationLoadFailed = false;
+    try {
+      reservation = await loadVisualSpendReservation(candidate.worker_metadata);
+      const journaledBatchName = cleanNullable(candidate.worker_metadata?.possible_external_batch_name);
+      const claimToken = cleanNullable(candidate.worker_metadata?.submission_claim_token);
+      if (
+        reservation?.status === "creating"
+        && !reservation.provider_batch_name
+        && journaledBatchName
+        && claimToken
+      ) {
+        await submitGeminiSpendReservation({
+          supabase,
+          reservationId: reservation.id,
+          attemptToken: claimToken,
+          providerBatchName: journaledBatchName,
+        });
+        reservation = await loadVisualSpendReservation(candidate.worker_metadata);
+      }
+    } catch (reservationError) {
+      reservationLoadFailed = true;
+      report.errors.push({
+        candidate_id: candidate.id,
+        message: `Load visual spend reservation for stale-claim recovery failed: ${errorMessage(reservationError)}`,
+      });
+    }
+    if (
+      reservation?.provider_batch_name
+      && new Set(["submitted", "settled"]).has(reservation.status)
+    ) {
+      const { data: restored, error: restoreError } = await supabase
+        .from("shared_award_visual_review_candidates")
+        .update({
+          status: "submitted",
+          gemini_batch_name: reservation.provider_batch_name,
+          model: reservation.model || candidate.model || geminiWorkerModel(),
+          submitted_at: reservation.submitted_at || now,
+          completed_at: null,
+          rejection_reason: null,
+          worker_metadata: workerMetadataForCandidate(candidate, {
+            gemini_spend_reservation_id: reservation.id,
+            gemini_spend_reservation_key: reservation.reservation_key,
+            gemini_spend_attempt_token: reservation.attempt_token,
+            provider_binding_recovered_at: now,
+          }),
+          updated_at: now,
+        })
+        .eq("id", candidate.id)
+        .eq("status", "processing")
+        .is("gemini_batch_name", null)
+        .lt("updated_at", cutoff)
+        .select("id")
+        .maybeSingle();
+      if (restoreError) throw new Error(`Restore visual provider binding failed: ${restoreError.message}`);
+      if (restored) report.provider_batch_bindings_recovered += 1;
+      continue;
+    }
+    const recoveryDecision = reservationLoadFailed
+      || (reservation && !new Set(["reserved", "released"]).has(reservation.status))
+      ? { action: "fail_closed", reason: `spend_reservation_${reservation?.status || "unavailable"}` }
+      : reservation
+        ? { action: "requeue", reason: `spend_reservation_${reservation.status}_before_create` }
+        : visualReviewStaleClaimRecoveryDecision(candidate);
     if (recoveryDecision.action === "fail_closed") {
       const { data: failedClosed, error: failClosedError } = await supabase
         .from("shared_award_visual_review_candidates")
@@ -517,6 +602,40 @@ async function recoverStaleSubmissionClaims() {
       continue;
     }
     if (recoveryDecision.action !== "requeue") continue;
+    const staleClaimToken = cleanNullable(candidate.worker_metadata?.submission_claim_token);
+    try {
+      const reservationKey = cleanNullable(candidate.worker_metadata?.gemini_spend_reservation_key)
+        || (staleClaimToken ? `changed-page-review:${staleClaimToken}` : null);
+      if (reservationKey) {
+        await releaseUnsubmittedGeminiSpendReservationByKey({
+          supabase,
+          reservationKey,
+          reason: "stale_claim_recovered_before_provider_create",
+        });
+      }
+    } catch (reservationError) {
+      const { data: failedClosed, error: failClosedError } = await supabase
+        .from("shared_award_visual_review_candidates")
+        .update({
+          status: "failed",
+          rejection_reason: "manual_recovery_required_spend_reservation_state",
+          worker_metadata: workerMetadataForCandidate(candidate, {
+            stale_submission_claim_failed_closed_at: now,
+            spend_reservation_recovery_error: truncate(errorMessage(reservationError), 800),
+          }),
+          completed_at: now,
+          updated_at: now,
+        })
+        .eq("id", candidate.id)
+        .eq("status", "processing")
+        .is("gemini_batch_name", null)
+        .lt("updated_at", cutoff)
+        .select("id")
+        .maybeSingle();
+      if (failClosedError) throw new Error(`Fail unsafe stale visual reservation closed failed: ${failClosedError.message}`);
+      if (failedClosed) report.manual_recovery_required_claims += 1;
+      continue;
+    }
     const { data: recovered, error: recoverError } = await supabase
       .from("shared_award_visual_review_candidates")
       .update({
@@ -525,6 +644,9 @@ async function recoverStaleSubmissionClaims() {
           stale_submission_claim_recovered_at: now,
           stale_submission_claim_token: candidate.worker_metadata?.submission_claim_token || null,
           submission_claim_token: null,
+          gemini_spend_attempt_token: null,
+          gemini_spend_reservation_id: null,
+          gemini_spend_reservation_key: null,
         }),
         updated_at: now,
       })
@@ -537,6 +659,22 @@ async function recoverStaleSubmissionClaims() {
     if (recoverError) throw new Error(`Recover stale visual submission claim failed: ${recoverError.message}`);
     if (recovered) report.recovered_stale_submission_claims += 1;
   }
+}
+
+async function loadVisualSpendReservation(workerMetadata) {
+  const reservationId = cleanNullable(workerMetadata?.gemini_spend_reservation_id);
+  const reservationKey = cleanNullable(workerMetadata?.gemini_spend_reservation_key);
+  if (!reservationId && !reservationKey) return null;
+  let query = supabase
+    .from("gemini_spend_reservations")
+    .select("id,reservation_key,attempt_token,status,provider_batch_name,submitted_at,model");
+  query = reservationId ? query.eq("id", reservationId) : query.eq("reservation_key", reservationKey);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new Error(`Load visual spend reservation failed: ${error.message}`);
+  if (data && reservationKey && data.reservation_key !== reservationKey) {
+    throw new Error("Visual spend reservation identity mismatch.");
+  }
+  return data || null;
 }
 
 async function requeueRetryableFailures() {
@@ -733,6 +871,87 @@ async function submitCandidateChunk(model, candidates) {
 
   const requests = claimedCandidates.map((candidate) => geminiBatchRequestForCandidate(candidate));
   const mode = requests.length > inlineThreshold ? "jsonl_file" : "inline";
+  const estimated = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
+    maxOutputTokensPerRequest: 900,
+  });
+  const reservationKey = `changed-page-review:${claimToken}`;
+  const workFingerprint = paidReviewWorkFingerprint(
+    "changed-page-review",
+    model,
+    claimedCandidates.map((candidate) => candidate.candidate_signature || candidate.id),
+  );
+  let spendReservation = null;
+  try {
+    spendReservation = await reserveGeminiSpend({
+      supabase,
+      laneKey: GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW,
+      reservationKey,
+      attemptToken: claimToken,
+      workFingerprint,
+      estimatedCostUsd: estimated,
+      workerSource: "process-visual-review-batch",
+      requestCount: claimedCandidates.length,
+      model,
+      metadata: {
+        claim_token: claimToken,
+        display_name: displayName,
+        candidate_ids: claimedCandidates.map((candidate) => candidate.id),
+        work_fingerprint: workFingerprint,
+        reservation_basis: "text_utf8_and_image_tile_upper_bound_standard_rates_max_output",
+      },
+    });
+    report.spend_reservations_created += 1;
+  } catch (error) {
+    const activeWork = geminiActiveWorkReservation(error);
+    let activeDisposition = null;
+    try {
+      await releaseUnsubmittedGeminiSpendReservationByKey({
+        supabase,
+        reservationKey,
+        reason: `reservation_response_failed_before_provider_create:${errorMessage(error)}`.slice(0, 500),
+      });
+      if (activeWork) {
+        activeDisposition = await deferVisualSubmissionClaimsForActiveWork(claimedCandidates, claimToken, activeWork);
+      } else {
+        await releaseSubmissionClaims(claimedCandidates, claimToken, error);
+      }
+    } catch (recoveryError) {
+      await failSubmissionClaimsClosed(claimedCandidates, claimToken, recoveryError);
+      throw recoveryError;
+    }
+    if (!(error instanceof GeminiBudgetUnavailableError)) throw error;
+    if (activeWork) {
+      report.active_work_deferred_candidates += claimedCandidates.length;
+      if (activeDisposition?.manualRecoveryRequired) {
+        report.manual_recovery_required_claims += claimedCandidates.length;
+      }
+      report.batches.push({
+        name: null,
+        model,
+        mode: activeDisposition?.manualRecoveryRequired ? "active_work_manual_recovery" : "active_work_in_flight",
+        requested_candidates: claimedCandidates.length,
+        estimated_cost_usd: roundUsd(estimated),
+        active_work: { ...error.status, recovered_status: activeDisposition?.status || activeWork.status },
+      });
+      console.log(
+        `VISUAL_REVIEW_ACTIVE_WORK candidates=${claimedCandidates.length} status=${activeDisposition?.status || activeWork.status} reservation=${activeWork.reservationId}`,
+      );
+      return;
+    }
+    report.budget_deferred_candidates += claimedCandidates.length;
+    report.batches.push({
+      name: null,
+      model,
+      mode: "budget_deferred",
+      requested_candidates: claimedCandidates.length,
+      estimated_cost_usd: roundUsd(estimated),
+      budget: error.status,
+    });
+    console.log(
+      `VISUAL_REVIEW_BUDGET_DEFERRED candidates=${claimedCandidates.length} remaining_usd=${error.status?.remaining_usd ?? 0} reset_at=${error.status?.reset_at || "unknown"}`,
+    );
+    return;
+  }
   let batch;
   try {
     batch = await createGeminiBatchJob({
@@ -740,15 +959,23 @@ async function submitCandidateChunk(model, candidates) {
       requests,
       displayName,
       mode,
-      beforeCreate: () => markSubmissionClaimsCreateStarted(
-        claimedCandidates,
-        claimToken,
-      ),
+      beforeCreate: () => markSubmissionClaimsCreateStarted(claimedCandidates, claimToken, {
+        spendReservation,
+        reservationKey,
+        estimatedCostUsd: estimated,
+      }),
     });
   } catch (error) {
     if (error?.possibleExternalBatchCreated) {
       await failSubmissionClaimsClosed(claimedCandidates, claimToken, error);
     } else {
+      await releaseGeminiSpendReservation({
+        supabase,
+        reservationId: spendReservation.reservation_id,
+        reason: `${error?.safeToReleaseBatchClaim ? "provider_create_definitively_failed" : "provider_create_not_reached"}:${errorMessage(error)}`.slice(0, 500),
+        expectedStatus: error?.safeToReleaseBatchClaim ? "creating" : null,
+        expectedAttemptToken: claimToken,
+      });
       await releaseSubmissionClaims(claimedCandidates, claimToken, error);
     }
     throw error;
@@ -758,6 +985,26 @@ async function submitCandidateChunk(model, candidates) {
     const error = new Error(`Gemini batch creation did not return a batch name: ${JSON.stringify(batch).slice(0, 500)}`);
     error.possibleExternalBatchCreated = true;
     await failSubmissionClaimsClosed(claimedCandidates, claimToken, error);
+    throw error;
+  }
+  try {
+    await journalVisualProviderBatchName(claimedCandidates, claimToken, batchName);
+  } catch (error) {
+    error.possibleExternalBatchCreated = true;
+    await failSubmissionClaimsClosed(claimedCandidates, claimToken, error, batchName);
+    throw error;
+  }
+
+  try {
+    await submitGeminiSpendReservation({
+      supabase,
+      reservationId: spendReservation.reservation_id,
+      attemptToken: claimToken,
+      providerBatchName: batchName,
+    });
+  } catch (error) {
+    error.possibleExternalBatchCreated = true;
+    await failSubmissionClaimsClosed(claimedCandidates, claimToken, error, batchName);
     throw error;
   }
 
@@ -772,6 +1019,8 @@ async function submitCandidateChunk(model, candidates) {
       mode,
       displayName,
       submittedAt: now,
+      spendReservation,
+      estimatedCostUsd: estimated,
     });
     if (submittedCandidate) submittedCandidates.push(submittedCandidate);
     else report.submission_claims_lost_after_batch_create += 1;
@@ -779,7 +1028,6 @@ async function submitCandidateChunk(model, candidates) {
 
   report.submitted_jobs += 1;
   report.submitted_candidates += submittedCandidates.length;
-  const estimated = claimedCandidates.reduce((total, candidate) => total + estimateCandidateBatchCostUsd(model, candidate), 0);
   report.estimated_batch_cost_usd = roundUsd(report.estimated_batch_cost_usd + estimated);
   report.batches.push({
     name: batchName,
@@ -801,6 +1049,8 @@ async function persistSubmittedClaim({
   mode,
   displayName,
   submittedAt,
+  spendReservation,
+  estimatedCostUsd,
 }) {
   let lastError = null;
   for (let attempt = 1; attempt <= 4; attempt += 1) {
@@ -819,6 +1069,9 @@ async function persistSubmittedClaim({
           display_name: displayName,
           batch_display_name: displayName,
           submission_claim_token: claimToken,
+          gemini_spend_reservation_id: spendReservation.reservation_id,
+          gemini_spend_lane: GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW,
+          gemini_spend_estimated_cost_usd: roundUsd(estimatedCostUsd),
           prompt_rebuilt_from_current_policy: true,
         }),
       })
@@ -837,7 +1090,11 @@ async function persistSubmittedClaim({
   );
 }
 
-async function markSubmissionClaimsCreateStarted(candidates, claimToken) {
+async function markSubmissionClaimsCreateStarted(
+  candidates,
+  claimToken,
+  { spendReservation, reservationKey, estimatedCostUsd },
+) {
   const startedAt = new Date().toISOString();
   for (const candidate of candidates) {
     const { data, error } = await supabase
@@ -845,6 +1102,11 @@ async function markSubmissionClaimsCreateStarted(candidates, claimToken) {
       .update({
         worker_metadata: workerMetadataForCandidate(candidate, {
           batch_create_started_at: startedAt,
+          gemini_spend_reservation_id: spendReservation.reservation_id,
+          gemini_spend_reservation_key: reservationKey,
+          gemini_spend_attempt_token: claimToken,
+          gemini_spend_lane: GEMINI_PAID_LANES.CHANGED_PAGE_REVIEW,
+          gemini_spend_estimated_cost_usd: estimatedCostUsd,
         }),
         updated_at: startedAt,
       })
@@ -852,7 +1114,7 @@ async function markSubmissionClaimsCreateStarted(candidates, claimToken) {
       .eq("status", "processing")
       .is("gemini_batch_name", null)
       .contains("worker_metadata", { submission_claim_token: claimToken })
-      .select("id")
+      .select("id,worker_metadata")
       .maybeSingle();
     if (error) {
       throw new Error(`Mark Gemini create start for ${candidate.id} failed: ${error.message}`);
@@ -860,7 +1122,109 @@ async function markSubmissionClaimsCreateStarted(candidates, claimToken) {
     if (!data) {
       throw new Error(`Submission claim ${candidate.id} was lost before Gemini create POST.`);
     }
+    candidate.worker_metadata = data.worker_metadata;
   }
+  await markGeminiSpendCreateStarted({
+    supabase,
+    reservationId: spendReservation.reservation_id,
+    attemptToken: claimToken,
+    metadata: {
+      reservation_key: reservationKey,
+      candidate_ids: candidates.map((candidate) => candidate.id),
+    },
+  });
+}
+
+async function journalVisualProviderBatchName(candidates, claimToken, batchName) {
+  const returnedAt = new Date().toISOString();
+  for (const candidate of candidates) {
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          possible_external_batch_name: batchName,
+          provider_batch_returned_at: returnedAt,
+        }),
+        updated_at: returnedAt,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .contains("worker_metadata", { submission_claim_token: claimToken })
+      .select("worker_metadata")
+      .maybeSingle();
+    if (error) throw new Error(`Journal visual provider Batch ${batchName} failed: ${error.message}`);
+    if (!data) throw new Error(`Visual submission claim ${candidate.id} was lost after provider create.`);
+    candidate.worker_metadata = data.worker_metadata;
+  }
+}
+
+async function deferVisualSubmissionClaimsForActiveWork(candidates, claimToken, activeWork) {
+  const now = new Date().toISOString();
+  const reservation = await loadGeminiSpendReservation({
+    supabase,
+    reservationId: activeWork.reservationId,
+  });
+  const providerBound = new Set(["submitted", "settled"]).has(reservation.status)
+    && cleanNullable(reservation.provider_batch_name);
+  const manualRecovery = reservation.status === "creating" && !providerBound;
+  for (const candidate of candidates) {
+    const metadata = workerMetadataForCandidate(candidate, {
+      submission_claim_token: providerBound ? null : reservation.attempt_token,
+      submission_claim_released_at: now,
+      submission_claim_release_reason: `Equivalent Gemini review already has an active ${reservation.status} reservation.`,
+      batch_create_started_at: manualRecovery ? reservation.create_started_at || now : null,
+      gemini_spend_attempt_token: reservation.attempt_token,
+      gemini_spend_reservation_id: reservation.id,
+      gemini_spend_reservation_key: reservation.reservation_key,
+      active_work_reservation_id: reservation.id,
+      active_work_status: reservation.status,
+      active_work_detected_at: now,
+      retry_creates_api_charge: true,
+      automatic_retry_after_budget_reset: false,
+      automatic_retry_after_active_work: !manualRecovery,
+      active_work_recovery: providerBound
+        ? "automatic_provider_poll"
+        : manualRecovery
+          ? "manual_provider_create_recovery"
+          : "automatic_stale_pre_create_recovery",
+      provider_binding_recovered_at: providerBound ? now : null,
+    });
+    const { data, error } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .update({
+        status: providerBound ? "submitted" : manualRecovery ? "failed" : "processing",
+        gemini_batch_name: providerBound ? reservation.provider_batch_name : null,
+        model: reservation.model || candidate.model || geminiWorkerModel(),
+        submitted_at: providerBound ? reservation.submitted_at || now : candidate.submitted_at || null,
+        completed_at: manualRecovery ? now : null,
+        rejection_reason: manualRecovery
+          ? "manual_recovery_required_equivalent_review_create_started"
+          : null,
+        worker_metadata: metadata,
+        updated_at: now,
+      })
+      .eq("id", candidate.id)
+      .eq("status", "processing")
+      .is("gemini_batch_name", null)
+      .contains("worker_metadata", { submission_claim_token: claimToken })
+      .select("id")
+      .maybeSingle();
+    if (error) throw new Error(`Defer visual active-work claim ${candidate.id} failed: ${error.message}`);
+    if (!data) report.submission_claim_conflicts += 1;
+    else if (providerBound) report.provider_batch_bindings_recovered += 1;
+  }
+  if (manualRecovery) {
+    report.errors.push({
+      stage: "visual_active_work_recovery",
+      message: `Equivalent Gemini provider-create reservation ${reservation.id} requires manual recovery; a second paid call was not created.`,
+    });
+  }
+  return {
+    status: reservation.status,
+    manualRecoveryRequired: manualRecovery,
+    providerBound: Boolean(providerBound),
+  };
 }
 
 async function releaseSubmissionClaims(candidates, claimToken, cause) {
@@ -876,6 +1240,9 @@ async function releaseSubmissionClaims(candidates, claimToken, cause) {
           submission_claim_release_reason: truncate(errorMessage(cause), 800),
           batch_create_started_at: null,
           batch_create_failed_at: now,
+          gemini_spend_attempt_token: null,
+          gemini_spend_reservation_id: null,
+          gemini_spend_reservation_key: null,
         }),
         updated_at: now,
       })
@@ -896,21 +1263,28 @@ async function releaseSubmissionClaims(candidates, claimToken, cause) {
   }
 }
 
-async function failSubmissionClaimsClosed(candidates, claimToken, cause) {
+async function failSubmissionClaimsClosed(candidates, claimToken, cause, providerBatchName = null) {
   const now = new Date().toISOString();
   for (const candidate of candidates) {
+    const knownBatchName = cleanNullable(providerBatchName);
     const { data, error } = await supabase
       .from("shared_award_visual_review_candidates")
       .update({
-        status: "failed",
-        rejection_reason: "manual_recovery_required_possible_external_batch_created",
+        status: knownBatchName ? "submitted" : "failed",
+        gemini_batch_name: knownBatchName,
+        submitted_at: knownBatchName ? now : candidate.submitted_at || null,
+        rejection_reason: knownBatchName
+          ? null
+          : "manual_recovery_required_possible_external_batch_created",
         worker_metadata: workerMetadataForCandidate(candidate, {
           submission_claim_failed_closed_at: now,
           possible_external_batch_error: truncate(errorMessage(cause), 800),
+          possible_external_batch_name: knownBatchName,
+          provider_binding_recovery_required: Boolean(knownBatchName),
           manual_recovery_batch_display_name:
             candidate.worker_metadata?.batch_display_name || null,
         }),
-        completed_at: now,
+        completed_at: knownBatchName ? null : now,
         updated_at: now,
       })
       .eq("id", candidate.id)
@@ -926,7 +1300,7 @@ async function failSubmissionClaimsClosed(candidates, claimToken, cause) {
       });
       continue;
     }
-    if (data) report.manual_recovery_required_claims += 1;
+    if (data && !knownBatchName) report.manual_recovery_required_claims += 1;
   }
 }
 
@@ -943,7 +1317,17 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
     candidate.status !== "failed" || candidate.rejection_reason === "missing_batch_response"
   );
   const sourcesById = await loadSourcesById(candidates.map((candidate) => candidate.shared_award_source_id));
-  const responseMap = await geminiBatchResponseMap(job);
+  const batchResponses = await geminiBatchResponseMap(
+    job,
+    candidates.map((candidate) => candidate.id),
+  );
+  const responseMap = batchResponses.responses;
+  // Settle terminal provider spend before changing any candidate/publication
+  // state. Retrying after a crash is safe because settlement is idempotent.
+  await settleVisualBatchSpend(batchName, {
+    terminalState: geminiBatchState(job),
+    accounting: batchResponses.accounting,
+  });
 
   for (const candidate of candidates) {
     const recoveringMissingResponse = candidate.status === "failed" && candidate.rejection_reason === "missing_batch_response";
@@ -1670,6 +2054,7 @@ function geminiBatchRequestForCandidate(candidate) {
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: 900,
+        thinkingConfig: { thinkingBudget: 0 },
         responseMimeType: "application/json",
         responseSchema: visualReviewResponseSchema,
       },
@@ -1766,17 +2151,36 @@ async function uploadGeminiJsonlRequests({ requests, displayName }) {
   return fileName;
 }
 
-async function geminiBatchResponseMap(job) {
+async function geminiBatchResponseMap(job, expectedKeys = []) {
   const responses = [...extractGeminiBatchInlineResponses(job)];
   for (const fileName of geminiBatchOutputFileNames(job)) {
     const text = await downloadGeminiFileText(fileName);
     for (const line of text.split(/\r?\n/)) {
-      const parsed = parseJsonObject(line);
-      if (parsed) responses.push(parsed);
+      if (!line.trim()) continue;
+      responses.push(parseJsonObject(line) || { awardping_unparseable_batch_line: true });
     }
   }
 
-  return geminiBatchInlineResponseMap(responses).responses;
+  const mapped = geminiBatchInlineResponseMap(responses);
+  const mappingComplete = geminiBatchExactMappingComplete(responses, mapped, expectedKeys);
+  if (mapped.missingKeys > 0) {
+    report.errors.push({
+      stage: "visual_batch_response_mapping",
+      message: `${mapped.missingKeys} Gemini Batch response item(s) had no candidate key and could not be reconciled.`,
+    });
+  }
+  for (const duplicateKey of mapped.duplicateKeys) {
+    mapped.responses.delete(duplicateKey);
+    report.errors.push({
+      candidate_id: duplicateKey,
+      stage: "visual_batch_response_mapping",
+      message: `Gemini Batch returned duplicate response key ${duplicateKey}; the candidate was failed closed instead of choosing an ambiguous response.`,
+    });
+  }
+  return {
+    responses: mapped.responses,
+    accounting: geminiBatchUsageAccounting(responses, { mappingComplete }),
+  };
 }
 
 async function downloadGeminiFileText(fileName) {
@@ -2007,6 +2411,86 @@ async function refreshStatusCounts() {
   }
 }
 
+async function settleVisualBatchSpend(
+  batchName,
+  { terminalState, accounting = null } = {},
+) {
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("model,actual_usage,worker_metadata")
+    .eq("gemini_batch_name", batchName);
+  if (error) throw new Error(`Load visual spend reservation for ${batchName} failed: ${error.message}`);
+  const rows = data || [];
+  const reservationIds = unique(rows.map((row) => cleanNullable(objectValue(row.worker_metadata).gemini_spend_reservation_id)));
+  if (!reservationIds.length) return null; // Historical Batch created before account-wide reservations.
+  if (reservationIds.length !== 1) {
+    throw new Error(`Gemini Batch ${batchName} is bound to ${reservationIds.length} spend reservations.`);
+  }
+  const terminalAccounting = accounting || geminiBatchUsageAccounting([]);
+  const usage = terminalAccounting.usage;
+  const modelName = cleanNullable(rows.find((row) => row.model)?.model) || geminiWorkerModel();
+  let reservation = await loadGeminiSpendReservation({
+    supabase,
+    reservationId: reservationIds[0],
+  });
+  if (reservation.status === "settled") {
+    return { settled: true, already_settled: true, reservation_id: reservation.id };
+  }
+  const attemptTokens = unique(rows.map((row) =>
+    cleanNullable(objectValue(row.worker_metadata).gemini_spend_attempt_token)
+  ));
+  if (
+    reservation.status === "creating"
+    && !reservation.provider_batch_name
+    && attemptTokens.length === 1
+  ) {
+    await submitGeminiSpendReservation({
+      supabase,
+      reservationId: reservation.id,
+      attemptToken: attemptTokens[0],
+      providerBatchName: batchName,
+    });
+    reservation = await loadGeminiSpendReservation({
+      supabase,
+      reservationId: reservation.id,
+    });
+    report.provider_batch_bindings_recovered += 1;
+  }
+  const settlement = terminalGeminiSettlement({
+    model: modelName,
+    usage,
+    reservation,
+    responseCount: terminalAccounting.responseCount,
+    usageResponseCount: terminalAccounting.usageResponseCount,
+    mappingComplete: terminalAccounting.mappingComplete,
+  });
+  const settled = await settleGeminiSpendReservation({
+    supabase,
+    reservationId: reservationIds[0],
+    spentCostUsd: settlement.spentCostUsd,
+    usage: {
+      ...usage,
+      coverage: settlement.coverage,
+      terminal_state: terminalState || null,
+      provider_batch_name: batchName,
+    },
+    spentSource: settlement.spentSource,
+  });
+  report.spend_reservations_settled += settled ? 1 : 0;
+  return settled;
+}
+
+function paidReviewWorkFingerprint(kind, modelName, identities) {
+  const digest = crypto.createHash("sha256")
+    .update(JSON.stringify({
+      kind,
+      model: modelName,
+      identities: [...new Set((identities || []).map((value) => String(value || "").trim()).filter(Boolean))].sort(),
+    }))
+    .digest("hex");
+  return `${kind}:${digest}`;
+}
+
 function geminiBatchUrl(model) {
   const modelName = String(model || "").replace(/^models\//, "");
   return `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:batchGenerateContent`;
@@ -2097,15 +2581,6 @@ function addUsage(target, usage) {
   target.thoughts_tokens += usage.thoughts_tokens || 0;
   target.cached_content_tokens += usage.cached_content_tokens || 0;
   return target;
-}
-
-function estimateCandidateBatchCostUsd(model, candidate) {
-  const promptPayload = refreshVisualReviewPromptPayloadPolicy(candidate.prompt_payload || {});
-  const promptChars = buildVisualReviewPromptText(promptPayload).length;
-  const estimatedInputTokens = Math.ceil(promptChars / 4);
-  const estimatedOutputTokens = 800;
-  const rates = geminiBatchPricePerMillion(model);
-  return roundUsd((estimatedInputTokens / 1_000_000) * rates.input + (estimatedOutputTokens / 1_000_000) * rates.output);
 }
 
 function geminiBatchPricePerMillion(model) {

@@ -49,7 +49,7 @@ describe("verified monitoring-feedback promotion worker", () => {
     expect(monitoringPromotionMatcherDigest).toBe(monitoringPromotionMatcherIdentity.hash);
   });
 
-  it("builds a cluster-bound zero-charge hourly resolution attestation", () => {
+  it("builds a cluster-bound zero-charge feedback-promotion lane resolution attestation", () => {
     const metadata = buildPostSweepResolutionWorkerAttestationMetadata({
       cluster: {
         cluster_id: "90000000-0000-4000-8000-000000000009",
@@ -1321,9 +1321,9 @@ describe("verified monitoring-feedback promotion worker", () => {
     ).toEqual({ suppressed: true, reason: "source_shape_noise" });
   });
 
-  it("wires the runner before the general sweep and captures immutable run binding", () => {
+  it("wires independent promotion, suppression, and audit lanes with immutable capture binding", () => {
     const downstream = readFileSync(
-      resolve(root, "installer", "windows", "Run-AwardPingDownstreamQueues.ps1"),
+      resolve(root, "scripts", "run-downstream-lane.mjs"),
       "utf8",
     );
     const capture = readFileSync(
@@ -1341,13 +1341,13 @@ describe("verified monitoring-feedback promotion worker", () => {
     expect(capture).toContain(
       "localBaselineEvidenceCache.clear();\n  observedVisualReviewCandidateIds.clear();",
     );
-    expect(downstream).toContain("process-monitoring-feedback-promotions.mjs");
-    expect(downstream.indexOf('-Name "visual-review-batch"')).toBeLessThan(
-      downstream.indexOf('-Name "verified-feedback-promotions"'),
-    );
-    expect(downstream.indexOf('-Name "verified-feedback-promotions"')).toBeLessThan(
-      downstream.indexOf('-Name "change-event-suppression-sweep"'),
-    );
+    expect(downstream).toContain("feedback_promotion: {");
+    expect(downstream).toContain("scripts/process-monitoring-feedback-promotions.mjs");
+    expect(downstream).toContain("suppression: {");
+    expect(downstream).toContain("scripts/cleanup-change-event-noise.mjs");
+    expect(downstream).toContain("page_audit: {");
+    expect(downstream).toContain("scripts/evaluate-public-page-audit-canaries.mjs");
+    expect(downstream).not.toContain("scripts/process-page-audit-batch.mjs");
     expect(generalSweep).toContain(
       '"list_unresolved_monitoring_feedback_promotion_rule_ids"',
     );

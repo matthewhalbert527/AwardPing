@@ -124,7 +124,7 @@ function startProfile(profile) {
       envPath,
       `--profile=${profile}`,
       "--apply=true",
-      "--baseline-cost-cap-usd=15",
+      "--baseline-cost-cap-usd=5",
     ],
   });
 
@@ -149,7 +149,7 @@ function startAtomicTask(taskId) {
         "--profile=daily",
         `--phases=${(run.phases || []).join(",")}`,
         "--apply=true",
-        "--baseline-cost-cap-usd=15",
+        "--baseline-cost-cap-usd=5",
       ]
     : [
         ...(run.args || []),

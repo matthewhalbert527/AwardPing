@@ -2,8 +2,6 @@ param(
   [string]$InstallRoot = "$env:LOCALAPPDATA\AwardPingWorker",
   [string]$SupabaseUrl = "https://zploenljxkqzyxcmbyec.supabase.co",
   [string]$AppUrl = "https://awardping.vercel.app",
-  [int]$SuppressionSweepLimit = 10000,
-  [int]$SuppressionSweepBatchSize = 500,
   [switch]$UpdateOnly
 )
 
@@ -281,7 +279,14 @@ function Get-AwardPingManagedTaskNames {
     "AwardPing Visual Snapshot Worker Shard 1",
     "AwardPing Visual Snapshot Worker Shard 2",
     "AwardPing Visual Snapshot Worker Shard 3",
-    "AwardPing Downstream Queue Pipeline"
+    "AwardPing New Page Review Lane",
+    "AwardPing Changed Page Review Lane",
+    "AwardPing Feedback Promotion Lane",
+    "AwardPing Suppression Lane",
+    "AwardPing Reconciliation Lane",
+    "AwardPing Page Audit Lane",
+    "AwardPing Manual Quarantine Lane",
+    "AwardPing Nightly Report Lane"
   )
 }
 
@@ -575,6 +580,16 @@ function Get-AwardPingTaskSnapshotsForFinalization {
   )
 
   $snapshots = @($InitialSnapshots)
+  $retiredDownstreamSnapshot = @(
+    $InitialSnapshots |
+      Where-Object { [string]$_.TaskName -eq "AwardPing Downstream Queue Pipeline" } |
+      Select-Object -First 1
+  )
+  $newLaneWasEnabled = if ($retiredDownstreamSnapshot.Count -gt 0) {
+    [bool]$retiredDownstreamSnapshot[0].WasEnabled
+  } else {
+    $true
+  }
   $initialKeys = @{}
   foreach ($snapshot in $InitialSnapshots) {
     $key = Get-AwardPingTaskSnapshotKey -TaskName $snapshot.TaskName -TaskPath $snapshot.TaskPath
@@ -594,11 +609,16 @@ function Get-AwardPingTaskSnapshotsForFinalization {
     }
 
     $taskXml = [string](Export-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -ErrorAction Stop)
+    $wasEnabled = if ([string]$task.TaskName -like "AwardPing * Lane") {
+      $newLaneWasEnabled
+    } else {
+      $true
+    }
     $snapshots += [pscustomobject]@{
       TaskName = [string]$task.TaskName
       TaskPath = $taskPath
       Xml = $taskXml
-      WasEnabled = $true
+      WasEnabled = $wasEnabled
       WasRunning = $false
       ExistedBeforeUpdate = $false
       RestoreAfterUpdate = $true
@@ -814,7 +834,11 @@ function Get-AwardPingInstalledRuntimeProblems {
   if ($RequireManagedRuntime) {
     $requiredPaths += @(
       (Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"),
-      (Join-Path $InstallRoot "Run-AwardPingDownstreamQueues.ps1"),
+      (Join-Path $InstallRoot "Run-AwardPingDownstreamLane.ps1"),
+      (Join-Path $AppDir "scripts\run-downstream-lane.mjs"),
+      (Join-Path $AppDir "scripts\lib\gemini-spend-ledger.mjs"),
+      (Join-Path $AppDir "scripts\lib\gemini-batch-support.mjs"),
+      (Join-Path $AppDir "scripts\lib\r2-baseline-rehydration.mjs"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
       (Join-Path $AppDir "scripts\lib\expansion-state-isolation.mjs"),
@@ -822,6 +846,7 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\lib\visual-event-localization.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-snapshot-history.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-review-queue.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-baseline-promotion.mjs"),
       (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
       (Join-Path $AppDir "scripts\process-monitoring-feedback-promotions.mjs"),
       (Join-Path $AppDir "scripts\sync-manual-quarantine-registry.mjs"),
@@ -841,6 +866,7 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\supabase-service-client.mjs"),
       (Join-Path $AppDir "scripts\backfill-baseline-facts.mjs"),
       (Join-Path $AppDir "scripts\process-source-intake-requests.mjs"),
+      (Join-Path $AppDir "scripts\lib\source-intake.mjs"),
       (Join-Path $AppDir "scripts\process-visual-review-batch.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-change-publication.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-event-evidence.mjs"),
@@ -852,6 +878,7 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\cleanup-change-event-noise.mjs"),
       (Join-Path $AppDir "scripts\reconcile-impacted-award-pages.mjs"),
       (Join-Path $AppDir "scripts\process-page-audit-batch.mjs"),
+      (Join-Path $AppDir "scripts\evaluate-public-page-audit-canaries.mjs"),
       (Join-Path $AppDir "config\award-monitoring-policy.json"),
       (Join-Path $AppDir "config\award-decision-memory.json")
     )
@@ -929,7 +956,7 @@ function Get-AwardPingInstalledRuntimeProblems {
     $hashPairs = @()
     if (-not [string]::IsNullOrWhiteSpace($InstallerSourceDirectory)) {
       foreach ($fileName in @(
-        "Run-AwardPingDownstreamQueues.ps1"
+        "Run-AwardPingDownstreamLane.ps1"
       )) {
         $hashPairs += [pscustomobject]@{
           Source = Join-Path $InstallerSourceDirectory $fileName
@@ -939,6 +966,10 @@ function Get-AwardPingInstalledRuntimeProblems {
     }
     if (-not [string]::IsNullOrWhiteSpace($AppSourceRoot)) {
       foreach ($relativePath in @(
+        "scripts\run-downstream-lane.mjs",
+        "scripts\lib\gemini-spend-ledger.mjs",
+        "scripts\lib\gemini-batch-support.mjs",
+        "scripts\lib\r2-baseline-rehydration.mjs",
         "scripts\capture-visual-snapshots.mjs",
         "scripts\lib\visual-capture-run-report.mjs",
         "scripts\lib\expansion-state-isolation.mjs",
@@ -946,6 +977,7 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\visual-event-localization.mjs",
         "scripts\lib\visual-snapshot-history.mjs",
         "scripts\lib\visual-review-queue.mjs",
+        "scripts\lib\visual-baseline-promotion.mjs",
         "scripts\report-visual-nightly.mjs",
         "scripts\process-monitoring-feedback-promotions.mjs",
         "scripts\sync-manual-quarantine-registry.mjs",
@@ -965,6 +997,7 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\supabase-service-client.mjs",
         "scripts\backfill-baseline-facts.mjs",
         "scripts\process-source-intake-requests.mjs",
+        "scripts\lib\source-intake.mjs",
         "scripts\process-visual-review-batch.mjs",
         "scripts\lib\visual-change-publication.mjs",
         "scripts\lib\visual-event-evidence.mjs",
@@ -976,6 +1009,7 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\cleanup-change-event-noise.mjs",
         "scripts\reconcile-impacted-award-pages.mjs",
         "scripts\process-page-audit-batch.mjs",
+        "scripts\evaluate-public-page-audit-canaries.mjs",
         "config\award-monitoring-policy.json",
         "config\award-decision-memory.json"
       )) {
@@ -1004,8 +1038,6 @@ function Get-AwardPingInstalledRuntimeProblems {
 function Get-AwardPingTaskRestoreXml {
   param(
     [object]$Snapshot,
-    [int]$SuppressionSweepLimit,
-    [int]$SuppressionSweepBatchSize,
     [bool]$ApplyTaskDefinitionUpdates
   )
 
@@ -1044,40 +1076,12 @@ function Get-AwardPingTaskRestoreXml {
   }
   if ($enabledNode) { $enabledNode.InnerText = "false" }
 
-  if ($ApplyTaskDefinitionUpdates -and $Snapshot.TaskName -eq "AwardPing Downstream Queue Pipeline") {
-    $argumentsNode = $document.SelectSingleNode("/task:Task/task:Actions/task:Exec/task:Arguments", $namespace)
-    if ($argumentsNode -and $argumentsNode.InnerText -match "(?i)-SuppressionSweepLimit\s+\S+") {
-      $argumentsNode.InnerText = [regex]::Replace(
-        $argumentsNode.InnerText,
-        "(?i)(-SuppressionSweepLimit\s+)\S+",
-        "`${1}$SuppressionSweepLimit"
-      )
-    } elseif ($argumentsNode) {
-      $argumentsNode.InnerText = $argumentsNode.InnerText.TrimEnd() + " -SuppressionSweepLimit $SuppressionSweepLimit"
-    }
-    if ($argumentsNode -and $argumentsNode.InnerText -match "(?i)-SuppressionSweepBatchSize\s+\S+") {
-      $argumentsNode.InnerText = [regex]::Replace(
-        $argumentsNode.InnerText,
-        "(?i)(-SuppressionSweepBatchSize\s+)\S+",
-        "`${1}$SuppressionSweepBatchSize"
-      )
-    } elseif ($argumentsNode) {
-      $argumentsNode.InnerText = $argumentsNode.InnerText.TrimEnd() + " -SuppressionSweepBatchSize $SuppressionSweepBatchSize"
-    }
-    $descriptionNode = $document.SelectSingleNode("/task:Task/task:RegistrationInfo/task:Description", $namespace)
-    if ($descriptionNode) {
-      $descriptionNode.InnerText = "Finalizes the 6 PM capture report, processes bounded source intake and visual reviews, verifies feedback-rule promotions, reapplies suppression policy, reconciles award facts, processes page audits, and refreshes the durable manual-quarantine registry."
-    }
-  }
-
   return $document.OuterXml
 }
 
 function Restore-AwardPingTasksAfterUpdate {
   param(
     [object[]]$Snapshots,
-    [int]$SuppressionSweepLimit,
-    [int]$SuppressionSweepBatchSize,
     [bool]$ApplyTaskDefinitionUpdates,
     [bool]$RestoreOperationalState,
     [bool]$RestoreRetiredTasks = $false
@@ -1100,8 +1104,6 @@ function Restore-AwardPingTasksAfterUpdate {
     try {
       $xml = Get-AwardPingTaskRestoreXml `
         -Snapshot $snapshot `
-        -SuppressionSweepLimit $SuppressionSweepLimit `
-        -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
         -ApplyTaskDefinitionUpdates $ApplyTaskDefinitionUpdates
       Register-ScheduledTask `
         -TaskName $snapshot.TaskName `
@@ -1169,8 +1171,6 @@ function Invoke-AwardPingTaskSetRollback {
   param(
     [object[]]$InitialSnapshots,
     [string]$InstallRoot,
-    [int]$SuppressionSweepLimit,
-    [int]$SuppressionSweepBatchSize,
     [bool]$RestoreOperationalState
   )
 
@@ -1190,8 +1190,6 @@ function Invoke-AwardPingTaskSetRollback {
   try {
     Restore-AwardPingTasksAfterUpdate `
       -Snapshots $InitialSnapshots `
-      -SuppressionSweepLimit $SuppressionSweepLimit `
-      -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
       -ApplyTaskDefinitionUpdates $false `
       -RestoreOperationalState $RestoreOperationalState `
       -RestoreRetiredTasks $true
@@ -1319,7 +1317,7 @@ function Get-AwardPingManagedRootRuntimeNames {
   return @(
     "Uninstall-AwardPingWorker.ps1",
     "Run-AwardPingVisualSnapshots.ps1",
-    "Run-AwardPingDownstreamQueues.ps1",
+    "Run-AwardPingDownstreamLane.ps1",
     "Show-AwardPingVisualStatus.ps1",
     "Show-AwardPingGeminiUsage.ps1",
     "3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat",
@@ -1514,13 +1512,12 @@ GEMINI_MODEL=gemini-2.5-flash-lite
 GEMINI_DISCOVERY_MODEL=gemini-2.5-flash-lite
 GEMINI_SUMMARY_MODEL=gemini-2.5-flash-lite
 AWARDPING_VISUAL_GEMINI_MODEL=gemini-2.5-flash-lite
-AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=15
 AWARDPING_VISUAL_WEB_CONCURRENCY=4
 AWARDPING_EXTRACT_BASELINE_INFO=false
 AWARDPING_R2_OPERATION_RETRIES=5
 AWARDPING_R2_REPAIR_MISSING_SNAPSHOTS=true
 
-AWARDPING_R2_SNAPSHOT_SYNC=false
+AWARDPING_R2_SNAPSHOT_SYNC=true
 R2_BUCKET=$R2Bucket
 R2_ACCOUNT_ID=$R2AccountId
 R2_ENDPOINT=$R2Endpoint
@@ -1552,20 +1549,25 @@ function Update-ExistingEnvFileDefaults {
     "GEMINI_DISCOVERY_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_SUMMARY_MODEL" = "gemini-2.5-flash-lite"
     "AWARDPING_VISUAL_GEMINI_MODEL" = "gemini-2.5-flash-lite"
+    "AWARDPING_R2_SNAPSHOT_SYNC" = "true"
   }
   $missingDefaults = [ordered]@{
-    "AWARDPING_GEMINI_API_DAILY_COST_CAP_USD" = "15"
     "AWARDPING_VISUAL_WEB_CONCURRENCY" = "4"
     "AWARDPING_EXTRACT_BASELINE_INFO" = "false"
     "AWARDPING_R2_OPERATION_RETRIES" = "5"
     "AWARDPING_R2_REPAIR_MISSING_SNAPSHOTS" = "true"
-    "AWARDPING_R2_SNAPSHOT_SYNC" = "false"
     "R2_BUCKET" = "awardping-snapshots"
     "R2_ACCOUNT_ID" = ""
     "R2_ENDPOINT" = ""
     "R2_ACCESS_KEY_ID" = ""
     "R2_SECRET_ACCESS_KEY" = ""
   }
+
+  $content = [regex]::Replace(
+    $content,
+    "(?m)^AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=.*(?:\r?\n)?",
+    ""
+  )
 
   foreach ($key in $updates.Keys) {
     $value = $updates[$key]
@@ -1585,7 +1587,7 @@ function Update-ExistingEnvFileDefaults {
   }
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
-  Write-Host "Gemini API defaults set to gemini-2.5-flash-lite with an AwardPing estimated daily cost cap."
+  Write-Host "Gemini model defaults set to gemini-2.5-flash-lite. Database policy fixes New Page Review and Changed Page Review at `$5/day each; every other lane is `$0, and no limit comes from this environment file."
 }
 
 function Write-UninstallScript {
@@ -1606,6 +1608,14 @@ function Write-UninstallScript {
   "AwardPing Baseline Facts Watchdog",
   "AwardPing Localization Repair Watchdog",
   "AwardPing Source Intake Processor",
+  "AwardPing New Page Review Lane",
+  "AwardPing Changed Page Review Lane",
+  "AwardPing Feedback Promotion Lane",
+  "AwardPing Suppression Lane",
+  "AwardPing Reconciliation Lane",
+  "AwardPing Page Audit Lane",
+  "AwardPing Manual Quarantine Lane",
+  "AwardPing Nightly Report Lane",
   "AwardPing Downstream Queue Pipeline",
   "AwardPing Startup Supervisor"
 )
@@ -2157,6 +2167,8 @@ function Get-AwardPingRetiredArtifactRelativePaths {
     "Watch-AwardPingBaselineFacts.ps1",
     "Run-AwardPingBaselineFacts.ps1",
     "baseline-facts-worker.lock",
+    "Run-AwardPingDownstreamQueues.ps1",
+    "downstream-queue-pipeline.lock",
     "app\scripts\run-local-source-worker.mjs"
   )
 }
@@ -2260,41 +2272,65 @@ function Register-VisualSnapshotTask {
   }
 }
 
-function Register-DownstreamQueuePipeline {
+function Register-DownstreamLaneTasks {
   param(
     [string]$InstallRoot,
-    [int]$SuppressionSweepLimit,
-    [int]$SuppressionSweepBatchSize,
     [bool]$RegisterDisabled
   )
 
-  Write-Step "Creating AwardPing downstream queue pipeline"
-  $pipelineScript = Join-Path $PSScriptRoot "Run-AwardPingDownstreamQueues.ps1"
-  if (-not (Test-Path -LiteralPath $pipelineScript)) {
-    Write-Host "Downstream queue pipeline script is missing; skipping its task." -ForegroundColor Yellow
-    return
+  Write-Step "Creating independent AwardPing downstream lane tasks"
+  $sourceScript = Join-Path $PSScriptRoot "Run-AwardPingDownstreamLane.ps1"
+  if (-not (Test-Path -LiteralPath $sourceScript -PathType Leaf)) {
+    throw "Downstream lane wrapper is missing: $sourceScript"
   }
+  $targetScript = Join-Path $InstallRoot "Run-AwardPingDownstreamLane.ps1"
+  Copy-Item -LiteralPath $sourceScript -Destination $targetScript -Force -ErrorAction Stop
 
-  $pipelineInstallArguments = @(
-    "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $pipelineScript,
-    "-InstallRoot", $InstallRoot,
-    "-Install",
-    "-IntervalMinutes", "60",
-    "-VisualReviewLimit", "250",
-    "-VisualReviewBatchSize", "25",
-    "-SuppressionSweepLimit", [string]$SuppressionSweepLimit,
-    "-SuppressionSweepBatchSize", [string]$SuppressionSweepBatchSize,
-    "-ReconciliationLimit", "250",
-    "-PageAuditLimit", "250",
-    "-PageAuditBatchSize", "50"
+  $laneDefinitions = @(
+    [pscustomobject]@{ Key = "new_page_review"; TaskName = "AwardPing New Page Review Lane"; StaggerMinutes = 0; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Processes queued new-page source intake and its paid Gemini Batch review independently. Database policy fixes this lane at `$5/day." },
+    [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Processes queued changed-page visual candidates and their paid Gemini Batch review independently. Database policy fixes this lane at `$5/day." },
+    [pscustomobject]@{ Key = "feedback_promotion"; TaskName = "AwardPing Feedback Promotion Lane"; StaggerMinutes = 4; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Advances verified feedback-rule promotions without submitting a paid AI request." },
+    [pscustomobject]@{ Key = "suppression"; TaskName = "AwardPing Suppression Lane"; StaggerMinutes = 6; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Applies the active suppression policy and retroactive sweep checkpoints without submitting a paid AI request." },
+    [pscustomobject]@{ Key = "reconciliation"; TaskName = "AwardPing Reconciliation Lane"; StaggerMinutes = 8; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Reconciles pending public award facts without submitting a paid AI request." },
+    [pscustomobject]@{ Key = "page_audit"; TaskName = "AwardPing Page Audit Lane"; StaggerMinutes = 10; TimeoutMinutes = 6; ExecutionTimeLimitMinutes = 8; Description = "Runs deterministic public-page audit checks only. This lane never submits pages to Gemini." },
+    [pscustomobject]@{ Key = "manual_quarantine"; TaskName = "AwardPing Manual Quarantine Lane"; StaggerMinutes = 12; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Refreshes the durable manual-quarantine registry without submitting a paid AI request." },
+    [pscustomobject]@{ Key = "nightly_report"; TaskName = "AwardPing Nightly Report Lane"; StaggerMinutes = 14; TimeoutMinutes = 4; ExecutionTimeLimitMinutes = 6; Description = "Finalizes the due three-shard 6 PM capture report without submitting a paid AI request." }
   )
-  if ($RegisterDisabled) { $pipelineInstallArguments += "-InstallDisabled" }
-  & powershell.exe @pipelineInstallArguments
-  if ($LASTEXITCODE -ne 0) {
-    throw "Could not install AwardPing downstream queue pipeline task."
-  }
 
-  Write-Host "Scheduled task created: AwardPing Downstream Queue Pipeline"
+  $now = Get-Date
+  $quarterStartMinute = [Math]::Floor($now.TimeOfDay.TotalMinutes / 15) * 15
+  foreach ($lane in $laneDefinitions) {
+    $startAt = $now.Date.AddMinutes($quarterStartMinute + [int]$lane.StaggerMinutes)
+    if ($startAt -le $now.AddSeconds(30)) {
+      $startAt = $startAt.AddMinutes(15)
+    }
+
+    $action = New-ScheduledTaskAction `
+      -Execute "powershell.exe" `
+      -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Lane $($lane.Key) -TimeoutMinutes $($lane.TimeoutMinutes)"
+    $trigger = New-ScheduledTaskTrigger `
+      -Once `
+      -At $startAt `
+      -RepetitionInterval (New-TimeSpan -Minutes 15) `
+      -RepetitionDuration (New-TimeSpan -Days 3650)
+    $settings = New-ScheduledTaskSettingsSet `
+      -MultipleInstances IgnoreNew `
+      -StartWhenAvailable `
+      -ExecutionTimeLimit (New-TimeSpan -Minutes $lane.ExecutionTimeLimitMinutes)
+    $settings.DisallowStartIfOnBatteries = $false
+    $settings.StopIfGoingOnBatteries = $false
+    $settings.Hidden = $true
+    if ($RegisterDisabled) { $settings.Enabled = $false }
+
+    Register-ScheduledTask `
+      -TaskName $lane.TaskName `
+      -Action $action `
+      -Trigger $trigger `
+      -Settings $settings `
+      -Description $lane.Description `
+      -Force | Out-Null
+    Write-Host "Scheduled task created: $($lane.TaskName), every 15 minutes at +$($lane.StaggerMinutes) minute(s)"
+  }
 }
 
 $packageRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
@@ -2397,7 +2433,7 @@ try {
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $r2Configuration = Read-R2WorkerConfiguration
     $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
-    Write-Host "The three 6 PM visual shards and hourly report/intake/downstream pipeline will be scheduled. Legacy catch-up workers will be removed."
+    Write-Host "The three 6 PM visual shards and eight independent downstream lanes will be scheduled. Only New Page Review and Changed Page Review are paid; database policy fixes each at `$5/day, and every other lane is `$0. Legacy catch-up workers will be removed."
     Write-EnvFile `
       -Path $envPath `
       -SupabaseUrl $SupabaseUrl `
@@ -2420,10 +2456,8 @@ try {
   Write-UninstallScript -InstallRoot $InstallRoot
   Write-LauncherScripts -InstallRoot $InstallRoot
   Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $true
-  Register-DownstreamQueuePipeline `
+  Register-DownstreamLaneTasks `
     -InstallRoot $InstallRoot `
-    -SuppressionSweepLimit $SuppressionSweepLimit `
-    -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
     -RegisterDisabled $true
 
   if (-not $UpdateOnly) {
@@ -2447,10 +2481,16 @@ try {
     if ($retirementProblems.Count -gt 0) {
       throw "Retired AwardPing artifacts remain after cleanup: $($retirementProblems -join ' | ')"
     }
+    if ($runTest) {
+      Write-Step "Running one-page visual snapshot test before enabling recurring tasks"
+      $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
+      & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $visualRunScript -All -Limit 1
+      if ($LASTEXITCODE -ne 0) {
+        throw "The one-page visual snapshot test failed while recurring tasks were disabled. Check logs under $logDir."
+      }
+    }
     Restore-AwardPingTasksAfterUpdate `
       -Snapshots $finalizationSnapshots `
-      -SuppressionSweepLimit $SuppressionSweepLimit `
-      -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
       -ApplyTaskDefinitionUpdates $true `
       -RestoreOperationalState $true
     $taskUpdateCommitted = $true
@@ -2484,8 +2524,6 @@ try {
         Disable-AwardPingTasksForInstallRoot -InstallRoot $InstallRoot
         Restore-AwardPingTasksAfterUpdate `
           -Snapshots $finalizationSnapshots `
-          -SuppressionSweepLimit $SuppressionSweepLimit `
-          -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
           -ApplyTaskDefinitionUpdates $true `
           -RestoreOperationalState $true
         $taskUpdateCommitted = $true
@@ -2552,8 +2590,6 @@ try {
         Invoke-AwardPingTaskSetRollback `
           -InitialSnapshots $taskSnapshots `
           -InstallRoot $InstallRoot `
-          -SuppressionSweepLimit $SuppressionSweepLimit `
-          -SuppressionSweepBatchSize $SuppressionSweepBatchSize `
           -RestoreOperationalState $rollbackOperationalState
         if (-not $rollbackOperationalState) {
           throw "Original AwardPing tasks were restored in a disabled state because runtime validation failed: $($rollbackProblems -join ' | ')"
@@ -2678,15 +2714,6 @@ if ($installFailure) {
 }
 if ($restoreFailure) {
   throw $restoreFailure
-}
-
-if ((-not $UpdateOnly) -and $runTest) {
-  Write-Step "Running one-page visual snapshot test"
-  $visualRunScript = Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $visualRunScript -All -Limit 1
-  if ($LASTEXITCODE -ne 0) {
-    throw "The one-page visual snapshot test failed. Check logs under $logDir."
-  }
 }
 
 Write-Step "Done"

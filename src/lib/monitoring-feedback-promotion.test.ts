@@ -133,12 +133,12 @@ describe("monitoring feedback promotion workflow", () => {
         status: "failed",
         summary: "History pagination failed after page 12.",
         failure_reason: "database timeout",
-        safe_action: "Repair the history query and retry the hourly worker.",
+        safe_action: "Repair the history query and retry the feedback-promotion lane.",
       },
     });
 
     expect(monitoringFeedbackPromotionSafeAction(cluster)).toBe(
-      "Repair the history query and retry the hourly worker.",
+      "Repair the history query and retry the feedback-promotion lane.",
     );
     expect(monitoringFeedbackPromotionFailedGate(cluster)).toBe(
       "History pagination failed after page 12.",
@@ -201,14 +201,14 @@ describe("monitoring feedback promotion workflow", () => {
       "Do not resolve",
     );
     expect(monitoringFeedbackPromotionSafeAction(cluster)).toContain(
-      "next normal hourly, zero-charge worker run",
+      "next zero-charge feedback-promotion lane run",
     );
     expect(monitoringFeedbackPromotionSafeAction(cluster)).not.toContain(
       "Review the sweep report, then resolve",
     );
   });
 
-  it("keeps final resolution locked until the durable hourly attestation is ready", () => {
+  it("keeps final resolution locked until the durable lane attestation is ready", () => {
     const pending = promotionCluster({
       stage: "retroactive_sweep",
       activationStatus: "sweep_completed",

@@ -210,7 +210,7 @@ function PromotionClusterCard({
                 : cluster.stage === "retroactive_sweep" && cluster.resolutionReady
                 ? "Ready to resolve"
                 : cluster.stage === "retroactive_sweep"
-                  ? "Hourly attestation pending"
+                  ? "Feedback-promotion attestation pending"
                   : "Rule active globally"}
             </span>
           ) : null}
@@ -344,7 +344,7 @@ function PromotionClusterCard({
         <h4>{safeAction}</h4>
         <p>
           {activationInvalid
-            ? "AwardPing checks the restored app and worker identities hourly without launching paid review work, reverses candidate-attributable historical suppression, and returns to draft only after the rollback audit passes."
+            ? "The next feedback-promotion lane run checks the restored app and worker identities without launching paid review work, reverses candidate-attributable historical suppression, and returns to draft only after the rollback audit passes."
             : "This page provides controls for cluster confirmation, rule drafting, and final resolution. Activation is a reviewed deployment; automation owns the evidence gates and retroactive sweep."}
         </p>
       </div>
@@ -392,7 +392,7 @@ function PromotionClusterCard({
               }
             />
             <EvidenceFact
-              label="Final hourly attestation"
+              label="Final feedback-promotion attestation"
               value={
                 cluster.resolutionIdentityDrifted
                   ? "Blocked by post-sweep identity drift"

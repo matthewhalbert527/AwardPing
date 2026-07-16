@@ -59,8 +59,8 @@ Unchanged captures, AI-rejected changes, and low-confidence candidates do not
 advance that pointer. Accepted candidates are copied to the permanent event
 plane before publication. The per-source publication lease and local baseline
 mutex serialize the local baseline, R2 pointer, event evidence, and
-reconciliation side effects across the 6 PM scan and hourly completed-result
-recovery.
+reconciliation side effects across the 6 PM capture scan and the independent
+changed-page review lane.
 
 Retention cleanup may remove objects that fall out of the moving two-generation
 source history. It categorically excludes `visual-snapshots/published/`; every
@@ -68,6 +68,32 @@ object referenced by a published update must remain available for that update.
 
 The bucket should stay private. AwardPing reads from it by generating short-lived
 signed URLs from the server.
+
+## Automatic Local Cache Recovery
+
+R2 is authoritative when a retained local baseline points to missing evidence.
+Before the 6 PM comparison fails, the worker checks the R2 `latest` and
+`previous` generations for one exact match to the baseline's source, award,
+kind, capture timestamp, image/PDF hash, and text hash. It does not choose a
+newer pointer or a fuzzy substitute.
+
+Every referenced key must be under the source's immutable capture/approved
+prefix. The worker HEADs and downloads the complete required generation,
+verifies object metadata/length, recomputes the core SHA-256 hashes, validates
+the downloaded source metadata and layout/image binding, and rewrites only the
+machine-local file paths. Downloads go to a sibling staging directory. Only
+after every artifact passes does one atomic rename publish the restored cache
+and one atomic JSON write repoint the baseline. Any missing object, key escape,
+hash mismatch, identity mismatch, partial download, or concurrent baseline
+change leaves the last-known-good baseline untouched and is reported as a
+refused or failed recovery.
+
+Recovery is enabled whenever complete R2 snapshot sync is enabled; it creates
+no Gemini/API-review charge. Admin workflow **6. Evidence Recovery** reports
+attempts, exact restores, refusals, and operational failures from the scheduled
+workers. It separates restores with verified text-node/accordion geometry from
+legacy evidence-only restores, so a recovered screenshot is never mistaken for
+recovered localization data.
 
 ## Bucket
 

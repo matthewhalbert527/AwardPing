@@ -580,7 +580,7 @@ async function loadFreshResolutionWorkerAttestation(
         {
           ok: false,
           error:
-            "Wait for the next normal hourly, zero-charge matching worker attestation completed after the retroactive sweep.",
+            "Wait for the next zero-charge matching feedback-promotion lane attestation completed after the retroactive sweep.",
         },
         { status: 409 },
       ),
@@ -654,7 +654,12 @@ export function buildMonitoringFeedbackRuleDraft(
 }
 
 function workflowDatabaseError(error: { code?: string; message?: string }) {
-  const message = error.message || "The verified promotion workflow could not advance.";
+  const message = (
+    error.message || "The verified promotion workflow could not advance."
+  ).replaceAll(
+    "hourly worker attestation",
+    "feedback-promotion lane attestation",
+  );
   if (error.code === "P0002") {
     return NextResponse.json(
       { ok: false, error: "That feedback cluster no longer exists." },

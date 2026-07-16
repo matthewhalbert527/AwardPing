@@ -1,6 +1,10 @@
 import type { AdminPageIssue, PageIssueSeverity } from "@/lib/admin-page-issues";
 import type { AdminManualQuarantineItem } from "@/lib/admin-manual-quarantine";
 import {
+  downstreamLaneRuntimeState,
+  type AdminDownstreamLane,
+} from "@/lib/admin-worker-operations";
+import {
   awardMonitoringPolicyIdentity,
   visualReviewBatchPolicyIdentity,
 } from "@/lib/award-monitoring-policy";
@@ -32,6 +36,7 @@ export type OperatorActionInboxItem = {
     | "manual_quarantine"
     | "monitoring_feedback"
     | "digest_delivery"
+    | "downstream_lane"
     | "inbox_load";
   severity: PageIssueSeverity;
   severityLabel: "Urgent" | "Important" | "Routine";
@@ -138,6 +143,7 @@ export type BuildOperatorActionInboxInput = {
   visualReviewFailures?: OperatorVisualReviewFailureInput[];
   digestDeliveryFailures?: OperatorDigestDeliveryFailureInput[];
   loadErrors?: string[];
+  downstreamLanes?: AdminDownstreamLane[];
   now?: Date;
 };
 
@@ -158,6 +164,7 @@ export function buildOperatorActionInbox({
   visualReviewFailures = [],
   digestDeliveryFailures = [],
   loadErrors = [],
+  downstreamLanes = [],
   now = new Date(),
 }: BuildOperatorActionInboxInput) {
   const items = [
@@ -173,10 +180,192 @@ export function buildOperatorActionInbox({
     ...visualReviewFailures.map((failure) => visualReviewFailureToAction(failure, now)),
     ...promotionClusters.map((cluster) => monitoringFeedbackClusterToAction(cluster, now)),
     ...digestDeliveryFailures.map((failure) => digestDeliveryFailureToAction(failure, now)),
+    ...downstreamLanes
+      .filter((lane) => downstreamLaneNeedsAction(lane, now))
+      .map((lane) => downstreamLaneToAction(lane, now)),
     ...(loadErrors.length > 0 ? [loadErrorToAction(loadErrors, now)] : []),
   ];
 
   return dedupeActions(items).sort(compareActions);
+}
+
+function downstreamLaneNeedsAction(lane: AdminDownstreamLane, now: Date) {
+  const runtime = downstreamLaneRuntimeState(lane, now);
+  return runtime.disabled ||
+    runtime.expiredLease ||
+    runtime.overdueUnclaimed ||
+    runtime.overdue ||
+    Boolean(lane.lastError) ||
+    lane.consecutiveFailures > 0;
+}
+
+function downstreamLaneToAction(lane: AdminDownstreamLane, now: Date): OperatorActionInboxItem {
+  const runtime = downstreamLaneRuntimeState(lane, now);
+  const automaticRetry = runtime.retryWaiting;
+  const state: OperatorActionState = automaticRetry ? "auto_retrying" : "needs_operator";
+  const condition = runtime.disabled
+    ? "disabled"
+    : runtime.expiredLease
+      ? "expired-lease"
+      : runtime.overdueUnclaimed
+        ? runtime.overdue
+          ? "overdue-unclaimed"
+          : "retry-due-unclaimed"
+        : lane.lastError
+          ? lane.lastError
+          : runtime.overdue
+            ? "sla-breached"
+            : "failed-attempt";
+  const failureReason = runtime.disabled
+    ? "This lane is disabled, so no worker can claim its work."
+    : runtime.expiredLease
+      ? "The last worker lease expired without a safe completion."
+      : runtime.overdueUnclaimed
+        ? runtime.overdue
+          ? "The lane is past its service-level target and no worker currently owns it."
+          : "The lane retry was due, but no worker claimed it."
+        : lane.lastError || (runtime.overdue
+          ? lane.oldestItemAt
+            ? "The oldest waiting item is beyond this lane's service-level target."
+            : "This periodic lane missed its service-level deadline."
+          : "The lane has consecutive failed attempts.");
+  const occurredAt = runtime.expiredLease
+    ? lane.leaseExpiresAt
+    : runtime.overdue
+      ? lane.nextSlaDueAt || lane.oldestItemAt
+      : runtime.retryDue
+        ? lane.nextRetryAt
+        : lane.lastFailedAt || lane.lastFinishedAt || lane.oldestItemAt;
+  const paid = lane.paid;
+  const delayedUpdate = lane.laneKey === "changed_page_review";
+  const delayedSource = lane.laneKey === "new_page_review";
+  return {
+    schemaVersion: operatorActionInboxSchemaVersion,
+    id: `downstream-lane:${lane.laneKey}`,
+    fingerprint: `downstream-lane:${lane.laneKey}:${condition}`,
+    sourceKind: "downstream_lane",
+    severity: delayedUpdate || lane.laneKey === "reconciliation" ? "high" : "medium",
+    severityLabel: delayedUpdate || lane.laneKey === "reconciliation" ? "Important" : "Routine",
+    state,
+    stateLabel: stateLabel(state),
+    title: `${lane.label} lane needs attention`,
+    context: `${lane.queueDepth.toLocaleString("en-US")} waiting`,
+    failureReason,
+    occurredAt,
+    ageLabel: formatOperatorActionAge(occurredAt, now),
+    owner: {
+      label: paid ? "Review operations" : "Worker operations",
+      detail: "This lane is isolated, so other lanes continue while its owner repairs the failure.",
+    },
+    publicImpact: delayedUpdate
+      ? { level: "delayed", label: "Public update delayed", detail: "Changed wording remains unpublished until review completes." }
+      : delayedSource
+        ? { level: "none", label: "Existing public data unaffected", detail: "The new page is not added until its review completes." }
+        : { level: "protected", label: "Last-known-good data protected", detail: "This failed lane cannot overwrite verified public facts." },
+    retry: {
+      automatic: automaticRetry,
+      label: runtime.disabled
+        ? "No — lane is disabled"
+        : runtime.expiredLease
+          ? "No — expired lease needs recovery"
+          : runtime.overdueUnclaimed
+            ? runtime.overdue
+              ? "No — overdue and unclaimed"
+              : "No — retry due and unclaimed"
+            : automaticRetry
+              ? "Yes — isolated automatic retry"
+              : "No retry currently scheduled",
+      detail: runtime.disabled
+        ? "Automation cannot resume until an operator verifies why this lane was disabled and re-enables it."
+        : runtime.expiredLease
+          ? "Confirm the prior worker stopped, preserve its evidence, then recover only this lane before another claim."
+          : runtime.overdueUnclaimed
+            ? "Start or repair this lane's worker; no other lane needs to be restarted."
+            : automaticRetry
+              ? `Only this lane retries at ${lane.nextRetryAt}; no other workflow is held behind it.`
+              : "Inspect the lane error and run the same isolated lane after repair.",
+    },
+    charge: paid
+      ? {
+          level: "may_charge",
+          label: "Only a new review submission charges",
+          detail: "Polling or applying an existing result is free. A new provider submission must first reserve this lane's $5 daily budget.",
+        }
+      : noPaidAiCharge("This operational lane cannot reserve or create a paid Gemini request."),
+    recommendedAction: {
+      label: runtime.disabled
+        ? "Verify and enable this lane"
+        : runtime.expiredLease
+          ? "Recover the expired lease"
+          : runtime.overdueUnclaimed
+            ? runtime.overdue
+              ? "Start this overdue lane"
+              : "Start this unclaimed retry"
+            : automaticRetry
+              ? "Review evidence while retry waits"
+              : "Repair this isolated lane",
+      detail: runtime.disabled
+        ? "Confirm the lane should run, identify its worker owner, then enable and start only this lane."
+        : runtime.expiredLease
+          ? "Verify the old worker is no longer active, reconcile its preserved run evidence, then safely claim only this lane."
+          : runtime.overdueUnclaimed
+            ? "Run or repair this lane's worker now; investigate its scheduler if it remains claimable without an owner."
+            : lane.lastError
+              ? `Fix the reported failure without restarting unrelated lanes: ${lane.lastError}`
+              : "Inspect the oldest item and lane run evidence; keep last-known-good public data in place.",
+      href: "/dashboard/admin/issues?tab=operations",
+    },
+    evidence: compactEvidence([
+      ["Lane", lane.laneKey],
+      ["Enabled", lane.enabled ? "Yes" : "No"],
+      ["Claimable", lane.claimable ? "Yes" : "No"],
+      ["Queue depth", String(lane.queueDepth)],
+      ["Oldest item", lane.oldestItemAt],
+      ["Oldest-item target", lane.oldestItemSlaSeconds > 0 ? `${lane.oldestItemSlaSeconds}s` : null],
+      ["Next SLA due", lane.nextSlaDueAt],
+      [
+        "SLA status",
+        runtime.overdueUnclaimed
+          ? runtime.overdue
+            ? "Breached; overdue and unclaimed"
+            : "Within target; retry due and unclaimed"
+          : runtime.overdue
+            ? "Breached"
+            : "Within target",
+      ],
+      ["Timeout", `${lane.timeoutSeconds}s`],
+      ["Lease TTL", `${lane.leaseTtlSeconds}s`],
+      ["Lease owner", lane.leaseOwner || "None"],
+      [
+        "Lease status",
+        runtime.expiredLease
+          ? "Expired"
+          : lane.leaseOwner
+            ? "Active"
+            : lane.claimable
+              ? "Available"
+              : "Unclaimed; not currently claimable",
+      ],
+      ["Lease expires", lane.leaseExpiresAt],
+      ["Consecutive failures", String(lane.consecutiveFailures)],
+      ["Next retry", lane.nextRetryAt],
+      ["Last status", lane.lastStatus],
+      ["Last started", lane.lastStartedAt],
+      ["Last finished", lane.lastFinishedAt],
+      ["Last succeeded", lane.lastSucceededAt],
+      ["Last failed", lane.lastFailedAt],
+      ["Policy source", lane.policySource],
+    ]),
+    policy: {
+      id: "independent-downstream-lanes",
+      version: "v1",
+      hash: null,
+      description: lane.policySource,
+    },
+    award: null,
+    source: null,
+    action: { kind: "none" },
+  };
 }
 
 function manualQuarantineToAction(
@@ -193,9 +382,24 @@ function manualQuarantineToAction(
     jsonText(sourceEvidence.title) ||
     (quarantine.category === "visual_review" ? "Visual review candidate" : null);
   const sourceUrl = jsonText(sourceEvidence.url);
-  const blocked = quarantine.retryCharge === "unknown";
-  const retry = manualQuarantineRetry(quarantine.retryMode);
-  const charge = manualQuarantineCharge(quarantine.retryCharge);
+  const noCostPublicPage = quarantine.category === "public_page";
+  const blocked = !noCostPublicPage && quarantine.retryCharge === "unknown";
+  const retry = noCostPublicPage
+    ? {
+        automatic: false,
+        label: "No — repair, then rerun the free audit",
+        detail: "Repair only this award, then rerun reconciliation and its deterministic no-cost page audit.",
+      }
+    : manualQuarantineRetry(quarantine.retryMode);
+  const charge = noCostPublicPage
+    ? noPaidAiCharge("Public-page reconciliation and deterministic page-audit reruns do not submit paid AI work.")
+    : manualQuarantineCharge(quarantine.retryCharge);
+  const failureReason = noCostPublicPage && quarantine.reasonCode === "page_audit_retry_limit_reached"
+    ? "The deterministic page audit reached its safe retry limit and remains unresolved."
+    : quarantine.reason;
+  const recommendedAction = noCostPublicPage
+    ? "Inspect the linked evidence, repair only this award, then rerun reconciliation and the deterministic no-cost page audit."
+    : quarantine.recommendedAction;
 
   return {
     schemaVersion: operatorActionInboxSchemaVersion,
@@ -211,7 +415,7 @@ function manualQuarantineToAction(
       quarantine.evidenceRecordCount > 1
         ? `${quarantine.evidenceRecordCount.toLocaleString("en-US")} linked evidence records, grouped as one case`
         : "1 preserved evidence record",
-    failureReason: quarantine.reason,
+    failureReason,
     occurredAt: quarantine.firstObservedAt,
     ageLabel: formatOperatorActionAge(quarantine.firstObservedAt, now),
     owner: {
@@ -223,7 +427,7 @@ function manualQuarantineToAction(
     charge,
     recommendedAction: {
       label: manualQuarantineActionLabel(quarantine.category),
-      detail: quarantine.recommendedAction,
+      detail: recommendedAction,
       href: null,
     },
     evidence: compactEvidence([
@@ -529,13 +733,11 @@ function issueDisposition(issue: AdminPageIssue): Pick<
       retry: {
         automatic: false,
         label: "No — resolve the finding",
-        detail: "The public page stays on last-known-good facts until reconciliation and the audit finding are resolved.",
+        detail: "The public page stays on last-known-good facts until reconciliation and the deterministic audit finding are resolved.",
       },
-      charge: {
-        level: "may_charge",
-        label: "Possible — Gemini Batch",
-        detail: "Reconciliation has no paid AI call. A newly flagged page-audit rerun can submit a paid Gemini Batch request.",
-      },
+      charge: noPaidAiCharge(
+        "Reconciliation and deterministic page-audit reruns do not submit paid AI work.",
+      ),
     };
   }
 
@@ -915,7 +1117,7 @@ function monitoringFeedbackClusterToAction(
     failureReason:
       failedGate ||
       (awaitingResolutionAttestation
-        ? "The retroactive sweep passed. Resolve stays locked until the next normal hourly worker records a matching zero-charge attestation."
+        ? "The retroactive sweep passed. Resolve stays locked until the next feedback-promotion lane run records a matching zero-charge attestation."
         : null) ||
       (appActivationParityPending
         ? "App activation detected; worker parity is pending before AwardPing can continue the bounded historical sweep."
@@ -961,13 +1163,13 @@ function monitoringFeedbackClusterToAction(
         resolutionIdentityDrifted
           ? "The current app identity no longer matches the immutable activated app/worker identity. Final resolution cannot become ready; deactivate the candidate, restore the exact inactive deployment, and audit reversal of candidate-attributable suppressions."
           : postSweepDeactivated
-          ? "The sweep finished, but its rule is no longer active. Do not resolve: the normal hourly no-charge worker must record deactivation, reverse candidate-attributable suppressions, and return the workflow to draft."
+          ? "The sweep finished, but its rule is no longer active. Do not resolve: the next no-charge feedback-promotion lane run must record deactivation, reverse candidate-attributable suppressions, and return the workflow to draft."
           : activationBlocked
           ? cluster.draftRuleActive
             ? "New evidence invalidated the sealed canary revision. Stop further historical mutation, restore the inactive deployment, and audit reversal of every candidate-attributable suppression before redrafting."
             : "The candidate is inactive and no further historical mutation is allowed. AwardPing is verifying the rollback and suppression-reversal audit before redrafting."
           : appActivationParityPending
-            ? "The current app policy contains the candidate, but activated worker parity is not proven. Do not describe global suppression as verified until the hourly identity check advances the workflow."
+            ? "The current app policy contains the candidate, but activated worker parity is not proven. Do not describe global suppression as verified until the next feedback-promotion lane identity check advances the workflow."
             : cluster.draftRuleActive
               ? "The verified active deployment suppresses matching future events. The cluster stays open until the bounded historical sweep is verified."
               : "Each reported event stays suppressed immediately. Similar future events remain unchanged until every global activation gate passes.",
@@ -977,17 +1179,17 @@ function monitoringFeedbackClusterToAction(
       label:
         automaticRetry
           ? postSweepDeactivated
-            ? "Yes — hourly rollback/deactivation repair"
+            ? "Yes — feedback-promotion lane rollback/deactivation repair"
             : activationBlocked
-            ? "Yes — hourly rollback verification"
+            ? "Yes — feedback-promotion lane rollback verification"
             : cluster.stage === "app_worker_hashes_match"
             ? "Yes — next scheduled 6 PM scan"
             : cluster.stage === "six_pm_canary" && cluster.draftRuleActive
-              ? "Yes — hourly activated-deployment verification"
+              ? "Yes — feedback-promotion lane activated-deployment verification"
             : awaitingResolutionAttestation
-              ? "Yes — next normal hourly attestation"
+              ? "Yes — next feedback-promotion lane attestation"
             : failedGate
-              ? "Yes — hourly verified-stage retry"
+              ? "Yes — feedback-promotion lane verified-stage retry"
               : "Yes — verified stage runner"
           : failedGate
             ? resolutionIdentityDrifted
@@ -997,16 +1199,16 @@ function monitoringFeedbackClusterToAction(
       detail:
         automaticRetry
           ? postSweepDeactivated
-            ? "The normal hourly no-charge worker records the inactive deployment, reverses candidate-attributable suppressions, and returns the cluster to draft before any resolution can occur."
+            ? "The next no-charge feedback-promotion lane run records the inactive deployment, reverses candidate-attributable suppressions, and returns the cluster to draft before any resolution can occur."
             : activationBlocked
             ? "AwardPing retries only the no-charge identity check. It cannot pass until the rule is inactive and the app and worker run the same restored revision."
             : awaitingResolutionAttestation
-              ? "The normal hourly promotion worker records one reusable cluster-bound attestation. It creates no paid API request and does not wait for another 6 PM scan."
+              ? "The next feedback-promotion lane run records one reusable cluster-bound attestation. It creates no paid API request and does not wait for another 6 PM scan."
             : failedGate
             ? "The runner will retry the unchanged evidence automatically, but a rule, deployment, or source repair may still be required before it can pass."
             : "Automation advances only after it records passing evidence for the next exact stage."
           : resolutionIdentityDrifted
-            ? "A normal hourly attestation cannot match the stale activated identity. A person must first deactivate the candidate and restore the exact inactive app and worker deployment."
+            ? "A feedback-promotion lane attestation cannot match the stale activated identity. A person must first deactivate the candidate and restore the exact inactive app and worker deployment."
             : "The workflow cannot advance until the displayed operator checkpoint or failed gate is resolved.",
     },
     charge: isCanaryStage
@@ -1023,13 +1225,13 @@ function monitoringFeedbackClusterToAction(
       label: resolutionIdentityDrifted
         ? "Restore the inactive deployment"
         : postSweepDeactivated
-          ? "Keep inactive; let hourly rollback repair run"
+          ? "Keep inactive; let lane rollback repair run"
           : activationBlocked
           ? "Restore the inactive deployment"
         : failedGate
           ? "Repair the blocked verification gate"
           : awaitingResolutionAttestation
-            ? "Wait for the no-charge hourly attestation"
+            ? "Wait for the no-charge lane attestation"
             : cluster.stage === "retroactive_sweep" && cluster.resolutionReady
               ? "Review and resolve the verified pattern"
           : stageLabel,
@@ -1047,7 +1249,7 @@ function monitoringFeedbackClusterToAction(
       ["Activation blocked", cluster.activationBlockedAt],
       ["Resolution identity", cluster.resolutionIdentityDriftReason],
       [
-        "Final hourly attestation",
+        "Final feedback-promotion attestation",
         cluster.resolutionIdentityDrifted
           ? "Blocked by post-sweep identity drift"
           : cluster.resolutionReady

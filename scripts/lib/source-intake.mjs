@@ -192,6 +192,7 @@ export function buildGeminiIntakeRequest(request, capture, deterministicReview, 
       generationConfig: {
         temperature: 0.1,
         maxOutputTokens: 1600,
+        thinkingConfig: { thinkingBudget: 0 },
         responseMimeType: "application/json",
       },
     },

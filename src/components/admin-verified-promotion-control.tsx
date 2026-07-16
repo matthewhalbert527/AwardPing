@@ -98,7 +98,7 @@ export function AdminVerifiedPromotionControl({
             {ruleActive
               ? "Deactivate this rule and deploy the same inactive revision to the app and worker. "
               : "Keep this candidate inactive. "}
-            AwardPing checks the rollback identities hourly at no API charge, reverses partial
+            AwardPing checks the rollback identities on the next feedback-promotion lane run at no API charge, reverses partial
             candidate-attributable historical suppression, and returns the enlarged cluster to
             draft only after the rollback audit passes.
           </p>
@@ -117,7 +117,7 @@ export function AdminVerifiedPromotionControl({
             {resolutionIdentityDriftReason ||
               "The current app identity no longer matches the immutable activated app and worker identity."}{" "}
             Deactivate the candidate, restore the exact inactive app and worker deployment,
-            and let the normal hourly zero-charge rollback audit verify reversals before
+            and let the next zero-charge feedback-promotion lane run verify reversals before
             redrafting. Do not resolve this cluster.
           </p>
         </div>
@@ -178,7 +178,7 @@ export function AdminVerifiedPromotionControl({
         <div>
           <strong>Rule deactivation detected</strong>
           <p>
-            Do not resolve this cluster. Keep the drafted rule inactive while the hourly
+            Do not resolve this cluster. Keep the drafted rule inactive while the feedback-promotion lane
             no-charge worker records the deactivation, reverses suppressions attributable to this
             candidate, and returns the workflow to a safe draft checkpoint.
           </p>
@@ -192,9 +192,9 @@ export function AdminVerifiedPromotionControl({
       <div className="verified-promotion-automation-note" role="status">
         <BadgeCheck size={17} aria-hidden="true" />
         <div>
-          <strong>Final hourly attestation pending</strong>
+          <strong>Final feedback-promotion attestation pending</strong>
           <p>
-            Resolve stays locked until the next normal hourly worker records the matching
+            Resolve stays locked until the next feedback-promotion lane run records the matching
             zero-charge attestation. No extra 6 PM scan or paid API call is required.
           </p>
         </div>
@@ -447,7 +447,7 @@ export function promotionControlAction(
         buttonLabel: "Resolve verified pattern",
         busyLabel: "Resolving…",
         description:
-          "Close the cluster only after the completed sweep artifact and the next normal hourly, zero-charge matching worker attestation are visible. This does not require another 6 PM scan.",
+          "Close the cluster only after the completed sweep artifact and the next zero-charge matching feedback-promotion lane attestation are visible. This does not require another 6 PM scan.",
         successMessage: "The verified pattern was resolved.",
       };
     default:

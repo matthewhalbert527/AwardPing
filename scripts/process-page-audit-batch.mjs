@@ -31,7 +31,11 @@ const limit = positiveInt(args.limit, 100);
 const maxRequestsPerBatch = positiveInt(args["max-requests-per-batch"], 100);
 const model = geminiWorkerModel();
 const apply = boolArg(args.apply, true);
-const submit = boolArg(args.submit, true);
+const requestedSubmit = boolArg(args.submit, false);
+// Permanent policy: page auditing is deterministic and no longer creates a
+// third paid Gemini pipeline. This script may only poll/reconcile historical
+// jobs that were submitted before the policy changed.
+const submit = false;
 const poll = boolArg(args.poll, true);
 const pollOnly = boolArg(args["poll-only"], false);
 const submitOnly = boolArg(args["submit-only"], false);
@@ -73,7 +77,7 @@ if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
   process.exit(1);
 }
-if (!geminiApiKey && (submit || poll)) {
+if (!geminiApiKey && poll) {
   console.error("GEMINI_API_KEY is required to process page audit batches.");
   process.exit(1);
 }
@@ -87,7 +91,17 @@ const report = {
   status: "running",
   env_path: envPath,
   report_path: reportPath,
-  options: { limit, max_requests_per_batch: maxRequestsPerBatch, model, apply, submit, poll, journal_path: journalPath },
+  options: {
+    limit,
+    max_requests_per_batch: maxRequestsPerBatch,
+    model,
+    apply,
+    submit,
+    requested_submit: requestedSubmit,
+    submission_policy: "retired_no_third_paid_lane",
+    poll,
+    journal_path: journalPath,
+  },
   page_audit_batch_candidates: 0,
   submitted_jobs: 0,
   submitted_audits: 0,
@@ -100,6 +114,13 @@ const report = {
   errors: [],
   batches: [],
 };
+
+if (requestedSubmit) {
+  report.errors.push({
+    severity: "warning",
+    message: "Gemini page-audit submission is retired. Deterministic page auditing runs in the no-cost page_audit lane; only historical Gemini jobs will be polled.",
+  });
+}
 
 writeReport();
 try {
@@ -644,16 +665,15 @@ function sleep(ms) {
 }
 
 function printHelp() {
-  console.log(`Process Gemini Batch page audits for flagged AwardPing public pages.
+  console.log(`Poll and reconcile historical Gemini page-audit jobs created before paid page-audit submission was retired.
+
+Current page auditing is deterministic and runs in the no-cost page_audit lane. This command never submits a new paid request.
 
 Options:
   --limit=100
-  --max-requests-per-batch=100
-  --model=gemini-2.5-flash-lite
   --poll=true
-  --submit=true
   --poll-only=false
-  --submit-only=false
   --apply=true
+  --submit=true                 Ignored; records a retirement warning only
 `);
 }

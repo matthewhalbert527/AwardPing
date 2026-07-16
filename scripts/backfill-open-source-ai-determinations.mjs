@@ -56,7 +56,7 @@ const geminiBatchMaxRequests = positiveInt(args["gemini-batch-max-requests"], 25
 const geminiBatchParallelJobs = positiveInt(args["gemini-batch-parallel-jobs"], 4);
 const dailyCostCapUsd = nonNegativeNumber(
   args["daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
-  15,
+  5,
 );
 const resume = boolArg(args.resume, true);
 const outputJson = boolArg(args.json, false);
@@ -794,7 +794,7 @@ Options:
   --max-batch-requests=<n>               Submit up to n sources to Gemini Batch through baseline-facts worker
   --gemini-batch-max-requests=<n>        Requests per Gemini Batch job (default 250)
   --gemini-batch-parallel-jobs=<n>       Concurrent Gemini Batch jobs (default 4)
-  --daily-cost-cap-usd=<n>               Estimated Gemini daily spend cap (default 10)
+  --daily-cost-cap-usd=<n>               Secondary local ceiling (default 5; database lane cap is authoritative)
   --resume=true                          Keep durable batch behavior enabled
   --reconcile=true                       Run reconciliation after applying
   --reconcile-limit=<n>                  Limit reconciliation queue processing

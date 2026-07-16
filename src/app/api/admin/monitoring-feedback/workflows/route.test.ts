@@ -446,7 +446,7 @@ describe("verified monitoring feedback workflow route", () => {
     expect(mocks.rpc).toHaveBeenCalledTimes(2);
   });
 
-  it("waits clearly when no normal hourly post-sweep attestation exists", async () => {
+  it("waits clearly when no feedback-promotion lane post-sweep attestation exists", async () => {
     mocks.candidateActive = true;
     mocks.rpc
       .mockResolvedValueOnce({ data: [resolutionClusterRow()], error: null })
@@ -464,7 +464,7 @@ describe("verified monitoring feedback workflow route", () => {
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringContaining("normal hourly, zero-charge matching worker attestation"),
+      error: expect.stringContaining("zero-charge matching feedback-promotion lane attestation"),
     });
     expect(mocks.rpc).toHaveBeenCalledTimes(2);
   });
@@ -765,6 +765,29 @@ describe("verified monitoring feedback workflow route", () => {
       error: "The recurrence count changed.",
       currentStage: "triaged",
     });
+  });
+
+  it("translates the legacy database cadence label into the feedback-promotion lane", async () => {
+    mocks.rpc
+      .mockResolvedValueOnce({
+        data: [clusterRow({ current_stage: "triaged" })],
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        data: null,
+        error: {
+          code: "P0001",
+          message:
+            "Wait for the next successful matching hourly worker attestation completed after the retroactive sweep.",
+        },
+      });
+
+    const response = await POST(workflowRequest(confirmBody()));
+    const payload = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(payload.error).toContain("matching feedback-promotion lane attestation");
+    expect(payload.error).not.toContain("hourly worker");
   });
 
   it("explains a missing workflow migration without implying suppression failed", async () => {

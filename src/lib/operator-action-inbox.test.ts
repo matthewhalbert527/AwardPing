@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 
 import type { AdminPageIssue } from "@/lib/admin-page-issues";
 import type { AdminManualQuarantineItem } from "@/lib/admin-manual-quarantine";
+import type { AdminDownstreamLane } from "@/lib/admin-worker-operations";
 import { awardMonitoringPolicyIdentity } from "@/lib/award-monitoring-policy";
 import {
   buildOperatorActionInbox,
@@ -75,7 +76,7 @@ function quarantineItem(
     publicImpact: "protected",
     owner: "Public page review",
     retryMode: "operator_after_repair",
-    retryCharge: "may_charge",
+    retryCharge: "none",
     title: "Example Award: public page needs review",
     reasonCode: "latest_reconciliation_failed",
     reason: "The latest reconciliation failed.",
@@ -174,7 +175,7 @@ describe("operator action inbox", () => {
       state: "needs_operator",
       publicImpact: { level: "protected" },
       retry: { automatic: false },
-      charge: { level: "may_charge" },
+      charge: { level: "none" },
       award: { id: "award-1", slug: "example-award", name: "Example Award" },
       policy: {
         id: "awardping-manual-quarantine",
@@ -183,8 +184,31 @@ describe("operator action inbox", () => {
       },
     });
     expect(item.context).toContain("2 linked evidence records");
+    expect(item.retry.label).toContain("free audit");
+    expect(item.charge.detail).toContain("deterministic page-audit reruns");
     expect(item.evidence).toContainEqual({ label: "Evidence records", value: "2" });
     expect(item.evidence).toContainEqual({ label: "Evidence hash", value: "a".repeat(64) });
+  });
+
+  it("keeps a public-page quarantine no-cost even when a stale row says it may charge", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [
+        quarantineItem({
+          retryCharge: "may_charge",
+          reasonCode: "page_audit_retry_limit_reached",
+          reason: "The latest page audit exhausted two Gemini Batch attempts.",
+          recommendedAction: "Approve another Gemini Batch attempt; retrying may create a charge.",
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("needs_operator");
+    expect(item.charge.level).toBe("none");
+    expect(item.failureReason).toContain("deterministic page audit reached its safe retry limit");
+    expect(item.recommendedAction.detail).toContain("deterministic no-cost page audit");
+    expect(JSON.stringify(item)).not.toContain("Gemini Batch");
   });
 
   it("keeps historical limitations out of the repair inbox", () => {
@@ -322,7 +346,7 @@ describe("operator action inbox", () => {
     expect(item.charge.level).toBe("none");
   });
 
-  it("marks page-audit findings as publication blockers with a possible Gemini charge", () => {
+  it("marks page-audit findings as deterministic no-cost publication blockers", () => {
     const [item] = buildOperatorActionInbox({
       issues: [
         issue({
@@ -338,8 +362,8 @@ describe("operator action inbox", () => {
     expect(item.publicImpact.level).toBe("blocked");
     expect(item.publicImpact.label).toContain("Public page update blocked");
     expect(item.retry.automatic).toBe(false);
-    expect(item.charge.level).toBe("may_charge");
-    expect(item.charge.label).toContain("Gemini Batch");
+    expect(item.charge.level).toBe("none");
+    expect(item.charge.detail).toContain("deterministic page-audit reruns");
   });
 
   it("sends source-intake failures to an operator and discloses a possible Gemini charge", () => {
@@ -571,7 +595,7 @@ describe("operator action inbox", () => {
     expect(item.severity).toBe("high");
     expect(item.failureReason).toContain("2 legitimate updates");
     expect(item.retry.automatic).toBe(true);
-    expect(item.retry.label).toContain("hourly verified-stage retry");
+    expect(item.retry.label).toContain("feedback-promotion lane verified-stage retry");
     expect(item.retry.detail).toContain("rule, deployment, or source repair");
   });
 
@@ -698,7 +722,7 @@ describe("operator action inbox", () => {
     expect(item.state).toBe("blocked");
     expect(item.severity).toBe("high");
     expect(item.retry.automatic).toBe(true);
-    expect(item.retry.label).toContain("hourly rollback verification");
+    expect(item.retry.label).toContain("feedback-promotion lane rollback verification");
     expect(item.retry.detail).toContain("no-charge identity check");
     expect(item.failureReason).toContain("New matching feedback arrived after the canary");
     expect(item.recommendedAction.detail).toContain(
@@ -751,7 +775,7 @@ describe("operator action inbox", () => {
     );
   });
 
-  it("makes post-sweep deactivation a high blocked hourly rollback action", () => {
+  it("makes post-sweep deactivation a high blocked lane rollback action", () => {
     const [item] = buildOperatorActionInbox({
       issues: [],
       promotionClusters: [
@@ -781,9 +805,9 @@ describe("operator action inbox", () => {
       charge: { level: "none" },
     });
     expect(item.failureReason).toContain("Do not resolve");
-    expect(item.retry.label).toContain("hourly rollback/deactivation repair");
+    expect(item.retry.label).toContain("feedback-promotion lane rollback/deactivation repair");
     expect(item.recommendedAction.detail).toContain(
-      "next normal hourly, zero-charge worker run",
+      "next zero-charge feedback-promotion lane run",
     );
     expect(item.recommendedAction.detail).not.toContain(
       "Review the sweep report, then resolve",
@@ -818,7 +842,7 @@ describe("operator action inbox", () => {
 
     expect(pending).toMatchObject({
       state: "auto_retrying",
-      retry: { automatic: true, label: "Yes — next normal hourly attestation" },
+      retry: { automatic: true, label: "Yes — next feedback-promotion lane attestation" },
       charge: { level: "none" },
     });
     expect(pending.failureReason).toContain("Resolve stays locked");
@@ -870,7 +894,7 @@ describe("operator action inbox", () => {
       "restore the exact reviewed inactive app and worker identity",
     );
     expect(item.evidence).toContainEqual({
-      label: "Final hourly attestation",
+      label: "Final feedback-promotion attestation",
       value: "Blocked by post-sweep identity drift",
     });
     expect(item.evidence).toContainEqual({
@@ -970,6 +994,149 @@ describe("operator action inbox", () => {
   });
 });
 
+describe("independent downstream lane actions", () => {
+  it("flags a database-reported periodic SLA breach that is overdue and unclaimed", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        laneKey: "nightly_report",
+        label: "6 PM capture report",
+        oldestItemAt: null,
+        oldestItemSlaSeconds: 0,
+        nextSlaDueAt: "2026-07-15T17:45:00.000Z",
+        slaBreached: true,
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      id: "downstream-lane:nightly_report",
+      sourceKind: "downstream_lane",
+      state: "needs_operator",
+      failureReason: "The lane is past its service-level target and no worker currently owns it.",
+      occurredAt: "2026-07-15T17:45:00.000Z",
+    });
+    expect(item.retry).toMatchObject({
+      automatic: false,
+      label: "No — overdue and unclaimed",
+    });
+    expect(item.evidence).toContainEqual({
+      label: "SLA status",
+      value: "Breached; overdue and unclaimed",
+    });
+    expect(item.evidence).toContainEqual({ label: "Claimable", value: "Yes" });
+    expect(item.evidence).toContainEqual({
+      label: "Next SLA due",
+      value: "2026-07-15T17:45:00.000Z",
+    });
+  });
+
+  it("creates one isolated-lane action with retry, timeout, and error evidence", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        laneKey: "changed_page_review",
+        label: "Changed page review",
+        paid: true,
+        queueDepth: 4,
+        claimable: false,
+        consecutiveFailures: 2,
+        lastError: "Provider polling timed out.",
+        lastFailedAt: "2026-07-15T17:20:00.000Z",
+        nextRetryAt: "2026-07-15T18:15:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "auto_retrying",
+      severity: "high",
+      failureReason: "Provider polling timed out.",
+      charge: { level: "may_charge" },
+      retry: { automatic: true },
+    });
+    expect(item.evidence).toContainEqual({ label: "Timeout", value: "600s" });
+    expect(item.evidence).toContainEqual({ label: "Consecutive failures", value: "2" });
+  });
+
+  it("does not call a past-due unclaimed retry automatic", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        consecutiveFailures: 1,
+        nextRetryAt: "2026-07-15T17:55:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "needs_operator",
+      occurredAt: "2026-07-15T17:55:00.000Z",
+      failureReason: "The lane retry was due, but no worker claimed it.",
+      retry: { automatic: false, label: "No — retry due and unclaimed" },
+    });
+    expect(item.evidence).toContainEqual({
+      label: "SLA status",
+      value: "Within target; retry due and unclaimed",
+    });
+  });
+
+  it("makes a disabled lane an explicit operator action even with a future retry time", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        laneKey: "suppression",
+        label: "Suppression",
+        enabled: false,
+        claimable: false,
+        nextRetryAt: "2026-07-15T18:15:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "needs_operator",
+      failureReason: "This lane is disabled, so no worker can claim its work.",
+      retry: { automatic: false, label: "No — lane is disabled" },
+      charge: { level: "none" },
+    });
+    expect(item.evidence).toContainEqual({ label: "Enabled", value: "No" });
+    expect(item.evidence).toContainEqual({ label: "Claimable", value: "No" });
+  });
+
+  it("makes an expired lease an operator recovery with owner, TTL, and run evidence", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        laneKey: "reconciliation",
+        label: "Reconciliation",
+        claimable: false,
+        leaseOwner: "pc-worker-2",
+        leaseExpiresAt: "2026-07-15T17:50:00.000Z",
+        leaseExpired: true,
+        lastStatus: "claimed",
+        lastStartedAt: "2026-07-15T17:30:00.000Z",
+        lastFinishedAt: "2026-07-15T17:45:00.000Z",
+        lastSucceededAt: "2026-07-14T18:00:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "needs_operator",
+      failureReason: "The last worker lease expired without a safe completion.",
+      retry: { automatic: false, label: "No — expired lease needs recovery" },
+    });
+    expect(item.evidence).toContainEqual({ label: "Lease owner", value: "pc-worker-2" });
+    expect(item.evidence).toContainEqual({ label: "Lease TTL", value: "360s" });
+    expect(item.evidence).toContainEqual({ label: "Lease status", value: "Expired" });
+    expect(item.evidence).toContainEqual({
+      label: "Last started",
+      value: "2026-07-15T17:30:00.000Z",
+    });
+  });
+});
+
 describe("formatOperatorActionAge", () => {
   it.each([
     [null, "Age unavailable"],
@@ -988,3 +1155,33 @@ describe("formatOperatorActionAge", () => {
     expect(formatOperatorActionAge("2026-07-16T18:00:00.000Z", now)).toBe("Just now");
   });
 });
+
+function downstreamLane(overrides: Partial<AdminDownstreamLane> = {}): AdminDownstreamLane {
+  return {
+    laneKey: "page_audit",
+    label: "Page audit",
+    paid: false,
+    enabled: true,
+    claimable: true,
+    timeoutSeconds: 600,
+    leaseTtlSeconds: 360,
+    oldestItemSlaSeconds: 3_600,
+    queueDepth: 0,
+    oldestItemAt: null,
+    nextSlaDueAt: "2026-07-15T19:00:00.000Z",
+    slaBreached: false,
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    leaseExpired: false,
+    nextRetryAt: null,
+    consecutiveFailures: 0,
+    lastStatus: "idle",
+    lastError: null,
+    lastStartedAt: null,
+    lastFinishedAt: null,
+    lastSucceededAt: null,
+    lastFailedAt: null,
+    policySource: "postgres_lane_scheduler_v1",
+    ...overrides,
+  };
+}

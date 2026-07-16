@@ -3,19 +3,29 @@ export const workerLanes = [
     id: "orchestration",
     label: "Monitoring System",
     detail:
-      "Operator-run catch-up plus the permanent 6 PM capture and hourly downstream schedule.",
+      "Operator-run catch-up plus independent permanent lanes for promotion, quarantine accounting, and the nightly report.",
     profileIds: ["catchup", "daily"],
-    taskIds: ["health", "verified-feedback-promotions", "one-time-catchup"],
-    workerIds: ["downstream-queues"],
+    taskIds: [
+      "health",
+      "verified-feedback-promotions",
+      "manual-quarantine-registry",
+      "nightly-report",
+      "one-time-catchup",
+    ],
+    workerIds: [
+      "feedback-promotion-lane",
+      "manual-quarantine-lane",
+      "nightly-report-lane",
+    ],
   },
   {
     id: "source-quality",
     label: "Source Quality",
     detail:
-      "Operator-run source cleanup tools plus the suppression policy enforced by the hourly downstream pipeline.",
+      "Operator-run source cleanup tools plus an independent recurring suppression-policy lane.",
     profileIds: ["cleanup"],
     taskIds: ["source-quality", "change-event-noise", "prune-history"],
-    workerIds: [],
+    workerIds: ["suppression-lane"],
   },
   {
     id: "visual-capture",
@@ -24,7 +34,12 @@ export const workerLanes = [
       "Runs stable capture plus cheap expandable-section text extraction for already-approved monitorable sources and enqueues review candidates without discovering new sources.",
     profileIds: ["snapshots"],
     taskIds: ["visual-snapshots", "visual-review-batch"],
-    workerIds: ["visual-shard-1", "visual-shard-2", "visual-shard-3"],
+    workerIds: [
+      "changed-page-review-lane",
+      "visual-shard-1",
+      "visual-shard-2",
+      "visual-shard-3",
+    ],
   },
   {
     id: "source-discovery",
@@ -33,16 +48,16 @@ export const workerLanes = [
       "Processes pasted source-intake requests, then runs explicit discovery separately from daily capture with strict quality gates.",
     profileIds: ["source-intake", "discovery"],
     taskIds: ["source-intake", "source-discovery"],
-    workerIds: [],
+    workerIds: ["new-page-review-lane"],
   },
   {
     id: "facts-cycle",
     label: "Facts & Cycle Intelligence",
     detail:
-      "Runs Gemini Batch source extraction, award-level fact reconciliation, and page audits used by public award pages.",
+      "Runs operator-only fact extraction plus independent reconciliation and deterministic public-page audit lanes.",
     profileIds: ["baseline"],
     taskIds: ["ai-review-completion", "baseline-facts", "reconcile-awards", "page-audit-batch", "aggregate-facts", "award-details"],
-    workerIds: [],
+    workerIds: ["reconciliation-lane", "page-audit-lane"],
   },
   {
     id: "repair-recovery",
@@ -60,22 +75,22 @@ export const maintenanceProfiles = {
     laneId: "orchestration",
     label: "Initial Setup & Repair",
     detail:
-      "Completes a temporary backlog and returns the system to its permanent 6 PM capture and hourly downstream schedule.",
-    cost: "Gemini API cap: up to $15/day.",
+      "Completes a temporary backlog and returns the system to its three 6 PM shards and eight independent downstream lanes.",
+    cost: "Operator-only catch-up; permanent paid work remains limited to the two database-capped $5/day review lanes.",
   },
   daily: {
     laneId: "orchestration",
     label: "Daily Monitoring",
     detail:
       "Checks approved pages, compares meaningful content, and publishes only verified changes.",
-    cost: "Gemini API cap: up to $15/day for batch fact/review work; capture itself does not use synchronous Gemini.",
+    cost: "New-page and changed-page review are each hard-capped at $5/day; every other permanent lane is $0 direct AI/API cost.",
   },
   baseline: {
     laneId: "facts-cycle",
     label: "Baseline Facts",
     detail:
       "Runs Gemini Batch source fact extraction, reconciles public award facts, and audits pages when facts or cycle relevance are behind.",
-    cost: "Gemini API cap: up to $15/day.",
+    cost: "Operator-only Gemini Batch work; no permanent baseline lane is installed.",
   },
   cleanup: {
     laneId: "source-quality",
@@ -103,14 +118,14 @@ export const maintenanceProfiles = {
     label: "Source Intake",
     detail:
       "Processes pasted official source URLs: capture, deterministic gate, Gemini Batch classification, award match/create, source insertion, and reconciliation queueing.",
-    cost: "Gemini Batch API for plausible submitted pages.",
+    cost: "Gemini Batch API for plausible submitted pages, hard-capped at $5/day.",
   },
   "visual-review": {
     laneId: "visual-capture",
     label: "Visual Review Batch",
     detail:
       "Submits/polls durable Gemini Batch visual-review candidates, using compact section diffs and changed-section crop evidence when needed, then publishes only validated applicant-facing changes.",
-    cost: "Gemini Batch API only.",
+    cost: "Gemini Batch API only, hard-capped at $5/day.",
   },
 };
 
@@ -133,7 +148,7 @@ export const atomicTasks = [
     laneId: "orchestration",
     label: "One-Time Catch-Up",
     detail:
-      "Forecasts and drains source review, missing baselines, reconciliation, page and visual review, and current snapshot localization, then exits so only the permanent 6 PM and hourly schedule remains.",
+      "Forecasts and drains source review, missing baselines, reconciliation, page and visual review, and current snapshot localization, then exits so only the permanent 6 PM shards and independent lanes remain.",
     cost: "Gemini Batch only with gemini-2.5-flash-lite; forecasts live time and cost before applying.",
     run: {
       kind: "script",
@@ -157,7 +172,33 @@ export const atomicTasks = [
         "--apply=true",
       ],
     },
-    scheduledWorkerIds: ["downstream-queues"],
+    scheduledWorkerIds: ["feedback-promotion-lane"],
+  },
+  {
+    id: "manual-quarantine-registry",
+    laneId: "orchestration",
+    label: "Manual Quarantine Registry",
+    detail:
+      "Refreshes durable operator cases and reports automated work, quarantine, historical limitations, and terminal failures separately.",
+    cost: "$0 direct AI/API cost.",
+    run: {
+      kind: "script",
+      args: ["scripts/sync-manual-quarantine-registry.mjs"],
+    },
+    scheduledWorkerIds: ["manual-quarantine-lane"],
+  },
+  {
+    id: "nightly-report",
+    laneId: "orchestration",
+    label: "6 PM Capture Report",
+    detail:
+      "Finalizes the due three-shard capture report independently of all review and repair queues.",
+    cost: "$0 direct AI/API cost.",
+    run: {
+      kind: "script",
+      args: ["scripts/report-visual-nightly.mjs", "--write=true"],
+    },
+    scheduledWorkerIds: ["nightly-report-lane"],
   },
   {
     id: "source-quality",
@@ -183,7 +224,7 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["change-event-noise"],
     },
-    scheduledWorkerIds: ["downstream-queues"],
+    scheduledWorkerIds: ["suppression-lane"],
   },
   {
     id: "visual-snapshots",
@@ -204,12 +245,12 @@ export const atomicTasks = [
     label: "Gemini Visual Review Batch",
     detail:
       "Processes the durable visual-review candidate queue with Gemini Batch and publishes only validated changes.",
-    cost: "Gemini Batch API only.",
+    cost: "Gemini Batch API only, hard-capped at $5/day.",
     run: {
       kind: "maintenance",
       phases: ["visual-review-batch"],
     },
-    scheduledWorkerIds: ["downstream-queues"],
+    scheduledWorkerIds: ["changed-page-review-lane"],
   },
   {
     id: "source-intake",
@@ -217,12 +258,12 @@ export const atomicTasks = [
     label: "Source Intake",
     detail:
       "Processes queued pasted URLs, rejects obvious bad pages, submits plausible pages to Gemini Batch, and hands accepted sources to award reconciliation.",
-    cost: "Gemini Batch API for plausible submitted pages.",
+    cost: "Gemini Batch API for plausible submitted pages, hard-capped at $5/day.",
     run: {
       kind: "maintenance",
       phases: ["source-intake"],
     },
-    scheduledWorkerIds: ["downstream-queues"],
+    scheduledWorkerIds: ["new-page-review-lane"],
   },
   {
     id: "source-discovery",
@@ -269,7 +310,7 @@ export const atomicTasks = [
     label: "Baseline Fact Extraction",
     detail:
       "Runs Gemini Batch page-fact extraction for source pages so cycle relevance and application facts can be computed.",
-    cost: "Gemini API cap: up to $15/day.",
+    cost: "Operator-only Gemini Batch work; no permanent baseline lane is installed.",
     run: {
       kind: "maintenance",
       phases: ["baseline-facts"],
@@ -300,28 +341,33 @@ export const atomicTasks = [
       kind: "maintenance",
       phases: ["reconcile-awards"],
     },
-    scheduledWorkerIds: ["downstream-queues"],
+    scheduledWorkerIds: ["reconciliation-lane"],
   },
   {
     id: "page-audit-batch",
     laneId: "facts-cycle",
-    label: "Gemini Page Audit Batch",
+    label: "Deterministic Page Audit",
     detail:
-      "Submits only deterministic audit warnings/conflicts to Gemini Batch for a second review; Gemini suggestions must cite exact evidence.",
-    cost: "Gemini Batch API only for flagged award pages.",
+      "Evaluates public pages with deterministic reconciliation canaries and routes failures for action; it never submits a page to Gemini.",
+    cost: "$0 direct AI/API cost.",
     run: {
-      kind: "maintenance",
-      phases: ["page-audit-batch"],
+      kind: "script",
+      args: [
+        "scripts/evaluate-public-page-audit-canaries.mjs",
+        "--all=true",
+        "--fail-on-critical=false",
+      ],
+      applyArg: true,
     },
-    scheduledWorkerIds: ["downstream-queues"],
+    scheduledWorkerIds: ["page-audit-lane"],
   },
   {
     id: "award-details",
     laneId: "facts-cycle",
     label: "Award Detail Extraction (disabled)",
     detail:
-      "Disabled by policy because it used the local Gemini CLI. Use Gemini Batch reconciliation and page-audit workers instead.",
-    cost: "$0 while disabled; Gemini work must use Batch API with gemini-2.5-flash-lite.",
+      "Disabled by policy because it used the local Gemini CLI. New-page review handles source information; changed-page review handles changed wording; reconciliation and page audit stay deterministic.",
+    cost: "$0 while disabled; only the two review lanes may create paid Gemini Batch work.",
     run: {
       kind: "script",
       args: [
@@ -366,13 +412,84 @@ export const atomicTasks = [
 
 export const scheduledWorkers = [
   {
-    id: "downstream-queues",
-    laneId: "orchestration",
-    taskName: "AwardPing Downstream Queue Pipeline",
-    label: "Hourly Queue Pipeline",
+    id: "new-page-review-lane",
+    laneKey: "new_page_review",
+    laneId: "source-discovery",
+    taskName: "AwardPing New Page Review Lane",
+    label: "New Page Review",
     detail:
-      "Hourly: finalizes the 6 PM report, processes bounded source intake, handles visual review, advances verified feedback promotions, applies general suppression, reconciles award facts, and processes flagged page audits.",
-    cost: "Gemini Batch API for plausible source-intake pages, queued change candidates, and flagged page audits; promotion, suppression, and reconciliation add no direct AI cost.",
+      "Every 15 minutes: processes queued submitted pages independently from changed-page review and all zero-cost lanes.",
+    cost: "Gemini Batch API with a $5/day hard cap.",
+  },
+  {
+    id: "changed-page-review-lane",
+    laneKey: "changed_page_review",
+    laneId: "visual-capture",
+    taskName: "AwardPing Changed Page Review Lane",
+    label: "Changed Page Review",
+    detail:
+      "Every 15 minutes: processes queued visual-change candidates independently from new-page intake and all zero-cost lanes.",
+    cost: "Gemini Batch API with a $5/day hard cap.",
+  },
+  {
+    id: "feedback-promotion-lane",
+    laneKey: "feedback_promotion",
+    laneId: "orchestration",
+    taskName: "AwardPing Feedback Promotion Lane",
+    label: "Feedback Promotion",
+    detail:
+      "Every 15 minutes: advances verified promotion, canary, sweep, and rollback state under its own lease and timeout.",
+    cost: "$0 direct AI/API cost.",
+  },
+  {
+    id: "suppression-lane",
+    laneKey: "suppression",
+    laneId: "source-quality",
+    taskName: "AwardPing Suppression Lane",
+    label: "Suppression",
+    detail:
+      "Every 15 minutes: applies current suppression policy and bounded retroactive sweep work independently.",
+    cost: "$0 direct AI/API cost.",
+  },
+  {
+    id: "reconciliation-lane",
+    laneKey: "reconciliation",
+    laneId: "facts-cycle",
+    taskName: "AwardPing Reconciliation Lane",
+    label: "Award Reconciliation",
+    detail:
+      "Every 15 minutes: reconciles pending public award facts without waiting for a review lane to finish.",
+    cost: "$0 direct AI/API cost.",
+  },
+  {
+    id: "page-audit-lane",
+    laneKey: "page_audit",
+    laneId: "facts-cycle",
+    taskName: "AwardPing Page Audit Lane",
+    label: "Deterministic Page Audit",
+    detail:
+      "Every 15 minutes: runs deterministic public-page checks and never submits pages to Gemini.",
+    cost: "$0 direct AI/API cost.",
+  },
+  {
+    id: "manual-quarantine-lane",
+    laneKey: "manual_quarantine",
+    laneId: "orchestration",
+    taskName: "AwardPing Manual Quarantine Lane",
+    label: "Manual Quarantine",
+    detail:
+      "Every 15 minutes: refreshes the durable operator registry independently from producers and reviewers.",
+    cost: "$0 direct AI/API cost.",
+  },
+  {
+    id: "nightly-report-lane",
+    laneKey: "nightly_report",
+    laneId: "orchestration",
+    taskName: "AwardPing Nightly Report Lane",
+    label: "6 PM Capture Report",
+    detail:
+      "Every 15 minutes: safely finalizes the due three-shard report when its reporting window is ready.",
+    cost: "$0 direct AI/API cost.",
   },
   {
     id: "visual-shard-1",
@@ -405,7 +522,8 @@ export const scheduledWorkers = [
 
 export const workerProcessPatterns = [
   "Run-AwardPing",
-  "Run-AwardPingDownstreamQueues",
+  "Run-AwardPingDownstreamLane",
+  "run-downstream-lane",
   "run-awardping-maintenance",
   "capture-visual-snapshots",
   "baseline-facts",

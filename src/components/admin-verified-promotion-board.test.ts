@@ -86,7 +86,7 @@ describe("AdminVerifiedPromotionBoard", () => {
     expect(html).toContain("Change only this candidate to active");
   });
 
-  it("moves an already-active canary cluster into automatic hourly verification", () => {
+  it("moves an already-active canary cluster into automatic lane verification", () => {
     const cluster = promotionCluster({
       stage: "six_pm_canary",
       draftRuleActive: true,
@@ -323,12 +323,12 @@ describe("AdminVerifiedPromotionBoard", () => {
     expect(html).toContain("Post-sweep rule deactivated");
     expect(html).toContain("Verification invalidated");
     expect(html).toContain("Post-sweep deactivation requires rollback repair");
-    expect(html).toContain("hourly rollback/deactivation repair");
+    expect(html).toContain("feedback-promotion lane rollback/deactivation repair");
     expect(html).not.toContain("Global activation gates passed");
     expect(html).not.toContain("Review the sweep report, then resolve");
   });
 
-  it("counts a completed sweep as automatic until its durable hourly attestation is ready", () => {
+  it("counts a completed sweep as automatic until its durable lane attestation is ready", () => {
     const pending = promotionCluster({
       stage: "retroactive_sweep",
       draftRuleActive: true,
@@ -357,7 +357,7 @@ describe("AdminVerifiedPromotionBoard", () => {
 
     expect(pendingHtml).toContain("0 need a person");
     expect(pendingHtml).toContain("1 is in automatic verification");
-    expect(pendingHtml).toContain("Hourly attestation pending");
+    expect(pendingHtml).toContain("Feedback-promotion attestation pending");
     expect(pendingHtml).toContain("Policy review");
     expect(readyHtml).toContain("1 needs a person");
     expect(readyHtml).toContain("0 are in automatic verification");
@@ -391,7 +391,7 @@ describe("AdminVerifiedPromotionBoard", () => {
     expect(html).toContain(
       "restore the exact reviewed inactive app and worker identity",
     );
-    expect(html).not.toContain("Hourly attestation pending");
+    expect(html).not.toContain("Feedback-promotion attestation pending");
   });
 });
 

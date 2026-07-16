@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { monitoringPolicyPromptLinesForScope } from "./lib/award-monitoring-policy.mjs";
@@ -8,6 +9,20 @@ import {
   markGeminiBillingBlocked,
 } from "./lib/gemini-spend-guard.mjs";
 import {
+  GEMINI_PAID_LANES,
+  GeminiBudgetUnavailableError,
+  estimateGeminiMaximumBatchRequestsCostUsd,
+  geminiActiveWorkReservation,
+  loadGeminiSpendReservation,
+  markGeminiSpendCreateStarted,
+  releaseGeminiSpendReservation,
+  releaseUnsubmittedGeminiSpendReservationByKey,
+  reserveGeminiSpend,
+  settleGeminiSpendReservation,
+  submitGeminiSpendReservation,
+  terminalGeminiSettlement,
+} from "./lib/gemini-spend-ledger.mjs";
+import {
   activeBatchRequestKeys,
   batchJobsAwaitingReconciliation,
   baselineFactsPromptCharLimit,
@@ -16,7 +31,9 @@ import {
   estimateTextTokens,
   extractGeminiBatchInlineResponses as extractGeminiBatchInlineResponsesShared,
   extractGeminiUsageMetadata,
+  geminiBatchExactMappingComplete,
   geminiBatchInlineResponseMap as geminiBatchInlineResponseMapShared,
+  geminiBatchUsageAccounting,
   geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
@@ -41,6 +58,7 @@ import {
 } from "./lib/gemini-worker-policy.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
+import { atomicWriteJson } from "./lib/visual-baseline-lock.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -78,7 +96,7 @@ const aiProvider = selectAiProvider(requestedAiProvider);
 const geminiApiModel = geminiWorkerModel();
 const dailyCostCapUsd = nonNegativeNumber(
   args["gemini-api-daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
-  15,
+  5,
 );
 const geminiApiMaxRequests = nonNegativeInt(
   args["gemini-api-max-requests"] || args["max-calls"] || env.AWARDPING_GEMINI_API_MAX_REQUESTS,
@@ -230,6 +248,7 @@ async function runOnce() {
     skip_reasons: {},
     failed: 0,
     stop_reason: null,
+    active_work_deferred_batches: 0,
     billing_blocked: false,
     blocking_reason: null,
     gemini_cli_usage: {
@@ -659,10 +678,12 @@ function geminiCliBaselineFactFiles(capture) {
 
 async function processGeminiApiBatchTargets(targets, report, runId) {
   let batchState = loadGeminiBatchState();
+  batchState = await recoverBaselinePreCreateReservations(batchState, report);
   const reconciliation = await reconcileUnfinishedGeminiBatchJobs(batchState, targets, report, runId);
   batchState = reconciliation.state;
   const activeRequestKeys = new Set([
     ...activeBatchRequestKeys(batchState),
+    ...unresolvedBaselineReservationRequestKeys(batchState),
     ...reconciliation.reconciledRequestKeys,
   ]);
   const activeJobs = unfinishedBatchJobs(batchState);
@@ -776,6 +797,137 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
   }
 }
 
+async function recoverBaselinePreCreateReservations(state, report) {
+  let nextState = state;
+  for (const job of Array.isArray(state?.jobs) ? state.jobs : []) {
+    if (!new Set([
+      "reservation_pending",
+      "reserved_pre_create",
+      "create_started",
+      "manual_recovery",
+      "active_work_waiting",
+    ]).has(job.status)) continue;
+    try {
+      let reservation = await loadGeminiSpendReservationForRecovery(job);
+      if (
+        reservation
+        && !reservation.provider_batch_name
+        && job.batch_name
+        && job.reservation_attempt_token
+        && reservation.status === "creating"
+      ) {
+        await submitGeminiSpendReservation({
+          supabase,
+          reservationId: reservation.id,
+          attemptToken: job.reservation_attempt_token,
+          providerBatchName: job.batch_name,
+        });
+        reservation = await loadGeminiSpendReservationForRecovery(job);
+      }
+
+      if (
+        reservation?.provider_batch_name
+        && new Set(["submitted", "settled"]).has(reservation.status)
+      ) {
+        nextState = mergeBatchJobRecord(nextState, {
+          ...job,
+          batch_name: reservation.provider_batch_name,
+          status: "submitted",
+          submitted_at: reservation.submitted_at || job.submitted_at || new Date().toISOString(),
+          spend_reservation_id: reservation.id,
+          reservation_attempt_token: reservation.attempt_token,
+          spend_work_fingerprint: reservation.work_fingerprint,
+          model: reservation.model || job.model,
+          request_count: reservation.request_count || job.request_count,
+          error: null,
+          provider_binding_recovered_at: new Date().toISOString(),
+        });
+        continue;
+      }
+
+      if (reservation?.status === "creating") {
+        nextState = mergeBatchJobRecord(nextState, {
+          ...job,
+          status: "manual_recovery",
+          spend_reservation_id: reservation.id,
+          error: "Provider-create started but no provider batch name is recoverable; automatic resubmission is blocked.",
+        });
+        continue;
+      }
+
+      if (job.status === "active_work_waiting" && reservation?.status === "reserved") {
+        nextState = mergeBatchJobRecord(nextState, {
+          ...job,
+          status: "active_work_waiting",
+          spend_reservation_id: reservation.id,
+          error: "Equivalent pre-create work is still owned by another attempt; no second paid call will be created.",
+        });
+        continue;
+      }
+
+      if (reservation && !new Set(["reserved", "released"]).has(reservation.status)) {
+        nextState = mergeBatchJobRecord(nextState, {
+          ...job,
+          status: "manual_recovery",
+          spend_reservation_id: reservation.id,
+          error: `Spend reservation is ${reservation.status} without a recoverable provider batch name.`,
+        });
+        continue;
+      }
+
+      if (reservation?.status === "reserved") {
+        await releaseGeminiSpendReservation({
+          supabase,
+          reservationId: reservation.id,
+          reason: "provider_create_not_reached:stale_baseline_reservation_recovered",
+          expectedStatus: "reserved",
+          expectedAttemptToken: reservation.attempt_token,
+        });
+      }
+      nextState = mergeBatchJobRecord(nextState, {
+        ...job,
+        status: reservation ? "released_before_create" : "reservation_not_created",
+        completed_at: new Date().toISOString(),
+        error: null,
+      });
+    } catch (error) {
+      nextState = mergeBatchJobRecord(nextState, {
+        ...job,
+        status: "manual_recovery",
+        error: `Pre-create reservation recovery failed: ${errorMessage(error)}`,
+      });
+      report.errors.push({
+        stage: "baseline_facts_pre_create_reservation_recovery",
+        message: errorMessage(error),
+      });
+    }
+  }
+  saveGeminiBatchState(nextState);
+  return nextState;
+}
+
+async function loadGeminiSpendReservationForRecovery(job) {
+  const reservationId = cleanNullable(job?.spend_reservation_id);
+  const reservationKey = cleanNullable(job?.spend_reservation_key);
+  if (!reservationId && !reservationKey) return null;
+  let query = supabase
+    .from("gemini_spend_reservations")
+    .select("id,reservation_key,attempt_token,work_fingerprint,status,provider_batch_name,submitted_at,model,request_count");
+  query = reservationId ? query.eq("id", reservationId) : query.eq("reservation_key", reservationKey);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw new Error(`Load baseline Gemini spend reservation failed: ${error.message}`);
+  if (data && reservationKey && data.reservation_key !== reservationKey) {
+    throw new Error("Baseline Gemini spend reservation identity mismatch.");
+  }
+  return data || null;
+}
+
+function unresolvedBaselineReservationRequestKeys(state) {
+  return (Array.isArray(state?.jobs) ? state.jobs : [])
+    .filter((job) => ["create_started", "manual_recovery", "active_work_waiting"].includes(job.status))
+    .flatMap((job) => Array.isArray(job.request_keys) ? job.request_keys : []);
+}
+
 async function processGeminiApiBatchChunkGroup(chunks, report, runId, { waitForCompletion = true } = {}) {
   if (!chunks.length) return;
   if (geminiApiDailyCapReached(report)) {
@@ -804,6 +956,16 @@ async function processGeminiApiBatchChunkSafely(entries, report, runId, { waitFo
       return;
     } catch (error) {
       const message = errorMessage(error);
+      if (error?.possibleExternalBatchCreated) {
+        report.failed += entries.length;
+        report.gemini_usage.batch_failures += entries.length;
+        report.errors.push({
+          stage: "baseline_facts_batch_create",
+          message: `Gemini Batch creation had an ambiguous network outcome. The spend reservation remains held and the request will not be resubmitted automatically: ${message}`,
+        });
+        console.log(`BASELINE_FACTS_BATCH ambiguous_create_fail_closed requests=${entries.length}`);
+        return;
+      }
       if (isGeminiBillingOrQuotaErrorMessage(message)) {
         markReportBillingBlocked(report, message);
         console.log(`BASELINE_FACTS_BATCH billing_blocked requests=${entries.length} message=${truncate(message, 500)}`);
@@ -852,14 +1014,15 @@ function loadGeminiBatchState() {
       version: 1,
       jobs: Array.isArray(parsed?.jobs) ? parsed.jobs : [],
     };
-  } catch {
-    return { version: 1, jobs: [] };
+  } catch (error) {
+    throw new Error(
+      `Gemini Batch state is unreadable at ${geminiBatchStatePath}; preserve it and recover provider jobs before continuing: ${errorMessage(error)}`,
+    );
   }
 }
 
 function saveGeminiBatchState(state) {
-  mkdirSync(dirname(geminiBatchStatePath), { recursive: true });
-  writeFileSync(geminiBatchStatePath, `${JSON.stringify({ version: 1, jobs: state.jobs || [] }, null, 2)}\n`, "utf8");
+  atomicWriteJson(geminiBatchStatePath, { version: 1, jobs: state.jobs || [] });
 }
 
 function upsertGeminiBatchStateJob(record) {
@@ -882,18 +1045,7 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
   for (const job of ordered) {
     if (!job.batch_name) continue;
     const latestRequestKeys = latestKeysByJob.get(job.batch_name) || [];
-    if (!latestRequestKeys.length) {
-      nextState = mergeBatchJobRecord(nextState, {
-        ...job,
-        status: "succeeded",
-        reconciled_at: new Date().toISOString(),
-        reconciliation_status: "superseded_duplicate_requests",
-        superseded_request_count: Array.isArray(job.request_keys) ? job.request_keys.length : 0,
-      });
-      saveGeminiBatchState(nextState);
-      console.log(`BASELINE_FACTS_BATCH existing_superseded job=${job.batch_name}`);
-      continue;
-    }
+    const fullySuperseded = latestRequestKeys.length === 0;
     const completed = await fetchGeminiBatchJson(
       `https://generativelanguage.googleapis.com/v1beta/${job.batch_name}`,
       { method: "GET", kind: "batch_poll_existing" },
@@ -911,6 +1063,14 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
 
     if (!isGeminiBatchSucceeded(stateValue)) {
       const message = `Gemini batch ${job.batch_name} finished with ${stateValue || "unknown state"}: ${geminiBatchErrorMessage(completed)}`;
+      if (job.spend_reservation_id) {
+        await settleBaselineGeminiBatchSpend({
+          reservationId: job.spend_reservation_id,
+          model: job.model || geminiApiModel,
+          terminalState: stateValue,
+          providerBatchName: job.batch_name,
+        });
+      }
       report.gemini_usage.batch_failures += nonNegativeInt(job.request_count, 0);
       report.errors.push({ batch_name: job.batch_name, message });
       nextState = mergeBatchJobRecord(nextState, {
@@ -925,8 +1085,43 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
       continue;
     }
 
+    if (fullySuperseded) {
+      if (job.spend_reservation_id) {
+        const terminal = await geminiTerminalBatchUsage(completed, job.request_keys);
+        await settleBaselineGeminiBatchSpend({
+          reservationId: job.spend_reservation_id,
+          model: job.model || geminiApiModel,
+          ...terminal,
+          terminalState: stateValue,
+          providerBatchName: job.batch_name,
+        });
+      }
+      nextState = mergeBatchJobRecord(nextState, {
+        ...job,
+        status: "succeeded",
+        completed_at: new Date().toISOString(),
+        output_ref: geminiBatchOutputRef(completed),
+        reconciled_at: new Date().toISOString(),
+        reconciliation_status: "superseded_duplicate_requests",
+        superseded_request_count: Array.isArray(job.request_keys) ? job.request_keys.length : 0,
+      });
+      saveGeminiBatchState(nextState);
+      console.log(`BASELINE_FACTS_BATCH existing_superseded job=${job.batch_name}`);
+      continue;
+    }
+
     const entries = entriesForBatchStateJob(job, targetsBySourceId, new Set(latestRequestKeys));
     if (!entries.length) {
+      if (job.spend_reservation_id) {
+        const terminal = await geminiTerminalBatchUsage(completed, job.request_keys);
+        await settleBaselineGeminiBatchSpend({
+          reservationId: job.spend_reservation_id,
+          model: job.model || geminiApiModel,
+          ...terminal,
+          terminalState: stateValue,
+          providerBatchName: job.batch_name,
+        });
+      }
       nextState = mergeBatchJobRecord(nextState, {
         ...job,
         status: "succeeded",
@@ -943,12 +1138,30 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
     report.checked += entries.length;
     let reconciliationResult;
     try {
+      const preparedResponses = await prepareGeminiApiBatchResponses({
+        batchName: job.batch_name,
+        completed,
+        entries,
+      });
+      if (job.spend_reservation_id) {
+        await settleBaselineGeminiBatchSpend({
+          reservationId: job.spend_reservation_id,
+          model: job.model || geminiApiModel,
+          usage: preparedResponses.usage,
+          responseCount: preparedResponses.responseCount,
+          usageResponseCount: preparedResponses.usageResponseCount,
+          mappingComplete: preparedResponses.mappingComplete,
+          terminalState: stateValue,
+          providerBatchName: job.batch_name,
+        });
+      }
       reconciliationResult = await applyGeminiApiBatchResponses({
         batchName: job.batch_name,
         completed,
         entries,
         report,
         runId,
+        preparedResponses,
       });
     } catch (error) {
       const message = errorMessage(error);
@@ -1025,29 +1238,230 @@ function isGeminiBatchSucceeded(state) {
 }
 
 async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompletion = true } = {}) {
-  const displayName = `awardping-baseline-facts-${timestampForPath(new Date().toISOString())}`;
+  const attemptToken = randomUUID();
+  const displayName = `awardping-baseline-facts-${timestampForPath(new Date().toISOString())}-${attemptToken.slice(0, 8)}`;
   const requests = entries.map((entry) => entry.batchEntry);
   const inputMode = batchInputModeForRequests(requests, {
     inlineThreshold: geminiBatchInlineRequestThreshold,
     maxInlineBytes: geminiBatchMaxInlineBytes,
   });
-  const estimatedCostUsd = estimateGeminiBatchEntriesCostUsd(entries);
-  const created = await createGeminiBatchJob({ requests, displayName, mode: inputMode });
+  const estimatedCostUsd = estimateGeminiMaximumBatchRequestsCostUsd(geminiApiModel, requests, {
+    maxOutputTokensPerRequest: baselineFactsMaxOutputTokens,
+  });
+  const workFingerprint = baselineFactsWorkFingerprint(entries);
+  const reservationKey = `${workFingerprint}:attempt:${attemptToken}`;
+  const requestContexts = entries.map((entry) => ({
+    source_id: entry.source.id,
+    shared_award_id: entry.source.shared_award_id || null,
+    baseline_path: entry.target.baselinePath,
+    source_url: entry.source.url,
+  }));
+  upsertGeminiBatchStateJob({
+    batch_name: null,
+    display_name: displayName,
+    request_keys: entries.map((entry) => entry.source.id),
+    request_contexts: requestContexts,
+    model: geminiApiModel,
+    status: "reservation_pending",
+    reservation_attempt_token: attemptToken,
+    spend_work_fingerprint: workFingerprint,
+    spend_reservation_key: reservationKey,
+    request_count: entries.length,
+    estimated_cost_usd: estimatedCostUsd,
+    input_mode: inputMode,
+  });
+  let spendReservation;
+  try {
+    spendReservation = await reserveGeminiSpend({
+      supabase,
+      laneKey: GEMINI_PAID_LANES.NEW_PAGE_REVIEW,
+      reservationKey,
+      workFingerprint,
+      attemptToken,
+      estimatedCostUsd,
+      workerSource: "backfill-baseline-facts",
+      workerRunId: null,
+      requestCount: entries.length,
+      model: geminiApiModel,
+      metadata: {
+        source_ids: entries.map((entry) => entry.source.id),
+        work_fingerprint: workFingerprint,
+        input_mode: inputMode,
+        reservation_basis: "text_utf8_and_image_tile_upper_bound_standard_rates_max_output",
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof GeminiBudgetUnavailableError)) {
+      try {
+        await releaseUnsubmittedGeminiSpendReservationByKey({
+          supabase,
+          reservationKey,
+          reason: `reservation_response_failed_before_provider_create:${errorMessage(error)}`.slice(0, 500),
+        });
+      } catch (recoveryError) {
+        recoveryError.budgetReservationRecoveryRequired = true;
+        throw recoveryError;
+      }
+      upsertGeminiBatchStateJob({
+        display_name: displayName,
+        status: "released_before_create",
+        completed_at: new Date().toISOString(),
+        error: errorMessage(error),
+      });
+      throw error;
+    }
+    const activeWork = geminiActiveWorkReservation(error);
+    if (activeWork) {
+      const activeReservation = await loadGeminiSpendReservation({
+        supabase,
+        reservationId: activeWork.reservationId,
+      });
+      const providerBound = new Set(["submitted", "settled"]).has(activeReservation.status)
+        && cleanNullable(activeReservation.provider_batch_name);
+      const manualRecovery = activeReservation.status === "creating" && !providerBound;
+      report.active_work_deferred_batches += 1;
+      report.stop_reason = manualRecovery
+        ? "gemini_reservation_manual_recovery_required"
+        : "gemini_equivalent_review_already_in_flight";
+      upsertGeminiBatchStateJob({
+        batch_name: providerBound ? activeReservation.provider_batch_name : null,
+        display_name: displayName,
+        request_keys: entries.map((entry) => entry.source.id),
+        request_contexts: requestContexts,
+        model: activeReservation.model || geminiApiModel,
+        status: providerBound
+          ? "submitted"
+          : manualRecovery
+            ? "manual_recovery"
+            : "active_work_waiting",
+        submitted_at: providerBound ? activeReservation.submitted_at || new Date().toISOString() : null,
+        spend_reservation_id: activeReservation.id,
+        spend_reservation_key: activeReservation.reservation_key,
+        reservation_attempt_token: activeReservation.attempt_token,
+        spend_work_fingerprint: workFingerprint,
+        active_work_status: activeReservation.status,
+        active_work_detected_at: new Date().toISOString(),
+        error: manualRecovery
+          ? "Equivalent provider-create work already started, but no provider Batch name is recoverable. Generic retry is blocked."
+          : null,
+      });
+      if (manualRecovery) {
+        report.errors.push({
+          stage: "baseline_facts_spend_reservation",
+          message: `Equivalent Gemini provider-create reservation ${activeReservation.id} requires manual recovery; a second paid call was not created.`,
+        });
+      }
+      console.log(
+        `BASELINE_FACTS_BATCH active_work status=${activeReservation.status} reservation=${activeReservation.id}`,
+      );
+      return;
+    }
+    report.stop_reason = "gemini_account_budget_deferred";
+    report.gemini_usage.budget_status = error.status;
+    upsertGeminiBatchStateJob({
+      display_name: displayName,
+      status: "budget_deferred",
+      completed_at: new Date().toISOString(),
+      error: cleanNullable(error.status?.reason) || errorMessage(error),
+    });
+    console.log(
+      `BASELINE_FACTS_BATCH budget_deferred requests=${entries.length} remaining_usd=${error.status?.remaining_usd ?? 0} reset_at=${error.status?.reset_at || "unknown"}`,
+    );
+    return;
+  }
+  upsertGeminiBatchStateJob({
+    batch_name: null,
+    display_name: displayName,
+    request_keys: entries.map((entry) => entry.source.id),
+    request_contexts: requestContexts,
+    model: geminiApiModel,
+    status: "reserved_pre_create",
+    reserved_at: new Date().toISOString(),
+    request_count: entries.length,
+    estimated_cost_usd: estimatedCostUsd,
+    spend_reservation_id: spendReservation.reservation_id,
+    spend_reservation_key: reservationKey,
+    reservation_attempt_token: attemptToken,
+    spend_work_fingerprint: workFingerprint,
+  });
+
+  let created;
+  try {
+    await markGeminiSpendCreateStarted({
+      supabase,
+      reservationId: spendReservation.reservation_id,
+      attemptToken,
+      metadata: { display_name: displayName, request_keys: entries.map((entry) => entry.source.id) },
+    });
+    upsertGeminiBatchStateJob({
+      display_name: displayName,
+      status: "create_started",
+      create_started_at: new Date().toISOString(),
+    });
+    created = await createGeminiBatchJob({ requests, displayName, mode: inputMode });
+  } catch (error) {
+    if (!error?.possibleExternalBatchCreated) {
+      await releaseGeminiSpendReservation({
+        supabase,
+        reservationId: spendReservation.reservation_id,
+        reason: `provider_create_definitively_failed:${errorMessage(error)}`.slice(0, 500),
+        expectedAttemptToken: attemptToken,
+      });
+      upsertGeminiBatchStateJob({
+        display_name: displayName,
+        status: "released_before_create",
+        completed_at: new Date().toISOString(),
+        error: errorMessage(error),
+      });
+    } else {
+      upsertGeminiBatchStateJob({
+        display_name: displayName,
+        status: "manual_recovery",
+        error: `Provider Batch create outcome is ambiguous: ${errorMessage(error)}`,
+      });
+    }
+    throw error;
+  }
   const batchName = geminiBatchJobName(created);
   if (!batchName) {
-    throw new Error(`Gemini Batch API did not return a batch name: ${truncate(JSON.stringify(created), 600)}`);
+    const error = new Error(`Gemini Batch API did not return a batch name: ${truncate(JSON.stringify(created), 600)}`);
+    error.possibleExternalBatchCreated = true;
+    upsertGeminiBatchStateJob({
+      display_name: displayName,
+      status: "manual_recovery",
+      error: error.message,
+    });
+    throw error;
+  }
+  try {
+    await submitGeminiSpendReservation({
+      supabase,
+      reservationId: spendReservation.reservation_id,
+      attemptToken,
+      providerBatchName: batchName,
+    });
+  } catch (error) {
+    upsertGeminiBatchStateJob({
+      batch_name: batchName,
+      display_name: displayName,
+      request_keys: entries.map((entry) => entry.source.id),
+      model: geminiApiModel,
+      status: "manual_recovery",
+      submitted_at: new Date().toISOString(),
+      request_count: entries.length,
+      estimated_cost_usd: estimatedCostUsd,
+      spend_reservation_id: spendReservation.reservation_id,
+      error: `Provider Batch exists but its spend reservation could not be bound: ${errorMessage(error)}`,
+    });
+    error.possibleExternalBatchCreated = true;
+    throw error;
   }
 
   upsertGeminiBatchStateJob({
     batch_name: batchName,
     display_name: displayName,
     request_keys: entries.map((entry) => entry.source.id),
-    request_contexts: entries.map((entry) => ({
-      source_id: entry.source.id,
-      shared_award_id: entry.source.shared_award_id || null,
-      baseline_path: entry.target.baselinePath,
-      source_url: entry.source.url,
-    })),
+    request_contexts: requestContexts,
     model: geminiApiModel,
     status: "submitted",
     submitted_at: new Date().toISOString(),
@@ -1056,6 +1470,10 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     request_count: entries.length,
     estimated_cost_usd: estimatedCostUsd,
     input_mode: inputMode,
+    spend_reservation_id: spendReservation.reservation_id,
+    reservation_attempt_token: attemptToken,
+    spend_work_fingerprint: workFingerprint,
+    spend_lane: GEMINI_PAID_LANES.NEW_PAGE_REVIEW,
   });
   recordGeminiApiBatchSubmission(report, entries, {
     batchName,
@@ -1091,6 +1509,12 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
       report.errors.push({ source_id: entry.source.id, source_url: entry.source.url, message });
     }
     console.log(`BASELINE_FACTS_BATCH failed job=${batchName} requests=${entries.length} message=${truncate(message, 500)}`);
+    await settleBaselineGeminiBatchSpend({
+      reservationId: spendReservation.reservation_id,
+      model: geminiApiModel,
+      terminalState: state,
+      providerBatchName: batchName,
+    });
     upsertGeminiBatchStateJob({
       batch_name: batchName,
       status: "failed",
@@ -1104,12 +1528,28 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
 
   let reconciliationResult;
   try {
+    const preparedResponses = await prepareGeminiApiBatchResponses({
+      batchName,
+      completed,
+      entries,
+    });
+    await settleBaselineGeminiBatchSpend({
+      reservationId: spendReservation.reservation_id,
+      model: geminiApiModel,
+      usage: preparedResponses.usage,
+      responseCount: preparedResponses.responseCount,
+      usageResponseCount: preparedResponses.usageResponseCount,
+      mappingComplete: preparedResponses.mappingComplete,
+      terminalState: state,
+      providerBatchName: batchName,
+    });
     reconciliationResult = await applyGeminiApiBatchResponses({
       batchName,
       completed,
       entries,
       report,
       runId,
+      preparedResponses,
     });
   } catch (error) {
     const message = errorMessage(error);
@@ -1136,7 +1576,23 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
   });
 }
 
-async function applyGeminiApiBatchResponses({ batchName, completed, entries, report, runId }) {
+function baselineFactsWorkFingerprint(entries) {
+  const identity = entries.map((entry) => ({
+    source_id: entry.source.id,
+    captured_at: entry.baseline.captured_at || null,
+    text_hash: entry.baseline.text_hash || null,
+    image_hash: entry.baseline.image_hash || null,
+    file_hash: entry.baseline.file_hash || null,
+  }));
+  const digest = createHash("sha256").update(JSON.stringify({
+    model: geminiApiModel,
+    max_output_tokens: baselineFactsMaxOutputTokens,
+    requests: identity,
+  })).digest("hex");
+  return `baseline-facts:${digest}`;
+}
+
+async function prepareGeminiApiBatchResponses({ batchName, completed, entries }) {
   const responses = await geminiBatchResponses(completed);
   const responseByKey = geminiBatchInlineResponseMap(responses);
   const missingEntryKeys = entries
@@ -1145,14 +1601,17 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
   const duplicateEntryKeys = entries
     .map((entry) => entry.source.id)
     .filter((key) => responseByKey.duplicateKeys.has(key));
-  if (!responses.length) {
-    throw new Error(`Gemini batch ${batchName} returned no readable inline or file responses.`);
-  }
-  if (missingEntryKeys.length || duplicateEntryKeys.length) {
-    throw new Error(
-      `Gemini batch ${batchName} response mapping failed: missing=${missingEntryKeys.length} duplicate=${duplicateEntryKeys.length}.`,
-    );
-  }
+  const mappingError = !responses.length
+    ? `Gemini batch ${batchName} returned no readable inline or file responses.`
+    : missingEntryKeys.length || duplicateEntryKeys.length
+      ? `Gemini batch ${batchName} response mapping failed: missing=${missingEntryKeys.length} duplicate=${duplicateEntryKeys.length}.`
+      : null;
+  const mappingComplete = !mappingError && geminiBatchExactMappingComplete(
+    responses,
+    responseByKey,
+    entries.map((entry) => entry.source.id),
+  );
+  const accounting = geminiBatchUsageAccounting(responses, { mappingComplete });
   if (responses.length !== entries.length) {
     console.log(
       `BASELINE_FACTS_BATCH response_count_mismatch job=${batchName} expected=${entries.length} actual=${responses.length}`,
@@ -1164,7 +1623,37 @@ async function applyGeminiApiBatchResponses({ batchName, completed, entries, rep
     );
   }
 
-  const result = { processed: entries.length, extracted: 0, applied: 0, failed: 0 };
+  return {
+    responses,
+    responseByKey,
+    ...accounting,
+    mappingError,
+  };
+}
+
+async function applyGeminiApiBatchResponses({
+  batchName,
+  completed,
+  entries,
+  report,
+  runId,
+  preparedResponses = null,
+}) {
+  const prepared = preparedResponses || await prepareGeminiApiBatchResponses({
+    batchName,
+    completed,
+    entries,
+  });
+  if (prepared.mappingError) throw new Error(prepared.mappingError);
+  const { responseByKey } = prepared;
+
+  const result = {
+    processed: entries.length,
+    extracted: 0,
+    applied: 0,
+    failed: 0,
+    usage: prepared.usage,
+  };
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
     const inlineResponse = responseByKey.responses.get(entry.source.id) || null;
@@ -1298,6 +1787,7 @@ function geminiApiBaselineFactsRequest(source, capture, reason) {
     generationConfig: {
       temperature: 0.1,
       maxOutputTokens: baselineFactsMaxOutputTokens,
+      thinkingConfig: { thinkingBudget: 0 },
       responseMimeType: "application/json",
     },
   };
@@ -1445,9 +1935,26 @@ async function fetchGeminiBatchJson(url, { method, body, kind }) {
         signal: AbortSignal.timeout(geminiCliTimeoutMs),
       });
       const responseBody = await response.text().catch(() => "");
-      if (response.ok) return JSON.parse(responseBody);
+      if (response.ok) {
+        try {
+          return JSON.parse(responseBody);
+        } catch (cause) {
+          const error = new Error(
+            `Gemini ${kind} returned a successful HTTP response whose body could not be parsed: ${errorMessage(cause)}`,
+          );
+          if (method === "POST" && String(kind).startsWith("batch_create")) {
+            error.possibleExternalBatchCreated = true;
+          }
+          throw error;
+        }
+      }
 
       const message = geminiHttpErrorMessage(response.status, responseBody);
+      if (method === "POST" && String(kind).startsWith("batch_create")) {
+        const error = new Error(message);
+        error.possibleExternalBatchCreated = isAmbiguousGeminiBatchCreateHttpStatus(response.status);
+        throw error;
+      }
       if (attempt < maxAttempts && isRetryableGeminiApiFailure(response.status, responseBody)) {
         const waitMs = 1_500 * attempt;
         console.log(
@@ -1459,6 +1966,14 @@ async function fetchGeminiBatchJson(url, { method, body, kind }) {
       recordGeminiApiBillingBlock(kind, geminiApiModel, response.status, responseBody, message);
       throw new Error(message);
     } catch (error) {
+      if (
+        method === "POST" &&
+        String(kind).startsWith("batch_create") &&
+        isRetryableGeminiNetworkFailure(error)
+      ) {
+        error.possibleExternalBatchCreated = true;
+        throw error;
+      }
       if (attempt < maxAttempts && isRetryableGeminiNetworkFailure(error)) {
         const waitMs = 1_500 * attempt;
         console.log(
@@ -1499,6 +2014,11 @@ function extractGeminiBatchInlineResponses(data) {
   return extractGeminiBatchInlineResponsesShared(data);
 }
 
+function isAmbiguousGeminiBatchCreateHttpStatus(status) {
+  const value = Number(status);
+  return value === 408 || value === 409 || value === 429 || value >= 500;
+}
+
 function geminiBatchInlineResponseMap(responses) {
   return geminiBatchInlineResponseMapShared(responses);
 }
@@ -1508,11 +2028,54 @@ async function geminiBatchResponses(data) {
   for (const fileName of geminiBatchOutputFileNames(data)) {
     const text = await downloadGeminiFileText(fileName);
     for (const line of text.split(/\r?\n/)) {
-      const parsed = parseJsonObject(line);
-      if (parsed) responses.push(parsed);
+      if (!line.trim()) continue;
+      responses.push(parseJsonObject(line) || { awardping_unparseable_batch_line: true });
     }
   }
   return responses;
+}
+
+async function geminiTerminalBatchUsage(data, expectedKeys = []) {
+  const responses = await geminiBatchResponses(data);
+  const mapped = geminiBatchInlineResponseMap(responses);
+  const mappingComplete = geminiBatchExactMappingComplete(responses, mapped, expectedKeys);
+  return geminiBatchUsageAccounting(responses, { mappingComplete });
+}
+
+async function settleBaselineGeminiBatchSpend({
+  reservationId,
+  model,
+  usage = {},
+  responseCount = 0,
+  usageResponseCount = 0,
+  mappingComplete = false,
+  terminalState,
+  providerBatchName,
+}) {
+  const reservation = await loadGeminiSpendReservation({ supabase, reservationId });
+  if (reservation.status === "settled") {
+    return { settled: true, already_settled: true, reservation_id: reservation.id };
+  }
+  const settlement = terminalGeminiSettlement({
+    model,
+    usage,
+    reservation,
+    responseCount,
+    usageResponseCount,
+    mappingComplete,
+  });
+  return settleGeminiSpendReservation({
+    supabase,
+    reservationId,
+    spentCostUsd: settlement.spentCostUsd,
+    usage: {
+      ...usage,
+      coverage: settlement.coverage,
+      terminal_state: terminalState || null,
+      provider_batch_name: providerBatchName || null,
+    },
+    spentSource: settlement.spentSource,
+  });
 }
 
 async function downloadGeminiFileText(fileName) {
@@ -2142,16 +2705,12 @@ function recordGeminiApiBatchSubmission(report, entries, batch) {
   );
 }
 
-function estimateGeminiBatchEntriesCostUsd(entries) {
-  return estimateGeminiCostUsd(geminiApiModel, estimateGeminiBatchEntriesUsage(entries), "batch");
-}
-
 function estimateGeminiBatchEntriesUsage(entries) {
   const promptTokens = entries.reduce(
     (sum, entry) => sum + estimateTextTokens(JSON.stringify(entry.batchEntry?.request || {})),
     0,
   );
-  const candidatesTokens = entries.length * Math.min(baselineFactsMaxOutputTokens, 900);
+  const candidatesTokens = entries.length * baselineFactsMaxOutputTokens;
   return {
     prompt_tokens: promptTokens,
     candidates_tokens: candidatesTokens,

@@ -5,7 +5,9 @@ import {
   batchInputModeForRequests,
   estimateGeminiCostUsd,
   extractGeminiBatchInlineResponses,
+  geminiBatchExactMappingComplete,
   geminiBatchInlineResponseMap,
+  geminiBatchUsageAccounting,
   geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
@@ -46,6 +48,47 @@ describe("Gemini batch support helpers", () => {
     expect([...activeBatchRequestKeys(second)].sort()).toEqual(["source-1", "source-2"]);
   });
 
+  it("replaces a pre-create display-name record when the provider batch name arrives", () => {
+    const pending = mergeBatchJobRecord(null, {
+      display_name: "baseline-attempt-1",
+      status: "reservation_pending",
+    });
+    const submitted = mergeBatchJobRecord(pending, {
+      display_name: "baseline-attempt-1",
+      batch_name: "batches/created-1",
+      status: "submitted",
+    });
+    expect(submitted.jobs).toHaveLength(1);
+    expect(submitted.jobs[0]).toMatchObject({
+      display_name: "baseline-attempt-1",
+      batch_name: "batches/created-1",
+      status: "submitted",
+    });
+  });
+
+  it("merges a restarted local job into the active spend reservation record", () => {
+    const existing = mergeBatchJobRecord(null, {
+      display_name: "first-process",
+      spend_reservation_id: "reservation-1",
+      spend_reservation_key: "reservation-key-1",
+      status: "reserved_pre_create",
+    });
+    const restarted = mergeBatchJobRecord(existing, {
+      display_name: "second-process",
+      spend_reservation_id: "reservation-1",
+      spend_reservation_key: "reservation-key-1",
+      status: "submitted",
+      batch_name: "batches/1",
+    });
+    expect(restarted.jobs).toHaveLength(1);
+    expect(restarted.jobs[0]).toMatchObject({
+      display_name: "second-process",
+      spend_reservation_id: "reservation-1",
+      status: "submitted",
+      batch_name: "batches/1",
+    });
+  });
+
   it("accounts pending requests before hitting the submitted-request cap", () => {
     expect(submittedRequestCapReached({ submitted: 25, pending: 74, cap: 100 })).toBe(false);
     expect(submittedRequestCapReached({ submitted: 25, pending: 75, cap: 100 })).toBe(true);
@@ -70,6 +113,30 @@ describe("Gemini batch support helpers", () => {
     expect(mapped.responses.get("source-1")).toBeTruthy();
     expect(mapped.duplicateKeys.has("source-1")).toBe(true);
     expect(mapped.missingKeys).toBe(1);
+  });
+
+  it("accounts every raw response and requires an exact unique key mapping", () => {
+    const responses = [
+      { metadata: { key: "source-1" }, response: { usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 2 } } },
+      { metadata: { key: "source-1" }, response: { usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 3 } } },
+      { response: { usageMetadata: { promptTokenCount: 30, candidatesTokenCount: 4 } } },
+    ];
+    const mapped = geminiBatchInlineResponseMap(responses);
+    const exact = geminiBatchExactMappingComplete(responses, mapped, ["source-1"]);
+    const accounting = geminiBatchUsageAccounting(responses, { mappingComplete: exact });
+
+    expect(accounting).toMatchObject({
+      responseCount: 3,
+      usageResponseCount: 3,
+      mappingComplete: false,
+      usage: { prompt_tokens: 60, candidates_tokens: 9 },
+    });
+    const one = [responses[0]];
+    expect(geminiBatchExactMappingComplete(
+      one,
+      geminiBatchInlineResponseMap(one),
+      ["source-1"],
+    )).toBe(true);
   });
 
   it("parses the nested inline response envelope returned by Gemini Batch", () => {

@@ -54,7 +54,7 @@ const sourceIntakeMaxRequestsPerBatch = positiveInt(args["source-intake-max-requ
 const sourceIntakeGeminiMode = cleanChoice(args["source-intake-gemini-api-mode"], ["batch", "none"], "batch");
 const baselineLimit = positiveInt(args["baseline-limit"], 50_000);
 const baselineMaxCalls = nonNegativeInt(args["baseline-max-calls"], 50_000);
-const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 15);
+const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 5);
 const baselineBatchMaxRequests = positiveInt(args["baseline-batch-max-requests"], 25);
 const baselineBatchParallelJobs = positiveInt(args["baseline-batch-parallel-jobs"], 4);
 const baselineForce = boolArg(args["baseline-force"], false);
@@ -696,7 +696,7 @@ function printHelp() {
 
 Examples:
   node scripts/run-awardping-maintenance.mjs --profile=catchup --apply=true
-  node scripts/run-awardping-maintenance.mjs --profile=baseline --baseline-cost-cap-usd=15
+  node scripts/run-awardping-maintenance.mjs --profile=baseline --baseline-cost-cap-usd=5
   node scripts/run-awardping-maintenance.mjs --phases=health,baseline-facts,reconcile-awards,page-audit-batch
 
 Profiles:
@@ -713,7 +713,7 @@ Useful options:
   --apply=true|false
   --continue-on-error=true|false
   --visual-shards=3
-  --baseline-cost-cap-usd=15
+  --baseline-cost-cap-usd=5
   --baseline-limit=50000
   --ai-review-completion-max-batch-requests=50000
   --source-quality-hours=10

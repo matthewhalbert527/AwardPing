@@ -196,18 +196,80 @@ export function normalizeGeminiUsage(metadata) {
   };
 }
 
+export function geminiBatchUsageAccounting(responses, { mappingComplete = false } = {}) {
+  const items = Array.isArray(responses) ? responses : [...(responses || [])];
+  const usage = normalizeGeminiUsage({});
+  let usageResponseCount = 0;
+  for (const response of items) {
+    const itemUsage = normalizeGeminiUsage(extractGeminiUsageMetadata(response));
+    if ([
+      itemUsage.total_tokens,
+      itemUsage.prompt_tokens,
+      itemUsage.candidates_tokens,
+      itemUsage.thoughts_tokens,
+      itemUsage.cached_content_tokens,
+    ].some((value) => value > 0)) {
+      usageResponseCount += 1;
+    }
+    usage.prompt_tokens += itemUsage.prompt_tokens;
+    usage.candidates_tokens += itemUsage.candidates_tokens;
+    usage.total_tokens += itemUsage.total_tokens;
+    usage.thoughts_tokens += itemUsage.thoughts_tokens;
+    usage.cached_content_tokens += itemUsage.cached_content_tokens;
+  }
+  return {
+    usage,
+    responseCount: items.length,
+    usageResponseCount,
+    mappingComplete: mappingComplete === true,
+  };
+}
+
+export function geminiBatchExactMappingComplete(responses, mapped, expectedKeys) {
+  const items = Array.isArray(responses) ? responses : [...(responses || [])];
+  const expected = [...new Set((expectedKeys || []).map(cleanText).filter(Boolean))];
+  const responseMap = mapped?.responses instanceof Map ? mapped.responses : new Map();
+  const duplicateKeys = mapped?.duplicateKeys instanceof Set ? mapped.duplicateKeys : new Set();
+  return expected.length > 0
+    && items.length === expected.length
+    && Number(mapped?.missingKeys || 0) === 0
+    && duplicateKeys.size === 0
+    && responseMap.size === expected.length
+    && expected.every((key) => responseMap.has(key));
+}
+
 export function mergeBatchJobRecord(state, record) {
   const next = {
     version: 1,
     jobs: Array.isArray(state?.jobs) ? [...state.jobs] : [],
   };
-  const key = record.batch_name || record.display_name;
-  const index = next.jobs.findIndex((job) => (job.batch_name || job.display_name) === key);
+  const batchName = cleanText(record?.batch_name);
+  const displayName = cleanText(record?.display_name);
+  const spendReservationId = cleanText(record?.spend_reservation_id);
+  const spendReservationKey = cleanText(record?.spend_reservation_key);
+  let index = next.jobs.findIndex((job) =>
+    (batchName && cleanText(job?.batch_name) === batchName) ||
+    (displayName && cleanText(job?.display_name) === displayName)
+  );
   if (index === -1) {
-    next.jobs.push(record);
-  } else {
-    next.jobs[index] = { ...next.jobs[index], ...record };
+    index = next.jobs.findIndex((job) =>
+    (spendReservationId && cleanText(job?.spend_reservation_id) === spendReservationId) ||
+    (spendReservationKey && cleanText(job?.spend_reservation_key) === spendReservationKey)
+    );
   }
+  const merged = index === -1 ? record : { ...next.jobs[index], ...record };
+  const mergedBatchName = cleanText(merged?.batch_name);
+  const mergedReservationId = cleanText(merged?.spend_reservation_id);
+  const mergedReservationKey = cleanText(merged?.spend_reservation_key);
+  next.jobs = next.jobs.filter((job, jobIndex) => {
+    if (jobIndex === index) return false;
+    return !(
+      (mergedBatchName && cleanText(job?.batch_name) === mergedBatchName) ||
+      (mergedReservationId && cleanText(job?.spend_reservation_id) === mergedReservationId) ||
+      (mergedReservationKey && cleanText(job?.spend_reservation_key) === mergedReservationKey)
+    );
+  });
+  next.jobs.push(merged);
   return next;
 }
 

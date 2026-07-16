@@ -65,7 +65,7 @@ const maxRuntimeHours = positiveNumber(args["max-runtime-hours"], 36);
 const maxNoProgressCycles = boundedInt(args["max-no-progress-cycles"], 5, 1, 20);
 const dailyCostCapUsd = nonNegativeNumber(
   args["daily-cost-cap-usd"] || env.AWARDPING_GEMINI_API_DAILY_COST_CAP_USD,
-  15,
+  5,
 );
 const waitForBudgetReset = boolArg(args["wait-for-budget-reset"], true);
 const sourceBatchSize = boundedInt(args["source-batch-size"], 250, 1, 500);
@@ -1318,7 +1318,7 @@ Options:
   --forecast-only=true            Read live backlog and estimate time/cost (default without --apply)
   --apply=true                    Run the catch-up processor
   --resume=true                   Resume the durable state file (default)
-  --daily-cost-cap-usd=15         Maximum estimated Gemini Batch spend per UTC day
+  --daily-cost-cap-usd=5          Secondary local ceiling; database enforces $5 per paid lane
   --wait-for-budget-reset=true    Wait for the next budget window when needed
   --max-runtime-hours=36          Pause safely after this runtime
   --poll-seconds=120              Poll interval for durable Gemini Batch jobs

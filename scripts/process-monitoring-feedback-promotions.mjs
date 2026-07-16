@@ -260,7 +260,7 @@ async function processPromotionCluster({
         ...common,
         status: "waiting",
         reason:
-          "The verified retroactive sweep is complete. The normal hourly, zero-charge worker attestation is durable; final operator resolution is now safe.",
+          "The verified retroactive sweep is complete. The zero-charge feedback-promotion lane attestation is durable; final operator resolution is now safe.",
         worker_run_id: attestation.worker_run_id,
       };
     }
@@ -795,7 +795,7 @@ async function processPromotionCluster({
     return {
       ...common,
       status: "waiting",
-      reason: `Retroactive sweep checkpoint saved after ${sweep.scanned_count} events; the next hourly run will resume from the durable cursor.`,
+      reason: `Retroactive sweep checkpoint saved after ${sweep.scanned_count} events; the next feedback-promotion lane run will resume from the durable cursor.`,
       cursor: sweep.cursor,
     };
   }
@@ -914,7 +914,7 @@ export async function recordPostSweepResolutionWorkerAttestation({
   );
   if (!identityMatches) {
     throw new Error(
-      "The post-sweep app and hourly worker revision, policy, or matcher identity drifted.",
+      "The post-sweep app and feedback-promotion lane worker revision, policy, or matcher identity drifted.",
     );
   }
   const activation = objectValue(sweep.activation_attestation);
@@ -981,7 +981,7 @@ export async function recordPostSweepResolutionWorkerAttestation({
   );
   if (existingError) {
     throw new Error(
-      `Find reusable post-sweep hourly worker attestation failed: ${existingError.message}`,
+      `Find reusable post-sweep feedback-promotion lane attestation failed: ${existingError.message}`,
     );
   }
   const existingRun = Array.isArray(existingRuns) ? existingRuns[0] : null;
@@ -991,7 +991,7 @@ export async function recordPostSweepResolutionWorkerAttestation({
       !validTimestamp(existingRun.finished_at)
     ) {
       throw new Error(
-        "The reusable post-sweep hourly worker attestation is malformed.",
+        "The reusable post-sweep feedback-promotion lane attestation is malformed.",
       );
     }
     return {
@@ -1026,7 +1026,7 @@ export async function recordPostSweepResolutionWorkerAttestation({
     .maybeSingle();
   if (error || !data?.id || !validTimestamp(data.finished_at)) {
     throw new Error(
-      `Record post-sweep hourly worker attestation failed: ${error?.message || "no durable run returned"}`,
+      `Record post-sweep feedback-promotion lane attestation failed: ${error?.message || "no durable run returned"}`,
     );
   }
   return {
@@ -1095,7 +1095,7 @@ async function processBlockedPromotionRollback({
       reason:
         "Activation rollback is required, but the installed worker still has the blocked rule active.",
       safe_action:
-        "Return only the drafted rule to inactive and deploy the same rollback revision to the app and worker. The hourly worker will verify and reverse its partial suppressions without a paid API call.",
+        "Return only the drafted rule to inactive and deploy the same rollback revision to the app and worker. The next feedback-promotion lane run will verify and reverse its partial suppressions without a paid API call.",
     };
   }
   const blockedAt = cleanText(cluster.activation_blocked_at);
@@ -1186,7 +1186,7 @@ async function processBlockedPromotionRollback({
     return {
       ...common,
       status: "waiting",
-      reason: `Rollback reversed or re-attributed ${reversal.processed_count} candidate-attributable suppressions in this bounded pass; the next hourly run resumes from its durable cursor.`,
+      reason: `Rollback reversed or re-attributed ${reversal.processed_count} candidate-attributable suppressions in this bounded pass; the next feedback-promotion lane run resumes from its durable cursor.`,
       cursor: reversal.cursor,
     };
   }
@@ -2577,7 +2577,7 @@ export async function recordPromotionWorkerFailure({
   const failureStage = promotionWorkerFailureStage(cluster);
   const postActivation = promotionExceptionRequiresRollback(cluster);
   const safeAction = postActivation
-    ? "Keep the drafted rule inactive. Repair the reported worker failure; hourly recovery will reverse candidate-attributable suppressions and restart full validation without a paid API call."
+    ? "Keep the drafted rule inactive. Repair the reported worker failure; feedback-promotion lane recovery will reverse candidate-attributable suppressions and restart full validation without a paid API call."
     : safeActionForGate(failureStage);
   const evidence = stabilizePromotionReport({
     schema_version: "monitoring-promotion-worker-failure-v1",
@@ -2690,7 +2690,7 @@ async function markPromotionRollbackRequired({
     status: "failed",
     reason: evidence.summary || "Post-activation verification failed.",
     safe_action:
-      "Keep the drafted rule inactive. The hourly worker will verify the rollback identity, reverse only candidate-attributable suppressions, and restart full validation without a paid API call.",
+      "Keep the drafted rule inactive. The next feedback-promotion lane run will verify the rollback identity, reverse only candidate-attributable suppressions, and restart full validation without a paid API call.",
   };
 }
 

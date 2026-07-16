@@ -19,7 +19,9 @@ export type MaintenanceProfile = {
   primary?: boolean;
 };
 
-export const DEFAULT_BASELINE_COST_CAP_USD = 15;
+// Compatibility ceiling for manual legacy maintenance. Permanent paid work is
+// reserved atomically in the two $5/day new-page and changed-page review lanes.
+export const DEFAULT_BASELINE_COST_CAP_USD = 5;
 export const GEMINI_BATCH_COST_PER_SOURCE_USD = 0.000215;
 
 export const MAINTENANCE_PROFILES: Record<MaintenanceProfileId, MaintenanceProfile> = {

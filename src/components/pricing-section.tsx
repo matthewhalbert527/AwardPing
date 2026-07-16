@@ -5,7 +5,7 @@ import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
 const features = [
   "Unlimited award page monitors",
-  "Hourly scheduled checks",
+  "Scheduled daily checks",
   "Email alerts",
   "Update history for follow-up",
   "Find exact official award pages",

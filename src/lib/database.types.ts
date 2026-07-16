@@ -2622,6 +2622,134 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      claim_monitoring_downstream_lane: {
+        Args: {
+          p_lane_key: string;
+          p_metadata?: Json;
+          p_worker_run_id?: string;
+          p_worker_source: string;
+        };
+        Returns: Json;
+      };
+      complete_monitoring_downstream_lane: {
+        Args: {
+          p_claim_token: string;
+          p_error: string;
+          p_lane_key: string;
+          p_result: Json;
+          p_run_id: string;
+          p_succeeded: boolean;
+        };
+        Returns: Json;
+      };
+      heartbeat_monitoring_downstream_lane: {
+        Args: {
+          p_claim_token: string;
+          p_lane_key: string;
+          p_metadata?: Json;
+          p_run_id: string;
+        };
+        Returns: Json;
+      };
+      list_gemini_budget_status: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          budget_date: string;
+          cap_micro_usd: number;
+          lane_key: string;
+          remaining_micro_usd: number;
+          reserved_micro_usd: number;
+          reset_at: string;
+          source: string;
+          spent_micro_usd: number;
+        }>;
+      };
+      list_monitoring_downstream_lane_status: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          active_run_id: string;
+          claimable: boolean;
+          claimed_at: string;
+          consecutive_failures: number;
+          creates_api_charge: boolean;
+          display_name: string;
+          enabled: boolean;
+          heartbeat_at: string;
+          lane_key: string;
+          last_error: string;
+          last_failed_at: string;
+          last_finished_at: string;
+          last_started_at: string;
+          last_succeeded_at: string;
+          lease_expired: boolean;
+          lease_expires_at: string;
+          lease_owner: string;
+          lease_ttl_seconds: number;
+          next_eligible_at: string;
+          next_sla_due_at: string;
+          oldest_item_at: string;
+          oldest_item_sla_seconds: number;
+          paid_lane_key: string;
+          queue_depth: number;
+          retry_base_seconds: number;
+          retry_max_seconds: number;
+          sla_breached: boolean;
+          sla_deadline: string;
+          sla_seconds: number;
+          source: string;
+          status: string;
+          timeout_seconds: number;
+        }>;
+      };
+      mark_gemini_spend_create_started: {
+        Args: {
+          p_attempt_token: string;
+          p_metadata?: Json;
+          p_reservation_id: string;
+        };
+        Returns: Json;
+      };
+      release_gemini_spend_reservation: {
+        Args: {
+          p_expected_attempt_token?: string;
+          p_expected_status?: string;
+          p_reason: string;
+          p_reservation_id: string;
+        };
+        Returns: Json;
+      };
+      reserve_gemini_spend: {
+        Args: {
+          p_attempt_token: string;
+          p_estimated_micro_usd: number;
+          p_lane_key: string;
+          p_metadata: Json;
+          p_model: string;
+          p_request_count: number;
+          p_reservation_key: string;
+          p_work_fingerprint: string;
+          p_worker_run_id: string;
+          p_worker_source: string;
+        };
+        Returns: Json;
+      };
+      settle_gemini_spend_reservation: {
+        Args: {
+          p_reservation_id: string;
+          p_spent_micro_usd: number;
+          p_spent_source: string;
+          p_usage: Json;
+        };
+        Returns: Json;
+      };
+      submit_gemini_spend_reservation: {
+        Args: {
+          p_attempt_token: string;
+          p_provider_batch_name: string;
+          p_reservation_id: string;
+        };
+        Returns: Json;
+      };
       manual_quarantine_evidence_hash: {
         Args: { p_evidence: Json };
         Returns: string;

@@ -136,6 +136,109 @@ describe("visual event capture wiring", () => {
     expect(baselineStatus).toContain("expansionStateScreenshots:");
   });
 
+  it("treats missing main or opened-section geometry as incomplete local baseline evidence", () => {
+    const meta = {
+      expansion_state_screenshots: [{ state_id: "eligibility-open" }],
+      files: {
+        expansion_states: [{ state_id: "eligibility-open" }],
+      },
+    };
+    const completePaths = new Set([
+      "page.jpg",
+      "thumb.jpg",
+      "text.txt",
+      "meta.json",
+      "layout.json",
+      "expansion-state-01.jpg",
+      "expansion-state-01-layout.json",
+    ]);
+    const status = executableBaselineEvidenceStatus({
+      existingPaths: completePaths,
+      metadataByPath: new Map([["meta.json", meta]]),
+    });
+    const baseline = webpageBaselineDescriptor();
+
+    expect(status(baseline)).toMatchObject({
+      ok: true,
+      localizationStatus: "exact_geometry_available",
+    });
+
+    const withoutMainLayout = structuredClone(baseline);
+    withoutMainLayout.capture.layout = null;
+    expect(status(withoutMainLayout)).toMatchObject({
+      ok: false,
+      missing: ["layout"],
+    });
+
+    const withoutExpansionLayout = executableBaselineEvidenceStatus({
+      existingPaths: new Set([...completePaths].filter((path) => path !== "expansion-state-01-layout.json")),
+      metadataByPath: new Map([["meta.json", meta]]),
+    });
+    expect(withoutExpansionLayout(baseline)).toMatchObject({
+      ok: false,
+      missing: ["expansion_state_01_layout"],
+    });
+
+    const descriptorLost = structuredClone(baseline);
+    descriptorLost.capture.expansion_states = [];
+    expect(status(descriptorLost)).toMatchObject({
+      ok: false,
+      missing: ["expansion_state_01_page", "expansion_state_01_layout"],
+    });
+  });
+
+  it("keeps explicit legacy R2 evidence-only recovery honest without retrying it as exact geometry", () => {
+    const evidencePaths = new Set([
+      "page.jpg",
+      "thumb.jpg",
+      "text.txt",
+      "meta.json",
+      "layout.json",
+      "expansion-state-01.jpg",
+    ]);
+    const status = executableBaselineEvidenceStatus({
+      existingPaths: evidencePaths,
+      metadataByPath: new Map([[
+        "meta.json",
+        { expansion_state_screenshots: [{ state_id: "eligibility-open" }] },
+      ]]),
+    });
+
+    const legacyGeometryUnavailable = webpageBaselineDescriptor();
+    legacyGeometryUnavailable.capture.layout = null;
+    legacyGeometryUnavailable.summary_metadata = {
+      r2_local_rehydration: {
+        localization_status: "evidence_only_geometry_unavailable",
+        expected_expansion_states: 1,
+      },
+    };
+    expect(status(legacyGeometryUnavailable)).toMatchObject({
+      ok: true,
+      localizationStatus: "evidence_only_geometry_unavailable",
+    });
+
+    const expansionGeometryIncomplete = webpageBaselineDescriptor();
+    expansionGeometryIncomplete.summary_metadata = {
+      r2_local_rehydration: {
+        localization_status: "evidence_only_expansion_geometry_incomplete",
+        expected_expansion_states: 1,
+      },
+    };
+    expect(status(expansionGeometryIncomplete)).toMatchObject({
+      ok: true,
+      localizationStatus: "evidence_only_expansion_geometry_incomplete",
+    });
+
+    expansionGeometryIncomplete.capture.layout = null;
+    expect(status(expansionGeometryIncomplete)).toMatchObject({
+      ok: false,
+      missing: ["layout"],
+    });
+
+    const selection = functionBody(captureSource, "hasBaselineForSource", "needsMissingBaselineCompletion");
+    expect(selection).toContain("baselineEvidenceStatus(baseline).ok");
+  });
+
   it("builds byte-bound snapshot refs before deriving candidate evidence signatures", () => {
     const enqueue = functionBody(captureSource, "enqueueVisualReviewCandidate", "queueAwardReconciliationFromSource");
     const prompt = enqueue.indexOf("const promptPayload = buildVisualReviewPromptPayload");
@@ -172,4 +275,36 @@ function functionBody(source, name, nextName) {
   const candidates = [nextFunction, nextAsyncFunction].filter((value) => value > resolvedStart);
   const end = candidates.length ? Math.min(...candidates) : source.length;
   return source.slice(resolvedStart, end);
+}
+
+function executableBaselineEvidenceStatus({ existingPaths, metadataByPath }) {
+  const body = functionBody(captureSource, "baselineEvidenceStatus", "captureFromBaseline");
+  return Function(
+    "fromArchiveRelative",
+    "existsSync",
+    "readJsonIfExists",
+    `${body}\nreturn baselineEvidenceStatus;`,
+  )(
+    (value) => value || null,
+    (path) => existingPaths.has(path),
+    (path) => metadataByPath.get(path) || null,
+  );
+}
+
+function webpageBaselineDescriptor() {
+  return {
+    kind: "webpage",
+    capture: {
+      page: "page.jpg",
+      thumb: "thumb.jpg",
+      text: "text.txt",
+      meta: "meta.json",
+      layout: "layout.json",
+      expansion_states: [{
+        state_id: "eligibility-open",
+        page: "expansion-state-01.jpg",
+        layout: "expansion-state-01-layout.json",
+      }],
+    },
+  };
 }

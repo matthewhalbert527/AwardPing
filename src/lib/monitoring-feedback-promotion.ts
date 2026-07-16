@@ -113,7 +113,7 @@ export const monitoringFeedbackPromotionStageCopy: Record<
   retroactive_sweep: {
     label: "Retroactive sweep",
     plainDescription:
-      "The approved rule was applied to retained history; the next normal hourly, zero-charge worker attestation must pass before Resolve unlocks.",
+      "The approved rule was applied to retained history; the next zero-charge feedback-promotion lane attestation must pass before Resolve unlocks.",
   },
   resolved: {
     label: "Resolved",
@@ -150,16 +150,16 @@ export function monitoringFeedbackPromotionSafeAction(
   cluster: MonitoringFeedbackPromotionCluster,
 ) {
   if (cluster.activationStatus === "blocked_late_evidence") {
-    return "Deactivate the drafted rule if it is live in either deployed surface, keep the candidate inactive, deploy the same inactive revision to the app and worker, and let the hourly rollback verification reverse candidate-attributable suppression before redrafting.";
+    return "Deactivate the drafted rule if it is live in either deployed surface, keep the candidate inactive, deploy the same inactive revision to the app and worker, and let the next feedback-promotion lane rollback verification reverse candidate-attributable suppression before redrafting.";
   }
   if (cluster.activationStatus === "rollback_required") {
-    return "Restore the exact inactive app and worker revision, then let the hourly rollback verification reverse or safely re-attribute candidate-attributable suppression before the cluster returns to draft.";
+    return "Restore the exact inactive app and worker revision, then let the next feedback-promotion lane rollback verification reverse or safely re-attribute candidate-attributable suppression before the cluster returns to draft.";
   }
   if (monitoringFeedbackPromotionPostSweepDeactivated(cluster)) {
-    return "Keep the drafted rule inactive. The next normal hourly, zero-charge worker run will record the deactivation, require rollback, reverse candidate-attributable suppressions, and return the cluster to a safe draft checkpoint; do not resolve it.";
+    return "Keep the drafted rule inactive. The next zero-charge feedback-promotion lane run will record the deactivation, require rollback, reverse candidate-attributable suppressions, and return the cluster to a safe draft checkpoint; do not resolve it.";
   }
   if (cluster.resolutionIdentityDrifted) {
-    return "Deactivate the drafted rule, restore the exact reviewed inactive app and worker identity from the pre-canary hash attestation, and let the normal hourly zero-charge rollback audit reverse or safely re-attribute every candidate-attributable suppression before redrafting.";
+    return "Deactivate the drafted rule, restore the exact reviewed inactive app and worker identity from the pre-canary hash attestation, and let the next zero-charge feedback-promotion lane rollback audit reverse or safely re-attribute every candidate-attributable suppression before redrafting.";
   }
   const failedEvidence = monitoringFeedbackPromotionFailedEvidence(cluster);
   const evidenceSafeAction = evidenceText(failedEvidence, "safe_action");
@@ -193,8 +193,8 @@ export function monitoringFeedbackPromotionSafeAction(
         : "Activate the verified rule globally and start the retroactive sweep.";
     case "retroactive_sweep":
       return cluster.resolutionReady
-        ? "Review the durable hourly attestation with the completed sweep report, then resolve the verified cluster."
-        : "Wait for the next normal hourly, zero-charge matching worker attestation. Resolve stays locked and no extra 6 PM scan is required.";
+        ? "Review the durable feedback-promotion lane attestation with the completed sweep report, then resolve the verified cluster."
+        : "Wait for the next zero-charge matching feedback-promotion lane attestation. Resolve stays locked and no extra 6 PM scan is required.";
     case "resolved":
       return "No action is needed unless this pattern recurs under a new signature.";
   }
@@ -204,7 +204,7 @@ export function monitoringFeedbackPromotionFailedGate(
   cluster: MonitoringFeedbackPromotionCluster,
 ) {
   if (monitoringFeedbackPromotionPostSweepDeactivated(cluster)) {
-    return "The retroactive sweep completed, but the drafted rule is no longer active. Do not resolve it; hourly rollback/deactivation repair must reverse candidate-attributable suppressions and return the workflow to draft.";
+    return "The retroactive sweep completed, but the drafted rule is no longer active. Do not resolve it; feedback-promotion lane rollback/deactivation repair must reverse candidate-attributable suppressions and return the workflow to draft.";
   }
   if (cluster.resolutionIdentityDrifted) {
     return (
@@ -216,10 +216,10 @@ export function monitoringFeedbackPromotionFailedGate(
   const concreteSummary = evidenceText(failedEvidence, "summary");
   if (concreteSummary) return concreteSummary;
   if (cluster.activationStatus === "blocked_late_evidence") {
-    return "New matching feedback arrived after the canary. Deactivate the rule if it is live and deploy the same inactive revision to the app and worker; AwardPing verifies that rollback hourly, then returns the enlarged cluster to draft automatically.";
+    return "New matching feedback arrived after the canary. Deactivate the rule if it is live and deploy the same inactive revision to the app and worker; AwardPing verifies that rollback on the next feedback-promotion lane run, then returns the enlarged cluster to draft automatically.";
   }
   if (cluster.activationStatus === "rollback_required") {
-    return "The activated deployment or historical sweep failed. Restore the exact inactive app and worker revision; AwardPing verifies that rollback hourly, reverses candidate-attributable suppression, and returns the cluster to draft only after the audit passes.";
+    return "The activated deployment or historical sweep failed. Restore the exact inactive app and worker revision; AwardPing verifies that rollback on the next feedback-promotion lane run, reverses candidate-attributable suppression, and returns the cluster to draft only after the audit passes.";
   }
   const legitimateCollisions = evidenceNumber(
     cluster.shadowReport,
@@ -328,17 +328,17 @@ function failedPromotionAttemptSafeAction(stage: string | null) {
     case "rule_drafted":
       return "Keep the candidate inactive, correct the rule boundary or known-real-update fixtures named in the failure evidence, refresh the cluster, and save the narrow draft again.";
     case "historical_shadow_test":
-      return "Keep the candidate inactive, repair the history query or narrow the rule, then let the hourly shadow test retry against the unchanged evidence revision.";
+      return "Keep the candidate inactive, repair the history query or narrow the rule, then let the feedback-promotion lane shadow test retry against the unchanged evidence revision.";
     case "regression_tests_pass":
       return "Repair the named regression fixture or narrow the candidate rule, then rerun verification from the draft checkpoint.";
     case "app_worker_hashes_match":
-      return "Deploy the same reviewed app and worker identity, then let the hourly no-charge hash check run again.";
+      return "Deploy the same reviewed app and worker identity, then let the next no-charge feedback-promotion lane hash check run again.";
     case "six_pm_canary":
       return "Repair the listed candidate or shard failure and wait for the next normal 6 PM cohort; do not start an extra paid scan.";
     case "retroactive_sweep":
-      return "Keep the candidate inactive if rollback is required, repair the saved sweep failure, and let the hourly worker resume only after app/worker identity is verified.";
+      return "Keep the candidate inactive if rollback is required, repair the saved sweep failure, and let the feedback-promotion lane resume only after app/worker identity is verified.";
     case "resolved":
-      return "Keep the cluster open, restore the exact activated identity or obtain its matching hourly attestation, refresh, and resolve only after the final gate is ready.";
+      return "Keep the cluster open, restore the exact activated identity or obtain its matching feedback-promotion lane attestation, refresh, and resolve only after the final gate is ready.";
     default:
       return null;
   }

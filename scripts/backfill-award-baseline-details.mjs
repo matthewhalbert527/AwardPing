@@ -74,7 +74,7 @@ const heartbeatMinutes = positiveInt(args["heartbeat-minutes"], 5);
 const geminiCliDisabledByPolicy = true;
 if (geminiCliDisabledByPolicy) {
   console.error(
-    "Award baseline details uses Gemini CLI and is disabled by policy. Use Gemini Batch reconciliation/page-audit workers with gemini-2.5-flash-lite.",
+    "Award baseline details uses Gemini CLI and is disabled by policy. Use new-page review for source information, changed-page review for changed wording, and deterministic reconciliation/page audit.",
   );
   process.exit(1);
 }

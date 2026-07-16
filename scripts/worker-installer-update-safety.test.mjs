@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,8 +9,18 @@ const installer = readFileSync(
   "utf8",
 );
 const downstream = readFileSync(
-  resolve(root, "installer", "windows", "Run-AwardPingDownstreamQueues.ps1"),
+  resolve(root, "installer", "windows", "Run-AwardPingDownstreamLane.ps1"),
   "utf8",
+);
+const downstreamLaneRunner = readFileSync(
+  resolve(root, "scripts", "run-downstream-lane.mjs"),
+  "utf8",
+);
+const startupSupervisorPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Start-AwardPingOnBoot.ps1",
 );
 const sourceIntakeWorker = readFileSync(
   resolve(root, "scripts", "process-source-intake-requests.mjs"),
@@ -24,6 +34,26 @@ const overnightInstaller = readFileSync(
     "Install-AwardPingOvernightSourceQuality.ps1",
   ),
   "utf8",
+);
+const baselineCompletionWatchdogPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Watch-AwardPingBaselineCompletion.ps1",
+);
+const baselineFactsWatchdogPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Watch-AwardPingBaselineFacts.ps1",
+);
+const baselineCompletionWatchdog = readFileSync(baselineCompletionWatchdogPath, "utf8");
+const baselineFactsWatchdog = readFileSync(baselineFactsWatchdogPath, "utf8");
+const overnightInstallerPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Install-AwardPingOvernightSourceQuality.ps1",
 );
 const installerDocs = readFileSync(
   resolve(root, "docs", "local-pc-worker-installer.md"),
@@ -166,7 +196,7 @@ describe("Windows worker update safety", () => {
       "function Start-ScheduledTask { $script:calls += 'start' }",
       "function Stop-ScheduledTask { $script:calls += 'stop' }",
       "$snapshot = [pscustomobject]@{ TaskName='AwardPing Test'; TaskPath='\\'; RestoreAfterUpdate=$true; WasEnabled=$true; WasRunning=$true }",
-      "try { Restore-AwardPingTasksAfterUpdate -Snapshots @($snapshot) -SuppressionSweepLimit 1 -SuppressionSweepBatchSize 1 -ApplyTaskDefinitionUpdates $false -RestoreOperationalState $true } catch {}",
+      "try { Restore-AwardPingTasksAfterUpdate -Snapshots @($snapshot) -ApplyTaskDefinitionUpdates $false -RestoreOperationalState $true } catch {}",
       "'CALLS=' + ($script:calls -join ',')",
     ].join("\n");
     const result = runPowerShell(simulation);
@@ -228,7 +258,7 @@ describe("Windows worker update safety", () => {
       cleanupFunctions,
       "function Test-AwardPingTaskTargetsInstallRoot { $true }",
       "$script:calls = @()",
-      "function Get-ScheduledTask { @([pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker Shard 1'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing Downstream Queue Pipeline'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing Concurrent Custom Audit'; TaskPath='\\' }) }",
+      "function Get-ScheduledTask { @([pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker Shard 1'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing New Page Review Lane'; TaskPath='\\' }, [pscustomobject]@{ TaskName='AwardPing Concurrent Custom Audit'; TaskPath='\\' }) }",
       "function Disable-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction); $script:calls += 'disable:' + $TaskName }",
       "function Stop-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction); $script:calls += 'stop:' + $TaskName }",
       "function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm, $ErrorAction); $script:calls += 'remove:' + $TaskName }",
@@ -239,9 +269,42 @@ describe("Windows worker update safety", () => {
     const result = runPowerShell(simulation);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      "CALLS=disable:AwardPing Downstream Queue Pipeline,stop:AwardPing Downstream Queue Pipeline,remove:AwardPing Downstream Queue Pipeline",
+      "CALLS=disable:AwardPing New Page Review Lane,stop:AwardPing New Page Review Lane,remove:AwardPing New Page Review Lane",
     );
     expect(result.stdout).not.toContain("AwardPing Concurrent Custom Audit");
+  });
+
+  windowsIt("carries the retired monolith enabled state into newly created lanes", () => {
+    const finalizationFunctions = [
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingManagedTaskNames",
+        "Get-AwardPingTaskSnapshotKey",
+      ),
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingTaskSnapshotKey",
+        "Assert-AwardPingManagedTaskRegistrationScope",
+      ),
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingTaskSnapshotsForFinalization",
+        "Get-InstalledAwardPingWorkerProcesses",
+      ),
+    ].join("\n");
+    const simulation = [
+      finalizationFunctions,
+      "function Test-AwardPingTaskTargetsInstallRoot { $true }",
+      "function Get-ScheduledTask { [pscustomobject]@{ TaskName='AwardPing New Page Review Lane'; TaskPath='\\' } }",
+      "function Export-ScheduledTask { '<Task />' }",
+      "$legacy = [pscustomobject]@{ TaskName='AwardPing Downstream Queue Pipeline'; TaskPath='\\'; WasEnabled=$false; RestoreAfterUpdate=$false }",
+      "$migrated = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @($legacy) -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing New Page Review Lane' })[0]",
+      "$fresh = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @() -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing New Page Review Lane' })[0]",
+      "'MIGRATED=' + $migrated.WasEnabled + ' FRESH=' + $fresh.WasEnabled",
+    ].join("\n");
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("MIGRATED=False FRESH=True");
   });
 
   windowsIt("restores the exact old app and root wrappers after a post-switch failure", () => {
@@ -311,14 +374,48 @@ describe("Windows worker update safety", () => {
 
   it("registers every permanent task disabled until fresh-install or update validation commits", () => {
     expect(installer).toContain("Register-VisualSnapshotTask -InstallRoot $InstallRoot -RegisterDisabled $true");
+    expect(installer).toContain("Register-DownstreamLaneTasks `");
     expect(installer).toContain("-RegisterDisabled $true");
     expect(installer).toContain("if ($RegisterDisabled) { $settings.Enabled = $false }");
-    expect(downstream).toContain("[switch]$InstallDisabled");
-    expect(downstream).toContain("if ($InstallDisabled) { $settings.Enabled = $false }");
-    expect(installer).not.toContain("-InstallDisabled:$RegisterDisabled");
+    expect(downstream).not.toContain("Register-ScheduledTask");
+    expect(installer).not.toContain("Register-DownstreamQueuePipeline");
+    expect(installer).toContain(
+      '[string]$_.TaskName -eq "AwardPing Downstream Queue Pipeline"',
+    );
+    expect(installer).toContain("WasEnabled = $wasEnabled");
+  });
+
+  it("runs the optional capture/R2 smoke test before recurring tasks can be enabled", () => {
+    const mainStart = installer.indexOf("$packageRoot = Resolve-Path");
+    const registrationIndex = installer.indexOf(
+      "Register-DownstreamLaneTasks `",
+      mainStart,
+    );
+    const smokeIndex = installer.indexOf(
+      'Write-Step "Running one-page visual snapshot test before enabling recurring tasks"',
+      registrationIndex,
+    );
+    const restoreIndex = installer.indexOf(
+      "Restore-AwardPingTasksAfterUpdate `",
+      smokeIndex,
+    );
+    const outerCatchIndex = installer.indexOf("} catch {", restoreIndex);
+
+    expect(registrationIndex).toBeGreaterThan(mainStart);
+    expect(smokeIndex).toBeGreaterThan(registrationIndex);
+    expect(restoreIndex).toBeGreaterThan(smokeIndex);
+    expect(outerCatchIndex).toBeGreaterThan(restoreIndex);
+    expect(installer).toContain(
+      "The one-page visual snapshot test failed while recurring tasks were disabled.",
+    );
+    expect(
+      installer.split("Running one-page visual snapshot test before enabling recurring tasks")
+        .length - 1,
+    ).toBe(1);
   });
 
   it("retires catch-up watchdogs and the startup supervisor from the permanent task set", () => {
+    expect(existsSync(startupSupervisorPath)).toBe(false);
     expect(installer).not.toContain("Register-BaselineFactsWatchdog -InstallRoot");
     expect(installer).not.toContain("Register-StartupSupervisorTask -InstallRoot");
     const cleanup = extractPowerShellFunction(
@@ -331,16 +428,30 @@ describe("Windows worker update safety", () => {
       "Get-AwardPingRetiredArtifactProblems",
       "Register-VisualSnapshotTask",
     );
+    const retiredArtifacts = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingRetiredArtifactRelativePaths",
+      "Remove-LegacySourceTask",
+    );
     expect(cleanup).toContain('[string]$_.TaskName -like "AwardPing*"');
     expect(cleanup).toContain('[string]$_.TaskName -notin $managedTaskNames');
     expect(cleanup).toContain("Get-AwardPingRetiredArtifactRelativePaths");
     expect(cleanup).toContain("Remove-Item -LiteralPath $legacyPath -Force -ErrorAction Stop");
     expect(cleanup).toContain('"AwardPing Startup Supervisor.vbs"');
+    expect(retiredArtifacts).toContain('"Start-AwardPingOnBoot.ps1"');
     expect(retirementValidation).toContain('[string]$_.TaskName -notin $managedTaskNames');
     expect(retirementValidation).toContain("Get-AwardPingRetiredArtifactRelativePaths");
     expect(installer).toContain('"app\\scripts\\run-local-source-worker.mjs"');
     expect(installer).toContain('"Watch-AwardPingBaselineCompletion.ps1"');
     expect(installer).toContain('"baseline-facts-worker.lock"');
+    expect(installer).toContain('"Run-AwardPingDownstreamQueues.ps1"');
+    expect(installer).toContain('"downstream-queue-pipeline.lock"');
+    const managedTaskNames = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingManagedTaskNames",
+      "Get-AwardPingTaskSnapshotKey",
+    );
+    expect(managedTaskNames).not.toContain("AwardPing Downstream Queue Pipeline");
     expect(installer).toContain("RestoreAfterUpdate = [string]$task.TaskName -in @(Get-AwardPingManagedTaskNames)");
     expect(installer).toContain("Retired AwardPing artifacts remain after cleanup");
     expect(installer).toContain("retired-artifact cleanup was incomplete");
@@ -388,6 +499,7 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\visual-event-localization.mjs",
       "scripts\\lib\\visual-snapshot-history.mjs",
       "scripts\\lib\\visual-review-queue.mjs",
+      "scripts\\lib\\visual-baseline-promotion.mjs",
       "scripts\\lib\\visual-change-publication.mjs",
       "scripts\\lib\\visual-event-evidence.mjs",
       "scripts\\read-event-visual-evidence-coverage.mjs",
@@ -408,6 +520,12 @@ describe("Windows worker update safety", () => {
       "src\\lib\\source-ai-review-status.ts",
       "src\\lib\\source-url-policy.ts",
       "scripts\\supabase-service-client.mjs",
+      "scripts\\run-downstream-lane.mjs",
+      "scripts\\lib\\gemini-spend-ledger.mjs",
+      "scripts\\lib\\gemini-batch-support.mjs",
+      "scripts\\lib\\r2-baseline-rehydration.mjs",
+      "scripts\\lib\\source-intake.mjs",
+      "scripts\\evaluate-public-page-audit-canaries.mjs",
     ]) {
       expect(installer.split(`"${relativePath}"`).length - 1).toBeGreaterThanOrEqual(2);
     }
@@ -448,43 +566,50 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath");
   });
 
-  it("keeps the retro sweep and quarantine sync explicit in the hourly execution order", () => {
-    expect(installer).toContain("-SuppressionSweepLimit $SuppressionSweepLimit");
-    expect(installer).toContain("-SuppressionSweepBatchSize $SuppressionSweepBatchSize");
+  it("installs eight isolated downstream lanes with bounded locks, stagger, and timeouts", () => {
+    const registrationStart = installer.indexOf("function Register-DownstreamLaneTasks {");
+    const registrationEnd = installer.indexOf("\n$packageRoot = Resolve-Path", registrationStart);
+    const registration = installer.slice(registrationStart, registrationEnd);
+    expect(registrationStart).toBeGreaterThan(0);
+    expect(registrationEnd).toBeGreaterThan(registrationStart);
+    const definitions = [
+      ["new_page_review", "AwardPing New Page Review Lane", 0, 10, 12],
+      ["changed_page_review", "AwardPing Changed Page Review Lane", 2, 10, 12],
+      ["feedback_promotion", "AwardPing Feedback Promotion Lane", 4, 6, 8],
+      ["suppression", "AwardPing Suppression Lane", 6, 6, 8],
+      ["reconciliation", "AwardPing Reconciliation Lane", 8, 6, 8],
+      ["page_audit", "AwardPing Page Audit Lane", 10, 6, 8],
+      ["manual_quarantine", "AwardPing Manual Quarantine Lane", 12, 4, 6],
+      ["nightly_report", "AwardPing Nightly Report Lane", 14, 4, 6],
+    ];
 
-    const visualIndex = downstream.indexOf('-Name "visual-review-batch"');
-    const sweepIndex = downstream.indexOf('-Name "change-event-suppression-sweep"');
-    const reconciliationIndex = downstream.indexOf('-Name "award-reconciliation"');
-    const auditIndex = downstream.indexOf('-Name "page-audit-batch"');
-    const nightlyReportIndex = downstream.indexOf('-Name "visual-nightly-report"');
-    const promotionIndex = downstream.indexOf('-Name "verified-feedback-promotions"');
-    const sourceIntakeIndex = downstream.indexOf('-Name "source-intake"');
-    const quarantineIndex = downstream.indexOf('-Name "manual-quarantine-registry"');
-    expect(sweepIndex).toBeGreaterThan(visualIndex);
-    expect(reconciliationIndex).toBeGreaterThan(sweepIndex);
-    expect(auditIndex).toBeGreaterThan(reconciliationIndex);
-    expect(quarantineIndex).toBeGreaterThan(auditIndex);
-    expect(nightlyReportIndex).toBeGreaterThan(0);
-    expect(promotionIndex).toBeGreaterThan(visualIndex);
-    expect(promotionIndex).toBeLessThan(sweepIndex);
-    expect(sourceIntakeIndex).toBeGreaterThan(nightlyReportIndex);
-    expect(visualIndex).toBeGreaterThan(sourceIntakeIndex);
-    expect(downstream).toContain('scripts\\report-visual-nightly.mjs');
-    expect(downstream).toContain('scripts\\process-monitoring-feedback-promotions.mjs');
-    expect(downstream).toContain('scripts\\process-source-intake-requests.mjs');
-    expect(downstream).toContain('scripts\\sync-manual-quarantine-registry.mjs');
-    expect(downstream).toContain('"--poll-batch-limit=5"');
-    expect(downstream).toContain('"--request-timeout-ms=30000"');
-    expect(downstream).toContain('"--time-budget-ms=600000"');
-    expect(downstream).toContain('"--status=pending,queued"');
-    expect(downstream).not.toContain('"--status=pending,queued,failed"');
-    expect(downstream).toContain('$nightlyReportExit -eq 0');
-    expect(downstream).toContain('$promotionExit -eq 0');
-    expect(downstream).toContain('promotion_exit=$promotionExit');
-    expect(downstream).toContain('$sourceIntakeExit -eq 0');
-    expect(downstream).toContain('$manualQuarantineExit -eq 0');
-    expect(downstream).toContain('manual_quarantine_exit=$manualQuarantineExit');
-    expect(downstream).toContain("refreshes the durable manual-quarantine registry");
+    for (const [key, taskName, stagger, timeout, taskTimeout] of definitions) {
+      expect(registration).toContain(
+        `Key = "${key}"; TaskName = "${taskName}"; StaggerMinutes = ${stagger}; TimeoutMinutes = ${timeout}; ExecutionTimeLimitMinutes = ${taskTimeout}`,
+      );
+      expect(installer.split(`"${taskName}"`).length - 1).toBeGreaterThanOrEqual(3);
+    }
+    expect(registration).toContain("-RepetitionInterval (New-TimeSpan -Minutes 15)");
+    expect(registration).toContain("$quarterStartMinute");
+    expect(registration).toContain("-TimeoutMinutes $($lane.TimeoutMinutes)");
+    expect(registration).toContain("-ExecutionTimeLimit (New-TimeSpan -Minutes $lane.ExecutionTimeLimitMinutes)");
+    expect(registration).toContain("This lane never submits pages to Gemini.");
+
+    expect(downstream).toContain('$LockPath = Join-Path $InstallRoot "downstream-lane-$Lane.lock"');
+    expect(downstream).toContain("[System.IO.FileMode]::CreateNew");
+    expect(downstream).toContain("[System.IO.FileShare]::None");
+    expect(downstream).toContain('scripts\\run-downstream-lane.mjs');
+    expect(downstream).toContain('"--lane=$Lane"');
+    expect(downstream).toContain('"--time-budget-ms=$timeBudgetMs"');
+    expect(downstream).toContain("$process.WaitForExit($TimeoutMinutes * 60 * 1000)");
+    expect(downstream).toContain("taskkill.exe");
+    expect(downstream).toContain("exit $exitCode");
+
+    expect(downstreamLaneRunner).toContain("page_audit:");
+    expect(downstreamLaneRunner).toContain('script: "scripts/evaluate-public-page-audit-canaries.mjs"');
+    expect(downstreamLaneRunner).not.toMatch(
+      /page_audit:\s*{[\s\S]*?script:\s*"scripts\/process-page-audit-batch\.mjs"/,
+    );
     expect(sourceIntakeWorker).toContain('positiveInt(args["poll-batch-limit"], 25)');
     expect(sourceIntakeWorker).toContain('positiveInt(args["time-budget-ms"], 15 * 60_000)');
     expect(sourceIntakeWorker).toContain(': ["pending", "queued"];');
@@ -514,6 +639,70 @@ describe("Windows worker update safety", () => {
     expect(nightlyReporter).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
   });
 
+  windowsIt("bounds downstream logs without deleting outside the verified log directory", () => {
+    const retentionFunctions = [
+      extractPowerShellFunction(
+        downstream,
+        "Test-DownstreamLogPathWithinDirectory",
+        "Remove-DownstreamLogFile",
+      ),
+      extractPowerShellFunction(
+        downstream,
+        "Remove-DownstreamLogFile",
+        "Invoke-DownstreamLogRetention",
+      ),
+      extractPowerShellFunction(
+        downstream,
+        "Invoke-DownstreamLogRetention",
+        "Rotate-DownstreamLaneSummaryLog",
+      ),
+      extractPowerShellFunction(
+        downstream,
+        "Rotate-DownstreamLaneSummaryLog",
+        "Write-LaneLog",
+      ),
+      extractPowerShellFunction(
+        downstream,
+        "Write-LaneLog",
+        "Test-LaneLockActive",
+      ),
+    ].join("\n");
+    const simulation = [
+      retentionFunctions,
+      "$root = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-log-retention-' + [guid]::NewGuid().ToString('N'))",
+      "$LogDir = Join-Path $root 'logs'; New-Item -ItemType Directory -Path $LogDir -Force | Out-Null",
+      "$SummaryLog = Join-Path $LogDir 'awardping-downstream-new_page_review.log'",
+      "$outside = Join-Path $root 'outside.log'; Set-Content -LiteralPath $outside -Value 'keep'",
+      "1..4 | ForEach-Object { $path = Join-Path $LogDir ('awardping-downstream-new_page_review-20260716-12000' + $_ + '-001-' + $_ + '.log'); Set-Content -LiteralPath $path -Value $_; (Get-Item -LiteralPath $path).LastWriteTimeUtc = [DateTime]::UtcNow.AddMinutes($_) }",
+      "$old = Join-Path $LogDir 'awardping-downstream-new_page_review-20260701-120000-001-9.log'; Set-Content -LiteralPath $old -Value 'old'; (Get-Item -LiteralPath $old).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-20)",
+      "$temp = Join-Path $LogDir 'awardping-downstream-new_page_review-20260701-120000-001-9.stdout.tmp'; Set-Content -LiteralPath $temp -Value 'old-temp'; (Get-Item -LiteralPath $temp).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-2)",
+      "Invoke-DownstreamLogRetention -MaxRunLogFiles 2 -MaxRunLogAgeDays 14 -MaxTemporaryLogFiles 1 -MaxTemporaryLogAgeHours 24",
+      "try { Remove-DownstreamLogFile -Path $outside; 'UNEXPECTED_OUTSIDE_DELETE' } catch { 'OUTSIDE_BLOCKED=' + $_.Exception.Message }",
+      "Set-Content -LiteralPath $SummaryLog -Value ('x' * 2048)",
+      "Rotate-DownstreamLaneSummaryLog -MaxBytes 1024",
+      "Write-LaneLog -Message 'new-summary'",
+      "$runCount = @(Get-ChildItem -LiteralPath $LogDir -File | Where-Object { $_.Name -match '^awardping-downstream-new_page_review-\\d{8}-\\d{6}-\\d{3}-\\d+\\.log$' }).Count",
+      "'RUN_COUNT=' + $runCount",
+      "'OLD_EXISTS=' + (Test-Path -LiteralPath $old)",
+      "'TEMP_EXISTS=' + (Test-Path -LiteralPath $temp)",
+      "'OUTSIDE_EXISTS=' + (Test-Path -LiteralPath $outside)",
+      "'SUMMARY_EXISTS=' + (Test-Path -LiteralPath $SummaryLog)",
+      "'PREVIOUS_EXISTS=' + (Test-Path -LiteralPath ($SummaryLog + '.previous.log'))",
+      "Remove-Item -LiteralPath $root -Recurse -Force",
+    ].join("\n");
+
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("RUN_COUNT=2");
+    expect(result.stdout).toContain("OLD_EXISTS=False");
+    expect(result.stdout).toContain("TEMP_EXISTS=False");
+    expect(result.stdout).toContain("OUTSIDE_BLOCKED=");
+    expect(result.stdout).toContain("OUTSIDE_EXISTS=True");
+    expect(result.stdout).toContain("SUMMARY_EXISTS=True");
+    expect(result.stdout).toContain("PREVIOUS_EXISTS=True");
+    expect(result.stdout).not.toContain("UNEXPECTED_OUTSIDE_DELETE");
+  });
+
   it("seals the installed source revision and live app identity URL", () => {
     expect(installer).toContain("Get-AwardPingSourceRevision -SourceRoot $sourceRoot");
     expect(installer).toContain("AWARDPING_WORKER_REVISION=$SourceRevision");
@@ -537,12 +726,14 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain(
       '"scripts\\lib\\monitoring-feedback-promotion-verification.mjs"',
     );
-    expect(installer).toContain("refreshes the durable manual-quarantine registry");
+    expect(installer).toContain("durable manual-quarantine registry");
     expect(installerDocs).toContain("AWARDPING_WORKER_REVISION");
     expect(installerDocs).toContain("NEXT_PUBLIC_APP_URL");
-    expect(installerDocs).toContain("promotion_exit");
+    expect(installerDocs).toContain("AwardPing Feedback Promotion Lane");
     expect(installerDocs).toContain("sync-manual-quarantine-registry.mjs");
     expect(installerDocs).toContain("refuses a dirty git worktree");
+    expect(installer).not.toContain("AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=15");
+    expect(installer).not.toContain('"AWARDPING_GEMINI_API_DAILY_COST_CAP_USD" = "15"');
   });
 
   windowsIt("replaces a stale installed app URL with the requested release URL", () => {
@@ -554,7 +745,7 @@ describe("Windows worker update safety", () => {
     const simulation = [
       updateFunction,
       "$path = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-env-' + [guid]::NewGuid().ToString('N'))",
-      "Set-Content -LiteralPath $path -Value \"NEXT_PUBLIC_APP_URL=https://old.example.com`r`nAWARDPING_WORKER_REVISION=0000000000000000000000000000000000000000`r`n\"",
+      "Set-Content -LiteralPath $path -Value \"NEXT_PUBLIC_APP_URL=https://old.example.com`r`nAWARDPING_WORKER_REVISION=0000000000000000000000000000000000000000`r`nAWARDPING_GEMINI_API_DAILY_COST_CAP_USD=15`r`n\"",
       "Update-ExistingEnvFileDefaults -Path $path -AppUrl 'https://awardping.vercel.app' -SourceRevision '1111111111111111111111111111111111111111'",
       "Get-Content -LiteralPath $path -Raw",
       "Remove-Item -LiteralPath $path -Force",
@@ -569,6 +760,7 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).toContain(
       "AWARDPING_WORKER_REVISION=1111111111111111111111111111111111111111",
     );
+    expect(result.stdout).not.toContain("AWARDPING_GEMINI_API_DAILY_COST_CAP_USD");
   });
 
   windowsIt("refuses to seal a dirty git source as the prior commit", () => {
@@ -613,7 +805,7 @@ describe("Windows worker update safety", () => {
     expect(installerDocs).toContain("Install-AwardPingWorker.ps1\" -UpdateOnly");
     expect(installerDocs).toContain("apply and verify its Supabase migrations");
     expect(installerDocs).toContain("/api/monitoring-policy-identity");
-    expect(installerDocs).toContain("change-event-suppression-sweep");
+    expect(installerDocs).toContain("AwardPing Suppression Lane");
     expect(installerDocs).toContain("complete staged app");
     expect(installerDocs).toContain("workspace catch-up");
     expect(installerDocs).toContain("Cloudflare R2 account ID");
@@ -640,83 +832,33 @@ describe("Windows worker update safety", () => {
     expect(nightlyWriter).toContain("releaseLock?.()");
   });
 
-  it("publishes the overnight policy bundle as a quiesced rollback transaction", () => {
-    expect(overnightInstaller).toContain(
-      'config\\award-monitoring-policy.json',
-    );
-    expect(overnightInstaller).toContain(
-      'config\\award-decision-memory.json',
-    );
-    expect(overnightInstaller).toContain("Publish-StagedFileAtomically");
-    expect(overnightInstaller).toContain("[System.IO.File]::Replace");
-    expect(overnightInstaller).toContain("Get-OvernightTaskSnapshot");
-    expect(overnightInstaller).toContain("Suspend-OvernightTaskForUpdate");
-    expect(overnightInstaller).toContain("New-OvernightBundleSnapshot");
-    expect(overnightInstaller).toContain("Restore-OvernightBundleSnapshot");
-    expect(overnightInstaller).toContain("Restore-OvernightTaskAfterFailure");
-    const removeEntryIndex = overnightInstaller.indexOf(
-      "foreach ($entryPath in @($targetRunner, $runNowBatPath))",
-    );
-    const stopIndex = overnightInstaller.indexOf(
-      "Wait-ForInstalledOvernightProcessesToStop",
-      removeEntryIndex,
-    );
-    const publishIndex = overnightInstaller.indexOf(
-      "Publish-StagedFileAtomically",
-      stopIndex,
-    );
-    expect(removeEntryIndex).toBeGreaterThan(0);
-    expect(stopIndex).toBeGreaterThan(removeEntryIndex);
-    expect(publishIndex).toBeGreaterThan(stopIndex);
+  it("keeps every obsolete standalone installer and watchdog fail-closed", () => {
+    for (const source of [
+      overnightInstaller,
+      baselineCompletionWatchdog,
+      baselineFactsWatchdog,
+    ]) {
+      expect(source).toContain("is retired and cannot");
+      expect(source).toContain("Install-AwardPingWorker.ps1");
+      expect(source).not.toContain("Register-ScheduledTask");
+      expect(source).not.toContain("Start-ScheduledTask");
+      expect(source).not.toContain("Start-Process");
+    }
   });
 
-  windowsIt("restores every overnight bundle file after a partial publish", () => {
-    const bundleFunctions = [
-      extractPowerShellFunction(overnightInstaller, "Publish-StagedFileAtomically", "Test-OvernightTaskTargetsInstallRoot"),
-      extractPowerShellFunction(overnightInstaller, "New-OvernightBundleSnapshot", "Remove-OvernightBundleTargets"),
-      extractPowerShellFunction(overnightInstaller, "Remove-OvernightBundleTargets", "Restore-OvernightBundleSnapshot"),
-      extractPowerShellFunction(overnightInstaller, "Restore-OvernightBundleSnapshot", "Get-OvernightBundleProblems"),
-    ].join("\n");
-    const simulation = [
-      bundleFunctions,
-      "$root = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-overnight-rollback-' + [guid]::NewGuid().ToString('N'))",
-      "$stage = Join-Path $root 'stage'; $snapshotDir = Join-Path $root 'snapshot'; New-Item -ItemType Directory -Path $root,$stage -Force | Out-Null",
-      "$oldA = Join-Path $root 'a.json'; $oldB = Join-Path $root 'b.mjs'; $newOnly = Join-Path $root 'new.ps1'",
-      "$stageA = Join-Path $stage 'a.json'; $stageB = Join-Path $stage 'b.mjs'; $stageNew = Join-Path $stage 'new.ps1'",
-      "Set-Content -LiteralPath $oldA -Value 'old-a'; Set-Content -LiteralPath $oldB -Value 'old-b'",
-      "Set-Content -LiteralPath $stageA -Value 'new-a'; Set-Content -LiteralPath $stageB -Value 'new-b'; Set-Content -LiteralPath $stageNew -Value 'new-only'",
-      "$entries = @([pscustomobject]@{DestinationPath=$oldA},[pscustomobject]@{DestinationPath=$oldB},[pscustomobject]@{DestinationPath=$newOnly})",
-      "$snapshot = New-OvernightBundleSnapshot -Entries $entries -SnapshotDirectory $snapshotDir",
-      "Remove-OvernightBundleTargets -Entries $entries",
-      "Publish-StagedFileAtomically -StagedPath $stageA -DestinationPath $oldA -Token 'test'",
-      "Publish-StagedFileAtomically -StagedPath $stageNew -DestinationPath $newOnly -Token 'test'",
-      "Restore-OvernightBundleSnapshot -Snapshot $snapshot -Token 'test'",
-      "'A=' + (Get-Content -LiteralPath $oldA -Raw).Trim()",
-      "'B=' + (Get-Content -LiteralPath $oldB -Raw).Trim()",
-      "'NEW_ONLY_EXISTS=' + (Test-Path -LiteralPath $newOnly)",
-      "Remove-Item -LiteralPath $root -Recurse -Force",
-    ].join("\n");
-    const result = runPowerShell(simulation);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("A=old-a");
-    expect(result.stdout).toContain("B=old-b");
-    expect(result.stdout).toContain("NEW_ONLY_EXISTS=False");
-  });
-
-  windowsIt("blocks an overnight task-name collision from another install root", () => {
-    const collisionFunctions = [
-      extractPowerShellFunction(overnightInstaller, "Test-OvernightTaskTargetsInstallRoot", "Get-OvernightTaskSnapshot"),
-      extractPowerShellFunction(overnightInstaller, "Get-OvernightTaskSnapshot", "Get-DisabledScheduledTaskXml"),
-    ].join("\n");
-    const simulation = [
-      collisionFunctions,
-      String.raw`function Get-ScheduledTask { [pscustomobject]@{ TaskName='AwardPing Overnight Source Quality Pass'; TaskPath='\'; Actions=@([pscustomobject]@{ Execute='powershell.exe'; Arguments='-File "D:\OtherAwardPing\Run-AwardPingOvernightSourceQuality.ps1"' }); State='Ready' } }`,
-      "try { Get-OvernightTaskSnapshot -TaskName 'AwardPing Overnight Source Quality Pass' -InstallRoot 'C:\\AwardPingWorker'; 'UNEXPECTED_SUCCESS' } catch { 'BLOCKED=' + $_.Exception.Message }",
-    ].join("\n");
-    const result = runPowerShell(simulation);
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain("BLOCKED=");
-    expect(result.stdout).toContain("not the AwardPing overnight task for this install root");
-    expect(result.stdout).not.toContain("UNEXPECTED_SUCCESS");
+  windowsIt("returns a nonzero retirement error from every obsolete entrypoint", () => {
+    for (const path of [
+      overnightInstallerPath,
+      baselineCompletionWatchdogPath,
+      baselineFactsWatchdogPath,
+    ]) {
+      const result = spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path],
+        { encoding: "utf8" },
+      );
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}\n${result.stderr}`).toContain("is retired and cannot");
+    }
   });
 });

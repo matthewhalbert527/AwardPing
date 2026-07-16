@@ -1,6 +1,6 @@
 # AwardPing
 
-AwardPing is a focused nationally competitive award monitor. Advisors can create a shared office, track awards from a shared source database, manually add exact URLs, use hourly scheduled checks, and receive email alerts or daily digests when meaningful content changes.
+AwardPing is a focused nationally competitive award monitor. Advisors can create a shared office, track awards from a shared source database, manually add exact URLs, rely on the scheduled 6 PM capture scans and independent 15-minute downstream lanes, and receive email alerts or daily digests when meaningful content changes.
 
 ## Stack
 
@@ -62,9 +62,12 @@ npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50
 ```
 
 The legacy local text-change worker has been retired. Three visual-capture
-shards run on the crawler PC at 6:00 PM. An hourly downstream task finalizes the
-capture report, processes bounded source intake, reviews candidates, reapplies
-suppression policy, reconciles award facts, and handles flagged page audits.
+shards run on the crawler PC at 6:00 PM. Eight independently leased downstream
+lanes run every 15 minutes for new-page review, changed-page review, feedback
+promotion, suppression, reconciliation, deterministic page audit, manual
+quarantine, and the nightly report. A slow visual batch cannot block auditing
+or reconciliation. Only the two review lanes can create a Gemini charge, and
+PostgreSQL atomically caps each one at $5 per UTC day.
 
 Update the Windows worker from a reviewed repository revision with
 `Install-AwardPingWorker.ps1 -UpdateOnly`; do not copy individual files into the

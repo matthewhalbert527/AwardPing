@@ -269,7 +269,7 @@ function monitoringFeedbackResolutionState(
   );
   const identityDrifted = driftedLabels.length > 0;
   const identityDriftReason = identityDrifted
-    ? `Post-sweep identity drift blocks resolution: ${driftedLabels.join(", ")} ${driftedLabels.length === 1 ? "does" : "do"} not match the immutable activated app/worker identity. Restore the exact inactive deployment and complete the hourly rollback audit.`
+    ? `Post-sweep identity drift blocks resolution: ${driftedLabels.join(", ")} ${driftedLabels.length === 1 ? "does" : "do"} not match the immutable activated app/worker identity. Restore the exact inactive deployment and complete the feedback-promotion lane rollback audit.`
     : null;
   const ready = Boolean(
     !identityDrifted &&

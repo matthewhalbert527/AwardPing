@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { AlertTriangle, Archive, ExternalLink, Inbox, Plus, ScrollText, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Archive, CloudDownload, ExternalLink, Gauge, Inbox, Plus, ScrollText, ShieldCheck } from "lucide-react";
 import { AdminNotAnUpdateControl } from "@/components/admin-not-an-update-control";
 import { AdminManualQuarantineBoard } from "@/components/admin-manual-quarantine-board";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { AdminRunReport } from "@/components/admin-run-report";
 import { AdminVerifiedPromotionBoard } from "@/components/admin-verified-promotion-board";
+import { AdminWorkerOperationsBoard } from "@/components/admin-worker-operations-board";
 import { OperatorActionInbox } from "@/components/operator-action-inbox";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
@@ -21,6 +22,10 @@ import {
 } from "@/lib/admin-page-issues";
 import { buildAdminRunReportFeed } from "@/lib/admin-run-report";
 import { loadAdminMonitoringFeedbackPromotionClusters } from "@/lib/admin-monitoring-feedback-promotions";
+import {
+  loadAdminWorkerOperations,
+  scheduledVisualRecoveryWorkerNames,
+} from "@/lib/admin-worker-operations";
 import {
   buildOperatorActionInbox,
   type OperatorDigestDeliveryFailureInput,
@@ -76,21 +81,30 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   const activeTab =
     params.tab === "promotions" ||
     params.tab === "quarantine" ||
+    params.tab === "recovery" ||
+    params.tab === "operations" ||
     params.tab === "updates" ||
     params.tab === "suppressed" ||
     params.tab === "excluded"
       ? params.tab
       : "inbox";
   const renderedAt = new Date();
-  const [workerRunsResult, manualQuarantine] = await Promise.all([
+  const [workerRunsResult, recoveryWorkerRunsResult, manualQuarantine] = await Promise.all([
     admin
       .from("local_worker_runs")
       .select("*")
       .order("started_at", { ascending: false })
       .limit(200),
+    admin
+      .from("local_worker_runs")
+      .select("*")
+      .in("worker_name", [...scheduledVisualRecoveryWorkerNames])
+      .order("started_at", { ascending: false })
+      .limit(30),
     loadAdminManualQuarantine(admin),
   ]);
   const workerRuns = (workerRunsResult.data || []) as LocalWorkerRun[];
+  const recoveryWorkerRuns = (recoveryWorkerRunsResult.data || []) as LocalWorkerRun[];
   const runReport = buildAdminRunReportFeed(workerRuns, renderedAt);
 
   const [
@@ -101,6 +115,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     deliveryFailures,
     recentUpdates,
     suppressedEvents,
+    workerOperations,
   ] = await Promise.all([
     loadAdminPageIssues(admin, workerRuns, {
       includeLegacyDiagnostics: false,
@@ -112,6 +127,12 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     loadAdminFailedPublicUpdateDeliveries(admin),
     loadAdminRecentChangeEvents(admin),
     loadAdminSuppressedChangeEvents(admin),
+    loadAdminWorkerOperations(
+      admin,
+      recoveryWorkerRuns,
+      recoveryWorkerRunsResult.error?.message ? [recoveryWorkerRunsResult.error.message] : [],
+      renderedAt,
+    ),
   ]);
   const actionLoadErrors = [
     workerRunsResult.error?.message,
@@ -120,6 +141,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     ...visualReviewFailures.loadErrors,
     ...deliveryFailures.loadErrors,
     ...manualQuarantine.loadErrors,
+    ...workerOperations.loadErrors,
   ].filter((message): message is string => Boolean(message));
   const historyLoadErrors = [
     ...reviewLater.loadErrors,
@@ -141,6 +163,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       (failure) => !quarantinedVisualCandidateIds.has(failure.id),
     ),
     digestDeliveryFailures: deliveryFailures.failures,
+    downstreamLanes: workerOperations.lanes,
     loadErrors: actionLoadErrors,
     now: renderedAt,
   });
@@ -152,8 +175,8 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <span className="badge">Admin</span>
           <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            3 repairs current failures and decisions. 4 verifies global feedback rules. 5 keeps unresolved and
-            historically limited work visible until it is truthfully resolved.
+            3 repairs current failures. 4 verifies global feedback rules. 5 keeps unresolved work visible. 6 protects
+            recoverable evidence. 7 shows every independent lane and the two fixed daily budgets.
           </p>
           <p className="admin-page-timestamp">Refreshed {formatDate(renderedAt.toISOString())}.</p>
         </div>
@@ -193,6 +216,22 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
         >
           <Archive size={15} aria-hidden="true" />
           5. Manual Quarantine
+        </Link>
+        <Link
+          aria-current={activeTab === "recovery" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "recovery" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=recovery"
+        >
+          <CloudDownload size={15} aria-hidden="true" />
+          6. Evidence Recovery
+        </Link>
+        <Link
+          aria-current={activeTab === "operations" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "operations" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=operations"
+        >
+          <Gauge size={15} aria-hidden="true" />
+          7. Lanes &amp; Spending
         </Link>
       </nav>
 
@@ -240,6 +279,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
         </>
       ) : activeTab === "quarantine" ? (
         <AdminManualQuarantineBoard result={manualQuarantine} />
+      ) : activeTab === "recovery" ? (
+        <AdminWorkerOperationsBoard result={workerOperations} view="recovery" now={renderedAt.toISOString()} />
+      ) : activeTab === "operations" ? (
+        <AdminWorkerOperationsBoard result={workerOperations} view="operations" now={renderedAt.toISOString()} />
       ) : (
         <section className="card admin-section-card admin-issue-panel">
           {historyLoadErrors.length > 0 && (
