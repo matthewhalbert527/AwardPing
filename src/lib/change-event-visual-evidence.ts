@@ -181,6 +181,8 @@ function localizationReason({
       return "This historical update predates recoverable visual evidence.";
     case "not_applicable_pdf":
       return "Screenshot localization does not apply to this PDF evidence.";
+    case "not_applicable_new_document":
+      return "This PDF is AwardPing's first retained observation; no prior publisher version is asserted.";
     default:
       return "No verified exact crop is available; the full event screenshot is shown.";
   }

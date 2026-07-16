@@ -27,13 +27,13 @@ describe("AdminManualQuarantineBoard", () => {
     expect(html).toContain("Last catch-up completion assessment");
     expect(html).toContain(">Automated work clear<");
     expect(html).toContain("Quarantined work remaining");
-    expect(html).toContain(">293<");
+    expect(html).toContain(">295<");
     expect(html).toContain("Historical limitations");
     expect(html).toContain(">390<");
     expect(html).toContain("Terminal failures requiring action");
-    expect(html).toContain(">275<");
+    expect(html).toContain(">277<");
     expect(html).toContain(
-      "The last catch-up completion assessment reported automated work clear. The registry currently holds 293 quarantined review cases.",
+      "The last catch-up completion assessment reported automated work clear. The registry currently holds 295 quarantined review cases.",
     );
     expect(html).toContain(
       `Reported ${formatCentralDateTime("2026-07-15T21:00:00.000Z")}.`,
@@ -41,10 +41,12 @@ describe("AdminManualQuarantineBoard", () => {
     expect(html).toContain(
       `Registry synced ${formatCentralDateTime("2026-07-15T21:05:00.000Z")}`,
     );
-    expect(html).toContain("509 linked evidence records are preserved.");
-    expect(html).toContain("Public-page repair");
+    expect(html).toContain("511 linked evidence records are preserved.");
+    expect(html).toContain("Public-page and baseline repair");
+    expect(html).toContain("authoritative R2 recovery evidence");
     expect(html).toContain("452");
     expect(html).toContain("Visual review");
+    expect(html).toContain("New document evidence");
     expect(html).toContain("Historical screenshot limits");
     expect(html).toContain("Exact grouped backlog");
   });
@@ -149,16 +151,16 @@ function quarantineResult(): AdminManualQuarantineLoadResult {
   return {
     registryAvailable: true,
     items: [],
-    total: 293,
+    total: 295,
     loadErrors: [],
     summary: {
       automatedWorkClear: true,
       automatedBlockers: {},
-      quarantinedWorkRemaining: 293,
-      quarantineEvidenceRecords: 509,
+      quarantinedWorkRemaining: 295,
+      quarantineEvidenceRecords: 511,
       historicalLimitations: 390,
       historicalInventoryStatus: "complete",
-      terminalFailuresRequiringAction: 275,
+      terminalFailuresRequiringAction: 277,
       byCategory: {
         public_page: {
           cases: 236,
@@ -174,6 +176,14 @@ function quarantineResult(): AdminManualQuarantineLoadResult {
           terminalCases: 57,
           terminalFailures: 57,
           oldestObservedAt: "2026-07-02T00:00:00.000Z",
+          unknownPublicImpactCases: 0,
+        },
+        initial_document: {
+          cases: 2,
+          evidenceRecords: 2,
+          terminalCases: 2,
+          terminalFailures: 2,
+          oldestObservedAt: "2026-07-16T00:00:00.000Z",
           unknownPublicImpactCases: 0,
         },
         historical_localization: {

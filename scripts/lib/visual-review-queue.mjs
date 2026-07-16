@@ -446,6 +446,50 @@ export function rebuildVisualReviewCandidateForCurrentPolicy(
   };
 }
 
+/**
+ * Refreshes the policy-bound identity of a deterministic first-observation
+ * candidate without converting it into a paid Gemini review. The evidence
+ * identity and capture occurrence remain fixed; only the active policy
+ * identity changes.
+ */
+export function rebuildInitialOfficialDocumentCandidateForCurrentPolicy(candidate) {
+  const promptPayload = refreshVisualReviewPromptPayloadPolicy(
+    objectValue(candidate?.prompt_payload),
+  );
+  const workerMetadata = objectValue(candidate?.worker_metadata);
+  const newSnapshotRef = objectValue(
+    Object.keys(objectValue(candidate?.new_snapshot_ref)).length
+      ? candidate.new_snapshot_ref
+      : promptPayload.new_snapshot_ref,
+  );
+  const attestation = objectValue(promptPayload.first_observation_attestation);
+  const hashes = objectValue(promptPayload.hashes);
+  const evidenceSignature = normalizeText(workerMetadata.evidence_signature) ||
+    crypto.createHash("sha256").update(stableJsonStringify({
+      candidate_scope: "initial_official_document",
+      source_acquisition_id: candidate?.source_acquisition_id || null,
+      source_id: candidate?.shared_award_source_id || null,
+      source_url: candidate?.source_url || null,
+      first_observation_attestation_sha256:
+        attestation.sha256 || hashes.first_observation_attestation_sha256 || null,
+      current_file_sha256: candidate?.new_file_hash || hashes.new_file_hash || null,
+      current_artifact_manifest_digest: newSnapshotRef.artifact_manifest_digest || null,
+    })).digest("hex");
+  const monitoringPolicy = currentVisualReviewPolicyIdentity();
+  const candidateSignature = crypto.createHash("sha256").update(stableJsonStringify({
+    evidence_signature: evidenceSignature,
+    occurrence_captured_at: newSnapshotRef.captured_at || candidate?.created_at || null,
+    monitoring_policy: monitoringPolicy,
+  })).digest("hex");
+
+  return {
+    candidate_signature: candidateSignature,
+    evidence_signature: evidenceSignature,
+    prompt_payload: promptPayload,
+    monitoring_policy: monitoringPolicy,
+  };
+}
+
 export function visualReviewSourcePromptContext(source) {
   const directBaselineFacts = objectValue(source?.baseline_facts);
   return {
@@ -479,9 +523,19 @@ export function refreshVisualReviewPromptPayloadPolicy(payload = {}) {
 
 export function visualReviewCandidatePolicyFreshness(candidate, { requireIdentity = true } = {}) {
   const activePolicy = currentVisualReviewPolicyIdentity();
-  const submittedPolicy = normalizePolicyIdentity(
-    candidate?.worker_metadata?.monitoring_policy || candidate?.prompt_payload?.monitoring_policy,
-  );
+  const workerPolicy = normalizePolicyIdentity(candidate?.worker_metadata?.monitoring_policy);
+  const promptPolicy = normalizePolicyIdentity(candidate?.prompt_payload?.monitoring_policy);
+  if (workerPolicy && promptPolicy && !samePolicyIdentity(workerPolicy, promptPolicy)) {
+    return {
+      allowed: false,
+      reason: "submission_policy_identity_conflict",
+      active_policy: activePolicy,
+      submitted_policy: workerPolicy,
+      worker_policy: workerPolicy,
+      prompt_policy: promptPolicy,
+    };
+  }
+  const submittedPolicy = workerPolicy || promptPolicy;
   if (!submittedPolicy) {
     return {
       allowed: !requireIdentity,
@@ -736,6 +790,10 @@ export function buildVisualReviewPromptPayload({
   };
 }
 
+export function buildVisualSnapshotRef(capture, archiveRelative = (value) => value || null) {
+  return snapshotRef(capture, capture, archiveRelative);
+}
+
 export function buildVisualReviewPromptText(payload) {
   const activePolicyIdentity = currentVisualReviewPolicyIdentity();
   return [
@@ -977,6 +1035,8 @@ export function latestVisualReviewPolicyDecision({
       reason: freshness.reason,
       policy_identity: policyIdentity,
       submitted_policy_identity: freshness.submitted_policy,
+      submitted_worker_policy_identity: freshness.worker_policy || null,
+      submitted_prompt_policy_identity: freshness.prompt_policy || null,
       guard: "policy_freshness",
     };
   }

@@ -4,6 +4,7 @@ import {
   isUsefulChangeForAward,
 } from "@/lib/change-summary";
 import type { AwardPageType } from "@/lib/award-discovery-types";
+import { isFirstObservedOfficialDocument } from "@/lib/change-details";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
 import { activeChangeSourceFilter } from "@/lib/source-change-events";
@@ -170,6 +171,7 @@ export function relativeTimeLabel(value: string) {
 }
 
 function changeTypeLabel(value: unknown) {
+  if (isFirstObservedOfficialDocument(value)) return "New official document";
   const object = value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {};

@@ -1,9 +1,20 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import type { SourcePageRequestIntakeType, SourcePageRequestStatus } from "@/lib/database.types";
+import type {
+  SourceAcquisitionKind,
+  SourceAcquisitionNotificationMode,
+  SourcePageRequestIntakeType,
+  SourcePageRequestStatus,
+} from "@/lib/database.types";
 import { sourceIntakeTypes } from "@/lib/source-intake";
-import { sourceIntakeActionAllowedWithContext } from "@/lib/source-intake-operator-actions";
+import {
+  FREE_RECONCILIATION_FAILURE_REASON,
+  isSourceIntakeReconciliationOnlyRecovery,
+  sourceIntakeActionAllowedWithContext,
+  sourceIntakeProtectedRecovery,
+  sourceIntakeReconciliationRetryEligibility,
+} from "@/lib/source-intake-operator-actions";
 
 export type SourceIntakeRequestView = {
   id: string;
@@ -19,6 +30,10 @@ export type SourceIntakeRequestView = {
   created_shared_award_id: string | null;
   created_source_ids: string[] | null;
   ai_review: unknown;
+  capture_metadata: unknown;
+  acquisition_kind: SourceAcquisitionKind;
+  notification_mode: SourceAcquisitionNotificationMode;
+  onboarding_batch_id: string | null;
   deterministic_review: unknown;
   error: string | null;
   created_at: string;
@@ -90,7 +105,7 @@ export function AdminSourceIntakePanel({
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Action failed.");
       setRequests((current) => current.map((row) => (row.id === id ? payload.request : row)));
-      setMessage("Request updated.");
+      setMessage(cleanText(payload.message) || "Request updated.");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Action failed.");
     } finally {
@@ -202,11 +217,32 @@ function SourceIntakeRow({
   const deterministic = objectValue(request.deterministic_review);
   const ai = objectValue(request.ai_review);
   const matchedAward = request.matched_shared_award_id ? awardById.get(request.matched_shared_award_id) : null;
-  const actionContext = { statusReason: request.status_reason, aiReview: request.ai_review };
+  const actionContext = {
+    statusReason: request.status_reason,
+    aiReview: request.ai_review,
+    captureMetadata: request.capture_metadata,
+    requestId: request.id,
+    acquisitionKind: request.acquisition_kind,
+    notificationMode: request.notification_mode,
+    onboardingBatchId: request.onboarding_batch_id,
+  };
   const canAttach = sourceIntakeActionAllowedWithContext("attach_to_award", request.status, actionContext);
   const canRetry = sourceIntakeActionAllowedWithContext("retry", request.status, actionContext);
   const canRerunAi = sourceIntakeActionAllowedWithContext("rerun_ai_review", request.status, actionContext);
   const canReject = sourceIntakeActionAllowedWithContext("reject", request.status, actionContext);
+  const protectedRecovery = sourceIntakeProtectedRecovery(request.status, actionContext);
+  const restrictedRecovery = isSourceIntakeReconciliationOnlyRecovery(request.status, actionContext);
+  const reconciliationRetry = sourceIntakeReconciliationRetryEligibility(request.status, actionContext);
+  const canRetryReconciliation = sourceIntakeActionAllowedWithContext(
+    "retry_reconciliation",
+    request.status,
+    actionContext,
+  );
+  const ordinaryMatchingRetry =
+    !protectedRecovery.protected &&
+    request.status_reason === FREE_RECONCILIATION_FAILURE_REASON &&
+    !canRetryReconciliation &&
+    canRetry;
   return (
     <article className={`admin-pipeline-row ${attentionStatus(request.status) ? "admin-pipeline-row-attention" : ""}`}>
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -229,36 +265,83 @@ function SourceIntakeRow({
             <Detail label="Updated" value={formatDate(request.updated_at)} />
           </dl>
           {request.error && <p className="mt-3 text-sm font-black text-[var(--brand-burgundy)]">{request.error}</p>}
+          {restrictedRecovery && (
+            <p className={`mt-3 text-sm font-bold ${protectedRecovery.mode !== "manual_only" ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
+              {protectedRecovery.protected
+                ? protectedRecovery.explanation
+                : ordinaryMatchingRetry
+                  ? "Retry this ordinary source from capture. The page may be fetched again and its AI review may create a charge."
+                  : reconciliationRetry.explanation}
+            </p>
+          )}
         </div>
         <div className="grid content-start gap-3">
-          <select
-            className="input"
-            value={selectedAwardId}
-            disabled={actionBusy || !canAttach}
-            onChange={(event) => setSelectedAwardId(event.target.value)}
-          >
-            <option value="">Attach to award...</option>
-            {awardOptions.map((award) => (
-              <option key={award.id} value={award.id}>
-                {award.name}
-              </option>
-            ))}
-          </select>
-          <div className="flex flex-wrap gap-2">
-            <button
-              className="button-secondary"
-              disabled={actionBusy || !canAttach || !selectedAwardId}
-              type="button"
-              onClick={() => onAction(request.id, "attach_to_award", selectedAwardId)}
+          {!restrictedRecovery && (
+            <select
+              className="input"
+              value={selectedAwardId}
+              disabled={actionBusy || !canAttach}
+              onChange={(event) => setSelectedAwardId(event.target.value)}
             >
-              Attach
-            </button>
-            <button className="button-secondary" disabled={actionBusy || !canRetry} type="button" onClick={() => onAction(request.id, "retry")}>
-              Retry
-            </button>
-            <button className="button-secondary" disabled={actionBusy || !canRerunAi} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
-              Rerun AI
-            </button>
+              <option value="">Attach to award...</option>
+              {awardOptions.map((award) => (
+                <option key={award.id} value={award.id}>
+                  {award.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {!restrictedRecovery && (
+              <button
+                className="button-secondary"
+                disabled={actionBusy || !canAttach || !selectedAwardId}
+                type="button"
+                onClick={() => onAction(request.id, "attach_to_award", selectedAwardId)}
+              >
+                Attach
+              </button>
+            )}
+            {protectedRecovery.mode === "retry_capture_may_charge" && canRetry && (
+              <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "retry")}>
+                Retry capture + review
+              </button>
+            )}
+            {protectedRecovery.mode === "resume_staged_capture_may_charge" && canRetry && (
+              <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "retry")}>
+                Resume saved capture + review
+              </button>
+            )}
+            {protectedRecovery.mode === "rerun_ai_review_may_charge" && canRerunAi && (
+              <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
+                Review saved capture with AI
+              </button>
+            )}
+            {ordinaryMatchingRetry && (
+              <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "retry")}>
+                Retry page + review
+              </button>
+            )}
+            {canRetryReconciliation && (
+              <button
+                className="button-secondary"
+                disabled={actionBusy}
+                type="button"
+                onClick={() => onAction(request.id, "retry_reconciliation")}
+              >
+                Replay retained result - $0
+              </button>
+            )}
+            {!restrictedRecovery && (
+              <>
+                <button className="button-secondary" disabled={actionBusy || !canRetry} type="button" onClick={() => onAction(request.id, "retry")}>
+                  Retry
+                </button>
+                <button className="button-secondary" disabled={actionBusy || !canRerunAi} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
+                  Rerun AI
+                </button>
+              </>
+            )}
             <button className="button-secondary" disabled={actionBusy || !canReject} type="button" onClick={() => onAction(request.id, "reject")}>
               Reject
             </button>

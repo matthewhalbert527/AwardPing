@@ -92,7 +92,7 @@ export type AdminManualQuarantineBacklogItem = {
   id: string;
   quarantineKey: string;
   caseKey: string;
-  category: "public_page" | "visual_review";
+  category: "public_page" | "visual_review" | "initial_document";
   status: AdminManualQuarantineStatus;
   terminal: boolean;
   terminalFailureCount: number;
@@ -252,7 +252,7 @@ const backlogItemSchema = z.object({
   id: uuidSchema,
   quarantine_key: shortTextSchema,
   case_key: shortTextSchema,
-  category: z.enum(["public_page", "visual_review"]),
+  category: z.enum(["public_page", "visual_review", "initial_document"]),
   status: z.enum(manualQuarantineStatusValues),
   terminal: z.boolean(),
   terminal_failure_count: nonNegativeIntegerSchema,

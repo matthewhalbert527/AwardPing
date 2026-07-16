@@ -478,22 +478,37 @@ function manualQuarantineToAction(
     jsonText(sourceEvidence.title) ||
     (quarantine.category === "visual_review" ? "Visual review candidate" : null);
   const sourceUrl = jsonText(sourceEvidence.url);
+  const r2BaselineRecovery =
+    quarantine.category === "public_page" &&
+    quarantine.policyId === "awardping-r2-baseline-recovery-quarantine" &&
+    quarantine.caseKey.startsWith("r2-baseline-recovery:");
   const noCostPublicPage = quarantine.category === "public_page";
   const blocked = !noCostPublicPage && quarantine.retryCharge === "unknown";
-  const retry = noCostPublicPage
+  const retry = r2BaselineRecovery
+    ? {
+        automatic: false,
+        label: "No \u2014 exact R2 restore required",
+        detail:
+          "A person must repair the immutable R2 generation and run the exact-source recovery. Once those exact bytes verify, AwardPing resolves the case and resumes the source automatically.",
+      }
+    : noCostPublicPage
     ? {
         automatic: false,
         label: "No — repair, then rerun the free audit",
         detail: "Repair only this award, then rerun reconciliation and its deterministic no-cost page audit.",
       }
     : manualQuarantineRetry(quarantine.retryMode);
-  const charge = noCostPublicPage
+  const charge = r2BaselineRecovery
+    ? noPaidAiCharge("Exact-source R2 verification and local-cache restoration do not submit paid AI work.")
+    : noCostPublicPage
     ? noPaidAiCharge("Public-page reconciliation and deterministic page-audit reruns do not submit paid AI work.")
     : manualQuarantineCharge(quarantine.retryCharge);
   const failureReason = noCostPublicPage && quarantine.reasonCode === "page_audit_retry_limit_reached"
     ? "The deterministic page audit reached its safe retry limit and remains unresolved."
     : quarantine.reason;
-  const recommendedAction = noCostPublicPage
+  const recommendedAction = r2BaselineRecovery
+    ? quarantine.recommendedAction
+    : noCostPublicPage
     ? "Inspect the linked evidence, repair only this award, then rerun reconciliation and the deterministic no-cost page audit."
     : quarantine.recommendedAction;
 
@@ -522,7 +537,9 @@ function manualQuarantineToAction(
     retry,
     charge,
     recommendedAction: {
-      label: manualQuarantineActionLabel(quarantine.category),
+      label: r2BaselineRecovery
+        ? "Repair the authoritative baseline"
+        : manualQuarantineActionLabel(quarantine.category),
       detail: recommendedAction,
       href: null,
     },
@@ -556,6 +573,21 @@ function manualQuarantineToAction(
 }
 
 function manualQuarantineRetry(retryMode: string): OperatorActionInboxItem["retry"] {
+  if (retryMode === "automatic_zero_charge_publication_retry") {
+    return {
+      automatic: true,
+      label: "Yes \u2014 publication only",
+      detail:
+        "AwardPing automatically retries atomic event/evidence publication with the retained candidate. It does not submit a paid AI request or create a replacement review.",
+    };
+  }
+  if (retryMode === "automatic_local_evidence_retry") {
+    return {
+      automatic: true,
+      label: "Yes — local evidence only",
+      detail: "AwardPing retries the retained local evidence automatically. That retry does not submit a paid AI request.",
+    };
+  }
   if (retryMode === "operator_before_retry") {
     return {
       automatic: false,

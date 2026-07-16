@@ -497,8 +497,34 @@ describe("visual review queue helpers", () => {
   });
 
   it("blocks a Batch result when policy changed after submission", () => {
+    const stalePolicy = {
+      id: "old-policy",
+      version: "1",
+      hash: "old-policy-hash",
+    };
     expect(visualReviewCandidatePolicyFreshness({
       ...candidate,
+      prompt_payload: {
+        ...candidate.prompt_payload,
+        monitoring_policy: stalePolicy,
+      },
+      worker_metadata: {
+        monitoring_policy: stalePolicy,
+      },
+    })).toMatchObject({
+      allowed: false,
+      reason: "policy_changed_since_batch_submission",
+      active_policy: currentVisualReviewPolicyIdentity(),
+    });
+  });
+
+  it("fails closed when prompt and worker policy identities disagree", () => {
+    expect(visualReviewCandidatePolicyFreshness({
+      ...candidate,
+      prompt_payload: {
+        ...candidate.prompt_payload,
+        monitoring_policy: currentVisualReviewPolicyIdentity(),
+      },
       worker_metadata: {
         monitoring_policy: {
           id: "old-policy",
@@ -508,8 +534,10 @@ describe("visual review queue helpers", () => {
       },
     })).toMatchObject({
       allowed: false,
-      reason: "policy_changed_since_batch_submission",
+      reason: "submission_policy_identity_conflict",
       active_policy: currentVisualReviewPolicyIdentity(),
+      prompt_policy: currentVisualReviewPolicyIdentity(),
+      worker_policy: { hash: "old-policy-hash" },
     });
   });
 

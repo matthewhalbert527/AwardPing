@@ -1,5 +1,10 @@
+import { createHash } from "node:crypto";
+import dns from "node:dns/promises";
+import { isIP } from "node:net";
 import * as cheerio from "cheerio";
+import { Agent, fetch as undiciFetch } from "undici";
 import { normalizeAwardName, awardIdentityScore } from "./award-fact-reconciliation.mjs";
+import { validateRetainedIntakeArtifactManifest } from "./intake-artifact-retention.mjs";
 import { sourceQualityDecision } from "./source-quality.mjs";
 
 export const intakeStatuses = new Set([
@@ -28,6 +33,31 @@ const pdfPattern = /\.pdf(?:$|[?#])/i;
 const acceptedRelevance = new Set(["primary", "supporting"]);
 const acceptedCycle = new Set(["current_or_upcoming", "evergreen"]);
 const awardPageTypes = new Set(["homepage", "application", "deadline", "eligibility", "requirements", "faq", "pdf", "other"]);
+const acquisitionKinds = new Set([
+  "live_discovery",
+  "user_request",
+  "admin_intake",
+  "historical_import",
+  "seed",
+  "repair",
+  "legacy_unknown",
+  "operator_historical_exception",
+]);
+const notificationModes = new Set(["first_capture_candidate", "baseline_only", "manual_review"]);
+const sha256Pattern = /^[a-f0-9]{64}$/;
+const redirectStatuses = new Set([301, 302, 303, 307, 308]);
+const defaultMaxPdfBytes = 20 * 1024 * 1024;
+const defaultMaxResponseBytes = 50 * 1024 * 1024;
+const defaultMaxPdfPages = 200;
+const acquisitionReviewPolicy = Object.freeze({
+  name: "source_intake_acquisition_review",
+  version: 1,
+  exact_evidence_required_for_first_capture: true,
+  first_capture_kind: "live_discovery_pdf",
+});
+const acquisitionReviewPolicyHash = createHash("sha256")
+  .update(JSON.stringify(acquisitionReviewPolicy), "utf8")
+  .digest("hex");
 
 export function normalizeSourceIntakeUrl(value) {
   const raw = String(value || "").trim();
@@ -66,7 +96,10 @@ export function deterministicSourceIntakeReview(input) {
   if (spamTextPattern.test(combined)) qualityFlags.push("spam");
   if (!awardSignalPattern.test(combined) && pageType !== "pdf") qualityFlags.push("missing-award-signal");
 
-  if (qualityFlags.includes("spam") || qualityFlags.includes("access-error") || qualityFlags.includes("blocked-url-shape")) {
+  if (qualityFlags.includes("access-error")) {
+    return review(false, "needs_manual_review", "access-error", pageType, qualityFlags, normalizedUrl, input);
+  }
+  if (qualityFlags.includes("spam") || qualityFlags.includes("blocked-url-shape")) {
     return review(false, "rejected", qualityFlags[0], pageType, qualityFlags, normalizedUrl, input);
   }
   if (qualityFlags.includes("generic-listing") || qualityFlags.includes("missing-award-signal")) {
@@ -78,41 +111,301 @@ export function deterministicSourceIntakeReview(input) {
 export async function captureIntakePage(url, options = {}) {
   const timeoutMs = positiveInt(options.timeoutMs, 30_000);
   const maxBytes = positiveInt(options.maxBytes, 1_500_000);
+  const maxPdfBytes = positiveInt(options.maxPdfBytes, defaultMaxPdfBytes);
+  const maxResponseBytes = Math.max(
+    maxPdfBytes,
+    positiveInt(options.maxResponseBytes, defaultMaxResponseBytes),
+  );
+  const maxRedirects = positiveInt(options.maxRedirects, 5);
+  const fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : undiciFetch;
+  const lookupImpl = typeof options.lookupImpl === "function"
+    ? options.lookupImpl
+    : (...args) => dns.lookup(...args);
+  const dispatcherFactory = typeof options.dispatcherFactory === "function"
+    ? options.dispatcherFactory
+    : createPinnedDispatcher;
   const startedAt = Date.now();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
-      redirect: "follow",
+    const fetched = await fetchPublicIntakeBytes(url, {
+      fetchImpl,
+      lookupImpl,
+      dispatcherFactory,
+      maxPdfBytes,
+      maxResponseBytes,
+      maxRedirects,
       signal: controller.signal,
       headers: {
         "user-agent": "AwardPingSourceIntake/1.0 (+https://awardping.com)",
         accept: "text/html,application/xhtml+xml,application/pdf,text/plain;q=0.9,*/*;q=0.5",
       },
     });
-    const contentType = response.headers.get("content-type") || "";
-    const finalUrl = normalizeSourceIntakeUrl(response.url || url);
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes));
-    const parsed = parseCapturedContent({ body, contentType, finalUrl });
-    return {
+    const { response, bytes, finalUrl, contentType, isPdf } = fetched;
+    // pdf-parse may transfer/detach the Buffer it receives. Preserve one
+    // untouched copy as the immutable reviewed artifact and parse a separate
+    // copy so the returned bytes can never become empty or mutated.
+    const artifactBytes = isPdf ? Buffer.from(bytes) : null;
+    const responseByteLength = bytes.length;
+    const captureFileHash = createHash("sha256").update(artifactBytes || bytes).digest("hex");
+    let parsed;
+    let pdfPageCount = null;
+    let pdfTextError = null;
+    if (isPdf) {
+      try {
+        const pdf = await parseCapturedPdf({
+          bytes: Buffer.from(artifactBytes),
+          finalUrl,
+          maxPages: positiveInt(options.maxPdfPages, defaultMaxPdfPages),
+          timeoutMs: positiveInt(options.pdfParseTimeoutMs, Math.min(timeoutMs, 20_000)),
+        });
+        parsed = pdf.parsed;
+        pdfPageCount = pdf.page_count;
+      } catch (error) {
+        pdfTextError = errorMessage(error).slice(0, 1000);
+        parsed = parseCapturedContent({ body: "", contentType, finalUrl });
+      }
+    } else {
+      const body = new TextDecoder("utf-8", { fatal: false }).decode(bytes.slice(0, maxBytes));
+      parsed = parseCapturedContent({ body, contentType, finalUrl });
+    }
+    const capture = {
       ok: response.ok,
       status_code: response.status,
       final_url: finalUrl,
       canonical_url: parsed.canonical_url || finalUrl,
       content_type: contentType,
-      byte_length: bytes.length,
-      truncated: bytes.length > maxBytes,
+      byte_length: responseByteLength,
+      capture_file_hash: captureFileHash,
+      captured_at: new Date().toISOString(),
+      truncated: responseByteLength > maxBytes,
       title: parsed.title,
       page_description: parsed.page_description,
       text: parsed.text,
+      page_count: pdfPageCount,
+      pdf_text_error: pdfTextError,
       links: parsed.links,
       pdf_links: parsed.pdf_links,
       duration_ms: Date.now() - startedAt,
-      capture_method: "fetch_html",
+      capture_method: isPdf ? "fetch_pdf_text" : "fetch_html",
     };
+    // The intake worker may retain the exact accepted PDF, but these bytes are
+    // deliberately non-enumerable so spreading/JSON-serializing a capture can
+    // never put a multi-megabyte document into source_page_requests.
+    if (isPdf) {
+      Object.defineProperty(capture, "artifact_bytes", {
+        value: artifactBytes,
+        enumerable: false,
+        writable: false,
+        configurable: false,
+      });
+    }
+    return capture;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function parseCapturedPdf({
+  bytes,
+  finalUrl,
+  maxTextChars = 60_000,
+  maxPages = defaultMaxPdfPages,
+  timeoutMs = 20_000,
+}) {
+  const { PDFParse } = await import("pdf-parse");
+  const pageLimit = positiveInt(maxPages, defaultMaxPdfPages);
+  const parseTimeoutMs = positiveInt(timeoutMs, 20_000);
+  const parser = new PDFParse({
+    data: bytes,
+    isEvalSupported: false,
+    maxImageSize: 4_000_000,
+    canvasMaxAreaInBytes: 16_000_000,
+  });
+  try {
+    const info = await withTimeout(
+      parser.getInfo({ parsePageInfo: false }),
+      parseTimeoutMs,
+      "PDF metadata parsing timed out.",
+    );
+    const pageCount = positiveInt(info.total, 0);
+    if (!pageCount) throw new Error("PDF page count is unavailable.");
+    if (pageCount > pageLimit) {
+      throw new Error(`PDF has ${pageCount} pages; source intake limit is ${pageLimit}.`);
+    }
+    const result = await withTimeout(
+      parser.getText({ first: pageCount }),
+      parseTimeoutMs,
+      "PDF text extraction timed out.",
+    );
+    return {
+      parsed: {
+        title: titleFromUrl(finalUrl),
+        page_description: "",
+        canonical_url: finalUrl,
+        text: cleanText(result.text).slice(0, positiveInt(maxTextChars, 60_000)),
+        links: [],
+        pdf_links: [],
+      },
+      page_count: pageCount,
+    };
+  } finally {
+    await parser.destroy();
+  }
+}
+
+async function fetchPublicIntakeBytes(rawUrl, options) {
+  let currentUrl = normalizeSourceIntakeUrl(rawUrl);
+
+  for (let redirectCount = 0; redirectCount <= options.maxRedirects; redirectCount += 1) {
+    const parsedUrl = new URL(currentUrl);
+    const addresses = await resolvePublicAddresses(parsedUrl, options.lookupImpl);
+    const dispatcher = options.dispatcherFactory(parsedUrl, addresses);
+    let response;
+    try {
+      response = await options.fetchImpl(currentUrl, {
+        redirect: "manual",
+        dispatcher: dispatcher || undefined,
+        signal: options.signal,
+        headers: options.headers,
+      });
+
+      if (response.redirected || (response.url && normalizeSourceIntakeUrl(response.url) !== currentUrl)) {
+        throw new Error("Source intake fetch followed an unvalidated redirect.");
+      }
+
+      const location = response.headers.get("location");
+      if (redirectStatuses.has(response.status) && location) {
+        if (redirectCount >= options.maxRedirects) {
+          throw new Error(`Source intake exceeded ${options.maxRedirects} redirects.`);
+        }
+        await response.body?.cancel().catch(() => undefined);
+        currentUrl = normalizeSourceIntakeUrl(new URL(location, currentUrl).toString());
+        continue;
+      }
+
+      const finalUrl = currentUrl;
+      const contentType = response.headers.get("content-type") || "";
+      const isPdf = /pdf/i.test(contentType) || pdfPattern.test(finalUrl);
+      const byteLimit = isPdf ? options.maxPdfBytes : options.maxResponseBytes;
+      const contentLength = Number(response.headers.get("content-length") || 0);
+      if (Number.isFinite(contentLength) && contentLength > byteLimit) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(
+          `${isPdf ? "PDF" : "Source response"} is too large (${contentLength} bytes; limit ${byteLimit} bytes).`,
+        );
+      }
+      const bytes = await readBoundedResponseBytes(response, byteLimit, isPdf ? "PDF" : "Source response");
+      return { response, bytes, finalUrl, contentType, isPdf };
+    } finally {
+      await closeDispatcher(dispatcher);
+    }
+  }
+
+  throw new Error("Source intake redirect processing did not terminate.");
+}
+
+async function resolvePublicAddresses(url, lookupImpl) {
+  const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = isIP(hostname);
+  const resolved = literalFamily
+    ? [{ address: hostname, family: literalFamily }]
+    : await lookupImpl(hostname, { all: true, verbatim: true });
+  const addresses = (Array.isArray(resolved) ? resolved : [resolved])
+    .map((entry) => ({
+      address: String(entry?.address || "").trim(),
+      family: Number(entry?.family) || isIP(String(entry?.address || "")),
+    }))
+    .filter((entry) => entry.address && (entry.family === 4 || entry.family === 6));
+  if (!addresses.length) {
+    throw new Error("Source intake hostname did not resolve to a usable public address.");
+  }
+  if (addresses.some((entry) => isPrivateOrReservedIp(entry.address))) {
+    throw new Error("Source intake URL resolves to a private, local, or reserved network address.");
+  }
+  return addresses;
+}
+
+function createPinnedDispatcher(url, addresses) {
+  const expectedHostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  let cursor = 0;
+  return new Agent({
+    connect: {
+      lookup(hostname, options, callback) {
+        if (String(hostname || "").toLowerCase() !== expectedHostname) {
+          callback(new Error("Source intake dispatcher rejected a hostname change."));
+          return;
+        }
+        const family = Number(options?.family) || 0;
+        const eligible = family === 4 || family === 6
+          ? addresses.filter((entry) => entry.family === family)
+          : addresses;
+        if (!eligible.length) {
+          callback(new Error("Source intake dispatcher has no pinned address for the requested family."));
+          return;
+        }
+        if (options?.all) {
+          callback(null, eligible.map((entry) => ({ ...entry })));
+          return;
+        }
+        const selected = eligible[cursor % eligible.length];
+        cursor += 1;
+        callback(null, selected.address, selected.family);
+      },
+    },
+  });
+}
+
+async function closeDispatcher(dispatcher) {
+  if (!dispatcher) return;
+  if (typeof dispatcher.close === "function") {
+    await dispatcher.close();
+    return;
+  }
+  if (typeof dispatcher.destroy === "function") dispatcher.destroy();
+}
+
+async function readBoundedResponseBytes(response, byteLimit, label) {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+      total += chunk.byteLength;
+      if (total > byteLimit) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`${label} is too large (more than ${byteLimit} bytes).`);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
+async function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -404,6 +697,224 @@ export function sourceLikeFromIntake({ request, capture, review }) {
   };
 }
 
+export function buildSourceAcquisitionProposal({
+  request,
+  source,
+  review,
+  capture,
+  awardCreated = false,
+  workerRunId = null,
+  sealedAt = new Date().toISOString(),
+}) {
+  const normalizedReview = normalizeGeminiIntakeResult(review);
+  const acquisitionKind = normalizeAcquisitionKind(request?.acquisition_kind);
+  const requestedNotificationMode = normalizeNotificationMode(request?.notification_mode);
+  const captureFileHash = cleanText(capture?.capture_file_hash).toLowerCase();
+  const exactQuotes = exactEvidenceQuotes(normalizedReview.evidence_quotes, capture?.text);
+  const onboardingBatchId = cleanNullable(request?.onboarding_batch_id);
+  const parentSourceId = cleanNullable(request?.parent_shared_award_source_id);
+  const originSourcePageRequestId = cleanNullable(request?.id);
+  const originWorkerRunId = cleanNullable(workerRunId);
+  const sourceUrl = cleanNullable(source?.url);
+  const captureFinalUrl = cleanNullable(capture?.canonical_url || capture?.final_url);
+  const isPdf = normalizedReview.page_type === "pdf"
+    || /pdf/i.test(cleanText(capture?.content_type))
+    || pdfPattern.test(cleanText(captureFinalUrl || sourceUrl));
+  const liveFirstCaptureRequested =
+    requestedNotificationMode === "first_capture_candidate"
+    && acquisitionKind === "live_discovery"
+    && !awardCreated
+    && !onboardingBatchId;
+  let retainedArtifact = null;
+  let retainedArtifactFailure = null;
+  if (liveFirstCaptureRequested) {
+    try {
+      retainedArtifact = validateRetainedIntakeArtifactManifest(capture?.retained_artifact, {
+        requestId: originSourcePageRequestId,
+        fileHash: captureFileHash,
+        finalUrl: captureFinalUrl,
+        requireR2Verified: true,
+      });
+    } catch (error) {
+      retainedArtifactFailure = cleanNullable(error?.code) || "intake_artifact_manifest_invalid";
+    }
+  }
+  const firstCaptureEligible =
+    liveFirstCaptureRequested
+    && isPdf
+    && Boolean(originSourcePageRequestId)
+    && Boolean(originWorkerRunId)
+    && Boolean(parentSourceId)
+    && Boolean(sourceUrl)
+    && captureFinalUrl === sourceUrl
+    && sha256Pattern.test(captureFileHash)
+    && exactQuotes.length > 0
+    && retainedArtifact !== null;
+  const notificationMode = firstCaptureEligible
+    ? "first_capture_candidate"
+    : liveFirstCaptureRequested
+      ? "manual_review"
+      : requestedNotificationMode === "manual_review" && !awardCreated && !onboardingBatchId
+        ? "manual_review"
+        : "baseline_only";
+  const dispositionReason = firstCaptureEligible
+    ? "sealed_live_discovery_for_existing_award"
+    : acquisitionDowngradeReason({
+        requestedNotificationMode,
+        acquisitionKind,
+        awardCreated,
+        onboardingBatchId,
+        isPdf,
+        originSourcePageRequestId,
+        originWorkerRunId,
+        parentSourceId,
+        sourceUrl,
+        captureFinalUrl,
+        captureFileHash,
+        exactQuotes,
+        retainedArtifact,
+        retainedArtifactFailure,
+      });
+  const reviewSealWithoutHash = {
+    schema_version: 1,
+    sealed: true,
+    sealed_at: canonicalTimestamp(sealedAt),
+    status: "accepted",
+    source_relevance: normalizedReview.source_relevance,
+    award_relevance: normalizedReview.source_relevance,
+    cycle_relevance: normalizedReview.cycle_relevance,
+    officialness: normalizedReview.officialness,
+    confidence: normalizedReview.confidence,
+    page_type: normalizedReview.page_type,
+    detected_award_name: normalizedReview.detected_award_name,
+    evidence_quotes: exactQuotes,
+    submitted_evidence_quote_count: normalizedReview.evidence_quotes.length,
+    exact_evidence_verified: exactQuotes.length > 0,
+    capture_file_hash: sha256Pattern.test(captureFileHash) ? captureFileHash : null,
+    capture_page_count: positiveInt(capture?.page_count, 0) || null,
+    capture_content_type: cleanNullable(capture?.content_type),
+    capture_final_url: captureFinalUrl,
+    capture_captured_at: canonicalTimestamp(capture?.captured_at),
+    review_model: cleanNullable(request?.ai_review?.model || review?.model),
+    policy_name: acquisitionReviewPolicy.name,
+    policy_version: acquisitionReviewPolicy.version,
+    policy_hash: acquisitionReviewPolicyHash,
+    source_page_request_id: originSourcePageRequestId,
+    retained_artifact: firstCaptureEligible ? retainedArtifact : null,
+  };
+  const sealSha256 = sha256Canonical(reviewSealWithoutHash);
+  const reviewSeal = { ...reviewSealWithoutHash, seal_sha256: sealSha256 };
+
+  return {
+    create: true,
+    reason: dispositionReason,
+    acquisition_kind: acquisitionKind,
+    notification_mode: notificationMode,
+    row: {
+      acquisition_kind: acquisitionKind,
+      notification_mode: notificationMode,
+      award_was_created: Boolean(awardCreated),
+      origin_source_page_request_id: originSourcePageRequestId,
+      origin_worker_run_id: originWorkerRunId,
+      parent_shared_award_source_id: parentSourceId,
+      onboarding_batch_id: onboardingBatchId,
+      review_seal: reviewSeal,
+      metadata: {
+        schema_version: 1,
+        requested_notification_mode: requestedNotificationMode,
+        disposition_reason: dispositionReason,
+        requires_manual_review: notificationMode === "manual_review",
+        source_was_inserted: true,
+        award_was_created: Boolean(awardCreated),
+        exact_evidence_quote_count: exactQuotes.length,
+        capture_file_hash: reviewSeal.capture_file_hash,
+        retained_artifact: firstCaptureEligible ? retainedArtifact : null,
+        review_policy_name: acquisitionReviewPolicy.name,
+        review_policy_version: acquisitionReviewPolicy.version,
+        review_policy_hash: acquisitionReviewPolicyHash,
+      },
+    },
+  };
+}
+
+export function buildSourceAcquisitionRecord(input) {
+  if (!input?.sourceWasInserted) {
+    return {
+      create: false,
+      reason: "preexisting_source_not_reacquired",
+      acquisition_kind: normalizeAcquisitionKind(input?.request?.acquisition_kind),
+      notification_mode: "baseline_only",
+      row: null,
+    };
+  }
+  const sourceId = cleanNullable(input?.source?.id);
+  if (!sourceId) throw new Error("A newly inserted source needs an id before its acquisition can be sealed.");
+  const proposal = buildSourceAcquisitionProposal(input);
+  const row = { ...proposal.row };
+  delete row.award_was_created;
+  return {
+    ...proposal,
+    row: {
+      shared_award_source_id: sourceId,
+      ...row,
+    },
+  };
+}
+
+export function buildDiscoveredPdfIntakeRequest({
+  source,
+  link,
+  expanded,
+  decision,
+  discoveryIntent = "historical_onboarding",
+  onboardingBatchId = null,
+}) {
+  const candidate = objectValue(decision?.candidate);
+  const normalizedUrl = normalizeSourceIntakeUrl(candidate.url || link?.url);
+  const awardName = cleanText(source?.shared_awards?.name || source?.title || candidate.title);
+  if (!awardName) throw new Error("A discovered PDF intake request requires an award name.");
+  const parentSourceId = cleanNullable(source?.id);
+  if (!parentSourceId) throw new Error("A discovered PDF intake request requires its parent source id.");
+  const awardId = cleanNullable(source?.shared_award_id);
+  if (!awardId) throw new Error("A discovered PDF intake request requires its matched award id.");
+  const normalizedDiscoveryIntent = cleanChoice(
+    discoveryIntent,
+    ["live_recurring", "historical_onboarding"],
+    "historical_onboarding",
+  );
+  const liveRecurring = normalizedDiscoveryIntent === "live_recurring" && !cleanNullable(onboardingBatchId);
+  const effectiveOnboardingBatchId = liveRecurring
+    ? null
+    : cleanNullable(onboardingBatchId) || "operator_historical_discovery";
+
+  return {
+    award_name: awardName,
+    homepage_url: normalizedUrl,
+    submitted_url: cleanNullable(link?.url) || normalizedUrl,
+    normalized_url: normalizedUrl,
+    intake_type: "official_source",
+    notes: [
+      "Found by the shared visual worker after expanding the parent official source.",
+      `Parent source: ${cleanText(source?.url)}`,
+      cleanText(link?.reason) ? `Signal: ${cleanText(link.reason)}` : null,
+      cleanText(decision?.reason) ? `Discovery gate: ${cleanText(decision.reason)}` : null,
+      expanded?.controls_clicked ? `Expanded controls: ${expanded.controls_clicked}` : null,
+      liveRecurring
+        ? "Discovery intent: recurring live monitoring."
+        : `Discovery intent: historical onboarding (${effectiveOnboardingBatchId}).`,
+    ].filter(Boolean).join(" "),
+    status: "pending",
+    status_reason: liveRecurring
+      ? "queued_from_live_pdf_discovery_for_sealed_new_page_review"
+      : "queued_from_historical_pdf_discovery_baseline_only",
+    matched_shared_award_id: awardId,
+    acquisition_kind: liveRecurring ? "live_discovery" : "historical_import",
+    notification_mode: liveRecurring ? "first_capture_candidate" : "baseline_only",
+    parent_shared_award_source_id: parentSourceId,
+    onboarding_batch_id: effectiveOnboardingBatchId,
+  };
+}
+
 export function sourceQualityForIntakeSource(sourceLike) {
   return sourceQualityDecision(sourceLike, { purpose: "monitoring" });
 }
@@ -414,9 +925,27 @@ export function normalizeSharedAwardPageType(value) {
   return awardPageTypes.has(value) ? value : "other";
 }
 
-export function factCandidateRowsFromIntake({ awardId, sourceId, sourceLike, review }) {
+export const sourceIntakeFactCandidateConflictColumns =
+  "source_page_request_id,field_name,intake_value_sha256";
+
+export function sourceIntakeFactValueSha256(value) {
+  const normalizedValue = typeof value === "string"
+    ? value
+    : JSON.stringify(value ?? null);
+  return createHash("sha256").update(normalizedValue, "utf8").digest("hex");
+}
+
+export function factCandidateRowsFromIntake({
+  awardId,
+  sourceId,
+  sourcePageRequestId,
+  sourceLike,
+  review,
+  extractedAt = new Date().toISOString(),
+}) {
   const normalized = normalizeGeminiIntakeResult(review);
   const evidence = normalized.evidence_quotes[0] || null;
+  const requestId = cleanNullable(sourcePageRequestId);
   const rows = [];
   const add = (field, value) => {
     const values = Array.isArray(value) ? value : value ? [value] : [];
@@ -435,11 +964,16 @@ export function factCandidateRowsFromIntake({ awardId, sourceId, sourceLike, rev
         normalized_value: raw,
         evidence_quote: evidence,
         evidence_location: "source_intake_page_text",
-        extracted_at: new Date().toISOString(),
+        extracted_at: extractedAt,
         model: "source-intake-gemini-batch",
         confidence: normalized.confidence,
         candidate_status: "pending",
-        metadata: { intake_request_id: normalized.raw?.source_page_request_id || null },
+        source_page_request_id: requestId,
+        intake_value_sha256: requestId ? sourceIntakeFactValueSha256(raw) : null,
+        metadata: {
+          intake_request_id: normalized.raw?.source_page_request_id || null,
+          source_page_request_id: requestId,
+        },
       });
     }
   };
@@ -453,6 +987,32 @@ export function factCandidateRowsFromIntake({ awardId, sourceId, sourceLike, rev
   if (sourceLike.page_type === "application") add("application_url", sourceLike.url);
   if (sourceLike.page_type === "faq") add("faq_url", sourceLike.url);
   return rows;
+}
+
+export async function persistSourceIntakeFactCandidates(supabase, rows) {
+  const candidates = Array.isArray(rows) ? rows : [];
+  if (!candidates.length) return { inserted: 0, existing: 0 };
+  if (candidates.some((candidate) => (
+    !cleanNullable(candidate?.source_page_request_id) ||
+    !cleanNullable(candidate?.field_name) ||
+    !sha256Pattern.test(cleanText(candidate?.intake_value_sha256).toLowerCase())
+  ))) {
+    throw new Error("Source-intake fact candidates require a stable request/field/value identity.");
+  }
+
+  const { data, error } = await supabase
+    .from("shared_award_fact_candidates")
+    .upsert(candidates, {
+      onConflict: sourceIntakeFactCandidateConflictColumns,
+      ignoreDuplicates: true,
+    })
+    .select("id");
+  if (error) throw new Error(`Persist intake fact candidates failed: ${error.message}`);
+  const inserted = Array.isArray(data) ? data.length : 0;
+  return {
+    inserted,
+    existing: Math.max(0, candidates.length - inserted),
+  };
 }
 
 export function parseJsonObject(value) {
@@ -596,9 +1156,147 @@ function canonicalUrlKey(value) {
   }
 }
 
+function exactEvidenceQuotes(quotes, capturedText) {
+  const text = normalizeEvidenceText(capturedText);
+  if (!text) return [];
+  const seen = new Set();
+  const result = [];
+  for (const quote of quotes || []) {
+    const normalized = normalizeEvidenceText(quote);
+    if (!normalized || seen.has(normalized) || !text.includes(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function normalizeEvidenceText(value) {
+  return String(value || "")
+    .normalize("NFKC")
+    .replace(/\u0000/g, "")
+    .replace(/\u00ad/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeAcquisitionKind(value) {
+  const key = databaseEnumKey(value);
+  return acquisitionKinds.has(key) ? key : "legacy_unknown";
+}
+
+function normalizeNotificationMode(value) {
+  const key = databaseEnumKey(value);
+  return notificationModes.has(key) ? key : "baseline_only";
+}
+
+function databaseEnumKey(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_")
+    .replace(/[^a-z0-9_]+/g, "")
+    .replace(/^_+|_+$/g, "");
+}
+
+function acquisitionDowngradeReason({
+  requestedNotificationMode,
+  acquisitionKind,
+  awardCreated,
+  onboardingBatchId,
+  isPdf,
+  originSourcePageRequestId,
+  originWorkerRunId,
+  parentSourceId,
+  sourceUrl,
+  captureFinalUrl,
+  captureFileHash,
+  exactQuotes,
+  retainedArtifact,
+  retainedArtifactFailure,
+}) {
+  if (requestedNotificationMode !== "first_capture_candidate") {
+    return requestedNotificationMode === "manual_review"
+      ? "explicit_manual_review"
+      : "notification_not_requested";
+  }
+  if (acquisitionKind !== "live_discovery") return "non_live_discovery_baseline_only";
+  if (awardCreated) return "new_award_onboarding_baseline_only";
+  if (onboardingBatchId) return "bulk_onboarding_baseline_only";
+  if (!originSourcePageRequestId) return "source_request_provenance_missing_manual_review";
+  if (!originWorkerRunId) return "worker_run_provenance_missing_manual_review";
+  if (!parentSourceId) return "parent_source_provenance_missing_manual_review";
+  if (!isPdf) return "non_pdf_first_capture_manual_review";
+  if (!sourceUrl || !captureFinalUrl || captureFinalUrl !== sourceUrl) {
+    return "capture_final_url_mismatch_manual_review";
+  }
+  if (!sha256Pattern.test(captureFileHash)) return "capture_hash_missing_manual_review";
+  if (!exactQuotes.length) return "exact_evidence_missing_manual_review";
+  if (!retainedArtifact) {
+    return retainedArtifactFailure || "intake_artifact_manifest_missing_manual_review";
+  }
+  return "first_capture_policy_manual_review";
+}
+
+function canonicalTimestamp(value) {
+  const parsed = Date.parse(cleanText(value));
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+function sha256Canonical(value) {
+  return createHash("sha256").update(JSON.stringify(sortJson(value)), "utf8").digest("hex");
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortJson(value[key])]),
+  );
+}
+
 function isPrivateIpLikeHost(hostname) {
-  const host = hostname.replace(/^\[|\]$/g, "");
-  return /^(10|127)\./.test(host) || /^192\.168\./.test(host) || /^172\.(1[6-9]|2\d|3[0-1])\./.test(host) || host === "0.0.0.0" || host === "::1";
+  return isPrivateOrReservedIp(hostname.replace(/^\[|\]$/g, ""));
+}
+
+function isPrivateOrReservedIp(value) {
+  const address = String(value || "").split("%")[0].toLowerCase();
+  const family = isIP(address);
+  if (family === 4) {
+    const [a, b] = address.split(".").map(Number);
+    return (
+      a === 0
+      || a === 10
+      || a === 127
+      || (a === 100 && b >= 64 && b <= 127)
+      || (a === 169 && b === 254)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 192 && b === 0)
+      || (a === 192 && b === 168)
+      || (a === 192 && b === 88)
+      || (a === 198 && (b === 18 || b === 19))
+      || (a === 198 && b === 51)
+      || (a === 203 && b === 0)
+      || a >= 224
+    );
+  }
+  if (family === 6) {
+    return (
+      address === "::"
+      || address === "::1"
+      || address.startsWith("::ffff:")
+      || address.startsWith("fc")
+      || address.startsWith("fd")
+      || address.startsWith("fe8")
+      || address.startsWith("fe9")
+      || address.startsWith("fea")
+      || address.startsWith("feb")
+      || address.startsWith("ff")
+      || address.startsWith("2001:db8:")
+      || !/^[23]/.test(address)
+    );
+  }
+  return false;
 }
 
 function objectValue(value) {

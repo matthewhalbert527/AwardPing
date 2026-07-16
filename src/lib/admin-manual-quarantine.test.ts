@@ -11,11 +11,11 @@ describe("admin manual quarantine loader", () => {
     const summary = mapManualQuarantineSummary({
       automated_work_clear: true,
       automated_blockers: {},
-      quarantined_work_remaining: 293,
-      quarantine_evidence_records: 509,
+      quarantined_work_remaining: 295,
+      quarantine_evidence_records: 511,
       historical_limitations: 390,
       historical_inventory_status: "complete",
-      terminal_failures_requiring_action: 275,
+      terminal_failures_requiring_action: 277,
       by_category: {
         public_page: {
           cases: 236,
@@ -31,6 +31,14 @@ describe("admin manual quarantine loader", () => {
           terminal_cases: 57,
           terminal_failures: 57,
           oldest_observed_at: "2026-07-02T00:00:00.000Z",
+          unknown_public_impact_cases: 0,
+        },
+        initial_document: {
+          cases: 2,
+          evidence_records: 2,
+          terminal_cases: 2,
+          terminal_failures: 2,
+          oldest_observed_at: "2026-07-16T00:00:00.000Z",
           unknown_public_impact_cases: 0,
         },
         historical_localization: {
@@ -52,11 +60,11 @@ describe("admin manual quarantine loader", () => {
 
     expect(summary).toMatchObject({
       automatedWorkClear: true,
-      quarantinedWorkRemaining: 293,
-      quarantineEvidenceRecords: 509,
+      quarantinedWorkRemaining: 295,
+      quarantineEvidenceRecords: 511,
       historicalLimitations: 390,
       historicalInventoryStatus: "complete",
-      terminalFailuresRequiringAction: 275,
+      terminalFailuresRequiringAction: 277,
       completionStatus: "automated_work_clear",
       completionReportedAt: "2026-07-15T21:00:00.000Z",
       lastSyncedAt: "2026-07-15T21:05:00.000Z",
@@ -68,6 +76,14 @@ describe("admin manual quarantine loader", () => {
       terminalFailures: 218,
       oldestObservedAt: "2026-07-01T00:00:00.000Z",
       unknownPublicImpactCases: 20,
+    });
+    expect(summary.byCategory.initial_document).toEqual({
+      cases: 2,
+      evidenceRecords: 2,
+      terminalCases: 2,
+      terminalFailures: 2,
+      oldestObservedAt: "2026-07-16T00:00:00.000Z",
+      unknownPublicImpactCases: 0,
     });
   });
 

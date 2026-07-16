@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
 import { afterEach, describe, expect, it } from "vitest";
@@ -345,7 +345,20 @@ describe("published visual event evidence", () => {
     temporary.push(archiveRoot);
     const previous = await captureFixture(archiveRoot, "previous", "Deadline February 1");
     const current = await captureFixture(archiveRoot, "current", "Deadline March 1");
-    for (const ref of [previous.ref, current.ref]) relocateSnapshotRef(ref, archiveRoot);
+    for (const ref of [previous.ref, current.ref]) {
+      relocateSnapshotRef(ref, archiveRoot);
+      const refs = [
+        ...Object.values(ref.local_paths || {}),
+        ...(ref.visual_states || []).flatMap((state) => Object.values(state.local_paths || {})),
+      ];
+      // Simulate another PC's old absolute root still being mounted with
+      // unrelated bytes. The portable current-root identity must win.
+      for (const artifact of refs) {
+        if (!artifact?.path) continue;
+        mkdirSync(dirname(artifact.path), { recursive: true });
+        writeFileSync(artifact.path, Buffer.from("stale old worker bytes"));
+      }
+    }
 
     const evidence = await preparePublishedVisualEventEvidence({
       candidate: candidateFixture(previous, current),

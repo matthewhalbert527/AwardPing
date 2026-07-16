@@ -105,6 +105,30 @@ describe("change event visual evidence", () => {
     expect(result.objects.crop).toBeUndefined();
     expect(signObjectKey).toHaveBeenCalledTimes(1);
   });
+
+  it("describes current-only first-observed PDF evidence without implying a prior version", async () => {
+    const signObjectKey = vi.fn(async (key: string) => `https://signed.test/${key}`);
+    const result = await buildEventVisualEvidenceSide({
+      captureValue: {
+        captured_at: "2026-07-16T18:00:00.000Z",
+        full: {
+          object_key: "visual-snapshots/published/event-1/current/document.pdf",
+          sha256: "a".repeat(64),
+          byte_length: 12_000,
+          content_type: "application/pdf",
+        },
+      },
+      localizationValue: { status: "not_applicable_new_document" },
+      signObjectKey,
+    });
+
+    expect(result.kind).toBe("pdf");
+    expect(result.localization_status).toBe("not_applicable_new_document");
+    expect(result.localization_reason).toBe(
+      "This PDF is AwardPing's first retained observation; no prior publisher version is asserted.",
+    );
+    expect(result.localization_reason).not.toMatch(/changed|updated|today/i);
+  });
 });
 
 function capture({ cropExact }: { cropExact: boolean }) {

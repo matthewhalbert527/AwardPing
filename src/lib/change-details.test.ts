@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   buildHeuristicChangeDetails,
   buildStructuredChangeDiff,
+  changeDetailsLabel,
   changeDetailsToSummary,
+  isFirstObservedOfficialDocument,
   isMeaningfulChangeDetails,
   normalizeAiChangeDetails,
   parseChangeDetails,
@@ -1079,5 +1081,79 @@ describe("structured change details", () => {
       "The deadline moved to April 15, 2026.",
     );
     expect(isMeaningfulChangeDetails(details)).toBe(true);
+  });
+
+  it("preserves and truthfully summarizes a first-observed official document", () => {
+    const details = {
+      event_kind: "new_official_document",
+      reader_summary: "The publisher posted a new document today.",
+      before: null,
+      after: "Candidates must submit two letters of recommendation.",
+      exact_before: null,
+      exact_after: "Candidates must submit two letters of recommendation.",
+      section: "Application requirements",
+      change_type: "new_official_document",
+      advisor_impact: "Review the guidance before advising applicants.",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: ["Candidates must submit two letters of recommendation."],
+        removed_text: [],
+        likely_section: "Application requirements",
+        page_type: "pdf",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {},
+      quality_flags: [],
+      first_observed_at: "2026-06-21T14:00:00.000Z",
+      recognized_at: "2026-07-16T18:00:00.000Z",
+      generated_at: "2026-07-16T18:00:00.000Z",
+    };
+
+    const parsed = parseChangeDetails(details);
+
+    expect(parsed?.event_kind).toBe("new_official_document");
+    expect(parsed?.first_observed_at).toBe("2026-06-21T14:00:00.000Z");
+    expect(parsed?.recognized_at).toBe("2026-07-16T18:00:00.000Z");
+    expect(isFirstObservedOfficialDocument(details)).toBe(true);
+    expect(changeDetailsLabel(details)).toBe("New official document");
+    expect(changeDetailsToSummary(details, "Unsafe fallback")).toBe(
+      'AwardPing first observed this official document for the award. The document includes: "Candidates must submit two letters of recommendation."',
+    );
+    expect(changeDetailsToSummary(details, "Unsafe fallback")).not.toMatch(
+      /publisher posted|today|changed/i,
+    );
+  });
+
+  it("states the historical limit when a first observation has no exact current wording", () => {
+    const details = {
+      event_kind: "new_official_document",
+      reader_summary: "The publisher added this PDF today.",
+      before: null,
+      after: null,
+      section: null,
+      change_type: "new_official_document",
+      advisor_impact: null,
+      is_alert_worthy: true,
+      confidence: "medium",
+      structured_diff: {
+        added_text: [],
+        removed_text: [],
+        likely_section: null,
+        page_type: "pdf",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {},
+      quality_flags: [],
+      generated_at: "2026-07-16T18:00:00.000Z",
+    };
+
+    expect(changeDetailsToSummary(details, null)).toBe(
+      "AwardPing first observed this official document for the award. AwardPing's observation time does not establish when the publisher posted it.",
+    );
   });
 });

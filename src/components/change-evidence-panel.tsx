@@ -35,7 +35,11 @@ export function ChangeEvidencePanel({
 
   return (
     <details className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
-      <summary>View change explanation</summary>
+      <summary>
+        {evidence.isFirstObservation
+          ? "View first-observation explanation"
+          : "View change explanation"}
+      </summary>
       <div className="change-evidence-body">
         {(changeEventId || sourceId) && sourceUrl ? (
           <div className="change-evidence-highlight-link">
@@ -53,7 +57,7 @@ export function ChangeEvidencePanel({
         ) : null}
 
         <section className="change-evidence-section">
-          <h4>What changed</h4>
+          <h4>{evidence.isFirstObservation ? "What AwardPing first observed" : "What changed"}</h4>
           {evidence.hasSummaryEvidence && (
             <div className="change-evidence-summary-only">
               {evidence.summaryLabel && (
@@ -79,7 +83,30 @@ export function ChangeEvidencePanel({
             <p className="change-evidence-note">{evidence.relationshipNote}</p>
           )}
 
-          {evidence.hasStructuredEvidence || evidence.hasSnapshotEvidence ? (
+          {evidence.isFirstObservation ? (
+            <>
+              <div className="change-evidence-grid">
+                <section>
+                  <h5>Wording in the document</h5>
+                  {evidence.currentSnippets.length > 0 ? (
+                    evidence.currentSnippets.map((snippet) => (
+                      <mark className="change-evidence-added" key={snippet}>
+                        {snippet}
+                      </mark>
+                    ))
+                  ) : (
+                    <mark className="change-evidence-added">
+                      {evidence.afterSnippet || "No exact current wording was retained."}
+                    </mark>
+                  )}
+                </section>
+              </div>
+              <p className="change-evidence-note">
+                No prior version is shown because this is AwardPing&apos;s first retained
+                observation. This does not establish when the publisher posted the document.
+              </p>
+            </>
+          ) : evidence.hasStructuredEvidence || evidence.hasSnapshotEvidence ? (
             <div className="change-evidence-grid">
               <section>
                 <h5>Current wording</h5>
@@ -129,7 +156,7 @@ export function ChangeEvidencePanel({
           </section>
         )}
 
-        {(sourceUrl || sourceTitle || sourcePageTypeLabel || detectedAt) && (
+        {(sourceUrl || sourceTitle || sourcePageTypeLabel || detectedAt || evidence.firstObservedAt) && (
           <section className="change-evidence-section">
             <h4>Source</h4>
             <dl className="change-source-details">
@@ -156,10 +183,16 @@ export function ChangeEvidencePanel({
                   <dd>{sourcePageTypeLabel}</dd>
                 </div>
               )}
-              {detectedAt && (
+              {evidence.isFirstObservation && evidence.firstObservedAt && (
                 <div>
-                  <dt>Detected</dt>
-                  <dd>{formatDate(detectedAt)}</dd>
+                  <dt>First retained capture</dt>
+                  <dd>{formatDate(evidence.firstObservedAt)}</dd>
+                </div>
+              )}
+              {(evidence.recognizedAt || detectedAt) && (
+                <div>
+                  <dt>{evidence.isFirstObservation ? "Recognized as an update" : "Detected"}</dt>
+                  <dd>{formatDate(evidence.recognizedAt || detectedAt || "")}</dd>
                 </div>
               )}
             </dl>

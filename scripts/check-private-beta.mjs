@@ -208,10 +208,7 @@ function checkVercelCron() {
 
   const crons = Array.isArray(config.crons) ? config.crons : [];
   const paths = new Map(crons.map((cron) => [cron.path, cron.schedule]));
-  const expected = [
-    ["/api/cron/check-monitors", "0 12 * * *"],
-    ["/api/cron/send-digests", "0 13 * * *"],
-  ];
+  const expected = [["/api/cron/send-digests", "0 13 * * *"]];
 
   for (const [path, schedule] of expected) {
     if (paths.get(path) === schedule) {
@@ -235,6 +232,9 @@ function checkMigrations() {
     "0009_office_workspace_invites.sql",
     "0016_public_updates_contact.sql",
     "0017_structured_change_details.sql",
+    "20260716150000_initial_official_document_events.sql",
+    "20260716152833_source_intake_fact_candidate_idempotency.sql",
+    "20260716161529_r2_baseline_recovery_quarantine.sql",
   ];
 
   for (const file of expected) {
@@ -312,6 +312,128 @@ function checkMigrations() {
     pass("Structured change-details migration is present.");
   } else {
     fail("Structured change-details migration is missing change_details on both change tables.");
+  }
+
+  const initialOfficialDocuments = readIfExists(
+    "supabase/migrations/20260716150000_initial_official_document_events.sql",
+  );
+  const requiredInitialDocumentTables = [
+    "shared_award_source_acquisitions",
+    "shared_award_source_discovery_states",
+    "shared_award_source_discovered_links",
+  ];
+  const missingInitialDocumentTables = requiredInitialDocumentTables.filter(
+    (table) =>
+      !new RegExp(
+        `create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?public\\.${table}\\s*\\(`,
+        "i",
+      ).test(initialOfficialDocuments),
+  );
+  const requiredInitialDocumentRpcs = [
+    "register_shared_award_source_pdf_links",
+    "bind_shared_award_discovered_link_request",
+    "create_and_bind_shared_award_discovered_link_request",
+    "record_shared_award_discovered_link_quarantine",
+    "resolve_shared_award_discovered_link_quarantine",
+    "register_shared_award_source_from_intake",
+    "publish_shared_award_initial_document_event",
+    "record_initial_official_document_quarantine",
+    "resolve_initial_official_document_quarantine",
+  ];
+  const missingInitialDocumentRpcs = requiredInitialDocumentRpcs.filter(
+    (rpc) =>
+      !new RegExp(
+        `create\\s+or\\s+replace\\s+function\\s+public\\.${rpc}\\s*\\(`,
+        "i",
+      ).test(initialOfficialDocuments),
+  );
+  const requiredInitialDocumentSafetyContracts = [
+    "p_actor_user_id uuid",
+    "p_expected_evidence_hash text",
+    "v_quarantine.status <> 'in_review'",
+    "v_quarantine.evidence_hash is distinct from p_expected_evidence_hash",
+    "v_assignment.assigned_to_user_id is distinct from p_actor_user_id",
+    "v_assignment.assigned_to_email is distinct from v_actor",
+  ];
+  const missingInitialDocumentSafetyContracts = requiredInitialDocumentSafetyContracts.filter(
+    (contract) => !initialOfficialDocuments.includes(contract),
+  );
+
+  if (
+    missingInitialDocumentTables.length === 0 &&
+    missingInitialDocumentRpcs.length === 0 &&
+    missingInitialDocumentSafetyContracts.length === 0
+  ) {
+    pass(
+      "Initial official-document migration includes immutable intake provenance, discovery state, publication, and quarantine surfaces.",
+    );
+  } else {
+    const missing = [
+      ...missingInitialDocumentTables.map((table) => `table public.${table}`),
+      ...missingInitialDocumentRpcs.map((rpc) => `RPC public.${rpc}`),
+      ...missingInitialDocumentSafetyContracts.map((contract) => `safety contract ${contract}`),
+    ];
+    fail(
+      `Initial official-document migration is incomplete; missing ${missing.join(", ")}.`,
+    );
+  }
+
+  const intakeFactIdempotency = readIfExists(
+    "supabase/migrations/20260716152833_source_intake_fact_candidate_idempotency.sql",
+  );
+  const intakeFactIdempotencyRequired = [
+    "source_page_request_id",
+    "intake_value_sha256",
+    "shared_award_fact_candidates_intake_identity_check",
+    "shared_award_fact_candidates_intake_identity_idx",
+    "awardping_preserve_intake_fact_candidate_identity",
+  ];
+  const missingIntakeFactIdempotency = intakeFactIdempotencyRequired.filter(
+    (item) => !intakeFactIdempotency.includes(item),
+  );
+  if (missingIntakeFactIdempotency.length === 0) {
+    pass(
+      "Source-intake fact replay migration includes stable request/field/value identity and uniqueness guards.",
+    );
+  } else {
+    fail(
+      `Source-intake fact replay migration is incomplete; missing ${missingIntakeFactIdempotency.join(", ")}.`,
+    );
+  }
+
+  const r2BaselineRecoveryQuarantine = readIfExists(
+    "supabase/migrations/20260716161529_r2_baseline_recovery_quarantine.sql",
+  );
+  const r2BaselineRecoveryRequired = [
+    "record_r2_baseline_recovery_quarantine",
+    "resolve_r2_baseline_recovery_quarantine",
+    "preserve_r2_baseline_recovery_quarantine",
+    "r2-baseline-recovery:",
+    "awardping-r2-baseline-recovery-quarantine",
+    "for update of source, award",
+    "public.manual_quarantine_evidence_hash",
+    "public.refresh_manual_quarantine_registry_state",
+    "new.resolved_by = 'manual-quarantine-sync'",
+    "admin_review_status = 'review_later'",
+    "admin_review_status = 'open'",
+    "v_reopen_source :=",
+    "v_source.admin_reviewed_by = 'awardping-r2-baseline-recovery'",
+    "p_evidence -> 'restored_missing_baseline' is distinct from 'true'::jsonb",
+    "p_evidence -> 'creates_api_charge' is distinct from 'false'::jsonb",
+    "p_evidence -> 'used_live_fetch' is distinct from 'false'::jsonb",
+    "to service_role",
+  ];
+  const missingR2BaselineRecovery = r2BaselineRecoveryRequired.filter(
+    (item) => !r2BaselineRecoveryQuarantine.includes(item),
+  );
+  if (missingR2BaselineRecovery.length === 0) {
+    pass(
+      "R2 baseline-recovery migration atomically protects sources, preserves source-keyed operator cases, and permits only exact no-charge recovery to reopen them.",
+    );
+  } else {
+    fail(
+      `R2 baseline-recovery quarantine migration is incomplete; missing ${missingR2BaselineRecovery.join(", ")}.`,
+    );
   }
 }
 

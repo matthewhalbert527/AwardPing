@@ -228,6 +228,7 @@ export function SourceSnapshotViewerButton({
               error={error}
               loading={loading}
               canShowPrevious={canShowPrevious}
+              firstObservation={evidence.isFirstObservation}
               onVersionChange={setActiveVersion}
               evidenceScope={snapshot?.evidence_scope || "source_current"}
               title={snapshot?.source_title || sourceTitle}
@@ -337,6 +338,7 @@ export function SourceSnapshotInlinePreview({
   return (
     <SnapshotInlineBody
       key={requestPath}
+      firstObservation={evidence.isFirstObservation}
       snapshot={snapshot}
       title={snapshot.source_title || sourceTitle}
     />
@@ -353,21 +355,44 @@ function SnapshotEvidencePanel({
   summary?: string | null;
 }) {
   return (
-    <aside className="source-snapshot-evidence" aria-label="Selected change evidence">
+    <aside
+      className="source-snapshot-evidence"
+      aria-label={
+        evidence.isFirstObservation
+          ? "Selected first-observation evidence"
+          : "Selected change evidence"
+      }
+    >
       <div className="source-snapshot-evidence-heading">
         <div>
-          <p>Selected change</p>
+          <p>{evidence.isFirstObservation ? "Selected first observation" : "Selected change"}</p>
           <h3>{evidence.changeTypeLabel || "Source update"}</h3>
         </div>
         <div className="source-snapshot-evidence-badges">
           {evidence.confidenceLabel && <span>{evidence.confidenceLabel}</span>}
-          {detectedAt && <span>{formatSnapshotDate(detectedAt)}</span>}
+          {detectedAt && (
+            <span>
+              {evidence.isFirstObservation ? "Update recognized " : ""}
+              {formatSnapshotDate(detectedAt)}
+            </span>
+          )}
         </div>
       </div>
       <p className="source-snapshot-evidence-summary">
-        {evidence.summarySnippet || summary || "AwardPing detected a meaningful source-page change."}
+        {evidence.summarySnippet ||
+          summary ||
+          (evidence.isFirstObservation
+            ? "AwardPing first observed this official document."
+            : "AwardPing detected a meaningful source-page change.")}
       </p>
-      {(evidence.previousSnippets.length > 0 || evidence.currentSnippets.length > 0) && (
+      {evidence.isFirstObservation && evidence.currentSnippets.length > 0 ? (
+        <div className="source-snapshot-evidence-grid">
+          <div>
+            <strong>Wording in the document</strong>
+            <p>{evidence.currentSnippets[0] || evidence.afterSnippet}</p>
+          </div>
+        </div>
+      ) : (evidence.previousSnippets.length > 0 || evidence.currentSnippets.length > 0) && (
         <div className="source-snapshot-evidence-grid">
           <div>
             <strong>Previous</strong>
@@ -378,6 +403,11 @@ function SnapshotEvidencePanel({
             <p>{evidence.currentSnippets[0] || evidence.afterSnippet || "No current wording stored."}</p>
           </div>
         </div>
+      )}
+      {evidence.isFirstObservation && (
+        <p className="source-snapshot-evidence-summary">
+          No prior version is asserted; this is AwardPing&apos;s first retained observation.
+        </p>
       )}
     </aside>
   );
@@ -421,6 +451,7 @@ function SnapshotBody({
   canShowPrevious,
   evidenceScope,
   error,
+  firstObservation,
   loading,
   onVersionChange,
   title,
@@ -430,6 +461,7 @@ function SnapshotBody({
   canShowPrevious: boolean;
   evidenceScope: "change_event" | "source_current";
   error: string | null;
+  firstObservation: boolean;
   loading: boolean;
   onVersionChange: (version: SnapshotVersion) => void;
   title: string;
@@ -478,7 +510,10 @@ function SnapshotBody({
         <SnapshotFrameActions
           activeVersion={version}
           canShowPrevious={canShowPrevious}
-          currentLabel={evidenceScope === "change_event" ? "Current" : "Latest"}
+          currentLabel={
+            firstObservation ? "First observed" : evidenceScope === "change_event" ? "Current" : "Latest"
+          }
+          firstObservation={firstObservation}
           localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio, evidenceScope)}
           openLabel="Open PDF"
           openUrl={primaryObject.url}
@@ -487,7 +522,9 @@ function SnapshotBody({
         <div className="source-snapshot-pdf">
           <FileText size={34} aria-hidden="true" />
           <div>
-            <p className="source-snapshot-pdf-title">PDF snapshot</p>
+            <p className="source-snapshot-pdf-title">
+              {firstObservation ? "First-observed PDF" : "PDF snapshot"}
+            </p>
           </div>
         </div>
       </div>
@@ -499,7 +536,10 @@ function SnapshotBody({
       <SnapshotFrameActions
         activeVersion={version}
         canShowPrevious={canShowPrevious}
-        currentLabel={evidenceScope === "change_event" ? "Current" : "Latest"}
+        currentLabel={
+          firstObservation ? "First observed" : evidenceScope === "change_event" ? "Current" : "Latest"
+        }
+        firstObservation={firstObservation}
         localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio, evidenceScope)}
         openLabel="Open image"
         openUrl={primaryObject.url}
@@ -518,9 +558,11 @@ function SnapshotBody({
 }
 
 function SnapshotInlineBody({
+  firstObservation,
   snapshot,
   title,
 }: {
+  firstObservation: boolean;
   snapshot: SourceSnapshotResponse;
   title: string;
 }) {
@@ -565,19 +607,27 @@ function SnapshotInlineBody({
               snapshot.evidence_scope || "source_current",
             )}
           </span>
-          <div className="source-snapshot-tabs source-snapshot-inline-tabs" aria-label="Screenshot version">
+          <div className="source-snapshot-tabs source-snapshot-inline-tabs" aria-label="Evidence version">
             <SnapshotTab
               active={resolvedVersion === "latest"}
               disabled={!latestAvailable}
-              label={snapshot.evidence_scope === "change_event" ? "Current" : "Latest"}
+              label={
+                firstObservation
+                  ? "First observed"
+                  : snapshot.evidence_scope === "change_event"
+                    ? "Current"
+                    : "Latest"
+              }
               onSelect={() => setActiveVersion("latest")}
             />
-            <SnapshotTab
-              active={resolvedVersion === "previous"}
-              disabled={!previousAvailable}
-              label="Previous"
-              onSelect={() => setActiveVersion("previous")}
-            />
+            {!firstObservation && (
+              <SnapshotTab
+                active={resolvedVersion === "previous"}
+                disabled={!previousAvailable}
+                label="Previous"
+                onSelect={() => setActiveVersion("previous")}
+              />
+            )}
           </div>
         </div>
         <a href={primaryObject.url} rel="noreferrer" target="_blank">
@@ -589,7 +639,7 @@ function SnapshotInlineBody({
       {primaryObject.kind === "pdf" ? (
         <div className="source-snapshot-inline-pdf">
           <FileText size={22} aria-hidden="true" />
-          PDF snapshot available
+          {firstObservation ? "First-observed PDF available" : "PDF snapshot available"}
         </div>
       ) : (
         <div className="source-snapshot-inline-frame" ref={frameRef}>
@@ -611,6 +661,7 @@ function SnapshotFrameActions({
   activeVersion,
   canShowPrevious,
   currentLabel,
+  firstObservation,
   localizationLabel,
   openLabel,
   openUrl,
@@ -619,6 +670,7 @@ function SnapshotFrameActions({
   activeVersion: SnapshotVersion;
   canShowPrevious: boolean;
   currentLabel: string;
+  firstObservation: boolean;
   localizationLabel: string;
   openLabel: string;
   openUrl: string;
@@ -628,18 +680,20 @@ function SnapshotFrameActions({
     <div className="source-snapshot-frame-actions">
       <div className="source-snapshot-version-control">
         <span>{localizationLabel}</span>
-        <div className="source-snapshot-tabs" aria-label="Screenshot version">
+        <div className="source-snapshot-tabs" aria-label="Evidence version">
           <SnapshotTab
             active={activeVersion === "latest"}
             label={currentLabel}
             onSelect={() => onVersionChange("latest")}
           />
-          <SnapshotTab
-            active={activeVersion === "previous"}
-            disabled={!canShowPrevious}
-            label="Previous"
-            onSelect={() => onVersionChange("previous")}
-          />
+          {!firstObservation && (
+            <SnapshotTab
+              active={activeVersion === "previous"}
+              disabled={!canShowPrevious}
+              label="Previous"
+              onSelect={() => onVersionChange("previous")}
+            />
+          )}
         </div>
       </div>
       <a href={openUrl} rel="noreferrer" target="_blank">
@@ -758,6 +812,10 @@ export function snapshotLocalizationLabel(
   evidenceScope: "change_event" | "source_current" = "source_current",
 ) {
   if (evidenceScope === "change_event") {
+    if (snapshot?.kind === "pdf") {
+      const reason = String(snapshot.localization_reason || "").trim();
+      return reason ? `Immutable event PDF - ${reason}` : "Immutable event PDF";
+    }
     if (snapshot?.exact_overlap && snapshot.objects.crop) return "Verified exact change area";
     const reason = String(snapshot?.localization_reason || "").trim();
     if (reason) return `Full event screenshot - ${reason}`;

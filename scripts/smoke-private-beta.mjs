@@ -14,17 +14,12 @@ await checkStatus("login page", "/login", [200]);
 await checkRedirect("pricing redirect", "/pricing", "/signup");
 await checkRedirect("dashboard auth redirect", "/dashboard", "/login");
 await checkStatus("find awards page", "/award-directory", [200]);
-await checkStatus("check-monitors cron rejects anonymous calls", "/api/cron/check-monitors", [401]);
 await checkStatus("send-digests cron rejects anonymous calls", "/api/cron/send-digests", [401]);
 
 if (runCron) {
   if (!cronSecret) {
     record("FAIL", "Authorized cron smoke requested, but CRON_SECRET is not set.");
   } else {
-    await checkStatus("authorized check-monitors cron", "/api/cron/check-monitors", [200], {
-      headers: { authorization: `Bearer ${cronSecret}` },
-      timeoutMs: 70000,
-    });
     await checkStatus("authorized send-digests cron", "/api/cron/send-digests", [200], {
       headers: { authorization: `Bearer ${cronSecret}` },
       timeoutMs: 70000,

@@ -4,6 +4,7 @@ import {
   Bot,
   CameraOff,
   CheckCircle2,
+  FileSearch,
   History,
   ShieldAlert,
 } from "lucide-react";
@@ -191,9 +192,9 @@ export function AdminManualQuarantineBoard({
       {result.registryAvailable && (
         <div className="operator-inbox-list" aria-label="Quarantine groups">
           <QuarantineGroup
-            detail="Each award is one case. Its latest unresolved page audit and failed reconciliation stay linked as evidence."
+            detail="Each unresolved award or source-baseline repair is one case. Page-audit, reconciliation, and authoritative R2 recovery evidence stay linked until the exact repair is verified."
             icon={Archive}
-            label="Public-page repair"
+            label="Public-page and baseline repair"
             summary={summary.byCategory.public_page}
           />
           <QuarantineGroup
@@ -201,6 +202,12 @@ export function AdminManualQuarantineBoard({
             icon={CameraOff}
             label="Visual review"
             summary={summary.byCategory.visual_review}
+          />
+          <QuarantineGroup
+            detail="A first-observed official document is held here when its sealed review, exact wording, or retained PDF cannot be bound safely. Local evidence repair is tried before any new paid page review."
+            icon={FileSearch}
+            label="New document evidence"
+            summary={summary.byCategory.initial_document}
           />
           <QuarantineGroup
             detail={

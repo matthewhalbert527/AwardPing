@@ -71,6 +71,35 @@ export type VisualReviewCandidateStatus =
   | "failed"
   | "published"
   | "superseded";
+export type VisualReviewCandidateScope =
+  | "content_change"
+  | "initial_official_document";
+export type SourceAcquisitionKind =
+  | "live_discovery"
+  | "user_request"
+  | "admin_intake"
+  | "historical_import"
+  | "seed"
+  | "repair"
+  | "legacy_unknown"
+  | "operator_historical_exception";
+export type SourceAcquisitionNotificationMode =
+  | "first_capture_candidate"
+  | "baseline_only"
+  | "manual_review";
+export type SourceDiscoveryNotificationMode =
+  | "first_capture_candidate"
+  | "baseline_only";
+export type SourceDiscoveryNotificationDisposition =
+  | "unreviewed"
+  | "no_prior_request"
+  | "baseline_prior_request_bound"
+  | "active_live_request_bound"
+  | "prior_non_live_request_requires_action"
+  | "prior_terminal_request_requires_action"
+  | "prior_request_requires_action"
+  | "quarantined_prior_request_conflict"
+  | "operator_approved_new_live_review_bound";
 export type ChangeEventVisualEvidenceStatus =
   | "verified"
   | "unavailable_exact_text_missing"
@@ -79,13 +108,15 @@ export type ChangeEventVisualEvidenceStatus =
   | "unavailable_ambiguous"
   | "historical_artifact_unrecoverable"
   | "full_screenshot_fallback"
-  | "not_applicable_pdf";
+  | "not_applicable_pdf"
+  | "not_applicable_new_document";
 export type ManualQuarantineClassification =
   | "actionable_quarantine"
   | "historical_limitation";
 export type ManualQuarantineCategory =
   | "public_page"
   | "visual_review"
+  | "initial_document"
   | "historical_localization";
 export type ManualQuarantineStatus = "quarantined" | "in_review" | "resolved";
 export type ManualQuarantineSeverity = "high" | "medium" | "low";
@@ -284,6 +315,8 @@ export type Database = {
           candidate_status: "pending" | "selected" | "rejected" | "conflicted" | "superseded";
           rejection_reason: string | null;
           selected_reason: string | null;
+          source_page_request_id: string | null;
+          intake_value_sha256: string | null;
           metadata: Json;
           created_at: string;
           updated_at: string;
@@ -307,6 +340,8 @@ export type Database = {
           candidate_status?: "pending" | "selected" | "rejected" | "conflicted" | "superseded";
           rejection_reason?: string | null;
           selected_reason?: string | null;
+          source_page_request_id?: string | null;
+          intake_value_sha256?: string | null;
           metadata?: Json;
           created_at?: string;
           updated_at?: string;
@@ -430,6 +465,8 @@ export type Database = {
           id: string;
           shared_award_id: string;
           shared_award_source_id: string;
+          candidate_scope: VisualReviewCandidateScope;
+          source_acquisition_id: string | null;
           candidate_signature: string;
           source_url: string;
           source_title: string | null;
@@ -467,6 +504,8 @@ export type Database = {
           id?: string;
           shared_award_id: string;
           shared_award_source_id: string;
+          candidate_scope?: VisualReviewCandidateScope;
+          source_acquisition_id?: string | null;
           candidate_signature: string;
           source_url: string;
           source_title?: string | null;
@@ -503,6 +542,8 @@ export type Database = {
         Update: {
           shared_award_id?: string;
           shared_award_source_id?: string;
+          candidate_scope?: VisualReviewCandidateScope;
+          source_acquisition_id?: string | null;
           candidate_signature?: string;
           source_url?: string;
           source_title?: string | null;
@@ -548,6 +589,13 @@ export type Database = {
             columns: ["shared_award_source_id"];
             isOneToOne: false;
             referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "shared_award_visual_review_candidates_source_acquisition_id_fkey";
+            columns: ["source_acquisition_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_source_acquisitions";
             referencedColumns: ["id"];
           },
         ];
@@ -1310,6 +1358,159 @@ export type Database = {
           updated_at?: string;
         };
         Relationships: [];
+      };
+      shared_award_source_acquisitions: {
+        Row: {
+          id: string;
+          shared_award_source_id: string;
+          acquisition_kind: SourceAcquisitionKind;
+          notification_mode: SourceAcquisitionNotificationMode;
+          origin_source_page_request_id: string | null;
+          origin_worker_run_id: string | null;
+          parent_shared_award_source_id: string | null;
+          onboarding_batch_id: string | null;
+          review_seal: Json;
+          metadata: Json;
+          acquired_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          shared_award_source_id: string;
+          acquisition_kind: SourceAcquisitionKind;
+          notification_mode: SourceAcquisitionNotificationMode;
+          origin_source_page_request_id?: string | null;
+          origin_worker_run_id?: string | null;
+          parent_shared_award_source_id?: string | null;
+          onboarding_batch_id?: string | null;
+          review_seal?: Json;
+          metadata?: Json;
+          acquired_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          shared_award_source_id?: string;
+          acquisition_kind?: SourceAcquisitionKind;
+          notification_mode?: SourceAcquisitionNotificationMode;
+          origin_source_page_request_id?: string | null;
+          origin_worker_run_id?: string | null;
+          parent_shared_award_source_id?: string | null;
+          onboarding_batch_id?: string | null;
+          review_seal?: Json;
+          metadata?: Json;
+          acquired_at?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_source_acquisitions_shared_award_source_id_fkey";
+            columns: ["shared_award_source_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      shared_award_source_discovery_states: {
+        Row: {
+          shared_award_source_id: string;
+          pdf_seed_completed_at: string;
+          last_pdf_scan_at: string;
+          last_worker_run_id: string | null;
+          metadata: Json;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          shared_award_source_id: string;
+          pdf_seed_completed_at: string;
+          last_pdf_scan_at: string;
+          last_worker_run_id?: string | null;
+          metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          shared_award_source_id?: string;
+          pdf_seed_completed_at?: string;
+          last_pdf_scan_at?: string;
+          last_worker_run_id?: string | null;
+          metadata?: Json;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_source_discovery_states_shared_award_source_id_fkey";
+            columns: ["shared_award_source_id"];
+            isOneToOne: true;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      shared_award_source_discovered_links: {
+        Row: {
+          parent_shared_award_source_id: string;
+          url_hash: string;
+          normalized_url: string;
+          link_kind: "pdf";
+          notification_mode: SourceDiscoveryNotificationMode;
+          onboarding_batch_id: string | null;
+          first_worker_run_id: string | null;
+          last_worker_run_id: string | null;
+          source_page_request_id: string | null;
+          prior_source_page_request_id: string | null;
+          notification_disposition: SourceDiscoveryNotificationDisposition;
+          request_queued_at: string | null;
+          metadata: Json;
+          first_seen_at: string;
+          last_seen_at: string;
+        };
+        Insert: {
+          parent_shared_award_source_id: string;
+          url_hash: string;
+          normalized_url: string;
+          link_kind?: "pdf";
+          notification_mode: SourceDiscoveryNotificationMode;
+          onboarding_batch_id?: string | null;
+          first_worker_run_id?: string | null;
+          last_worker_run_id?: string | null;
+          source_page_request_id?: string | null;
+          prior_source_page_request_id?: string | null;
+          notification_disposition?: SourceDiscoveryNotificationDisposition;
+          request_queued_at?: string | null;
+          metadata?: Json;
+          first_seen_at?: string;
+          last_seen_at?: string;
+        };
+        Update: {
+          parent_shared_award_source_id?: string;
+          url_hash?: string;
+          normalized_url?: string;
+          link_kind?: "pdf";
+          notification_mode?: SourceDiscoveryNotificationMode;
+          onboarding_batch_id?: string | null;
+          first_worker_run_id?: string | null;
+          last_worker_run_id?: string | null;
+          source_page_request_id?: string | null;
+          prior_source_page_request_id?: string | null;
+          notification_disposition?: SourceDiscoveryNotificationDisposition;
+          request_queued_at?: string | null;
+          metadata?: Json;
+          first_seen_at?: string;
+          last_seen_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "shared_award_source_discovered_links_parent_shared_award_source_id_fkey";
+            columns: ["parent_shared_award_source_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       shared_award_source_snapshots: {
         Row: {
@@ -2210,6 +2411,10 @@ export type Database = {
           deterministic_review: Json;
           discovered_links: Json;
           capture_metadata: Json;
+          acquisition_kind: SourceAcquisitionKind;
+          notification_mode: SourceAcquisitionNotificationMode;
+          parent_shared_award_source_id: string | null;
+          onboarding_batch_id: string | null;
           worker_run_id: string | null;
           processed_at: string | null;
           failed_at: string | null;
@@ -2238,6 +2443,10 @@ export type Database = {
           deterministic_review?: Json;
           discovered_links?: Json;
           capture_metadata?: Json;
+          acquisition_kind?: SourceAcquisitionKind;
+          notification_mode?: SourceAcquisitionNotificationMode;
+          parent_shared_award_source_id?: string | null;
+          onboarding_batch_id?: string | null;
           worker_run_id?: string | null;
           processed_at?: string | null;
           failed_at?: string | null;
@@ -2264,6 +2473,10 @@ export type Database = {
           deterministic_review?: Json;
           discovered_links?: Json;
           capture_metadata?: Json;
+          acquisition_kind?: SourceAcquisitionKind;
+          notification_mode?: SourceAcquisitionNotificationMode;
+          parent_shared_award_source_id?: string | null;
+          onboarding_batch_id?: string | null;
           worker_run_id?: string | null;
           processed_at?: string | null;
           failed_at?: string | null;
@@ -3204,6 +3417,143 @@ export type Database = {
           change_event_id: string;
           evidence_id: string;
           inserted: boolean;
+        }>;
+      };
+      publish_shared_award_initial_document_event: {
+        Args: {
+          p_event: Json;
+          p_evidence: Json;
+        };
+        Returns: Array<{
+          change_event_id: string;
+          evidence_id: string;
+          inserted: boolean;
+        }>;
+      };
+      refresh_shared_award_initial_document_candidate_policy: {
+        Args: {
+          p_candidate_id: string;
+          p_publication_claim_token: string;
+          p_candidate_signature: string;
+          p_monitoring_policy: Json;
+          p_monitoring_policy_bundle: Json;
+          p_policy_guard: Json;
+        };
+        Returns: Array<{
+          candidate_id: string;
+          candidate_signature: string;
+          refreshed: boolean;
+        }>;
+      };
+      record_initial_official_document_quarantine: {
+        Args: {
+          p_source_id: string;
+          p_acquisition_id: string;
+          p_reason_code: string;
+          p_evidence?: Json;
+        };
+        Returns: string;
+      };
+      resolve_initial_official_document_quarantine: {
+        Args: {
+          p_acquisition_id: string;
+          p_candidate_id: string;
+        };
+        Returns: boolean;
+      };
+      record_r2_baseline_recovery_quarantine: {
+        Args: {
+          p_source_id: string;
+          p_reason_code: string;
+          p_evidence: Json;
+        };
+        Returns: string;
+      };
+      resolve_r2_baseline_recovery_quarantine: {
+        Args: {
+          p_source_id: string;
+          p_evidence: Json;
+        };
+        Returns: boolean;
+      };
+      bind_shared_award_discovered_link_request: {
+        Args: {
+          p_parent_source_id: string;
+          p_normalized_url: string;
+          p_source_page_request_id: string;
+        };
+        Returns: boolean;
+      };
+      create_and_bind_shared_award_discovered_link_request: {
+        Args: {
+          p_parent_source_id: string;
+          p_normalized_url: string;
+          p_request: Json;
+        };
+        Returns: Array<{
+          source_page_request_id: string | null;
+          created: boolean;
+          notification_disposition: SourceDiscoveryNotificationDisposition;
+          prior_source_page_request_id: string | null;
+          quarantine_required: boolean;
+        }>;
+      };
+      record_shared_award_discovered_link_quarantine: {
+        Args: {
+          p_parent_source_id: string;
+          p_normalized_url: string;
+          p_prior_source_page_request_id: string;
+          p_evidence?: Json;
+        };
+        Returns: string;
+      };
+      resolve_shared_award_discovered_link_quarantine: {
+        Args: {
+          p_parent_source_id: string;
+          p_normalized_url: string;
+          p_action: "bind_eligible_live_request" | "approve_new_live_review";
+          p_actor: string;
+          p_actor_user_id: string;
+          p_expected_evidence_hash: string;
+          p_source_page_request_id?: string | null;
+        };
+        Returns: Array<{
+          bound_source_page_request_id: string;
+          created: boolean;
+          resolved: boolean;
+        }>;
+      };
+      register_shared_award_source_from_intake: {
+        Args: {
+          p_source: Json;
+          p_acquisition: Json;
+        };
+        Returns: Array<{
+          source_id: string;
+          acquisition_id: string | null;
+          source_inserted: boolean;
+          effective_notification_mode: SourceAcquisitionNotificationMode;
+          effective_disposition_reason: string;
+        }>;
+      };
+      register_shared_award_source_pdf_links: {
+        Args: {
+          p_source_id: string;
+          p_urls: Json;
+          p_worker_run_id?: string | null;
+          p_live_requested?: boolean;
+          p_onboarding_batch_id?: string | null;
+          p_metadata?: Json;
+          p_scan_complete?: boolean;
+        };
+        Returns: Array<{
+          normalized_url: string;
+          notification_mode: SourceDiscoveryNotificationMode;
+          onboarding_batch_id: string | null;
+          source_page_request_id: string | null;
+          prior_source_page_request_id: string | null;
+          notification_disposition: SourceDiscoveryNotificationDisposition;
+          first_seen: boolean;
         }>;
       };
       retire_shared_award_source_preserving_visual_history: {

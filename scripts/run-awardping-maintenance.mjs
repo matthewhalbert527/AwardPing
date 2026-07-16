@@ -49,6 +49,14 @@ const discoveryMaxHtmlSubpageDiscoveries = boundedInt(args["discovery-max-html-s
 const discoveryMaxPerAward = boundedInt(args["discovery-max-per-award"], 5, 0, 500);
 const discoveryMaxPerSource = boundedInt(args["discovery-max-per-source"], 3, 0, 100);
 const discoveryMaxPerDomain = boundedInt(args["discovery-max-per-domain"], 100, 0, 10_000);
+const discoveryIntent = cleanChoice(
+  args["discovery-intent"],
+  ["live_recurring", "historical_onboarding"],
+  "historical_onboarding",
+);
+const discoveryOnboardingBatchId = String(
+  args["discovery-onboarding-batch-id"] || `maintenance-discovery-${runStamp}`,
+).trim();
 const sourceIntakeLimit = positiveInt(args["source-intake-limit"], profile === "daily" ? 25 : 250);
 const sourceIntakeMaxRequestsPerBatch = positiveInt(args["source-intake-max-requests-per-batch"], 100);
 const sourceIntakeGeminiMode = cleanChoice(args["source-intake-gemini-api-mode"], ["batch", "none"], "batch");
@@ -224,10 +232,14 @@ async function runVisualSnapshots(completeMissing) {
       "--include-section-text-in-main-hash=false",
       "--capture-section-evidence=false",
       completeMissing ? "--visual-review-mode=none" : "--visual-review-mode=batch",
-      "--discovery-mode=false",
-      "--discover-pdf-subpages=false",
+      completeMissing ? "--discovery-mode=false" : "--discovery-mode=true",
+      completeMissing ? "--discovery-intent=historical_onboarding" : "--discovery-intent=live_recurring",
+      completeMissing ? "--discover-pdf-subpages=false" : "--discover-pdf-subpages=true",
       "--discover-html-subpages=false",
       "--max-html-subpage-discoveries=0",
+      `--max-discoveries-per-award=${discoveryMaxPerAward}`,
+      `--max-discoveries-per-source=${discoveryMaxPerSource}`,
+      `--max-discoveries-per-domain=${discoveryMaxPerDomain}`,
     ];
 
     if (completeMissing) {
@@ -270,6 +282,7 @@ async function runSourceDiscovery() {
       "--interpret-visual-changes=false",
       "--visual-review-mode=none",
       "--discovery-mode=true",
+      `--discovery-intent=${discoveryIntent}`,
       "--discover-pdf-subpages=true",
       "--discover-html-subpages=true",
       `--max-html-subpage-discoveries=${discoveryMaxHtmlSubpageDiscoveries}`,
@@ -277,6 +290,9 @@ async function runSourceDiscovery() {
       `--max-discoveries-per-source=${discoveryMaxPerSource}`,
       `--max-discoveries-per-domain=${discoveryMaxPerDomain}`,
     ];
+    if (discoveryIntent === "historical_onboarding") {
+      commandArgs.push(`--discovery-onboarding-batch-id=${discoveryOnboardingBatchId}`);
+    }
     jobs.push(runPhase(phaseName, commandArgs));
   }
 

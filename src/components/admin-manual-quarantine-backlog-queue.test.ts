@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AdminManualQuarantineBacklogQueue,
   manualQuarantineBulkEligibility,
+  manualQuarantineDiscoveryResolutionEligibility,
   refreshManualQuarantineQueue,
   shouldRetainManualQuarantineRequestId,
 } from "@/components/admin-manual-quarantine-backlog-queue";
@@ -140,6 +141,50 @@ describe("AdminManualQuarantineBacklogQueue", () => {
       startReview: false,
       unassignOwn: true,
     });
+  });
+
+  it("shows the explicit budgeted resolution only for an owned in-review discovery conflict", () => {
+    const conflict = manualQuarantineBacklogItem({
+      assignedToEmail: "operator@example.com",
+      assignedToUserId: "30000000-0000-4000-8000-000000000003",
+      category: "initial_document",
+      quarantineKey: "discovered-pdf-notification:source:hash",
+      status: "in_review",
+    });
+
+    expect(
+      manualQuarantineDiscoveryResolutionEligibility(
+        conflict,
+        "30000000-0000-4000-8000-000000000003",
+        "operator@example.com",
+      ),
+    ).toEqual({ visible: true, allowed: true });
+    expect(
+      manualQuarantineDiscoveryResolutionEligibility(
+        { ...conflict, status: "quarantined" },
+        "30000000-0000-4000-8000-000000000003",
+        "operator@example.com",
+      ),
+    ).toEqual({ visible: true, allowed: false });
+    expect(
+      manualQuarantineDiscoveryResolutionEligibility(
+        manualQuarantineBacklogItem(),
+        "30000000-0000-4000-8000-000000000003",
+        "operator@example.com",
+      ),
+    ).toEqual({ visible: false, allowed: false });
+
+    const html = renderToStaticMarkup(
+      createElement(AdminManualQuarantineBacklogQueue, {
+        available: true,
+        currentUserEmail: "operator@example.com",
+        currentUserId: "30000000-0000-4000-8000-000000000003",
+        items: [conflict],
+        refreshHref: "/dashboard/admin/issues?tab=quarantine",
+      }),
+    );
+    expect(html).toContain("Approve one New Page Review (may charge)");
+    expect(html).toContain("$5/day New Page Review lane");
   });
 
   it("retains idempotency keys only when the outcome is ambiguous", () => {

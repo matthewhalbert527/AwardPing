@@ -72,7 +72,7 @@ export function displayChangeSummary(
   changeDetails?: unknown,
 ) {
   const clean = rewritePathSourceLabel(
-    cleanDisplayText(changeDetailsToSummary(changeDetails, summary)),
+    cleanChangeDisplayText(changeDetailsToSummary(changeDetails, summary)),
     sourceUrl,
   );
   const url = String(sourceUrl || "").toLowerCase();
@@ -838,16 +838,16 @@ function cleanDiffText(value: string) {
 }
 
 function normalizeDiffSentence(value: string) {
-  const clean = cleanDisplayText(value).replace(/\.\.+$/g, ".");
+  const clean = cleanChangeDisplayText(value).replace(/\.\.+$/g, ".");
   if (!clean) return "";
 
-  return /[.!?]$/.test(clean) ? clean : `${clean}.`;
+  return /[.!?](?:["'\u2019\u201d)\]]*)$/.test(clean) ? clean : `${clean}.`;
 }
 
 function displayParts(input: { label: string; text: string }) {
   const text = input.text
     .split(/\n+/)
-    .map((line) => cleanDisplayText(line))
+    .map((line) => cleanChangeDisplayText(line))
     .filter(Boolean)
     .join("\n")
     .replace(/[ \t\r\f\v]+/g, " ")
@@ -859,6 +859,10 @@ function displayParts(input: { label: string; text: string }) {
     text,
     paragraphs: readableChangeParagraphs(text),
   };
+}
+
+function cleanChangeDisplayText(value: string | null | undefined) {
+  return cleanDisplayText(value).replace(/\bAward Ping\b/g, "AwardPing");
 }
 
 function readableChangeParagraphs(value: string) {

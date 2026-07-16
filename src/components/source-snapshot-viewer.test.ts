@@ -87,4 +87,29 @@ describe("source snapshot viewer evidence selection", () => {
     expect(genericLabel).toBe("Approximate text match in this retained source snapshot");
     expect(genericLabel).not.toMatch(/changed section/i);
   });
+
+  it("labels first-observed PDF evidence without calling it a changed screenshot", () => {
+    const label = snapshotLocalizationLabel(
+      {
+        captured_at: "2026-07-16T18:00:00.000Z",
+        kind: "pdf",
+        localization_reason:
+          "This PDF is AwardPing's first retained observation; no prior publisher version is asserted.",
+        objects: {
+          full: {
+            key: "visual-snapshots/published/event-1/current/document.pdf",
+            url: "https://signed.test/document.pdf",
+            content_type: "application/pdf",
+          },
+        },
+      },
+      null,
+      "change_event",
+    );
+
+    expect(label).toBe(
+      "Immutable event PDF - This PDF is AwardPing's first retained observation; no prior publisher version is asserted.",
+    );
+    expect(label).not.toMatch(/changed screenshot|full event screenshot|today/i);
+  });
 });

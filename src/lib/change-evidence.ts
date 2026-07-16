@@ -37,6 +37,9 @@ export type ChangeEvidence = {
   hasSnapshotEvidence: boolean;
   hasSummaryEvidence: boolean;
   hasStructuredEvidence: boolean;
+  isFirstObservation: boolean;
+  firstObservedAt: string | null;
+  recognizedAt: string | null;
 };
 
 export function buildChangeEvidence(input: ChangeEvidenceInput): ChangeEvidence {
@@ -44,7 +47,8 @@ export function buildChangeEvidence(input: ChangeEvidenceInput): ChangeEvidence 
   const nextClean = normalizeEvidenceText(input.newTextSample || "");
   const rawHasSnapshotEvidence = Boolean(previousClean || nextClean);
   const details = parseChangeDetails(input.changeDetails);
-  const detailsAlreadyInComparison = details
+  const isFirstObservation = details?.event_kind === "new_official_document";
+  const detailsAlreadyInComparison = details && !isFirstObservation
     ? structuredDetailsAlreadyInComparison(details, previousClean, nextClean)
     : false;
   const detailsMeaningful = details
@@ -70,7 +74,7 @@ export function buildChangeEvidence(input: ChangeEvidenceInput): ChangeEvidence 
   const addedSnippets = previousClean && nextClean && !suppressSnapshotEvidence
     ? changedSentences(previousClean, nextClean, "added").slice(0, 3)
     : [];
-  const removedSnippets = previousClean && nextClean && !suppressSnapshotEvidence
+  const removedSnippets = !isFirstObservation && previousClean && nextClean && !suppressSnapshotEvidence
     ? changedSentences(previousClean, nextClean, "removed").slice(0, 3)
     : [];
   const fallback = suppressSnapshotEvidence
@@ -84,7 +88,7 @@ export function buildChangeEvidence(input: ChangeEvidenceInput): ChangeEvidence 
         fallback.after ||
         firstMeaningfulSentence(nextClean) ||
         truncateEvidence(nextClean, 240);
-  const beforeSnippet = suppressSnapshotEvidence
+  const beforeSnippet = isFirstObservation || suppressSnapshotEvidence
     ? null
     : details
       ? unrelatedStructuredPair
@@ -112,7 +116,7 @@ export function buildChangeEvidence(input: ChangeEvidenceInput): ChangeEvidence 
           ...(includeSnapshotSentenceSnippets ? addedSnippets : []),
         ])
       : evidenceSnippetList([afterSnippet, ...addedSnippets]);
-  const previousSnippets = suppressSnapshotEvidence
+  const previousSnippets = isFirstObservation || suppressSnapshotEvidence
     ? []
     : details
       ? evidenceSnippetList([
@@ -145,6 +149,9 @@ export function buildChangeEvidence(input: ChangeEvidenceInput): ChangeEvidence 
     hasSnapshotEvidence,
     hasSummaryEvidence: Boolean(summaryEvidence?.text || details?.reader_summary),
     hasStructuredEvidence: Boolean(details && detailsMeaningful),
+    isFirstObservation,
+    firstObservedAt: isFirstObservation ? details?.first_observed_at || null : null,
+    recognizedAt: isFirstObservation ? details?.recognized_at || null : null,
   };
 }
 
@@ -546,7 +553,7 @@ function descriptionSourceLabel(
 }
 
 function normalizeEvidenceText(value: string) {
-  return cleanDisplayText(value);
+  return cleanDisplayText(value).replace(/\bAward Ping\b/g, "AwardPing");
 }
 
 function commonPrefixLength(left: string, right: string) {

@@ -363,6 +363,58 @@ describe("change summary filtering", () => {
     });
   });
 
+  it("renders first-observed documents without asserting a publisher-side change date", () => {
+    const changeDetails = {
+      event_kind: "new_official_document",
+      reader_summary: "The publisher posted this new PDF today.",
+      before: null,
+      after: "Personal statement: 750 words maximum.",
+      exact_before: null,
+      exact_after: "Personal statement: 750 words maximum.",
+      section: "Application requirements",
+      change_type: "new_official_document",
+      advisor_impact: "Review the first-observed guidance before advising applicants.",
+      is_alert_worthy: true,
+      confidence: "high",
+      structured_diff: {
+        added_text: ["Personal statement: 750 words maximum."],
+        removed_text: [],
+        likely_section: "Application requirements",
+        page_type: "pdf",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+      source: {},
+      quality_flags: [],
+      generated_at: "2026-07-16T18:00:00.000Z",
+    };
+
+    expect(isUsefulChangeSummary("The publisher posted this new PDF today.", changeDetails)).toBe(
+      true,
+    );
+    expect(
+      displayChangeSummary(
+        "The publisher posted this new PDF today.",
+        "https://example.edu/2027-guidance.pdf",
+        changeDetails,
+      ),
+    ).toBe(
+      'AwardPing first observed this official document for the award. The document includes: "Personal statement: 750 words maximum."',
+    );
+    expect(
+      changeSummaryDisplayParts(
+        "The publisher posted this new PDF today.",
+        "https://example.edu/2027-guidance.pdf",
+        "2027 application guidance",
+        changeDetails,
+      ),
+    ).toMatchObject({
+      label: "New official document",
+      text: 'AwardPing first observed this official document for the award. The document includes: "Personal statement: 750 words maximum."',
+    });
+  });
+
   it("hides structured changes that fail the quality gate", () => {
     expect(
       isUsefulChangeSummary("The page was updated.", {

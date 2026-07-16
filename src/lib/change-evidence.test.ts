@@ -834,6 +834,56 @@ describe("change evidence", () => {
     expect(evidence.highlightedUrl).toBeNull();
   });
 
+  it("treats a new official document as a current-only first observation", () => {
+    const currentWording = "Candidates must submit two letters of recommendation.";
+    const evidence = buildChangeEvidence({
+      sourceUrl: "https://example.edu/2027-guidance.pdf",
+      sourceTitle: "2027 application guidance",
+      summary: "The publisher posted this PDF today.",
+      previousTextSample: "A fabricated previous version must never be shown.",
+      newTextSample: currentWording,
+      changeDetails: {
+        event_kind: "new_official_document",
+        reader_summary: "The publisher posted this PDF today.",
+        before: "A fabricated previous version must never be shown.",
+        after: currentWording,
+        exact_before: "A fabricated previous version must never be shown.",
+        exact_after: currentWording,
+        section: "Application requirements",
+        change_type: "new_official_document",
+        advisor_impact: "Review the guidance before advising applicants.",
+        is_alert_worthy: true,
+        confidence: "high",
+        structured_diff: {
+          added_text: [currentWording],
+          removed_text: ["A fabricated previous version must never be shown."],
+          likely_section: "Application requirements",
+          page_type: "pdf",
+          date_changes: [],
+          amount_changes: [],
+          noise_flags: [],
+        },
+        source: {},
+        quality_flags: [],
+        first_observed_at: "2026-06-21T14:00:00.000Z",
+        recognized_at: "2026-07-16T18:00:00.000Z",
+        generated_at: "2026-07-16T18:00:00.000Z",
+      },
+    });
+
+    expect(evidence.isFirstObservation).toBe(true);
+    expect(evidence.firstObservedAt).toBe("2026-06-21T14:00:00.000Z");
+    expect(evidence.recognizedAt).toBe("2026-07-16T18:00:00.000Z");
+    expect(evidence.changeTypeLabel).toBe("New official document");
+    expect(evidence.summarySnippet).toBe(
+      `AwardPing first observed this official document for the award. The document includes: "${currentWording}"`,
+    );
+    expect(evidence.currentSnippets).toContain(currentWording);
+    expect(evidence.beforeSnippet).toBeNull();
+    expect(evidence.previousSnippets).toEqual([]);
+    expect(evidence.removedSnippets).toEqual([]);
+  });
+
   it("encodes highlighted official-page text", () => {
     expect(
       buildTextFragmentUrl("https://example.edu/award?cycle=2026", "Finalists upload transcripts"),

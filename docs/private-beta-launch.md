@@ -16,7 +16,7 @@ Then check launch-specific wiring against the env file you intend to use:
 npm run launch:check -- --env .env.production.local --production
 ```
 
-The launch check validates required env names, cron config, migrations, job-run observability, pipeline tables, free-service copy, and billing redirects. It does not print secret values.
+The launch check validates required env names, digest cron config, migrations, job-run observability, pipeline tables, free-service copy, and billing redirects. It does not print secret values. Source monitoring itself runs on the local 6 PM visual-capture shards and independently leased downstream lanes.
 
 ## 2. Prepare Supabase
 
@@ -25,11 +25,16 @@ Create or select the production Supabase project, then apply every migration in 
 ```bash
 npx supabase@latest link --project-ref <supabase-project-ref>
 npx supabase@latest db dump --linked --schema public --file /tmp/awardping-remote-public-schema.sql
-npx supabase@latest db push
+npx supabase@latest db push --linked
+npx supabase@latest migration list --linked
 npm run seed:shared-awards
 ```
 
-If the CLI is not authenticated, run `npx supabase@latest login` first. Before `db push`, inspect the dumped schema and confirm the project is empty or already AwardPing-only. Do not push these migrations into a shared or unrelated Supabase database. If SQL editor is used instead, run `supabase/migrations/0001_initial.sql` through `0007_shared_award_catalog.sql` in filename order.
+If the CLI is not authenticated, run `npx supabase@latest login` first. Before `db push`, inspect the dumped schema and confirm the project is empty or already AwardPing-only. Do not push these migrations into a shared or unrelated Supabase database. Confirm `migration list --linked` shows every local migration on the remote side and no local-only rows remain.
+
+If SQL Editor is used instead, run **every** `.sql` file currently present in `supabase/migrations` in filename order. Do not stop at `0007_shared_award_catalog.sql`; the required sequence includes `20260716150000_initial_official_document_events.sql`, which adds immutable first-observation provenance and publication support for newly discovered official documents, followed by `20260716152833_source_intake_fact_candidate_idempotency.sql`, which makes retained-result fact replay duplicate-safe, and then `20260716161529_r2_baseline_recovery_quarantine.sql`, which atomically protects a source and creates a source-keyed operator case when authoritative R2 recovery fails.
+
+Before updating the installed worker, confirm the last migration is present remotely. Its service-role RPCs keep an R2 recovery failure in `review_later` and in Manual Quarantine until the worker verifies and restores the exact immutable R2 generation. Generic quarantine refreshes cannot close that case, and the recovery itself creates no API charge. Broad scans continue to exclude the protected source; use only the worker's exact-source recovery invocation to retry it. Exact recovery resolves the R2 case, but it reopens and clears source failure fields only if the R2 workflow still owns the exact `review_later` status, owner, and note; any later unrelated review is preserved.
 
 In Supabase Auth, set:
 
@@ -90,13 +95,13 @@ Run a non-mutating route smoke test:
 npm run launch:smoke -- --url https://<production-domain>
 ```
 
-Then run the cron smoke only when you are ready to create real `job_runs` rows and perform due monitor/digest work:
+Then run the cron smoke only when you are ready to create a real digest `job_runs` row and perform due digest delivery work:
 
 ```bash
 npm run launch:smoke -- --url https://<production-domain> --cron-secret "$CRON_SECRET" --run-cron
 ```
 
-After the cron smoke, log in as an owner/admin and open `/dashboard/ops`. Confirm the latest check and digest runs are recorded, failed email deliveries are visible, and monitor errors are understandable.
+After the cron smoke, log in as an owner/admin and open `/dashboard/ops`. Confirm the local worker and downstream lanes are healthy, shared-source failures are understandable, the latest digest run is recorded, and failed email deliveries are visible. Historical user-level monitor timestamps and errors are not worker health signals.
 
 ## 6. First Advisor Workflow
 
@@ -105,7 +110,7 @@ Before inviting more users, complete this path with a beta account:
 1. Sign up for free and reach `/dashboard`.
 2. Confirm the default office exists.
 3. Use `/award-directory` to find an award, then add it to the watchlist after login.
-4. Open the watchlist and run a manual check.
+4. Open the watchlist and confirm its tracked sources are assigned to the scheduled visual worker; the retired manual text check is intentionally unavailable.
 5. Move the saved award through the pipeline.
 6. Add one note and one task.
 7. Send and accept one office invite.

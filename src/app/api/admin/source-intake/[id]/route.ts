@@ -3,7 +3,13 @@ import { z } from "zod";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
-import { sourceIntakeActionAllowedWithContext } from "@/lib/source-intake-operator-actions";
+import {
+  FREE_RECONCILIATION_FAILURE_REASON,
+  sourceIntakeActionAllowedWithContext,
+  sourceIntakeProtectedRecovery,
+  sourceIntakeReconciliationRetryEligibility,
+  sourceIntakeReconciliationRetryPatch,
+} from "@/lib/source-intake-operator-actions";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -11,6 +17,7 @@ export const runtime = "nodejs";
 const actionSchema = z.object({
   action: z.enum([
     "retry",
+    "retry_reconciliation",
     "reject",
     "attach_to_award",
     "approve_as_new_award",
@@ -38,16 +45,11 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   const admin = createSupabaseAdminClient();
-  const reason = parsed.data.reason || manualReason(parsed.data.action);
   const now = new Date().toISOString();
-  const patch = patchForAction(parsed.data, reason, now);
-  if (!patch.ok) {
-    return NextResponse.json({ ok: false, error: patch.error }, { status: 400 });
-  }
 
   const { data: current, error: currentError } = await admin
     .from("source_page_requests")
-    .select("status,status_reason,ai_review,updated_at")
+    .select("id,status,status_reason,ai_review,capture_metadata,acquisition_kind,notification_mode,onboarding_batch_id,updated_at")
     .eq("id", id)
     .maybeSingle();
   if (currentError) {
@@ -56,19 +58,36 @@ export async function PATCH(request: Request, context: RouteContext) {
   if (!current) {
     return NextResponse.json({ ok: false, error: "Source intake request not found." }, { status: 404 });
   }
+  const actionContext = {
+    statusReason: current.status_reason,
+    aiReview: current.ai_review,
+    captureMetadata: current.capture_metadata,
+    requestId: current.id,
+    acquisitionKind: current.acquisition_kind,
+    notificationMode: current.notification_mode,
+    onboardingBatchId: current.onboarding_batch_id,
+  };
+  const protectedRecovery = sourceIntakeProtectedRecovery(current.status, actionContext);
   if (
-    !sourceIntakeActionAllowedWithContext(parsed.data.action, current.status, {
-      statusReason: current.status_reason,
-      aiReview: current.ai_review,
-    })
+    !sourceIntakeActionAllowedWithContext(parsed.data.action, current.status, actionContext)
   ) {
+    const retryEligibility = parsed.data.action === "retry_reconciliation"
+      ? sourceIntakeReconciliationRetryEligibility(current.status, actionContext)
+      : null;
     return NextResponse.json(
       {
         ok: false,
-        error: `This request is ${current.status}. Active or ambiguous Gemini submissions must finish or be resolved before that action.`,
+        error: (protectedRecovery.protected ? protectedRecovery.explanation : retryEligibility?.explanation)
+          || `This request is ${current.status}. Active or ambiguous Gemini submissions must finish or be resolved before that action.`,
       },
       { status: 409 },
     );
+  }
+
+  const reason = parsed.data.reason || manualReason(parsed.data.action);
+  const patch = patchForAction(parsed.data, reason, now);
+  if (!patch.ok) {
+    return NextResponse.json({ ok: false, error: patch.error }, { status: 400 });
   }
 
   const { data, error } = await admin
@@ -90,7 +109,60 @@ export async function PATCH(request: Request, context: RouteContext) {
     );
   }
 
-  return NextResponse.json({ ok: true, request: data });
+  const disclosure = protectedActionDisclosure(
+    parsed.data.action,
+    protectedRecovery,
+    current.status_reason,
+  );
+  return NextResponse.json({
+    ok: true,
+    request: data,
+    message: disclosure.message,
+    retry: disclosure.retry,
+  });
+}
+
+function protectedActionDisclosure(
+  action: z.infer<typeof actionSchema>["action"],
+  recovery: ReturnType<typeof sourceIntakeProtectedRecovery>,
+  statusReason: string | null,
+) {
+  if (recovery.protected) {
+    const messages = {
+      retry_capture_may_charge:
+        "Capture retry queued. AwardPing will fetch the page again; its first AI review may create a charge.",
+      resume_staged_capture_may_charge:
+        "Saved-capture resume queued. AwardPing will resume the exact staged capture without refetching the page; its first AI review may create a charge.",
+      rerun_ai_review_may_charge:
+        "AI review queued for the verified saved capture. AwardPing will not refetch the page; this review may create a charge.",
+      replay_retained_result_no_charge:
+        "Free retained-result replay queued. AwardPing will reuse the verified capture and accepted AI result; it will not refetch the page or rerun AI.",
+      manual_only: "Request updated.",
+      ordinary: "Request updated.",
+    } as const;
+    return {
+      message: action === "reject" ? "Request rejected." : messages[recovery.mode],
+      retry: action === "reject" ? undefined : {
+        api_charge: recovery.apiCharge,
+        creates_api_charge: recovery.apiCharge === "may_charge",
+        refetches_page: recovery.refetchesPage,
+        runs_ai_review: recovery.runsAiReview,
+      },
+    };
+  }
+  if (action === "retry_reconciliation") {
+    return {
+      message: "Free reconciliation retry queued. AwardPing will reuse the stored accepted AI result and retained capture; it will not refetch the page or rerun AI.",
+      retry: { api_charge: "none", creates_api_charge: false, refetches_page: false, runs_ai_review: false },
+    };
+  }
+  if (action === "retry" && statusReason === FREE_RECONCILIATION_FAILURE_REASON) {
+    return {
+      message: "Page-and-review retry queued for this ordinary source. AwardPing may fetch the page again and the AI review may create a charge.",
+      retry: { api_charge: "may_charge", creates_api_charge: true, refetches_page: true, runs_ai_review: true },
+    };
+  }
+  return { message: "Request updated.", retry: undefined };
 }
 
 function patchForAction(
@@ -111,6 +183,13 @@ function patchForAction(
         processed_at: now,
         updated_at: now,
       },
+    };
+  }
+
+  if (data.action === "retry_reconciliation") {
+    return {
+      ok: true,
+      value: sourceIntakeReconciliationRetryPatch(now),
     };
   }
 
@@ -201,6 +280,7 @@ function patchForAction(
 
 function manualReason(action: string) {
   if (action === "retry") return "manual_retry_requested";
+  if (action === "retry_reconciliation") return "manual_reconciliation_retry_requested";
   if (action === "reject") return "manual_reject_requested";
   if (action === "attach_to_award") return "manual_attach_to_existing_award_requested";
   if (action === "approve_as_new_award") return "manual_approve_as_new_award_requested";

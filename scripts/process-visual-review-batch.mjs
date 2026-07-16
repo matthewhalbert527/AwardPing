@@ -11,6 +11,7 @@ import {
   fileToInlineGeminiPart,
   latestVisualReviewPolicyDecision,
   normalizeVisualBatchResult,
+  rebuildInitialOfficialDocumentCandidateForCurrentPolicy,
   rebuildVisualReviewCandidateForCurrentPolicy,
   refreshVisualReviewPromptPayloadPolicy,
   visualHashFromCandidate,
@@ -26,7 +27,23 @@ import { assertVisualReviewBatchPolicyCoverage } from "./lib/award-monitoring-po
 import { recordVisualRejectionLedger } from "./lib/visual-rejection-ledger.mjs";
 import { acquireVisualReviewPublicationClaim } from "./lib/visual-publication-claim.mjs";
 import { persistVisualChangeAndReconciliation } from "./lib/visual-change-publication.mjs";
-import { preparePublishedVisualEventEvidence } from "./lib/visual-event-evidence.mjs";
+import {
+  isDeterministicVisualArtifactError,
+  preparePublishedInitialOfficialDocumentEvidence,
+  preparePublishedVisualEventEvidence,
+} from "./lib/visual-event-evidence.mjs";
+import {
+  restoreInitialOfficialDocumentCandidateArtifactsFromR2,
+} from "./lib/r2-baseline-rehydration.mjs";
+import {
+  restoreInitialOfficialDocumentCandidateArtifactsFromAcquisition,
+} from "./lib/intake-artifact-retention.mjs";
+import {
+  INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+  initialOfficialDocumentEventTimes,
+  initialOfficialDocumentPublicationDecision,
+  initialOfficialDocumentSourceIdentityDecision,
+} from "./lib/initial-official-document.mjs";
 import {
   compareVisualCandidateOrder,
   findBlockingPriorVisualPublication,
@@ -238,6 +255,17 @@ const report = {
   event_evidence_verified: 0,
   event_evidence_full_fallback: 0,
   event_evidence_upload_failed: 0,
+  initial_official_documents_published: 0,
+  initial_official_document_duplicates: 0,
+  initial_official_document_rejected: 0,
+  initial_official_document_quarantined: 0,
+  initial_official_document_retry_pending: 0,
+  initial_official_document_r2_restore_attempted: 0,
+  initial_official_document_r2_artifacts_restored: 0,
+  initial_official_document_r2_restore_failed: 0,
+  initial_official_document_acquisition_restore_attempted: 0,
+  initial_official_document_acquisition_restore_succeeded: 0,
+  initial_official_document_acquisition_restore_failed: 0,
   verified_event_crop_sides: 0,
   unavailable_event_crop_sides: 0,
   event_evidence_failures: [],
@@ -388,7 +416,9 @@ async function reconcileStoredSucceededCandidates() {
   );
   for (const candidate of candidates) {
     try {
-      const usage = normalizeGeminiUsage(candidate.actual_usage);
+      const usage = candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE
+        ? {}
+        : normalizeGeminiUsage(candidate.actual_usage);
       const result = candidate.ai_result;
       const claim = await claimCompletedCandidatePublication(candidate, result, usage);
       if (!claim.acquired) {
@@ -1521,8 +1551,41 @@ async function publishCandidateResultUnlocked({
     return { status: "rejected", reason: "source_not_open" };
   }
 
-  const sourceIdentity = visualReviewSourceIdentityFreshness(candidate, source);
+  const initialDocumentCandidate = candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE;
+  const sourceIdentity = initialDocumentCandidate
+    ? initialOfficialDocumentSourceIdentityDecision({ candidate, source })
+    : visualReviewSourceIdentityFreshness(candidate, source);
   if (!sourceIdentity.allowed) {
+    if (initialDocumentCandidate) {
+      const quarantineId = await recordInitialOfficialDocumentPublicationQuarantine({
+        candidate,
+        source,
+        result,
+        reason: sourceIdentity.reason,
+        failureStage: "source_identity",
+        publicationDecision: { allowed: false, source_identity: sourceIdentity },
+      });
+      await markPublicationCandidate(candidate, publicationClaimToken, {
+        status: "succeeded",
+        ai_result: result,
+        actual_usage: {},
+        rejection_reason: `publish_retry_pending:${sourceIdentity.reason}`,
+        worker_metadata: workerMetadataForCandidate(candidate, {
+          source_identity_guard: sourceIdentity,
+          baseline_advanced: false,
+          recapture_required: false,
+          reuse_completed_batch_response: true,
+          rejection_disposition: "actionable_initial_document_quarantine",
+          manual_quarantine_id: quarantineId,
+          creates_api_charge: false,
+        }),
+        completed_at: now,
+        updated_at: now,
+      });
+      report.source_url_changed_since_capture += 1;
+      report.initial_official_document_retry_pending += 1;
+      return { status: "retry_pending", reason: sourceIdentity.reason };
+    }
     await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "superseded",
       ai_result: result,
@@ -1557,6 +1620,16 @@ async function publishCandidateResultUnlocked({
       updated_at: now,
     });
     return { status: "retry_pending", reason: "prior_source_publication_pending" };
+  }
+
+  if (candidate.candidate_scope === INITIAL_OFFICIAL_DOCUMENT_SCOPE) {
+    return publishInitialOfficialDocumentCandidate({
+      candidate,
+      source,
+      result,
+      publicationClaimToken,
+      now,
+    });
   }
 
   const currentContextCandidate = rebuildVisualReviewCandidateForCurrentPolicy(candidate, {
@@ -1861,6 +1934,572 @@ async function publishCandidateResultUnlocked({
   return publication.duplicate
     ? { status: "duplicate", event_id: publication.event_id }
     : { status: "published", event_id: publication.event_id };
+}
+
+async function publishInitialOfficialDocumentCandidate({
+  candidate,
+  source,
+  result,
+  publicationClaimToken,
+  now,
+}) {
+  const decision = initialOfficialDocumentPublicationDecision({ candidate, source, result });
+  if (!decision.allowed) {
+    const quarantineId = await recordInitialOfficialDocumentPublicationQuarantine({
+      candidate,
+      source,
+      result,
+      reason: decision.reason,
+      failureStage: "publication_guard",
+      publicationDecision: decision,
+    });
+    report.initial_official_document_rejected += 1;
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "rejected",
+      ai_result: result,
+      actual_usage: {},
+      rejection_reason: decision.reason,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        initial_document_publication_guard: decision,
+        baseline_advanced: false,
+        rejection_disposition: "actionable_initial_document_quarantine",
+        manual_quarantine_id: quarantineId,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "rejected", reason: decision.reason };
+  }
+
+  const eventTimes = initialOfficialDocumentEventTimes({ candidate });
+  const eventDetectedAt = eventTimes.detected_at;
+  const changeDetails = {
+    ...decision.change_details,
+    first_observed_at: eventTimes.first_observed_at,
+    recognized_at: eventTimes.recognized_at,
+    generated_at: eventTimes.generated_at,
+  };
+  const policyDecision = latestVisualReviewPolicyDecision({
+    candidate,
+    source,
+    result,
+    changeDetails,
+  });
+  if (!policyDecision.allowed) {
+    if (policyDecision.guard === "policy_freshness") {
+      return requeueInitialDocumentCandidateForCurrentPolicy({
+        candidate,
+        policyDecision,
+        now,
+        publicationClaimToken,
+      });
+    }
+
+    let ledgerResult = null;
+    try {
+      ledgerResult = await recordVisualRejectionLedger(supabase, {
+        candidate,
+        policyIdentity: monitoringPolicy,
+        rejectionReason: policyDecision.reason,
+        now,
+      });
+      if (ledgerResult.recorded) report.rejection_ledger_recorded += 1;
+      else if (ledgerResult.reason === "ledger_table_missing") {
+        report.rejection_ledger_unavailable += 1;
+      }
+    } catch (ledgerError) {
+      report.rejection_ledger_unavailable += 1;
+      report.errors.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        message: `Initial-document rejection ledger write failed: ${errorMessage(ledgerError)}`,
+      });
+    }
+
+    const intentionallySuppressed = policyDecision.guard === "change_event_suppression";
+    const quarantineId = intentionallySuppressed
+      ? null
+      : await recordInitialOfficialDocumentPublicationQuarantine({
+          candidate,
+          source,
+          result,
+          reason: policyDecision.reason,
+          failureStage: "current_policy_validation",
+          publicationDecision: decision,
+          policyDecision,
+        });
+
+    report.initial_official_document_rejected += 1;
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "rejected",
+      ai_result: {
+        ...result,
+        policy_guard: policyDecision,
+        rejection_ledger: ledgerResult,
+      },
+      actual_usage: {},
+      rejection_reason: policyDecision.reason,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        initial_document_publication_guard: decision,
+        policy_guard: policyDecision,
+        baseline_advanced: false,
+        rejection_disposition: intentionallySuppressed
+          ? "intentional_policy_suppression_non_actionable"
+          : "actionable_initial_document_quarantine",
+        manual_quarantine_id: quarantineId,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "rejected", reason: policyDecision.reason };
+  }
+
+  let eventEvidence;
+  let candidateArtifactRestore = null;
+  const prepareInitialDocumentEvidence = () =>
+    preparePublishedInitialOfficialDocumentEvidence({
+      candidate,
+      source,
+      archiveRoot,
+      now,
+      config: {
+        bucket: r2Bucket,
+        endpoint: r2Endpoint,
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+  try {
+    try {
+      eventEvidence = await prepareInitialDocumentEvidence();
+    } catch (error) {
+      if (
+        !isDeterministicVisualArtifactError(error) ||
+        error.code !== "visual_artifact_missing"
+      ) {
+        throw error;
+      }
+
+      report.initial_official_document_r2_restore_attempted += 1;
+      try {
+        const snapshotRecord = await loadInitialOfficialDocumentR2SnapshotRecord(
+          candidate.shared_award_source_id,
+        );
+        candidateArtifactRestore = await restoreInitialOfficialDocumentCandidateArtifactsFromR2({
+          archiveRoot,
+          source,
+          candidate,
+          snapshotRecord,
+          bucket: r2Bucket,
+          config: {
+            bucket: r2Bucket,
+            endpoint: r2Endpoint,
+            accessKeyId: r2AccessKeyId,
+            secretAccessKey: r2SecretAccessKey,
+          },
+        });
+      } catch (restoreError) {
+        candidateArtifactRestore = {
+          restored: false,
+          reason: "r2_snapshot_pointer_load_failed",
+          detail: errorMessage(restoreError),
+        };
+      }
+
+      if (!candidateArtifactRestore?.restored) {
+        report.initial_official_document_acquisition_restore_attempted += 1;
+        const rotatingSnapshotFailure = candidateArtifactRestore;
+        try {
+          const acquisition = await loadInitialOfficialDocumentSourceAcquisition(
+            candidate.source_acquisition_id,
+          );
+          candidateArtifactRestore = await restoreInitialOfficialDocumentCandidateArtifactsFromAcquisition({
+            archiveRoot,
+            source,
+            acquisition,
+            candidate,
+            bucket: r2Bucket,
+            config: {
+              bucket: r2Bucket,
+              endpoint: r2Endpoint,
+              accessKeyId: r2AccessKeyId,
+              secretAccessKey: r2SecretAccessKey,
+            },
+          });
+          candidateArtifactRestore.rotating_snapshot_restore = rotatingSnapshotFailure;
+        } catch (acquisitionRestoreError) {
+          candidateArtifactRestore = {
+            restored: false,
+            reason: "acquisition_intake_artifact_load_failed",
+            detail: errorMessage(acquisitionRestoreError),
+            rotating_snapshot_restore: rotatingSnapshotFailure,
+          };
+        }
+        if (candidateArtifactRestore?.restored) {
+          report.initial_official_document_acquisition_restore_succeeded += 1;
+        } else {
+          report.initial_official_document_acquisition_restore_failed += 1;
+        }
+      }
+
+      if (!candidateArtifactRestore?.restored) {
+        report.initial_official_document_r2_restore_failed += 1;
+        const restoreError = new Error(
+          `Candidate-bound R2 artifact restore refused (${candidateArtifactRestore?.reason || "unknown"}): ` +
+          `${candidateArtifactRestore?.detail || "No exact immutable generation was restored."}`,
+        );
+        restoreError.initialDocumentCandidateArtifactRestore = candidateArtifactRestore;
+        throw restoreError;
+      }
+      report.initial_official_document_r2_artifacts_restored += Number(
+        candidateArtifactRestore.artifact_count || 0,
+      );
+      eventEvidence = await prepareInitialDocumentEvidence();
+    }
+  } catch (error) {
+    const message = errorMessage(error);
+    const restoreEvidence =
+      error?.initialDocumentCandidateArtifactRestore || candidateArtifactRestore;
+    const evidenceFailureStage = restoreEvidence?.restored === false
+      ? "candidate_artifact_recovery"
+      : "permanent_evidence_preparation";
+    let quarantineId = null;
+    let quarantineWriteError = null;
+    try {
+      quarantineId = await recordInitialOfficialDocumentPublicationQuarantine({
+        candidate,
+        source,
+        result,
+        reason:
+          restoreEvidence?.reason ||
+          error?.code ||
+          "initial_document_evidence_not_durable",
+        failureStage: evidenceFailureStage,
+        publicationDecision: decision,
+        policyDecision,
+        candidateArtifactRestore: restoreEvidence,
+      });
+    } catch (quarantineError) {
+      quarantineWriteError = errorMessage(quarantineError);
+      report.errors.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        stage: "record_initial_document_evidence_quarantine",
+        message: quarantineWriteError,
+        solution:
+          "Restore the initial-document quarantine RPC/migration and retry this same zero-charge publication result; do not create a replacement candidate.",
+      });
+    }
+    report.event_evidence_upload_failed += 1;
+    report.initial_official_document_retry_pending += 1;
+    report.event_evidence_failures.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      stage: evidenceFailureStage,
+      reason: message,
+      candidate_artifact_restore: restoreEvidence,
+      quarantine_id: quarantineId,
+      quarantine_write_error: quarantineWriteError,
+      solution: restoreEvidence?.restored === false
+        ? initialDocumentCandidateRestoreFailureSolution(restoreEvidence)
+        : visualEventEvidenceFailureSolution(message),
+    });
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded",
+      ai_result: result,
+      actual_usage: {},
+      rejection_reason: "publish_retry_pending:initial_document_evidence_not_durable",
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        initial_document_publication_guard: decision,
+        policy_guard: policyDecision,
+        baseline_advanced: false,
+        event_evidence_error: message,
+        initial_document_candidate_artifact_restore: restoreEvidence,
+        initial_document_evidence_failure_stage: evidenceFailureStage,
+        rejection_disposition: "actionable_initial_document_quarantine",
+        manual_quarantine_id: quarantineId,
+        manual_quarantine_write_error: quarantineWriteError,
+        creates_api_charge: false,
+        reuse_completed_batch_response: true,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    return { status: "retry_pending", reason: "initial_document_evidence_not_durable" };
+  }
+
+  const eventIdentity = {
+    shared_award_id: candidate.shared_award_id,
+    source_url: decision.source_identity?.event_source_url || source.url,
+    previous_hash: decision.previous_hash,
+    new_hash: decision.new_hash,
+  };
+  const publication = await persistVisualChangeAndReconciliation({
+    eventIdentity,
+    publishEventWithEvidence: async () => {
+      const { data, error } = await supabase.rpc("publish_shared_award_initial_document_event", {
+        p_event: {
+          visual_review_candidate_id: candidate.id,
+          source_acquisition_id: candidate.source_acquisition_id,
+          shared_award_id: candidate.shared_award_id,
+          shared_award_source_id: candidate.shared_award_source_id,
+          source_url: decision.source_identity?.event_source_url || source.url,
+          source_title: candidate.source_title || null,
+          source_page_type: candidate.source_page_type || null,
+          previous_hash: decision.previous_hash,
+          new_hash: decision.new_hash,
+          summary: changeDetails.reader_summary,
+          change_details: changeDetails,
+          detected_at: eventDetectedAt,
+        },
+        p_evidence: eventEvidence,
+      });
+      if (error) {
+        throw new Error(`Atomic initial-document event/evidence publication failed: ${error.message}`);
+      }
+      return Array.isArray(data) ? data[0] || null : data || null;
+    },
+    enqueueReconciliation: async (eventId) => queueAwardReconciliationForCandidate({
+      candidate,
+      source,
+      reason: "initial_official_document_published",
+      candidateIds: [candidate.id],
+      metadata: {
+        change_event_id: eventId,
+        source_acquisition_id: candidate.source_acquisition_id,
+        event_kind: "new_official_document",
+        review_mode: "deterministic_sealed_acquisition_review",
+      },
+    }),
+  });
+
+  if (publication.action !== "publish") {
+    const publicationPersistenceFailed =
+      initialDocumentPublicationPersistenceFailed(publication);
+    let publicationQuarantineId = null;
+    let publicationQuarantineWriteError = null;
+    if (publicationPersistenceFailed) {
+      try {
+        publicationQuarantineId = await recordInitialOfficialDocumentPublicationQuarantine({
+          candidate,
+          source,
+          result,
+          reason: publication.reason || "change_event_evidence_not_durable",
+          failureStage: "publication_persistence",
+          publicationDecision: decision,
+          policyDecision,
+          publicationFailure: publication,
+          retryMode: "automatic_zero_charge_publication_retry",
+        });
+      } catch (quarantineError) {
+        publicationQuarantineWriteError = errorMessage(quarantineError);
+        report.errors.push({
+          candidate_id: candidate.id,
+          source_id: candidate.shared_award_source_id,
+          stage: "record_initial_document_publication_persistence_quarantine",
+          message: publicationQuarantineWriteError,
+          solution:
+            "Restore the initial-document quarantine RPC/migration and retry this same zero-charge publication result; do not create a replacement candidate.",
+        });
+      }
+      report.event_evidence_upload_failed += 1;
+      report.event_evidence_failures.push({
+        candidate_id: candidate.id,
+        source_id: candidate.shared_award_source_id,
+        stage: "publication_persistence",
+        reason: publication.error || publication.reason,
+        quarantine_id: publicationQuarantineId,
+        quarantine_write_error: publicationQuarantineWriteError,
+        solution:
+          "Verify the atomic initial-document publication RPC, migration, and database availability, then let the worker retry this retained candidate automatically without charge.",
+      });
+    }
+    report.initial_official_document_retry_pending += 1;
+    await markPublicationCandidate(candidate, publicationClaimToken, {
+      status: "succeeded",
+      ai_result: result,
+      actual_usage: {},
+      rejection_reason: `publish_retry_pending:${publication.reason}`,
+      worker_metadata: workerMetadataForCandidate(candidate, {
+        initial_document_publication_guard: decision,
+        policy_guard: policyDecision,
+        baseline_advanced: false,
+        change_event_id: publication.event_id || null,
+        change_event_evidence_id: publication.evidence_id || null,
+        change_event_publication: publication,
+        ...(publicationPersistenceFailed ? {
+          initial_document_evidence_failure_stage: "publication_persistence",
+          rejection_disposition: "actionable_initial_document_quarantine",
+          manual_quarantine_id: publicationQuarantineId,
+          manual_quarantine_write_error: publicationQuarantineWriteError,
+          retry_mode: "automatic_zero_charge_publication_retry",
+          creates_api_charge: false,
+        } : {}),
+        reuse_completed_batch_response: true,
+      }),
+      completed_at: now,
+      updated_at: now,
+    });
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      stage: publicationPersistenceFailed
+        ? "publication_persistence"
+        : "award_reconciliation_enqueue",
+      quarantine_id: publicationQuarantineId,
+      message: `Publish initial official document retry pending: ${publication.error || publication.reason}`,
+      solution: publicationPersistenceFailed
+        ? "Repair the atomic event/evidence publication dependency and allow the same zero-charge candidate to retry automatically."
+        : "Repair the award reconciliation queue and retry; the event and evidence are already durable, so do not create an initial-document evidence quarantine.",
+    });
+    return { status: "retry_pending", reason: publication.reason };
+  }
+
+  if (publication.duplicate) report.initial_official_document_duplicates += 1;
+  else report.initial_official_documents_published += 1;
+  await markPublicationCandidate(candidate, publicationClaimToken, {
+    status: "published",
+    ai_result: result,
+    actual_usage: {},
+    rejection_reason: null,
+    worker_metadata: workerMetadataForCandidate(candidate, {
+      initial_document_publication_guard: decision,
+      policy_guard: policyDecision,
+      baseline_advanced: false,
+      change_event_id: publication.event_id,
+      change_event_evidence_id: publication.evidence_id,
+      reconciliation: publication.reconciliation,
+      creates_api_charge: false,
+    }),
+    completed_at: now,
+    published_at: now,
+    updated_at: now,
+  });
+  await resolveInitialOfficialDocumentPublicationQuarantine(candidate);
+
+  return publication.duplicate
+    ? { status: "duplicate", event_id: publication.event_id }
+    : { status: "published", event_id: publication.event_id };
+}
+
+async function loadInitialOfficialDocumentR2SnapshotRecord(sourceId) {
+  const { data, error } = await supabase
+    .from("shared_award_source_visual_snapshots")
+    .select(
+      "shared_award_source_id, shared_award_id, kind, bucket, source_url, latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
+    )
+    .eq("shared_award_source_id", sourceId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Load initial-document R2 snapshot pointer failed: ${error.message}`);
+  }
+  return data || null;
+}
+
+function initialDocumentPublicationPersistenceFailed(publication) {
+  if (publication?.action === "publish") return false;
+  // The publication coordinator reaches reconciliation only after both IDs
+  // are durable. A retry carrying both IDs is therefore reconciliation-only
+  // and must not be mislabeled as an initial-document evidence failure.
+  return !publication?.event_id || !publication?.evidence_id;
+}
+
+async function resolveInitialOfficialDocumentPublicationQuarantine(candidate) {
+  const { error } = await supabase.rpc("resolve_initial_official_document_quarantine", {
+    p_acquisition_id: candidate.source_acquisition_id,
+    p_candidate_id: candidate.id,
+  });
+  if (error) {
+    report.errors.push({
+      candidate_id: candidate.id,
+      source_id: candidate.shared_award_source_id,
+      stage: "resolve_initial_document_publication_quarantine",
+      message: `Published initial-document quarantine resolution failed: ${error.message}`,
+    });
+  }
+}
+
+async function recordInitialOfficialDocumentPublicationQuarantine({
+  candidate,
+  source,
+  result,
+  reason,
+  failureStage,
+  publicationDecision = null,
+  policyDecision = null,
+  candidateArtifactRestore = null,
+  publicationFailure = null,
+  retryMode = "manual_candidate_evidence_repair",
+}) {
+  const reasonCode = cleanText(reason)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 200) || "unknown_initial_document_publication_failure";
+  const message =
+    `The first-observation candidate failed safe ${failureStage.replace(/_/g, " ")} ` +
+    `validation: ${reasonCode}.`;
+  const { data: quarantineId, error } = await supabase.rpc(
+    "record_initial_official_document_quarantine",
+    {
+      p_source_id: source?.id || candidate.shared_award_source_id,
+      p_acquisition_id: candidate.source_acquisition_id,
+      p_reason_code: reasonCode,
+      p_evidence: {
+        message,
+        failure_stage: failureStage,
+        candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+        candidate: {
+          id: candidate.id,
+          signature: candidate.candidate_signature,
+          status: candidate.status,
+          source_url: candidate.source_url,
+          new_file_hash: candidate.new_file_hash,
+        },
+        result: {
+          candidate_scope: result?.candidate_scope || null,
+          observation_kind: result?.observation_kind || null,
+          is_true_change: result?.is_true_change === true,
+          is_alert_worthy: result?.is_alert_worthy === true,
+          exact_before: result?.exact_before ?? result?.before ?? null,
+          exact_after: result?.exact_after ?? result?.after ?? null,
+          review_execution: objectValue(result?.review_execution),
+        },
+        publication_guard: publicationDecision,
+        policy_guard: policyDecision,
+        candidate_artifact_restore: candidateArtifactRestore,
+        publication_failure: publicationFailure,
+        repair: {
+          retry_mode: retryMode,
+          creates_api_charge: false,
+          preserves_candidate_identity: true,
+          resolves_only_after_publication: true,
+        },
+      },
+    },
+  );
+  if (error || !quarantineId) {
+    throw new Error(
+      `Record initial-document publication quarantine failed: ${error?.message || "missing quarantine id"}`,
+    );
+  }
+  report.initial_official_document_quarantined += 1;
+  report.errors.push({
+    candidate_id: candidate.id,
+    source_id: candidate.shared_award_source_id,
+    source_acquisition_id: candidate.source_acquisition_id,
+    quarantine_id: quarantineId,
+    stage: failureStage,
+    message,
+    solution: failureStage === "source_identity"
+      ? "Restore the source URL to the candidate URL or the exact final URL sealed by the retained capture. This retry is free and must not replace immutable candidate evidence."
+      : failureStage === "publication_persistence"
+        ? "Verify the atomic event/evidence publication RPC, migration, and database availability. AwardPing will retry this retained candidate automatically without charge; do not create a replacement review."
+      : new Set(["candidate_artifact_recovery", "permanent_evidence_preparation"]).has(failureStage)
+        ? "Inspect the candidate-bound paths, artifact manifest, exact R2 generation, and permanent-evidence dependency. Repairing and retrying this candidate is free; never substitute another document or rewrite candidate identity."
+        : "Inspect the sealed acquisition, retained PDF, and deterministic candidate. Repairing candidate evidence is free; approve another paid new-page review only if the sealed intake review itself must be replaced.",
+  });
+  return quarantineId;
 }
 
 async function queueAwardReconciliationForCandidate({
@@ -2277,6 +2916,21 @@ async function loadSourcesById(ids) {
     for (const row of data || []) map.set(row.id, row);
   }
   return map;
+}
+
+async function loadInitialOfficialDocumentSourceAcquisition(acquisitionId) {
+  const id = cleanNullable(acquisitionId);
+  if (!id) throw new Error("Initial-document candidate is missing its source acquisition id.");
+  const { data, error } = await supabase
+    .from("shared_award_source_acquisitions")
+    .select(
+      "id,shared_award_source_id,acquisition_kind,notification_mode,origin_source_page_request_id,origin_worker_run_id,parent_shared_award_source_id,onboarding_batch_id,review_seal,metadata,acquired_at,created_at",
+    )
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Load initial-document source acquisition failed: ${error.message}`);
+  if (!data?.id) throw new Error("Initial-document source acquisition no longer exists.");
+  return data;
 }
 
 async function findPriorNonterminalPublication(candidate) {
@@ -2706,29 +3360,28 @@ function workerMetadataForCandidate(candidate, patch = {}) {
   };
 }
 
-async function requeueCandidateForCurrentPolicy({
+async function requeueInitialDocumentCandidateForCurrentPolicy({
   candidate,
-  source,
   policyDecision,
-  usage,
   now,
   publicationClaimToken,
 }) {
-  const rebuilt = rebuildVisualReviewCandidateForCurrentPolicy(candidate, { source });
-  const currentSignature = rebuilt.candidate_signature;
-
-  const existing = await findCandidateWithSignature(currentSignature, candidate.id);
+  const rebuilt = rebuildInitialOfficialDocumentCandidateForCurrentPolicy(candidate);
+  const existing = await findCandidateWithSignature(rebuilt.candidate_signature, candidate.id);
   if (existing) {
     await markPublicationCandidate(candidate, publicationClaimToken, {
       status: "superseded",
       ai_result: {
+        ...objectValue(candidate.ai_result),
         stale_policy_guard: policyDecision,
       },
-      actual_usage: usage,
+      actual_usage: {},
       rejection_reason: `current_policy_candidate_exists:${existing.id}`,
       worker_metadata: workerMetadataForCandidate(candidate, {
         policy_guard: policyDecision,
         superseded_by_candidate_id: existing.id,
+        deterministic_initial_document_policy_refresh: true,
+        creates_api_charge: false,
       }),
       completed_at: now,
       updated_at: now,
@@ -2736,14 +3389,63 @@ async function requeueCandidateForCurrentPolicy({
     return { status: "superseded", reason: "current_policy_candidate_exists" };
   }
 
+  const { data, error } = await supabase.rpc(
+    "refresh_shared_award_initial_document_candidate_policy",
+    {
+      p_candidate_id: candidate.id,
+      p_publication_claim_token: publicationClaimToken,
+      p_candidate_signature: rebuilt.candidate_signature,
+      p_monitoring_policy: rebuilt.monitoring_policy,
+      p_monitoring_policy_bundle: rebuilt.prompt_payload.monitoring_policy_bundle,
+      p_policy_guard: policyDecision,
+    },
+  );
+  if (error) {
+    if (error.code === "23505") {
+      const racedConflict = await findCandidateWithSignature(
+        rebuilt.candidate_signature,
+        candidate.id,
+      );
+      if (racedConflict) {
+        await markPublicationCandidate(candidate, publicationClaimToken, {
+          status: "superseded",
+          ai_result: {
+            ...objectValue(candidate.ai_result),
+            stale_policy_guard: policyDecision,
+          },
+          actual_usage: {},
+          rejection_reason: `current_policy_candidate_exists:${racedConflict.id}`,
+          worker_metadata: workerMetadataForCandidate(candidate, {
+            policy_guard: policyDecision,
+            superseded_by_candidate_id: racedConflict.id,
+            deterministic_initial_document_policy_refresh: true,
+            creates_api_charge: false,
+          }),
+          completed_at: now,
+          updated_at: now,
+        });
+        return { status: "superseded", reason: "current_policy_candidate_exists" };
+      }
+    }
+    throw new Error(`Refresh initial-document candidate policy failed: ${error.message}`);
+  }
+  const refreshed = Array.isArray(data) ? data[0] || null : data || null;
+  if (!refreshed?.candidate_id || refreshed.candidate_signature !== rebuilt.candidate_signature) {
+    throw new Error(
+      `Initial-document publication claim ${candidate.id} was not refreshed atomically.`,
+    );
+  }
+  return { status: "requeued", reason: policyDecision.reason };
+}
+
+async function requeueCandidateForCurrentPolicy({
+  candidate,
+  policyDecision,
+  usage,
+  now,
+  publicationClaimToken,
+}) {
   const patch = publicationFinalizationPatch(candidate, publicationClaimToken, {
-    candidate_signature: currentSignature,
-    gemini_batch_request_key: currentSignature,
-    source_url: rebuilt.source_context.url || candidate.source_url,
-    source_title: rebuilt.source_context.title || candidate.source_title,
-    source_page_type: rebuilt.source_context.page_type || candidate.source_page_type,
-    prompt_payload: rebuilt.prompt_payload,
-    prompt_context: rebuilt.prompt_context,
     status: "pending",
     gemini_batch_name: null,
     model: null,
@@ -2772,26 +3474,6 @@ async function requeueCandidateForCurrentPolicy({
     .select("id")
     .maybeSingle();
   if (error) {
-    if (error.code === "23505") {
-      const racedConflict = await findCandidateWithSignature(currentSignature, candidate.id);
-      if (racedConflict) {
-        await markPublicationCandidate(candidate, publicationClaimToken, {
-          status: "superseded",
-          ai_result: {
-            stale_policy_guard: policyDecision,
-          },
-          actual_usage: usage,
-          rejection_reason: `current_policy_candidate_exists:${racedConflict.id}`,
-          worker_metadata: workerMetadataForCandidate(candidate, {
-            policy_guard: policyDecision,
-            superseded_by_candidate_id: racedConflict.id,
-          }),
-          completed_at: now,
-          updated_at: now,
-        });
-        return { status: "superseded", reason: "current_policy_candidate_exists" };
-      }
-    }
     throw new Error(`Requeue visual candidate for current policy failed: ${error.message}`);
   }
   if (!data) {
@@ -2829,6 +3511,23 @@ function truncate(value, maxLength) {
 
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error || "Unknown error");
+}
+
+function initialDocumentCandidateRestoreFailureSolution(restore) {
+  const reason = cleanText(restore?.reason).toLowerCase();
+  if (/target_conflict|direct_path_conflict|directory_unsafe|artifact_path_unsafe/.test(reason)) {
+    return "Keep the candidate unpublished and preserve the conflicting local path for audit. Verify the configured archive root and remove or relocate bytes only after confirming they are not the immutable candidate artifact; the retry will restore the exact candidate-bound path without overwriting it.";
+  }
+  if (/hash|manifest|source_mismatch|award_mismatch|key_|generation_ambiguous/.test(reason)) {
+    return "Quarantine the pointer/object mismatch, preserve both local and R2 bytes, and verify the source ID, immutable object keys, timestamp, SHA-256 values, and candidate manifest. Do not relink the candidate or overwrite either copy; recapture through the normal scan only if the exact generation cannot be proven.";
+  }
+  if (/snapshot_record_missing|snapshot_pointer_load_failed|exact_r2_generation_unavailable/.test(reason)) {
+    return "Verify that R2 snapshot sync retained this candidate's exact capture as the latest or previous source generation. Repair or backfill only that immutable pointer when the object hashes prove identity; otherwise leave the event quarantined and recapture through the normal scan.";
+  }
+  if (/download|credentials|invalid_candidate_restore_input/.test(reason)) {
+    return "Verify the worker's R2 bucket, endpoint, credentials, read permission, and snapshot pointer query, then retry the same candidate. The recovery is hash-verified and creates no new review charge.";
+  }
+  return "Inspect the candidate artifact manifest, exact R2 generation, local archive path, and restore detail in this report. Repair the failed dependency and retry the same candidate without changing candidate identity or substituting another document.";
 }
 
 function visualEventEvidenceFailureSolution(value) {

@@ -2,8 +2,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   baselineFactsFromIntakeReview,
+  buildSourceAcquisitionProposal,
   buildGeminiIntakeRequest,
   captureIntakePage,
   deterministicSourceIntakeReview,
@@ -13,6 +15,7 @@ import {
   normalizeSharedAwardPageType,
   normalizeSourceIntakeUrl,
   parseJsonObject,
+  persistSourceIntakeFactCandidates,
   sourceLikeFromIntake,
   sourceQualityForIntakeSource,
   shouldCreateNewAwardFromIntake,
@@ -45,6 +48,21 @@ import {
   geminiWorkerModel,
   normalizeGeminiBatchMode,
 } from "./lib/gemini-worker-policy.mjs";
+import {
+  IntakeArtifactRetentionError,
+  POST_RETENTION_CAPTURE_FAILURE_REASON,
+  POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON,
+  persistPostRetentionCaptureFailure,
+  requiresFirstObservationArtifactRetention,
+  retainFirstObservationIntakePdfArtifact,
+  resumeFirstObservationIntakeArtifactRetention,
+  serializableRetainedCaptureMetadata,
+  validateRetainedIntakeArtifactManifest,
+} from "./lib/intake-artifact-retention.mjs";
+import {
+  INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+  initialOfficialDocumentPublicationDecision,
+} from "./lib/initial-official-document.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -92,6 +110,10 @@ const model = geminiWorkerModel();
 const maxRequestsPerBatch = positiveInt(args["max-requests-per-batch"], 100);
 const requestTimeoutMs = positiveInt(args["request-timeout-ms"], 120_000);
 const captureTimeoutMs = positiveInt(args["capture-timeout-ms"], 30_000);
+const initialDocumentMaterializationTimeoutMs = positiveInt(
+  args["initial-document-materialization-timeout-ms"],
+  120_000,
+);
 const pollBatchLimit = positiveInt(args["poll-batch-limit"], 25);
 const timeBudgetMs = positiveInt(args["time-budget-ms"], 15 * 60_000);
 const deadlineAtMs = Date.now() + timeBudgetMs;
@@ -99,6 +121,17 @@ const hardDeadlineGraceMs = 2_000;
 const staleInFlightMs = positiveInt(args["stale-in-flight-ms"], 30 * 60_000);
 const maxBatchAgeMs = positiveInt(args["max-batch-age-ms"], 72 * 60 * 60_000);
 const reportDir = args["report-dir"] ? resolve(root, String(args["report-dir"])) : join(root, "reports");
+const archiveRoot = resolve(
+  String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || args["archive-dir"] || "D:\\AwardPingVisualSnapshots"),
+);
+const r2Bucket = cleanNullable(args["r2-bucket"] || env.R2_BUCKET) || "awardping-snapshots";
+const r2AccountId = cleanNullable(args["r2-account-id"] || env.R2_ACCOUNT_ID);
+const r2Endpoint = cleanNullable(
+  args["r2-endpoint"] || env.R2_ENDPOINT ||
+  (r2AccountId ? `https://${r2AccountId}.r2.cloudflarestorage.com` : null),
+);
+const r2AccessKeyId = cleanNullable(args["r2-access-key-id"] || env.R2_ACCESS_KEY_ID);
+const r2SecretAccessKey = cleanNullable(args["r2-secret-access-key"] || env.R2_SECRET_ACCESS_KEY);
 const reportPath = args.report
   ? resolve(root, String(args.report))
   : join(reportDir, `source-intake-${timestampForPath(new Date().toISOString())}.json`);
@@ -135,6 +168,7 @@ const report = {
     model,
     max_requests_per_batch: maxRequestsPerBatch,
     poll_batch_limit: pollBatchLimit,
+    initial_document_materialization_timeout_ms: initialDocumentMaterializationTimeoutMs,
     time_budget_ms: timeBudgetMs,
     stale_in_flight_ms: staleInFlightMs,
     max_batch_age_ms: maxBatchAgeMs,
@@ -160,11 +194,34 @@ const report = {
   stale_submission_claims_requeued: 0,
   stale_capture_requests_requeued: 0,
   stale_reconcile_claims_requeued: 0,
+  stale_free_reconciliation_claims_requeued: 0,
   stale_matching_requests_failed_closed: 0,
   needs_manual_review: 0,
   matched_existing_awards: 0,
   created_awards: 0,
   created_or_updated_sources: 0,
+  source_acquisitions_created: 0,
+  source_acquisitions_first_capture_candidate: 0,
+  source_acquisitions_baseline_only: 0,
+  source_acquisitions_manual_review: 0,
+  live_first_capture_preflight_manual_review: 0,
+  initial_document_materialization_attempted: 0,
+  initial_document_materialization_subprocess_started: 0,
+  initial_document_materialization_candidate_existing: 0,
+  initial_document_materialization_succeeded: 0,
+  initial_document_materialization_failed: 0,
+  source_acquisitions_skipped_preexisting: 0,
+  intake_artifacts_retained: 0,
+  intake_artifacts_resumed: 0,
+  intake_artifact_retention_failed: 0,
+  post_retention_failures_quarantined: 0,
+  post_retention_persistence_unverified: 0,
+  stale_protected_captures_recovered: 0,
+  stale_protected_completed_captures_resumed: 0,
+  stale_protected_staged_captures_resumed: 0,
+  reconciliation_only_retries_loaded: 0,
+  reconciliation_only_retries_completed: 0,
+  reconciliation_only_retries_failed: 0,
   fact_candidates_inserted: 0,
   awards_queued_for_reconciliation: 0,
   rejected: 0,
@@ -198,6 +255,9 @@ workerRun = await createWorkerRun().catch((error) => {
 
 writeReport();
 try {
+  if (apply && hasTimeBudget("reconciliation_only_retry")) {
+    await processRequestedReconciliationRetries();
+  }
   if (apply && hasTimeBudget("recover_stale_in_flight")) await recoverStaleInFlightRequests();
   if (hasTimeBudget("load_backlog_counts")) await loadStageBacklogCounts();
   if (poll && !submitOnly && geminiApiMode === "batch" && hasTimeBudget("poll")) await pollSubmittedBatches();
@@ -265,11 +325,119 @@ async function loadStageBacklogCounts() {
   }
 }
 
+async function processRequestedReconciliationRetries() {
+  const { data, error } = await supabase
+    .from("source_page_requests")
+    .select("*")
+    .eq("status", "ai_review_succeeded")
+    .eq("status_reason", "manual_reconciliation_retry_requested")
+    .is("worker_run_id", null)
+    .order("updated_at", { ascending: true })
+    .limit(limit);
+  if (error) throw new Error(`Load reconciliation-only source intake retries failed: ${error.message}`);
+  report.reconciliation_only_retries_loaded += (data || []).length;
+
+  for (const requested of data || []) {
+    if (!hasTimeBudget("reconciliation_only_retry")) break;
+    let claimed = null;
+    try {
+      const capture = captureFromRow(requested);
+      const retainedArtifact = validateRetainedIntakeArtifactManifest(capture.retained_artifact, {
+        requestId: requested.id,
+        fileHash: capture.capture_file_hash,
+        finalUrl: capture.canonical_url || capture.final_url,
+        requireR2Verified: true,
+      });
+      const storedReview = objectValue(requested.ai_review);
+      if (cleanNullable(storedReview.status) !== "accepted") {
+        throw new Error("Reconciliation-only retry requires a stored accepted AI review.");
+      }
+      if (!retainedArtifact.r2_verified_at) {
+        throw new Error("Reconciliation-only retry requires completed immutable R2 retention.");
+      }
+      const now = new Date().toISOString();
+      let claimQuery = supabase
+        .from("source_page_requests")
+        .update({
+          worker_run_id: workerRunId,
+          status_reason: "manual_reconciliation_retry_claimed_no_charge",
+          failed_at: null,
+          error: null,
+          updated_at: now,
+        })
+        .eq("id", requested.id)
+        .eq("status", "ai_review_succeeded")
+        .eq("status_reason", "manual_reconciliation_retry_requested")
+        .is("worker_run_id", null);
+      claimQuery = withObservedUpdatedAt(claimQuery, requested.updated_at);
+      const claimResult = await claimQuery.select("*").maybeSingle();
+      if (claimResult.error) {
+        throw new Error(`Claim reconciliation-only source intake retry failed: ${claimResult.error.message}`);
+      }
+      claimed = claimResult.data;
+      if (!claimed) continue;
+
+      await finalizeReviewedRequest(
+        claimed,
+        { ...capture, retained_artifact: retainedArtifact },
+        objectValue(claimed.deterministic_review),
+        Object.keys(objectValue(storedReview.raw)).length ? storedReview.raw : storedReview,
+      );
+      report.reconciliation_only_retries_completed += 1;
+      report.requests.push({
+        id: claimed.id,
+        submitted_url: claimed.submitted_url || claimed.homepage_url,
+        status: "reconciliation_retry_completed",
+        reason: "stored_capture_and_ai_review_replayed_no_charge",
+        creates_api_charge: false,
+      });
+    } catch (retryError) {
+      report.reconciliation_only_retries_failed += 1;
+      report.needs_manual_review += 1;
+      report.errors.push({
+        request_id: requested.id,
+        stage: "reconciliation_only_retry",
+        message: errorMessage(retryError),
+        solution:
+          "Repair the verified retained-artifact manifest or atomic registration dependency, then request the same reconciliation-only retry. Do not recapture the URL or rerun Gemini.",
+        creates_api_charge: false,
+      });
+      if (claimed?.id) {
+        await failOwnedReconciliation(claimed.id, errorMessage(retryError));
+      } else if (apply) {
+        let failPreclaim = supabase
+          .from("source_page_requests")
+          .update({
+            status: "needs_manual_review",
+            status_reason: "reconciliation_retry_preflight_failed_no_charge",
+            worker_run_id: null,
+            failed_at: new Date().toISOString(),
+            error: `${errorMessage(retryError)} Safe action: repair retained evidence, then retry reconciliation only.`.slice(0, 1000),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", requested.id)
+          .eq("status", "ai_review_succeeded")
+          .eq("status_reason", "manual_reconciliation_retry_requested")
+          .is("worker_run_id", null);
+        failPreclaim = withObservedUpdatedAt(failPreclaim, requested.updated_at);
+        const { error: failError } = await failPreclaim.select("id").maybeSingle();
+        if (failError) {
+          report.errors.push({
+            request_id: requested.id,
+            stage: "reconciliation_only_retry_preflight_failure_persistence",
+            message: failError.message,
+          });
+        }
+      }
+    }
+  }
+}
+
 async function recoverStaleInFlightRequests() {
   const cutoff = new Date(Date.now() - staleInFlightMs).toISOString();
   const { data, error } = await supabase
     .from("source_page_requests")
-    .select("id,status,updated_at")
+    .select("id,status,status_reason,updated_at,acquisition_kind,notification_mode,onboarding_batch_id,capture_metadata")
     .in("status", ["validating", "capturing", "ai_review_succeeded", "matching"])
     .lt("updated_at", cutoff)
     .order("updated_at", { ascending: true })
@@ -280,6 +448,13 @@ async function recoverStaleInFlightRequests() {
     if (!hasTimeBudget("recover_stale_in_flight")) break;
     const matching = row.status === "matching";
     const reconcileClaim = row.status === "ai_review_succeeded";
+    const freeReconciliationClaim =
+      reconcileClaim && row.status_reason === "manual_reconciliation_retry_claimed_no_charge";
+    const protectedCapture = isProtectedLiveFirstCaptureRow(row) && row.status === "capturing";
+    const retainedCapturePersisted = protectedCapture && hasProvenRetainedCaptureMetadata(row);
+    const stagedCapturePersisted = protectedCapture
+      && !retainedCapturePersisted
+      && hasProvenStagedCaptureMetadata(row);
     const now = new Date().toISOString();
     const patch = matching
       ? {
@@ -287,9 +462,39 @@ async function recoverStaleInFlightRequests() {
           status_reason: "stale_matching_failed_closed_operator_retry_required",
           worker_run_id: null,
           failed_at: now,
-          error: "Source intake stopped while applying an accepted AI result. Review the partial state, then choose Rerun AI if safe.",
+          error: "Source intake stopped while applying an accepted AI result. Review the partial state. Use the $0 retained-result retry when offered; otherwise use a generic rerun only after confirming it is safe and may create an API charge.",
           updated_at: now,
         }
+      : protectedCapture
+        ? {
+            status: retainedCapturePersisted
+              ? "ai_review_pending"
+              : stagedCapturePersisted
+                ? "pending"
+                : "needs_manual_review",
+            status_reason: retainedCapturePersisted
+              ? "stale_protected_capture_resuming_from_verified_retained_artifact"
+              : stagedCapturePersisted
+                ? "stale_protected_capture_resuming_staged_artifact"
+                : POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON,
+            worker_run_id: null,
+            failed_at: retainedCapturePersisted || stagedCapturePersisted ? null : now,
+            error: retainedCapturePersisted
+              ? null
+              : stagedCapturePersisted
+                ? null
+                : "Source intake stopped after capture began and retained-artifact persistence cannot be proven. Inspect immutable storage and bind the exact capture manually; automated URL refetch is blocked.",
+            updated_at: now,
+          }
+      : freeReconciliationClaim
+        ? {
+            status: "ai_review_succeeded",
+            status_reason: "manual_reconciliation_retry_requested",
+            worker_run_id: null,
+            failed_at: null,
+            error: null,
+            updated_at: now,
+          }
       : reconcileClaim
         ? {
             status: "ai_review_submitted",
@@ -326,6 +531,37 @@ async function recoverStaleInFlightRequests() {
         stage: "matching",
         message: "Stale matching work was failed closed for operator review.",
       });
+    } else if (protectedCapture) {
+      report.stale_protected_captures_recovered += 1;
+      if (retainedCapturePersisted) {
+        report.stale_protected_completed_captures_resumed += 1;
+        report.warnings.push({
+          request_id: row.id,
+          stage: "protected_first_capture_recovery",
+          message: "Stale first-capture work resumed at AI review from its verified retained artifact without a URL refetch.",
+          creates_api_charge_on_recovery: false,
+          downstream_review_may_charge: true,
+        });
+      } else if (stagedCapturePersisted) {
+        report.stale_protected_staged_captures_resumed += 1;
+        report.warnings.push({
+          request_id: row.id,
+          stage: "protected_first_capture_recovery",
+          message: "Stale first-capture work requeued its exact staged artifact for retention resume without a URL refetch.",
+          creates_api_charge_on_recovery: false,
+          downstream_review_may_charge: true,
+        });
+      } else {
+        report.needs_manual_review += 1;
+        report.errors.push({
+          request_id: row.id,
+          stage: "protected_first_capture_recovery",
+          message: "Stale first-capture work has unproven retained identity and was made manual-only without a URL refetch.",
+          creates_api_charge: false,
+        });
+      }
+    } else if (freeReconciliationClaim) {
+      report.stale_free_reconciliation_claims_requeued += 1;
     } else if (reconcileClaim) {
       report.stale_reconcile_claims_requeued += 1;
     } else {
@@ -523,6 +759,10 @@ async function processCaptureStage(row) {
   };
   report.requests.push(summary);
   let ownedStatus = null;
+  let artifactRetentionRequired = false;
+  let capturedForRetention = null;
+  let completedCaptureMetadata = null;
+  let completedDiscoveredLinks = null;
 
   try {
     if (apply) {
@@ -547,7 +787,36 @@ async function processCaptureStage(row) {
       ownedStatus = "capturing";
     }
 
-    const capture = await captureIntakePage(normalizedUrl, { timeoutMs: captureTimeoutMs });
+    const priorCaptureMetadata = objectValue(row.capture_metadata);
+    const stagedManifest = objectValue(priorCaptureMetadata.retained_artifact_staged);
+    const stagedRetentionRequired =
+      apply &&
+      Object.keys(stagedManifest).length > 0 &&
+      requiresFirstObservationArtifactRetention(row, captureFromRow(row));
+    artifactRetentionRequired = stagedRetentionRequired;
+    let capture;
+    if (stagedRetentionRequired) {
+      capturedForRetention = captureFromRow(row);
+      const retainedArtifact = await resumeFirstObservationIntakeArtifactRetention({
+        stagedManifest,
+        archiveRoot,
+        bucket: r2Bucket,
+        config: {
+          bucket: r2Bucket,
+          endpoint: r2Endpoint,
+          accessKeyId: r2AccessKeyId,
+          secretAccessKey: r2SecretAccessKey,
+        },
+      });
+      capture = {
+        ...capturedForRetention,
+        retained_artifact: retainedArtifact,
+      };
+      report.intake_artifacts_resumed += 1;
+    } else {
+      capture = await captureIntakePage(normalizedUrl, { timeoutMs: captureTimeoutMs });
+    }
+    capturedForRetention = capture;
     report.captured += 1;
     const deterministicReview = deterministicSourceIntakeReview({
       url: capture.canonical_url || capture.final_url || normalizedUrl,
@@ -558,17 +827,37 @@ async function processCaptureStage(row) {
     });
     summary.reason = deterministicReview.reason;
 
-    const captureMetadata = {
-      ...capture,
-      text_excerpt: String(capture.text || "").slice(0, 20_000),
-      text_length: String(capture.text || "").length,
-      links: undefined,
-      pdf_links: undefined,
-    };
+    artifactRetentionRequired =
+      apply &&
+      deterministicReview.status !== "rejected" &&
+      deterministicReview.status !== "needs_manual_review" &&
+      geminiApiMode !== "none" &&
+      requiresFirstObservationArtifactRetention(row, capture);
+    const retainedArtifact = artifactRetentionRequired
+      ? capture.retained_artifact || await retainFirstObservationIntakePdfArtifact({
+          request: row,
+          capture,
+          archiveRoot,
+          bucket: r2Bucket,
+          config: {
+            bucket: r2Bucket,
+            endpoint: r2Endpoint,
+            accessKeyId: r2AccessKeyId,
+            secretAccessKey: r2SecretAccessKey,
+          },
+        })
+      : null;
+    if (retainedArtifact) report.intake_artifacts_retained += 1;
+
+    const captureMetadata = serializableRetainedCaptureMetadata(capture, retainedArtifact);
     const discoveredLinks = {
       links: capture.links || [],
       pdf_links: capture.pdf_links || [],
     };
+    if (retainedArtifact) {
+      completedCaptureMetadata = captureMetadata;
+      completedDiscoveredLinks = discoveredLinks;
+    }
 
     if (apply) {
       await requireOwnedRequestUpdate(row.id, "capturing", {
@@ -635,12 +924,109 @@ async function processCaptureStage(row) {
     }
     return true;
   } catch (error) {
+    if (completedCaptureMetadata && apply && ownedStatus) {
+      const quarantine = await persistPostRetentionCaptureFailure({
+        persist: (patch) => updateOwnedRequest(row.id, ownedStatus, patch),
+        captureMetadata: completedCaptureMetadata,
+        discoveredLinks: completedDiscoveredLinks,
+        processingError: error,
+      });
+      report.needs_manual_review += 1;
+      summary.status = "needs_manual_review";
+      if (quarantine.persisted) {
+        report.post_retention_failures_quarantined += 1;
+        summary.reason = POST_RETENTION_CAPTURE_FAILURE_REASON;
+        report.errors.push({
+          request_id: row.id,
+          stage: "post_retention_capture_processing",
+          reason_code: POST_RETENTION_CAPTURE_FAILURE_REASON,
+          message: errorMessage(error),
+          solution: "Continue from the verified retained capture. Do not fetch the source URL again.",
+          creates_api_charge_on_recovery: false,
+          downstream_review_may_charge: true,
+        });
+        return true;
+      }
+
+      report.post_retention_persistence_unverified += 1;
+      summary.reason = POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON;
+      report.errors.push({
+        request_id: row.id,
+        stage: "post_retention_capture_failure_persistence",
+        reason_code: POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON,
+        message: quarantine.persistenceError
+          ? errorMessage(quarantine.persistenceError)
+          : "The fail-closed retained-capture quarantine write returned no owned row.",
+        solution: "Do not refetch. Stale recovery will make this protected first capture manual-only so immutable storage can be inspected and rebound.",
+        creates_api_charge: false,
+      });
+      return false;
+    }
     if (isSourceIntakeOwnershipLost(error)) {
       report.capture_claim_conflicts += 1;
       summary.status = "skipped";
       summary.reason = errorMessage(error);
       report.warnings.push({ request_id: row.id, stage: "capture_ownership", message: errorMessage(error) });
       return false;
+    }
+    if (artifactRetentionRequired && error instanceof IntakeArtifactRetentionError) {
+      report.intake_artifact_retention_failed += 1;
+      report.needs_manual_review += 1;
+      summary.status = "needs_manual_review";
+      summary.reason = error.code;
+      report.errors.push({
+        request_id: row.id,
+        stage: "intake_artifact_retention",
+        reason_code: error.code,
+        message: errorMessage(error),
+        solution: error.solution,
+        creates_api_charge: false,
+      });
+      if (apply && ownedStatus) {
+        const stagedArtifact = objectValue(error?.details).staged_manifest
+          || objectValue(capturedForRetention?.retained_artifact_staged)
+          || null;
+        const failedCaptureMetadata = capturedForRetention
+          ? {
+              ...capturedForRetention,
+              artifact_bytes: undefined,
+              retained_artifact: null,
+              retained_artifact_staged: stagedArtifact,
+              text_excerpt: String(capturedForRetention.text || "").slice(0, 20_000),
+              text_length: String(capturedForRetention.text || "").length,
+              links: undefined,
+              pdf_links: undefined,
+            }
+          : undefined;
+        const quarantine = await persistPostRetentionCaptureFailure({
+          persist: (patch) => updateOwnedRequest(row.id, ownedStatus, patch),
+          captureMetadata: failedCaptureMetadata,
+          discoveredLinks: capturedForRetention
+            ? {
+                links: capturedForRetention.links || [],
+                pdf_links: capturedForRetention.pdf_links || [],
+              }
+            : null,
+          processingError: error,
+          statusReason: error.code,
+          solution: error.solution,
+        });
+        if (!quarantine.persisted) {
+          report.post_retention_persistence_unverified += 1;
+          report.errors.push({
+            request_id: row.id,
+            stage: "intake_artifact_retention_quarantine_persistence",
+            reason_code: POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON,
+            message: quarantine.persistenceError
+              ? errorMessage(quarantine.persistenceError)
+              : "The staged retained-capture quarantine write returned no owned row.",
+            solution: "Do not refetch. Stale recovery will make this protected first capture manual-only so immutable local/R2 state can be inspected and rebound.",
+            creates_api_charge: false,
+          });
+          return false;
+        }
+      }
+      return true;
     }
     report.failed += 1;
     summary.status = "failed";
@@ -1927,29 +2313,126 @@ async function finalizeReviewedRequest(row, capture, deterministicReview, rawRes
     return;
   }
 
-  const source = apply
-    ? await upsertAcceptedSource(awardResult.award.id, sourceLike, row)
-    : { id: "dry-run-source-id" };
+  const acquisitionPreflight = buildSourceAcquisitionProposal({
+    request: row,
+    source: { url: sourceLike.url },
+    review: normalizedReview,
+    capture,
+    awardCreated: awardResult.created,
+    workerRunId,
+  });
+  const liveFirstCaptureRequested =
+    cleanNullable(row.notification_mode) === "first_capture_candidate"
+    && cleanNullable(row.acquisition_kind) === "live_discovery"
+    && !awardResult.created
+    && !cleanNullable(row.onboarding_batch_id);
+  if (
+    liveFirstCaptureRequested
+    && acquisitionPreflight.notification_mode !== "first_capture_candidate"
+  ) {
+    report.live_first_capture_preflight_manual_review += 1;
+    await finalizeLiveFirstCaptureManualReview({
+      row,
+      awardResult,
+      aiReview,
+      now,
+      dispositionReason: acquisitionPreflight.reason,
+      source: null,
+      phase: "client_preflight",
+    });
+    return;
+  }
+
+  const sourceWrite = apply
+    ? await registerAcceptedSource(awardResult.award.id, sourceLike, row, {
+        capture,
+        review: normalizedReview,
+        awardCreated: awardResult.created,
+        acquisitionProposal: acquisitionPreflight,
+      })
+    : {
+        source: { id: "dry-run-source-id" },
+        inserted: true,
+        acquisition: acquisitionPreflight,
+      };
+  const source = sourceWrite.source;
   report.created_or_updated_sources += 1;
+  if (sourceWrite.acquisition?.create) {
+    report.source_acquisitions_created += 1;
+    if (sourceWrite.acquisition.notification_mode === "first_capture_candidate") {
+      report.source_acquisitions_first_capture_candidate += 1;
+    } else if (sourceWrite.acquisition.notification_mode === "baseline_only") {
+      report.source_acquisitions_baseline_only += 1;
+    } else if (sourceWrite.acquisition.notification_mode === "manual_review") {
+      report.source_acquisitions_manual_review += 1;
+    }
+  } else if (!sourceWrite.inserted) {
+    report.source_acquisitions_skipped_preexisting += 1;
+  }
+
+  if (
+    liveFirstCaptureRequested
+    && sourceWrite.acquisition?.create
+    && sourceWrite.acquisition.notification_mode === "manual_review"
+  ) {
+    const dispositionReason = cleanNullable(sourceWrite.acquisition.reason)
+      || "source_acquisition_requires_manual_review";
+    if (apply) {
+      const quarantineMessage =
+        `Unexpected server downgrade blocked first-capture publication (${dispositionReason}). ` +
+        "The source remains review_later until its retained intake evidence is repaired.";
+      const { error: sourceQuarantineError } = await supabase
+        .from("shared_award_sources")
+        .update({
+          admin_review_status: "review_later",
+          last_error: quarantineMessage,
+          updated_at: now,
+        })
+        .eq("id", source.id);
+      if (sourceQuarantineError) {
+        throw new Error(`Quarantine downgraded live source failed: ${sourceQuarantineError.message}`);
+      }
+    }
+    await finalizeLiveFirstCaptureManualReview({
+      row,
+      awardResult,
+      aiReview,
+      now,
+      dispositionReason,
+      source,
+      phase: "server_downgrade",
+    });
+    return;
+  }
+
+  if (
+    apply &&
+    liveFirstCaptureRequested &&
+    sourceWrite.acquisition?.id &&
+    sourceWrite.acquisition.notification_mode === "first_capture_candidate"
+  ) {
+    await ensureInitialOfficialDocumentCandidateMaterialized({
+      row,
+      award: awardResult.award,
+      source,
+      acquisition: sourceWrite.acquisition,
+    });
+  }
 
   const candidateRows = factCandidateRowsFromIntake({
     awardId: awardResult.award.id,
     sourceId: source.id,
+    sourcePageRequestId: row.id,
     sourceLike,
     review: normalizedReview,
-  }).map((candidate) => ({
-    ...candidate,
-    metadata: {
-      ...(objectValue(candidate.metadata)),
-      source_page_request_id: row.id,
-    },
-  }));
+  });
 
   if (apply && candidateRows.length) {
-    const { error } = await supabase.from("shared_award_fact_candidates").insert(candidateRows);
-    if (error) throw new Error(`Insert intake fact candidates failed: ${error.message}`);
+    const persistedFacts = await persistSourceIntakeFactCandidates(supabase, candidateRows);
+    report.fact_candidates_inserted += persistedFacts.inserted;
+  } else {
+    report.fact_candidates_inserted += candidateRows.length;
   }
-  report.fact_candidates_inserted += candidateRows.length;
 
   if (apply) {
     const queueResult = await enqueueAwardReconciliation(supabase, {
@@ -1976,6 +2459,340 @@ async function finalizeReviewedRequest(row, capture, deterministicReview, rawRes
       error: null,
     });
   }
+}
+
+async function finalizeLiveFirstCaptureManualReview({
+  row,
+  awardResult,
+  aiReview,
+  now,
+  dispositionReason,
+  source = null,
+  phase,
+}) {
+  const reason = cleanNullable(dispositionReason) || "live_first_capture_requires_manual_review";
+  const sourceDisposition = source?.id
+    ? "The newly inserted source was quarantined as review_later."
+    : "No source was registered from this request.";
+  const message =
+    `The requested live first-capture notification failed safe evidence or provenance validation ` +
+    `(${reason}). ${sourceDisposition} Repair the retained request evidence before retrying; ` +
+    "do not absorb this document as a healthy baseline.";
+  report.needs_manual_review += 1;
+  report.errors.push({
+    source_page_request_id: row.id,
+    source_id: source?.id || null,
+    stage: `live_first_capture_${phase}`,
+    message,
+    solution:
+      "Inspect the captured final URL, PDF hash, exact evidence quote, parent source, and worker/request provenance. Retry the retained evidence after repair; request another paid review only if the retained intake bytes themselves are invalid.",
+  });
+  if (!apply) return;
+  await requireOwnedRequestUpdate(row.id, "matching", {
+    status: "needs_manual_review",
+    status_reason: reason,
+    worker_run_id: null,
+    matched_shared_award_id: awardResult.created ? null : awardResult.award.id,
+    created_shared_award_id: awardResult.created ? awardResult.award.id : null,
+    created_source_ids: source?.id ? [source.id] : [],
+    ai_review: aiReview,
+    processed_at: now,
+    failed_at: now,
+    error: message.slice(0, 1000),
+  });
+}
+
+async function ensureInitialOfficialDocumentCandidateMaterialized({
+  row,
+  award,
+  source,
+  acquisition,
+}) {
+  report.initial_document_materialization_attempted += 1;
+  try {
+    const existing = await loadInitialOfficialDocumentCandidate(acquisition.id);
+    if (existing) {
+      verifyInitialOfficialDocumentCandidate({ existing, award, source, acquisition });
+      await resolveInitialOfficialDocumentMaterializationQuarantine(acquisition.id, existing.id);
+      report.initial_document_materialization_candidate_existing += 1;
+      report.initial_document_materialization_succeeded += 1;
+      return existing;
+    }
+
+    const deadlineMarginMs = 5_000;
+    const remainingLaneBudgetMs = deadlineAtMs - Date.now() - deadlineMarginMs;
+    if (remainingLaneBudgetMs < 5_000) {
+      throw new Error(
+        "The source-intake lane lacks enough time to safely materialize and verify the sealed first observation.",
+      );
+    }
+    const timeoutMs = Math.min(initialDocumentMaterializationTimeoutMs, remainingLaneBudgetMs);
+    report.initial_document_materialization_subprocess_started += 1;
+    const execution = await runInitialOfficialDocumentMaterialization({
+      row,
+      source,
+      acquisition,
+      timeoutMs,
+    });
+    const candidate = await loadInitialOfficialDocumentCandidate(acquisition.id);
+    if (!candidate) {
+      const missing = new Error(
+        "The sealed-artifact worker completed without creating the required initial-document candidate.",
+      );
+      missing.materialization_output = execution;
+      throw missing;
+    }
+    verifyInitialOfficialDocumentCandidate({ existing: candidate, award, source, acquisition });
+    await resolveInitialOfficialDocumentMaterializationQuarantine(acquisition.id, candidate.id);
+    report.initial_document_materialization_succeeded += 1;
+    return candidate;
+  } catch (error) {
+    let message = errorMessage(error);
+    try {
+      const recovered = await loadInitialOfficialDocumentCandidate(acquisition.id);
+      if (recovered) {
+        verifyInitialOfficialDocumentCandidate({ existing: recovered, award, source, acquisition });
+        await resolveInitialOfficialDocumentMaterializationQuarantine(acquisition.id, recovered.id);
+        report.initial_document_materialization_candidate_existing += 1;
+        report.initial_document_materialization_succeeded += 1;
+        return recovered;
+      }
+    } catch (recoveryError) {
+      message = `${message} Post-failure candidate verification also failed: ${errorMessage(recoveryError)}`;
+    }
+    report.initial_document_materialization_failed += 1;
+    const output = objectValue(error?.materialization_output);
+    const quarantineId = await recordSourceIntakeMaterializationQuarantine({
+      row,
+      source,
+      acquisition,
+      message,
+      output,
+    });
+    report.errors.push({
+      request_id: row.id,
+      source_id: source.id,
+      source_acquisition_id: acquisition.id,
+      quarantine_id: quarantineId,
+      stage: "initial_document_same_pass_materialization",
+      message,
+      solution:
+        "Retry the stored capture and accepted review through reconciliation-only recovery. The retry uses the immutable retained PDF, does not fetch the URL, and creates no Gemini charge.",
+      creates_api_charge: false,
+    });
+    const failure = new Error(
+      `The accepted source was not finalized because its exact first-observation candidate could not be verified. ` +
+      `Quarantine ${quarantineId}; retry the retained result without charge. ${message}`,
+    );
+    failure.code = "INITIAL_DOCUMENT_SAME_PASS_MATERIALIZATION_FAILED";
+    throw failure;
+  }
+}
+
+async function loadInitialOfficialDocumentCandidate(acquisitionId) {
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("*")
+    .eq("source_acquisition_id", acquisitionId)
+    .eq("candidate_scope", INITIAL_OFFICIAL_DOCUMENT_SCOPE)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Load exact initial-document candidate failed: ${error.message}`);
+  }
+  return data || null;
+}
+
+async function resolveInitialOfficialDocumentMaterializationQuarantine(acquisitionId, candidateId) {
+  const { error } = await supabase.rpc(
+    "resolve_initial_official_document_quarantine",
+    {
+      p_acquisition_id: acquisitionId,
+      p_candidate_id: candidateId,
+    },
+  );
+  if (error) {
+    throw new Error(`Resolve initial-document materialization quarantine failed: ${error.message}`);
+  }
+}
+
+function verifyInitialOfficialDocumentCandidate({ existing, award, source, acquisition }) {
+  const candidate = objectValue(existing);
+  const expected = {
+    award_id: cleanNullable(award?.id),
+    source_id: cleanNullable(source?.id),
+    acquisition_id: cleanNullable(acquisition?.id),
+    source_url: cleanNullable(source?.url),
+    file_hash: cleanNullable(objectValue(acquisition?.row).review_seal?.capture_file_hash)?.toLowerCase(),
+  };
+  const mismatches = [];
+  if (candidate.candidate_scope !== INITIAL_OFFICIAL_DOCUMENT_SCOPE) mismatches.push("scope");
+  if (cleanNullable(candidate.shared_award_id) !== expected.award_id) mismatches.push("award");
+  if (cleanNullable(candidate.shared_award_source_id) !== expected.source_id) mismatches.push("source");
+  if (cleanNullable(candidate.source_acquisition_id) !== expected.acquisition_id) mismatches.push("acquisition");
+  if (cleanNullable(candidate.source_url) !== expected.source_url) mismatches.push("source_url");
+  if (cleanNullable(candidate.new_file_hash)?.toLowerCase() !== expected.file_hash) mismatches.push("file_hash");
+  if (!["succeeded", "published"].includes(cleanNullable(candidate.status))) mismatches.push("status");
+  if (mismatches.length) {
+    throw new Error(
+      `Initial-document candidate failed exact sealed identity verification (${mismatches.join(", ")}).`,
+    );
+  }
+
+  const decision = initialOfficialDocumentPublicationDecision({
+    candidate,
+    source: {
+      ...source,
+      shared_award_id: expected.award_id,
+    },
+    result: objectValue(candidate.ai_result),
+  });
+  if (!decision.allowed) {
+    throw new Error(
+      `Initial-document candidate failed deterministic publication verification (${decision.reason}).`,
+    );
+  }
+  return candidate;
+}
+
+async function runInitialOfficialDocumentMaterialization({ row, source, acquisition, timeoutMs }) {
+  const sourceTimeoutMs = Math.max(4_000, timeoutMs - 1_000);
+  const commandArgs = [
+    join(root, "scripts", "capture-visual-snapshots.mjs"),
+    `--env=${envPath}`,
+    `--archive-dir=${archiveRoot}`,
+    "--limit=1",
+    "--all=true",
+    `--source-id=${source.id}`,
+    "--pdf-only=true",
+    "--web-only=false",
+    "--promote=true",
+    "--visual-review-mode=batch",
+    "--extract-baseline-info=false",
+    "--backfill-baseline-info=false",
+    "--capture-section-evidence=false",
+    "--discovery-mode=false",
+    "--discover-pdf-subpages=false",
+    "--discover-html-subpages=false",
+    "--r2-snapshot-sync=true",
+    "--r2-repair-missing-snapshots=false",
+    "--snapshot-history-prune=false",
+    "--source-quality-mode=deterministic",
+    "--run-trigger=manual",
+    `--run-cohort-id=source-intake:${row.id}`,
+    "--initial-official-document-materialization=true",
+    `--initial-official-document-acquisition-id=${acquisition.id}`,
+    `--source-timeout-ms=${sourceTimeoutMs}`,
+  ];
+
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(process.execPath, commandArgs, {
+      cwd: root,
+      env: process.env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const appendTail = (current, chunk) => `${current}${chunk}`.slice(-16_000);
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk) => {
+      stdout = appendTail(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr = appendTail(stderr, chunk);
+    });
+
+    const finish = (error, result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) rejectPromise(error);
+      else resolvePromise(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      const error = new Error(
+        `Sealed first-observation materialization exceeded its ${timeoutMs}ms lane reservation.`,
+      );
+      error.materialization_output = { stdout_tail: stdout, stderr_tail: stderr, timed_out: true };
+      finish(error);
+    }, timeoutMs);
+
+    child.once("error", (spawnError) => {
+      const error = new Error(`Start sealed first-observation materialization failed: ${errorMessage(spawnError)}`);
+      error.materialization_output = { stdout_tail: stdout, stderr_tail: stderr, start_failed: true };
+      finish(error);
+    });
+    child.once("close", (code, signal) => {
+      const result = {
+        exit_code: code,
+        signal: signal || null,
+        stdout_tail: stdout,
+        stderr_tail: stderr,
+        timed_out: false,
+      };
+      if (code === 0) {
+        finish(null, result);
+        return;
+      }
+      const error = new Error(
+        `Sealed first-observation materialization exited with code ${code ?? "unknown"}` +
+        `${signal ? ` (${signal})` : ""}.`,
+      );
+      error.materialization_output = result;
+      finish(error);
+    });
+  });
+}
+
+async function recordSourceIntakeMaterializationQuarantine({
+  row,
+  source,
+  acquisition,
+  message,
+  output,
+}) {
+  const evidence = {
+    message,
+    failure_stage: "source_intake_same_pass_materialization",
+    candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+    source_page_request_id: row.id,
+    source_intake_worker_run_id: workerRunId,
+    materialization_output: {
+      exit_code: output.exit_code ?? null,
+      signal: output.signal ?? null,
+      timed_out: output.timed_out === true,
+      start_failed: output.start_failed === true,
+      stdout_tail: cleanNullable(output.stdout_tail)?.slice(-4_000) || null,
+      stderr_tail: cleanNullable(output.stderr_tail)?.slice(-4_000) || null,
+    },
+    repair: {
+      retry_mode: "reconciliation_only_retained_result_replay",
+      creates_api_charge: false,
+      fetches_source_url: false,
+      preserves_acquisition_identity: true,
+      safe_action:
+        "Retry the stored capture and accepted review after repairing the local/R2 materialization dependency.",
+    },
+  };
+  const { data: quarantineId, error } = await supabase.rpc(
+    "record_initial_official_document_quarantine",
+    {
+      p_source_id: source.id,
+      p_acquisition_id: acquisition.id,
+      p_reason_code: "source_intake_same_pass_materialization_failed",
+      p_evidence: evidence,
+    },
+  );
+  if (error || !quarantineId) {
+    throw new Error(
+      `Initial-document materialization failed and durable quarantine persistence also failed: ` +
+      `${error?.message || "missing quarantine id"}. Original failure: ${message}`,
+    );
+  }
+  return quarantineId;
 }
 
 async function resolveAwardForRequest(row, capture, deterministicReview, review) {
@@ -2075,37 +2892,93 @@ async function createSharedAwardFromIntake(row, capture, review) {
   return data;
 }
 
-async function upsertAcceptedSource(awardId, sourceLike, row) {
+async function registerAcceptedSource(awardId, sourceLike, row, {
+  capture,
+  review,
+  awardCreated,
+  acquisitionProposal: preflightAcquisitionProposal = null,
+}) {
   const baselineFacts = baselineFactsFromIntakeReview(objectValue(sourceLike.page_metadata).intake_review || objectValue(row.ai_review));
-  const { data, error } = await supabase
-    .from("shared_award_sources")
-    .upsert({
+  const sourcePayload = {
+    shared_award_id: awardId,
+    url: sourceLike.url,
+    title: sourceLike.title,
+    display_title: sourceLike.display_title || null,
+    page_description: sourceLike.page_description || null,
+    page_type: normalizeSharedAwardPageType(sourceLike.page_type),
+    confidence: sourceLike.confidence || 0.75,
+    reason: "Accepted through source intake workflow",
+    source: "admin",
+    submitted_by_user_id: row.user_id || null,
+    admin_review_status: "open",
+    page_metadata: {
+      ...(objectValue(sourceLike.page_metadata)),
+      baseline_facts: baselineFacts,
+      source_intake_request_id: row.id,
+    },
+    page_metadata_generated_at: new Date().toISOString(),
+    page_metadata_model: sourceLike.page_metadata_model || model,
+    last_error: null,
+    consecutive_failures: 0,
+  };
+  const acquisitionProposal = preflightAcquisitionProposal || buildSourceAcquisitionProposal({
+    request: row,
+    source: { url: sourceLike.url },
+    review,
+    capture,
+    awardCreated,
+    workerRunId,
+  });
+  const { data, error } = await supabase.rpc("register_shared_award_source_from_intake", {
+    p_source: sourcePayload,
+    p_acquisition: acquisitionProposal.row,
+  });
+  if (error) throw new Error(`Register accepted source and acquisition failed: ${error.message}`);
+  const registration = Array.isArray(data) ? data[0] : data;
+  if (!registration?.source_id) {
+    throw new Error("Accepted source registration did not return a source id.");
+  }
+  const inserted = registration.source_inserted === true;
+  const effectiveNotificationMode = cleanNullable(registration.effective_notification_mode)
+    || "baseline_only";
+  const effectiveDispositionReason = cleanNullable(registration.effective_disposition_reason)
+    || (effectiveNotificationMode === acquisitionProposal.notification_mode
+      ? acquisitionProposal.reason
+      : `server_${effectiveNotificationMode}_policy_decision`);
+  const acquisition = registration.acquisition_id
+    ? {
+        ...acquisitionProposal,
+        id: registration.acquisition_id,
+        notification_mode: effectiveNotificationMode,
+        reason: effectiveDispositionReason,
+        row: {
+          ...acquisitionProposal.row,
+          notification_mode: effectiveNotificationMode,
+        },
+      }
+    : {
+        create: false,
+        reason: inserted
+          ? "acquisition_registration_missing"
+          : "preexisting_source_not_reacquired",
+        acquisition_kind: acquisitionProposal.acquisition_kind,
+        notification_mode: effectiveNotificationMode,
+        row: null,
+      };
+  if (inserted && !registration.acquisition_id) {
+    throw new Error("A newly inserted source registration did not create immutable acquisition provenance.");
+  }
+
+  return {
+    source: {
+      id: registration.source_id,
       shared_award_id: awardId,
       url: sourceLike.url,
       title: sourceLike.title,
-      display_title: sourceLike.display_title || null,
-      page_description: sourceLike.page_description || null,
-      page_type: normalizeSharedAwardPageType(sourceLike.page_type),
-      confidence: sourceLike.confidence || 0.75,
-      reason: "Accepted through source intake workflow",
-      source: "admin",
-      submitted_by_user_id: row.user_id || null,
-      admin_review_status: "open",
-      page_metadata: {
-        ...(objectValue(sourceLike.page_metadata)),
-        baseline_facts: baselineFacts,
-        source_intake_request_id: row.id,
-      },
-      page_metadata_generated_at: new Date().toISOString(),
-      page_metadata_model: sourceLike.page_metadata_model || model,
-      last_error: null,
-      consecutive_failures: 0,
-    }, { onConflict: "shared_award_id,url" })
-    .select("id,shared_award_id,url,title")
-    .maybeSingle();
-  if (error) throw new Error(`Upsert accepted source failed: ${error.message}`);
-  if (!data) throw new Error("Upsert accepted source did not return a row.");
-  return data;
+    },
+    inserted,
+    acquisition,
+  };
 }
 
 async function markBatchRowsFailed(batchName, message) {
@@ -2186,11 +3059,25 @@ function workerMetadata() {
       stale_submission_claims_requeued: report.stale_submission_claims_requeued,
       stale_capture_requests_requeued: report.stale_capture_requests_requeued,
       stale_reconcile_claims_requeued: report.stale_reconcile_claims_requeued,
+      stale_free_reconciliation_claims_requeued: report.stale_free_reconciliation_claims_requeued,
       stale_matching_requests_failed_closed: report.stale_matching_requests_failed_closed,
       needs_manual_review: report.needs_manual_review,
       matched_existing_awards: report.matched_existing_awards,
       created_awards: report.created_awards,
       created_or_updated_sources: report.created_or_updated_sources,
+      source_acquisitions_created: report.source_acquisitions_created,
+      source_acquisitions_first_capture_candidate: report.source_acquisitions_first_capture_candidate,
+      source_acquisitions_baseline_only: report.source_acquisitions_baseline_only,
+      source_acquisitions_manual_review: report.source_acquisitions_manual_review,
+      live_first_capture_preflight_manual_review: report.live_first_capture_preflight_manual_review,
+      initial_document_materialization_attempted: report.initial_document_materialization_attempted,
+      initial_document_materialization_subprocess_started:
+        report.initial_document_materialization_subprocess_started,
+      initial_document_materialization_candidate_existing:
+        report.initial_document_materialization_candidate_existing,
+      initial_document_materialization_succeeded: report.initial_document_materialization_succeeded,
+      initial_document_materialization_failed: report.initial_document_materialization_failed,
+      source_acquisitions_skipped_preexisting: report.source_acquisitions_skipped_preexisting,
       fact_candidates_inserted: report.fact_candidates_inserted,
       awards_queued_for_reconciliation: report.awards_queued_for_reconciliation,
       failed: report.failed,
@@ -2254,6 +3141,36 @@ function sourceIntakeOwnershipLost(id, expectedStatus) {
 
 function isSourceIntakeOwnershipLost(error) {
   return error && typeof error === "object" && error.code === "SOURCE_INTAKE_OWNERSHIP_LOST";
+}
+
+function isProtectedLiveFirstCaptureRow(row) {
+  return cleanNullable(row?.acquisition_kind) === "live_discovery"
+    && cleanNullable(row?.notification_mode) === "first_capture_candidate"
+    && !cleanNullable(row?.onboarding_batch_id);
+}
+
+function hasProvenRetainedCaptureMetadata(row) {
+  return hasProvenCaptureArtifact(row, "retained_artifact", true);
+}
+
+function hasProvenStagedCaptureMetadata(row) {
+  return hasProvenCaptureArtifact(row, "retained_artifact_staged", false);
+}
+
+function hasProvenCaptureArtifact(row, artifactField, requireR2Verified) {
+  const capture = captureFromRow(row);
+  try {
+    validateRetainedIntakeArtifactManifest(capture[artifactField], {
+      requestId: row.id,
+      fileHash: capture.capture_file_hash,
+      finalUrl: capture.canonical_url || capture.final_url,
+      requireR2Verified,
+      allowUnboundR2Target: !requireR2Verified,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function captureFromRow(row) {
@@ -2466,6 +3383,7 @@ Options:
   --poll-batch-limit=25
   --request-timeout-ms=120000
   --capture-timeout-ms=30000
+  --initial-document-materialization-timeout-ms=120000
   --time-budget-ms=900000
   --stale-in-flight-ms=1800000
   --max-batch-age-ms=259200000

@@ -31,7 +31,7 @@ export const workerLanes = [
     id: "visual-capture",
     label: "Visual Capture",
     detail:
-      "Runs stable capture plus cheap expandable-section text extraction for already-approved monitorable sources and enqueues review candidates without discovering new sources.",
+      "Runs stable capture plus expandable-section extraction for approved sources, and the 6 PM shards safely seed then discover newly linked official PDFs.",
     profileIds: ["snapshots"],
     taskIds: ["visual-snapshots", "visual-review-batch"],
     workerIds: [
@@ -45,7 +45,7 @@ export const workerLanes = [
     id: "source-discovery",
     label: "Source Intake & Discovery",
     detail:
-      "Processes pasted source-intake requests, then runs explicit discovery separately from daily capture with strict quality gates.",
+      "Reviews pasted and 6 PM-discovered source requests; operator bulk discovery remains a separate baseline-only onboarding tool.",
     profileIds: ["source-intake", "discovery"],
     taskIds: ["source-intake", "source-discovery"],
     workerIds: ["new-page-review-lane"],
@@ -231,7 +231,7 @@ export const atomicTasks = [
     laneId: "visual-capture",
     label: "Visual Snapshots",
     detail:
-      "Captures stable screenshots, visible text, and separate expandable-section text for monitor-eligible sources across the visual shards; normal runs do not discover sources.",
+      "Captures stable screenshots and expandable-section text across the 6 PM shards, seeds existing PDF links baseline-only, and queues later newly linked PDFs for review.",
     cost: "$0 direct AI/API cost during capture.",
     run: {
       kind: "maintenance",
@@ -270,7 +270,7 @@ export const atomicTasks = [
     laneId: "source-discovery",
     label: "Source Discovery",
     detail:
-      "Runs discovery mode with deterministic identity and source-quality gates before inserting source candidates.",
+      "Runs operator discovery with deterministic gates; it defaults to historical onboarding so bulk results cannot become public first-observation alerts.",
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "maintenance",
@@ -418,7 +418,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing New Page Review Lane",
     label: "New Page Review",
     detail:
-      "Every 15 minutes: processes queued submitted pages independently from changed-page review and all zero-cost lanes.",
+      "Every 15 minutes: reviews submitted pages and newly linked PDFs queued by the 6 PM scan, independently from changed-page review.",
     cost: "Gemini Batch API with a $5/day hard cap.",
   },
   {
@@ -497,7 +497,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 1",
     label: "Visual Snapshot Shard 1",
     detail:
-      "Captures stable screenshots, visible text, and separate expandable-section text for the first shard of monitor-eligible source pages.",
+      "Captures the first source shard and safely records newly linked official PDFs for the new-page review lane.",
     cost: "$0 direct AI/API cost during capture.",
   },
   {
@@ -506,7 +506,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 2",
     label: "Visual Snapshot Shard 2",
     detail:
-      "Captures stable screenshots, visible text, and separate expandable-section text for the second shard of monitor-eligible source pages.",
+      "Captures the second source shard and safely records newly linked official PDFs for the new-page review lane.",
     cost: "$0 direct AI/API cost during capture.",
   },
   {
@@ -515,7 +515,7 @@ export const scheduledWorkers = [
     taskName: "AwardPing Visual Snapshot Worker Shard 3",
     label: "Visual Snapshot Shard 3",
     detail:
-      "Captures stable screenshots, visible text, and separate expandable-section text for the third shard of monitor-eligible source pages.",
+      "Captures the third source shard and safely records newly linked official PDFs for the new-page review lane.",
     cost: "$0 direct AI/API cost during capture.",
   },
 ];

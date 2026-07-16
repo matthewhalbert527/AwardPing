@@ -251,6 +251,51 @@ describe("operator action inbox", () => {
     expect(JSON.stringify(item)).not.toContain("Gemini Batch");
   });
 
+  it("explains authoritative R2 recovery as an exact, no-charge source repair", () => {
+    const sourceId = "20000000-0000-4000-8000-000000000002";
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [
+        quarantineItem({
+          quarantineKey: `r2-baseline-recovery:${sourceId}`,
+          caseKey: `r2-baseline-recovery:${sourceId}`,
+          sourceId,
+          owner: "Baseline evidence recovery",
+          retryMode: "manual_exact_r2_rehydration_then_automatic_resume",
+          reasonCode: "r2_authoritative_baseline_recovery_failed",
+          reason: "Exact local-cache recovery from the authoritative R2 generation failed.",
+          recommendedAction:
+            "Inspect the immutable R2 pointer and complete generation, restore only the exact hash-bound objects, and never fetch a replacement baseline.",
+          policyId: "awardping-r2-baseline-recovery-quarantine",
+          policyVersion: "1",
+          policyHash: "4458c623fe35d74671bf6b6c418b0dd3ac0567933f05fb87d562348a8a288683",
+          primarySourceTable: "shared_award_sources",
+          primarySourceRecordId: sourceId,
+          evidence: {
+            source: {
+              id: sourceId,
+              title: "Official source",
+              url: "https://example.com/award.pdf",
+            },
+          },
+        }),
+      ],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "needs_operator",
+      retry: { automatic: false, label: "No \u2014 exact R2 restore required" },
+      charge: { level: "none", label: "No paid AI call" },
+      recommendedAction: { label: "Repair the authoritative baseline" },
+      source: { id: sourceId, title: "Official source" },
+    });
+    expect(item.retry.detail).toContain("resumes the source automatically");
+    expect(item.charge.detail).toContain("do not submit paid AI work");
+    expect(item.recommendedAction.detail).toContain("never fetch a replacement baseline");
+    expect(item.failureReason).toContain("authoritative R2 generation failed");
+  });
+
   it("keeps historical limitations out of the repair inbox", () => {
     const items = buildOperatorActionInbox({
       issues: [],
@@ -287,6 +332,53 @@ describe("operator action inbox", () => {
     expect(item.state).toBe("blocked");
     expect(item.charge.level).toBe("unknown");
     expect(item.recommendedAction.label).toContain("paid attempt");
+  });
+
+  it("reports automatic first-observation evidence retries as free local work", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [
+        quarantineItem({
+          quarantineKey: "initial-document:acquisition-1",
+          caseKey: "initial-document:acquisition-1",
+          category: "initial_document",
+          retryMode: "automatic_local_evidence_retry",
+          retryCharge: "none",
+        }),
+      ],
+      now,
+    });
+
+    expect(item.retry).toMatchObject({
+      automatic: true,
+      label: "Yes — local evidence only",
+    });
+    expect(item.retry.detail).toContain("does not submit a paid AI request");
+    expect(item.charge.level).toBe("none");
+  });
+
+  it("reports initial-document publication persistence retries as automatic and free", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [
+        quarantineItem({
+          quarantineKey: "initial-document:acquisition-publication-1",
+          caseKey: "initial-document:acquisition-publication-1",
+          category: "initial_document",
+          retryMode: "automatic_zero_charge_publication_retry",
+          retryCharge: "none",
+        }),
+      ],
+      now,
+    });
+
+    expect(item.retry).toMatchObject({
+      automatic: true,
+      label: "Yes \u2014 publication only",
+    });
+    expect(item.retry.detail).toContain("atomic event/evidence publication");
+    expect(item.retry.detail).toContain("does not submit a paid AI request");
+    expect(item.charge.level).toBe("none");
   });
 
   it("excludes retired baseline and source-completion categories", () => {
@@ -425,6 +517,26 @@ describe("operator action inbox", () => {
       label: "Open Source Intake",
       href: "/dashboard/admin/source-intake",
     });
+  });
+
+  it("keeps an access-blocked source intake request visible for a safe operator decision", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [
+        issue({
+          category: "source_intake_needs_manual_review",
+          area: "Source intake",
+          currentValue: "needs_manual_review",
+          message: "access-error",
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("needs_operator");
+    expect(item.failureReason).toBe("access-error");
+    expect(item.owner.label).toBe("Source intake");
+    expect(item.retry.automatic).toBe(false);
+    expect(item.recommendedAction.href).toBe("/dashboard/admin/source-intake");
   });
 
   it("turns a missing 6 PM shard into one manual no-AI-charge repair", () => {

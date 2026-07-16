@@ -7,7 +7,10 @@ export type AdminManualQuarantineClassification =
   "actionable_quarantine" | "historical_limitation";
 
 export type AdminManualQuarantineCategory =
-  "public_page" | "visual_review" | "historical_localization";
+  | "public_page"
+  | "visual_review"
+  | "initial_document"
+  | "historical_localization";
 
 export type AdminManualQuarantineCategorySummary = {
   cases: number;
@@ -382,6 +385,7 @@ export function emptyManualQuarantineSummary(): AdminManualQuarantineSummary {
     byCategory: {
       public_page: emptyCategorySummary(),
       visual_review: emptyCategorySummary(),
+      initial_document: emptyCategorySummary(),
       historical_localization: emptyCategorySummary(),
     },
     completionStatus: "not_reported",
@@ -400,6 +404,7 @@ function mapCategorySummaries(
   return {
     public_page: mapCategorySummary(object?.public_page),
     visual_review: mapCategorySummary(object?.visual_review),
+    initial_document: mapCategorySummary(object?.initial_document),
     historical_localization: mapCategorySummary(
       object?.historical_localization,
     ),
@@ -452,7 +457,11 @@ function quarantineClassification(
 }
 
 function quarantineCategory(value: string): AdminManualQuarantineCategory {
-  if (value === "visual_review" || value === "historical_localization")
+  if (
+    value === "visual_review" ||
+    value === "initial_document" ||
+    value === "historical_localization"
+  )
     return value;
   return "public_page";
 }

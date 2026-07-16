@@ -839,6 +839,8 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\lib\gemini-spend-ledger.mjs"),
       (Join-Path $AppDir "scripts\lib\gemini-batch-support.mjs"),
       (Join-Path $AppDir "scripts\lib\r2-baseline-rehydration.mjs"),
+      (Join-Path $AppDir "scripts\lib\intake-artifact-retention.mjs"),
+      (Join-Path $AppDir "scripts\lib\initial-official-document.mjs"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
       (Join-Path $AppDir "scripts\lib\expansion-state-isolation.mjs"),
@@ -970,6 +972,8 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\gemini-spend-ledger.mjs",
         "scripts\lib\gemini-batch-support.mjs",
         "scripts\lib\r2-baseline-rehydration.mjs",
+        "scripts\lib\intake-artifact-retention.mjs",
+        "scripts\lib\initial-official-document.mjs",
         "scripts\capture-visual-snapshots.mjs",
         "scripts\lib\visual-capture-run-report.mjs",
         "scripts\lib\expansion-state-isolation.mjs",
@@ -1742,6 +1746,23 @@ if (`$CompleteMissingBaselines) {
   `$workerArgs += [string]`$CompleteMissingBatchLimit
 }
 if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
+if (-not `$CompleteMissingBaselines -and -not `$BaselineRefresh) {
+  # The permanent 6 PM shards are the authoritative live discovery surface.
+  # They queue newly linked PDFs for the separately capped new-page review lane.
+  `$workerArgs += "--discovery-mode=true"
+  `$workerArgs += "--discovery-intent=live_recurring"
+  `$workerArgs += "--discover-pdf-subpages=true"
+  `$workerArgs += "--discover-html-subpages=false"
+  `$workerArgs += "--max-html-subpage-discoveries=0"
+  `$workerArgs += "--max-discoveries-per-award=5"
+  `$workerArgs += "--max-discoveries-per-source=3"
+  `$workerArgs += "--max-discoveries-per-domain=100"
+} else {
+  `$workerArgs += "--discovery-mode=false"
+  `$workerArgs += "--discovery-intent=historical_onboarding"
+  `$workerArgs += "--discover-pdf-subpages=false"
+  `$workerArgs += "--discover-html-subpages=false"
+}
 
 if (`$CompleteMissingBaselines) {
   Write-Host "Running AwardPing missing visual baseline completion (`$ShardLabel). Log: `$logPath"
@@ -2267,7 +2288,7 @@ function Register-VisualSnapshotTask {
     $settings.StopIfGoingOnBatteries = $false
     $settings.Hidden = $true
     if ($RegisterDisabled) { $settings.Enabled = $false }
-    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots daily from this PC. Domain shard $($shardIndex + 1) of 3." -Force | Out-Null
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Description "Captures visual AwardPing source-page snapshots and queues newly linked official PDFs for review daily from this PC. Domain shard $($shardIndex + 1) of 3." -Force | Out-Null
     Write-Host "Scheduled task created: $taskName daily at 6:00 PM"
   }
 }

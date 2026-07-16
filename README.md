@@ -44,11 +44,11 @@ For local development, `npx supabase start` applies the migrations and prints th
 
 ## Shared Offices
 
-Each signup gets a starter workspace and can create a university office such as an Office of Nationally Competitive Awards, Fellowships Office, Honors Advising office, or whatever name the school uses. The creator gets owner/admin permissions so they can edit awards, invite advisors, add tracked award pages, run manual checks, and manage the watchlist.
+Each signup gets a starter workspace and can create a university office such as an Office of Nationally Competitive Awards, Fellowships Office, Honors Advising office, or whatever name the school uses. The creator gets owner/admin permissions so they can edit awards, invite advisors, add tracked award pages, review scheduled-worker results, and manage the watchlist.
 
 Owners and admins can invite teammates by searching existing users by email, sending an email invitation, or creating an invite code/link. Invite links work for existing accounts and for new users after signup. Members can review the shared watchlist, award source pages, change history, and choose whether they receive immediate alerts, a daily digest, both, or no emails.
 
-Set `CRON_SECRET` in production so Vercel can call the monitor and digest cron routes. The default digest cron runs at 13:00 UTC.
+Set `CRON_SECRET` in production so Vercel can call the digest cron route. The default digest cron runs at 13:00 UTC. Source monitoring is performed by the local 6 PM visual-capture shards and the independently leased downstream lanes, not by a Vercel monitor cron.
 
 ## Local PC Visual Worker
 
@@ -87,7 +87,7 @@ Before inviting real advisors:
 7. Run `npm run launch:smoke -- --url https://your-domain.com`.
 8. Run `npm run seed:shared-awards` against production.
 9. Run `npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000` from the local crawler computer.
-10. Use `/dashboard/ops` as an owner/admin to confirm cron runs, monitor errors, and failed deliveries after launch.
+10. Use `/dashboard/ops` as an owner/admin to confirm local worker runs, shared-source health, downstream lane health, digest runs, and failed deliveries after launch.
 
 The full launch runbook is in `docs/private-beta-launch.md`.
 

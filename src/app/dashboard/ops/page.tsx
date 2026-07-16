@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
@@ -19,6 +18,7 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 
 type JobRun = Database["public"]["Tables"]["job_runs"]["Row"];
 type LocalWorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
+type LaneStatus = Database["public"]["Functions"]["list_monitoring_downstream_lane_status"]["Returns"][number];
 
 export default async function OpsPage() {
   if (!hasSupabaseConfig()) return <SetupNotice />;
@@ -47,9 +47,6 @@ export default async function OpsPage() {
     new Date(now).getTime() - 7 * 24 * 60 * 60 * 1000,
   ).toISOString();
   const [
-    { count: dueCount },
-    { count: errorCount },
-    { data: errorMonitors },
     { data: failedDeliveries },
     { count: sharedSourceCount },
     { count: dueSharedSourceCount },
@@ -60,25 +57,8 @@ export default async function OpsPage() {
     { data: recentSharedChanges },
     { data: structureErrors },
     { data: localWorkerRuns },
+    { data: errorSharedSources },
   ] = await Promise.all([
-    supabase
-      .from("monitors")
-      .select("*", { count: "exact", head: true })
-      .eq("office_id", officeContext.current.officeId)
-      .eq("status", "active")
-      .lte("next_check_at", now),
-    supabase
-      .from("monitors")
-      .select("*", { count: "exact", head: true })
-      .eq("office_id", officeContext.current.officeId)
-      .eq("status", "error"),
-    supabase
-      .from("monitors")
-      .select("id, label, url, last_error, last_checked_at")
-      .eq("office_id", officeContext.current.officeId)
-      .eq("status", "error")
-      .order("updated_at", { ascending: false })
-      .limit(8),
     supabase
       .from("alert_deliveries")
       .select("id, delivery_type, recipient, error, created_at")
@@ -130,38 +110,68 @@ export default async function OpsPage() {
       .select("*")
       .order("started_at", { ascending: false })
       .limit(5),
+    supabase
+      .from("shared_award_sources")
+      .select("id, shared_award_id, title, url, last_error, last_checked_at")
+      .not("last_error", "is", null)
+      .order("last_checked_at", { ascending: false, nullsFirst: false })
+      .limit(8),
   ]);
 
-  let jobRuns: JobRun[] = [];
-  let jobRunError: string | null = null;
+  let lastDigestRun: JobRun | null = null;
+  let digestRunError: string | null = null;
+  let laneStatuses: LaneStatus[] = [];
+  let laneStatusError: string | null = null;
 
   if (hasSupabaseAdminConfig()) {
     const admin = createSupabaseAdminClient();
-    const { data, error } = await admin
-      .from("job_runs")
-      .select("*")
-      .order("started_at", { ascending: false })
-      .limit(10);
+    const [digestResult, lanesResult] = await Promise.all([
+      admin
+        .from("job_runs")
+        .select("*")
+        .eq("job_name", "send-digests")
+        .order("started_at", { ascending: false })
+        .limit(1),
+      admin.rpc("list_monitoring_downstream_lane_status"),
+    ]);
 
-    if (error) {
-      jobRunError = error.message;
+    if (digestResult.error) {
+      digestRunError = digestResult.error.message;
     } else {
-      jobRuns = data || [];
+      lastDigestRun = digestResult.data?.[0] || null;
+    }
+
+    if (lanesResult.error) {
+      laneStatusError = lanesResult.error.message;
+    } else {
+      laneStatuses = lanesResult.data || [];
     }
   } else {
-    jobRunError = "Supabase service role is not configured, so job runs cannot be read.";
+    digestRunError = "Supabase service role is not configured, so digest runs cannot be read.";
+    laneStatusError = "Supabase service role is not configured, so downstream lane health cannot be read.";
   }
 
-  const lastCheckRun = jobRuns.find((run) => run.job_name === "check-monitors");
-  const lastDigestRun = jobRuns.find((run) => run.job_name === "send-digests");
   const workerRuns = (localWorkerRuns || []) as LocalWorkerRun[];
   const lastWorkerRun = workerRuns[0] || null;
+  const lanesNeedingAttention = laneStatuses.filter(laneNeedsAttention);
+  const healthyLaneCount = laneStatuses.length - lanesNeedingAttention.length;
+  const laneHealthValue = laneStatuses.length
+    ? `${healthyLaneCount}/${laneStatuses.length}`
+    : laneStatusError
+      ? "Unavailable"
+      : "No data";
+  const laneAlertValue = laneStatuses.length
+    ? lanesNeedingAttention.length
+    : laneStatusError
+      ? "Unavailable"
+      : "No data";
 
   const sharedAwardIds = [
     ...new Set(
       [
         ...(recentSharedSources || []).map((source) => source.shared_award_id),
         ...(recentSharedChanges || []).map((change) => change.shared_award_id),
+        ...(errorSharedSources || []).map((source) => source.shared_award_id),
       ].filter(Boolean),
     ),
   ] as string[];
@@ -190,15 +200,18 @@ export default async function OpsPage() {
         <span className="badge">Ops</span>
         <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
         <p className="mt-2 text-[var(--muted)]">
-          Monitor cron runs, stuck pages, and failed alert delivery before inviting more advisors.
+          Review the shared visual worker, independent downstream lanes, source failures, and alert delivery.
         </p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
-        <MetricCard label="Due now" value={dueCount || 0} />
-        <MetricCard label="Monitor errors" value={errorCount || 0} />
-        <MetricCard label="Last check run" value={lastCheckRun ? lastCheckRun.status : "None"} />
-        <MetricCard label="Last digest run" value={lastDigestRun ? lastDigestRun.status : "None"} />
+        <MetricCard label="Last worker run" value={lastWorkerRun ? lastWorkerRun.status : "None"} />
+        <MetricCard label="Healthy lanes" value={laneHealthValue} />
+        <MetricCard label="Lane alerts" value={laneAlertValue} />
+        <MetricCard
+          label="Last digest run"
+          value={lastDigestRun ? lastDigestRun.status : digestRunError ? "Unavailable" : "None"}
+        />
       </div>
 
       <div className="mt-6 grid gap-4 md:grid-cols-5">
@@ -218,7 +231,7 @@ export default async function OpsPage() {
                 Last run: {lastWorkerRun ? formatDate(lastWorkerRun.started_at) : "No run logged"}
               </p>
             </div>
-            <StatusPill status={lastWorkerRun?.status || "running"} />
+            {lastWorkerRun ? <StatusPill status={lastWorkerRun.status} /> : <span className="badge">No data</span>}
           </div>
           <div className="mt-5 grid gap-3">
             {workerRuns.map((run) => (
@@ -286,37 +299,45 @@ export default async function OpsPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <section className="card rounded-3xl p-6">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-2xl font-black">Recent cron runs</h2>
-            <Link className="button-secondary" href="/award-directory">
-              View award directory
-            </Link>
-          </div>
+          <h2 className="text-2xl font-black">Downstream lanes</h2>
+          <p className="mt-1 text-sm text-[var(--muted)]">
+            Each lane has its own lease, retry state, timeout, and oldest-item service target.
+          </p>
           <div className="mt-5 grid gap-3">
-            {jobRuns.map((run) => (
-              <div
-                className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4"
-                key={run.id}
-              >
+            {laneStatuses.map((lane) => (
+              <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={lane.lane_key}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-black">{run.job_name}</p>
+                    <p className="font-black">{lane.display_name}</p>
                     <p className="text-sm text-[var(--muted)]">
-                      Started {formatDate(run.started_at)}
-                      {run.finished_at ? `, finished ${formatDate(run.finished_at)}` : ""}
+                      {lane.queue_depth} waiting - {lane.creates_api_charge ? "Paid review lane" : "No API charge"}
                     </p>
                   </div>
-                  <StatusPill status={run.status} />
+                  <LaneStatusPill lane={lane} />
                 </div>
-                <p className="mt-2 text-sm text-[var(--muted)]">
-                  Processed {run.processed_count}
-                </p>
-                {run.error && <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">{run.error}</p>}
+                {lane.oldest_item_at && (
+                  <p className="mt-2 text-sm text-[var(--muted)]">
+                    Oldest waiting item: {formatDate(lane.oldest_item_at)}
+                  </p>
+                )}
+                {lane.lease_expired && (
+                  <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">
+                    The active lease expired and requires a safe retry.
+                  </p>
+                )}
+                {lane.sla_breached && (
+                  <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">
+                    The oldest-item service target has been missed.
+                  </p>
+                )}
+                {lane.last_error && (
+                  <p className="mt-2 text-sm font-semibold text-[var(--foreground)]">{lane.last_error}</p>
+                )}
               </div>
             ))}
-            {jobRuns.length === 0 && (
+            {laneStatuses.length === 0 && (
               <p className="text-[var(--muted)]">
-                {jobRunError || "No cron run has been recorded yet."}
+                {laneStatusError || "No downstream lane status has been recorded yet."}
               </p>
             )}
           </div>
@@ -326,26 +347,28 @@ export default async function OpsPage() {
           <h2 className="text-2xl font-black">Needs attention</h2>
           <div className="mt-5 grid gap-4">
             <div>
-              <h3 className="font-black">Monitor errors</h3>
+              <h3 className="font-black">Shared-source errors</h3>
               <div className="mt-3 grid gap-3">
-                {(errorMonitors || []).map((monitor) => (
-                  <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={monitor.id}>
-                    <p className="font-bold">{monitor.label}</p>
+                {(errorSharedSources || []).map((source) => (
+                  <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={source.id}>
+                    <p className="font-bold">
+                      {sharedAwardName.get(source.shared_award_id) || readableSourceTitle(source.title, source.url)}
+                    </p>
                     <a
                       className="mt-1 block truncate text-sm font-semibold text-[var(--brand)] underline"
-                      href={monitor.url}
+                      href={source.url}
                       rel="noreferrer"
                       target="_blank"
                     >
-                      {monitor.url}
+                      {source.url}
                     </a>
-                    {monitor.last_error && (
-                      <p className="mt-2 text-sm text-[var(--foreground)]">{monitor.last_error}</p>
+                    {source.last_error && (
+                      <p className="mt-2 text-sm text-[var(--foreground)]">{source.last_error}</p>
                     )}
                   </div>
                 ))}
-                {(!errorMonitors || errorMonitors.length === 0) && (
-                  <p className="text-sm text-[var(--muted)]">No monitor errors right now.</p>
+                {(!errorSharedSources || errorSharedSources.length === 0) && (
+                  <p className="text-sm text-[var(--muted)]">No shared-source errors right now.</p>
                 )}
               </div>
             </div>
@@ -444,6 +467,33 @@ function MetricCard({ label, value }: { label: string; value: string | number })
       </p>
       <p className="mt-3 text-3xl font-black capitalize">{value}</p>
     </div>
+  );
+}
+
+function laneNeedsAttention(lane: LaneStatus) {
+  return (
+    !lane.enabled ||
+    lane.lease_expired ||
+    lane.sla_breached ||
+    lane.status === "backoff" ||
+    lane.consecutive_failures > 0
+  );
+}
+
+function LaneStatusPill({ lane }: { lane: LaneStatus }) {
+  const needsAttention = laneNeedsAttention(lane);
+  const label = needsAttention
+    ? "Attention"
+    : lane.status === "claimed"
+      ? "Running"
+      : lane.queue_depth > 0
+        ? "Ready"
+        : "Healthy";
+
+  return (
+    <span className={needsAttention ? "badge bg-[var(--brand-pink-soft)]" : "badge"}>
+      {label}
+    </span>
   );
 }
 

@@ -23,6 +23,50 @@ Use this file as the first stop for stipulations that decide what should become 
 - Both loaders validate batch coverage at load time. An active alert-blocking rule without a prompt or `visual_review_batch` scope fails fast instead of silently disappearing from queued review.
 - Every active policy rule may declare legacy or model-emitted `aliases`. App and worker paths canonicalize those aliases to the stable rule `id` before deciding or recording a suppression.
 
+## First Observation of a New Official Document
+
+AwardPing may surface a newly discovered PDF for an existing award even when
+the PDF has not changed since AwardPing first saw it. This is a **first
+observation**, not a before-and-after website change.
+
+The live workflow is:
+
+1. The shared worker discovers a new PDF on an official source for an existing
+   award.
+2. The **New page review** lane performs the one paid review. It must confirm
+   that the PDF is official, applicant-facing, materially relevant, and current,
+   upcoming, or evergreen. The review and exact PDF hash are sealed together.
+3. An accepted review creates an immutable source-acquisition record. The first
+   capture saves the baseline and creates a deterministic, zero-charge
+   first-observation candidate from that sealed review and the same PDF hash.
+4. Downstream publication may create a **New official document / new cycle
+   guidance** event. Its evidence shows the exact wording AwardPing first
+   observed and the retained current PDF. It does not invent a previous version.
+
+The public wording must say when **AwardPing first observed** the document. It
+must not claim or imply when the publisher posted, released, or changed it. If
+the review, acquisition record, exact quote, hash, or retained evidence does not
+match, publication fails closed.
+
+Bulk historical onboarding, creation of a new award, imports, repair runs, and
+legacy records remain **baseline-only**. They may establish monitoring evidence
+but do not create first-observation alerts. Reprocessing one of those records
+cannot silently convert it into a live-discovery alert.
+
+If a post-seed PDF matches an older request, AwardPing does not hide the new
+link or automatically start a second paid review. It places one item in Manual
+Quarantine with the prior request and charge evidence. The safe operator choices
+are: replay and bind the exact retained live result for **$0** when it is
+eligible, or explicitly approve **one new-page review** after inspecting the
+history. The second choice closes only the exact blocking request, preserves its
+original status and provenance in quarantine evidence, and remains subject to
+the $5 New page review daily budget.
+
+The shared source capture worker, including the scheduled 6 PM shards, is the
+authoritative monitoring path. The old per-user `check-monitors` route is
+retired; it does not check current shared sources, and its historical counters
+must not be treated as current scan results.
+
 ## Operational Feedback Loop
 
 Choosing **Not an update** still suppresses that one event immediately. Broader behavior never changes from that click alone. The immutable feedback then enters this verified promotion workflow:
@@ -111,7 +155,7 @@ cannot retry, resolve, delete, or create an API charge.
 - **4. Verified Promotions** is the plain-language nine-step promotion board. Each cluster appears once with recurrence, affected source count, evidence signature/domain template/reason, legitimate collisions, known-real fixtures, current activation state, gate reports, failure details, safe fixes, and only the operator controls legal at that state. At step 8, it explains that the next normal zero-charge feedback-promotion lane attestation unlocks Resolve; it never implies another 6 PM scan is needed.
 
 - **5. Manual Quarantine** is the detailed operator backlog behind that single inbox entry. It keeps the four completion facts and historical limitations visible, then shows exact totals, paginated repair groups, paginated cases, age, functional and individual ownership, saved views, and only the no-charge bulk actions that are safe for the selected evidence revision. It labels award-homepage domain fallbacks honestly and never treats the length of a capped result page as the total.
-- **6. Evidence Recovery** reports R2-to-local cache recovery. The worker may restore only the exact immutable generation whose source ID, capture time, kind, hashes, metadata, and required objects match the retained baseline. It stages and verifies the complete generation before an atomic pointer change. A mismatch is refused and the last-known-good baseline remains untouched.
+- **6. Evidence Recovery** reports R2-to-local cache recovery. The worker may restore only the exact immutable generation whose source ID, capture time, kind, hashes, metadata, and required objects match the retained baseline. It stages and verifies the complete generation before an atomic pointer change. A mismatch is refused and the last-known-good baseline remains untouched. If authoritative R2 evidence exists but exact local recovery fails, one source-keyed, high-severity Manual Quarantine case is opened with protected public impact and no retry charge; the source moves to `review_later`. Generic registry refreshes cannot clear it. Broad scans keep excluding that source, while an explicit exact-source recovery invocation may retry the same immutable R2 generation without an API charge. A successful exact-generation rehydration resolves the R2 case. It clears the R2 source failure state and reopens the source only while the R2 workflow still owns the exact review status, owner, and note; if another workflow has taken ownership, that source state remains untouched and excluded as appropriate.
 - **7. Lanes & Spending** shows each downstream lane separately: lease, timeout, oldest-item SLA, retry time, backlog, and last failure. It also shows the two account-wide paid budgets—**New page review** and **Changed page review**—with effective cap, reserved, spent, remaining, UTC reset time, and database policy source.
 
 ## Paid Review and Independent Lanes

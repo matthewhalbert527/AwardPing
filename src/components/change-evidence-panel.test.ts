@@ -73,4 +73,56 @@ describe("ChangeEvidencePanel", () => {
 
     expect(html).toContain("Snapshot");
   });
+
+  it("renders a new official document as a current-only first observation", () => {
+    const html = renderToStaticMarkup(
+      createElement(ChangeEvidencePanel, {
+        changeEventId: "change-1",
+        sourceId: "source-1",
+        sourceUrl: "https://example.edu/2027-guidance.pdf",
+        sourceTitle: "2027 application guidance",
+        summary: "The publisher posted this PDF today.",
+        changeDetails: {
+          event_kind: "new_official_document",
+          reader_summary: "The publisher posted this PDF today.",
+          before: null,
+          after: "Candidates must submit two letters of recommendation.",
+          exact_before: null,
+          exact_after: "Candidates must submit two letters of recommendation.",
+          section: "Application requirements",
+          change_type: "new_official_document",
+          advisor_impact: "Review the guidance before advising applicants.",
+          is_alert_worthy: true,
+          confidence: "high",
+          structured_diff: {
+            added_text: ["Candidates must submit two letters of recommendation."],
+            removed_text: [],
+            likely_section: "Application requirements",
+            page_type: "pdf",
+            date_changes: [],
+            amount_changes: [],
+            noise_flags: [],
+          },
+          source: {},
+          quality_flags: [],
+          first_observed_at: "2026-06-21T14:00:00.000Z",
+          recognized_at: "2026-07-16T18:00:00.000Z",
+          generated_at: "2026-07-16T18:00:00.000Z",
+        },
+        detectedAt: "2026-07-16T18:00:00.000Z",
+      }),
+    );
+
+    expect(html).toContain("View first-observation explanation");
+    expect(html).toContain("What AwardPing first observed");
+    expect(html).toContain("New official document");
+    expect(html).toContain("Wording in the document");
+    expect(html).toContain("First retained capture");
+    expect(html).toContain("Recognized as an update");
+    expect(html).not.toContain("First observed by AwardPing");
+    expect(html).toContain("does not establish when the publisher posted the document");
+    expect(html).not.toContain("What changed");
+    expect(html).not.toContain("Previous wording");
+    expect(html).not.toContain("The publisher posted this PDF today");
+  });
 });

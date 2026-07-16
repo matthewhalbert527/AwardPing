@@ -1,7 +1,7 @@
 import { HeadObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import crypto from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { extname, isAbsolute, resolve } from "node:path";
+import { extname, isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
 import {
   localizeVisualEventSide,
@@ -99,6 +99,134 @@ export async function preparePublishedVisualEventEvidence({
       created_at: now,
       verified_at: evidenceStatus === "verified" ? now : null,
       backfilled_at: historical ? now : null,
+    };
+  } finally {
+    if (ownsStore) store.destroy?.();
+  }
+}
+
+/**
+ * Publishes permanent evidence for a first-observed official PDF without
+ * inventing a previous document. The previous side is the byte-verifiable
+ * first-observation attestation sealed into the candidate; the current side
+ * remains the real candidate-bound PDF capture.
+ */
+export async function preparePublishedInitialOfficialDocumentEvidence({
+  candidate,
+  source,
+  archiveRoot,
+  config,
+  artifactStore = null,
+  now = new Date().toISOString(),
+} = {}) {
+  assertCandidateIdentity(candidate, source);
+  if (cleanText(candidate?.candidate_scope) !== "initial_official_document") {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate?.id || "unknown"} is not an initial official document candidate.`,
+      "initial_document_candidate_scope_invalid",
+    );
+  }
+
+  const sourceAcquisitionId = cleanText(candidate?.source_acquisition_id);
+  if (!sourceAcquisitionId) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} has no source acquisition binding.`,
+      "initial_document_acquisition_missing",
+    );
+  }
+
+  const current = resolveCandidateVisualEvidenceSide({
+    candidate,
+    side: "current",
+    archiveRoot,
+  });
+  preflightInitialOfficialDocumentCurrent({ candidate, current });
+  const attestation = resolveInitialOfficialDocumentAttestation({
+    candidate,
+    source,
+    sourceAcquisitionId,
+    current,
+  });
+
+  const ownsStore = !artifactStore;
+  const store = artifactStore || createPublishedVisualArtifactStore(config);
+  try {
+    const attestationArtifact = await uploadBufferArtifact({
+      store,
+      candidateId: candidate.id,
+      side: "previous",
+      role: "first-observation-attestation",
+      body: attestation.bytes,
+      contentType: "application/json; charset=utf-8",
+      extension: "json",
+    });
+    const preparedCurrent = await prepareSide({
+      side: "current",
+      candidate,
+      changeDetails: {},
+      archiveRoot,
+      store,
+      historical: false,
+      legacyFallback: false,
+    });
+    const binding = {
+      candidate_id: candidate.id,
+      candidate_signature: candidate.candidate_signature,
+      source_acquisition_id: sourceAcquisitionId,
+      first_observation_attestation_sha256: attestation.sha256,
+      current_file_sha256: current.expected_file_hash,
+    };
+    const previousCapture = {
+      full: null,
+      metadata: attestationArtifact,
+      crop: null,
+      captured_at: attestation.body.capture.captured_at,
+      capture_hashes: {
+        image_hash: null,
+        text_hash: null,
+        file_hash: attestation.sha256,
+        layout_hash: null,
+        attestation_hash: attestation.sha256,
+        attestation_sha256: attestation.sha256,
+      },
+      state_id: "first-observation",
+      kind: "first_observation_attestation",
+      attestation: {
+        schema_version: attestation.body.schema_version,
+        prior_evidence_state: attestation.body.prior_evidence_state,
+        binding,
+      },
+    };
+    const previousLocalization = localizationManifest({
+      side: "previous",
+      status: "not_applicable_first_observation",
+      required: false,
+      reason: "There is no earlier AwardPing capture to localize; the immutable first-observation attestation is retained instead.",
+    });
+
+    return {
+      change_event_id: null,
+      shared_award_id: candidate.shared_award_id,
+      shared_award_source_id: candidate.shared_award_source_id,
+      visual_review_candidate_id: candidate.id,
+      candidate_signature: candidate.candidate_signature,
+      source_acquisition_id: sourceAcquisitionId,
+      bucket: store.bucket,
+      evidence_status: "not_applicable_new_document",
+      previous_capture: previousCapture,
+      current_capture: preparedCurrent.capture,
+      localization: {
+        direction: "added",
+        sides: {
+          previous: previousLocalization,
+          current: preparedCurrent.localization,
+        },
+      },
+      first_observation_binding: binding,
+      evidence_schema_version: VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION,
+      created_at: now,
+      verified_at: null,
+      backfilled_at: null,
     };
   } finally {
     if (ownsStore) store.destroy?.();
@@ -245,6 +373,281 @@ export function publishedVisualEvidenceObjectKey({
   if (!/^[a-f0-9]{64}$/.test(digest)) throw new Error("Published evidence key requires a SHA-256 digest.");
   const suffix = safeExtension(extension);
   return `${PUBLISHED_VISUAL_EVIDENCE_PREFIX}/${candidateSegment}/${sideSegment}/${roleSegment}/${digest}.${suffix}`;
+}
+
+function preflightInitialOfficialDocumentCurrent({ candidate, current }) {
+  if (!current.ref) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} has no current snapshot reference.`,
+      "initial_document_current_capture_missing",
+    );
+  }
+  if (current.kind !== "pdf") {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} current capture is not a PDF.`,
+      "initial_document_current_capture_not_pdf",
+    );
+  }
+  validateCandidateArtifactManifest({
+    candidate,
+    side: "current",
+    resolved: current,
+    historical: false,
+  });
+  preflightCandidateArtifactBytes({
+    candidate,
+    side: "current",
+    resolved: current,
+    historical: false,
+  });
+  const candidateCurrentHash = cleanText(candidate.new_file_hash).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(candidateCurrentHash)) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} current PDF hash is missing.`,
+      "initial_document_current_hash_missing",
+    );
+  }
+  const captureCurrentHash = cleanText(current.ref?.file_hash).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(captureCurrentHash)) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} current capture PDF hash is missing.`,
+      "initial_document_current_capture_hash_missing",
+    );
+  }
+  if (candidateCurrentHash !== captureCurrentHash) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} current PDF hash does not match its capture.`,
+      "initial_document_current_hash_mismatch",
+    );
+  }
+  assertSemanticArtifactRef({
+    candidateId: candidate.id,
+    side: "current",
+    role: "PDF",
+    semanticSha256: captureCurrentHash,
+    artifactRef: current.file_refs.pdf,
+    required: true,
+  });
+}
+
+function resolveInitialOfficialDocumentAttestation({
+  candidate,
+  source,
+  sourceAcquisitionId,
+  current,
+}) {
+  const prompt = objectValue(candidate.prompt_payload);
+  const directPreviousRef = objectValue(candidate.previous_snapshot_ref);
+  const promptPreviousRef = objectValue(prompt.previous_snapshot_ref);
+  const references = [
+    candidate.first_observation_attestation,
+    candidate.first_observation_attestation_ref,
+    prompt.first_observation_attestation,
+    directPreviousRef.first_observation_attestation,
+    directPreviousRef.attestation,
+    promptPreviousRef.first_observation_attestation,
+    promptPreviousRef.attestation,
+    cleanText(directPreviousRef.kind) === "first_observation_attestation" &&
+        typeof directPreviousRef.canonical_json === "string"
+      ? directPreviousRef
+      : null,
+    cleanText(promptPreviousRef.kind) === "first_observation_attestation" &&
+        typeof promptPreviousRef.canonical_json === "string"
+      ? promptPreviousRef
+      : null,
+  ].map(objectValue).filter((value) => Object.keys(value).length);
+  if (!references.length) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} has no immutable first-observation attestation.`,
+      "first_observation_attestation_missing",
+    );
+  }
+
+  const normalized = references.map((reference) => normalizeInitialOfficialDocumentAttestation({
+    candidate,
+    reference,
+  }));
+  const [attestation] = normalized;
+  if (normalized.some((value) =>
+    value.sha256 !== attestation.sha256 || value.canonicalJson !== attestation.canonicalJson
+  )) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} has conflicting first-observation attestations.`,
+      "first_observation_attestation_conflict",
+    );
+  }
+
+  const promptAttestationHash = cleanText(
+    objectValue(prompt.hashes).first_observation_attestation_sha256,
+  ).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(promptAttestationHash)) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} prompt has no first-observation attestation hash binding.`,
+      "first_observation_attestation_prompt_hash_missing",
+    );
+  }
+  if (promptAttestationHash !== attestation.sha256) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} prompt attestation hash does not match its bytes.`,
+      "first_observation_attestation_prompt_hash_mismatch",
+    );
+  }
+  const snapshotAttestationHash = cleanText(directPreviousRef.attestation_sha256).toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(snapshotAttestationHash)) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} previous snapshot has no first-observation attestation hash binding.`,
+      "first_observation_attestation_snapshot_hash_missing",
+    );
+  }
+  if (snapshotAttestationHash !== attestation.sha256) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} previous snapshot attestation hash does not match its bytes.`,
+      "first_observation_attestation_snapshot_hash_mismatch",
+    );
+  }
+  const previousFileHash = cleanText(candidate.previous_file_hash).toLowerCase();
+  if (previousFileHash !== attestation.sha256) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} previous evidence hash does not match the first-observation attestation.`,
+      "first_observation_attestation_candidate_hash_mismatch",
+    );
+  }
+  const promptPreviousFileHash = cleanText(objectValue(prompt.hashes).previous_file_hash).toLowerCase();
+  if (promptPreviousFileHash && promptPreviousFileHash !== attestation.sha256) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} prompt previous evidence hash does not match the first-observation attestation.`,
+      "first_observation_attestation_prompt_previous_hash_mismatch",
+    );
+  }
+
+  const body = attestation.body;
+  if (
+    cleanText(body.schema_version) !== "awardping.first_observation.v1" ||
+    cleanText(body.kind) !== "first_observation" ||
+    cleanText(body.candidate_scope) !== "initial_official_document" ||
+    cleanText(body.prior_evidence_state) !== "no_prior_baseline_supplied"
+  ) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation contract is invalid.`,
+      "first_observation_attestation_contract_invalid",
+    );
+  }
+  if (
+    cleanText(body.source?.id) !== candidate.shared_award_source_id ||
+    cleanText(body.source?.shared_award_id) !== candidate.shared_award_id ||
+    (source?.id && cleanText(body.source?.id) !== cleanText(source.id)) ||
+    (source?.shared_award_id &&
+      cleanText(body.source?.shared_award_id) !== cleanText(source.shared_award_id))
+  ) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation source binding is invalid.`,
+      "first_observation_attestation_source_mismatch",
+    );
+  }
+  if (cleanText(body.acquisition?.id) !== sourceAcquisitionId) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation acquisition binding is invalid.`,
+      "first_observation_attestation_acquisition_mismatch",
+    );
+  }
+  const currentHash = cleanText(current.ref?.file_hash).toLowerCase();
+  if (
+    cleanText(body.capture?.kind) !== "pdf" ||
+    cleanText(body.capture?.file_sha256).toLowerCase() !== currentHash
+  ) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation does not bind the current PDF hash.`,
+      "first_observation_attestation_current_hash_mismatch",
+    );
+  }
+  const currentCapturedAt = canonicalIsoTimestamp(current.ref?.captured_at || current.meta?.captured_at);
+  if (!currentCapturedAt || canonicalIsoTimestamp(body.capture?.captured_at) !== currentCapturedAt) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation does not bind the current capture time.`,
+      "first_observation_attestation_capture_time_mismatch",
+    );
+  }
+  if (cleanText(body.sealed_review?.status) !== "accepted") {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation has no accepted sealed review.`,
+      "first_observation_attestation_review_invalid",
+    );
+  }
+
+  return attestation;
+}
+
+function normalizeInitialOfficialDocumentAttestation({ candidate, reference }) {
+  const canonicalJson = typeof reference.canonical_json === "string"
+    ? reference.canonical_json
+    : "";
+  if (!canonicalJson) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation has no canonical JSON bytes.`,
+      "first_observation_attestation_bytes_missing",
+    );
+  }
+  const bytes = Buffer.from(canonicalJson, "utf8");
+  const expectedSha256 = cleanText(reference.sha256).toLowerCase();
+  const expectedByteLength = nonNegativeSafeInteger(reference.byte_length);
+  if (!/^[a-f0-9]{64}$/.test(expectedSha256) || expectedByteLength === null) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation manifest is incomplete.`,
+      "first_observation_attestation_manifest_incomplete",
+    );
+  }
+  if (bytes.length !== expectedByteLength) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation byte length changed after review.`,
+      "first_observation_attestation_byte_length_mismatch",
+    );
+  }
+  const actualSha256 = sha256Buffer(bytes);
+  if (actualSha256 !== expectedSha256) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation bytes changed after review.`,
+      "first_observation_attestation_hash_mismatch",
+    );
+  }
+  let body;
+  try {
+    body = JSON.parse(canonicalJson);
+  } catch {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation is not valid JSON.`,
+      "first_observation_attestation_json_invalid",
+    );
+  }
+  if (!Object.keys(objectValue(body)).length || stableManifestJson(body) !== canonicalJson) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation is not canonical JSON.`,
+      "first_observation_attestation_not_canonical",
+    );
+  }
+  const referencedBody = objectValue(reference.body);
+  if (Object.keys(referencedBody).length && stableManifestJson(referencedBody) !== canonicalJson) {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation body conflicts with its bytes.`,
+      "first_observation_attestation_body_mismatch",
+    );
+  }
+  if (cleanText(reference.kind) !== "first_observation") {
+    throw new DeterministicVisualArtifactError(
+      `Candidate ${candidate.id} first-observation attestation kind is invalid.`,
+      "first_observation_attestation_kind_invalid",
+    );
+  }
+  return {
+    body,
+    bytes,
+    canonicalJson,
+    sha256: actualSha256,
+  };
+}
+
+function canonicalIsoTimestamp(value) {
+  const parsed = Date.parse(cleanText(value));
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
 }
 
 async function prepareSide({
@@ -1320,15 +1723,39 @@ function verifiedStateGeometryHash(geometry, imageHash) {
 function resolvePathRef(value, archiveRoot) {
   if (!value) return null;
   if (typeof value === "string") {
-    return isAbsolute(value) ? value : resolve(archiveRoot, value);
+    if (isAbsolute(value)) return value;
+    return resolveContainedArchivePath(value, archiveRoot);
   }
   const ref = objectValue(value);
-  const direct = cleanText(ref.path);
-  if (direct && isAbsolute(direct) && existsSync(direct)) return direct;
   const archiveRelative = cleanText(ref.archive_relative);
-  if (archiveRelative) return resolve(archiveRoot, archiveRelative);
+  // Candidate refs are portable only through their archive-relative identity.
+  // Prefer that current-root path even when a stale absolute path from another
+  // PC still happens to exist. Exact hash/length checks occur before publish.
+  if (archiveRelative) return resolveContainedArchivePath(archiveRelative, archiveRoot);
+  const direct = cleanText(ref.path);
+  // Legacy refs without archive_relative may use an absolute path. The caller
+  // still verifies the immutable artifact manifest before accepting its bytes.
   if (direct && isAbsolute(direct)) return direct;
-  return direct ? resolve(archiveRoot, direct) : null;
+  return direct ? resolveContainedArchivePath(direct, archiveRoot) : null;
+}
+
+function resolveContainedArchivePath(value, archiveRoot) {
+  if (isAbsolute(value)) {
+    throw new DeterministicVisualArtifactError(
+      "Candidate archive-relative artifact path is absolute.",
+      "visual_artifact_path_unsafe",
+    );
+  }
+  const root = resolve(archiveRoot);
+  const candidate = resolve(root, value);
+  const rel = relative(root, candidate);
+  if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+    throw new DeterministicVisualArtifactError(
+      "Candidate artifact path escapes the configured archive root.",
+      "visual_artifact_path_unsafe",
+    );
+  }
+  return candidate;
 }
 
 function resolveArtifactPathRef(value, archiveRoot) {

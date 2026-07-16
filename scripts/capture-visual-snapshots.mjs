@@ -93,21 +93,35 @@ import {
 import { inspectLocalBaselineEvidence } from "./lib/local-baseline-evidence.mjs";
 import { rehydrateLocalBaselineFromR2 } from "./lib/r2-baseline-rehydration.mjs";
 import {
+  intakeArtifactFailureSolution,
+  materializeFirstObservationCaptureFromAcquisition,
+} from "./lib/intake-artifact-retention.mjs";
+import {
   sourceBaselineFacts,
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
 import { monitoringPromotionMatcherBundleHash } from "./lib/monitoring-promotion-matcher-bundle.mjs";
 import { insertedDiscoveryRows } from "./lib/source-discovery-write.mjs";
 import {
+  buildDiscoveredPdfIntakeRequest,
+  normalizeSourceIntakeUrl,
+} from "./lib/source-intake.mjs";
+import {
   buildVisualReviewPromptPayload,
   buildVisualReviewPromptText,
+  buildVisualSnapshotRef,
   classifyVisualReviewCandidate,
   currentMonitoringPolicyAuditIdentity,
   currentVisualReviewPolicyIdentity,
   normalizeVisualReviewMode,
   visualReviewCandidateSignature,
   visualReviewEvidenceSignature,
+  stableJsonStringify,
 } from "./lib/visual-review-queue.mjs";
+import {
+  INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+  buildInitialOfficialDocumentCandidate,
+} from "./lib/initial-official-document.mjs";
 import {
   findVisualRejectionLedgerMatch,
   touchVisualRejectionLedgerMatch,
@@ -124,6 +138,9 @@ const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
 const captureBehaviorVersion = 9;
 const captureBehaviorName = "final-state-text-node-geometry-with-open-sections";
+const maxPdfDiscoveryRegistrationBatchSize = 500;
+const maxPdfDiscoveryQueueCandidates = 25;
+const maxSnapshotExpandableControls = 120;
 const args = parseArgs(process.argv.slice(2));
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
@@ -156,6 +173,13 @@ const sourceIdsFile = cleanText(args["source-ids-file"]);
 const sourceIdsFilter = loadSourceIdsFilter(sourceIdsFile);
 const sourceUrlFilter = cleanText(args["source-url"]);
 const awardFilter = cleanText(args.award);
+const initialOfficialDocumentMaterialization = boolArg(
+  args["initial-official-document-materialization"],
+  false,
+);
+const initialOfficialDocumentAcquisitionId = cleanText(
+  args["initial-official-document-acquisition-id"],
+);
 const continuous = boolArg(args.continuous, false);
 const intervalMinutes = positiveInt(args["interval-minutes"], 60);
 const visualSourceCheckMinutes = positiveInt(
@@ -232,6 +256,22 @@ const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
 const discoveryMode = boolArg(args["discovery-mode"] ?? env.AWARDPING_DISCOVERY_MODE, false);
+const requestedDiscoveryOnboardingBatchId = cleanText(
+  args["discovery-onboarding-batch-id"]
+    || env.AWARDPING_DISCOVERY_ONBOARDING_BATCH_ID,
+);
+const requestedDiscoveryIntent = cleanSlug(
+  args["discovery-intent"] || env.AWARDPING_DISCOVERY_INTENT || "historical_onboarding",
+);
+const discoveryIntent = requestedDiscoveryIntent === "live_recurring"
+  && !requestedDiscoveryOnboardingBatchId
+  ? "live_recurring"
+  : "historical_onboarding";
+const discoveryOnboardingBatchId = discoveryIntent === "live_recurring"
+  ? null
+  : requestedDiscoveryOnboardingBatchId
+    || cleanText(args["run-cohort-id"])
+    || "operator_historical_discovery";
 const captureProfile = normalizeCaptureProfile(
   args["capture-profile"] || env.AWARDPING_CAPTURE_PROFILE,
   defaultCaptureProfile({
@@ -509,6 +549,37 @@ if (aiReviewEvidenceCapture && !sourceIdFilter && sourceIdsFilter.size === 0) {
   process.exit(1);
 }
 
+if (initialOfficialDocumentMaterialization) {
+  const invalidReasons = [];
+  if (!sourceIdFilter) invalidReasons.push("--source-id is required");
+  if (!initialOfficialDocumentAcquisitionId) {
+    invalidReasons.push("--initial-official-document-acquisition-id is required");
+  }
+  if (!includeNotDue) invalidReasons.push("--all=true is required");
+  if (!pdfOnly || webOnly) invalidReasons.push("the run must be PDF-only");
+  if (continuous) invalidReasons.push("continuous mode is not allowed");
+  if (sourceIdsFilter.size || sourceUrlFilter || awardFilter) {
+    invalidReasons.push("no additional source filter is allowed");
+  }
+  if (
+    baselineRefresh || completeMissingBaselines || localizationRepair ||
+    r2BackfillBaselines || forceR2SnapshotRefresh || discoveryMode
+  ) {
+    invalidReasons.push("bulk, discovery, refresh, localization, and R2 backfill modes are not allowed");
+  }
+  if (visualReviewMode !== "batch") invalidReasons.push("--visual-review-mode=batch is required");
+  if (extractBaselineInfo || backfillBaselineInfo) {
+    invalidReasons.push("baseline AI extraction and backfill must be disabled");
+  }
+  if (!r2SnapshotSync) invalidReasons.push("--r2-snapshot-sync=true is required");
+  if (invalidReasons.length) {
+    console.error(
+      `Invalid initial official document materialization mode: ${invalidReasons.join("; ")}.`,
+    );
+    process.exit(1);
+  }
+}
+
 if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)) {
   console.error(
     "R2 snapshot sync is enabled, but R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.",
@@ -600,6 +671,8 @@ async function runOnce() {
       run_cohort_id: runCohortId,
       include_not_due: includeNotDue,
       source_id: sourceIdFilter || null,
+      initial_official_document_materialization: initialOfficialDocumentMaterialization,
+      initial_official_document_acquisition_id: initialOfficialDocumentAcquisitionId || null,
       source_url: sourceUrlFilter || null,
       award: awardFilter || null,
       baseline_refresh: baselineRefresh,
@@ -631,10 +704,14 @@ async function runOnce() {
       thumb_width: thumbWidth,
       max_expansion_state_screenshots: maxExpansionStateScreenshots,
       discovery_mode: discoveryMode,
+      discovery_intent: discoveryIntent,
+      discovery_onboarding_batch_id: discoveryOnboardingBatchId,
       discover_pdf_subpages_requested: discoverPdfSubpagesRequested,
       discover_html_subpages_requested: discoverHtmlSubpagesRequested,
       discover_pdf_subpages: discoverPdfSubpages,
       discover_html_subpages: discoverHtmlSubpages,
+      max_pdf_discovery_registration_batch_size: maxPdfDiscoveryRegistrationBatchSize,
+      max_pdf_discovery_queue_candidates: maxPdfDiscoveryQueueCandidates,
       max_html_subpage_discoveries: maxHtmlSubpageDiscoveries,
       max_discoveries_per_award: maxNewDiscoveriesPerAward,
       max_discoveries_per_source: maxNewDiscoveriesPerSource,
@@ -765,12 +842,26 @@ async function runOnce() {
     discovered_html_candidates: 0,
     discovered_html_sources: 0,
     discovery_mode: discoveryMode,
+    discovery_intent: discoveryIntent,
+    discovery_onboarding_batch_id: discoveryOnboardingBatchId,
     discovery_candidates: 0,
     discovery_rejected_by_quality: 0,
     discovery_rejected_by_identity: 0,
     discovery_skipped_existing: 0,
+    discovery_skipped_active_request: 0,
+    discovery_skipped_prior_request: 0,
     discovery_inserted_pending: 0,
     discovery_inserted_open: 0,
+    discovery_pdf_links_first_seen_live: 0,
+    discovery_pdf_links_first_seen_baseline: 0,
+    discovery_pdf_links_seen_existing: 0,
+    discovery_pdf_provenance_links: 0,
+    discovery_pdf_provenance_truncated: 0,
+    discovery_pdf_incomplete_scans: 0,
+    discovery_pdf_incomplete_reasons: {},
+    discovery_pdf_queue_candidate_cap_hits: 0,
+    discovery_pdf_notification_quarantined: 0,
+    discovery_pdf_notification_quarantine_failed: 0,
     discovery_rejection_reasons: {},
     discovery_cap_hits_by_award: {},
     discovery_cap_hits_by_domain: {},
@@ -792,6 +883,11 @@ async function runOnce() {
     r2_rehydration_refused: 0,
     r2_rehydration_failed: 0,
     r2_rehydration_reasons: {},
+    r2_rehydration_quarantined: 0,
+    r2_rehydration_quarantine_failed: 0,
+    r2_rehydration_quarantines_resolved: 0,
+    r2_rehydration_quarantine_resolve_failed: 0,
+    r2_rehydration_only_completed: 0,
     snapshot_history_prune: {
       enabled: snapshotHistoryPrune,
       keep: snapshotHistoryPruneKeep,
@@ -813,6 +909,22 @@ async function runOnce() {
     visual_review_candidates_queued: 0,
     visual_review_candidates_existing: 0,
     visual_review_candidates_failed: 0,
+    initial_official_document_candidates_queued: 0,
+    initial_official_document_candidates_existing: 0,
+    initial_official_document_candidates_ineligible: 0,
+    initial_official_document_quarantined: 0,
+    initial_official_document_quarantines_resolved: 0,
+    initial_official_document_notifications_deferred: 0,
+    initial_official_document_intake_artifact_materialized: 0,
+    initial_official_document_intake_artifact_rehydrated: 0,
+    initial_official_document_intake_artifact_failed: 0,
+    initial_official_document_baseline_recovered_from_acquisition: 0,
+    initial_official_document_baseline_refresh_deferred: 0,
+    initial_official_document_materialization_only_completed: 0,
+    initial_official_document_materialization_only_baseline_written: 0,
+    initial_official_document_materialization_only_baseline_preserved: 0,
+    initial_official_document_materialization_only_review_hold_paused: 0,
+    initial_official_document_ineligible_reasons: {},
     visual_review_rejected_evidence_absorbed: 0,
     visual_rejection_ledger_unavailable: 0,
     awards_queued_for_reconciliation: 0,
@@ -979,12 +1091,19 @@ async function runOnce() {
           source_url: source.url,
           message,
         });
-        await recordBrokenSourceFailure(source, message).catch((recordError) => {
-          console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
-        });
-        await markSharedSourceVisualCheckFailed(source, message).catch((recordError) => {
-          console.log(`SOURCE_STATUS_UPDATE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
-        });
+        if (error?.r2AuthoritativeRecoveryFailure === true) {
+          await markSharedSourceR2RecoveryQuarantined(source, error, report).catch((recordError) => {
+            report.r2_rehydration_quarantine_failed += 1;
+            console.log(`R2_RECOVERY_QUARANTINE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
+          });
+        } else {
+          await recordBrokenSourceFailure(source, message).catch((recordError) => {
+            console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
+          });
+          await markSharedSourceVisualCheckFailed(source, message).catch((recordError) => {
+            console.log(`SOURCE_STATUS_UPDATE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
+          });
+        }
         console.log(`FAILED ${message} ${sourceLabel(source)}`);
 
         if (!pdfSource && (isBrowserClosedError(error) || isSourceTimeoutError(error))) {
@@ -1015,7 +1134,7 @@ async function runOnce() {
 
     workerRunId = await startWorkerRun(report);
     report.worker_run_id = workerRunId;
-    let sources = await loadSources(limit);
+    let sources = await attachSourceAcquisitions(await loadSources(limit));
     coverageSources = sources;
     report.baseline_coverage_start = summarizeBaselineCoverage(coverageSources);
     console.log(formatBaselineCoverage("BASELINE_COVERAGE start", report.baseline_coverage_start));
@@ -1226,30 +1345,79 @@ async function backfillOneR2Baseline(source, report) {
 }
 
 async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
-  if (!r2SnapshotSync || !baseline || baselineEvidenceStatus(baseline).ok) {
-    return { baseline, attempted: false, failureReason: null };
+  const missingLocalBaseline = !baseline;
+  // Exact source loading is allowed to reach a held source so its local R2
+  // cache can be repaired. That exception must never become permission to run
+  // a live capture while any review_later workflow still owns the source.
+  const quarantineRepairOnly =
+    source.admin_review_status === "review_later";
+  if (
+    !missingLocalBaseline &&
+    !quarantineRepairOnly &&
+    (!r2SnapshotSync || baselineEvidenceStatus(baseline).ok)
+  ) {
+    return {
+      baseline,
+      attempted: false,
+      failureReason: null,
+      authoritativeSnapshotPresent: false,
+      failClosed: false,
+      quarantineRepairOnly: false,
+    };
   }
 
   report.r2_rehydrate_local_cache += 1;
   let result;
+  let snapshotRecord = null;
+  let snapshotRecordLoadFailed = false;
   try {
-    const snapshotRecord = await loadR2SnapshotRecord(source.id);
-    const client = getR2Client();
-    result = await rehydrateLocalBaselineFromR2({
-      archiveRoot,
-      source,
-      baseline,
-      snapshotRecord,
-      bucket: r2Bucket,
-      client,
-      sendCommand: (createCommand, label) => sendR2Command(client, createCommand, label),
-    });
+    snapshotRecord = await loadR2SnapshotRecord(source.id);
   } catch (error) {
+    snapshotRecordLoadFailed = true;
     result = {
       rehydrated: false,
       reason: "r2_snapshot_record_load_failed",
       detail: errorMessage(error),
     };
+  }
+  if (!snapshotRecordLoadFailed && missingLocalBaseline && !snapshotRecord) {
+    return {
+      baseline: null,
+      attempted: true,
+      failureReason: null,
+      authoritativeSnapshotPresent: false,
+      failClosed: false,
+      quarantineRepairOnly,
+    };
+  }
+  if (!snapshotRecordLoadFailed) {
+    if (!r2SnapshotSync) {
+      result = {
+        rehydrated: false,
+        reason: "r2_authoritative_rehydration_disabled",
+        detail:
+          "An authoritative R2 snapshot exists, but this worker is not configured to verify and restore it.",
+      };
+    } else {
+      try {
+        const client = getR2Client();
+        result = await rehydrateLocalBaselineFromR2({
+          archiveRoot,
+          source,
+          baseline,
+          snapshotRecord,
+          bucket: r2Bucket,
+          client,
+          sendCommand: (createCommand, label) => sendR2Command(client, createCommand, label),
+        });
+      } catch (error) {
+        result = {
+          rehydrated: false,
+          reason: "r2_client_unavailable",
+          detail: errorMessage(error),
+        };
+      }
+    }
   }
 
   if (result.rehydrated) {
@@ -1262,6 +1430,11 @@ async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
     if (result.generation === "latest") report.r2_rehydrated_local_latest += 1;
     if (result.generation === "previous") report.r2_rehydrated_local_previous += 1;
     localBaselineEvidenceCache.set(source.id, true);
+    const quarantineResolutionSucceeded = await maybeResolveR2BaselineRecoveryQuarantine(
+      source,
+      result,
+      report,
+    );
     console.log(
       `R2 LOCAL REHYDRATED generation=${result.generation} artifacts=${result.artifact_count} ${sourceLabel(source)}`,
     );
@@ -1270,6 +1443,12 @@ async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
       attempted: true,
       failureReason: null,
       generation: result.generation,
+      authoritativeSnapshotPresent: Boolean(snapshotRecord),
+      failClosed: false,
+      restoredMissingBaseline: Boolean(result.restored_missing_baseline),
+      restoredMissingSourceDirectory: Boolean(result.restored_missing_source_directory),
+      quarantineRepairOnly,
+      quarantineResolutionSucceeded,
     };
   }
 
@@ -1284,7 +1463,157 @@ async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
     baseline,
     attempted: true,
     failureReason: reason,
+    authoritativeSnapshotPresent: Boolean(snapshotRecord),
+    failClosed: missingLocalBaseline && (snapshotRecordLoadFailed || Boolean(snapshotRecord)),
+    quarantineRepairOnly,
+    snapshotRecordLoadFailed,
+    snapshotEvidence: r2SnapshotRecoveryEvidence(snapshotRecord),
   };
+}
+
+function r2SnapshotRecoveryEvidence(snapshotRecord) {
+  if (!snapshotRecord || typeof snapshotRecord !== "object") return null;
+  return {
+    shared_award_source_id: snapshotRecord.shared_award_source_id || null,
+    shared_award_id: snapshotRecord.shared_award_id || null,
+    kind: snapshotRecord.kind || null,
+    bucket: snapshotRecord.bucket || null,
+    source_url: snapshotRecord.source_url || null,
+    latest_captured_at: snapshotRecord.latest_captured_at || null,
+    latest_object_keys: jsonObjectOrEmpty(snapshotRecord.latest_object_keys),
+    latest_hashes: jsonObjectOrEmpty(snapshotRecord.latest_hashes),
+    latest_metadata: jsonObjectOrEmpty(snapshotRecord.latest_metadata),
+    previous_captured_at: snapshotRecord.previous_captured_at || null,
+    previous_object_keys: jsonObjectOrEmpty(snapshotRecord.previous_object_keys),
+    previous_hashes: jsonObjectOrEmpty(snapshotRecord.previous_hashes),
+    previous_metadata: jsonObjectOrEmpty(snapshotRecord.previous_metadata),
+    updated_at: snapshotRecord.updated_at || null,
+  };
+}
+
+async function maybeRecoverIncompleteBaselineFromIntakeAcquisition({ source, baseline, report }) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  if (!isRetainedLiveFirstCaptureAcquisition(acquisition) || !isPdfSource(source)) {
+    return { recovered: false, baseline };
+  }
+
+  try {
+    const capture = await materializeFirstObservationCaptureFromAcquisition({
+      archiveRoot,
+      source,
+      acquisition,
+      bucket: r2Bucket,
+      config: {
+        bucket: r2Bucket,
+        endpoint: r2Endpoint,
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+    const baselineFileHash = cleanText(baseline.file_hash || baseline.image_hash).toLowerCase();
+    const baselineTextHash = cleanText(baseline.text_hash).toLowerCase();
+    const captureFileHash = cleanText(capture.file_hash).toLowerCase();
+    const captureTextHash = cleanText(capture.text_hash).toLowerCase();
+    const baselineCapturedAt = Date.parse(cleanText(baseline.captured_at));
+    const captureCapturedAt = Date.parse(cleanText(capture.captured_at));
+    if (
+      !baselineFileHash || baselineFileHash !== captureFileHash ||
+      !baselineTextHash || baselineTextHash !== captureTextHash ||
+      !Number.isFinite(baselineCapturedAt) || baselineCapturedAt !== captureCapturedAt
+    ) {
+      throw Object.assign(
+        new Error("The acquisition artifact does not match the incomplete baseline's immutable hashes/timestamp."),
+        { code: "intake_artifact_incomplete_baseline_identity_mismatch" },
+      );
+    }
+    const expectedPaths = {
+      pdf: toArchiveRelative(capture.pdf_path),
+      text: toArchiveRelative(capture.text_path),
+      meta: toArchiveRelative(capture.meta_path),
+    };
+    for (const [role, expected] of Object.entries(expectedPaths)) {
+      const sealedPath = cleanText(jsonObjectOrEmpty(baseline.capture)[role]).replace(/\\/g, "/");
+      if (sealedPath && sealedPath !== expected) {
+        throw Object.assign(
+          new Error(`The incomplete baseline ${role} path conflicts with deterministic acquisition materialization.`),
+          { code: "intake_artifact_incomplete_baseline_path_mismatch" },
+        );
+      }
+    }
+
+    const written = writeBaseline(source, capture, {
+      reason: "intake_acquisition_exact_local_recovery",
+      previous_baseline: baseline,
+      baseline_facts: baseline?.summary_metadata?.baseline_facts || null,
+      baseline_facts_metadata: baseline?.summary_metadata?.baseline_facts_metadata || null,
+    });
+    if (!written) throw new Error("The exact acquisition artifact was older than the current baseline.");
+    const recoveredBaseline = readJsonIfExists(baselinePathForSource(source.id));
+    const recoveredEvidence = baselineEvidenceStatus(recoveredBaseline);
+    if (!recoveredEvidence.ok) {
+      throw new Error(`Acquisition recovery remained incomplete: ${recoveredEvidence.missing.join(", ")}.`);
+    }
+    report.initial_official_document_baseline_recovered_from_acquisition += 1;
+    localBaselineEvidenceCache.set(source.id, true);
+    console.log(`R2 INTAKE BASELINE REHYDRATED ${sourceLabel(source)}`);
+    return { recovered: true, baseline: recoveredBaseline };
+  } catch (error) {
+    const reasonCode = cleanText(error?.code || "intake_artifact_incomplete_baseline_recovery_failed")
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 200);
+    const solution = error?.solution || intakeArtifactFailureSolution(reasonCode);
+    const { data: quarantineId, error: quarantineError } = await supabase.rpc(
+      "record_initial_official_document_quarantine",
+      {
+        p_source_id: source.id,
+        p_acquisition_id: acquisition.id,
+        p_reason_code: reasonCode,
+        p_evidence: {
+          message: `Exact acquisition recovery for an incomplete baseline failed: ${errorMessage(error)}`,
+          failure_stage: "intake_artifact_incomplete_baseline_recovery",
+          candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+          retained_artifact: jsonObjectOrEmpty(acquisition.review_seal).retained_artifact,
+          repair: {
+            retry_mode: "manual_candidate_evidence_repair",
+            creates_api_charge: false,
+            safe_action: solution,
+          },
+        },
+      },
+    );
+    if (quarantineError || !quarantineId) {
+      const persistenceMessage =
+        `Exact acquisition recovery failed (${reasonCode}) and durable quarantine persistence failed: ` +
+        `${quarantineError?.message || "missing quarantine id"}. Safe action: ${solution}`;
+      report.errors.push({
+        source_id: source.id,
+        source_acquisition_id: acquisition.id,
+        quarantine_id: null,
+        stage: "intake_artifact_incomplete_baseline_recovery_quarantine_persistence",
+        reason_code: reasonCode,
+        message: persistenceMessage,
+        quarantine_error: quarantineError?.message || "missing quarantine id",
+        solution,
+        creates_api_charge: false,
+      });
+      throw new Error(persistenceMessage);
+    }
+    report.initial_official_document_quarantined += 1;
+    report.errors.push({
+      source_id: source.id,
+      source_acquisition_id: acquisition.id,
+      quarantine_id: quarantineId || null,
+      stage: "intake_artifact_incomplete_baseline_recovery",
+      reason_code: reasonCode,
+      message: errorMessage(error),
+      quarantine_error: quarantineError?.message || null,
+      solution,
+      creates_api_charge: false,
+    });
+    return { recovered: false, baseline };
+  }
 }
 
 function isR2RehydrationOperationalFailure(reason) {
@@ -1292,6 +1621,7 @@ function isR2RehydrationOperationalFailure(reason) {
     "r2_snapshot_record_load_failed",
     "r2_object_download_failed",
     "r2_object_body_missing",
+    "r2_client_unavailable",
     "r2_local_rehydration_failed",
   ]).has(reason);
 }
@@ -1306,6 +1636,24 @@ function incompleteLocalBaselineError(evidence, recovery) {
   return new Error(
     `Baseline exists but evidence is missing (${missing}).${recoveryDetail} Rerun with --baseline-refresh=true only after confirming the source.`,
   );
+}
+
+function authoritativeR2MissingBaselineError(recovery) {
+  const reason = cleanText(recovery?.failureReason) || "r2_authoritative_recovery_failed";
+  const error = new Error(
+    `Local baseline is missing while authoritative R2 evidence exists or cannot be safely ruled out. ` +
+    `Exact recovery failed (${reason}); the live source was not fetched, no fresh baseline was created, ` +
+    "and the R2 pointer was not rotated.",
+  );
+  error.code = "r2_authoritative_missing_local_baseline_recovery_failed";
+  error.r2AuthoritativeRecoveryFailure = true;
+  error.r2RecoveryReason = reason;
+  error.r2RecoveryEvidence = {
+    authoritative_snapshot_present: Boolean(recovery?.authoritativeSnapshotPresent),
+    snapshot_record_load_failed: Boolean(recovery?.snapshotRecordLoadFailed),
+    snapshot: recovery?.snapshotEvidence || null,
+  };
+  return error;
 }
 
 async function backfillOneR2BaselineUnlocked(source, report) {
@@ -1361,38 +1709,103 @@ async function processSource(source, context, browserMeta, report) {
 }
 
 async function processSourceUnlocked(source, context, browserMeta, report) {
-  const hygiene = shouldRejectDiscoveredSource({
-    ...source,
-    award_name: source.shared_awards?.name || "",
-    source_url: source.url,
-    source_title: source.title,
-  });
-  if (hygiene.action === "review_later") {
-    await markSharedSourceReviewLater(source, hygiene);
+  if (initialOfficialDocumentMaterialization) {
+    await processInitialOfficialDocumentMaterializationOnly(source, report);
     return;
   }
 
-  const consolidation = classifySourceForConsolidation(source, source.shared_awards || {});
-  if (consolidation.action === "review_later") {
-    await markSharedSourceReviewLater(source, consolidation);
-    return;
+  // Exact R2 repair may deliberately load an already-held source. Preserve the
+  // workflow/operator that owns that hold; hygiene may classify open sources,
+  // but it must not rewrite an existing review_later record before repair.
+  if (source.admin_review_status === "open") {
+    const hygiene = shouldRejectDiscoveredSource({
+      ...source,
+      award_name: source.shared_awards?.name || "",
+      source_url: source.url,
+      source_title: source.title,
+    });
+    if (hygiene.action === "review_later") {
+      await markSharedSourceReviewLater(source, hygiene);
+      return;
+    }
+
+    const consolidation = classifySourceForConsolidation(source, source.shared_awards || {});
+    if (consolidation.action === "review_later") {
+      await markSharedSourceReviewLater(source, consolidation);
+      return;
+    }
   }
 
   const baselinePath = baselinePathForSource(source.id);
   let baseline = readJsonIfExists(baselinePath);
-  const recovery = baselineRefresh
+  let recovery = baselineRefresh && baseline
     ? { baseline, failureReason: null }
     : await maybeRehydrateIncompleteLocalBaseline(source, baseline, report);
   baseline = recovery.baseline;
+  if (!baseline && recovery.failClosed) {
+    throw authoritativeR2MissingBaselineError(recovery);
+  }
+  if (recovery.quarantineRepairOnly) {
+    if (
+      baseline &&
+      !recovery.failureReason &&
+      baselineEvidenceStatus(baseline).ok
+    ) {
+      report.r2_rehydration_only_completed += 1;
+      console.log(`R2_REHYDRATION_ONLY_COMPLETE ${sourceLabel(source)}`);
+    } else {
+      console.log(`SOURCE_REVIEW_HOLD no_live_capture ${sourceLabel(source)}`);
+    }
+    return;
+  }
+  if (
+    baseline &&
+    !baselineRefresh &&
+    !baselineEvidenceStatus(baseline).ok
+  ) {
+    const acquisitionRecovery = await maybeRecoverIncompleteBaselineFromIntakeAcquisition({
+      source,
+      baseline,
+      report,
+    });
+    if (acquisitionRecovery.recovered) {
+      baseline = acquisitionRecovery.baseline;
+      recovery = {
+        ...recovery,
+        baseline,
+        failureReason: null,
+        acquisitionArtifactRecovered: true,
+      };
+    }
+  }
   const recoveredEvidence = baseline && !baselineRefresh
     ? baselineEvidenceStatus(baseline)
     : null;
   if (recoveredEvidence && !recoveredEvidence.ok) {
     throw incompleteLocalBaselineError(recoveredEvidence, recovery);
   }
+  if (sourceIdFilter) {
+    const currentReviewState = await loadSharedSourceReviewState(source.id, report, {
+      stage: "exact_source_pre_capture_review_state",
+    });
+    if (!currentReviewState || currentReviewState.admin_review_status !== "open") {
+      console.log(`SOURCE_REVIEW_HOLD no_live_capture ${sourceLabel(source)}`);
+      return;
+    }
+  }
+  if (
+    baseline &&
+    baselineRefresh &&
+    isFirstCaptureCandidateAcquisition(source?.source_acquisition) &&
+    await shouldDeferFirstCaptureBaselineRefresh(source.source_acquisition)
+  ) {
+    report.initial_official_document_baseline_refresh_deferred += 1;
+    console.log(`DEFER baseline_refresh_until_first_document_candidate ${sourceLabel(source)}`);
+    return;
+  }
   const pdfSource = isPdfSource(source);
   const capture = pdfSource
-    ? await capturePdfSource(source)
+    ? await capturePdfSourceForBaseline(source, baseline, report)
     : await captureSource(source, context, browserMeta, report, { baseline });
   report.checked += 1;
   if (capture.kind === "pdf") {
@@ -1420,8 +1833,19 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     await maybeSyncR2Snapshot(source, capture, report, {
       reason: baseline ? "baseline_refresh" : "initial_baseline",
     });
+    const initialDocumentResult = !baseline
+      ? await maybeEnqueueInitialOfficialDocumentCandidate({ source, capture, report })
+      : null;
     if (localizationRepair) report.localization_repair_baselined += 1;
-    await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    if (initialDocumentResult?.ineligible) {
+      await markSharedSourceInitialDocumentQuarantined(
+        source,
+        capture,
+        initialDocumentResult.reason,
+      );
+    } else {
+      await markSharedSourceVisualCheckSucceeded(source, capture, report);
+    }
     console.log(`BASELINE ${capture.kind === "pdf" ? "PDF " : ""}${sourceLabel(source)}`);
     return;
   }
@@ -2174,6 +2598,307 @@ async function finishSafeDeterministicNoise({
   return { absorbed: baselinePromoted, disposition: baselineDisposition.reason };
 }
 
+function initialOfficialDocumentNotificationsEnabled() {
+  return (
+    visualReviewMode === "batch" &&
+    !baselineRefresh &&
+    !completeMissingBaselines &&
+    !localizationRepair &&
+    !r2BackfillBaselines &&
+    !forceR2SnapshotRefresh
+  );
+}
+
+async function maybeEnqueueInitialOfficialDocumentCandidate({ source, capture, report }) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  if (!acquisition.id || acquisition.notification_mode !== "first_capture_candidate") {
+    return null;
+  }
+  if (!initialOfficialDocumentNotificationsEnabled()) {
+    report.initial_official_document_notifications_deferred += 1;
+    return { deferred: true, reason: "bulk_or_repair_mode_baseline_only_for_this_run" };
+  }
+
+  const { data: existing, error: existingError } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("id,status,candidate_signature,new_snapshot_ref")
+    .eq("source_acquisition_id", acquisition.id)
+    .eq("candidate_scope", INITIAL_OFFICIAL_DOCUMENT_SCOPE)
+    .maybeSingle();
+  if (existingError) {
+    throw new Error(`Load initial official document candidate failed: ${existingError.message}`);
+  }
+  if (existing?.id) {
+    report.initial_official_document_candidates_existing += 1;
+    await recordVisualReviewCandidateRunObservation(existing.id, report);
+    await maybeResolveInitialOfficialDocumentQuarantine({
+      acquisitionId: acquisition.id,
+      candidate: existing,
+      report,
+    });
+    return { ...existing, existing: true, retains_current_capture: false };
+  }
+
+  const review = jsonObjectOrEmpty(acquisition.review_seal);
+  const decision = buildInitialOfficialDocumentCandidate({
+    acquisition,
+    review,
+    source,
+    capture,
+  });
+  if (!decision.eligible) {
+    report.initial_official_document_candidates_ineligible += 1;
+    incrementCounterObject(
+      report.initial_official_document_ineligible_reasons,
+      decision.reason || "unknown",
+    );
+    console.log(
+      `INITIAL_DOCUMENT_INELIGIBLE reason=${decision.reason || "unknown"} ${sourceLabel(source)}`,
+    );
+    const quarantineEvidence = {
+      message: `The first-observation candidate failed safe evidence validation: ${decision.reason || "unknown"}.`,
+      candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+      worker_run_id: report.worker_run_id || null,
+      capture: {
+        kind: capture.kind || null,
+        captured_at: capture.captured_at || null,
+        final_url: capture.final_url || source.url || null,
+        file_sha256: capture.file_hash || null,
+        text_sha256: capture.text_hash || null,
+        pdf_text_error: capture.pdf_text_error || null,
+      },
+    };
+    const { data: quarantineId, error: quarantineError } = await supabase.rpc(
+      "record_initial_official_document_quarantine",
+      {
+        p_source_id: source.id,
+        p_acquisition_id: acquisition.id,
+        p_reason_code: decision.reason || "unknown_initial_document_failure",
+        p_evidence: quarantineEvidence,
+      },
+    );
+    if (quarantineError || !quarantineId) {
+      throw new Error(
+        `Record initial official document quarantine failed: ${quarantineError?.message || "missing quarantine id"}`,
+      );
+    }
+    report.initial_official_document_quarantined += 1;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      source_acquisition_id: acquisition.id,
+      quarantine_id: quarantineId,
+      message: quarantineEvidence.message,
+      solution:
+        "Inspect the sealed acquisition and retained PDF. The next local evidence retry is automatic and free; approve another paid new-page review only if the sealed intake evidence must be replaced.",
+    });
+    return { ineligible: true, reason: decision.reason, quarantine_id: quarantineId };
+  }
+
+  const currentSnapshotRef = buildVisualSnapshotRef(capture, toArchiveRelative);
+  const attestation = decision.first_observation_attestation;
+  const previousSnapshotRef = {
+    kind: "first_observation_attestation",
+    captured_at: capture.captured_at,
+    source_acquisition_id: acquisition.id,
+    attestation_sha256: attestation.sha256,
+    byte_length: attestation.byte_length,
+    content_type: attestation.content_type,
+  };
+  const monitoringPolicy = currentVisualReviewPolicyIdentity();
+  const promptPayload = {
+    version: 1,
+    candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+    behavior_version: captureBehaviorVersion,
+    behavior_name: captureBehaviorName,
+    monitoring_policy: monitoringPolicy,
+    monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+    source: {
+      id: source.id,
+      shared_award_id: source.shared_award_id,
+      award_name: source.shared_awards?.name || null,
+      title: source.title || null,
+      url: source.url,
+      page_type: source.page_type || "pdf",
+      acquisition_id: acquisition.id,
+    },
+    previous_snapshot_ref: previousSnapshotRef,
+    new_snapshot_ref: currentSnapshotRef,
+    first_observation_attestation: attestation,
+    hashes: {
+      previous_text_hash: null,
+      new_text_hash: capture.text_hash || null,
+      previous_image_hash: null,
+      new_image_hash: capture.image_hash || capture.file_hash,
+      previous_file_hash: attestation.sha256,
+      new_file_hash: capture.file_hash,
+      previous_artifact_manifest_digest: null,
+      new_artifact_manifest_digest: currentSnapshotRef.artifact_manifest_digest,
+      first_observation_attestation_sha256: attestation.sha256,
+    },
+    deterministic_classification: {
+      classification: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+      reason: decision.reason,
+      candidate_change: true,
+      first_observation: true,
+    },
+    deterministic_diff: decision.deterministic_diff,
+    include_images: false,
+    previous_text_excerpt: "",
+    new_text_excerpt: decision.evidence_quote,
+    text_evidence: {
+      added_text: [decision.evidence_quote],
+      removed_text: [],
+      date_changes: [],
+      amount_changes: [],
+    },
+  };
+  const evidenceSignature = hashText(stableJsonStringify({
+    candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+    source_acquisition_id: acquisition.id,
+    source_id: source.id,
+    source_url: source.url,
+    first_observation_attestation_sha256: attestation.sha256,
+    current_file_sha256: capture.file_hash,
+    current_artifact_manifest_digest: currentSnapshotRef.artifact_manifest_digest,
+  }));
+  const candidateSignature = hashText(stableJsonStringify({
+    evidence_signature: evidenceSignature,
+    occurrence_captured_at: capture.captured_at,
+    monitoring_policy: monitoringPolicy,
+  }));
+  const completedAt = new Date().toISOString();
+  const row = {
+    shared_award_id: source.shared_award_id,
+    shared_award_source_id: source.id,
+    candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+    source_acquisition_id: acquisition.id,
+    candidate_signature: candidateSignature,
+    source_url: source.url,
+    source_title: source.title || null,
+    source_page_type: source.page_type || "pdf",
+    previous_snapshot_ref: previousSnapshotRef,
+    new_snapshot_ref: currentSnapshotRef,
+    previous_text_hash: null,
+    new_text_hash: capture.text_hash || null,
+    previous_image_hash: null,
+    new_image_hash: capture.image_hash || capture.file_hash,
+    previous_file_hash: attestation.sha256,
+    new_file_hash: capture.file_hash,
+    deterministic_diff: decision.deterministic_diff,
+    deterministic_classification: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+    prompt_payload: promptPayload,
+    prompt_context: stableJsonStringify({
+      candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+      source_acquisition_id: acquisition.id,
+      evidence_quote: decision.evidence_quote,
+      first_observation_attestation_sha256: attestation.sha256,
+    }),
+    status: "succeeded",
+    gemini_batch_request_key: null,
+    model: null,
+    estimated_cost_usd: null,
+    actual_usage: {},
+    ai_result: {
+      ...decision.result,
+      review_execution: decision.review_execution,
+    },
+    completed_at: completedAt,
+    worker_metadata: {
+      queued_by: "capture-visual-snapshots",
+      queued_at: completedAt,
+      worker_run_id: report.worker_run_id,
+      capture_behavior_version: captureBehaviorVersion,
+      capture_behavior_name: captureBehaviorName,
+      visual_review_mode: "deterministic_sealed_acquisition_review",
+      candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+      source_acquisition_id: acquisition.id,
+      monitoring_policy: monitoringPolicy,
+      monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+      evidence_signature: evidenceSignature,
+      creates_api_charge: false,
+    },
+    updated_at: completedAt,
+  };
+
+  let candidate = null;
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .insert(row)
+    .select("id,status,candidate_signature")
+    .maybeSingle();
+  if (error && error.code !== "23505") {
+    throw new Error(`Insert initial official document candidate failed: ${error.message}`);
+  }
+  candidate = data || null;
+  if (!candidate?.id) {
+    const { data: raced, error: racedError } = await supabase
+      .from("shared_award_visual_review_candidates")
+      .select("id,status,candidate_signature")
+      .eq("source_acquisition_id", acquisition.id)
+      .eq("candidate_scope", INITIAL_OFFICIAL_DOCUMENT_SCOPE)
+      .maybeSingle();
+    if (racedError || !raced?.id) {
+      throw new Error(
+        `Initial official document candidate was neither inserted nor found after a uniqueness race: ${racedError?.message || "missing row"}`,
+      );
+    }
+    report.initial_official_document_candidates_existing += 1;
+    candidate = raced;
+  } else {
+    report.initial_official_document_candidates_queued += 1;
+    capture.persist_expansion_state_screenshots = true;
+    await queueAwardReconciliationFromSource({
+      source,
+      report,
+      reason: "initial_official_document_candidate",
+      candidateIds: [candidate.id],
+      priority: 85,
+      metadata: {
+        candidate_signature: candidateSignature,
+        candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+        source_acquisition_id: acquisition.id,
+        evidence_signature: evidenceSignature,
+        creates_api_charge: false,
+      },
+    });
+    console.log(`QUEUED initial_official_document ${sourceLabel(source)}`);
+  }
+
+  await recordVisualReviewCandidateRunObservation(candidate.id, report);
+  await maybeResolveInitialOfficialDocumentQuarantine({
+    acquisitionId: acquisition.id,
+    candidate,
+    report,
+  });
+  return {
+    ...candidate,
+    retains_current_capture: Boolean(data?.id),
+  };
+}
+
+async function maybeResolveInitialOfficialDocumentQuarantine({
+  acquisitionId,
+  candidate,
+  report,
+}) {
+  if (!acquisitionId || !candidate?.id || !["succeeded", "published"].includes(candidate.status)) {
+    return false;
+  }
+  const { data, error } = await supabase.rpc(
+    "resolve_initial_official_document_quarantine",
+    {
+      p_acquisition_id: acquisitionId,
+      p_candidate_id: candidate.id,
+    },
+  );
+  if (error) {
+    throw new Error(`Resolve initial official document quarantine failed: ${error.message}`);
+  }
+  if (data) report.initial_official_document_quarantines_resolved += 1;
+  return Boolean(data);
+}
+
 async function enqueueVisualReviewCandidate({
   source,
   baseline,
@@ -2423,13 +3148,50 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   const fileChanged = capture.file_hash !== previousHash;
   const textChanged = capture.text_hash !== baseline.text_hash;
 
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  if (acquisition.id && acquisition.notification_mode === "first_capture_candidate") {
+    // Always recover the first observation from the retained first baseline
+    // before evaluating the current download. A later PDF revision must not
+    // erase an eligible, already-retained first observation.
+    const firstObservedCapture = captureFromBaseline(baseline);
+    if (!firstObservedCapture || firstObservedCapture.kind !== "pdf") {
+      throw new Error(
+        `Initial official document recovery requires the retained PDF baseline for ${sourceLabel(source)}.`,
+      );
+    }
+    const initialDocumentResult = await maybeEnqueueInitialOfficialDocumentCandidate({
+      source,
+      capture: firstObservedCapture,
+      report,
+    });
+    if (initialDocumentResult?.ineligible) {
+      await markSharedSourceInitialDocumentQuarantined(
+        source,
+        capture,
+        initialDocumentResult.reason,
+      );
+      if (!fileChanged) {
+        report.unchanged += 1;
+        report.pdf_unchanged += 1;
+        console.log(`UNCHANGED pdf_file_match initial_document_quarantined ${sourceLabel(source)}`);
+        if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+        return;
+      }
+      console.log(
+        `INITIAL_DOCUMENT_QUARANTINED current_pdf_revision_still_processed ${sourceLabel(source)}`,
+      );
+    }
+  }
+
   if (!fileChanged) {
     report.unchanged += 1;
     report.pdf_unchanged += 1;
     await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "pdf_unchanged" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(textChanged ? `UNCHANGED pdf_file_match_text_diff_ignored ${sourceLabel(source)}` : `UNCHANGED pdf_file_match ${sourceLabel(source)}`);
-    if (!keepUnchanged) removeGeneratedCaptureDir(capture.dir);
+    if (!keepUnchanged) {
+      removeGeneratedCaptureDir(capture.dir);
+    }
     return;
   }
 
@@ -2542,6 +3304,222 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
 
   console.log(`REVIEW pdf_changed ${sourceLabel(source)}`);
+}
+
+async function processInitialOfficialDocumentMaterializationOnly(source, report) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  if (acquisition.id !== initialOfficialDocumentAcquisitionId) {
+    throw new Error(
+      `Initial official document materialization expected acquisition ` +
+      `${initialOfficialDocumentAcquisitionId}, but the exact source-bound acquisition was not loaded.`,
+    );
+  }
+  if (!isPdfSource(source)) {
+    throw new Error("Initial official document materialization requires an exact PDF source.");
+  }
+  if (!isRetainedLiveFirstCaptureAcquisition(acquisition)) {
+    throw new Error(
+      "Initial official document materialization requires a live first-capture acquisition with an immutable retained artifact.",
+    );
+  }
+
+  const baselinePath = baselinePathForSource(source.id);
+  let baseline = readJsonIfExists(baselinePath);
+  let recovery = null;
+  if (
+    !baseline ||
+    source.admin_review_status === "review_later"
+  ) {
+    recovery = await maybeRehydrateIncompleteLocalBaseline(source, baseline, report);
+    baseline = recovery.baseline;
+    if (!baseline && recovery.failClosed) {
+      throw authoritativeR2MissingBaselineError(recovery);
+    }
+  }
+
+  const heldRecoveryUnresolved =
+    source.admin_review_status === "review_later" &&
+    recovery?.quarantineResolutionSucceeded !== true;
+  const currentReviewState = heldRecoveryUnresolved
+    ? null
+    : await loadSharedSourceReviewState(source.id, report, {
+        stage: "initial_official_document_pre_publication_review_state",
+      });
+  if (
+    heldRecoveryUnresolved ||
+    !currentReviewState ||
+    currentReviewState.admin_review_status !== "open"
+  ) {
+    report.initial_official_document_materialization_only_review_hold_paused += 1;
+    console.log(
+      `INITIAL_OFFICIAL_DOCUMENT_REVIEW_HOLD no_sealed_publication ${sourceLabel(source)}`,
+    );
+    return;
+  }
+
+  // This mode is intentionally incapable of calling the live PDF downloader.
+  // It replays the exact retained bytes approved by New Page Review, so a retry
+  // is free and cannot silently substitute a newer response from the live URL.
+  const capture = await materializeSealedFirstObservationCapture(source, report);
+  report.checked += 1;
+  report.pdf_checked += 1;
+
+  if (!baseline) {
+    writeBaseline(source, capture, {
+      reason: "initial_official_document_first_observation",
+      previous_baseline: null,
+    });
+    report.baselined += 1;
+    report.initial_official_document_materialization_only_baseline_written += 1;
+    await maybeSyncR2Snapshot(source, capture, report, {
+      reason: "initial_official_document_first_observation",
+    });
+  } else {
+    // A later healthy baseline must never be rolled back to the first-observed
+    // bytes merely to reconstruct the event candidate.
+    report.initial_official_document_materialization_only_baseline_preserved += 1;
+  }
+
+  const result = await maybeEnqueueInitialOfficialDocumentCandidate({
+    source,
+    capture,
+    report,
+  });
+  if (result?.ineligible) {
+    await markSharedSourceInitialDocumentQuarantined(source, capture, result.reason);
+    throw new Error(
+      `Initial official document candidate failed sealed-evidence validation (${result.reason || "unknown"}).`,
+    );
+  }
+  if (!result?.id || !["succeeded", "published"].includes(result.status)) {
+    throw new Error(
+      "Initial official document materialization did not produce a succeeded source-acquisition candidate.",
+    );
+  }
+
+  report.initial_official_document_materialization_only_completed += 1;
+  console.log(
+    `MATERIALIZED initial_official_document acquisition=${acquisition.id} candidate=${result.id} ${sourceLabel(source)}`,
+  );
+}
+
+async function capturePdfSourceForBaseline(source, baseline, report) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const useSealedIntakeArtifact =
+    !baseline &&
+    isRetainedLiveFirstCaptureAcquisition(acquisition);
+  if (!useSealedIntakeArtifact) return capturePdfSource(source);
+
+  return materializeSealedFirstObservationCapture(source, report);
+}
+
+async function materializeSealedFirstObservationCapture(source, report) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+
+  try {
+    const capture = await materializeFirstObservationCaptureFromAcquisition({
+      archiveRoot,
+      source,
+      acquisition,
+      bucket: r2Bucket,
+      config: {
+        bucket: r2Bucket,
+        endpoint: r2Endpoint,
+        accessKeyId: r2AccessKeyId,
+        secretAccessKey: r2SecretAccessKey,
+      },
+    });
+    report.initial_official_document_intake_artifact_materialized += 1;
+    if (capture.intake_artifact_local_cache_rehydrated) {
+      report.initial_official_document_intake_artifact_rehydrated += 1;
+    }
+    console.log(`MATERIALIZED sealed_intake_pdf ${sourceLabel(source)}`);
+    return capture;
+  } catch (error) {
+    report.initial_official_document_intake_artifact_failed += 1;
+    const reasonCode = cleanText(error?.code || "intake_artifact_materialization_failed")
+      .toLowerCase()
+      .replace(/[^a-z0-9_]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 200) || "intake_artifact_materialization_failed";
+    const solution = error?.solution || intakeArtifactFailureSolution(reasonCode);
+    const evidence = {
+      message: `The exact PDF accepted by new-page review could not be materialized: ${errorMessage(error)}`,
+      failure_stage: "intake_artifact_materialization",
+      candidate_scope: INITIAL_OFFICIAL_DOCUMENT_SCOPE,
+      worker_run_id: report.worker_run_id || null,
+      retained_artifact: jsonObjectOrEmpty(acquisition.review_seal).retained_artifact || null,
+      repair: {
+        retry_mode: "manual_candidate_evidence_repair",
+        creates_api_charge: false,
+        preserves_acquisition_identity: true,
+        safe_action: solution,
+      },
+    };
+    const { data: quarantineId, error: quarantineError } = await supabase.rpc(
+      "record_initial_official_document_quarantine",
+      {
+        p_source_id: source.id,
+        p_acquisition_id: acquisition.id,
+        p_reason_code: reasonCode,
+        p_evidence: evidence,
+      },
+    );
+    if (quarantineError || !quarantineId) {
+      throw new Error(
+        `Exact intake artifact materialization failed (${reasonCode}) and quarantine persistence failed: ` +
+        `${quarantineError?.message || "missing quarantine id"}. Safe action: ${solution}`,
+      );
+    }
+    report.initial_official_document_quarantined += 1;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      source_acquisition_id: acquisition.id,
+      quarantine_id: quarantineId,
+      stage: "intake_artifact_materialization",
+      reason_code: reasonCode,
+      message: evidence.message,
+      solution,
+      creates_api_charge: false,
+    });
+    const failure = new Error(
+      `Exact intake artifact materialization failed (${reasonCode}); the live URL was not fetched and no baseline was created. Safe action: ${solution}`,
+    );
+    failure.code = reasonCode;
+    throw failure;
+  }
+}
+
+function isRetainedLiveFirstCaptureAcquisition(value) {
+  const acquisition = jsonObjectOrEmpty(value);
+  return Boolean(
+    acquisition.id &&
+    acquisition.acquisition_kind === "live_discovery" &&
+    acquisition.notification_mode === "first_capture_candidate" &&
+    jsonObjectOrEmpty(acquisition.review_seal).retained_artifact,
+  );
+}
+
+function isFirstCaptureCandidateAcquisition(value) {
+  const acquisition = jsonObjectOrEmpty(value);
+  return Boolean(
+    acquisition.id &&
+    acquisition.notification_mode === "first_capture_candidate",
+  );
+}
+
+async function shouldDeferFirstCaptureBaselineRefresh(acquisition) {
+  const { data, error } = await supabase
+    .from("shared_award_visual_review_candidates")
+    .select("id")
+    .eq("source_acquisition_id", acquisition.id)
+    .eq("candidate_scope", INITIAL_OFFICIAL_DOCUMENT_SCOPE)
+    .limit(1);
+  if (error) {
+    throw new Error(`Check protected first-capture candidate before baseline refresh failed: ${error.message}`);
+  }
+  return !(data || []).length;
 }
 
 async function capturePdfSource(source) {
@@ -2753,16 +3731,9 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     });
     await waitForPageSettledForSnapshot(page);
 
+    let pdfDiscoveryForRegistration = null;
     let discoveredPdfLinks = [];
     let discoveredHtmlLinks = [];
-    if (discoveryMode && discoverPdfSubpages) {
-      discoveredPdfLinks = await discoverPdfLinksOnPage(page, source);
-      await maybeRecordDiscoveredPdfSources(source, discoveredPdfLinks, expanded, report);
-    }
-    if (discoveryMode && discoverHtmlSubpages) {
-      discoveredHtmlLinks = await discoverHtmlSubpageLinksOnPage(page, source);
-      await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
-    }
 
     // Expansion-state evidence and discovery can mutate page state. Re-establish the
     // final deterministic page once, then capture searchable text-node geometry and
@@ -2788,6 +3759,50 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       if (pageSettle.waited_ms > 0) report.capture_settle_waits += 1;
       if (pageSettle.timed_out) report.capture_settle_timeouts += 1;
       report.capture_settle_wait_ms += pageSettle.waited_ms;
+    }
+
+    // Discover links only from the same fully expanded, fully scrolled, settled
+    // DOM that is about to be captured. A failed/capped expansion, capped
+    // scroll, or unsettled page is an incomplete scan and must never establish
+    // the historical seed watermark.
+    if (discoveryMode && discoverPdfSubpages) {
+      const pdfDiscovery = await discoverPdfLinksOnPage(page, source);
+      const completeness = pdfDiscoveryCompleteness({
+        expanded: finalExpanded,
+        scrollActivation,
+        pageSettle,
+        domScan: pdfDiscovery,
+      });
+      pdfDiscoveryForRegistration = {
+        ...pdfDiscovery,
+        scanComplete: completeness.complete,
+        incompleteReasons: completeness.reasons,
+      };
+      discoveredPdfLinks = pdfDiscovery.queueCandidates;
+      if (report && !completeness.complete) {
+        report.discovery_pdf_provenance_truncated += 1;
+        report.discovery_pdf_incomplete_scans += 1;
+        for (const reason of completeness.reasons) {
+          incrementCounterObject(report.discovery_pdf_incomplete_reasons, reason);
+        }
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          message:
+            "PDF discovery scan was retained as incomplete and did not advance the historical seed: " +
+            completeness.reasons.join(", "),
+        });
+      }
+      if (report && pdfDiscovery.error) {
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          message: `PDF discovery DOM scan failed and was left unseeded: ${pdfDiscovery.error}`,
+        });
+      }
+    }
+    if (discoveryMode && discoverHtmlSubpages) {
+      discoveredHtmlLinks = await discoverHtmlSubpageLinksOnPage(page, source);
     }
 
     const pageTitle = await page.title().catch(() => "");
@@ -2962,6 +3977,17 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
 
     writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
 
+    // Discovery becomes durable only after the page has passed capture-quality
+    // validation and its evidence has been written successfully. A transient
+    // CAPTCHA, access-block, or soft-404 page must never establish an empty or
+    // partial historical watermark that turns old links into live alerts later.
+    if (pdfDiscoveryForRegistration) {
+      await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration, expanded, report);
+    }
+    if (discoveryMode && discoverHtmlSubpages) {
+      await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
+    }
+
     return {
       ...meta,
       dir: captureDir,
@@ -3007,6 +4033,8 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
       controls_clicked: 0,
       panels_forced_open: 0,
       passes: 0,
+      control_candidates: 0,
+      control_cap_hit: false,
       skipped: true,
       reason: "capture_profile_minimal_expansion",
       capture_profile: profile,
@@ -3014,7 +4042,7 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
   }
 
   try {
-    const result = await page.evaluate(async ({ relevanceMode }) => {
+    const result = await page.evaluate(async ({ maxControls, relevanceMode }) => {
       const delay = (ms) => new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
       const clickedKeys = new Set();
       const counts = {
@@ -3022,6 +4050,8 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
         controls_clicked: 0,
         panels_forced_open: 0,
         passes: 0,
+        control_candidates: 0,
+        control_cap_hit: false,
       };
 
       function textOf(element) {
@@ -3141,7 +4171,9 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
           "button, [role='button'], a[data-toggle], a[data-bs-toggle], button[data-toggle], button[data-bs-toggle]",
         ),
       ].filter(isSafeExpandableControl);
-      for (const control of finalControls.slice(0, 120)) {
+      counts.control_candidates = Math.max(counts.control_candidates, finalControls.length);
+      if (finalControls.length > maxControls) counts.control_cap_hit = true;
+      for (const control of finalControls.slice(0, maxControls)) {
         control.setAttribute("aria-expanded", "true");
         const details = control.closest("details");
         if (details) details.setAttribute("open", "");
@@ -3157,7 +4189,10 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
           ),
         ].filter(isSafeExpandableControl);
 
-        for (const control of controls.slice(0, 120)) {
+        counts.control_candidates = Math.max(counts.control_candidates, controls.length);
+        if (controls.length > maxControls) counts.control_cap_hit = true;
+
+        for (const control of controls.slice(0, maxControls)) {
           const key = `${control.tagName}:${signalFor(control).slice(0, 220)}`;
           if (clickedKeys.has(key)) continue;
           clickedKeys.add(key);
@@ -3191,7 +4226,7 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
       openClosedDetails();
 
       return counts;
-    }, { relevanceMode });
+    }, { maxControls: maxSnapshotExpandableControls, relevanceMode });
     await page.waitForTimeout(350).catch(() => null);
     return {
       ...result,
@@ -3204,6 +4239,8 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
       controls_clicked: 0,
       panels_forced_open: 0,
       passes: 0,
+      control_candidates: 0,
+      control_cap_hit: false,
       capture_profile: profile,
       relevance_mode: relevanceMode,
       error: errorMessage(error),
@@ -4737,51 +5774,91 @@ function classifyInvalidPageCapture({ status, finalUrl, pageTitle, text, dimensi
 }
 
 async function discoverPdfLinksOnPage(page, source) {
-  const rawLinks = await page
-    .evaluate(() =>
-      [...document.querySelectorAll("a[href]")].map((link) => ({
-        href: link.getAttribute("href") || "",
-        text: (link.innerText || link.textContent || "").replace(/\s+/g, " ").trim(),
-        title: link.getAttribute("title") || "",
-        ariaLabel: link.getAttribute("aria-label") || "",
-        download: link.getAttribute("download") || "",
-        contextText: (
-          link.closest("article, section, li, tr, p, div")?.innerText ||
-          link.parentElement?.innerText ||
-          ""
-        )
-          .replace(/\s+/g, " ")
-          .trim()
-          .slice(0, 1200),
-        inBoilerplateRegion: Boolean(
-          link.closest(
-            [
-              "header",
-              "footer",
-              "nav",
-              "aside",
-              "[role='navigation']",
-              "[role='contentinfo']",
-              ".header",
-              ".footer",
-              ".site-header",
-              ".site-footer",
-              ".navbar",
-              ".navigation",
-              ".menu",
-              ".mobile-menu",
-              ".sidebar",
-            ].join(","),
+  const rawDiscovery = await page
+    .evaluate(() => {
+      const links = [];
+      const seen = new Set();
+      for (const link of document.querySelectorAll("a[href]")) {
+        const href = link.getAttribute("href") || "";
+        let normalizedUrl = "";
+        let parsedUrl = null;
+        try {
+          parsedUrl = new URL(href, document.baseURI);
+          if (!["http:", "https:"].includes(parsedUrl.protocol)) continue;
+          parsedUrl.hash = "";
+          normalizedUrl = parsedUrl.toString();
+        } catch {
+          continue;
+        }
+        if (seen.has(normalizedUrl)) continue;
+        const text = (link.innerText || link.textContent || "").replace(/\s+/g, " ").trim();
+        const title = link.getAttribute("title") || "";
+        const ariaLabel = link.getAttribute("aria-label") || "";
+        const download = link.getAttribute("download") || "";
+        const signal = [normalizedUrl, text, title, ariaLabel, download]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        const pdfUrl = /\.pdf$/i.test(parsedUrl.pathname)
+          || /\.pdf(?:$|[?&=/])/i.test(`${parsedUrl.pathname}${parsedUrl.search}`);
+        const pdfText = /\bpdf\b/.test(signal);
+        const documentSignal =
+          /\b(application|guidelines?|instructions?|materials?|form|document|download)\b/.test(signal)
+          && /(\/files?\/|\/uploads?\/|\/documents?\/|\/media\/|download|attachment|pdf)/.test(signal);
+        if (!pdfUrl && !pdfText && !documentSignal) continue;
+        seen.add(normalizedUrl);
+        links.push({
+          href: normalizedUrl,
+          text,
+          title,
+          ariaLabel,
+          download,
+          contextText: (
+            link.closest("article, section, li, tr, p, div")?.innerText ||
+            link.parentElement?.innerText ||
+            ""
+          )
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 1200),
+          inBoilerplateRegion: Boolean(
+            link.closest(
+              [
+                "header",
+                "footer",
+                "nav",
+                "aside",
+                "[role='navigation']",
+                "[role='contentinfo']",
+                ".header",
+                ".footer",
+                ".site-header",
+                ".site-footer",
+                ".navbar",
+                ".navigation",
+                ".menu",
+                ".mobile-menu",
+                ".sidebar",
+              ].join(","),
+            ),
           ),
-        ),
-      })),
-    )
-    .catch(() => []);
+        });
+      }
+      return { links, truncated: false };
+    })
+    // A failed DOM read is not an empty complete scan. Marking it incomplete
+    // prevents a transient browser failure from permanently seeding this parent.
+    .catch((error) => ({
+      links: [],
+      truncated: true,
+      error: errorMessage(error),
+    }));
 
   const seen = new Set();
-  const candidates = [];
+  const provenanceLinks = [];
+  const queueCandidates = [];
 
-  for (const link of rawLinks) {
+  for (const link of rawDiscovery.links) {
     const url = normalizeDiscoveredUrl(link.href, source.url);
     if (!url || seen.has(url)) continue;
     const signal = [url, link.text, link.title, link.ariaLabel, link.download]
@@ -4793,6 +5870,10 @@ async function discoverPdfLinksOnPage(page, source) {
     const documentSignal =
       /\b(application|guidelines?|instructions?|materials?|form|document|download)\b/.test(signal) &&
       /(\/files?\/|\/uploads?\/|\/documents?\/|\/media\/|download|attachment|pdf)/.test(signal);
+    if (!pdfUrl && !pdfText && !documentSignal) continue;
+    seen.add(url);
+    provenanceLinks.push({ url });
+
     const title = readablePdfLinkTitle(link, source);
     const hygiene = shouldRejectDiscoveredSource({
       url,
@@ -4801,8 +5882,6 @@ async function discoverPdfLinksOnPage(page, source) {
       page_type: "pdf",
       reason: signal,
     });
-
-    if (!pdfUrl && !pdfText && !documentSignal) continue;
     if (hygiene.action === "review_later") continue;
     const consolidation = classifySourceForConsolidation(
       {
@@ -4816,8 +5895,7 @@ async function discoverPdfLinksOnPage(page, source) {
     );
     if (consolidation.action === "review_later") continue;
     if (!isRelevantDiscoveredPdfLink(link, url, source)) continue;
-    seen.add(url);
-    candidates.push({
+    queueCandidates.push({
       url,
       title,
       link_text: link.text || null,
@@ -4825,7 +5903,27 @@ async function discoverPdfLinksOnPage(page, source) {
     });
   }
 
-  return candidates.slice(0, 25);
+  return {
+    provenanceLinks,
+    queueCandidates,
+    truncated: rawDiscovery.truncated,
+    error: rawDiscovery.error || null,
+  };
+}
+
+function pdfDiscoveryCompleteness({ expanded, scrollActivation, pageSettle, domScan }) {
+  const reasons = [];
+  if (domScan?.error) reasons.push("dom_scan_failed");
+  if (domScan?.truncated) reasons.push("dom_scan_incomplete");
+  if (expanded?.error) reasons.push("final_expansion_failed");
+  if (expanded?.control_cap_hit) reasons.push("expandable_control_cap_hit");
+  if (scrollActivation?.error) reasons.push("scroll_activation_failed");
+  if (scrollActivation?.hit_step_limit) reasons.push("scroll_step_cap_hit");
+  if (!pageSettle?.stable || pageSettle?.timed_out) reasons.push("page_not_settled");
+  return {
+    complete: reasons.length === 0,
+    reasons: [...new Set(reasons)],
+  };
 }
 
 function isRelevantDiscoveredPdfLink(link, url, source) {
@@ -5169,37 +6267,128 @@ function incrementCounterObject(bucket, key) {
   bucket[key] = (bucket[key] || 0) + 1;
 }
 
-async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, report) {
+async function maybeRecordDiscoveredPdfSources(source, pdfDiscovery, expanded, report) {
   if (!discoveryMode || !discoverPdfSubpages) return;
-  if (!pdfLinks.length) return;
+  const provenanceLinks = Array.isArray(pdfDiscovery?.provenanceLinks)
+    ? pdfDiscovery.provenanceLinks
+    : [];
+  const pdfLinks = Array.isArray(pdfDiscovery?.queueCandidates)
+    ? pdfDiscovery.queueCandidates
+    : [];
   if (report) {
     report.discovered_pdf_candidates += pdfLinks.length;
     report.discovery_candidates += pdfLinks.length;
+    report.discovery_pdf_provenance_links += provenanceLinks.length;
   }
 
-  const urls = [...new Set(pdfLinks.map((link) => link.url))];
-  const { data: existing, error: existingError } = await supabase
+  const urls = [...new Set(provenanceLinks
+    .map((link) => normalizeDiscoveredPdfIntakeUrl(link.url))
+    .filter(Boolean))];
+  const registrationBatches = urls.length
+    ? chunkArray(urls, maxPdfDiscoveryRegistrationBatchSize)
+    : [[]];
+  const registeredLinks = [];
+  for (let batchIndex = 0; batchIndex < registrationBatches.length; batchIndex += 1) {
+    const urlBatch = registrationBatches[batchIndex];
+    const finalBatch = batchIndex === registrationBatches.length - 1;
+    const { data, error: registrationError } = await supabase.rpc(
+      "register_shared_award_source_pdf_links",
+      {
+        p_source_id: source.id,
+        p_urls: urlBatch,
+        p_worker_run_id: report?.worker_run_id || null,
+        p_live_requested: discoveryIntent === "live_recurring",
+        p_onboarding_batch_id: discoveryIntent === "live_recurring"
+          ? null
+          : discoveryOnboardingBatchId,
+        // Earlier batches durably seed links but cannot establish completeness.
+        // Only the final batch may advance the parent's seed watermark.
+        p_scan_complete: pdfDiscovery.scanComplete === true && finalBatch,
+        p_metadata: {
+          schema_version: 1,
+          discovery_intent: discoveryIntent,
+          parent_source_url: source.url,
+          run_trigger: runTrigger,
+          run_cohort_id: report?.run_identity?.run_cohort_id || null,
+          registration_batch_index: batchIndex,
+          registration_batch_count: registrationBatches.length,
+          scan_complete: pdfDiscovery.scanComplete === true,
+          incomplete_reasons: pdfDiscovery.incompleteReasons || [],
+        },
+      },
+    );
+    if (registrationError) {
+      if (report) {
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          message:
+            `PDF source discovery provenance registration failed in batch ${batchIndex + 1}/` +
+            `${registrationBatches.length}: ${registrationError.message}`,
+        });
+      }
+      return;
+    }
+    registeredLinks.push(...(data || []));
+  }
+  const linkProvenanceByUrl = new Map();
+  for (const registered of registeredLinks || []) {
+    linkProvenanceByUrl.set(normalizeComparableUrl(registered.normalized_url), registered);
+    if (!report) continue;
+    if (registered.first_seen === true) {
+      if (registered.notification_mode === "first_capture_candidate") {
+        report.discovery_pdf_links_first_seen_live += 1;
+      } else {
+        report.discovery_pdf_links_first_seen_baseline += 1;
+      }
+    } else {
+      report.discovery_pdf_links_seen_existing += 1;
+    }
+  }
+  // An empty successful registration is meaningful: it atomically marks this
+  // parent source's first PDF-link scan complete, so a later new link is live.
+  if (!urls.length) return;
+  const existingResult = await supabase
     .from("shared_award_sources")
     .select("url")
-    .eq("shared_award_id", source.shared_award_id)
-    .in("url", urls);
+    .eq("shared_award_id", source.shared_award_id);
 
-  if (existingError) {
+  if (existingResult.error) {
     if (report) {
       report.errors.push({
         source_id: source.id,
         source_url: source.url,
-        message: `PDF source discovery lookup failed: ${existingError.message}`,
+        message: `PDF source discovery lookup failed: ${existingResult.error.message}`,
       });
     }
     return;
   }
 
-  const existingUrls = new Set((existing || []).map((row) => row.url));
+  const existingUrls = new Set((existingResult.data || []).map((row) => normalizeComparableUrl(row.url)));
+  const seenUrls = new Set();
   const rows = [];
   for (const link of pdfLinks) {
-    if (existingUrls.has(link.url)) {
-      if (report) report.discovery_skipped_existing += 1;
+    const normalizedIntakeUrl = normalizeDiscoveredPdfIntakeUrl(link.url);
+    const comparableUrl = normalizeComparableUrl(normalizedIntakeUrl);
+    if (!comparableUrl || seenUrls.has(comparableUrl)) continue;
+    seenUrls.add(comparableUrl);
+    const provenance = linkProvenanceByUrl.get(comparableUrl);
+    if (!provenance) {
+      if (report) {
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          candidate_url: normalizedIntakeUrl,
+          message: "Durable first-seen PDF link provenance is missing.",
+        });
+      }
+      continue;
+    }
+    if (provenance.source_page_request_id) {
+      if (report) {
+        report.discovery_skipped_existing += 1;
+        report.discovery_skipped_prior_request += 1;
+      }
       continue;
     }
     const decision = evaluateDiscoveredSourceCandidate(source, link, "pdf");
@@ -5207,36 +6396,227 @@ async function maybeRecordDiscoveredPdfSources(source, pdfLinks, expanded, repor
       recordDiscoveryRejection(report, decision);
       continue;
     }
+    if (discoveredPdfNotificationRequiresQuarantine(provenance)) {
+      await quarantineDiscoveredPdfNotificationConflict({
+        source,
+        normalizedUrl: normalizedIntakeUrl,
+        provenance,
+        decision,
+        report,
+      });
+      continue;
+    }
+    if (existingUrls.has(comparableUrl)) {
+      if (report) report.discovery_skipped_existing += 1;
+      continue;
+    }
+    if (rows.length >= maxPdfDiscoveryQueueCandidates) {
+      if (report) report.discovery_pdf_queue_candidate_cap_hits += 1;
+      break;
+    }
     if (!reserveDiscoveryCap(source, link.url, report)) continue;
-    rows.push(discoveredSourceRow(source, link, "pdf", expanded, decision));
+    try {
+      rows.push(buildDiscoveredPdfIntakeRequest({
+        source,
+        link,
+        expanded,
+        decision,
+        discoveryIntent: provenance.notification_mode === "first_capture_candidate"
+          ? "live_recurring"
+          : "historical_onboarding",
+        onboardingBatchId: provenance.onboarding_batch_id || null,
+      }));
+    } catch (error) {
+      if (report) {
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          message: `PDF source discovery request build failed: ${errorMessage(error)}`,
+        });
+      }
+    }
   }
 
   if (!rows.length) return;
 
-  const { data, error } = await supabase
-    .from("shared_award_sources")
-    .upsert(rows, { onConflict: "shared_award_id,url", ignoreDuplicates: true })
-    .select("id,url");
-
-  if (error) {
-    if (report) {
+  let inserted = 0;
+  for (const row of rows) {
+    const { data, error } = await supabase.rpc(
+      "create_and_bind_shared_award_discovered_link_request",
+      {
+        p_parent_source_id: source.id,
+        p_normalized_url: row.normalized_url,
+        p_request: row,
+      },
+    );
+    if (error) {
+      if (report) {
+        report.errors.push({
+          source_id: source.id,
+          source_url: source.url,
+          candidate_url: row.normalized_url,
+          message: `Atomic PDF source discovery request creation/binding failed: ${error.message}`,
+          solution:
+            "Retry the same scan after restoring the atomic discovery RPC. No unbound request was committed and no review should be charged.",
+        });
+      }
+      continue;
+    }
+    const registration = Array.isArray(data) ? data[0] || null : data || null;
+    if (registration?.quarantine_required === true) {
+      await quarantineDiscoveredPdfNotificationConflict({
+        source,
+        normalizedUrl: row.normalized_url,
+        provenance: registration,
+        decision: { reason: "atomic_request_prior_provenance_conflict" },
+        report,
+      });
+      continue;
+    }
+    if (registration?.source_page_request_id) {
+      if (registration.created === true) {
+        inserted += 1;
+      } else if (report) {
+        report.discovery_skipped_existing += 1;
+        report.discovery_skipped_active_request += 1;
+        report.discovery_skipped_prior_request += 1;
+      }
+    } else if (report) {
       report.errors.push({
         source_id: source.id,
         source_url: source.url,
-        message: `PDF source discovery insert failed: ${error.message}`,
+        candidate_url: row.normalized_url,
+        message: "Atomic PDF discovery RPC returned neither a bound request nor quarantine disposition.",
+        solution:
+          "Inspect the discovery ledger RPC contract before retrying. Do not create a standalone paid request.",
       });
     }
-    return;
   }
 
-  const insertedRows = insertedDiscoveryRows(rows, data);
-  const inserted = insertedRows.length;
   if (report) {
     report.discovered_pdf_sources += inserted;
-    report.discovery_inserted_open += insertedRows.filter((row) => row.admin_review_status === "open").length;
-    report.discovery_inserted_pending += insertedRows.filter((row) => row.admin_review_status !== "open").length;
+    report.discovery_inserted_pending += inserted;
   }
-  console.log(`DISCOVERED PDF SOURCES inserted=${inserted} parent=${sourceLabel(source)}`);
+  console.log(`DISCOVERED PDF INTAKE REQUESTS inserted=${inserted} parent=${sourceLabel(source)}`);
+}
+
+function chunkArray(values, size) {
+  const chunkSize = Math.max(1, Number(size) || 1);
+  const chunks = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+  return chunks;
+}
+
+async function refreshDiscoveredPdfRequestBinding(source, normalizedUrl, report) {
+  const { data, error } = await supabase.rpc("register_shared_award_source_pdf_links", {
+    p_source_id: source.id,
+    p_urls: [normalizedUrl],
+    p_worker_run_id: report?.worker_run_id || null,
+    p_live_requested: discoveryIntent === "live_recurring",
+    p_onboarding_batch_id: discoveryIntent === "live_recurring"
+      ? null
+      : discoveryOnboardingBatchId,
+    // A one-URL uniqueness-race refresh is never proof that the parent page's
+    // full historical link set was observed. An existing seed stays intact;
+    // an unseeded parent remains unseeded until its first complete page scan.
+    p_scan_complete: false,
+    p_metadata: {
+      schema_version: 1,
+      discovery_intent: discoveryIntent,
+      request_binding_refresh: true,
+      run_trigger: runTrigger,
+    },
+  });
+  const registration = data?.[0] || null;
+  const rebound = registration?.source_page_request_id || null;
+  const actionableConflict = discoveredPdfNotificationRequiresQuarantine(registration);
+  if ((error || (!rebound && !actionableConflict)) && report) {
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      candidate_url: normalizedUrl,
+      message: error
+        ? `PDF request conflict binding refresh failed: ${error.message}`
+        : "PDF request conflict could not be bound to durable discovery provenance.",
+    });
+  }
+  return registration;
+}
+
+const discoveredPdfNotificationConflictDispositions = new Set([
+  "prior_non_live_request_requires_action",
+  "prior_terminal_request_requires_action",
+  "prior_request_requires_action",
+  "quarantined_prior_request_conflict",
+]);
+
+function discoveredPdfNotificationRequiresQuarantine(provenance) {
+  return Boolean(
+    provenance?.prior_source_page_request_id &&
+    discoveredPdfNotificationConflictDispositions.has(
+      cleanText(provenance.notification_disposition),
+    ),
+  );
+}
+
+async function quarantineDiscoveredPdfNotificationConflict({
+  source,
+  normalizedUrl,
+  provenance,
+  decision,
+  report,
+}) {
+  const { data: quarantineId, error } = await supabase.rpc(
+    "record_shared_award_discovered_link_quarantine",
+    {
+      p_parent_source_id: source.id,
+      p_normalized_url: normalizedUrl,
+      p_prior_source_page_request_id: provenance.prior_source_page_request_id,
+      p_evidence: {
+        worker_run_id: report?.worker_run_id || null,
+        run_trigger: runTrigger,
+        run_cohort_id: report?.run_identity?.run_cohort_id || null,
+        discovery_intent: discoveryIntent,
+        discovery_gate_reason: decision?.reason || null,
+        notification_disposition: provenance.notification_disposition,
+        creates_api_charge: false,
+      },
+    },
+  );
+  if (error || !quarantineId) {
+    if (report) {
+      report.discovery_pdf_notification_quarantine_failed += 1;
+      report.errors.push({
+        source_id: source.id,
+        source_url: source.url,
+        candidate_url: normalizedUrl,
+        prior_source_page_request_id: provenance.prior_source_page_request_id,
+        message:
+          `PDF notification provenance quarantine failed: ${error?.message || "missing quarantine id"}`,
+        solution:
+          "Restore the discovered-link quarantine RPC and retry the same scan. Do not queue another paid review or absorb this PDF as a baseline.",
+      });
+    }
+    return null;
+  }
+  if (report) {
+    report.discovery_pdf_notification_quarantined += 1;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      candidate_url: normalizedUrl,
+      prior_source_page_request_id: provenance.prior_source_page_request_id,
+      quarantine_id: quarantineId,
+      message:
+        "A post-seed PDF notification was quarantined because prior intake history cannot be relabeled as this live discovery.",
+      solution:
+        "Review the retained prior request first. Replay exact eligible live evidence for $0, or explicitly approve one new-page review under the $5 lane.",
+      creates_api_charge: false,
+    });
+  }
+  return quarantineId;
 }
 
 async function discoverHtmlSubpageLinksOnPage(page, source) {
@@ -5568,6 +6948,14 @@ function normalizeComparableUrl(value) {
   }
 }
 
+function normalizeDiscoveredPdfIntakeUrl(value) {
+  try {
+    return normalizeSourceIntakeUrl(value);
+  } catch {
+    return null;
+  }
+}
+
 function isLikelyDownloadUrl(value) {
   try {
     const parsed = new URL(value);
@@ -5789,6 +7177,143 @@ async function markSharedSourceReviewLater(source, hygiene) {
 
   if (error) throw new Error(`shared_award_sources review_later update failed: ${error.message}`);
   console.log(`SOURCE_REVIEW_LATER pre_capture reason=${hygiene.reason} ${sourceLabel(source)}`);
+}
+
+async function maybeResolveR2BaselineRecoveryQuarantine(source, recovery, report) {
+  const baseline = jsonObjectOrEmpty(recovery.baseline);
+  const baselineSource = jsonObjectOrEmpty(baseline.source);
+  const evidence = {
+    schema_version: "awardping.r2-baseline-recovery-resolution.v1",
+    resolved_at: new Date().toISOString(),
+    source_id: source.id,
+    shared_award_id: source.shared_award_id || null,
+    rehydrated: recovery.rehydrated === true,
+    reason: cleanText(recovery.reason),
+    generation: recovery.generation || null,
+    family: recovery.family || null,
+    version: recovery.version || null,
+    artifact_count: nonNegativeInt(recovery.artifact_count, 0),
+    baseline: {
+      kind: baseline.kind || null,
+      captured_at: baseline.captured_at || null,
+      text_hash: baseline.text_hash || null,
+      file_hash: baseline.file_hash || null,
+      image_hash: baseline.image_hash || null,
+      source: {
+        id: baselineSource.id || null,
+        shared_award_id: baselineSource.shared_award_id || null,
+      },
+    },
+    localization_status: recovery.localization_status || null,
+    restored_missing_baseline: Boolean(recovery.restored_missing_baseline),
+    restored_missing_source_directory: Boolean(recovery.restored_missing_source_directory),
+    creates_api_charge: false,
+    used_live_fetch: false,
+  };
+  const { data, error } = await supabase.rpc(
+    "resolve_r2_baseline_recovery_quarantine",
+    {
+      p_source_id: source.id,
+      p_evidence: evidence,
+    },
+  );
+  if (error) {
+    report.r2_rehydration_quarantine_resolve_failed += 1;
+    report.errors.push({
+      source_id: source.id,
+      stage: "r2_baseline_recovery_quarantine_resolution",
+      message: `Resolve R2 baseline recovery quarantine failed: ${error.message}`,
+      evidence,
+      creates_api_charge: false,
+    });
+    console.log(`R2_RECOVERY_QUARANTINE_RESOLVE_FAILED ${error.message} ${sourceLabel(source)}`);
+    return false;
+  }
+  if (data === true) {
+    report.r2_rehydration_quarantines_resolved += 1;
+    console.log(`R2_RECOVERY_QUARANTINE_RESOLVED ${sourceLabel(source)}`);
+    return true;
+  }
+  return false;
+}
+
+async function loadSharedSourceReviewState(sourceId, report, { stage }) {
+  const { data, error } = await supabase
+    .from("shared_award_sources")
+    .select("id, admin_review_status, admin_reviewed_by")
+    .eq("id", sourceId)
+    .maybeSingle();
+  if (error || !data) {
+    report.errors.push({
+      source_id: sourceId,
+      stage,
+      message: error
+        ? `Reload source review state failed: ${error.message}`
+        : "Reload source review state failed: source missing.",
+      creates_api_charge: false,
+    });
+    return null;
+  }
+  return data;
+}
+
+async function markSharedSourceR2RecoveryQuarantined(source, recoveryError, report) {
+  const reasonCode = cleanText(
+    recoveryError?.r2RecoveryReason || recoveryError?.code || "r2_authoritative_recovery_failed",
+  )
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 200) || "r2_authoritative_recovery_failed";
+  const evidence = {
+    schema_version: "awardping.r2-baseline-recovery-quarantine.v1",
+    observed_at: new Date().toISOString(),
+    failure_stage: "authoritative_missing_local_baseline_recovery",
+    message: errorMessage(recoveryError),
+    source: {
+      id: source.id,
+      shared_award_id: source.shared_award_id || null,
+      url: source.url || null,
+      title: source.title || null,
+    },
+    authoritative_r2: recoveryError?.r2RecoveryEvidence || null,
+    repair: {
+      retry_mode: "manual_exact_r2_rehydration",
+      creates_api_charge: false,
+      permits_live_fetch: false,
+      safe_action:
+        "Verify the immutable DB pointer and exact R2 generation, then retry the same no-charge restore. " +
+        "Do not fetch a replacement baseline, replay older sealed bytes, or rotate R2.",
+    },
+    worker: {
+      worker_run_id: report.worker_run_id || null,
+      run_trigger: runTrigger,
+      run_cohort_id: runCohortId || null,
+    },
+  };
+  const { data: quarantineId, error } = await supabase.rpc(
+    "record_r2_baseline_recovery_quarantine",
+    {
+      p_source_id: source.id,
+      p_reason_code: reasonCode,
+      p_evidence: evidence,
+    },
+  );
+  if (error || !quarantineId) {
+    throw new Error(
+      `Durable R2 baseline recovery quarantine failed: ${error?.message || "missing quarantine id"}`,
+    );
+  }
+  report.r2_rehydration_quarantined += 1;
+  report.errors.push({
+    source_id: source.id,
+    quarantine_id: quarantineId,
+    stage: "r2_baseline_recovery_quarantine",
+    reason_code: reasonCode,
+    evidence,
+    creates_api_charge: false,
+  });
+  console.log(`R2_RECOVERY_QUARANTINED id=${quarantineId} ${sourceLabel(source)}`);
 }
 
 async function markSharedSourceVisualCheckFailed(source, message) {
@@ -6129,6 +7654,24 @@ async function syncR2SnapshotPair(source, capture) {
     uploaded: Object.keys(latestKeys).length,
     rotated: Object.keys(history.previous_object_keys).length,
   };
+}
+
+async function markSharedSourceInitialDocumentQuarantined(source, capture, reason) {
+  const now = new Date().toISOString();
+  const failures = nonNegativeInt(source.consecutive_failures, 0) + 1;
+  const { error } = await supabase
+    .from("shared_award_sources")
+    .update({
+      last_hash: visualHashForCapture(capture),
+      last_checked_at: now,
+      next_check_at: nextVisualSourceCheckDate(),
+      consecutive_failures: failures,
+      last_error: truncate(`initial_document_quarantined:${reason || "unknown"}`, 1000),
+      ...sourcePageMetadataUpdate(source, capture),
+      updated_at: now,
+    })
+    .eq("id", source.id);
+  if (error) throw error;
 }
 
 async function syncR2LocalizationLatest(source, capture) {
@@ -7660,6 +9203,34 @@ async function loadSources(pageLimit) {
   return sources.slice(0, pageLimit);
 }
 
+async function attachSourceAcquisitions(sources) {
+  const acquisitionsBySourceId = new Map();
+  const sourceIds = [...new Set((sources || []).map((source) => source.id).filter(Boolean))];
+  for (let index = 0; index < sourceIds.length; index += 100) {
+    const chunk = sourceIds.slice(index, index + 100);
+    let query = supabase
+      .from("shared_award_source_acquisitions")
+      .select(
+        "id,shared_award_source_id,acquisition_kind,notification_mode,origin_source_page_request_id,origin_worker_run_id,parent_shared_award_source_id,onboarding_batch_id,review_seal,metadata,acquired_at,created_at",
+      )
+      .in("shared_award_source_id", chunk);
+    if (initialOfficialDocumentMaterialization) {
+      query = query.eq("id", initialOfficialDocumentAcquisitionId);
+    }
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(describeSupabaseError(error, "load immutable source acquisition provenance"));
+    }
+    for (const acquisition of data || []) {
+      acquisitionsBySourceId.set(acquisition.shared_award_source_id, acquisition);
+    }
+  }
+  return (sources || []).map((source) => ({
+    ...source,
+    source_acquisition: acquisitionsBySourceId.get(source.id) || null,
+  }));
+}
+
 async function loadSourcesByIds(pageLimit) {
   const ids = [...sourceIdsFilter].slice(0, pageLimit);
   const sources = [];
@@ -7673,6 +9244,8 @@ async function loadSourcesByIds(pageLimit) {
 }
 
 function filterMonitorableSourcesForCapture(sources) {
+  if (initialOfficialDocumentMaterialization) return sources;
+
   const accepted = [];
   const rejected = new Map();
 
@@ -7917,10 +9490,15 @@ function buildSourcesQuery(sourceIds = []) {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
-    .eq("shared_awards.status", "active")
-    .eq("admin_review_status", "open");
+    .eq("shared_awards.status", "active");
+
+  // Exact operator repair is allowed to address one quarantined source. Broad
+  // and file-based scans must continue excluding review_later sources.
+  if (!sourceIdFilter) {
+    query = query.eq("admin_review_status", "open");
+  }
 
   if (sourceIds.length) {
     query = query.in("id", sourceIds);
@@ -8237,6 +9815,24 @@ function visualWorkerMetadata(report) {
         report.visual_review_candidate_observations,
       visual_review_candidate_observation_failures:
         report.visual_review_candidate_observation_failures,
+      initial_official_document_candidates_queued:
+        report.initial_official_document_candidates_queued,
+      initial_official_document_candidates_existing:
+        report.initial_official_document_candidates_existing,
+      initial_official_document_candidates_ineligible:
+        report.initial_official_document_candidates_ineligible,
+      initial_official_document_notifications_deferred:
+        report.initial_official_document_notifications_deferred,
+      initial_official_document_materialization_only_completed:
+        report.initial_official_document_materialization_only_completed,
+      initial_official_document_materialization_only_baseline_written:
+        report.initial_official_document_materialization_only_baseline_written,
+      initial_official_document_materialization_only_baseline_preserved:
+        report.initial_official_document_materialization_only_baseline_preserved,
+      initial_official_document_materialization_only_review_hold_paused:
+        report.initial_official_document_materialization_only_review_hold_paused,
+      initial_official_document_ineligible_reasons:
+        report.initial_official_document_ineligible_reasons,
       visual_noise: report.visual_noise,
       review: report.review,
       skipped_existing_baseline: report.skipped_existing_baseline,
@@ -8298,6 +9894,12 @@ function visualWorkerMetadata(report) {
       discovery_rejected_by_quality: report.discovery_rejected_by_quality,
       discovery_rejected_by_identity: report.discovery_rejected_by_identity,
       discovery_skipped_existing: report.discovery_skipped_existing,
+      discovery_skipped_active_request: report.discovery_skipped_active_request,
+      discovery_skipped_prior_request: report.discovery_skipped_prior_request,
+      discovery_pdf_provenance_links: report.discovery_pdf_provenance_links,
+      discovery_pdf_provenance_truncated: report.discovery_pdf_provenance_truncated,
+      discovery_pdf_incomplete_scans: report.discovery_pdf_incomplete_scans,
+      discovery_pdf_incomplete_reasons: report.discovery_pdf_incomplete_reasons,
       discovery_inserted_pending: report.discovery_inserted_pending,
       discovery_inserted_open: report.discovery_inserted_open,
       promoted: report.promoted,
@@ -8318,6 +9920,12 @@ function visualWorkerMetadata(report) {
       r2_rehydration_refused: report.r2_rehydration_refused,
       r2_rehydration_failed: report.r2_rehydration_failed,
       r2_rehydration_reasons: report.r2_rehydration_reasons,
+      r2_rehydration_quarantined: report.r2_rehydration_quarantined,
+      r2_rehydration_quarantine_failed: report.r2_rehydration_quarantine_failed,
+      r2_rehydration_quarantines_resolved: report.r2_rehydration_quarantines_resolved,
+      r2_rehydration_quarantine_resolve_failed:
+        report.r2_rehydration_quarantine_resolve_failed,
+      r2_rehydration_only_completed: report.r2_rehydration_only_completed,
       localization_repair_synced: report.localization_repair_synced,
       localization_repair_baselined: report.localization_repair_baselined,
       localization_repair_skipped_changed: report.localization_repair_skipped_changed,
@@ -8394,6 +10002,12 @@ function visualWorkerMetadata(report) {
         rejected_by_quality: report.discovery_rejected_by_quality,
         rejected_by_identity: report.discovery_rejected_by_identity,
         skipped_existing: report.discovery_skipped_existing,
+        skipped_active_request: report.discovery_skipped_active_request,
+        skipped_prior_request: report.discovery_skipped_prior_request,
+        pdf_provenance_links: report.discovery_pdf_provenance_links,
+        pdf_provenance_truncated: report.discovery_pdf_provenance_truncated,
+        pdf_incomplete_scans: report.discovery_pdf_incomplete_scans,
+        pdf_incomplete_reasons: report.discovery_pdf_incomplete_reasons,
         inserted_pending: report.discovery_inserted_pending,
         inserted_open: report.discovery_inserted_open,
         rejection_reasons: report.discovery_rejection_reasons,
@@ -8416,6 +10030,10 @@ function visualWorkerMetadata(report) {
 
 function visualWorkerName() {
   const suffix = shardCount > 1 ? `-shard-${shardIndex + 1}-of-${shardCount}` : "";
+  if (initialOfficialDocumentMaterialization) {
+    const sourceSuffix = sourceIdFilter ? `-${sourceIdFilter.slice(0, 8)}` : "";
+    return `local-visual-snapshot-worker-initial-document${sourceSuffix}`;
+  }
   if (localizationRepair) return `local-visual-snapshot-worker-localization-repair${suffix}`;
   if (r2BackfillBaselines) return `local-visual-snapshot-worker-r2-backfill${suffix}`;
   if (completeMissingBaselines) return `local-visual-snapshot-worker-baseline-completion${suffix}`;

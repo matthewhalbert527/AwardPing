@@ -13,6 +13,7 @@ export type ChangeGenerationStatus =
   | "invalid_json"
   | "rejected"
   | "fallback";
+export type ChangeEventKind = "content_change" | "new_official_document";
 
 export type StructuredChangeDiff = {
   added_text: string[];
@@ -32,6 +33,9 @@ export type ChangeDetailSource = {
 };
 
 export type ChangeDetails = {
+  event_kind?: ChangeEventKind;
+  first_observed_at?: string | null;
+  recognized_at?: string | null;
   reader_summary: string;
   before: string | null;
   after: string | null;
@@ -226,6 +230,7 @@ export function normalizeAiChangeDetails(input: {
   }
 
   const merged: ChangeDetails = {
+    event_kind: input.fallback.event_kind,
     reader_summary:
       cleanShortText(parsed.reader_summary) || input.fallback.reader_summary,
     before: exactBefore ?? nullableCleanText(parsed.before) ?? input.fallback.before,
@@ -446,6 +451,9 @@ export function parseChangeDetails(value: unknown): ChangeDetails | null {
   if (!readerSummary) return null;
 
   return refineContentOnlyChange({
+    event_kind: normalizeChangeEventKind(parsed.event_kind),
+    first_observed_at: nullableTimestamp(parsed.first_observed_at),
+    recognized_at: nullableTimestamp(parsed.recognized_at),
     reader_summary: readerSummary,
     before: nullableCleanText(parsed.before),
     after: nullableCleanText(parsed.after),
@@ -489,8 +497,29 @@ export function changeDetailsToSummary(
   fallbackSummary: string | null | undefined,
 ) {
   const details = parseChangeDetails(changeDetails);
+  const firstObservationSummary = firstObservedOfficialDocumentSummary(details);
+  if (firstObservationSummary) return firstObservationSummary;
   const summary = cleanShortText(details?.reader_summary);
   return summary || cleanShortText(fallbackSummary);
+}
+
+export function isFirstObservedOfficialDocument(changeDetails: unknown) {
+  return parseChangeDetails(changeDetails)?.event_kind === "new_official_document";
+}
+
+export function firstObservedOfficialDocumentSummary(changeDetails: unknown) {
+  const details = parseChangeDetails(changeDetails);
+  if (details?.event_kind !== "new_official_document") return null;
+
+  const exactCurrentWording = nullableCleanText(
+    details.exact_after || details.after || details.structured_diff.added_text[0],
+  );
+  const observation = "AwardPing first observed this official document for the award.";
+  if (!exactCurrentWording) {
+    return `${observation} AwardPing's observation time does not establish when the publisher posted it.`;
+  }
+
+  return `${observation} The document includes: "${exactCurrentWording}"`;
 }
 
 export function changeDetailsSearchText(changeDetails: unknown) {
@@ -527,6 +556,7 @@ export function changeDetailsLabel(changeDetails: unknown, fallback = "Update") 
   const details = parseChangeDetails(changeDetails);
   if (!details) return fallback;
 
+  if (details.event_kind === "new_official_document") return "New official document";
   if (details.change_type === "date" || details.change_type === "deadline") return "Date";
   if (details.change_type === "amount" || details.change_type === "funding") return "Funding";
   if (details.change_type === "eligibility") return "Eligibility";
@@ -960,6 +990,7 @@ function hasDocumentMetadataOnlyChange(details: ChangeDetails) {
 }
 
 function refineContentOnlyChange(details: ChangeDetails): ChangeDetails {
+  if (details.event_kind === "new_official_document") return details;
   const contentRotation = profileTestimonialChangeSummary(details.source, details.structured_diff);
   if (!contentRotation) return details;
 
@@ -1352,6 +1383,17 @@ function normalizeGenerationStatus(value: unknown): ChangeGenerationStatus | nul
     return clean;
   }
   return null;
+}
+
+function normalizeChangeEventKind(value: unknown): ChangeEventKind | undefined {
+  const clean = cleanSlugText(value);
+  if (clean === "content_change" || clean === "new_official_document") return clean;
+  return undefined;
+}
+
+function nullableTimestamp(value: unknown): string | null {
+  const clean = nullableCleanText(value);
+  return clean && Number.isFinite(Date.parse(clean)) ? clean : null;
 }
 
 function normalizeSource(source: ChangeDetailSource | Record<string, unknown> | null | undefined) {
