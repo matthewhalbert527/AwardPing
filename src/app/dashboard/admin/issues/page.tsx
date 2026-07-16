@@ -1,26 +1,18 @@
 import Link from "next/link";
-import {
-  AlertTriangle,
-  ExternalLink,
-  Inbox,
-  Plus,
-  ScrollText,
-  ShieldCheck,
-} from "lucide-react";
+import { AlertTriangle, Archive, ExternalLink, Inbox, Plus, ScrollText, ShieldCheck } from "lucide-react";
 import { AdminNotAnUpdateControl } from "@/components/admin-not-an-update-control";
+import { AdminManualQuarantineBoard } from "@/components/admin-manual-quarantine-board";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { AdminRunReport } from "@/components/admin-run-report";
 import { AdminVerifiedPromotionBoard } from "@/components/admin-verified-promotion-board";
 import { OperatorActionInbox } from "@/components/operator-action-inbox";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
-import {
-  alertBlockingMonitoringPolicyFlagIds,
-  candidateMonitoringPolicyFlagIds,
-} from "@/lib/award-monitoring-policy";
+import { alertBlockingMonitoringPolicyFlagIds, candidateMonitoringPolicyFlagIds } from "@/lib/award-monitoring-policy";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
+import { loadAdminManualQuarantine } from "@/lib/admin-manual-quarantine";
 import type { AdminReviewLaterSource, AdminSuppressedChangeEvent } from "@/lib/admin-page-issues";
 import {
   loadAdminPageIssues,
@@ -83,17 +75,21 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   const params = await searchParams;
   const activeTab =
     params.tab === "promotions" ||
+    params.tab === "quarantine" ||
     params.tab === "updates" ||
     params.tab === "suppressed" ||
     params.tab === "excluded"
       ? params.tab
       : "inbox";
   const renderedAt = new Date();
-  const workerRunsResult = await admin
-    .from("local_worker_runs")
-    .select("*")
-    .order("started_at", { ascending: false })
-    .limit(200);
+  const [workerRunsResult, manualQuarantine] = await Promise.all([
+    admin
+      .from("local_worker_runs")
+      .select("*")
+      .order("started_at", { ascending: false })
+      .limit(200),
+    loadAdminManualQuarantine(admin),
+  ]);
   const workerRuns = (workerRunsResult.data || []) as LocalWorkerRun[];
   const runReport = buildAdminRunReportFeed(workerRuns, renderedAt);
 
@@ -106,7 +102,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     recentUpdates,
     suppressedEvents,
   ] = await Promise.all([
-    loadAdminPageIssues(admin, workerRuns, { includeLegacyDiagnostics: false }),
+    loadAdminPageIssues(admin, workerRuns, {
+      includeLegacyDiagnostics: false,
+      includeQuarantinedDiagnostics: !manualQuarantine.registryAvailable,
+    }),
     loadAdminReviewLaterSources(admin),
     loadAdminMonitoringFeedbackPromotionClusters(admin),
     loadAdminVisualReviewFailures(admin),
@@ -120,21 +119,27 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     ...promotionClusters.loadErrors,
     ...visualReviewFailures.loadErrors,
     ...deliveryFailures.loadErrors,
+    ...manualQuarantine.loadErrors,
   ].filter((message): message is string => Boolean(message));
   const historyLoadErrors = [
     ...reviewLater.loadErrors,
     ...recentUpdates.loadErrors,
     ...suppressedEvents.loadErrors,
   ].filter((message): message is string => Boolean(message));
+  const quarantinedVisualCandidateIds = new Set(
+    manualQuarantine.items
+      .map((item) => item.visualCandidateId)
+      .filter((id): id is string => Boolean(id)),
+  );
   const actionItems = buildOperatorActionInbox({
     issues: pageIssues.issues,
+    manualQuarantineItems: manualQuarantine.items,
     promotionClusters: promotionClusters.clusters,
     nightlyFailureGroups: runReport.visualNightly?.failureGroups || [],
-    nightlyReportedAt:
-      runReport.visualNightly?.finishedAt ||
-      runReport.visualNightly?.startedAt ||
-      null,
-    visualReviewFailures: visualReviewFailures.failures,
+    nightlyReportedAt: runReport.visualNightly?.finishedAt || runReport.visualNightly?.startedAt || null,
+    visualReviewFailures: visualReviewFailures.failures.filter(
+      (failure) => !quarantinedVisualCandidateIds.has(failure.id),
+    ),
     digestDeliveryFailures: deliveryFailures.failures,
     loadErrors: actionLoadErrors,
     now: renderedAt,
@@ -147,11 +152,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <span className="badge">Admin</span>
           <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            3 repairs current failures and decisions. 4 turns repeated false-update feedback into a verified global rule without weakening immediate suppression.
+            3 repairs current failures and decisions. 4 verifies global feedback rules. 5 keeps unresolved and
+            historically limited work visible until it is truthfully resolved.
           </p>
-          <p className="admin-page-timestamp">
-            Refreshed {formatDate(renderedAt.toISOString())}.
-          </p>
+          <p className="admin-page-timestamp">Refreshed {formatDate(renderedAt.toISOString())}.</p>
         </div>
         <div className="flex flex-wrap gap-3">
           <Link className="button-secondary" href="/dashboard/admin/source-intake">
@@ -181,6 +185,14 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
         >
           <ShieldCheck size={15} aria-hidden="true" />
           4. Verified Promotions
+        </Link>
+        <Link
+          aria-current={activeTab === "quarantine" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "quarantine" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=quarantine"
+        >
+          <Archive size={15} aria-hidden="true" />
+          5. Manual Quarantine
         </Link>
       </nav>
 
@@ -226,6 +238,8 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
             clusters={promotionClusters.clusters}
           />
         </>
+      ) : activeTab === "quarantine" ? (
+        <AdminManualQuarantineBoard result={manualQuarantine} />
       ) : (
         <section className="card admin-section-card admin-issue-panel">
           {historyLoadErrors.length > 0 && (
@@ -273,7 +287,8 @@ function RecentUpdateReview({ events }: { events: AdminRecentChangeEvent[] }) {
         <div>
           <h2>Review recent published updates</h2>
           <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-            If an update is not real, hide it here and send the evidence into the Action Inbox for reviewed global policy promotion.
+            If an update is not real, hide it here and send the evidence into the Action Inbox for reviewed global
+            policy promotion.
           </p>
         </div>
       </div>
@@ -291,20 +306,12 @@ function RecentUpdateReview({ events }: { events: AdminRecentChangeEvent[] }) {
                 <p className="admin-issue-message">{event.summary}</p>
                 <div className="admin-issue-actions">
                   {safeExternalUrl(event.sourceUrl) && (
-                    <a
-                      className="admin-issue-link"
-                      href={event.sourceUrl}
-                      rel="noreferrer"
-                      target="_blank"
-                    >
+                    <a className="admin-issue-link" href={event.sourceUrl} rel="noreferrer" target="_blank">
                       Source <ExternalLink size={13} aria-hidden="true" />
                     </a>
                   )}
                 </div>
-                <AdminNotAnUpdateControl
-                  eventId={event.id}
-                  policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
-                />
+                <AdminNotAnUpdateControl eventId={event.id} policyRuleIds={alertBlockingMonitoringPolicyFlagIds} />
               </div>
               <time dateTime={event.detectedAt}>{formatDate(event.detectedAt)}</time>
             </article>
@@ -322,9 +329,7 @@ function RecentUpdateReview({ events }: { events: AdminRecentChangeEvent[] }) {
 function SuppressedEventList({ events }: { events: AdminSuppressedChangeEvent[] }) {
   if (events.length === 0) {
     return (
-      <p className="text-sm font-semibold text-[var(--muted)]">
-        No suppressed change events are currently reported.
-      </p>
+      <p className="text-sm font-semibold text-[var(--muted)]">No suppressed change events are currently reported.</p>
     );
   }
 
@@ -374,7 +379,8 @@ function ExcludedSourceList({ sources }: { sources: AdminReviewLaterSource[] }) 
         <div>
           <h2>Excluded source history</h2>
           <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-            These are completed monitoring decisions, not open actions. Restore a source only if new evidence makes it official and monitorable again.
+            These are completed monitoring decisions, not open actions. Restore a source only if new evidence makes it
+            official and monitorable again.
           </p>
         </div>
       </div>
@@ -392,7 +398,10 @@ function ExcludedSourceList({ sources }: { sources: AdminReviewLaterSource[] }) 
                 <p className="admin-issue-source">{source.sourceTitle}</p>
                 <p className="admin-issue-message">{source.note || source.message}</p>
                 <div className="admin-issue-actions">
-                  <Link href={dashboardAwardPath(source.awardSlug, source.awardName, source.awardId)} className="admin-issue-link">
+                  <Link
+                    href={dashboardAwardPath(source.awardSlug, source.awardName, source.awardId)}
+                    className="admin-issue-link"
+                  >
                     Award page
                   </Link>
                   {safeExternalUrl(source.sourceUrl) && (
@@ -401,11 +410,7 @@ function ExcludedSourceList({ sources }: { sources: AdminReviewLaterSource[] }) 
                     </a>
                   )}
                 </div>
-                <AdminPageIssueActions
-                  mode="review"
-                  sourceId={source.id}
-                  sourceTitle={source.sourceTitle}
-                />
+                <AdminPageIssueActions mode="review" sourceId={source.id} sourceTitle={source.sourceTitle} />
               </div>
               <time dateTime={source.reviewedAt || undefined}>
                 {source.reviewedAt ? formatDate(source.reviewedAt) : "Review time unavailable"}
@@ -427,9 +432,7 @@ async function loadAdminRecentChangeEvents(
 ): Promise<{ events: AdminRecentChangeEvent[]; loadErrors: string[] }> {
   const { data, error } = await admin
     .from("shared_award_change_events")
-    .select(
-      "id, shared_award_id, shared_award_source_id, source_title, source_url, summary, detected_at",
-    )
+    .select("id, shared_award_id, shared_award_source_id, source_title, source_url, summary, detected_at")
     .is("suppressed_at", null)
     .order("detected_at", { ascending: false })
     .limit(100);
@@ -448,14 +451,17 @@ async function loadAdminRecentChangeEvents(
   };
 }
 
-async function loadAdminVisualReviewFailures(
-  admin: ReturnType<typeof createSupabaseAdminClient>,
-): Promise<{ failures: OperatorVisualReviewFailureInput[]; loadErrors: string[] }> {
+async function loadAdminVisualReviewFailures(admin: ReturnType<typeof createSupabaseAdminClient>): Promise<{
+  failures: OperatorVisualReviewFailureInput[];
+  loadErrors: string[];
+}> {
   const { data, error, count } = await admin
     .from("shared_award_visual_review_candidates")
     .select(
       "id, shared_award_id, shared_award_source_id, source_title, source_url, candidate_signature, rejection_reason, gemini_batch_name, model, estimated_cost_usd, worker_metadata, updated_at",
-      { count: "exact" },
+      {
+        count: "exact",
+      },
     )
     .eq("status", "failed")
     .order("updated_at", { ascending: true })
@@ -485,9 +491,10 @@ async function loadAdminVisualReviewFailures(
   };
 }
 
-async function loadAdminFailedPublicUpdateDeliveries(
-  admin: ReturnType<typeof createSupabaseAdminClient>,
-): Promise<{ failures: OperatorDigestDeliveryFailureInput[]; loadErrors: string[] }> {
+async function loadAdminFailedPublicUpdateDeliveries(admin: ReturnType<typeof createSupabaseAdminClient>): Promise<{
+  failures: OperatorDigestDeliveryFailureInput[];
+  loadErrors: string[];
+}> {
   const { data, error, count } = await admin
     .from("public_update_deliveries")
     .select("id, digest_key, recipient, recipient_hash, change_event_ids, error, created_at", { count: "exact" })

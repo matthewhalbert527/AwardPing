@@ -56,10 +56,41 @@ This gate keeps a one-off correction from becoming an accidental global rule whi
 - **The rule becomes inactive after the sweep:** never offer or accept Resolve. The Action Inbox and promotion board show a high-severity blocked deactivation state while the normal hourly, zero-charge worker records the inactive deployment, marks rollback, reverses candidate-attributable suppression, and returns the cluster to draft.
 - **New evidence arrives after canary:** block activation and historical mutation immediately. Restore the exact inactive deployment if the rule is live; let the hourly identity check and bounded suppression-reversal audit return the enlarged cluster to draft.
 
+## Manual Quarantine Accounting
+
+A drained automatic queue does not mean every problem is resolved. The
+service-role-only `manual_quarantine_registry` stores durable operator cases,
+and `manual_quarantine_registry_events` preserves every opening, evidence
+revision, reopening, and status change. The registry uses these rules:
+
+- The latest unresolved error/critical page audit and the latest failed
+  reconciliation for one award share one public-page case. Both source records
+  remain in its evidence and failure counts, so the UI neither hides the
+  reconciliation nor presents one repair as two unrelated cases.
+- A visual-review failure stays automatic while it has a safe bounded retry or
+  missing-response recovery. A retry-exhausted failure, or an ambiguous Batch
+  creation that could already have incurred a charge, becomes a terminal
+  quarantine case.
+- Historical screenshot localization enters the registry only from a complete,
+  timestamped, SHA-256-bound source-ID inventory. Until that inventory is
+  imported, historical limitations are unknown rather than zero.
+- A newer safe audit/reconciliation state or a visual candidate leaving its
+  terminal failed state resolves the current case but does not erase its
+  append-only registry history.
+
+`manual_quarantine_registry_state` reports **Automated work clear**,
+**Quarantined work remaining**, **Historical limitations**, and **Terminal
+failures requiring action** independently. Quarantined work counts operator
+cases; terminal failures count every linked terminal failure record. The
+hourly downstream worker refreshes database-backed cases after their producing
+queues and makes no paid API request while doing so.
+
 ## Admin Workflows
 
 - **3. Action Inbox** is the single operator queue. Each item shows severity and public impact, the failure reason, age, functional owner, what retries automatically, whether that retry creates an API charge, the recommended safe action, retained evidence, and the exact policy identity/version/hash. A post-sweep inactive rule is high severity and blocked, with hourly rollback/deactivation repair—not a protected or resolvable state.
 - **4. Verified Promotions** is the plain-language nine-step promotion board. Each cluster appears once with recurrence, affected source count, evidence signature/domain template/reason, legitimate collisions, known-real fixtures, current activation state, gate reports, failure details, safe fixes, and only the operator controls legal at that state. At step 8, it explains that the next normal hourly zero-charge attestation unlocks Resolve; it never implies another 6 PM scan is needed.
+
+- **5. Manual Quarantine** is the durable accounting view. It shows the four completion facts above, groups linked public-page evidence into one understandable repair case, lists terminal visual cases separately, and keeps historical limitations visible without mixing them into actionable work. Operator actions remain in **3. Action Inbox**.
 
 ## Worker State and Policy Changes
 
@@ -70,7 +101,8 @@ This gate keeps a one-off correction from becoming an accidental global rule whi
 - Every visual-review candidate observed by a scheduled shard is linked to that exact durable worker run through the append-only `shared_award_visual_review_candidate_run_observations` table. Reused candidate rows can therefore be proven against each canary shard without overwriting their earlier run history.
 - Completed Batch results acquire an atomic per-candidate, database-unique per-source publication claim before rejection-ledger, baseline, change-event, or reconciliation side effects. Concurrent pollers lose the compare-and-set and do no publication work; an abandoned claim becomes recoverable after the configured stale interval. Windows workers also hold an OS-owned per-source mutex across local/R2 side effects, which the operating system releases after a crash. R2 promotion uploads to deterministic immutable capture keys and advances its pointer with an `updated_at` compare-and-set only after every object is durable; a losing writer removes only uploads that the winning pointer does not reference. Partial uploads and failed pointer writes therefore remain safe to retry.
 - `cleanup-change-event-noise.mjs` runs in the hourly downstream pipeline after visual Batch publication and scans unsuppressed history in ascending `(detected_at, id)` order. Its service-role-only `monitoring_policy_sweep_state` cursor makes bounded hourly runs continue where the prior run stopped, so old rows cannot be starved by newer events. A changed effective policy hash or deterministic matcher version resets the cursor and intentionally rechecks the full history. The retro sweep evaluates immutable event evidence and current global policy, but does not permanently suppress a historical event merely because its source is now missing, `review_later`, or differently classified; those mutable lifecycle gates remain part of live publication/rendering instead.
-- Both worker-state tables are service-role-only. The rejection ledger is comparison memory, not a public baseline or an approval record.
+- `sync-manual-quarantine-registry.mjs` runs after page audits in the same hourly pipeline and refreshes current database-backed quarantine cases without a Gemini request. Its exit code is part of the final pipeline result, so stale quarantine accounting cannot be reported as a healthy run.
+- Worker state, rejection-ledger, and manual-quarantine tables are service-role-only. The rejection ledger is comparison memory, not a public baseline or an approval record.
 
 ## Adding A Stipulation
 

@@ -74,7 +74,7 @@ function Install-PipelineTask {
     -Action $action `
     -Trigger $trigger `
     -Settings $settings `
-    -Description "Finalizes the 6 PM capture report, processes bounded source intake, polls/submits visual reviews, verifies feedback-rule promotions, reapplies suppression policy, reconciles award facts, and processes flagged page audits." `
+    -Description "Finalizes the 6 PM capture report, processes bounded source intake and visual reviews, verifies feedback-rule promotions, reapplies suppression policy, reconciles award facts, processes page audits, and refreshes the durable manual-quarantine registry." `
     -Force | Out-Null
 
   Write-PipelineLog "installed task=$TaskName interval_minutes=$IntervalMinutes visual_limit=$VisualReviewLimit visual_batch_size=$VisualReviewBatchSize suppression_sweep_limit=$SuppressionSweepLimit suppression_sweep_batch_size=$SuppressionSweepBatchSize reconciliation_limit=$ReconciliationLimit page_audit_limit=$PageAuditLimit page_audit_batch_size=$PageAuditBatchSize"
@@ -146,6 +146,7 @@ $pageAuditScript = Join-Path $AppDir "scripts\process-page-audit-batch.mjs"
 $nightlyReportScript = Join-Path $AppDir "scripts\report-visual-nightly.mjs"
 $promotionScript = Join-Path $AppDir "scripts\process-monitoring-feedback-promotions.mjs"
 $sourceIntakeScript = Join-Path $AppDir "scripts\process-source-intake-requests.mjs"
+$manualQuarantineScript = Join-Path $AppDir "scripts\sync-manual-quarantine-registry.mjs"
 if (-not (Test-Path -LiteralPath $visualReviewScript)) {
   throw "Missing visual review Batch worker: $visualReviewScript"
 }
@@ -167,6 +168,9 @@ if (-not (Test-Path -LiteralPath $promotionScript)) {
 if (-not (Test-Path -LiteralPath $sourceIntakeScript)) {
   throw "Missing source intake processor: $sourceIntakeScript"
 }
+if (-not (Test-Path -LiteralPath $manualQuarantineScript)) {
+  throw "Missing manual quarantine registry sync: $manualQuarantineScript"
+}
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $script:NodePath = (Get-Command node.exe -ErrorAction Stop).Source
@@ -182,6 +186,7 @@ $pageAuditExit = 1
 $nightlyReportExit = 1
 $promotionExit = 1
 $sourceIntakeExit = 1
+$manualQuarantineExit = 1
 try {
   $nightlyReportExit = Invoke-NodeStep `
     -Name "visual-nightly-report" `
@@ -270,11 +275,19 @@ try {
     ) `
     -RunLog $runLog
 
+  $manualQuarantineExit = Invoke-NodeStep `
+    -Name "manual-quarantine-registry" `
+    -ScriptPath $manualQuarantineScript `
+    -Arguments @(
+      "--env", ".env.worker.local"
+    ) `
+    -RunLog $runLog
+
 } finally {
   Remove-Item -LiteralPath $LockPath -Force -ErrorAction SilentlyContinue
 }
 
-$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0 -and $nightlyReportExit -eq 0 -and $promotionExit -eq 0 -and $sourceIntakeExit -eq 0) { 0 } else { 1 }
-Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode source_intake_exit=$sourceIntakeExit visual_exit=$visualExit promotion_exit=$promotionExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit finished=$(Get-Date -Format o)" -Encoding UTF8
-Write-PipelineLog "finished exit_code=$exitCode source_intake_exit=$sourceIntakeExit visual_exit=$visualExit promotion_exit=$promotionExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit nightly_report_exit=$nightlyReportExit run_log=$runLog"
+$exitCode = if ($visualExit -eq 0 -and $suppressionExit -eq 0 -and $reconciliationExit -eq 0 -and $pageAuditExit -eq 0 -and $nightlyReportExit -eq 0 -and $promotionExit -eq 0 -and $sourceIntakeExit -eq 0 -and $manualQuarantineExit -eq 0) { 0 } else { 1 }
+Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_QUEUE_PIPELINE_EXIT exit_code=$exitCode source_intake_exit=$sourceIntakeExit visual_exit=$visualExit promotion_exit=$promotionExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit manual_quarantine_exit=$manualQuarantineExit nightly_report_exit=$nightlyReportExit finished=$(Get-Date -Format o)" -Encoding UTF8
+Write-PipelineLog "finished exit_code=$exitCode source_intake_exit=$sourceIntakeExit visual_exit=$visualExit promotion_exit=$promotionExit suppression_exit=$suppressionExit reconciliation_exit=$reconciliationExit page_audit_exit=$pageAuditExit manual_quarantine_exit=$manualQuarantineExit nightly_report_exit=$nightlyReportExit run_log=$runLog"
 exit $exitCode

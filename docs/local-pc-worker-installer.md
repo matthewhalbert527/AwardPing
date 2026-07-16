@@ -17,7 +17,8 @@
   that run the screenshot/PDF checker daily.
 - Creates `AwardPing Downstream Queue Pipeline` for hourly report finalization,
   source intake, review, verified feedback promotion, immutable event-evidence
-  publication, suppression, reconciliation, and page audits.
+  publication, suppression, reconciliation, page audits, and durable manual
+  quarantine accounting.
 
 ## Windows Install
 
@@ -97,17 +98,21 @@ Deploy a reviewed revision in this order:
    path, and leaves unrelated Startup-folder launchers untouched.
 5. Compare repository and installed hashes for both policy JSON files and the
    policy, suppression, visual-review, capture, immutable-evidence,
-   evidence-coverage/backfill, and baseline worker scripts. Confirm the staged
-   dependency validation includes the native `sharp` crop package.
+   evidence-coverage/backfill, quarantine-sync, and baseline worker scripts.
+   Confirm the staged dependency validation includes
+   `scripts/sync-manual-quarantine-registry.mjs` and the native `sharp` crop
+   package.
    Confirm the three visual shard tasks still run daily at 6 PM and the
    downstream task runs hourly with `SuppressionSweepLimit` in its action.
 6. Inspect the first downstream log after deployment. It must show the
    independent `visual-nightly-report` finalizer first, followed by bounded
    `source-intake`, `visual-review-batch`, `verified-feedback-promotions`,
    `change-event-suppression-sweep`,
-   `award-reconciliation`, and `page-audit-batch`, with a zero final exit code.
-   The final line includes `promotion_exit`, so a failed verification cannot be
-   hidden by later successful queue work.
+   `award-reconciliation`, `page-audit-batch`, and
+   `manual-quarantine-registry`, with a zero final exit code. The final line
+   includes both `promotion_exit` and `manual_quarantine_exit`, so a failed
+   verification or incomplete quarantine refresh cannot be hidden by later
+   successful queue work.
 
 ## Permanent and Catch-up Work
 
@@ -116,6 +121,9 @@ the hourly downstream pipeline. The hourly pipeline first finalizes the due
 capture report, processes up to 25 queued source-intake requests, and polls
 at most five existing AI batches within a ten-minute budget before review,
 verified feedback promotion, suppression, reconciliation, and page-audit work.
+After those producers finish, the same hourly run refreshes the durable manual
+quarantine registry. That final accounting step reads current database state
+and does not create a Gemini request or another 6 PM capture.
 Promotion runs after visual review so the exact 6 PM candidates are terminal
 before their canary is judged. Failed intake requests wait
 for an operator-selected retry instead of cycling forever. This keeps new award
@@ -155,6 +163,44 @@ standalone source-intake or localization watchdog. Baseline, source quality,
 and localization repair scripts remain targeted catch-up tools only;
 run them deliberately for a bounded repair rather than reinstalling a recurring
 task.
+
+## Manual Quarantine Registry
+
+Manual quarantine is durable database state, not a count copied from one
+catch-up report. The registry groups a latest critical page audit with its
+latest failed reconciliation as one public-page repair case while preserving
+both evidence records. Each terminal visual-review candidate remains its own
+case. Historical screenshot-localization limitations are imported from the
+complete source-ID inventory and remain separate from work that an operator
+can repair.
+
+Catch-up and Admin report these four facts independently:
+
+- **Automated work clear**: whether every safe automatic queue is drained.
+- **Quarantined work remaining**: unresolved operator cases, counted once per
+  case.
+- **Historical limitations**: retained screenshots that truthfully cannot gain
+  exact historical geometry. This stays unknown until a complete inventory is
+  imported; a missing report is never displayed as zero.
+- **Terminal failures requiring action**: linked terminal failure records,
+  including failed reconciliation and exhausted Batch attempts.
+
+The normal hourly pipeline refreshes database-backed cases with:
+
+```powershell
+npm run source:sync-manual-quarantine -- --env .env.worker.local
+```
+
+Import historical localization only from the complete retained-snapshot audit:
+
+```powershell
+npm run source:sync-manual-quarantine -- --env .env.worker.local --historical-report reports/snapshot-localization-coverage-latest.json
+```
+
+The import verifies that the report count exactly matches its unique source
+IDs, hashes the report, and fails closed if any source cannot be bound to its
+retained previous object keys and hashes. Actions remain in **3. Action
+Inbox**; **5. Manual Quarantine** is the simple, durable accounting view.
 
 ## Verified Feedback Promotions
 

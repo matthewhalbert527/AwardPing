@@ -824,6 +824,8 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\lib\visual-review-queue.mjs"),
       (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
       (Join-Path $AppDir "scripts\process-monitoring-feedback-promotions.mjs"),
+      (Join-Path $AppDir "scripts\sync-manual-quarantine-registry.mjs"),
+      (Join-Path $AppDir "scripts\lib\manual-quarantine.mjs"),
       (Join-Path $AppDir "scripts\lib\monitoring-feedback-promotion-verification.mjs"),
       (Join-Path $AppDir "scripts\lib\monitoring-promotion-matcher-bundle.mjs"),
       (Join-Path $AppDir "scripts\lib\award-monitoring-policy.mjs"),
@@ -946,6 +948,8 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\visual-review-queue.mjs",
         "scripts\report-visual-nightly.mjs",
         "scripts\process-monitoring-feedback-promotions.mjs",
+        "scripts\sync-manual-quarantine-registry.mjs",
+        "scripts\lib\manual-quarantine.mjs",
         "scripts\lib\monitoring-feedback-promotion-verification.mjs",
         "scripts\lib\monitoring-promotion-matcher-bundle.mjs",
         "scripts\lib\award-monitoring-policy.mjs",
@@ -1062,7 +1066,7 @@ function Get-AwardPingTaskRestoreXml {
     }
     $descriptionNode = $document.SelectSingleNode("/task:Task/task:RegistrationInfo/task:Description", $namespace)
     if ($descriptionNode) {
-      $descriptionNode.InnerText = "Finalizes the 6 PM capture report, processes bounded source intake, polls/submits visual reviews, verifies feedback-rule promotions, reapplies suppression policy, reconciles award facts, and processes flagged page audits."
+      $descriptionNode.InnerText = "Finalizes the 6 PM capture report, processes bounded source intake and visual reviews, verifies feedback-rule promotions, reapplies suppression policy, reconciles award facts, processes page audits, and refreshes the durable manual-quarantine registry."
     }
   }
 

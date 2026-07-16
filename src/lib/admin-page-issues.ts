@@ -1,4 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import {
+  nonQuarantinedPageAuditFilter,
+  reconciliationDiagnosticStatuses,
+  shouldIncludePageAuditDiagnostic,
+  shouldIncludeReconciliationDiagnostic,
+} from "@/lib/admin-page-issue-diagnostic-scope";
 import type { Database } from "@/lib/database.types";
 import {
   buildSourceAiCoverageRow,
@@ -138,6 +144,7 @@ export type AdminPageIssueOptions = {
   includeSuppressed?: boolean;
   category?: string | null;
   includeLegacyDiagnostics?: boolean;
+  includeQuarantinedDiagnostics?: boolean;
 };
 
 type CountResult = {
@@ -167,6 +174,7 @@ export async function loadAdminPageIssues(
   options: AdminPageIssueOptions = {},
 ): Promise<AdminPageIssueLoadResult> {
   const includeLegacyDiagnostics = options.includeLegacyDiagnostics !== false;
+  const includeQuarantinedDiagnostics = options.includeQuarantinedDiagnostics !== false;
   const [
     sourceRowsResult,
     sourceCountResult,
@@ -297,8 +305,15 @@ export async function loadAdminPageIssues(
     ? await loadAiCoverageIssues(admin, loadErrors)
     : [];
   const awardMissingPublicFactIssues = await loadAwardMissingPublicFactIssues(admin, loadErrors);
-  const reconciliationIssues = await loadReconciliationIssueRows(admin, loadErrors);
-  const pageAuditIssues = await loadPageAuditIssueRows(admin, loadErrors, options);
+  const reconciliationIssues = await loadReconciliationIssueRows(
+    admin,
+    loadErrors,
+    includeQuarantinedDiagnostics,
+  );
+  const pageAuditIssues = await loadPageAuditIssueRows(admin, loadErrors, {
+    ...options,
+    includeQuarantinedDiagnostics,
+  });
   const sourceIntakeIssues = await loadSourceIntakeIssueRows(admin, loadErrors);
   const workerIssues = geminiWorkerBlockerIssues((workerRunResult.data || []) as LocalWorkerRun[]);
   const sourceIssueIds = new Set(sourceRows.map((row) => row.id));
@@ -546,17 +561,25 @@ async function loadAwardMissingPublicFactIssues(admin: AdminClient, loadErrors: 
   return issues;
 }
 
-async function loadReconciliationIssueRows(admin: AdminClient, loadErrors: string[]) {
+async function loadReconciliationIssueRows(
+  admin: AdminClient,
+  loadErrors: string[],
+  includeQuarantinedDiagnostics: boolean,
+) {
   const rawAdmin = admin as unknown as SupabaseClient;
-  const { data, error, count } = await rawAdmin
+  let query = rawAdmin
     .from("shared_award_reconciliation_queue")
     .select(
       "id,shared_award_id,reason,status,error,started_at,completed_at,created_at,shared_awards(name,slug,official_homepage)",
       { count: "exact" },
     )
-    .in("status", ["failed", "processing"])
     .order("created_at", { ascending: false })
     .limit(500);
+  query = query.in(
+    "status",
+    reconciliationDiagnosticStatuses(includeQuarantinedDiagnostics),
+  );
+  const { data, error, count } = await query;
   if (error?.message) {
     if (isMissingRelationError(error.message)) return [];
     loadErrors.push(error.message);
@@ -567,12 +590,13 @@ async function loadReconciliationIssueRows(admin: AdminClient, loadErrors: strin
       `${(count || 0) - (data || []).length} additional reconciliation rows are not shown because the inbox reached its 500-row limit.`,
     );
   }
-  const staleBefore = Date.now() - 45 * 60 * 1000;
   return ((data || []) as Array<Record<string, unknown>>)
-    .filter((row) => {
-      if (cleanText(row.status) === "failed") return true;
-      return dateMs(cleanText(row.started_at || row.created_at) || null) <= staleBefore;
-    })
+    .filter((row) =>
+      shouldIncludeReconciliationDiagnostic(
+        row,
+        includeQuarantinedDiagnostics,
+      ),
+    )
     .map(reconciliationRowToIssue);
 }
 
@@ -592,6 +616,9 @@ async function loadPageAuditIssueRows(
     .order("created_at", { ascending: false })
     .limit(500);
   if (!options.includeResolved) query = query.is("resolved_at", null);
+  if (options.includeQuarantinedDiagnostics === false) {
+    query = query.or(nonQuarantinedPageAuditFilter);
+  }
   const { data, error, count } = await query;
   if (error?.message) {
     if (isMissingRelationError(error.message)) return [];
@@ -603,7 +630,14 @@ async function loadPageAuditIssueRows(
       `${(count || 0) - (data || []).length} additional page-audit findings are not shown because the inbox reached its 500-row limit.`,
     );
   }
-  return ((data || []) as Array<Record<string, unknown>>).map(pageAuditRowToIssue);
+  return ((data || []) as Array<Record<string, unknown>>)
+    .filter((row) =>
+      shouldIncludePageAuditDiagnostic(
+        row,
+        options.includeQuarantinedDiagnostics !== false,
+      ),
+    )
+    .map(pageAuditRowToIssue);
 }
 
 async function loadSourceIntakeIssueRows(admin: AdminClient, loadErrors: string[]) {

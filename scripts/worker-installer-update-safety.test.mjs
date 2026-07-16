@@ -396,6 +396,8 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\visual-event-evidence-backfill.mjs",
       "scripts\\lib\\snapshot-localization.mjs",
       "scripts\\lib\\monitoring-promotion-matcher-bundle.mjs",
+      "scripts\\sync-manual-quarantine-registry.mjs",
+      "scripts\\lib\\manual-quarantine.mjs",
       "scripts\\lib\\award-monitoring-policy.mjs",
       "scripts\\lib\\change-event-sweep-state.mjs",
       "scripts\\lib\\source-quality.mjs",
@@ -446,7 +448,7 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath");
   });
 
-  it("keeps the retro sweep explicit in the restored task and the hourly execution order", () => {
+  it("keeps the retro sweep and quarantine sync explicit in the hourly execution order", () => {
     expect(installer).toContain("-SuppressionSweepLimit $SuppressionSweepLimit");
     expect(installer).toContain("-SuppressionSweepBatchSize $SuppressionSweepBatchSize");
 
@@ -457,9 +459,11 @@ describe("Windows worker update safety", () => {
     const nightlyReportIndex = downstream.indexOf('-Name "visual-nightly-report"');
     const promotionIndex = downstream.indexOf('-Name "verified-feedback-promotions"');
     const sourceIntakeIndex = downstream.indexOf('-Name "source-intake"');
+    const quarantineIndex = downstream.indexOf('-Name "manual-quarantine-registry"');
     expect(sweepIndex).toBeGreaterThan(visualIndex);
     expect(reconciliationIndex).toBeGreaterThan(sweepIndex);
     expect(auditIndex).toBeGreaterThan(reconciliationIndex);
+    expect(quarantineIndex).toBeGreaterThan(auditIndex);
     expect(nightlyReportIndex).toBeGreaterThan(0);
     expect(promotionIndex).toBeGreaterThan(visualIndex);
     expect(promotionIndex).toBeLessThan(sweepIndex);
@@ -468,6 +472,7 @@ describe("Windows worker update safety", () => {
     expect(downstream).toContain('scripts\\report-visual-nightly.mjs');
     expect(downstream).toContain('scripts\\process-monitoring-feedback-promotions.mjs');
     expect(downstream).toContain('scripts\\process-source-intake-requests.mjs');
+    expect(downstream).toContain('scripts\\sync-manual-quarantine-registry.mjs');
     expect(downstream).toContain('"--poll-batch-limit=5"');
     expect(downstream).toContain('"--request-timeout-ms=30000"');
     expect(downstream).toContain('"--time-budget-ms=600000"');
@@ -477,6 +482,9 @@ describe("Windows worker update safety", () => {
     expect(downstream).toContain('$promotionExit -eq 0');
     expect(downstream).toContain('promotion_exit=$promotionExit');
     expect(downstream).toContain('$sourceIntakeExit -eq 0');
+    expect(downstream).toContain('$manualQuarantineExit -eq 0');
+    expect(downstream).toContain('manual_quarantine_exit=$manualQuarantineExit');
+    expect(downstream).toContain("refreshes the durable manual-quarantine registry");
     expect(sourceIntakeWorker).toContain('positiveInt(args["poll-batch-limit"], 25)');
     expect(sourceIntakeWorker).toContain('positiveInt(args["time-budget-ms"], 15 * 60_000)');
     expect(sourceIntakeWorker).toContain(': ["pending", "queued"];');
@@ -524,12 +532,16 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Refusing to label dirty or uncommitted worker code");
     expect(installer).toContain('Join-Path $manifestRoot ".awardping-worker-revision"');
     expect(installer).toContain('"scripts\\process-monitoring-feedback-promotions.mjs"');
+    expect(installer).toContain('"scripts\\sync-manual-quarantine-registry.mjs"');
+    expect(installer).toContain('"scripts\\lib\\manual-quarantine.mjs"');
     expect(installer).toContain(
       '"scripts\\lib\\monitoring-feedback-promotion-verification.mjs"',
     );
+    expect(installer).toContain("refreshes the durable manual-quarantine registry");
     expect(installerDocs).toContain("AWARDPING_WORKER_REVISION");
     expect(installerDocs).toContain("NEXT_PUBLIC_APP_URL");
     expect(installerDocs).toContain("promotion_exit");
+    expect(installerDocs).toContain("sync-manual-quarantine-registry.mjs");
     expect(installerDocs).toContain("refuses a dirty git worktree");
   });
 

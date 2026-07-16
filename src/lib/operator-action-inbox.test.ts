@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import type { AdminPageIssue } from "@/lib/admin-page-issues";
+import type { AdminManualQuarantineItem } from "@/lib/admin-manual-quarantine";
 import { awardMonitoringPolicyIdentity } from "@/lib/award-monitoring-policy";
 import {
   buildOperatorActionInbox,
@@ -53,6 +54,53 @@ function visualFailure(
     estimatedCostUsd: 0.0012,
     workerMetadata: { failure_retry_count: 0 },
     updatedAt: "2026-07-15T16:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function quarantineItem(
+  overrides: Partial<AdminManualQuarantineItem> = {},
+): AdminManualQuarantineItem {
+  return {
+    id: "quarantine-1",
+    quarantineKey: "public-page:award-1",
+    caseKey: "public-page:award-1",
+    classification: "actionable_quarantine",
+    category: "public_page",
+    status: "quarantined",
+    requiresAction: true,
+    terminal: true,
+    terminalFailureCount: 1,
+    severity: "high",
+    publicImpact: "protected",
+    owner: "Public page review",
+    retryMode: "operator_after_repair",
+    retryCharge: "may_charge",
+    title: "Example Award: public page needs review",
+    reasonCode: "latest_reconciliation_failed",
+    reason: "The latest reconciliation failed.",
+    recommendedAction: "Repair this award, then rerun reconciliation and its page audit.",
+    awardId: "award-1",
+    sourceId: null,
+    visualCandidateId: null,
+    primarySourceTable: "shared_award_page_audits",
+    primarySourceRecordId: "audit-1",
+    evidenceRecordCount: 2,
+    evidence: {
+      award: {
+        id: "award-1",
+        name: "Example Award",
+        slug: "example-award",
+      },
+    },
+    evidenceHash: "a".repeat(64),
+    policyId: "awardping-manual-quarantine",
+    policyVersion: "1",
+    policyHash: "b".repeat(64),
+    firstObservedAt: "2026-07-15T14:00:00.000Z",
+    lastObservedAt: "2026-07-15T16:00:00.000Z",
+    quarantinedAt: "2026-07-15T16:05:00.000Z",
+    updatedAt: "2026-07-15T16:05:00.000Z",
     ...overrides,
   };
 }
@@ -113,6 +161,70 @@ function promotionCluster(
 }
 
 describe("operator action inbox", () => {
+  it("turns each actionable quarantine case into one evidence-bound operator action", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [quarantineItem()],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      fingerprint: "public-page:award-1",
+      sourceKind: "manual_quarantine",
+      state: "needs_operator",
+      publicImpact: { level: "protected" },
+      retry: { automatic: false },
+      charge: { level: "may_charge" },
+      award: { id: "award-1", slug: "example-award", name: "Example Award" },
+      policy: {
+        id: "awardping-manual-quarantine",
+        version: "1",
+        hash: "b".repeat(64),
+      },
+    });
+    expect(item.context).toContain("2 linked evidence records");
+    expect(item.evidence).toContainEqual({ label: "Evidence records", value: "2" });
+    expect(item.evidence).toContainEqual({ label: "Evidence hash", value: "a".repeat(64) });
+  });
+
+  it("keeps historical limitations out of the repair inbox", () => {
+    const items = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [
+        quarantineItem({
+          classification: "historical_limitation",
+          category: "historical_localization",
+          requiresAction: false,
+          terminal: false,
+          terminalFailureCount: 0,
+          publicImpact: "none",
+          retryCharge: "none",
+        }),
+      ],
+      now,
+    });
+
+    expect(items).toEqual([]);
+  });
+
+  it("blocks a quarantine retry when an existing paid request is uncertain", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      manualQuarantineItems: [
+        quarantineItem({
+          category: "visual_review",
+          retryMode: "operator_before_retry",
+          retryCharge: "unknown",
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("blocked");
+    expect(item.charge.level).toBe("unknown");
+    expect(item.recommendedAction.label).toContain("paid attempt");
+  });
+
   it("excludes retired baseline and source-completion categories", () => {
     const retiredCategories = [
       "award_structure_scan_failed",

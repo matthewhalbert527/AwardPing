@@ -80,6 +80,37 @@ export type ChangeEventVisualEvidenceStatus =
   | "historical_artifact_unrecoverable"
   | "full_screenshot_fallback"
   | "not_applicable_pdf";
+export type ManualQuarantineClassification =
+  | "actionable_quarantine"
+  | "historical_limitation";
+export type ManualQuarantineCategory =
+  | "public_page"
+  | "visual_review"
+  | "historical_localization";
+export type ManualQuarantineStatus = "quarantined" | "in_review" | "resolved";
+export type ManualQuarantineSeverity = "high" | "medium" | "low";
+export type ManualQuarantinePublicImpact =
+  | "blocked"
+  | "delayed"
+  | "protected"
+  | "none"
+  | "unknown";
+export type ManualQuarantineRetryCharge =
+  | "none"
+  | "will_charge"
+  | "may_charge"
+  | "unknown";
+export type ManualQuarantineEventType =
+  | "opened"
+  | "reopened"
+  | "evidence_refreshed"
+  | "case_refreshed"
+  | "status_changed";
+export type ManualQuarantineHistoricalInventoryStatus = "not_imported" | "complete";
+export type ManualQuarantineCompletionStatus =
+  | "not_reported"
+  | "automated_work_remaining"
+  | "automated_work_clear";
 
 export type Database = {
   public: {
@@ -666,6 +697,260 @@ export type Database = {
             columns: ["shared_award_source_id"];
             isOneToOne: false;
             referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      manual_quarantine_registry: {
+        Row: {
+          id: string;
+          quarantine_key: string;
+          case_key: string;
+          classification: ManualQuarantineClassification;
+          category: ManualQuarantineCategory;
+          status: ManualQuarantineStatus;
+          requires_action: boolean;
+          terminal: boolean;
+          terminal_failure_count: number;
+          severity: ManualQuarantineSeverity;
+          public_impact: ManualQuarantinePublicImpact;
+          owner: string;
+          retry_mode: string;
+          retry_charge: ManualQuarantineRetryCharge;
+          title: string;
+          reason_code: string;
+          reason: string;
+          recommended_action: string;
+          shared_award_id: string | null;
+          shared_award_source_id: string | null;
+          visual_review_candidate_id: string | null;
+          primary_source_table: string;
+          primary_source_record_id: string;
+          evidence_record_count: number;
+          evidence: Json;
+          evidence_hash: string;
+          policy_id: string;
+          policy_version: string;
+          policy_hash: string;
+          first_observed_at: string;
+          last_observed_at: string;
+          quarantined_at: string;
+          resolved_at: string | null;
+          resolved_by: string | null;
+          resolution_note: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          quarantine_key: string;
+          case_key: string;
+          classification: ManualQuarantineClassification;
+          category: ManualQuarantineCategory;
+          status?: ManualQuarantineStatus;
+          requires_action: boolean;
+          terminal?: boolean;
+          terminal_failure_count?: number;
+          severity: ManualQuarantineSeverity;
+          public_impact: ManualQuarantinePublicImpact;
+          owner: string;
+          retry_mode: string;
+          retry_charge: ManualQuarantineRetryCharge;
+          title: string;
+          reason_code: string;
+          reason: string;
+          recommended_action: string;
+          shared_award_id?: string | null;
+          shared_award_source_id?: string | null;
+          visual_review_candidate_id?: string | null;
+          primary_source_table: string;
+          primary_source_record_id: string;
+          evidence_record_count?: number;
+          evidence?: Json;
+          evidence_hash: string;
+          policy_id?: string;
+          policy_version?: string;
+          policy_hash?: string;
+          first_observed_at: string;
+          last_observed_at: string;
+          quarantined_at?: string;
+          resolved_at?: string | null;
+          resolved_by?: string | null;
+          resolution_note?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          quarantine_key?: string;
+          case_key?: string;
+          classification?: ManualQuarantineClassification;
+          category?: ManualQuarantineCategory;
+          status?: ManualQuarantineStatus;
+          requires_action?: boolean;
+          terminal?: boolean;
+          terminal_failure_count?: number;
+          severity?: ManualQuarantineSeverity;
+          public_impact?: ManualQuarantinePublicImpact;
+          owner?: string;
+          retry_mode?: string;
+          retry_charge?: ManualQuarantineRetryCharge;
+          title?: string;
+          reason_code?: string;
+          reason?: string;
+          recommended_action?: string;
+          shared_award_id?: string | null;
+          shared_award_source_id?: string | null;
+          visual_review_candidate_id?: string | null;
+          primary_source_table?: string;
+          primary_source_record_id?: string;
+          evidence_record_count?: number;
+          evidence?: Json;
+          evidence_hash?: string;
+          policy_id?: string;
+          policy_version?: string;
+          policy_hash?: string;
+          first_observed_at?: string;
+          last_observed_at?: string;
+          quarantined_at?: string;
+          resolved_at?: string | null;
+          resolved_by?: string | null;
+          resolution_note?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "manual_quarantine_registry_shared_award_id_fkey";
+            columns: ["shared_award_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_awards";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "manual_quarantine_registry_shared_award_source_id_fkey";
+            columns: ["shared_award_source_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_sources";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "manual_quarantine_registry_visual_review_candidate_id_fkey";
+            columns: ["visual_review_candidate_id"];
+            isOneToOne: false;
+            referencedRelation: "shared_award_visual_review_candidates";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      manual_quarantine_registry_events: {
+        Row: {
+          id: number;
+          quarantine_id: string;
+          event_type: ManualQuarantineEventType;
+          previous_status: string | null;
+          next_status: string;
+          evidence_hash: string;
+          snapshot: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: number;
+          quarantine_id: string;
+          event_type: ManualQuarantineEventType;
+          previous_status?: string | null;
+          next_status: string;
+          evidence_hash: string;
+          snapshot: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: number;
+          quarantine_id?: string;
+          event_type?: ManualQuarantineEventType;
+          previous_status?: string | null;
+          next_status?: string;
+          evidence_hash?: string;
+          snapshot?: Json;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "manual_quarantine_registry_events_quarantine_id_fkey";
+            columns: ["quarantine_id"];
+            isOneToOne: false;
+            referencedRelation: "manual_quarantine_registry";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      manual_quarantine_registry_state: {
+        Row: {
+          registry_key: string;
+          schema_version: string;
+          automated_work_clear: boolean | null;
+          automated_blockers: Json;
+          quarantined_work_remaining: number;
+          quarantine_evidence_records: number;
+          historical_limitations: number | null;
+          historical_inventory_status: ManualQuarantineHistoricalInventoryStatus;
+          terminal_failures_requiring_action: number;
+          by_category: Json;
+          completion_status: ManualQuarantineCompletionStatus;
+          source_worker_run_id: string | null;
+          completion_reported_at: string | null;
+          historical_inventory_reported_at: string | null;
+          historical_inventory_digest: string | null;
+          last_synced_at: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          registry_key: string;
+          schema_version?: string;
+          automated_work_clear?: boolean | null;
+          automated_blockers?: Json;
+          quarantined_work_remaining?: number;
+          quarantine_evidence_records?: number;
+          historical_limitations?: number | null;
+          historical_inventory_status?: ManualQuarantineHistoricalInventoryStatus;
+          terminal_failures_requiring_action?: number;
+          by_category?: Json;
+          completion_status?: ManualQuarantineCompletionStatus;
+          source_worker_run_id?: string | null;
+          completion_reported_at?: string | null;
+          historical_inventory_reported_at?: string | null;
+          historical_inventory_digest?: string | null;
+          last_synced_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          registry_key?: string;
+          schema_version?: string;
+          automated_work_clear?: boolean | null;
+          automated_blockers?: Json;
+          quarantined_work_remaining?: number;
+          quarantine_evidence_records?: number;
+          historical_limitations?: number | null;
+          historical_inventory_status?: ManualQuarantineHistoricalInventoryStatus;
+          terminal_failures_requiring_action?: number;
+          by_category?: Json;
+          completion_status?: ManualQuarantineCompletionStatus;
+          source_worker_run_id?: string | null;
+          completion_reported_at?: string | null;
+          historical_inventory_reported_at?: string | null;
+          historical_inventory_digest?: string | null;
+          last_synced_at?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "manual_quarantine_registry_state_source_worker_run_id_fkey";
+            columns: ["source_worker_run_id"];
+            isOneToOne: false;
+            referencedRelation: "local_worker_runs";
             referencedColumns: ["id"];
           },
         ];
@@ -2337,6 +2622,35 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      manual_quarantine_evidence_hash: {
+        Args: { p_evidence: Json };
+        Returns: string;
+      };
+      refresh_manual_quarantine_registry_state: {
+        Args: { p_synced_at?: string };
+        Returns: Json;
+      };
+      sync_manual_quarantine_registry: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      replace_manual_quarantine_historical_limitations: {
+        Args: {
+          p_source_ids: string[];
+          p_reported_at: string;
+          p_report_digest: string;
+        };
+        Returns: Json;
+      };
+      record_manual_quarantine_completion: {
+        Args: {
+          p_automated_work_clear: boolean;
+          p_automated_blockers: Json;
+          p_source_worker_run_id?: string | null;
+          p_reported_at?: string;
+        };
+        Returns: Json;
+      };
       record_monitoring_feedback_promotion_worker_failure: {
         Args: {
           p_request_id: string;

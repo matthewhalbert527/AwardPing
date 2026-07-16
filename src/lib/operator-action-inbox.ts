@@ -1,4 +1,5 @@
 import type { AdminPageIssue, PageIssueSeverity } from "@/lib/admin-page-issues";
+import type { AdminManualQuarantineItem } from "@/lib/admin-manual-quarantine";
 import {
   awardMonitoringPolicyIdentity,
   visualReviewBatchPolicyIdentity,
@@ -28,6 +29,7 @@ export type OperatorActionInboxItem = {
     | "page_issue"
     | "nightly_scan"
     | "visual_review"
+    | "manual_quarantine"
     | "monitoring_feedback"
     | "digest_delivery"
     | "inbox_load";
@@ -129,6 +131,7 @@ export type OperatorDigestDeliveryFailureInput = {
 
 export type BuildOperatorActionInboxInput = {
   issues: AdminPageIssue[];
+  manualQuarantineItems?: AdminManualQuarantineItem[];
   promotionClusters?: MonitoringFeedbackPromotionCluster[];
   nightlyFailureGroups?: OperatorNightlyFailureInput[];
   nightlyReportedAt?: string | null;
@@ -148,6 +151,7 @@ const retiredIssueCategories = new Set([
 
 export function buildOperatorActionInbox({
   issues,
+  manualQuarantineItems = [],
   promotionClusters = [],
   nightlyFailureGroups = [],
   nightlyReportedAt = null,
@@ -157,6 +161,9 @@ export function buildOperatorActionInbox({
   now = new Date(),
 }: BuildOperatorActionInboxInput) {
   const items = [
+    ...manualQuarantineItems
+      .filter((item) => item.requiresAction && item.status !== "resolved")
+      .map((item) => manualQuarantineToAction(item, now)),
     ...issues
       .filter((issue) => !retiredIssueCategories.has(issue.category))
       .map((issue) => pageIssueToAction(issue, now)),
@@ -170,6 +177,174 @@ export function buildOperatorActionInbox({
   ];
 
   return dedupeActions(items).sort(compareActions);
+}
+
+function manualQuarantineToAction(
+  quarantine: AdminManualQuarantineItem,
+  now: Date,
+): OperatorActionInboxItem {
+  const evidence = objectValue(quarantine.evidence);
+  const awardEvidence = objectValue(evidence.award);
+  const sourceEvidence = objectValue(evidence.source);
+  const candidateEvidence = objectValue(evidence.candidate);
+  const awardName = jsonText(awardEvidence.name) || "Affected award";
+  const awardSlug = jsonText(awardEvidence.slug);
+  const sourceTitle =
+    jsonText(sourceEvidence.title) ||
+    (quarantine.category === "visual_review" ? "Visual review candidate" : null);
+  const sourceUrl = jsonText(sourceEvidence.url);
+  const blocked = quarantine.retryCharge === "unknown";
+  const retry = manualQuarantineRetry(quarantine.retryMode);
+  const charge = manualQuarantineCharge(quarantine.retryCharge);
+
+  return {
+    schemaVersion: operatorActionInboxSchemaVersion,
+    id: `manual-quarantine:${quarantine.id}`,
+    fingerprint: quarantine.caseKey,
+    sourceKind: "manual_quarantine",
+    severity: quarantine.severity,
+    severityLabel: severityLabel(quarantine.severity),
+    state: blocked ? "blocked" : "needs_operator",
+    stateLabel: stateLabel(blocked ? "blocked" : "needs_operator"),
+    title: quarantine.title,
+    context:
+      quarantine.evidenceRecordCount > 1
+        ? `${quarantine.evidenceRecordCount.toLocaleString("en-US")} linked evidence records, grouped as one case`
+        : "1 preserved evidence record",
+    failureReason: quarantine.reason,
+    occurredAt: quarantine.firstObservedAt,
+    ageLabel: formatOperatorActionAge(quarantine.firstObservedAt, now),
+    owner: {
+      label: quarantine.owner,
+      detail: "Functional owner recorded by the quarantine policy.",
+    },
+    publicImpact: manualQuarantinePublicImpact(quarantine.publicImpact),
+    retry,
+    charge,
+    recommendedAction: {
+      label: manualQuarantineActionLabel(quarantine.category),
+      detail: quarantine.recommendedAction,
+      href: null,
+    },
+    evidence: compactEvidence([
+      ["Quarantine case", quarantine.caseKey],
+      ["Category", humanizeCode(quarantine.category)],
+      ["Reason code", quarantine.reasonCode],
+      ["Evidence records", String(quarantine.evidenceRecordCount)],
+      ["Primary record", `${quarantine.primarySourceTable}:${quarantine.primarySourceRecordId}`],
+      ["Evidence hash", quarantine.evidenceHash],
+      ["Award ID", quarantine.awardId],
+      ["Source ID", quarantine.sourceId],
+      ["Visual candidate", quarantine.visualCandidateId || jsonText(candidateEvidence.id)],
+      ["First observed", quarantine.firstObservedAt],
+      ["Last observed", quarantine.lastObservedAt],
+    ]),
+    policy: {
+      id: quarantine.policyId,
+      version: quarantine.policyVersion,
+      hash: quarantine.policyHash,
+      description: "Policy identity stored with this durable quarantine case and its preserved evidence.",
+    },
+    award: quarantine.awardId
+      ? { id: quarantine.awardId, slug: awardSlug, name: awardName }
+      : null,
+    source: quarantine.sourceId || sourceTitle || sourceUrl
+      ? { id: quarantine.sourceId, title: sourceTitle || "Affected source", url: sourceUrl }
+      : null,
+    action: { kind: "none" },
+  };
+}
+
+function manualQuarantineRetry(retryMode: string): OperatorActionInboxItem["retry"] {
+  if (retryMode === "operator_before_retry") {
+    return {
+      automatic: false,
+      label: "No — verify the existing request first",
+      detail: "A possible external request may already exist. Reconcile that evidence before approving any retry.",
+    };
+  }
+  if (retryMode === "retry_limit_reached") {
+    return {
+      automatic: false,
+      label: "No — retry limit reached",
+      detail: "The bounded retry policy stopped. A person must inspect the evidence before another attempt.",
+    };
+  }
+  return {
+    automatic: false,
+    label: "No — repair and approve",
+    detail: "The case stays quarantined until a person repairs the affected record and explicitly approves the safe next step.",
+  };
+}
+
+function manualQuarantineCharge(
+  level: AdminManualQuarantineItem["retryCharge"],
+): OperatorActionInboxItem["charge"] {
+  if (level === "none") {
+    return noPaidAiCharge("The recorded recovery path does not create a paid AI request.");
+  }
+  if (level === "will_charge") {
+    return {
+      level,
+      label: "Yes — paid AI retry",
+      detail: "Approving another visual-review submission creates a paid AI request.",
+    };
+  }
+  if (level === "may_charge") {
+    return {
+      level,
+      label: "Possible — depends on action",
+      detail: "Repairing or reconciling data is free; explicitly rerunning an AI review can create a charge.",
+    };
+  }
+  return {
+    level: "unknown",
+    label: "Unknown — do not retry blindly",
+    detail: "The registry cannot prove whether an external paid request already exists. Reconcile it first.",
+  };
+}
+
+function manualQuarantinePublicImpact(
+  level: AdminManualQuarantineItem["publicImpact"],
+): OperatorActionInboxItem["publicImpact"] {
+  if (level === "blocked") {
+    return {
+      level,
+      label: "Public update blocked",
+      detail: "The affected public update cannot advance until this case is resolved.",
+    };
+  }
+  if (level === "protected") {
+    return {
+      level,
+      label: "Public data protected",
+      detail: "Last-known-good public facts remain in place while the failed evidence is quarantined.",
+    };
+  }
+  if (level === "unknown") {
+    return {
+      level,
+      label: "Public impact needs verification",
+      detail: "The audit remains unresolved, so confirm whether published wording was affected before closing the case.",
+    };
+  }
+  if (level === "none") {
+    return {
+      level,
+      label: "No public impact",
+      detail: "This case does not currently block or delay a public update.",
+    };
+  }
+  return {
+    level: "delayed",
+    label: "Update publication delayed",
+    detail: "The affected update remains unpublished while its evidence is quarantined.",
+  };
+}
+
+function manualQuarantineActionLabel(category: AdminManualQuarantineItem["category"]) {
+  if (category === "visual_review") return "Inspect before another paid attempt";
+  return "Repair and verify this award";
 }
 
 export function operatorActionInboxSummary(items: OperatorActionInboxItem[]) {
@@ -1164,7 +1339,7 @@ function compactEvidence(
     .map(([label, value]) => ({ label, value }));
 }
 
-function objectValue(value: Json): Record<string, Json | undefined> {
+function objectValue(value: Json | undefined | null): Record<string, Json | undefined> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, Json | undefined>)
     : {};

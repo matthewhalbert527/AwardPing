@@ -49,12 +49,16 @@ const r2 = new S3Client({
 const startedAt = new Date().toISOString();
 
 try {
-  const sources = (await loadRows(
+  const loadedSources = await loadRows(
     "shared_award_sources",
     "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,created_at,shared_awards!inner(id,name,status,official_homepage)",
     (query) => query.eq("admin_review_status", "open").eq("shared_awards.status", "active"),
-    { limit },
-  )).filter((source) => isMonitorableAwardSource(source));
+    { limit: limit + 1 },
+  );
+  const inventoryTruncated = loadedSources.length > limit;
+  const sources = loadedSources
+    .slice(0, limit)
+    .filter((source) => isMonitorableAwardSource(source));
   const snapshots = await loadSnapshots(sources.map((source) => source.id));
   const snapshotBySource = new Map(snapshots.map((snapshot) => [snapshot.shared_award_source_id, snapshot]));
   const rows = [];
@@ -115,6 +119,12 @@ try {
     report_type: "legacy_source_pointer_layout_maintenance",
     verified_event_crop_metric: false,
     verified_event_crop_report_command: "node scripts/read-event-visual-evidence-coverage.mjs",
+    inventory_scope: {
+      kind: "all_active_open_monitorable_sources",
+      requested_source_limit: limit,
+      database_sources_loaded: Math.min(loadedSources.length, limit),
+      truncated: inventoryTruncated,
+    },
     started_at: startedAt,
     finished_at: new Date().toISOString(),
     apply,

@@ -1,4 +1,6 @@
 import { buildSourceAiCoverageRow } from "./ai-review-coverage.mjs";
+import { validateHistoricalLocalizationInventory } from "./manual-quarantine.mjs";
+import { visualReviewFailureRetryDecision } from "./visual-review-queue.mjs";
 
 export const ONE_TIME_CATCHUP_MODEL = "gemini-2.5-flash-lite";
 export const ONE_TIME_CATCHUP_BATCH_MODE = "batch";
@@ -65,6 +67,9 @@ export function summarizeOneTimeCatchupBacklog({
     ["failed", "needs-review"].includes(cleanKey(audit.audit_status)) &&
     ["critical", "error"].includes(cleanKey(audit.severity)),
   );
+  const terminalPageAuditRows = latestUnresolvedAuditErrors.filter((audit) =>
+    pageAuditReachedRetryLimit(audit, audits),
+  );
   const pageAuditBatchInFlight = audits.filter((audit) =>
     cleanKey(audit.audit_kind) === "gemini-batch" &&
     Boolean(audit.gemini_batch_name) &&
@@ -76,9 +81,35 @@ export function summarizeOneTimeCatchupBacklog({
     ["warnings", "failed", "needs-review"].includes(cleanKey(audit.audit_status)),
   );
 
-  const visualQueueRows = visualReviewCandidates.filter((candidate) =>
-    ["pending", "submitted", "processing", "succeeded"].includes(cleanKey(candidate.status)),
+  const activeVisualReviewCandidates = visualReviewCandidates.filter((candidate) =>
+    activeAwardIds.has(candidate.shared_award_id),
   );
+  const failedVisualRows = activeVisualReviewCandidates.filter(
+    (candidate) => cleanKey(candidate.status) === "failed",
+  );
+  const failedVisualDecisions = failedVisualRows.map((candidate) => ({
+    candidate,
+    decision: visualReviewFailureRetryDecision(candidate, { maxRetries: 3 }),
+  }));
+  const retryableVisualFailures = failedVisualDecisions
+    .filter(({ decision }) =>
+      decision.retry || decision.reason === "awaiting_missing_batch_response_recovery"
+    )
+    .map(({ candidate }) => candidate);
+  const terminalVisualFailures = failedVisualDecisions
+    .filter(({ decision }) =>
+      [
+        "failure_retry_limit_reached",
+        "possible_external_batch_requires_manual_recovery",
+      ].includes(decision.reason)
+    )
+    .map(({ candidate }) => candidate);
+  const visualQueueRows = [
+    ...activeVisualReviewCandidates.filter((candidate) =>
+      ["pending", "submitted", "processing", "succeeded"].includes(cleanKey(candidate.status)),
+    ),
+    ...retryableVisualFailures,
+  ];
   const visualEstimatedCostUsd = visualQueueRows.reduce(
     (total, candidate) => total + nonNegativeNumber(candidate.estimated_cost_usd, 0),
     0,
@@ -106,6 +137,8 @@ export function summarizeOneTimeCatchupBacklog({
     deterministic_page_audit_candidates: deterministicAuditCandidates.length,
     page_audit_batch_in_flight: pageAuditBatchInFlight.length,
     visual_review_queue: visualQueueRows.length,
+    visual_review_retryable_failures: retryableVisualFailures.length,
+    visual_review_terminal_failures: terminalVisualFailures.length,
     visual_review_estimated_cost_usd: roundUsd(visualEstimatedCostUsd),
     source_category_counts: categoryCounts,
     snapshot_localization_audit_pending: localizationAudited ? 0 : 1,
@@ -130,6 +163,14 @@ export function summarizeOneTimeCatchupBacklog({
       : 0,
   };
 
+  const quarantine = buildOneTimeCatchupQuarantineSummary({
+    unresolvedAuditRows: latestUnresolvedAuditErrors,
+    latestFailedReconciliationRows: latestFailedReconciliations,
+    terminalPageAuditRows,
+    terminalVisualFailureRows: terminalVisualFailures,
+    snapshotLocalization: localization,
+  });
+
   return {
     backlog,
     source_ai_rows: sourceAiRows,
@@ -138,7 +179,83 @@ export function summarizeOneTimeCatchupBacklog({
     monitor_eligible_missing_visual_rows: monitorEligibleMissingVisuals,
     latest_failed_reconciliation_rows: latestFailedReconciliations,
     unresolved_audit_rows: latestUnresolvedAuditErrors,
-    completion: catchupCompletionDecision(backlog),
+    terminal_page_audit_rows: terminalPageAuditRows,
+    retryable_visual_failure_rows: retryableVisualFailures,
+    terminal_visual_failure_rows: terminalVisualFailures,
+    quarantine,
+    completion: catchupCompletionDecision(backlog, quarantine),
+  };
+}
+
+export function buildOneTimeCatchupQuarantineSummary({
+  unresolvedAuditRows = [],
+  latestFailedReconciliationRows = [],
+  terminalPageAuditRows = [],
+  terminalVisualFailureRows = [],
+  snapshotLocalization = {},
+} = {}) {
+  const publicPageCaseKeys = new Set([
+    ...unresolvedAuditRows.map((row) => cleanText(row?.shared_award_id)).filter(Boolean),
+    ...latestFailedReconciliationRows
+      .map((row) => cleanText(row?.shared_award_id))
+      .filter(Boolean),
+  ]);
+  const visualCaseKeys = new Set(
+    terminalVisualFailureRows
+      .map((row) => cleanText(row?.id) || cleanText(row?.candidate_signature))
+      .filter(Boolean),
+  );
+  const terminalPublicPageCaseKeys = new Set([
+    ...latestFailedReconciliationRows
+      .map((row) => cleanText(row?.shared_award_id))
+      .filter(Boolean),
+    ...terminalPageAuditRows
+      .map((row) => cleanText(row?.shared_award_id))
+      .filter(Boolean),
+  ]);
+  const historicalInventory = validateHistoricalLocalizationInventory(
+    snapshotLocalization,
+    { requireAudited: true },
+  );
+  const historicalInventoryComplete = historicalInventory.complete;
+  const historicalCount = historicalInventoryComplete
+    ? historicalInventory.declaredCount
+    : null;
+  const publicPageEvidenceRecords =
+    unresolvedAuditRows.length + latestFailedReconciliationRows.length;
+  const visualEvidenceRecords = terminalVisualFailureRows.length;
+
+  return {
+    schema_version: "manual-quarantine-registry-v1",
+    quarantined_work_remaining: publicPageCaseKeys.size + visualCaseKeys.size,
+    quarantine_evidence_records: publicPageEvidenceRecords + visualEvidenceRecords,
+    historical_limitations: historicalCount,
+    historical_inventory_status: historicalInventoryComplete ? "complete" : "not_imported",
+    terminal_failures_requiring_action:
+      latestFailedReconciliationRows.length +
+      terminalPageAuditRows.length +
+      terminalVisualFailureRows.length,
+    by_category: {
+      public_page: {
+        cases: publicPageCaseKeys.size,
+        evidence_records: publicPageEvidenceRecords,
+        terminal_cases: terminalPublicPageCaseKeys.size,
+        terminal_failures:
+          latestFailedReconciliationRows.length + terminalPageAuditRows.length,
+      },
+      visual_review: {
+        cases: visualCaseKeys.size,
+        evidence_records: visualEvidenceRecords,
+        terminal_cases: visualCaseKeys.size,
+        terminal_failures: terminalVisualFailureRows.length,
+      },
+      historical_localization: {
+        cases: historicalCount,
+        evidence_records: historicalCount,
+        terminal_cases: 0,
+        terminal_failures: 0,
+      },
+    },
   };
 }
 
@@ -229,7 +346,7 @@ export function estimateOneTimeCatchup({
   };
 }
 
-export function catchupCompletionDecision(backlog = {}) {
+export function catchupCompletionDecision(backlog = {}, quarantine = {}) {
   const automatedBlockers = {
     source_ai_reviews: nonNegativeInt(backlog.source_ai_reviews, 0),
     sources_to_review_later: nonNegativeInt(backlog.sources_to_review_later, 0),
@@ -253,23 +370,93 @@ export function catchupCompletionDecision(backlog = {}) {
       0,
     ),
   };
-  const automatedComplete = Object.values(automatedBlockers).every((value) => value === 0);
-  const manualReviewCount = nonNegativeInt(backlog.latest_unresolved_audit_errors, 0);
-  const historicalLocalizationFallbacks = nonNegativeInt(
-    backlog.snapshot_localization_historical_unavailable,
-    0,
-  );
+  const automatedWorkClear = Object.values(automatedBlockers).every((value) => value === 0);
   return {
-    automated_complete: automatedComplete,
-    steady_state_ready: automatedComplete,
-    status: automatedComplete
-      ? manualReviewCount > 0
-        ? "complete_with_safe_manual_review"
-        : "complete"
-      : "catchup_required",
+    status: automatedWorkClear ? "automated_work_clear" : "automated_work_remaining",
+    automated_work_clear: automatedWorkClear,
     automated_blockers: automatedBlockers,
-    safe_manual_review_items: manualReviewCount,
-    historical_localization_fallbacks: historicalLocalizationFallbacks,
+    quarantined_work_remaining: nonNegativeInt(
+      quarantine.quarantined_work_remaining,
+      0,
+    ),
+    quarantine_evidence_records: nonNegativeInt(
+      quarantine.quarantine_evidence_records,
+      0,
+    ),
+    historical_limitations:
+      quarantine.historical_limitations == null
+        ? null
+        : nonNegativeInt(quarantine.historical_limitations, 0),
+    historical_inventory_status:
+      quarantine.historical_inventory_status === "complete"
+        ? "complete"
+        : "not_imported",
+    terminal_failures_requiring_action: nonNegativeInt(
+      quarantine.terminal_failures_requiring_action,
+      0,
+    ),
+    quarantine_by_category: objectValue(quarantine.by_category),
+  };
+}
+
+export function completionFromManualQuarantineState(
+  completion = {},
+  registryState = {},
+) {
+  const state = objectValue(registryState);
+  if (typeof state.automated_work_clear !== "boolean") {
+    throw new Error("Manual quarantine state is missing automated_work_clear.");
+  }
+  const expectedStatus = state.automated_work_clear
+    ? "automated_work_clear"
+    : "automated_work_remaining";
+  if (state.completion_status !== expectedStatus) {
+    throw new Error("Manual quarantine completion status contradicts automated_work_clear.");
+  }
+  const historicalInventoryStatus =
+    state.historical_inventory_status === "complete"
+      ? "complete"
+      : state.historical_inventory_status === "not_imported"
+        ? "not_imported"
+        : null;
+  if (!historicalInventoryStatus) {
+    throw new Error("Manual quarantine state has an invalid historical inventory status.");
+  }
+  if (
+    !state.by_category ||
+    typeof state.by_category !== "object" ||
+    Array.isArray(state.by_category)
+  ) {
+    throw new Error("Manual quarantine state is missing category accounting.");
+  }
+  const byCategory = state.by_category;
+
+  return {
+    ...completion,
+    status: expectedStatus,
+    automated_work_clear: state.automated_work_clear,
+    automated_blockers: objectValue(state.automated_blockers),
+    quarantined_work_remaining: requiredNonNegativeInteger(
+      state.quarantined_work_remaining,
+      "quarantined_work_remaining",
+    ),
+    quarantine_evidence_records: requiredNonNegativeInteger(
+      state.quarantine_evidence_records,
+      "quarantine_evidence_records",
+    ),
+    historical_limitations:
+      historicalInventoryStatus === "complete"
+        ? requiredNonNegativeInteger(
+            state.historical_limitations,
+            "historical_limitations",
+          )
+        : null,
+    historical_inventory_status: historicalInventoryStatus,
+    terminal_failures_requiring_action: requiredNonNegativeInteger(
+      state.terminal_failures_requiring_action,
+      "terminal_failures_requiring_action",
+    ),
+    quarantine_by_category: byCategory,
   };
 }
 
@@ -314,6 +501,31 @@ function latestRowsBy(rows, key) {
     if (value && !latest.has(value)) latest.set(value, row);
   }
   return latest;
+}
+
+function requiredNonNegativeInteger(value, field) {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) {
+    throw new Error(`Manual quarantine state has an invalid ${field}.`);
+  }
+  return number;
+}
+
+function pageAuditReachedRetryLimit(audit, audits, maxAttempts = 2) {
+  if (cleanKey(audit?.audit_kind) !== "gemini-batch") return false;
+  const requestKey = cleanText(audit?.gemini_batch_request_key);
+  if (!requestKey) return false;
+  const attempts = audits.filter(
+    (candidate) =>
+      cleanKey(candidate?.audit_kind) === "gemini-batch" &&
+      cleanText(candidate?.gemini_batch_request_key) === requestKey,
+  );
+  if (attempts.length < Math.max(1, nonNegativeInt(maxAttempts, 2))) return false;
+  if (attempts.some((candidate) => candidate?.ai_result == null)) return false;
+  return attempts.every((candidate) => {
+    const result = objectValue(candidate?.ai_result);
+    return ["invalid-json", "missing-batch-response"].includes(cleanKey(result.error));
+  });
 }
 
 function countBy(rows, picker) {

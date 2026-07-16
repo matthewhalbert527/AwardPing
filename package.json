@@ -49,6 +49,7 @@
     "source:one-time-catchup": "node scripts/run-one-time-catchup.mjs",
     "source:reconcile-awards": "node scripts/reconcile-impacted-award-pages.mjs",
     "source:page-audit-batch": "node scripts/process-page-audit-batch.mjs",
+    "source:sync-manual-quarantine": "node scripts/sync-manual-quarantine-registry.mjs",
     "award:audit-canaries": "node scripts/evaluate-public-page-audit-canaries.mjs",
     "command:center": "node scripts/awardping-command-center.mjs",
     "command:center:web": "node scripts/awardping-command-center-web.mjs",

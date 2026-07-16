@@ -15,12 +15,17 @@ import { dirname, join, resolve } from "node:path";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { geminiSpendGuardStatus } from "./lib/gemini-spend-guard.mjs";
 import {
+  completionFromManualQuarantineState,
   estimateOneTimeCatchup,
   nextSourceAiStagnantCycles,
   ONE_TIME_CATCHUP_BATCH_MODE,
   ONE_TIME_CATCHUP_MODEL,
   summarizeOneTimeCatchupBacklog,
 } from "./lib/one-time-catchup.mjs";
+import {
+  historicalLocalizationInventoryDigest,
+  validateHistoricalLocalizationInventory,
+} from "./lib/manual-quarantine.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 class CatchupPausedError extends Error {
@@ -131,7 +136,7 @@ let workerRunId = null;
 let state = resume ? readJsonIfExists(statePath) : null;
 if (
   !state ||
-  ["succeeded", "complete", "complete_with_safe_manual_review", "forecast_only"].includes(state.status)
+  ["succeeded", "automated_work_clear", "forecast_only"].includes(state.status)
 ) {
   state = newState();
 } else {
@@ -215,14 +220,23 @@ try {
     });
   }
 
+  await runStage("manual-quarantine", syncManualQuarantineRegistry);
+
   const final = await liveSnapshot();
+  const recordedQuarantineState = await recordManualQuarantineCompletion(
+    final.summary.completion,
+  );
+  final.summary.completion = completionFromManualQuarantineState(
+    final.summary.completion,
+    recordedQuarantineState,
+  );
   state.current_backlog = final.summary.backlog;
   state.completion = final.summary.completion;
   state.status = final.summary.completion.status;
   state.finished_at = new Date().toISOString();
   state.updated_at = state.finished_at;
   writeState();
-  await updateWorkerRun("succeeded");
+  await updateWorkerRun("succeeded", null, final);
   writeFinalReport();
   printCompletion(final);
   if (json) console.log(JSON.stringify(finalReport(), null, 2));
@@ -717,7 +731,7 @@ async function liveSnapshot() {
     ),
     loadRows(
       "shared_award_page_audits",
-      "id,shared_award_id,audit_kind,audit_status,severity,gemini_batch_name,ai_result,resolved_at,created_at",
+      "id,shared_award_id,audit_kind,audit_status,severity,gemini_batch_name,gemini_batch_request_key,ai_result,resolved_at,created_at",
     ),
     loadRows(
       "shared_award_reconciliation_queue",
@@ -725,7 +739,7 @@ async function liveSnapshot() {
     ),
     loadRows(
       "shared_award_visual_review_candidates",
-      "id,shared_award_id,shared_award_source_id,status,estimated_cost_usd,created_at",
+      "id,shared_award_id,shared_award_source_id,candidate_signature,status,rejection_reason,estimated_cost_usd,worker_metadata,created_at,updated_at",
       null,
       { optional: true },
     ),
@@ -806,6 +820,63 @@ async function countReconciliationStatus(statuses) {
     .in("status", statuses);
   if (error) throw new Error(`Count reconciliation queue failed: ${error.message}`);
   return count || 0;
+}
+
+async function syncManualQuarantineRegistry() {
+  const { data: syncedState, error: syncError } = await supabase.rpc(
+    "sync_manual_quarantine_registry",
+  );
+  if (syncError) {
+    throw new Error(`Sync manual quarantine registry failed: ${syncError.message}`);
+  }
+  if (!syncedState || typeof syncedState !== "object" || Array.isArray(syncedState)) {
+    throw new Error("Sync manual quarantine registry returned no durable state.");
+  }
+
+  if (state.localization?.audited !== true) return syncedState;
+  const inventory = validateHistoricalLocalizationInventory(state.localization, {
+    requireAudited: true,
+  });
+  if (!inventory.complete) {
+    console.warn(
+      `MANUAL_QUARANTINE_HISTORY_NOT_IMPORTED reason=${inventory.reason}`,
+    );
+    return syncedState;
+  }
+  const sourceIds = inventory.sourceIds;
+  const reportedAt = state.localization.finished_at;
+  const reportDigest = historicalLocalizationInventoryDigest(state.localization);
+  const { data: historicalState, error: historicalError } = await supabase.rpc(
+    "replace_manual_quarantine_historical_limitations",
+    {
+      p_source_ids: sourceIds,
+      p_reported_at: reportedAt,
+      p_report_digest: reportDigest,
+    },
+  );
+  if (historicalError) {
+    throw new Error(`Import historical quarantine inventory failed: ${historicalError.message}`);
+  }
+  if (!historicalState || typeof historicalState !== "object" || Array.isArray(historicalState)) {
+    throw new Error("Import historical quarantine inventory returned no durable state.");
+  }
+  return historicalState;
+}
+
+async function recordManualQuarantineCompletion(completion) {
+  const { data, error } = await supabase.rpc("record_manual_quarantine_completion", {
+    p_automated_work_clear: completion.automated_work_clear === true,
+    p_automated_blockers: completion.automated_blockers || {},
+    p_source_worker_run_id: workerRunId,
+    p_reported_at: new Date().toISOString(),
+  });
+  if (error) {
+    throw new Error(`Record manual quarantine completion failed: ${error.message}`);
+  }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Record manual quarantine completion returned no durable state.");
+  }
+  return data;
 }
 
 async function ensureGeminiBudget() {
@@ -947,9 +1018,13 @@ async function updateTicker(stage, snapshot) {
   if (error) console.warn(`ONE_TIME_CATCHUP_TICKER_FAILED ${error.message}`);
 }
 
-async function updateWorkerRun(status, errorMessageValue = null) {
+async function updateWorkerRun(
+  status,
+  errorMessageValue = null,
+  snapshotOverride = null,
+) {
   if (!workerRunId) return;
-  const snapshot = await liveSnapshot().catch(() => null);
+  const snapshot = snapshotOverride || await liveSnapshot().catch(() => null);
   const { error } = await supabase
     .from("local_worker_runs")
     .update({
@@ -978,7 +1053,7 @@ function workerMetadata(stage, snapshot) {
     started_at: state.started_at,
     updated_at: new Date().toISOString(),
     completed_stages: completedStageCount(),
-    total_stages: includeHousekeeping ? 13 : 11,
+    total_stages: includeHousekeeping ? 14 : 12,
     backlog: snapshot?.summary?.backlog || state.current_backlog || null,
     forecast: snapshot?.forecast || state.forecast || null,
     completion: snapshot?.summary?.completion || state.completion || null,
@@ -1032,6 +1107,7 @@ function printForecast(snapshot) {
   console.log(`  localization_latest_pending=${backlog.snapshot_localization_latest_pending} localization_previous_pending=${backlog.snapshot_localization_previous_pending} historical_fallbacks=${backlog.snapshot_localization_historical_unavailable} localization_work=${backlog.snapshot_localization_work_pending}`);
   console.log(`  active_awards=${backlog.active_awards} missing_public_facts=${backlog.awards_missing_public_facts} never_reconciled=${backlog.awards_never_reconciled}`);
   console.log(`  latest_failed_reconciliations=${backlog.reconciliation_latest_failed_awards} unresolved_audit_errors=${backlog.latest_unresolved_audit_errors}`);
+  console.log(`  visual_retryable_failures=${backlog.visual_review_retryable_failures} visual_terminal_failures=${backlog.visual_review_terminal_failures}`);
   console.log(`  gemini_model=${forecast.model} mode=${forecast.gemini_mode} estimated_cost=$${forecast.estimated_total_cost_usd.toFixed(2)} range=$${forecast.estimated_cost_range_usd.low.toFixed(2)}-$${forecast.estimated_cost_range_usd.high.toFixed(2)}`);
   console.log(`  expected_time=${forecast.expected_time_hours.low}-${forecast.expected_time_hours.high}h conservative_external_batch_sla=${forecast.conservative_external_batch_sla_hours}h`);
   console.log(`  localization_time=${forecast.estimated_snapshot_localization_hours.low}-${forecast.estimated_snapshot_localization_hours.high}h shards=${forecast.snapshot_localization_shards}`);
@@ -1039,13 +1115,16 @@ function printForecast(snapshot) {
 
 function printCompletion(snapshot) {
   console.log(`ONE_TIME_CATCHUP_COMPLETE status=${snapshot.summary.completion.status}`);
-  console.log(`  automated_complete=${snapshot.summary.completion.automated_complete} manual_review_items=${snapshot.summary.completion.safe_manual_review_items}`);
+  console.log(`  automated_work_clear=${snapshot.summary.completion.automated_work_clear}`);
+  console.log(`  quarantined_work_remaining=${snapshot.summary.completion.quarantined_work_remaining} evidence_records=${snapshot.summary.completion.quarantine_evidence_records}`);
+  console.log(`  historical_limitations=${snapshot.summary.completion.historical_limitations ?? "not_imported"}`);
+  console.log(`  terminal_failures_requiring_action=${snapshot.summary.completion.terminal_failures_requiring_action}`);
   console.log(`  report=${reportPath}`);
 }
 
 function newState() {
   return {
-    version: 1,
+    version: 2,
     started_at: new Date().toISOString(),
     resumed_at: null,
     finished_at: null,
