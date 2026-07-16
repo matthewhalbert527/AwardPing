@@ -236,6 +236,7 @@ function checkMigrations() {
     "20260716152833_source_intake_fact_candidate_idempotency.sql",
     "20260716161529_r2_baseline_recovery_quarantine.sql",
     "20260716171409_recover_rejected_initial_document_candidates.sql",
+    "20260716174800_fix_initial_document_publication_evidence_contract.sql",
   ];
 
   for (const file of expected) {
@@ -303,6 +304,37 @@ function checkMigrations() {
   } else {
     fail(
       `Initial official-document recovery migration is incomplete; missing ${missingInitialDocumentRecoveryContracts.join(", ")}.`,
+    );
+  }
+
+  const initialDocumentPublicationEvidenceRepair = readIfExists(
+    "supabase/migrations/20260716174800_fix_initial_document_publication_evidence_contract.sql",
+  );
+  const requiredInitialDocumentPublicationEvidenceRepairContracts = [
+    "publish_shared_award_initial_document_event(jsonb,jsonb)",
+    "$predicate$v_previous_capture ->> 'state_id' is distinct from 'first_observation'$predicate$",
+    "$predicate$v_previous_capture ->> 'state_id' is distinct from 'first-observation'$predicate$",
+    "v_old_occurrences = 0 and v_new_occurrences = 1",
+    "v_old_occurrences = 1 and v_new_occurrences = 0",
+    "v_definition := pg_catalog.replace(v_definition, v_old_predicate, v_new_predicate)",
+    "awardping_assert_permanent_visual_artifact(v_current_capture -> 'text', 'current.text')",
+    "v_old_text_guard_occurrences = 1 and v_new_text_guard_occurrences = 0",
+    "Initial-document publication RPC has an unexpected or ambiguous attestation state-ID contract.",
+    "Initial-document publication RPC has an unexpected or ambiguous current-text artifact contract.",
+    "execute v_definition",
+    "to service_role",
+  ];
+  const missingInitialDocumentPublicationEvidenceRepairContracts =
+    requiredInitialDocumentPublicationEvidenceRepairContracts.filter(
+      (contract) => !initialDocumentPublicationEvidenceRepair.includes(contract),
+    );
+  if (missingInitialDocumentPublicationEvidenceRepairContracts.length === 0) {
+    pass(
+      "Initial official-document publication uses canonical first-observation state and permanent candidate-bound PDF text without weakening its other atomic guards.",
+    );
+  } else {
+    fail(
+      `Initial official-document publication evidence repair is incomplete; missing ${missingInitialDocumentPublicationEvidenceRepairContracts.join(", ")}.`,
     );
   }
 

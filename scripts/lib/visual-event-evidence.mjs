@@ -729,8 +729,23 @@ async function prepareSide({
       requireExpectedManifest: !historical,
       required: true,
     });
+    const text = await uploadPathArtifact({
+      store,
+      candidateId: candidate.id,
+      side,
+      role: "text",
+      path: resolved.files.text,
+      contentType: "text/plain; charset=utf-8",
+      expectedSha256: resolved.file_refs.text.sha256,
+      expectedByteLength: resolved.file_refs.text.byte_length,
+      requireExpectedManifest: !historical && Boolean(resolved.files.text),
+      required: !historical && Boolean(resolved.files.text),
+    });
     return {
-      capture: captureManifest({ resolved, full: pdf, metadata, stateId: "document" }),
+      capture: {
+        ...captureManifest({ resolved, full: pdf, metadata, stateId: "document" }),
+        text,
+      },
       localization: localizationManifest({
         side,
         status: "not_applicable_pdf",

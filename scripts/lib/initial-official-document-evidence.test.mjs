@@ -51,6 +51,12 @@ describe("initial official document permanent evidence", () => {
         kind: "pdf",
         state_id: "document",
         full: { sha256: fixture.pdfHash, content_type: "application/pdf" },
+        text: {
+          sha256: fixture.textHash,
+          byte_length: fixture.text.length,
+          content_type: "text/plain; charset=utf-8",
+        },
+        capture_hashes: { text_hash: fixture.semanticTextHash },
       },
       localization: {
         direction: "added",
@@ -76,11 +82,21 @@ describe("initial official document permanent evidence", () => {
     expect(evidence.current_capture.full.object_key).toContain(
       `${PUBLISHED_VISUAL_EVIDENCE_PREFIX}/candidate-initial-1/current/document/`,
     );
+    expect(evidence.current_capture.text.object_key).toContain(
+      `${PUBLISHED_VISUAL_EVIDENCE_PREFIX}/candidate-initial-1/current/text/${fixture.textHash}.txt`,
+    );
     const attestationUpload = store.putCalls.find((item) =>
       item.key === evidence.previous_capture.metadata.object_key
     );
     expect(attestationUpload.body.toString("utf8")).toBe(fixture.attestation.canonical_json);
-    expect(store.putCalls).toHaveLength(3);
+    const textUpload = store.putCalls.find((item) =>
+      item.key === evidence.current_capture.text.object_key
+    );
+    expect(textUpload.body).toEqual(fixture.text);
+    expect(evidence.current_capture.text.sha256).not.toBe(
+      evidence.current_capture.capture_hashes.text_hash,
+    );
+    expect(store.putCalls).toHaveLength(4);
     expect(store.headCalls).toEqual(store.putCalls.map((item) => item.key));
   });
 
@@ -128,6 +144,22 @@ describe("initial official document permanent evidence", () => {
     expect(store.putCalls).toHaveLength(0);
   });
 
+  it("rejects retained PDF text bytes that differ from the candidate archive reference", async () => {
+    const fixture = createFixture();
+    const tampered = Buffer.from(fixture.text);
+    tampered[0] ^= 1;
+    writeFileSync(fixture.textPath, tampered);
+    const store = memoryStore();
+
+    await expect(preparePublishedInitialOfficialDocumentEvidence({
+      candidate: fixture.candidate,
+      source: fixture.source,
+      archiveRoot: fixture.archiveRoot,
+      artifactStore: store,
+    })).rejects.toMatchObject({ code: "visual_artifact_hash_mismatch" });
+    expect(store.putCalls).toHaveLength(0);
+  });
+
   it("rejects an attestation whose acquisition binding differs from the candidate", async () => {
     const fixture = createFixture();
     fixture.candidate.source_acquisition_id = "different-acquisition";
@@ -159,13 +191,21 @@ function createFixture() {
     kind: "pdf",
     captured_at: "2026-07-16T12:00:00.000Z",
   }));
+  const textPath = join(captureDirectory, "text.txt");
+  const text = Buffer.from("Applicants must submit two letters of recommendation.\n", "utf8");
+  writeFileSync(textPath, text);
+  const textHash = sha(text);
+  const semanticTextHash = sha("applicants must submit two letters of recommendation");
+  if (semanticTextHash === textHash) throw new Error("Fixture requires distinct semantic and byte hashes.");
   const currentRef = {
     kind: "pdf",
     captured_at: "2026-07-16T12:00:00.000Z",
     file_hash: pdfHash,
+    text_hash: semanticTextHash,
     local_paths: {
       pdf: artifactPathRef(pdfPath),
       meta: artifactPathRef(metaPath),
+      text: artifactPathRef(textPath),
     },
   };
   const manifest = visualSnapshotArtifactManifest(currentRef);
@@ -228,7 +268,17 @@ function createFixture() {
       },
     },
   };
-  return { archiveRoot, source, candidate, attestation, pdfHash };
+  return {
+    archiveRoot,
+    source,
+    candidate,
+    attestation,
+    pdfHash,
+    textPath,
+    text,
+    textHash,
+    semanticTextHash,
+  };
 }
 
 function memoryStore() {

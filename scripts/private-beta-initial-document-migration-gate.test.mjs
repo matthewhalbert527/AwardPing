@@ -16,6 +16,9 @@ describe("private-beta initial official-document migration gate", () => {
     expect(launchCheck).toContain(
       "20260716150000_initial_official_document_events.sql",
     );
+    expect(launchCheck).toContain(
+      "20260716174800_fix_initial_document_publication_evidence_contract.sql",
+    );
 
     for (const table of [
       "shared_award_source_acquisitions",
@@ -80,6 +83,9 @@ describe("private-beta initial official-document migration gate", () => {
       "OK     Migration 20260716171409_recover_rejected_initial_document_candidates.sql is present.",
     );
     expect(result.stdout).toContain(
+      "OK     Migration 20260716174800_fix_initial_document_publication_evidence_contract.sql is present.",
+    );
+    expect(result.stdout).toContain(
       "OK     Initial official-document migration includes immutable intake provenance, discovery state, publication, and quarantine surfaces.",
     );
     expect(result.stdout).toContain(
@@ -87,6 +93,9 @@ describe("private-beta initial official-document migration gate", () => {
     );
     expect(result.stdout).toContain(
       "OK     Initial official-document recovery migration is zero-charge, CAS-bound, and leaves quarantine open until publication.",
+    );
+    expect(result.stdout).toContain(
+      "OK     Initial official-document publication uses canonical first-observation state and permanent candidate-bound PDF text without weakening its other atomic guards.",
     );
   });
 
@@ -104,6 +113,9 @@ describe("private-beta initial official-document migration gate", () => {
     );
     expect(runbook).toContain(
       "`20260716171409_recover_rejected_initial_document_candidates.sql`",
+    );
+    expect(runbook).toContain(
+      "`20260716174800_fix_initial_document_publication_evidence_contract.sql`",
     );
     expect(runbook).toContain("migration list --linked");
     expect(runbook).not.toContain(
