@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   monitoringPolicySweepCursorAfterRows,
+  monitoringPolicySweepEffectivePolicyHash,
   monitoringPolicySweepKey,
   monitoringPolicySweepKeysetFilter,
   monitoringPolicySweepStart,
@@ -31,6 +32,34 @@ describe("monitoring policy sweep state", () => {
       cursor: null,
       scanned_count: 0,
     });
+  });
+
+  it("resets cleanup history when the unresolved promotion exclusion set changes", () => {
+    const excluded = monitoringPolicySweepEffectivePolicyHash("policy-one", [
+      "rule-b",
+      "rule-a",
+      "rule-a",
+    ]);
+    expect(excluded).toBe(
+      monitoringPolicySweepEffectivePolicyHash("policy-one", [
+        "rule-a",
+        "rule-b",
+      ]),
+    );
+    const afterResolution = monitoringPolicySweepEffectivePolicyHash(
+      "policy-one",
+      ["rule-b"],
+    );
+    expect(afterResolution).not.toBe(excluded);
+    expect(
+      monitoringPolicySweepStart(
+        {
+          ...state,
+          policy_hash: excluded,
+        },
+        afterResolution,
+      ),
+    ).toEqual({ reset: true, cursor: null, scanned_count: 0 });
   });
 
   it("builds a deterministic timestamp-and-id keyset filter", () => {

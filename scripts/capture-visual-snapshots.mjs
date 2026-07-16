@@ -23,6 +23,7 @@ import { deterministicNoiseBaselineDisposition } from "./lib/deterministic-noise
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import {
   aiReviewLooksLikeRelativeAgeOnlyChange,
+  changeEventSuppressionPolicyIdentity,
   hasRelativeAgeOnlyTextDiff,
   monitoringPolicyPromptLinesForScope,
 } from "./lib/award-monitoring-policy.mjs";
@@ -94,6 +95,7 @@ import {
   sourceBaselineFacts,
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import { monitoringPromotionMatcherBundleHash } from "./lib/monitoring-promotion-matcher-bundle.mjs";
 import { insertedDiscoveryRows } from "./lib/source-discovery-write.mjs";
 import {
   buildVisualReviewPromptPayload,
@@ -114,6 +116,8 @@ import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const monitoringPromotionMatcherDigest =
+  monitoringPromotionMatcherBundleHash;
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
@@ -132,6 +136,7 @@ const archiveRoot = resolve(
   String(env.AWARDPING_VISUAL_SNAPSHOT_DIR || args["archive-dir"] || defaultArchiveRoot),
 );
 const localBaselineEvidenceCache = new Map();
+const observedVisualReviewCandidateIds = new Set();
 const brokenSourcesDir = join(archiveRoot, "broken-sources");
 const brokenSourcesCurrentPath = join(brokenSourcesDir, "broken-sources-current.json");
 const brokenSourcesJsonlPath = join(brokenSourcesDir, "broken-sources-events.jsonl");
@@ -539,6 +544,7 @@ supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
 
 async function runOnce() {
   localBaselineEvidenceCache.clear();
+  observedVisualReviewCandidateIds.clear();
   ensureArchiveDirectories();
 
   const startedAt = new Date().toISOString();
@@ -560,6 +566,7 @@ async function runOnce() {
     archive_root: archiveRoot,
     monitoring_policy: currentVisualReviewPolicyIdentity(),
     monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+    suppression_policy: changeEventSuppressionPolicyIdentity,
     run_identity: {
       workflow: "visual_capture",
       trigger: runTrigger,
@@ -695,6 +702,8 @@ async function runOnce() {
     text_only_noise_rejected: 0,
     text_only_published_or_queued: 0,
     visual_only_candidate_enqueued: 0,
+    visual_review_candidate_observations: 0,
+    visual_review_candidate_observation_failures: 0,
     visual_noise: 0,
     review: 0,
     skipped_existing_baseline: 0,
@@ -2154,6 +2163,7 @@ async function enqueueVisualReviewCandidate({
       worker_metadata: {
         queued_by: "capture-visual-snapshots",
         queued_at: new Date().toISOString(),
+        worker_run_id: report.worker_run_id,
         capture_behavior_version: captureBehaviorVersion,
         capture_behavior_name: captureBehaviorName,
         visual_review_mode: visualReviewMode,
@@ -2175,6 +2185,24 @@ async function enqueueVisualReviewCandidate({
 
     if (error) throw error;
 
+    let candidate = data || null;
+    if (!candidate?.id) {
+      const { data: existingCandidate, error: existingError } = await supabase
+        .from("shared_award_visual_review_candidates")
+        .select("id,status")
+        .eq("candidate_signature", candidateSignature)
+        .maybeSingle();
+      if (existingError) throw existingError;
+      if (!existingCandidate?.id) {
+        throw new Error(
+          `Visual review candidate ${candidateSignature} was neither inserted nor found after duplicate-safe upsert.`,
+        );
+      }
+      candidate = existingCandidate;
+    }
+
+    await recordVisualReviewCandidateRunObservation(candidate.id, report);
+
     if (data?.id) {
       capture.persist_expansion_state_screenshots = true;
       report.visual_review_candidates_queued += 1;
@@ -2182,7 +2210,7 @@ async function enqueueVisualReviewCandidate({
         source,
         report,
         reason: "visual_review_candidate",
-        candidateIds: [data.id],
+        candidateIds: [candidate.id],
         priority: 80,
         metadata: {
           candidate_signature: candidateSignature,
@@ -2193,12 +2221,14 @@ async function enqueueVisualReviewCandidate({
           queued_by: "capture-visual-snapshots",
         },
       });
-      return data;
+      return candidate;
     }
 
     report.visual_review_candidates_existing += 1;
     capture.persist_expansion_state_screenshots = true;
     return {
+      id: candidate.id,
+      status: candidate.status,
       existing: true,
       duplicate: true,
       candidate_signature: candidateSignature,
@@ -2214,6 +2244,36 @@ async function enqueueVisualReviewCandidate({
     console.log(`QUEUE FAILED ${message} ${sourceLabel(source)}`);
     throw error;
   }
+}
+
+async function recordVisualReviewCandidateRunObservation(candidateId, report) {
+  if (!candidateId || observedVisualReviewCandidateIds.has(candidateId)) return;
+  if (!report.worker_run_id) {
+    report.visual_review_candidate_observation_failures += 1;
+    throw new Error(
+      "Cannot bind a visual review candidate to this capture because the durable worker run ID is unavailable.",
+    );
+  }
+  const { error } = await supabase
+    .from("shared_award_visual_review_candidate_run_observations")
+    .upsert(
+      {
+        run_id: report.worker_run_id,
+        candidate_id: candidateId,
+      },
+      {
+        onConflict: "run_id,candidate_id",
+        ignoreDuplicates: true,
+      },
+    );
+  if (error) {
+    report.visual_review_candidate_observation_failures += 1;
+    throw new Error(
+      `Visual review candidate run observation failed: ${error.message || String(error)}`,
+    );
+  }
+  observedVisualReviewCandidateIds.add(candidateId);
+  report.visual_review_candidate_observations += 1;
 }
 
 async function queueAwardReconciliationFromSource({
@@ -7976,6 +8036,10 @@ function visualWorkerMetadata(report) {
     monitoring_policy: report.monitoring_policy || currentVisualReviewPolicyIdentity(),
     monitoring_policy_bundle:
       report.monitoring_policy_bundle || currentMonitoringPolicyAuditIdentity(),
+    suppression_policy: report.suppression_policy || changeEventSuppressionPolicyIdentity,
+    worker_revision:
+      cleanText(env.AWARDPING_WORKER_REVISION || env.GIT_COMMIT_SHA) || null,
+    matcher_digest: monitoringPromotionMatcherDigest,
     ai_provider: report.ai_provider,
     ai_model: report.ai_model,
     ai_required: report.ai_required,
@@ -7997,6 +8061,10 @@ function visualWorkerMetadata(report) {
       text_only_noise_rejected: report.text_only_noise_rejected,
       text_only_published_or_queued: report.text_only_published_or_queued,
       visual_only_candidate_enqueued: report.visual_only_candidate_enqueued,
+      visual_review_candidate_observations:
+        report.visual_review_candidate_observations,
+      visual_review_candidate_observation_failures:
+        report.visual_review_candidate_observation_failures,
       visual_noise: report.visual_noise,
       review: report.review,
       skipped_existing_baseline: report.skipped_existing_baseline,

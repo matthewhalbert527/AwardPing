@@ -3,12 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import type { AdminPageIssue } from "@/lib/admin-page-issues";
+import { awardMonitoringPolicyIdentity } from "@/lib/award-monitoring-policy";
 import {
   buildOperatorActionInbox,
   formatOperatorActionAge,
-  type OperatorMonitoringFeedbackInput,
+  operatorActionInboxSummary,
   type OperatorVisualReviewFailureInput,
 } from "@/lib/operator-action-inbox";
+import type { MonitoringFeedbackPromotionCluster } from "@/lib/monitoring-feedback-promotion";
 
 const now = new Date("2026-07-15T18:00:00.000Z");
 
@@ -55,31 +57,57 @@ function visualFailure(
   };
 }
 
-function pendingFeedback(
-  overrides: Partial<OperatorMonitoringFeedbackInput> = {},
-): OperatorMonitoringFeedbackInput {
+function promotionCluster(
+  overrides: Partial<MonitoringFeedbackPromotionCluster> = {},
+): MonitoringFeedbackPromotionCluster {
   return {
-    id: "feedback-1",
-    eventId: "event-1",
-    sourceId: "source-1",
-    awardId: "award-1",
-    eventSummary: "A rotating testimonial was incorrectly treated as an update.",
-    eventSourceUrl: "https://example.com/award",
-    eventSourceTitle: "Official source",
-    eventSourcePageType: "award_page",
-    eventDetectedAt: "2026-07-15T15:00:00.000Z",
-    eventEvidence: {
-      section: "Testimonials",
-      exact_before: "Previous quote",
-      exact_after: "Replacement quote",
-    },
+    clusterKey: "a".repeat(64),
+    evidenceSignature: "b".repeat(64),
+    domainTemplate: "example.com/award|award_page",
     reasonCode: "content_churn",
-    note: "Suppress rotating testimonials globally.",
-    requestedScope: "global",
-    policyRuleId: "rotating-testimonial-noise",
-    policyVersion: "monitoring-policy-2026-07-12",
-    actorEmail: "operator@example.com",
-    createdAt: "2026-07-15T15:30:00.000Z",
+    recurrenceCount: 4,
+    sourceCount: 3,
+    firstSeenAt: "2026-07-14T15:30:00.000Z",
+    lastSeenAt: "2026-07-15T15:30:00.000Z",
+    feedbackIds: ["feedback-1", "feedback-2", "feedback-3", "feedback-4"],
+    requestedScopes: ["global"],
+    sampleFeedback: [
+      {
+        feedback_id: "feedback-1",
+        source_id: "source-1",
+        source_title: "Official source",
+        source_url: "https://example.com/award",
+        event_summary: "A rotating testimonial was incorrectly treated as an update.",
+        event_evidence: {
+          section: "Testimonials",
+          exact_before: "Previous quote",
+          exact_after: "Replacement quote",
+        },
+      },
+    ],
+    workflowId: "workflow-1",
+    workflowVersion: 1,
+    stage: "triaged",
+    activationStatus: "inactive",
+    activationBlockedAt: null,
+    resolutionReady: false,
+    resolutionIdentityDrifted: false,
+    resolutionIdentityDriftReason: null,
+    resolutionWorkerRunId: null,
+    resolutionAttestedAt: null,
+    ownerEmail: "operator@example.com",
+    draftPolicyRuleId: null,
+    draftRuleActive: false,
+    draftSummary: null,
+    legitimateNegativeEventIds: [],
+    blockingReport: null,
+    latestRejectedAttempt: null,
+    shadowReport: null,
+    regressionReport: null,
+    hashAttestation: null,
+    canaryReport: null,
+    retroactiveSweepReport: null,
+    updatedAt: "2026-07-15T15:30:00.000Z",
     ...overrides,
   };
 }
@@ -357,10 +385,10 @@ describe("operator action inbox", () => {
     });
   });
 
-  it("keeps pending monitoring feedback manual, free, and bound to its recorded policy version", () => {
+  it("shows each clustered feedback pattern once with recurrence and a verified-workflow link", () => {
     const [item] = buildOperatorActionInbox({
       issues: [],
-      pendingFeedback: [pendingFeedback()],
+      promotionClusters: [promotionCluster()],
       now,
     });
 
@@ -369,13 +397,374 @@ describe("operator action inbox", () => {
     expect(item.owner.label).toBe("Policy review");
     expect(item.retry.automatic).toBe(false);
     expect(item.charge.level).toBe("none");
+    expect(item.context).toContain("4 occurrences across 3 sources");
+    expect(item.recommendedAction.href).toBe(
+      "/dashboard/admin/issues?tab=promotions#promotion-workflow-1",
+    );
+    expect(item.evidence).toContainEqual({
+      label: "Recurrence",
+      value: "4 occurrences",
+    });
     expect(item.policy).toMatchObject({
-      id: "rotating-testimonial-noise",
-      version: "monitoring-policy-2026-07-12",
+      id: awardMonitoringPolicyIdentity.id,
+      version: awardMonitoringPolicyIdentity.version,
+      hash: awardMonitoringPolicyIdentity.hash,
+    });
+  });
+
+  it("keeps the deployed policy identity separate from the proposed rule ID", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "rule_drafted",
+          draftPolicyRuleId: "candidate_listing_noise",
+        }),
+      ],
+      now,
+    });
+
+    expect(item.evidence).toContainEqual({
+      label: "Draft rule",
+      value: "candidate_listing_noise",
+    });
+    expect(item.policy).toMatchObject({
+      id: awardMonitoringPolicyIdentity.id,
+      version: awardMonitoringPolicyIdentity.version,
+      hash: awardMonitoringPolicyIdentity.hash,
+    });
+    expect(item.policy.id).not.toBe("candidate_listing_noise");
+  });
+
+  it("blocks a clustered rule that would hide legitimate updates", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "rule_drafted",
+          shadowReport: {
+            status: "failed",
+            legitimate_updates_suppressed: 2,
+            legitimate_updates: [
+              { event_id: "real-1", summary: "Deadline extended" },
+              { event_id: "real-2", summary: "Award amount increased" },
+            ],
+          },
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("blocked");
+    expect(item.severity).toBe("high");
+    expect(item.failureReason).toContain("2 legitimate updates");
+    expect(item.retry.automatic).toBe(true);
+    expect(item.retry.label).toContain("hourly verified-stage retry");
+    expect(item.retry.detail).toContain("rule, deployment, or source repair");
+  });
+
+  it("surfaces the durable reason and safe fix for a rejected operator checkpoint", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "similar_feedback_clustered",
+          latestRejectedAttempt: {
+            status: "failed",
+            requested_stage: "rule_drafted",
+            summary: "The candidate belongs to another open cluster.",
+            failure_reason: "candidate ownership conflict",
+            conflicting_cluster_id: "workflow-two",
+          },
+        }),
+      ],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "blocked",
+      severity: "high",
+      retry: { automatic: false },
+      failureReason: "The candidate belongs to another open cluster.",
+    });
+    expect(item.recommendedAction.detail).toContain("Keep the candidate inactive");
+    expect(item.evidence).toContainEqual({
+      label: "Latest rejected stage",
+      value: "Rule drafted",
     });
     expect(item.evidence).toContainEqual({
-      label: "Submitted by",
-      value: "operator@example.com",
+      label: "Latest rejected reason",
+      value: "candidate ownership conflict",
+    });
+  });
+
+  it("marks the regular 6 PM canary observation as automatic and potentially charged", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "app_worker_hashes_match",
+          shadowReport: { status: "passed", legitimate_updates_suppressed: 0 },
+          regressionReport: { status: "passed" },
+          hashAttestation: { status: "passed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("auto_retrying");
+    expect(item.retry.label).toContain("next scheduled 6 PM scan");
+    expect(item.charge).toMatchObject({ level: "may_charge" });
+  });
+
+  it("routes a passed canary to the reviewed activation deployment", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "six_pm_canary",
+          shadowReport: { status: "passed", legitimate_updates_suppressed: 0 },
+          regressionReport: { status: "passed" },
+          hashAttestation: { status: "passed" },
+          canaryReport: { status: "passed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("needs_operator");
+    expect(item.retry.automatic).toBe(false);
+    expect(item.recommendedAction.detail).toContain("Activate the verified rule globally");
+    expect(item.charge.level).toBe("none");
+  });
+
+  it("reports app activation without claiming worker parity or global verification", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "six_pm_canary",
+          draftPolicyRuleId: "candidate_listing_noise",
+          draftRuleActive: true,
+          shadowReport: { status: "passed", legitimate_updates_suppressed: 0 },
+          regressionReport: { status: "passed" },
+          hashAttestation: { status: "passed" },
+          canaryReport: { status: "passed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item.publicImpact).toMatchObject({
+      level: "unknown",
+      label: "App activation detected; worker parity pending",
+    });
+    expect(item.state).toBe("auto_retrying");
+    expect(item.retry.automatic).toBe(true);
+    expect(item.publicImpact.detail).toContain("worker parity is not proven");
+    expect(item.publicImpact.detail).not.toContain("verified active deployment");
+    expect(item.recommendedAction.detail).toContain("App activation is detected");
+    expect(item.recommendedAction.detail).not.toContain("Activate the verified rule globally");
+  });
+
+  it("creates a visible manual action when late feedback blocks activation", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "six_pm_canary",
+          draftPolicyRuleId: "candidate_listing_noise",
+          draftRuleActive: true,
+          activationStatus: "blocked_late_evidence",
+          activationBlockedAt: "2026-07-15T19:45:00.000Z",
+          canaryReport: { status: "passed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item.state).toBe("blocked");
+    expect(item.severity).toBe("high");
+    expect(item.retry.automatic).toBe(true);
+    expect(item.retry.label).toContain("hourly rollback verification");
+    expect(item.retry.detail).toContain("no-charge identity check");
+    expect(item.failureReason).toContain("New matching feedback arrived after the canary");
+    expect(item.recommendedAction.detail).toContain(
+      "Deactivate the drafted rule if it is live",
+    );
+    expect(item.recommendedAction.label).toBe("Restore the inactive deployment");
+    expect(item.publicImpact.level).toBe("unknown");
+    expect(item.publicImpact.label).toContain("Unverified active rule");
+    expect(item.publicImpact.detail).toContain("suppression");
+    expect(item.evidence).toContainEqual({
+      label: "Activation safety state",
+      value: "Blocked late evidence",
+    });
+    expect(operatorActionInboxSummary([item])).toMatchObject({
+      publicBlockers: 0,
+      publicImpactUnknown: 1,
+    });
+  });
+
+  it("keeps rollback-required promotion work high severity without a failed gate artifact", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "six_pm_canary",
+          draftPolicyRuleId: "candidate_listing_noise",
+          draftRuleActive: true,
+          activationStatus: "rollback_required",
+          activationBlockedAt: "2026-07-15T19:45:00.000Z",
+          blockingReport: {
+            status: "failed",
+            summary:
+              "The retroactive sweep mutated retained history, but its final guarded transition was rejected; rollback is required.",
+            transition_failure_reason: "the guarded transition was rejected",
+          },
+          canaryReport: { status: "passed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      severity: "high",
+      state: "blocked",
+      publicImpact: { level: "unknown" },
+    });
+    expect(item.failureReason).toContain("final guarded transition was rejected");
+    expect(item.failureReason).not.toContain(
+      "completed its bounded historical sweep",
+    );
+  });
+
+  it("makes post-sweep deactivation a high blocked hourly rollback action", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "retroactive_sweep",
+          draftPolicyRuleId: "candidate_listing_noise",
+          draftRuleActive: false,
+          activationStatus: "sweep_completed",
+          shadowReport: { status: "passed", legitimate_updates_suppressed: 0 },
+          regressionReport: { status: "passed" },
+          hashAttestation: { status: "passed" },
+          canaryReport: { status: "passed" },
+          retroactiveSweepReport: { status: "completed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      severity: "high",
+      state: "blocked",
+      publicImpact: {
+        level: "blocked",
+        label: "Post-sweep deactivation requires rollback repair",
+      },
+      retry: { automatic: true },
+      charge: { level: "none" },
+    });
+    expect(item.failureReason).toContain("Do not resolve");
+    expect(item.retry.label).toContain("hourly rollback/deactivation repair");
+    expect(item.recommendedAction.detail).toContain(
+      "next normal hourly, zero-charge worker run",
+    );
+    expect(item.recommendedAction.detail).not.toContain(
+      "Review the sweep report, then resolve",
+    );
+  });
+
+  it("moves a completed sweep from zero-charge retry to operator resolution only after attestation", () => {
+    const pendingCluster = promotionCluster({
+      stage: "retroactive_sweep",
+      draftPolicyRuleId: "candidate_listing_noise",
+      draftRuleActive: true,
+      activationStatus: "sweep_completed",
+      retroactiveSweepReport: { status: "completed" },
+    });
+    const readyCluster = promotionCluster({
+      ...pendingCluster,
+      resolutionReady: true,
+      resolutionWorkerRunId: "70000000-0000-4000-8000-000000000007",
+      resolutionAttestedAt: "2026-07-15T21:00:00.000Z",
+    });
+
+    const [pending] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [pendingCluster],
+      now,
+    });
+    const [ready] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [readyCluster],
+      now,
+    });
+
+    expect(pending).toMatchObject({
+      state: "auto_retrying",
+      retry: { automatic: true, label: "Yes — next normal hourly attestation" },
+      charge: { level: "none" },
+    });
+    expect(pending.failureReason).toContain("Resolve stays locked");
+    expect(ready).toMatchObject({
+      state: "needs_operator",
+      retry: { automatic: false },
+      recommendedAction: { label: "Review and resolve the verified pattern" },
+    });
+    expect(ready.evidence).toContainEqual({
+      label: "Resolution worker run",
+      value: "70000000-0000-4000-8000-000000000007",
+    });
+  });
+
+  it("classifies post-sweep identity drift as a manual unknown-impact rollback", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      promotionClusters: [
+        promotionCluster({
+          stage: "retroactive_sweep",
+          draftPolicyRuleId: "candidate_listing_noise",
+          draftRuleActive: true,
+          activationStatus: "sweep_completed",
+          resolutionIdentityDrifted: true,
+          resolutionIdentityDriftReason:
+            "Post-sweep identity drift blocks resolution: matcher/verifier bundle does not match the immutable activated identity.",
+          retroactiveSweepReport: { status: "completed" },
+        }),
+      ],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      severity: "high",
+      state: "blocked",
+      publicImpact: {
+        level: "unknown",
+        label: "Post-sweep identity drift requires rollback",
+      },
+      retry: {
+        automatic: false,
+        label: "No — restore the inactive deployment",
+      },
+      recommendedAction: { label: "Restore the inactive deployment" },
+    });
+    expect(item.failureReason).toContain("matcher/verifier bundle");
+    expect(item.retry.detail).toContain("cannot match the stale activated identity");
+    expect(item.recommendedAction.detail).toContain(
+      "restore the exact reviewed inactive app and worker identity",
+    );
+    expect(item.evidence).toContainEqual({
+      label: "Final hourly attestation",
+      value: "Blocked by post-sweep identity drift",
+    });
+    expect(item.evidence).toContainEqual({
+      label: "Resolution identity",
+      value:
+        "Post-sweep identity drift blocks resolution: matcher/verifier bundle does not match the immutable activated identity.",
     });
   });
 

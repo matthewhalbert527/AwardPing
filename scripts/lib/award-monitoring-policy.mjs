@@ -22,6 +22,13 @@ export const awardDecisionMemory = JSON.parse(readFileSync(decisionMemoryPath, "
 
 export const VISUAL_REVIEW_BATCH_POLICY_SCOPE = "visual_review_batch";
 
+export const monitoringPromotionMatcherIdentity = Object.freeze({
+  id: normalizePolicyText(awardMonitoringPolicy?.promotion_matcher?.identity),
+  version: normalizePolicyText(awardMonitoringPolicy?.promotion_matcher?.version),
+  source: normalizePolicyText(awardMonitoringPolicy?.promotion_matcher?.source),
+  hash: normalizePolicyText(awardMonitoringPolicy?.promotion_matcher?.hash).toLowerCase(),
+});
+
 const UPDATE_REVIEW_PROMPT_SCOPES = new Set([
   "change_details_ai",
   "visual_snapshot_ai",
@@ -40,29 +47,46 @@ const decisionMemoryEntries = Array.isArray(awardDecisionMemory.entries)
   ? awardDecisionMemory.entries
   : [];
 
-const policyFlagIdByAlias = new Map();
-const policyFlagAliasConflicts = [];
-for (const flag of policyFlags) {
-  if (!flag || flag.active === false) continue;
-  const canonicalId = cleanPolicyFlag(flag.id);
-  if (!canonicalId) continue;
-  for (const rawAlias of [canonicalId, ...stringArray(flag.aliases)]) {
-    const alias = cleanPolicyFlag(rawAlias);
-    if (!alias) continue;
-    const existing = policyFlagIdByAlias.get(alias);
-    if (existing && existing !== canonicalId) {
-      policyFlagAliasConflicts.push({ alias, ids: [existing, canonicalId] });
-      continue;
-    }
-    policyFlagIdByAlias.set(alias, canonicalId);
-  }
-}
+const policyAliasIndex = buildMonitoringPolicyAliasIndex(policyFlags);
+const policyFlagIdByAlias = policyAliasIndex.active;
+const reviewablePolicyFlagIdByAlias = policyAliasIndex.reviewable;
+const policyFlagAliasConflicts = policyAliasIndex.conflicts;
 
 export const alertBlockingMonitoringPolicyFlagIds = Object.freeze(
   [
     ...new Set(
       policyFlags
         .filter((flag) => flag?.active !== false && flag?.alert_blocking === true)
+        .map((flag) => cleanPolicyFlag(flag.id))
+        .filter(Boolean),
+    ),
+  ],
+);
+export const reviewableMonitoringPolicyFlagIds = Object.freeze(
+  [
+    ...new Set(
+      policyFlags
+        .filter((flag) => flag?.alert_blocking === true)
+        .map((flag) => cleanPolicyFlag(flag.id))
+        .filter(Boolean),
+    ),
+  ],
+);
+export const candidateMonitoringPolicyFlagIds = Object.freeze(
+  [
+    ...new Set(
+      policyFlags
+        .filter(
+          (flag) =>
+            flag?.active === false &&
+            flag?.alert_blocking === true &&
+            flag?.persistent === true &&
+            normalizePolicyText(flag?.prompt).length > 0 &&
+            Array.isArray(flag?.prompt_scopes) &&
+            flag.prompt_scopes.includes(VISUAL_REVIEW_BATCH_POLICY_SCOPE) &&
+            flag?.promotion_test_mode === "deterministic" &&
+            /^[0-9a-f]{64}$/.test(monitoringPromotionMatcherIdentity.hash),
+        )
         .map((flag) => cleanPolicyFlag(flag.id))
         .filter(Boolean),
     ),
@@ -177,12 +201,76 @@ export function assertVisualReviewBatchPolicyCoverage() {
 export function monitoringPolicyAliasConflicts() {
   return policyFlagAliasConflicts.map((conflict) => ({
     alias: conflict.alias,
-    ids: [...new Set(conflict.ids)],
+    ids: [...conflict.ids],
   }));
 }
 
+export function buildMonitoringPolicyAliasIndex(flags = []) {
+  const active = new Map();
+  const reviewable = new Map();
+  const conflictIds = new Map();
+  const recordConflict = (alias, ...ids) => {
+    const values = conflictIds.get(alias) || new Set();
+    for (const id of ids) if (id) values.add(id);
+    conflictIds.set(alias, values);
+  };
+
+  for (const flag of Array.isArray(flags) ? flags : []) {
+    if (!flag) continue;
+    const canonicalId = cleanPolicyFlag(flag.id);
+    if (!canonicalId) continue;
+    for (const rawAlias of [canonicalId, ...stringArray(flag.aliases)]) {
+      const alias = cleanPolicyFlag(rawAlias);
+      if (!alias) continue;
+      const reviewableExisting = reviewable.get(alias);
+      if (reviewableExisting && reviewableExisting !== canonicalId) {
+        recordConflict(alias, reviewableExisting, canonicalId);
+      } else if (!reviewableExisting) {
+        reviewable.set(alias, canonicalId);
+      }
+      if (flag.active === false) continue;
+      const activeExisting = active.get(alias);
+      if (activeExisting && activeExisting !== canonicalId) {
+        recordConflict(alias, activeExisting, canonicalId);
+        continue;
+      }
+      active.set(alias, canonicalId);
+    }
+  }
+
+  return {
+    active,
+    reviewable,
+    conflicts: [...conflictIds.entries()]
+      .map(([alias, ids]) => ({ alias, ids: [...ids].sort() }))
+      .sort((left, right) => left.alias.localeCompare(right.alias)),
+  };
+}
+
 export function monitoringPolicyFlagIdForAlias(flag) {
-  return policyFlagIdByAlias.get(cleanPolicyFlag(flag)) || null;
+  const canonicalId = policyFlagIdByAlias.get(cleanPolicyFlag(flag)) || null;
+  if (!canonicalId) return null;
+  return policyFlags.some(
+    (policyFlag) =>
+      policyFlag?.active !== false &&
+      cleanPolicyFlag(policyFlag?.id) === canonicalId,
+  )
+    ? canonicalId
+    : null;
+}
+
+export function reviewableMonitoringPolicyFlagIdForAlias(flag) {
+  return reviewablePolicyFlagIdByAlias.get(cleanPolicyFlag(flag)) || null;
+}
+
+export function isReviewableMonitoringPolicyFlag(flag) {
+  const canonicalId = reviewableMonitoringPolicyFlagIdForAlias(flag);
+  if (!canonicalId) return false;
+  return policyFlags.some(
+    (policyFlag) =>
+      cleanPolicyFlag(policyFlag?.id) === canonicalId &&
+      policyFlag?.alert_blocking === true,
+  );
 }
 
 export function isAlertBlockingMonitoringPolicyFlag(flag) {
@@ -194,6 +282,65 @@ export function isAlertBlockingMonitoringPolicyFlag(flag) {
       cleanPolicyFlag(policyFlag.id) === canonicalId &&
       policyFlag.alert_blocking === true,
   );
+}
+
+export function isCandidateMonitoringPolicyFlag(flag) {
+  const canonicalId = reviewableMonitoringPolicyFlagIdForAlias(flag);
+  if (!canonicalId) return false;
+  return policyFlags.some(
+    (policyFlag) =>
+      cleanPolicyFlag(policyFlag?.id) === canonicalId &&
+      policyFlag?.active === false &&
+      policyFlag?.alert_blocking === true &&
+      policyFlag?.persistent === true &&
+      normalizePolicyText(policyFlag?.prompt).length > 0 &&
+      Array.isArray(policyFlag?.prompt_scopes) &&
+      policyFlag.prompt_scopes.includes(VISUAL_REVIEW_BATCH_POLICY_SCOPE) &&
+      policyFlag?.promotion_test_mode === "deterministic",
+  );
+}
+
+export function isGloballyActiveMonitoringPolicyRule(flag) {
+  const canonicalId = monitoringPolicyFlagIdForAlias(flag);
+  if (!canonicalId) return false;
+  return policyFlags.some(
+    (policyFlag) =>
+      cleanPolicyFlag(policyFlag?.id) === canonicalId &&
+      policyFlag?.active !== false &&
+      policyFlag?.alert_blocking === true &&
+      policyFlag?.persistent === true &&
+      normalizePolicyText(policyFlag?.prompt).length > 0 &&
+      Array.isArray(policyFlag?.prompt_scopes) &&
+      policyFlag.prompt_scopes.includes(VISUAL_REVIEW_BATCH_POLICY_SCOPE),
+  );
+}
+
+export function monitoringPolicyRuleDefinitionForReview(flag) {
+  const canonicalId = reviewableMonitoringPolicyFlagIdForAlias(flag);
+  if (!canonicalId) return null;
+  const policyFlag = policyFlags.find(
+    (candidate) =>
+      cleanPolicyFlag(candidate?.id) === canonicalId &&
+      candidate?.alert_blocking === true,
+  );
+  if (!policyFlag) return null;
+  return {
+    id: canonicalId,
+    label: normalizePolicyText(policyFlag.label || canonicalId),
+    alert_blocking: true,
+    persistent: policyFlag.persistent === true,
+    aliases: [...new Set(stringArray(policyFlag.aliases).map(cleanPolicyFlag).filter(Boolean))].sort(),
+    scopes: [...new Set(stringArray(policyFlag.scopes).map(normalizePolicyText).filter(Boolean))].sort(),
+    prompt_scopes: [
+      ...new Set(stringArray(policyFlag.prompt_scopes).map(normalizePolicyText).filter(Boolean)),
+    ].sort(),
+    prompt: normalizePolicyText(policyFlag.prompt),
+    promotion_test_mode:
+      policyFlag.promotion_test_mode === "deterministic"
+        ? "deterministic"
+        : "unsupported",
+    matcher_digest: monitoringPromotionMatcherIdentity.hash,
+  };
 }
 
 export function isPersistentMonitoringPolicyFlag(flag) {

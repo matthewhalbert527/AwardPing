@@ -81,7 +81,7 @@ export function ProfileMenu({
           {showAdminLink && (
             <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/admin/issues" onClick={() => setOpen(false)}>
               <ShieldCheck size={16} aria-hidden="true" />
-              Action Inbox
+              Admin workflows
             </Link>
           )}
           <Link className="flex items-center gap-2 rounded-xl px-3 py-2 font-bold hover:bg-[var(--brand-blue-soft)]" href="/dashboard/office" onClick={() => setOpen(false)}>

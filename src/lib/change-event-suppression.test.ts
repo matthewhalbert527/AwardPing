@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { awardMonitoringPolicy } from "@/lib/award-monitoring-policy";
-import { changeEventSuppressionDecision } from "@/lib/change-event-suppression";
+import {
+  changeEventSuppressionDecision,
+  qualityFlagSuppressionCandidate,
+} from "@/lib/change-event-suppression";
 
 const source = {
   id: "source-1",
@@ -183,6 +186,62 @@ describe("change event suppression", () => {
         { mode: "retro_sweep" },
       ),
     ).toEqual({ suppressed: false, reason: null });
+  });
+
+  it.each([
+    ["profile_roster_rotation", "profile-roster-rotation"],
+    ["document_metadata_only_change", "document-metadata-only-change"],
+  ])(
+    "does not let inactive candidate %s suppress through its raw quality alias",
+    (ruleId, alias) => {
+      const rule = awardMonitoringPolicy.policy_flags.find(
+        (candidate) => candidate.id === ruleId,
+      ) as ({ active?: boolean } & Record<string, unknown>) | undefined;
+      expect(rule).toBeTruthy();
+      if (!rule) return;
+      const originalActive = rule.active;
+      try {
+        rule.active = false;
+        const candidate = event("The application deadline remains April 1.", {
+          is_alert_worthy: true,
+          generation_status: "generated",
+          quality_flags: [alias],
+          structured_diff: {
+            added_text: ["The application deadline remains April 1."],
+          },
+        });
+
+        expect(changeEventSuppressionDecision(candidate, source)).toEqual({
+          suppressed: false,
+          reason: null,
+        });
+        expect(
+          changeEventSuppressionDecision(candidate, source, {
+            mode: "retro_sweep",
+            excludedPolicyRuleIds: [ruleId],
+          }),
+        ).toEqual({ suppressed: false, reason: null });
+      } finally {
+        if (originalActive === undefined) delete rule.active;
+        else rule.active = originalActive;
+      }
+    },
+  );
+
+  it("does not apply raw quality fallback to a reviewable but inactive rule", () => {
+    const options = {
+      activePolicyId: null,
+      reviewablePolicyId: "profile_roster_rotation",
+    };
+    expect(
+      qualityFlagSuppressionCandidate("profile-roster-rotation", options),
+    ).toBeNull();
+    expect(
+      qualityFlagSuppressionCandidate("profile-roster-rotation", {
+        ...options,
+        excludedPolicyRuleIds: new Set(["profile_roster_rotation"]),
+      }),
+    ).toBeNull();
   });
 
   it.each([

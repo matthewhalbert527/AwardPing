@@ -24,6 +24,7 @@ describe("AwardPing worker catalog automation", () => {
   it("maps every permanent hourly stage to the downstream task and keeps catch-up work operator-only", () => {
     for (const taskId of [
       "source-intake",
+      "verified-feedback-promotions",
       "visual-review-batch",
       "change-event-noise",
       "reconcile-awards",
@@ -42,6 +43,41 @@ describe("AwardPing worker catalog automation", () => {
     ]) {
       expect(atomicTasks.find((task) => task.id === taskId)?.scheduledWorkerIds).toEqual([]);
     }
+  });
+
+  it("makes verified feedback promotion a zero-extra-charge hourly stage", () => {
+    const promotion = atomicTasks.find(
+      (task) => task.id === "verified-feedback-promotions",
+    );
+
+    expect(promotion?.scheduledWorkerIds).toEqual(["downstream-queues"]);
+    expect(promotion?.run).toMatchObject({
+      kind: "script",
+      args: [
+        "scripts/process-monitoring-feedback-promotions.mjs",
+        "--env=.env.worker.local",
+        "--apply=true",
+      ],
+    });
+    expect(promotion?.cost).toContain("$0 extra");
+  });
+
+  it("describes the permanent hourly stages in their executable order", () => {
+    const downstream = scheduledWorkers.find(
+      (worker) => worker.id === "downstream-queues",
+    );
+    const detail = downstream?.detail || "";
+
+    expect(detail.indexOf("source intake")).toBeLessThan(
+      detail.indexOf("visual review"),
+    );
+    expect(detail.indexOf("visual review")).toBeLessThan(
+      detail.indexOf("verified feedback promotions"),
+    );
+    expect(detail.indexOf("verified feedback promotions")).toBeLessThan(
+      detail.indexOf("general suppression"),
+    );
+    expect(downstream?.cost).toContain("source-intake");
   });
 
   it("references only real scheduled workers from atomic tasks", () => {

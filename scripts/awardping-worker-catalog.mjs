@@ -5,7 +5,7 @@ export const workerLanes = [
     detail:
       "Operator-run catch-up plus the permanent 6 PM capture and hourly downstream schedule.",
     profileIds: ["catchup", "daily"],
-    taskIds: ["health", "one-time-catchup"],
+    taskIds: ["health", "verified-feedback-promotions", "one-time-catchup"],
     workerIds: ["downstream-queues"],
   },
   {
@@ -141,6 +141,23 @@ export const atomicTasks = [
       applyArg: true,
     },
     scheduledWorkerIds: [],
+  },
+  {
+    id: "verified-feedback-promotions",
+    laneId: "orchestration",
+    label: "Verified Feedback Promotions",
+    detail:
+      "Advances clustered false-update feedback through complete shadow history, retained regression fixtures, exact app/worker/matcher identity, the regular three-shard 6 PM canary, and a bounded resumable retroactive sweep.",
+    cost: "$0 extra direct AI/API cost; it observes the regular 6 PM cohort and never launches a paid canary.",
+    run: {
+      kind: "script",
+      args: [
+        "scripts/process-monitoring-feedback-promotions.mjs",
+        "--env=.env.worker.local",
+        "--apply=true",
+      ],
+    },
+    scheduledWorkerIds: ["downstream-queues"],
   },
   {
     id: "source-quality",
@@ -354,8 +371,8 @@ export const scheduledWorkers = [
     taskName: "AwardPing Downstream Queue Pipeline",
     label: "Hourly Queue Pipeline",
     detail:
-      "Hourly: finalizes the 6 PM report, processes bounded source intake, handles visual review and suppression, reconciles award facts, and processes flagged page audits.",
-    cost: "Gemini Batch API for queued change candidates and flagged page audits; reconciliation has no direct AI cost.",
+      "Hourly: finalizes the 6 PM report, processes bounded source intake, handles visual review, advances verified feedback promotions, applies general suppression, reconciles award facts, and processes flagged page audits.",
+    cost: "Gemini Batch API for plausible source-intake pages, queued change candidates, and flagged page audits; promotion, suppression, and reconciliation add no direct AI cost.",
   },
   {
     id: "visual-shard-1",
@@ -399,6 +416,7 @@ export const workerProcessPatterns = [
   "run-localization-repair",
   "run-overnight-source-quality",
   "process-source-intake-requests",
+  "process-monitoring-feedback-promotions",
   "process-visual-review-batch",
   "reconcile-impacted-award-pages",
 ];

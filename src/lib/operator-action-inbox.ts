@@ -5,6 +5,15 @@ import {
 } from "@/lib/award-monitoring-policy";
 import type { Json } from "@/lib/database.types";
 import { monitoringFeedbackEvidenceSummary } from "@/lib/monitoring-feedback";
+import {
+  monitoringFeedbackPromotionFailedGate,
+  monitoringFeedbackPromotionNeedsActivationRollback,
+  monitoringFeedbackPromotionPostSweepDeactivated,
+  monitoringFeedbackPromotionProgress,
+  monitoringFeedbackPromotionSafeAction,
+  monitoringFeedbackPromotionStageCopy,
+  type MonitoringFeedbackPromotionCluster,
+} from "@/lib/monitoring-feedback-promotion";
 
 export const operatorActionInboxSchemaVersion = "operator-action-inbox-v1";
 
@@ -77,29 +86,8 @@ export type OperatorActionInboxItem = {
   } | null;
   action:
     | { kind: "source"; sourceId: string; sourceTitle: string }
-    | { kind: "monitoring_feedback"; feedbackId: string }
     | { kind: "source_intake" }
     | { kind: "none" };
-};
-
-export type OperatorMonitoringFeedbackInput = {
-  id: string;
-  eventId: string;
-  sourceId: string | null;
-  awardId: string;
-  eventSummary: string | null;
-  eventSourceUrl: string | null;
-  eventSourceTitle: string | null;
-  eventSourcePageType: string | null;
-  eventDetectedAt: string | null;
-  eventEvidence: Json;
-  reasonCode: string;
-  note: string | null;
-  requestedScope: string;
-  policyRuleId: string | null;
-  policyVersion: string;
-  actorEmail: string;
-  createdAt: string;
 };
 
 export type OperatorNightlyFailureInput = {
@@ -141,7 +129,7 @@ export type OperatorDigestDeliveryFailureInput = {
 
 export type BuildOperatorActionInboxInput = {
   issues: AdminPageIssue[];
-  pendingFeedback?: OperatorMonitoringFeedbackInput[];
+  promotionClusters?: MonitoringFeedbackPromotionCluster[];
   nightlyFailureGroups?: OperatorNightlyFailureInput[];
   nightlyReportedAt?: string | null;
   visualReviewFailures?: OperatorVisualReviewFailureInput[];
@@ -160,7 +148,7 @@ const retiredIssueCategories = new Set([
 
 export function buildOperatorActionInbox({
   issues,
-  pendingFeedback = [],
+  promotionClusters = [],
   nightlyFailureGroups = [],
   nightlyReportedAt = null,
   visualReviewFailures = [],
@@ -176,7 +164,7 @@ export function buildOperatorActionInbox({
       .filter(shouldIncludeNightlyFailure)
       .map((failure) => nightlyFailureToAction(failure, nightlyReportedAt, now)),
     ...visualReviewFailures.map((failure) => visualReviewFailureToAction(failure, now)),
-    ...pendingFeedback.map((feedback) => monitoringFeedbackToAction(feedback, now)),
+    ...promotionClusters.map((cluster) => monitoringFeedbackClusterToAction(cluster, now)),
     ...digestDeliveryFailures.map((failure) => digestDeliveryFailureToAction(failure, now)),
     ...(loadErrors.length > 0 ? [loadErrorToAction(loadErrors, now)] : []),
   ];
@@ -188,7 +176,16 @@ export function operatorActionInboxSummary(items: OperatorActionInboxItem[]) {
   const needsOperator = items.filter((item) => item.state !== "auto_retrying").length;
   const autoRetrying = items.filter((item) => item.state === "auto_retrying").length;
   const publicBlockers = items.filter((item) => item.publicImpact.level === "blocked").length;
-  return { total: items.length, needsOperator, autoRetrying, publicBlockers };
+  const publicImpactUnknown = items.filter(
+    (item) => item.publicImpact.level === "unknown",
+  ).length;
+  return {
+    total: items.length,
+    needsOperator,
+    autoRetrying,
+    publicBlockers,
+    publicImpactUnknown,
+  };
 }
 
 export function formatOperatorActionAge(value: string | null, now = new Date()) {
@@ -668,73 +665,262 @@ function visualReviewFailureToAction(
   };
 }
 
-function monitoringFeedbackToAction(
-  feedback: OperatorMonitoringFeedbackInput,
+function monitoringFeedbackClusterToAction(
+  cluster: MonitoringFeedbackPromotionCluster,
   now: Date,
 ): OperatorActionInboxItem {
-  const severity: PageIssueSeverity = feedback.requestedScope === "global" ? "medium" : "low";
-  const evidenceSummary = monitoringFeedbackEvidenceSummary(feedback.eventEvidence);
+  const progress = monitoringFeedbackPromotionProgress(cluster.stage);
+  const failedGate = monitoringFeedbackPromotionFailedGate(cluster);
+  const resolutionIdentityDrifted = cluster.resolutionIdentityDrifted;
+  const awaitingResolutionAttestation =
+    cluster.stage === "retroactive_sweep" &&
+    cluster.draftRuleActive &&
+    !resolutionIdentityDrifted &&
+    !cluster.resolutionReady;
+  const appActivationParityPending =
+    cluster.stage === "six_pm_canary" &&
+    cluster.draftRuleActive;
+  const isManualStage =
+    cluster.stage === null ||
+    cluster.stage === "triaged" ||
+    cluster.stage === "similar_feedback_clustered" ||
+    (cluster.stage === "six_pm_canary" && !cluster.draftRuleActive) ||
+    (cluster.stage === "retroactive_sweep" &&
+      (cluster.resolutionReady || resolutionIdentityDrifted));
+  const isCanaryStage = cluster.stage === "app_worker_hashes_match";
+  const activationBlocked = monitoringFeedbackPromotionNeedsActivationRollback(
+    cluster.activationStatus,
+  );
+  const postSweepDeactivated =
+    monitoringFeedbackPromotionPostSweepDeactivated(cluster);
+  const automaticRetry =
+    activationBlocked ||
+    postSweepDeactivated ||
+    (!resolutionIdentityDrifted &&
+      (awaitingResolutionAttestation ||
+        !isManualStage ||
+        (Boolean(failedGate) && cluster.stage === "six_pm_canary")));
+  const sampleEvidence = Array.isArray(cluster.sampleFeedback)
+    ? cluster.sampleFeedback[0]
+    : cluster.sampleFeedback;
+  const sampleRecord =
+    sampleEvidence && typeof sampleEvidence === "object" && !Array.isArray(sampleEvidence)
+      ? sampleEvidence
+      : null;
+  const sourceTitle = jsonText(sampleRecord?.source_title) || "Clustered monitoring feedback";
+  const sourceUrl = jsonText(sampleRecord?.source_url);
+  const sourceId = jsonText(sampleRecord?.source_id);
+  const eventSummary = jsonText(sampleRecord?.event_summary);
+  const sampleCapturedEvidence = sampleRecord?.event_evidence
+    ? monitoringFeedbackEvidenceSummary(sampleRecord.event_evidence)
+    : null;
+  const stageLabel = cluster.stage
+    ? monitoringFeedbackPromotionStageCopy[cluster.stage].label
+    : "Ready for triage";
+  const occurrenceLabel = `${cluster.recurrenceCount.toLocaleString("en-US")} ${cluster.recurrenceCount === 1 ? "occurrence" : "occurrences"}`;
+  const sourceCountLabel = `${cluster.sourceCount.toLocaleString("en-US")} ${cluster.sourceCount === 1 ? "source" : "sources"}`;
+  const severity: PageIssueSeverity = failedGate ? "high" : "medium";
+  const state: OperatorActionState = failedGate
+    ? "blocked"
+    : isManualStage
+      ? "needs_operator"
+      : "auto_retrying";
+
   return {
     schemaVersion: operatorActionInboxSchemaVersion,
-    id: `monitoring-feedback:${feedback.id}`,
-    fingerprint: `monitoring-feedback:${feedback.id}`,
+    id: `monitoring-feedback-cluster:${cluster.clusterKey}`,
+    fingerprint: `monitoring-feedback-cluster:${cluster.clusterKey}`,
     sourceKind: "monitoring_feedback",
     severity,
     severityLabel: severityLabel(severity),
-    state: "needs_operator",
-    stateLabel: stateLabel("needs_operator"),
-    title: feedback.eventSourceTitle || `False-update correction ${feedback.eventId}`,
-    context: feedback.requestedScope === "global" ? "Requested as a global rule" : "Event-specific correction",
-    failureReason: feedback.note || feedback.eventSummary || humanizeCode(feedback.reasonCode),
-    occurredAt: feedback.createdAt,
-    ageLabel: formatOperatorActionAge(feedback.createdAt, now),
+    state,
+    stateLabel: stateLabel(state),
+    title: `Repeated false-update pattern: ${humanizeCode(cluster.reasonCode)}`,
+    context: `${cluster.domainTemplate} · ${occurrenceLabel} across ${sourceCountLabel} · Step ${progress.completed} of ${progress.total}`,
+    failureReason:
+      failedGate ||
+      (awaitingResolutionAttestation
+        ? "The retroactive sweep passed. Resolve stays locked until the next normal hourly worker records a matching zero-charge attestation."
+        : null) ||
+      (appActivationParityPending
+        ? "App activation detected; worker parity is pending before AwardPing can continue the bounded historical sweep."
+        : null) ||
+      eventSummary ||
+      "Similar corrections are waiting for a verified global rule.",
+    occurredAt: cluster.updatedAt || cluster.lastSeenAt,
+    ageLabel: formatOperatorActionAge(cluster.updatedAt || cluster.lastSeenAt, now),
     owner: {
-      label: "Policy review",
-      detail: "Functional owner; the submitter is recorded in evidence.",
+      label: state === "auto_retrying" ? "AwardPing" : "Policy review",
+      detail:
+        state === "auto_retrying"
+          ? "Automatic verified-promotion workflow. A person is needed only if a gate fails."
+          : cluster.ownerEmail
+            ? `Assigned to ${cluster.ownerEmail}.`
+            : "Functional owner; no individual assignee is stored.",
     },
     publicImpact: {
-      level: "protected",
-      label: "Current false update is hidden",
-      detail: "A similar false update can recur until the reviewed rule is implemented globally.",
+      level:
+        resolutionIdentityDrifted
+          ? "unknown"
+          : postSweepDeactivated
+          ? "blocked"
+          : activationBlocked && cluster.draftRuleActive
+            ? "unknown"
+            : appActivationParityPending
+              ? "unknown"
+              : "protected",
+      label: resolutionIdentityDrifted
+        ? "Post-sweep identity drift requires rollback"
+        : postSweepDeactivated
+          ? "Post-sweep deactivation requires rollback repair"
+          : activationBlocked
+            ? cluster.draftRuleActive
+              ? "Unverified active rule is being rolled back"
+              : "Activation is blocked safely"
+            : appActivationParityPending
+              ? "App activation detected; worker parity pending"
+              : cluster.draftRuleActive
+                ? "Verified rule is active globally"
+                : "Current false updates are hidden",
+      detail:
+        resolutionIdentityDrifted
+          ? "The current app identity no longer matches the immutable activated app/worker identity. Final resolution cannot become ready; deactivate the candidate, restore the exact inactive deployment, and audit reversal of candidate-attributable suppressions."
+          : postSweepDeactivated
+          ? "The sweep finished, but its rule is no longer active. Do not resolve: the normal hourly no-charge worker must record deactivation, reverse candidate-attributable suppressions, and return the workflow to draft."
+          : activationBlocked
+          ? cluster.draftRuleActive
+            ? "New evidence invalidated the sealed canary revision. Stop further historical mutation, restore the inactive deployment, and audit reversal of every candidate-attributable suppression before redrafting."
+            : "The candidate is inactive and no further historical mutation is allowed. AwardPing is verifying the rollback and suppression-reversal audit before redrafting."
+          : appActivationParityPending
+            ? "The current app policy contains the candidate, but activated worker parity is not proven. Do not describe global suppression as verified until the hourly identity check advances the workflow."
+            : cluster.draftRuleActive
+              ? "The verified active deployment suppresses matching future events. The cluster stays open until the bounded historical sweep is verified."
+              : "Each reported event stays suppressed immediately. Similar future events remain unchanged until every global activation gate passes.",
     },
     retry: {
-      automatic: false,
-      label: "No — policy decision needed",
-      detail: "Requested global scope is not active until a tested rule is implemented and selected below.",
+      automatic: automaticRetry,
+      label:
+        automaticRetry
+          ? postSweepDeactivated
+            ? "Yes — hourly rollback/deactivation repair"
+            : activationBlocked
+            ? "Yes — hourly rollback verification"
+            : cluster.stage === "app_worker_hashes_match"
+            ? "Yes — next scheduled 6 PM scan"
+            : cluster.stage === "six_pm_canary" && cluster.draftRuleActive
+              ? "Yes — hourly activated-deployment verification"
+            : awaitingResolutionAttestation
+              ? "Yes — next normal hourly attestation"
+            : failedGate
+              ? "Yes — hourly verified-stage retry"
+              : "Yes — verified stage runner"
+          : failedGate
+            ? resolutionIdentityDrifted
+              ? "No — restore the inactive deployment"
+              : "No — repair the failed gate"
+            : "No — operator checkpoint",
+      detail:
+        automaticRetry
+          ? postSweepDeactivated
+            ? "The normal hourly no-charge worker records the inactive deployment, reverses candidate-attributable suppressions, and returns the cluster to draft before any resolution can occur."
+            : activationBlocked
+            ? "AwardPing retries only the no-charge identity check. It cannot pass until the rule is inactive and the app and worker run the same restored revision."
+            : awaitingResolutionAttestation
+              ? "The normal hourly promotion worker records one reusable cluster-bound attestation. It creates no paid API request and does not wait for another 6 PM scan."
+            : failedGate
+            ? "The runner will retry the unchanged evidence automatically, but a rule, deployment, or source repair may still be required before it can pass."
+            : "Automation advances only after it records passing evidence for the next exact stage."
+          : resolutionIdentityDrifted
+            ? "A normal hourly attestation cannot match the stale activated identity. A person must first deactivate the candidate and restore the exact inactive app and worker deployment."
+            : "The workflow cannot advance until the displayed operator checkpoint or failed gate is resolved.",
     },
-    charge: noPaidAiCharge("Promoting or resolving a monitoring rule does not submit paid AI work."),
+    charge: isCanaryStage
+      ? {
+          level: "may_charge",
+          label: "Possible — scheduled Gemini Batch",
+          detail:
+            "The normal 6 PM visual-review cohort can create Gemini Batch API charges; the promotion workflow does not launch an extra canary run.",
+        }
+      : noPaidAiCharge(
+          "Clustering, shadow evaluation, regression checks, hash checks, and final resolution do not submit paid AI work.",
+        ),
     recommendedAction: {
-      label: "Implement or match a safe global rule",
-      detail: "Review the captured evidence, implement and test the rule, then mark this correction resolved with the exact active rule.",
-      href: null,
+      label: resolutionIdentityDrifted
+        ? "Restore the inactive deployment"
+        : postSweepDeactivated
+          ? "Keep inactive; let hourly rollback repair run"
+          : activationBlocked
+          ? "Restore the inactive deployment"
+        : failedGate
+          ? "Repair the blocked verification gate"
+          : awaitingResolutionAttestation
+            ? "Wait for the no-charge hourly attestation"
+            : cluster.stage === "retroactive_sweep" && cluster.resolutionReady
+              ? "Review and resolve the verified pattern"
+          : stageLabel,
+      detail: monitoringFeedbackPromotionSafeAction(cluster),
+      href: `/dashboard/admin/issues?tab=promotions#promotion-${encodeURIComponent(cluster.workflowId || cluster.clusterKey)}`,
     },
     evidence: compactEvidence([
-      ["Feedback", feedback.id],
-      ["Event", feedback.eventId],
-      ["Award ID", feedback.awardId],
-      ["Source ID", feedback.sourceId],
-      ["Reason", humanizeCode(feedback.reasonCode)],
-      ["Requested scope", feedback.requestedScope],
-      ["Captured evidence", evidenceSummary],
-      ["Event detected", feedback.eventDetectedAt],
-      ["Submitted by", feedback.actorEmail],
-      ["Submitted", feedback.createdAt],
+      ["Evidence signature", cluster.evidenceSignature],
+      ["Domain template", cluster.domainTemplate],
+      ["Reason", humanizeCode(cluster.reasonCode)],
+      ["Recurrence", occurrenceLabel],
+      ["Affected sources", sourceCountLabel],
+      ["Current stage", `${stageLabel} (${progress.completed} of ${progress.total})`],
+      ["Activation safety state", humanizeCode(cluster.activationStatus)],
+      ["Activation blocked", cluster.activationBlockedAt],
+      ["Resolution identity", cluster.resolutionIdentityDriftReason],
+      [
+        "Final hourly attestation",
+        cluster.resolutionIdentityDrifted
+          ? "Blocked by post-sweep identity drift"
+          : cluster.resolutionReady
+            ? cluster.resolutionAttestedAt
+            : "Pending",
+      ],
+      ["Resolution worker run", cluster.resolutionWorkerRunId],
+      [
+        "Latest rejected stage",
+        typeof cluster.latestRejectedAttempt?.requested_stage === "string"
+          ? humanizeCode(cluster.latestRejectedAttempt.requested_stage)
+          : null,
+      ],
+      [
+        "Latest rejected reason",
+        jsonText(cluster.latestRejectedAttempt?.failure_reason) ||
+          cluster.latestRejectedAttempt?.summary,
+      ],
+      [
+        "Latest rejected report",
+        cluster.latestRejectedAttempt?.report_id ||
+          cluster.latestRejectedAttempt?.digest,
+      ],
+      ["Latest rejected at", cluster.latestRejectedAttempt?.completed_at],
+      ["Draft rule", cluster.draftPolicyRuleId],
+      [
+        "Known real update fixtures",
+        cluster.legitimateNegativeEventIds.join(", ") || null,
+      ],
+      ["Sample evidence", sampleCapturedEvidence],
+      ["Workflow ID", cluster.workflowId],
+      ["First seen", cluster.firstSeenAt],
+      ["Last updated", cluster.updatedAt || cluster.lastSeenAt],
     ]),
     policy: {
-      id: feedback.policyRuleId || "monitoring-feedback-record",
-      version: feedback.policyVersion || "not recorded",
-      hash: null,
-      description: "Policy version stored with the original correction. This row does not retain a historical policy hash.",
+      id: awardMonitoringPolicyIdentity.id,
+      version: awardMonitoringPolicyIdentity.version,
+      hash: awardMonitoringPolicyIdentity.hash,
+      description:
+        "Current deployed monitoring-policy bundle. The proposed rule ID is shown separately in Evidence, and accepted stages retain their immutable draft evidence.",
     },
     award: null,
-    source: feedback.eventSourceTitle || feedback.eventSourceUrl || feedback.sourceId
-      ? {
-          id: feedback.sourceId,
-          title: feedback.eventSourceTitle || "Original source",
-          url: feedback.eventSourceUrl,
-        }
-      : null,
-    action: { kind: "monitoring_feedback", feedbackId: feedback.id },
+    source: {
+      id: sourceId,
+      title: sourceTitle,
+      url: sourceUrl,
+    },
+    action: { kind: "none" },
   };
 }
 
@@ -991,6 +1177,11 @@ function integerValue(value: unknown) {
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function jsonText(value: Json | undefined) {
+  const cleaned = cleanText(value);
+  return cleaned || null;
 }
 
 function humanizeCode(value: string) {

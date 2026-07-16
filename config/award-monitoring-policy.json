@@ -1,7 +1,28 @@
 {
-  "version": 2,
+  "version": 3,
   "name": "AwardPing global monitoring policy",
-  "updated_at": "2026-07-14",
+  "updated_at": "2026-07-15",
+  "promotion_matcher": {
+    "identity": "awardping-monitoring-promotion-matcher-bundle",
+    "version": "source-bundle-sha256-v1",
+    "source": "scripts/lib/monitoring-promotion-matcher-bundle.mjs",
+    "sources": [
+      "scripts/lib/monitoring-promotion-matcher-bundle.mjs",
+      "scripts/lib/change-event-suppression.mjs",
+      "scripts/lib/change-event-sweep-state.mjs",
+      "scripts/lib/award-monitoring-policy.mjs",
+      "scripts/lib/source-quality.mjs",
+      "scripts/lib/source-ai-review-status.mjs",
+      "scripts/lib/monitoring-feedback-promotion-verification.mjs",
+      "scripts/process-monitoring-feedback-promotions.mjs",
+      "src/lib/change-event-suppression.ts",
+      "src/lib/award-monitoring-policy.ts",
+      "src/lib/source-quality.ts",
+      "src/lib/source-ai-review-status.ts",
+      "src/lib/source-url-policy.ts"
+    ],
+    "hash": "fc9bcc48d870eae4e7ed2718ee725141d425d3d1b29ab30f0c8b189934ffbe7d"
+  },
   "principles": [
     "Publish updates only when a concrete applicant-facing award fact changed.",
     "Apply policy globally across all awards unless a rule explicitly says it is award-specific.",

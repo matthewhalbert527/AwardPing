@@ -76,7 +76,33 @@ describe("Windows worker update safety", () => {
 
     expect(stagedCopyIndex).toBeGreaterThan(0);
     expect(stagedDependencyIndex).toBeGreaterThan(stagedCopyIndex);
+    const finalRevisionCheckIndex = installer.indexOf(
+      "Get-AwardPingSourceRevision -SourceRoot $sourceRoot",
+      stagedDependencyIndex,
+    );
     expect(suspendIndex).toBeGreaterThan(stagedDependencyIndex);
+    expect(finalRevisionCheckIndex).toBeGreaterThan(stagedDependencyIndex);
+    expect(finalRevisionCheckIndex).toBeLessThan(suspendIndex);
+    const freshCopyIndex = installer.indexOf(
+      "Copy-AppFiles -SourceRoot $sourceRoot -AppDir $appDir",
+      stagedCopyIndex + 1,
+    );
+    const freshDependencyIndex = installer.indexOf(
+      "Install-Dependencies -AppDir $appDir",
+      freshCopyIndex,
+    );
+    const freshRevisionCheckIndex = installer.indexOf(
+      "Get-AwardPingSourceRevision -SourceRoot $sourceRoot",
+      freshDependencyIndex,
+    );
+    const launcherWriteIndex = installer.indexOf(
+      "Write-UninstallScript -InstallRoot $InstallRoot",
+      freshDependencyIndex,
+    );
+    expect(freshCopyIndex).toBeGreaterThan(stagedCopyIndex);
+    expect(freshDependencyIndex).toBeGreaterThan(freshCopyIndex);
+    expect(freshRevisionCheckIndex).toBeGreaterThan(freshDependencyIndex);
+    expect(freshRevisionCheckIndex).toBeLessThan(launcherWriteIndex);
     expect(mutableStateIndex).toBeGreaterThan(suspendIndex);
     expect(switchIndex).toBeGreaterThan(mutableStateIndex);
     expect(finallyIndex).toBeGreaterThan(switchIndex);
@@ -120,7 +146,8 @@ describe("Windows worker update safety", () => {
     expect(retirementIndex).toBeGreaterThan(registrationIndex);
   });
 
-  const windowsIt = process.platform === "win32" ? it : it.skip;
+  const windowsIt = (name, test) =>
+    (process.platform === "win32" ? it : it.skip)(name, test, 20_000);
 
   windowsIt("never enables or starts a task whose XML registration failed", () => {
     const restoreFunction = extractPowerShellFunction(
@@ -368,6 +395,17 @@ describe("Windows worker update safety", () => {
       "scripts\\backfill-visual-event-evidence.mjs",
       "scripts\\lib\\visual-event-evidence-backfill.mjs",
       "scripts\\lib\\snapshot-localization.mjs",
+      "scripts\\lib\\monitoring-promotion-matcher-bundle.mjs",
+      "scripts\\lib\\award-monitoring-policy.mjs",
+      "scripts\\lib\\change-event-sweep-state.mjs",
+      "scripts\\lib\\source-quality.mjs",
+      "scripts\\lib\\source-ai-review-status.mjs",
+      "src\\lib\\change-event-suppression.ts",
+      "src\\lib\\award-monitoring-policy.ts",
+      "src\\lib\\source-quality.ts",
+      "src\\lib\\source-ai-review-status.ts",
+      "src\\lib\\source-url-policy.ts",
+      "scripts\\supabase-service-client.mjs",
     ]) {
       expect(installer.split(`"${relativePath}"`).length - 1).toBeGreaterThanOrEqual(2);
     }
@@ -417,14 +455,18 @@ describe("Windows worker update safety", () => {
     const reconciliationIndex = downstream.indexOf('-Name "award-reconciliation"');
     const auditIndex = downstream.indexOf('-Name "page-audit-batch"');
     const nightlyReportIndex = downstream.indexOf('-Name "visual-nightly-report"');
+    const promotionIndex = downstream.indexOf('-Name "verified-feedback-promotions"');
     const sourceIntakeIndex = downstream.indexOf('-Name "source-intake"');
     expect(sweepIndex).toBeGreaterThan(visualIndex);
     expect(reconciliationIndex).toBeGreaterThan(sweepIndex);
     expect(auditIndex).toBeGreaterThan(reconciliationIndex);
     expect(nightlyReportIndex).toBeGreaterThan(0);
+    expect(promotionIndex).toBeGreaterThan(visualIndex);
+    expect(promotionIndex).toBeLessThan(sweepIndex);
     expect(sourceIntakeIndex).toBeGreaterThan(nightlyReportIndex);
     expect(visualIndex).toBeGreaterThan(sourceIntakeIndex);
     expect(downstream).toContain('scripts\\report-visual-nightly.mjs');
+    expect(downstream).toContain('scripts\\process-monitoring-feedback-promotions.mjs');
     expect(downstream).toContain('scripts\\process-source-intake-requests.mjs');
     expect(downstream).toContain('"--poll-batch-limit=5"');
     expect(downstream).toContain('"--request-timeout-ms=30000"');
@@ -432,6 +474,8 @@ describe("Windows worker update safety", () => {
     expect(downstream).toContain('"--status=pending,queued"');
     expect(downstream).not.toContain('"--status=pending,queued,failed"');
     expect(downstream).toContain('$nightlyReportExit -eq 0');
+    expect(downstream).toContain('$promotionExit -eq 0');
+    expect(downstream).toContain('promotion_exit=$promotionExit');
     expect(downstream).toContain('$sourceIntakeExit -eq 0');
     expect(sourceIntakeWorker).toContain('positiveInt(args["poll-batch-limit"], 25)');
     expect(sourceIntakeWorker).toContain('positiveInt(args["time-budget-ms"], 15 * 60_000)');
@@ -462,9 +506,101 @@ describe("Windows worker update safety", () => {
     expect(nightlyReporter).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
   });
 
+  it("seals the installed source revision and live app identity URL", () => {
+    expect(installer).toContain("Get-AwardPingSourceRevision -SourceRoot $sourceRoot");
+    expect(installer).toContain("AWARDPING_WORKER_REVISION=$SourceRevision");
+    expect(installer).toContain("NEXT_PUBLIC_APP_URL=$AppUrl");
+    expect(installer).toContain('"AWARDPING_WORKER_REVISION" = $SourceRevision');
+    expect(installer).toContain('"NEXT_PUBLIC_APP_URL" = $AppUrl');
+    expect(installer).toContain("invalid AWARDPING_WORKER_REVISION");
+    expect(installer).toContain("invalid NEXT_PUBLIC_APP_URL");
+    expect(installer).toContain(
+      "installed AWARDPING_WORKER_REVISION does not equal the requested source commit",
+    );
+    expect(installer).toContain(
+      "installed NEXT_PUBLIC_APP_URL does not equal the requested production app URL",
+    );
+    expect(installer).toContain("status --porcelain --untracked-files=all");
+    expect(installer).toContain("Refusing to label dirty or uncommitted worker code");
+    expect(installer).toContain('Join-Path $manifestRoot ".awardping-worker-revision"');
+    expect(installer).toContain('"scripts\\process-monitoring-feedback-promotions.mjs"');
+    expect(installer).toContain(
+      '"scripts\\lib\\monitoring-feedback-promotion-verification.mjs"',
+    );
+    expect(installerDocs).toContain("AWARDPING_WORKER_REVISION");
+    expect(installerDocs).toContain("NEXT_PUBLIC_APP_URL");
+    expect(installerDocs).toContain("promotion_exit");
+    expect(installerDocs).toContain("refuses a dirty git worktree");
+  });
+
+  windowsIt("replaces a stale installed app URL with the requested release URL", () => {
+    const updateFunction = extractPowerShellFunction(
+      installer,
+      "Update-ExistingEnvFileDefaults",
+      "Write-UninstallScript",
+    );
+    const simulation = [
+      updateFunction,
+      "$path = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-env-' + [guid]::NewGuid().ToString('N'))",
+      "Set-Content -LiteralPath $path -Value \"NEXT_PUBLIC_APP_URL=https://old.example.com`r`nAWARDPING_WORKER_REVISION=0000000000000000000000000000000000000000`r`n\"",
+      "Update-ExistingEnvFileDefaults -Path $path -AppUrl 'https://awardping.vercel.app' -SourceRevision '1111111111111111111111111111111111111111'",
+      "Get-Content -LiteralPath $path -Raw",
+      "Remove-Item -LiteralPath $path -Force",
+    ].join("\n");
+
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "NEXT_PUBLIC_APP_URL=https://awardping.vercel.app",
+    );
+    expect(result.stdout).not.toContain("NEXT_PUBLIC_APP_URL=https://old.example.com");
+    expect(result.stdout).toContain(
+      "AWARDPING_WORKER_REVISION=1111111111111111111111111111111111111111",
+    );
+  });
+
+  windowsIt("refuses to seal a dirty git source as the prior commit", () => {
+    const gitPath = spawnSync("where.exe", ["git.exe"], { encoding: "utf8" })
+      .stdout.split(/\r?\n/)
+      .map((value) => value.trim())
+      .find(Boolean);
+    expect(gitPath).toBeTruthy();
+    const quotedGitPath = String(gitPath).replace(/'/g, "''");
+    const functions = [
+      `$script:gitPath = '${quotedGitPath}'`,
+      "function Get-CommandPath { param([string]$Command) return $script:gitPath }",
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingSourceRevision",
+        "Complete-AwardPingStartupLauncherUpdate",
+      ),
+    ].join("\n");
+    const simulation = [
+      functions,
+      "$root = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-dirty-revision-' + [guid]::NewGuid().ToString('N'))",
+      "New-Item -ItemType Directory -Path $root -Force | Out-Null",
+      "& $script:gitPath -C $root init --quiet",
+      "& $script:gitPath -C $root config user.email 'worker-test@awardping.local'",
+      "& $script:gitPath -C $root config user.name 'AwardPing Test'",
+      "$file = Join-Path $root 'worker.mjs'; Set-Content -LiteralPath $file -Value 'committed'",
+      "& $script:gitPath -C $root add worker.mjs; & $script:gitPath -C $root commit --quiet -m initial",
+      "$clean = Get-AwardPingSourceRevision -SourceRoot $root",
+      "Set-Content -LiteralPath $file -Value 'dirty'",
+      "try { Get-AwardPingSourceRevision -SourceRoot $root; 'UNEXPECTED_SUCCESS' } catch { 'BLOCKED=' + $_.Exception.Message }",
+      "'CLEAN=' + $clean",
+      "Remove-Item -LiteralPath $root -Recurse -Force",
+    ].join("\n");
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/CLEAN=[0-9a-f]{40}/);
+    expect(result.stdout).toContain("BLOCKED=Refusing to label dirty or uncommitted worker code");
+    expect(result.stdout).not.toContain("UNEXPECTED_SUCCESS");
+  });
+
   it("documents the complete update command instead of manual app-file copying", () => {
     expect(installerDocs).toContain("Install-AwardPingWorker.ps1\" -UpdateOnly");
-    expect(installerDocs).toContain("Apply and verify its Supabase migrations");
+    expect(installerDocs).toContain("apply and verify its Supabase migrations");
+    expect(installerDocs).toContain("/api/monitoring-policy-identity");
     expect(installerDocs).toContain("change-event-suppression-sweep");
     expect(installerDocs).toContain("complete staged app");
     expect(installerDocs).toContain("workspace catch-up");

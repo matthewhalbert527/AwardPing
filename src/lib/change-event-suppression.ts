@@ -4,6 +4,7 @@ import {
   isAlertBlockingMonitoringPolicyFlag,
   isPersistentMonitoringPolicyFlag,
   monitoringPolicyFlagIdForAlias,
+  reviewableMonitoringPolicyFlagIdForAlias,
 } from "@/lib/award-monitoring-policy";
 
 export type ChangeEventSuppressionSource = SourceQualitySource & {
@@ -33,6 +34,8 @@ export type ChangeEventSuppressionMode = "publication" | "retro_sweep";
 
 export type ChangeEventSuppressionOptions = {
   mode?: ChangeEventSuppressionMode;
+  excludedPolicyRuleIds?: string[];
+  ignoreExistingSuppression?: boolean;
 };
 
 const rejectedNoiseFlags = new Set([
@@ -107,7 +110,7 @@ const conditionalSourceShapePattern =
 
 const noiseSummaryPatterns = [
   { reason: "file_size_or_loading_time_noise", pattern: /\b(?:file size|pdf file size|loading time|load time|hash only|metadata only)\b/i },
-  { reason: "security_question_or_access_noise", pattern: /\b(?:security question|access denied|login required|authentication required|captcha|forbidden)\b/i },
+  { reason: "security_question_or_access_noise", policyId: "source_access_error", pattern: /\b(?:security question|access denied|login required|authentication required|captcha|forbidden)\b/i },
   { reason: "plugin_or_version_noise", pattern: /\b(?:jump appsolutions|appsolutions|plugin version|version (?:number )?(?:changed|updated)|v\d+(?:\.\d+){1,3})\b/i },
   { reason: "related_content_link_noise", pattern: /\b(?:related content|related links|more like this|similar activities|recommended links)\b/i },
   { reason: "profile_roster_news_noise", pattern: /\b(?:current fellows?|profile content|testimonial|recipient(?:s)?|awardee(?:s)?|roster|news item|press release)\b/i },
@@ -160,7 +163,14 @@ export function changeEventSuppressionDecision(
   options: ChangeEventSuppressionOptions = {},
 ): ChangeEventSuppressionDecision {
   const retroSweep = options.mode === "retro_sweep";
-  if (isChangeEventSuppressed(change)) {
+  const excludedPolicyRuleIds = new Set(
+    (Array.isArray(options.excludedPolicyRuleIds)
+      ? options.excludedPolicyRuleIds
+      : [])
+      .map(reviewableMonitoringPolicyFlagIdForAlias)
+      .filter((policyId): policyId is string => Boolean(policyId)),
+  );
+  if (!options.ignoreExistingSuppression && isChangeEventSuppressed(change)) {
     return { suppressed: true, reason: change.suppression_reason || "already_suppressed" };
   }
 
@@ -233,28 +243,17 @@ export function changeEventSuppressionDecision(
   const qualityFlags = changeEventQualityFlags(details);
   const preservesCorrectedEvidence = hasSupportedCorrectedEvidence(details);
   const flag = qualityFlags
-    .map((value) => ({
-      value,
-      policyId: monitoringPolicyFlagIdForAlias(value),
-    }))
-    .find(
-      ({ value, policyId }) =>
-        !(preservesCorrectedEvidence && correctedEvidenceDiagnosticFlags.has(value)) &&
-        (rejectedNoiseFlags.has(value) ||
-          Boolean(
-            policyId &&
-              isAlertBlockingMonitoringPolicyFlag(policyId) &&
-              isPersistentMonitoringPolicyFlag(policyId),
-          )),
-    );
+    .map((value) =>
+      qualityFlagSuppressionCandidate(value, {
+        excludedPolicyRuleIds,
+        preservesCorrectedEvidence,
+      }),
+    )
+    .find((candidate) => candidate !== null);
   if (flag) {
-    const policyFlag =
-      flag.policyId &&
-      isAlertBlockingMonitoringPolicyFlag(flag.policyId) &&
-      isPersistentMonitoringPolicyFlag(flag.policyId);
     return {
       suppressed: true,
-      reason: `${policyFlag ? "policy_flag" : "quality_flag"}_${policyFlagId(flag.policyId || flag.value)}`,
+      reason: `${flag.policyFlag ? "policy_flag" : "quality_flag"}_${policyFlagId(flag.policyId || flag.value)}`,
     };
   }
 
@@ -267,26 +266,70 @@ export function changeEventSuppressionDecision(
 
   for (const item of noiseSummaryPatterns) {
     if (item.pattern.test(summaryText) && !hasApplicantSignal) {
+      if (item.policyId && excludedPolicyRuleIds.has(item.policyId)) continue;
+      if (retroSweep && item.policyId) continue;
       return { suppressed: true, reason: item.reason };
     }
   }
 
-  const detectedPolicyFlag = textDetectedPolicyFlag({
+  const detectedPolicyFlag = textDetectedPolicyFlags({
     details,
     structured: detailsStructured,
     summaryText,
     hasApplicantSignal,
     hasDeterministicApplicantSignal,
-  });
-  if (
-    detectedPolicyFlag &&
-    isAlertBlockingMonitoringPolicyFlag(detectedPolicyFlag) &&
-    isPersistentMonitoringPolicyFlag(detectedPolicyFlag)
-  ) {
+  }).find(
+    (policyId) =>
+      !excludedPolicyRuleIds.has(policyId) &&
+      isAlertBlockingMonitoringPolicyFlag(policyId) &&
+      isPersistentMonitoringPolicyFlag(policyId),
+  );
+  if (detectedPolicyFlag) {
     return { suppressed: true, reason: `policy_flag_${detectedPolicyFlag}` };
   }
 
   return { suppressed: false, reason: null };
+}
+
+export function qualityFlagSuppressionCandidate(
+  value: string,
+  {
+    excludedPolicyRuleIds = new Set<string>(),
+    preservesCorrectedEvidence = false,
+    activePolicyId = monitoringPolicyFlagIdForAlias(value),
+    reviewablePolicyId = reviewableMonitoringPolicyFlagIdForAlias(value),
+  }: {
+    excludedPolicyRuleIds?: Set<string>;
+    preservesCorrectedEvidence?: boolean;
+    activePolicyId?: string | null;
+    reviewablePolicyId?: string | null;
+  } = {},
+) {
+  const cleanValue = cleanKey(value);
+  if (reviewablePolicyId && excludedPolicyRuleIds.has(reviewablePolicyId)) {
+    return null;
+  }
+  if (
+    preservesCorrectedEvidence &&
+    correctedEvidenceDiagnosticFlags.has(cleanValue)
+  ) {
+    return null;
+  }
+  const policyFlag = Boolean(
+    activePolicyId &&
+      isAlertBlockingMonitoringPolicyFlag(activePolicyId) &&
+      isPersistentMonitoringPolicyFlag(activePolicyId),
+  );
+  const rawQualityFlag =
+    rejectedNoiseFlags.has(cleanValue) && !reviewablePolicyId;
+  if (!rawQualityFlag && !policyFlag) return null;
+  return {
+    value: cleanValue,
+    policyId: activePolicyId,
+    reviewablePolicyId,
+    policyFlag,
+    rawQualityFlag,
+  };
 }
 
 function changeEventQualityFlags(details: Record<string, unknown>) {
@@ -300,7 +343,7 @@ function changeEventQualityFlags(details: Record<string, unknown>) {
   ].map(cleanKey).filter(Boolean);
 }
 
-function textDetectedPolicyFlag({
+function textDetectedPolicyFlags({
   details,
   structured,
   summaryText,
@@ -312,24 +355,25 @@ function textDetectedPolicyFlag({
   summaryText: string;
   hasApplicantSignal: boolean;
   hasDeterministicApplicantSignal: boolean;
-}) {
+}): string[] {
+  const matches: string[] = [];
   if (
     cleanKey(details.generation_status) === "invalid-json" ||
     /\b(?:invalid ai json|ai (?:returned|produced) invalid json|json parse (?:error|failure))\b/i.test(summaryText)
-  ) return "ai_invalid_json";
+  ) matches.push("ai_invalid_json");
 
   if (
     /\b(?:access denied|security challenge|security question|captcha|forbidden|error 403|error 404|page not found|service unavailable)\b/i.test(summaryText) ||
     (!hasApplicantSignal && /\b(?:authentication (?:is )?required|login (?:is )?required|required to log in)\b/i.test(summaryText))
-  ) return "source_access_error";
+  ) matches.push("source_access_error");
 
   if (
     /\b(?:no actual (?:changed )?fact|no concrete (?:changed )?fact|before and after (?:text )?(?:are )?identical|claimed (?:new|added) text (?:was )?already present|claimed removed text (?:is|was) still present|nothing applicant-facing changed)\b/i.test(summaryText)
-  ) return "no_actual_changed_fact";
+  ) matches.push("no_actual_changed_fact");
 
   if (
     /\b(?:unsupported structured fact|changed facts? (?:are |were )?not supported by (?:the )?evidence|exact before(?:-and-| and )after (?:is |was |are |were )?not supported by (?:the )?evidence|(?:added|removed|date|amount) (?:text |change |fact )?(?:is |was )?unsupported|before text not found|after text not found)\b/i.test(summaryText)
-  ) return "unsupported_structured_fact";
+  ) matches.push("unsupported_structured_fact");
 
   if (hasRelativeAgeOnlyPolicyChange({
     readerSummary: normalizeText(details.reader_summary) || null,
@@ -340,69 +384,69 @@ function textDetectedPolicyFlag({
     removedText: stringArray(structured.removed_text),
     dateChanges: stringArray(structured.date_changes),
     amountChanges: stringArray(structured.amount_changes),
-  })) return "relative_age_timestamp_churn";
+  })) matches.push("relative_age_timestamp_churn");
 
   if (!hasApplicantSignal) {
     if (
       /\b(?:current date|today's date|(?:open|closed) today|last updated|generated (?:on|at)|copyright year|post id|writer id|view count|countdown)\b/i.test(summaryText)
-    ) return "current_date_only_churn";
+    ) matches.push("current_date_only_churn");
     if (
       /\b(?:recipient|awardee|winner|finalist|alumni|fellow)\b.{0,50}\b(?:announced|announcement|news|story|profile|roster|list|changed|updated|rotated)\b|\b(?:news item|press release)\b/i.test(summaryText)
-    ) return "recipient_news_change";
+    ) matches.push("recipient_news_change");
     if (
       /\b(?:profile|testimonial|roster|carousel|featured (?:fellow|student|recipient)|alumni story|student story)\b.{0,60}\b(?:changed|updated|refreshed|rotated|reordered|new|removed)\b/i.test(summaryText)
-    ) return "profile_roster_rotation";
+    ) matches.push("profile_roster_rotation");
     if (
       /\b(?:pdf |document )?(?:file size|metadata|hash|modified timestamp|creation date)(?: only| changed| updated)|\bmetadata-only\b/i.test(summaryText)
-    ) return "document_metadata_only_change";
+    ) matches.push("document_metadata_only_change");
     if (
       /\b(?:donat(?:e|ion)|fundrais(?:e|er|ing)|give now|giving form|checkout|shopping cart|gift amount|donor form|sponsor(?:ship)? (?:form|widget))\b/i.test(summaryText)
-    ) return "fundraising_form_change";
+    ) matches.push("fundraising_form_change");
     if (
       /\b(?:navigation|nav menu|footer|header|sidebar|breadcrumb|faq|frequently asked questions|link order|reorder(?:ed|ing)?|layout|style reflow|font|line wrap)\b.{0,60}\b(?:changed|updated|refreshed|moved|reordered|only)\b/i.test(summaryText)
-    ) return "navigation_or_reorder_only_change";
+    ) matches.push("navigation_or_reorder_only_change");
     if (
       /\b(?:calendar|conference|admissions event|webinar|workshop|event registration|events? listing)\b.{0,60}\b(?:changed|updated|added|removed|refreshed|rotated)\b/i.test(summaryText)
-    ) return "calendar_event_noise";
+    ) matches.push("calendar_event_noise");
     if (
       /\b(?:cookie|consent|privacy banner|popup|pop-up|modal|newsletter prompt|advertisement|captcha widget|sitewide notice|holiday hours|office hours|transient notice|loading state)\b.{0,60}\b(?:changed|updated|appeared|disappeared|opened|closed|refreshed|rotated|only)\b/i.test(summaryText)
-    ) return "site_chrome_or_transient_notice";
+    ) matches.push("site_chrome_or_transient_notice");
     if (
       /\b(?:animated|count-up|counter|impact number|kpi|statistic)\b.{0,60}\b(?:changed|drift|loaded|loading|animation|incremented)\b/i.test(summaryText)
-    ) return "animated_stat_counter";
+    ) matches.push("animated_stat_counter");
     if (
       /\b(?:raw scrape|scrape artifact|leaked markup|html markup|jump links?|menu blob|learn more links?)\b/i.test(summaryText)
-    ) return "raw_scrape_signal";
+    ) matches.push("raw_scrape_signal");
     if (
       /\b(?:latest updates?|latest news|news sidebar|cross-program updates?)\b.{0,60}\b(?:changed|updated|refreshed|rotated|added|removed)\b/i.test(summaryText)
-    ) return "generic_latest_updates_block";
+    ) matches.push("generic_latest_updates_block");
     if (
       /\b(?:sample expansion|recrawl length|crawl length|pre-existing surrounding content|more of the same page was captured)\b/i.test(summaryText)
-    ) return "sample_expansion";
+    ) matches.push("sample_expansion");
   }
 
   if (
     !hasDeterministicApplicantSignal &&
     /\b(?:(?:format|formatting|whitespace|capitalization|punctuation|line wrapping|styling)(?:[- ]only| alone)|only (?:the )?(?:format|formatting|whitespace|capitalization|punctuation|line wrapping|styling) changed|only .{0,60}\b(?:format|formatting|whitespace|capitalization|punctuation|line wrapping|styling) changed)\b/i.test(summaryText)
-  ) return "format_only_change";
+  ) matches.push("format_only_change");
   if (
     !hasDeterministicApplicantSignal &&
     /\b(?:context-only|container-only|only (?:the )?(?:context|container) changed|surrounding context changed but (?:the )?fact (?:did not|does not|was unchanged))\b/i.test(summaryText)
-  ) return "context_only_change";
+  ) matches.push("context_only_change");
   if (
     !hasDeterministicApplicantSignal &&
     /\b(?:indistinct|truncated (?:snippet|evidence|text)|insufficient (?:evidence|context)|snippet too vague|cannot determine from (?:the )?(?:snippet|evidence))\b/i.test(summaryText)
-  ) return "indistinct_truncated_snippet";
+  ) matches.push("indistinct_truncated_snippet");
   if (
     !hasDeterministicApplicantSignal &&
     /\b(?:orphan punctuation|punctuation mark (?:appeared|disappeared) by itself|standalone punctuation)\b/i.test(summaryText)
-  ) return "orphan_punctuation";
+  ) matches.push("orphan_punctuation");
   if (
     !hasApplicantSignal &&
     /\b(?:the )?(?:page|website|content) (?:changed|updated|refreshed)(?: without (?:a )?specific|,? but no specific| generally| visually)?\b/i.test(summaryText)
-  ) return "vague_summary";
+  ) matches.push("vague_summary");
 
-  return null;
+  return matches;
 }
 
 function hasSupportedCorrectedEvidence(details: Record<string, unknown>) {

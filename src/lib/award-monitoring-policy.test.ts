@@ -1,22 +1,29 @@
 import { describe, expect, it } from "vitest";
 import {
   alertBlockingMonitoringPolicyFlagIds,
+  candidateMonitoringPolicyFlagIds,
   assertVisualReviewBatchPolicyCoverage,
   awardDecisionMemory,
   awardMonitoringPolicy,
   awardMonitoringPolicyHash,
   awardMonitoringPolicyIdentity,
   awardMonitoringPolicyVersion,
+  buildMonitoringPolicyAliasIndex,
   changeEventSuppressionBehaviorVersion,
   changeEventSuppressionPolicyHash,
   changeEventSuppressionPolicyIdentity,
   decisionMemoryPromptLinesForScope,
   hasRelativeAgeOnlyPolicyChange,
   isAlertBlockingMonitoringPolicyFlag,
+  isCandidateMonitoringPolicyFlag,
   isPersistentMonitoringPolicyFlag,
+  isReviewableMonitoringPolicyFlag,
   monitoringPolicyAliasConflicts,
   monitoringPolicyFlagIdForAlias,
+  monitoringPromotionMatcherIdentity,
   monitoringPolicyPromptLinesForScope,
+  monitoringPolicyRuleDefinitionForReview,
+  reviewableMonitoringPolicyFlagIds,
   visualReviewBatchPolicyHash,
   visualReviewBatchPolicyIdentity,
   visualReviewBatchPolicyVersion,
@@ -24,6 +31,19 @@ import {
 } from "@/lib/award-monitoring-policy";
 
 describe("award monitoring policy", () => {
+  it("seals the executable promotion matcher dependency bundle", () => {
+    expect(monitoringPromotionMatcherIdentity).toMatchObject({
+      id: "awardping-monitoring-promotion-matcher-bundle",
+      version: "source-bundle-sha256-v1",
+      source: "scripts/lib/monitoring-promotion-matcher-bundle.mjs",
+    });
+    expect(monitoringPromotionMatcherIdentity.hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      monitoringPolicyRuleDefinitionForReview("fundraising_form_change")
+        ?.matcher_digest,
+    ).toBe(monitoringPromotionMatcherIdentity.hash);
+  });
+
   it("exposes policy prompts for visual snapshot review", () => {
     const prompt = monitoringPolicyPromptLinesForScope("visual_snapshot_ai").join(" ");
 
@@ -91,13 +111,13 @@ describe("award monitoring policy", () => {
   });
 
   it("exposes a deterministic policy-bundle identity for scan metadata", () => {
-    expect(awardMonitoringPolicyVersion).toBe("policy-2.memory-2");
+    expect(awardMonitoringPolicyVersion).toBe("policy-3.memory-2");
     expect(awardMonitoringPolicyHash).toMatch(/^fnv1a32x2-utf16:[0-9a-f]{16}$/);
     expect(awardMonitoringPolicyIdentity).toEqual({
       id: `awardping-monitoring-policy@${awardMonitoringPolicyVersion}+${awardMonitoringPolicyHash}`,
       version: awardMonitoringPolicyVersion,
       hash: awardMonitoringPolicyHash,
-      policyVersion: 2,
+      policyVersion: 3,
       decisionMemoryVersion: 2,
     });
   });
@@ -107,6 +127,21 @@ describe("award monitoring policy", () => {
     expect(isAlertBlockingMonitoringPolicyFlag("relative-age-timestamp-churn")).toBe(true);
     expect(isPersistentMonitoringPolicyFlag("relative_age_timestamp_churn")).toBe(true);
     expect(isPersistentMonitoringPolicyFlag("relative-age-timestamp-churn")).toBe(true);
+  });
+
+  it("exposes alert-blocking rules for dark promotion review", () => {
+    expect(reviewableMonitoringPolicyFlagIds).toContain(
+      "relative_age_timestamp_churn",
+    );
+    expect(isReviewableMonitoringPolicyFlag("donation_prompt")).toBe(true);
+    expect(isReviewableMonitoringPolicyFlag("not_a_policy_rule")).toBe(false);
+    expect(candidateMonitoringPolicyFlagIds).toEqual([]);
+    expect(isCandidateMonitoringPolicyFlag("donation_prompt")).toBe(false);
+    expect(monitoringPolicyRuleDefinitionForReview("donation_prompt")).toMatchObject({
+      id: "fundraising_form_change",
+      alert_blocking: true,
+      persistent: true,
+    });
   });
 
   it.each([
@@ -131,6 +166,32 @@ describe("award monitoring policy", () => {
       version: visualReviewBatchPolicyVersion,
       hash: visualReviewBatchPolicyHash,
     });
+  });
+
+  it("detects candidate alias conflicts regardless of active/inactive rule order", () => {
+    const active = {
+      id: "active_rule",
+      active: true,
+      aliases: ["shared-candidate-alias"],
+    };
+    const inactive = {
+      id: "inactive_rule",
+      active: false,
+      aliases: ["shared-candidate-alias"],
+    };
+    for (const flags of [
+      [active, inactive],
+      [inactive, active],
+    ]) {
+      const index = buildMonitoringPolicyAliasIndex(flags);
+      expect(index.active.get("shared_candidate_alias")).toBe("active_rule");
+      expect(index.conflicts).toEqual([
+        {
+          alias: "shared_candidate_alias",
+          ids: ["active_rule", "inactive_rule"],
+        },
+      ]);
+    }
   });
 
   it("versions deterministic suppression matcher behavior in the sweep identity", () => {

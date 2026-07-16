@@ -1,6 +1,7 @@
 param(
   [string]$InstallRoot = "$env:LOCALAPPDATA\AwardPingWorker",
   [string]$SupabaseUrl = "https://zploenljxkqzyxcmbyec.supabase.co",
+  [string]$AppUrl = "https://awardping.vercel.app",
   [int]$SuppressionSweepLimit = 10000,
   [int]$SuppressionSweepBatchSize = 500,
   [switch]$UpdateOnly
@@ -465,6 +466,50 @@ function Read-WorkerEnvValues {
   return $values
 }
 
+function Get-AwardPingSourceRevision {
+  param([string]$SourceRoot)
+
+  $git = Get-CommandPath "git.exe"
+  if (-not $git) { $git = Get-CommandPath "git" }
+  if ($git) {
+    foreach ($gitRoot in @($SourceRoot, (Split-Path -Parent $SourceRoot))) {
+      if ([string]::IsNullOrWhiteSpace($gitRoot)) { continue }
+      $repositoryOutput = @(& $git -C $gitRoot rev-parse --show-toplevel 2>$null)
+      $repositoryExitCode = $LASTEXITCODE
+      $repositoryRoot = ($repositoryOutput | Select-Object -First 1)
+      if ($repositoryExitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$repositoryRoot)) { continue }
+      $dirtyPaths = @(& $git -C ([string]$repositoryRoot) status --porcelain --untracked-files=all 2>$null)
+      if ($LASTEXITCODE -ne 0) {
+        throw "Could not verify that the AwardPing source repository is clean: $repositoryRoot"
+      }
+      if ($dirtyPaths.Count -gt 0) {
+        throw "Refusing to label dirty or uncommitted worker code as a deployed git revision. Commit or clean the source repository first: $repositoryRoot"
+      }
+      $revisionOutput = @(& $git -C ([string]$repositoryRoot) rev-parse HEAD 2>$null)
+      $revisionExitCode = $LASTEXITCODE
+      $revision = ($revisionOutput | Select-Object -First 1)
+      if ($revisionExitCode -eq 0 -and ([string]$revision) -match "^[0-9a-fA-F]{40}$") {
+        return ([string]$revision).Trim().ToLowerInvariant()
+      }
+      throw "Could not read the committed AwardPing source revision: $repositoryRoot"
+    }
+  }
+
+  foreach ($manifestRoot in @($SourceRoot, (Split-Path -Parent $SourceRoot))) {
+    if ([string]::IsNullOrWhiteSpace($manifestRoot)) { continue }
+    $manifestPath = Join-Path $manifestRoot ".awardping-worker-revision"
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+      $manifestRevision = (Get-Content -LiteralPath $manifestPath -Raw -ErrorAction Stop).Trim()
+      if ($manifestRevision -match "^[0-9a-fA-F]{40}$") {
+        return $manifestRevision.ToLowerInvariant()
+      }
+      throw "Invalid AwardPing worker revision manifest: $manifestPath"
+    }
+  }
+
+  throw "Could not determine the exact source git commit. Run the installer from a committed clone or include .awardping-worker-revision in the worker package."
+}
+
 function Complete-AwardPingStartupLauncherUpdate {
   param(
     [object]$Snapshot,
@@ -756,7 +801,9 @@ function Get-AwardPingInstalledRuntimeProblems {
     [object[]]$TaskSnapshots,
     [bool]$RequireManagedRuntime,
     [string]$InstallerSourceDirectory = "",
-    [string]$AppSourceRoot = ""
+    [string]$AppSourceRoot = "",
+    [string]$ExpectedAppUrl = "",
+    [string]$ExpectedSourceRevision = ""
   )
 
   $problems = @()
@@ -776,6 +823,20 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\lib\visual-snapshot-history.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-review-queue.mjs"),
       (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
+      (Join-Path $AppDir "scripts\process-monitoring-feedback-promotions.mjs"),
+      (Join-Path $AppDir "scripts\lib\monitoring-feedback-promotion-verification.mjs"),
+      (Join-Path $AppDir "scripts\lib\monitoring-promotion-matcher-bundle.mjs"),
+      (Join-Path $AppDir "scripts\lib\award-monitoring-policy.mjs"),
+      (Join-Path $AppDir "scripts\lib\change-event-suppression.mjs"),
+      (Join-Path $AppDir "scripts\lib\change-event-sweep-state.mjs"),
+      (Join-Path $AppDir "scripts\lib\source-quality.mjs"),
+      (Join-Path $AppDir "scripts\lib\source-ai-review-status.mjs"),
+      (Join-Path $AppDir "src\lib\change-event-suppression.ts"),
+      (Join-Path $AppDir "src\lib\award-monitoring-policy.ts"),
+      (Join-Path $AppDir "src\lib\source-quality.ts"),
+      (Join-Path $AppDir "src\lib\source-ai-review-status.ts"),
+      (Join-Path $AppDir "src\lib\source-url-policy.ts"),
+      (Join-Path $AppDir "scripts\supabase-service-client.mjs"),
       (Join-Path $AppDir "scripts\backfill-baseline-facts.mjs"),
       (Join-Path $AppDir "scripts\process-source-intake-requests.mjs"),
       (Join-Path $AppDir "scripts\process-visual-review-batch.mjs"),
@@ -835,6 +896,31 @@ function Get-AwardPingInstalledRuntimeProblems {
     if (-not $r2Validation.Ok) {
       $problems += "invalid worker R2 configuration: $($r2Validation.Message)"
     }
+    if (([string]$workerEnv["AWARDPING_WORKER_REVISION"]) -notmatch "^[0-9a-fA-F]{40}$") {
+      $problems += "invalid AWARDPING_WORKER_REVISION; the installed worker must name the exact source git commit"
+    } elseif (
+      -not [string]::IsNullOrWhiteSpace($ExpectedSourceRevision) -and
+      ([string]$workerEnv["AWARDPING_WORKER_REVISION"]).Trim() -ne $ExpectedSourceRevision.Trim()
+    ) {
+      $problems += "installed AWARDPING_WORKER_REVISION does not equal the requested source commit"
+    }
+    $appUri = $null
+    if (
+      -not [Uri]::TryCreate(
+        [string]$workerEnv["NEXT_PUBLIC_APP_URL"],
+        [UriKind]::Absolute,
+        [ref]$appUri
+      ) -or
+      $appUri.Scheme -ne "https"
+    ) {
+      $problems += "invalid NEXT_PUBLIC_APP_URL; verified promotions require the live HTTPS app identity endpoint"
+    } elseif (
+      -not [string]::IsNullOrWhiteSpace($ExpectedAppUrl) -and
+      ([string]$workerEnv["NEXT_PUBLIC_APP_URL"]).Trim().TrimEnd("/") -ne
+        $ExpectedAppUrl.Trim().TrimEnd("/")
+    ) {
+      $problems += "installed NEXT_PUBLIC_APP_URL does not equal the requested production app URL"
+    }
   }
 
   if ($RequireManagedRuntime) {
@@ -859,6 +945,20 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\visual-snapshot-history.mjs",
         "scripts\lib\visual-review-queue.mjs",
         "scripts\report-visual-nightly.mjs",
+        "scripts\process-monitoring-feedback-promotions.mjs",
+        "scripts\lib\monitoring-feedback-promotion-verification.mjs",
+        "scripts\lib\monitoring-promotion-matcher-bundle.mjs",
+        "scripts\lib\award-monitoring-policy.mjs",
+        "scripts\lib\change-event-suppression.mjs",
+        "scripts\lib\change-event-sweep-state.mjs",
+        "scripts\lib\source-quality.mjs",
+        "scripts\lib\source-ai-review-status.mjs",
+        "src\lib\change-event-suppression.ts",
+        "src\lib\award-monitoring-policy.ts",
+        "src\lib\source-quality.ts",
+        "src\lib\source-ai-review-status.ts",
+        "src\lib\source-url-policy.ts",
+        "scripts\supabase-service-client.mjs",
         "scripts\backfill-baseline-facts.mjs",
         "scripts\process-source-intake-requests.mjs",
         "scripts\process-visual-review-batch.mjs",
@@ -962,7 +1062,7 @@ function Get-AwardPingTaskRestoreXml {
     }
     $descriptionNode = $document.SelectSingleNode("/task:Task/task:RegistrationInfo/task:Description", $namespace)
     if ($descriptionNode) {
-      $descriptionNode.InnerText = "Finalizes the 6 PM capture report, processes bounded source intake, polls/submits visual reviews, reapplies suppression policy, reconciles award facts, and processes flagged page audits."
+      $descriptionNode.InnerText = "Finalizes the 6 PM capture report, processes bounded source intake, polls/submits visual reviews, verifies feedback-rule promotions, reapplies suppression policy, reconciles award facts, and processes flagged page audits."
     }
   }
 
@@ -1386,6 +1486,8 @@ function Write-EnvFile {
   param(
     [string]$Path,
     [string]$SupabaseUrl,
+    [string]$AppUrl,
+    [string]$SourceRevision,
     [string]$SupabaseServiceRoleKey,
     [string]$GeminiApiKey,
     [string]$R2Bucket,
@@ -1399,6 +1501,8 @@ function Write-EnvFile {
   $content = @"
 NEXT_PUBLIC_SUPABASE_URL=$SupabaseUrl
 SUPABASE_SERVICE_ROLE_KEY=$SupabaseServiceRoleKey
+NEXT_PUBLIC_APP_URL=$AppUrl
+AWARDPING_WORKER_REVISION=$SourceRevision
 
 AI_PROVIDER=gemini
 GEMINI_API_KEY=$GeminiApiKey
@@ -1424,7 +1528,11 @@ R2_SECRET_ACCESS_KEY=$R2SecretAccessKey
 }
 
 function Update-ExistingEnvFileDefaults {
-  param([string]$Path)
+  param(
+    [string]$Path,
+    [string]$AppUrl,
+    [string]$SourceRevision
+  )
 
   if (-not (Test-Path $Path)) {
     return
@@ -1433,6 +1541,8 @@ function Update-ExistingEnvFileDefaults {
   Write-Step "Refreshing local worker defaults"
   $content = Get-Content -Path $Path -Raw
   $updates = [ordered]@{
+    "NEXT_PUBLIC_APP_URL" = $AppUrl
+    "AWARDPING_WORKER_REVISION" = $SourceRevision
     "AI_PROVIDER" = "gemini"
     "GEMINI_MODEL" = "gemini-2.5-flash-lite"
     "GEMINI_DISCOVERY_MODEL" = "gemini-2.5-flash-lite"
@@ -2194,6 +2304,7 @@ if (Test-Path (Join-Path $payloadRoot "package.json")) {
 if (-not (Test-Path (Join-Path $sourceRoot "package.json"))) {
   throw "Could not find runner-files\package.json. Run this installer from the extracted AwardPing worker package."
 }
+$sourceRevision = Get-AwardPingSourceRevision -SourceRoot $sourceRoot
 
 if ($UpdateOnly) {
   Write-Host "AwardPing Local PC Worker Code Update" -ForegroundColor Green
@@ -2245,6 +2356,10 @@ try {
     Write-Step "Building complete staged AwardPing app"
     Copy-AppFiles -SourceRoot $sourceRoot -AppDir $stagingAppDir
     Install-Dependencies -AppDir $stagingAppDir
+    $verifiedSourceRevision = Get-AwardPingSourceRevision -SourceRoot $sourceRoot
+    if ($verifiedSourceRevision -ne $sourceRevision) {
+      throw "AwardPing source revision changed while the staged update was being built. Restart from one clean reviewed commit."
+    }
 
     $taskSnapshots = @(Get-AwardPingTaskSnapshotsForUpdate -InstallRoot $InstallRoot)
     $taskSnapshotCaptured = $true
@@ -2257,7 +2372,10 @@ try {
       -SnapshotDirectory $rootRuntimeSnapshotDir
     $rootRuntimeSnapshotCaptured = $true
     Copy-AwardPingMutableAppState -CurrentAppDir $appDir -StagingAppDir $stagingAppDir
-    Update-ExistingEnvFileDefaults -Path (Join-Path $stagingAppDir ".env.worker.local")
+    Update-ExistingEnvFileDefaults `
+      -Path (Join-Path $stagingAppDir ".env.worker.local") `
+      -AppUrl $AppUrl `
+      -SourceRevision $sourceRevision
     Switch-ToStagedAwardPingApp `
       -CurrentAppDir $appDir `
       -StagingAppDir $stagingAppDir `
@@ -2279,6 +2397,8 @@ try {
     Write-EnvFile `
       -Path $envPath `
       -SupabaseUrl $SupabaseUrl `
+      -AppUrl $AppUrl `
+      -SourceRevision $sourceRevision `
       -SupabaseServiceRoleKey $supabaseServiceRoleKey `
       -GeminiApiKey $geminiApiKey `
       -R2Bucket $r2Configuration.Bucket `
@@ -2287,6 +2407,10 @@ try {
       -R2AccessKeyId $r2Configuration.AccessKeyId `
       -R2SecretAccessKey $r2Configuration.SecretAccessKey
     Install-Dependencies -AppDir $appDir
+    $verifiedSourceRevision = Get-AwardPingSourceRevision -SourceRoot $sourceRoot
+    if ($verifiedSourceRevision -ne $sourceRevision) {
+      throw "AwardPing source revision changed while the installed app was being built. Restart from one clean reviewed commit."
+    }
   }
 
   Write-UninstallScript -InstallRoot $InstallRoot
@@ -2308,7 +2432,9 @@ try {
       -TaskSnapshots $finalizationSnapshots `
       -RequireManagedRuntime $true `
       -InstallerSourceDirectory $PSScriptRoot `
-      -AppSourceRoot ([string]$sourceRoot))
+      -AppSourceRoot ([string]$sourceRoot) `
+      -ExpectedAppUrl $AppUrl `
+      -ExpectedSourceRevision $sourceRevision)
     if ($runtimeProblems.Count -gt 0) {
       throw "The installed worker is not complete enough to enable scheduled tasks: $($runtimeProblems -join ' | ')"
     }
@@ -2345,7 +2471,9 @@ try {
           -TaskSnapshots @($finalizationSnapshots | Where-Object { $_.RestoreAfterUpdate }) `
           -RequireManagedRuntime $true `
           -InstallerSourceDirectory $PSScriptRoot `
-          -AppSourceRoot ([string]$sourceRoot))
+          -AppSourceRoot ([string]$sourceRoot) `
+          -ExpectedAppUrl $AppUrl `
+          -ExpectedSourceRevision $sourceRevision)
         if ($runtimeProblems.Count -gt 0) {
           throw "The installed worker is not complete enough to resume scheduled tasks: $($runtimeProblems -join ' | ')"
         }

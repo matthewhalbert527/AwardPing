@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { awardMonitoringPolicy } from "./lib/award-monitoring-policy.mjs";
-import { changeEventSuppressionDecision } from "./lib/change-event-suppression.mjs";
+import {
+  changeEventMatchesMonitoringPolicyRule,
+  changeEventSuppressionDecision,
+  qualityFlagSuppressionCandidate,
+} from "./lib/change-event-suppression.mjs";
 
 const source = {
   id: "source-1",
@@ -32,6 +36,37 @@ function event(summary, changeDetails = {}, sourceOverride = source) {
 }
 
 describe("scheduled change-event suppression", () => {
+  it("shadow-matches a proposed rule without changing the event", () => {
+    const candidate = event("The donation widget changed its suggested gift amount.", {
+      is_alert_worthy: true,
+    });
+
+    expect(
+      changeEventMatchesMonitoringPolicyRule(
+        candidate,
+        source,
+        "fundraising_form_change",
+      ),
+    ).toBe(true);
+    expect(candidate).not.toHaveProperty("suppressed_at");
+  });
+
+  it("does not shadow-match a legitimate applicant-facing deadline", () => {
+    expect(
+      changeEventMatchesMonitoringPolicyRule(
+        event("The application deadline changed from March 1 to March 15.", {
+          is_alert_worthy: true,
+          structured_diff: {
+            added_text: ["Application deadline: March 15"],
+            removed_text: ["Application deadline: March 1"],
+          },
+        }),
+        source,
+        "fundraising_form_change",
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     ["The donation widget changed its suggested gift amount.", "fundraising_form_change"],
     ["The current date and last updated timestamp changed.", "current_date_only_churn"],
@@ -224,6 +259,116 @@ describe("scheduled change-event suppression", () => {
     expect(decision).toEqual({
       suppressed: true,
       reason: "policy_flag_fundraising_form_change",
+    });
+  });
+
+  it("excludes an unresolved promotion rule and can recompute another valid reason", () => {
+    const candidate = event("Only formatting and the donation widget changed.", {
+      is_alert_worthy: true,
+      quality_flags: ["fundraising-form-change", "format-only-change"],
+    });
+    expect(
+      changeEventSuppressionDecision(candidate, source, {
+        mode: "retro_sweep",
+        excludedPolicyRuleIds: ["fundraising_form_change"],
+      }),
+    ).toEqual({
+      suppressed: true,
+      reason: "policy_flag_format_only_change",
+    });
+
+    expect(
+      changeEventSuppressionDecision(
+        {
+          ...candidate,
+          suppressed_at: "2026-07-15T00:00:00.000Z",
+          suppression_reason: "policy_flag_fundraising_form_change",
+          suppression_source: "scheduled-downstream-policy-sweep",
+          change_details: {
+            is_alert_worthy: true,
+            quality_flags: ["fundraising-form-change"],
+          },
+        },
+        source,
+        {
+          mode: "retro_sweep",
+          excludedPolicyRuleIds: ["fundraising_form_change"],
+          ignoreExistingSuppression: true,
+        },
+      ),
+    ).toEqual({ suppressed: false, reason: null });
+  });
+
+  it.each([
+    ["profile_roster_rotation", "profile-roster-rotation"],
+    ["document_metadata_only_change", "document-metadata-only-change"],
+  ])(
+    "does not let inactive candidate %s suppress through its raw quality alias",
+    (ruleId, alias) => {
+      const rule = awardMonitoringPolicy.policy_flags.find(
+        (candidate) => candidate.id === ruleId,
+      );
+      expect(rule).toBeTruthy();
+      const originalActive = rule.active;
+      try {
+        rule.active = false;
+        const candidate = event("The application deadline remains April 1.", {
+          is_alert_worthy: true,
+          generation_status: "generated",
+          quality_flags: [alias],
+          structured_diff: {
+            added_text: ["The application deadline remains April 1."],
+          },
+        });
+
+        expect(changeEventSuppressionDecision(candidate, source)).toEqual({
+          suppressed: false,
+          reason: null,
+        });
+        expect(
+          changeEventSuppressionDecision(candidate, source, {
+            mode: "retro_sweep",
+            excludedPolicyRuleIds: [ruleId],
+          }),
+        ).toEqual({ suppressed: false, reason: null });
+      } finally {
+        if (originalActive === undefined) delete rule.active;
+        else rule.active = originalActive;
+      }
+    },
+  );
+
+  it("does not apply raw quality fallback to a reviewable but inactive rule", () => {
+    const options = {
+      activePolicyId: null,
+      reviewablePolicyId: "profile_roster_rotation",
+    };
+    expect(
+      qualityFlagSuppressionCandidate("profile-roster-rotation", options),
+    ).toBeNull();
+    expect(
+      qualityFlagSuppressionCandidate("profile-roster-rotation", {
+        ...options,
+        excludedPolicyRuleIds: new Set(["profile_roster_rotation"]),
+      }),
+    ).toBeNull();
+  });
+
+  it("preserves an overlapping text-derived reason when the first match is excluded", () => {
+    const candidate = event("Invalid AI JSON after an access denied page", {
+      is_alert_worthy: true,
+    });
+
+    expect(changeEventMatchesMonitoringPolicyRule(candidate, source, "ai_invalid_json")).toBe(true);
+    expect(changeEventMatchesMonitoringPolicyRule(candidate, source, "source_access_error")).toBe(true);
+    expect(
+      changeEventSuppressionDecision(candidate, source, {
+        mode: "retro_sweep",
+        excludedPolicyRuleIds: ["ai_invalid_json"],
+      }),
+    ).toEqual({
+      suppressed: true,
+      reason: "policy_flag_source_access_error",
     });
   });
 

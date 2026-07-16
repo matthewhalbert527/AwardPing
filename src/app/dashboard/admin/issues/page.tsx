@@ -1,15 +1,23 @@
 import Link from "next/link";
-import { AlertTriangle, ExternalLink, Inbox, Plus, ScrollText } from "lucide-react";
+import {
+  AlertTriangle,
+  ExternalLink,
+  Inbox,
+  Plus,
+  ScrollText,
+  ShieldCheck,
+} from "lucide-react";
 import { AdminNotAnUpdateControl } from "@/components/admin-not-an-update-control";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { AdminRunReport } from "@/components/admin-run-report";
-import {
-  type AdminPendingMonitoringFeedback,
-} from "@/components/admin-monitoring-feedback-pending-list";
+import { AdminVerifiedPromotionBoard } from "@/components/admin-verified-promotion-board";
 import { OperatorActionInbox } from "@/components/operator-action-inbox";
 import { SetupNotice } from "@/components/setup-notice";
 import { requireUser, isSiteAdminEmail } from "@/lib/auth";
-import { alertBlockingMonitoringPolicyFlagIds } from "@/lib/award-monitoring-policy";
+import {
+  alertBlockingMonitoringPolicyFlagIds,
+  candidateMonitoringPolicyFlagIds,
+} from "@/lib/award-monitoring-policy";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
@@ -20,6 +28,7 @@ import {
   loadAdminSuppressedChangeEvents,
 } from "@/lib/admin-page-issues";
 import { buildAdminRunReportFeed } from "@/lib/admin-run-report";
+import { loadAdminMonitoringFeedbackPromotionClusters } from "@/lib/admin-monitoring-feedback-promotions";
 import {
   buildOperatorActionInbox,
   type OperatorDigestDeliveryFailureInput,
@@ -61,7 +70,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       <IssueShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Action Inbox</h1>
+          <h1 className="mt-4 text-3xl font-black">Admin workflows</h1>
           <p className="mt-2 text-[var(--muted)]">
             Supabase service-role access is not configured, so operator actions cannot be loaded.
           </p>
@@ -73,7 +82,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   const admin = createSupabaseAdminClient();
   const params = await searchParams;
   const activeTab =
-    params.tab === "updates" || params.tab === "suppressed" || params.tab === "excluded"
+    params.tab === "promotions" ||
+    params.tab === "updates" ||
+    params.tab === "suppressed" ||
+    params.tab === "excluded"
       ? params.tab
       : "inbox";
   const renderedAt = new Date();
@@ -88,7 +100,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   const [
     pageIssues,
     reviewLater,
-    pendingFeedback,
+    promotionClusters,
     visualReviewFailures,
     deliveryFailures,
     recentUpdates,
@@ -96,7 +108,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   ] = await Promise.all([
     loadAdminPageIssues(admin, workerRuns, { includeLegacyDiagnostics: false }),
     loadAdminReviewLaterSources(admin),
-    loadAdminPendingMonitoringFeedback(admin),
+    loadAdminMonitoringFeedbackPromotionClusters(admin),
     loadAdminVisualReviewFailures(admin),
     loadAdminFailedPublicUpdateDeliveries(admin),
     loadAdminRecentChangeEvents(admin),
@@ -105,7 +117,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   const actionLoadErrors = [
     workerRunsResult.error?.message,
     ...pageIssues.loadErrors,
-    ...pendingFeedback.loadErrors,
+    ...promotionClusters.loadErrors,
     ...visualReviewFailures.loadErrors,
     ...deliveryFailures.loadErrors,
   ].filter((message): message is string => Boolean(message));
@@ -116,7 +128,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   ].filter((message): message is string => Boolean(message));
   const actionItems = buildOperatorActionInbox({
     issues: pageIssues.issues,
-    pendingFeedback: pendingFeedback.feedback,
+    promotionClusters: promotionClusters.clusters,
     nightlyFailureGroups: runReport.visualNightly?.failureGroups || [],
     nightlyReportedAt:
       runReport.visualNightly?.finishedAt ||
@@ -133,9 +145,9 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       <div className="admin-page-header">
         <div>
           <span className="badge">Admin</span>
-          <h1 className="admin-page-title">Action Inbox</h1>
+          <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            One plain-language queue for failures and decisions. Automatic retries stay visible, but normal pending work and old technical completion counters stay out.
+            3 repairs current failures and decisions. 4 turns repeated false-update feedback into a verified global rule without weakening immediate suppression.
           </p>
           <p className="admin-page-timestamp">
             Refreshed {formatDate(renderedAt.toISOString())}.
@@ -153,15 +165,26 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
         </div>
       </div>
 
-      <nav aria-label="Action Inbox views" className="admin-subtabs">
+      <nav aria-label="Primary admin workflows" className="admin-subtabs admin-workflow-tabs">
         <Link
           aria-current={activeTab === "inbox" ? "page" : undefined}
           className={`admin-subtab ${activeTab === "inbox" ? "admin-subtab-active" : ""}`}
           href="/dashboard/admin/issues"
         >
           <Inbox size={15} aria-hidden="true" />
-          Action Inbox
+          3. Action Inbox
         </Link>
+        <Link
+          aria-current={activeTab === "promotions" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "promotions" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues?tab=promotions"
+        >
+          <ShieldCheck size={15} aria-hidden="true" />
+          4. Verified Promotions
+        </Link>
+      </nav>
+
+      <nav aria-label="Admin history views" className="admin-subtabs admin-history-tabs">
         <Link
           aria-current={activeTab === "updates" ? "page" : undefined}
           className={`admin-subtab ${activeTab === "updates" ? "admin-subtab-active" : ""}`}
@@ -188,9 +211,19 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       {activeTab === "inbox" ? (
         <>
           <AdminRunReport compact initialFeed={runReport} />
-          <OperatorActionInbox
-            items={actionItems}
-            policyRuleIds={alertBlockingMonitoringPolicyFlagIds}
+          <OperatorActionInbox items={actionItems} />
+        </>
+      ) : activeTab === "promotions" ? (
+        <>
+          {promotionClusters.loadErrors.length > 0 && (
+            <div className="operator-history-load-warning" role="status">
+              <AlertTriangle size={17} aria-hidden="true" />
+              {promotionClusters.loadErrors.join(" ")}
+            </div>
+          )}
+          <AdminVerifiedPromotionBoard
+            candidateRuleIds={candidateMonitoringPolicyFlagIds}
+            clusters={promotionClusters.clusters}
           />
         </>
       ) : (
@@ -223,7 +256,7 @@ function AccessDenied({ configured }: { configured: boolean }) {
     <IssueShell>
       <div className="card p-6">
         <span className="badge">Admin</span>
-        <h1 className="mt-4 text-3xl font-black">Action Inbox</h1>
+        <h1 className="mt-4 text-3xl font-black">Admin workflows</h1>
         <p className="mt-2 text-[var(--muted)]">
           This page is limited to AwardPing site admins
           {configured ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}
@@ -412,60 +445,6 @@ async function loadAdminRecentChangeEvents(
       detectedAt: row.detected_at,
     })),
     loadErrors: error?.message ? [error.message] : [],
-  };
-}
-
-async function loadAdminPendingMonitoringFeedback(
-  admin: ReturnType<typeof createSupabaseAdminClient>,
-): Promise<{
-  feedback: AdminPendingMonitoringFeedback[];
-  total: number;
-  loadErrors: string[];
-}> {
-  const { data, error } = await admin.rpc("list_pending_monitoring_feedback", {
-    p_limit: 500,
-  });
-
-  if (error) {
-    return {
-      feedback: [],
-      total: 0,
-      loadErrors: [
-        /list_pending_monitoring_feedback|monitoring_feedback|schema cache|42P01|PGRST/i.test(
-          error.message,
-        )
-          ? "Monitoring feedback is not migrated for this deployment yet."
-          : error.message,
-      ],
-    };
-  }
-
-  const rows = data || [];
-  const total = Number(rows[0]?.total_pending || 0);
-  return {
-    feedback: rows.map((row) => ({
-      id: row.feedback_id,
-      eventId: row.event_id,
-      sourceId: row.source_id,
-      awardId: row.award_id,
-      eventSummary: row.event_summary,
-      eventSourceUrl: row.event_source_url,
-      eventSourceTitle: row.event_source_title,
-      eventSourcePageType: row.event_source_page_type,
-      eventDetectedAt: row.event_detected_at,
-      eventEvidence: row.event_evidence,
-      reasonCode: row.reason_code,
-      note: row.note,
-      requestedScope: row.requested_scope,
-      policyRuleId: row.policy_rule_id,
-      policyVersion: row.policy_version,
-      actorEmail: row.actor_email,
-      createdAt: row.created_at,
-    })),
-    total,
-    loadErrors: total > rows.length
-      ? [`${total - rows.length} additional policy corrections are not shown because the inbox response reached its limit.`]
-      : [],
   };
 }
 

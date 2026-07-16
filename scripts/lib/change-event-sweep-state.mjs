@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 export const monitoringPolicySweepStateTable = "monitoring_policy_sweep_state";
 
 export function monitoringPolicySweepKey({ awardId = null, sourceId = null } = {}) {
@@ -17,6 +19,24 @@ export function monitoringPolicySweepStart(state, policyHash) {
         }),
     scanned_count: reset ? 0 : nonNegativeInt(state?.scanned_count),
   };
+}
+
+export function monitoringPolicySweepEffectivePolicyHash(
+  policyHash,
+  excludedRuleIds = [],
+) {
+  const normalizedRuleIds = [
+    ...new Set((excludedRuleIds || []).map(cleanText).filter(Boolean)),
+  ].sort();
+  return crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify({
+        policy_hash: cleanText(policyHash),
+        excluded_rule_ids: normalizedRuleIds,
+      }),
+    )
+    .digest("hex");
 }
 
 export function monitoringPolicySweepCursor(row) {

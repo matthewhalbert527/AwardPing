@@ -5,6 +5,7 @@ import { changeEventSuppressionPolicyIdentity } from "./lib/award-monitoring-pol
 import {
   isMissingMonitoringPolicySweepStateError,
   monitoringPolicySweepCursorAfterRows,
+  monitoringPolicySweepEffectivePolicyHash,
   monitoringPolicySweepKey,
   monitoringPolicySweepKeysetFilter,
   monitoringPolicySweepStart,
@@ -49,10 +50,16 @@ await run().catch((error) => {
 
 async function run() {
   const startedAt = new Date().toISOString();
+  const excludedPromotionRuleIds =
+    await loadUnresolvedMonitoringFeedbackPromotionRuleIds();
+  const effectiveSweepPolicyHash = monitoringPolicySweepEffectivePolicyHash(
+    changeEventSuppressionPolicyIdentity.hash,
+    excludedPromotionRuleIds,
+  );
   const stateResult = await loadSweepState();
   const sweepStart = monitoringPolicySweepStart(
     stateResult.state,
-    changeEventSuppressionPolicyIdentity.hash,
+    effectiveSweepPolicyHash,
   );
   const eventWindow = await loadCandidateEvents(sweepStart.cursor);
   const events = eventWindow.rows;
@@ -67,6 +74,8 @@ async function run() {
       deterministic_text_matchers: deterministicChangeEventSuppressionPolicyFlagIds,
       requires_queued_evidence_or_ai_when_not_explicit:
         changeEventSuppressionRulesRequiringEvidenceOrAi,
+      unresolved_promotion_rule_ids_excluded: excludedPromotionRuleIds,
+      effective_sweep_policy_hash: effectiveSweepPolicyHash,
     },
     sweep: {
       key: sweepKey,
@@ -96,6 +105,7 @@ async function run() {
     const source = event.shared_award_source_id ? sources.get(event.shared_award_source_id) || null : null;
     const decision = changeEventSuppressionDecision(event, source, {
       mode: "retro_sweep",
+      excludedPolicyRuleIds: excludedPromotionRuleIds,
     });
     if (!decision.suppressed) {
       report.kept_events += 1;
@@ -147,12 +157,29 @@ async function run() {
       cursor: eventWindow.cursor,
       scannedCount: sweepStart.scanned_count + events.length,
       now: new Date().toISOString(),
+      policyHash: effectiveSweepPolicyHash,
     });
     report.sweep.cursor_persisted = true;
   }
 
   report.finished_at = new Date().toISOString();
   console.log(JSON.stringify(report, null, 2));
+}
+
+async function loadUnresolvedMonitoringFeedbackPromotionRuleIds() {
+  const { data, error } = await supabase.rpc(
+    "list_unresolved_monitoring_feedback_promotion_rule_ids",
+  );
+  if (error) {
+    throw new Error(
+      `Load unresolved verified-promotion rules failed closed: ${error.message}`,
+    );
+  }
+  return unique(
+    (Array.isArray(data) ? data : [])
+      .map((row) => cleanText(row?.policy_rule_id))
+      .filter(Boolean),
+  ).sort();
 }
 
 async function loadCandidateEvents(startingCursor = null) {
@@ -204,14 +231,21 @@ async function loadSweepState() {
   return { state: data || null, unavailable: false };
 }
 
-async function persistSweepState({ previousState, sweepStart, cursor, scannedCount, now }) {
+async function persistSweepState({
+  previousState,
+  sweepStart,
+  cursor,
+  scannedCount,
+  now,
+  policyHash,
+}) {
   const policyChanged = sweepStart.reset;
   const { error } = await supabase
     .from(monitoringPolicySweepStateTable)
     .upsert(
       {
         sweep_key: sweepKey,
-        policy_hash: changeEventSuppressionPolicyIdentity.hash,
+        policy_hash: policyHash,
         cursor_detected_at: cursor?.detected_at || null,
         cursor_event_id: cursor?.event_id || null,
         scanned_count: scannedCount,

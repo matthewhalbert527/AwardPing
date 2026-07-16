@@ -9,7 +9,6 @@ import {
   ShieldCheck,
   UserRound,
 } from "lucide-react";
-import { AdminMonitoringFeedbackPromotionControl } from "@/components/admin-monitoring-feedback-promotion-control";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import {
@@ -20,10 +19,9 @@ import { formatCentralDateTime } from "@/lib/time-zone";
 
 type Props = {
   items: OperatorActionInboxItem[];
-  policyRuleIds: readonly string[];
 };
 
-export function OperatorActionInbox({ items, policyRuleIds }: Props) {
+export function OperatorActionInbox({ items }: Props) {
   const summary = operatorActionInboxSummary(items);
 
   return (
@@ -49,6 +47,11 @@ export function OperatorActionInbox({ items, policyRuleIds }: Props) {
             <AlertTriangle size={16} aria-hidden="true" />
             {formatNumber(summary.publicBlockers)} public {summary.publicBlockers === 1 ? "impact" : "impacts"}
           </span>
+        ) : summary.publicImpactUnknown > 0 ? (
+          <span className="operator-inbox-summary-status operator-inbox-summary-status-attention">
+            <AlertTriangle size={16} aria-hidden="true" />
+            {formatNumber(summary.publicImpactUnknown)} public {summary.publicImpactUnknown === 1 ? "impact needs" : "impacts need"} verification
+          </span>
         ) : (
           <span className="operator-inbox-summary-status">
             <ShieldCheck size={16} aria-hidden="true" />
@@ -60,7 +63,7 @@ export function OperatorActionInbox({ items, policyRuleIds }: Props) {
       {items.length > 0 ? (
         <div className="operator-inbox-list">
           {items.map((item) => (
-            <OperatorActionRow item={item} key={item.id} policyRuleIds={policyRuleIds} />
+            <OperatorActionRow item={item} key={item.id} />
           ))}
         </div>
       ) : (
@@ -76,13 +79,7 @@ export function OperatorActionInbox({ items, policyRuleIds }: Props) {
   );
 }
 
-function OperatorActionRow({
-  item,
-  policyRuleIds,
-}: {
-  item: OperatorActionInboxItem;
-  policyRuleIds: readonly string[];
-}) {
+function OperatorActionRow({ item }: { item: OperatorActionInboxItem }) {
   const sourceUrl = safeExternalUrl(item.source?.url || null);
   const exactTime = item.occurredAt ? formatCentralDateTime(item.occurredAt) : "Exact time unavailable";
 
@@ -217,12 +214,6 @@ function OperatorActionRow({
           mode="active"
           sourceId={item.action.sourceId}
           sourceTitle={item.action.sourceTitle}
-        />
-      )}
-      {item.action.kind === "monitoring_feedback" && (
-        <AdminMonitoringFeedbackPromotionControl
-          feedbackId={item.action.feedbackId}
-          policyRuleIds={policyRuleIds}
         />
       )}
     </article>

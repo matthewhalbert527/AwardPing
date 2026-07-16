@@ -8,13 +8,16 @@
   Cloudflare R2 bucket/account/access-key configuration used to retain immutable
   published evidence.
 - Writes those values to `.env.worker.local` on the PC.
+- Seals the exact source git commit as `AWARDPING_WORKER_REVISION` and keeps the
+  live HTTPS app URL as `NEXT_PUBLIC_APP_URL`, so app/worker promotion checks
+  cannot pass with an unknown or stale deployment.
 - Installs npm dependencies.
 - Runs a one-page visual snapshot test.
 - Creates Windows Scheduled Tasks named `AwardPing Visual Snapshot Worker Shard 1-3`
   that run the screenshot/PDF checker daily.
 - Creates `AwardPing Downstream Queue Pipeline` for hourly report finalization,
-  source intake, review, immutable event-evidence publication, suppression,
-  reconciliation, and page audits.
+  source intake, review, verified feedback promotion, immutable event-evidence
+  publication, suppression, reconciliation, and page audits.
 
 ## Windows Install
 
@@ -43,12 +46,32 @@ scripts, dependency changes, and Scheduled Task updates.
 
 Deploy a reviewed revision in this order:
 
-1. Apply and verify its Supabase migrations.
-2. Run the repository tests and commit the exact revision being deployed.
-3. From that revision, run:
+1. Run the repository tests, commit the exact revision being deployed, and push
+   that commit to the release branch.
+   The installer refuses a dirty git worktree so copied code cannot be labeled
+   as an older commit. A distribution without `.git` must carry a packaged
+   `.awardping-worker-revision` manifest created from that committed revision.
+2. From that clean commit, apply and verify its Supabase migrations.
+3. Deploy the same commit to Vercel and verify the live identity endpoint before
+   changing the worker:
 
    ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1" -UpdateOnly
+   $ReleaseSha = (git rev-parse HEAD).Trim()
+   $ProductionAppUrl = "https://awardping.vercel.app"
+   npx --yes vercel@56.2.1 --prod --yes
+   $Identity = Invoke-RestMethod "$ProductionAppUrl/api/monitoring-policy-identity"
+   if ($Identity.revision -ne $ReleaseSha) {
+     throw "Production does not match the reviewed release commit."
+   }
+   ```
+
+   Keep the identity response with the release evidence. It names the exact
+   full, Batch, suppression, and executable matcher-bundle policy hashes that the
+   installed worker must match.
+4. From that same still-clean revision, run:
+
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1" -UpdateOnly -AppUrl "https://awardping.vercel.app"
    ```
 
    Update mode builds and validates a complete staged app and npm dependency
@@ -72,24 +95,29 @@ Deploy a reviewed revision in this order:
    app is complete enough to run. The installer also refuses to overwrite a
    fixed AwardPing task owned by another install root or a custom Task Scheduler
    path, and leaves unrelated Startup-folder launchers untouched.
-4. Compare repository and installed hashes for both policy JSON files and the
+5. Compare repository and installed hashes for both policy JSON files and the
    policy, suppression, visual-review, capture, immutable-evidence,
    evidence-coverage/backfill, and baseline worker scripts. Confirm the staged
    dependency validation includes the native `sharp` crop package.
    Confirm the three visual shard tasks still run daily at 6 PM and the
    downstream task runs hourly with `SuppressionSweepLimit` in its action.
-5. Inspect the first downstream log after deployment. It must show the
-   independent `visual-nightly-report` finalizer first, followed in order by
-   bounded `source-intake`, `visual-review-batch`, `change-event-suppression-sweep`,
+6. Inspect the first downstream log after deployment. It must show the
+   independent `visual-nightly-report` finalizer first, followed by bounded
+   `source-intake`, `visual-review-batch`, `verified-feedback-promotions`,
+   `change-event-suppression-sweep`,
    `award-reconciliation`, and `page-audit-batch`, with a zero final exit code.
+   The final line includes `promotion_exit`, so a failed verification cannot be
+   hidden by later successful queue work.
 
 ## Permanent and Catch-up Work
 
 The permanent worker schedule contains only the three 6 PM capture shards and
 the hourly downstream pipeline. The hourly pipeline first finalizes the due
-capture report, then processes up to 25 queued source-intake requests and polls
+capture report, processes up to 25 queued source-intake requests, and polls
 at most five existing AI batches within a ten-minute budget before review,
-suppression, reconciliation, and page-audit work. Failed intake requests wait
+verified feedback promotion, suppression, reconciliation, and page-audit work.
+Promotion runs after visual review so the exact 6 PM candidates are terminal
+before their canary is judged. Failed intake requests wait
 for an operator-selected retry instead of cycling forever. This keeps new award
 and source submissions moving continuously without turning one-time build work
 into another permanent watchdog.
@@ -127,6 +155,71 @@ standalone source-intake or localization watchdog. Baseline, source quality,
 and localization repair scripts remain targeted catch-up tools only;
 run them deliberately for a bounded repair rather than reinstalling a recurring
 task.
+
+## Verified Feedback Promotions
+
+The hourly worker makes the broader feedback workflow automatic after an
+operator clusters feedback and drafts an inactive rule:
+
+1. Scan the complete paginated change-event history, including events already
+   hidden by immediate feedback suppression. A configured safety cap fails the
+   shadow report instead of pretending the partial scan was complete.
+2. Run every clustered event as a positive regression fixture and every
+   operator-confirmed legitimate update ID sealed into the immutable draft as
+   a negative fixture. The worker exact-loads only those bound IDs; it never
+   chooses a convenient negative by first asking the candidate matcher what it
+   already preserves. A missing, duplicate, overlapping, or no-longer-retained
+   negative fails closed.
+3. Compare the live app with the installed worker using the exact git revision,
+   full policy hash, Batch policy hash, suppression policy hash, and normalized
+   executable matcher digest. At least one retained worker run must prove the
+   same identity.
+4. Wait for a later regular 6 PM cohort with exactly three scheduled shards.
+   The worker never launches another capture or paid API request for this gate.
+   It waits until every exact-run visual-review candidate is published or
+   rejected and fails on any candidate failure. A `superseded` candidate
+   remains nonterminal for promotion even when its replacement is known; the
+   workflow waits for a later clean 6 PM cohort instead of rewriting its raw
+   database status. Every shard must also report zero capture failures and zero
+   candidate/run observation-ledger failures. Canary events count only when
+   their candidate is immutably bound to one of those exact three worker-run
+   IDs through the append-only
+   `shared_award_visual_review_candidate_run_observations` ledger. This also
+   records a duplicate candidate seen in a later run without overwriting its
+   original metadata. The three runs' retained observation total must equal
+   the ledger bindings; a published candidate without its event binding cannot
+   pass as an empty, clean canary.
+5. After the behavior-identical rule is globally activated, verify the live
+   app and worker again. Then resume a bounded per-cluster retroactive sweep
+   from a canary-cycle-specific `monitoring_policy_sweep_state` checkpoint. It
+   changes an event only when the candidate matcher and active production
+   suppression decision agree, and it advances only after reaching the true
+   end of history with zero errors.
+6. On the next normal hourly downstream run after a completed sweep, append a
+   successful zero-API-charge `local_worker_runs` identity attestation bound to
+   that cluster revision. The admin route deterministically selects the earliest
+   exact matching run after the sweep and the database revalidates it before
+   Resolve can succeed. This does not start a visual capture, wait for the next
+   day, or add another 6 PM canary.
+7. If activated identity verification or the sweep fails, or the rule is
+   disabled after a partial pass, mark the cluster `rollback_required`. The
+   hourly worker waits for the exact inactive app/worker identity, re-evaluates
+   every attributable event with the candidate excluded, preserves any other
+   valid production suppression, and reverses the rest in bounded audited
+   batches. Each activation cycle has separate cursor and request identities.
+   Only a zero-attributable count permits the cluster to return to draft.
+   The same rollback path applies when an operator disables the rule after the
+   sweep: Admin hides Resolve and both workflow views show high-severity hourly
+   rollback/deactivation repair.
+
+The ordinary downstream suppression sweep loads every unresolved proposed rule
+ID and excludes all of them fail-closed. It therefore cannot activate a draft,
+bypass the canary, or obscure which suppressions must be reversed.
+
+Unchanged failed evidence uses a deterministic transition request ID, so an
+hourly retry returns the existing audit result instead of creating duplicate
+failure rows. Normal waits—such as waiting for the next 6 PM cohort or resuming
+an incomplete bounded cursor—do not create failed transitions.
 
 The Supabase key must be an elevated AwardPing project key from Supabase Project
 Settings -> API. Use either the legacy JWT `service_role` key or a newer
