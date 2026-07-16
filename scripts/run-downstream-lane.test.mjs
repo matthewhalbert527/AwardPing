@@ -27,6 +27,8 @@ describe("independent downstream lane runner", () => {
   it("uses deterministic page auditing and never the paid Gemini page-audit worker", () => {
     const command = commandForDownstreamLane("page-audit");
     expect(command.args[0]).toMatch(/evaluate-public-page-audit-canaries\.mjs$/);
+    expect(command.args).toContain("--env=.env.worker.local");
+    expect(command.args).not.toContain("--env");
     expect(command.args.join(" ")).not.toContain("process-page-audit-batch");
     expect(command.args.join(" ")).not.toContain("--submit=true");
   });

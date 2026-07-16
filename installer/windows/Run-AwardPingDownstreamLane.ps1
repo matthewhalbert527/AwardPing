@@ -280,6 +280,11 @@ try {
     -WindowStyle Hidden `
     -PassThru
 
+  # PowerShell can lose access to ExitCode after an asynchronously-started
+  # process closes unless its native handle was materialized while it was
+  # alive. Hold the handle so Task Scheduler receives the real lane result.
+  $processHandle = $process.Handle
+
   $completed = $process.WaitForExit($TimeoutMinutes * 60 * 1000)
   if (-not $completed) {
     Add-Content -LiteralPath $runLog -Value "DOWNSTREAM_LANE_TIMEOUT lane=$Lane pid=$($process.Id)" -Encoding UTF8
@@ -298,7 +303,8 @@ try {
     $exitCode = 124
   } else {
     $process.WaitForExit()
-    $exitCode = $process.ExitCode
+    $process.Refresh()
+    $exitCode = [int]$process.ExitCode
   }
 
   Append-OutputFile -Path $stdoutPath -RunLog $runLog -Stream "STDOUT"

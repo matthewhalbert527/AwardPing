@@ -48,28 +48,30 @@ if (isDirectExecution()) {
 
   if (!config.supabaseUrl || !config.serviceRoleKey) {
     console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
-    process.exit(1);
-  }
-  if (!config.appUrl) {
+    process.exitCode = 1;
+  } else if (!config.appUrl) {
     console.error("NEXT_PUBLIC_APP_URL is required for live app/worker promotion attestation.");
-    process.exit(1);
-  }
-
-  const supabase = createSupabaseServiceClient(
-    config.supabaseUrl,
-    config.serviceRoleKey,
-  );
-  runMonitoringFeedbackPromotionWorker({ supabase, config, env })
-    .then((report) => {
+    process.exitCode = 1;
+  } else {
+    const supabase = createSupabaseServiceClient(
+      config.supabaseUrl,
+      config.serviceRoleKey,
+    );
+    try {
+      const report = await runMonitoringFeedbackPromotionWorker({
+        supabase,
+        config,
+        env,
+      });
       console.log(JSON.stringify(report, null, 2));
-      process.exit(report.failed > 0 ? 1 : 0);
-    })
-    .catch((error) => {
+      process.exitCode = report.failed > 0 ? 1 : 0;
+    } catch (error) {
       console.error(
         `MONITORING_FEEDBACK_PROMOTION_FATAL ${error?.message || String(error)}`,
       );
-      process.exit(1);
-    });
+      process.exitCode = 1;
+    }
+  }
 }
 
 export async function runMonitoringFeedbackPromotionWorker({

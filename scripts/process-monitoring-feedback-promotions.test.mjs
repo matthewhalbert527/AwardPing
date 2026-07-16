@@ -43,6 +43,15 @@ import {
 const root = resolve(import.meta.dirname, "..");
 
 describe("verified monitoring-feedback promotion worker", () => {
+  it("lets pending Windows network resources drain instead of forcing process exit", () => {
+    const source = readFileSync(
+      resolve(root, "scripts", "process-monitoring-feedback-promotions.mjs"),
+      "utf8",
+    );
+    expect(source).not.toMatch(/process\.exit\(/);
+    expect(source).toContain("process.exitCode =");
+  });
+
   it("computes the configured digest from the executable dependency bundle", () => {
     expect(monitoringPromotionMatcherDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(monitoringPromotionMatcherDigest).toBe(monitoringPromotionMatcherBundleHash);

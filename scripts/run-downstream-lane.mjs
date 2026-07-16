@@ -83,7 +83,10 @@ export function commandForDownstreamLane(laneKey, { envFile = ".env.worker.local
   const definition = downstreamLaneDefinitions[normalized];
   if (!definition) throw new Error(`Unknown downstream lane: ${laneKey || "(missing)"}`);
   const args = [resolve(root, definition.script)];
-  if (definition.includeEnv !== false) args.push("--env", envFile);
+  // Use the inline form because a few of the older deterministic workers only
+  // accept --key=value arguments. Keeping one canonical form prevents a lane
+  // from silently falling back to .env.local on the installed worker.
+  if (definition.includeEnv !== false) args.push(`--env=${envFile}`);
   if (normalized === "nightly_report") args.push("--reports-dir", resolve(root, "reports"));
   if (normalized === "new_page_review" && Number.isFinite(Number(timeBudgetMs))) {
     args.push(`--time-budget-ms=${Math.max(1_000, Math.floor(Number(timeBudgetMs) - 15_000))}`);

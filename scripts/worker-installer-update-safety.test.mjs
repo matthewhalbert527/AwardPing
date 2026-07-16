@@ -1,6 +1,15 @@
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "..");
@@ -8,10 +17,13 @@ const installer = readFileSync(
   resolve(root, "installer", "windows", "Install-AwardPingWorker.ps1"),
   "utf8",
 );
-const downstream = readFileSync(
-  resolve(root, "installer", "windows", "Run-AwardPingDownstreamLane.ps1"),
-  "utf8",
+const downstreamPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Run-AwardPingDownstreamLane.ps1",
 );
+const downstream = readFileSync(downstreamPath, "utf8");
 const downstreamLaneRunner = readFileSync(
   resolve(root, "scripts", "run-downstream-lane.mjs"),
   "utf8",
@@ -602,6 +614,9 @@ describe("Windows worker update safety", () => {
     expect(downstream).toContain('"--lane=$Lane"');
     expect(downstream).toContain('"--time-budget-ms=$timeBudgetMs"');
     expect(downstream).toContain("$process.WaitForExit($TimeoutMinutes * 60 * 1000)");
+    expect(downstream).toContain("$processHandle = $process.Handle");
+    expect(downstream).toContain("$process.Refresh()");
+    expect(downstream).toContain("$exitCode = [int]$process.ExitCode");
     expect(downstream).toContain("taskkill.exe");
     expect(downstream).toContain("exit $exitCode");
 
@@ -637,6 +652,68 @@ describe("Windows worker update safety", () => {
     expect(sourceIntakeWorker).toContain('report.errors.length || report.failed > 0 || report.submission_claims_lost_after_batch_create > 0');
     expect(captureWorker).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
     expect(nightlyReporter).toContain('acquireFileLock(join(reportDir, "visual-nightly-report.lock"))');
+  });
+
+  windowsIt("preserves a completed child process exit code for Task Scheduler", () => {
+    const result = runPowerShell([
+      '$ErrorActionPreference = "Stop"',
+      '$process = Start-Process -FilePath (Get-Command powershell.exe).Source -ArgumentList @("-NoProfile", "-Command", "exit 7") -WindowStyle Hidden -PassThru',
+      '$processHandle = $process.Handle',
+      '$completed = $process.WaitForExit(10000)',
+      'if (-not $completed) { throw "The controlled child did not exit." }',
+      '$process.WaitForExit()',
+      '$process.Refresh()',
+      '$exitCode = [int]$process.ExitCode',
+      'Write-Output $exitCode',
+    ].join("\n"));
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe("7");
+  });
+
+  windowsIt("returns and logs a real downstream wrapper child failure", () => {
+    const installRoot = mkdtempSync(join(tmpdir(), "awardping-lane-wrapper-"));
+    const appScripts = join(installRoot, "app", "scripts");
+    const logDir = join(installRoot, "logs");
+    mkdirSync(appScripts, { recursive: true });
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(
+      join(appScripts, "run-downstream-lane.mjs"),
+      'console.error("CONTROLLED_LANE_FAILURE");\nprocess.exitCode = 7;\n',
+      "utf8",
+    );
+
+    try {
+      const result = spawnSync(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          downstreamPath,
+          "-InstallRoot",
+          installRoot,
+          "-Lane",
+          "manual_quarantine",
+          "-TimeoutMinutes",
+          "2",
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      const runLogName = readdirSync(logDir).find((name) =>
+        /^awardping-downstream-manual_quarantine-.*\.log$/.test(name),
+      );
+
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(7);
+      expect(runLogName).toBeTruthy();
+      expect(readFileSync(join(logDir, runLogName), "utf8")).toContain(
+        "DOWNSTREAM_LANE_EXIT lane=manual_quarantine exit_code=7",
+      );
+    } finally {
+      rmSync(installRoot, { recursive: true, force: true });
+    }
   });
 
   windowsIt("bounds downstream logs without deleting outside the verified log directory", () => {
