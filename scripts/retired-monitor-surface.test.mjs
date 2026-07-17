@@ -18,6 +18,9 @@ describe("retired user-level monitor checker", () => {
     expect(smoke).not.toContain("/api/cron/check-monitors");
     expect(launchCheck).toContain('/api/cron/send-digests');
     expect(smoke).toContain('/api/cron/send-digests');
+    expect(smoke).toContain('"pricing redirect", "/pricing", "/contact"');
+    expect(smoke).toContain('"dashboard consolidation redirect", "/dashboard", "/updates"');
+    expect(smoke).not.toContain('"dashboard auth redirect"');
   });
 
   it("uses shared-source, worker, and lane state for operations health", () => {

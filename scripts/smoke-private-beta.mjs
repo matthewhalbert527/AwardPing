@@ -11,8 +11,8 @@ const checks = [];
 await checkStatus("home page", "/", [200]);
 await checkStatus("signup page", "/signup", [200]);
 await checkStatus("login page", "/login", [200]);
-await checkRedirect("pricing redirect", "/pricing", "/signup");
-await checkRedirect("dashboard auth redirect", "/dashboard", "/login");
+await checkRedirect("pricing redirect", "/pricing", "/contact");
+await checkRedirect("dashboard consolidation redirect", "/dashboard", "/updates");
 await checkStatus("find awards page", "/award-directory", [200]);
 await checkStatus("send-digests cron rejects anonymous calls", "/api/cron/send-digests", [401]);
 await checkStatus(
