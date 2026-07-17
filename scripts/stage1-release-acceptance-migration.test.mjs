@@ -134,6 +134,8 @@ describe("Stage 1 release acceptance migration", () => {
       "private.insert_stage1_external_release_artifact",
     ]) {
       const body = functionBody(name);
+      expect(body).toContain("p_completed_at + (case p_artifact_kind");
+      expect(body).toContain("end) then");
       expect(body).toContain(
         "when 'non_cohort_leak_crawl' then interval '24 hours'",
       );

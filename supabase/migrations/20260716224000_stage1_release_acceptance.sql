@@ -1247,13 +1247,13 @@ begin
     or p_started_at > p_completed_at
     or p_completed_at > v_now + interval '5 minutes'
     or p_valid_until <= v_now
-    or p_valid_until > p_completed_at + case p_artifact_kind
+    or p_valid_until > p_completed_at + (case p_artifact_kind
       when 'hosted_runtime_identity' then interval '2 hours'
       when 'non_cohort_leak_crawl' then interval '24 hours'
       when 'r2_recovery_drill' then interval '24 hours'
       when 'rollback_drill' then interval '7 days'
       else interval '0 seconds'
-    end then
+    end) then
     raise exception using errcode = '22023',
       message = 'Producer measurement timestamps are invalid, expired, or too long-lived.';
   end if;
@@ -1564,13 +1564,13 @@ begin
     or p_started_at > p_completed_at
     or p_completed_at > v_now + interval '5 minutes'
     or p_valid_until <= v_now
-    or p_valid_until > p_completed_at + case p_artifact_kind
+    or p_valid_until > p_completed_at + (case p_artifact_kind
       when 'hosted_runtime_identity' then interval '2 hours'
       when 'non_cohort_leak_crawl' then interval '24 hours'
       when 'r2_recovery_drill' then interval '24 hours'
       when 'rollback_drill' then interval '7 days'
       else interval '0 seconds'
-    end then
+    end) then
     raise exception using errcode = '22023',
       message = 'External artifact timestamps are invalid, expired, or too long-lived.';
   end if;
