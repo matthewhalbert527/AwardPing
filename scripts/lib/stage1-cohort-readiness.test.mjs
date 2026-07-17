@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   REQUIRED_SOURCE_ROLES,
+  STAGE1_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
   STAGE1_COHORT_DEFINITION,
   allStage1SearchKeys,
   buildStage1ReadinessReport,
@@ -12,6 +13,7 @@ import {
   rankOfficialSourceCandidates,
   sourceIdentityDisposition,
   validateExactStage1Definition,
+  validateRemoteSnapshot,
 } from "./stage1-cohort-readiness.mjs";
 
 const temporaryPaths = [];
@@ -73,6 +75,32 @@ describe("Stage 1 cohort readiness preflight", () => {
     expect(allStage1SearchKeys()).toContain("smart scholarship for service program");
     expect(allStage1SearchKeys()).not.toContain("marshall sherfield fellowship");
     expect(allStage1SearchKeys()).not.toContain("gem fellowship");
+  });
+
+  it("accepts the authoritative v3 publication snapshot contract", () => {
+    const snapshot = {
+      schema_version: STAGE1_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
+      cohorts: STAGE1_COHORT_DEFINITION.map((entry, index) => ({
+        registry: { cohort_key: entry.cohortKey },
+        members: [
+          { member_kind: "canonical", shared_award_id: `canonical-${index}` },
+          { member_kind: "alias", shared_award_id: `alias-${index}` },
+        ],
+      })),
+    };
+
+    expect(STAGE1_PUBLICATION_SNAPSHOT_SCHEMA_VERSION).toBe(3);
+    expect(validateRemoteSnapshot(snapshot)).toMatchObject({
+      ok: true,
+      errors: [],
+      cohort_count: 25,
+      canonical_member_count: 25,
+      alias_member_count: 25,
+    });
+    expect(validateRemoteSnapshot({ ...snapshot, schema_version: 1 })).toMatchObject({
+      ok: false,
+      errors: ["unexpected_schema_version:1"],
+    });
   });
 
   it("treats the Marshall home and Apply pages as the core role candidates", () => {

@@ -1130,10 +1130,14 @@ function summarizeQuarantine(rows, memberIds) {
   };
 }
 
-function validateRemoteSnapshot(snapshot) {
+export const STAGE1_PUBLICATION_SNAPSHOT_SCHEMA_VERSION = 3;
+
+export function validateRemoteSnapshot(snapshot) {
   if (!snapshot) return { ok: false, errors: ["snapshot_missing"] };
   const errors = [];
-  if (snapshot.schema_version !== 1) errors.push(`unexpected_schema_version:${snapshot.schema_version}`);
+  if (snapshot.schema_version !== STAGE1_PUBLICATION_SNAPSHOT_SCHEMA_VERSION) {
+    errors.push(`unexpected_schema_version:${snapshot.schema_version}`);
+  }
   const rows = Array.isArray(snapshot.cohorts) ? snapshot.cohorts : [];
   if (rows.length !== 25) errors.push(`expected_25_cohorts_found_${rows.length}`);
   const actualKeys = rows.map((row) => row?.registry?.cohort_key).filter(Boolean);
