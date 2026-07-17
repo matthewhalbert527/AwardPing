@@ -6,7 +6,7 @@
     },
     {
       "path": "/api/cron/drain-public-digest-outbox",
-      "schedule": "*/5 * * * *"
+      "schedule": "0 14 * * *"
     }
   ]
 }

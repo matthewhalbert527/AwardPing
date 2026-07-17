@@ -189,6 +189,12 @@ honest unavailable label. Then verify an owner/admin invitation, watchlist,
 office notes/tasks, Operator Action Inbox, quarantine, digest outbox, and both
 paid-lane budget displays.
 
+The 13:00 UTC daily digest job both freezes new digest payloads and immediately
+drains the durable outbox. A second Hobby-compatible daily job at 14:00 UTC
+retries queued deliveries and records terminal failures for operator action.
+The authenticated drain route remains available for a deliberate manual retry;
+no digest depends on an in-memory timer.
+
 ## Rollback
 
 Suspend the Stage 1 release first so public surfaces and digest claims fail

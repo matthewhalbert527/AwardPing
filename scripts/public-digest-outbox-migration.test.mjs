@@ -136,10 +136,11 @@ describe("durable public digest outbox", () => {
     expect(privacyDelete).not.toContain('.from("public_update_subscribers")');
   });
 
-  it("runs a recurring independent drain", () => {
+  it("runs a Hobby-compatible daily independent retry drain", () => {
     expect(vercel.crons).toContainEqual({
       path: "/api/cron/drain-public-digest-outbox",
-      schedule: "*/5 * * * *",
+      schedule: "0 14 * * *",
     });
+    expect(vercel.crons).toHaveLength(2);
   });
 });

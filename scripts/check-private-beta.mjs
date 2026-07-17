@@ -249,7 +249,7 @@ function checkVercelCron() {
   const paths = new Map(crons.map((cron) => [cron.path, cron.schedule]));
   const expected = [
     ["/api/cron/send-digests", "0 13 * * *"],
-    ["/api/cron/drain-public-digest-outbox", "*/5 * * * *"],
+    ["/api/cron/drain-public-digest-outbox", "0 14 * * *"],
   ];
 
   for (const [path, schedule] of expected) {
@@ -258,6 +258,12 @@ function checkVercelCron() {
     } else {
       fail(`Vercel cron ${path} is missing or has the wrong schedule.`);
     }
+  }
+
+  if (crons.length <= 2) {
+    pass("Vercel cron count stays within the Hobby-plan two-job limit.");
+  } else {
+    fail(`Vercel Hobby permits at most two cron jobs; found ${crons.length}.`);
   }
 }
 
