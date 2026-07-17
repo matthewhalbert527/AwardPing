@@ -31,5 +31,7 @@ describe("atomic public form rate-limit migration", () => {
   it("computes retry timing with an ordinary schema-qualified function call", () => {
     expect(migration).not.toContain("pg_catalog.extract(epoch from");
     expect(migration).toContain("pg_catalog.date_part(");
+    expect(migration).not.toContain("pg_catalog.greatest(");
+    expect(migration).toContain("greatest(");
   });
 });

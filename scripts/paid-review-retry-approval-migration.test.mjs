@@ -14,6 +14,11 @@ const worker = readFileSync(
 );
 
 describe("paid review retry approval migration", () => {
+  it("normalizes bigint retry counters without mixed numeric overloads", () => {
+    expect(migration).toContain("greatest(0::bigint, p_retry_count)");
+    expect(migration).not.toContain("pg_catalog.greatest(");
+  });
+
   it("stores one-use exact-failure approvals for both paid lanes", () => {
     expect(migration).toContain("create table public.gemini_paid_retry_approvals");
     expect(migration).toContain("'new_page_review', 'changed_page_review'");

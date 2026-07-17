@@ -85,7 +85,7 @@ as $$
       'candidate_updated_at', p_candidate_updated_at,
       'rejection_reason', p_rejection_reason,
       'gemini_batch_name', p_gemini_batch_name,
-      'retry_count', pg_catalog.greatest(0, p_retry_count)
+      'retry_count', greatest(0::bigint, p_retry_count)
     )
   );
 $$;

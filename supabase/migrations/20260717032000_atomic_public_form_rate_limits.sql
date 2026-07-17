@@ -50,7 +50,7 @@ begin
       'allowed', false,
       'remaining', 0,
       'effective_limit', p_limit,
-      'retry_after_seconds', pg_catalog.greatest(
+      'retry_after_seconds', greatest(
         1,
         pg_catalog.ceil(
           pg_catalog.date_part(
