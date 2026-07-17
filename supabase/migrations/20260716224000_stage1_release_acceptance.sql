@@ -1784,7 +1784,9 @@ begin
       raise exception using errcode = '22023',
         message = 'Hosted runtime evidence observed_at is invalid.';
     end;
-    if pg_catalog.abs(pg_catalog.extract(epoch from (p_completed_at - v_observed_at))) > 300
+    if pg_catalog.abs(
+      pg_catalog.date_part('epoch', p_completed_at - v_observed_at)
+    ) > 300
       or p_completed_at < pg_catalog.clock_timestamp() - interval '1 hour'
       or p_valid_until > p_completed_at + interval '2 hours' then
       raise exception using errcode = '23514',

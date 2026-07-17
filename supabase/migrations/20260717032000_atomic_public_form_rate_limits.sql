@@ -53,9 +53,10 @@ begin
       'retry_after_seconds', pg_catalog.greatest(
         1,
         pg_catalog.ceil(
-          pg_catalog.extract(epoch from (
+          pg_catalog.date_part(
+            'epoch',
             coalesce(v_oldest, v_now) + pg_catalog.make_interval(secs => p_window_seconds) - v_now
-          ))
+          )
         )::integer
       )
     );

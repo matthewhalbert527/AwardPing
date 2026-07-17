@@ -26,14 +26,14 @@ begin
   v_authority_and_path := pg_catalog.split_part(v_value, '?', 1);
   v_query := case
     when pg_catalog.strpos(v_value, '?') > 0
-      then pg_catalog.substring(v_value from pg_catalog.strpos(v_value, '?') + 1)
+      then pg_catalog.substr(v_value, pg_catalog.strpos(v_value, '?') + 1)
     else ''
   end;
   v_authority := pg_catalog.split_part(v_authority_and_path, '/', 1);
   v_authority := pg_catalog.regexp_replace(v_authority, '^www\.', '', 'i');
-  v_path := pg_catalog.substring(
-    v_authority_and_path
-    from pg_catalog.char_length(pg_catalog.split_part(v_authority_and_path, '/', 1)) + 1
+  v_path := pg_catalog.substr(
+    v_authority_and_path,
+    pg_catalog.char_length(pg_catalog.split_part(v_authority_and_path, '/', 1)) + 1
   );
   v_path := case when v_path = '' then '/' else v_path end;
   v_path := pg_catalog.regexp_replace(v_path, '/index\.(html?|php|aspx?)$', '/', 'i');
@@ -47,8 +47,8 @@ begin
       pg_catalog.btrim(
         case
           when pg_catalog.strpos(v_query_part, '=') > 0
-            then pg_catalog.substring(
-              v_query_part from pg_catalog.strpos(v_query_part, '=') + 1
+            then pg_catalog.substr(
+              v_query_part, pg_catalog.strpos(v_query_part, '=') + 1
             )
           else ''
         end

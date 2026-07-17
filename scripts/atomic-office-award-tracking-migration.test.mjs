@@ -42,6 +42,11 @@ const untrackSourceFunction = functionBody(
 );
 
 describe("atomic office award tracking migration", () => {
+  it("normalizes URL slices with callable pg_catalog functions", () => {
+    expect(migration).not.toContain("pg_catalog.substring(");
+    expect((migration.match(/pg_catalog\.substr\(/g) || []).length).toBeGreaterThanOrEqual(3);
+  });
+
   it("authenticates and authorizes the exact office mutation at the database", () => {
     for (const body of [trackFunction, untrackAwardFunction, untrackSourceFunction]) {
       expect(body).toContain("v_actor_user_id uuid := (select auth.uid())");

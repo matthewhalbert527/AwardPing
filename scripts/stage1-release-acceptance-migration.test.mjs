@@ -164,6 +164,13 @@ describe("Stage 1 release acceptance migration", () => {
     );
   });
 
+  it("uses callable pg_catalog functions for interval arithmetic", () => {
+    expect(migration).not.toContain("pg_catalog.extract(epoch from");
+    expect(migration).toContain(
+      "pg_catalog.date_part('epoch', p_completed_at - v_observed_at)",
+    );
+  });
+
   it("makes a newer validly signed failure supersede an older passing proof", () => {
     const current = functionBody(
       "private.stage1_current_valid_release_artifact",

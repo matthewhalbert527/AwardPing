@@ -27,4 +27,9 @@ describe("atomic public form rate-limit migration", () => {
     expect(implementation).toContain('.rpc("reserve_public_form_rate_limit"');
     expect(implementation).not.toContain('.from("public_form_rate_limits")');
   });
+
+  it("computes retry timing with an ordinary schema-qualified function call", () => {
+    expect(migration).not.toContain("pg_catalog.extract(epoch from");
+    expect(migration).toContain("pg_catalog.date_part(");
+  });
 });
