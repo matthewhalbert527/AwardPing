@@ -17,7 +17,7 @@ Use this file as the first stop for stipulations that decide what should become 
 - Visual snapshot AI prompts include policy prompt lines by scope, including the queued `visual_review_batch` used by the 6 PM capture scan.
 - Baseline facts prompts include decision memory for source relevance, short source titles, important-date context, award conditions, and source-quality decisions.
 - Change interpretation prompts include decision memory for duplicate updates, expansion/lazy-load noise, wrong screenshot localization, and false added/removed text.
-- The overnight source-quality pass records the active policy version in each report.
+- Historical source-quality reports retain the active policy version, but no source-quality or baseline-completion worker is part of the permanent schedule.
 - Both loaders expose the same deterministic full-bundle `awardMonitoringPolicyIdentity` (`id`, bundle `version`, content `hash`, policy version, and decision-memory version) for audit metadata.
 - Batch candidates created by the 6 PM capture scan and decisions applied by the independent suppression lane use the separate `visualReviewBatchPolicyIdentity`. Its hash includes only active Batch rules, aliases, blocking/persistence behavior, Batch prompts, and active Batch decision memory. Baseline-only prompts, examples, labels, and other audit metadata therefore do not invalidate otherwise identical visual-review work.
 - Both loaders validate batch coverage at load time. An active alert-blocking rule without a prompt or `visual_review_batch` scope fails fast instead of silently disappearing from queued review.
@@ -111,10 +111,12 @@ revision, reopening, and status change. The registry uses these rules:
   reconciliation for one award share one public-page case. Both source records
   remain in its evidence and failure counts, so the UI neither hides the
   reconciliation nor presents one repair as two unrelated cases.
-- A visual-review failure stays automatic while it has a safe bounded retry or
-  missing-response recovery. A retry-exhausted failure, or an ambiguous Batch
-  creation that could already have incurred a charge, becomes a terminal
-  quarantine case.
+- Missing-response recovery stays automatic only because it reuses the existing
+  Gemini Batch and creates no new charge. Every failure that would require a
+  new paid new-page or changed-page submission becomes an operator case
+  immediately. A site admin must inspect the exact failed candidate and record
+  a one-use, version-bound approval; ambiguous provider creation is never
+  eligible for a generic resubmission.
 - Historical screenshot localization enters the registry only from a complete,
   timestamped, SHA-256-bound source-ID inventory. Until that inventory is
   imported, historical limitations are unknown rather than zero.
@@ -199,7 +201,7 @@ or failed visual review can no longer starve reconciliation or auditing.
 4. Set `persistent: true` for a promotable rule; the verified workflow rejects candidates that cannot keep filtering stored change details.
 5. Every active `alert_blocking` flag must have a `prompt` and include `visual_review_batch` in `prompt_scopes`. Add any other prompt scopes that need the same rule.
 6. Add every established legacy/model spelling to `aliases`; do not create two canonical rules for the same behavior.
-7. Wire the deterministic matcher before drafting the candidate. AI-only or free-form rule IDs cannot enter this workflow because their behavior cannot be replayed safely in shadow and canary stages. Recompute `promotion_matcher.hash` with `scripts/lib/monitoring-promotion-matcher-bundle.mjs`. The canonical bundle covers both app and worker implementations of the suppression matcher, promotion sweep/cursor semantics, policy-alias resolver, source-quality resolver and its baseline/URL-policy dependencies, plus the report verifier and promotion runner. A change to any one of those sources changes the digest, so old shadow/regression artifacts cannot be reused. Parity tests fail when the installed executable bundle and sealed policy digest differ.
+7. Wire the deterministic matcher before drafting the candidate. AI-only or free-form rule IDs cannot enter this workflow because their behavior cannot be replayed safely in shadow and canary stages. Recompute `promotion_matcher.hash` with `scripts/lib/monitoring-promotion-matcher-bundle.mjs`. The canonical bundle covers both app and worker implementations of the suppression matcher, promotion sweep/cursor semantics, policy-alias resolver, source-quality resolver and its baseline/URL-policy dependencies, plus the report verifier, promotion runner, and shared scheduled-nightly eligibility contract. A change to any one of those sources changes the digest, so old shadow/regression artifacts cannot be reused. Parity tests fail when the installed executable bundle and sealed policy digest differ.
 8. Increment the policy version so new scan and candidate metadata identifies the changed bundle.
 9. Add or update tests in `src/lib/award-monitoring-policy.test.ts`, `scripts/lib/award-monitoring-policy.test.mjs`, and the relevant classifier test.
 10. In **4. Verified Promotions**, bind at least one retained operator-confirmed real update ID near the candidate boundary before saving the immutable draft.

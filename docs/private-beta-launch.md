@@ -1,127 +1,197 @@
-# Private Beta Launch Runbook
+# Stage 1 Invitation-Only Beta Runbook
 
-Use this checklist to move AwardPing from a local build to a hosted private beta. The service is free during this phase, so signup CTAs should say "Sign up for free" and billing/pricing surfaces should stay redirected.
+This runbook releases exactly the 25-award Stage 1 cohort. It does not publish
+the legacy catalog, accept open signup, or bypass the database release gate.
 
-## 1. Verify The Build
+## 1. Verify the candidate build
 
-Run the full local verification suite before touching production:
+Run the complete local stack, then the launch-specific check against the exact
+production environment file without printing secret values:
 
 ```bash
 npm run verify
-```
-
-Then check launch-specific wiring against the env file you intend to use:
-
-```bash
 npm run launch:check -- --env .env.production.local --production
 ```
 
-The launch check validates required env names, digest cron config, migrations, job-run observability, pipeline tables, free-service copy, and billing redirects. It does not print secret values. Source monitoring itself runs on the local 6 PM visual-capture shards and independently leased downstream lanes.
+All SQL migrations must parse and all migration contract tests must pass. A
+clean-database migration execution is still required before production when a
+local PostgreSQL/Docker runtime is available.
 
-## 2. Prepare Supabase
+## 2. Apply Supabase first
 
-Create or select the production Supabase project, then apply every migration in order:
+Confirm the linked project is the AwardPing production project. Back it up,
+inspect the remote migration list, and apply every migration in filename order:
 
 ```bash
-npx supabase@latest link --project-ref <supabase-project-ref>
-npx supabase@latest db dump --linked --schema public --file /tmp/awardping-remote-public-schema.sql
+npx supabase@latest link --project-ref <production-project-ref>
+npx supabase@latest db dump --linked --schema public --file <secure-backup-path>
+npx supabase@latest migration list --linked
 npx supabase@latest db push --linked
 npx supabase@latest migration list --linked
-npm run seed:shared-awards
 ```
 
-If the CLI is not authenticated, run `npx supabase@latest login` first. Before `db push`, inspect the dumped schema and confirm the project is empty or already AwardPing-only. Do not push these migrations into a shared or unrelated Supabase database. Confirm `migration list --linked` shows every local migration on the remote side and no local-only rows remain.
+Do not run the broad legacy catalog seed. The Stage 1 registry migration owns
+the exact 25-member cohort, aliases, hard exclusions, publication state, and
+release identity.
 
-If SQL Editor is used instead, run **every** `.sql` file currently present in `supabase/migrations` in filename order. Do not stop at `0007_shared_award_catalog.sql`; the required sequence includes `20260716150000_initial_official_document_events.sql`, which adds immutable first-observation provenance and publication support for newly discovered official documents, followed by `20260716152833_source_intake_fact_candidate_idempotency.sql`, which makes retained-result fact replay duplicate-safe, `20260716161529_r2_baseline_recovery_quarantine.sql`, which atomically protects a source and creates a source-keyed operator case when authoritative R2 recovery fails, `20260716171409_recover_rejected_initial_document_candidates.sql`, which safely reopens only zero-charge first-document candidates rejected by the corrected applicant-signal guard, `20260716174800_fix_initial_document_publication_evidence_contract.sql`, which aligns atomic publication with the canonical hyphenated first-observation evidence state and requires permanent candidate-bound PDF text without relaxing any hash or identity guard, and `20260716181500_secure_visual_candidate_publication_trigger.sql`, which lets the publication-transition trigger execute its deliberately private manifest validators without exposing those validators as service-role RPCs.
+If the Supabase SQL Editor is used instead of `db push`, run **every** `.sql` file currently present in `supabase/migrations` in filename order. Do not stop at `0007_shared_award_catalog.sql`. The required chain includes `20260716150000_initial_official_document_events.sql`, `20260716152833_source_intake_fact_candidate_idempotency.sql`, `20260716171409_recover_rejected_initial_document_candidates.sql`, `20260716174800_fix_initial_document_publication_evidence_contract.sql`, and `20260716181500_secure_visual_candidate_publication_trigger.sql`, followed by every later Stage 1 migration. Verify the final state with `migration list --linked`.
 
-Before updating the installed worker, confirm the last migration is present remotely. The R2 service-role RPCs keep a recovery failure in `review_later` and in Manual Quarantine until the worker verifies and restores the exact immutable R2 generation. Generic quarantine refreshes cannot close that case, and the recovery itself creates no API charge. Broad scans continue to exclude the protected source; use only the worker's exact-source recovery invocation to retry it. Exact recovery resolves the R2 case, but it reopens and clears source failure fields only if the R2 workflow still owns the exact `review_later` status, owner, and note; any later unrelated review is preserved. The rejected first-document recovery is also service-role-only and zero-charge: it requires the exact rejected candidate, acquisition, signature, candidate evidence signature, unassigned quarantine evidence hash, and corrected failure reason. It does not alter immutable evidence or resolve quarantine; normal atomic event publication must succeed before the quarantine closes.
+The ordered chain includes
+`20260716161529_r2_baseline_recovery_quarantine.sql`; keep its exact-source,
+hash-verified R2 recovery and durable quarantine contract intact.
 
-In Supabase Auth, set:
+In Supabase Auth:
 
-- Site URL: `https://<production-domain>`
-- Redirect URLs: `https://<production-domain>/auth/confirm`
-- Local redirect for development: `http://localhost:3000/auth/confirm`
+- disable public signup;
+- set Site URL to `https://awardping.com`;
+- allow only the exact production confirmation/invitation redirects plus the
+  explicit localhost development redirect;
+- keep secret credentials server/worker-only.
 
-## 3. Configure Vercel
+Using a direct PostgreSQL administrator session, provision the exact production
+release target (app origin, Supabase origin/project, Vercel project/team, and R2
+account/bucket), approved producer source hashes, and release signer material in
+Supabase Vault. Application/service-role RPC access cannot create or change
+that target.
 
-Link the repo to the intended Vercel project:
+## 3. Configure hosted and worker environments
 
-```bash
-npx vercel@latest login
-npx vercel@latest link
-```
-
-Set these production environment variables in Vercel:
+Vercel needs the hosted values used by the app and cron routes:
 
 - `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` containing the production
+  `sb_publishable_...` value
+- `SUPABASE_SERVICE_ROLE_KEY` containing a server-only `sb_secret_...` value
+- `AWARDPING_ADMIN_EMAILS`
 - `RESEND_API_KEY`
 - `ALERT_FROM_EMAIL`
 - `CONTACT_TO_EMAIL`
 - `CRON_SECRET`
-- `TAVILY_API_KEY`
-- `AI_PROVIDER`
-- `GEMINI_API_KEY`
-- `GEMINI_DISCOVERY_MODEL`
-- `GEMINI_SUMMARY_MODEL`
-- `OPENAI_API_KEY`
-- `OPENAI_DISCOVERY_MODEL`
-- `OPENAI_SUMMARY_MODEL`
-- `DISCOVERY_DAILY_USER_LIMIT`
-- `DISCOVERY_DAILY_IP_LIMIT`
-- `DISCOVERY_DAILY_GLOBAL_LIMIT`
+- `APP_DATA_ENCRYPTION_KEY`
+- `FREE_CHECK_HOURLY_IP_LIMIT`
+- R2 identity/credentials when hosted evidence routes require signed objects
 
-Use a verified Resend sender for `ALERT_FROM_EMAIL`. Use a long random value for `CRON_SECRET`; do not reuse a local value.
+The variable names above remain for application compatibility; production does
+not accept legacy JWT values in them. `npm run launch:check -- --production`
+fails if either value is not the corresponding new key type, if a publishable
+key is placed in the server variable, or if a secret key is placed in a
+`NEXT_PUBLIC_` variable. Development checks warn about legacy values so a local
+migration can be staged without weakening the launch gate.
 
-Keep the discovery limits conservative for the private beta. Each award search currently performs four basic Tavily searches plus one Gemini or OpenAI classification call, so discovery is the main variable cost surface.
+The local worker needs a dedicated Supabase `sb_secret_...` key, Gemini, and R2
+credentials. The installer sends the Supabase secret in `apikey` only and
+persists it under the compatibility name `SUPABASE_SERVICE_ROLE_KEY` in the
+worker's local environment. Fresh installs reject legacy JWTs. An update-only
+install that finds a legacy JWT keeps tasks stopped and requests a validated
+replacement before switching the worker runtime.
 
-## 4. Deploy
+Gemini is used only by `new_page_review` and `changed_page_review`; PostgreSQL fixes
+each at $5 per UTC day with atomic reservations. No Tavily, OpenAI discovery,
+baseline-completion AI, source-quality AI, or immediate visual-review key is a
+launch requirement.
 
-Deploy production:
+The isolated release-evidence runner additionally needs the HMAC signer secret,
+the anonymous Supabase key, R2 credentials, and—only for the explicit rollback
+drill—a Vercel token and the exact rollback/restore deployment IDs. Do not put
+the HMAC secret in browser code.
+
+The release-evidence runner requires those variables to contain
+`sb_publishable_...` and `sb_secret_...` values. It rejects legacy API keys and
+uses the same secret-safe transport as the workers.
+
+### Disable legacy Supabase keys without downtime
+
+Do not disable either legacy key until all consumers are running on the new
+keys. Perform the cutover in this order:
+
+1. In the production Supabase project, create/reveal the `sb_publishable_...`
+   key and separate `sb_secret_...` keys for the hosted backend, isolated
+   release runner, and local worker. Do not delete or disable anything yet.
+2. Set the publishable key and hosted secret in every Vercel environment that
+   can receive production traffic. Redeploy the reviewed commit because
+   `NEXT_PUBLIC_` values are frozen into the client bundle at build time.
+3. Run the worker installer from that same clean commit with `-UpdateOnly`. If
+   its retained key is a legacy JWT, paste the dedicated worker secret when the
+   installer stops and requests it. Confirm all eleven tasks validate before
+   they resume.
+4. Configure the isolated evidence runner with the publishable key and its
+   server-only secret. Run a dry-run hosted-runtime measurement and the normal
+   app, Auth, cron/admin, worker read/write, and R2 smoke checks.
+5. Run `npm run launch:check -- --env <production-env> --production`. It must
+   report current publishable and secret key types. Check deployed logs for
+   `Invalid JWT`, HTTP 401, or failed Supabase RPC/REST calls.
+6. Disable only the legacy `anon` key in Supabase. Repeat anonymous browsing,
+   login/invitation confirmation, and the hosted Auth-settings probe. Re-enable
+   that key immediately if any consumer fails, then repair the consumer.
+7. Disable only the legacy `service_role` key. Repeat cron/admin, digest,
+   release-evidence dry-run, worker capture, both review lanes, reconciliation,
+   quarantine, and page-audit probes. Re-enable it immediately if any path
+   fails.
+8. Keep the release gate pending through the required normal 6 PM cohorts and
+   soak. Retain only the new keys after logs and acceptance evidence show no
+   legacy dependency.
+
+## 4. Deploy in fail-closed order
+
+1. Apply and verify the database migrations.
+2. Deploy the reviewed app revision to Vercel.
+3. Confirm the production aliases point to that exact revision.
+4. Update the installed local worker from the same reviewed revision.
+5. Confirm app, worker, matcher, policy, and migration hashes agree.
+
+The public release remains `pending` during these steps. A deploy succeeding is
+not permission to expose the cohort.
+
+The local 6 PM visual-capture shards and independently leased downstream lanes
+are the monitoring authority. Historical user-level monitor timestamps and errors are not worker health signals.
+
+## 5. Produce acceptance evidence
+
+Use the producer-owned release CLI; it measures the configured production
+target itself and cannot sign arbitrary JSON. Record:
+
+- hosted runtime/auth identity (fresh within 2 hours);
+- exact R2 recovery verification (fresh within 24 hours);
+- non-cohort anonymous leak crawl (fresh within 24 hours);
+- rollback and restoration drill (fresh within 7 days);
+- database-derived exact crop coverage;
+- three normal complete 6 PM three-shard cohorts;
+- at least 24 hours of healthy soak evidence.
+
+The newest signed measurement is authoritative. A newer failure or expiry keeps
+the gate on HOLD even when an older pass exists.
+
+## 6. Promote through the database gate
+
+Run the read-only readiness report first:
 
 ```bash
-npx vercel@latest --prod
+npm run stage1:readiness:strict
 ```
 
-If Vercel generated a new URL, update `NEXT_PUBLIC_APP_URL` to the final production URL and redeploy.
+Only after all 25 awards, every visible fact/event, budgets, hashes, worker
+cohorts, soak, rollback, R2, and leak checks pass may an administrator generate
+and consume the release acceptance record. Promotion is atomic and binds the
+exact gate-state hash and release epoch. Never update publication-state tables
+directly.
 
-## 5. Smoke Test
-
-Run a non-mutating route smoke test:
+## 7. Smoke-test the invitation-only beta
 
 ```bash
-npm run launch:smoke -- --url https://<production-domain>
+npm run launch:smoke -- --url https://awardping.com
 ```
 
-Then run the cron smoke only when you are ready to create a real digest `job_runs` row and perform due digest delivery work:
-
-```bash
-npm run launch:smoke -- --url https://<production-domain> --cron-secret "$CRON_SECRET" --run-cron
-```
-
-After the cron smoke, log in as an owner/admin and open `/dashboard/ops`. Confirm the local worker and downstream lanes are healthy, shared-source failures are understandable, the latest digest run is recorded, and failed email deliveries are visible. Historical user-level monitor timestamps and errors are not worker health signals.
-
-## 6. First Advisor Workflow
-
-Before inviting more users, complete this path with a beta account:
-
-1. Sign up for free and reach `/dashboard`.
-2. Confirm the default office exists.
-3. Use `/award-directory` to find an award, then add it to the watchlist after login.
-4. Open the watchlist and confirm its tracked sources are assigned to the scheduled visual worker; the retired manual text check is intentionally unavailable.
-5. Move the saved award through the pipeline.
-6. Add one note and one task.
-7. Send and accept one office invite.
-8. Confirm emails send through Resend or are intentionally skipped in local-only testing.
+Verify anonymously that only effectively verified Stage 1 awards are
+discoverable, non-cohort slugs do not leak, Marshall has no Sherfield source,
+and failed localization shows the event-specific full screenshot with the
+honest unavailable label. Then verify an owner/admin invitation, watchlist,
+office notes/tasks, Operator Action Inbox, quarantine, digest outbox, and both
+paid-lane budget displays.
 
 ## Rollback
 
-If the deployment fails before users enter data, roll back the Vercel deployment:
-
-```bash
-npx vercel@latest rollback
-```
-
-Do not roll back Supabase schema once beta users have written data unless a migration is confirmed destructive and a backup has been taken.
+Suspend the Stage 1 release first so public surfaces and digest claims fail
+closed. Roll back the app to the measured deployment, restore the worker to the
+matching revision, and verify the database contract/hash state. Do not reverse
+data-bearing Supabase migrations without a reviewed forward repair and backup.

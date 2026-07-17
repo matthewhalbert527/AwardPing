@@ -4,7 +4,7 @@
 
 - Installs the AwardPing worker under `%LOCALAPPDATA%\AwardPingWorker`.
 - Installs Node.js LTS with `winget` if Node is missing.
-- Prompts for the Supabase `service_role` key, Gemini API key, and the complete
+- Prompts for a dedicated Supabase `sb_secret_...` key, Gemini API key, and the complete
   Cloudflare R2 bucket/account/access-key configuration used to retain immutable
   published evidence.
 - Writes those values to `.env.worker.local` on the PC.
@@ -34,8 +34,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Ins
 
 Then:
 
-1. Paste the Supabase legacy JWT `service_role` key or the newer `sb_secret_...`
-   key when prompted.
+1. Paste the worker's dedicated Supabase `sb_secret_...` key when prompted.
+   Legacy JWT, anon, and publishable keys are rejected.
 2. Paste the Gemini API key when prompted.
 3. Enter the Cloudflare R2 bucket and paste the Cloudflare R2 account ID, access
    key ID, and secret access key. The installer keeps all eleven permanent tasks
@@ -93,8 +93,13 @@ Deploy a reviewed revision in this order:
 
    Updated and newly created tasks are registered disabled until every wrapper,
    action target, runtime script, dependency, and task definition validates.
-   On success, current task actions and settings are installed while each
-   existing task keeps its prior schedule, principal, enabled state, and
+   Validation rejects missing or extra triggers, a visual shard that is not
+   daily at exactly 6 PM, and any lane that is not on its required 15-minute
+   cadence and stagger offset. It also rejects a task action with the wrong
+   wrapper, shard/lane key, or timeout.
+   On success, the installer enforces the canonical triggers (three daily 6 PM
+   shards and eight staggered 15-minute lanes) and installs current actions and
+   settings while each existing task keeps its principal, enabled state, and
    running state. Legacy tasks are retired only after that task-set commit. On
    failure, newly created tasks are removed and the complete original task XML
    set is restored exactly. Tasks remain disabled if neither the old nor new
@@ -118,7 +123,7 @@ Deploy a reviewed revision in this order:
    Lane` runs the deterministic public-page evaluator and does not submit a
    Gemini request.
 
-## Permanent and Catch-up Work
+## Permanent Worker Work
 
 The permanent worker schedule contains the three 6 PM capture shards and these
 eight downstream tasks. There is no monolithic downstream pipeline.
@@ -177,10 +182,14 @@ Baseline Facts Watchdog`, `AwardPing Overnight Source Quality Pass`, and the
 `AwardPing Startup Supervisor` task/Startup-folder launcher, plus any old
 standalone source-intake or localization watchdog. It also unregisters the
 retired `AwardPing Downstream Queue Pipeline` and removes its wrapper and lock
-only after all eight replacement lane tasks validate. Baseline, source quality,
-and localization repair scripts remain targeted catch-up tools only;
-run them deliberately for a bounded repair rather than reinstalling a recurring
-task.
+only after all eight replacement lane tasks validate. The installer also removes
+the former baseline-completion, baseline-refresh, source-quality, and standalone
+localization-repair launchers. Recovery now runs through immutable R2 evidence,
+the normal capture path, quarantine, and the independent downstream lanes.
+The corresponding source-tree PowerShell entrypoints fail closed, and the local
+command center no longer offers the retired `daily`, `catchup`, `baseline`, or
+`cleanup` bundles. Manual source discovery remains available as a bounded,
+baseline-only onboarding action; it does not launch those retired workflows.
 
 ## Manual Quarantine Registry
 
@@ -288,14 +297,18 @@ later lane retry returns the existing audit result instead of creating duplicate
 failure rows. Normal waits—such as waiting for the next 6 PM cohort or resuming
 an incomplete bounded cursor—do not create failed transitions.
 
-The Supabase key must be an elevated AwardPing project key from Supabase Project
-Settings -> API. Use either the legacy JWT `service_role` key or a newer
-`sb_secret_...` secret key. It is not the Gemini API key, Vercel key,
-anon/publishable key, or Cloudflare token. The installer checks this key before
-installing dependencies.
+The Supabase key must be a dedicated `sb_secret_...` key from the AwardPing
+project's API Keys settings. It is not a legacy JWT `service_role` key, Gemini
+API key, Vercel key, anon/publishable key, or Cloudflare token. The installer
+checks it against the AwardPing tables using the `apikey` header only; it never
+sends an `sb_secret_...` value as bearer authorization.
 
 The installer hides pasted keys while you type. They are still stored in the PC's
-local `.env.worker.local` file because the worker needs them to run.
+local `.env.worker.local` file under the compatibility variable name
+`SUPABASE_SERVICE_ROLE_KEY` because the worker needs them to run. Update-only
+retains a current `sb_secret_...`; if it finds a legacy JWT or missing key, it
+keeps the scheduled tasks stopped and requests a validated replacement in the
+staged environment before switching versions.
 
 ## Manual Run
 
