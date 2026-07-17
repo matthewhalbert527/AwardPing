@@ -3,10 +3,20 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import {
   AdminSourceIntakePanel,
+  sourceIntakeActionRequiresPaidRetryConfirmation,
   type SourceIntakeRequestView,
 } from "@/components/admin-source-intake-panel";
 
 describe("admin source intake reconciliation retry", () => {
+  it("requires explicit confirmation only for actions that may create a new paid review", () => {
+    expect(sourceIntakeActionRequiresPaidRetryConfirmation("retry")).toBe(true);
+    expect(sourceIntakeActionRequiresPaidRetryConfirmation("rerun_capture")).toBe(true);
+    expect(sourceIntakeActionRequiresPaidRetryConfirmation("rerun_ai_review")).toBe(true);
+    expect(sourceIntakeActionRequiresPaidRetryConfirmation("retry_reconciliation")).toBe(false);
+    expect(sourceIntakeActionRequiresPaidRetryConfirmation("attach_to_award")).toBe(false);
+    expect(sourceIntakeActionRequiresPaidRetryConfirmation("reject")).toBe(false);
+  });
+
   it("offers only the free replay when capture and accepted review are verified", () => {
     const html = renderRequest(reconciliationRequest());
 

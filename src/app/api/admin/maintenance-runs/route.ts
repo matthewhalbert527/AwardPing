@@ -51,7 +51,7 @@ export async function POST() {
     {
       ok: false,
       error:
-        "Worker control is local-only. Run `npm run command:center -- start --profile=catchup` on the AwardPing PC.",
+        "Worker control is local-only. Use the installed 6 PM capture shards and independent scheduled lanes on the AwardPing PC.",
     },
     { status: 405 },
   );

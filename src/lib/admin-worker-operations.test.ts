@@ -57,7 +57,7 @@ describe("admin worker operations loader", () => {
       claimable: false,
       timeoutSeconds: 240,
       leaseTtlSeconds: 360,
-      oldestItemSlaSeconds: 0,
+      oldestItemSlaSeconds: 900,
       nextSlaDueAt: "2026-07-16T23:15:00.000Z",
       slaBreached: true,
       leaseOwner: "pc-worker-2",

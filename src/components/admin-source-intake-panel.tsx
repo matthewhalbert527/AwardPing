@@ -94,6 +94,14 @@ export function AdminSourceIntakePanel({
   }
 
   async function runAction(id: string, action: string, sharedAwardId?: string) {
+    if (
+      sourceIntakeActionRequiresPaidRetryConfirmation(action) &&
+      !window.confirm(
+        "This retry may create a Gemini charge in the $5/day new-page review lane. Continue with exactly this request?",
+      )
+    ) {
+      return;
+    }
     setActionBusyId(id);
     setMessage("");
     try {
@@ -198,6 +206,10 @@ export function AdminSourceIntakePanel({
       </section>
     </div>
   );
+}
+
+export function sourceIntakeActionRequiresPaidRetryConfirmation(action: string) {
+  return action === "retry" || action === "rerun_capture" || action === "rerun_ai_review";
 }
 
 function SourceIntakeRow({

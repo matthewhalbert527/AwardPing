@@ -2,15 +2,25 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { safeNextPath } from "@/lib/safe-next-path";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 
-type Props = {
-  mode: "login" | "signup";
-  nextPath?: string;
-};
+type Props =
+  | {
+      mode: "login";
+      nextPath?: string;
+    }
+  | {
+      mode: "signup";
+      inviteToken: string;
+      inviteEmailHint: string;
+      nextPath?: string;
+    };
 
-export function AuthForm({ mode, nextPath = "" }: Props) {
+export function AuthForm(props: Props) {
   const router = useRouter();
+  const { mode } = props;
+  const nextPath = props.nextPath || "";
   const fallbackPath = mode === "signup" ? "/dashboard/onboarding" : "/updates";
   const safeNext = safeNextPath(nextPath) || fallbackPath;
   const [email, setEmail] = useState("");
@@ -22,37 +32,49 @@ export function AuthForm({ mode, nextPath = "" }: Props) {
     event.preventDefault();
     setLoading(true);
     setMessage("");
-    const supabase = createSupabaseBrowserClient();
+    try {
+      if (mode === "login") {
+        const supabase = createSupabaseBrowserClient();
+        const result = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        });
 
-    const normalizedEmail = email.trim().toLowerCase();
-    const result =
-      mode === "login"
-        ? await supabase.auth.signInWithPassword({
-            email: normalizedEmail,
-            password,
-          })
-        : await supabase.auth.signUp({
-            email: normalizedEmail,
-            password,
-            options: {
-              emailRedirectTo: `${window.location.origin}/auth/confirm?next=${encodeURIComponent(safeNext)}`,
-            },
-          });
+        if (result.error) {
+          setMessage(authErrorMessage(result.error.message));
+          return;
+        }
 
-    setLoading(false);
+        router.push(safeNext);
+        router.refresh();
+        return;
+      }
 
-    if (result.error) {
-      setMessage(authErrorMessage(result.error.message));
-      return;
+      const response = await fetch("/api/auth/invite-signup", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          inviteToken: props.inviteToken,
+          password,
+        }),
+      });
+      const result = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        signedIn?: boolean;
+      } | null;
+
+      if (!response.ok || !result?.ok) {
+        setMessage("We could not create an account with that invitation.");
+        return;
+      }
+
+      router.push(result.signedIn ? safeNext : "/login?account=created");
+      router.refresh();
+    } catch {
+      setMessage("We could not create an account with that invitation.");
+    } finally {
+      setLoading(false);
     }
-
-    if (mode === "signup" && !result.data.session) {
-      setMessage("Check your email to confirm your account.");
-      return;
-    }
-
-    router.push(safeNext);
-    router.refresh();
   }
 
   return (
@@ -61,15 +83,26 @@ export function AuthForm({ mode, nextPath = "" }: Props) {
         <label className="text-sm font-bold" htmlFor="email">
           Email
         </label>
-        <input
-          id="email"
-          className="input mt-1"
-          type="email"
-          value={email}
-          onChange={(event) => setEmail(event.target.value)}
-          autoComplete={mode === "login" ? "username" : "email"}
-          required
-        />
+        {mode === "login" ? (
+          <input
+            id="email"
+            className="input mt-1"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoComplete="username"
+            required
+          />
+        ) : (
+          <input
+            id="email"
+            className="input mt-1"
+            type="text"
+            value={props.inviteEmailHint}
+            autoComplete="email"
+            readOnly
+          />
+        )}
       </div>
       <div>
         <label className="text-sm font-bold" htmlFor="password">
@@ -79,7 +112,7 @@ export function AuthForm({ mode, nextPath = "" }: Props) {
           id="password"
           className="input mt-1"
           type="password"
-          minLength={8}
+          minLength={mode === "signup" ? 12 : 8}
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           autoComplete={mode === "login" ? "current-password" : "new-password"}
@@ -96,11 +129,6 @@ export function AuthForm({ mode, nextPath = "" }: Props) {
       </button>
     </form>
   );
-}
-
-function safeNextPath(value: string | null) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) return "";
-  return value;
 }
 
 function authErrorMessage(message: string) {

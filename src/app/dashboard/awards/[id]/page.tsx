@@ -4,7 +4,9 @@ import { requireUser } from "@/lib/auth";
 import { canonicalAwardPath, normalizeAwardSlug } from "@/lib/award-slugs";
 import { hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { getPublicAwardPageResolutionBySlug } from "@/lib/public-award-pages";
+import { getStage1PublicationEntryForAward } from "@/lib/stage1-publication";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type Params = {
   params: Promise<{ id: string }>;
@@ -23,8 +25,7 @@ export default async function SharedAwardDetailRedirectPage({ params, searchPara
 
   const { id } = await params;
   const query = await searchParams;
-  const supabase = await createSupabaseServerClient();
-  const award = await resolveSharedAwardForDashboard(supabase, id);
+  const award = await resolveSharedAwardForDashboard(id);
 
   if (!award) redirect("/award-directory");
 
@@ -32,44 +33,26 @@ export default async function SharedAwardDetailRedirectPage({ params, searchPara
 }
 
 async function resolveSharedAwardForDashboard(
-  supabase: Awaited<ReturnType<typeof createSupabaseServerClient>>,
   identifier: string,
 ): Promise<SharedAwardRow | null> {
-  const normalized = normalizeAwardSlug(identifier);
-
   if (isUuid(identifier)) {
-    const { data } = await supabase
+    const publication = await getStage1PublicationEntryForAward(identifier);
+    if (!publication?.effectivelyVerified) return null;
+
+    const admin = createSupabaseAdminClient();
+    const { data } = await admin
       .from("shared_awards")
       .select("id, name, slug")
-      .eq("id", identifier)
+      .eq("id", publication.canonicalAwardId)
       .eq("status", "active")
       .maybeSingle();
 
     return data;
   }
 
-  const { data: direct } = await supabase
-    .from("shared_awards")
-    .select("id, name, slug")
-    .eq("slug", normalized)
-    .eq("status", "active")
-    .maybeSingle();
-
-  if (direct) return direct;
-
-  const { data: alias } = await supabase
-    .from("shared_award_slug_aliases")
-    .select("slug, shared_awards!inner(id, name, slug, status)")
-    .eq("slug", normalized)
-    .eq("shared_awards.status", "active")
-    .maybeSingle();
-
-  return embeddedSharedAward(alias?.shared_awards);
-}
-
-function embeddedSharedAward(value: unknown): SharedAwardRow | null {
-  if (Array.isArray(value)) return embeddedSharedAward(value[0]);
-  return value && typeof value === "object" ? (value as SharedAwardRow) : null;
+  const normalized = normalizeAwardSlug(identifier);
+  const resolution = await getPublicAwardPageResolutionBySlug(normalized);
+  return resolution.kind === "published" ? resolution.data.award : null;
 }
 
 function isUuid(value: string) {

@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
-export const VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION = 1;
+export const VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION = 3;
+export const VISUAL_EXACT_TEXT_BINDING_VERSION = "visual-exact-text-binding-v2";
 
 const quotePairs = [
   [/[\u2018\u2019\u201a\u201b\u2032]/gu, "'"],
@@ -19,49 +20,64 @@ export function normalizeVisualExactText(value) {
 }
 
 export function visualExactTokens(value) {
+  return visualExactTokenUnits(value).map((unit) => unit.token);
+}
+
+function visualExactTokenUnits(value) {
   const normalized = normalizeVisualExactText(value);
   if (!normalized) return [];
-  return [...normalized.matchAll(
+  const matches = [...normalized.matchAll(
     /[\p{L}\p{N}]+(?:[.,:/-](?=[\p{L}\p{N}])[\p{L}\p{N}]+)*|[^\s]/gu,
-  )].map((match) => match[0]);
+  )];
+  return matches.map((match, index) => {
+    const start = match.index || 0;
+    const previous = matches[index - 1];
+    const previousEnd = previous ? (previous.index || 0) + previous[0].length : start;
+    return {
+      token: match[0],
+      separatorBefore: index > 0 && /\s/u.test(normalized.slice(previousEnd, start)) ? " " : "",
+    };
+  });
 }
 
 export function directionalVisualLocalizationPhrases({
   side,
   changeDetails = null,
-  deterministicDiff = null,
   exactText = null,
 } = {}) {
   const normalizedSide = side === "previous" ? "previous" : "current";
-  const details = objectValue(changeDetails);
-  const structured = objectValue(details.structured_diff);
-  const deterministic = objectValue(deterministicDiff);
-  const facts = Array.isArray(details.changed_facts) ? details.changed_facts : [];
+  const semanticManifest = visualChangeSemanticManifest(changeDetails);
   const values = [];
-  const add = (value, source) => {
+  const add = (value, source, semantic = null) => {
     for (const item of arrayValue(value)) {
       const normalized = normalizeVisualExactText(item);
       if (!normalized) continue;
-      values.push({ text: String(item), normalized, source });
+      values.push({
+        text: String(item),
+        normalized,
+        source,
+        semantic_bound: Boolean(semantic),
+        semantic_side: semantic?.side || null,
+        exact_text_sha256: semantic?.normalized_text_sha256 || sha256Text(normalized),
+        semantic_candidates_sha256: semantic?.candidates_sha256 || null,
+        change_semantics_sha256: semantic?.change_semantics_sha256 || null,
+      });
     }
   };
 
-  add(exactText, "explicit_exact_text");
-  if (normalizedSide === "previous") {
-    add(details.exact_before, "change_details.exact_before");
-    add(details.before, "change_details.before");
-    for (const fact of facts) add(objectValue(fact).removed_text, "changed_facts.removed_text");
-    add(structured.removed_text, "change_details.structured_diff.removed_text");
-    add(deterministic.removed_text, "deterministic_diff.removed_text");
-    add(deterministic.exact_before_text, "deterministic_diff.exact_before_text");
-  } else {
-    add(details.exact_after, "change_details.exact_after");
-    add(details.after, "change_details.after");
-    for (const fact of facts) add(objectValue(fact).added_text, "changed_facts.added_text");
-    add(structured.added_text, "change_details.structured_diff.added_text");
-    add(deterministic.added_text, "deterministic_diff.added_text");
-    add(deterministic.exact_after_text, "deterministic_diff.exact_after_text");
+  const semanticSide = semanticManifest.sides[normalizedSide];
+  for (const candidate of semanticSide.candidates) {
+    add(candidate.normalized_text, candidate.source, {
+      ...candidate,
+      side: normalizedSide,
+      candidates_sha256: semanticSide.candidates_sha256,
+      change_semantics_sha256: semanticManifest.change_semantics_sha256,
+    });
   }
+  // Explicit text remains useful for operator diagnostics, but an equivalent
+  // event-derived candidate must win deduplication so it cannot accidentally
+  // strip the semantic publication binding.
+  add(exactText, "explicit_exact_text");
 
   const seen = new Set();
   return values
@@ -76,6 +92,75 @@ export function directionalVisualLocalizationPhrases({
       seen.add(value.normalized);
       return true;
     });
+}
+
+/**
+ * Returns the only event fields that may authorize a public "Changed section"
+ * crop. Broad before/after summaries and candidate-only deterministic fallbacks
+ * are intentionally excluded: they can help review, but they do not prove that
+ * the selected rectangle contains the event's exact changed wording.
+ */
+export function visualChangeSemanticManifest(changeDetails = null) {
+  const details = objectValue(changeDetails);
+  const structured = objectValue(details.structured_diff);
+  const changedFacts = [
+    ...arrayValue(details.changed_facts),
+    ...arrayValue(details.changed_award_facts),
+  ];
+  const collect = (side) => {
+    const values = [];
+    const add = (value, source) => {
+      for (const item of arrayValue(value)) {
+        const normalized = normalizeVisualExactText(item);
+        if (!normalized) continue;
+        values.push({
+          source,
+          normalized_text: normalized,
+          normalized_text_sha256: sha256Text(normalized),
+        });
+      }
+    };
+    if (side === "previous") {
+      add(details.exact_before, "change_details.exact_before");
+      for (const fact of changedFacts) {
+        add(objectValue(fact).removed_text, "change_details.changed_facts.removed_text");
+      }
+      add(structured.removed_text, "change_details.structured_diff.removed_text");
+    } else {
+      add(details.exact_after, "change_details.exact_after");
+      for (const fact of changedFacts) {
+        add(objectValue(fact).added_text, "change_details.changed_facts.added_text");
+      }
+      add(structured.added_text, "change_details.structured_diff.added_text");
+    }
+    const seen = new Set();
+    const candidates = values.filter((value) => {
+      if (seen.has(value.normalized_text)) return false;
+      seen.add(value.normalized_text);
+      return true;
+    });
+    return {
+      candidates,
+      candidates_sha256: sha256Stable(candidates),
+    };
+  };
+  const sides = {
+    previous: collect("previous"),
+    current: collect("current"),
+  };
+  const core = {
+    contract: VISUAL_EXACT_TEXT_BINDING_VERSION,
+    algorithm_version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
+    sides: {
+      previous: { candidates_sha256: sides.previous.candidates_sha256 },
+      current: { candidates_sha256: sides.current.candidates_sha256 },
+    },
+  };
+  return {
+    ...core,
+    sides,
+    change_semantics_sha256: sha256Stable(core),
+  };
 }
 
 export function bindVisualTextGeometry(geometry, {
@@ -142,12 +227,18 @@ export function findExactTextNodeMatch({ geometry, exactText } = {}) {
       return {
         text: String(text || ""),
         normalized: normalizeVisualExactText(text),
+        token_units: visualExactTokenUnits(text),
         tokens: visualExactTokens(text),
         priority: Number.isFinite(Number(value.priority)) ? Number(value.priority) : index,
         source: cleanText(value.source) || "explicit_exact_text",
         source_rank: Number.isFinite(Number(value.source_rank))
           ? Number(value.source_rank)
           : localizationPhraseSourceRank(cleanText(value.source) || "explicit_exact_text"),
+        semantic_bound: value.semantic_bound === true,
+        semantic_side: cleanText(value.semantic_side) || null,
+        exact_text_sha256: cleanText(value.exact_text_sha256).toLowerCase() || null,
+        semantic_candidates_sha256: cleanText(value.semantic_candidates_sha256).toLowerCase() || null,
+        change_semantics_sha256: cleanText(value.change_semantics_sha256).toLowerCase() || null,
       };
     })
     .filter((phrase) => phrase.tokens.length);
@@ -163,7 +254,7 @@ export function findExactTextNodeMatch({ geometry, exactText } = {}) {
   const uniqueCandidates = [];
   let ambiguous = false;
   for (const phrase of phrases) {
-    const matches = exactSequenceMatches(indexed, phrase.tokens);
+    const matches = exactSequenceMatches(indexed, phrase.token_units);
     if (matches.length === 1) {
       uniqueCandidates.push({ phrase, match: matches[0] });
     } else if (matches.length > 1) {
@@ -183,6 +274,11 @@ export function findExactTextNodeMatch({ geometry, exactText } = {}) {
       reason: "Normalized exact wording matched one text-node sequence.",
       exact_text: selected.phrase.normalized,
       phrase_source: selected.phrase.source,
+      semantic_bound: selected.phrase.semantic_bound,
+      semantic_side: selected.phrase.semantic_side,
+      exact_text_sha256: selected.phrase.exact_text_sha256,
+      semantic_candidates_sha256: selected.phrase.semantic_candidates_sha256,
+      change_semantics_sha256: selected.phrase.change_semantics_sha256,
       matched_rects: selected.match.rects,
       matched_node_orders: selected.match.nodeOrders,
       token_start: selected.match.start,
@@ -205,10 +301,7 @@ export function findExactTextNodeMatch({ geometry, exactText } = {}) {
 function localizationPhraseSourceRank(source) {
   const value = cleanText(source);
   if (value === "explicit_exact_text" || /^change_details\.exact_(before|after)$/.test(value)) return 0;
-  if (/^(changed_facts|change_details\.structured_diff)\./.test(value)) return 1;
-  if (/^deterministic_diff\.(removed_text|added_text)$/.test(value)) return 2;
-  if (/^change_details\.(before|after)$/.test(value)) return 3;
-  if (/^deterministic_diff\.exact_(before|after)_text$/.test(value)) return 9;
+  if (/^change_details\.(changed_facts|structured_diff)\./.test(value)) return 1;
   return 5;
 }
 
@@ -408,6 +501,11 @@ function localizeInState(state, phrases, padding) {
   if (crop.status !== "verified") {
     return { ...crop, state_id: state.state_id, exact_text: match.exact_text };
   }
+  const semanticBinding = buildVisualExactTextSemanticBinding({
+    state,
+    match,
+    crop,
+  });
   return {
     status: "verified",
     reason: "Normalized exact wording and crop overlap were verified.",
@@ -425,6 +523,8 @@ function localizeInState(state, phrases, padding) {
     crop_rect: crop.crop_rect,
     crop_rect_pixels: crop.crop_rect_pixels,
     exact_overlap: true,
+    semantic_binding: semanticBinding,
+    semantic_verified: Boolean(semanticBinding),
   };
 }
 
@@ -438,9 +538,178 @@ function localizationResult(value) {
     crop_rect: value.crop_rect || null,
     crop_rect_pixels: value.crop_rect_pixels || null,
     exact_overlap: value.exact_overlap === true,
+    semantic_binding: value.semantic_binding || null,
+    semantic_verified: value.semantic_verified === true,
     reason: value.reason,
     algorithm_version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
     ...value,
+  };
+}
+
+function buildVisualExactTextSemanticBinding({ state, match, crop }) {
+  if (
+    match.semantic_bound !== true ||
+    !["previous", "current"].includes(match.semantic_side) ||
+    !isSha256(match.exact_text_sha256) ||
+    !isSha256(match.semantic_candidates_sha256) ||
+    !isSha256(match.change_semantics_sha256) ||
+    !isSha256(state.geometry?.geometry_hash)
+  ) {
+    return null;
+  }
+  const core = {
+    contract: VISUAL_EXACT_TEXT_BINDING_VERSION,
+    algorithm_version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
+    side: match.semantic_side,
+    wording_source: match.phrase_source,
+    exact_text_sha256: match.exact_text_sha256,
+    candidates_sha256: match.semantic_candidates_sha256,
+    change_semantics_sha256: match.change_semantics_sha256,
+    state_id: state.state_id,
+    geometry_sha256: state.geometry.geometry_hash,
+    matched_node_orders: arrayValue(match.matched_node_orders).map(Number),
+    matched_rects_sha256: sha256Stable(match.matched_rects),
+    crop_rect_sha256: sha256Stable(crop.crop_rect),
+    crop_rect_pixels_sha256: sha256Stable(crop.crop_rect_pixels),
+  };
+  return {
+    ...core,
+    binding_sha256: sha256Stable(core),
+  };
+}
+
+export function verifyVisualExactTextSemanticBinding({
+  side,
+  changeDetails,
+  localization,
+  capture,
+} = {}) {
+  const normalizedSide = side === "previous" ? "previous" : side === "current" ? "current" : null;
+  if (!normalizedSide) return { valid: false, reason: "semantic_side_invalid" };
+  const localized = objectValue(localization);
+  const captured = objectValue(capture);
+  const crop = objectValue(captured.crop);
+  const layout = objectValue(captured.layout);
+  const binding = objectValue(localized.semantic_binding);
+  if (localized.status !== "verified" || localized.exact_overlap !== true) {
+    return { valid: false, reason: "localization_not_verified" };
+  }
+  if (String(localized.algorithm_version) !== String(VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION)) {
+    return { valid: false, reason: "localization_algorithm_not_v3" };
+  }
+  if (binding.contract !== VISUAL_EXACT_TEXT_BINDING_VERSION || binding.side !== normalizedSide) {
+    return { valid: false, reason: "semantic_contract_invalid" };
+  }
+  const exactText = normalizeVisualExactText(localized.exact_text);
+  const exactTextSha256 = sha256Text(exactText);
+  const manifest = visualChangeSemanticManifest(changeDetails);
+  const semanticSide = manifest.sides[normalizedSide];
+  const candidate = semanticSide.candidates.find((item) =>
+    item.source === binding.wording_source &&
+    item.normalized_text === exactText &&
+    item.normalized_text_sha256 === exactTextSha256
+  );
+  if (!candidate) return { valid: false, reason: "exact_text_not_bound_to_event_semantics" };
+  if (
+    binding.exact_text_sha256 !== exactTextSha256 ||
+    binding.candidates_sha256 !== semanticSide.candidates_sha256 ||
+    binding.change_semantics_sha256 !== manifest.change_semantics_sha256
+  ) {
+    return { valid: false, reason: "event_semantic_hash_mismatch" };
+  }
+  const stateId = cleanText(captured.state_id);
+  const geometrySha256 = cleanText(layout.geometry_hash).toLowerCase();
+  if (
+    !stateId || binding.state_id !== stateId || localized.state_id !== stateId ||
+    !isSha256(geometrySha256) || binding.geometry_sha256 !== geometrySha256
+  ) {
+    return { valid: false, reason: "semantic_geometry_binding_mismatch" };
+  }
+  const matchedRects = arrayValue(localized.matched_rects).map(rectValue).filter(Boolean);
+  const cropRect = rectValue(localized.crop_rect);
+  const cropRectPixels = rectValue(localized.crop_rect_pixels);
+  if (!matchedRects.length || !cropRect || !cropRectPixels) {
+    return { valid: false, reason: "semantic_rectangles_missing" };
+  }
+  if (!matchedRects.every((rect) => rectOverlapsClip(rect, cropRect))) {
+    return { valid: false, reason: "semantic_crop_does_not_overlap_exact_text" };
+  }
+  const core = {
+    contract: VISUAL_EXACT_TEXT_BINDING_VERSION,
+    algorithm_version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
+    side: normalizedSide,
+    wording_source: binding.wording_source,
+    exact_text_sha256: exactTextSha256,
+    candidates_sha256: semanticSide.candidates_sha256,
+    change_semantics_sha256: manifest.change_semantics_sha256,
+    state_id: stateId,
+    geometry_sha256: geometrySha256,
+    matched_node_orders: arrayValue(binding.matched_node_orders).map(Number),
+    matched_rects_sha256: sha256Stable(localized.matched_rects),
+    crop_rect_sha256: sha256Stable(localized.crop_rect),
+    crop_rect_pixels_sha256: sha256Stable(localized.crop_rect_pixels),
+  };
+  if (
+    binding.matched_rects_sha256 !== core.matched_rects_sha256 ||
+    binding.crop_rect_sha256 !== core.crop_rect_sha256 ||
+    binding.crop_rect_pixels_sha256 !== core.crop_rect_pixels_sha256 ||
+    binding.binding_sha256 !== sha256Stable(core)
+  ) {
+    return { valid: false, reason: "semantic_binding_hash_mismatch" };
+  }
+  if (
+    crop.semantic_binding_sha256 !== binding.binding_sha256 ||
+    crop.exact_text_sha256 !== exactTextSha256 ||
+    crop.geometry_sha256 !== geometrySha256
+  ) {
+    return { valid: false, reason: "crop_semantic_binding_mismatch" };
+  }
+  return {
+    valid: true,
+    reason: "exact_event_wording_geometry_and_crop_bound",
+    binding_sha256: binding.binding_sha256,
+  };
+}
+
+export function verifyVisualEventSemanticBindings({
+  changeDetails,
+  localization,
+  previousCapture,
+  currentCapture,
+} = {}) {
+  const manifest = visualChangeSemanticManifest(changeDetails);
+  const requiredSides = [
+    manifest.sides.previous.candidates.length ? "previous" : null,
+    manifest.sides.current.candidates.length ? "current" : null,
+  ].filter(Boolean);
+  const direction = cleanText(objectValue(localization).direction);
+  const expectedDirection = requiredSides.length === 2
+    ? ["changed", "mixed"]
+    : requiredSides[0] === "previous"
+      ? ["removed"]
+      : requiredSides[0] === "current"
+        ? ["added"]
+        : [];
+  if (!requiredSides.length || !expectedDirection.includes(direction)) {
+    return { valid: false, reason: "semantic_direction_mismatch", required_sides: requiredSides };
+  }
+  const sides = objectValue(objectValue(localization).sides);
+  const results = Object.fromEntries(requiredSides.map((requiredSide) => [
+    requiredSide,
+    verifyVisualExactTextSemanticBinding({
+      side: requiredSide,
+      changeDetails,
+      localization: sides[requiredSide],
+      capture: requiredSide === "previous" ? previousCapture : currentCapture,
+    }),
+  ]));
+  const valid = requiredSides.every((requiredSide) => results[requiredSide]?.valid === true);
+  return {
+    valid,
+    reason: valid ? "all_required_event_wording_semantically_bound" : "required_semantic_side_invalid",
+    required_sides: requiredSides,
+    sides: results,
+    change_semantics_sha256: manifest.change_semantics_sha256,
   };
 }
 
@@ -464,6 +733,7 @@ function indexedGeometryTokens(geometry) {
   const indexed = [];
   for (const node of [...nodes].sort((left, right) => Number(left?.order || 0) - Number(right?.order || 0))) {
     const runs = Array.isArray(node?.runs) ? node.runs : [];
+    let firstNodeToken = true;
     for (const run of [...runs].sort((left, right) => Number(left?.start || 0) - Number(right?.start || 0))) {
       const runTokens = visualExactTokens(run?.text);
       const rects = arrayValue(run?.rects).map(rectValue).filter(Boolean);
@@ -473,33 +743,81 @@ function indexedGeometryTokens(geometry) {
           token,
           rects,
           nodeOrder: Number(node?.order || 0),
+          nodePath: cleanText(node?.path) || null,
+          flowPath: cleanText(node?.flow_path) || null,
+          nodeBoundarySeparator: firstNodeToken
+            ? node?.separator_before === "" ? "" : " "
+            : null,
         });
+        firstNodeToken = false;
       }
     }
   }
   return indexed;
 }
 
-function exactSequenceMatches(indexed, expectedTokens) {
+function exactSequenceMatches(indexed, expectedTokenUnits) {
   const matches = [];
-  for (let start = 0; start <= indexed.length - expectedTokens.length; start += 1) {
+  for (let start = 0; start <= indexed.length - expectedTokenUnits.length; start += 1) {
     let matchesAll = true;
-    for (let offset = 0; offset < expectedTokens.length; offset += 1) {
-      if (indexed[start + offset].token !== expectedTokens[offset]) {
+    for (let offset = 0; offset < expectedTokenUnits.length; offset += 1) {
+      if (indexed[start + offset].token !== expectedTokenUnits[offset].token) {
         matchesAll = false;
         break;
       }
     }
     if (!matchesAll) continue;
-    const selected = indexed.slice(start, start + expectedTokens.length);
+    const selected = indexed.slice(start, start + expectedTokenUnits.length);
+    if (!exactTokenSequenceHasContiguousRenderedFlow(selected, expectedTokenUnits)) continue;
     matches.push({
       start,
-      end: start + expectedTokens.length,
+      end: start + expectedTokenUnits.length,
       rects: uniqueRects(selected.flatMap((token) => token.rects)),
       nodeOrders: [...new Set(selected.map((token) => token.nodeOrder))],
     });
   }
   return matches;
+}
+
+function exactTokenSequenceHasContiguousRenderedFlow(tokens, expectedTokenUnits) {
+  for (let index = 1; index < tokens.length; index += 1) {
+    const previous = tokens[index - 1];
+    const current = tokens[index];
+    if (previous.nodeOrder === current.nodeOrder) continue;
+    if (current.nodeOrder !== previous.nodeOrder + 1) return false;
+    if (!previous.flowPath || previous.flowPath !== current.flowPath) return false;
+    if (current.nodeBoundarySeparator !== expectedTokenUnits[index].separatorBefore) return false;
+    if (!rectanglesContinueRenderedTextFlow(previous.rects, current.rects)) return false;
+  }
+  return true;
+}
+
+function rectanglesContinueRenderedTextFlow(previousRects, currentRects) {
+  const previous = readingOrderRects(previousRects).at(-1);
+  const current = readingOrderRects(currentRects).at(0);
+  if (!previous || !current) return false;
+
+  const lineHeight = Math.max(previous.height, current.height);
+  const verticalOverlap = Math.min(previous.bottom, current.bottom) -
+    Math.max(previous.y, current.y);
+  if (verticalOverlap >= Math.min(previous.height, current.height) * 0.35) {
+    const horizontalGap = current.x - previous.right;
+    return horizontalGap >= -lineHeight &&
+      horizontalGap <= Math.max(96, lineHeight * 8);
+  }
+
+  const verticalGap = current.y - previous.bottom;
+  return verticalGap >= -lineHeight * 0.25 &&
+    verticalGap <= Math.max(48, lineHeight * 2.5);
+}
+
+function readingOrderRects(value) {
+  return arrayValue(value)
+    .map(rectValue)
+    .filter(Boolean)
+    .sort((left, right) =>
+      left.y - right.y || left.x - right.x || left.bottom - right.bottom,
+    );
 }
 
 function normalizeGeometryNodes(value) {
@@ -508,6 +826,7 @@ function normalizeGeometryNodes(value) {
     return {
       order: Number.isFinite(Number(item.order)) ? Number(item.order) : index,
       path: cleanNullable(item.path),
+      flow_path: cleanNullable(item.flow_path),
       text: String(item.text || ""),
       separator_before: item.separator_before === "" ? "" : " ",
       rects: arrayValue(item.rects).map(rectValue).filter(Boolean),
@@ -525,7 +844,23 @@ function normalizeGeometryNodes(value) {
 }
 
 function visualTextGeometryHash(value) {
-  return crypto.createHash("sha256").update(stableJsonStringify(value)).digest("hex");
+  return sha256Stable(value);
+}
+
+export function sha256VisualSemanticValue(value) {
+  return sha256Stable(value);
+}
+
+function sha256Stable(value) {
+  return sha256Text(stableJsonStringify(value));
+}
+
+function sha256Text(value) {
+  return crypto.createHash("sha256").update(String(value || ""), "utf8").digest("hex");
+}
+
+function isSha256(value) {
+  return /^[0-9a-f]{64}$/.test(cleanText(value).toLowerCase());
 }
 
 function withoutGeometryHash(value) {

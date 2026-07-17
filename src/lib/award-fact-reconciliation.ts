@@ -367,7 +367,14 @@ export function reconcileAwardFacts(
 
     const score = factCandidateScore(candidate, source || null, award);
     const selection: FactSelection = {
-      candidate: { ...candidate, field_name: validation.field },
+      candidate: {
+        ...candidate,
+        field_name: validation.field,
+        metadata: {
+          ...(candidate.metadata || {}),
+          stored_field_name: candidate.field_name,
+        },
+      },
       source: source || null,
       value: validation.value,
       reason: explainFactSelection(candidate, source || null, award),
@@ -527,7 +534,10 @@ export function buildFactCandidatesFromSources(award: ReconciliationAward, sourc
       const normalizedField = canonicalFieldName(field);
       if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return;
       candidates.push({
-        shared_award_id: award.id,
+        // Retained Stage 1 aliases/tracks may contribute evidence to the one
+        // canonical page. Preserve the actual source-owner identity here; the
+        // publication ledger binds the selected value to the canonical award.
+        shared_award_id: source.shared_award_id || award.id,
         shared_award_source_id: source.id || null,
         source_url: source.url || null,
         source_title: source.display_title || source.title || null,

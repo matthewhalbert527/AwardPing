@@ -61,6 +61,19 @@ import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { atomicWriteJson } from "./lib/visual-baseline-lock.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
+// This historical entrypoint used to submit a third category of paid work.
+// Baseline/source facts must now be learned only while reviewing a genuinely
+// new page in the account-wide new_page_review lane. Keep the implementation
+// below solely as retained recovery/reference code; direct execution always
+// fails before configuration, database access, or provider submission.
+const PAID_PROVIDER_ENTRYPOINT_RETIRED = true;
+if (PAID_PROVIDER_ENTRYPOINT_RETIRED) {
+  console.error(
+    "Baseline facts backfill is retired and cannot submit provider work. Use the New Page Review lane for new pages; deterministic reconciliation and page audit remain free.",
+  );
+  process.exit(2);
+}
+
 const root = resolve(import.meta.dirname, "..");
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const promptChars = 12_000;

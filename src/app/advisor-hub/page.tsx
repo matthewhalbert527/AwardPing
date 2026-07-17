@@ -72,8 +72,8 @@ export default async function AdvisorHubPage() {
               PDF guides, and portal links.
             </p>
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-              <Link className="button-primary" href={user ? signedInLandingPath() : "/signup"}>
-                {user ? signedInLandingLabel() : "Start a watchlist"}
+              <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
+                {user ? signedInLandingLabel() : "Request beta access"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/award-directory" prefetch={false}>

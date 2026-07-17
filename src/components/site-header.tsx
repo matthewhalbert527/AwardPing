@@ -40,8 +40,8 @@ export async function SiteHeader() {
                 />
               </>
             ) : (
-              <Link href="/signup" className="button-primary">
-                Sign up for free
+              <Link href="/contact" className="button-primary">
+                Request beta access
               </Link>
             )}
           </div>

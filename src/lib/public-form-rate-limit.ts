@@ -1,8 +1,11 @@
 import "server-only";
 
-import crypto from "node:crypto";
 import type { PublicFormRateLimitKind } from "@/lib/database.types";
 import { hasSupabaseAdminConfig } from "@/lib/config";
+import {
+  hashFreeCheckValue,
+  resolveFreeCheckClientIp,
+} from "@/lib/free-check-rate-limit";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 type RateLimitInput = {
@@ -14,46 +17,45 @@ type RateLimitInput = {
 
 export async function ensurePublicFormRateLimit(input: RateLimitInput) {
   if (!hasSupabaseAdminConfig()) {
-    return { allowed: true, ipHash: null };
+    return {
+      allowed: false,
+      ipHash: null,
+      reason: "rate_limit_unavailable" as const,
+      retryAfterSeconds: 0,
+    };
   }
 
   const ipHash = requestIpHash(input.request);
-  const since = new Date(Date.now() - input.windowMs).toISOString();
   const supabase = createSupabaseAdminClient();
-
-  const { count, error } = await supabase
-    .from("public_form_rate_limits")
-    .select("id", { count: "exact", head: true })
-    .eq("kind", input.kind)
-    .eq("ip_hash", ipHash)
-    .gte("created_at", since);
+  const windowSeconds = Math.ceil(input.windowMs / 1000);
+  const { data, error } = await supabase.rpc("reserve_public_form_rate_limit", {
+    p_kind: input.kind,
+    p_ip_hash: ipHash,
+    p_limit: input.limit,
+    p_window_seconds: windowSeconds,
+  });
 
   if (error) {
     throw error;
   }
-
-  if ((count || 0) >= input.limit) {
-    return { allowed: false, ipHash };
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw new Error("Public form rate-limit reservation returned an invalid result.");
   }
+  const result = data as Record<string, unknown>;
+  const allowed = result.allowed === true;
+  return {
+    allowed,
+    ipHash,
+    reason: allowed ? null : "limit_exceeded" as const,
+    retryAfterSeconds: nonNegativeInteger(result.retry_after_seconds),
+  };
+}
 
-  const { error: insertError } = await supabase.from("public_form_rate_limits").insert({
-    kind: input.kind,
-    ip_hash: ipHash,
-  });
-
-  if (insertError) {
-    throw insertError;
-  }
-
-  return { allowed: true, ipHash };
+function nonNegativeInteger(value: unknown) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 0 ? number : 0;
 }
 
 function requestIpHash(request: Request) {
-  const forwarded = request.headers.get("x-forwarded-for") || "";
-  const ip =
-    forwarded.split(",")[0]?.trim() ||
-    request.headers.get("x-real-ip") ||
-    "unknown";
-
-  return crypto.createHash("sha256").update(ip).digest("hex");
+  return hashFreeCheckValue(resolveFreeCheckClientIp(request.headers));
 }

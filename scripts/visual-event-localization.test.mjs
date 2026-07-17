@@ -8,6 +8,9 @@ import {
   normalizeVisualExactText,
   planVerifiedCrop,
   verifyVisualTextGeometryBinding,
+  verifyVisualEventSemanticBindings,
+  verifyVisualExactTextSemanticBinding,
+  visualChangeSemanticManifest,
   visualExactTokens,
 } from "./lib/visual-event-localization.mjs";
 
@@ -23,8 +26,8 @@ describe("visual event localization", () => {
     const geometry = boundGeometry({
       imageHash: "current-image",
       nodes: [
-        textNode(0, "Applications close", 80, 300),
-        textNode(1, "February 1, 2027.", 230, 300),
+        textNode(0, "Applications close", 80, 300, { flowPath: "body>main>p#deadline" }),
+        textNode(1, "February 1, 2027.", 230, 300, { flowPath: "body>main>p#deadline" }),
       ],
     });
     const result = localizeVisualEventSide({
@@ -46,6 +49,114 @@ describe("visual event localization", () => {
     expect(result.matched_rects.length).toBeGreaterThanOrEqual(5);
     expect(result.crop_rect.width).toBeGreaterThanOrEqual(360);
     expect(result.crop_rect_pixels).toMatchObject({ x: expect.any(Number), width: expect.any(Number) });
+    expect(result.semantic_verified).toBe(true);
+    expect(result.semantic_binding).toMatchObject({
+      contract: "visual-exact-text-binding-v2",
+      algorithm_version: 3,
+      side: "current",
+      wording_source: "change_details.exact_after",
+      geometry_sha256: geometry.geometry_hash,
+      binding_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(verifyVisualExactTextSemanticBinding({
+      side: "current",
+      changeDetails: { exact_after: "Applications close February 1, 2027." },
+      localization: result,
+      capture: semanticCapture(result, geometry),
+    })).toMatchObject({ valid: true });
+  });
+
+  it("rejects exact wording synthesized across distant or unrelated text nodes", () => {
+    const distantGeometry = boundGeometry({
+      imageHash: "current-image",
+      nodes: [
+        textNode(0, "Applications close", 80, 100, { flowPath: "body>main>p#deadline" }),
+        textNode(1, "February 1, 2027.", 80, 4_100, { flowPath: "body>main>p#deadline" }),
+      ],
+    });
+    const unrelatedGeometry = boundGeometry({
+      imageHash: "current-image",
+      nodes: [
+        textNode(0, "Applications close", 80, 100, { flowPath: "body>main>section#eligibility" }),
+        textNode(1, "February 1, 2027.", 230, 100, { flowPath: "body>footer" }),
+      ],
+    });
+
+    for (const geometry of [distantGeometry, unrelatedGeometry]) {
+      expect(findExactTextNodeMatch({
+        geometry,
+        exactText: "Applications close February 1, 2027.",
+      })).toMatchObject({ status: "unavailable_exact_text_not_found" });
+    }
+  });
+
+  it("rejects wording synthesized by inserting whitespace across a no-separator node boundary", () => {
+    const geometry = boundGeometry({
+      imageHash: "current-image",
+      nodes: [
+        textNode(0, "Applications", 80, 100, { flowPath: "body>main>p#deadline" }),
+        textNode(1, "close February 1, 2027.", 180, 100, {
+          flowPath: "body>main>p#deadline",
+          separatorBefore: "",
+        }),
+      ],
+    });
+
+    expect(findExactTextNodeMatch({
+      geometry,
+      exactText: "Applications close February 1, 2027.",
+    })).toMatchObject({ status: "unavailable_exact_text_not_found" });
+  });
+
+  it("does not authorize summaries or candidate-only deterministic text as event-semantic wording", () => {
+    const geometry = boundGeometry({
+      imageHash: "current-image",
+      nodes: [textNode(0, "The deadline is March 1.", 40, 300)],
+    });
+    const result = localizeVisualEventSide({
+      side: "current",
+      changeDetails: { after: "The deadline is March 1." },
+      deterministicDiff: { added_text: ["The deadline is March 1."] },
+      states: [state("main", "main", geometry, "current-image")],
+    });
+
+    expect(result.status).toBe("unavailable_exact_text");
+    expect(visualChangeSemanticManifest({ after: "The deadline is March 1." })
+      .sides.current.candidates).toEqual([]);
+  });
+
+  it("fails a mixed event unless both directional crops retain their event-semantic bindings", () => {
+    const details = {
+      exact_before: "Deadline February 1",
+      exact_after: "Deadline March 1",
+    };
+    const previousGeometry = boundGeometry({
+      imageHash: "previous-image",
+      nodes: [textNode(0, details.exact_before, 40, 300)],
+    });
+    const currentGeometry = boundGeometry({
+      imageHash: "current-image",
+      nodes: [textNode(0, details.exact_after, 40, 300)],
+    });
+    const previous = localizeVisualEventSide({
+      side: "previous",
+      changeDetails: details,
+      states: [state("previous", "main", previousGeometry, "previous-image")],
+    });
+    const current = localizeVisualEventSide({
+      side: "current",
+      changeDetails: details,
+      states: [state("current", "main", currentGeometry, "current-image")],
+    });
+    const currentCapture = semanticCapture(current, currentGeometry);
+    currentCapture.crop.exact_text_sha256 = "0".repeat(64);
+
+    expect(verifyVisualEventSemanticBindings({
+      changeDetails: details,
+      localization: { direction: "mixed", sides: { previous, current } },
+      previousCapture: semanticCapture(previous, previousGeometry),
+      currentCapture,
+    })).toMatchObject({ valid: false, reason: "required_semantic_side_invalid" });
   });
 
   it("selects removed wording only from the previous side", () => {
@@ -246,7 +357,7 @@ function boundGeometry({ imageHash, nodes }) {
   });
 }
 
-function textNode(order, text, x, y) {
+function textNode(order, text, x, y, { flowPath = null, separatorBefore = null } = {}) {
   let cursor = x;
   const runs = visualExactTokens(text).map((token, index) => {
     const width = Math.max(8, token.length * 8);
@@ -262,8 +373,9 @@ function textNode(order, text, x, y) {
   return {
     order,
     path: `main>p:nth-of-type(${order + 1})`,
+    flow_path: flowPath || `body>main>p:nth-of-type(${order + 1})`,
     text,
-    separator_before: order === 0 ? "" : " ",
+    separator_before: separatorBefore ?? (order === 0 ? "" : " "),
     rects: [{ x, y, width: Math.max(20, cursor - x), height: 20 }],
     runs,
   };
@@ -276,5 +388,17 @@ function state(stateId, kind, geometry, imageHash) {
     image_path: `C:/captures/${stateId}.jpg`,
     image_hash: imageHash,
     geometry,
+  };
+}
+
+function semanticCapture(localization, geometry) {
+  return {
+    state_id: localization.state_id,
+    layout: { geometry_hash: geometry.geometry_hash },
+    crop: {
+      semantic_binding_sha256: localization.semantic_binding.binding_sha256,
+      exact_text_sha256: localization.semantic_binding.exact_text_sha256,
+      geometry_sha256: localization.semantic_binding.geometry_sha256,
+    },
   };
 }

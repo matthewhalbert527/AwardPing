@@ -10,8 +10,13 @@ export async function GET(request: Request) {
     return redirectToUpdates("unsubscribed=invalid");
   }
 
-  const unsubscribed = await unsubscribePublicUpdateSubscriber(token);
-  return redirectToUpdates(unsubscribed ? "unsubscribed=1" : "unsubscribed=invalid");
+  const result = await unsubscribePublicUpdateSubscriber(token);
+  if (result === "retry_active_send") {
+    return redirectToUpdates("unsubscribed=retry");
+  }
+  return redirectToUpdates(
+    result === "unsubscribed" ? "unsubscribed=1" : "unsubscribed=invalid",
+  );
 }
 
 function redirectToUpdates(query: string) {

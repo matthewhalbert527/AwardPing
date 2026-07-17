@@ -10,6 +10,7 @@ import {
   UserRound,
 } from "lucide-react";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
+import { AdminPaidReviewRetryAction } from "@/components/admin-paid-review-retry-action";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import {
   operatorActionInboxSummary,
@@ -213,6 +214,13 @@ function OperatorActionRow({ item }: { item: OperatorActionInboxItem }) {
         <AdminPageIssueActions
           mode="active"
           sourceId={item.action.sourceId}
+          sourceTitle={item.action.sourceTitle}
+        />
+      )}
+      {item.action.kind === "paid_visual_retry" && (
+        <AdminPaidReviewRetryAction
+          candidateId={item.action.candidateId}
+          candidateUpdatedAt={item.action.candidateUpdatedAt}
           sourceTitle={item.action.sourceTitle}
         />
       )}

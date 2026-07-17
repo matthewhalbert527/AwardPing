@@ -70,9 +70,20 @@ export async function POST(request: Request) {
   });
 
   if (!rateLimit.allowed) {
+    if (rateLimit.reason === "rate_limit_unavailable") {
+      return NextResponse.json(
+        { ok: false, error: "Source-request protection is temporarily unavailable." },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { ok: false, error: "Too many source requests. Try again later." },
-      { status: 429 },
+      {
+        status: 429,
+        headers: rateLimit.retryAfterSeconds
+          ? { "Retry-After": String(rateLimit.retryAfterSeconds) }
+          : undefined,
+      },
     );
   }
 

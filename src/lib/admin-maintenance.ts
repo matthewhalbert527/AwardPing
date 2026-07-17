@@ -1155,12 +1155,8 @@ export function adminCommandPanelCommands(): AdminCommand[] {
   return [
     { label: "Read AI review coverage", command: "node scripts/read-ai-review-coverage.mjs --json" },
     {
-      label: "Backfill AI review dry run",
-      command: "node scripts/backfill-open-source-ai-determinations.mjs --dry-run=true",
-    },
-    {
-      label: "Apply AI review completion",
-      command: "node scripts/backfill-open-source-ai-determinations.mjs --apply=true --gemini-api-mode=batch --resume",
+      label: "Run new page review lane",
+      command: "node scripts/process-new-page-review-lane.mjs --env=.env.worker.local",
     },
     {
       label: "Process pasted source intake",

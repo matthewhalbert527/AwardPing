@@ -26,12 +26,19 @@ export async function GET(request: Request, { params }: Props) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
 
+  const user = await getCurrentUser();
+  if (!canViewSnapshot(user)) {
+    return NextResponse.json(
+      { error: "This snapshot is not available." },
+      { status: user ? 403 : 404 },
+    );
+  }
+
   if (!hasR2Config()) {
     return NextResponse.json({ error: "Cloudflare R2 is not configured." }, { status: 503 });
   }
 
   const { sourceId } = await params;
-  const user = await getCurrentUser();
   const admin = createSupabaseAdminClient();
   const { data: snapshot, error } = await admin
     .from("shared_award_source_visual_snapshots")
@@ -40,15 +47,12 @@ export async function GET(request: Request, { params }: Props) {
     .maybeSingle();
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Raw source snapshot lookup failed", error);
+    return NextResponse.json({ error: "Snapshot lookup failed." }, { status: 500 });
   }
 
   if (!snapshot) {
     return NextResponse.json({ error: "No visual snapshot is available yet." }, { status: 404 });
-  }
-
-  if (!(await canViewSnapshot(user, snapshot.shared_award_id, snapshot.shared_award_source_id))) {
-    return NextResponse.json({ error: "This snapshot is not available." }, { status: user ? 403 : 404 });
   }
 
   const [latestObjects, previousObjects, latestMetaResult, previousMetaResult] = await Promise.all([
@@ -107,33 +111,13 @@ export async function GET(request: Request, { params }: Props) {
   });
 }
 
-async function canViewSnapshot(
+function canViewSnapshot(
   user: { id: string; email?: string | null } | null,
-  sharedAwardId: string,
-  sharedAwardSourceId: string,
 ) {
-  if (isSiteAdminEmail(user?.email)) return true;
-
-  const admin = createSupabaseAdminClient();
-  const [{ data: awardRow, error: awardError }, { data: sourceRow, error: sourceError }] =
-    await Promise.all([
-      admin
-        .from("shared_awards")
-        .select("id")
-        .eq("id", sharedAwardId)
-        .eq("status", "active")
-        .maybeSingle(),
-      admin
-        .from("shared_award_sources")
-        .select("id")
-        .eq("id", sharedAwardSourceId)
-        .eq("shared_award_id", sharedAwardId)
-        .eq("admin_review_status", "open")
-        .maybeSingle(),
-    ]);
-
-  if (awardError || sourceError) return false;
-  return Boolean(awardRow && sourceRow);
+  // Mutable source snapshots can contain a newer, rejected, or quarantined
+  // capture than the public event. Public viewers receive only the immutable
+  // event-bound evidence route; raw source snapshots remain an operator tool.
+  return isSiteAdminEmail(user?.email);
 }
 
 async function createSignedSnapshotObjects(value: Json) {

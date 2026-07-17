@@ -252,8 +252,10 @@ describe("visual event capture wiring", () => {
   });
 
   it("version-gates the rendering change so old baselines refresh without false publication", () => {
-    expect(captureSource).toContain("const captureBehaviorVersion = 9;");
-    expect(captureSource).toContain('const captureBehaviorName = "final-state-text-node-geometry-with-open-sections";');
+    expect(captureSource).toContain("const captureBehaviorVersion = 11;");
+    expect(captureSource).toContain(
+      'const captureBehaviorName = "final-state-text-node-geometry-with-open-sections-semantic-crop-v3";',
+    );
   });
 
   it("fails closed instead of publishing an event outside the immutable candidate workflow", () => {

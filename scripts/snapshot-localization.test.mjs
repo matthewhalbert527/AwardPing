@@ -6,6 +6,10 @@ import {
   summarizeChangeEventVisualEvidence,
   summarizeSnapshotLocalization,
 } from "./lib/snapshot-localization.mjs";
+import {
+  sha256VisualSemanticValue,
+  visualChangeSemanticManifest,
+} from "./lib/visual-event-localization.mjs";
 
 const localizedMeta = {
   dimensions: { scroll_height: 4_000 },
@@ -207,27 +211,10 @@ describe("published event crop coverage", () => {
   });
 
   it("requires directional exact overlap and verified retained crop objects", () => {
+    const evidence = semanticCoverageEvidence(event.change_details, artifact);
     const result = classifyChangeEventVisualEvidence({
       event,
-      evidence: {
-        change_event_id: "event-1",
-        visual_review_candidate_id: "candidate-1",
-        evidence_status: "verified",
-        previous_capture: {
-          full: artifact("previous-full"),
-          crop: { ...artifact("previous-crop"), exact_overlap: true },
-        },
-        current_capture: {
-          full: artifact("current-full"),
-          crop: { ...artifact("current-crop"), exact_overlap: true },
-        },
-        localization: {
-          sides: {
-            previous: { status: "verified", exact_overlap: true },
-            current: { status: "verified", exact_overlap: true },
-          },
-        },
-      },
+      evidence,
       artifactChecks: {
         previous: { full: true, crop: true },
         current: { full: true, crop: true },
@@ -301,12 +288,12 @@ describe("published event crop coverage", () => {
       required_side_source: "immutable_evidence",
       required_side_mismatch: true,
       event_required_sides: [],
-      sides: { current: { verified_crop: true } },
+      sides: { current: { verified_crop: false } },
     });
     expect(summarizeChangeEventVisualEvidence([result])).toMatchObject({
       required_localization_sides: 1,
-      verified_event_crop_sides: 1,
-      verified_event_crop_coverage_percent: 100,
+      verified_event_crop_sides: 0,
+      verified_event_crop_coverage_percent: 0,
       required_side_mismatch_events: 1,
     });
   });
@@ -328,3 +315,71 @@ describe("published event crop coverage", () => {
     expect(result.required_sides).toEqual(["previous", "current"]);
   });
 });
+
+function semanticCoverageEvidence(changeDetails, artifact) {
+  const manifest = visualChangeSemanticManifest(changeDetails);
+  const rect = { x: 10, y: 20, width: 300, height: 120 };
+  const makeSide = (side) => {
+    const candidate = manifest.sides[side].candidates[0];
+    const stateId = `state-${side}`;
+    const geometryHash = side === "previous" ? "1".repeat(64) : "2".repeat(64);
+    const bindingCore = {
+      contract: "visual-exact-text-binding-v2",
+      algorithm_version: 3,
+      side,
+      wording_source: candidate.source,
+      exact_text_sha256: candidate.normalized_text_sha256,
+      candidates_sha256: manifest.sides[side].candidates_sha256,
+      change_semantics_sha256: manifest.change_semantics_sha256,
+      state_id: stateId,
+      geometry_sha256: geometryHash,
+      matched_node_orders: [0],
+      matched_rects_sha256: sha256VisualSemanticValue([rect]),
+      crop_rect_sha256: sha256VisualSemanticValue(rect),
+      crop_rect_pixels_sha256: sha256VisualSemanticValue(rect),
+    };
+    const binding = { ...bindingCore, binding_sha256: sha256VisualSemanticValue(bindingCore) };
+    return {
+      capture: {
+        state_id: stateId,
+        full: artifact(`${side}-full`),
+        layout: { ...artifact(`${side}-layout`), geometry_hash: geometryHash },
+        crop: {
+          ...artifact(`${side}-crop`),
+          exact_overlap: true,
+          semantic_binding_sha256: binding.binding_sha256,
+          exact_text_sha256: binding.exact_text_sha256,
+          geometry_sha256: binding.geometry_sha256,
+        },
+      },
+      localization: {
+        status: "verified",
+        exact_overlap: true,
+        exact_text: candidate.normalized_text,
+        matched_rects: [rect],
+        crop_rect: rect,
+        crop_rect_pixels: rect,
+        algorithm_version: "3",
+        state_id: stateId,
+        semantic_verified: true,
+        semantic_binding: binding,
+      },
+    };
+  };
+  const previous = makeSide("previous");
+  const current = makeSide("current");
+  return {
+    change_event_id: "event-1",
+    visual_review_candidate_id: "candidate-1",
+    evidence_status: "verified",
+    evidence_schema_version: "visual-event-evidence-v2",
+    previous_capture: previous.capture,
+    current_capture: current.capture,
+    localization: {
+      direction: "mixed",
+      semantic_contract: manifest.contract,
+      change_semantics_sha256: manifest.change_semantics_sha256,
+      sides: { previous: previous.localization, current: current.localization },
+    },
+  };
+}

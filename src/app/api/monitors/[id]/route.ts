@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseConfig } from "@/lib/config";
 import { canManageOffice, getMembershipForOffice } from "@/lib/offices";
+import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -17,6 +18,10 @@ const patchSchema = z.object({
 });
 
 export async function PATCH(request: Request, { params }: Params) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   if (!hasSupabaseConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
@@ -55,7 +60,8 @@ export async function PATCH(request: Request, { params }: Params) {
   const { error } = await admin
     .from("monitors")
     .update({ ...parsed.data, updated_at: new Date().toISOString() })
-    .eq("id", id);
+    .eq("id", id)
+    .eq("office_id", monitor.office_id);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
@@ -64,7 +70,11 @@ export async function PATCH(request: Request, { params }: Params) {
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(_request: Request, { params }: Params) {
+export async function DELETE(request: Request, { params }: Params) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   if (!hasSupabaseConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
@@ -92,17 +102,26 @@ export async function DELETE(_request: Request, { params }: Params) {
 
   const membership = await getMembershipForOffice(user.id, monitor.office_id);
   if (!membership || !canManageOffice(membership.role)) {
-    return NextResponse.json({ error: "Only office owners and admins can delete monitors." }, { status: 403 });
+    return NextResponse.json({ error: "Only office owners and admins can remove monitors." }, { status: 403 });
   }
 
+  // A physical delete cascades through local snapshots and can null or violate
+  // immutable published-event attribution. Preserve the monitor as a detached,
+  // paused tombstone so the page leaves the active award graph without erasing
+  // its evidence and history.
   const { error } = await admin
     .from("monitors")
-    .delete()
-    .eq("id", id);
+    .update({
+      award_id: null,
+      status: "paused",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("office_id", monitor.office_id);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, preserved: true });
 }

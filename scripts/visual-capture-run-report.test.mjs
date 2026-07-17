@@ -8,13 +8,15 @@ import {
   buildNightlyVisualReport,
   buildVisualRunReportSummary,
   classifyVisualCaptureFailure,
+  isDailyVisualShardReport,
   monitoringDateForTimestamp,
   monitoringDateForVisualReportFilename,
   shouldReplaceLatestNightlyReport,
 } from "./lib/visual-capture-run-report.mjs";
+import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 
 function shardReport(shardIndex, overrides = {}) {
-  return {
+  const report = {
     started_at: `2026-07-14T23:00:0${shardIndex}.000Z`,
     finished_at: `2026-07-14T23:30:0${shardIndex}.000Z`,
     status: "succeeded",
@@ -22,11 +24,18 @@ function shardReport(shardIndex, overrides = {}) {
       shard_count: 3,
       shard_index: shardIndex,
       run_trigger: "scheduled",
+      limit: 50000,
+      include_not_due: true,
+      pdf_only: false,
+      web_only: false,
+      skip_existing_baseline: false,
       baseline_refresh: false,
       complete_missing_baselines: false,
       localization_repair: false,
       r2_backfill_baselines: false,
-      discovery_mode: false,
+      discovery_mode: true,
+      discovery_intent: "live_recurring",
+      discovery_onboarding_batch_id: null,
       source_id: null,
       source_url: null,
       award: null,
@@ -37,6 +46,28 @@ function shardReport(shardIndex, overrides = {}) {
     errors: [],
     ...overrides,
   };
+  if (!("source_inventory" in overrides)) {
+    const loaded = Number(report.baseline_coverage_start?.loaded_sources || 0);
+    report.source_inventory = inventoryProof(shardIndex, [loaded, loaded, loaded]);
+  }
+  return report;
+}
+
+function inventoryProof(shardIndex, partitionCounts = [100, 100, 100]) {
+  const sources = partitionCounts.flatMap((count, partition) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `source-${partition}-${String(index).padStart(4, "0")}`,
+      partition,
+    })),
+  );
+  return buildVisualSourceInventoryProof({
+    eligibleSources: sources,
+    loadedSources: sources.filter((source) => source.partition === shardIndex),
+    shardCount: 3,
+    shardIndex,
+    shardIndexForSource: (source) => source.partition,
+    capturedAt: "2026-07-14T22:59:59.000Z",
+  });
 }
 
 describe("visual capture run reporting", () => {
@@ -106,18 +137,71 @@ describe("visual capture run reporting", () => {
       errors: [],
     });
 
-    expect(summary.failure_groups).toEqual([
+    expect(summary.failure_groups).toEqual(expect.arrayContaining([
       expect.objectContaining({
         code: "unknown_failure",
         count: 2,
         repair_code: "classify_before_retry",
       }),
-    ]);
+    ]));
+  });
+
+  it("never reports a zero-page or partially processed inventory as healthy", () => {
+    const empty = buildVisualRunReportSummary({
+      status: "succeeded",
+      checked: 0,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 0 },
+      errors: [],
+    });
+    const partial = buildVisualRunReportSummary({
+      status: "succeeded",
+      checked: 8,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 10 },
+      errors: [],
+    });
+
+    for (const summary of [empty, partial]) {
+      expect(summary.run_health).toMatchObject({
+        status: "failed",
+        inventory_complete: false,
+        requires_attention: true,
+      });
+      expect(summary.failure_groups).toContainEqual(expect.objectContaining({
+        code: "source_inventory_empty_or_incomplete",
+        severity: "critical",
+      }));
+    }
   });
 
   it("uses the Chicago 6 PM boundary for the monitoring date", () => {
     expect(monitoringDateForTimestamp("2026-07-14T22:59:59.000Z")).toBe("2026-07-13");
     expect(monitoringDateForTimestamp("2026-07-14T23:00:00.000Z")).toBe("2026-07-14");
+  });
+
+  it("includes permanent live discovery but excludes onboarding, repair, and targeted runs", () => {
+    expect(isDailyVisualShardReport(shardReport(0))).toBe(true);
+
+    const excludedOptions = [
+      { discovery_intent: "historical_onboarding", discovery_onboarding_batch_id: "batch-1" },
+      { baseline_refresh: true },
+      { localization_repair: true },
+      { source_id: "10000000-0000-4000-8000-000000000001" },
+      { source_ids_filter_count: 2 },
+      { initial_official_document_materialization: true },
+    ];
+    for (const optionOverrides of excludedOptions) {
+      const base = shardReport(0);
+      expect(isDailyVisualShardReport({
+        ...base,
+        options: { ...base.options, ...optionOverrides },
+      })).toBe(false);
+    }
+
+    const missingIntent = shardReport(0);
+    delete missingIntent.options.discovery_intent;
+    expect(isDailyVisualShardReport(missingIntent)).toBe(false);
   });
 
   it("derives monitoring windows from report filenames before parsing files", () => {
@@ -265,6 +349,31 @@ describe("visual capture run reporting", () => {
     );
   });
 
+  it("keeps an actively processing shard running without a premature inventory incident", () => {
+    const active = shardReport(0, {
+      status: "running",
+      checked: 20,
+      finished_at: null,
+      heartbeat_at: "2026-07-15T00:55:00.000Z",
+    });
+    const report = buildNightlyVisualReport([active, shardReport(1), shardReport(2)], {
+      monitoringDate: "2026-07-14",
+      generatedAt: "2026-07-15T01:00:00.000Z",
+    });
+
+    expect(report).toMatchObject({
+      status: "running",
+      totals: { inventory_complete: false },
+    });
+    expect(report.shards[0]).toMatchObject({
+      operational_status: "running",
+      inventory_complete: false,
+    });
+    expect(report.failure_groups).not.toContainEqual(expect.objectContaining({
+      code: "source_inventory_empty_or_incomplete",
+    }));
+  });
+
   it("reports a complete triad with any failure as degraded and aggregates solutions", () => {
     const report = buildNightlyVisualReport([
       shardReport(0, {
@@ -297,6 +406,54 @@ describe("visual capture run reporting", () => {
       repair_code: "backoff_then_retry",
       affected_count: 2,
     });
+  });
+
+  it("fails a complete three-shard cohort when every shard checks zero pages", () => {
+    const emptyShards = [0, 1, 2].map((shardIndex) => shardReport(shardIndex, {
+      checked: 0,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 0 },
+    }));
+    const report = buildNightlyVisualReport(emptyShards, {
+      monitoringDate: "2026-07-14",
+      generatedAt: "2026-07-15T00:00:00.000Z",
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      totals: {
+        loaded_sources: 0,
+        pages_captured: 0,
+        inventory_complete: false,
+      },
+    });
+    expect(report.failure_groups).toContainEqual(expect.objectContaining({
+      code: "source_inventory_empty_or_incomplete",
+    }));
+  });
+
+  it("fails a fully processed triad when one shard attests a different global inventory", () => {
+    const shards = [shardReport(0), shardReport(1), shardReport(2)];
+    shards[2].source_inventory = {
+      ...shards[2].source_inventory,
+      global_source_ids_sha256: "f".repeat(64),
+    };
+    const report = buildNightlyVisualReport(shards, {
+      monitoringDate: "2026-07-14",
+      generatedAt: "2026-07-15T00:00:00.000Z",
+    });
+
+    expect(report).toMatchObject({
+      status: "failed",
+      totals: {
+        inventory_complete: false,
+        inventory_proof_complete: false,
+      },
+    });
+    expect(report.failure_groups).toContainEqual(expect.objectContaining({
+      code: "source_inventory_proof_missing_or_mismatched",
+    }));
+    expect(report.summary).toContain("inventory proofs");
   });
 
   it("keeps only the newest attempt for each shard", () => {
@@ -348,7 +505,7 @@ describe("visual capture run reporting", () => {
     });
   });
 
-  it("retains legacy untagged shards launched during the actual 6 PM hour", () => {
+  it("does not treat legacy untagged shards as authoritative 6 PM evidence", () => {
     const legacyScheduled = [0, 1, 2].map((shardIndex) => {
       const report = shardReport(shardIndex);
       report.options.run_trigger = "";
@@ -358,10 +515,26 @@ describe("visual capture run reporting", () => {
     expect(buildNightlyVisualReport(legacyScheduled, {
       monitoringDate: "2026-07-14",
     })).toMatchObject({
-      status: "healthy",
-      observed_shards: 3,
-      totals: { pages_captured: 300 },
+      status: "incomplete",
+      observed_shards: 0,
+      missing_shards: [1, 2, 3],
     });
+  });
+
+  it("excludes partial scheduled scans from the authoritative cohort", () => {
+    for (const overrides of [
+      { include_not_due: false },
+      { limit: 100 },
+      { pdf_only: true },
+      { web_only: true },
+      { skip_existing_baseline: true },
+      { discovery_mode: false },
+      { discovery_intent: "" },
+    ]) {
+      const partial = shardReport(0);
+      partial.options = { ...partial.options, ...overrides };
+      expect(isDailyVisualShardReport(partial), JSON.stringify(overrides)).toBe(false);
+    }
   });
 
   it("excludes manual and maintenance shard runs from the scheduled nightly cohort", () => {

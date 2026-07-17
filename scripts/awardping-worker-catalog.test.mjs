@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   atomicTasks,
+  maintenanceProfiles,
   scheduledWorkers,
   workerLanes,
 } from "./awardping-worker-catalog.mjs";
@@ -54,12 +55,16 @@ describe("AwardPing worker catalog automation", () => {
     }
 
     for (const taskId of [
+      "one-time-catchup",
       "source-quality",
       "visual-missing",
+      "ai-review-completion",
       "baseline-facts",
+      "aggregate-facts",
+      "award-details",
       "localization-repair",
     ]) {
-      expect(atomicTasks.find((task) => task.id === taskId)?.scheduledWorkerIds).toEqual([]);
+      expect(atomicTasks.find((task) => task.id === taskId), taskId).toBeUndefined();
     }
   });
 
@@ -127,15 +132,10 @@ describe("AwardPing worker catalog automation", () => {
     }
   });
 
-  it("exposes the one-time catch-up as an operator-run batch-only task", () => {
-    const catchup = atomicTasks.find((task) => task.id === "one-time-catchup");
-
-    expect(catchup?.run).toMatchObject({
-      kind: "script",
-      args: ["scripts/run-one-time-catchup.mjs"],
-      applyArg: true,
-    });
-    expect(catchup?.scheduledWorkerIds).toEqual([]);
-    expect(catchup?.cost).toContain("gemini-2.5-flash-lite");
+  it("does not expose retired monolithic or repair workflows", () => {
+    expect(Object.keys(maintenanceProfiles)).not.toEqual(
+      expect.arrayContaining(["catchup", "daily", "baseline", "cleanup"]),
+    );
+    expect(workerLanes.map((lane) => lane.id)).not.toContain("repair-recovery");
   });
 });

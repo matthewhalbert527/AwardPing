@@ -99,72 +99,41 @@ function Test-SupabasePublishableKey {
   return $Key.Trim().StartsWith("sb_publishable_")
 }
 
-function Get-JwtRole {
-  param([string]$Key)
-
-  $parts = $Key.Trim().Split(".")
-  if ($parts.Length -lt 2) { return $null }
-
-  try {
-    $payload = $parts[1].Replace("-", "+").Replace("_", "/")
-    while ($payload.Length % 4 -ne 0) {
-      $payload = "$payload="
-    }
-    $bytes = [Convert]::FromBase64String($payload)
-    $json = [Text.Encoding]::UTF8.GetString($bytes)
-    $parsed = $json | ConvertFrom-Json
-    return $parsed.role
-  } catch {
-    return $null
-  }
-}
-
 function New-SupabaseKeyHeaders {
   param([string]$Key)
 
-  $headers = @{
+  return @{
     "apikey" = $Key
   }
-
-  if (-not (Test-SupabaseSecretKey $Key)) {
-    $headers["Authorization"] = "Bearer $Key"
-  }
-
-  return $headers
 }
 
-function Test-SupabaseServiceRoleKey {
+function Test-SupabaseSecretKeyAccess {
   param(
     [string]$SupabaseUrl,
-    [string]$SupabaseServiceRoleKey
+    [string]$SupabaseSecretKey
   )
 
-  $SupabaseServiceRoleKey = $SupabaseServiceRoleKey.Trim()
-  if (Test-SupabasePublishableKey $SupabaseServiceRoleKey) {
+  $SupabaseSecretKey = $SupabaseSecretKey.Trim()
+  if (Test-SupabasePublishableKey $SupabaseSecretKey) {
     return @{
       Ok = $false
-      Message = "That is a Supabase publishable key. The worker needs either the legacy JWT service_role key or the newer sb_secret key."
+      Message = "That is a Supabase publishable key. The worker requires a server-only sb_secret key."
     }
   }
-
-  $jwtRole = Get-JwtRole $SupabaseServiceRoleKey
-  if ($jwtRole -and $jwtRole -ne "service_role") {
+  if (-not (Test-SupabaseSecretKey $SupabaseSecretKey)) {
     return @{
       Ok = $false
-      Message = "That JWT key has role '$jwtRole'. The worker needs the service_role key, not the anon key."
+      Message = "Legacy Supabase JWT API keys are not accepted for the production worker. Create or reveal an sb_secret key for this worker before disabling the legacy keys."
     }
   }
 
   $baseUrl = $SupabaseUrl.TrimEnd("/")
   $endpoint = "${baseUrl}/rest/v1/shared_awards?select=id&limit=1"
-  $headers = New-SupabaseKeyHeaders $SupabaseServiceRoleKey
+  $headers = New-SupabaseKeyHeaders $SupabaseSecretKey
 
   try {
     Invoke-RestMethod -Method Get -Uri $endpoint -Headers $headers -ErrorAction Stop | Out-Null
-    if (Test-SupabaseSecretKey $SupabaseServiceRoleKey) {
-      return @{ Ok = $true; Message = "Supabase sb_secret key validated." }
-    }
-    return @{ Ok = $true; Message = "Supabase service_role JWT key validated." }
+    return @{ Ok = $true; Message = "Supabase sb_secret key validated using apikey only." }
   } catch {
     $body = Get-WebErrorBody $_
     $status = $null
@@ -175,7 +144,7 @@ function Test-SupabaseServiceRoleKey {
     if ($body -match "Invalid API key" -or $status -eq 401) {
       return @{
         Ok = $false
-        Message = "Supabase rejected that key for $baseUrl. Paste the AwardPing Supabase project service_role JWT key or sb_secret key, not the Gemini API key, Vercel key, anon/publishable key, or Cloudflare token. Response: $body"
+        Message = "Supabase rejected that key for $baseUrl. Paste the AwardPing worker's sb_secret key, not the Gemini API key, Vercel key, anon/publishable key, legacy JWT key, or Cloudflare token. Response: $body"
       }
     }
 
@@ -193,13 +162,13 @@ function Test-SupabaseServiceRoleKey {
   }
 }
 
-function Read-SupabaseServiceRoleKey {
+function Read-SupabaseSecretKey {
   param([string]$SupabaseUrl)
 
   while ($true) {
-    $key = Read-PlainSecret "Paste Supabase service_role JWT key or sb_secret key"
+    $key = Read-PlainSecret "Paste the worker's Supabase sb_secret key"
     Write-Host "Checking Supabase key..."
-    $result = Test-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl -SupabaseServiceRoleKey $key
+    $result = Test-SupabaseSecretKeyAccess -SupabaseUrl $SupabaseUrl -SupabaseSecretKey $key
     if ($result.Ok) {
       Write-Host $result.Message -ForegroundColor Green
       return $key
@@ -814,6 +783,119 @@ function Get-AwardPingRootedActionPaths {
   return @($paths.Values)
 }
 
+function Get-AwardPingManagedTaskScheduleProblems {
+  param([string]$InstallRoot)
+
+  $definitions = @(
+    [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 1"; Kind = "visual"; ShardIndex = 0; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
+    [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 2"; Kind = "visual"; ShardIndex = 1; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
+    [pscustomobject]@{ TaskName = "AwardPing Visual Snapshot Worker Shard 3"; Kind = "visual"; ShardIndex = 2; Lane = ""; StaggerMinutes = 0; TimeoutMinutes = 0 },
+    [pscustomobject]@{ TaskName = "AwardPing New Page Review Lane"; Kind = "lane"; ShardIndex = -1; Lane = "new_page_review"; StaggerMinutes = 0; TimeoutMinutes = 10 },
+    [pscustomobject]@{ TaskName = "AwardPing Changed Page Review Lane"; Kind = "lane"; ShardIndex = -1; Lane = "changed_page_review"; StaggerMinutes = 2; TimeoutMinutes = 10 },
+    [pscustomobject]@{ TaskName = "AwardPing Feedback Promotion Lane"; Kind = "lane"; ShardIndex = -1; Lane = "feedback_promotion"; StaggerMinutes = 4; TimeoutMinutes = 6 },
+    [pscustomobject]@{ TaskName = "AwardPing Suppression Lane"; Kind = "lane"; ShardIndex = -1; Lane = "suppression"; StaggerMinutes = 6; TimeoutMinutes = 6 },
+    [pscustomobject]@{ TaskName = "AwardPing Reconciliation Lane"; Kind = "lane"; ShardIndex = -1; Lane = "reconciliation"; StaggerMinutes = 8; TimeoutMinutes = 6 },
+    [pscustomobject]@{ TaskName = "AwardPing Page Audit Lane"; Kind = "lane"; ShardIndex = -1; Lane = "page_audit"; StaggerMinutes = 10; TimeoutMinutes = 6 },
+    [pscustomobject]@{ TaskName = "AwardPing Manual Quarantine Lane"; Kind = "lane"; ShardIndex = -1; Lane = "manual_quarantine"; StaggerMinutes = 12; TimeoutMinutes = 4 },
+    [pscustomobject]@{ TaskName = "AwardPing Nightly Report Lane"; Kind = "lane"; ShardIndex = -1; Lane = "nightly_report"; StaggerMinutes = 14; TimeoutMinutes = 4 }
+  )
+  $problems = @()
+  $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
+
+  foreach ($definition in $definitions) {
+    $tasks = @(Get-ScheduledTask -TaskName $definition.TaskName -ErrorAction SilentlyContinue | Where-Object {
+        $taskPath = if ([string]::IsNullOrWhiteSpace([string]$_.TaskPath)) { "\" } else { [string]$_.TaskPath }
+        $taskPath -eq "\" -and (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
+      })
+    if ($tasks.Count -ne 1) {
+      $problems += "managed task must exist exactly once at the root Task Scheduler path: $($definition.TaskName) (found $($tasks.Count))"
+      continue
+    }
+
+    try {
+      [xml]$document = Export-ScheduledTask `
+        -TaskName $definition.TaskName `
+        -TaskPath "\" `
+        -ErrorAction Stop
+      $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+      $namespace.AddNamespace("task", $document.DocumentElement.NamespaceURI)
+      $triggers = @($document.SelectNodes("/task:Task/task:Triggers/*", $namespace))
+      if ($triggers.Count -ne 1) {
+        $problems += "noncanonical trigger count for $($definition.TaskName): expected 1, found $($triggers.Count)"
+        continue
+      }
+
+      $trigger = $triggers[0]
+      $startNode = $trigger.SelectSingleNode("./task:StartBoundary", $namespace)
+      [DateTime]$start = [DateTime]::MinValue
+      if (-not $startNode -or -not [DateTime]::TryParse([string]$startNode.InnerText, [ref]$start)) {
+        $problems += "noncanonical or missing StartBoundary for $($definition.TaskName)"
+        continue
+      }
+
+      if ($definition.Kind -eq "visual") {
+        $daysNode = $trigger.SelectSingleNode("./task:ScheduleByDay/task:DaysInterval", $namespace)
+        if (
+          $trigger.LocalName -ne "CalendarTrigger" -or
+          -not $daysNode -or
+          [string]$daysNode.InnerText -ne "1" -or
+          $start.Hour -ne 18 -or
+          $start.Minute -ne 0 -or
+          $start.Second -ne 0
+        ) {
+          $problems += "noncanonical visual trigger for $($definition.TaskName): expected daily at 18:00"
+        }
+      } else {
+        $intervalNode = $trigger.SelectSingleNode("./task:Repetition/task:Interval", $namespace)
+        $durationNode = $trigger.SelectSingleNode("./task:Repetition/task:Duration", $namespace)
+        if (
+          $trigger.LocalName -ne "TimeTrigger" -or
+          -not $intervalNode -or
+          [string]$intervalNode.InnerText -ne "PT15M" -or
+          -not $durationNode -or
+          [string]$durationNode.InnerText -ne "P3650D" -or
+          ($start.Minute % 15) -ne [int]$definition.StaggerMinutes -or
+          $start.Second -ne 0
+        ) {
+          $problems += "noncanonical lane trigger for $($definition.TaskName): expected PT15M at +$($definition.StaggerMinutes) minute(s)"
+        }
+      }
+
+      $actions = @($document.SelectNodes("/task:Task/task:Actions/task:Exec", $namespace))
+      if ($actions.Count -ne 1) {
+        $problems += "noncanonical action count for $($definition.TaskName): expected 1, found $($actions.Count)"
+        continue
+      }
+      $argumentsNode = $actions[0].SelectSingleNode("./task:Arguments", $namespace)
+      $arguments = if ($argumentsNode) { [string]$argumentsNode.InnerText } else { "" }
+      if ($definition.Kind -eq "visual") {
+        $expectedWrapper = "$normalizedRoot\Run-AwardPingVisualSnapshots.ps1"
+        if (
+          $arguments.IndexOf($expectedWrapper, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+          $arguments -notmatch "(?i)(?:^|\s)-ShardCount\s+3(?:\s|$)" -or
+          $arguments -notmatch "(?i)(?:^|\s)-ShardIndex\s+$([int]$definition.ShardIndex)(?:\s|$)" -or
+          $arguments -notmatch "(?i)(?:^|\s)-RunTrigger\s+scheduled(?:\s|$)"
+        ) {
+          $problems += "noncanonical visual action for $($definition.TaskName)"
+        }
+      } else {
+        $expectedWrapper = "$normalizedRoot\Run-AwardPingDownstreamLane.ps1"
+        if (
+          $arguments.IndexOf($expectedWrapper, [System.StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+          $arguments -notmatch "(?i)(?:^|\s)-Lane\s+$([regex]::Escape([string]$definition.Lane))(?:\s|$)" -or
+          $arguments -notmatch "(?i)(?:^|\s)-TimeoutMinutes\s+$([int]$definition.TimeoutMinutes)(?:\s|$)"
+        ) {
+          $problems += "noncanonical lane action for $($definition.TaskName)"
+        }
+      }
+    } catch {
+      $problems += "could not validate managed task schedule $($definition.TaskName): $($_.Exception.Message)"
+    }
+  }
+
+  return $problems
+}
+
 function Get-AwardPingInstalledRuntimeProblems {
   param(
     [string]$InstallRoot,
@@ -836,14 +918,17 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $InstallRoot "Run-AwardPingVisualSnapshots.ps1"),
       (Join-Path $InstallRoot "Run-AwardPingDownstreamLane.ps1"),
       (Join-Path $AppDir "scripts\run-downstream-lane.mjs"),
+      (Join-Path $AppDir "scripts\process-new-page-review-lane.mjs"),
       (Join-Path $AppDir "scripts\lib\gemini-spend-ledger.mjs"),
       (Join-Path $AppDir "scripts\lib\gemini-batch-support.mjs"),
+      (Join-Path $AppDir "scripts\lib\paid-visual-review-policy.mjs"),
       (Join-Path $AppDir "scripts\lib\r2-baseline-rehydration.mjs"),
       (Join-Path $AppDir "scripts\lib\intake-artifact-retention.mjs"),
       (Join-Path $AppDir "scripts\lib\initial-official-document.mjs"),
       (Join-Path $AppDir "scripts\lib\initial-document-recovery.mjs"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-nightly-run-contract.mjs"),
       (Join-Path $AppDir "scripts\lib\expansion-state-isolation.mjs"),
       (Join-Path $AppDir "scripts\lib\visible-text-geometry.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-event-localization.mjs"),
@@ -919,6 +1004,9 @@ function Get-AwardPingInstalledRuntimeProblems {
   $workerEnvPath = Join-Path $AppDir ".env.worker.local"
   if (Test-Path -LiteralPath $workerEnvPath -PathType Leaf) {
     $workerEnv = Read-WorkerEnvValues -Path $workerEnvPath
+    if (-not (Test-SupabaseSecretKey ([string]$workerEnv["SUPABASE_SERVICE_ROLE_KEY"]))) {
+      $problems += "invalid SUPABASE_SERVICE_ROLE_KEY; the production worker requires an sb_secret key and cannot resume with a legacy JWT"
+    }
     $r2Validation = Test-R2WorkerConfiguration `
       -Bucket ([string]$workerEnv["R2_BUCKET"]) `
       -AccountId ([string]$workerEnv["R2_ACCOUNT_ID"]) `
@@ -956,6 +1044,7 @@ function Get-AwardPingInstalledRuntimeProblems {
   }
 
   if ($RequireManagedRuntime) {
+    $problems += @(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $InstallRoot)
     $hashPairs = @()
     if (-not [string]::IsNullOrWhiteSpace($InstallerSourceDirectory)) {
       foreach ($fileName in @(
@@ -970,14 +1059,17 @@ function Get-AwardPingInstalledRuntimeProblems {
     if (-not [string]::IsNullOrWhiteSpace($AppSourceRoot)) {
       foreach ($relativePath in @(
         "scripts\run-downstream-lane.mjs",
+        "scripts\process-new-page-review-lane.mjs",
         "scripts\lib\gemini-spend-ledger.mjs",
         "scripts\lib\gemini-batch-support.mjs",
+        "scripts\lib\paid-visual-review-policy.mjs",
         "scripts\lib\r2-baseline-rehydration.mjs",
         "scripts\lib\intake-artifact-retention.mjs",
         "scripts\lib\initial-official-document.mjs",
         "scripts\lib\initial-document-recovery.mjs",
         "scripts\capture-visual-snapshots.mjs",
         "scripts\lib\visual-capture-run-report.mjs",
+        "scripts\lib\visual-nightly-run-contract.mjs",
         "scripts\lib\expansion-state-isolation.mjs",
         "scripts\lib\visible-text-geometry.mjs",
         "scripts\lib\visual-event-localization.mjs",
@@ -1062,7 +1154,11 @@ function Get-AwardPingTaskRestoreXml {
   if ($ApplyTaskDefinitionUpdates) {
     $snapshotNamespace = [System.Xml.XmlNamespaceManager]::new($snapshotDocument.NameTable)
     $snapshotNamespace.AddNamespace("task", $snapshotDocument.DocumentElement.NamespaceURI)
-    foreach ($xpath in @("/task:Task/task:Principals", "/task:Task/task:Triggers")) {
+    # Keep the account/security context, but deliberately retain the freshly
+    # registered canonical triggers. Carrying an old trigger forward can turn
+    # a required 6 PM shard into a legacy catch-up schedule or leave a lane on
+    # the retired monolithic cadence.
+    foreach ($xpath in @("/task:Task/task:Principals")) {
       $snapshotNode = $snapshotDocument.SelectSingleNode($xpath, $snapshotNamespace)
       $currentNode = $document.SelectSingleNode($xpath, $namespace)
       if (-not $snapshotNode -or -not $currentNode) {
@@ -1596,6 +1692,33 @@ function Update-ExistingEnvFileDefaults {
   Write-Host "Gemini model defaults set to gemini-2.5-flash-lite. Database policy fixes New Page Review and Changed Page Review at `$5/day each; every other lane is `$0, and no limit comes from this environment file."
 }
 
+function Update-WorkerSupabaseSecretKeyForMigration {
+  param(
+    [string]$Path,
+    [string]$SupabaseUrl
+  )
+
+  $workerEnv = Read-WorkerEnvValues -Path $Path
+  $currentKey = ([string]$workerEnv["SUPABASE_SERVICE_ROLE_KEY"]).Trim()
+  if (Test-SupabaseSecretKey $currentKey) {
+    Write-Host "Existing worker Supabase sb_secret key retained."
+    return
+  }
+
+  Write-Step "Migrating worker from the legacy Supabase JWT key"
+  Write-Host "The installed worker cannot resume until a current sb_secret key is validated. The legacy key is not retained in the staged environment."
+  $replacementKey = Read-SupabaseSecretKey -SupabaseUrl $SupabaseUrl
+  $content = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+  $pattern = "(?m)^SUPABASE_SERVICE_ROLE_KEY=.*$"
+  if ($content -match $pattern) {
+    $content = [regex]::Replace($content, $pattern, "SUPABASE_SERVICE_ROLE_KEY=$replacementKey")
+  } else {
+    $content = $content.TrimEnd() + "`r`nSUPABASE_SERVICE_ROLE_KEY=$replacementKey`r`n"
+  }
+  Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+  Write-Host "The validated sb_secret key was written only to the staged .env.worker.local file." -ForegroundColor Green
+}
+
 function Write-UninstallScript {
   param([string]$InstallRoot)
 
@@ -1645,15 +1768,9 @@ $visualRunContent = @"
 param(
   [int]`$Limit = 50000,
   [switch]`$All,
-  [switch]`$BaselineRefresh,
-  [switch]`$PdfOnly,
-  [switch]`$WebOnly,
-  [switch]`$CompleteMissingBaselines,
-  [switch]`$SkipExistingBaseline,
   [int]`$DomainDelayMs = 1500,
   [int]`$WebConcurrency = 4,
   [int]`$MaxRestarts = 3,
-  [int]`$CompleteMissingBatchLimit = 250,
   [int]`$ShardCount = 1,
   [int]`$ShardIndex = 0,
   [ValidateSet("scheduled", "maintenance", "manual")]
@@ -1666,6 +1783,13 @@ param(
 `$LogDir = Join-Path `$InstallRoot "logs"
 if (`$ShardCount -lt 1) { throw "ShardCount must be at least 1." }
 if (`$ShardIndex -lt 0 -or `$ShardIndex -ge `$ShardCount) { throw "ShardIndex must be between 0 and `$(`$ShardCount - 1)." }
+if (`$RunTrigger -eq "scheduled" -and (
+  -not `$All -or
+  `$Limit -lt 50000 -or
+  `$ShardCount -ne 3
+)) {
+  throw "Scheduled 6 PM evidence must be a complete three-shard all-source scan."
+}
 `$ShardLabel = if (`$ShardCount -gt 1) { "shard-`$(`$ShardIndex + 1)-of-`$ShardCount" } else { "single" }
 `$LockName = if (`$ShardCount -gt 1) { "visual-worker-`$ShardLabel.lock" } else { "visual-worker.lock" }
 `$LockPath = Join-Path `$InstallRoot `$LockName
@@ -1706,8 +1830,8 @@ if (Test-VisualLockActive -Path `$LockPath) {
 }
 
 `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-`$mode = if (`$CompleteMissingBaselines) { "complete-missing-baselines" } elseif (`$BaselineRefresh) { "baseline-refresh" } else { "snapshots" }
-`$logPrefix = if (`$CompleteMissingBaselines) { "awardping-visual-complete-baselines" } elseif (`$BaselineRefresh) { "awardping-visual-baseline-refresh" } else { "awardping-visual-snapshots" }
+`$mode = "snapshots"
+`$logPrefix = "awardping-visual-snapshots"
 `$logPrefix = if (`$ShardCount -gt 1) { "`$logPrefix-`$ShardLabel" } else { `$logPrefix }
 `$logPath = Join-Path `$LogDir "`$logPrefix-`$stamp.log"
 
@@ -1736,46 +1860,21 @@ if (-not (Test-Path -LiteralPath `$workerScript)) {
   "--extract-baseline-info=false"
 )
 if (`$All) { `$workerArgs += "--all=true" }
-if (`$BaselineRefresh) { `$workerArgs += "--baseline-refresh=true" }
-if (`$PdfOnly) { `$workerArgs += "--pdf-only=true" }
-if (`$WebOnly) { `$workerArgs += "--web-only=true" }
-if (`$CompleteMissingBaselines) {
-  `$workerArgs += "--complete-missing-baselines=true"
-  `$workerArgs += "--skip-existing-baseline=true"
-  `$workerArgs += "--baseline-refresh=true"
-  `$workerArgs += "--extract-baseline-info=false"
-  `$workerArgs += "--complete-missing-batch-limit"
-  `$workerArgs += [string]`$CompleteMissingBatchLimit
-}
-if (`$SkipExistingBaseline) { `$workerArgs += "--skip-existing-baseline=true" }
-if (-not `$CompleteMissingBaselines -and -not `$BaselineRefresh) {
-  # The permanent 6 PM shards are the authoritative live discovery surface.
-  # They queue newly linked PDFs for the separately capped new-page review lane.
-  `$workerArgs += "--discovery-mode=true"
-  `$workerArgs += "--discovery-intent=live_recurring"
-  `$workerArgs += "--discover-pdf-subpages=true"
-  `$workerArgs += "--discover-html-subpages=false"
-  `$workerArgs += "--max-html-subpage-discoveries=0"
-  `$workerArgs += "--max-discoveries-per-award=5"
-  `$workerArgs += "--max-discoveries-per-source=3"
-  `$workerArgs += "--max-discoveries-per-domain=100"
-} else {
-  `$workerArgs += "--discovery-mode=false"
-  `$workerArgs += "--discovery-intent=historical_onboarding"
-  `$workerArgs += "--discover-pdf-subpages=false"
-  `$workerArgs += "--discover-html-subpages=false"
-}
+# The permanent capture path is the authoritative live discovery surface.
+# It queues newly linked PDFs for the separately capped new-page review lane.
+`$workerArgs += "--discovery-mode=true"
+`$workerArgs += "--discovery-intent=live_recurring"
+`$workerArgs += "--discover-pdf-subpages=true"
+`$workerArgs += "--discover-html-subpages=false"
+`$workerArgs += "--max-html-subpage-discoveries=0"
+`$workerArgs += "--max-discoveries-per-award=5"
+`$workerArgs += "--max-discoveries-per-source=3"
+`$workerArgs += "--max-discoveries-per-domain=100"
 
-if (`$CompleteMissingBaselines) {
-  Write-Host "Running AwardPing missing visual baseline completion (`$ShardLabel). Log: `$logPath"
-} elseif (`$BaselineRefresh) {
-  Write-Host "Running AwardPing visual baseline refresh (`$ShardLabel). Log: `$logPath"
-} else {
-  Write-Host "Running AwardPing visual snapshot worker (`$ShardLabel). Log: `$logPath"
-}
+Write-Host "Running AwardPing visual snapshot worker (`$ShardLabel). Log: `$logPath"
 Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath" -Encoding ASCII
 `$exitCode = 1
-Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All baseline_refresh=`$BaselineRefresh complete_missing_baselines=`$CompleteMissingBaselines complete_missing_batch_limit=`$CompleteMissingBatchLimit" -Encoding UTF8
+Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All" -Encoding UTF8
 try {
   `$attempt = 0
   do {
@@ -1822,42 +1921,6 @@ pause
 "@
 
   Set-Content -Path $visualCheckPath -Value $visualCheckContent -Encoding ASCII
-
-  $visualBaselinePath = Join-Path $InstallRoot "5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat"
-  $visualBaselineContent = @"
-@echo off
-echo Running AwardPing visual baseline refresh now.
-echo This replaces screenshot baselines so the next scheduled run can compare against them.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000 -BaselineRefresh
-echo.
-pause
-"@
-
-  Set-Content -Path $visualBaselinePath -Value $visualBaselineContent -Encoding ASCII
-
-  $pdfBaselinePath = Join-Path $InstallRoot "7-RUN-PDF-BASELINE-REFRESH-NOW.bat"
-  $pdfBaselineContent = @"
-@echo off
-echo Running AwardPing PDF baseline refresh now.
-echo This downloads PDF sources and compares future runs by PDF file hash.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 20000 -BaselineRefresh -PdfOnly
-echo.
-pause
-"@
-
-  Set-Content -Path $pdfBaselinePath -Value $pdfBaselineContent -Encoding ASCII
-
-  $completeBaselinePath = Join-Path $InstallRoot "8-COMPLETE-MISSING-VISUAL-BASELINES-NOW.bat"
-  $completeBaselineContent = @"
-@echo off
-echo Completing missing AwardPing visual baselines now.
-echo Existing baselines will be skipped so this only works on pages that still need a baseline.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$visualRunScript" -All -Limit 50000 -CompleteMissingBaselines -CompleteMissingBatchLimit 250
-echo.
-pause
-"@
-
-  Set-Content -Path $completeBaselinePath -Value $completeBaselineContent -Encoding ASCII
 
   $visualStatusScriptPath = Join-Path $InstallRoot "Show-AwardPingVisualStatus.ps1"
   $visualStatusScriptContent = @"
@@ -2097,9 +2160,6 @@ Use:
 4-SHOW-GEMINI-USAGE.bat
   Shows AwardPing Gemini usage recorded by this PC, grouped by day and month.
 
-5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat
-  Replaces screenshot baselines across all source pages so the next scheduled run can compare against a fresh baseline.
-
 6-SHOW-VISUAL-SNAPSHOT-STATUS.bat
   Shows whether the visual worker is running, live log counts, the latest report, and the next scheduled run.
 
@@ -2190,6 +2250,15 @@ function Get-AwardPingRetiredArtifactRelativePaths {
     "Watch-AwardPingBaselineFacts.ps1",
     "Run-AwardPingBaselineFacts.ps1",
     "baseline-facts-worker.lock",
+    "5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat",
+    "7-RUN-PDF-BASELINE-REFRESH-NOW.bat",
+    "8-COMPLETE-MISSING-VISUAL-BASELINES-NOW.bat",
+    "9-RUN-OVERNIGHT-SOURCE-QUALITY-NOW.bat",
+    "10-RUN-LOCALIZATION-REPAIR-NOW.bat",
+    "Run-AwardPingOvernightSourceQuality.ps1",
+    "Run-AwardPingLocalizationRepair.ps1",
+    "overnight-source-quality.lock",
+    "localization-repair.lock",
     "Run-AwardPingDownstreamQueues.ps1",
     "downstream-queue-pipeline.lock",
     "app\scripts\run-local-source-worker.mjs"
@@ -2372,12 +2441,12 @@ $sourceRevision = Get-AwardPingSourceRevision -SourceRoot $sourceRoot
 if ($UpdateOnly) {
   Write-Host "AwardPing Local PC Worker Code Update" -ForegroundColor Green
   Write-Host "This updates the crawler under: $InstallRoot"
-  Write-Host "Existing keys in .env.worker.local will be kept."
+  Write-Host "Existing keys in .env.worker.local will be kept, except a legacy Supabase JWT must be replaced with a validated sb_secret key."
 } else {
   Write-Host "AwardPing Local PC Worker Installer" -ForegroundColor Green
   Write-Host "This installs the crawler under: $InstallRoot"
   Write-Host "Secrets are written only to the PC's .env.worker.local file."
-  Write-Host "For Supabase, paste the legacy JWT service_role key or the newer sb_secret key. Do not use the anon/publishable key."
+  Write-Host "For Supabase, paste a server-only sb_secret key created for this worker. Legacy JWT and anon/publishable keys are rejected."
 }
 
 $appDir = Join-Path $InstallRoot "app"
@@ -2439,6 +2508,9 @@ try {
       -Path (Join-Path $stagingAppDir ".env.worker.local") `
       -AppUrl $AppUrl `
       -SourceRevision $sourceRevision
+    Update-WorkerSupabaseSecretKeyForMigration `
+      -Path (Join-Path $stagingAppDir ".env.worker.local") `
+      -SupabaseUrl $SupabaseUrl
     Switch-ToStagedAwardPingApp `
       -CurrentAppDir $appDir `
       -StagingAppDir $stagingAppDir `
@@ -2452,7 +2524,7 @@ try {
       -InstallRoot $InstallRoot `
       -UpdateToken $updateToken
     Copy-AppFiles -SourceRoot $sourceRoot -AppDir $appDir
-    $supabaseServiceRoleKey = Read-SupabaseServiceRoleKey -SupabaseUrl $SupabaseUrl
+    $supabaseServiceRoleKey = Read-SupabaseSecretKey -SupabaseUrl $SupabaseUrl
     $geminiApiKey = Read-PlainSecret "Paste Gemini API key"
     $r2Configuration = Read-R2WorkerConfiguration
     $runTest = Read-YesNo "Run a one-page visual snapshot test after install?" $true
@@ -2743,10 +2815,6 @@ Write-Step "Done"
 Write-Host "Installed at: $InstallRoot"
 Write-Host "Run the daily screenshot checker manually with:"
 Write-Host "`"$InstallRoot\3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat`""
-Write-Host "Run a fresh visual baseline refresh with:"
-Write-Host "`"$InstallRoot\5-RUN-VISUAL-BASELINE-REFRESH-NOW.bat`""
-Write-Host "Run a fresh PDF-only baseline refresh with:"
-Write-Host "`"$InstallRoot\7-RUN-PDF-BASELINE-REFRESH-NOW.bat`""
 Write-Host "Check visual worker status with:"
 Write-Host "`"$InstallRoot\6-SHOW-VISUAL-SNAPSHOT-STATUS.bat`""
 Write-Host "Logs are in: $logDir"

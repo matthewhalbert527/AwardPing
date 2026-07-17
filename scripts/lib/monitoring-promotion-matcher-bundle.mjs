@@ -14,6 +14,8 @@ export const monitoringPromotionMatcherBundleSources = Object.freeze([
   "scripts/lib/source-quality.mjs",
   "scripts/lib/source-ai-review-status.mjs",
   "scripts/lib/monitoring-feedback-promotion-verification.mjs",
+  "scripts/lib/visual-nightly-run-contract.mjs",
+  "scripts/lib/visual-source-inventory-proof.mjs",
   "scripts/process-monitoring-feedback-promotions.mjs",
   "src/lib/change-event-suppression.ts",
   "src/lib/award-monitoring-policy.ts",

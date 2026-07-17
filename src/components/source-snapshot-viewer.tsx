@@ -231,6 +231,7 @@ export function SourceSnapshotViewerButton({
               firstObservation={evidence.isFirstObservation}
               onVersionChange={setActiveVersion}
               evidenceScope={snapshot?.evidence_scope || "source_current"}
+              evidenceStatus={snapshot?.evidence_status || null}
               title={snapshot?.source_title || sourceTitle}
               version={activeVersion}
             />
@@ -329,7 +330,7 @@ export function SourceSnapshotInlinePreview({
       <div className="source-snapshot-inline source-snapshot-inline-state">
         <ImageIcon size={16} aria-hidden="true" />
         {changeEventId
-          ? "Exact visual evidence is unavailable for this update."
+          ? snapshotUnavailableMessage(snapshot)
           : "Screenshot preview not captured yet."}
       </div>
     );
@@ -450,6 +451,7 @@ function SnapshotBody({
   activeSnapshot,
   canShowPrevious,
   evidenceScope,
+  evidenceStatus,
   error,
   firstObservation,
   loading,
@@ -460,6 +462,7 @@ function SnapshotBody({
   activeSnapshot: SnapshotSide | null;
   canShowPrevious: boolean;
   evidenceScope: "change_event" | "source_current";
+  evidenceStatus: string | null;
   error: string | null;
   firstObservation: boolean;
   loading: boolean;
@@ -497,7 +500,9 @@ function SnapshotBody({
   if (!activeSnapshot || !primaryObject) {
     return (
       <div className="source-snapshot-state">
-        {version === "previous"
+        {evidenceStatus === "historical_artifact_unrecoverable"
+          ? snapshotUnavailableMessage({ evidence_status: evidenceStatus })
+          : version === "previous"
           ? "There is no previous snapshot for this page yet."
           : "No visual snapshot is available yet."}
       </div>
@@ -818,8 +823,8 @@ export function snapshotLocalizationLabel(
     }
     if (snapshot?.exact_overlap && snapshot.objects.crop) return "Verified exact change area";
     const reason = String(snapshot?.localization_reason || "").trim();
-    if (reason) return `Full event screenshot - ${reason}`;
-    return "Full event screenshot - exact change location unavailable";
+    if (reason) return `Exact location unavailable - full event screenshot. ${reason}`;
+    return "Exact location unavailable - full event screenshot shown.";
   }
   if (focusRatio !== null) return "Approximate text match in this retained source snapshot";
   switch (snapshot?.localization_status) {
@@ -836,4 +841,12 @@ export function snapshotLocalizationLabel(
     default:
       return "Screenshot localization pending";
   }
+}
+
+export function snapshotUnavailableMessage(
+  snapshot: Pick<SourceSnapshotResponse, "evidence_status"> | null,
+) {
+  return snapshot?.evidence_status === "historical_artifact_unrecoverable"
+    ? "Historical visual evidence unavailable - retained artifacts could not be recovered for this update."
+    : "Exact visual evidence is unavailable for this update.";
 }

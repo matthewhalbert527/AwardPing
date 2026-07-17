@@ -25,18 +25,16 @@ export async function GET(request: NextRequest) {
   let runId: string | null = null;
   try {
     runId = await startJobRun("send-digests");
-    const publicResult = await runPublicUpdateDigestDeliveries().catch((error) => ({
-      digestKey: new Date().toISOString().slice(0, 10),
-      sent: 0,
-      failed: 1,
-      skipped: false,
-      reason: errorMessage(error),
-    }));
+    const publicResult = await runPublicUpdateDigestDeliveries();
     const processedCount = publicResult.sent + publicResult.failed;
     const publicDigestMetadata = JSON.parse(JSON.stringify(publicResult)) as Json;
     await finishJobRun(runId, {
-      status: "succeeded",
+      status: publicResult.failed > 0 ? "failed" : "succeeded",
       processedCount,
+      error:
+        publicResult.failed > 0
+          ? `${publicResult.failed} public digest delivery attempt(s) became terminal.`
+          : null,
       metadata: {
         legacyOfficeTextDigestsDisabled: true,
         publicDigest: publicDigestMetadata,
@@ -44,11 +42,11 @@ export async function GET(request: NextRequest) {
     });
 
     return NextResponse.json({
-      ok: true,
+      ok: publicResult.failed === 0,
       runId,
       delivered: processedCount,
       publicResult,
-    });
+    }, { status: publicResult.failed > 0 ? 500 : 200 });
   } catch (error) {
     const message = errorMessage(error);
     if (runId) {

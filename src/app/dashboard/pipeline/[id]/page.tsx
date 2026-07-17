@@ -1,8 +1,9 @@
 import { redirect } from "next/navigation";
 import { requireUser } from "@/lib/auth";
 import { dashboardAwardPath } from "@/lib/award-slugs";
-import { hasSupabaseConfig } from "@/lib/config";
+import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { requireOfficeContext } from "@/lib/offices";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type Params = {
@@ -10,7 +11,7 @@ type Params = {
 };
 
 export default async function PipelineAwardRedirectPage({ params }: Params) {
-  if (!hasSupabaseConfig()) redirect("/award-directory");
+  if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) redirect("/award-directory");
 
   const user = await requireUser();
   const officeContext = await requireOfficeContext(user);
@@ -25,7 +26,10 @@ export default async function PipelineAwardRedirectPage({ params }: Params) {
     .maybeSingle();
 
   if (award?.shared_award_id) {
-    const { data: sharedAward } = await supabase
+    // The authenticated query above proves office ownership. Mutable shared
+    // catalog tables are intentionally service-only after the Stage 1 gate.
+    const admin = createSupabaseAdminClient();
+    const { data: sharedAward } = await admin
       .from("shared_awards")
       .select("id, name, slug")
       .eq("id", award.shared_award_id)

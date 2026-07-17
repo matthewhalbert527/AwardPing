@@ -3,6 +3,10 @@ import {
   buildChangeEventVisualEvidenceCoverageReport,
   verifyChangeEventManifestArtifacts,
 } from "./event-visual-evidence-coverage.mjs";
+import {
+  sha256VisualSemanticValue,
+  visualChangeSemanticManifest,
+} from "./visual-event-localization.mjs";
 
 describe("event visual evidence coverage", () => {
   it("HEAD-verifies full and crop SHA metadata plus exact byte length", async () => {
@@ -56,7 +60,7 @@ describe("event visual evidence coverage", () => {
     expect(result.details.current.verified_crop_chain).toMatchObject({
       verified: false,
       crop_source_image_bound: false,
-      solution: expect.stringMatching(/same source image key\/hash\/bytes/i),
+      solution: expect.stringMatching(/source image key\/hash\/bytes/i),
     });
   });
 
@@ -269,11 +273,31 @@ function eventRow(overrides = {}) {
 function evidenceRow(overrides = {}) {
   const currentFull = artifact("current/full", "b", 100, "image/jpeg");
   const currentLayout = artifact("current/layout", "f", 70, "application/json; charset=utf-8");
+  const rect = { x: 10, y: 20, width: 300, height: 120 };
+  const manifest = visualChangeSemanticManifest(eventRow().change_details);
+  const candidate = manifest.sides.current.candidates[0];
+  const bindingCore = {
+    contract: "visual-exact-text-binding-v2",
+    algorithm_version: 3,
+    side: "current",
+    wording_source: candidate.source,
+    exact_text_sha256: candidate.normalized_text_sha256,
+    candidates_sha256: manifest.sides.current.candidates_sha256,
+    change_semantics_sha256: manifest.change_semantics_sha256,
+    state_id: "main",
+    geometry_sha256: "9".repeat(64),
+    matched_node_orders: [0],
+    matched_rects_sha256: sha256VisualSemanticValue([rect]),
+    crop_rect_sha256: sha256VisualSemanticValue(rect),
+    crop_rect_pixels_sha256: sha256VisualSemanticValue(rect),
+  };
+  const binding = { ...bindingCore, binding_sha256: sha256VisualSemanticValue(bindingCore) };
   return {
     change_event_id: "event-1",
     visual_review_candidate_id: "candidate-1",
     bucket: "bucket-1",
     evidence_status: "verified",
+    evidence_schema_version: "visual-event-evidence-v2",
     previous_capture: {
       full: artifact("previous/full", "a", 100, "image/jpeg"),
       metadata: artifact("previous/metadata", "d", 30, "application/json"),
@@ -290,6 +314,9 @@ function evidenceRow(overrides = {}) {
         source_image_object_key: currentFull.object_key,
         source_image_sha256: currentFull.sha256,
         source_image_byte_length: currentFull.byte_length,
+        semantic_binding_sha256: binding.binding_sha256,
+        exact_text_sha256: binding.exact_text_sha256,
+        geometry_sha256: binding.geometry_sha256,
       },
       state_id: "main",
       states: [{
@@ -302,9 +329,28 @@ function evidenceRow(overrides = {}) {
     },
     localization: {
       direction: "added",
+      semantic_contract: manifest.contract,
+      change_semantics_sha256: manifest.change_semantics_sha256,
       sides: {
-        previous: { status: "not_required", exact_overlap: false },
-        current: { status: "verified", required: true, exact_overlap: true, state_id: "main" },
+        previous: {
+          status: "unavailable_not_required_for_added_wording",
+          required: false,
+          exact_overlap: false,
+          reason: "No previous wording is required for this added text.",
+        },
+        current: {
+          status: "verified",
+          required: true,
+          exact_overlap: true,
+          exact_text: candidate.normalized_text,
+          matched_rects: [rect],
+          crop_rect: rect,
+          crop_rect_pixels: rect,
+          algorithm_version: "3",
+          state_id: "main",
+          semantic_verified: true,
+          semantic_binding: binding,
+        },
       },
     },
     backfilled_at: null,

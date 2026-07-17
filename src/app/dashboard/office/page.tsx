@@ -5,6 +5,7 @@ import {
   OfficeNameForm,
   PrivacyControls,
   ProfileSettingsForm,
+  ReissueInviteButton,
 } from "@/components/office-forms";
 import { SetupNotice } from "@/components/setup-notice";
 import { getUserProfile, requireUser } from "@/lib/auth";
@@ -16,6 +17,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { formatCentralDate } from "@/lib/time-zone";
 
 type InviteRow = Database["public"]["Tables"]["office_invites"]["Row"];
+type InviteReissueRow = Database["public"]["Tables"]["office_invite_security_reissues"]["Row"];
 
 export default async function OfficePage() {
   if (!hasSupabaseConfig()) return <SetupNotice />;
@@ -40,6 +42,16 @@ export default async function OfficePage() {
         .is("accepted_at", null)
         .order("created_at", { ascending: false })
     : { data: [] as InviteRow[] };
+  const { data: inviteReissues } = canManage
+    ? await supabase
+        .from("office_invite_security_reissues")
+        .select("*")
+        .eq("office_id", officeContext.current.officeId)
+        .neq("status", "delivered")
+    : { data: [] as InviteReissueRow[] };
+  const inviteReissueById = new Map(
+    ((inviteReissues || []) as InviteReissueRow[]).map((reissue) => [reissue.invite_id, reissue]),
+  );
 
   const profile = await getUserProfile(user.id);
 
@@ -100,7 +112,7 @@ export default async function OfficePage() {
         </section>
 
         {canManage && (
-          <section className="dashboard-panel dashboard-panel-pad">
+          <section className="dashboard-panel dashboard-panel-pad" id="pending-invites">
             <h2 className="dashboard-panel-title">Pending invites</h2>
             <div className="dashboard-list">
               {(invites || []).map((invite) => (
@@ -117,6 +129,9 @@ export default async function OfficePage() {
                     <p className="mt-1 truncate text-sm font-semibold text-[var(--brand)] underline">
                       {`${appConfig.url}/join/${invite.invite_code}`}
                     </p>
+                    {inviteReissueById.has(invite.id) && (
+                      <ReissueInviteButton inviteId={invite.id} />
+                    )}
                   </div>
                   <p className="text-sm text-[var(--muted)]">
                     Expires {formatCentralDate(invite.expires_at)}

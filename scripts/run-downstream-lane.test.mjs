@@ -36,7 +36,11 @@ describe("independent downstream lane runner", () => {
   it("normalizes task-friendly lane keys and bounds the new-page child budget", () => {
     expect(normalizeDownstreamLaneKey("New-Page-Review")).toBe("new_page_review");
     const command = commandForDownstreamLane("new-page-review", { timeBudgetMs: 600_000 });
+    expect(command.args[0]).toMatch(/process-new-page-review-lane\.mjs$/);
     expect(command.args).toContain("--time-budget-ms=585000");
+    const changed = commandForDownstreamLane("changed-page-review");
+    expect(changed.args[0]).toMatch(/process-visual-review-batch\.mjs$/);
+    expect(changed.args).toContain("--paid-lane=changed_page_review");
   });
 
   it("uses the exact lane claim and completion RPC contracts", () => {

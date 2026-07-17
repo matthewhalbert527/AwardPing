@@ -356,7 +356,7 @@ describe("one-time catch-up planning", () => {
     expect(missingFields.historical_inventory_status).toBe("not_imported");
   });
 
-  it("groups linked page evidence and keeps retryable visual failures automated", () => {
+  it("groups linked page evidence and quarantines charged visual retries for approval", () => {
     const result = summarizeOneTimeCatchupBacklog({
       awards: [
         { id: "award-1", status: "active", name: "Example", public_facts: {} },
@@ -406,18 +406,26 @@ describe("one-time catch-up planning", () => {
       ]),
     });
 
-    expect(result.backlog.visual_review_queue).toBe(1);
-    expect(result.backlog.visual_review_retryable_failures).toBe(1);
-    expect(result.backlog.visual_review_terminal_failures).toBe(1);
-    expect(result.quarantine.quarantined_work_remaining).toBe(2);
-    expect(result.quarantine.quarantine_evidence_records).toBe(3);
-    expect(result.quarantine.terminal_failures_requiring_action).toBe(2);
+    expect(result.backlog.visual_review_queue).toBe(0);
+    expect(result.backlog.visual_review_retryable_failures).toBe(0);
+    expect(result.backlog.visual_review_retry_approval_required).toBe(2);
+    expect(result.backlog.visual_review_terminal_failures).toBe(0);
+    expect(result.approval_required_visual_failure_rows).toHaveLength(2);
+    expect(result.quarantine.quarantined_work_remaining).toBe(3);
+    expect(result.quarantine.quarantine_evidence_records).toBe(4);
+    expect(result.quarantine.terminal_failures_requiring_action).toBe(1);
     expect(result.quarantine.historical_limitations).toBe(2);
     expect(result.quarantine.by_category.public_page).toEqual({
       cases: 1,
       evidence_records: 2,
       terminal_cases: 1,
       terminal_failures: 1,
+    });
+    expect(result.quarantine.by_category.visual_review).toEqual({
+      cases: 2,
+      evidence_records: 2,
+      terminal_cases: 0,
+      terminal_failures: 0,
     });
   });
 

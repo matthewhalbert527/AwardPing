@@ -10,6 +10,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { isScheduledNightlyVisualRun } from "./visual-nightly-run-contract.mjs";
+import {
+  validateVisualSourceInventoryCohort,
+  validateVisualSourceInventoryProof,
+} from "./visual-source-inventory-proof.mjs";
 
 const MAX_EXAMPLES_PER_GROUP = 3;
 const MAX_SOURCE_IDS_PER_GROUP = 500;
@@ -323,12 +328,66 @@ export function buildVisualRunReportSummary(report = {}) {
   }
   const loadedSources = nonNegativeNumber(report.baseline_coverage_start?.loaded_sources) ||
     Math.max(pagesCaptured, failedSources);
+  const processedSources = pagesCaptured + failedSources +
+    nonNegativeNumber(report.skipped_existing_baseline) +
+    nonNegativeNumber(report.skipped_pdf);
+  const inventoryProofRequired = isDailyVisualShardReport(report);
+  const inventoryProof = validateVisualSourceInventoryProof(report.source_inventory, {
+    shardCount: reportShardCount(report),
+    shardIndex: reportShardIndex(report) ?? undefined,
+  });
+  const inventoryProofComplete = !inventoryProofRequired || inventoryProof.complete;
+  const inventoryComplete = loadedSources > 0 && processedSources === loadedSources &&
+    inventoryProofComplete;
   const executionStatus = cleanText(report.status) || "running";
   const operationalStatus = operationalStatusFor({
     executionStatus,
     failedSources,
     incidentCount: errors.length,
+    inventoryComplete,
   });
+  if (!["running", "blocked", "failed"].includes(executionStatus) && !inventoryComplete) {
+    failureGroups = mergeFailureGroups([...failureGroups, {
+      code: "source_inventory_empty_or_incomplete",
+      group: "platform_dependency",
+      label: "Scheduled source inventory was not fully processed",
+      severity: "critical",
+      retry_mode: "repair_then_restart_shard",
+      repair_code: "verify_inventory_then_restart_shard",
+      solution:
+        "Compare the shard's loaded and processed source inventory, repair the source query or interrupted loop, then restart only that shard. A zero-page run never proves a healthy scan.",
+      count: 1,
+      source_ids: [],
+      source_id_count: 0,
+      source_ids_truncated: false,
+      examples: [],
+    }]);
+  }
+  if (
+    inventoryProofRequired &&
+    !inventoryProof.complete &&
+    !["running", "blocked"].includes(executionStatus)
+  ) {
+    failureGroups = mergeFailureGroups([...failureGroups, {
+      code: "source_inventory_proof_missing_or_mismatched",
+      group: "platform_dependency",
+      label: "Authoritative source inventory proof is missing or mismatched",
+      severity: "critical",
+      retry_mode: "repair_then_restart_shard",
+      repair_code: "verify_authoritative_inventory_then_restart_shard",
+      solution:
+        "Compare the independently enumerated global and partition source hashes with the shard's loaded-source hash. Repair the source query or shard launcher, then restart only the affected shard.",
+      count: 1,
+      source_ids: [],
+      source_id_count: 0,
+      source_ids_truncated: false,
+      examples: [{
+        source_id: null,
+        source_url: null,
+        message: `Inventory proof failed: ${inventoryProof.reason}.`,
+      }],
+    }]);
+  }
 
   return {
     run_health: {
@@ -336,6 +395,11 @@ export function buildVisualRunReportSummary(report = {}) {
       status: operationalStatus,
       execution_status: executionStatus,
       loaded_sources: loadedSources,
+      processed_sources: processedSources,
+      inventory_complete: inventoryComplete,
+      inventory_proof_required: inventoryProofRequired,
+      inventory_proof_complete: inventoryProofComplete,
+      inventory_proof_reason: inventoryProofRequired ? inventoryProof.reason : "not_required",
       pages_captured: pagesCaptured,
       source_failures: failedSources,
       incident_count: errors.length,
@@ -376,6 +440,11 @@ export function buildNightlyVisualReport(reports, options = {}) {
     canonicalByShard.set(shardIndex, report);
   }
 
+  const expectedShardCount = Math.max(
+    3,
+    ...windowReports.map(reportShardCount),
+  );
+
   const shards = [...canonicalByShard.entries()]
     .sort(([left], [right]) => left - right)
     .map(([shardIndex, report]) => {
@@ -384,6 +453,18 @@ export function buildNightlyVisualReport(reports, options = {}) {
       const heartbeatAgeMs = generatedAtMs - dateMs(heartbeatAt);
       const stalled = executionStatus === "running" &&
         heartbeatAgeMs >= RUN_HEARTBEAT_STALE_MS;
+      const checked = nonNegativeNumber(report.checked);
+      const failed = nonNegativeNumber(report.failed);
+      const loaded = nonNegativeNumber(report.baseline_coverage_start?.loaded_sources) ||
+        Math.max(checked, failed);
+      const processed = checked + failed +
+        nonNegativeNumber(report.skipped_existing_baseline) +
+        nonNegativeNumber(report.skipped_pdf);
+      const inventoryProof = validateVisualSourceInventoryProof(report.source_inventory, {
+        shardCount: expectedShardCount,
+        shardIndex,
+      });
+      const inventoryComplete = loaded > 0 && processed === loaded && inventoryProof.complete;
       return {
         shard_index: shardIndex,
         shard_number: shardIndex + 1,
@@ -392,19 +473,36 @@ export function buildNightlyVisualReport(reports, options = {}) {
         heartbeat_at: heartbeatAt || null,
         finished_at: report.finished_at || null,
         execution_status: executionStatus,
-        operational_status: stalled ? "failed" : report.run_health.status,
-        checked: nonNegativeNumber(report.checked),
-        failed: nonNegativeNumber(report.failed),
-        loaded: nonNegativeNumber(report.baseline_coverage_start?.loaded_sources) ||
-          Math.max(nonNegativeNumber(report.checked), nonNegativeNumber(report.failed)),
+        operational_status: stalled
+          ? "failed"
+          : executionStatus === "running"
+            ? "running"
+            : !inventoryComplete
+              ? "failed"
+              : report.run_health.status,
+        checked,
+        failed,
+        loaded,
+        processed,
+        inventory_complete: inventoryComplete,
+        inventory_proof_complete: inventoryProof.complete,
+        inventory_proof_reason: inventoryProof.reason,
+        global_source_count: inventoryProof.globalCount,
+        global_source_ids_sha256: inventoryProof.globalHash,
+        expected_shard_source_count: inventoryProof.expectedShardCount,
+        expected_shard_source_ids_sha256: inventoryProof.expectedShardHash,
+        loaded_shard_source_count: inventoryProof.loadedShardCount,
+        loaded_shard_source_ids_sha256: inventoryProof.loadedShardHash,
         incident_count: nonNegativeNumber(report.run_health.incident_count),
         attempt_id: cleanText(report.run_identity?.attempt_id) || null,
         stalled,
       };
     });
-  const expectedShardCount = Math.max(
-    3,
-    ...windowReports.map(reportShardCount),
+  const inventoryProof = validateVisualSourceInventoryCohort(
+    [...canonicalByShard.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, report]) => report.source_inventory),
+    expectedShardCount,
   );
   const missingShards = Array.from({ length: expectedShardCount }, (_, index) => index)
     .filter((index) => !canonicalByShard.has(index))
@@ -419,10 +517,14 @@ export function buildNightlyVisualReport(reports, options = {}) {
     ["blocked", "failed"].includes(shard.operational_status),
   );
   const hasRunningShard = shards.some((shard) => shard.execution_status === "running");
+  const incompleteInventoryShards = shards.filter((shard) => !shard.inventory_complete);
+  const inventoryGapShards = incompleteInventoryShards.filter((shard) =>
+    shard.execution_status !== "running" && !shard.inventory_complete);
   let status = "healthy";
   if (hasFatalShard) status = "failed";
   else if (hasRunningShard) status = "running";
   else if (missingShards.length) status = "incomplete";
+  else if (!inventoryProof.complete) status = "failed";
   else if (failedSources > 0 || failureGroups.length > 0) status = "degraded";
   const stalledShards = shards.filter((shard) => shard.stalled);
   if (stalledShards.length) {
@@ -440,6 +542,45 @@ export function buildNightlyVisualReport(reports, options = {}) {
       source_id_count: 0,
       source_ids_truncated: false,
       examples: [],
+    }]);
+  }
+  if (inventoryGapShards.length && !failureGroups.some((group) =>
+    group.code === "source_inventory_empty_or_incomplete")) {
+    failureGroups = mergeFailureGroups([...failureGroups, {
+      code: "source_inventory_empty_or_incomplete",
+      group: "platform_dependency",
+      label: "Scheduled source inventory was not fully processed",
+      severity: "critical",
+      retry_mode: "repair_then_restart_shard",
+      repair_code: "verify_inventory_then_restart_shard",
+      solution:
+        "Compare each shard's loaded and processed source inventory, repair the source query or interrupted loop, then restart only the affected shard. A zero-page run never proves a healthy scan.",
+      count: inventoryGapShards.length,
+      source_ids: [],
+      source_id_count: 0,
+      source_ids_truncated: false,
+      examples: [],
+    }]);
+  }
+  if (!inventoryProof.complete && shards.length === expectedShardCount && !hasRunningShard) {
+    failureGroups = mergeFailureGroups([...failureGroups, {
+      code: "source_inventory_proof_missing_or_mismatched",
+      group: "platform_dependency",
+      label: "Authoritative source inventory proofs do not form one exact cohort",
+      severity: "critical",
+      retry_mode: "repair_then_restart_shard",
+      repair_code: "verify_authoritative_inventory_then_restart_shard",
+      solution:
+        "Require all three shards to attest the same non-empty global source count and hash, matching partition hashes, exact loaded hashes, and a partition-count sum equal to the global count.",
+      count: 1,
+      source_ids: [],
+      source_id_count: 0,
+      source_ids_truncated: false,
+      examples: [{
+        source_id: null,
+        source_url: null,
+        message: `Inventory cohort proof failed: ${inventoryProof.reason}.`,
+      }],
     }]);
   }
   if (missingShards.length) {
@@ -476,6 +617,12 @@ export function buildNightlyVisualReport(reports, options = {}) {
       pages_captured: pagesCaptured,
       source_failures: failedSources,
       incident_count: sum(shards.map((shard) => shard.incident_count)),
+      inventory_complete: shards.length === expectedShardCount &&
+        incompleteInventoryShards.length === 0 && inventoryProof.complete,
+      inventory_proof_complete: inventoryProof.complete,
+      global_source_count: inventoryProof.globalCount,
+      global_source_ids_sha256: inventoryProof.globalHash,
+      partition_source_count_sum: inventoryProof.partitionCountSum,
       failure_rate_percent: loadedSources
         ? roundPercent((failedSources / loadedSources) * 100)
         : 0,
@@ -490,6 +637,7 @@ export function buildNightlyVisualReport(reports, options = {}) {
       pagesCaptured,
       failedSources,
       missingShards,
+      failureGroups,
     }),
   };
 }
@@ -497,22 +645,13 @@ export function buildNightlyVisualReport(reports, options = {}) {
 export function isDailyVisualShardReport(report = {}) {
   const options = record(report.options);
   const identity = record(report.run_identity);
-  const trigger = cleanText(identity.trigger || options.run_trigger);
   const shardCount = reportShardCount(report);
   if (shardCount <= 1) return false;
-  if (trigger ? trigger !== "scheduled" : chicagoHourForTimestamp(report.started_at) !== 18) {
-    return false;
-  }
-  return ![
-    options.baseline_refresh,
-    options.complete_missing_baselines,
-    options.localization_repair,
-    options.r2_backfill_baselines,
-    options.discovery_mode,
-    options.source_id,
-    options.source_url,
-    options.award,
-  ].some(Boolean);
+  return isScheduledNightlyVisualRun({
+    startedAt: report.started_at,
+    runIdentity: identity,
+    options,
+  });
 }
 
 export function monitoringDateForTimestamp(value) {
@@ -586,10 +725,11 @@ export function shouldReplaceLatestNightlyReport(currentReport, candidateReport)
   return !currentDate || candidateDate >= currentDate;
 }
 
-function operationalStatusFor({ executionStatus, failedSources, incidentCount }) {
+function operationalStatusFor({ executionStatus, failedSources, incidentCount, inventoryComplete }) {
   if (executionStatus === "running") return "running";
   if (executionStatus === "blocked") return "blocked";
   if (executionStatus === "failed") return "failed";
+  if (!inventoryComplete) return "failed";
   if (failedSources > 0 || incidentCount > 0) return "degraded";
   return "healthy";
 }
@@ -655,9 +795,13 @@ function nightlySummary({
   pagesCaptured,
   failedSources,
   missingShards,
+  failureGroups,
 }) {
   if (status === "failed") {
-    return `The 6 PM scan failed. ${completedShards}/${expectedShardCount} shards reported; ${failedSources} source failures require attention.`;
+    const primaryFailure = failureGroups?.find((group) =>
+      group.code === "source_inventory_proof_missing_or_mismatched") || failureGroups?.[0];
+    const reason = cleanText(primaryFailure?.label) || "A shard or required inventory check failed";
+    return `The 6 PM scan failed: ${reason}. ${completedShards}/${expectedShardCount} shards reported; ${failedSources} source failures require attention.`;
   }
   if (status === "running") {
     return `The 6 PM scan is running. ${completedShards}/${expectedShardCount} shards have completed.`;
@@ -736,17 +880,6 @@ function sum(values) {
 function dateMs(value) {
   const parsed = value ? new Date(value).getTime() : 0;
   return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function chicagoHourForTimestamp(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return -1;
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
-    hour: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  return Number(parts.find((part) => part.type === "hour")?.value);
 }
 
 function recoverAbandonedFileLock(lockPath) {

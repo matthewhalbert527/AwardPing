@@ -3,11 +3,29 @@ import {
   buildAdminRunReportFeed,
   type WorkerRun,
 } from "@/lib/admin-run-report";
+import { buildVisualSourceInventoryProof } from "../../scripts/lib/visual-source-inventory-proof.mjs";
 
 function workerRun(
   overrides: Partial<WorkerRun> = {},
   metadata: Record<string, unknown> = {},
 ): WorkerRun {
+  const runIdentity = metadata.run_identity as Record<string, unknown> | undefined;
+  const normalizedMetadata = runIdentity?.trigger === "scheduled"
+    ? {
+        ...metadata,
+        source_inventory: metadata.source_inventory || inventoryProof(
+          Number(runIdentity.shard_index || 0),
+        ),
+        options: {
+          include_not_due: true,
+          limit: 50_000,
+          discovery_mode: true,
+          discovery_intent: "live_recurring",
+          discovery_onboarding_batch_id: null,
+          ...((metadata.options as Record<string, unknown> | undefined) || {}),
+        },
+      }
+    : metadata;
   return {
     id: overrides.id || "run-1",
     worker_name: overrides.worker_name || "local-visual-snapshot-worker-shard-1-of-3",
@@ -20,7 +38,7 @@ function workerRun(
     discovered_count: 0,
     failed_count: 0,
     error: null,
-    metadata: metadata as WorkerRun["metadata"],
+    metadata: normalizedMetadata as WorkerRun["metadata"],
     started_at: overrides.started_at || "2026-07-09T23:00:00.000Z",
     finished_at: overrides.finished_at === undefined
       ? "2026-07-10T06:00:00.000Z"
@@ -219,7 +237,8 @@ describe("admin run report", () => {
       {
         kind: "visual_snapshot",
         run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex },
-        baseline_coverage: { start: { loaded_sources: 400 } },
+        baseline_coverage: { start: { loaded_sources: 400 + (shardIndex === 0 ? 7 : 0) } },
+        source_inventory: inventoryProof(shardIndex, [407, 400, 400]),
       },
     ));
 
@@ -286,6 +305,11 @@ describe("admin run report", () => {
       {
         kind: "visual_snapshot",
         run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex },
+        options: {
+          discovery_mode: true,
+          discovery_intent: "live_recurring",
+          discovery_onboarding_batch_id: null,
+        },
         run_health: {
           status: shardIndex === 0 ? "degraded" : "healthy",
           incident_count: shardIndex === 0 ? 2 : 0,
@@ -359,6 +383,43 @@ describe("admin run report", () => {
     });
   });
 
+  it("fails a complete triad whose authoritative global inventory hashes disagree", () => {
+    const runs = [0, 1, 2].map((shardIndex) => workerRun(
+      {
+        id: `proof-${shardIndex}`,
+        worker_name: `local-visual-snapshot-worker-shard-${shardIndex + 1}-of-3`,
+        checked_count: 100,
+        started_at: `2026-07-14T23:00:0${shardIndex}.000Z`,
+        finished_at: `2026-07-14T23:30:0${shardIndex}.000Z`,
+      },
+      {
+        kind: "visual_snapshot",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: shardIndex },
+        baseline_coverage: { start: { loaded_sources: 100 } },
+      },
+    ));
+    const thirdMetadata = runs[2].metadata as Record<string, unknown>;
+    thirdMetadata.source_inventory = {
+      ...(thirdMetadata.source_inventory as Record<string, unknown>),
+      global_source_ids_sha256: "f".repeat(64),
+    };
+
+    const report = buildAdminRunReportFeed(
+      runs,
+      new Date("2026-07-15T12:00:00.000Z"),
+    ).visualNightly;
+
+    expect(report).toMatchObject({
+      status: "failed",
+      inventoryComplete: false,
+      inventoryProofComplete: false,
+    });
+    expect(report?.failureGroups).toContainEqual(expect.objectContaining({
+      code: "source_inventory_proof_missing_or_mismatched",
+    }));
+    expect(report?.summary).toContain("inventory proofs");
+  });
+
   it("uses only the latest attempt per shard and ignores maintenance shards", () => {
     const olderFailure = workerRun(
       {
@@ -423,9 +484,34 @@ describe("admin run report", () => {
       },
       { kind: "visual_snapshot" },
     );
+    const onboardingDiscovery = workerRun(
+      {
+        id: "historical-onboarding-shard",
+        worker_name: "local-visual-snapshot-worker-shard-3-of-3",
+        checked_count: 999,
+        started_at: "2026-07-15T01:30:00.000Z",
+      },
+      {
+        kind: "visual_snapshot",
+        run_identity: { trigger: "scheduled", shard_count: 3, shard_index: 2 },
+        options: {
+          discovery_mode: true,
+          discovery_intent: "historical_onboarding",
+          discovery_onboarding_batch_id: "bulk-2026-07-14",
+        },
+      },
+    );
 
     const report = buildAdminRunReportFeed(
-      [olderFailure, retry, shardTwo, shardThree, maintenance, untaggedCatchup],
+      [
+        olderFailure,
+        retry,
+        shardTwo,
+        shardThree,
+        maintenance,
+        untaggedCatchup,
+        onboardingDiscovery,
+      ],
       new Date("2026-07-15T12:00:00.000Z"),
     ).visualNightly;
 
@@ -485,8 +571,26 @@ describe("admin run report", () => {
     expect(feed.current).toBeNull();
     expect(report?.status).toBe("failed");
     expect(report?.shards[0]).toMatchObject({ status: "failed", stalled: true });
-    expect(report?.failureGroups).toEqual([
+    expect(report?.failureGroups).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: "stalled_shard", count: 1 }),
-    ]);
+      expect.objectContaining({ code: "source_inventory_empty_or_incomplete", count: 1 }),
+    ]));
   });
 });
+
+function inventoryProof(shardIndex: number, partitionCounts = [100, 100, 100]) {
+  const sources = partitionCounts.flatMap((count, partition) =>
+    Array.from({ length: count }, (_, index) => ({
+      id: `source-${partition}-${String(index).padStart(4, "0")}`,
+      partition,
+    })),
+  );
+  return buildVisualSourceInventoryProof({
+    eligibleSources: sources,
+    loadedSources: sources.filter((source) => source.partition === shardIndex),
+    shardCount: 3,
+    shardIndex,
+    shardIndexForSource: (source) => Number(source.partition),
+    capturedAt: "2026-07-14T22:59:59.000Z",
+  });
+}

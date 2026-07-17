@@ -64,6 +64,15 @@ const outputCsv = boolArg(args.csv, false);
 const reconcile = boolArg(args.reconcile, true);
 const reconcileLimit = positiveInt(args["reconcile-limit"], 500);
 const forceAi = boolArg(args["force-ai"], true);
+const LEGACY_PAID_SUBMISSION_RETIRED = true;
+const paidSubmissionRequested =
+  apply && maxBatchRequests > 0 && geminiApiMode !== "none";
+if (LEGACY_PAID_SUBMISSION_RETIRED && paidSubmissionRequested) {
+  console.error(
+    "Open-source AI completion can no longer submit paid provider work. Run it read-only, or send genuinely new pages through the New Page Review lane.",
+  );
+  process.exit(2);
+}
 const runStamp = timestampForPath(new Date().toISOString());
 const reportDir = args["report-dir"] ? resolve(root, String(args["report-dir"])) : join(root, "reports");
 const reportPath = args.report
@@ -655,8 +664,8 @@ function printHuman() {
     for (const [key, value] of Object.entries(blockers)) if (value) console.log(`  ${key}: ${value}`);
   }
   if (!apply) {
-    console.log("Apply command:");
-    console.log("  node scripts/backfill-open-source-ai-determinations.mjs --apply=true --max-batch-requests=500 --reconcile=true");
+    console.log("New pages that need provider review must enter the New Page Review lane:");
+    console.log("  node scripts/process-new-page-review-lane.mjs --env=.env.worker.local");
   }
 }
 
@@ -776,7 +785,8 @@ function csvCell(value) {
 function printHelp() {
   console.log(`Usage: node scripts/backfill-open-source-ai-determinations.mjs [options]
 
-One-time catch-up workflow for open source AI review coverage.
+Legacy coverage report and deterministic source-status cleanup. This command
+cannot submit provider work; genuinely new pages use New Page Review.
 
 Options:
   --dry-run=true                         Preview changes only (default)
@@ -790,12 +800,8 @@ Options:
   --only-unclear                         Only unclear/manual-review sources
   --only-unrelated                       Only unrelated-but-open sources
   --only-missing-cycle-relevance         Only sources missing cycle relevance
-  --gemini-api-mode=batch|none           Batch AI mode for missing reviews
-  --max-batch-requests=<n>               Submit up to n sources to Gemini Batch through baseline-facts worker
-  --gemini-batch-max-requests=<n>        Requests per Gemini Batch job (default 250)
-  --gemini-batch-parallel-jobs=<n>       Concurrent Gemini Batch jobs (default 4)
-  --daily-cost-cap-usd=<n>               Secondary local ceiling (default 5; database lane cap is authoritative)
-  --resume=true                          Keep durable batch behavior enabled
+  --gemini-api-mode=none                 Explicitly keep provider submission disabled
+  --max-batch-requests=0                 Required; paid legacy backfill is retired
   --reconcile=true                       Run reconciliation after applying
   --reconcile-limit=<n>                  Limit reconciliation queue processing
   --json                                 Print JSON report

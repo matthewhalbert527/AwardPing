@@ -4,24 +4,24 @@ import {
   publicAwardFactsFromAward,
   publicAwardMetaDescription,
 } from "@/lib/public-award-facts";
-import {
-  dedupeChangeSummaries,
-  displayChangeSummary,
-  isUsefulChangeForAward,
-} from "@/lib/change-summary";
-import { activeChangeSourceFilter } from "@/lib/source-change-events";
+import { displayChangeSummary } from "@/lib/change-summary";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
+import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import {
   isPublicAwardSource,
 } from "@/lib/source-quality";
 import {
-  canonicalSourceUrlKey,
-  displayHomepageForAward,
   filterTrackableOfficialSources,
 } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import {
+  isStage1SourceIdentityExcluded,
+  loadStage1PublicationIndex,
+  type Stage1PublicationEntry,
+  type Stage1PublicationIndex,
+} from "@/lib/stage1-publication";
 import { unreadSharedChangeIdsForUser } from "@/lib/update-read-state";
 
 type SharedAwardRow = Pick<
@@ -51,23 +51,8 @@ type SharedSourceRow = Pick<
   | "source"
   | "reason"
   | "submitted_by_user_id"
+  | "admin_review_status"
   | "last_checked_at"
->;
-
-type SharedChangeRow = Pick<
-  Database["public"]["Tables"]["shared_award_change_events"]["Row"],
-  | "id"
-  | "shared_award_id"
-  | "shared_award_source_id"
-  | "source_title"
-  | "source_url"
-  | "source_page_type"
-  | "summary"
-  | "change_details"
-  | "suppressed_at"
-  | "suppression_reason"
-  | "suppression_source"
-  | "detected_at"
 >;
 
 export type PublicAwardPageData = {
@@ -102,99 +87,142 @@ export type PublicAwardPageData = {
   }>;
 };
 
+export type PublicAwardPageResolution =
+  | { kind: "published"; data: PublicAwardPageData }
+  | { kind: "under_verification" }
+  | { kind: "missing" };
+
 export async function getPublicAwardPageBySlug(
   slug: string,
   options: { userId?: string | null } = {},
 ): Promise<PublicAwardPageData | null> {
+  const resolution = await getPublicAwardPageResolutionBySlug(slug, options);
+  return resolution.kind === "published" ? resolution.data : null;
+}
+
+export async function getPublicAwardPageResolutionBySlug(
+  slug: string,
+  options: { userId?: string | null } = {},
+): Promise<PublicAwardPageResolution> {
   const normalizedSlug = normalizeAwardSlug(slug);
-  if (!normalizedSlug) return null;
+  if (!normalizedSlug) return { kind: "missing" };
+
+  const publicationIndex = await loadStage1PublicationIndex();
+  if (!publicationIndex.available) return { kind: "missing" };
 
   const admin = createSupabaseAdminClient();
-  const direct = await admin
-    .from("shared_awards")
-    .select("id, name, slug, official_homepage, summary, public_facts, public_facts_generated_at, updated_at")
-    .eq("slug", normalizedSlug)
-    .eq("status", "active")
-    .maybeSingle();
+  let publication = publicationIndex.entries.find(
+    (entry) => entry.registry.canonical_slug === normalizedSlug,
+  );
+  let requestedAward = publication
+    ? canonicalAwardFromPublication(publication)
+    : null;
+  let wasSlugAlias = false;
+  if (!requestedAward) {
+    const direct = await admin
+      .from("shared_awards")
+      .select("id, name, slug, official_homepage, summary, public_facts, public_facts_generated_at, updated_at")
+      .eq("slug", normalizedSlug)
+      .eq("status", "active")
+      .maybeSingle();
 
-  if (direct.error) throw direct.error;
-  if (direct.data) {
-    return loadPublicAwardPageData(direct.data as SharedAwardRow, null, options);
+    if (direct.error) throw direct.error;
+    requestedAward = direct.data as SharedAwardRow | null;
+    if (!requestedAward) {
+      const alias = await admin
+        .from("shared_award_slug_aliases")
+        .select("slug, shared_awards!inner(id, name, slug, official_homepage, summary, public_facts, public_facts_generated_at, updated_at, status)")
+        .eq("slug", normalizedSlug)
+        .eq("shared_awards.status", "active")
+        .maybeSingle();
+
+      if (alias.error) throw alias.error;
+      requestedAward = embeddedSharedAward(alias.data?.shared_awards);
+      wasSlugAlias = Boolean(requestedAward);
+    }
+    publication = requestedAward
+      ? publicationIndex.entryByMemberAwardId.get(requestedAward.id)
+      : undefined;
   }
 
-  const alias = await admin
-    .from("shared_award_slug_aliases")
-    .select("slug, shared_awards!inner(id, name, slug, official_homepage, summary, public_facts, public_facts_generated_at, updated_at, status)")
-    .eq("slug", normalizedSlug)
-    .eq("shared_awards.status", "active")
-    .maybeSingle();
+  if (!requestedAward || !publication) return { kind: "missing" };
+  if (!publication.effectivelyVerified) return { kind: "under_verification" };
 
-  if (alias.error) throw alias.error;
-  const embeddedAward = embeddedSharedAward(alias.data?.shared_awards);
-  if (!embeddedAward) return null;
+  const canonicalAward = canonicalAwardFromPublication(publication);
 
-  return loadPublicAwardPageData(
-    embeddedAward,
-    canonicalAwardPath(embeddedAward.slug, embeddedAward.name, embeddedAward.id),
+  const canonicalPath = canonicalAwardPath(
+    canonicalAward.slug,
+    canonicalAward.name,
+    canonicalAward.id,
+  );
+  const shouldRedirect =
+    wasSlugAlias || requestedAward.id !== publication.canonicalAwardId;
+
+  const data = await loadPublicAwardPageData(
+    canonicalAward,
+    publication,
+    publicationIndex,
+    shouldRedirect ? canonicalPath : null,
     options,
   );
+  return data ? { kind: "published", data } : { kind: "under_verification" };
 }
 
 export async function getPublicAwardSitemapRows(limit = 50000) {
-  const admin = createSupabaseAdminClient();
-  const { data, error } = await admin
-    .from("shared_awards")
-    .select("id, name, slug, updated_at")
-    .eq("status", "active")
-    .not("slug", "is", null)
-    .order("updated_at", { ascending: false })
-    .limit(limit);
-
-  if (error) return [];
-  return (data || []).map((award) => ({
-    urlPath: canonicalAwardPath(award.slug, award.name, award.id),
-    updatedAt: award.updated_at,
+  const publicationIndex = await loadStage1PublicationIndex();
+  if (!publicationIndex.available || publicationIndex.verifiedCanonicalAwardIds.length === 0) {
+    return [];
+  }
+  return publicationIndex.verifiedEntries.slice(0, limit).map((publication) => ({
+    urlPath: canonicalAwardPath(
+      publication.registry.canonical_slug,
+      publication.registry.canonical_name,
+      publication.canonicalAwardId,
+    ),
+    updatedAt:
+      publication.registry.last_verified_at || publication.registry.updated_at,
   }));
 }
 
 async function loadPublicAwardPageData(
   award: SharedAwardRow,
+  publication: Stage1PublicationEntry,
+  publicationIndex: Stage1PublicationIndex,
   redirectPath: string | null,
   options: { userId?: string | null } = {},
-): Promise<PublicAwardPageData> {
+): Promise<PublicAwardPageData | null> {
   const admin = createSupabaseAdminClient();
-  const [{ data: sources }, { data: changes }] = await Promise.all([
+  const [sourcesResult, eligibleEvents] = await Promise.all([
     admin
       .from("shared_award_sources")
-      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, last_checked_at")
-      .eq("shared_award_id", award.id)
+      .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, last_checked_at")
+      .in("shared_award_id", publication.memberAwardIds)
       .eq("admin_review_status", "open")
       .order("page_type", { ascending: true })
       .order("created_at", { ascending: true }),
-    admin
-      .from("shared_award_change_events")
-      .select("id, shared_award_id, shared_award_source_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at")
-      .eq("shared_award_id", award.id)
-      .is("suppressed_at", null)
-      .order("detected_at", { ascending: false })
-      .limit(20),
+    loadEligiblePublicChangeEvents({
+      admin,
+      publicationIndex,
+      memberAwardIds: publication.memberAwardIds,
+      limit: 8,
+    }),
   ]);
+  if (sourcesResult.error) {
+    throw new Error(`Public award source query failed: ${sourcesResult.error.message}`);
+  }
+  const sources = sourcesResult.data || [];
 
   const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[])
+    .filter((source) => publication.allowedSourceIdSet.has(source.id))
+    .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
     .filter(isPublicAwardSource);
-  const changeIsFromOpenSource = activeChangeSourceFilter(officialSources);
-  const officialChanges = dedupeChangeSummaries(
-    ((changes || []) as SharedChangeRow[]).filter((change) =>
-      changeIsFromOpenSource(change) &&
-      isUsefulChangeForAward({
-        awardName: award.name,
-        sourceTitle: change.source_title,
-        sourceUrl: change.source_url,
-        summary: change.summary,
-        change_details: change.change_details,
-      }),
-    ),
+  const reviewedHomepageSource = officialSources.find((source) =>
+    source.id === publication.officialHomepageSourceId &&
+    source.url === publication.registry.official_homepage &&
+    publication.officialHomepageUrl === publication.registry.official_homepage
   );
+  if (!reviewedHomepageSource) return null;
+  const officialChanges = eligibleEvents.map((entry) => entry.event);
   const facts = publicAwardFactsFromAward({
     summary: award.summary,
     publicFacts: award.public_facts,
@@ -214,15 +242,7 @@ async function loadPublicAwardPageData(
       sources: [source],
     }),
   }));
-  const displayHomepage = displayHomepageForAward(award.official_homepage, officialSources);
-  const sourcesForPublicPage = withHomepageFallbackSource({
-    sources: publicSources,
-    award,
-    canonicalPath,
-    facts,
-    officialHomepage: displayHomepage,
-  });
-  const limitedChanges = officialChanges.slice(0, 8);
+  const limitedChanges = officialChanges;
   const unreadChangeIds = options.userId
     ? await unreadSharedChangeIdsForUser(options.userId, limitedChanges).catch(() => null)
     : null;
@@ -239,9 +259,9 @@ async function loadPublicAwardPageData(
     redirectPath,
     facts,
     metaDescription: publicAwardMetaDescription(award.name, facts),
-    officialHomepage: displayHomepage,
+    officialHomepage: publication.registry.official_homepage,
     lastCheckedAt: latestCheckedAt(officialSources),
-    sources: sourcesForPublicPage,
+    sources: publicSources,
     changes: limitedChanges.map((change) => ({
       id: change.id,
       sourceId: change.shared_award_source_id,
@@ -256,39 +276,20 @@ async function loadPublicAwardPageData(
   };
 }
 
-function withHomepageFallbackSource({
-  sources,
-  award,
-  canonicalPath,
-  facts,
-  officialHomepage,
-}: {
-  sources: PublicAwardPageData["sources"];
-  award: SharedAwardRow;
-  canonicalPath: string;
-  facts: ReturnType<typeof publicAwardFactsFromAward>;
-  officialHomepage: string | null;
-}) {
-  if (!officialHomepage) return sources;
-
-  const homepageKey = canonicalSourceUrlKey(officialHomepage);
-  const hasHomepageSource = sources.some((source) => canonicalSourceUrlKey(source.url) === homepageKey);
-  if (hasHomepageSource) return sources;
-
-  return [
-    {
-      id: `official-homepage-${award.id}`,
-      sourceSlug: "award-homepage",
-      publicPath: canonicalPath,
-      title: "Award homepage",
-      description: facts.overview,
-      url: officialHomepage,
-      pageType: "homepage" as AwardPageType,
-      lastCheckedAt: null,
-      facts: publicAwardFactsFromAward({}),
-    },
-    ...sources,
-  ];
+function canonicalAwardFromPublication(
+  publication: Stage1PublicationEntry,
+): SharedAwardRow {
+  return {
+    id: publication.canonicalAwardId,
+    name: publication.registry.canonical_name,
+    slug: publication.registry.canonical_slug,
+    official_homepage: publication.registry.official_homepage,
+    summary: null,
+    public_facts: publication.publishedFacts,
+    public_facts_generated_at: publication.registry.last_verified_at,
+    updated_at:
+      publication.registry.last_verified_at || publication.registry.updated_at,
+  };
 }
 
 function embeddedSharedAward(value: unknown): SharedAwardRow | null {

@@ -2,12 +2,47 @@ import type { Cadence, MonitorContentType, PlanName } from "@/lib/plans";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 
 export type Json = string | number | boolean | null | { [key: string]: Json } | Json[];
+export type Stage1ExternalReleaseArtifactArgs = {
+  p_status: "passed" | "failed";
+  p_app_revision: string;
+  p_evidence: Json;
+  p_expected_evidence_hash: string;
+  p_signer_key_id: string;
+  p_expected_signed_payload_hash: string;
+  p_signature: string;
+  p_started_at: string;
+  p_completed_at: string;
+  p_valid_until: string;
+  p_actor: string;
+};
+export type Stage1ExternalReleaseArtifactPreflightArgs = Omit<
+  Stage1ExternalReleaseArtifactArgs,
+  | "p_expected_evidence_hash"
+  | "p_expected_signed_payload_hash"
+  | "p_signature"
+>;
 export type OfficeRole = "owner" | "admin" | "member";
 export type NotificationPreference = "immediate" | "daily_digest" | "both" | "none";
 export type JobRunName = "check-monitors" | "send-digests";
 export type JobRunStatus = "running" | "succeeded" | "failed";
 export type PublicUpdateSubscriberStatus = "pending" | "active" | "unsubscribed";
 export type PublicUpdateDeliveryStatus = "sent" | "failed";
+export type PublicDigestOutboxStatus =
+  | "queued"
+  | "leased"
+  | "sending"
+  | "ambiguous"
+  | "sent"
+  | "terminal_failed"
+  | "release_blocked"
+  | "privacy_scrubbed";
+export type PublicDigestEventReceiptStatus =
+  | "reserved"
+  | "sent"
+  | "terminal_failed"
+  | "release_blocked"
+  | "superseded_unsent"
+  | "privacy_scrubbed";
 export type PublicFormRateLimitKind = "subscribe" | "contact" | "source_request";
 export type SourcePageRequestStatus =
   | "pending"
@@ -236,6 +271,316 @@ export type Database = {
         };
         Relationships: [];
       };
+      stage1_award_members: {
+        Row: {
+          shared_award_id: string;
+          cohort_key: string;
+          member_kind: "canonical" | "alias";
+          reason: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          shared_award_id: string;
+          cohort_key: string;
+          member_kind: "canonical" | "alias";
+          reason: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          cohort_key?: string;
+          member_kind?: "canonical" | "alias";
+          reason?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      stage1_award_publication_events: {
+        Row: {
+          id: number;
+          cohort_key: string;
+          previous_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          next_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          reason: string;
+          policy_version: string;
+          evidence_snapshot: Json;
+          evidence_hash: string;
+          actor: string;
+          created_at: string;
+        };
+        Insert: never;
+        Update: {
+          change_event_ids?: string[];
+          recipient?: string | null;
+          recipient_hash?: string | null;
+          status?: PublicUpdateDeliveryStatus;
+          error?: string | null;
+          release_epoch?: string | null;
+          release_policy_version?: string | null;
+          release_identity_hash?: string | null;
+          provider_idempotency_key?: string | null;
+          sent_at?: string;
+        };
+        Relationships: [];
+      };
+      stage1_award_reconciled_fact_evidence: {
+        Row: {
+          id: string;
+          shared_award_id: string;
+          reconciliation_id: string;
+          field_name: string;
+          public_value: Json;
+          candidate_ids: string[];
+          source_ids: string[];
+          evidence: Json;
+          evidence_hash: string;
+          materialized_at: string;
+        };
+        Insert: {
+          id?: string;
+          shared_award_id: string;
+          reconciliation_id: string;
+          field_name: string;
+          public_value: Json;
+          candidate_ids: string[];
+          source_ids: string[];
+          evidence: Json;
+          evidence_hash: string;
+          materialized_at?: string;
+        };
+        Update: never;
+        Relationships: [];
+      };
+      stage1_award_fact_publication_ledger: {
+        Row: {
+          id: number;
+          verification_batch_id: string;
+          cohort_key: string;
+          field_name: string;
+          materialization_id: string;
+          candidate_id: string;
+          source_id: string;
+          source_url: string;
+          source_role: string;
+          contributing_candidate_ids: string[];
+          contributing_source_ids: string[];
+          supporting_text: string;
+          source_snapshot_hashes: Json;
+          source_captured_at: string;
+          reconciliation_id: string;
+          page_audit_id: string;
+          normalized_value: Json;
+          public_value: Json;
+          cycle: string;
+          policy_version: string;
+          evidence_hash: string;
+          verified_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      stage1_award_source_identity_rules: {
+        Row: {
+          id: number;
+          cohort_key: string;
+          rule_key: string;
+          url_pattern: string | null;
+          title_pattern: string | null;
+          reason: string;
+          policy_version: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      stage1_award_registry: {
+        Row: {
+          cohort_key: string;
+          launch_rank: number;
+          canonical_name: string;
+          canonical_shared_award_id: string;
+          canonical_slug: string;
+          official_homepage: string;
+          publication_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          state_reason: string;
+          policy_version: string;
+          fact_ledger_batch_id: string | null;
+          release_epoch: string | null;
+          evidence_checked_at: string | null;
+          last_verified_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          cohort_key: string;
+          launch_rank: number;
+          canonical_name: string;
+          canonical_shared_award_id: string;
+          canonical_slug: string;
+          official_homepage: string;
+          publication_state?: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          state_reason?: string;
+          policy_version?: string;
+          fact_ledger_batch_id?: string | null;
+          release_epoch?: string | null;
+          evidence_checked_at?: string | null;
+          last_verified_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          launch_rank?: number;
+          canonical_name?: string;
+          canonical_shared_award_id?: string;
+          canonical_slug?: string;
+          official_homepage?: string;
+          publication_state?: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          state_reason?: string;
+          policy_version?: string;
+          fact_ledger_batch_id?: string | null;
+          release_epoch?: string | null;
+          evidence_checked_at?: string | null;
+          last_verified_at?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      stage1_release_acceptance_artifacts: {
+        Row: {
+          id: string;
+          artifact_kind: "hosted_runtime_identity" | "rollback_drill" | "non_cohort_leak_crawl" | "r2_recovery_drill" | "visual_crop_coverage";
+          producer_kind: "external_signed" | "database_derived";
+          environment: string;
+          status: "passed" | "failed";
+          cohort_identity_version: string;
+          cohort_identity_hash: string;
+          policy_version: string;
+          app_revision: string;
+          target_config_version: number;
+          target_config_hash: string;
+          evidence: Json;
+          evidence_hash: string;
+          signer_key_id: string | null;
+          signed_payload_hash: string | null;
+          signature: string | null;
+          started_at: string;
+          completed_at: string;
+          valid_until: string;
+          actor: string;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      stage1_release_acceptance_records: {
+        Row: {
+          id: string;
+          status: "ready" | "consumed" | "expired" | "rejected";
+          release_key: "stage1-national-25";
+          cohort_identity_version: string;
+          cohort_identity_hash: string;
+          policy_version: string;
+          summary: Json;
+          gate_state_hash: string;
+          summary_hash: string;
+          generated_at: string;
+          expires_at: string;
+          actor: string;
+          consumed_at: string | null;
+          release_epoch: string | null;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      stage1_release_acceptance_artifact_links: {
+        Row: {
+          acceptance_id: string;
+          artifact_id: string;
+          artifact_kind: "hosted_runtime_identity" | "rollback_drill" | "non_cohort_leak_crawl" | "r2_recovery_drill" | "visual_crop_coverage";
+          evidence_hash: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      stage1_publication_release_state: {
+        Row: {
+          release_key: "stage1-national-25";
+          release_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          release_epoch: string | null;
+          reason: string;
+          policy_version: string;
+          cohort_identity_version: string;
+          cohort_identity_hash: string;
+          activated_at: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          release_key: "stage1-national-25";
+          release_state?: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          release_epoch?: string | null;
+          reason?: string;
+          policy_version?: string;
+          cohort_identity_version?: string;
+          cohort_identity_hash: string;
+          activated_at?: string | null;
+          updated_at?: string;
+        };
+        Update: {
+          release_state?: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          release_epoch?: string | null;
+          reason?: string;
+          policy_version?: string;
+          cohort_identity_version?: string;
+          cohort_identity_hash?: string;
+          activated_at?: string | null;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      stage1_publication_release_events: {
+        Row: {
+          id: number;
+          release_key: string;
+          previous_state: string;
+          next_state: string;
+          release_epoch: string | null;
+          reason: string;
+          policy_version: string;
+          cohort_identity_version: string;
+          cohort_identity_hash: string;
+          evidence_snapshot: Json;
+          evidence_hash: string;
+          actor: string;
+          created_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      stage1_award_source_manifest: {
+        Row: {
+          cohort_key: string;
+          source_role: "identity_home" | "eligibility" | "application_materials" | "dates_cycle" | "funding" | "faq" | "selection_interviews" | "current_documents";
+          manifest_status: "missing" | "present" | "combined" | "not_published";
+          source_ids: string[];
+          evidence: Json;
+          checked_at: string | null;
+          policy_version: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
       shared_awards: {
         Row: {
           id: string;
@@ -433,6 +778,7 @@ export type Database = {
           completed_at: string | null;
           error: string | null;
           metadata: Json;
+          generation: number;
         };
         Insert: {
           id?: string;
@@ -447,6 +793,7 @@ export type Database = {
           completed_at?: string | null;
           error?: string | null;
           metadata?: Json;
+          generation?: number;
         };
         Update: {
           source_ids?: string[] | null;
@@ -457,7 +804,30 @@ export type Database = {
           completed_at?: string | null;
           error?: string | null;
           metadata?: Json;
+          generation?: number;
         };
+        Relationships: [];
+      };
+      gemini_paid_retry_approvals: {
+        Row: {
+          id: string;
+          candidate_id: string;
+          lane_key: "new_page_review" | "changed_page_review";
+          candidate_updated_at: string;
+          failure_fingerprint: string;
+          approved_request_fingerprint: string;
+          status: "approved" | "consumed" | "revoked" | "expired";
+          reason: string;
+          approved_by: string;
+          approved_at: string;
+          expires_at: string;
+          consumed_at: string | null;
+          consumed_candidate_updated_at: string | null;
+          authorized_provider_request_fingerprint: string | null;
+          provider_request_bound_at: string | null;
+        };
+        Insert: never;
+        Update: never;
         Relationships: [];
       };
       shared_award_visual_review_candidates: {
@@ -2242,6 +2612,7 @@ export type Database = {
           office_id: string;
           email: string | null;
           role: Exclude<OfficeRole, "owner">;
+          signup_email_hash: string | null;
           token_hash: string;
           invite_code: string;
           invited_by: string | null;
@@ -2255,6 +2626,7 @@ export type Database = {
           office_id: string;
           email?: string | null;
           role?: Exclude<OfficeRole, "owner">;
+          signup_email_hash?: string | null;
           token_hash: string;
           invite_code: string;
           invited_by?: string | null;
@@ -2266,6 +2638,50 @@ export type Database = {
         Update: {
           accepted_by?: string | null;
           accepted_at?: string | null;
+        };
+        Relationships: [];
+      };
+      office_invite_security_reissues: {
+        Row: {
+          invite_id: string;
+          office_id: string;
+          email_hash: string;
+          legacy_code_hash: string;
+          reason: string;
+          status: "pending_reissue" | "replacement_ready" | "delivered";
+          rotated_at: string;
+          replacement_prepared_at: string | null;
+          delivered_at: string | null;
+          reissued_by: string | null;
+          delivery_status: string | null;
+          last_error: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          invite_id: string;
+          office_id: string;
+          email_hash: string;
+          legacy_code_hash: string;
+          reason?: string;
+          status?: "pending_reissue" | "replacement_ready" | "delivered";
+          rotated_at?: string;
+          replacement_prepared_at?: string | null;
+          delivered_at?: string | null;
+          reissued_by?: string | null;
+          delivery_status?: string | null;
+          last_error?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          status?: "pending_reissue" | "replacement_ready" | "delivered";
+          replacement_prepared_at?: string | null;
+          delivered_at?: string | null;
+          reissued_by?: string | null;
+          delivery_status?: string | null;
+          last_error?: string | null;
+          updated_at?: string;
         };
         Relationships: [];
       };
@@ -2312,6 +2728,7 @@ export type Database = {
           confirmed_at: string | null;
           unsubscribed_at: string | null;
           last_digest_sent_at: string | null;
+          digest_started_at: string;
           created_at: string;
           updated_at: string;
         };
@@ -2327,6 +2744,7 @@ export type Database = {
           confirmed_at?: string | null;
           unsubscribed_at?: string | null;
           last_digest_sent_at?: string | null;
+          digest_started_at?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -2341,6 +2759,7 @@ export type Database = {
           confirmed_at?: string | null;
           unsubscribed_at?: string | null;
           last_digest_sent_at?: string | null;
+          digest_started_at?: string;
           updated_at?: string;
         };
         Relationships: [];
@@ -2348,25 +2767,41 @@ export type Database = {
       public_update_deliveries: {
         Row: {
           id: string;
-          subscriber_id: string;
+          subscriber_id: string | null;
           digest_key: string;
           change_event_ids: string[];
           recipient: string | null;
           recipient_hash: string | null;
           status: PublicUpdateDeliveryStatus;
           error: string | null;
+          release_epoch: string | null;
+          release_policy_version: string | null;
+          release_identity_hash: string | null;
+          provider_idempotency_key: string | null;
+          outbox_id: string | null;
+          delivery_contract_version: string | null;
+          payload_hash: string | null;
+          provider_message_id: string | null;
           sent_at: string;
           created_at: string;
         };
         Insert: {
           id?: string;
-          subscriber_id: string;
+          subscriber_id: string | null;
           digest_key: string;
           change_event_ids?: string[];
           recipient?: string | null;
           recipient_hash?: string | null;
           status: PublicUpdateDeliveryStatus;
           error?: string | null;
+          release_epoch?: string | null;
+          release_policy_version?: string | null;
+          release_identity_hash?: string | null;
+          provider_idempotency_key?: string | null;
+          outbox_id?: string | null;
+          delivery_contract_version?: string | null;
+          payload_hash?: string | null;
+          provider_message_id?: string | null;
           sent_at?: string;
           created_at?: string;
         };
@@ -2536,9 +2971,9 @@ export type Database = {
       awards: {
         Row: {
           id: string;
-          office_id: string | null;
+          office_id: string;
           shared_award_id: string | null;
-          user_id: string;
+          user_id: string | null;
           name: string;
           official_homepage: string | null;
           summary: string | null;
@@ -2552,9 +2987,9 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
-          office_id?: string | null;
+          office_id: string;
           shared_award_id?: string | null;
-          user_id: string;
+          user_id?: string | null;
           name: string;
           official_homepage?: string | null;
           summary?: string | null;
@@ -2568,8 +3003,9 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
-          office_id?: string | null;
+          office_id?: string;
           shared_award_id?: string | null;
+          user_id?: string | null;
           name?: string;
           official_homepage?: string | null;
           summary?: string | null;
@@ -2588,7 +3024,7 @@ export type Database = {
           id: string;
           office_id: string;
           award_id: string;
-          author_user_id: string;
+          author_user_id: string | null;
           author_member_id: string | null;
           body: string;
           created_at: string;
@@ -2598,13 +3034,14 @@ export type Database = {
           id?: string;
           office_id: string;
           award_id: string;
-          author_user_id: string;
+          author_user_id?: string | null;
           author_member_id?: string | null;
           body: string;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
+          author_user_id?: string | null;
           body?: string;
           updated_at?: string;
         };
@@ -2615,7 +3052,7 @@ export type Database = {
           id: string;
           office_id: string;
           award_id: string;
-          created_by_user_id: string;
+          created_by_user_id: string | null;
           assigned_member_id: string | null;
           title: string;
           status: AwardTaskStatus;
@@ -2628,7 +3065,7 @@ export type Database = {
           id?: string;
           office_id: string;
           award_id: string;
-          created_by_user_id: string;
+          created_by_user_id?: string | null;
           assigned_member_id?: string | null;
           title: string;
           status?: AwardTaskStatus;
@@ -2638,6 +3075,7 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
+          created_by_user_id?: string | null;
           assigned_member_id?: string | null;
           title?: string;
           status?: AwardTaskStatus;
@@ -2651,9 +3089,9 @@ export type Database = {
         Row: {
           id: string;
           award_id: string;
-          office_id: string | null;
+          office_id: string;
           shared_award_source_id: string | null;
-          user_id: string;
+          user_id: string | null;
           url: string;
           title: string;
           page_type:
@@ -2673,9 +3111,9 @@ export type Database = {
         };
         Insert: {
           award_id: string;
-          office_id?: string | null;
+          office_id: string;
           shared_award_source_id?: string | null;
-          user_id: string;
+          user_id?: string | null;
           url: string;
           title: string;
           page_type?:
@@ -2694,8 +3132,9 @@ export type Database = {
           updated_at?: string;
         };
         Update: {
-          office_id?: string | null;
+          office_id?: string;
           shared_award_source_id?: string | null;
+          user_id?: string | null;
           title?: string;
           page_type?:
             | "homepage"
@@ -2782,8 +3221,8 @@ export type Database = {
       monitors: {
         Row: {
           id: string;
-          office_id: string | null;
-          user_id: string;
+          office_id: string;
+          user_id: string | null;
           award_id: string | null;
           shared_award_source_id: string | null;
           label: string;
@@ -2811,8 +3250,8 @@ export type Database = {
           updated_at: string;
         };
         Insert: {
-          office_id?: string | null;
-          user_id: string;
+          office_id: string;
+          user_id?: string | null;
           award_id?: string | null;
           shared_award_source_id?: string | null;
           label: string;
@@ -2834,7 +3273,8 @@ export type Database = {
           next_check_at?: string;
         };
         Update: {
-          office_id?: string | null;
+          office_id?: string;
+          user_id?: string | null;
           award_id?: string | null;
           shared_award_source_id?: string | null;
           label?: string;
@@ -2967,6 +3407,93 @@ export type Database = {
         Update: never;
         Relationships: [];
       };
+      public_digest_outbox: {
+        Row: {
+          id: string;
+          subscriber_id: string | null;
+          digest_key: string;
+          batch_sequence: number;
+          recipient_hash: string | null;
+          recipient_encrypted: string | null;
+          release_key: string;
+          release_epoch: string;
+          release_policy_version: string;
+          release_identity_version: string;
+          release_identity_hash: string;
+          change_event_ids: string[];
+          event_bindings: Json;
+          rendered_payload: Json | null;
+          payload_schema_version: string;
+          payload_hash: string;
+          eligibility_seal_hash: string;
+          provider_idempotency_key: string;
+          status: PublicDigestOutboxStatus;
+          send_attempt_count: number;
+          max_attempts: number;
+          next_attempt_at: string;
+          lease_token: string | null;
+          last_claim_token: string | null;
+          lease_owner: string | null;
+          leased_at: string | null;
+          lease_expires_at: string | null;
+          first_provider_attempt_at: string | null;
+          last_provider_attempt_at: string | null;
+          ambiguous_since: string | null;
+          provider_message_id: string | null;
+          last_error: string | null;
+          sent_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      public_digest_event_receipts: {
+        Row: {
+          id: string;
+          subscriber_id: string | null;
+          change_event_id: string;
+          outbox_id: string | null;
+          legacy_delivery_id: string | null;
+          status: PublicDigestEventReceiptStatus;
+          sent_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      free_check_rate_limit_windows: {
+        Row: {
+          ip_hash: string;
+          window_started_at: string;
+          reserved_count: number;
+          attempt_count: number;
+          last_attempt_at: string;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
+      free_check_attempts: {
+        Row: {
+          id: string;
+          ip_hash: string;
+          url_hash: string;
+          requested_host: string;
+          window_started_at: string;
+          allowed: boolean;
+          outcome: "reserved" | "rate_limited" | "succeeded" | "failed" | "outcome_unknown";
+          failure_kind: string | null;
+          created_at: string;
+          completed_at: string | null;
+        };
+        Insert: never;
+        Update: never;
+        Relationships: [];
+      };
       discovery_requests: {
         Row: {
           id: string;
@@ -3018,6 +3545,436 @@ export type Database = {
     };
     Views: Record<string, never>;
     Functions: {
+      get_stage1_release_contract_state_hash: {
+        Args: Record<string, never>;
+        Returns: string;
+      };
+      get_stage1_release_gate_snapshot: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      get_stage1_release_producer_target: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      get_stage1_release_leak_crawl_manifest: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      get_stage1_release_r2_verification_manifest: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      prepare_stage1_hosted_runtime_identity_artifact: {
+        Args: Stage1ExternalReleaseArtifactPreflightArgs;
+        Returns: Json;
+      };
+      prepare_stage1_rollback_drill_artifact: {
+        Args: Stage1ExternalReleaseArtifactPreflightArgs;
+        Returns: Json;
+      };
+      prepare_stage1_non_cohort_leak_crawl_artifact: {
+        Args: Stage1ExternalReleaseArtifactPreflightArgs;
+        Returns: Json;
+      };
+      prepare_stage1_r2_recovery_drill_artifact: {
+        Args: Stage1ExternalReleaseArtifactPreflightArgs;
+        Returns: Json;
+      };
+      record_stage1_hosted_runtime_identity_artifact: {
+        Args: Stage1ExternalReleaseArtifactArgs;
+        Returns: Database["public"]["Tables"]["stage1_release_acceptance_artifacts"]["Row"];
+      };
+      record_stage1_rollback_drill_artifact: {
+        Args: Stage1ExternalReleaseArtifactArgs;
+        Returns: Database["public"]["Tables"]["stage1_release_acceptance_artifacts"]["Row"];
+      };
+      record_stage1_non_cohort_leak_crawl_artifact: {
+        Args: Stage1ExternalReleaseArtifactArgs;
+        Returns: Database["public"]["Tables"]["stage1_release_acceptance_artifacts"]["Row"];
+      };
+      record_stage1_r2_recovery_drill_artifact: {
+        Args: Stage1ExternalReleaseArtifactArgs;
+        Returns: Database["public"]["Tables"]["stage1_release_acceptance_artifacts"]["Row"];
+      };
+      record_stage1_visual_crop_coverage_artifact: {
+        Args: { p_actor: string };
+        Returns: Database["public"]["Tables"]["stage1_release_acceptance_artifacts"]["Row"];
+      };
+      record_stage1_release_acceptance: {
+        Args: {
+          p_expected_gate_state_hash: string;
+          p_expires_at: string;
+          p_actor: string;
+        };
+        Returns: Database["public"]["Tables"]["stage1_release_acceptance_records"]["Row"];
+      };
+      activate_stage1_release_from_acceptance: {
+        Args: {
+          p_acceptance_id: string;
+          p_expected_summary_hash: string;
+          p_reason: string;
+          p_actor: string;
+        };
+        Returns: Json;
+      };
+      suspend_stage1_release: {
+        Args: { p_reason: string; p_actor: string };
+        Returns: Json;
+      };
+      create_office_award_tracking_from_intake: {
+        Args: {
+          p_actor_user_id: string;
+          p_office_id: string;
+          p_shared_award_id: string;
+          p_shared_award_source_ids: string[];
+          p_cadence?: Cadence;
+        };
+        Returns: Json;
+      };
+      track_office_shared_award_atomic: {
+        Args: {
+          p_office_id: string;
+          p_canonical_shared_award_id: string;
+          p_expected_member_shared_award_ids: string[];
+          p_expected_release_epoch: string;
+          p_expected_source_bindings: Json;
+          p_cadence?: Cadence;
+        };
+        Returns: Json;
+      };
+      untrack_office_shared_award_atomic: {
+        Args: {
+          p_office_id: string;
+          p_requested_shared_award_id: string;
+          p_expected_member_shared_award_ids?: string[] | null;
+          p_expected_release_epoch?: string | null;
+          p_validate_release_epoch?: boolean;
+        };
+        Returns: Json;
+      };
+      untrack_office_shared_award_source_atomic: {
+        Args: {
+          p_office_id: string;
+          p_requested_shared_award_id: string;
+          p_shared_award_source_id: string;
+          p_expected_member_shared_award_ids?: string[] | null;
+          p_expected_release_epoch?: string | null;
+          p_validate_release_epoch?: boolean;
+        };
+        Returns: Json;
+      };
+      approve_visual_review_paid_retry: {
+        Args: {
+          p_candidate_id: string;
+          p_expected_candidate_updated_at: string;
+          p_reason: string;
+          p_actor: string;
+        };
+        Returns: Database["public"]["Tables"]["gemini_paid_retry_approvals"]["Row"];
+      };
+      consume_visual_review_paid_retry_approval: {
+        Args: {
+          p_candidate_id: string;
+          p_expected_candidate_updated_at: string;
+        };
+        Returns: Json;
+      };
+      authorize_visual_review_paid_retry_submission: {
+        Args: {
+          p_candidate_id: string;
+          p_submission_claim_token: string;
+          p_expected_request_fingerprint: string;
+          p_expected_provider_request_fingerprint: string;
+          p_expected_lane_key: "new_page_review" | "changed_page_review";
+        };
+        Returns: Json;
+      };
+      invalidate_visual_review_paid_retry_for_request_drift: {
+        Args: {
+          p_candidate_id: string;
+          p_expected_request_fingerprint: string;
+          p_expected_lane_key: "new_page_review" | "changed_page_review";
+          p_candidate_signature: string;
+          p_gemini_batch_request_key: string;
+          p_source_url: string;
+          p_source_title: string | null;
+          p_source_page_type: string | null;
+          p_prompt_payload: Json;
+          p_prompt_context: string | null;
+        };
+        Returns: Json;
+      };
+      commit_award_reconciliation_publication: {
+        Args: {
+          p_reconciliation_id: string;
+          p_shared_award_id: string;
+          p_expected_started_at: string;
+          p_expected_queue_generation: number;
+          p_expected_award_updated_at: string;
+          p_expected_public_facts: Json;
+          p_summary: string | null;
+          p_public_facts: Json;
+          p_confidence: number;
+          p_evidence_rows: Json;
+          p_source_ids: string[];
+          p_candidate_ids: string[];
+          p_generated_candidates: Json;
+          p_candidate_status_updates: Json;
+          p_audit_row: Json;
+        };
+        Returns: Database["public"]["Tables"]["shared_award_reconciliation_queue"]["Row"];
+      };
+      reserve_free_check_attempt: {
+        Args: {
+          p_ip_hash: string;
+          p_url_hash: string;
+          p_requested_host: string;
+          p_limit?: number;
+        };
+        Returns: Array<{
+          attempt_id: string;
+          allowed: boolean;
+          retry_after_seconds: number;
+          effective_limit: number;
+          window_started_at: string;
+        }>;
+      };
+      reserve_public_form_rate_limit: {
+        Args: {
+          p_kind: PublicFormRateLimitKind;
+          p_ip_hash: string;
+          p_limit: number;
+          p_window_seconds: number;
+        };
+        Returns: Json;
+      };
+      complete_free_check_attempt: {
+        Args: {
+          p_attempt_id: string;
+          p_outcome: "succeeded" | "failed";
+          p_failure_kind?: string | null;
+        };
+        Returns: boolean;
+      };
+      get_office_invite_signup_preview: {
+        Args: { p_invite_secret: string };
+        Returns: Array<{
+          invite_id: string;
+          office_name: string;
+          email_hint: string;
+          invite_role: Exclude<OfficeRole, "owner">;
+          invite_expires_at: string;
+        }>;
+      };
+      reserve_office_invite_signup: {
+        Args: { p_invite_secret: string };
+        Returns: Array<{
+          invite_id: string;
+          office_id: string;
+          normalized_email: string;
+          reservation_id: string;
+        }>;
+      };
+      reconcile_office_invite_signup_auth_user: {
+        Args: {
+          p_invite_id: string;
+          p_reservation_id: string;
+          p_normalized_email: string;
+        };
+        Returns: Array<{ user_id: string }>;
+      };
+      complete_office_invite_signup: {
+        Args: {
+          p_invite_id: string;
+          p_reservation_id: string;
+          p_user_id: string;
+          p_normalized_email: string;
+        };
+        Returns: Array<{ office_id: string }>;
+      };
+      release_office_invite_signup_reservation: {
+        Args: { p_invite_id: string; p_reservation_id: string };
+        Returns: boolean;
+      };
+      prepare_office_invite_security_reissue: {
+        Args: {
+          p_invite_id: string;
+          p_office_id: string;
+          p_token_hash: string;
+          p_invite_code: string;
+          p_expires_at: string;
+          p_reissued_by: string;
+        };
+        Returns: Array<{ invite_email: string; office_name: string }>;
+      };
+      record_office_invite_security_reissue_delivery: {
+        Args: {
+          p_invite_id: string;
+          p_reissued_by: string;
+          p_delivery_status: string;
+          p_error?: string | null;
+        };
+        Returns: boolean;
+      };
+      accept_office_invite_for_user: {
+        Args: {
+          p_invite_secret: string;
+          p_user_id: string;
+          p_normalized_email: string;
+        };
+        Returns: Array<{ office_id: string }>;
+      };
+      set_stage1_award_manifest_entry: {
+        Args: {
+          p_cohort_key: string;
+          p_source_role: "identity_home" | "eligibility" | "application_materials" | "dates_cycle" | "funding" | "faq" | "selection_interviews" | "current_documents";
+          p_manifest_status: "missing" | "present" | "combined" | "not_published";
+          p_source_ids: string[];
+          p_evidence: Json;
+          p_checked_at: string;
+          p_policy_version: string;
+        };
+        Returns: Database["public"]["Tables"]["stage1_award_source_manifest"]["Row"];
+      };
+      get_stage1_promotion_review_snapshot: {
+        Args: { p_cohort_keys: string[] };
+        Returns: Array<{
+          cohort_key: string;
+          review_hash: string;
+          snapshot: Json;
+        }>;
+      };
+      apply_stage1_reviewed_promotion: {
+        Args: {
+          p_cohort_keys: string[];
+          p_expected_review_hashes: Json;
+          p_manifest_entries: Json;
+          p_reason: string;
+          p_policy_version: string;
+          p_actor: string;
+        };
+        Returns: Array<
+          Database["public"]["Tables"]["stage1_award_registry"]["Row"]
+        >;
+      };
+      list_stage1_effective_publication: {
+        Args: Record<string, never>;
+        Returns: Array<{
+          cohort_key: string;
+          effectively_verified: boolean;
+          effective_reason: string;
+          evaluated_at: string;
+          cohort_ready: boolean;
+          cohort_readiness_reason: string;
+          release_epoch: string | null;
+          release_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          release_policy_version: string;
+          release_identity_version: string;
+          release_identity_hash: string;
+        }>;
+      };
+      get_stage1_publication_snapshot: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      get_awardping_release_contract_status: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      enqueue_public_digest_outbox: {
+        Args: {
+          p_digest_key: string;
+          p_expected_release_epoch: string;
+          p_expected_release_policy_version: string;
+          p_expected_release_identity_version: string;
+          p_expected_release_identity_hash: string;
+          p_entries: Json;
+        };
+        Returns: Json;
+      };
+      supersede_stale_public_digest_reservations: {
+        Args: {
+          p_expected_release_epoch: string;
+          p_expected_release_policy_version: string;
+          p_expected_release_identity_version: string;
+          p_expected_release_identity_hash: string;
+        };
+        Returns: Json;
+      };
+      claim_public_digest_outbox: {
+        Args: {
+          p_worker_id: string;
+          p_limit?: number;
+          p_lease_seconds?: number;
+        };
+        Returns: Array<{
+          id: string;
+          lease_token: string;
+          recipient_hash: string;
+          recipient_encrypted: string;
+          rendered_payload: Json;
+          payload_hash: string;
+          provider_idempotency_key: string;
+          send_attempt_count: number;
+        }>;
+      };
+      authorize_public_digest_send: {
+        Args: { p_outbox_id: string; p_lease_token: string };
+        Returns: boolean;
+      };
+      complete_public_digest_send: {
+        Args: {
+          p_outbox_id: string;
+          p_lease_token: string;
+          p_provider_message_id: string;
+        };
+        Returns: boolean;
+      };
+      fail_public_digest_send: {
+        Args: {
+          p_outbox_id: string;
+          p_lease_token: string;
+          p_error: string;
+          p_ambiguous: boolean;
+          p_retryable?: boolean;
+        };
+        Returns: PublicDigestOutboxStatus;
+      };
+      unsubscribe_public_update_subscriber: {
+        Args: { p_unsubscribe_token_hash: string };
+        Returns: "unsubscribed" | "not_found" | "retry_active_send";
+      };
+      erase_public_update_subscriber: {
+        Args: {
+          p_email_hash: string | null;
+          p_legacy_email?: string | null;
+        };
+        Returns: number;
+      };
+      get_office_invite_security_reissue_status: {
+        Args: Record<string, never>;
+        Returns: Json;
+      };
+      transition_stage1_award_publication: {
+        Args: {
+          p_cohort_key: string;
+          p_next_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          p_reason: string;
+          p_policy_version: string;
+          p_actor: string;
+        };
+        Returns: Database["public"]["Tables"]["stage1_award_registry"]["Row"];
+      };
+      transition_stage1_cohort_release: {
+        Args: {
+          p_next_state: "pending" | "verified_beta" | "revalidation_pending" | "suspended";
+          p_reason: string;
+          p_policy_version: string;
+          p_actor: string;
+        };
+        Returns: Json;
+      };
       claim_monitoring_downstream_lane: {
         Args: {
           p_lane_key: string;

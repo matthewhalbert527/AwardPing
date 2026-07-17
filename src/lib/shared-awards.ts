@@ -1,26 +1,22 @@
 import "server-only";
 
-import type { SupabaseClient, User } from "@supabase/supabase-js";
-import {
-  contentTypeForPage,
-  pageTypeLabel,
-  type AwardPageType,
-} from "@/lib/award-discovery-types";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import type { AwardPageType } from "@/lib/award-discovery-types";
 import { displayAwardSummary } from "@/lib/award-summary";
 import type { Database } from "@/lib/database.types";
-import { nextCheckDate, type Cadence } from "@/lib/plans";
+import type { Cadence } from "@/lib/plans";
 import { normalizeSharedAwardKey } from "@/lib/shared-awards-core";
 import { isMonitorableAwardSource } from "@/lib/source-quality";
 import {
-  displayHomepageForAward,
+  canonicalSourceUrlKey,
   filterTrackableOfficialSources,
 } from "@/lib/source-url-policy";
 
 export { normalizeSharedAwardKey };
 
-type AdminClient = SupabaseClient<Database>;
-type SharedAward = Database["public"]["Tables"]["shared_awards"]["Row"];
-type SharedAwardSource = Database["public"]["Tables"]["shared_award_sources"]["Row"];
+type DatabaseClient = SupabaseClient<Database>;
+type SharedAwardSource =
+  Database["public"]["Tables"]["shared_award_sources"]["Row"];
 
 export type SharedAwardInput = {
   name: string;
@@ -39,7 +35,7 @@ export type SharedAwardInput = {
 };
 
 export async function upsertSharedAward(
-  supabase: AdminClient,
+  supabase: DatabaseClient,
   input: SharedAwardInput,
 ) {
   const searchKey = normalizeSharedAwardKey(input.name);
@@ -125,194 +121,169 @@ export async function upsertSharedAward(
 }
 
 export async function trackSharedAwardForOffice(input: {
-  supabase: AdminClient;
-  sharedAward: SharedAward;
+  supabase: DatabaseClient;
+  canonicalSharedAwardId: string;
   sharedSources: SharedAwardSource[];
-  user: User;
   officeId: string;
   cadence: Cadence;
+  expectedMemberSharedAwardIds: string[];
+  expectedReleaseEpoch: string;
 }) {
-  const sharedSources = filterTrackableOfficialSources(input.sharedSources).filter(isMonitorableAwardSource);
+  const sharedSources = selectTrackableSharedAwardSources(
+    input.sharedSources,
+    input.canonicalSharedAwardId,
+  );
   if (sharedSources.length === 0) {
-    throw new Error("This shared award does not have official organization source pages yet.");
+    throw new Error(
+      "This shared award does not have official organization source pages yet.",
+    );
   }
 
-  const officialHomepage = displayHomepageForAward(
-    input.sharedAward.official_homepage,
-    sharedSources,
-  );
-  const existing = await findOfficeAwardForSharedAward(
-    input.supabase,
-    input.officeId,
-    input.sharedAward.id,
-  );
-
-  if (existing) {
-    const trackedSources = await addSharedSourcesToOfficeAward({
-      supabase: input.supabase,
-      award: existing,
-      sharedAward: input.sharedAward,
-      sharedSources,
-      user: input.user,
-      officeId: input.officeId,
-      cadence: input.cadence,
-    });
-
-    return { award: existing, ...trackedSources, alreadyTracked: true };
-  }
-
-  const { data: award, error: awardError } = await input.supabase
-    .from("awards")
-    .insert({
-      office_id: input.officeId,
-      user_id: input.user.id,
-      shared_award_id: input.sharedAward.id,
-      name: input.sharedAward.name,
-      official_homepage: officialHomepage,
-      summary: displayAwardSummary(input.sharedAward.summary),
-      confidence: input.sharedAward.confidence,
-      status: "active",
-    })
-    .select("*")
-    .single();
-
-  if (awardError || !award) {
-    throw new Error(awardError?.message || "Award card could not be created.");
-  }
-
-  const trackedSources = await addSharedSourcesToOfficeAward({
-    supabase: input.supabase,
-    award,
-    sharedAward: input.sharedAward,
-    sharedSources,
-    user: input.user,
-    officeId: input.officeId,
-    cadence: input.cadence,
-  });
-
-  return {
-    award,
-    ...trackedSources,
-    alreadyTracked: false,
-  };
-}
-
-async function addSharedSourcesToOfficeAward(input: {
-  supabase: AdminClient;
-  award: Database["public"]["Tables"]["awards"]["Row"];
-  sharedAward: SharedAward;
-  sharedSources: SharedAwardSource[];
-  user: User;
-  officeId: string;
-  cadence: Cadence;
-}) {
-  const sharedSourceIds = input.sharedSources.map((source) => source.id);
-  if (sharedSourceIds.length === 0) {
-    return { sources: [], monitors: [] };
-  }
-
-  const [{ data: existingSources }, { data: existingMonitors }] = await Promise.all([
-    input.supabase
-      .from("award_sources")
-      .select("shared_award_source_id")
-      .eq("award_id", input.award.id)
-      .in("shared_award_source_id", sharedSourceIds),
-    input.supabase
-      .from("monitors")
-      .select("shared_award_source_id")
-      .eq("award_id", input.award.id)
-      .in("shared_award_source_id", sharedSourceIds),
-  ]);
-
-  const existingSourceIds = new Set(
-    (existingSources || [])
-      .map((source) => source.shared_award_source_id)
-      .filter((id): id is string => Boolean(id)),
-  );
-  const existingMonitorIds = new Set(
-    (existingMonitors || [])
-      .map((monitor) => monitor.shared_award_source_id)
-      .filter((id): id is string => Boolean(id)),
-  );
-
-  const sourceRows = input.sharedSources
-    .filter((source) => !existingSourceIds.has(source.id))
+  const expectedSourceBindings = sharedSources
+    .sort((left, right) => left.id.localeCompare(right.id))
     .map((source) => ({
-      award_id: input.award.id,
-      office_id: input.officeId,
-      user_id: input.user.id,
-      shared_award_source_id: source.id,
+      id: source.id,
+      shared_award_id: source.shared_award_id,
       url: source.url,
       title: source.title,
       page_type: source.page_type,
       confidence: source.confidence,
       reason: source.reason,
-      selected: true,
+      admin_review_status: source.admin_review_status,
+      updated_at: source.updated_at,
     }));
+  const { data, error } = await input.supabase.rpc(
+    "track_office_shared_award_atomic",
+    {
+      p_office_id: input.officeId,
+      p_canonical_shared_award_id: input.canonicalSharedAwardId,
+      p_expected_member_shared_award_ids: input.expectedMemberSharedAwardIds,
+      p_expected_release_epoch: input.expectedReleaseEpoch,
+      p_expected_source_bindings: expectedSourceBindings,
+      p_cadence: input.cadence,
+    },
+  );
 
-  const { data: sources, error: sourcesError } = sourceRows.length
-    ? await input.supabase.from("award_sources").insert(sourceRows).select("*")
-    : { data: [], error: null };
-
-  if (sourcesError) {
-    throw new Error(sourcesError.message);
+  if (error) {
+    throwRpcError(error, "Shared award could not be tracked.");
+  }
+  if (!isJsonObject(data) || !isJsonObject(data.award)) {
+    throw new Error("Shared award tracking returned an invalid result.");
   }
 
-  const monitorRows = input.sharedSources
-    .filter((source) => !existingMonitorIds.has(source.id))
-    .map((source) => ({
-      office_id: input.officeId,
-      user_id: input.user.id,
-      award_id: input.award.id,
-      shared_award_source_id: source.id,
-      label: `${input.sharedAward.name} - ${pageTypeLabel(source.page_type)}`,
-      url: source.url,
-      content_type: contentTypeForPage(source.page_type, source.url),
-      cadence: input.cadence,
-      page_type: source.page_type,
-      source_label: source.title,
-      next_check_at: nextCheckDate(input.cadence, new Date(Date.now() - 86_400_000)),
-    }));
-
-  const { data: monitors, error: monitorsError } = monitorRows.length
-    ? await input.supabase.from("monitors").insert(monitorRows).select("*")
-    : { data: [], error: null };
-
-  if (monitorsError) {
-    throw new Error(monitorsError.message);
-  }
-
-  return {
-    sources: sources || [],
-    monitors: monitors || [],
+  return data as unknown as {
+    award: Database["public"]["Tables"]["awards"]["Row"];
+    sources: Database["public"]["Tables"]["award_sources"]["Row"][];
+    monitors: Database["public"]["Tables"]["monitors"]["Row"][];
+    alreadyTracked: boolean;
   };
 }
 
-async function findSharedAward(supabase: AdminClient, searchKey: string) {
-  const { data, error } = await supabase
-    .from("shared_awards")
-    .select("*")
-    .eq("search_key", searchKey)
-    .maybeSingle();
+export function selectTrackableSharedAwardSources(
+  sources: SharedAwardSource[],
+  canonicalSharedAwardId: string,
+) {
+  const monitorableSources = sources.filter(isMonitorableAwardSource);
+  const selectedByUrl = new Map(
+    filterTrackableOfficialSources(monitorableSources).map((source) => [
+      canonicalSourceUrlKey(source.url),
+      source,
+    ]),
+  );
+
+  // Prefer the reviewed canonical catalog identity when an alias owns the
+  // same logical URL. The database independently rejects duplicate URL keys.
+  for (const source of filterTrackableOfficialSources(
+    monitorableSources.filter(
+      (candidate) => candidate.shared_award_id === canonicalSharedAwardId,
+    ),
+  )) {
+    selectedByUrl.set(canonicalSourceUrlKey(source.url), source);
+  }
+
+  return [...selectedByUrl.values()];
+}
+
+export async function untrackSharedAwardForOffice(input: {
+  supabase: DatabaseClient;
+  officeId: string;
+  requestedSharedAwardId: string;
+  expectedMemberSharedAwardIds: string[] | null;
+  expectedReleaseEpoch: string | null;
+  validateReleaseEpoch: boolean;
+}) {
+  const { data, error } = await input.supabase.rpc(
+    "untrack_office_shared_award_atomic",
+    {
+      p_office_id: input.officeId,
+      p_requested_shared_award_id: input.requestedSharedAwardId,
+      p_expected_member_shared_award_ids: input.expectedMemberSharedAwardIds,
+      p_expected_release_epoch: input.expectedReleaseEpoch,
+      p_validate_release_epoch: input.validateReleaseEpoch,
+    },
+  );
 
   if (error) {
-    throw new Error(error.message);
+    throwRpcError(error, "Shared award could not be untracked.");
+  }
+  if (!isJsonObject(data) || data.ok !== true) {
+    throw new Error("Shared award untracking returned an invalid result.");
   }
 
   return data;
 }
 
-async function findOfficeAwardForSharedAward(
-  supabase: AdminClient,
-  officeId: string,
-  sharedAwardId: string,
-) {
+export async function untrackSharedAwardSourceForOffice(input: {
+  supabase: DatabaseClient;
+  officeId: string;
+  requestedSharedAwardId: string;
+  sharedAwardSourceId: string;
+  expectedMemberSharedAwardIds: string[] | null;
+  expectedReleaseEpoch: string | null;
+  validateReleaseEpoch: boolean;
+}) {
+  const { data, error } = await input.supabase.rpc(
+    "untrack_office_shared_award_source_atomic",
+    {
+      p_office_id: input.officeId,
+      p_requested_shared_award_id: input.requestedSharedAwardId,
+      p_shared_award_source_id: input.sharedAwardSourceId,
+      p_expected_member_shared_award_ids: input.expectedMemberSharedAwardIds,
+      p_expected_release_epoch: input.expectedReleaseEpoch,
+      p_validate_release_epoch: input.validateReleaseEpoch,
+    },
+  );
+
+  if (error) {
+    throwRpcError(error, "Award source page could not be untracked.");
+  }
+  if (!isJsonObject(data) || data.ok !== true) {
+    throw new Error("Award source untracking returned an invalid result.");
+  }
+
+  return data;
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function throwRpcError(
+  error: { message?: string; code?: string },
+  fallback: string,
+): never {
+  const wrapped = new Error(error.message || fallback) as Error & {
+    code?: string;
+  };
+  wrapped.code = error.code;
+  throw wrapped;
+}
+
+async function findSharedAward(supabase: DatabaseClient, searchKey: string) {
   const { data, error } = await supabase
-    .from("awards")
+    .from("shared_awards")
     .select("*")
-    .eq("office_id", officeId)
-    .eq("shared_award_id", sharedAwardId)
-    .eq("status", "active")
+    .eq("search_key", searchKey)
     .maybeSingle();
 
   if (error) {

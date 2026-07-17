@@ -607,18 +607,22 @@ describe("operator action inbox", () => {
   });
 
   describe("visual-review recovery", () => {
-    it("automatically retries an ordinary failure as a new paid Gemini Batch", () => {
+    it("requires one-use operator approval before a new paid Gemini Batch", () => {
       const [item] = buildOperatorActionInbox({
         issues: [],
         visualReviewFailures: [visualFailure()],
         now,
       });
 
-      expect(item.state).toBe("auto_retrying");
-      expect(item.retry.automatic).toBe(true);
-      expect(item.retry.label).toContain("attempt 1 of 3");
+      expect(item.state).toBe("needs_operator");
+      expect(item.retry.automatic).toBe(false);
+      expect(item.retry.label).toContain("approval required");
       expect(item.charge.level).toBe("will_charge");
       expect(item.charge.label).toContain("Gemini Batch");
+      expect(item.action).toMatchObject({
+        kind: "paid_visual_retry",
+        candidateId: "candidate-1",
+      });
     });
 
     it("recovers a missing response from the existing Batch without another charge", () => {
@@ -657,7 +661,7 @@ describe("operator action inbox", () => {
       expect(item.recommendedAction.detail).toContain("Never use a generic retry");
     });
 
-    it("stops automatic retries once three paid attempts have failed", () => {
+    it("requires a fresh approval even after multiple paid attempts", () => {
       const [item] = buildOperatorActionInbox({
         issues: [],
         visualReviewFailures: [
@@ -668,8 +672,9 @@ describe("operator action inbox", () => {
 
       expect(item.state).toBe("needs_operator");
       expect(item.retry.automatic).toBe(false);
-      expect(item.retry.label).toContain("retry limit reached");
+      expect(item.retry.label).toContain("approval required");
       expect(item.charge.level).toBe("will_charge");
+      expect(item.action.kind).toBe("paid_visual_retry");
     });
   });
 
@@ -1080,6 +1085,41 @@ describe("operator action inbox", () => {
     expect(item.context).not.toContain("person@");
   });
 
+  it("explains sealed ambiguous digest retries and their 23-hour cutoff", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      digestDeliveryFailures: [
+        {
+          id: "outbox-1",
+          deliveryType: "public digest outbox",
+          state: "ambiguous",
+          digestKey: "2026-07-16",
+          recipient: null,
+          recipientHash: "a".repeat(64),
+          changeEventCount: 2,
+          error: "Provider request lease expired before completion was recorded.",
+          createdAt: "2026-07-16T17:00:00.000Z",
+          updatedAt: "2026-07-16T17:05:00.000Z",
+          payloadHash: "b".repeat(64),
+          attemptCount: 1,
+          firstProviderAttemptAt: "2026-07-16T17:04:00.000Z",
+          nextAttemptAt: "2026-07-16T17:10:00.000Z",
+          contractVersion: "public-digest-render-v1",
+        },
+      ],
+      now,
+    });
+
+    expect(item.retry.automatic).toBe(true);
+    expect(item.retry.label).toContain("23-hour");
+    expect(item.retry.detail).toContain("same payload hash");
+    expect(item.policy.hash).toBe("b".repeat(64));
+    expect(item.evidence).toContainEqual({
+      label: "State",
+      value: "ambiguous",
+    });
+  });
+
   it("creates one urgent load-error action with all loader evidence", () => {
     const items = buildOperatorActionInbox({
       issues: [],
@@ -1285,6 +1325,39 @@ describe("independent downstream lane actions", () => {
     expect(item.evidence).toContainEqual({
       label: "Last started",
       value: "2026-07-15T17:30:00.000Z",
+    });
+  });
+
+  it("surfaces a retired legacy invite as one explicit resend action", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      inviteSecurityReissues: [{
+        inviteId: "33333333-3333-4333-8333-333333333333",
+        officeId: "22222222-2222-4222-8222-222222222222",
+        officeName: "Fellowships Office",
+        emailHash: "a".repeat(64),
+        status: "pending_reissue",
+        rotatedAt: "2026-07-15T17:00:00.000Z",
+        replacementPreparedAt: null,
+        deliveryStatus: null,
+        lastError: null,
+      }],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      sourceKind: "invite_security_reissue",
+      state: "needs_operator",
+      title: "Fellowships Office: resend a secure beta invitation",
+      publicImpact: { level: "blocked", label: "Invited advisor cannot join yet" },
+      retry: { automatic: false },
+      charge: { level: "may_charge" },
+      recommendedAction: { href: "/dashboard/office#pending-invites" },
+    });
+    expect(item.failureReason).toContain("original link no longer works");
+    expect(item.evidence).toContainEqual({
+      label: "Recipient binding",
+      value: "a".repeat(64),
     });
   });
 });

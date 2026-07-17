@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { createClient } from "@supabase/supabase-js";
+import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = new Set(process.argv.slice(2));
@@ -18,9 +18,7 @@ if (!supabaseUrl || !serviceRoleKey) {
   throw new Error("Missing Supabase service-role environment.");
 }
 
-const supabase = createClient(supabaseUrl, serviceRoleKey, {
-  auth: { persistSession: false },
-});
+const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
 
 const pageSize = 1000;
 let offset = 0;

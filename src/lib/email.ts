@@ -39,11 +39,33 @@ export type PublicUpdateConfirmationEmail = {
   confirmUrl: string;
 };
 
-export type PublicDailyDigestEmail = {
-  to: string;
+export type PublicDailyDigestRenderInput = {
   changes: PublicDigestChange[];
   unsubscribeUrl: string;
 };
+
+export type RenderedPublicDailyDigestEmail = {
+  from: string;
+  subject: string;
+  html: string;
+  text: string;
+};
+
+export type FrozenPublicDailyDigestEmail = RenderedPublicDailyDigestEmail & {
+  to: string;
+  idempotencyKey: string;
+};
+
+export class PublicDigestDeliveryError extends Error {
+  constructor(
+    message: string,
+    readonly ambiguous: boolean,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "PublicDigestDeliveryError";
+  }
+}
 
 export type ContactFormEmail = {
   to: string;
@@ -188,17 +210,9 @@ export async function sendPublicUpdateConfirmationEmail(input: PublicUpdateConfi
   });
 }
 
-export async function sendPublicDailyDigestEmail(input: PublicDailyDigestEmail) {
-  if (!appConfig.resendApiKey) {
-    logSkippedEmail("public daily digest", {
-      to: input.to,
-      changes: input.changes.length,
-    });
-    return { skipped: true };
-  }
-
-  resend ??= new Resend(appConfig.resendApiKey);
-
+export function renderPublicDailyDigestEmail(
+  input: PublicDailyDigestRenderInput,
+): RenderedPublicDailyDigestEmail {
   const listHtml = input.changes
     .map(
       (change) => `
@@ -219,9 +233,8 @@ export async function sendPublicDailyDigestEmail(input: PublicDailyDigestEmail) 
     )
     .join("\n\n");
 
-  return resend.emails.send({
+  return {
     from: appConfig.alertFromEmail,
-    to: input.to,
     subject: `AwardPing daily updates: ${input.changes.length} award page update${
       input.changes.length === 1 ? "" : "s"
     }`,
@@ -236,9 +249,60 @@ export async function sendPublicDailyDigestEmail(input: PublicDailyDigestEmail) 
           <a href="${escapeHtml(input.unsubscribeUrl)}">Unsubscribe</a> from public daily updates.
         </p>
       </div>
-    `,
+      `,
     text: `AwardPing daily updates\n\n${listText}\n\nUnsubscribe: ${input.unsubscribeUrl}`,
-  });
+  };
+}
+
+export async function sendFrozenPublicDailyDigestEmail(
+  input: FrozenPublicDailyDigestEmail,
+) {
+  if (!appConfig.resendApiKey) {
+    logSkippedEmail("public daily digest", { to: input.to });
+    throw new PublicDigestDeliveryError(
+      "Public daily digest delivery is unavailable because RESEND_API_KEY is not configured.",
+      false,
+      false,
+    );
+  }
+
+  resend ??= new Resend(appConfig.resendApiKey);
+  let result: Awaited<ReturnType<typeof resend.emails.send>>;
+  try {
+    result = await resend.emails.send(
+      {
+        from: input.from,
+        to: input.to,
+        subject: input.subject,
+        html: input.html,
+        text: input.text,
+      },
+      { idempotencyKey: input.idempotencyKey },
+    );
+  } catch (error) {
+    throw new PublicDigestDeliveryError(
+      `Public daily digest provider outcome is unknown: ${errorMessage(error)}`,
+      true,
+      true,
+    );
+  }
+
+  if (result.error) {
+    throw new PublicDigestDeliveryError(
+      `Public daily digest provider rejected the request: ${result.error.message}`,
+      false,
+      true,
+    );
+  }
+  if (!result.data?.id) {
+    throw new PublicDigestDeliveryError(
+      "Public daily digest provider did not confirm a delivery request ID.",
+      true,
+      true,
+    );
+  }
+
+  return { providerMessageId: result.data.id };
 }
 
 export async function sendContactFormEmail(input: ContactFormEmail) {
@@ -290,4 +354,8 @@ function logSkippedEmail(kind: string, details: Record<string, unknown>) {
 
 function formatDigestDate(value: string) {
   return formatCentralDate(value);
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error || "Unknown provider error.");
 }

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { formatOfficeNameWithOrganization } from "@/lib/office-names";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -6,6 +7,14 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json(
+      { offices: [], error: "Authentication required." },
+      { status: 401, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
     return NextResponse.json({ offices: [] });
   }

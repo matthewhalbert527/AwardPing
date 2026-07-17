@@ -11,6 +11,12 @@ import {
   hasSupabaseConfig,
 } from "@/lib/config";
 import { createR2SignedReadUrl, getR2Bucket } from "@/lib/r2";
+import {
+  eventVisualEvidencePresentation,
+  isPublicChangeEvent,
+  type PublicChangeEventVisualEvidence,
+} from "@/lib/public-change-event";
+import { getStage1PublicationEntryForAward } from "@/lib/stage1-publication";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -44,15 +50,13 @@ export async function GET(_request: Request, { params }: Props) {
     admin
       .from("shared_award_change_events")
       .select(
-        "id, shared_award_id, shared_award_source_id, source_url, source_title, source_page_type, suppressed_at",
+        "id, shared_award_id, shared_award_source_id, source_url, source_title, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, visual_review_candidate_id",
       )
       .eq("id", eventId)
       .maybeSingle(),
     admin
       .from("shared_award_change_event_visual_evidence")
-      .select(
-        "change_event_id, shared_award_id, shared_award_source_id, bucket, evidence_status, previous_capture, current_capture, localization, evidence_schema_version",
-      )
+      .select("*")
       .eq("change_event_id", eventId)
       .maybeSingle(),
   ]);
@@ -71,7 +75,7 @@ export async function GET(_request: Request, { params }: Props) {
   }
 
   const sourceId = event.shared_award_source_id;
-  if (!(await canViewEventEvidence(admin, user, event))) {
+  if (!(await canViewEventEvidence(admin, user, event, evidence))) {
     return NextResponse.json(
       { error: "This visual evidence is not available." },
       { status: user ? 403 : 404 },
@@ -85,6 +89,7 @@ export async function GET(_request: Request, { params }: Props) {
 
   const localization = jsonObject(evidence.localization);
   const localizationSides = jsonObject(localization.sides);
+  const presentation = eventVisualEvidencePresentation(event, evidence);
   let previous: EventVisualEvidenceSide;
   let latest: EventVisualEvidenceSide;
   try {
@@ -93,11 +98,15 @@ export async function GET(_request: Request, { params }: Props) {
         captureValue: evidence.previous_capture,
         localizationValue: localizationSides.previous,
         signObjectKey: createR2SignedReadUrl,
+        exactCropAllowed: presentation.exactCropAllowed,
+        fallbackReason: presentation.fallbackReason,
       }),
       buildEventVisualEvidenceSide({
         captureValue: evidence.current_capture,
         localizationValue: localizationSides.current,
         signObjectKey: createR2SignedReadUrl,
+        exactCropAllowed: presentation.exactCropAllowed,
+        fallbackReason: presentation.fallbackReason,
       }),
     ]);
   } catch {
@@ -110,7 +119,8 @@ export async function GET(_request: Request, { params }: Props) {
   return NextResponse.json({
     change_event_id: event.id,
     evidence_scope: "change_event",
-    evidence_status: evidence.evidence_status,
+    evidence_status: presentation.evidenceStatus,
+    stored_evidence_status: evidence.evidence_status,
     evidence_schema_version: evidence.evidence_schema_version,
     localization_direction: localizationDirection(localization.direction),
     source_id: sourceId,
@@ -129,32 +139,47 @@ async function canViewEventEvidence(
   admin: AdminClient,
   user: CurrentUser,
   event: {
+    id: string;
     shared_award_id: string;
     shared_award_source_id: string | null;
+    source_url: string;
+    source_title: string | null;
+    source_page_type: string | null;
+    summary: string;
+    change_details: unknown;
     suppressed_at: string | null;
+    suppression_reason: string | null;
+    suppression_source: string | null;
+    visual_review_candidate_id: string | null;
   },
+  evidence: PublicChangeEventVisualEvidence,
 ) {
   if (isSiteAdminEmail(user?.email)) return true;
-  if (event.suppressed_at || !event.shared_award_source_id) return false;
+  if (!event.shared_award_source_id) return false;
 
-  const [awardResult, sourceResult] = await Promise.all([
-    admin
-      .from("shared_awards")
-      .select("id")
-      .eq("id", event.shared_award_id)
-      .eq("status", "active")
-      .maybeSingle(),
+  const [sourceResult, publication] = await Promise.all([
     admin
       .from("shared_award_sources")
-      .select("id")
+      .select("id, shared_award_id, admin_review_status, url, title, display_title, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id")
       .eq("id", event.shared_award_source_id)
       .eq("shared_award_id", event.shared_award_id)
       .eq("admin_review_status", "open")
       .maybeSingle(),
+    getStage1PublicationEntryForAward(event.shared_award_id),
   ]);
 
-  if (awardResult.error || sourceResult.error) return false;
-  return Boolean(awardResult.data && sourceResult.data);
+  if (sourceResult.error || !publication) return false;
+  return isPublicChangeEvent({
+    event,
+    award: {
+      id: publication.canonicalAwardId,
+      name: publication.registry.canonical_name,
+      status: "active",
+    },
+    source: sourceResult.data,
+    publication,
+    evidence,
+  });
 }
 
 function hasMatchingEvidenceIdentity(

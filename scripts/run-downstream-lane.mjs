@@ -11,16 +11,8 @@ const root = resolve(import.meta.dirname, "..");
 
 export const downstreamLaneDefinitions = Object.freeze({
   new_page_review: {
-    script: "scripts/process-source-intake-requests.mjs",
-    args: [
-      "--limit=25",
-      "--gemini-api-mode=batch",
-      "--max-requests-per-batch=100",
-      "--poll-batch-limit=5",
-      "--request-timeout-ms=30000",
-      "--status=pending,queued",
-      "--apply=true",
-    ],
+    script: "scripts/process-new-page-review-lane.mjs",
+    args: [],
   },
   changed_page_review: {
     script: "scripts/process-visual-review-batch.mjs",
@@ -31,6 +23,7 @@ export const downstreamLaneDefinitions = Object.freeze({
       "--poll=true",
       "--submit=true",
       "--apply=true",
+      "--paid-lane=changed_page_review",
     ],
   },
   feedback_promotion: {

@@ -256,7 +256,7 @@ function normalizeDownstreamLane(value: unknown): AdminDownstreamLane {
     timeoutSeconds: integer(row.timeout_seconds ?? row.lease_ttl_seconds),
     leaseTtlSeconds: integer(row.lease_ttl_seconds),
     oldestItemSlaSeconds: integer(
-      row.oldest_item_sla_seconds === undefined ? row.sla_seconds : row.oldest_item_sla_seconds,
+      row.oldest_item_sla_seconds ?? row.sla_seconds,
     ),
     queueDepth: integer(row.queue_depth),
     oldestItemAt: nullableText(row.oldest_item_at),

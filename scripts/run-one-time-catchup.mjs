@@ -43,6 +43,19 @@ if (boolArg(args.help, false)) {
   process.exit(0);
 }
 
+// The apply workflow includes historical source-fact/provider work that is no
+// longer an allowed spending category. Preserve its read-only forecast and
+// deterministic planning helpers, but refuse mutation before loading secrets,
+// touching Supabase, or spawning any child process.
+const requestedApply = boolArg(args.apply, false);
+const PAID_CATCHUP_APPLY_RETIRED = true;
+if (PAID_CATCHUP_APPLY_RETIRED && requestedApply) {
+  console.error(
+    "One-time catch-up apply mode is retired and cannot submit provider work. Use the New Page Review and Changed Page Review lanes; run without --apply for a read-only forecast.",
+  );
+  process.exit(2);
+}
+
 const envPath = args.env
   ? resolve(root, String(args.env))
   : existsSync(resolve(root, ".env.worker.local"))
@@ -56,7 +69,7 @@ if (!supabaseUrl || !serviceRoleKey) {
   process.exit(1);
 }
 
-const apply = boolArg(args.apply, false);
+const apply = requestedApply;
 const forecastOnly = boolArg(args["forecast-only"], !apply);
 const resume = boolArg(args.resume, true);
 const json = boolArg(args.json, false);
@@ -1107,7 +1120,7 @@ function printForecast(snapshot) {
   console.log(`  localization_latest_pending=${backlog.snapshot_localization_latest_pending} localization_previous_pending=${backlog.snapshot_localization_previous_pending} historical_fallbacks=${backlog.snapshot_localization_historical_unavailable} localization_work=${backlog.snapshot_localization_work_pending}`);
   console.log(`  active_awards=${backlog.active_awards} missing_public_facts=${backlog.awards_missing_public_facts} never_reconciled=${backlog.awards_never_reconciled}`);
   console.log(`  latest_failed_reconciliations=${backlog.reconciliation_latest_failed_awards} unresolved_audit_errors=${backlog.latest_unresolved_audit_errors}`);
-  console.log(`  visual_retryable_failures=${backlog.visual_review_retryable_failures} visual_terminal_failures=${backlog.visual_review_terminal_failures}`);
+  console.log(`  visual_retryable_failures=${backlog.visual_review_retryable_failures} visual_retry_approval_required=${backlog.visual_review_retry_approval_required} visual_terminal_failures=${backlog.visual_review_terminal_failures}`);
   console.log(`  gemini_model=${forecast.model} mode=${forecast.gemini_mode} estimated_cost=$${forecast.estimated_total_cost_usd.toFixed(2)} range=$${forecast.estimated_cost_range_usd.low.toFixed(2)}-$${forecast.estimated_cost_range_usd.high.toFixed(2)}`);
   console.log(`  expected_time=${forecast.expected_time_hours.low}-${forecast.expected_time_hours.high}h conservative_external_batch_sla=${forecast.conservative_external_batch_sla_hours}h`);
   console.log(`  localization_time=${forecast.estimated_snapshot_localization_hours.low}-${forecast.estimated_snapshot_localization_hours.high}h shards=${forecast.snapshot_localization_shards}`);
@@ -1310,25 +1323,13 @@ function sleep(ms) {
 function printHelp() {
   console.log(`Usage: node scripts/run-one-time-catchup.mjs [options]
 
-Resumable one-time processor that drains AwardPing's setup/repair backlog and
-returns the system to normal daily monitoring. Gemini is restricted to Batch API
-with gemini-2.5-flash-lite.
+Read-only historical catch-up forecast. Apply mode is retired because it mixed
+legacy paid work with deterministic repair; permanent work now runs in the two
+paid review lanes and the independent no-charge lanes.
 
 Options:
   --forecast-only=true            Read live backlog and estimate time/cost (default without --apply)
-  --apply=true                    Run the catch-up processor
-  --resume=true                   Resume the durable state file (default)
-  --daily-cost-cap-usd=5          Secondary local ceiling; database enforces $5 per paid lane
-  --wait-for-budget-reset=true    Wait for the next budget window when needed
-  --max-runtime-hours=36          Pause safely after this runtime
-  --poll-seconds=120              Poll interval for durable Gemini Batch jobs
-  --source-batch-size=250         Requests per source-fact Batch job
-  --source-parallel-jobs=4        Parallel source-fact Batch jobs
-  --reconcile-batch-size=500      Awards reconciled per deterministic pass
-  --page-audit-batch-size=100     Requests per page-audit Batch job
-  --visual-shards=1               Serialized R2 missing-baseline repair shard
-  --localization-shards=3         Parallel domain-sharded localization repair workers
-  --include-housekeeping=true     Suppress historical noise and prune snapshots
+  --apply=true                    Retired; exits before secrets, database access, or child work
   --state=<path>                  Durable resume state path
   --report=<path>                 Final report path
   --env=<path>                    Worker environment file

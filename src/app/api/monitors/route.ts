@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { awardPageTypes } from "@/lib/award-discovery-types";
 import { getCurrentUser } from "@/lib/auth";
-import { hasSupabaseConfig } from "@/lib/config";
+import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
+import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 import { assertPublicHttpUrl } from "@/lib/url-safety";
 import { nextCheckDate } from "@/lib/plans";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 
@@ -21,8 +22,15 @@ const createMonitorSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   if (!hasSupabaseConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
+  }
+  if (!hasSupabaseAdminConfig()) {
+    return NextResponse.json({ error: "Monitor management is not configured." }, { status: 503 });
   }
 
   const user = await getCurrentUser();
@@ -53,14 +61,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const supabase = await createSupabaseServerClient();
+  const admin = createSupabaseAdminClient();
 
   if (parsed.data.awardId) {
-    const { data: award } = await supabase
+    const { data: award } = await admin
       .from("awards")
       .select("id")
       .eq("id", parsed.data.awardId)
-      .eq("user_id", user.id)
+      .eq("office_id", officeContext.current.officeId)
       .maybeSingle();
 
     if (!award) {
@@ -68,7 +76,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("monitors")
     .insert({
       office_id: officeContext.current.officeId,

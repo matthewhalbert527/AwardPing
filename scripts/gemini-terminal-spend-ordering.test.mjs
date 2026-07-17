@@ -103,7 +103,10 @@ describe("terminal Gemini spend ordering", () => {
     expect(visualReview).toContain('status: knownBatchName ? "submitted" : "failed"');
     expect(visualReview).toContain("provider_binding_recovery_required: Boolean(knownBatchName)");
     expect(visualReview).toContain('reservation.status === "creating"');
-    expect(visualReview).toContain('paidReviewWorkFingerprint(\n    "changed-page-review"');
+    expect(visualReview).toContain("paidReviewWorkFingerprint(\n    workKind");
+    const visualLanePolicy = source("lib/paid-visual-review-policy.mjs");
+    expect(visualLanePolicy).toContain('return "new-page-review"');
+    expect(visualLanePolicy).toContain('return "changed-page-review"');
     expect(visualReview).not.toContain("workFingerprint: reservationKey");
     expect(visualReview.indexOf("journalVisualProviderBatchName(claimedCandidates")).toBeLessThan(
       visualReview.indexOf("await submitGeminiSpendReservation({", visualReview.indexOf("journalVisualProviderBatchName(claimedCandidates")),

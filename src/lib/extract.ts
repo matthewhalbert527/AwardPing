@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import * as cheerio from "cheerio";
-import { assertPublicHttpUrl } from "@/lib/url-safety";
+import {
+  fetchPublicHttpResponse,
+  normalizeHttpUrl,
+  type PublicHttpResponse,
+} from "@/lib/url-safety";
 import type { MonitorContentType } from "@/lib/plans";
 
 export type ExtractedContent = {
@@ -23,76 +27,124 @@ export async function fetchExtractedContent(
   rawUrl: string,
   preferredType: MonitorContentType = "auto",
 ): Promise<ExtractedContent> {
-  const safeUrl = await assertPublicHttpUrl(rawUrl);
-  const response = await fetchCrawlerResponse(safeUrl);
-
-  if (!response.ok) {
-    throw new Error(`Fetch failed with HTTP ${response.status}.`);
+  const normalized = normalizeHttpUrl(rawUrl);
+  if (!normalized.ok) {
+    throw new Error(normalized.reason);
   }
+  const safeUrl = normalized.url;
+  const fetched = await fetchCrawlerResponse(safeUrl);
+  const response = fetched.response;
 
-  const contentLength = Number(response.headers.get("content-length") || 0);
-  if (contentLength > maxBytes) {
-    throw new Error("This award source is too large for the v1 tracking limit.");
+  try {
+    if (!response.ok) {
+      throw new Error(`Fetch failed with HTTP ${response.status}.`);
+    }
+
+    const contentLength = Number(response.headers.get("content-length") || 0);
+    if (contentLength > maxBytes) {
+      throw new Error("This award source is too large for the v1 tracking limit.");
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    const arrayBuffer = await readResponseBodyBounded(response, maxBytes);
+
+    const isPdf =
+      preferredType === "pdf" ||
+      (preferredType === "auto" &&
+        (contentType.includes("application/pdf") ||
+          safeUrl.pathname.toLowerCase().endsWith(".pdf")));
+
+    const text = isPdf
+      ? await extractPdfText(arrayBuffer)
+      : extractHtmlText(Buffer.from(arrayBuffer).toString("utf8"));
+
+    const normalizedText = normalizeText(text);
+    if (!normalizedText) {
+      throw new Error("No readable text was found on this URL.");
+    }
+
+    return {
+      url: safeUrl.toString(),
+      hash: hashText(normalizedText),
+      text: normalizedText,
+      sample: normalizedText,
+      byteLength: arrayBuffer.byteLength,
+      statusCode: response.status,
+      contentType,
+    };
+  } finally {
+    await releaseCrawlerResponse(fetched);
   }
-
-  const contentType = response.headers.get("content-type") || "";
-  const arrayBuffer = await response.arrayBuffer();
-  if (arrayBuffer.byteLength > maxBytes) {
-    throw new Error("This award source is too large for the v1 tracking limit.");
-  }
-
-  const isPdf =
-    preferredType === "pdf" ||
-    (preferredType === "auto" &&
-      (contentType.includes("application/pdf") ||
-        safeUrl.pathname.toLowerCase().endsWith(".pdf")));
-
-  const text = isPdf
-    ? await extractPdfText(arrayBuffer)
-    : extractHtmlText(Buffer.from(arrayBuffer).toString("utf8"));
-
-  const normalizedText = normalizeText(text);
-  if (!normalizedText) {
-    throw new Error("No readable text was found on this URL.");
-  }
-
-  return {
-    url: safeUrl.toString(),
-    hash: hashText(normalizedText),
-    text: normalizedText,
-    sample: normalizedText,
-    byteLength: arrayBuffer.byteLength,
-    statusCode: response.status,
-    contentType,
-  };
 }
 
-async function fetchCrawlerResponse(url: URL) {
+async function readResponseBodyBounded(
+  response: PublicHttpResponse["response"],
+  byteLimit: number,
+) {
+  if (!response.body) return new ArrayBuffer(0);
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      byteLength += value.byteLength;
+      if (byteLength > byteLimit) {
+        await reader.cancel("AwardPing response byte limit exceeded").catch(() => undefined);
+        throw new Error("This award source is too large for the v1 tracking limit.");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const combined = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return combined.buffer;
+}
+
+async function fetchCrawlerResponse(url: URL): Promise<PublicHttpResponse> {
   const attempts = [
     crawlerHeaders(userAgent),
     crawlerHeaders(fallbackUserAgent),
   ];
-  let latestResponse: Response | null = null;
+  let latestResponse: PublicHttpResponse | null = null;
 
   for (let index = 0; index < attempts.length; index += 1) {
-    const response = await fetch(url, {
-      redirect: "follow",
+    const fetched = await fetchPublicHttpResponse(url, {
       headers: attempts[index],
       signal: AbortSignal.timeout(18_000),
     });
+    const response = fetched.response;
 
-    if (response.ok) return response;
-    latestResponse = response;
+    if (response.ok) return fetched;
+    latestResponse = fetched;
 
     if (index === attempts.length - 1 || !shouldRetryWithAlternateHeaders(response.status)) {
-      return response;
+      return fetched;
     }
 
-    await response.body?.cancel().catch(() => undefined);
+    await releaseCrawlerResponse(fetched);
     await sleep(retryDelayMs(response));
   }
 
-  return latestResponse as Response;
+  if (!latestResponse) {
+    throw new Error("Crawler fetch did not produce a response.");
+  }
+  return latestResponse;
+}
+
+async function releaseCrawlerResponse(fetched: PublicHttpResponse) {
+  await fetched.response.body?.cancel().catch(() => undefined);
+  await fetched.close();
 }
 
 function crawlerHeaders(nextUserAgent: string) {
@@ -110,7 +162,7 @@ function shouldRetryWithAlternateHeaders(status: number) {
   return status === 403 || status === 405 || status === 429 || status >= 500;
 }
 
-function retryDelayMs(response: Response) {
+function retryDelayMs(response: PublicHttpResponse["response"]) {
   if (response.status !== 429) return 750;
   const retryAfter = response.headers.get("retry-after");
   if (!retryAfter) return 2_000;

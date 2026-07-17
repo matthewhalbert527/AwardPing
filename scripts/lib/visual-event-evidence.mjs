@@ -6,11 +6,12 @@ import sharp from "sharp";
 import {
   localizeVisualEventSide,
   verifyVisualTextGeometryBinding,
+  visualChangeSemanticManifest,
 } from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
 
 export const PUBLISHED_VISUAL_EVIDENCE_PREFIX = "visual-snapshots/published";
-export const VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION = "visual-event-evidence-v1";
+export const VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION = "visual-event-evidence-v2";
 
 export class DeterministicVisualArtifactError extends Error {
   constructor(message, code = "deterministic_visual_artifact_unavailable") {
@@ -62,7 +63,9 @@ export async function preparePublishedVisualEventEvidence({
     const previous = await prepare("previous");
     const current = await prepare("current");
     const requiredSides = [previous, current].filter((side) => side.localization.required);
-    const verifiedRequired = requiredSides.filter((side) => side.localization.status === "verified");
+    const verifiedRequired = requiredSides.filter((side) =>
+      side.localization.status === "verified" && side.localization.semantic_verified === true
+    );
     const allPdf = previous.localization.status === "not_applicable_pdf" &&
       current.localization.status === "not_applicable_pdf";
     const evidenceStatus = allPdf
@@ -78,6 +81,7 @@ export async function preparePublishedVisualEventEvidence({
           ? "added"
           : "changed";
 
+    const semanticManifest = visualChangeSemanticManifest(changeDetails);
     return {
       change_event_id: null,
       shared_award_id: candidate.shared_award_id,
@@ -90,6 +94,8 @@ export async function preparePublishedVisualEventEvidence({
       current_capture: current.capture,
       localization: {
         direction,
+        semantic_contract: semanticManifest.contract,
+        change_semantics_sha256: semanticManifest.change_semantics_sha256,
         sides: {
           previous: previous.localization,
           current: current.localization,
@@ -859,7 +865,7 @@ async function prepareSide({
       }
     : null;
   let crop = null;
-  if (localization.status === "verified") {
+  if (localization.status === "verified" && localization.semantic_verified === true) {
     crop = await createAndUploadVerifiedCrop({
       store,
       candidateId: candidate.id,
@@ -979,6 +985,9 @@ async function createAndUploadVerifiedCrop({
     clip,
     css_clip: localization.crop_rect,
     exact_overlap: true,
+    semantic_binding_sha256: localization.semantic_binding.binding_sha256,
+    exact_text_sha256: localization.semantic_binding.exact_text_sha256,
+    geometry_sha256: localization.semantic_binding.geometry_sha256,
     state_id: state.state_id,
     source_image_object_key: sourceImage.object_key,
     source_image_sha256: sourceImageSha256,
@@ -1369,6 +1378,9 @@ function localizationManifest(value) {
     reason: value.reason || null,
     algorithm_version: value.algorithm_version || null,
     state_id: value.state_id || null,
+    phrase_source: value.phrase_source || null,
+    semantic_binding: value.semantic_binding || null,
+    semantic_verified: value.semantic_verified === true,
   };
 }
 
@@ -1402,6 +1414,9 @@ function aggregateUnavailableStatus(requiredSides) {
   if (statuses.some((status) => status.includes("image"))) return "unavailable_geometry_missing";
   if (statuses.some((status) => status.includes("geometry"))) return "unavailable_geometry_missing";
   if (statuses.some((status) => status.includes("exact_text"))) return "unavailable_exact_text_missing";
+  if (requiredSides.some(
+    (side) => side.localization.status === "verified" && side.localization.semantic_verified !== true,
+  )) return "full_screenshot_fallback";
   return "full_screenshot_fallback";
 }
 

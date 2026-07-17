@@ -5,8 +5,9 @@ import {
   filterSubscribersWithoutDigestDelivery,
   hashToken,
   normalizePublicUpdateEmail,
+  pendingPublicDigestChangesForSubscriber,
   publicDigestKey,
-  publicDigestSince,
+  splitPublicDigestChanges,
   type PublicDigestCandidate,
 } from "@/lib/public-updates-core";
 
@@ -30,10 +31,45 @@ describe("public update digest helpers", () => {
     expect(hashToken(token)).toHaveLength(64);
   });
 
-  it("uses UTC digest keys and a 36-hour public digest window", () => {
+  it("uses UTC digest keys without a rolling delivery window", () => {
     const date = new Date("2026-05-27T20:00:00.000Z");
     expect(publicDigestKey(date)).toBe("2026-05-27");
-    expect(publicDigestSince(date)).toBe("2026-05-26T08:00:00.000Z");
+  });
+
+  it("uses durable event receipts so an overlapping next-day run cannot resend", () => {
+    const changes = Array.from({ length: 2 }, (_, index) => ({
+      eventId: `event-${index + 1}`,
+      awardName: "Example",
+      sourceTitle: "Deadlines",
+      sourceUrl: "https://example.edu/deadlines",
+      summary: `Update ${index + 1}`,
+      detectedAt: `2026-07-17T0${index + 2}:00:00.000Z`,
+    }));
+    const pending = pendingPublicDigestChangesForSubscriber(
+      changes,
+      "2026-07-17T00:00:00.000Z",
+      new Set(["event-1"]),
+    );
+    expect(pending.map((change) => change.eventId)).toEqual(["event-2"]);
+    expect(splitPublicDigestChanges(pending).flat().map((change) => change.eventId)).toEqual([
+      "event-2",
+    ]);
+  });
+
+  it("splits bursts into complete capped batches without omitting events", () => {
+    const changes = Array.from({ length: 25 }, (_, index) => ({
+      eventId: `event-${String(index + 1).padStart(2, "0")}`,
+      awardName: "Example",
+      sourceTitle: "Deadlines",
+      sourceUrl: "https://example.edu/deadlines",
+      summary: `Update ${index + 1}`,
+      detectedAt: new Date(Date.UTC(2026, 6, 17, 0, index)).toISOString(),
+    }));
+    const batches = splitPublicDigestChanges(changes);
+    expect(batches.map((batch) => batch.length)).toEqual([12, 12, 1]);
+    expect(batches.flat().map((change) => change.eventId)).toEqual(
+      changes.map((change) => change.eventId),
+    );
   });
 
   it("keeps useful official award changes and dedupes repeat summaries", () => {
@@ -140,8 +176,17 @@ describe("public update digest helpers", () => {
     expect(
       filterSubscribersWithoutDigestDelivery(
         [{ id: "sub-a" }, { id: "sub-b" }],
-        [{ subscriber_id: "sub-a" }],
+        [{ subscriber_id: "sub-a", status: "sent" }],
       ),
     ).toEqual([{ id: "sub-b" }]);
+  });
+
+  it("retries subscribers whose previous digest attempt failed", () => {
+    expect(
+      filterSubscribersWithoutDigestDelivery(
+        [{ id: "sub-a" }, { id: "sub-b" }],
+        [{ subscriber_id: "sub-a", status: "failed" }],
+      ),
+    ).toEqual([{ id: "sub-a" }, { id: "sub-b" }]);
   });
 });

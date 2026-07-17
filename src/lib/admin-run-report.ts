@@ -1,4 +1,9 @@
 import type { Database } from "@/lib/database.types";
+import { isScheduledNightlyVisualRun } from "../../scripts/lib/visual-nightly-run-contract.mjs";
+import {
+  validateVisualSourceInventoryCohort,
+  validateVisualSourceInventoryProof,
+} from "../../scripts/lib/visual-source-inventory-proof.mjs";
 
 export type WorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
 
@@ -39,6 +44,17 @@ export type VisualNightlyShard = {
   finishedAt: string | null;
   checked: number;
   failed: number;
+  loaded: number;
+  processed: number;
+  inventoryComplete: boolean;
+  inventoryProofComplete: boolean;
+  inventoryProofReason: string;
+  globalSourceCount: number | null;
+  globalSourceHash: string | null;
+  expectedShardSourceCount: number | null;
+  expectedShardSourceHash: string | null;
+  loadedShardSourceCount: number | null;
+  loadedShardSourceHash: string | null;
   incidents: number;
   stalled: boolean;
 };
@@ -67,6 +83,11 @@ export type VisualNightlyReport = {
   checked: number;
   failed: number;
   incidents: number;
+  inventoryComplete: boolean;
+  inventoryProofComplete: boolean;
+  globalSourceCount: number | null;
+  globalSourceHash: string | null;
+  partitionSourceCountSum: number | null;
   failureRatePercent: number;
   startedAt: string | null;
   finishedAt: string | null;
@@ -226,13 +247,22 @@ export function buildVisualNightlyReport(
     .map((index) => index + 1);
   const checked = sum(shards.map((shard) => shard.checked));
   const failed = sum(shards.map((shard) => shard.failed));
-  const loaded = sum([...canonicalByShard.values()].map(loadedSourcesForRun));
+  const loaded = sum(shards.map((shard) => shard.loaded));
   const incidents = sum(shards.map((shard) => shard.incidents));
   const completedShards = shards.filter((shard) => Boolean(shard.finishedAt) && !shard.stalled).length;
+  const inventoryProof = validateVisualSourceInventoryCohort(
+    [...canonicalByShard.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, run]) => record(run.metadata).source_inventory),
+    expectedShards,
+  );
   let failureGroups = mergeNightlyFailureGroups(
     [...canonicalByShard.values()].flatMap(runFailureGroups),
   );
   const anyFailed = shards.some((shard) => shard.status === "failed");
+  const incompleteInventoryShards = shards.filter((shard) => !shard.inventoryComplete);
+  const inventoryGapShards = incompleteInventoryShards.filter((shard) =>
+    shard.status !== "running" && !shard.inventoryComplete);
   const anyRunning = shards.some((shard) => shard.status === "running");
   const withinRunWindow = windowRuns.length > 0 &&
     now.getTime() - Math.min(...windowRuns.map((run) => dateMs(run.started_at))) < 3 * 60 * 60 * 1000;
@@ -242,10 +272,35 @@ export function buildVisualNightlyReport(
   else if (anyFailed) status = "failed";
   else if (anyRunning) status = "running";
   else if (missingShards.length) status = withinRunWindow ? "running" : "incomplete";
+  else if (!inventoryProof.complete) status = "failed";
   else if (failed > 0 || incidents > 0 || failureGroups.length > 0) status = "degraded";
   else status = "healthy";
 
   const syntheticFailures: VisualNightlyFailureGroup[] = [];
+  if (inventoryGapShards.length) {
+    syntheticFailures.push(failureResolution(
+      "source_inventory_empty_or_incomplete",
+      "Scheduled source inventory was not fully processed",
+      "critical",
+      "repair_then_restart_shard",
+      "verify_inventory_then_restart_shard",
+      "Compare each shard's loaded and processed source inventory, repair the source query or interrupted loop, then restart only the affected shard. A zero-page run never proves a healthy scan.",
+      inventoryGapShards.length,
+      0,
+    ));
+  }
+  if (!inventoryProof.complete && shards.length === expectedShards && !anyRunning) {
+    syntheticFailures.push(failureResolution(
+      "source_inventory_proof_missing_or_mismatched",
+      "Authoritative source inventory proofs do not form one exact cohort",
+      "critical",
+      "repair_then_restart_shard",
+      "verify_authoritative_inventory_then_restart_shard",
+      `Require all three shards to attest the same non-empty global count and hash, matching partition hashes, exact loaded hashes, and a partition-count sum equal to the global count. Proof failure: ${inventoryProof.reason}.`,
+      1,
+      0,
+    ));
+  }
   const legacyShards = [...canonicalByShard.values()].filter(isLegacyVisualRun);
   if (legacyShards.length) {
     syntheticFailures.push(failureResolution(
@@ -300,6 +355,12 @@ export function buildVisualNightlyReport(
     checked,
     failed,
     incidents,
+    inventoryComplete: shards.length === expectedShards &&
+      incompleteInventoryShards.length === 0 && inventoryProof.complete,
+    inventoryProofComplete: inventoryProof.complete,
+    globalSourceCount: inventoryProof.globalCount,
+    globalSourceHash: inventoryProof.globalHash,
+    partitionSourceCountSum: inventoryProof.partitionCountSum,
     failureRatePercent: loaded ? Math.round((failed / loaded) * 10_000) / 100 : 0,
     startedAt: earliestDate(shards.map((shard) => shard.startedAt)),
     finishedAt: latestDate(shards.map((shard) => shard.finishedAt)),
@@ -311,6 +372,7 @@ export function buildVisualNightlyReport(
       failed,
       missingShards,
       monitoringDate,
+      failureGroups,
     }),
     shards,
     failureGroups,
@@ -352,10 +414,20 @@ function visualNightlyShard(run: WorkerRun, shardIndex: number, now: Date): Visu
   const runHealth = record(metadata.run_health);
   const healthStatus = cleanText(runHealth.status);
   const stalled = visualRunIsStalled(run, now);
+  const checked = numberValue(run.checked_count);
+  const failed = numberValue(run.failed_count);
+  const loaded = loadedSourcesForRun(run);
+  const processed = checked + failed +
+    metric(run, ["skipped_existing_baseline"]) + metric(run, ["skipped_pdf"]);
+  const inventoryProof = validateVisualSourceInventoryProof(metadata.source_inventory, {
+    shardCount: visualShardCount(run),
+    shardIndex,
+  });
+  const inventoryComplete = loaded > 0 && processed === loaded && inventoryProof.complete;
   let status: VisualNightlyShard["status"] = "healthy";
   if (stalled) status = "failed";
   else if (run.status === "running" || healthStatus === "running") status = "running";
-  else if (run.status === "failed" || ["failed", "blocked"].includes(healthStatus)) status = "failed";
+  else if (run.status === "failed" || ["failed", "blocked"].includes(healthStatus) || !inventoryComplete) status = "failed";
   else if (run.failed_count > 0 || healthStatus === "degraded" || runFailureGroups(run).length) status = "degraded";
 
   return {
@@ -365,8 +437,19 @@ function visualNightlyShard(run: WorkerRun, shardIndex: number, now: Date): Visu
     status,
     startedAt: run.started_at,
     finishedAt: run.finished_at,
-    checked: numberValue(run.checked_count),
-    failed: numberValue(run.failed_count),
+    checked,
+    failed,
+    loaded,
+    processed,
+    inventoryComplete,
+    inventoryProofComplete: inventoryProof.complete,
+    inventoryProofReason: inventoryProof.reason,
+    globalSourceCount: inventoryProof.globalCount,
+    globalSourceHash: inventoryProof.globalHash,
+    expectedShardSourceCount: inventoryProof.expectedShardCount,
+    expectedShardSourceHash: inventoryProof.expectedShardHash,
+    loadedShardSourceCount: inventoryProof.loadedShardCount,
+    loadedShardSourceHash: inventoryProof.loadedShardHash,
     incidents: numberValue(runHealth.incident_count) || runErrorSamples(run).length,
     stalled,
   };
@@ -561,6 +644,7 @@ function visualNightlySummary({
   failed,
   missingShards,
   monitoringDate,
+  failureGroups,
 }: {
   status: VisualNightlyStatus;
   expectedShards: number;
@@ -569,10 +653,16 @@ function visualNightlySummary({
   failed: number;
   missingShards: number[];
   monitoringDate: string;
+  failureGroups: VisualNightlyFailureGroup[];
 }) {
   if (status === "scheduled") return `The three 6 PM shards are within their launch grace period for ${monitoringDate}.`;
   if (status === "missed") return `No 6 PM shard report was recorded for the due ${monitoringDate} scan.`;
-  if (status === "failed") return `The 6 PM scan failed. ${completedShards}/${expectedShards} shards reported, with ${formatCount(failed)} source failures.`;
+  if (status === "failed") {
+    const primaryFailure = failureGroups.find((group) =>
+      group.code === "source_inventory_proof_missing_or_mismatched") || failureGroups[0];
+    const reason = cleanText(primaryFailure?.label) || "A shard or required inventory check failed";
+    return `The 6 PM scan failed: ${reason}. ${completedShards}/${expectedShards} shards reported, with ${formatCount(failed)} source failures.`;
+  }
   if (status === "running") return `The 6 PM scan is running. ${completedShards}/${expectedShards} shards have completed.`;
   if (status === "incomplete") return `The 6 PM scan is incomplete; ${missingShards.map((shard) => `shard ${shard}`).join(" and ")} did not report.`;
   if (status === "degraded") return `All ${expectedShards} shards completed, captured ${formatCount(checked)} pages, and recorded ${formatCount(failed)} source failures.`;
@@ -737,20 +827,11 @@ function isScheduledDailyVisualRun(run: WorkerRun) {
   const metadata = record(run.metadata);
   const identity = record(metadata.run_identity);
   const options = record(metadata.options);
-  const trigger = cleanText(identity.trigger || options.run_trigger);
-  if (trigger ? trigger !== "scheduled" : chicagoHourForDate(run.started_at) !== 18) {
-    return false;
-  }
-  return ![
-    options.baseline_refresh,
-    options.complete_missing_baselines,
-    options.localization_repair,
-    options.r2_backfill_baselines,
-    options.discovery_mode,
-    options.source_id,
-    options.source_url,
-    options.award,
-  ].some(Boolean);
+  return isScheduledNightlyVisualRun({
+    startedAt: run.started_at,
+    runIdentity: identity,
+    options,
+  });
 }
 
 function isLegacyVisualRun(run: WorkerRun) {
@@ -899,17 +980,6 @@ function withinSixPmLaunchGrace(now: Date) {
   }).formatToParts(now);
   const byType = new Map(parts.map((part) => [part.type, part.value]));
   return Number(byType.get("hour")) === 18 && Number(byType.get("minute")) < 15;
-}
-
-function chicagoHourForDate(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return -1;
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: "America/Chicago",
-    hour: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(date);
-  return Number(parts.find((part) => part.type === "hour")?.value);
 }
 
 function formatCount(value: number) {

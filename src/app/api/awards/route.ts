@@ -1,17 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import {
-  awardPageTypes,
-  contentTypeForPage,
-  pageTypeLabel,
-} from "@/lib/award-discovery-types";
+import { awardPageTypes } from "@/lib/award-discovery-types";
 import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
-import { nextCheckDate } from "@/lib/plans";
+import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 import { upsertSharedAward } from "@/lib/shared-awards";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { assertPublicHttpUrl } from "@/lib/url-safety";
 
 export const runtime = "nodejs";
@@ -34,6 +29,10 @@ const createAwardSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   if (!hasSupabaseConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }
@@ -107,7 +106,6 @@ export async function POST(request: Request) {
     }
   }
 
-  const supabase = await createSupabaseServerClient();
   const admin = createSupabaseAdminClient();
   let sharedAward;
   try {
@@ -138,81 +136,69 @@ export async function POST(request: Request) {
     );
   }
 
-  const { data: award, error: awardError } = await supabase
-    .from("awards")
-    .insert({
-      office_id: officeContext.current.officeId,
-      user_id: user.id,
-      shared_award_id: sharedAward.id,
-      name: parsed.data.name,
-      official_homepage: officialHomepage,
-      summary: parsed.data.summary || null,
-      confidence: parsed.data.confidence,
-      status: "active",
-    })
-    .select("*")
-    .single();
+  const { data: sharedSources, error: sharedSourcesError } = await admin
+    .from("shared_award_sources")
+    .select("id, url")
+    .eq("shared_award_id", sharedAward.id)
+    .in("url", safeSources.map((source) => source.url));
 
-  if (awardError || !award) {
+  if (sharedSourcesError) {
     return NextResponse.json(
-      { error: awardError?.message || "Award card could not be created." },
+      { error: sharedSourcesError.message },
       { status: 500 },
     );
   }
 
-  const sourceRows = safeSources.map((source) => ({
-    award_id: award.id,
-    office_id: officeContext.current.officeId,
-    user_id: user.id,
-    url: source.url,
-    title: source.title,
-    page_type: source.pageType,
-    confidence: source.confidence,
-    reason: source.reason || null,
-    selected: true,
-  }));
-
-  const { data: sources, error: sourcesError } = await supabase
-    .from("award_sources")
-    .insert(sourceRows)
-    .select("*");
-
-  if (sourcesError) {
-    await supabase.from("awards").delete().eq("id", award.id).eq("user_id", user.id);
-    return NextResponse.json({ error: sourcesError.message }, { status: 500 });
+  const sharedSourceIdByUrl = new Map(
+    (sharedSources || []).map((source) => [source.url, source.id]),
+  );
+  const sharedSourceIds = safeSources
+    .map((source) => sharedSourceIdByUrl.get(source.url))
+    .filter((sourceId): sourceId is string => Boolean(sourceId));
+  if (sharedSourceIds.length !== safeSources.length) {
+    return NextResponse.json(
+      { error: "The shared source catalog changed during source intake. Try again." },
+      { status: 409 },
+    );
   }
 
-  const monitorRows = safeSources.map((source) => ({
-    office_id: officeContext.current.officeId,
-    user_id: user.id,
-    award_id: award.id,
-    label: `${parsed.data.name} - ${pageTypeLabel(source.pageType)}`,
-    url: source.url,
-    content_type: contentTypeForPage(source.pageType, source.url),
-    cadence: parsed.data.cadence,
-    page_type: source.pageType,
-    source_label: source.title,
-    next_check_at: nextCheckDate(
-      parsed.data.cadence,
-      new Date(Date.now() - 86_400_000),
-    ),
-  }));
-
-  const { data: monitors, error: monitorsError } = await supabase
-    .from("monitors")
-    .insert(monitorRows)
-    .select("*");
-
-  if (monitorsError) {
-    await supabase.from("awards").delete().eq("id", award.id).eq("user_id", user.id);
-    return NextResponse.json({ error: monitorsError.message }, { status: 500 });
+  const { data: tracking, error: trackingError } = await admin.rpc(
+    "create_office_award_tracking_from_intake",
+    {
+      p_actor_user_id: user.id,
+      p_office_id: officeContext.current.officeId,
+      p_shared_award_id: sharedAward.id,
+      p_shared_award_source_ids: sharedSourceIds,
+      p_cadence: parsed.data.cadence,
+    },
+  );
+  if (
+    trackingError ||
+    !isJsonObject(tracking) ||
+    !isJsonObject(tracking.award) ||
+    !Array.isArray(tracking.sources) ||
+    !Array.isArray(tracking.monitors)
+  ) {
+    const status = trackingError?.code === "42501"
+      ? 403
+      : trackingError?.code === "40001"
+        ? 409
+        : 500;
+    return NextResponse.json(
+      { error: trackingError?.message || "Award tracking could not be created." },
+      { status },
+    );
   }
 
   return NextResponse.json({
     ok: true,
-    award,
+    award: tracking.award,
     sharedAward,
-    sources: sources || [],
-    monitors: monitors || [],
+    sources: tracking.sources,
+    monitors: tracking.monitors,
   });
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

@@ -15,6 +15,11 @@ await checkRedirect("pricing redirect", "/pricing", "/signup");
 await checkRedirect("dashboard auth redirect", "/dashboard", "/login");
 await checkStatus("find awards page", "/award-directory", [200]);
 await checkStatus("send-digests cron rejects anonymous calls", "/api/cron/send-digests", [401]);
+await checkStatus(
+  "public digest outbox drain rejects anonymous calls",
+  "/api/cron/drain-public-digest-outbox",
+  [401],
+);
 
 if (runCron) {
   if (!cronSecret) {

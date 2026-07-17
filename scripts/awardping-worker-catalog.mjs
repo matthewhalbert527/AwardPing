@@ -3,14 +3,13 @@ export const workerLanes = [
     id: "orchestration",
     label: "Monitoring System",
     detail:
-      "Operator-run catch-up plus independent permanent lanes for promotion, quarantine accounting, and the nightly report.",
-    profileIds: ["catchup", "daily"],
+      "Independent permanent lanes for promotion, quarantine accounting, and the nightly report.",
+    profileIds: [],
     taskIds: [
       "health",
       "verified-feedback-promotions",
       "manual-quarantine-registry",
       "nightly-report",
-      "one-time-catchup",
     ],
     workerIds: [
       "feedback-promotion-lane",
@@ -20,11 +19,11 @@ export const workerLanes = [
   },
   {
     id: "source-quality",
-    label: "Source Quality",
+    label: "Suppression & Retention",
     detail:
-      "Operator-run source cleanup tools plus an independent recurring suppression-policy lane.",
-    profileIds: ["cleanup"],
-    taskIds: ["source-quality", "change-event-noise", "prune-history"],
+      "Applies the verified suppression policy and retains bounded snapshot history without a source-quality worker.",
+    profileIds: [],
+    taskIds: ["change-event-noise", "prune-history"],
     workerIds: ["suppression-lane"],
   },
   {
@@ -54,51 +53,14 @@ export const workerLanes = [
     id: "facts-cycle",
     label: "Facts & Cycle Intelligence",
     detail:
-      "Runs operator-only fact extraction plus independent reconciliation and deterministic public-page audit lanes.",
-    profileIds: ["baseline"],
-    taskIds: ["ai-review-completion", "baseline-facts", "reconcile-awards", "page-audit-batch", "aggregate-facts", "award-details"],
-    workerIds: ["reconciliation-lane", "page-audit-lane"],
-  },
-  {
-    id: "repair-recovery",
-    label: "Repair & Recovery",
-    detail:
-      "Specialized repair lanes for missing visual baselines and localized capture sync problems.",
+      "Runs independent reconciliation and deterministic public-page audit lanes.",
     profileIds: [],
-    taskIds: ["visual-missing", "localization-repair"],
-    workerIds: [],
+    taskIds: ["reconcile-awards", "page-audit-batch"],
+    workerIds: ["reconciliation-lane", "page-audit-lane"],
   },
 ];
 
 export const maintenanceProfiles = {
-  catchup: {
-    laneId: "orchestration",
-    label: "Initial Setup & Repair",
-    detail:
-      "Completes a temporary backlog and returns the system to its three 6 PM shards and eight independent downstream lanes.",
-    cost: "Operator-only catch-up; permanent paid work remains limited to the two database-capped $5/day review lanes.",
-  },
-  daily: {
-    laneId: "orchestration",
-    label: "Daily Monitoring",
-    detail:
-      "Checks approved pages, compares meaningful content, and publishes only verified changes.",
-    cost: "New-page and changed-page review are each hard-capped at $5/day; every other permanent lane is $0 direct AI/API cost.",
-  },
-  baseline: {
-    laneId: "facts-cycle",
-    label: "Baseline Facts",
-    detail:
-      "Runs Gemini Batch source fact extraction, reconciles public award facts, and audits pages when facts or cycle relevance are behind.",
-    cost: "Operator-only Gemini Batch work; no permanent baseline lane is installed.",
-  },
-  cleanup: {
-    laneId: "source-quality",
-    label: "Source Cleanup",
-    detail:
-      "Runs the source-quality gate, suppressed/noisy change-event cleanup, award reconciliation, and snapshot pruning without refreshing screenshots.",
-    cost: "$0 direct AI/API cost.",
-  },
   snapshots: {
     laneId: "visual-capture",
     label: "Screenshots",
@@ -144,20 +106,6 @@ export const atomicTasks = [
     scheduledWorkerIds: [],
   },
   {
-    id: "one-time-catchup",
-    laneId: "orchestration",
-    label: "One-Time Catch-Up",
-    detail:
-      "Forecasts and drains source review, missing baselines, reconciliation, page and visual review, and current snapshot localization, then exits so only the permanent 6 PM shards and independent lanes remain.",
-    cost: "Gemini Batch only with gemini-2.5-flash-lite; forecasts live time and cost before applying.",
-    run: {
-      kind: "script",
-      args: ["scripts/run-one-time-catchup.mjs"],
-      applyArg: true,
-    },
-    scheduledWorkerIds: [],
-  },
-  {
     id: "verified-feedback-promotions",
     laneId: "orchestration",
     label: "Verified Feedback Promotions",
@@ -199,19 +147,6 @@ export const atomicTasks = [
       args: ["scripts/report-visual-nightly.mjs", "--write=true"],
     },
     scheduledWorkerIds: ["nightly-report-lane"],
-  },
-  {
-    id: "source-quality",
-    laneId: "source-quality",
-    label: "Source Quality Cleanup (operator-only)",
-    detail:
-      "Finds source-quality gate failures and moves ineligible open sources to review_later.",
-    cost: "$0 direct AI/API cost.",
-    run: {
-      kind: "maintenance",
-      phases: ["source-quality"],
-    },
-    scheduledWorkerIds: [],
   },
   {
     id: "change-event-noise",
@@ -279,58 +214,6 @@ export const atomicTasks = [
     scheduledWorkerIds: [],
   },
   {
-    id: "visual-missing",
-    laneId: "repair-recovery",
-    label: "Complete Missing Visual Baselines",
-    detail:
-      "Backfills missing screenshot/text baselines with baseline-rich expandable-section extraction and no visual interpretation.",
-    cost: "$0 direct AI/API cost.",
-    run: {
-      kind: "maintenance",
-      phases: ["visual-missing"],
-    },
-    scheduledWorkerIds: [],
-  },
-  {
-    id: "ai-review-completion",
-    laneId: "facts-cycle",
-    label: "AI Review Completion",
-    detail:
-      "Closes the open-source review gap with Gemini Batch, moves clear rejects to review_later, and queues affected awards for reconciliation.",
-    cost: "Gemini Batch API with the configured daily cap.",
-    run: {
-      kind: "maintenance",
-      phases: ["ai-review-completion"],
-    },
-    scheduledWorkerIds: [],
-  },
-  {
-    id: "baseline-facts",
-    laneId: "facts-cycle",
-    label: "Baseline Fact Extraction",
-    detail:
-      "Runs Gemini Batch page-fact extraction for source pages so cycle relevance and application facts can be computed.",
-    cost: "Operator-only Gemini Batch work; no permanent baseline lane is installed.",
-    run: {
-      kind: "maintenance",
-      phases: ["baseline-facts"],
-    },
-    scheduledWorkerIds: [],
-  },
-  {
-    id: "aggregate-facts",
-    laneId: "facts-cycle",
-    label: "Legacy Public Fact Aggregation",
-    detail:
-      "Legacy fallback that rebuilds public award facts from extracted source-page baseline facts. Prefer award reconciliation.",
-    cost: "$0 direct AI/API cost.",
-    run: {
-      kind: "maintenance",
-      phases: ["aggregate-facts"],
-    },
-    scheduledWorkerIds: [],
-  },
-  {
     id: "reconcile-awards",
     laneId: "facts-cycle",
     label: "Reconciled Public Facts",
@@ -362,23 +245,6 @@ export const atomicTasks = [
     scheduledWorkerIds: ["page-audit-lane"],
   },
   {
-    id: "award-details",
-    laneId: "facts-cycle",
-    label: "Award Detail Extraction (disabled)",
-    detail:
-      "Disabled by policy because it used the local Gemini CLI. New-page review handles source information; changed-page review handles changed wording; reconciliation and page audit stay deterministic.",
-    cost: "$0 while disabled; only the two review lanes may create paid Gemini Batch work.",
-    run: {
-      kind: "script",
-      args: [
-        "scripts/backfill-award-baseline-details.mjs",
-        "--skip-existing=true",
-      ],
-      applyArg: true,
-    },
-    scheduledWorkerIds: [],
-  },
-  {
     id: "prune-history",
     laneId: "source-quality",
     label: "Snapshot History Prune",
@@ -388,23 +254,6 @@ export const atomicTasks = [
     run: {
       kind: "maintenance",
       phases: ["prune-history"],
-    },
-    scheduledWorkerIds: [],
-  },
-  {
-    id: "localization-repair",
-    laneId: "repair-recovery",
-    label: "Localization Repair",
-    detail:
-      "Operator-only targeted localization repair; changed pages return to normal capture/review instead of being absorbed.",
-    cost: "$0 direct AI/API cost.",
-    run: {
-      kind: "script",
-      args: [
-        "scripts/run-localization-repair.mjs",
-        "--limit=100000",
-        "--web-concurrency=1",
-      ],
     },
     scheduledWorkerIds: [],
   },

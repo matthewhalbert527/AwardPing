@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { validateSameOriginAdminMutation } from "@/lib/admin-request-security";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { SourceIntakeType } from "@/lib/source-intake";
@@ -35,6 +36,9 @@ const sourceIntakeSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  const originError = validateSameOriginAdminMutation(request);
+  if (originError) return originError;
+
   const setup = await validateAdminRequest();
   if (setup.response) return setup.response;
 

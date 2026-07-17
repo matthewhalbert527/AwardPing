@@ -41,10 +41,14 @@ export async function buildEventVisualEvidenceSide({
   captureValue,
   localizationValue,
   signObjectKey,
+  exactCropAllowed = false,
+  fallbackReason = null,
 }: {
   captureValue: unknown;
   localizationValue: unknown;
   signObjectKey: (key: string) => Promise<string>;
+  exactCropAllowed?: boolean;
+  fallbackReason?: string | null;
 }): Promise<EventVisualEvidenceSide> {
   const capture = jsonObject(captureValue) as EventVisualCaptureManifest;
   const localization = jsonObject(localizationValue) as EventVisualLocalizationSide;
@@ -52,7 +56,8 @@ export async function buildEventVisualEvidenceSide({
   const crop = evidenceObject(capture.crop);
   const localizationStatus = cleanText(localization.status) || "unavailable_geometry_missing";
   const cropPassesExactGate = Boolean(
-    localizationStatus === "verified" &&
+    exactCropAllowed &&
+      localizationStatus === "verified" &&
       crop?.exact_overlap === true &&
       localization.exact_overlap === true &&
       crop.source_image_object_key === full?.object_key &&
@@ -74,11 +79,21 @@ export async function buildEventVisualEvidenceSide({
   }
 
   const exactOverlap = Boolean(objects.crop);
-  const exposedLocalizationStatus = localizationStatus === "verified" && !exactOverlap
+  const localizationNotApplicable = [
+    "not_applicable_pdf",
+    "not_applicable_new_document",
+    "not_applicable_first_observation",
+  ].includes(localizationStatus);
+  const forceFullScreenshotFallback = !localizationNotApplicable && (
+    !exactCropAllowed || localizationStatus === "verified" && !exactOverlap
+  );
+  const exposedLocalizationStatus = forceFullScreenshotFallback
     ? "full_screenshot_fallback"
     : localizationStatus;
-  const suppliedReason = localizationStatus === "verified" && !exactOverlap
-    ? ""
+  const suppliedReason = forceFullScreenshotFallback && !exactCropAllowed
+    ? cleanText(fallbackReason)
+    : localizationStatus === "verified" && !exactOverlap
+      ? ""
     : cleanText(localization.reason);
 
   const kind = cleanText(full?.content_type).toLowerCase().includes("pdf")

@@ -111,13 +111,13 @@ describe("award monitoring policy", () => {
   });
 
   it("exposes a deterministic policy-bundle identity for scan metadata", () => {
-    expect(awardMonitoringPolicyVersion).toBe("policy-3.memory-2");
+    expect(awardMonitoringPolicyVersion).toBe("policy-4.memory-2");
     expect(awardMonitoringPolicyHash).toMatch(/^fnv1a32x2-utf16:[0-9a-f]{16}$/);
     expect(awardMonitoringPolicyIdentity).toEqual({
       id: `awardping-monitoring-policy@${awardMonitoringPolicyVersion}+${awardMonitoringPolicyHash}`,
       version: awardMonitoringPolicyVersion,
       hash: awardMonitoringPolicyHash,
-      policyVersion: 3,
+      policyVersion: 4,
       decisionMemoryVersion: 2,
     });
   });

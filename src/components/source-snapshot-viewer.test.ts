@@ -4,6 +4,7 @@ import {
   snapshotInitialVersion,
   snapshotLocalizationLabel,
   snapshotRequestPath,
+  snapshotUnavailableMessage,
 } from "@/components/source-snapshot-viewer";
 import { buildChangeEvidence } from "@/lib/change-evidence";
 
@@ -81,7 +82,7 @@ describe("source snapshot viewer evidence selection", () => {
     };
 
     expect(snapshotLocalizationLabel(eventSide, null, "change_event")).toBe(
-      "Full event screenshot - The location was ambiguous.",
+      "Exact location unavailable - full event screenshot. The location was ambiguous.",
     );
     const genericLabel = snapshotLocalizationLabel(genericSide, 0.4, "source_current");
     expect(genericLabel).toBe("Approximate text match in this retained source snapshot");
@@ -111,5 +112,16 @@ describe("source snapshot viewer evidence selection", () => {
       "Immutable event PDF - This PDF is AwardPing's first retained observation; no prior publisher version is asserted.",
     );
     expect(label).not.toMatch(/changed screenshot|full event screenshot|today/i);
+  });
+
+  it("labels unrecoverable historical artifacts truthfully", () => {
+    expect(snapshotUnavailableMessage({
+      evidence_status: "historical_artifact_unrecoverable",
+    })).toBe(
+      "Historical visual evidence unavailable - retained artifacts could not be recovered for this update.",
+    );
+    expect(snapshotUnavailableMessage(null)).toBe(
+      "Exact visual evidence is unavailable for this update.",
+    );
   });
 });

@@ -15,10 +15,9 @@ import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
 const command = args._[0] || "status";
-const profile = choiceArg(args.profile, ["catchup", "daily", "baseline", "cleanup", "snapshots"], "catchup");
+const profile = stringArg(args.profile, "snapshots").toLowerCase();
 const taskId = stringArg(args.task, "");
 const apply = boolArg(args.apply, true);
-const baselineCostCapUsd = numberArg(args["baseline-cost-cap-usd"], 5);
 const envPath = stringArg(
   args.env,
   existsSync(resolve(root, ".env.worker.local")) ? ".env.worker.local" : ".env.local",
@@ -46,8 +45,10 @@ if (command === "help" || boolArg(args.help, false)) {
 } else if (command === "status") {
   await printStatus();
 } else if (command === "start") {
+  assertKnownProfile();
   startMaintenance();
 } else if (command === "run") {
+  assertKnownProfile();
   await runMaintenanceForeground();
 } else if (command === "start-task") {
   startAtomicTaskDetached();
@@ -67,10 +68,10 @@ async function printStatus() {
   await printLocalProcesses();
   await printWorkerLanes();
   console.log("");
-  console.log("Start catch-up:");
-  console.log("  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=5");
-  console.log("Start one task:");
-  console.log("  npm run command:center -- start-task --task=baseline-facts");
+  console.log("Run a bounded manual screenshot capture:");
+  console.log("  npm run command:center -- start --profile=snapshots --apply=true");
+  console.log("Start one current zero-cost task:");
+  console.log("  npm run command:center -- start-task --task=reconcile-awards");
 }
 
 function startMaintenance() {
@@ -135,7 +136,6 @@ function maintenanceArgs() {
     envPath,
     `--profile=${profile}`,
     `--apply=${apply}`,
-    `--baseline-cost-cap-usd=${baselineCostCapUsd}`,
   ];
 }
 
@@ -146,10 +146,9 @@ function atomicTaskArgs(task) {
       "scripts/run-awardping-maintenance.mjs",
       "--env",
       envPath,
-      "--profile=daily",
+      "--profile=task",
       `--phases=${(run.phases || []).join(",")}`,
       `--apply=${apply}`,
-      `--baseline-cost-cap-usd=${baselineCostCapUsd}`,
     ];
   }
   return [
@@ -372,9 +371,9 @@ Usage:
   npm run command:center -- status
   npm run command:center -- profiles
   npm run command:center -- tasks
-  npm run command:center -- start --profile=catchup --apply=true --baseline-cost-cap-usd=5
-  npm run command:center -- run --profile=baseline --apply=true
-  npm run command:center -- start-task --task=baseline-facts
+  npm run command:center -- start --profile=snapshots --apply=true
+  npm run command:center -- run --profile=discovery --apply=true
+  npm run command:center -- start-task --task=source-intake
   npm run command:center -- run-task --task=reconcile-awards
 
 Commands:
@@ -387,10 +386,9 @@ Commands:
   run-task   Run one individual task in the foreground.
 
 Options:
-  --profile=catchup|daily|baseline|cleanup|snapshots|discovery|visual-review
-  --task=health|source-quality|visual-snapshots|visual-review-batch|visual-missing|ai-review-completion|baseline-facts|reconcile-awards|page-audit-batch|aggregate-facts|award-details|prune-history|localization-repair
+  --profile=${Object.keys(maintenanceProfiles).join("|")}
+  --task=${atomicTasks.map((task) => task.id).join("|")}
   --apply=true|false
-  --baseline-cost-cap-usd=5
   --env=.env.worker.local`);
 }
 
@@ -424,19 +422,16 @@ function boolArg(value, fallback) {
   return /^(1|true|yes|y|on)$/i.test(String(value).trim());
 }
 
-function choiceArg(value, allowed, fallback) {
-  const clean = String(value || "").trim().toLowerCase();
-  return allowed.includes(clean) ? clean : fallback;
-}
-
 function stringArg(value, fallback) {
   const clean = String(value || "").trim();
   return clean || fallback;
 }
 
-function numberArg(value, fallback) {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+function assertKnownProfile() {
+  if (Object.hasOwn(maintenanceProfiles, profile)) return;
+  console.error(`Unknown or retired profile: ${profile}`);
+  console.error(`Current profiles: ${Object.keys(maintenanceProfiles).join(", ")}`);
+  process.exit(1);
 }
 
 function findAtomicTask() {

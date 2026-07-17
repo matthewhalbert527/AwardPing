@@ -202,4 +202,31 @@ describe("award fact reconciliation", () => {
     expect(publishable.stipend).toBe("$37,000");
     expect(publishable.reconciliation.review_flags).toContain("amount_preserved_pending_review");
   });
+
+  it("keeps retained-alias candidates bound to the award that owns their source", () => {
+    const aliasSource = source({
+      id: "alias-eligibility",
+      shared_award_id: "retained-alias-award",
+      title: award.name,
+      page_type: "eligibility",
+      page_metadata: {
+        baseline_facts: {
+          status: "succeeded",
+          award_relevance: "supporting",
+          award_name_seen: true,
+          confidence: "high",
+          eligibility: ["Applicants must be enrolled graduate students."],
+          evidence_quotes: ["Applicants must be enrolled graduate students."],
+        },
+      },
+    });
+
+    const candidates = buildFactCandidatesFromSources(award, [aliasSource]);
+
+    expect(candidates).not.toHaveLength(0);
+    expect(candidates.every((candidate) =>
+      candidate.shared_award_id === "retained-alias-award" &&
+      candidate.shared_award_source_id === "alias-eligibility"
+    )).toBe(true);
+  });
 });

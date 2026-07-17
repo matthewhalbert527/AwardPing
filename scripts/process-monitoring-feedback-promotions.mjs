@@ -31,6 +31,11 @@ import {
   currentMonitoringPromotionWorkerIdentity,
   sealPromotionReport,
 } from "./lib/monitoring-feedback-promotion-verification.mjs";
+import { isScheduledNightlyVisualRun } from "./lib/visual-nightly-run-contract.mjs";
+import {
+  validateVisualSourceInventoryCohort,
+  validateVisualSourceInventoryProof,
+} from "./lib/visual-source-inventory-proof.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -528,6 +533,7 @@ async function processPromotionCluster({
       candidate_status_counts: candidateReadiness.status_counts,
       candidate_terminal_failures: candidateReadiness.failures,
       capture_coverage_safe: cohort.captureCoverageSafe,
+      source_inventory_proof: cohort.sourceInventoryProof,
       capture_coverage_failures: cohort.runs
         .filter((run) => !workerRunHasSafeCanaryCoverage(run))
         .map((run) => ({
@@ -1514,7 +1520,11 @@ export function selectCanaryCohort(
     const metadata = objectValue(run.metadata);
     const identity = objectValue(metadata.run_identity);
     return (
-      cleanKey(identity.trigger) === "scheduled" &&
+      isScheduledNightlyVisualRun({
+        startedAt: run.started_at,
+        runIdentity: identity,
+        options: objectValue(metadata.options),
+      }) &&
       Number(identity.shard_count) === 3 &&
       Number.isInteger(Number(identity.shard_index)) &&
       validTimestamp(run.started_at) &&
@@ -1552,6 +1562,10 @@ export function selectCanaryCohort(
     }
     if (![0, 1, 2].every((shard) => newestByShard.has(shard))) continue;
     const selected = [0, 1, 2].map((shard) => newestByShard.get(shard));
+    const sourceInventoryProof = validateVisualSourceInventoryCohort(
+      selected.map((run) => objectValue(run.metadata).source_inventory),
+      3,
+    );
     const exactIdentity = selected.every((run) => {
       const metadata = objectValue(run.metadata);
       return (
@@ -1570,7 +1584,9 @@ export function selectCanaryCohort(
       completed: selected.every((run) =>
         ["succeeded", "completed"].includes(cleanKey(run.status)),
       ),
-      captureCoverageSafe: selected.every(workerRunHasSafeCanaryCoverage),
+      captureCoverageSafe:
+        sourceInventoryProof.complete && selected.every(workerRunHasSafeCanaryCoverage),
+      sourceInventoryProof,
     });
   }
   return (
@@ -1583,8 +1599,27 @@ export function selectCanaryCohort(
 }
 
 export function workerRunHasSafeCanaryCoverage(run) {
-  const counts = objectValue(objectValue(run?.metadata).counts);
+  const metadata = objectValue(run?.metadata);
+  const identity = objectValue(metadata.run_identity);
+  const counts = objectValue(metadata.counts);
+  const health = objectValue(metadata.run_health);
+  const inventoryProof = validateVisualSourceInventoryProof(metadata.source_inventory, {
+    shardCount: Number(identity.shard_count),
+    shardIndex: Number(identity.shard_index),
+  });
+  const loaded = Number(health.loaded_sources);
+  const processed = Number(health.processed_sources);
+  const checked = Number(run?.checked_count);
   return (
+    Number.isInteger(loaded) &&
+    loaded > 0 &&
+    Number.isInteger(processed) &&
+    processed === loaded &&
+    health.inventory_complete === true &&
+    health.inventory_proof_complete === true &&
+    inventoryProof.complete &&
+    Number.isInteger(checked) &&
+    checked > 0 &&
     Number.isInteger(Number(run?.failed_count)) &&
     Number(run.failed_count) === 0 &&
     Object.prototype.hasOwnProperty.call(

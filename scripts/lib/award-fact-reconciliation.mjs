@@ -178,7 +178,14 @@ export function reconcileAwardFacts(award, sources, candidates = [], options = {
       continue;
     }
     const selection = {
-      candidate: { ...candidate, field_name: validation.field },
+      candidate: {
+        ...candidate,
+        field_name: validation.field,
+        metadata: {
+          ...(candidate.metadata || {}),
+          stored_field_name: candidate.field_name,
+        },
+      },
       source: source || null,
       value: validation.value,
       reason: explainFactSelection(candidate, source || null, award),
@@ -279,7 +286,11 @@ export function buildFactCandidatesFromSources(award, sources) {
       const normalizedField = canonicalFieldName(field);
       if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return;
       candidates.push({
-        shared_award_id: award.id,
+        // Stage 1 reconciles retained aliases/tracks into one canonical public
+        // fact set. Keep each candidate bound to the award that actually owns
+        // its source; the publication ledger separately binds the reconciled
+        // value to the canonical award.
+        shared_award_id: source.shared_award_id || award.id,
         shared_award_source_id: source.id || null,
         source_url: source.url || null,
         source_title: source.display_title || source.title || null,
@@ -323,6 +334,42 @@ export function buildFactCandidatesFromSources(award, sources) {
     if (cleanKey(source.page_type) === "faq") add("faq_url", source.url);
   }
   return candidates;
+}
+
+export function planMissingFactCandidateMaterialization(
+  award,
+  sources,
+  loadedCandidates = [],
+) {
+  const sourceOwnerById = new Map(
+    sources.map((source) => [source.id, source.shared_award_id]),
+  );
+  const sourceOwnerMismatches = [];
+  const ownerMatchedCandidates = loadedCandidates.filter((candidate) => {
+    const sourceOwner = sourceOwnerById.get(candidate.shared_award_source_id);
+    const ownerMatches = !sourceOwner || sourceOwner === candidate.shared_award_id;
+    if (!ownerMatches) sourceOwnerMismatches.push(candidate);
+    return ownerMatches;
+  });
+  const usableLoadedCandidates = ownerMatchedCandidates.filter(
+    (candidate) => !["rejected", "superseded"].includes(candidate.candidate_status),
+  );
+  const loadedCandidateKeys = new Set(
+    // Rejected and superseded rows are not reconsidered, but their stable
+    // identity still prevents the same permanently invalid source fact from
+    // being regenerated on every reconciliation pass.
+    ownerMatchedCandidates.map(factCandidateMaterializationKey),
+  );
+  const generatedCandidates = buildFactCandidatesFromSources(award, sources)
+    .filter((candidate) => !loadedCandidateKeys.has(
+      factCandidateMaterializationKey(candidate),
+    ));
+
+  return {
+    usableLoadedCandidates,
+    generatedCandidates,
+    sourceOwnerMismatches,
+  };
 }
 
 export function buildAwardSummaryFromFacts(award, facts) {
@@ -385,12 +432,34 @@ export function preserveLastKnownGoodAmountFacts(selectedFacts, previousPublicFa
   };
 }
 
-export async function enqueueAwardReconciliation(supabase, { awardId, reason, sourceIds = [], candidateIds = [], priority = 100, metadata = {} }) {
+export async function enqueueAwardReconciliation(supabase, {
+  awardId,
+  reason,
+  sourceIds = [],
+  candidateIds = [],
+  priority = 100,
+  metadata = {},
+  _casAttempt = 0,
+}) {
   if (!awardId) return { queued: false, reason: "missing_award_id" };
+  const stage1Target = await resolveStage1ReconciliationTarget(supabase, awardId);
+  const targetAwardId = stage1Target.canonicalAwardId;
+  const targetMetadata = stage1Target.canonicalized
+    ? {
+        ...metadata,
+        stage1_cohort_key: stage1Target.cohortKey,
+        triggering_member_award_ids: unique([
+          ...(Array.isArray(metadata?.triggering_member_award_ids)
+            ? metadata.triggering_member_award_ids
+            : []),
+          awardId,
+        ]),
+      }
+    : metadata;
   const { data: existing, error: existingError } = await supabase
     .from("shared_award_reconciliation_queue")
-    .select("id,reason,source_ids,candidate_ids,priority,metadata,status")
-    .eq("shared_award_id", awardId)
+    .select("id,reason,source_ids,candidate_ids,priority,metadata,status,generation")
+    .eq("shared_award_id", targetAwardId)
     .in("status", ["pending", "processing"])
     .order("created_at", { ascending: true })
     .limit(1)
@@ -402,13 +471,14 @@ export async function enqueueAwardReconciliation(supabase, { awardId, reason, so
     throw new Error(`Load active award reconciliation failed: ${existingError.message}`);
   }
   if (existing?.id) {
+    const currentGeneration = Number(existing.generation) || 0;
     const patch = {
       source_ids: unique([...(existing.source_ids || []), ...sourceIds]).filter(Boolean),
       candidate_ids: unique([...(existing.candidate_ids || []), ...candidateIds]).filter(Boolean),
       priority: Math.min(Number(existing.priority) || 100, Number(priority) || 100),
       metadata: {
         ...(existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {}),
-        ...metadata,
+        ...targetMetadata,
         coalesced_reasons: unique([
           ...(Array.isArray(existing.metadata?.coalesced_reasons)
             ? existing.metadata.coalesced_reasons.filter(Boolean)
@@ -417,22 +487,47 @@ export async function enqueueAwardReconciliation(supabase, { awardId, reason, so
           reason,
         ]),
       },
+      generation: currentGeneration + 1,
     };
-    const { error: updateError } = await supabase
+    const { data: updated, error: updateError } = await supabase
       .from("shared_award_reconciliation_queue")
       .update(patch)
-      .eq("id", existing.id);
+      .eq("id", existing.id)
+      .eq("status", existing.status)
+      .eq("generation", currentGeneration)
+      .select("id,status,generation")
+      .maybeSingle();
     if (updateError) throw new Error(`Update active award reconciliation failed: ${updateError.message}`);
-    return { queued: false, coalesced: true, id: existing.id, status: existing.status };
+    if (updated?.id) {
+      return {
+        queued: false,
+        coalesced: true,
+        id: updated.id,
+        status: updated.status,
+        generation: updated.generation,
+      };
+    }
+    if (_casAttempt >= 4) {
+      throw new Error("Active award reconciliation changed repeatedly while coalescing new work.");
+    }
+    return enqueueAwardReconciliation(supabase, {
+      awardId,
+      reason,
+      sourceIds,
+      candidateIds,
+      priority,
+      metadata,
+      _casAttempt: _casAttempt + 1,
+    });
   }
   const payload = {
-    shared_award_id: awardId,
+    shared_award_id: targetAwardId,
     reason,
     source_ids: unique(sourceIds).filter(Boolean),
     candidate_ids: unique(candidateIds).filter(Boolean),
     status: "pending",
     priority,
-    metadata,
+    metadata: targetMetadata,
   };
   const { data, error } = await supabase
     .from("shared_award_reconciliation_queue")
@@ -442,18 +537,81 @@ export async function enqueueAwardReconciliation(supabase, { awardId, reason, so
   if (error) {
     if (/does not exist|schema cache|relation .* not found/i.test(error.message || "")) return { queued: false, reason: "queue_table_missing" };
     if (error.code === "23505" || /duplicate key|unique constraint/i.test(error.message || "")) {
-      const { data: raced } = await supabase
-        .from("shared_award_reconciliation_queue")
-        .select("id,status")
-        .eq("shared_award_id", awardId)
-        .in("status", ["pending", "processing"])
-        .limit(1)
-        .maybeSingle();
-      return { queued: false, coalesced: true, id: raced?.id || null, status: raced?.status || null };
+      if (_casAttempt >= 4) {
+        throw new Error("Active award reconciliation changed repeatedly while queuing new work.");
+      }
+      return enqueueAwardReconciliation(supabase, {
+        awardId,
+        reason,
+        sourceIds,
+        candidateIds,
+        priority,
+        metadata,
+        _casAttempt: _casAttempt + 1,
+      });
     }
     throw new Error(`Queue award reconciliation failed: ${error.message}`);
   }
   return { queued: Boolean(data?.id), id: data?.id || null };
+}
+
+export async function resolveStage1ReconciliationTarget(supabase, awardId) {
+  const fallback = {
+    canonicalAwardId: awardId,
+    cohortKey: null,
+    memberAwardIds: [awardId],
+    canonicalized: false,
+  };
+  if (!awardId) return fallback;
+
+  const membership = await supabase
+    .from("stage1_award_members")
+    .select("cohort_key")
+    .eq("shared_award_id", awardId)
+    .maybeSingle();
+  if (membership.error) {
+    if (isMissingStage1RegistryError(membership.error)) return fallback;
+    throw new Error(`Load Stage 1 reconciliation membership failed: ${membership.error.message}`);
+  }
+  const cohortKey = membership.data?.cohort_key || null;
+  if (!cohortKey) return fallback;
+
+  const [registry, members] = await Promise.all([
+    supabase
+      .from("stage1_award_registry")
+      .select("canonical_shared_award_id")
+      .eq("cohort_key", cohortKey)
+      .maybeSingle(),
+    supabase
+      .from("stage1_award_members")
+      .select("shared_award_id")
+      .eq("cohort_key", cohortKey),
+  ]);
+  if (registry.error || members.error) {
+    const error = registry.error || members.error;
+    if (isMissingStage1RegistryError(error)) return fallback;
+    throw new Error(`Load Stage 1 reconciliation target failed: ${error.message}`);
+  }
+  const canonicalAwardId = registry.data?.canonical_shared_award_id || null;
+  const memberAwardIds = unique(
+    (members.data || []).map((member) => member.shared_award_id).filter(Boolean),
+  );
+  if (!canonicalAwardId || !memberAwardIds.includes(canonicalAwardId)) {
+    throw new Error(`Stage 1 cohort ${cohortKey} has no valid canonical reconciliation target.`);
+  }
+
+  return {
+    canonicalAwardId,
+    cohortKey,
+    memberAwardIds,
+    canonicalized: canonicalAwardId !== awardId,
+  };
+}
+
+function isMissingStage1RegistryError(error) {
+  return /does not exist|schema cache|relation .* not found|could not find the table/i.test(
+    String(error?.message || ""),
+  );
 }
 
 function selectedFactsFromSelections(award, selected, options) {
@@ -493,6 +651,27 @@ function selectedFactsFromSelections(award, selected, options) {
       conflict_count: options.conflictCount,
     },
   };
+}
+
+function factCandidateMaterializationKey(candidate) {
+  return JSON.stringify(stableJsonValue({
+    shared_award_id: candidate.shared_award_id || null,
+    shared_award_source_id: candidate.shared_award_source_id || null,
+    field_name: candidate.field_name || null,
+    normalized_value: candidate.normalized_value ?? candidate.raw_value ?? null,
+    evidence_quote: candidate.evidence_quote || null,
+    evidence_location: candidate.evidence_location || null,
+  }));
+}
+
+function stableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, stableJsonValue(nested)]),
+  );
 }
 
 function factCandidateScore(candidate, source, award) {

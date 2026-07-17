@@ -16,6 +16,7 @@ const env = {
 
 checkEnvFile();
 checkRequiredEnv();
+checkSupabaseApiKeyMigration();
 checkProductionEnv();
 checkVercelProjectLink();
 checkVercelCron();
@@ -99,14 +100,13 @@ function checkRequiredEnv() {
   const required = [
     ["NEXT_PUBLIC_APP_URL", "hosted app URL"],
     ["NEXT_PUBLIC_SUPABASE_URL", "Supabase project URL"],
-    ["NEXT_PUBLIC_SUPABASE_ANON_KEY", "Supabase anon key"],
-    ["SUPABASE_SERVICE_ROLE_KEY", "Supabase service role key"],
+    ["NEXT_PUBLIC_SUPABASE_ANON_KEY", "Supabase sb_publishable key"],
+    ["SUPABASE_SERVICE_ROLE_KEY", "Supabase sb_secret key"],
     ["CRON_SECRET", "cron route secret"],
+    ["APP_DATA_ENCRYPTION_KEY", "personal-data encryption"],
     ["RESEND_API_KEY", "Resend email delivery"],
     ["ALERT_FROM_EMAIL", "verified email sender"],
     ["CONTACT_TO_EMAIL", "contact form recipient"],
-    ["TAVILY_API_KEY", "source finder search"],
-    ["OPENAI_API_KEY", "source finder classification"],
   ];
 
   for (const [key, label] of required) {
@@ -123,6 +123,45 @@ function checkRequiredEnv() {
       fail("CRON_SECRET must be a long production-only random value.");
     } else {
       pass("CRON_SECRET is not a placeholder and is long enough for launch.");
+    }
+  }
+
+  if (hasValue("APP_DATA_ENCRYPTION_KEY")) {
+    const encryptionKey = env.APP_DATA_ENCRYPTION_KEY.trim();
+    if (encryptionKey.length < 32 || /replace|changeme|example|secret/i.test(encryptionKey)) {
+      fail("APP_DATA_ENCRYPTION_KEY must be a production-only random value with at least 32 characters.");
+    } else if (hasValue("CRON_SECRET") && encryptionKey === env.CRON_SECRET.trim()) {
+      fail("APP_DATA_ENCRYPTION_KEY must be independent from CRON_SECRET.");
+    } else {
+      pass("APP_DATA_ENCRYPTION_KEY is non-placeholder, long enough, and independent from CRON_SECRET.");
+    }
+  }
+}
+
+function checkSupabaseApiKeyMigration() {
+  if (hasValue("NEXT_PUBLIC_SUPABASE_ANON_KEY")) {
+    const publicKey = env.NEXT_PUBLIC_SUPABASE_ANON_KEY.trim();
+    if (publicKey.startsWith("sb_secret_")) {
+      fail("NEXT_PUBLIC_SUPABASE_ANON_KEY contains an sb_secret key; it would be exposed to browsers.");
+    } else if (publicKey.startsWith("sb_publishable_")) {
+      pass("NEXT_PUBLIC_SUPABASE_ANON_KEY contains a current sb_publishable key.");
+    } else if (production) {
+      fail("NEXT_PUBLIC_SUPABASE_ANON_KEY must contain an sb_publishable key before legacy Supabase keys are disabled.");
+    } else {
+      warn("NEXT_PUBLIC_SUPABASE_ANON_KEY still contains a legacy/nonstandard key; development migration is allowed, but production requires sb_publishable.");
+    }
+  }
+
+  if (hasValue("SUPABASE_SERVICE_ROLE_KEY")) {
+    const secretKey = env.SUPABASE_SERVICE_ROLE_KEY.trim();
+    if (secretKey.startsWith("sb_publishable_")) {
+      fail("SUPABASE_SERVICE_ROLE_KEY contains a publishable key and cannot authorize server or worker operations.");
+    } else if (secretKey.startsWith("sb_secret_")) {
+      pass("SUPABASE_SERVICE_ROLE_KEY contains a current server-only sb_secret key.");
+    } else if (production) {
+      fail("SUPABASE_SERVICE_ROLE_KEY must contain an sb_secret key; legacy service_role JWTs are launch blockers.");
+    } else {
+      warn("SUPABASE_SERVICE_ROLE_KEY still contains a legacy/nonstandard key; development migration is allowed, but production requires sb_secret.");
     }
   }
 }
@@ -208,7 +247,10 @@ function checkVercelCron() {
 
   const crons = Array.isArray(config.crons) ? config.crons : [];
   const paths = new Map(crons.map((cron) => [cron.path, cron.schedule]));
-  const expected = [["/api/cron/send-digests", "0 13 * * *"]];
+  const expected = [
+    ["/api/cron/send-digests", "0 13 * * *"],
+    ["/api/cron/drain-public-digest-outbox", "*/5 * * * *"],
+  ];
 
   for (const [path, schedule] of expected) {
     if (paths.get(path) === schedule) {
@@ -238,6 +280,22 @@ function checkMigrations() {
     "20260716171409_recover_rejected_initial_document_candidates.sql",
     "20260716174800_fix_initial_document_publication_evidence_contract.sql",
     "20260716181500_secure_visual_candidate_publication_trigger.sql",
+    "20260716204011_stage1_publication_registry.sql",
+    "20260716211002_invite_only_beta_signup.sql",
+    "20260716212857_atomic_free_check_rate_limit.sql",
+    "20260716214500_stage1_reviewed_promotion.sql",
+    "20260716221500_atomic_reconciliation_publication.sql",
+    "20260716223000_stage1_source_release_fence.sql",
+    "20260716223500_public_digest_release_binding.sql",
+    "20260716224000_stage1_release_acceptance.sql",
+    "20260716224500_exact_text_semantic_crop_binding.sql",
+    "20260717004447_public_digest_outbox.sql",
+    "20260717010000_paid_review_retry_approval.sql",
+    "20260717011309_atomic_office_award_tracking.sql",
+    "20260717022006_harden_office_tracking_ownership.sql",
+    "20260717025000_harden_award_work_items_tenant_binding.sql",
+    "20260717032000_atomic_public_form_rate_limits.sql",
+    "20260717033000_public_digest_event_ledger.sql",
   ];
 
   for (const file of expected) {
@@ -543,10 +601,10 @@ function checkRedirects() {
   const pricing = readIfExists("src/app/pricing/page.tsx");
   const billing = readIfExists("src/app/dashboard/billing/page.tsx");
 
-  if (/redirect\(["']\/signup["']\)/.test(pricing)) {
-    pass("/pricing redirects to /signup.");
+  if (/redirect\(["']\/contact["']\)/.test(pricing)) {
+    pass("/pricing redirects to /contact for the invitation-only beta.");
   } else {
-    fail("/pricing should redirect to /signup for the free beta.");
+    fail("/pricing should redirect to /contact for the invitation-only beta.");
   }
 
   if (/redirect\(["']\/updates["']\)/.test(billing)) {

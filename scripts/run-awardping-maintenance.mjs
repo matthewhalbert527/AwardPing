@@ -20,7 +20,14 @@ const envPath = args.env
       ? ".env.local"
       : "";
 const envArgs = envPath ? ["--env", envPath] : [];
-const profile = cleanChoice(args.profile, ["daily", "catchup", "baseline", "cleanup", "snapshots", "discovery", "visual-review", "source-intake"], "daily");
+const supportedProfiles = ["snapshots", "discovery", "visual-review", "source-intake", "task"];
+const requestedProfile = String(args.profile || "").trim().toLowerCase();
+if (requestedProfile && !supportedProfiles.includes(requestedProfile)) {
+  console.error(`Unknown or retired maintenance profile: ${requestedProfile}`);
+  console.error(`Current profiles: ${supportedProfiles.filter((value) => value !== "task").join(", ")}`);
+  process.exit(2);
+}
+const profile = requestedProfile || "snapshots";
 const apply = boolArg(args.apply, true);
 const continueOnError = boolArg(args["continue-on-error"], true);
 const runStamp = timestampForPath(new Date().toISOString());
@@ -34,7 +41,43 @@ const logDir = args["log-dir"]
     : join(reportDir, "logs");
 const reportPath = join(reportDir, "summary.json");
 
-const phases = csvList(args.phases).length ? csvList(args.phases) : profilePhases(profile);
+const explicitPhases = csvList(args.phases);
+if (profile === "task" && explicitPhases.length === 0) {
+  console.error("The internal task profile requires an explicit --phases list.");
+  process.exit(2);
+}
+const phases = explicitPhases.length ? explicitPhases : profilePhases(profile);
+const supportedPhases = new Set([
+  "health",
+  "prune-history",
+  "source-quality",
+  "change-event-noise",
+  "source-intake",
+  "source-discovery",
+  "visual",
+  "visual-missing",
+  "visual-review-batch",
+  "reconcile-awards",
+  "page-audit-batch",
+  "localization-repair",
+  "aggregate-facts",
+]);
+const retiredPaidPhases = new Set(["ai-review-completion", "baseline-facts"]);
+const retiredRequestedPhases = phases.filter((phase) => retiredPaidPhases.has(phase));
+const unknownRequestedPhases = phases.filter(
+  (phase) => !supportedPhases.has(phase) && !retiredPaidPhases.has(phase),
+);
+if (retiredRequestedPhases.length || unknownRequestedPhases.length) {
+  if (retiredRequestedPhases.length) {
+    console.error(
+      `Retired paid maintenance phase(s): ${retiredRequestedPhases.join(", ")}. Use new_page_review or changed_page_review.`,
+    );
+  }
+  if (unknownRequestedPhases.length) {
+    console.error(`Unknown maintenance phase(s): ${unknownRequestedPhases.join(", ")}.`);
+  }
+  process.exit(2);
+}
 const visualShards = boundedInt(args["visual-shards"], 3, 1, 12);
 const visualLimit = positiveInt(args["visual-limit"], 50_000);
 const visualWebConcurrency = boundedInt(args["visual-web-concurrency"], 4, 1, 8);
@@ -57,19 +100,9 @@ const discoveryIntent = cleanChoice(
 const discoveryOnboardingBatchId = String(
   args["discovery-onboarding-batch-id"] || `maintenance-discovery-${runStamp}`,
 ).trim();
-const sourceIntakeLimit = positiveInt(args["source-intake-limit"], profile === "daily" ? 25 : 250);
+const sourceIntakeLimit = positiveInt(args["source-intake-limit"], 250);
 const sourceIntakeMaxRequestsPerBatch = positiveInt(args["source-intake-max-requests-per-batch"], 100);
 const sourceIntakeGeminiMode = cleanChoice(args["source-intake-gemini-api-mode"], ["batch", "none"], "batch");
-const baselineLimit = positiveInt(args["baseline-limit"], 50_000);
-const baselineMaxCalls = nonNegativeInt(args["baseline-max-calls"], 50_000);
-const baselineCostCapUsd = nonNegativeNumber(args["baseline-cost-cap-usd"], 5);
-const baselineBatchMaxRequests = positiveInt(args["baseline-batch-max-requests"], 25);
-const baselineBatchParallelJobs = positiveInt(args["baseline-batch-parallel-jobs"], 4);
-const baselineForce = boolArg(args["baseline-force"], false);
-const aiReviewCompletionMaxBatchRequests = nonNegativeInt(
-  args["ai-review-completion-max-batch-requests"],
-  baselineMaxCalls,
-);
 const sourceQualityHours = positiveNumber(args["source-quality-hours"], 10);
 const sourceQualityMaxAwards = positiveInt(args["source-quality-max-awards"], 90);
 const sourceQualityMinOpenSources = positiveInt(args["source-quality-min-open-sources"], 75);
@@ -129,8 +162,6 @@ try {
     else if (phase === "visual") await runVisualSnapshots(false);
     else if (phase === "visual-missing") await runVisualSnapshots(true);
     else if (phase === "visual-review-batch") await runVisualReviewBatch();
-    else if (phase === "ai-review-completion") await runAiReviewCompletion();
-    else if (phase === "baseline-facts") await runBaselineFacts();
     else if (phase === "reconcile-awards") await runReconcileAwards();
     else if (phase === "page-audit-batch") await runPageAuditBatch();
     else if (phase === "localization-repair") await runLocalizationRepair();
@@ -310,41 +341,6 @@ async function runVisualReviewBatch() {
   ]);
 }
 
-async function runAiReviewCompletion() {
-  await runPhase("ai-review-completion", [
-    "scripts/backfill-open-source-ai-determinations.mjs",
-    ...envArgs,
-    `--apply=${apply}`,
-    "--only-open=true",
-    "--gemini-api-mode=batch",
-    `--max-batch-requests=${aiReviewCompletionMaxBatchRequests}`,
-    `--gemini-batch-max-requests=${baselineBatchMaxRequests}`,
-    `--daily-cost-cap-usd=${baselineCostCapUsd}`,
-    "--resume=true",
-    "--reconcile=false",
-    "--force-ai=true",
-  ]);
-}
-
-async function runBaselineFacts() {
-  const commandArgs = [
-    "scripts/backfill-baseline-facts.mjs",
-    ...envArgs,
-    "--ai-provider=gemini",
-    "--model=gemini-2.5-flash-lite",
-    "--gemini-api-mode=batch",
-    `--gemini-batch-max-requests=${baselineBatchMaxRequests}`,
-    `--gemini-batch-parallel-jobs=${baselineBatchParallelJobs}`,
-    `--limit=${baselineLimit}`,
-    `--gemini-api-max-requests=${baselineMaxCalls}`,
-    `--gemini-api-max-submitted-requests=${baselineMaxCalls}`,
-    `--gemini-api-daily-cost-cap-usd=${baselineCostCapUsd}`,
-    `--apply=${apply}`,
-  ];
-  if (baselineForce) commandArgs.push("--force=true");
-  await runPhase("baseline-facts", commandArgs);
-}
-
 async function runReconcileAwards() {
   await runPhase("reconcile-awards", [
     "scripts/reconcile-impacted-award-pages.mjs",
@@ -465,41 +461,11 @@ function runCommand(commandArgs, logPath) {
 }
 
 function profilePhases(value) {
-  if (value === "catchup") {
-    return [
-      "health",
-      "source-intake",
-      "visual-missing",
-      "ai-review-completion",
-      "source-quality",
-      "visual-review-batch",
-      "reconcile-awards",
-      "page-audit-batch",
-      "change-event-noise",
-      "localization-repair",
-      "prune-history",
-    ];
-  }
-  if (value === "baseline") return ["health", "baseline-facts", "reconcile-awards", "page-audit-batch"];
-  if (value === "cleanup") return ["health", "source-quality", "change-event-noise", "reconcile-awards", "prune-history"];
   if (value === "snapshots") return ["health", "visual"];
   if (value === "visual-review") return ["health", "visual-review-batch"];
   if (value === "source-intake") return ["health", "source-intake", "reconcile-awards", "page-audit-batch"];
-  if (value === "discovery") {
-    return ["health", "source-intake", "source-quality", "source-discovery", "baseline-facts", "reconcile-awards", "page-audit-batch", "prune-history"];
-  }
-  return [
-    "health",
-    "source-intake",
-    "source-quality",
-    "visual",
-    "visual-review-batch",
-    "baseline-facts",
-    "reconcile-awards",
-    "page-audit-batch",
-    "change-event-noise",
-    "prune-history",
-  ];
+  if (value === "discovery") return ["health", "source-discovery"];
+  return ["health"];
 }
 
 function writeReport() {
@@ -671,11 +637,6 @@ function positiveInt(value, fallback) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function nonNegativeInt(value, fallback) {
-  const parsed = Number.parseInt(String(value ?? ""), 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
 function boundedInt(value, fallback, min, max) {
   return Math.min(max, Math.max(min, positiveInt(value, fallback)));
 }
@@ -683,11 +644,6 @@ function boundedInt(value, fallback, min, max) {
 function positiveNumber(value, fallback) {
   const parsed = Number.parseFloat(String(value ?? ""));
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function nonNegativeNumber(value, fallback) {
-  const parsed = Number.parseFloat(String(value ?? ""));
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function stringArg(value, fallback) {
@@ -711,27 +667,23 @@ function printHelp() {
   console.log(`Run AwardPing maintenance from one coordinated entrypoint.
 
 Examples:
-  node scripts/run-awardping-maintenance.mjs --profile=catchup --apply=true
-  node scripts/run-awardping-maintenance.mjs --profile=baseline --baseline-cost-cap-usd=5
-  node scripts/run-awardping-maintenance.mjs --phases=health,baseline-facts,reconcile-awards,page-audit-batch
+  node scripts/run-awardping-maintenance.mjs --profile=snapshots --apply=true
+  node scripts/run-awardping-maintenance.mjs --profile=discovery --apply=true
+  node scripts/run-awardping-maintenance.mjs --profile=task --phases=health,reconcile-awards
 
 Profiles:
-  daily      stable checks, section extraction, queued batch review, reconciliation, deterministic audit, flagged page-audit batch
-  catchup    missing captures, AI review completion, source cleanup, visual Batch review, reconciliation, audit, localization, retention
-  baseline   baseline-rich fact extraction, reconciliation, deterministic audit, flagged page-audit batch
-  cleanup    source-quality gate cleanup, noisy event suppression, reconciliation, retention pruning
   snapshots  stable capture and cheap section text extraction only; discovery stays off
-  discovery  separate limited source discovery with strict source-quality gates
+  discovery  separate limited source discovery only; newly accepted pages enter the new-page lane
   source-intake  pasted URL capture/review/match/create/reconcile workflow
   visual-review  durable Gemini Batch visual-review polling/submission
+
+The former daily, catchup, baseline, and cleanup bundles are retired. Use the
+three 6 PM capture shards and eight independent scheduled lanes for normal work.
 
 Useful options:
   --apply=true|false
   --continue-on-error=true|false
   --visual-shards=3
-  --baseline-cost-cap-usd=5
-  --baseline-limit=50000
-  --ai-review-completion-max-batch-requests=50000
   --source-quality-hours=10
   --source-quality-max-awards=90
 `);

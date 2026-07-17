@@ -2,8 +2,17 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
-import { trackSharedAwardForOffice } from "@/lib/shared-awards";
+import {
+  trackSharedAwardForOffice,
+  untrackSharedAwardSourceForOffice,
+} from "@/lib/shared-awards";
+import {
+  getStage1PublicationEntryForAward,
+  isStage1SourceIdentityExcluded,
+} from "@/lib/stage1-publication";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 
 export const runtime = "nodejs";
 
@@ -11,7 +20,11 @@ type Props = {
   params: Promise<{ id: string; sourceId: string }>;
 };
 
-export async function POST(_request: Request, { params }: Props) {
+export async function POST(request: Request, { params }: Props) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   const setupError = validateSetup();
   if (setupError) return setupError;
 
@@ -29,35 +42,44 @@ export async function POST(_request: Request, { params }: Props) {
   }
 
   const { id, sourceId } = await params;
-  const supabase = createSupabaseAdminClient();
-  const [{ data: sharedAward }, { data: sharedSource }] = await Promise.all([
-    supabase
-      .from("shared_awards")
-      .select("*")
-      .eq("id", id)
-      .eq("status", "active")
-      .maybeSingle(),
-    supabase
-      .from("shared_award_sources")
-      .select("*")
-      .eq("id", sourceId)
-      .eq("shared_award_id", id)
-      .eq("admin_review_status", "open")
-      .maybeSingle(),
-  ]);
+  const publication = await getStage1PublicationEntryForAward(id);
+  if (!publication?.effectivelyVerified) {
+    return NextResponse.json({ error: "Award source page was not found." }, { status: 404 });
+  }
+  if (!publication.registry.release_epoch) {
+    return NextResponse.json({ error: "Award source page was not found." }, { status: 404 });
+  }
+  const admin = createSupabaseAdminClient();
+  const { data: sharedSource, error: sharedSourceError } = await admin
+    .from("shared_award_sources")
+    .select("*")
+    .eq("id", sourceId)
+    .in("shared_award_id", publication.memberAwardIds)
+    .eq("admin_review_status", "open")
+    .maybeSingle();
 
-  if (!sharedAward || !sharedSource) {
+  if (sharedSourceError) {
+    return NextResponse.json({ error: sharedSourceError.message }, { status: 500 });
+  }
+
+  if (
+    !sharedSource ||
+    !publication.allowedSourceIdSet.has(sharedSource.id) ||
+    isStage1SourceIdentityExcluded(publication, sharedSource)
+  ) {
     return NextResponse.json({ error: "Award source page was not found." }, { status: 404 });
   }
 
   try {
+    const supabase = await createSupabaseServerClient();
     const result = await trackSharedAwardForOffice({
       supabase,
-      sharedAward,
+      canonicalSharedAwardId: publication.canonicalAwardId,
       sharedSources: [sharedSource],
-      user,
       officeId: officeContext.current.officeId,
       cadence: "daily",
+      expectedMemberSharedAwardIds: publication.memberAwardIds,
+      expectedReleaseEpoch: publication.registry.release_epoch,
     });
 
     return NextResponse.json({ ok: true, ...result });
@@ -69,12 +91,16 @@ export async function POST(_request: Request, { params }: Props) {
             ? error.message
             : "Award source page could not be tracked.",
       },
-      { status: 500 },
+      { status: trackingMutationStatus(error) },
     );
   }
 }
 
-export async function DELETE(_request: Request, { params }: Props) {
+export async function DELETE(request: Request, { params }: Props) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   const setupError = validateSetup();
   if (setupError) return setupError;
 
@@ -92,68 +118,31 @@ export async function DELETE(_request: Request, { params }: Props) {
   }
 
   const { id, sourceId } = await params;
-  const supabase = createSupabaseAdminClient();
-  const { data: officeAward, error: lookupError } = await supabase
-    .from("awards")
-    .select("id")
-    .eq("office_id", officeContext.current.officeId)
-    .eq("shared_award_id", id)
-    .eq("status", "active")
-    .maybeSingle();
+  const publication = await getStage1PublicationEntryForAward(id);
+  try {
+    const supabase = await createSupabaseServerClient();
+    const result = await untrackSharedAwardSourceForOffice({
+      supabase,
+      officeId: officeContext.current.officeId,
+      requestedSharedAwardId: id,
+      sharedAwardSourceId: sourceId,
+      expectedMemberSharedAwardIds: publication?.memberAwardIds || null,
+      expectedReleaseEpoch: publication?.registry.release_epoch || null,
+      validateReleaseEpoch: Boolean(publication),
+    });
 
-  if (lookupError) {
-    return NextResponse.json({ error: lookupError.message }, { status: 500 });
+    return NextResponse.json(result);
+  } catch (error) {
+    return NextResponse.json(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Award source page could not be untracked.",
+      },
+      { status: trackingMutationStatus(error) },
+    );
   }
-
-  if (!officeAward) {
-    return NextResponse.json({ ok: true, tracked: false });
-  }
-
-  const { error: monitorError } = await supabase
-    .from("monitors")
-    .delete()
-    .eq("office_id", officeContext.current.officeId)
-    .eq("award_id", officeAward.id)
-    .eq("shared_award_source_id", sourceId);
-
-  if (monitorError) {
-    return NextResponse.json({ error: monitorError.message }, { status: 500 });
-  }
-
-  const { error: sourceError } = await supabase
-    .from("award_sources")
-    .delete()
-    .eq("office_id", officeContext.current.officeId)
-    .eq("award_id", officeAward.id)
-    .eq("shared_award_source_id", sourceId);
-
-  if (sourceError) {
-    return NextResponse.json({ error: sourceError.message }, { status: 500 });
-  }
-
-  const { count, error: countError } = await supabase
-    .from("monitors")
-    .select("id", { count: "exact", head: true })
-    .eq("office_id", officeContext.current.officeId)
-    .eq("award_id", officeAward.id);
-
-  if (countError) {
-    return NextResponse.json({ error: countError.message }, { status: 500 });
-  }
-
-  if ((count || 0) === 0) {
-    const { error: awardError } = await supabase
-      .from("awards")
-      .delete()
-      .eq("office_id", officeContext.current.officeId)
-      .eq("id", officeAward.id);
-
-    if (awardError) {
-      return NextResponse.json({ error: awardError.message }, { status: 500 });
-    }
-  }
-
-  return NextResponse.json({ ok: true, tracked: false });
 }
 
 function validateSetup() {
@@ -169,4 +158,15 @@ function validateSetup() {
   }
 
   return null;
+}
+
+function trackingMutationStatus(error: unknown) {
+  const code =
+    error instanceof Error && "code" in error
+      ? String((error as Error & { code?: string }).code || "")
+      : "";
+  if (code === "40001") return 409;
+  if (code === "42501" || code === "28000") return 403;
+  if (code === "P0002") return 404;
+  return 500;
 }

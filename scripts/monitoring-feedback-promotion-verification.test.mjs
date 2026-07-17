@@ -11,6 +11,7 @@ import {
   comparePreciseRfc3339,
   currentMonitoringPromotionWorkerIdentity,
 } from "./lib/monitoring-feedback-promotion-verification.mjs";
+import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 
 const source = {
   id: "source-one",
@@ -260,6 +261,32 @@ describe("monitoring feedback promotion verification", () => {
     });
   });
 
+  it("rejects a canary whose scheduled shards lack one exact source inventory proof", () => {
+    const hashes = {
+      policy_hash: "full",
+      batch_policy_hash: "batch",
+      suppression_policy_hash: "suppress",
+    };
+    const scheduledRuns = [0, 1, 2].map((shard) => scheduledRun(shard, hashes));
+    delete scheduledRuns[1].metadata.source_inventory;
+
+    const report = withRuleActive(false, () =>
+      buildMonitoringPromotionCanaryReport({
+        clusterKey: "cluster-one",
+        ruleId: "fundraising_form_change",
+        draftHash,
+        monitoringDate: "2026-07-15",
+        scheduledRuns,
+        expectedHashes: hashes,
+      }),
+    );
+
+    expect(report).toMatchObject({
+      status: "failed",
+      source_inventory_proof_complete: false,
+    });
+  });
+
   it("selects the newest canary run at microsecond precision after its gate", () => {
     const hashes = {
       policy_hash: "full",
@@ -436,8 +463,26 @@ function scheduledRun(shard, hashes) {
       monitoring_policy_bundle: { hash: hashes.policy_hash },
       monitoring_policy: { hash: hashes.batch_policy_hash },
       suppression_policy: { hash: hashes.suppression_policy_hash },
+      source_inventory: inventoryProof(shard),
     },
   };
+}
+
+function inventoryProof(shardIndex) {
+  const sources = [0, 1, 2].flatMap((partition) =>
+    Array.from({ length: 2 }, (_, index) => ({
+      id: `source-${partition}-${index}`,
+      partition,
+    })),
+  );
+  return buildVisualSourceInventoryProof({
+    eligibleSources: sources,
+    loadedSources: sources.filter((source) => source.partition === shardIndex),
+    shardCount: 3,
+    shardIndex,
+    shardIndexForSource: (source) => source.partition,
+    capturedAt: "2026-07-15T22:59:59.000Z",
+  });
 }
 
 function policyIdentity(suppressionPolicyHash) {

@@ -1,5 +1,5 @@
 import { SetupNotice } from "@/components/setup-notice";
-import { requireUser } from "@/lib/auth";
+import { isSiteAdminEmail, requireUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, requireOfficeContext } from "@/lib/offices";
@@ -24,6 +24,19 @@ export default async function OpsPage() {
   if (!hasSupabaseConfig()) return <SetupNotice />;
 
   const user = await requireUser();
+  if (!isSiteAdminEmail(user.email)) {
+    return (
+      <div>
+        <div className="mb-8">
+          <span className="badge">Ops</span>
+          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+        </div>
+        <div className="card rounded-3xl p-6 text-[var(--muted)]">
+          This view is available only to AwardPing site administrators.
+        </div>
+      </div>
+    );
+  }
   const officeContext = await requireOfficeContext(user);
   const canManage = canManageOffice(officeContext.current.role);
 
@@ -41,7 +54,22 @@ export default async function OpsPage() {
     );
   }
 
-  const supabase = await createSupabaseServerClient();
+  if (!hasSupabaseAdminConfig()) {
+    return (
+      <div>
+        <div className="mb-8">
+          <span className="badge">Ops</span>
+          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+        </div>
+        <div className="card rounded-3xl p-6 text-[var(--muted)]">
+          Operational data is unavailable because trusted server access is not configured.
+        </div>
+      </div>
+    );
+  }
+
+  const userSupabase = await createSupabaseServerClient();
+  const admin = createSupabaseAdminClient();
   const now = new Date().toISOString();
   const sevenDaysAgo = new Date(
     new Date(now).getTime() - 7 * 24 * 60 * 60 * 1000,
@@ -59,58 +87,58 @@ export default async function OpsPage() {
     { data: localWorkerRuns },
     { data: errorSharedSources },
   ] = await Promise.all([
-    supabase
+    userSupabase
       .from("alert_deliveries")
       .select("id, delivery_type, recipient, error, created_at")
       .eq("office_id", officeContext.current.officeId)
       .eq("status", "failed")
       .order("created_at", { ascending: false })
       .limit(8),
-    supabase
+    admin
       .from("shared_award_sources")
       .select("*", { count: "exact", head: true }),
-    supabase
+    admin
       .from("shared_award_sources")
       .select("*", { count: "exact", head: true })
       .lte("next_check_at", now),
-    supabase
+    admin
       .from("shared_award_sources")
       .select("*", { count: "exact", head: true })
       .not("last_error", "is", null),
-    supabase
+    admin
       .from("shared_award_change_events")
       .select("*", { count: "exact", head: true })
       .is("suppressed_at", null)
       .gte("detected_at", sevenDaysAgo),
-    supabase
+    admin
       .from("shared_awards")
       .select("*", { count: "exact", head: true })
       .eq("status", "active")
       .lte("next_structure_scan_at", now),
-    supabase
+    admin
       .from("shared_award_sources")
       .select("id, shared_award_id, title, url, page_type, last_checked_at, next_check_at, last_error")
       .order("last_checked_at", { ascending: false, nullsFirst: false })
       .limit(8),
-    supabase
+    admin
       .from("shared_award_change_events")
       .select("id, shared_award_id, source_title, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source, detected_at")
       .is("suppressed_at", null)
       .order("detected_at", { ascending: false })
       .limit(25),
-    supabase
+    admin
       .from("shared_awards")
       .select("id, name, structure_scan_error, last_structure_scan_at, next_structure_scan_at")
       .eq("status", "active")
       .not("structure_scan_error", "is", null)
       .order("updated_at", { ascending: false })
       .limit(6),
-    supabase
+    admin
       .from("local_worker_runs")
       .select("*")
       .order("started_at", { ascending: false })
       .limit(5),
-    supabase
+    admin
       .from("shared_award_sources")
       .select("id, shared_award_id, title, url, last_error, last_checked_at")
       .not("last_error", "is", null)
@@ -123,32 +151,26 @@ export default async function OpsPage() {
   let laneStatuses: LaneStatus[] = [];
   let laneStatusError: string | null = null;
 
-  if (hasSupabaseAdminConfig()) {
-    const admin = createSupabaseAdminClient();
-    const [digestResult, lanesResult] = await Promise.all([
-      admin
-        .from("job_runs")
-        .select("*")
-        .eq("job_name", "send-digests")
-        .order("started_at", { ascending: false })
-        .limit(1),
-      admin.rpc("list_monitoring_downstream_lane_status"),
-    ]);
+  const [digestResult, lanesResult] = await Promise.all([
+    admin
+      .from("job_runs")
+      .select("*")
+      .eq("job_name", "send-digests")
+      .order("started_at", { ascending: false })
+      .limit(1),
+    admin.rpc("list_monitoring_downstream_lane_status"),
+  ]);
 
-    if (digestResult.error) {
-      digestRunError = digestResult.error.message;
-    } else {
-      lastDigestRun = digestResult.data?.[0] || null;
-    }
-
-    if (lanesResult.error) {
-      laneStatusError = lanesResult.error.message;
-    } else {
-      laneStatuses = lanesResult.data || [];
-    }
+  if (digestResult.error) {
+    digestRunError = digestResult.error.message;
   } else {
-    digestRunError = "Supabase service role is not configured, so digest runs cannot be read.";
-    laneStatusError = "Supabase service role is not configured, so downstream lane health cannot be read.";
+    lastDigestRun = digestResult.data?.[0] || null;
+  }
+
+  if (lanesResult.error) {
+    laneStatusError = lanesResult.error.message;
+  } else {
+    laneStatuses = lanesResult.data || [];
   }
 
   const workerRuns = (localWorkerRuns || []) as LocalWorkerRun[];
@@ -176,7 +198,7 @@ export default async function OpsPage() {
     ),
   ] as string[];
   const { data: sharedAwardRows } = sharedAwardIds.length
-    ? await supabase
+    ? await admin
         .from("shared_awards")
         .select("id, name")
         .in("id", sharedAwardIds)

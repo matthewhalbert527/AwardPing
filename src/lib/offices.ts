@@ -31,12 +31,7 @@ export function canManageOffice(role: OfficeRole) {
 
 export async function getOfficeContext(user: { id: string; email?: string | null }) {
   const supabase = await createSupabaseServerClient();
-  let memberships = await fetchMemberships(supabase, user.id);
-
-  if (memberships.length === 0) {
-    await ensureDefaultOffice(user.id, user.email || null);
-    memberships = await fetchMemberships(supabase, user.id);
-  }
+  const memberships = await fetchMemberships(supabase, user.id);
 
   if (memberships.length === 0) {
     return null;
@@ -83,17 +78,6 @@ export async function requireOfficeRole(
     throw new Error("You do not have permission to manage this office workspace.");
   }
   return membership;
-}
-
-export async function ensureDefaultOffice(userId: string, email: string | null) {
-  const admin = createSupabaseAdminClient();
-  const { data, error } = await admin.rpc("ensure_default_office_for_user", {
-    target_user_id: userId,
-    target_email: email,
-  });
-
-  if (error) throw error;
-  return data as string;
 }
 
 async function fetchMemberships(

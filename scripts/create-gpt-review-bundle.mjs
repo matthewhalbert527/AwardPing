@@ -292,7 +292,7 @@ This is a sanitized review bundle for AwardPing. Start here, then inspect the fi
 1. \`CURRENT_STATE.md\`, \`PROGRAM_CONTEXT.md\`, \`RUNBOOK.md\`, and \`PROJECT_HANDOFF.md\`.
 2. \`POLICY/award-monitoring-policy.json\` and \`POLICY/award-decision-memory.json\`.
 3. \`CODEBASE/scripts/capture-visual-snapshots.mjs\`, \`CODEBASE/scripts/backfill-baseline-facts.mjs\`, \`CODEBASE/scripts/run-localization-repair.mjs\`, and \`CODEBASE/scripts/run-overnight-source-quality-pass.mjs\`.
-4. \`CODEBASE/src/lib/public-award-pages.ts\`, \`CODEBASE/src/lib/change-details-ai.ts\`, and the public award page components under \`CODEBASE/src/app\`.
+4. \`CODEBASE/src/lib/public-award-pages.ts\` and the public award page components under \`CODEBASE/src/app\`.
 5. \`DATABASE/export-summary.json\`, then the CSV/JSON exports in \`DATABASE/\`.
 6. Recent worker summaries in \`WORKER_REPORTS/\`.
 

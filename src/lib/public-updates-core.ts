@@ -38,6 +38,7 @@ export type PublicDigestSubscriber = {
 
 export type PublicDigestDelivery = {
   subscriber_id: string;
+  status: "sent" | "failed";
 };
 
 export type PublicUnsubscribeTokenSubscriber = {
@@ -63,10 +64,6 @@ export function publicDigestKey(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
-export function publicDigestSince(date = new Date()) {
-  return new Date(date.getTime() - 36 * 60 * 60 * 1000).toISOString();
-}
-
 export function createPublicUnsubscribeToken(
   subscriber: PublicUnsubscribeTokenSubscriber,
   secret: string,
@@ -81,7 +78,7 @@ export function createPublicUnsubscribeToken(
 export function buildPublicDigestChanges(
   candidates: PublicDigestCandidate[],
   awardNameById: Map<string, string>,
-  limit = 12,
+  limit: number | null = 12,
 ): PublicDigestChange[] {
   const usefulChanges = candidates
     .slice()
@@ -104,8 +101,9 @@ export function buildPublicDigestChanges(
       );
     });
 
-  return dedupeChangeSummaries(usefulChanges)
-    .slice(0, limit)
+  const deduped = dedupeChangeSummaries(usefulChanges);
+  const retained = limit === null ? deduped : deduped.slice(0, limit);
+  return retained
     .map((change) => ({
       eventId: change.id,
       awardName: awardNameById.get(change.shared_award_id) || "Tracked award",
@@ -116,12 +114,51 @@ export function buildPublicDigestChanges(
     }));
 }
 
+export function pendingPublicDigestChangesForSubscriber(
+  changes: PublicDigestChange[],
+  digestStartedAt: string,
+  reservedEventIds: ReadonlySet<string>,
+) {
+  const startedAt = Date.parse(digestStartedAt);
+  if (!Number.isFinite(startedAt)) {
+    throw new Error("Subscriber digest start time is invalid.");
+  }
+  return changes
+    .filter((change) => {
+      const detectedAt = Date.parse(change.detectedAt);
+      if (!Number.isFinite(detectedAt)) {
+        throw new Error(`Digest event ${change.eventId} has an invalid detection time.`);
+      }
+      return detectedAt >= startedAt && !reservedEventIds.has(change.eventId);
+    })
+    .sort((left, right) =>
+      Date.parse(left.detectedAt) - Date.parse(right.detectedAt) ||
+      left.eventId.localeCompare(right.eventId),
+    );
+}
+
+export function splitPublicDigestChanges(
+  changes: PublicDigestChange[],
+  batchSize = 12,
+) {
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 12) {
+    throw new Error("Public digest presentation batches must contain 1-12 events.");
+  }
+  const batches: PublicDigestChange[][] = [];
+  for (let start = 0; start < changes.length; start += batchSize) {
+    batches.push(changes.slice(start, start + batchSize));
+  }
+  return batches;
+}
+
 export function filterSubscribersWithoutDigestDelivery<
   Subscriber extends PublicDigestSubscriber,
   Delivery extends PublicDigestDelivery,
 >(subscribers: Subscriber[], deliveries: Delivery[]) {
   const deliveredSubscriberIds = new Set(
-    deliveries.map((delivery) => delivery.subscriber_id),
+    deliveries
+      .filter((delivery) => delivery.status === "sent")
+      .map((delivery) => delivery.subscriber_id),
   );
 
   return subscribers.filter((subscriber) => !deliveredSubscriberIds.has(subscriber.id));

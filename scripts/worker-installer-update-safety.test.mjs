@@ -61,6 +61,20 @@ const baselineFactsWatchdogPath = resolve(
 );
 const baselineCompletionWatchdog = readFileSync(baselineCompletionWatchdogPath, "utf8");
 const baselineFactsWatchdog = readFileSync(baselineFactsWatchdogPath, "utf8");
+const baselineFactsRunnerPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Run-AwardPingBaselineFacts.ps1",
+);
+const sourceQualityRunnerPath = resolve(
+  root,
+  "installer",
+  "windows",
+  "Run-AwardPingOvernightSourceQuality.ps1",
+);
+const baselineFactsRunner = readFileSync(baselineFactsRunnerPath, "utf8");
+const sourceQualityRunner = readFileSync(sourceQualityRunnerPath, "utf8");
 const overnightInstallerPath = resolve(
   root,
   "installer",
@@ -94,6 +108,12 @@ function extractPowerShellFunction(source, name, nextName) {
 function runPowerShell(script) {
   return spawnSync("powershell.exe", ["-NoProfile", "-Command", "-"], {
     input: script,
+    encoding: "utf8",
+  });
+}
+
+function runPowerShellCommand(script) {
+  return spawnSync("powershell.exe", ["-NoProfile", "-Command", script], {
     encoding: "utf8",
   });
 }
@@ -155,7 +175,7 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Pop-Location");
   });
 
-  it("restores exact task XML on failure and merges new task actions with old schedules on success", () => {
+  it("restores exact task XML on failure and enforces canonical triggers on success", () => {
     expect(installer).toContain("Export-ScheduledTask");
     expect(installer).toContain("Register-ScheduledTask");
     expect(installer).toContain("WasEnabled");
@@ -166,7 +186,13 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Get-AwardPingTaskSnapshotsForFinalization");
     expect(installer).toContain("-and $taskSnapshotCaptured");
     expect(installer).toContain('/task:Task/task:Principals');
-    expect(installer).toContain('/task:Task/task:Triggers');
+    const restoreXml = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingTaskRestoreXml",
+      "Restore-AwardPingTasksAfterUpdate",
+    );
+    expect(restoreXml).not.toContain('/task:Task/task:Triggers');
+    expect(restoreXml).toMatch(/freshly\s*\n\s*# registered canonical triggers/);
     expect(installer).toContain("[xml]$document = $Snapshot.Xml");
     expect(installer).toContain("restored in a disabled state because runtime validation failed");
     expect(installer).toContain("Startup-launcher restoration failed; all AwardPing tasks were left disabled");
@@ -190,6 +216,77 @@ describe("Windows worker update safety", () => {
 
   const windowsIt = (name, test) =>
     (process.platform === "win32" ? it : it.skip)(name, test, 20_000);
+
+  windowsIt("keeps the principal but replaces a legacy trigger with the canonical trigger", () => {
+    const restoreXmlFunction = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingTaskRestoreXml",
+      "Restore-AwardPingTasksAfterUpdate",
+    );
+    const simulation = [
+      restoreXmlFunction,
+      "$namespace = 'http://schemas.microsoft.com/windows/2004/02/mit/task'",
+      "$old = '<Task xmlns=\"' + $namespace + '\"><Principals><Principal id=\"Author\"><UserId>OLD-PRINCIPAL</UserId></Principal></Principals><Triggers><CalendarTrigger><StartBoundary>2026-01-01T01:00:00</StartBoundary></CalendarTrigger></Triggers><Settings><Enabled>true</Enabled></Settings></Task>'",
+      "$canonical = '<Task xmlns=\"' + $namespace + '\"><Principals><Principal id=\"Author\"><UserId>NEW-PRINCIPAL</UserId></Principal></Principals><Triggers><CalendarTrigger><StartBoundary>2026-01-01T18:00:00</StartBoundary></CalendarTrigger></Triggers><Settings><Enabled>true</Enabled></Settings></Task>'",
+      "function Export-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction); $canonical }",
+      "$snapshot = [pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker Shard 1'; TaskPath='\\'; Xml=$old }",
+      "[xml]$result = Get-AwardPingTaskRestoreXml -Snapshot $snapshot -ApplyTaskDefinitionUpdates $true",
+      "$ns = [System.Xml.XmlNamespaceManager]::new($result.NameTable)",
+      "$ns.AddNamespace('task', $result.DocumentElement.NamespaceURI)",
+      "$principal = $result.SelectSingleNode('/task:Task/task:Principals/task:Principal/task:UserId', $ns).InnerText",
+      "$trigger = $result.SelectSingleNode('/task:Task/task:Triggers/task:CalendarTrigger/task:StartBoundary', $ns).InnerText",
+      "$enabled = $result.SelectSingleNode('/task:Task/task:Settings/task:Enabled', $ns).InnerText",
+      "'PRINCIPAL=' + $principal + ' TRIGGER=' + $trigger + ' ENABLED=' + $enabled",
+    ].join("\n");
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(
+      "PRINCIPAL=OLD-PRINCIPAL TRIGGER=2026-01-01T18:00:00 ENABLED=false",
+    );
+  });
+
+  windowsIt("rejects every noncanonical managed-task trigger before resume", () => {
+    const validator = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingManagedTaskScheduleProblems",
+      "Get-AwardPingInstalledRuntimeProblems",
+    );
+    const simulation = [
+      validator,
+      "$script:root = 'C:\\AwardPingWorker'",
+      "$script:badTask = ''",
+      "$script:lanes = @{",
+      "  'AwardPing New Page Review Lane'=@('new_page_review',0,10); 'AwardPing Changed Page Review Lane'=@('changed_page_review',2,10); 'AwardPing Feedback Promotion Lane'=@('feedback_promotion',4,6); 'AwardPing Suppression Lane'=@('suppression',6,6); 'AwardPing Reconciliation Lane'=@('reconciliation',8,6); 'AwardPing Page Audit Lane'=@('page_audit',10,6); 'AwardPing Manual Quarantine Lane'=@('manual_quarantine',12,4); 'AwardPing Nightly Report Lane'=@('nightly_report',14,4)",
+      "}",
+      "function Test-AwardPingTaskTargetsInstallRoot { param($Task,$InstallRoot); $true }",
+      "function Get-ScheduledTask { param($TaskName,$ErrorAction); [pscustomobject]@{ TaskName=$TaskName; TaskPath='\\'; Actions=@() } }",
+      "function Export-ScheduledTask {",
+      "  param($TaskName,$TaskPath,$ErrorAction)",
+      "  $ns = 'http://schemas.microsoft.com/windows/2004/02/mit/task'",
+      "  if ($TaskName -like 'AwardPing Visual Snapshot Worker Shard *') {",
+      "    $number = [int]($TaskName -replace '^.*Shard ', ''); $index = $number - 1; $hour = if ($TaskName -eq $script:badTask) { 17 } else { 18 }",
+      "    $arguments = '-NoProfile -File \"' + $script:root + '\\Run-AwardPingVisualSnapshots.ps1\" -All -ShardCount 3 -ShardIndex ' + $index + ' -RunTrigger scheduled'",
+      "    return '<Task xmlns=\"' + $ns + '\"><Triggers><CalendarTrigger><StartBoundary>2026-07-16T' + $hour.ToString('00') + ':00:00</StartBoundary><ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay></CalendarTrigger></Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
+      "  }",
+      "  $lane = $script:lanes[$TaskName]; $arguments = '-NoProfile -File \"' + $script:root + '\\Run-AwardPingDownstreamLane.ps1\" -InstallRoot \"' + $script:root + '\" -Lane ' + $lane[0] + ' -TimeoutMinutes ' + $lane[2]",
+      "  return '<Task xmlns=\"' + $ns + '\"><Triggers><TimeTrigger><StartBoundary>2026-07-16T12:' + ([int]$lane[1]).ToString('00') + ':00</StartBoundary><Repetition><Interval>PT15M</Interval><Duration>P3650D</Duration></Repetition></TimeTrigger></Triggers><Actions><Exec><Command>powershell.exe</Command><Arguments>' + $arguments + '</Arguments></Exec></Actions></Task>'",
+      "}",
+      "$clean = @(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root)",
+      "$script:badTask = 'AwardPing Visual Snapshot Worker Shard 2'",
+      "$bad = @(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $script:root)",
+      "'CLEAN_COUNT=' + $clean.Count",
+      "'BAD_COUNT=' + $bad.Count",
+      "'BAD=' + ($bad -join ' | ')",
+    ].join("\n");
+    const result = runPowerShellCommand(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain("CLEAN_COUNT=0");
+    expect(result.stdout).toContain("BAD_COUNT=1");
+    expect(result.stdout).toContain(
+      "noncanonical visual trigger for AwardPing Visual Snapshot Worker Shard 2",
+    );
+  });
 
   windowsIt("never enables or starts a task whose XML registration failed", () => {
     const restoreFunction = extractPowerShellFunction(
@@ -490,6 +587,12 @@ describe("Windows worker update safety", () => {
 
   it("validates installed wrappers, action targets, app scripts, and dependencies before resume", () => {
     expect(installer).toContain("Get-AwardPingInstalledRuntimeProblems");
+    expect(installer).toContain(
+      "Get-AwardPingManagedTaskScheduleProblems -InstallRoot $InstallRoot",
+    );
+    expect(installer).toContain("noncanonical trigger count");
+    expect(installer).toContain("noncanonical lane trigger");
+    expect(installer).toContain("noncanonical visual trigger");
     expect(installer).toContain("Get-AwardPingRootedActionPaths");
     expect(installer).toContain("invalid PowerShell action script");
     expect(installer).toContain("missing action/runtime path");
@@ -533,8 +636,10 @@ describe("Windows worker update safety", () => {
       "src\\lib\\source-url-policy.ts",
       "scripts\\supabase-service-client.mjs",
       "scripts\\run-downstream-lane.mjs",
+      "scripts\\process-new-page-review-lane.mjs",
       "scripts\\lib\\gemini-spend-ledger.mjs",
       "scripts\\lib\\gemini-batch-support.mjs",
+      "scripts\\lib\\paid-visual-review-policy.mjs",
       "scripts\\lib\\r2-baseline-rehydration.mjs",
       "scripts\\lib\\source-intake.mjs",
       "scripts\\lib\\initial-document-recovery.mjs",
@@ -895,7 +1000,10 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("-ShardIndex $shardIndex -RunTrigger scheduled");
     expect(installer).toContain('"--run-trigger"');
     expect(installer).toContain('`$RunTrigger');
+    expect(installer).toContain('`$workerArgs += "--discovery-mode=true"');
+    expect(installer).toContain('`$workerArgs += "--discovery-intent=live_recurring"');
     expect(installer).toContain("scripts\\lib\\visual-capture-run-report.mjs");
+    expect(installer).toContain("scripts\\lib\\visual-nightly-run-contract.mjs");
     expect(installer).toContain("scripts\\report-visual-nightly.mjs");
     expect(installer).toContain("visual-nightly-report-latest.json");
     expect(installer).toContain("Failures / loaded sources");
@@ -915,6 +1023,8 @@ describe("Windows worker update safety", () => {
       overnightInstaller,
       baselineCompletionWatchdog,
       baselineFactsWatchdog,
+      baselineFactsRunner,
+      sourceQualityRunner,
     ]) {
       expect(source).toContain("is retired and cannot");
       expect(source).toContain("Install-AwardPingWorker.ps1");
@@ -929,6 +1039,8 @@ describe("Windows worker update safety", () => {
       overnightInstallerPath,
       baselineCompletionWatchdogPath,
       baselineFactsWatchdogPath,
+      baselineFactsRunnerPath,
+      sourceQualityRunnerPath,
     ]) {
       const result = spawnSync(
         "powershell.exe",

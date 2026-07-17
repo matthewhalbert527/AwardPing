@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { validateSameOriginAdminMutation } from "@/lib/admin-request-security";
 import { getCurrentUser, isSiteAdminEmail } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
@@ -35,6 +36,9 @@ type RouteContext = {
 type SourcePageRequestUpdate = Database["public"]["Tables"]["source_page_requests"]["Update"];
 
 export async function PATCH(request: Request, context: RouteContext) {
+  const originError = validateSameOriginAdminMutation(request);
+  if (originError) return originError;
+
   const setup = await validateAdminRequest();
   if (setup) return setup;
 

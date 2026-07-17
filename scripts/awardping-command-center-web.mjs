@@ -124,7 +124,6 @@ function startProfile(profile) {
       envPath,
       `--profile=${profile}`,
       "--apply=true",
-      "--baseline-cost-cap-usd=5",
     ],
   });
 
@@ -146,10 +145,9 @@ function startAtomicTask(taskId) {
         "scripts/run-awardping-maintenance.mjs",
         "--env",
         envPath,
-        "--profile=daily",
+        "--profile=task",
         `--phases=${(run.phases || []).join(",")}`,
         "--apply=true",
-        "--baseline-cost-cap-usd=5",
       ]
     : [
         ...(run.args || []),

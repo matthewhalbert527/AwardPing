@@ -1,3 +1,5 @@
+import { verifyVisualEventSemanticBindings } from "./visual-event-localization.mjs";
+
 export const SNAPSHOT_LOCALIZATION_READY = new Set([
   "ready",
   "ready_via_identical_peer",
@@ -172,6 +174,14 @@ export function classifyChangeEventVisualEvidence({
 
   const localization = objectValue(evidence.localization);
   const localizationSides = objectValue(localization.sides);
+  const semanticVerification = evidence.evidence_schema_version === "visual-event-evidence-v2"
+    ? verifyVisualEventSemanticBindings({
+        changeDetails: event.change_details,
+        localization,
+        previousCapture: evidence.previous_capture,
+        currentCapture: evidence.current_capture,
+      })
+    : { valid: false, reason: "legacy_visual_event_evidence_v1", sides: {} };
   const sides = {};
   for (const side of ["previous", "current"]) {
     const required = requiredSides.includes(side);
@@ -183,12 +193,13 @@ export function classifyChangeEventVisualEvidence({
     const retainedFull = validArtifactManifest(full) && checks.full === true;
     const cropArtifactVerified = validArtifactManifest(crop) && checks.crop === true;
     const exactOverlap = localized.exact_overlap === true && crop.exact_overlap === true;
+    const semanticBindingVerified = objectValue(semanticVerification.sides)[side]?.valid === true;
     const verifiedCrop = required && localized.status === VERIFIED_EVENT_CROP_STATUS &&
-      exactOverlap && cropArtifactVerified;
+      exactOverlap && cropArtifactVerified && semanticBindingVerified;
 
     let status = "not_required";
     if (required && verifiedCrop) status = VERIFIED_EVENT_CROP_STATUS;
-    else if (required && retainedFull) status = cleanText(localized.status) || "full_screenshot_fallback";
+    else if (required && retainedFull) status = "full_screenshot_fallback";
     else if (required) status = cleanText(localized.status) || "unavailable_image_missing";
     else if (retainedFull) status = "retained_full_not_localization_target";
 
@@ -199,6 +210,9 @@ export function classifyChangeEventVisualEvidence({
       retained_full: retainedFull,
       exact_overlap: exactOverlap,
       crop_artifact_verified: cropArtifactVerified,
+      semantic_binding_verified: semanticBindingVerified,
+      semantic_binding_reason: objectValue(semanticVerification.sides)[side]?.reason ||
+        semanticVerification.reason || null,
       reason: cleanText(localized.reason) || null,
     };
   }
@@ -207,14 +221,23 @@ export function classifyChangeEventVisualEvidence({
   const verifiedRequired = requiredResults.filter((side) => side.verified_crop).length;
   const retainedFullSides = Object.values(sides).filter((side) => side.retained_full).length;
   const evidenceStatus = cleanText(evidence.evidence_status);
+  const allRequiredVerified = requiredResults.length && verifiedRequired === requiredResults.length;
+  const effectiveStatus = allRequiredVerified
+    ? VERIFIED_EVENT_CROP_STATUS
+    : requiredResults.length && requiredResults.every((side) => side.retained_full)
+      ? "full_screenshot_fallback"
+      : evidenceStatus || (retainedFullSides ? "full_screenshot_fallback" : "unavailable_image_missing");
   return {
     event_id: event?.id || evidence.change_event_id,
-    status: requiredResults.length && verifiedRequired === requiredResults.length
-      ? VERIFIED_EVENT_CROP_STATUS
-      : evidenceStatus || (retainedFullSides ? "full_screenshot_fallback" : "unavailable_image_missing"),
+    status: effectiveStatus,
     immutable_binding: true,
     candidate_bound: Boolean(cleanText(evidence.visual_review_candidate_id)),
     historical: Boolean(evidence.backfilled_at),
+    evidence_schema_version: cleanText(evidence.evidence_schema_version) || null,
+    semantic_binding_verified: semanticVerification.valid === true,
+    semantic_binding_reason: semanticVerification.reason || null,
+    legacy_crop_downgraded: evidence.evidence_schema_version === "visual-event-evidence-v1" &&
+      evidenceStatus === VERIFIED_EVENT_CROP_STATUS,
     required_side_source: evidenceRequirement.authoritative
       ? "immutable_evidence"
       : "event_change_details",
@@ -249,6 +272,8 @@ export function summarizeChangeEventVisualEvidence(rows = []) {
     .filter((side) => side.retained_full).length;
   const byStatus = countBy(rows, (row) => row.status || "unknown");
   const requiredSideMismatches = rows.filter((row) => row.required_side_mismatch).length;
+  const semanticallyVerifiedEvents = rows.filter((row) => row.semantic_binding_verified).length;
+  const legacyCropDowngrades = rows.filter((row) => row.legacy_crop_downgraded).length;
 
   return {
     published_event_count: eventCount,
@@ -280,6 +305,8 @@ export function summarizeChangeEventVisualEvidence(rows = []) {
       ? "Add exact before/after wording to the event change details, then backfill from its bound visual-review candidate when retained artifacts permit it."
       : null,
     required_side_mismatch_events: requiredSideMismatches,
+    semantically_verified_event_count: semanticallyVerifiedEvents,
+    legacy_v1_crop_fallback_event_count: legacyCropDowngrades,
     required_side_mismatch_solution: requiredSideMismatches
       ? "Keep the immutable evidence requirement authoritative for coverage, then repair the event change details so its exact directional wording agrees with the published evidence."
       : null,
@@ -297,18 +324,16 @@ export function requiredChangeEventLocalizationSides(event = {}) {
       : [];
   const hasPrevious = Boolean(
     hasTextValue(details.exact_before) ||
-    hasTextValue(details.before) ||
     hasTextValue(structured.removed_text) ||
     facts.some((fact) =>
-      hasTextValue(objectValue(fact).removed_text) || hasTextValue(objectValue(fact).before)
+      hasTextValue(objectValue(fact).removed_text)
     ),
   );
   const hasCurrent = Boolean(
     hasTextValue(details.exact_after) ||
-    hasTextValue(details.after) ||
     hasTextValue(structured.added_text) ||
     facts.some((fact) =>
-      hasTextValue(objectValue(fact).added_text) || hasTextValue(objectValue(fact).after)
+      hasTextValue(objectValue(fact).added_text)
     ),
   );
   if (hasPrevious || hasCurrent) {

@@ -145,6 +145,9 @@ function updatesStatusMessage(params: { confirmed?: string; unsubscribed?: strin
   if (params.confirmed === "1") return "Your daily AwardPing updates are confirmed.";
   if (params.confirmed === "invalid") return "That confirmation link is no longer valid.";
   if (params.unsubscribed === "1") return "You have been unsubscribed from public daily updates.";
+  if (params.unsubscribed === "retry") {
+    return "A daily update is already being sent. Please use the unsubscribe link again in a few minutes.";
+  }
   if (params.unsubscribed === "invalid") return "That unsubscribe link is no longer valid.";
   return "";
 }

@@ -100,12 +100,31 @@ export async function verifyChangeEventManifestArtifacts({ evidence, headObject 
       );
       const cropManifest = objectValue(capture.crop);
       const fullManifest = objectValue(capture.full);
+      const semanticBinding = objectValue(localizationSide?.semantic_binding);
       const cropSourceImageBound = Boolean(
         cleanText(cropManifest.source_image_object_key) === cleanText(fullManifest.object_key) &&
         cleanText(cropManifest.source_image_sha256).toLowerCase() ===
           cleanText(fullManifest.sha256).toLowerCase() &&
         positiveNumber(cropManifest.source_image_byte_length) ===
           positiveNumber(fullManifest.byte_length)
+      );
+      const semanticArtifactBound = Boolean(
+        evidence?.evidence_schema_version === "visual-event-evidence-v2" &&
+        semanticBinding.contract === "visual-exact-text-binding-v2" &&
+        Number(semanticBinding.algorithm_version) === 3 &&
+        semanticBinding.side === side &&
+        cleanText(semanticBinding.state_id) === selectedStateId &&
+        /^[a-f0-9]{64}$/.test(cleanText(semanticBinding.binding_sha256)) &&
+        /^[a-f0-9]{64}$/.test(cleanText(semanticBinding.exact_text_sha256)) &&
+        /^[a-f0-9]{64}$/.test(cleanText(semanticBinding.geometry_sha256)) &&
+        cleanText(cropManifest.semantic_binding_sha256) ===
+          cleanText(semanticBinding.binding_sha256) &&
+        cleanText(cropManifest.exact_text_sha256) ===
+          cleanText(semanticBinding.exact_text_sha256) &&
+        cleanText(cropManifest.geometry_sha256) ===
+          cleanText(semanticBinding.geometry_sha256) &&
+        cleanText(objectValue(capture.layout).geometry_hash) ===
+          cleanText(semanticBinding.geometry_sha256)
       );
       const cropChain = {
         verified: Boolean(
@@ -114,7 +133,8 @@ export async function verifyChangeEventManifestArtifacts({ evidence, headObject 
           directResults.layout?.verified &&
           selectedImage?.verified &&
           selectedGeometry?.verified &&
-          cropSourceImageBound
+          cropSourceImageBound &&
+          semanticArtifactBound
         ),
         crop_verified: directResults.crop?.verified === true,
         full_verified: directResults.full?.verified === true,
@@ -123,10 +143,11 @@ export async function verifyChangeEventManifestArtifacts({ evidence, headObject 
         selected_state_image_verified: selectedImage?.verified === true,
         selected_state_geometry_verified: selectedGeometry?.verified === true,
         crop_source_image_bound: cropSourceImageBound,
+        semantic_artifact_bound: semanticArtifactBound,
       };
       if (!cropChain.verified) {
         cropChain.solution =
-          "Exclude this crop from verified coverage until its exact crop names the same source image key/hash/bytes and its selected full image, selected state image, and bound geometry artifacts all pass immutable HEAD verification.";
+          "Exclude this crop from verified coverage until its v3 contiguous-flow event-semantic binding, exact source image key/hash/bytes, selected full image, selected state image, and bound geometry artifacts all pass verification.";
       }
       details[side].verified_crop_chain = cropChain;
       checks[side].crop = cropChain.verified;

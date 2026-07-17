@@ -39,6 +39,7 @@ import {
   workerRunHasSafeCanaryCoverage,
   workerRunMatchesIdentity,
 } from "./process-monitoring-feedback-promotions.mjs";
+import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -372,6 +373,34 @@ describe("verified monitoring-feedback promotion worker", () => {
     ).toBeNull();
   });
 
+  it("uses live recurring discovery for the canary and rejects onboarding lookalikes", () => {
+    const liveRuns = [0, 1, 2].map((shard) => scheduledRun({ id: `live-${shard}`, shard }));
+    expect(selectCanaryCohort(liveRuns, {
+      notBefore: "2026-07-15T00:00:00.000Z",
+      expectedRevision: "commit-a",
+      expectedHashes: hashes(),
+      expectedMatcherDigest: monitoringPromotionMatcherDigest,
+    })?.cohortId).toBe("visual-nightly:2026-07-15");
+
+    const onboardingRuns = liveRuns.map((run) => ({
+      ...run,
+      metadata: {
+        ...run.metadata,
+        options: {
+          ...run.metadata.options,
+          discovery_intent: "historical_onboarding",
+          discovery_onboarding_batch_id: "bulk-2026-07-15",
+        },
+      },
+    }));
+    expect(selectCanaryCohort(onboardingRuns, {
+      notBefore: "2026-07-15T00:00:00.000Z",
+      expectedRevision: "commit-a",
+      expectedHashes: hashes(),
+      expectedMatcherDigest: monitoringPromotionMatcherDigest,
+    })).toBeNull();
+  });
+
   it("flags a selected shard whose worker revision or matcher differs", () => {
     const runs = [0, 1, 2].map((shard) =>
       scheduledRun({
@@ -461,8 +490,11 @@ describe("verified monitoring-feedback promotion worker", () => {
     failedCapture.failed_count = 1;
     const failedObservation = scheduledRun({ shard: 1 });
     failedObservation.metadata.counts.visual_review_candidate_observation_failures = 1;
+    const missingInventoryProof = scheduledRun({ shard: 2 });
+    delete missingInventoryProof.metadata.source_inventory;
     expect(workerRunHasSafeCanaryCoverage(failedCapture)).toBe(false);
     expect(workerRunHasSafeCanaryCoverage(failedObservation)).toBe(false);
+    expect(workerRunHasSafeCanaryCoverage(missingInventoryProof)).toBe(false);
     expect(workerRunHasSafeCanaryCoverage(scheduledRun({ shard: 2 }))).toBe(true);
 
     const cohort = selectCanaryCohort(
@@ -1628,6 +1660,7 @@ function scheduledRun({
     id,
     worker_name: `local-visual-snapshot-worker-shard-${shard + 1}-of-3`,
     status: "succeeded",
+    checked_count: 100,
     failed_count: 0,
     started_at: startedAt,
     finished_at: new Date(new Date(startedAt).getTime() + 60_000).toISOString(),
@@ -1642,9 +1675,25 @@ function scheduledRun({
         shard_count: 3,
         shard_index: shard,
       },
+      options: {
+        include_not_due: true,
+        limit: 50_000,
+        discovery_mode: true,
+        discovery_intent: "live_recurring",
+        discovery_onboarding_batch_id: null,
+      },
       monitoring_policy_bundle: { hash: "full" },
       monitoring_policy: { hash: "batch" },
       suppression_policy: { hash: "suppression" },
+      source_inventory: inventoryProof(shard),
+      baseline_coverage: { start: { loaded_sources: 100 } },
+      run_health: {
+        status: "healthy",
+        loaded_sources: 100,
+        processed_sources: 100,
+        inventory_complete: true,
+        inventory_proof_complete: true,
+      },
       counts: {
         visual_review_candidate_observations: 0,
         visual_review_candidate_observation_failures: 0,
@@ -1654,4 +1703,21 @@ function scheduledRun({
       },
     },
   };
+}
+
+function inventoryProof(shardIndex) {
+  const sources = [0, 1, 2].flatMap((partition) =>
+    Array.from({ length: 100 }, (_, index) => ({
+      id: `source-${partition}-${String(index).padStart(4, "0")}`,
+      partition,
+    })),
+  );
+  return buildVisualSourceInventoryProof({
+    eligibleSources: sources,
+    loadedSources: sources.filter((source) => source.partition === shardIndex),
+    shardCount: 3,
+    shardIndex,
+    shardIndexForSource: (source) => source.partition,
+    capturedAt: "2026-07-15T22:59:59.000Z",
+  });
 }

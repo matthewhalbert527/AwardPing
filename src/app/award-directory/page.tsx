@@ -1,4 +1,3 @@
-import { unstable_cache } from "next/cache";
 import { AwardDiscoveryWorkspace } from "@/components/award-discovery-workspace";
 import { SetupNotice } from "@/components/setup-notice";
 import { SiteFooter } from "@/components/site-footer";
@@ -6,15 +5,14 @@ import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { canonicalAwardPath } from "@/lib/award-slugs";
-import { awardDirectorySharedCatalogCacheTag } from "@/lib/cache-tags";
-import { dedupeChangeSummaries, isUsefulChangeForAward } from "@/lib/change-summary";
+import { dedupeChangeSummaries } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { canManageOffice, getOfficeContext } from "@/lib/offices";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
-import { activeChangeSourceFilter } from "@/lib/source-change-events";
-import { isMonitorableOfficialSource } from "@/lib/source-url-policy";
+import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
 
 export const dynamic = "force-dynamic";
 
@@ -28,8 +26,10 @@ type SharedAwardDirectoryRow = Pick<
 >;
 type SharedChangeDirectoryRow = Pick<
   SharedChangeRow,
+  | "id"
   | "shared_award_id"
   | "shared_award_source_id"
+  | "source_title"
   | "source_url"
   | "source_page_type"
   | "summary"
@@ -37,23 +37,9 @@ type SharedChangeDirectoryRow = Pick<
   | "suppressed_at"
   | "suppression_reason"
   | "suppression_source"
+  | "visual_review_candidate_id"
+  | "detected_at"
 >;
-type SharedSourceDirectoryRow = Pick<
-  Database["public"]["Tables"]["shared_award_sources"]["Row"],
-  | "id"
-  | "url"
-  | "admin_review_status"
-  | "title"
-  | "display_title"
-  | "page_metadata"
-  | "page_metadata_generated_at"
-  | "page_metadata_model"
-  | "page_type"
-  | "source"
-  | "reason"
-  | "submitted_by_user_id"
->;
-
 export default async function AwardDirectoryPage() {
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
     return (
@@ -70,7 +56,7 @@ export default async function AwardDirectoryPage() {
   const user = await getCurrentUser();
   const [officeContext, sharedCatalogBase] = await Promise.all([
     user ? getOfficeContext(user) : Promise.resolve(null),
-    getCachedSharedCatalog(),
+    getSharedCatalog(),
   ]);
   const admin = createSupabaseAdminClient();
   const { data: awards } = officeContext
@@ -80,7 +66,11 @@ export default async function AwardDirectoryPage() {
         .eq("office_id", officeContext.current.officeId)
         .eq("status", "active")
     : { data: [] as OfficeAwardTrackingRow[] };
-  const sharedCatalog = withTrackedSharedAwards(sharedCatalogBase, awards || []);
+  const sharedCatalog = withTrackedSharedAwards(
+    sharedCatalogBase.awards,
+    awards || [],
+    sharedCatalogBase.canonicalAwardIdByMember,
+  );
 
   return (
     <div className="page-shell">
@@ -105,82 +95,47 @@ export default async function AwardDirectoryPage() {
   );
 }
 
-type SupabaseAdminClient = ReturnType<typeof createSupabaseAdminClient>;
-
-const getCachedSharedCatalog = unstable_cache(
-  async () => {
-    const admin = createSupabaseAdminClient();
-    const [sharedAwards, { data: sharedChanges }] = await Promise.all([
-      fetchAllSharedAwards(admin),
-      admin
-        .from("shared_award_change_events")
-        .select("shared_award_id, shared_award_source_id, source_url, source_page_type, summary, change_details, suppressed_at, suppression_reason, suppression_source")
-        .is("suppressed_at", null)
-        .order("detected_at", { ascending: false })
-        .limit(1000),
-    ]);
-    const sharedChangeRows = (sharedChanges || []) as SharedChangeDirectoryRow[];
-    const sourceIds = [
-      ...new Set(
-        sharedChangeRows
-          .map((change) => change.shared_award_source_id)
-          .filter((sourceId): sourceId is string => Boolean(sourceId)),
-      ),
-    ];
-    const { data: sourceRows } = sourceIds.length
-      ? await admin
-        .from("shared_award_sources")
-        .select("id, url, admin_review_status, title, display_title, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id")
-          .in("id", sourceIds)
-      : { data: [] as SharedSourceDirectoryRow[] };
-    const changeIsFromOpenSource = activeChangeSourceFilter(
-      ((sourceRows || []) as SharedSourceDirectoryRow[]).filter(
-        (source) => source.admin_review_status === "open",
-      ),
-    );
-
-    return mapSharedAwards(
-      sharedAwards,
-      groupBySharedAwardId(sharedChangeRows.filter(changeIsFromOpenSource)),
-      new Set<string>(),
-    );
-  },
-  ["award-directory-shared-catalog-v3"],
-  {
-    revalidate: 300,
-    tags: [awardDirectorySharedCatalogCacheTag],
-  },
-);
-
-async function fetchAllSharedAwards(supabase: SupabaseAdminClient) {
-  return fetchAllPages<SharedAwardDirectoryRow>((from, to) =>
-    supabase
-      .from("shared_awards")
-      .select("id, name, slug, official_homepage, summary, public_facts, public_facts_generated_at")
-      .eq("status", "active")
-      .order("name", { ascending: true })
-      .range(from, to),
+async function getSharedCatalog() {
+  const admin = createSupabaseAdminClient();
+  const publicationIndex = await loadStage1PublicationIndex();
+  const canonicalAwardIdByMember = new Map(
+    [...publicationIndex.entryByMemberAwardId.entries()].map(
+      ([memberAwardId, entry]) => [memberAwardId, entry.canonicalAwardId],
+    ),
   );
-}
-
-async function fetchAllPages<Row>(
-  queryPage: (from: number, to: number) => PromiseLike<{
-    data: Row[] | null;
-    error: unknown;
-  }>,
-) {
-  const pageSize = 1000;
-  const rows: Row[] = [];
-
-  for (let from = 0; ; from += pageSize) {
-    const { data, error } = await queryPage(from, from + pageSize - 1);
-    if (error || !data?.length) break;
-
-    rows.push(...data);
-    if (data.length < pageSize) break;
+  if (!publicationIndex.available || publicationIndex.verifiedEntries.length === 0) {
+    return { awards: [], canonicalAwardIdByMember };
   }
 
-  return rows;
+  const sharedAwards: SharedAwardDirectoryRow[] = publicationIndex.verifiedEntries.map(
+    (publication) => ({
+      id: publication.canonicalAwardId,
+      name: publication.registry.canonical_name,
+      slug: publication.registry.canonical_slug,
+      official_homepage: publication.registry.official_homepage,
+      summary: null,
+      public_facts: publication.publishedFacts,
+      public_facts_generated_at: publication.registry.last_verified_at,
+    }),
+  );
+  const eligibleEvents = await loadEligiblePublicChangeEvents({
+    admin,
+    publicationIndex,
+    limit: null,
+  });
+  const canonicalChanges = eligibleEvents.map(({ event, publication }) => ({
+    ...event,
+    shared_award_id: publication.canonicalAwardId,
+  }));
+
+  return {
+    awards: mapSharedAwards(
+      sharedAwards,
+      groupBySharedAwardId(canonicalChanges),
+      new Set<string>(),
+    ),
+    canonicalAwardIdByMember,
+  };
 }
 
 function mapSharedAwards(
@@ -194,15 +149,7 @@ function mapSharedAwards(
       publicFacts: award.public_facts,
     });
     const changes = dedupeChangeSummaries(
-      (sharedChangesByAwardId.get(award.id) || []).filter((change) =>
-        isMonitorableOfficialSource({ url: change.source_url, page_type: change.source_page_type }) &&
-        isUsefulChangeForAward({
-          awardName: award.name,
-          sourceUrl: change.source_url,
-          summary: change.summary,
-          change_details: change.change_details,
-        }),
-      ),
+      sharedChangesByAwardId.get(award.id) || [],
     );
 
     return {
@@ -232,11 +179,13 @@ function mapSharedAwards(
 function withTrackedSharedAwards(
   sharedAwards: ReturnType<typeof mapSharedAwards>,
   officeAwards: OfficeAwardTrackingRow[],
+  canonicalAwardIdByMember: Map<string, string>,
 ) {
   const trackedSharedIds = new Set(
     officeAwards
       .map((award) => award.shared_award_id)
-      .filter((id): id is string => Boolean(id)),
+      .filter((id): id is string => Boolean(id))
+      .map((id) => canonicalAwardIdByMember.get(id) || id),
   );
 
   if (trackedSharedIds.size === 0) return sharedAwards;

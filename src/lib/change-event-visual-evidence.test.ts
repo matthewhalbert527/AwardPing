@@ -14,6 +14,7 @@ describe("change event visual evidence", () => {
         exact_overlap: true,
         reason: "Exact added wording overlaps this crop.",
       },
+      exactCropAllowed: true,
       signObjectKey,
     });
 
@@ -34,6 +35,7 @@ describe("change event visual evidence", () => {
       const result = await buildEventVisualEvidenceSide({
         captureValue: capture({ cropExact }),
         localizationValue: localization,
+        exactCropAllowed: true,
         signObjectKey,
       });
 
@@ -57,6 +59,7 @@ describe("change event visual evidence", () => {
         },
       },
       localizationValue: { status: "verified", exact_overlap: true },
+      exactCropAllowed: true,
       signObjectKey,
     });
 
@@ -80,6 +83,7 @@ describe("change event visual evidence", () => {
         exact_overlap: true,
         reason: "The stored crop is verified.",
       },
+      exactCropAllowed: true,
       signObjectKey,
     });
 
@@ -97,6 +101,7 @@ describe("change event visual evidence", () => {
     const result = await buildEventVisualEvidenceSide({
       captureValue: value,
       localizationValue: { status: "verified", exact_overlap: true },
+      exactCropAllowed: true,
       signObjectKey,
     });
 

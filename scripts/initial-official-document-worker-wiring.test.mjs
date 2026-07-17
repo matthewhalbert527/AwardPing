@@ -12,7 +12,15 @@ const reviewWorker = readFileSync(
 
 describe("initial official document worker wiring", () => {
   it("loads immutable acquisition provenance before processing sources", () => {
-    expect(worker).toContain("attachSourceAcquisitions(await loadSources(limit))");
+    const run = functionBody(worker, "async function runOnce");
+    const loadIndex = run.indexOf("const loadedSources = authoritativeInventory");
+    const attachIndex = run.indexOf(
+      "let sources = await attachSourceAcquisitions(loadedSources)",
+    );
+    const processIndex = run.indexOf("await runConcurrent(sources");
+    expect(loadIndex).toBeGreaterThan(-1);
+    expect(attachIndex).toBeGreaterThan(loadIndex);
+    expect(processIndex).toBeGreaterThan(attachIndex);
     const loader = functionBody(worker, "async function attachSourceAcquisitions");
     expect(loader).toContain('.from("shared_award_source_acquisitions")');
     expect(loader).toContain("source_acquisition:");

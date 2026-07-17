@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { DeterministicVisualArtifactError } from "./visual-event-evidence.mjs";
 import {
+  sha256VisualSemanticValue,
+  visualChangeSemanticManifest,
+} from "./visual-event-localization.mjs";
+import {
   backfillEvidenceRpcPayload,
   createDryRunPublishedArtifactStore,
   createImmutablePublishedArtifactStore,
@@ -389,8 +393,12 @@ describe("historical visual event evidence backfill", () => {
 
   it("keeps verified crops only when crop, layout, state, and overlap identities are complete", () => {
     const candidate = candidateRow();
-    const event = eventRow();
-    const complete = verifiedPreparedEvidence(candidate);
+    const changeDetails = {
+      exact_before: "Exact previous changed wording",
+      exact_after: "Exact current changed wording",
+    };
+    const event = eventRow({ change_details: changeDetails });
+    const complete = verifiedPreparedEvidence(candidate, changeDetails);
 
     expect(normalizePreparedHistoricalEvidence({
       event,
@@ -415,6 +423,24 @@ describe("historical visual event evidence backfill", () => {
         evidence: value,
       }).evidence.evidence_status).toBe("full_screenshot_fallback");
     }
+  });
+
+  it("downgrades even structurally complete v1 crops to the retained full screenshots", () => {
+    const candidate = candidateRow();
+    const changeDetails = {
+      exact_before: "Exact previous changed wording",
+      exact_after: "Exact current changed wording",
+    };
+    const event = eventRow({ change_details: changeDetails });
+    const legacy = verifiedPreparedEvidence(candidate, changeDetails);
+    legacy.evidence_schema_version = "visual-event-evidence-v1";
+
+    const result = normalizePreparedHistoricalEvidence({ event, candidate, evidence: legacy });
+
+    expect(result.evidence.evidence_status).toBe("full_screenshot_fallback");
+    expect(result.evidence.previous_capture.crop).toBeNull();
+    expect(result.evidence.current_capture.crop).toBeNull();
+    expect(result.evidence.localization.sides.previous.reason).toMatch(/predates event-semantic/i);
   });
 
   it("maps unsafe repair classes to explicit operator-safe solutions", () => {
@@ -558,12 +584,16 @@ function preparedEvidence(candidate, {
   };
 }
 
-function verifiedPreparedEvidence(candidate) {
+function verifiedPreparedEvidence(candidate, changeDetails) {
   const evidence = preparedEvidence(candidate, {
     evidence_status: "verified",
     previousStatus: "verified",
     currentStatus: "verified",
   });
+  const manifest = visualChangeSemanticManifest(changeDetails);
+  evidence.evidence_schema_version = "visual-event-evidence-v2";
+  evidence.localization.semantic_contract = manifest.contract;
+  evidence.localization.change_semantics_sha256 = manifest.change_semantics_sha256;
   for (const side of ["previous", "current"]) {
     const stateId = `${side}-state`;
     const full = {
@@ -581,6 +611,27 @@ function verifiedPreparedEvidence(candidate) {
     const layout = { ...geometry, state_id: stateId, geometry_hash: geometryHash };
     const cssRect = { x: 0, y: 0, width: 100, height: 50 };
     const pixelRect = { x: 0, y: 0, width: 100, height: 50 };
+    const matchedRects = [{ x: 10, y: 10, width: 20, height: 10 }];
+    const semanticCandidate = manifest.sides[side].candidates[0];
+    const bindingCore = {
+      contract: "visual-exact-text-binding-v2",
+      algorithm_version: 3,
+      side,
+      wording_source: semanticCandidate.source,
+      exact_text_sha256: semanticCandidate.normalized_text_sha256,
+      candidates_sha256: manifest.sides[side].candidates_sha256,
+      change_semantics_sha256: manifest.change_semantics_sha256,
+      state_id: stateId,
+      geometry_sha256: geometryHash,
+      matched_node_orders: [0],
+      matched_rects_sha256: sha256VisualSemanticValue(matchedRects),
+      crop_rect_sha256: sha256VisualSemanticValue(cssRect),
+      crop_rect_pixels_sha256: sha256VisualSemanticValue(pixelRect),
+    };
+    const semanticBinding = {
+      ...bindingCore,
+      binding_sha256: sha256VisualSemanticValue(bindingCore),
+    };
     evidence[`${side}_capture`] = {
       ...evidence[`${side}_capture`],
       full,
@@ -600,6 +651,9 @@ function verifiedPreparedEvidence(candidate) {
         source_image_object_key: full.object_key,
         source_image_sha256: full.sha256,
         source_image_byte_length: full.byte_length,
+        semantic_binding_sha256: semanticBinding.binding_sha256,
+        exact_text_sha256: semanticBinding.exact_text_sha256,
+        geometry_sha256: semanticBinding.geometry_sha256,
       },
       states: [{
         state_id: stateId,
@@ -612,14 +666,16 @@ function verifiedPreparedEvidence(candidate) {
     evidence.localization.sides[side] = {
       status: "verified",
       required: true,
-      exact_text: "Exact changed wording",
-      matched_rects: [{ x: 10, y: 10, width: 20, height: 10 }],
+      exact_text: semanticCandidate.normalized_text,
+      matched_rects: matchedRects,
       crop_rect: cssRect,
       crop_rect_pixels: pixelRect,
       exact_overlap: true,
       reason: null,
-      algorithm_version: "1",
+      algorithm_version: "3",
       state_id: stateId,
+      semantic_verified: true,
+      semantic_binding: semanticBinding,
     };
   }
   return evidence;

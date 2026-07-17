@@ -12,6 +12,7 @@ import {
   currentMonitoringPolicyAuditIdentity,
   currentVisualReviewPolicyIdentity,
   expandableSectionCandidateRejectReason,
+  fileToVerifiedInlineGeminiPart,
   latestVisualReviewPolicyDecision,
   normalizeVisualBatchResult,
   normalizeVisualReviewMode,
@@ -83,6 +84,35 @@ function sourceFixture(overrides = {}) {
 }
 
 describe("visual review queue helpers", () => {
+  it("attaches only bytes matching the immutable thumbnail reference", () => {
+    const dir = mkdtempSync(join(tmpdir(), "awardping-verified-thumb-"));
+    const path = join(dir, "thumb.png");
+    const body = Buffer.from("verified-thumbnail");
+    writeFileSync(path, body);
+    const ref = {
+      path,
+      sha256: crypto.createHash("sha256").update(body).digest("hex"),
+      byte_length: body.length,
+    };
+    try {
+      expect(fileToVerifiedInlineGeminiPart(ref, { role: "current thumbnail" }))
+        .toEqual({
+          inlineData: {
+            mimeType: "image/png",
+            data: body.toString("base64"),
+          },
+        });
+      writeFileSync(path, Buffer.from("tampered-thumbnail"));
+      expect(() => fileToVerifiedInlineGeminiPart(ref, { role: "current thumbnail" }))
+        .toThrow(/do not match the approved snapshot reference/i);
+      rmSync(path);
+      expect(() => fileToVerifiedInlineGeminiPart(ref, { role: "current thumbnail" }))
+        .toThrow(/artifact is missing/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("uses section identity before shared whole-page hashes for event uniqueness", () => {
     const fixture = (sectionKey, previousHash, newHash) => ({
       previous_image_hash: "shared-old-image",
@@ -128,14 +158,15 @@ describe("visual review queue helpers", () => {
     });
   });
 
-  it("retries bounded ordinary failures but leaves missing responses for recovery", () => {
+  it("requires one-use approval for paid retries but recovers existing responses", () => {
     expect(visualReviewFailureRetryDecision({
       status: "failed",
       rejection_reason: "invalid_ai_json: unexpected token",
       worker_metadata: { failure_retry_count: 1 },
     })).toMatchObject({
-      retry: true,
-      next_retry_count: 2,
+      retry: false,
+      approval_required: true,
+      reason: "paid_retry_approval_required",
     });
     expect(visualReviewFailureRetryDecision({
       status: "failed",
@@ -150,7 +181,8 @@ describe("visual review queue helpers", () => {
       worker_metadata: { failure_retry_count: 3 },
     })).toMatchObject({
       retry: false,
-      reason: "failure_retry_limit_reached",
+      approval_required: true,
+      reason: "paid_retry_approval_required",
     });
     expect(visualReviewFailureRetryDecision({
       status: "failed",

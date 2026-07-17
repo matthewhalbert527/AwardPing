@@ -39,11 +39,19 @@ describe("published visual event evidence", () => {
     });
 
     expect(evidence.evidence_status).toBe("verified");
+    expect(evidence.evidence_schema_version).toBe("visual-event-evidence-v2");
     expect(evidence.localization.direction).toBe("mixed");
+    expect(evidence.localization.change_semantics_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(evidence.localization.sides.previous).toMatchObject({
       status: "verified",
       exact_overlap: true,
       exact_text: "Deadline February 1",
+      semantic_verified: true,
+      semantic_binding: {
+        contract: "visual-exact-text-binding-v2",
+        wording_source: "change_details.exact_before",
+        binding_sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
     });
     expect(evidence.previous_capture.crop).toMatchObject({
       exact_overlap: true,
@@ -51,6 +59,12 @@ describe("published visual event evidence", () => {
       source_image_object_key: evidence.previous_capture.full.object_key,
       source_image_sha256: evidence.previous_capture.full.sha256,
       source_image_byte_length: evidence.previous_capture.full.byte_length,
+      semantic_binding_sha256:
+        evidence.localization.sides.previous.semantic_binding.binding_sha256,
+      exact_text_sha256:
+        evidence.localization.sides.previous.semantic_binding.exact_text_sha256,
+      geometry_sha256:
+        evidence.localization.sides.previous.semantic_binding.geometry_sha256,
     });
     expect(evidence.current_capture.crop.object_key).toContain(
       `${PUBLISHED_VISUAL_EVIDENCE_PREFIX}/candidate-1/current/changed-section-crop/`,
@@ -154,6 +168,31 @@ describe("published visual event evidence", () => {
     expect(evidence.previous_capture.full.object_key).toContain("main-full");
     expect(evidence.previous_capture.crop).toBeNull();
     expect(evidence.localization.sides.previous.status).toBe("unavailable_exact_text_not_found");
+  });
+
+  it("retains full screenshots but creates no crop from broad before/after summaries", async () => {
+    const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-event-semantic-fallback-"));
+    temporary.push(archiveRoot);
+    const previous = await captureFixture(archiveRoot, "previous", "Deadline February 1");
+    const current = await captureFixture(archiveRoot, "current", "Deadline March 1");
+    const evidence = await preparePublishedVisualEventEvidence({
+      candidate: candidateFixture(previous, current),
+      source: { id: "source-1", shared_award_id: "award-1" },
+      changeDetails: {
+        before: "Deadline February 1",
+        after: "Deadline March 1",
+      },
+      archiveRoot,
+      artifactStore: memoryStore(),
+    });
+
+    expect(evidence.evidence_status).toBe("full_screenshot_fallback");
+    expect(evidence.previous_capture.full).toBeTruthy();
+    expect(evidence.current_capture.full).toBeTruthy();
+    expect(evidence.previous_capture.crop).toBeNull();
+    expect(evidence.current_capture.crop).toBeNull();
+    expect(evidence.localization.sides.previous.semantic_verified).toBe(false);
+    expect(evidence.localization.sides.current.semantic_verified).toBe(false);
   });
 
   it("recovers a candidate-hash-bound legacy screenshot with canonical metadata and no crop", async () => {

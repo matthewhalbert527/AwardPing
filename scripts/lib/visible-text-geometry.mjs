@@ -165,6 +165,7 @@ export async function captureVisibleTextGeometry(page, { capturedAt = null, stat
           nodes.push({
             order: nodes.length,
             path: selectorPath(parent),
+            flow_path: selectorPath(currentBlock),
             text: rawText,
             separator_before: separatorBefore,
             rects: nodeRects,

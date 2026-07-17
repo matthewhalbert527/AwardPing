@@ -1,5 +1,3 @@
-export const geminiBatchOnlyModel = "gemini-2.5-flash-lite";
-
 export const appConfig = {
   name: "AwardPing",
   url: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
@@ -11,14 +9,6 @@ export const appConfig = {
   contactToEmail: process.env.CONTACT_TO_EMAIL || "",
   cronSecret: process.env.CRON_SECRET || "",
   dataEncryptionKey: process.env.APP_DATA_ENCRYPTION_KEY || "",
-  tavilyApiKey: process.env.TAVILY_API_KEY || "",
-  aiProvider: process.env.AI_PROVIDER || "auto",
-  geminiApiKey: process.env.GEMINI_API_KEY || "",
-  geminiModel: geminiBatchOnlyModel,
-  geminiDiscoveryModel: geminiBatchOnlyModel,
-  geminiSummaryModel: geminiBatchOnlyModel,
-  openaiApiKey: process.env.OPENAI_API_KEY || "",
-  openaiDiscoveryModel: process.env.OPENAI_DISCOVERY_MODEL || "gpt-4.1-mini",
   r2AccountId: textFromEnv("R2_ACCOUNT_ID"),
   r2Endpoint: textFromEnv("R2_ENDPOINT"),
   r2AccessKeyId: textFromEnv("R2_ACCESS_KEY_ID"),
@@ -26,9 +16,6 @@ export const appConfig = {
   r2Bucket: textFromEnv("R2_BUCKET", "awardping-snapshots"),
   r2SignedUrlTtlSeconds: numberFromEnv("R2_SIGNED_URL_TTL_SECONDS", 900),
   adminEmails: emailListFromEnv("AWARDPING_ADMIN_EMAILS"),
-  discoveryDailyUserLimit: numberFromEnv("DISCOVERY_DAILY_USER_LIMIT", 10),
-  discoveryDailyIpLimit: numberFromEnv("DISCOVERY_DAILY_IP_LIMIT", 30),
-  discoveryDailyGlobalLimit: numberFromEnv("DISCOVERY_DAILY_GLOBAL_LIMIT", 100),
 };
 
 export function hasSupabaseConfig() {

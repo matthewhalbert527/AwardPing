@@ -37,6 +37,7 @@ export type OperatorActionInboxItem = {
     | "monitoring_feedback"
     | "digest_delivery"
     | "downstream_lane"
+    | "invite_security_reissue"
     | "inbox_load";
   severity: PageIssueSeverity;
   severityLabel: "Urgent" | "Important" | "Routine";
@@ -94,6 +95,12 @@ export type OperatorActionInboxItem = {
   action:
     | { kind: "source"; sourceId: string; sourceTitle: string }
     | { kind: "source_intake" }
+    | {
+        kind: "paid_visual_retry";
+        candidateId: string;
+        candidateUpdatedAt: string;
+        sourceTitle: string;
+      }
     | { kind: "none" };
 };
 
@@ -126,12 +133,31 @@ export type OperatorVisualReviewFailureInput = {
 export type OperatorDigestDeliveryFailureInput = {
   id: string;
   deliveryType: string;
+  state?: "legacy_failed" | "ambiguous" | "terminal_failed" | "release_blocked";
   digestKey: string | null;
   recipient: string | null;
   recipientHash?: string | null;
   changeEventCount?: number;
   error: string | null;
   createdAt: string;
+  updatedAt?: string | null;
+  payloadHash?: string | null;
+  attemptCount?: number | null;
+  firstProviderAttemptAt?: string | null;
+  nextAttemptAt?: string | null;
+  contractVersion?: string | null;
+};
+
+export type OperatorInviteSecurityReissueInput = {
+  inviteId: string;
+  officeId: string;
+  officeName: string;
+  emailHash: string;
+  status: "pending_reissue" | "replacement_ready";
+  rotatedAt: string;
+  replacementPreparedAt: string | null;
+  deliveryStatus: string | null;
+  lastError: string | null;
 };
 
 export type OperatorManualQuarantineBacklogInput = {
@@ -154,6 +180,7 @@ export type BuildOperatorActionInboxInput = {
   nightlyReportedAt?: string | null;
   visualReviewFailures?: OperatorVisualReviewFailureInput[];
   digestDeliveryFailures?: OperatorDigestDeliveryFailureInput[];
+  inviteSecurityReissues?: OperatorInviteSecurityReissueInput[];
   loadErrors?: string[];
   downstreamLanes?: AdminDownstreamLane[];
   now?: Date;
@@ -176,6 +203,7 @@ export function buildOperatorActionInbox({
   nightlyReportedAt = null,
   visualReviewFailures = [],
   digestDeliveryFailures = [],
+  inviteSecurityReissues = [],
   loadErrors = [],
   downstreamLanes = [],
   now = new Date(),
@@ -195,6 +223,7 @@ export function buildOperatorActionInbox({
     ...visualReviewFailures.map((failure) => visualReviewFailureToAction(failure, now)),
     ...promotionClusters.map((cluster) => monitoringFeedbackClusterToAction(cluster, now)),
     ...digestDeliveryFailures.map((failure) => digestDeliveryFailureToAction(failure, now)),
+    ...inviteSecurityReissues.map((reissue) => inviteSecurityReissueToAction(reissue, now)),
     ...downstreamLanes
       .filter((lane) => downstreamLaneNeedsAction(lane, now))
       .map((lane) => downstreamLaneToAction(lane, now)),
@@ -202,6 +231,72 @@ export function buildOperatorActionInbox({
   ];
 
   return dedupeActions(items).sort(compareActions);
+}
+
+function inviteSecurityReissueToAction(
+  reissue: OperatorInviteSecurityReissueInput,
+  now: Date,
+): OperatorActionInboxItem {
+  const replacementReady = reissue.status === "replacement_ready";
+  return {
+    schemaVersion: operatorActionInboxSchemaVersion,
+    id: `invite-security-reissue:${reissue.inviteId}`,
+    fingerprint: `invite-security-reissue:${reissue.inviteId}:${reissue.status}:${reissue.deliveryStatus || "none"}`,
+    sourceKind: "invite_security_reissue",
+    severity: "medium",
+    severityLabel: severityLabel("medium"),
+    state: "needs_operator",
+    stateLabel: stateLabel("needs_operator"),
+    title: `${reissue.officeName}: resend a secure beta invitation`,
+    context: `Invite ${reissue.emailHash.slice(0, 10)}\u2026`,
+    failureReason: replacementReady
+      ? reissue.lastError || "A strong replacement exists, but confirmed email delivery has not completed."
+      : "AwardPing retired an older short invitation code during the beta security upgrade. The original link no longer works and must not fail silently.",
+    occurredAt: reissue.replacementPreparedAt || reissue.rotatedAt,
+    ageLabel: formatOperatorActionAge(reissue.replacementPreparedAt || reissue.rotatedAt, now),
+    owner: {
+      label: "Office owner or admin",
+      detail: "Only an administrator for the affected office may create and resend its replacement invitation.",
+    },
+    publicImpact: {
+      level: "blocked",
+      label: "Invited advisor cannot join yet",
+      detail: "Public award data is unaffected, but this advisor's invite-only beta access is blocked until a replacement is delivered.",
+    },
+    retry: {
+      automatic: false,
+      label: "No \u2014 deliberate resend required",
+      detail: "AwardPing will not repeatedly email a replacement or expose a bearer link without an authorized office admin action.",
+    },
+    charge: {
+      level: "may_charge",
+      label: "Possible email-provider charge",
+      detail: "Creating the replacement uses no paid AI. Sending it may create a normal email-provider charge.",
+    },
+    recommendedAction: {
+      label: replacementReady ? "Copy or resend the prepared replacement" : "Create and resend a secure replacement",
+      detail: "Open the affected office's Pending invites section, create one strong replacement, and confirm delivery before clearing this action.",
+      href: "/dashboard/office#pending-invites",
+    },
+    evidence: compactEvidence([
+      ["Invite", reissue.inviteId],
+      ["Office", reissue.officeId],
+      ["Recipient binding", reissue.emailHash],
+      ["Security rotation", reissue.rotatedAt],
+      ["Replacement prepared", reissue.replacementPreparedAt],
+      ["Delivery status", reissue.deliveryStatus],
+      ["Last delivery error", reissue.lastError],
+    ]),
+    policy: {
+      id: "invite-only-beta-security-reissue",
+      version: "v1",
+      hash: null,
+      description: "Legacy low-entropy invitation codes are retired with durable, auditable replacement delivery instead of silent invalidation.",
+    },
+    award: null,
+    source: null,
+    action: { kind: "none" },
+  };
 }
 
 function downstreamLaneNeedsAction(lane: AdminDownstreamLane, now: Date) {
@@ -1066,9 +1161,8 @@ function visualReviewFailureToAction(
   const retryCount = Math.max(0, integerValue(metadata.failure_retry_count));
   const reason = cleanText(failure.rejectionReason) || "Visual review failed without a recorded reason.";
   const missingResponse = reason === "missing_batch_response";
-  const ambiguousExternalBatch = reason === "manual_recovery_required_possible_external_batch_created";
-  const retryLimitReached = retryCount >= 3;
-  const automatic = missingResponse || (!ambiguousExternalBatch && !retryLimitReached);
+  const ambiguousExternalBatch = reason.startsWith("manual_recovery_required_");
+  const automatic = missingResponse;
   const state: OperatorActionState = ambiguousExternalBatch
     ? "blocked"
     : automatic
@@ -1087,17 +1181,11 @@ function visualReviewFailureToAction(
           label: "Yes — recover existing result",
           detail: "AwardPing will look for the missing response from the existing Batch without resubmitting it.",
         }
-      : retryLimitReached
-        ? {
-            automatic: false,
-            label: "No — retry limit reached",
-            detail: "Three paid retries have failed. Inspect the evidence and cause before any new submission.",
-          }
-        : {
-            automatic: true,
-            label: `Yes — attempt ${retryCount + 1} of 3`,
-            detail: "The failed candidate will be submitted in a new Gemini Batch attempt.",
-          };
+      : {
+          automatic: false,
+          label: "No — approval required",
+          detail: "A site admin must approve this exact failed candidate before one new paid Batch submission.",
+        };
   const charge: OperatorActionInboxItem["charge"] = ambiguousExternalBatch
     ? {
         level: "unknown",
@@ -1137,14 +1225,12 @@ function visualReviewFailureToAction(
     retry,
     charge,
     recommendedAction: {
-      label: automatic ? "Watch the bounded retry" : "Inspect before resubmitting",
+      label: automatic ? "Watch existing-result recovery" : "Inspect and approve one retry",
       detail: ambiguousExternalBatch
         ? "Reconcile the possible external Batch name and result first. Never use a generic retry in this state."
         : missingResponse
           ? "Allow response recovery to reuse the existing Batch."
-          : retryLimitReached
-            ? "Inspect the captured evidence, prompt payload, and rejection reason before approving another paid attempt."
-            : "Allow the bounded automatic retry; intervene only if it reaches the retry limit.",
+          : "Inspect the captured evidence, prompt payload, and rejection reason. Approve one exact retry only when a new paid submission is justified.",
       href: null,
     },
     evidence: compactEvidence([
@@ -1162,11 +1248,18 @@ function visualReviewFailureToAction(
       id: visualReviewBatchPolicyIdentity.id,
       version: visualReviewBatchPolicyIdentity.version,
       hash: visualReviewBatchPolicyIdentity.hash,
-      description: "Current bounded-retry and visual-review Batch policy.",
+      description: "Current operator-approved paid-retry and visual-review Batch policy.",
     },
     award: null,
     source: { id: failure.sourceId, title: failure.sourceTitle, url: failure.sourceUrl },
-    action: { kind: "none" },
+    action: ambiguousExternalBatch || missingResponse
+      ? { kind: "none" }
+      : {
+          kind: "paid_visual_retry",
+          candidateId: failure.id,
+          candidateUpdatedAt: failure.updatedAt,
+          sourceTitle: failure.sourceTitle,
+        },
   };
 }
 
@@ -1434,6 +1527,11 @@ function digestDeliveryFailureToAction(
   now: Date,
 ): OperatorActionInboxItem {
   const recipientLabel = deliveryRecipientLabel(failure);
+  const deliveryState = failure.state || "legacy_failed";
+  const autoRetry = deliveryState === "ambiguous";
+  const releaseBlocked = deliveryState === "release_blocked";
+  const legacy = deliveryState === "legacy_failed";
+  const occurredAt = failure.updatedAt || failure.createdAt;
   return {
     schemaVersion: operatorActionInboxSchemaVersion,
     id: `delivery:${failure.id}`,
@@ -1443,11 +1541,15 @@ function digestDeliveryFailureToAction(
     severityLabel: severityLabel("medium"),
     state: "needs_operator",
     stateLabel: stateLabel("needs_operator"),
-    title: `${capitalize(failure.deliveryType || "email")} delivery failed`,
+    title: releaseBlocked
+      ? "Public digest blocked by a changed release"
+      : autoRetry
+        ? "Public digest provider outcome is ambiguous"
+        : `${capitalize(failure.deliveryType || "email")} delivery failed`,
     context: recipientLabel,
     failureReason: failure.error || "The delivery provider returned a failure without a recorded reason.",
-    occurredAt: failure.createdAt,
-    ageLabel: formatOperatorActionAge(failure.createdAt, now),
+    occurredAt,
+    ageLabel: formatOperatorActionAge(occurredAt, now),
     owner: {
       label: "Delivery review",
       detail: "Functional owner; no individual assignee is stored.",
@@ -1455,21 +1557,37 @@ function digestDeliveryFailureToAction(
     publicImpact: {
       level: "blocked",
       label: "Subscriber did not receive email",
-      detail: "The public site is unaffected, but this subscriber's update delivery failed.",
+      detail: releaseBlocked
+        ? "No stale digest was sent; a fresh verified release must create a new payload."
+        : "The public site is unaffected, but this subscriber may not have received the digest.",
     },
     retry: {
-      automatic: false,
-      label: "No — delivery is not auto-retried",
-      detail: "Inspect the address and provider error before sending one replacement. Do not create duplicate digests.",
+      automatic: autoRetry,
+      label: autoRetry
+        ? "Yes — only inside the sealed 23-hour window"
+        : "No — operator review is required",
+      detail: autoRetry
+        ? "The drain retries the same payload hash and provider idempotency key. It stops before 24 hours so an expired key cannot create a duplicate."
+        : releaseBlocked
+          ? "This payload belongs to an invalidated release and will never be sent. Re-verification must produce a new digest."
+          : legacy
+            ? "This pre-outbox row has no immutable payload, so AwardPing cannot safely infer or replay it."
+            : "The automatic retry limit or safe provider-idempotency window ended. Do not send a replacement without reconciling provider evidence.",
     },
     charge: {
       level: "may_charge",
       label: "Possible — Resend",
-      detail: "Sending a replacement email may create a Resend provider charge; no Gemini charge is involved.",
+      detail: autoRetry
+        ? "A provider request is made with the same idempotency key and may count toward Resend usage; no Gemini charge is involved."
+        : "A manual replacement may create a Resend provider charge; no Gemini charge is involved.",
     },
     recommendedAction: {
-      label: "Inspect, then resend once if safe",
-      detail: "Correct a permanent address problem or confirm the provider recovered, then send only one replacement delivery.",
+      label: releaseBlocked
+        ? "Re-verify before creating a new digest"
+        : "Reconcile provider evidence before any resend",
+      detail: legacy
+        ? "Preserve this historical row as unsealed legacy evidence. Create a replacement only after confirming the provider did not deliver it."
+        : "Check the immutable payload hash, provider logs, attempt timestamps, and release evidence before authorizing any manual replacement.",
       href: null,
     },
     evidence: compactEvidence([
@@ -1478,13 +1596,20 @@ function digestDeliveryFailureToAction(
       ["Digest", failure.digestKey],
       ["Recipient", recipientLabel],
       ["Updates in digest", failure.changeEventCount == null ? null : String(failure.changeEventCount)],
-      ["Failed", failure.createdAt],
+      ["State", deliveryState],
+      ["Payload hash", failure.payloadHash],
+      ["Attempts", failure.attemptCount == null ? null : String(failure.attemptCount)],
+      ["First provider request", failure.firstProviderAttemptAt],
+      ["Next automatic attempt", failure.nextAttemptAt],
+      ["Recorded", occurredAt],
     ]),
     policy: {
       id: "public-update-delivery",
-      version: "not recorded",
-      hash: null,
-      description: "Delivery rows currently do not retain a versioned retry policy; the inbox reports that gap honestly.",
+      version: failure.contractVersion || "legacy-unsealed",
+      hash: failure.payloadHash || null,
+      description: failure.contractVersion
+        ? "The rendered payload, event bindings, Stage 1 release, provider key, lease, and retry state are durable."
+        : "This delivery predates the durable outbox and does not claim an immutable rendered payload.",
     },
     award: null,
     source: null,

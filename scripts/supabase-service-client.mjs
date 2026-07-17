@@ -22,6 +22,21 @@ export function isSupabaseSecretApiKey(key) {
   return Boolean(String(key || "").trim().startsWith("sb_secret_"));
 }
 
+export function prepareSupabaseServiceHeaders(headersInit, key) {
+  const headers = new Headers(headersInit);
+  if (!isSupabaseSecretApiKey(key)) return headers;
+
+  const secretAuthorization = `Bearer ${key}`;
+  if (headers.get("authorization") !== secretAuthorization) return headers;
+  if (headers.get("apikey") !== key) {
+    throw new Error(
+      "Supabase sb_secret requests must carry the same key in apikey before Authorization is removed.",
+    );
+  }
+  headers.delete("authorization");
+  return headers;
+}
+
 export function isRetryableSupabaseNetworkError(error) {
   const message = errorMessage(error).toLowerCase();
   const code = String(error?.code || error?.cause?.code || "").toLowerCase();
@@ -31,12 +46,8 @@ export function isRetryableSupabaseNetworkError(error) {
 }
 
 function createSupabaseFetch(key) {
-  const secretKey = isSupabaseSecretApiKey(key);
   return async (input, init) => {
-    const headers = new Headers(init?.headers);
-    if (secretKey && headers.get("authorization") === `Bearer ${key}`) {
-      headers.delete("authorization");
-    }
+    const headers = prepareSupabaseServiceHeaders(init?.headers, key);
 
     const method = String(init?.method || input?.method || "GET").toUpperCase();
     const maxAttempts = ["GET", "HEAD", "OPTIONS"].includes(method) ? 4 : 1;

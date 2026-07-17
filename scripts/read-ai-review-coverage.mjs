@@ -173,8 +173,8 @@ async function loadLatestWorkerRuns() {
 }
 
 function recommendedCommands(summary) {
-  const applyCommand = "node scripts/backfill-open-source-ai-determinations.mjs --apply=true --max-batch-requests=500 --reconcile=true";
-  const dryRunCommand = "node scripts/backfill-open-source-ai-determinations.mjs --dry-run=true --json";
+  const applyCommand = "node scripts/process-new-page-review-lane.mjs --env=.env.worker.local";
+  const dryRunCommand = "node scripts/read-ai-review-coverage.mjs --json";
   return {
     dry_run: dryRunCommand,
     apply: applyCommand,

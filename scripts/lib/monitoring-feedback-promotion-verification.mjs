@@ -7,6 +7,7 @@ import {
   visualReviewBatchPolicyIdentity,
 } from "./award-monitoring-policy.mjs";
 import { changeEventMatchesMonitoringPolicyRule } from "./change-event-suppression.mjs";
+import { validateVisualSourceInventoryCohort } from "./visual-source-inventory-proof.mjs";
 
 export function currentMonitoringPromotionWorkerIdentity(env = process.env) {
   return {
@@ -257,6 +258,10 @@ export function buildMonitoringPromotionCanaryReport({
     ["completed", "succeeded"].includes(cleanKey(run.status)),
   );
   const hashesMatch = canonicalRuns.every((run) => workerRunHashesMatch(run, expectedHashes));
+  const inventoryProof = validateVisualSourceInventoryCohort(
+    canonicalRuns.map((run) => objectValue(run.metadata).source_inventory),
+    requiredShardCount,
+  );
   const matchedEvents = events.filter((event) =>
     changeEventMatchesMonitoringPolicyRule(
       event,
@@ -274,6 +279,7 @@ export function buildMonitoringPromotionCanaryReport({
     canonicalRuns.length === requiredShardCount &&
     completedRuns.length === requiredShardCount &&
     hashesMatch &&
+    inventoryProof.complete &&
     legitimateUpdates.length === 0;
   return sealPromotionReport({
     schema_version: "monitoring-promotion-six-pm-canary-v1",
@@ -291,6 +297,11 @@ export function buildMonitoringPromotionCanaryReport({
     completed_shards: completedRuns.length,
     failed_shards: Math.max(0, requiredShardCount - completedRuns.length),
     policy_hashes_match: hashesMatch,
+    source_inventory_proof_complete: inventoryProof.complete,
+    source_inventory_proof_reason: inventoryProof.reason,
+    source_inventory_global_count: inventoryProof.globalCount,
+    source_inventory_global_hash: inventoryProof.globalHash,
+    source_inventory_partition_count_sum: inventoryProof.partitionCountSum,
     full_hash: cleanText(expectedHashes?.policy_hash) || null,
     batch_hash: cleanText(expectedHashes?.batch_policy_hash) || null,
     suppression_hash: cleanText(expectedHashes?.suppression_policy_hash) || null,
@@ -302,8 +313,8 @@ export function buildMonitoringPromotionCanaryReport({
       .map((run) => Number(objectValue(objectValue(run.metadata).run_identity).shard_index))
       .sort((left, right) => left - right),
     summary: passed
-      ? "The scheduled 6 PM cohort completed with matching policy hashes and no legitimate collisions."
-      : "The 6 PM cohort is incomplete, mismatched, failed, or found a legitimate collision.",
+      ? "The scheduled 6 PM cohort completed with matching policy hashes, one exact source inventory proof, and no legitimate collisions."
+      : "The 6 PM cohort is incomplete, has mismatched policy or source-inventory proof, failed, or found a legitimate collision.",
   });
 }
 

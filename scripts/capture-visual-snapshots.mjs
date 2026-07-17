@@ -55,6 +55,8 @@ import {
   monitoringDateForVisualReportFilename,
   shouldReplaceLatestNightlyReport,
 } from "./lib/visual-capture-run-report.mjs";
+import { isScheduledNightlyVisualRun } from "./lib/visual-nightly-run-contract.mjs";
+import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
 import {
   refreshedLatestVisualSnapshotHistory,
@@ -136,8 +138,8 @@ const monitoringPromotionMatcherDigest =
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 9;
-const captureBehaviorName = "final-state-text-node-geometry-with-open-sections";
+const captureBehaviorVersion = 11;
+const captureBehaviorName = "final-state-text-node-geometry-with-open-sections-semantic-crop-v3";
 const maxPdfDiscoveryRegistrationBatchSize = 500;
 const maxPdfDiscoveryQueueCandidates = 25;
 const maxSnapshotExpandableControls = 120;
@@ -671,6 +673,7 @@ async function runOnce() {
       run_cohort_id: runCohortId,
       include_not_due: includeNotDue,
       source_id: sourceIdFilter || null,
+      source_ids_filter_count: sourceIdsFilter.size,
       initial_official_document_materialization: initialOfficialDocumentMaterialization,
       initial_official_document_acquisition_id: initialOfficialDocumentAcquisitionId || null,
       source_url: sourceUrlFilter || null,
@@ -958,6 +961,7 @@ async function runOnce() {
       note: "Gemini CLI / Antigravity does not expose exact token or account quota usage in worker logs. Check the Gemini account usage page for the account-level monthly allowance.",
     },
     errors: [],
+    source_inventory: null,
     run_health: null,
     failure_groups: [],
     repair_plan: { requires_operator: false, actions: [] },
@@ -1134,7 +1138,39 @@ async function runOnce() {
 
     workerRunId = await startWorkerRun(report);
     report.worker_run_id = workerRunId;
-    let sources = await attachSourceAcquisitions(await loadSources(limit));
+    const authoritativeInventory = isScheduledNightlyVisualRun({
+      startedAt,
+      runIdentity: report.run_identity,
+      options: report.options,
+    })
+      ? await loadAuthoritativeScheduledSourceInventory()
+      : null;
+    // A normal 6 PM shard captures the exact immutable-id inventory it just
+    // proved. Re-querying with mutable next_check_at/created_at pagination lets
+    // concurrent shards move rows between pages and creates false gaps.
+    const loadedSources = authoritativeInventory
+      ? authoritativeInventory.filter(sourceMatchesShard).slice(0, limit)
+      : await loadSources(limit);
+    if (authoritativeInventory) {
+      report.source_inventory = buildVisualSourceInventoryProof({
+        eligibleSources: authoritativeInventory,
+        loadedSources,
+        shardCount,
+        shardIndex,
+        shardIndexForSource,
+        capturedAt: new Date().toISOString(),
+      });
+      console.log(
+        `SOURCE_INVENTORY_PROOF global=${report.source_inventory.global_source_count} global_hash=${report.source_inventory.global_source_ids_sha256} shard=${shardIndex + 1}/${shardCount} expected=${report.source_inventory.expected_shard_source_count} loaded=${report.source_inventory.loaded_shard_source_count} exact=${report.source_inventory.shard_exact_match}`,
+      );
+      if (!report.source_inventory.proof_complete) {
+        await updateWorkerRunMetadata(workerRunId, report);
+        throw new Error(
+          `Scheduled source inventory proof failed: expected ${report.source_inventory.expected_shard_source_count} sources (${report.source_inventory.expected_shard_source_ids_sha256}) but loaded ${report.source_inventory.loaded_shard_source_count} (${report.source_inventory.loaded_shard_source_ids_sha256}); global inventory ${report.source_inventory.global_source_count} (${report.source_inventory.global_source_ids_sha256}).`,
+        );
+      }
+    }
+    let sources = await attachSourceAcquisitions(loadedSources);
     coverageSources = sources;
     report.baseline_coverage_start = summarizeBaselineCoverage(coverageSources);
     console.log(formatBaselineCoverage("BASELINE_COVERAGE start", report.baseline_coverage_start));
@@ -6309,7 +6345,7 @@ async function maybeRecordDiscoveredPdfSources(source, pdfDiscovery, expanded, r
           discovery_intent: discoveryIntent,
           parent_source_url: source.url,
           run_trigger: runTrigger,
-          run_cohort_id: report?.run_identity?.run_cohort_id || null,
+          run_cohort_id: report?.run_identity?.cohort_id || null,
           registration_batch_index: batchIndex,
           registration_batch_count: registrationBatches.length,
           scan_complete: pdfDiscovery.scanComplete === true,
@@ -6577,7 +6613,7 @@ async function quarantineDiscoveredPdfNotificationConflict({
       p_evidence: {
         worker_run_id: report?.worker_run_id || null,
         run_trigger: runTrigger,
-        run_cohort_id: report?.run_identity?.run_cohort_id || null,
+        run_cohort_id: report?.run_identity?.cohort_id || null,
         discovery_intent: discoveryIntent,
         discovery_gate_reason: decision?.reason || null,
         notification_disposition: provenance.notification_disposition,
@@ -7995,6 +8031,7 @@ function captureLocalizationMetadata(capture) {
     geometry_ready: geometryReady,
     geometry_hash: cleanText(textGeometry.geometry_hash) || null,
     bound_image_hash: cleanText(geometryScreenshot.image_hash) || null,
+    semantic_crop_contract: "visual-exact-text-binding-v2",
     layout_sample_present: hasLayoutSample,
     scroll_height_present: hasScrollHeight,
     capture_behavior_version: capture.capture_behavior_version || null,
@@ -9203,6 +9240,77 @@ async function loadSources(pageLimit) {
   return sources.slice(0, pageLimit);
 }
 
+async function loadAuthoritativeScheduledSourceInventory() {
+  let pageSize = sourceLoadPageSize;
+  const initialCountResult = await buildAuthoritativeSourceInventoryCountQuery();
+  if (initialCountResult.error) {
+    throw new Error(describeSupabaseError(
+      initialCountResult.error,
+      "count authoritative scheduled source inventory",
+    ));
+  }
+  const expectedRawCount = initialCountResult.count;
+  if (!Number.isInteger(expectedRawCount) || expectedRawCount < 0) {
+    throw new Error("Authoritative scheduled source inventory did not return an exact database count.");
+  }
+  const rawSources = [];
+  let lastSourceId = null;
+
+  for (;;) {
+    const requestedPageSize = pageSize;
+    let query = buildAuthoritativeSourceInventoryQuery()
+      .limit(requestedPageSize);
+    if (lastSourceId) query = query.gt("id", lastSourceId);
+    const { data, error } = await query;
+
+    if (error) {
+      if (isSupabaseStatementTimeoutLike(error) && pageSize > minSourceLoadPageSize) {
+        pageSize = Math.max(minSourceLoadPageSize, Math.floor(pageSize / 2));
+        console.warn(
+          `SOURCE_INVENTORY_PROOF_TIMEOUT retrying with page_size=${pageSize} after_id=${lastSourceId || "start"}`,
+        );
+        continue;
+      }
+      throw new Error(describeSupabaseError(error, "enumerate authoritative scheduled source inventory"));
+    }
+
+    const page = data || [];
+    if (!page.length) break;
+    const pageIds = page.map((source) => cleanText(source?.id)).filter(Boolean);
+    if (
+      pageIds.length !== page.length ||
+      pageIds.some((id, index) => index > 0 && id <= pageIds[index - 1]) ||
+      (lastSourceId && pageIds[0] <= lastSourceId)
+    ) {
+      throw new Error(
+        "Authoritative scheduled source inventory keyset order was incomplete or non-monotonic.",
+      );
+    }
+    rawSources.push(...page);
+    lastSourceId = pageIds.at(-1);
+    if (page.length < requestedPageSize) break;
+  }
+
+  const finalCountResult = await buildAuthoritativeSourceInventoryCountQuery();
+  if (finalCountResult.error) {
+    throw new Error(describeSupabaseError(
+      finalCountResult.error,
+      "recount authoritative scheduled source inventory",
+    ));
+  }
+  if (finalCountResult.count !== expectedRawCount) {
+    throw new Error("Authoritative scheduled source inventory changed while it was being enumerated.");
+  }
+
+  const uniqueRawIds = new Set(rawSources.map((source) => cleanText(source?.id)).filter(Boolean));
+  if (rawSources.length !== expectedRawCount || uniqueRawIds.size !== expectedRawCount) {
+    throw new Error(
+      `Authoritative scheduled source inventory enumeration was not exact: count=${expectedRawCount} rows=${rawSources.length} unique=${uniqueRawIds.size}.`,
+    );
+  }
+  return filterMonitorableSourcesForCapture(rawSources, { logRejected: false });
+}
+
 async function attachSourceAcquisitions(sources) {
   const acquisitionsBySourceId = new Map();
   const sourceIds = [...new Set((sources || []).map((source) => source.id).filter(Boolean))];
@@ -9243,7 +9351,7 @@ async function loadSourcesByIds(pageLimit) {
   return sources.slice(0, pageLimit);
 }
 
-function filterMonitorableSourcesForCapture(sources) {
+function filterMonitorableSourcesForCapture(sources, { logRejected = true } = {}) {
   if (initialOfficialDocumentMaterialization) return sources;
 
   const accepted = [];
@@ -9262,7 +9370,7 @@ function filterMonitorableSourcesForCapture(sources) {
     rejected.set(reason, (rejected.get(reason) || 0) + 1);
   }
 
-  if (rejected.size) {
+  if (logRejected && rejected.size) {
     console.log(
       `SOURCE_QUALITY_SKIP ${[...rejected.entries()]
         .sort(([left], [right]) => left.localeCompare(right))
@@ -9621,6 +9729,25 @@ async function updateWorkerRunMetadata(runId, report) {
   }
 }
 
+function buildAuthoritativeSourceInventoryQuery() {
+  return supabase
+    .from("shared_award_sources")
+    .select(
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
+    )
+    .eq("shared_awards.status", "active")
+    .eq("admin_review_status", "open")
+    .order("id", { ascending: true });
+}
+
+function buildAuthoritativeSourceInventoryCountQuery() {
+  return supabase
+    .from("shared_award_sources")
+    .select("id,shared_awards!inner(id)", { count: "exact", head: true })
+    .eq("shared_awards.status", "active")
+    .eq("admin_review_status", "open");
+}
+
 async function maybePruneSnapshotHistory(report) {
   const tasks = [
     {
@@ -9798,6 +9925,7 @@ function visualWorkerMetadata(report) {
     billing_blocked: Boolean(report.billing_blocked),
     blocking_reason: report.blocking_reason || null,
     options: report.options,
+    source_inventory: report.source_inventory || null,
     counts: {
       candidate_changes: report.candidate_changes,
       ai_true_changes: report.ai_true_changes,

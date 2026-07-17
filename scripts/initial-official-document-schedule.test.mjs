@@ -35,7 +35,9 @@ describe("permanent first-observation discovery schedule", () => {
     expect(launcher).toContain('`$workerArgs += "--discovery-mode=true"');
     expect(launcher).toContain('`$workerArgs += "--discovery-intent=live_recurring"');
     expect(launcher).toContain('`$workerArgs += "--discover-pdf-subpages=true"');
-    expect(launcher).toContain("if (-not `$CompleteMissingBaselines -and -not `$BaselineRefresh)");
+    expect(launcher).not.toContain("`$BaselineRefresh");
+    expect(launcher).not.toContain("`$CompleteMissingBaselines");
+    expect(launcher).not.toContain("--discovery-mode=false");
     expect(installer).toContain("queues newly linked official PDFs for review daily");
   });
 });

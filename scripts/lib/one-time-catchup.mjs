@@ -96,6 +96,12 @@ export function summarizeOneTimeCatchupBacklog({
       decision.retry || decision.reason === "awaiting_missing_batch_response_recovery"
     )
     .map(({ candidate }) => candidate);
+  const approvalRequiredVisualFailures = failedVisualDecisions
+    .filter(({ decision }) =>
+      decision.approval_required === true ||
+      decision.reason === "paid_retry_approval_required"
+    )
+    .map(({ candidate }) => candidate);
   const terminalVisualFailures = failedVisualDecisions
     .filter(({ decision }) =>
       [
@@ -138,6 +144,7 @@ export function summarizeOneTimeCatchupBacklog({
     page_audit_batch_in_flight: pageAuditBatchInFlight.length,
     visual_review_queue: visualQueueRows.length,
     visual_review_retryable_failures: retryableVisualFailures.length,
+    visual_review_retry_approval_required: approvalRequiredVisualFailures.length,
     visual_review_terminal_failures: terminalVisualFailures.length,
     visual_review_estimated_cost_usd: roundUsd(visualEstimatedCostUsd),
     source_category_counts: categoryCounts,
@@ -167,6 +174,7 @@ export function summarizeOneTimeCatchupBacklog({
     unresolvedAuditRows: latestUnresolvedAuditErrors,
     latestFailedReconciliationRows: latestFailedReconciliations,
     terminalPageAuditRows,
+    paidRetryApprovalRows: approvalRequiredVisualFailures,
     terminalVisualFailureRows: terminalVisualFailures,
     snapshotLocalization: localization,
   });
@@ -181,6 +189,7 @@ export function summarizeOneTimeCatchupBacklog({
     unresolved_audit_rows: latestUnresolvedAuditErrors,
     terminal_page_audit_rows: terminalPageAuditRows,
     retryable_visual_failure_rows: retryableVisualFailures,
+    approval_required_visual_failure_rows: approvalRequiredVisualFailures,
     terminal_visual_failure_rows: terminalVisualFailures,
     quarantine,
     completion: catchupCompletionDecision(backlog, quarantine),
@@ -191,6 +200,7 @@ export function buildOneTimeCatchupQuarantineSummary({
   unresolvedAuditRows = [],
   latestFailedReconciliationRows = [],
   terminalPageAuditRows = [],
+  paidRetryApprovalRows = [],
   terminalVisualFailureRows = [],
   snapshotLocalization = {},
 } = {}) {
@@ -201,6 +211,11 @@ export function buildOneTimeCatchupQuarantineSummary({
       .filter(Boolean),
   ]);
   const visualCaseKeys = new Set(
+    [...paidRetryApprovalRows, ...terminalVisualFailureRows]
+      .map((row) => cleanText(row?.id) || cleanText(row?.candidate_signature))
+      .filter(Boolean),
+  );
+  const terminalVisualCaseKeys = new Set(
     terminalVisualFailureRows
       .map((row) => cleanText(row?.id) || cleanText(row?.candidate_signature))
       .filter(Boolean),
@@ -223,7 +238,8 @@ export function buildOneTimeCatchupQuarantineSummary({
     : null;
   const publicPageEvidenceRecords =
     unresolvedAuditRows.length + latestFailedReconciliationRows.length;
-  const visualEvidenceRecords = terminalVisualFailureRows.length;
+  const visualEvidenceRecords =
+    paidRetryApprovalRows.length + terminalVisualFailureRows.length;
 
   return {
     schema_version: "manual-quarantine-registry-v1",
@@ -246,7 +262,7 @@ export function buildOneTimeCatchupQuarantineSummary({
       visual_review: {
         cases: visualCaseKeys.size,
         evidence_records: visualEvidenceRecords,
-        terminal_cases: visualCaseKeys.size,
+        terminal_cases: terminalVisualCaseKeys.size,
         terminal_failures: terminalVisualFailureRows.length,
       },
       historical_localization: {

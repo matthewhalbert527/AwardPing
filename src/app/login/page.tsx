@@ -7,13 +7,18 @@ import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseConfig } from "@/lib/config";
 import { getOnboardingStatus, onboardingRedirectPath } from "@/lib/onboarding";
+import { safeNextPath } from "@/lib/safe-next-path";
 
 export const metadata: Metadata = {
   title: "Log in",
 };
 
 type Props = {
-  searchParams: Promise<{ next?: string }>;
+  searchParams: Promise<{
+    next?: string;
+    account?: string;
+    confirmation?: string;
+  }>;
 };
 
 export default async function LoginPage({ searchParams }: Props) {
@@ -23,7 +28,13 @@ export default async function LoginPage({ searchParams }: Props) {
     redirect(onboardingRedirectPath(status));
   }
 
-  const nextPath = safeNextPath((await searchParams).next || null);
+  const query = await searchParams;
+  const nextPath = safeNextPath(query.next || null);
+  const statusMessage = query.account === "created"
+    ? "Your invited account was created. Log in to continue."
+    : query.confirmation === "invalid"
+      ? "That confirmation link is invalid or expired. Request a new invitation from your office administrator."
+      : null;
 
   return (
     <div className="page-shell">
@@ -34,22 +45,22 @@ export default async function LoginPage({ searchParams }: Props) {
           <p className="mt-2 text-sm text-[var(--muted)]">
             Open your AwardPing dashboard.
           </p>
+          {statusMessage && (
+            <p className="mt-4 rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] p-3 text-sm">
+              {statusMessage}
+            </p>
+          )}
           <div className="mt-6">
             {hasSupabaseConfig() ? <AuthForm mode="login" nextPath={nextPath} /> : <SetupNotice />}
           </div>
           <p className="mt-5 text-sm text-[var(--muted)]">
-            No account?{" "}
-            <Link className="font-bold text-[var(--brand)]" href="/signup">
-              Sign up for free
+            New accounts require a secure office invitation.{" "}
+            <Link className="font-bold text-[var(--brand)]" href="/contact">
+              Request beta access
             </Link>
           </p>
         </div>
       </main>
     </div>
   );
-}
-
-function safeNextPath(value: string | null) {
-  if (!value || !value.startsWith("/") || value.startsWith("//")) return "";
-  return value;
 }

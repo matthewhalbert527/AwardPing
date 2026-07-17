@@ -1,9 +1,10 @@
 import Link from "next/link";
-import { AlertTriangle, Archive, CloudDownload, ExternalLink, Gauge, Inbox, Plus, ScrollText, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Archive, CloudDownload, ExternalLink, Gauge, Inbox, Plus, Rocket, ScrollText, ShieldCheck } from "lucide-react";
 import { AdminNotAnUpdateControl } from "@/components/admin-not-an-update-control";
 import { AdminManualQuarantineBoard } from "@/components/admin-manual-quarantine-board";
 import { AdminPageIssueActions } from "@/components/admin-page-issue-actions";
 import { AdminRunReport } from "@/components/admin-run-report";
+import { AdminStage1ReleaseGate } from "@/components/admin-stage1-release-gate";
 import { AdminVerifiedPromotionBoard } from "@/components/admin-verified-promotion-board";
 import { AdminWorkerOperationsBoard } from "@/components/admin-worker-operations-board";
 import { OperatorActionInbox } from "@/components/operator-action-inbox";
@@ -14,6 +15,7 @@ import { dashboardAwardPath } from "@/lib/award-slugs";
 import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import { loadAdminManualQuarantine } from "@/lib/admin-manual-quarantine";
+import { loadAdminInviteSecurityReissues } from "@/lib/admin-invite-security-reissues";
 import {
   defaultAdminManualQuarantineBacklogQuery,
   loadAdminManualQuarantineBacklog,
@@ -28,6 +30,7 @@ import {
   loadAdminSuppressedChangeEvents,
 } from "@/lib/admin-page-issues";
 import { buildAdminRunReportFeed } from "@/lib/admin-run-report";
+import { loadAdminStage1ReleaseGateEvidence } from "@/lib/admin-stage1-release-gate";
 import { loadAdminMonitoringFeedbackPromotionClusters } from "@/lib/admin-monitoring-feedback-promotions";
 import {
   loadAdminWorkerOperations,
@@ -38,6 +41,8 @@ import {
   type OperatorDigestDeliveryFailureInput,
   type OperatorVisualReviewFailureInput,
 } from "@/lib/operator-action-inbox";
+import { currentMonitoringPromotionAppIdentity } from "@/lib/monitoring-feedback-promotion-identity";
+import { summarizeStage1BetaReleaseGate } from "@/lib/stage1-release-gate-summary";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
@@ -84,6 +89,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   const admin = createSupabaseAdminClient();
   const params = await searchParams;
   const activeTab =
+    params.tab === "inbox" ||
     params.tab === "promotions" ||
     params.tab === "quarantine" ||
     params.tab === "recovery" ||
@@ -92,7 +98,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     params.tab === "suppressed" ||
     params.tab === "excluded"
       ? params.tab
-      : "inbox";
+      : "release";
   const backlogQuery =
     activeTab === "quarantine"
       ? parseAdminManualQuarantineBacklogQuery(params)
@@ -116,7 +122,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       .select("*")
       .in("worker_name", [...scheduledVisualRecoveryWorkerNames])
       .order("started_at", { ascending: false })
-      .limit(30),
+      .limit(300),
     loadAdminManualQuarantine(admin, { includeItems: false }),
     loadAdminManualQuarantineBacklog(admin, backlogQuery),
     loadAdminManualQuarantineSavedViews(admin, user.id),
@@ -124,7 +130,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
   ]);
   const workerRuns = (workerRunsResult.data || []) as LocalWorkerRun[];
   const recoveryWorkerRuns = (recoveryWorkerRunsResult.data || []) as LocalWorkerRun[];
-  const runReport = buildAdminRunReportFeed(workerRuns, renderedAt);
+  const allRelevantWorkerRuns = [
+    ...new Map([...workerRuns, ...recoveryWorkerRuns].map((run) => [run.id, run])).values(),
+  ];
+  const runReport = buildAdminRunReportFeed(allRelevantWorkerRuns, renderedAt);
   const visualQuarantineRevisionMatches =
     manualQuarantineBacklog.available &&
     quarantinedVisualCandidates.revision !== null &&
@@ -148,6 +157,8 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     recentUpdates,
     suppressedEvents,
     workerOperations,
+    releaseEvidence,
+    inviteSecurityReissues,
   ] = await Promise.all([
     loadAdminPageIssues(admin, workerRuns, {
       includeLegacyDiagnostics: false,
@@ -165,7 +176,31 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       recoveryWorkerRunsResult.error?.message ? [recoveryWorkerRunsResult.error.message] : [],
       renderedAt,
     ),
+    activeTab === "release"
+      ? loadAdminStage1ReleaseGateEvidence(admin)
+      : Promise.resolve(null),
+    loadAdminInviteSecurityReissues(admin),
   ]);
+  const releaseGate = releaseEvidence
+    ? summarizeStage1BetaReleaseGate({
+        ...releaseEvidence,
+        now: renderedAt,
+        appIdentity: currentMonitoringPromotionAppIdentity(),
+        visualNightly: runReport.visualNightly,
+        visualWorkerRuns: allRelevantWorkerRuns,
+        budgets: workerOperations.budgets,
+        lanes: workerOperations.lanes,
+        evidenceRecovery: workerOperations.evidenceRecovery,
+        loadErrors: [
+          ...(releaseEvidence.loadErrors || []),
+          ...(workerRunsResult.error?.message ? [`Worker run report: ${workerRunsResult.error.message}`] : []),
+          ...(recoveryWorkerRunsResult.error?.message
+            ? [`Scheduled 6 PM shard identity: ${recoveryWorkerRunsResult.error.message}`]
+            : []),
+          ...workerOperations.operationsLoadErrors,
+        ],
+      })
+    : null;
   const actionLoadErrors = [
     workerRunsResult.error?.message,
     ...pageIssues.loadErrors,
@@ -177,6 +212,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     ...quarantinedVisualCandidates.loadErrors,
     ...visualQuarantineRevisionErrors,
     ...workerOperations.loadErrors,
+    ...inviteSecurityReissues.loadErrors,
   ].filter((message): message is string => Boolean(message));
   const historyLoadErrors = [
     ...reviewLater.loadErrors,
@@ -208,6 +244,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
         !quarantinedVisualCandidates.ids.has(failure.id),
     ),
     digestDeliveryFailures: deliveryFailures.failures,
+    inviteSecurityReissues: inviteSecurityReissues.reissues,
     downstreamLanes: workerOperations.lanes,
     loadErrors: actionLoadErrors,
     now: renderedAt,
@@ -220,8 +257,9 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <span className="badge">Admin</span>
           <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            3 repairs current failures. 4 verifies global feedback rules. 5 keeps unresolved work visible. 6 protects
-            recoverable evidence. 7 shows every independent lane and the two fixed daily budgets.
+            1 keeps the 25-award beta release closed until every proof passes. 3 repairs current failures. 4 verifies
+            global feedback rules. 5 keeps unresolved work visible. 6 protects recoverable evidence. 7 shows every
+            independent lane and the two fixed daily budgets.
           </p>
           <p className="admin-page-timestamp">Refreshed {formatDate(renderedAt.toISOString())}.</p>
         </div>
@@ -239,9 +277,17 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
 
       <nav aria-label="Primary admin workflows" className="admin-subtabs admin-workflow-tabs">
         <Link
+          aria-current={activeTab === "release" ? "page" : undefined}
+          className={`admin-subtab ${activeTab === "release" ? "admin-subtab-active" : ""}`}
+          href="/dashboard/admin/issues"
+        >
+          <Rocket size={15} aria-hidden="true" />
+          1. Beta Release Gate
+        </Link>
+        <Link
           aria-current={activeTab === "inbox" ? "page" : undefined}
           className={`admin-subtab ${activeTab === "inbox" ? "admin-subtab-active" : ""}`}
-          href="/dashboard/admin/issues"
+          href="/dashboard/admin/issues?tab=inbox"
         >
           <Inbox size={15} aria-hidden="true" />
           3. Action Inbox
@@ -304,7 +350,9 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
         </Link>
       </nav>
 
-      {activeTab === "inbox" ? (
+      {activeTab === "release" && releaseGate ? (
+        <AdminStage1ReleaseGate summary={releaseGate} />
+      ) : activeTab === "inbox" ? (
         <>
           <AdminRunReport compact initialFeed={runReport} />
           <OperatorActionInbox items={actionItems} />
@@ -590,28 +638,70 @@ async function loadAdminFailedPublicUpdateDeliveries(admin: ReturnType<typeof cr
   failures: OperatorDigestDeliveryFailureInput[];
   loadErrors: string[];
 }> {
-  const { data, error, count } = await admin
-    .from("public_update_deliveries")
-    .select("id, digest_key, recipient, recipient_hash, change_event_ids, error, created_at", { count: "exact" })
-    .eq("status", "failed")
-    .order("created_at", { ascending: true })
-    .limit(500);
+  const [outbox, legacy] = await Promise.all([
+    admin
+      .from("public_digest_outbox")
+      .select(
+        "id, digest_key, recipient_hash, change_event_ids, status, last_error, send_attempt_count, first_provider_attempt_at, next_attempt_at, payload_hash, payload_schema_version, created_at, updated_at",
+        { count: "exact" },
+      )
+      .in("status", ["ambiguous", "terminal_failed", "release_blocked"])
+      .order("updated_at", { ascending: true })
+      .limit(500),
+    admin
+      .from("public_update_deliveries")
+      .select(
+        "id, digest_key, recipient, recipient_hash, change_event_ids, error, delivery_contract_version, payload_hash, created_at",
+        { count: "exact" },
+      )
+      .eq("status", "failed")
+      .order("created_at", { ascending: true })
+      .limit(500),
+  ]);
 
-  return {
-    failures: (data || []).map((row) => ({
+  const failures: OperatorDigestDeliveryFailureInput[] = [
+    ...(outbox.data || []).map((row) => ({
       id: row.id,
-      deliveryType: "digest",
+      deliveryType: "public digest outbox",
+      state: row.status as "ambiguous" | "terminal_failed" | "release_blocked",
+      digestKey: row.digest_key,
+      recipient: null,
+      recipientHash: row.recipient_hash,
+      changeEventCount: row.change_event_ids.length,
+      error: row.last_error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      payloadHash: row.payload_hash,
+      attemptCount: row.send_attempt_count,
+      firstProviderAttemptAt: row.first_provider_attempt_at,
+      nextAttemptAt: row.next_attempt_at,
+      contractVersion: row.payload_schema_version,
+    })),
+    ...(legacy.data || []).map((row) => ({
+      id: row.id,
+      deliveryType: "legacy digest",
+      state: "legacy_failed" as const,
       digestKey: row.digest_key,
       recipient: row.recipient,
       recipientHash: row.recipient_hash,
       changeEventCount: row.change_event_ids.length,
       error: row.error,
       createdAt: row.created_at,
+      payloadHash: row.payload_hash,
+      contractVersion: row.delivery_contract_version,
     })),
+  ];
+
+  return {
+    failures,
     loadErrors: [
-      error?.message,
-      (count || 0) > (data || []).length
-        ? `${(count || 0) - (data || []).length} additional public digest failures are not shown because the inbox reached its 500-item limit.`
+      outbox.error?.message,
+      legacy.error?.message,
+      (outbox.count || 0) > (outbox.data || []).length
+        ? `${(outbox.count || 0) - (outbox.data || []).length} additional durable public digest outbox actions are not shown because the inbox reached its 500-item limit.`
+        : null,
+      (legacy.count || 0) > (legacy.data || []).length
+        ? `${(legacy.count || 0) - (legacy.data || []).length} additional legacy public digest failures are not shown because the inbox reached its 500-item limit.`
         : null,
     ].filter((message): message is string => Boolean(message)),
   };

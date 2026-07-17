@@ -613,7 +613,7 @@ export function visualReviewSourceIdentityFreshness(candidate, source) {
   };
 }
 
-export function visualReviewFailureRetryDecision(candidate, { maxRetries = 3 } = {}) {
+export function visualReviewFailureRetryDecision(candidate) {
   const retryCount = Math.max(
     0,
     Number.parseInt(candidate?.worker_metadata?.failure_retry_count, 10) || 0,
@@ -630,14 +630,11 @@ export function visualReviewFailureRetryDecision(candidate, { maxRetries = 3 } =
   ) {
     return { retry: false, reason: "possible_external_batch_requires_manual_recovery", retry_count: retryCount };
   }
-  if (retryCount >= Math.max(0, Number(maxRetries) || 0)) {
-    return { retry: false, reason: "failure_retry_limit_reached", retry_count: retryCount };
-  }
   return {
-    retry: true,
-    reason: "ordinary_failure_retryable",
+    retry: false,
+    approval_required: true,
+    reason: "paid_retry_approval_required",
     retry_count: retryCount,
-    next_retry_count: retryCount + 1,
   };
 }
 
@@ -2126,13 +2123,30 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
-export function fileToInlineGeminiPart(path) {
-  if (!path || !existsSync(path)) return null;
+export function fileToVerifiedInlineGeminiPart(artifactRef, { role = "image" } = {}) {
+  const ref = objectValue(artifactRef);
+  const path = cleanNullable(ref.path);
+  const expectedHash = cleanNullable(ref.sha256)?.toLowerCase();
+  const expectedBytes = Number(ref.byte_length ?? ref.bytes);
+  if (!path || !existsSync(path)) {
+    throw new Error(`Visual review ${role} artifact is missing.`);
+  }
+  if (!/^[0-9a-f]{64}$/.test(expectedHash || "")) {
+    throw new Error(`Visual review ${role} artifact has no immutable SHA-256 binding.`);
+  }
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 1) {
+    throw new Error(`Visual review ${role} artifact has no immutable byte-length binding.`);
+  }
+  const body = readFileSync(path);
+  const actualHash = crypto.createHash("sha256").update(body).digest("hex");
+  if (body.length !== expectedBytes || actualHash !== expectedHash) {
+    throw new Error(`Visual review ${role} artifact bytes do not match the approved snapshot reference.`);
+  }
   const mimeType = /\.png$/i.test(path) ? "image/png" : "image/jpeg";
   return {
     inlineData: {
       mimeType,
-      data: readFileSync(path).toString("base64"),
+      data: body.toString("base64"),
     },
   };
 }

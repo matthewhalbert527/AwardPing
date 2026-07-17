@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseConfig } from "@/lib/config";
 import { getAwardAndMembership } from "@/lib/award-workflow-server";
+import { isSameOriginMutationRequest } from "@/lib/same-origin-mutation";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -16,6 +17,10 @@ const noteSchema = z.object({
 });
 
 export async function POST(request: Request, { params }: Params) {
+  if (!isSameOriginMutationRequest(request)) {
+    return NextResponse.json({ error: "This request is not allowed." }, { status: 403 });
+  }
+
   if (!hasSupabaseConfig()) {
     return NextResponse.json({ error: "Supabase is not configured." }, { status: 503 });
   }

@@ -4,6 +4,7 @@ import {
   VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION,
 } from "./visual-event-evidence.mjs";
 import { requiredChangeEventLocalizationSides } from "./snapshot-localization.mjs";
+import { verifyVisualEventSemanticBindings } from "./visual-event-localization.mjs";
 import { visualHashFromCandidate } from "./visual-review-queue.mjs";
 
 export const LEGACY_VISUAL_EVIDENCE_CANDIDATE_CUTOFF = "2026-07-15T20:15:00.000Z";
@@ -418,7 +419,11 @@ export function normalizePreparedHistoricalEvidence({ event = {}, candidate, evi
       VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION,
   };
   if (normalized.evidence_status !== "verified") normalized.verified_at = null;
-  if (normalized.evidence_status === "verified" && !completeVerifiedHistoricalEvidence(normalized)) {
+  const legacyVerifiedCrop = normalized.evidence_status === "verified" &&
+    normalized.evidence_schema_version !== VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION;
+  if (normalized.evidence_status === "verified" && (
+    legacyVerifiedCrop || !completeVerifiedHistoricalEvidence(normalized, event)
+  )) {
     normalized.evidence_status = "full_screenshot_fallback";
     normalized.verified_at = null;
     const normalizedLocalization = objectValue(normalized.localization);
@@ -434,7 +439,9 @@ export function normalizePreparedHistoricalEvidence({ event = {}, candidate, evi
           ...localized,
           status: "full_screenshot_fallback",
           exact_overlap: false,
-          reason: "The full screenshot survives, but the legacy capture lacks complete new-format state/hash identity for a verified crop.",
+          reason: legacyVerifiedCrop
+            ? "The full screenshot survives, but this v1 crop predates event-semantic exact-wording verification."
+            : "The full screenshot survives, but the retained capture lacks complete v2 semantic/state/hash identity for a verified crop.",
         };
       }
     }
@@ -652,7 +659,7 @@ function validArtifact(value) {
   );
 }
 
-function completeVerifiedHistoricalEvidence(evidence) {
+function completeVerifiedHistoricalEvidence(evidence, event) {
   const localization = objectValue(evidence.localization);
   const sides = objectValue(localization.sides);
   for (const side of ["previous", "current"]) {
@@ -731,7 +738,7 @@ function completeVerifiedHistoricalEvidence(evidence) {
       matchedRects.every((rect) => rectanglesOverlap(rect, cropRect)) &&
       Object.keys(cropRect).length > 0 &&
       Object.keys(cropRectPixels).length > 0 &&
-      cleanText(localized.algorithm_version) === "1" &&
+      cleanText(localized.algorithm_version) === "3" &&
       cleanText(localized.state_id) === stateId;
   };
   const exact = {
@@ -743,12 +750,22 @@ function completeVerifiedHistoricalEvidence(evidence) {
   )) {
     return false;
   }
-  if (localization.direction === "added") return Boolean(exact.current);
-  if (localization.direction === "removed") return Boolean(exact.previous);
-  if (localization.direction === "changed" || localization.direction === "mixed") {
-    return Boolean(exact.previous && exact.current);
+  const directionValid = localization.direction === "added"
+    ? Boolean(exact.current)
+    : localization.direction === "removed"
+      ? Boolean(exact.previous)
+      : localization.direction === "changed" || localization.direction === "mixed"
+        ? Boolean(exact.previous && exact.current)
+        : false;
+  if (!directionValid || evidence.evidence_schema_version !== VISUAL_EVENT_EVIDENCE_SCHEMA_VERSION) {
+    return false;
   }
-  return false;
+  return verifyVisualEventSemanticBindings({
+    changeDetails: event?.change_details,
+    localization,
+    previousCapture: evidence.previous_capture,
+    currentCapture: evidence.current_capture,
+  }).valid;
 }
 
 function positiveInteger(value) {

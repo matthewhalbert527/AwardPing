@@ -104,26 +104,12 @@ async function deleteAppDataForUser(
     .map((result) => result.error?.message)
     .filter((message): message is string => Boolean(message));
 
-  if (emailHash) {
-    const result = await admin
-      .from("public_update_subscribers")
-      .delete()
-      .eq("email_hash", emailHash);
-
-    if (result.error) {
-      errors.push(result.error.message);
-    }
-  }
-
-  if (email) {
-    const result = await admin
-      .from("public_update_subscribers")
-      .delete()
-      .eq("email", email);
-
-    if (result.error) {
-      errors.push(result.error.message);
-    }
+  if (emailHash || email) {
+    const result = await admin.rpc("erase_public_update_subscriber", {
+      p_email_hash: emailHash,
+      p_legacy_email: email,
+    });
+    if (result.error) errors.push(result.error.message);
   }
 
   return errors;

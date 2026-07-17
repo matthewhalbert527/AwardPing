@@ -208,8 +208,8 @@ export function PublicAwardWorkspace({
                 Official homepage
               </a>
             )}
-            <Link className="button-primary" href="/signup">
-              Add to watchlist
+            <Link className="button-primary" href="/contact">
+              Request beta access
               <ArrowRight size={16} aria-hidden="true" />
             </Link>
           </div>

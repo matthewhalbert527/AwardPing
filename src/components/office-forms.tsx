@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import {
   Building2,
   Download,
-  Link as LinkIcon,
   MailPlus,
   Save,
   Search,
@@ -201,7 +200,7 @@ export function InviteMemberForm() {
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
 
-  async function createInvite(input: { email?: string }) {
+  async function createInvite(inviteeEmail: string) {
     setLoading(true);
     setMessage("");
     setInviteUrl("");
@@ -210,7 +209,7 @@ export function InviteMemberForm() {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        email: input.email || undefined,
+        email: inviteeEmail,
         role,
       }),
     });
@@ -224,13 +223,19 @@ export function InviteMemberForm() {
 
     setInviteUrl(data.inviteUrl || "");
     setInviteCode(data.inviteCode || "");
-    setMessage(input.email ? "Invitation created and email sent." : "Invite link created.");
+    setMessage(
+      data.deliveryStatus === "sent"
+        ? "Invitation created and email sent."
+        : data.deliveryStatus === "not_configured"
+          ? "Invitation created. Email delivery is not configured, so copy the secure link below."
+          : "Invitation created, but email delivery failed. Copy the secure link below.",
+    );
     router.refresh();
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await createInvite({ email });
+    await createInvite(email);
   }
 
   async function searchUsers() {
@@ -258,8 +263,8 @@ export function InviteMemberForm() {
     <form className="dashboard-panel dashboard-panel-pad" onSubmit={submit}>
       <h2 className="dashboard-panel-title">Invite advisor</h2>
       <p className="dashboard-panel-copy">
-        Search for an existing user by email, send an email invite, or create a
-        shareable invite code for someone who still needs to sign up.
+        Search for an existing user or enter the email of someone who still needs
+        to sign up. Every signup invitation is bound to that email address.
       </p>
       <div className="mt-4 grid gap-3 md:grid-cols-[1fr_auto_160px_auto]">
         <input
@@ -302,17 +307,6 @@ export function InviteMemberForm() {
           ))}
         </div>
       )}
-      <div className="mt-3">
-        <button
-          className="button-secondary"
-          type="button"
-          onClick={() => createInvite({})}
-          disabled={loading}
-        >
-          <LinkIcon size={17} aria-hidden="true" />
-          Create invite code
-        </button>
-      </div>
       {(inviteUrl || inviteCode) && (
         <div className="dashboard-list-item mt-4">
           {inviteCode && (
@@ -332,6 +326,70 @@ export function InviteMemberForm() {
       )}
       {message && <p className="mt-3 text-sm font-semibold">{message}</p>}
     </form>
+  );
+}
+
+export function ReissueInviteButton({ inviteId }: { inviteId: string }) {
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState("");
+  const [inviteUrl, setInviteUrl] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
+
+  async function reissue() {
+    setLoading(true);
+    setMessage("");
+    setInviteUrl("");
+    setInviteCode("");
+    const response = await fetch(`/api/offices/invites/${inviteId}/reissue`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+    });
+    const data = await response.json().catch(() => ({}));
+    setLoading(false);
+
+    if (!response.ok) {
+      setMessage(data.error || "Secure replacement invitation could not be created.");
+      return;
+    }
+
+    setInviteUrl(data.inviteUrl || "");
+    setInviteCode(data.inviteCode || "");
+    setMessage(
+      data.deliveryStatus === "sent"
+        ? "Secure replacement created and emailed."
+        : "Secure replacement created. Copy this new link now; email delivery did not complete.",
+    );
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3">
+      <p className="text-sm font-bold text-amber-950">
+        This pending invitation used an older short code. Its old link was retired for security.
+      </p>
+      <button
+        className="button-secondary mt-2"
+        type="button"
+        disabled={loading}
+        onClick={reissue}
+      >
+        <MailPlus size={17} aria-hidden="true" />
+        {loading ? "Creating replacement..." : "Create and resend secure replacement"}
+      </button>
+      {inviteCode && (
+        <p className="mt-2 text-sm font-black">
+          New code: <span className="font-mono">{inviteCode}</span>
+        </p>
+      )}
+      {inviteUrl && (
+        <input
+          className="input mt-2 font-mono text-sm"
+          value={inviteUrl}
+          readOnly
+          onFocus={(event) => event.currentTarget.select()}
+        />
+      )}
+      {message && <p className="mt-2 text-sm font-semibold">{message}</p>}
+    </div>
   );
 }
 

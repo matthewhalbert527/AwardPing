@@ -17,7 +17,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!data) return {};
 
   return {
-    title: `${data.award.name} | AwardPing`,
+    title: data.award.name,
     description: data.metaDescription,
     alternates: {
       canonical: `${appConfig.url}${data.canonicalPath}`,

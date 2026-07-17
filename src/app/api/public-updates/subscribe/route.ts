@@ -41,9 +41,20 @@ export async function POST(request: Request) {
   });
 
   if (!rateLimit.allowed) {
+    if (rateLimit.reason === "rate_limit_unavailable") {
+      return NextResponse.json(
+        { ok: false, error: "Signup protection is temporarily unavailable." },
+        { status: 503 },
+      );
+    }
     return NextResponse.json(
       { ok: false, error: "Too many signup attempts. Try again later." },
-      { status: 429 },
+      {
+        status: 429,
+        headers: rateLimit.retryAfterSeconds
+          ? { "Retry-After": String(rateLimit.retryAfterSeconds) }
+          : undefined,
+      },
     );
   }
 

@@ -10,8 +10,8 @@ export function SetupNotice() {
         <div>
           <h2 className="text-xl font-black">Environment setup needed</h2>
           <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
-            Add Supabase, Resend, Tavily, Gemini or OpenAI, and cron values to
-            `.env.local` using `.env.example`, then restart the dev server.
+            Add Supabase, Resend, Gemini, R2, and cron values to `.env.local`
+            using `.env.example`, then restart the dev server.
           </p>
         </div>
       </div>

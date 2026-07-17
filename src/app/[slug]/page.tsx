@@ -12,7 +12,10 @@ import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
 import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
-import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
+import {
+  getPublicAwardPageBySlug,
+  getPublicAwardPageResolutionBySlug,
+} from "@/lib/public-award-pages";
 import { getSeoPage, seoPages } from "@/lib/seo-pages";
 
 export const dynamic = "force-dynamic";
@@ -37,11 +40,21 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   }
 
   if (!hasSupabaseAdminConfig()) return {};
-  const awardPage = await getPublicAwardPageBySlug(slug).catch(() => null);
-  if (!awardPage) return {};
+  const resolution = await getPublicAwardPageResolutionBySlug(slug).catch(
+    () => ({ kind: "missing" as const }),
+  );
+  if (resolution.kind === "under_verification") {
+    return {
+      title: "Award under verification",
+      description: "This award record is being reverified before publication.",
+      robots: { index: false, follow: false },
+    };
+  }
+  if (resolution.kind !== "published") return {};
+  const awardPage = resolution.data;
 
   return {
-    title: `${awardPage.award.name} | AwardPing`,
+    title: awardPage.award.name,
     description: awardPage.metaDescription,
     alternates: {
       canonical: `${appConfig.url}${awardPage.canonicalPath}`,
@@ -56,12 +69,50 @@ export default async function SlugPage({ params, searchParams }: Props) {
   if (page) return <SeoLandingPageContent page={page} />;
 
   if (!hasSupabaseAdminConfig()) notFound();
+  const initialResolution = await getPublicAwardPageResolutionBySlug(slug).catch(
+    () => ({ kind: "missing" as const }),
+  );
+  if (initialResolution.kind === "under_verification") {
+    return <AwardUnderVerification />;
+  }
+  if (initialResolution.kind !== "published") notFound();
+
   const user = await getCurrentUser();
-  const awardPage = await getPublicAwardPageBySlug(slug, { userId: user?.id }).catch(() => null);
+  const awardPage = user
+    ? await getPublicAwardPageBySlug(slug, { userId: user.id }).catch(() => null)
+    : initialResolution.data;
   if (!awardPage) notFound();
   if (awardPage.redirectPath) redirect(awardPage.redirectPath);
 
   return <PublicAwardPage data={awardPage} initialChangeId={query.change} initialSourceId={query.source} />;
+}
+
+function AwardUnderVerification() {
+  return (
+    <div className="page-shell">
+      <SiteHeader />
+      <main className="mx-auto max-w-3xl px-5 py-20">
+        <section className="card rounded-3xl p-8 md:p-10">
+          <span className="badge">Protected beta record</span>
+          <h1 className="mt-5 text-4xl font-black">Under verification</h1>
+          <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
+            AwardPing is checking this award&apos;s official pages, current cycle,
+            evidence, and monitoring health. Application facts stay hidden until
+            every release check passes.
+          </p>
+          <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+            <Link className="button-primary" href="/award-directory" prefetch={false}>
+              View verified awards
+            </Link>
+            <Link className="button-secondary" href="/">
+              Return home
+            </Link>
+          </div>
+        </section>
+      </main>
+      <SiteFooter />
+    </div>
+  );
 }
 
 async function SeoLandingPageContent({
@@ -85,8 +136,8 @@ async function SeoLandingPageContent({
               {page.intro}
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Link className="button-primary" href={user ? signedInLandingPath() : "/signup"}>
-                {user ? signedInLandingLabel() : "Sign up for free"}
+              <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
+                {user ? signedInLandingLabel() : "Request beta access"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/award-directory" prefetch={false}>
