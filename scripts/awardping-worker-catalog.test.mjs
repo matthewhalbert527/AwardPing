@@ -118,6 +118,20 @@ describe("AwardPing worker catalog automation", () => {
     expect(promotion?.cost).toContain("$0 extra");
   });
 
+  it("explicitly authorizes the scheduled manual quarantine mutation", () => {
+    const quarantine = atomicTasks.find(
+      (task) => task.id === "manual-quarantine-registry",
+    );
+
+    expect(quarantine?.run).toMatchObject({
+      kind: "script",
+      args: [
+        "scripts/sync-manual-quarantine-registry.mjs",
+        "--apply=true",
+      ],
+    });
+  });
+
   it("references only real scheduled workers from tasks and lane groups", () => {
     const scheduledIds = new Set(scheduledWorkers.map((worker) => worker.id));
     for (const task of atomicTasks) {

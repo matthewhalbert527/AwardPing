@@ -45,6 +45,9 @@ describe("atomic reconciliation publication migration", () => {
       "update public.shared_award_fact_candidates candidate",
     );
     expect(atomicFunction).toContain(
+      "'pending', 'selected', 'rejected', 'conflicted', 'superseded'",
+    );
+    expect(atomicFunction).toContain(
       "insert into public.shared_award_page_audits",
     );
     expect(atomicFunction).toContain("update public.shared_awards award");
@@ -69,6 +72,13 @@ describe("atomic reconciliation publication migration", () => {
     expect(worker).toContain("p_generated_candidates: generatedCandidateRows");
     expect(worker).toContain(
       "p_candidate_status_updates: candidateStatusUpdates",
+    );
+    expect(worker).toContain("buildCandidateDispositionEntries(");
+    expect(reconciliationLibrary).toContain(
+      "export function buildAtomicCandidateChanges",
+    );
+    expect(reconciliationLibrary).toContain(
+      'candidate_status: "superseded"',
     );
     expect(worker).toContain("p_audit_row: auditRow");
     expect(worker).toContain(
@@ -109,8 +119,12 @@ describe("atomic reconciliation publication migration", () => {
     expect(worker).toContain(
       "p_expected_queue_generation: queueRow.generation",
     );
-    expect(worker).toContain("async function updateOwnedQueue(id, startedAt, patch)");
-    expect(worker).toContain('.eq("started_at", startedAt)');
+    expect(worker).toContain(
+      "async function finishOwnedQueue(queueRow, startedAt, terminalStatus, errorText)",
+    );
+    expect(worker).toContain(
+      '"finish_or_requeue_award_reconciliation_claim"',
+    );
     expect(reconciliationLibrary).toContain(
       ".eq(\"generation\", currentGeneration)",
     );

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  isExactHeldR2RepairTarget,
   rehydrateLocalBaselineFromR2,
   restoreInitialOfficialDocumentCandidateArtifactsFromR2,
 } from "./r2-baseline-rehydration.mjs";
@@ -20,6 +21,8 @@ import { buildInitialOfficialDocumentCandidate } from "./initial-official-docume
 import { preparePublishedInitialOfficialDocumentEvidence } from "./visual-event-evidence.mjs";
 import {
   bindVisualTextGeometry,
+  sha256VisualSemanticValue,
+  verifyVisualScreenshotLayoutCapture,
   verifyVisualTextGeometryBinding,
 } from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
@@ -41,6 +44,41 @@ afterEach(() => {
 });
 
 describe("exact R2 local-baseline rehydration", () => {
+  it("admits only one exact held source into R2 repair-only processing", () => {
+    const heldSource = {
+      id: sourceId,
+      admin_review_status: "review_later",
+    };
+    const exactRepair = {
+      source: heldSource,
+      sourceIdFilter: sourceId,
+      r2SnapshotSync: true,
+      r2RepairMissingSnapshots: true,
+    };
+
+    expect(isExactHeldR2RepairTarget(exactRepair)).toBe(true);
+    expect(isExactHeldR2RepairTarget({
+      ...exactRepair,
+      sourceIdFilter: "",
+    })).toBe(false);
+    expect(isExactHeldR2RepairTarget({
+      ...exactRepair,
+      source: { ...heldSource, id: "33333333-3333-4333-8333-333333333333" },
+    })).toBe(false);
+    expect(isExactHeldR2RepairTarget({
+      ...exactRepair,
+      source: { ...heldSource, admin_review_status: "open" },
+    })).toBe(false);
+    expect(isExactHeldR2RepairTarget({
+      ...exactRepair,
+      r2SnapshotSync: false,
+    })).toBe(false);
+    expect(isExactHeldR2RepairTarget({
+      ...exactRepair,
+      r2RepairMissingSnapshots: false,
+    })).toBe(false);
+  });
+
   it("reports the operator-facing local-cache recovery counters", () => {
     for (const key of [
       "r2_rehydrate_local_cache",
@@ -119,6 +157,9 @@ describe("exact R2 local-baseline rehydration", () => {
     );
     expect(holdReturn).toBeGreaterThan(holdGate);
     expect(holdReturn).toBeLessThan(liveCapture);
+    expect(processBody).toContain(
+      'SOURCE_REVIEW_HOLD no_live_capture reason=${recovery.failureReason || "review_later"}',
+    );
     const existingHoldProtection = processBody.indexOf(
       'if (source.admin_review_status === "open")',
     );
@@ -247,6 +288,31 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(meta.text_geometry.file).toBe(published.capture.layout);
     expect(JSON.stringify(meta)).not.toContain("C:\\\\stale");
     expect(readdirSync(join(fixture.archiveRoot, "sources"))).toEqual([sourceId]);
+  });
+
+  it("surfaces an unavailable exact generation without replacing or rolling back the baseline", async () => {
+    const fixture = recoveryFixture();
+    writeBaselineFixture(fixture);
+    const originalBaseline = readFileSync(fixture.baselinePath);
+    fixture.snapshot.latest_captured_at = "2026-07-14T23:00:00.000Z";
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: fixture.baseline,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({
+      rehydrated: false,
+      reason: "exact_r2_generation_unavailable",
+    });
+    expect(readFileSync(fixture.baselinePath)).toEqual(originalBaseline);
+    expect(readdirSync(join(fixture.archiveRoot, "sources", sourceId))).toEqual([
+      "baseline.json",
+    ]);
   });
 
   it("fails a whole-directory restore closed on tampered or cross-source R2 evidence", async () => {
@@ -399,11 +465,100 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(meta.text_geometry.file).toBe(published.capture.layout);
     expect(meta.text_geometry.screenshot.image_ref).toBe(published.capture.page);
     expect(meta.browser.executable_path).toBeUndefined();
+    expect(meta.expandable_sections[0].section_path).toBe("main>details:nth-of-type(1)");
     expect(JSON.stringify(meta)).not.toContain("C:\\\\stale");
     const layout = JSON.parse(readFileSync(join(fixture.archiveRoot, published.capture.layout), "utf8"));
     expect(layout.screenshot.image_ref).toBe(published.capture.page);
+    expect(layout.nodes[0]).toMatchObject({
+      path: "main>p:nth-of-type(1)",
+      flow_path: "body>main>p:nth-of-type(1)",
+    });
     expect(layout.geometry_hash).toBe(published.layout_hash);
+    expect(layout.screenshot.alignment_status).toBe("verified");
+    expect(layout.capture_verification).toMatchObject({
+      status: "verified",
+      screenshot_alignment: "verified",
+      restored_proof_recomputed: true,
+    });
     expect(verifyVisualTextGeometryBinding(layout, published.image_hash)).toMatchObject({ valid: true });
+  });
+
+  it("recomputes contradictory restored alignment and capture proof instead of preserving verified claims", async () => {
+    const fixture = recoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    const layoutKey = fixture.snapshot.latest_object_keys.layout;
+    const malformed = JSON.parse(fixture.objects[layoutKey].body.toString("utf8"));
+    malformed.screenshot.pixel_height = 1200;
+    malformed.screenshot.scale_y = 0.5;
+    malformed.screenshot.alignment_status = "verified";
+    delete malformed.geometry_hash;
+    malformed.geometry_hash = sha256VisualSemanticValue(malformed);
+    fixture.objects[layoutKey] = objectFixture(
+      Buffer.from(JSON.stringify(malformed), "utf8"),
+      "application/json; charset=utf-8",
+    );
+    fixture.snapshot.latest_hashes.layout_hash = malformed.geometry_hash;
+    fixture.snapshot.latest_metadata.layout_hash = malformed.geometry_hash;
+    const metaKey = fixture.snapshot.latest_object_keys.meta;
+    const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
+    meta.layout_hash = malformed.geometry_hash;
+    meta.text_geometry.geometry_hash = malformed.geometry_hash;
+    meta.text_geometry.screenshot = malformed.screenshot;
+    fixture.objects[metaKey] = objectFixture(
+      Buffer.from(JSON.stringify(meta), "utf8"),
+      "application/json; charset=utf-8",
+    );
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+      now: "2026-07-16T01:15:00.000Z",
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({
+      rehydrated: true,
+      recovery_scope: "baseline_evidence_only",
+      localization_recovered: false,
+      localization_status: "evidence_only_geometry_verification_unavailable",
+    });
+    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
+    const restored = JSON.parse(
+      readFileSync(join(fixture.archiveRoot, published.capture.layout), "utf8"),
+    );
+    expect(restored.screenshot).toMatchObject({
+      scale_x: 1,
+      scale_y: 0.5,
+      alignment_status: "unavailable_nonuniform_or_unexpected_scale",
+    });
+    expect(restored).toMatchObject({
+      availability_status: "unavailable_screenshot_geometry_mismatch",
+      capture_verification: {
+        status: "unavailable",
+        screenshot_alignment: "unavailable_nonuniform_or_unexpected_scale",
+        restored_proof_recomputed: true,
+      },
+      nodes: [],
+    });
+    expect(verifyVisualTextGeometryBinding(restored, published.image_hash)).toMatchObject({
+      valid: true,
+    });
+    expect(published.summary_metadata.r2_local_rehydration).toMatchObject({
+      localization_recovered: false,
+      localization_status: "evidence_only_geometry_verification_unavailable",
+      main_geometry_verified: false,
+    });
+    const restoredMeta = JSON.parse(
+      readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"),
+    );
+    expect(restoredMeta.localization).toMatchObject({
+      status: "unavailable",
+      unavailable_reason: "evidence_only_geometry_verification_unavailable",
+    });
   });
 
   it("selects previous only when latest does not exactly match the baseline", async () => {
@@ -541,6 +696,10 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(readFileSync(join(fixture.archiveRoot, state.page))).toEqual(fixture.expansionPage);
     const layout = JSON.parse(readFileSync(join(fixture.archiveRoot, state.layout), "utf8"));
     expect(layout.screenshot.image_ref).toBe(state.page);
+    expect(layout.nodes[0]).toMatchObject({
+      path: "main>details:nth-of-type(1)>p",
+      flow_path: "body>main>details:nth-of-type(1)>p",
+    });
     expect(layout.geometry_hash).toBe(state.layout_hash);
     expect(verifyVisualTextGeometryBinding(layout, fixture.expansionImageHash)).toMatchObject({
       valid: true,
@@ -830,24 +989,46 @@ function recoveryFixture() {
   const text = Buffer.from(`${textValue}\n`, "utf8");
   const imageHash = sha256(page);
   const textHash = sha256(textValue);
-  const layoutValue = bindVisualTextGeometry({
+  const screenshot = {
+    css_width: 1365,
+    css_height: 2400,
+    pixel_width: 1365,
+    pixel_height: 2400,
+    alignment_status: "verified",
+  };
+  const rawLayoutValue = {
     version: 1,
     state_id: "main",
     captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
     document: { width: 1365, height: 2400 },
     viewport: { width: 1365, height: 768 },
+    scroll: { x: 0, y: 0 },
     device_pixel_ratio: 1,
-    nodes: [],
-  }, {
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "verified",
+      sampled_rect_count: 0,
+      rejected_rect_count: 0,
+    },
+    nodes: [geometryNode({
+      text: "Applications close March 15",
+      path: "main>p:nth-of-type(1)",
+      flowPath: "body>main>p:nth-of-type(1)",
+      y: 240,
+    })],
+  };
+  const verifiedLayoutValue = verifyVisualScreenshotLayoutCapture({
+    before: rawLayoutValue,
+    after: rawLayoutValue,
+    screenshot,
+    stateId: "main",
+  });
+  const layoutValue = bindVisualTextGeometry(verifiedLayoutValue, {
     capturedAt,
     imageHash,
     imageRef: "C:\\stale\\page.jpg",
-    screenshot: {
-      css_width: 1365,
-      css_height: 2400,
-      pixel_width: 1365,
-      pixel_height: 2400,
-    },
+    screenshot,
   });
   const layout = Buffer.from(JSON.stringify(layoutValue), "utf8");
   const source = {
@@ -908,6 +1089,11 @@ function recoveryFixture() {
     page_bytes: page.length,
     thumb_bytes: thumb.length,
     browser: { executable_path: "C:\\stale\\chrome.exe", name: "Chromium" },
+    expandable_sections: [{
+      section_path: "main>details:nth-of-type(1)",
+      label: "Deadlines",
+      text: "Applications close March 15",
+    }],
     layout_hash: layoutValue.geometry_hash,
     text_geometry: {
       geometry_hash: layoutValue.geometry_hash,
@@ -974,24 +1160,46 @@ function writeBaselineFixture(fixture) {
 function addExpansionState(fixture) {
   const expansionPage = Buffer.from("verified opened eligibility accordion screenshot");
   const expansionImageHash = sha256(expansionPage);
-  const expansionLayoutValue = bindVisualTextGeometry({
+  const expansionScreenshot = {
+    css_width: 1365,
+    css_height: 2600,
+    pixel_width: 1365,
+    pixel_height: 2600,
+    alignment_status: "verified",
+  };
+  const rawExpansionLayout = {
     version: 1,
     state_id: "eligibility-open",
     captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
     document: { width: 1365, height: 2600 },
     viewport: { width: 1365, height: 768 },
+    scroll: { x: 0, y: 0 },
     device_pixel_ratio: 1,
-    nodes: [{ text: "Eligibility", rect: { x: 100, y: 1400, width: 300, height: 40 } }],
-  }, {
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "verified",
+      sampled_rect_count: 0,
+      rejected_rect_count: 0,
+    },
+    nodes: [geometryNode({
+      text: "Applicants must satisfy the eligibility requirements",
+      path: "main>details:nth-of-type(1)>p",
+      flowPath: "body>main>details:nth-of-type(1)>p",
+      y: 420,
+    })],
+  };
+  const verifiedExpansionLayout = verifyVisualScreenshotLayoutCapture({
+    before: rawExpansionLayout,
+    after: rawExpansionLayout,
+    screenshot: expansionScreenshot,
+    stateId: "eligibility-open",
+  });
+  const expansionLayoutValue = bindVisualTextGeometry(verifiedExpansionLayout, {
     capturedAt,
     imageHash: expansionImageHash,
     imageRef: "C:\\stale\\expansion-state-01.jpg",
-    screenshot: {
-      css_width: 1365,
-      css_height: 2600,
-      pixel_width: 1365,
-      pixel_height: 2600,
-    },
+    screenshot: expansionScreenshot,
   });
   const expansionLayout = Buffer.from(JSON.stringify(expansionLayoutValue), "utf8");
   const prefix = fixture.snapshot.latest_object_keys.page.slice(0, -"page.jpg".length);
@@ -1217,6 +1425,20 @@ function initialDocumentRestoreFixture() {
 
 function initialDocumentFileName(role) {
   return role === "pdf" ? "document.pdf" : role === "text" ? "text.txt" : "meta.json";
+}
+
+function geometryNode({ text, path, flowPath, y }) {
+  const width = Math.max(160, text.length * 8);
+  const rect = { x: 120, y, width, height: 24, right: 120 + width, bottom: y + 24 };
+  return {
+    order: 0,
+    path,
+    flow_path: flowPath,
+    text,
+    separator_before: "",
+    rects: [rect],
+    runs: [{ start: 0, end: text.length, text, rects: [rect] }],
+  };
 }
 
 function objectFixture(body, contentType) {

@@ -1,3 +1,5 @@
+import "server-only";
+
 export const appConfig = {
   name: "AwardPing",
   url: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
@@ -8,7 +10,13 @@ export const appConfig = {
   alertFromEmail: process.env.ALERT_FROM_EMAIL || "AwardPing <alerts@example.com>",
   contactToEmail: process.env.CONTACT_TO_EMAIL || "",
   cronSecret: process.env.CRON_SECRET || "",
-  dataEncryptionKey: process.env.APP_DATA_ENCRYPTION_KEY || "",
+  dataEncryptionKey: textFromEnv("APP_DATA_ENCRYPTION_KEY"),
+  dataEncryptionKeyId: textFromEnv("APP_DATA_ENCRYPTION_KEY_ID"),
+  dataDecryptionKeyringJson:
+    textFromEnv("APP_DATA_DECRYPTION_KEYRING_JSON"),
+  dataLookupHmacKey: textFromEnv("APP_DATA_LOOKUP_HMAC_KEY"),
+  dataLegacyV1EncryptionKey:
+    textFromEnv("APP_DATA_LEGACY_V1_ENCRYPTION_KEY"),
   r2AccountId: textFromEnv("R2_ACCOUNT_ID"),
   r2Endpoint: textFromEnv("R2_ENDPOINT"),
   r2AccessKeyId: textFromEnv("R2_ACCESS_KEY_ID"),

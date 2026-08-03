@@ -26,13 +26,19 @@ describe("immutable visual evidence cleanup wiring", () => {
     }
   });
 
-  it("retires source-cleanup rows through the preserving RPC", () => {
+  it("retires source-cleanup rows through the preserving CAS RPC", () => {
+    const helper = read("scripts/lib/source-cleanup-cas.mjs");
+    expect(helper).toContain(
+      'const cleanupRpc = "apply_shared_award_source_cleanup_plan"',
+    );
+    expect(helper).toContain("p_plan: plan");
     for (const path of [
       "scripts/audit-shared-source-coverage.mjs",
       "scripts/post-crawl-cleanup-report.mjs",
     ]) {
       const source = read(path);
-      expect(source).toContain('rpc("retire_shared_award_source_preserving_visual_history"');
+      expect(source).toContain("applyAwardSourceCleanupPlanWithCas");
+      expect(source).toContain("buildAwardSourceCleanupPlan");
       expect(source).not.toContain('deleteWhereIn("shared_award_change_events"');
       expect(source).not.toContain('deleteWhereIn("shared_award_sources"');
     }

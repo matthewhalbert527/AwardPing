@@ -6,7 +6,12 @@ export type ScheduledNightlyVisualRunReason =
   | "targeted_run"
   | "partial_scan"
   | "historical_onboarding"
-  | "unsupported_discovery_intent";
+  | "unsupported_discovery_intent"
+  | "pdf_discovery_disabled"
+  | "html_discovery_not_canonical"
+  | "visual_review_not_canonical"
+  | "visual_review_disabled"
+  | "immutable_evidence_sync_disabled";
 
 export type ScheduledNightlyVisualRunInput = {
   startedAt?: unknown;
@@ -21,6 +26,18 @@ export type ScheduledNightlyVisualRunClassification = {
 };
 
 export declare const NIGHTLY_VISUAL_DISCOVERY_INTENT: "live_recurring";
+export declare const NIGHTLY_VISUAL_REVIEW_MODE: "batch";
+
+export type VisualDiscoveryConfiguration = {
+  requestedIntent: string;
+  requestedOnboardingBatchId: string;
+  discoveryIntent: "live_recurring" | "historical_onboarding";
+};
+
+export declare function resolveVisualDiscoveryConfiguration(input?: {
+  args?: Record<string, unknown>;
+  env?: Record<string, unknown>;
+}): VisualDiscoveryConfiguration;
 
 export declare function classifyScheduledNightlyVisualRun(
   input?: ScheduledNightlyVisualRunInput,

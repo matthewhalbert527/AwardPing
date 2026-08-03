@@ -104,6 +104,8 @@ function checkRequiredEnv() {
     ["SUPABASE_SERVICE_ROLE_KEY", "Supabase sb_secret key"],
     ["CRON_SECRET", "cron route secret"],
     ["APP_DATA_ENCRYPTION_KEY", "personal-data encryption"],
+    ["APP_DATA_ENCRYPTION_KEY_ID", "personal-data encryption key identity"],
+    ["APP_DATA_LOOKUP_HMAC_KEY", "stable personal-data lookup HMAC"],
     ["RESEND_API_KEY", "Resend email delivery"],
     ["ALERT_FROM_EMAIL", "verified email sender"],
     ["CONTACT_TO_EMAIL", "contact form recipient"],
@@ -135,6 +137,86 @@ function checkRequiredEnv() {
     } else {
       pass("APP_DATA_ENCRYPTION_KEY is non-placeholder, long enough, and independent from CRON_SECRET.");
     }
+  }
+
+  if (hasValue("APP_DATA_ENCRYPTION_KEY_ID")) {
+    const keyId = env.APP_DATA_ENCRYPTION_KEY_ID.trim();
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(keyId) || keyId === "local-dev") {
+      fail("APP_DATA_ENCRYPTION_KEY_ID must be a production key identifier, not a secret or local-dev value.");
+    } else {
+      pass("APP_DATA_ENCRYPTION_KEY_ID is a valid explicit v2 key identifier.");
+    }
+  }
+
+  if (hasValue("APP_DATA_LOOKUP_HMAC_KEY")) {
+    const lookupKey = env.APP_DATA_LOOKUP_HMAC_KEY.trim();
+    if (lookupKey.length < 32 || /replace|changeme|example|secret/i.test(lookupKey)) {
+      fail("APP_DATA_LOOKUP_HMAC_KEY must be a production-only random value with at least 32 characters.");
+    } else if (
+      (hasValue("APP_DATA_ENCRYPTION_KEY") &&
+        lookupKey === env.APP_DATA_ENCRYPTION_KEY.trim()) ||
+      (hasValue("CRON_SECRET") && lookupKey === env.CRON_SECRET.trim())
+    ) {
+      fail("APP_DATA_LOOKUP_HMAC_KEY must be independent from encryption and cron secrets.");
+    } else {
+      pass("APP_DATA_LOOKUP_HMAC_KEY is strong, stable, and independent from encryption and cron secrets.");
+    }
+  }
+
+  if (hasValue("APP_DATA_DECRYPTION_KEYRING_JSON")) {
+    try {
+      const keyring = JSON.parse(env.APP_DATA_DECRYPTION_KEYRING_JSON);
+      const entries =
+        keyring && !Array.isArray(keyring) && typeof keyring === "object"
+          ? Object.entries(keyring)
+          : [];
+      if (
+        entries.length === 0 ||
+        entries.some(
+          ([keyId, value]) =>
+            !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(keyId) ||
+            typeof value !== "string" ||
+            value.length < 32 ||
+            /replace|changeme|example|secret/i.test(value) ||
+            (hasValue("APP_DATA_ENCRYPTION_KEY_ID") &&
+              keyId === env.APP_DATA_ENCRYPTION_KEY_ID.trim()) ||
+            (hasValue("APP_DATA_ENCRYPTION_KEY") &&
+              value === env.APP_DATA_ENCRYPTION_KEY.trim()) ||
+            (hasValue("APP_DATA_LOOKUP_HMAC_KEY") &&
+              value === env.APP_DATA_LOOKUP_HMAC_KEY.trim()) ||
+            (hasValue("CRON_SECRET") && value === env.CRON_SECRET.trim()),
+        )
+      ) {
+        fail("APP_DATA_DECRYPTION_KEYRING_JSON must map distinct prior v2 key IDs to strong encryption-only material.");
+      } else {
+        pass("APP_DATA_DECRYPTION_KEYRING_JSON contains valid prior v2 key entries.");
+      }
+    } catch {
+      fail("APP_DATA_DECRYPTION_KEYRING_JSON must be valid JSON when it is set.");
+    }
+  }
+
+  if (hasValue("APP_DATA_LEGACY_V1_ENCRYPTION_KEY")) {
+    const legacyKey = env.APP_DATA_LEGACY_V1_ENCRYPTION_KEY.trim();
+    if (
+      /^(?:replace(?:[-_\s].*)?|change[-_\s]?me(?:[-_\s].*)?|example(?:[-_\s].*)?|secret)$/i.test(
+        legacyKey,
+      )
+    ) {
+      fail("APP_DATA_LEGACY_V1_ENCRYPTION_KEY is invalid; omit it unless the exact recovered legacy key is available.");
+    } else if (
+      (hasValue("APP_DATA_ENCRYPTION_KEY") &&
+        legacyKey === env.APP_DATA_ENCRYPTION_KEY.trim()) ||
+      (hasValue("APP_DATA_LOOKUP_HMAC_KEY") &&
+        legacyKey === env.APP_DATA_LOOKUP_HMAC_KEY.trim()) ||
+      (hasValue("CRON_SECRET") && legacyKey === env.CRON_SECRET.trim())
+    ) {
+      fail("The recovered legacy v1 key must not be reused by the active encryption, lookup, or cron purpose.");
+    } else {
+      pass("An explicit recovered legacy v1 key is configured for controlled recovery.");
+    }
+  } else {
+    pass("No legacy v1 key is claimed; affected profiles remain honestly marked for re-entry.");
   }
 }
 
@@ -302,6 +384,8 @@ function checkMigrations() {
     "20260717025000_harden_award_work_items_tenant_binding.sql",
     "20260717032000_atomic_public_form_rate_limits.sql",
     "20260717033000_public_digest_event_ledger.sql",
+    "20260717113112_preserve_legacy_personal_data_for_reentry.sql",
+    "20260717123000_legacy_contact_ciphertext_quarantine.sql",
   ];
 
   for (const file of expected) {
@@ -455,6 +539,36 @@ function checkMigrations() {
     pass("Public update subscriber and contact rate-limit migration is present.");
   } else {
     fail("Public update/contact migration is missing.");
+  }
+
+  const legacyContactPrivacy = readIfExists(
+    "supabase/migrations/20260717123000_legacy_contact_ciphertext_quarantine.sql",
+  );
+  const requiredLegacyContactContracts = [
+    "personal_data_legacy_contact_quarantine",
+    "personal_data_erasure_tombstones",
+    "recover_legacy_contact_ciphertext",
+    "quarantine_legacy_contact_ciphertext",
+    "erase_personal_data_for_privacy_request",
+    "erase_legacy_contact_ciphertext_for_privacy_request",
+    "coalesce(v_entry ->> 'recipient_encrypted', '') not like 'ap:v2:%'",
+    "coalesce(outbox.recipient_encrypted, '') like 'ap:v2:%'",
+    "coalesce(v_outbox.recipient_encrypted, '') not like 'ap:v2:%'",
+    "personal_data_legacy_contact_gate_snapshot",
+    "legacy_contact_ciphertext_not_safe",
+    "stage1_gate_without_contact_fence_20260717123000",
+  ];
+  const missingLegacyContactContracts = requiredLegacyContactContracts.filter(
+    (contract) => !legacyContactPrivacy.includes(contract),
+  );
+  if (missingLegacyContactContracts.length === 0) {
+    pass(
+      "Legacy contact ciphertext is inventoried, disabled, v2-fenced, erasable, and bound into the signed release gate.",
+    );
+  } else {
+    fail(
+      `Legacy contact privacy migration is incomplete; missing ${missingLegacyContactContracts.join(", ")}.`,
+    );
   }
 
   const structuredDetails = readIfExists("supabase/migrations/0017_structured_change_details.sql");

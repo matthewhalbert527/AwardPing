@@ -69,6 +69,10 @@ export default async function OfficePage() {
         <ProfileSettingsForm
           initialFullName={profile?.full_name || ""}
           initialOrganization={profile?.organization || ""}
+          reentryRequired={profile?.personal_data_reentry_required || false}
+          legacyRecoveryAvailable={
+            profile?.personal_data_legacy_recovery_available || false
+          }
         />
         {canManage && (
           <OfficeNameForm initialName={editableOfficeName(officeContext.current.officeName)} />

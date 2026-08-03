@@ -1,0 +1,368 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://awardping.com/schemas/stage1-human-review-root.v1.json",
+  "title": "AwardPing Stage 1 human-review root",
+  "description": "The immutable pre-commit human decision shared by reviewed reconciliation and post-commit manifest proof. Generated reconciliation and page-audit IDs are intentionally forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "policy_version", "review", "cohorts"],
+  "properties": {
+    "schema_version": { "const": "awardping.stage1.human-review-root.v1" },
+    "policy_version": { "const": "stage1-publication-v1" },
+    "review": { "$ref": "#/$defs/review" },
+    "cohorts": {
+      "type": "array",
+      "oneOf": [
+        { "minItems": 1, "maxItems": 1 },
+        { "minItems": 25, "maxItems": 25 }
+      ],
+      "items": { "$ref": "#/$defs/cohort" }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+    },
+    "uuidArray": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/uuid" }
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "httpsUrl": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewed_by",
+        "reviewed_at",
+        "reason",
+        "selection_method",
+        "auto_accept_ranked_candidates",
+        "materialize_candidates"
+      ],
+      "properties": {
+        "reviewed_by": { "type": "string", "minLength": 1 },
+        "reviewed_at": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "minLength": 1 },
+        "selection_method": { "const": "explicit_human_review" },
+        "auto_accept_ranked_candidates": { "const": false },
+        "materialize_candidates": { "const": false }
+      }
+    },
+    "publicFacts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "enum": [
+          "overview",
+          "deadline",
+          "opening_date",
+          "award_amounts",
+          "eligibility",
+          "requirements",
+          "application_materials",
+          "how_to_apply",
+          "important_dates",
+          "documents",
+          "contacts",
+          "academic_levels",
+          "disciplines",
+          "citizenship",
+          "confidence"
+        ]
+      },
+      "additionalProperties": true
+    },
+    "fieldChoice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field_name", "composition_method", "candidate_ids", "candidate_evidence"],
+      "properties": {
+        "field_name": {
+          "enum": [
+            "overview",
+            "deadline",
+            "opening_date",
+            "award_amounts",
+            "eligibility",
+            "requirements",
+            "application_materials",
+            "how_to_apply",
+            "important_dates",
+            "documents",
+            "contacts",
+            "academic_levels",
+            "disciplines",
+            "citizenship",
+            "confidence"
+          ]
+        },
+        "composition_method": {
+          "enum": ["direct_exact", "ordered_array_items"]
+        },
+        "candidate_ids": {
+          "allOf": [
+            { "$ref": "#/$defs/uuidArray" },
+            { "minItems": 1 }
+          ]
+        },
+        "candidate_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/candidateEvidence" }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "composition_method": { "const": "direct_exact" } },
+            "required": ["composition_method"]
+          },
+          "then": {
+            "properties": {
+              "candidate_ids": { "minItems": 1, "maxItems": 1 },
+              "candidate_evidence": { "minItems": 1, "maxItems": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "candidateEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "source_id",
+        "evidence_quote",
+        "evidence_location",
+        "capture_text_sha256",
+        "capture_text_object_key"
+      ],
+      "properties": {
+        "candidate_id": { "$ref": "#/$defs/uuid" },
+        "source_id": { "$ref": "#/$defs/uuid" },
+        "evidence_quote": { "type": "string", "minLength": 1 },
+        "evidence_location": { "type": "string", "minLength": 1 },
+        "capture_text_sha256": { "$ref": "#/$defs/sha256" },
+        "capture_text_object_key": {
+          "type": "string",
+          "pattern": "^visual-snapshots/sources/[0-9a-f-]+/captures/[0-9a-f]{32}/text[.]txt$"
+        }
+      }
+    },
+    "positiveIntegerText": {
+      "oneOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "string", "pattern": "^[1-9][0-9]*$" }
+      ]
+    },
+    "nonNegativeIntegerText": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0 },
+        { "type": "string", "pattern": "^[0-9]+$" }
+      ]
+    },
+    "hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/sha256" }
+    },
+    "objectKeys": {
+      "type": "object",
+      "description": "Runtime validation requires one lowercase immutable captures/<32-hex generation> family, exact slot filenames, and a complete webpage or PDF core set.",
+      "oneOf": [
+        {
+          "required": ["page", "thumb", "text", "meta"],
+          "properties": {
+            "page": { "pattern": "/page[.]jpg$" },
+            "thumb": { "pattern": "/thumb[.]jpg$" },
+            "text": { "pattern": "/text[.]txt$" },
+            "meta": { "pattern": "/meta[.]json$" },
+            "layout": { "pattern": "/layout[.]json$" }
+          },
+          "patternProperties": {
+            "^expansion_state_[0-9]{2}$": { "pattern": "/expansion-state-[0-9]{2}[.]jpg$" },
+            "^expansion_state_[0-9]{2}_layout$": { "pattern": "/expansion-state-[0-9]{2}-layout[.]json$" }
+          },
+          "propertyNames": { "pattern": "^(page|thumb|text|meta|layout|expansion_state_[0-9]{2}(_layout)?)$" },
+          "not": { "required": ["pdf"] }
+        },
+        {
+          "required": ["pdf", "text", "meta"],
+          "minProperties": 3,
+          "maxProperties": 3,
+          "properties": {
+            "pdf": { "pattern": "/document[.]pdf$" },
+            "text": { "pattern": "/text[.]txt$" },
+            "meta": { "pattern": "/meta[.]json$" }
+          },
+          "propertyNames": { "pattern": "^(pdf|text|meta)$" }
+        }
+      ],
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^visual-snapshots/sources/[0-9a-f-]+/captures/[0-9a-f]{32}/[^/]+$"
+      }
+    },
+    "captureMetadata": {
+      "type": "object",
+      "required": ["text_object_bytes", "text_length"],
+      "properties": {
+        "page_bytes": { "$ref": "#/$defs/positiveIntegerText" },
+        "file_bytes": { "$ref": "#/$defs/positiveIntegerText" },
+        "text_object_bytes": { "$ref": "#/$defs/positiveIntegerText" },
+        "text_length": { "$ref": "#/$defs/nonNegativeIntegerText" }
+      },
+      "oneOf": [
+        { "required": ["page_bytes"], "not": { "required": ["file_bytes"] } },
+        { "required": ["file_bytes"], "not": { "required": ["page_bytes"] } }
+      ],
+      "additionalProperties": true
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verified_at", "hashes"],
+      "properties": {
+        "verified_at": { "type": "string", "format": "date-time" },
+        "hashes": { "$ref": "#/$defs/hashes" }
+      }
+    },
+    "officialIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "classification", "evidence_url", "reviewed_reason"],
+      "properties": {
+        "host": { "type": "string", "minLength": 1 },
+        "classification": {
+          "enum": [
+            "canonical_program_host",
+            "official_authority_host",
+            "official_contractor_host"
+          ]
+        },
+        "evidence_url": { "$ref": "#/$defs/httpsUrl" },
+        "reviewed_reason": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "source_url",
+        "official_identity",
+        "last_checked_at",
+        "snapshot",
+        "r2",
+        "local"
+      ],
+      "properties": {
+        "source_id": { "$ref": "#/$defs/uuid" },
+        "source_url": { "$ref": "#/$defs/httpsUrl" },
+        "official_identity": { "$ref": "#/$defs/officialIdentity" },
+        "last_checked_at": { "type": "string", "format": "date-time" },
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["captured_at", "object_keys", "hashes", "metadata"],
+          "properties": {
+            "captured_at": { "type": "string", "format": "date-time" },
+            "object_keys": { "$ref": "#/$defs/objectKeys" },
+            "hashes": { "$ref": "#/$defs/hashes" },
+            "metadata": { "$ref": "#/$defs/captureMetadata" }
+          }
+        },
+        "r2": { "$ref": "#/$defs/verification" },
+        "local": { "$ref": "#/$defs/verification" }
+      }
+    },
+    "role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_role",
+        "manifest_status",
+        "official",
+        "supporting_text",
+        "cycle",
+        "sources",
+        "fact_candidate_ids"
+      ],
+      "properties": {
+        "source_role": {
+          "enum": [
+            "identity_home",
+            "eligibility",
+            "application_materials",
+            "dates_cycle",
+            "funding",
+            "faq",
+            "selection_interviews",
+            "current_documents"
+          ]
+        },
+        "manifest_status": { "enum": ["present", "combined", "not_published"] },
+        "official": { "const": true },
+        "supporting_text": { "type": "string", "minLength": 1 },
+        "cycle": { "type": "string", "minLength": 1 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/source" }
+        },
+        "fact_candidate_ids": { "$ref": "#/$defs/uuidArray" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "manifest_status": { "const": "not_published" } },
+            "required": ["manifest_status"]
+          },
+          "then": { "properties": { "fact_candidate_ids": { "maxItems": 0 } } },
+          "else": { "properties": { "fact_candidate_ids": { "minItems": 1 } } }
+        }
+      ]
+    },
+    "cohort": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cohort_key", "canonical_award", "public_facts", "field_choices", "roles"],
+      "properties": {
+        "cohort_key": { "type": "string", "pattern": "^[a-z0-9_]+$" },
+        "canonical_award": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "search_key", "name", "official_homepage"],
+          "properties": {
+            "id": { "$ref": "#/$defs/uuid" },
+            "search_key": { "type": "string", "minLength": 1 },
+            "name": { "type": "string", "minLength": 1 },
+            "official_homepage": { "$ref": "#/$defs/httpsUrl" }
+          }
+        },
+        "public_facts": { "$ref": "#/$defs/publicFacts" },
+        "field_choices": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/fieldChoice" }
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/role" }
+        }
+      }
+    }
+  }
+}

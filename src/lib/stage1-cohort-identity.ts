@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const stage1CohortIdentityVersion = "stage1-national-25-v1";
+export const stage1CohortIdentityVersion = "stage1-national-25-v2";
 
 export const stage1CohortIdentity = Object.freeze([
   [1, "rhodes_us", "Rhodes Scholarship (United States)", "3e0c02fe-70cc-4933-81c4-b58ac4036bff", "rhodes-scholarship", "https://www.rhodeshouse.ox.ac.uk/scholarships/the-rhodes-scholarship/"],
@@ -20,7 +20,7 @@ export const stage1CohortIdentity = Object.freeze([
   [15, "boren", "Boren Scholarships and Fellowships", "5cabc508-416c-4387-8652-276e7c76afe1", "boren-awards", "https://www.borenawards.org/"],
   [16, "cls", "Critical Language Scholarship Program", "ba1a3c76-4868-42b4-994b-6cbae72a7044", "critical-language-scholarship", "https://clscholarship.org/"],
   [17, "nsf_grfp", "NSF Graduate Research Fellowship Program", "d955a846-cee1-4c01-932e-e3cb7215f3fb", "nsf-graduate-research-fellowship-program", "https://www.nsfgrfp.org/"],
-  [18, "hertz", "Hertz Fellowship", "4d2f6a7f-024e-4194-be31-1b9f63e497bc", "hertz-foundation-graduate-fellowship", "https://www.hertzfoundation.org/the-fellowship/"],
+  [18, "hertz", "Hertz Fellowship", "4d2f6a7f-024e-4194-be31-1b9f63e497bc", "hertz-foundation-graduate-fellowship", "https://www.hertzfoundation.org/hertz-fellowship/"],
   [19, "ndseg", "National Defense Science and Engineering Graduate Fellowship", "e776ca2f-4b2c-431e-a3f9-248ad78c30e8", "national-defense-science-and-engineering-graduate-fellowship", "https://ndseg.org/"],
   [20, "smart", "SMART Scholarship-for-Service Program", "d7d4d117-f312-456f-a75c-3dbd5d372c99", "smart-scholarship-for-service-program", "https://www.smartscholarship.org/smart"],
   [21, "gem", "GEM Fellowship", "4b7cef78-b2c9-4463-ad3e-0f42a9164425", "gem-national-consortium", "https://www.gemfellowship.org/"],

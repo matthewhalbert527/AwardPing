@@ -37,6 +37,7 @@ export type OperatorActionInboxItem = {
     | "monitoring_feedback"
     | "digest_delivery"
     | "downstream_lane"
+    | "regression_audit"
     | "invite_security_reissue"
     | "inbox_load";
   severity: PageIssueSeverity;
@@ -160,6 +161,24 @@ export type OperatorInviteSecurityReissueInput = {
   lastError: string | null;
 };
 
+export type OperatorRegressionAuditFailureInput = {
+  failureKind: "operational" | "blocking_audit" | "operational_and_blocking";
+  awardId: string;
+  awardName: string;
+  awardSlug: string | null;
+  officialHomepage: string | null;
+  lastAttemptedAt: string | null;
+  lastSucceededAt: string | null;
+  consecutiveFailures: number;
+  nextRetryAt: string;
+  operationalError: string | null;
+  lastAuditError: string | null;
+  lastAuditId: string | null;
+  lastObservationKey: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type OperatorManualQuarantineBacklogInput = {
   exactTotal: number;
   exactClusterTotal: number;
@@ -169,6 +188,13 @@ export type OperatorManualQuarantineBacklogInput = {
   chargeGatedCases: number;
   oldestObservedAt: string | null;
   registrySyncedAt: string | null;
+};
+
+export type OperatorActionInboxCaseSourceTotal = {
+  key: "visual_review" | "digest_delivery";
+  label: string;
+  renderedTotal: number;
+  exactTotal: number | null;
 };
 
 export type BuildOperatorActionInboxInput = {
@@ -181,6 +207,7 @@ export type BuildOperatorActionInboxInput = {
   visualReviewFailures?: OperatorVisualReviewFailureInput[];
   digestDeliveryFailures?: OperatorDigestDeliveryFailureInput[];
   inviteSecurityReissues?: OperatorInviteSecurityReissueInput[];
+  regressionAuditFailures?: OperatorRegressionAuditFailureInput[];
   loadErrors?: string[];
   downstreamLanes?: AdminDownstreamLane[];
   now?: Date;
@@ -204,10 +231,12 @@ export function buildOperatorActionInbox({
   visualReviewFailures = [],
   digestDeliveryFailures = [],
   inviteSecurityReissues = [],
+  regressionAuditFailures = [],
   loadErrors = [],
   downstreamLanes = [],
   now = new Date(),
 }: BuildOperatorActionInboxInput) {
+  const pageAuditLane = downstreamLanes.find((lane) => lane.laneKey === "page_audit") || null;
   const items = [
     ...(manualQuarantineBacklog
       ? [manualQuarantineBacklogToAction(manualQuarantineBacklog, now)]
@@ -224,6 +253,8 @@ export function buildOperatorActionInbox({
     ...promotionClusters.map((cluster) => monitoringFeedbackClusterToAction(cluster, now)),
     ...digestDeliveryFailures.map((failure) => digestDeliveryFailureToAction(failure, now)),
     ...inviteSecurityReissues.map((reissue) => inviteSecurityReissueToAction(reissue, now)),
+    ...regressionAuditFailures.map((failure) =>
+      regressionAuditFailureToAction(failure, pageAuditLane, now)),
     ...downstreamLanes
       .filter((lane) => downstreamLaneNeedsAction(lane, now))
       .map((lane) => downstreamLaneToAction(lane, now)),
@@ -231,6 +262,228 @@ export function buildOperatorActionInbox({
   ];
 
   return dedupeActions(items).sort(compareActions);
+}
+
+function regressionAuditFailureToAction(
+  failure: OperatorRegressionAuditFailureInput,
+  pageAuditLane: AdminDownstreamLane | null,
+  now: Date,
+): OperatorActionInboxItem {
+  const blockingOutcome = failure.failureKind !== "operational";
+  const operationalFailure = failure.failureKind !== "blocking_audit";
+  const repeated = operationalFailure && failure.consecutiveFailures >= 3;
+  const nextRetryMs = dateMs(failure.nextRetryAt);
+  const retryIsDue = nextRetryMs === 0 || nextRetryMs <= now.getTime();
+  const laneRuntime = pageAuditLane
+    ? downstreamLaneRuntimeState(pageAuditLane, now)
+    : null;
+  const activeLease = Boolean(
+    pageAuditLane?.leaseOwner &&
+      pageAuditLane.lastStatus === "claimed" &&
+      pageAuditLane.leaseExpiresAt &&
+      dateMs(pageAuditLane.leaseExpiresAt) > now.getTime() &&
+      !laneRuntime?.expiredLease,
+  );
+  const laneCanRetry = Boolean(
+    pageAuditLane &&
+      pageAuditLane.enabled &&
+      !laneRuntime?.expiredLease &&
+      !laneRuntime?.overdueUnclaimed &&
+      (activeLease || laneRuntime?.retryWaiting || pageAuditLane.claimable),
+  );
+  const laneFailure = regressionAuditLaneFailure(pageAuditLane, laneRuntime, activeLease);
+  const needsOperator = blockingOutcome || repeated || !laneCanRetry;
+  const state: OperatorActionState = needsOperator ? "needs_operator" : "auto_retrying";
+  const occurredAt = failure.lastAttemptedAt || failure.updatedAt || failure.createdAt;
+  const attemptLabel = `${failure.consecutiveFailures.toLocaleString("en-US")} consecutive ${failure.consecutiveFailures === 1 ? "failure" : "failures"}`;
+  const severity: PageIssueSeverity = blockingOutcome || repeated ? "high" : "medium";
+  const failureReason = blockingOutcome && operationalFailure
+    ? `${failure.operationalError || "The latest verification attempt failed."} The last completed audit remains blocked: ${failure.lastAuditError || "blocking regression finding"}`
+    : blockingOutcome
+      ? failure.lastAuditError || "The deterministic regression audit blocked publication."
+      : failure.operationalError || "The deterministic regression audit could not run.";
+
+  return {
+    schemaVersion: operatorActionInboxSchemaVersion,
+    id: `regression-audit:${failure.awardId}`,
+    fingerprint: `regression-audit:${failure.awardId}`,
+    sourceKind: "regression_audit",
+    severity,
+    severityLabel: severityLabel(severity),
+    state,
+    stateLabel: stateLabel(state),
+    title: blockingOutcome
+      ? operationalFailure
+        ? `${failure.awardName}: blocking regression remains and verification failed`
+        : `${failure.awardName}: regression page audit blocked publication`
+      : `${failure.awardName}: regression page audit failed`,
+    context: blockingOutcome
+      ? operationalFailure
+        ? `Blocking audit outcome retained; ${attemptLabel}; retry ${retryIsDue ? "is due" : `scheduled for ${failure.nextRetryAt}`}`
+        : `Blocking deterministic finding; verification ${retryIsDue ? "is due" : `is scheduled for ${failure.nextRetryAt}`}`
+      : `${attemptLabel}; retry ${retryIsDue ? "is due" : `scheduled for ${failure.nextRetryAt}`}`,
+    failureReason,
+    occurredAt,
+    ageLabel: formatOperatorActionAge(occurredAt, now),
+    owner: {
+      label: blockingOutcome ? "Public page review" : "Worker operations",
+      detail: blockingOutcome
+        ? "An operator must repair the cited fact or evidence binding. The isolated page-audit lane then verifies that repair without publishing or creating an API charge."
+        : laneCanRetry
+          ? "The authoritative isolated page-audit lane is enabled and has a schedulable retry or active owner."
+          : "No healthy schedulable page-audit lane could be proven. Worker operations must restore only this lane before the retry can be called automatic.",
+    },
+    publicImpact: blockingOutcome
+      ? {
+          level: "blocked",
+          label: "Further publication blocked",
+          detail:
+            "The observation-only audit did not overwrite public facts, but it found that this award's current facts or evidence cannot be verified safely. Keep promotion and further publication blocked until repair passes.",
+        }
+      : {
+          level: laneCanRetry ? "protected" : "unknown",
+          label: laneCanRetry
+            ? "Last-known-good facts protected"
+            : "Regression verification status unknown",
+          detail: laneCanRetry
+            ? "This observation-only audit did not change public facts. Until it succeeds, a newly introduced public-page regression for this award may remain undetected."
+            : "Last-known-good facts remain unchanged, but AwardPing cannot prove the failed regression audit will run again while the page-audit lane is unhealthy or unavailable.",
+        },
+    retry: {
+      automatic: laneCanRetry,
+      label: laneCanRetry
+        ? blockingOutcome
+          ? "Yes — verifies automatically after repair"
+          : retryIsDue
+            ? "Yes — due on the next audit run"
+            : "Yes — isolated scheduled retry"
+        : laneFailure.retryLabel,
+      detail: laneCanRetry
+        ? blockingOutcome
+          ? "The no-charge lane will re-evaluate this award, but retry alone cannot resolve a substantive finding. Repair the cited fact or evidence first; only a later nonblocking observation clears this outcome."
+          : retryIsDue
+            ? `The healthy page-audit lane may claim this award on its next run. The durable count remains ${failure.consecutiveFailures} until a successful observation clears it.`
+            : `Only this award becomes eligible at ${failure.nextRetryAt}. The authoritative page-audit lane is schedulable; a clean parent lane exit does not clear this durable failure state.`
+        : laneFailure.detail,
+    },
+    charge: {
+      level: "none",
+      label: "$0 — no API charge",
+      detail:
+        "This deterministic regression audit and its retry do not review a new page, review a changed page, or submit a paid AI request.",
+    },
+    recommendedAction: {
+      label: blockingOutcome
+        ? laneCanRetry
+          ? "Repair the cited regression finding"
+          : "Repair the finding and restore its audit lane"
+        : !laneCanRetry
+          ? laneFailure.actionLabel
+          : repeated
+            ? "Inspect this award before relying on another retry"
+            : "Let the scheduled retry run",
+      detail: blockingOutcome
+        ? laneCanRetry
+          ? "Open the retained audit evidence below, repair only the cited public fact or source binding, preserve current facts until verified, then let the isolated no-charge audit confirm the repair."
+          : `Repair the retained finding, then restore the page-audit lane so it can verify the repair. ${laneFailure.detail}`
+        : !laneCanRetry
+          ? laneFailure.detail
+          : repeated
+            ? "Use the exact error and retained audit identifiers below to repair only this award. Preserve last-known-good public facts, then allow the isolated no-charge audit retry to verify the repair."
+            : "No manual rerun is needed yet. Keep the evidence intact and investigate only if the scheduled attempt fails again or remains due without being claimed.",
+      href: blockingOutcome
+        ? "/dashboard/admin/issues?tab=inbox"
+        : "/dashboard/admin/issues?tab=operations",
+    },
+    evidence: compactEvidence([
+      ["Award ID", failure.awardId],
+      ["Official homepage", failure.officialHomepage],
+      ["Failure kind", failure.failureKind],
+      ["Operational error", failure.operationalError],
+      ["Consecutive failures", String(failure.consecutiveFailures)],
+      ["Last attempted", failure.lastAttemptedAt],
+      ["Last succeeded", failure.lastSucceededAt],
+      ["Next retry", failure.nextRetryAt],
+      ["Last audit outcome error", failure.lastAuditError],
+      ["Last audit ID", failure.lastAuditId],
+      ["Last observation key", failure.lastObservationKey],
+      ["Retry state updated", failure.updatedAt],
+      ["Page-audit lane", pageAuditLane?.laneKey],
+      ["Lane enabled", pageAuditLane ? (pageAuditLane.enabled ? "Yes" : "No") : null],
+      ["Lane claimable", pageAuditLane ? (pageAuditLane.claimable ? "Yes" : "No") : null],
+      ["Lane lease owner", pageAuditLane?.leaseOwner],
+      ["Lane lease expires", pageAuditLane?.leaseExpiresAt],
+      ["Lane next retry", pageAuditLane?.nextRetryAt],
+      ["Lane policy source", pageAuditLane?.policySource],
+    ]),
+    policy: {
+      id: "regression-audit-observation",
+      version: "regression-audit-observation-v1",
+      hash: null,
+      description:
+        "Service-only durable state for deterministic, observation-only regression page audits. Successful execution clears operational errors; only a later nonblocking observation clears a blocking audit outcome.",
+    },
+    award: {
+      id: failure.awardId,
+      slug: failure.awardSlug,
+      name: failure.awardName,
+    },
+    source: null,
+    action: { kind: "none" },
+  };
+}
+
+function regressionAuditLaneFailure(
+  lane: AdminDownstreamLane | null,
+  runtime: ReturnType<typeof downstreamLaneRuntimeState> | null,
+  activeLease: boolean,
+) {
+  if (!lane) {
+    return {
+      retryLabel: "Unknown — page-audit lane unavailable",
+      actionLabel: "Restore page-audit lane status",
+      detail:
+        "The authoritative page-audit lane was missing from worker operations. Restore its status loader or database policy, then verify it is enabled and schedulable before relying on retry.",
+    };
+  }
+  if (runtime?.disabled) {
+    return {
+      retryLabel: "No — page-audit lane is disabled",
+      actionLabel: "Enable the page-audit lane",
+      detail:
+        "Verify why the page-audit lane was disabled, preserve the award evidence, then enable and start only that lane.",
+    };
+  }
+  if (runtime?.expiredLease) {
+    return {
+      retryLabel: "No — page-audit lease expired",
+      actionLabel: "Recover the expired page-audit lease",
+      detail:
+        "Confirm the prior page-audit worker stopped, preserve its run evidence, then recover only the expired page-audit lease.",
+    };
+  }
+  if (runtime?.overdueUnclaimed) {
+    return {
+      retryLabel: "No — page-audit work is overdue and unclaimed",
+      actionLabel: "Start the overdue page-audit lane",
+      detail:
+        "Start or repair the page-audit worker now. The award retry is durable, but no healthy owner currently guarantees it will run.",
+    };
+  }
+  if (!activeLease && !runtime?.retryWaiting && !lane.claimable) {
+    return {
+      retryLabel: "Unknown — no scheduler or active owner",
+      actionLabel: "Restore the page-audit scheduler",
+      detail:
+        "The lane is enabled but has no active owner, future retry, or claimable work signal. Repair its scheduler/status contract before relying on automatic retry.",
+    };
+  }
+  return {
+    retryLabel: "Unknown — page-audit lane health is incomplete",
+    actionLabel: "Verify the page-audit lane",
+    detail:
+      "AwardPing could not prove a healthy page-audit retry path. Verify the lane status and lease before taking any manual action on this award.",
+  };
 }
 
 function inviteSecurityReissueToAction(
@@ -311,6 +564,7 @@ function downstreamLaneNeedsAction(lane: AdminDownstreamLane, now: Date) {
 
 function downstreamLaneToAction(lane: AdminDownstreamLane, now: Date): OperatorActionInboxItem {
   const runtime = downstreamLaneRuntimeState(lane, now);
+  const structuredFailure = downstreamLaneStructuredFailure(lane);
   const automaticRetry = runtime.retryWaiting;
   const state: OperatorActionState = automaticRetry ? "auto_retrying" : "needs_operator";
   const condition = runtime.disabled
@@ -334,7 +588,7 @@ function downstreamLaneToAction(lane: AdminDownstreamLane, now: Date): OperatorA
         ? runtime.overdue
           ? "The lane is past its service-level target and no worker currently owns it."
           : "The lane retry was due, but no worker claimed it."
-        : lane.lastError || (runtime.overdue
+        : structuredFailure?.failureReason || lane.lastError || (runtime.overdue
           ? lane.oldestItemAt
             ? "The oldest waiting item is beyond this lane's service-level target."
             : "This periodic lane missed its service-level deadline."
@@ -420,9 +674,11 @@ function downstreamLaneToAction(lane: AdminDownstreamLane, now: Date): OperatorA
           ? "Verify the old worker is no longer active, reconcile its preserved run evidence, then safely claim only this lane."
           : runtime.overdueUnclaimed
             ? "Run or repair this lane's worker now; investigate its scheduler if it remains claimable without an owner."
-            : lane.lastError
-              ? `Fix the reported failure without restarting unrelated lanes: ${lane.lastError}`
-              : "Inspect the oldest item and lane run evidence; keep last-known-good public data in place.",
+            : structuredFailure
+              ? structuredFailure.recommendedAction
+              : lane.lastError
+                ? `Fix the reported failure without restarting unrelated lanes: ${lane.lastError}`
+                : "Inspect the oldest item and lane run evidence; keep last-known-good public data in place.",
       href: "/dashboard/admin/issues?tab=operations",
     },
     evidence: compactEvidence([
@@ -476,6 +732,23 @@ function downstreamLaneToAction(lane: AdminDownstreamLane, now: Date): OperatorA
     source: null,
     action: { kind: "none" },
   };
+}
+
+function downstreamLaneStructuredFailure(lane: AdminDownstreamLane) {
+  if (lane.laneKey !== "manual_quarantine") return null;
+  if (lane.lastError === "lane_child_failure:database_statement_timeout") {
+    return {
+      failureReason: "The durable quarantine registry refresh exceeded its database statement timeout.",
+      recommendedAction: "Apply and verify the bounded manual-quarantine sync migration, then retry only this zero-charge lane. Other lanes can keep running.",
+    };
+  }
+  if (lane.lastError === "lane_child_failure:registry_sync_failed") {
+    return {
+      failureReason: "The durable quarantine registry refresh failed before it returned a verified state.",
+      recommendedAction: "Inspect the retained lane log and database health, repair the cited cause, then retry only this zero-charge lane. Other lanes can keep running.",
+    };
+  }
+  return null;
 }
 
 function manualQuarantineBacklogToAction(
@@ -774,20 +1047,52 @@ function manualQuarantineActionLabel(category: AdminManualQuarantineItem["catego
   return "Repair and verify this award";
 }
 
-export function operatorActionInboxSummary(items: OperatorActionInboxItem[]) {
+export function operatorActionInboxSummary(
+  items: OperatorActionInboxItem[],
+  caseSourceTotals: OperatorActionInboxCaseSourceTotal[] = [],
+) {
   const needsOperator = items.filter((item) => item.state !== "auto_retrying").length;
   const autoRetrying = items.filter((item) => item.state === "auto_retrying").length;
   const publicBlockers = items.filter((item) => item.publicImpact.level === "blocked").length;
   const publicImpactUnknown = items.filter(
     (item) => item.publicImpact.level === "unknown",
   ).length;
+  const normalizedCaseSources = caseSourceTotals.map((source) => {
+    const renderedTotal = nonNegativeSafeInteger(source.renderedTotal)
+      ? source.renderedTotal
+      : 0;
+    const exactTotal = source.exactTotal !== null &&
+      nonNegativeSafeInteger(source.exactTotal) &&
+      source.exactTotal >= renderedTotal
+      ? source.exactTotal
+      : null;
+    return {
+      ...source,
+      renderedTotal,
+      exactTotal,
+      omittedTotal: exactTotal === null ? null : exactTotal - renderedTotal,
+    };
+  });
   return {
     total: items.length,
     needsOperator,
     autoRetrying,
     publicBlockers,
     publicImpactUnknown,
+    caseSources: normalizedCaseSources,
+    renderedCaseRows: normalizedCaseSources.reduce(
+      (total, source) => total + source.renderedTotal,
+      0,
+    ),
+    exactUnderlyingCases: normalizedCaseSources.length > 0 &&
+      normalizedCaseSources.every((source) => source.exactTotal !== null)
+      ? normalizedCaseSources.reduce((total, source) => total + (source.exactTotal || 0), 0)
+      : null,
   };
+}
+
+function nonNegativeSafeInteger(value: number) {
+  return Number.isSafeInteger(value) && value >= 0;
 }
 
 export function formatOperatorActionAge(value: string | null, now = new Date()) {

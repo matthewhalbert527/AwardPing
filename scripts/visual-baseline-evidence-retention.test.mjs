@@ -121,6 +121,35 @@ describe("visual baseline evidence retention", () => {
     expect(source).toContain('reason: "repeated_evidence_capture_failure"');
   });
 
+  it("limits held-source quality bypass to exact R2 repair and fails empty exact loads closed", () => {
+    const filterBody = functionBody(
+      "filterMonitorableSourcesForCapture",
+      "isSupabaseStatementTimeoutLike",
+    );
+    const exactRepairBypass = filterBody.indexOf("isExactHeldR2RepairTarget");
+    const monitoringQuality = filterBody.indexOf(
+      'sourceQualityDecision(source, { purpose: "monitoring" })',
+    );
+    expect(exactRepairBypass).toBeGreaterThan(-1);
+    expect(exactRepairBypass).toBeLessThan(monitoringQuality);
+    expect(filterBody).toContain("sourceIdFilter,");
+    expect(filterBody).toContain("r2SnapshotSync,");
+    expect(filterBody).toContain("r2RepairMissingSnapshots,");
+
+    const runBody = functionBody("runOnce", "startRunHeartbeat");
+    const load = runBody.indexOf("const loadedSources = authoritativeInventory");
+    const failClosed = runBody.indexOf("Exact source load failed closed", load);
+    const acquisitions = runBody.indexOf("await attachSourceAcquisitions", load);
+    expect(load).toBeGreaterThan(-1);
+    expect(failClosed).toBeGreaterThan(load);
+    expect(failClosed).toBeLessThan(acquisitions);
+    expect(runBody).toContain("loadedSources.length !== 1");
+    expect(runBody).toContain("loadedSources[0]?.id !== sourceIdFilter");
+
+    const queryBody = functionBody("buildSourcesQuery", "startWorkerRun");
+    expect(queryBody).toContain("if (!includeNotDue && !sourceIdFilter)");
+  });
+
   it("repairs and verifies local evidence before submitting source AI review", () => {
     const evidenceStage = catchupSource.indexOf(
       'runStage("source-ai-local-evidence", drainSourceAiEvidence)',
@@ -188,12 +217,34 @@ describe("visual baseline evidence retention", () => {
     expect(localization).toContain("refreshedLatestVisualSnapshotHistory");
   });
 
-  it("never rotates an existing pointer from the missing-snapshot repair path", () => {
+  it("records the raw retained text-object byte length for signed R2 recovery", () => {
+    const metadata = functionBody("r2CaptureMetadata", "captureLocalizationMetadata");
+
+    expect(metadata).toContain("text_object_bytes:");
+    expect(metadata).toContain("statSync(capture.text_path).size");
+    expect(source).toContain("statSync,");
+  });
+
+  it("refreshes an existing authoritative pointer only when explicitly forced", () => {
     const repair = functionBody("maybeRepairMissingR2Snapshot", "publishVisualChangeEvent");
 
-    expect(repair).toContain("if (existingR2SnapshotSourceIds.has(source.id)) return false");
+    expect(repair).toContain("const snapshotAlreadyExists = existingR2SnapshotSourceIds.has(source.id)");
+    expect(repair).toContain("if (snapshotAlreadyExists && !forceR2SnapshotRefresh) return false");
     expect(repair).toContain("await maybeSyncR2Snapshot");
+    expect(repair).toContain("report.r2_forced_refreshes += 1");
+    expect(repair).toContain("report.r2_repaired_missing += 1");
     expect(source).not.toContain("r2LatestOnlyRefresh");
     expect(source).not.toContain("r2-latest-only-refresh");
+  });
+
+  it("keeps R2 authoritative when a no-change capture rewrites localization evidence", () => {
+    const sync = functionBody("maybeSyncR2Snapshot", "maybeRepairMissingR2Snapshot");
+    const process = functionBody("processSourceUnlocked", "processLocalizationRepairSource");
+    const localization = functionBody("processLocalizationRepairSource", "processTextOnlyComparison");
+
+    expect(sync).toContain('"capture_behavior_refresh"');
+    expect(sync).toContain('"localization_repair"');
+    expect(process).toContain('reason: "capture_behavior_refresh", unchanged: true');
+    expect(localization).toContain('reason: "localization_repair", unchanged: true');
   });
 });

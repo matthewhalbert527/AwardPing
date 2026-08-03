@@ -131,7 +131,7 @@ export const atomicTasks = [
     cost: "$0 direct AI/API cost.",
     run: {
       kind: "script",
-      args: ["scripts/sync-manual-quarantine-registry.mjs"],
+      args: ["scripts/sync-manual-quarantine-registry.mjs", "--apply=true"],
     },
     scheduledWorkerIds: ["manual-quarantine-lane"],
   },

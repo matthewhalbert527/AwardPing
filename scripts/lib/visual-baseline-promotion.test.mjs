@@ -596,6 +596,7 @@ describe("approved visual baseline promotion", () => {
       expansion_states_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(database.current.latest_metadata).toMatchObject({
+      text_object_bytes: readFileSync(capture.text_path).length,
       expansion_state_count: 1,
       expansion_state_screenshots: [{
         state_id: "eligibility-open",

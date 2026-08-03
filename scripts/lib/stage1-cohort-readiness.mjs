@@ -2,9 +2,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
-export const STAGE1_READINESS_SCHEMA_VERSION = "stage1-cohort-readiness-v1";
+export const STAGE1_READINESS_SCHEMA_VERSION = "stage1-cohort-readiness-v2";
 export const STAGE1_POLICY_VERSION = "stage1-publication-v1";
 export const STAGE1_FRESHNESS_MS = 24 * 60 * 60 * 1_000;
+export const STAGE1_FUTURE_CLOCK_TOLERANCE_MS = 5 * 60 * 1_000;
+export const STAGE1_REMOTE_EFFECTIVE_BLOCKER =
+  "remote_effective_publication_gate_closed";
 
 export const REQUIRED_SOURCE_ROLES = Object.freeze([
   "identity_home",
@@ -40,7 +43,14 @@ export const PUBLISHED_FACT_FIELDS = Object.freeze([
 export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(1, "rhodes_us", "Rhodes Scholarship (United States)", "rhodes scholarship", "https://www.rhodeshouse.ox.ac.uk/scholarships/the-rhodes-scholarship/", [
     "rhodes scholarships",
-  ]),
+  ], {
+    identityRules: [{
+      rule_key: "exclude_rhodes_non_us_constituencies",
+      url_pattern: "(?:^|[/_.-])(?:australia|bermuda|canada|china|east[-_]?africa|germany|hong[-_]?kong|india|israel|jamaica|caribbean|kenya|malaysia|new[-_]?zealand|pakistan|saudi[-_]?arabia|singapore|southern[-_]?africa|syria|jordan|lebanon|palestine|united[-_]?arab[-_]?emirates|west[-_]?africa|zambia|zimbabwe|england|scotland|wales|united[-_]?kingdom)(?:[/_.-]|$)",
+      title_pattern: "(?:rhodes|information for candidates|candidate guidance|constituency).{0,100}(?:^|[^A-Za-z0-9_])(?:australia|australian|bermuda|bermudian|canada|canadian|china|chinese|east africa|germany|german|hong kong|india|indian|israel|israeli|jamaica|caribbean|kenya|kenyan|malaysia|malaysian|new zealand|pakistan|pakistani|saudi arabia|singapore|singaporean|southern africa|syria|syrian|jordan|jordanian|lebanon|lebanese|palestine|palestinian|united arab emirates|emirati|west africa|zambia|zambian|zimbabwe|zimbabwean|england|scotland|wales|united kingdom|british)(?:$|[^A-Za-z0-9_])|(?:^|[^A-Za-z0-9_])(?:australia|australian|bermuda|bermudian|canada|canadian|china|chinese|east africa|germany|german|hong kong|india|indian|israel|israeli|jamaica|caribbean|kenya|kenyan|malaysia|malaysian|new zealand|pakistan|pakistani|saudi arabia|singapore|singaporean|southern africa|syria|syrian|jordan|jordanian|lebanon|lebanese|palestine|palestinian|united arab emirates|emirati|west africa|zambia|zambian|zimbabwe|zimbabwean|england|scotland|wales|united kingdom|british)(?:$|[^A-Za-z0-9_]).{0,100}(?:rhodes|information for candidates|candidate guidance|constituency)",
+      reason: "A country- or constituency-specific Rhodes source outside the United States cannot supply Rhodes (US) facts or updates.",
+    }],
+  }),
   cohort(2, "marshall", "Marshall Scholarship", "marshall scholarship", "https://www.marshallscholarship.org/", [], {
     identityRules: [{
       rule_key: "exclude_marshall_sherfield",
@@ -68,7 +78,18 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(7, "knight_hennessy", "Knight-Hennessy Scholars", "knight-hennessy scholars", "https://knight-hennessy.stanford.edu/", [
     "knight-hennessy scholars program",
   ]),
-  cohort(8, "yenching", "Yenching Academy", "yenching academy scholars", "https://yenchingacademy.pku.edu.cn/", []),
+  cohort(8, "yenching", "Yenching Academy", "yenching academy scholars", "https://yenchingacademy.pku.edu.cn/", [], {
+    preferredPaths: {
+      identity_home: ["/"],
+      eligibility: ["/ADMISSIONS.htm"],
+      application_materials: ["/ADMISSIONS.htm"],
+      dates_cycle: ["/ADMISSIONS.htm"],
+      funding: ["/ADMISSIONS.htm"],
+      faq: ["/ADMISSIONS/Frequently_Asked_Questions.htm"],
+      selection_interviews: ["/ADMISSIONS/Frequently_Asked_Questions.htm"],
+      current_documents: ["/ADMISSIONS.htm"],
+    },
+  }),
   cohort(9, "luce", "Luce Scholars Program", "luce scholars program", "https://lucescholars.org/", [
     "henry luce foundation - scholars program for professional development in asia",
   ]),
@@ -80,7 +101,24 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(13, "beinecke", "Beinecke Scholarship", "beinecke scholarship", "https://beineckescholarship.org/", []),
   cohort(14, "gilman", "Benjamin A. Gilman International Scholarship", "gilman international scholarship", "https://www.gilmanscholarship.org/", [
     "gilman scholarship",
-  ]),
+  ], {
+    identityRules: [{
+      rule_key: "exclude_gilman_mccain",
+      url_pattern: "gilman[-_]?mccain|gilmanmccain|/program/gilman-mccain-scholarships(?:/|$)",
+      title_pattern: "gilman[- ]?mccain|gilmanmccain",
+      reason: "Gilman-McCain is a distinct scholarship and cannot supply Benjamin A. Gilman International Scholarship facts or updates.",
+    }],
+    preferredPaths: {
+      identity_home: ["/"],
+      eligibility: ["/applicants/eligibility/"],
+      application_materials: ["/applicants/application-overview/"],
+      dates_cycle: ["/applicants/deadlines-and-timeline/"],
+      funding: ["/applicants/selection-criteria/"],
+      faq: ["/applicants/applicants-faq-2/"],
+      selection_interviews: ["/applicants/selection-criteria/"],
+      current_documents: ["/wp-content/uploads/2025/01/Application-PDF-Version.pdf"],
+    },
+  }),
   cohort(15, "boren", "Boren Scholarships and Fellowships", "boren awards", "https://www.borenawards.org/", [
     "boren awards for international study",
     "boren scholarship/fellowship urgd/grad",
@@ -94,10 +132,42 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(17, "nsf_grfp", "NSF Graduate Research Fellowship Program", "nsf graduate research fellowship program", "https://www.nsfgrfp.org/", [
     "national science foundation graduate research fellowship",
   ]),
-  cohort(18, "hertz", "Hertz Fellowship", "hertz foundation graduate fellowship", "https://www.hertzfoundation.org/the-fellowship/", []),
+  cohort(18, "hertz", "Hertz Fellowship", "hertz foundation graduate fellowship", "https://www.hertzfoundation.org/hertz-fellowship/", [], {
+    preferredPaths: {
+      identity_home: ["/hertz-fellowship/"],
+      eligibility: ["/hertz-fellowship/who-can-apply/"],
+      application_materials: ["/hertz-fellowship/apply/"],
+      dates_cycle: ["/hertz-fellowship/apply/"],
+      funding: ["/hertz-fellowship/fellowship-benefits/"],
+      faq: ["/hertz-fellowship/application-help/faq/"],
+      selection_interviews: ["/hertz-fellowship/apply/"],
+      current_documents: ["/hertz-fellowship/apply/"],
+    },
+  }),
   cohort(19, "ndseg", "National Defense Science and Engineering Graduate Fellowship", "national defense science and engineering graduate fellowship", "https://ndseg.org/", [
     "department of war national defense science and engineering grad fellowships",
-  ]),
+  ], {
+    delegatedAuthorities: [{
+      host: "ndseg.sysplus.com",
+      classification: "official_contractor_host",
+      evidenceUrl: "https://ndseg.org/apply-link",
+      reviewedReason: "The canonical NDSEG program host explicitly delegates the current application to SysPlus.",
+    }],
+    preferredPaths: {
+      eligibility: ["/NDSEG/About/Eligibility.aspx"],
+      application_materials: [
+        "/NDSEG/Applicants/Application-Evaluation-Award",
+        "/NDSEG/Applicants/Application-Evaluation-Award.aspx",
+      ],
+      funding: ["/NDSEG/About/"],
+      faq: ["/NDSEG/FAQ/Application", "/NDSEG/FAQ/Application.aspx"],
+      selection_interviews: [
+        "/NDSEG/Applicants/Application-Evaluation-Award",
+        "/NDSEG/Applicants/Application-Evaluation-Award.aspx",
+      ],
+      current_documents: ["/NDSEG/"],
+    },
+  }),
   cohort(20, "smart", "SMART Scholarship-for-Service Program", "smart scholarship for service program", "https://www.smartscholarship.org/smart", [
     "smart scholarship program",
     "u.s. department of defense (dod) - science, mathematics & research for transformation (smart) - scholarship for service program",
@@ -114,7 +184,18 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
     "soros fellowship for new americans",
     "soros fellowships for new americans",
   ]),
-  cohort(24, "samvid", "Samvid Scholars", "samvid scholars program", "https://samvidscholars.org/", []),
+  cohort(24, "samvid", "Samvid Scholars", "samvid scholars program", "https://samvidscholars.org/", [], {
+    preferredPaths: {
+      identity_home: ["/"],
+      eligibility: ["/how-to-apply/"],
+      application_materials: ["/how-to-apply/"],
+      dates_cycle: ["/how-to-apply/"],
+      funding: ["/"],
+      faq: ["/how-to-apply/"],
+      selection_interviews: ["/how-to-apply/"],
+      current_documents: ["/how-to-apply/"],
+    },
+  }),
   cohort(25, "gaither", "James C. Gaither Junior Fellows Program", "james c. gaither junior fellows program", "https://carnegieendowment.org/james-c-gaither-junior-fellows-program", [
     "carnegie junior fellowship",
   ]),
@@ -228,7 +309,12 @@ export function rankOfficialSourceCandidates({
   return sources
     .map((source) => {
       const disposition = sourceIdentityDisposition(source, identityRules);
-      if (disposition.excluded || !isOfficialProgramUrl(source.url, definition.officialHomepage)) return null;
+      const authority = stage1ManifestSourceAuthority({
+        sourceUrl: source.url,
+        role,
+        cohort: definition,
+      });
+      if (disposition.excluded || !authority) return null;
       const snapshot = visualSnapshots instanceof Map
         ? visualSnapshots.get(source.id)
         : visualSnapshots?.[source.id];
@@ -241,7 +327,9 @@ export function rankOfficialSourceCandidates({
       ].filter(Boolean).join(" ");
       const pathname = normalizedPathname(source.url);
       let score = 100;
-      const reasons = ["official_program_domain"];
+      const reasons = [authority.classification === "canonical_program_host"
+        ? "official_program_domain"
+        : "official_delegated_contractor"];
 
       if (sameNormalizedUrl(source.url, definition.officialHomepage)) {
         score += role === "identity_home" ? 180 : 25;
@@ -273,7 +361,7 @@ export function rankOfficialSourceCandidates({
       } else {
         score += 15;
       }
-      if (isFresh(source.last_checked_at, now)) {
+      if (isStage1LiveSourceCheckCurrent(source.last_checked_at, now)) {
         score += 30;
         reasons.push("fresh_source_check");
       }
@@ -409,6 +497,26 @@ export function buildStage1ReadinessReport({
   const ledgerByCohort = groupBy(factLedger, (row) => row.cohort_key);
 
   const globalBlockers = [];
+  const requiredQueryErrors = Array.isArray(queryInventory?.errors)
+    ? queryInventory.errors
+      .filter((entry) => entry && typeof entry === "object")
+      .map((entry) => ({
+        query: String(entry.query || "unknown_query"),
+        code: String(entry.code || "query_failed"),
+        message: truncateText(entry.message || "Required readiness evidence could not be loaded.", 1_000),
+      }))
+    : [];
+  if (requiredQueryErrors.length) {
+    globalBlockers.push(blocker(
+      "required_stage1_query_failed",
+      "critical",
+      "One or more required Stage 1 evidence queries failed or could not prove an exact stable result; readiness must remain blocked.",
+      {
+        failed_query_count: requiredQueryErrors.length,
+        failed_queries: requiredQueryErrors,
+      },
+    ));
+  }
   if (registryMode !== "remote_service_snapshot") {
     globalBlockers.push(blocker(
       "stage1_registry_not_available_remotely",
@@ -462,14 +570,18 @@ export function buildStage1ReadinessReport({
         admin_review_status: source.admin_review_status || null,
         last_checked_at: source.last_checked_at || null,
         source_check_age_hours: ageHours(source.last_checked_at, now),
-        fresh_within_24h: isFresh(source.last_checked_at, now),
+        fresh_within_24h: isStage1LiveSourceCheckCurrent(source.last_checked_at, now),
         consecutive_failures: source.consecutive_failures || 0,
         last_error: source.last_error || null,
         identity_exclusion: identity,
-        official_program_domain: isOfficialProgramUrl(source.url, definition.officialHomepage),
+        official_program_domain: Boolean(officialSourceAuthority(source.url, definition)),
+        official_source_authority: officialSourceAuthority(source.url, definition),
         visual_evidence: {
           latest_captured_at: snapshot?.latest_captured_at || null,
-          fresh_within_24h: isFresh(snapshot?.latest_captured_at, now),
+          verification_epoch_valid: isStage1DurableVerificationTimestampValid(
+            snapshot?.latest_captured_at,
+            now,
+          ),
           r2,
           local,
         },
@@ -532,6 +644,7 @@ export function buildStage1ReadinessReport({
       const binding = inspectManifestBinding({
         manifest,
         role,
+        definition,
         now,
         sourceReportById,
         candidateById,
@@ -541,7 +654,7 @@ export function buildStage1ReadinessReport({
         blockers.push(blocker(
           "source_role_not_verified",
           "critical",
-          `Required source role ${role} does not have fresh, exact, immutable evidence.`,
+          `Required source role ${role} does not have exact immutable evidence and a current live source check.`,
           { role, reasons: binding.reasons, best_candidate_url: ranked[0]?.url || null },
         ));
       }
@@ -565,7 +678,14 @@ export function buildStage1ReadinessReport({
     const latestReconciliation = canonical
       ? latestBy(reconciliationByAward.get(canonical.id) || [], "created_at")
       : null;
-    const latestAudit = canonical ? latestBy(auditsByAward.get(canonical.id) || [], "created_at") : null;
+    const latestAudit = canonical
+      ? latestBy(
+          (auditsByAward.get(canonical.id) || []).filter(
+            (audit) => audit.audit_kind === "deterministic",
+          ),
+          "created_at",
+        )
+      : null;
     const publicFacts = nonEmptyPublishedFacts(canonical?.public_facts);
     const reconciliationReport = inspectReconciliation({
       reconciliation: latestReconciliation,
@@ -574,11 +694,11 @@ export function buildStage1ReadinessReport({
       sourceById,
       candidateById,
     });
-    if (!reconciliationReport.fresh_success) {
+    if (!reconciliationReport.verified_success) {
       blockers.push(blocker(
         "canonical_reconciliation_not_fresh_success",
         "critical",
-        "The latest canonical reconciliation is absent, failed, incomplete, or older than 24 hours.",
+        "The latest canonical reconciliation is absent, failed, incomplete, or dated in the future.",
         { status: latestReconciliation?.status || null, completed_at: latestReconciliation?.completed_at || null },
       ));
     }
@@ -592,11 +712,11 @@ export function buildStage1ReadinessReport({
     }
 
     const auditReport = inspectPageAudit({ audit: latestAudit, publicFacts, now });
-    if (!auditReport.fresh_pass) {
+    if (!auditReport.verified_pass) {
       blockers.push(blocker(
         "canonical_page_audit_not_fresh_pass",
         "critical",
-        "The latest canonical page audit is absent, not passed, or older than 24 hours.",
+        "The latest canonical page audit is absent, not passed, or dated in the future.",
         { status: latestAudit?.audit_status || null, created_at: latestAudit?.created_at || null },
       ));
     }
@@ -675,7 +795,7 @@ export function buildStage1ReadinessReport({
 
     if (registryMode === "remote_service_snapshot" && remote?.effectively_verified !== true) {
       blockers.push(blocker(
-        "remote_effective_publication_gate_closed",
+        STAGE1_REMOTE_EFFECTIVE_BLOCKER,
         "critical",
         "The authoritative remote publication decision is closed.",
         { effective_reason: remote?.effective_reason || "cohort_missing_from_snapshot" },
@@ -746,6 +866,8 @@ export function buildStage1ReadinessReport({
       fact_publication_ledger: ledgerReport,
       quarantine: quarantineReport,
       blockers: uniqueBlockers,
+      ready_for_reviewed_promotion:
+        isStage1ReviewedPromotionReady(uniqueBlockers),
       ready_for_verified_beta_promotion: uniqueBlockers.length === 0 && remote?.effectively_verified === true,
     };
     cohortReport.next_actions = nextActionsForCohort(cohortReport);
@@ -757,6 +879,14 @@ export function buildStage1ReadinessReport({
     ...globalBlockers.map((entry) => nextActionForBlocker(null, entry, null)),
     ...cohortReports.flatMap((cohort) => cohort.next_actions),
   ].filter(Boolean);
+  const promotionCounts = effectiveStage1PromotionCounts({
+    cohortReports,
+    globalBlockers,
+  });
+  const reviewedPromotionCounts = reviewedStage1PromotionCounts({
+    cohortReports,
+    globalBlockers,
+  });
 
   return {
     schema_version: STAGE1_READINESS_SCHEMA_VERSION,
@@ -782,8 +912,8 @@ export function buildStage1ReadinessReport({
     query_inventory: queryInventory,
     summary: {
       exact_cohort_count: cohortReports.length,
-      ready_for_verified_beta_count: cohortReports.filter((cohort) => cohort.ready_for_verified_beta_promotion).length,
-      blocked_count: cohortReports.filter((cohort) => !cohort.ready_for_verified_beta_promotion).length,
+      ...reviewedPromotionCounts,
+      ...promotionCounts,
       total_blockers: allBlockers.length,
       blockers_by_code: countBy(allBlockers, (entry) => entry.code),
       total_sources: cohortReports.reduce((sum, cohort) => sum + cohort.sources.length, 0),
@@ -807,6 +937,51 @@ export function buildStage1ReadinessReport({
   };
 }
 
+export function effectiveStage1PromotionCounts({ cohortReports, globalBlockers }) {
+  const reports = Array.isArray(cohortReports) ? cohortReports : [];
+  const blockers = Array.isArray(globalBlockers) ? globalBlockers : [];
+  const cohortLevelReadyCount = reports.filter(
+    (cohort) => cohort?.ready_for_verified_beta_promotion === true,
+  ).length;
+  const globalReleaseGateClear = blockers.length === 0;
+  const readyCount = globalReleaseGateClear ? cohortLevelReadyCount : 0;
+  return {
+    cohort_level_ready_count: cohortLevelReadyCount,
+    global_release_gate_clear: globalReleaseGateClear,
+    overall_ready_for_verified_beta:
+      globalReleaseGateClear
+      && reports.length === STAGE1_COHORT_DEFINITION.length
+      && cohortLevelReadyCount === reports.length,
+    ready_for_verified_beta_count: readyCount,
+    blocked_count: reports.length - readyCount,
+  };
+}
+
+export function isStage1ReviewedPromotionReady(blockers) {
+  const entries = Array.isArray(blockers) ? blockers : [];
+  return entries.every((entry) => entry?.code === STAGE1_REMOTE_EFFECTIVE_BLOCKER);
+}
+
+export function reviewedStage1PromotionCounts({ cohortReports, globalBlockers }) {
+  const reports = Array.isArray(cohortReports) ? cohortReports : [];
+  const blockers = Array.isArray(globalBlockers) ? globalBlockers : [];
+  const cohortReadyCount = reports.filter(
+    (cohort) => cohort?.ready_for_reviewed_promotion === true,
+  ).length;
+  const globalGateClear = blockers.length === 0;
+  const readyCount = globalGateClear ? cohortReadyCount : 0;
+  return {
+    cohort_level_pre_promotion_ready_count: cohortReadyCount,
+    global_pre_promotion_gate_clear: globalGateClear,
+    overall_ready_for_reviewed_promotion:
+      globalGateClear
+      && reports.length === STAGE1_COHORT_DEFINITION.length
+      && cohortReadyCount === reports.length,
+    ready_for_reviewed_promotion_count: readyCount,
+    pre_promotion_blocked_count: reports.length - readyCount,
+  };
+}
+
 function cohort(launchRank, cohortKey, canonicalName, canonicalSearchKey, officialHomepage, aliasSearchKeys, options = {}) {
   return Object.freeze({
     launchRank,
@@ -817,6 +992,7 @@ function cohort(launchRank, cohortKey, canonicalName, canonicalSearchKey, offici
     aliasSearchKeys: Object.freeze(aliasSearchKeys),
     identityRules: Object.freeze(options.identityRules || []),
     preferredPaths: Object.freeze(options.preferredPaths || {}),
+    delegatedAuthorities: Object.freeze(options.delegatedAuthorities || []),
   });
 }
 
@@ -830,16 +1006,56 @@ function compilePostgresPattern(value, invalidRules, ruleKey) {
   }
 }
 
-function isOfficialProgramUrl(candidate, officialHomepage) {
+function officialSourceAuthority(candidate, definition) {
   try {
-    const candidateHost = stripWww(new URL(candidate).hostname);
-    const officialHost = stripWww(new URL(officialHomepage).hostname);
-    return candidateHost === officialHost
-      || candidateHost.endsWith(`.${officialHost}`)
-      || officialHost.endsWith(`.${candidateHost}`);
+    const candidateUrl = String(candidate || "");
+    const officialUrl = String(definition.officialHomepage || "");
+    if (!candidateUrl.startsWith("https://") || !officialUrl.startsWith("https://")) {
+      return null;
+    }
+    const parsedCandidate = new URL(candidateUrl);
+    const parsedOfficial = new URL(officialUrl);
+    if (
+      parsedCandidate.protocol !== "https:"
+      || parsedOfficial.protocol !== "https:"
+      || parsedCandidate.username
+      || parsedCandidate.password
+      || parsedOfficial.username
+      || parsedOfficial.password
+    ) {
+      return null;
+    }
+    const candidateHost = parsedCandidate.hostname.toLowerCase();
+    const officialHost = parsedOfficial.hostname.toLowerCase();
+    if (candidateHost === officialHost) {
+      return {
+        host: candidateHost,
+        classification: "canonical_program_host",
+        evidence_url: definition.officialHomepage,
+      };
+    }
+    const delegated = (definition.delegatedAuthorities || []).find(
+      (entry) => String(entry.host).toLowerCase() === candidateHost,
+    );
+    return delegated ? {
+      host: candidateHost,
+      classification: delegated.classification,
+      evidence_url: delegated.evidenceUrl,
+      reviewed_reason: delegated.reviewedReason,
+    } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function stage1ManifestSourceAuthority({ sourceUrl, role, cohort }) {
+  if (!cohort || !REQUIRED_SOURCE_ROLES.includes(role)) return null;
+  const authority = officialSourceAuthority(sourceUrl, cohort);
+  if (!authority) return null;
+  if (role === "identity_home" && sourceUrl !== cohort.officialHomepage) {
+    return null;
+  }
+  return authority;
 }
 
 function canonicalIdentityReport(definition, actual, remoteRegistry) {
@@ -908,17 +1124,31 @@ function inspectR2Pointer(snapshot) {
   };
 }
 
-function inspectManifestBinding({ manifest, role, now, sourceReportById, candidateById, memberIds }) {
+function inspectManifestBinding({
+  manifest,
+  role,
+  definition,
+  now,
+  sourceReportById,
+  candidateById,
+  memberIds,
+}) {
   const reasons = [];
   if (!manifest) return { valid: false, reasons: ["manifest_missing"] };
   if (manifest.source_role !== role) reasons.push("manifest_role_mismatch");
   if (!["present", "combined", "not_published"].includes(manifest.manifest_status)) reasons.push("manifest_status_missing");
-  if (!isFresh(manifest.checked_at, now)) reasons.push("manifest_check_not_fresh");
+  if (!isStage1DurableVerificationTimestampValid(manifest.checked_at, now)) {
+    reasons.push("manifest_check_missing_or_future");
+  }
   if (manifest.policy_version !== STAGE1_POLICY_VERSION) reasons.push("policy_version_mismatch");
   const evidence = objectValue(manifest.evidence);
   if (evidence.official !== true && evidence.official !== "true") reasons.push("official_attestation_missing");
-  if (!isFresh(evidence.r2_verified_at, now)) reasons.push("r2_verification_not_fresh");
-  if (!isFresh(evidence.local_verified_at, now)) reasons.push("local_verification_not_fresh");
+  if (!isStage1DurableVerificationTimestampValid(evidence.r2_verified_at, now)) {
+    reasons.push("r2_verification_missing_or_future");
+  }
+  if (!isStage1DurableVerificationTimestampValid(evidence.local_verified_at, now)) {
+    reasons.push("local_verification_missing_or_future");
+  }
   if (evidence.policy_version !== manifest.policy_version) reasons.push("evidence_policy_mismatch");
   if (!String(evidence.supporting_text || "").trim()) reasons.push("supporting_text_missing");
 
@@ -931,12 +1161,39 @@ function inspectManifestBinding({ manifest, role, now, sourceReportById, candida
       reasons.push(`source_not_in_cohort:${sourceId}`);
       continue;
     }
+    const requiredAuthority = stage1ManifestSourceAuthority({
+      sourceUrl: source.url,
+      role,
+      cohort: definition,
+    });
+    if (!requiredAuthority) {
+      reasons.push(role === "identity_home"
+        ? `identity_home_not_exact_canonical:${sourceId}`
+        : `source_authority_unreviewed:${sourceId}`);
+    } else {
+      const reportedAuthority = objectValue(source.official_source_authority);
+      const boundAuthority = objectValue(binding.official_identity);
+      for (const [field, expected] of Object.entries({
+        host: requiredAuthority.host,
+        classification: requiredAuthority.classification,
+        evidence_url: requiredAuthority.evidence_url,
+      })) {
+        if (reportedAuthority[field] !== expected) {
+          reasons.push(`source_authority_report_mismatch:${sourceId}`);
+        }
+        if (boundAuthority[field] !== expected) {
+          reasons.push(`source_authority_binding_mismatch:${sourceId}`);
+        }
+      }
+    }
     if (!memberIds.has(source.shared_award_id)) reasons.push(`source_member_mismatch:${sourceId}`);
     if (source.admin_review_status !== "open") reasons.push(`source_not_open:${sourceId}`);
     if (!source.fresh_within_24h) reasons.push(`source_check_stale:${sourceId}`);
     if (source.last_error) reasons.push(`source_error:${sourceId}`);
     if (source.identity_exclusion.excluded) reasons.push(`source_identity_excluded:${sourceId}`);
-    if (!source.visual_evidence.fresh_within_24h) reasons.push(`snapshot_stale:${sourceId}`);
+    if (!source.visual_evidence.verification_epoch_valid) {
+      reasons.push(`snapshot_timestamp_missing_or_future:${sourceId}`);
+    }
     if (!source.visual_evidence.r2.pointer_available) reasons.push(`r2_pointer_missing:${sourceId}`);
     if (!source.visual_evidence.local.exact_available) reasons.push(`local_exact_evidence_missing:${sourceId}`);
     if (binding.source_url !== source.url) reasons.push(`source_url_binding_mismatch:${sourceId}`);
@@ -977,9 +1234,9 @@ function inspectReconciliation({ reconciliation, now, memberIds, sourceById, can
     const candidate = candidateById.get(id);
     return candidate?.shared_award_source_id && !(sourceIds || []).includes(candidate.shared_award_source_id);
   });
-  const freshSuccess = Boolean(
+  const verifiedSuccess = Boolean(
     reconciliation?.status === "succeeded"
-    && isFresh(reconciliation.completed_at, now),
+    && isStage1DurableVerificationTimestampValid(reconciliation.completed_at, now),
   );
   const exactArrays = Boolean(
     sourceIds
@@ -990,7 +1247,7 @@ function inspectReconciliation({ reconciliation, now, memberIds, sourceById, can
   );
   return {
     latest: reconciliation ? sanitizeReconciliation(reconciliation) : null,
-    fresh_success: freshSuccess,
+    verified_success: verifiedSuccess,
     age_hours: ageHours(reconciliation?.completed_at, now),
     exact_identity_arrays: exactArrays,
     bindings: {
@@ -1012,7 +1269,10 @@ function inspectPageAudit({ audit, publicFacts, now }) {
     .map(([field]) => field);
   return {
     latest: audit ? sanitizeAudit(audit) : null,
-    fresh_pass: Boolean(audit?.audit_status === "passed" && isFresh(audit.created_at, now)),
+    verified_pass: Boolean(
+      audit?.audit_status === "passed"
+      && isStage1DurableVerificationTimestampValid(audit.created_at, now),
+    ),
     age_hours: ageHours(audit?.created_at, now),
     public_snapshot_exact: Object.keys(publicFacts).length > 0 && mismatchedFields.length === 0,
     compared_fields: Object.keys(publicFacts),
@@ -1173,6 +1433,14 @@ export function nextActionForBlocker(cohort, entry, sourceRoles) {
   if (entry.code === "stage1_registry_not_available_remotely" || entry.code === "remote_stage1_snapshot_invalid") {
     return { ...base, priority: 1, action_type: "validate_and_deploy_registry", summary: "Validate the reviewed Stage 1 migration, then deploy it through the normal migration workflow; do not promote any award.", mutates_remote_state: true };
   }
+  if (entry.code === "required_stage1_query_failed") {
+    return {
+      ...base,
+      priority: 1,
+      action_type: "restore_readiness_evidence",
+      summary: "Repair the listed read-only evidence query, require an exact stable result, then rerun readiness. Do not promote from partial or stale evidence.",
+    };
+  }
   if (entry.code === "source_role_not_verified" || entry.code === "official_source_candidate_missing") {
     const role = entry.evidence?.role;
     const candidates = sourceRoles?.find((row) => row.source_role === role)?.official_candidate_urls || [];
@@ -1208,7 +1476,7 @@ export function nextActionForBlocker(cohort, entry, sourceRoles) {
   if (entry.code === "actionable_quarantine_open") {
     return { ...base, priority: 7, action_type: "resolve_quarantine", summary: "Work the durable quarantine cases by reason and owner; resolve only after evidence proves the underlying failure is gone.", mutates_remote_state: true };
   }
-  if (entry.code === "remote_effective_publication_gate_closed") {
+  if (entry.code === STAGE1_REMOTE_EFFECTIVE_BLOCKER) {
     return { ...base, priority: 9, action_type: "hold_publication", summary: "Keep the award unpublished until all earlier evidence actions pass and the authoritative RPC returns verified.", mutates_remote_state: false };
   }
   return { ...base, priority: 8, action_type: "manual_review", summary: entry.message };
@@ -1433,9 +1701,16 @@ function latestBy(rows, field) {
   return [...rows].sort((left, right) => timestamp(right[field]) - timestamp(left[field]) || String(right.id).localeCompare(String(left.id)))[0] || null;
 }
 
-function isFresh(value, now) {
+export function isStage1DurableVerificationTimestampValid(value, now) {
   const time = timestamp(value);
-  return time > 0 && time <= now.getTime() + 5 * 60 * 1_000 && time >= now.getTime() - STAGE1_FRESHNESS_MS;
+  return time > 0 && time <= now.getTime() + STAGE1_FUTURE_CLOCK_TOLERANCE_MS;
+}
+
+export function isStage1LiveSourceCheckCurrent(value, now) {
+  const time = timestamp(value);
+  return time > 0
+    && time <= now.getTime() + STAGE1_FUTURE_CLOCK_TOLERANCE_MS
+    && time >= now.getTime() - STAGE1_FRESHNESS_MS;
 }
 
 function ageHours(value, now) {

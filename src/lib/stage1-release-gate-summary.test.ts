@@ -64,6 +64,130 @@ describe("summarizeStage1BetaReleaseGate", () => {
     expect(summary.awards.every((award) => award.cohortReady)).toBe(true);
   });
 
+  it.each([
+    ["null", null],
+    ["empty", ""],
+    ["malformed", "not-a-release-uuid"],
+  ])("rejects a %s active release epoch", (_label, releaseEpoch) => {
+    const input = readyInput();
+    input.registry = input.registry.map((row) => ({
+      ...row,
+      release_epoch: releaseEpoch,
+    }));
+    input.effectivePublication = input.effectivePublication.map((row) => ({
+      ...row,
+      release_epoch: releaseEpoch,
+    }));
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.release.atomic).toBe(false);
+    expect(summary.release.epoch).toBeNull();
+    expect(summary.blockers.join(" ")).toContain("authoritative release epoch");
+  });
+
+  it.each([
+    ["effective policy", { release_policy_version: "stage1-publication-v0" }],
+    ["identity version", { release_identity_version: "stage1-national-25-v0" }],
+    ["identity hash", { release_identity_hash: "0".repeat(64) }],
+  ])("rejects a mixed %s contract", (_label, replacement) => {
+    const input = readyInput();
+    input.effectivePublication[12] = {
+      ...input.effectivePublication[12],
+      ...replacement,
+    };
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.release.atomic).toBe(false);
+    expect(summary.blockers.join(" ")).toContain("Every effective publication row");
+  });
+
+  it("rejects a registry row on a different publication policy", () => {
+    const input = readyInput();
+    input.registry[7] = {
+      ...input.registry[7],
+      policy_version: "stage1-publication-v0",
+    };
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.release.atomic).toBe(false);
+    expect(summary.blockers.join(" ")).toContain(
+      "Every Stage 1 registry row must use stage1-publication-v1",
+    );
+  });
+
+  it("does not expire an unchanged immutable award-verification epoch", () => {
+    const input = readyInput();
+    const oldVerifiedAt = "2025-01-15T12:00:00.000Z";
+    input.registry = input.registry.map((row) => ({
+      ...row,
+      evidence_checked_at: oldVerifiedAt,
+      last_verified_at: oldVerifiedAt,
+    }));
+    input.manifests = input.manifests.map((manifest) => ({
+      ...manifest,
+      checked_at: oldVerifiedAt,
+      evidence: {
+        ...(manifest.evidence as Record<string, unknown>),
+        captured_at: oldVerifiedAt,
+        r2_verified_at: oldVerifiedAt,
+        local_verified_at: oldVerifiedAt,
+      },
+    }));
+    input.latestReconciliations = Object.fromEntries(
+      Object.entries(input.latestReconciliations).map(([awardId, row]) => [
+        awardId,
+        row ? { ...row, created_at: oldVerifiedAt, completed_at: oldVerifiedAt } : null,
+      ]),
+    );
+    input.latestAudits = Object.fromEntries(
+      Object.entries(input.latestAudits).map(([awardId, row]) => [
+        awardId,
+        row ? { ...row, created_at: oldVerifiedAt } : null,
+      ]),
+    );
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("READY");
+    expect(summary.awards.every((award) => award.status === "ready")).toBe(true);
+    expect(summary.awards.every((award) => award.verifiedManifestRoles === 8)).toBe(true);
+  });
+
+  it("lets an expired signed R2 proof close public release without undoing award readiness", () => {
+    const input = readyInput();
+    input.effectivePublication = input.effectivePublication.map((row) => ({
+      ...row,
+      effectively_verified: false,
+      effective_reason: "signed_r2_recovery_artifact_not_current",
+      cohort_ready: true,
+      cohort_readiness_reason: "verified",
+    }));
+    const r2 = input.releaseArtifacts.r2_recovery_drill;
+    if (!r2) throw new Error("Ready fixture requires signed R2 evidence.");
+    input.releaseArtifacts.r2_recovery_drill = {
+      ...r2,
+      valid_until: "2026-07-17T11:59:59.000Z",
+    };
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.visibleCount).toBe(0);
+    expect(summary.release.effectiveReason).toBe(
+      "signed_r2_recovery_artifact_not_current",
+    );
+    expect(summary.awards.every((award) => award.cohortReady)).toBe(true);
+    expect(summary.awards.every((award) => award.status === "ready")).toBe(true);
+    expect(summary.acceptanceArtifacts.find((artifact) =>
+      artifact.kind === "r2_recovery_drill")?.status).toBe("hold");
+  });
+
   it("fails closed to UNKNOWN when any required load reports an error", () => {
     const input = readyInput();
     input.loadErrors = ["Stage 1 source manifests: connection unavailable"];
@@ -624,6 +748,11 @@ function workerRun(shardNumber: number, monitoringDate: string): WorkerRun {
         discovery_mode: true,
         discovery_intent: "live_recurring",
         discovery_onboarding_batch_id: null,
+        discover_pdf_subpages: true,
+        discover_html_subpages: false,
+        visual_review_mode: "batch",
+        interpret_visual_changes: true,
+        r2_snapshot_sync: true,
       },
       baseline_coverage: { start: { loaded_sources: 100 } },
       source_inventory: sourceInventory,

@@ -70,6 +70,7 @@ export function validateStage1ReleaseProducerTarget(value) {
 export async function measureStage1HostedRuntimeIdentity({
   target: targetValue,
   supabaseAnonKey,
+  supabaseServiceRoleKey,
   fetchImpl = globalThis.fetch,
   measuredAt = new Date().toISOString(),
   measurementId = randomUUID(),
@@ -77,12 +78,18 @@ export async function measureStage1HostedRuntimeIdentity({
   const target = validateStage1ReleaseProducerTarget(targetValue);
   assertMeasurementIdentity({ measuredAt, measurementId });
   const anonKey = cleanText(supabaseAnonKey);
+  const serviceRoleKey = cleanText(supabaseServiceRoleKey);
   if (!anonKey) throw new Error("A production Supabase anon key is required for the Auth probe.");
+  if (!serviceRoleKey) {
+    throw new Error("A production Supabase service key is required for the Vault Data API probe.");
+  }
   if (typeof fetchImpl !== "function") throw new Error("A fetch implementation is required.");
 
   const identityUrl = `${target.appOrigin}/api/monitoring-policy-identity`;
   const authSettingsUrl = `${target.supabaseOrigin}/auth/v1/settings`;
-  const [identityResponse, authResponse] = await Promise.all([
+  const vaultProfileUrl =
+    `${target.supabaseOrigin}/rest/v1/decrypted_secrets?select=id&limit=1`;
+  const [identityResponse, authResponse, vaultProfileResponse] = await Promise.all([
     fetchJsonWithoutRedirect(identityUrl, {
       fetchImpl,
       headers: { accept: "application/json" },
@@ -92,6 +99,15 @@ export async function measureStage1HostedRuntimeIdentity({
       headers: {
         accept: "application/json",
         apikey: anonKey,
+      },
+    }),
+    fetchJsonWithoutRedirect(vaultProfileUrl, {
+      fetchImpl,
+      headers: {
+        accept: "application/json",
+        "accept-profile": "vault",
+        apikey: serviceRoleKey,
+        authorization: `Bearer ${serviceRoleKey}`,
       },
     }),
   ]);
@@ -111,14 +127,23 @@ export async function measureStage1HostedRuntimeIdentity({
   if (authResponse.status !== 200 || auth.disable_signup !== true) {
     throw new Error("The exact production Supabase Auth project does not report disable_signup=true.");
   }
+  if (
+    vaultProfileResponse.status !== 406 ||
+    objectValue(vaultProfileResponse.json).code !== "PGRST106"
+  ) {
+    throw new Error(
+      "The production service key was not denied access to the Vault Data API profile.",
+    );
+  }
 
   const evidence = {
     ...producerEnvelope(target, { measuredAt, measurementId }),
-    schema_version: "awardping.stage1.hosted-runtime-identity.v1",
-    measurement_method: "direct_no_redirect_https_get_v1",
+    schema_version: "awardping.stage1.hosted-runtime-identity.v2",
+    measurement_method: "direct_no_redirect_https_and_vault_profile_get_v2",
     base_url: target.appOrigin,
     identity_url: identityUrl,
     auth_settings_url: authSettingsUrl,
+    vault_profile_url: vaultProfileUrl,
     deployment_provider: target.deploymentProvider,
     deployment_project_id: target.deploymentProjectId,
     app_revision: cleanText(identity.revision),
@@ -129,10 +154,15 @@ export async function measureStage1HostedRuntimeIdentity({
     disable_signup: true,
     identity_http_status: identityResponse.status,
     auth_http_status: authResponse.status,
+    vault_profile_http_status: vaultProfileResponse.status,
+    vault_profile_postgrest_code: "PGRST106",
+    vault_profile_exposed: false,
     identity_redirected: false,
     auth_redirected: false,
+    vault_profile_redirected: false,
     identity_response_sha256: identityResponse.sha256,
     auth_response_sha256: authResponse.sha256,
+    vault_profile_response_sha256: vaultProfileResponse.sha256,
     observed_at: measuredAt,
   };
   return {
@@ -147,6 +177,7 @@ export async function measureStage1NonCohortLeakCrawl({
   target: targetValue,
   manifest: manifestValue,
   supabaseAnonKey,
+  supabaseServiceRoleKey,
   fetchImpl = globalThis.fetch,
   measuredAt = new Date().toISOString(),
   measurementId = randomUUID(),
@@ -157,6 +188,7 @@ export async function measureStage1NonCohortLeakCrawl({
   const runtime = await measureStage1HostedRuntimeIdentity({
     target: targetValue,
     supabaseAnonKey,
+    supabaseServiceRoleKey,
     fetchImpl,
     measuredAt,
     measurementId,
@@ -167,25 +199,53 @@ export async function measureStage1NonCohortLeakCrawl({
   ];
   const observations = await mapWithConcurrency(routes, concurrency, async (route) => {
     const url = `${target.appOrigin}${route.path}`;
-    const response = await fetchTextWithoutRedirect(url, { fetchImpl });
-    const underVerification = /\bunder verification\b/i.test(response.text);
-    return {
-      group: route.group,
-      path: route.path,
-      status: response.status,
-      redirected: false,
-      location: response.location,
-      body_sha256: response.sha256,
-      under_verification: underVerification,
-    };
+    try {
+      const response = await fetchCrawlObservation(url, {
+        fetchImpl,
+        appOrigin: target.appOrigin,
+      });
+      return {
+        group: route.group,
+        path: route.path,
+        status: response.status,
+        redirected: response.redirected,
+        redirect_location: response.redirectLocation,
+        body_sha256: response.sha256,
+        under_verification: /\bunder verification\b/i.test(response.text),
+        error_code: null,
+      };
+    } catch (error) {
+      return {
+        group: route.group,
+        path: route.path,
+        status: null,
+        redirected: false,
+        redirect_location: null,
+        body_sha256: null,
+        under_verification: false,
+        error_code: safeErrorCode(error),
+      };
+    }
   });
   const stage1 = observations.filter((row) => row.group === "stage1");
   const nonCohort = observations.filter((row) => row.group === "non_cohort");
   const stage1UnderVerification = stage1.filter(
-    (row) => row.status === 200 && row.under_verification,
+    (row) => row.status === 200 && !row.redirected && row.under_verification,
   ).length;
-  const unexpectedStage1Leaks = stage1.length - stage1UnderVerification;
-  const nonCohortLeaks = nonCohort.filter((row) => row.status !== 404).length;
+  const failures = observations
+    .map(crawlFailureDiagnostic)
+    .filter(Boolean)
+    .sort((left, right) => compareFailureKey(
+      `${left.group}\n${left.path}`,
+      `${right.group}\n${right.path}`,
+    ));
+  const unexpectedStage1Leaks = failures.filter(
+    (row) => row.group === "stage1",
+  ).length;
+  const nonCohortLeaks = failures.filter(
+    (row) => row.group === "non_cohort",
+  ).length;
+  const failureSetHash = sha256(stableJson(failures.map(crawlFailureIdentity)));
   const responseSetSha256 = sha256(stableJson(observations));
   const passed =
     manifest.stage1Routes.length === 25 &&
@@ -211,9 +271,18 @@ export async function measureStage1NonCohortLeakCrawl({
       stage1_under_verification_pages: stage1UnderVerification,
       non_cohort_leaks: nonCohortLeaks,
       unexpected_stage1_leaks: unexpectedStage1Leaks,
+      failure_count: failures.length,
+      failure_set_hash: failureSetHash,
       route_manifest_sha256: manifest.routeManifestSha256,
       response_set_sha256: responseSetSha256,
       runtime_identity_response_sha256: runtime.evidence.identity_response_sha256,
+    },
+    diagnostics: {
+      schema_version: "awardping.stage1.non-cohort-leak-diagnostics.v1",
+      total_observations: observations.length,
+      failure_count: failures.length,
+      failure_set_hash: failureSetHash,
+      failures,
     },
   };
 }
@@ -248,28 +317,52 @@ export async function measureStage1R2RecoveryDrill({
           Key: object.objectKey,
         }));
         const body = await responseBodyBytes(response?.Body);
-        const actualSha256 = sha256(body);
+        const measuredHash = measureR2ObjectHash(body, object);
+        const actualSha256 = measuredHash?.sha256 || null;
         const actualLength = body.length;
         const actualContentType = cleanText(response?.ContentType).toLowerCase();
         const expectedContentType = object.contentType.toLowerCase();
         const verified =
           actualSha256 === object.sha256 &&
           actualLength === object.byteLength &&
+          (
+            object.semanticLength === null ||
+            measuredHash?.semanticLength === object.semanticLength
+          ) &&
           contentTypeFamily(actualContentType) === contentTypeFamily(expectedContentType);
         return {
+          object_scope: object.scope,
+          source_id: object.sourceId,
+          artifact: object.artifact,
           object_key: object.objectKey,
+          hash_mode: object.hashMode,
           expected_sha256: object.sha256,
           actual_sha256: actualSha256,
           expected_byte_length: object.byteLength,
           actual_byte_length: actualLength,
-          content_type: actualContentType,
+          expected_semantic_length: object.semanticLength,
+          actual_semantic_length: measuredHash?.semanticLength ?? null,
+          expected_content_type: expectedContentType,
+          actual_content_type: actualContentType,
           outcome: verified ? "verified" : "mismatch",
         };
       } catch (error) {
         return {
+          object_scope: object.scope,
+          source_id: object.sourceId,
+          artifact: object.artifact,
           object_key: object.objectKey,
+          hash_mode: object.hashMode,
+          expected_sha256: object.sha256,
+          actual_sha256: null,
+          expected_byte_length: object.byteLength,
+          actual_byte_length: null,
+          expected_semantic_length: object.semanticLength,
+          actual_semantic_length: null,
+          expected_content_type: object.contentType,
+          actual_content_type: null,
           outcome: r2AccessRefused(error) ? "refused" : "failed",
-          error_code: cleanText(error?.name || error?.Code || "unknown").slice(0, 120),
+          error_code: safeErrorCode(error),
         };
       }
     },
@@ -277,6 +370,14 @@ export async function measureStage1R2RecoveryDrill({
   const recovered = observations.filter((row) => row.outcome === "verified").length;
   const refused = observations.filter((row) => row.outcome === "refused").length;
   const failed = observations.length - recovered - refused;
+  const failures = observations
+    .filter((row) => row.outcome !== "verified")
+    .map(r2FailureDiagnostic)
+    .sort((left, right) => compareFailureKey(
+      `${left.object_scope}\n${left.source_id || ""}\n${left.artifact}\n${left.object_key}`,
+      `${right.object_scope}\n${right.source_id || ""}\n${right.artifact}\n${right.object_key}`,
+    ));
+  const failureSetHash = sha256(stableJson(failures.map(r2FailureIdentity)));
   const passed = recovered === observations.length && failed === 0 && refused === 0;
   return {
     status: passed ? "passed" : "failed",
@@ -284,7 +385,11 @@ export async function measureStage1R2RecoveryDrill({
     evidence: {
       ...producerEnvelope(target, { measuredAt, measurementId }),
       schema_version: "awardping.stage1.r2-recovery-drill.v1",
+      // Kept at v1 for the immutable acceptance-envelope contract. "sha256"
+      // means every object is fully GET and checked with its DB-declared hash
+      // mode; it does not mean every expected hash is over unmodified bytes.
       measurement_method: "r2_full_get_sha256_v1",
+      hash_mode_contract: "db_manifest_declared_hash_modes_v1",
       r2_account_id: target.r2AccountId,
       r2_bucket: target.r2Bucket,
       r2_endpoint: `https://${target.r2AccountId}.r2.cloudflarestorage.com`,
@@ -292,9 +397,20 @@ export async function measureStage1R2RecoveryDrill({
       recovered_objects: recovered,
       failed_objects: failed,
       refused_objects: refused,
+      failure_count: failures.length,
+      failure_set_hash: failureSetHash,
       visual_objects_checked: observations.length,
+      published_event_objects_checked: manifest.publishedEventObjectCount,
+      manifest_source_objects_checked: manifest.manifestSourceObjectCount,
       visual_object_set_hash: manifest.visualObjectSetHash,
       recovery_manifest_sha256: sha256(stableJson(observations)),
+    },
+    diagnostics: {
+      schema_version: "awardping.stage1.r2-recovery-diagnostics.v1",
+      total_observations: observations.length,
+      failure_count: failures.length,
+      failure_set_hash: failureSetHash,
+      failures,
     },
   };
 }
@@ -308,6 +424,7 @@ export async function measureStage1RollbackDrill({
   executeProductionRollback = false,
   deploymentController,
   supabaseAnonKey,
+  supabaseServiceRoleKey,
   fetchImpl = globalThis.fetch,
   measuredAt = new Date().toISOString(),
   measurementId = randomUUID(),
@@ -340,6 +457,7 @@ export async function measureStage1RollbackDrill({
   const probe = () => measureStage1HostedRuntimeIdentity({
     target: targetValue,
     supabaseAnonKey,
+    supabaseServiceRoleKey,
     fetchImpl,
     measuredAt: new Date().toISOString(),
     measurementId: randomUUID(),
@@ -472,36 +590,163 @@ function validateR2Manifest(value, target) {
   const embeddedTarget = validateStage1ReleaseProducerTarget(manifest.target);
   const objects = arrayValue(manifest.objects).map((value) => {
     const object = objectValue(value);
+    const scope = requiredText(object.scope, "R2 object scope");
+    const sourceId = cleanText(object.source_id).toLowerCase() || null;
+    const artifact = requiredText(object.artifact, "R2 object artifact");
     const objectKey = requiredText(object.object_key, "R2 object key");
     const bucket = requiredText(object.bucket, "R2 object bucket");
     const objectSha256 = requiredHash(object.sha256, "R2 object SHA-256");
     const byteLength = Number(object.byte_length);
-    const contentType = requiredText(object.content_type, "R2 object content type");
+    const hashMode = requiredText(object.hash_mode, "R2 object hash mode");
+    const contentType = requiredText(
+      object.content_type,
+      "R2 object content type",
+    ).toLowerCase();
+    const semanticLength = object.semantic_length === null || object.semantic_length === undefined
+      ? null
+      : Number(object.semantic_length);
+    const publishedEvent = scope === "published_event";
+    const manifestSource = scope === "manifest_source";
+    const sourceUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const sourcePrefix = manifestSource && sourceUuidPattern.test(sourceId || "")
+      ? `visual-snapshots/sources/${sourceId}/captures/`
+      : null;
+    const sourcePathPattern = sourcePrefix
+      ? new RegExp(`^${escapeRegExp(sourcePrefix)}[0-9a-f]{32}/`)
+      : null;
+    const sourceGenerationMatch = sourcePrefix
+      ? objectKey.match(new RegExp(`^${escapeRegExp(sourcePrefix)}([0-9a-f]{32})/`))
+      : null;
+    const expectedSourceFile = artifact === "page"
+      ? "page\\.jpg"
+      : artifact === "pdf"
+        ? "document\\.pdf"
+        : artifact === "text"
+          ? "text\\.txt"
+          : null;
+    const sourceBindingValid = Boolean(
+      manifestSource
+      && sourcePathPattern
+      && expectedSourceFile
+      && new RegExp(`${sourcePathPattern.source}${expectedSourceFile}$`).test(objectKey)
+      && !/(^|\/)latest(\/|$)/i.test(objectKey)
+      && (
+        artifact === "text"
+          ? hashMode === "utf8_text_single_trailing_newline_v1"
+            && Number.isSafeInteger(semanticLength)
+            && semanticLength >= 0
+            && contentTypeFamily(contentType) === "text/plain"
+          : hashMode === "raw_sha256"
+            && semanticLength === null
+            && (
+              (artifact === "page" && contentTypeFamily(contentType) === "image/jpeg")
+              || (artifact === "pdf" && contentTypeFamily(contentType) === "application/pdf")
+            )
+      )
+    );
+    const eventBindingValid = Boolean(
+      publishedEvent
+      && sourceId === null
+      && objectKey.startsWith("visual-snapshots/published/")
+      && !/(^|\/)latest(\/|$)/i.test(objectKey)
+      && hashMode === "raw_sha256"
+      && semanticLength === null
+      && (
+        contentTypeFamily(contentType).startsWith("image/")
+        || contentTypeFamily(contentType) === "application/json"
+      )
+    );
     if (
       bucket !== target.r2Bucket ||
-      !objectKey.startsWith("visual-snapshots/published/") ||
+      (!sourceBindingValid && !eventBindingValid) ||
       !Number.isSafeInteger(byteLength) ||
       byteLength < 1
     ) {
       throw new Error("The DB-owned R2 manifest contains an invalid object binding.");
     }
-    return { bucket, objectKey, sha256: objectSha256, byteLength, contentType };
+    return {
+      scope,
+      sourceId,
+      artifact,
+      bucket,
+      objectKey,
+      sha256: objectSha256,
+      hashMode,
+      byteLength,
+      semanticLength,
+      contentType,
+      generationId: sourceGenerationMatch?.[1] || null,
+    };
+  });
+  const uniqueObjectKeys = new Set(objects.map((object) => `${object.bucket}\n${object.objectKey}`));
+  const publishedEventObjectCount = objects.filter(
+    (object) => object.scope === "published_event",
+  ).length;
+  const manifestSourceObjectCount = objects.filter(
+    (object) => object.scope === "manifest_source",
+  ).length;
+  const manifestSourceGroups = new Map();
+  for (const object of objects.filter((entry) => entry.scope === "manifest_source")) {
+    manifestSourceGroups.set(
+      object.sourceId,
+      [...(manifestSourceGroups.get(object.sourceId) || []), object],
+    );
+  }
+  const manifestSourceSetsValid = [...manifestSourceGroups.values()].every((entries) => {
+    const artifacts = entries.map((entry) => entry.artifact).sort();
+    const generations = new Set(entries.map((entry) => entry.generationId));
+    return entries.length === 2
+      && generations.size === 1
+      && (
+        artifacts.join(",") === "page,text"
+        || artifacts.join(",") === "pdf,text"
+      );
   });
   if (
+    manifest.schema_version !== "awardping.stage1.r2-verification-manifest.v2" ||
     embeddedTarget.targetConfigHash !== target.targetConfigHash ||
     Number(manifest.unexpected_bucket_count) !== 0 ||
     Number(manifest.malformed_object_count) !== 0 ||
-    Number(manifest.visual_object_count) !== objects.length
+    Number(manifest.manifest_binding_error_count) !== 0 ||
+    Number(manifest.visual_object_count) !== objects.length ||
+    Number(manifest.published_event_object_count) !== publishedEventObjectCount ||
+    Number(manifest.manifest_source_object_count) !== manifestSourceObjectCount ||
+    uniqueObjectKeys.size !== objects.length ||
+    !manifestSourceSetsValid
   ) {
     throw new Error("The DB-owned R2 verification manifest is incomplete or target-mismatched.");
   }
   return {
     objects,
+    publishedEventObjectCount,
+    manifestSourceObjectCount,
     visualObjectSetHash: requiredHash(
       manifest.visual_object_set_hash,
       "visual object-set hash",
     ),
   };
+}
+
+function measureR2ObjectHash(body, object) {
+  if (object.hashMode === "raw_sha256") {
+    return { sha256: sha256(body), semanticLength: null };
+  }
+  if (object.hashMode !== "utf8_text_single_trailing_newline_v1") return null;
+  try {
+    const rawText = new TextDecoder("utf-8", { fatal: true }).decode(body);
+    const semanticText = rawText.endsWith("\r\n")
+      ? rawText.slice(0, -2)
+      : rawText.endsWith("\n")
+        ? rawText.slice(0, -1)
+        : null;
+    if (semanticText === null) return null;
+    return {
+      sha256: sha256(Buffer.from(semanticText, "utf8")),
+      semanticLength: semanticText.length,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function fetchJsonWithoutRedirect(url, { fetchImpl, headers }) {
@@ -522,7 +767,7 @@ async function fetchJsonWithoutRedirect(url, { fetchImpl, headers }) {
   return { status: response.status, sha256: sha256(bytes), json };
 }
 
-async function fetchTextWithoutRedirect(url, { fetchImpl }) {
+async function fetchCrawlObservation(url, { fetchImpl, appOrigin }) {
   const response = await fetchImpl(url, {
     method: "GET",
     redirect: "manual",
@@ -532,14 +777,132 @@ async function fetchTextWithoutRedirect(url, { fetchImpl }) {
       "user-agent": "AwardPing-Stage1-Anonymous-Leak-Probe/1.0",
     },
   });
-  assertNoRedirect(response, url);
+  if (!response || typeof response.status !== "number") {
+    throw new Error("NoHttpResponse");
+  }
   const bytes = Buffer.from(await response.arrayBuffer());
+  const redirected = Boolean(
+    response.redirected ||
+    response.status >= 300 && response.status < 400 ||
+    response.url && response.url !== url
+  );
   return {
     status: response.status,
-    location: cleanText(response.headers?.get?.("location")) || null,
+    redirected,
+    redirectLocation: sanitizeRedirectLocation(
+      response.headers?.get?.("location"),
+      appOrigin,
+    ),
     sha256: sha256(bytes),
     text: bytes.toString("utf8"),
   };
+}
+
+function crawlFailureDiagnostic(row) {
+  let reason = null;
+  let recommendedSafeAction = null;
+  if (row.error_code) {
+    reason = "request_failed";
+    recommendedSafeAction =
+      "Repair anonymous route availability, TLS, or network access, then rerun the exact crawl path.";
+  } else if (row.redirected) {
+    reason = "redirect_refused";
+    recommendedSafeAction =
+      "Remove the redirect and serve the expected response at this exact canonical path before rerunning.";
+  } else if (row.group === "stage1" && row.status !== 200) {
+    reason = "unexpected_stage1_status";
+    recommendedSafeAction =
+      "Restore this Stage 1 path to an HTTP 200 Under verification page, then rerun the crawl.";
+  } else if (row.group === "stage1" && !row.under_verification) {
+    reason = "under_verification_marker_missing";
+    recommendedSafeAction =
+      "Restore the Under verification marker on this Stage 1 path, then rerun the crawl.";
+  } else if (row.group === "non_cohort" && row.status !== 404) {
+    reason = "non_cohort_route_publicly_visible";
+    recommendedSafeAction =
+      "Remove this non-cohort path from anonymous publication and verify it returns HTTP 404 before rerunning.";
+  }
+  if (!reason) return null;
+  return {
+    group: row.group,
+    path: row.path,
+    http_status: row.status,
+    redirected: row.redirected,
+    redirect_location: row.redirect_location,
+    under_verification: row.under_verification,
+    reason,
+    error_code: row.error_code,
+    recommended_safe_action: recommendedSafeAction,
+  };
+}
+
+function crawlFailureIdentity(row) {
+  return {
+    group: row.group,
+    path: row.path,
+    http_status: row.http_status,
+    redirected: row.redirected,
+    redirect_location: row.redirect_location,
+    under_verification: row.under_verification,
+    reason: row.reason,
+    error_code: row.error_code,
+  };
+}
+
+function r2FailureDiagnostic(row) {
+  const recommendedSafeAction = row.outcome === "mismatch"
+    ? "Restore or recapture this exact immutable object generation, rebuild the DB-owned manifest, then rerun the R2 drill."
+    : row.outcome === "refused"
+      ? "Repair read-only R2 credential or bucket access, keep the immutable manifest unchanged, then rerun the drill."
+      : "Confirm this exact immutable object exists in the authoritative bucket, repair retrieval, then rerun the drill.";
+  return {
+    object_scope: row.object_scope,
+    source_id: row.source_id,
+    artifact: row.artifact,
+    object_key: row.object_key,
+    hash_mode: row.hash_mode,
+    outcome: row.outcome,
+    error_code: row.error_code || null,
+    expected_sha256: row.expected_sha256 || null,
+    actual_sha256: row.actual_sha256 || null,
+    expected_byte_length: row.expected_byte_length ?? null,
+    actual_byte_length: row.actual_byte_length ?? null,
+    expected_semantic_length: row.expected_semantic_length ?? null,
+    actual_semantic_length: row.actual_semantic_length ?? null,
+    expected_content_type: row.expected_content_type || null,
+    actual_content_type: row.actual_content_type || null,
+    recommended_safe_action: recommendedSafeAction,
+  };
+}
+
+function r2FailureIdentity(row) {
+  const identity = { ...row };
+  delete identity.recommended_safe_action;
+  return identity;
+}
+
+function sanitizeRedirectLocation(value, appOrigin) {
+  const raw = cleanText(value);
+  if (!raw) return null;
+  try {
+    const location = new URL(raw, appOrigin);
+    return location.origin === appOrigin
+      ? `${location.pathname}`
+      : `${location.origin}${location.pathname}`;
+  } catch {
+    return "[invalid-location]";
+  }
+}
+
+function safeErrorCode(error) {
+  const value = cleanText(error?.Code || error?.name || "unknown")
+    .replace(/[^A-Za-z0-9_.:-]/g, "_")
+    .slice(0, 120);
+  return value || "unknown";
+}
+
+function compareFailureKey(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function assertNoRedirect(response, expectedUrl) {
@@ -620,6 +983,10 @@ function r2AccessRefused(error) {
 
 function contentTypeFamily(value) {
   return cleanText(value).toLowerCase().split(";", 1)[0];
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function pollRuntimeState({ probe, predicate, attempts, intervalMs, sleep, label }) {

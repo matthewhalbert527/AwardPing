@@ -22,6 +22,11 @@ function workerRun(
           discovery_mode: true,
           discovery_intent: "live_recurring",
           discovery_onboarding_batch_id: null,
+          discover_pdf_subpages: true,
+          discover_html_subpages: false,
+          visual_review_mode: "batch",
+          interpret_visual_changes: true,
+          r2_snapshot_sync: true,
           ...((metadata.options as Record<string, unknown> | undefined) || {}),
         },
       }

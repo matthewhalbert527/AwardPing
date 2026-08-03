@@ -650,6 +650,19 @@ function geometry(text, imageHash, y = 120, height = 600) {
     document: { width: 800, height },
     viewport: { width: 800, height: 600 },
     device_pixel_ratio: 1,
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "verified",
+      sampled_rect_count: 1,
+      rejected_rect_count: 0,
+    },
+    capture_verification: {
+      contract: "visual-screenshot-layout-binding-v1",
+      status: "verified",
+      before_fingerprint: "a".repeat(64),
+      after_fingerprint: "a".repeat(64),
+      screenshot_alignment: "verified",
+    },
     nodes: [{
       order: 0,
       text,

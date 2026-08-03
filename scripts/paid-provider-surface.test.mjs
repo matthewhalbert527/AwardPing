@@ -164,7 +164,7 @@ describe("paid provider surface", () => {
       .toBeLessThan(sourceTitleBackfill.indexOf("const supabase ="));
     expect(runScript("scripts/backfill-award-baseline-details.mjs").status).toBe(1);
     expect(runScript("scripts/backfill-source-page-titles.mjs").status).toBe(1);
-  });
+  }, 15_000);
 
   it("proves capture's retained direct-provider functions are unreachable", () => {
     expect(capture).toContain('if (visualReviewMode === "immediate")');

@@ -11,7 +11,11 @@ import {
 } from "@/lib/admin-worker-operations";
 import type { Database, Json } from "@/lib/database.types";
 import type { InviteOnlySignupReadiness } from "@/lib/invite-only-signup-readiness";
-import { stage1CohortIdentityMismatch } from "@/lib/stage1-cohort-identity";
+import {
+  stage1CohortIdentityHash,
+  stage1CohortIdentityMismatch,
+  stage1CohortIdentityVersion,
+} from "@/lib/stage1-cohort-identity";
 import { classifyScheduledNightlyVisualRun } from "../../scripts/lib/visual-nightly-run-contract.mjs";
 
 export const stage1ReleaseAwardCount = 25;
@@ -31,6 +35,7 @@ const futureClockToleranceMs = 5 * 60 * 1_000;
 const nightlyAcceptanceCohortCount = 3 as const;
 const nightlyAcceptanceSoakMs = 24 * 60 * 60 * 1_000;
 const expectedPolicyVersion = "stage1-publication-v1";
+const canonicalReleaseEpochPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const expectedBudgetLanes = ["new_page_review", "changed_page_review"] as const;
 const expectedDownstreamLanes = [
   ["new_page_review", "New page review", true],
@@ -86,6 +91,10 @@ export type Stage1EffectivePublication = {
   release_identity_hash: string;
 };
 
+export function isCanonicalStage1ReleaseEpoch(value: unknown): value is string {
+  return typeof value === "string" && canonicalReleaseEpochPattern.test(value);
+}
+
 export type Stage1AppIdentity = {
   revision: string;
   policy_hash: string;
@@ -134,17 +143,17 @@ export type Stage1ReleaseAwardSummary = {
   effectiveReason: string;
   cohortReady: boolean;
   effectivelyVisible: boolean;
-  evidenceFresh: boolean;
+  verificationEpochValid: boolean;
   evidenceCheckedAt: string | null;
   completedManifestRoles: number;
-  freshManifestRoles: number;
+  verifiedManifestRoles: number;
   missingManifestRoles: string[];
   reconciliationStatus: string;
   reconciliationAt: string | null;
-  reconciliationFresh: boolean;
+  reconciliationValid: boolean;
   auditStatus: string;
   auditAt: string | null;
-  auditFresh: boolean;
+  auditValid: boolean;
   quarantineCount: number;
   status: "ready" | "hold";
 };
@@ -311,11 +320,23 @@ export function summarizeStage1BetaReleaseGate(
   const releaseEpochs = uniqueText(input.effectivePublication.map((row) => row.release_epoch || ""));
   const releaseReasons = uniqueText(input.effectivePublication.map((row) => row.effective_reason));
   const registryEpochs = uniqueText(input.registry.map((row) => row.release_epoch || ""));
+  const canonicalReleaseEpoch = releaseEpochs.length === 1 &&
+    isCanonicalStage1ReleaseEpoch(releaseEpochs[0])
+    ? releaseEpochs[0]
+    : null;
+  const effectiveReleaseContractsValid = input.effectivePublication.every((row) =>
+    effectivePublicationIdentityValid(row));
+  const registryReleaseContractsValid = input.registry.every((row) =>
+    row.policy_version === expectedPolicyVersion);
   const atomicRelease = visibleCount === stage1ReleaseAwardCount &&
     input.effectivePublication.length === stage1ReleaseAwardCount &&
+    input.registry.length === stage1ReleaseAwardCount &&
     releaseStates.length === 1 && releaseStates[0] === "verified_beta" &&
-    releaseEpochs.length === 1 && registryEpochs.length === 1 &&
-    releaseEpochs[0] === registryEpochs[0];
+    canonicalReleaseEpoch !== null && registryEpochs.length === 1 &&
+    registryEpochs[0] === canonicalReleaseEpoch &&
+    effectiveReleaseContractsValid && registryReleaseContractsValid &&
+    input.effectivePublication.every((row) => row.release_epoch === canonicalReleaseEpoch) &&
+    input.registry.every((row) => row.release_epoch === canonicalReleaseEpoch);
   const cohortIdentityMismatch = stage1CohortIdentityMismatch(input.registry);
   const releaseClaimsActive = releaseStates.length === 1 && releaseStates[0] === "verified_beta";
   const blockers = [
@@ -323,6 +344,12 @@ export function summarizeStage1BetaReleaseGate(
       ? []
       : [`The Stage 1 registry contains ${input.registry.length} awards; exactly 25 are required.`]),
     ...(cohortIdentityMismatch ? [cohortIdentityMismatch] : []),
+    ...(!registryReleaseContractsValid
+      ? [`Every Stage 1 registry row must use ${expectedPolicyVersion}.`]
+      : []),
+    ...(!effectiveReleaseContractsValid
+      ? ["Every effective publication row must match the reviewed Stage 1 release policy and cohort identity."]
+      : []),
     ...(visibleCount !== 0 && visibleCount !== stage1ReleaseAwardCount
       ? [`The publication result is partial (${visibleCount}/25); public release must fail closed to zero.`]
       : []),
@@ -367,7 +394,7 @@ export function summarizeStage1BetaReleaseGate(
     expectedAwardCount: stage1ReleaseAwardCount,
     release: {
       state: releaseStates.length === 1 ? releaseStates[0] : "mixed_or_missing",
-      epoch: releaseEpochs.length === 1 ? releaseEpochs[0] : null,
+      epoch: canonicalReleaseEpoch,
       effectiveReason: releaseReasons.length === 1 ? releaseReasons[0] : "mixed_or_missing",
       atomic: atomicRelease,
     },
@@ -445,8 +472,8 @@ function summarizeAcceptanceArtifacts(
       };
     }
     const identityMatches = artifact.artifact_kind === kind &&
-      artifact.cohort_identity_version === "stage1-national-25-v1" &&
-      artifact.cohort_identity_hash === "60261d07d5918554d0fb0b4ab895dbef3d57973f0a5b8d277ad0b128611d801e" &&
+      artifact.cohort_identity_version === stage1CohortIdentityVersion &&
+      artifact.cohort_identity_hash === stage1CohortIdentityHash &&
       artifact.policy_version === expectedPolicyVersion &&
       artifact.app_revision === appIdentity.revision;
     const timeValid = validTimestamp(artifact.started_at) && validTimestamp(artifact.completed_at) &&
@@ -500,6 +527,24 @@ function nonNegativeInteger(value: unknown) {
   return Number.isInteger(value) && Number(value) >= 0;
 }
 
+function effectivePublicationIdentityValid(row: Stage1EffectivePublication) {
+  return row.release_policy_version === expectedPolicyVersion &&
+    row.release_identity_version === stage1CohortIdentityVersion &&
+    row.release_identity_hash === stage1CohortIdentityHash;
+}
+
+function effectivePublicationContractValid(
+  row: Stage1EffectivePublication | null,
+  registryEpoch: string | null,
+) {
+  if (!row || !effectivePublicationIdentityValid(row)) return false;
+  if (row.release_state === "verified_beta") {
+    return isCanonicalStage1ReleaseEpoch(row.release_epoch) &&
+      row.release_epoch === registryEpoch;
+  }
+  return row.release_epoch === null && registryEpoch === null;
+}
+
 function summarizeAward({
   registry,
   manifests,
@@ -522,21 +567,25 @@ function summarizeAward({
     const manifest = manifestByRole.get(role);
     return manifest ? manifestComplete(manifest) : false;
   });
-  const freshRoles = stage1ReleaseManifestRoles.filter((role) => {
+  const verifiedRoles = stage1ReleaseManifestRoles.filter((role) => {
     const manifest = manifestByRole.get(role);
-    return manifest ? manifestComplete(manifest) && manifestFresh(manifest, now) : false;
+    return manifest
+      ? manifestComplete(manifest) && manifestVerificationTimeValid(manifest, now)
+      : false;
   });
   const missingRoles = stage1ReleaseManifestRoles.filter((role) => !completedRoles.includes(role));
-  const evidenceFresh = registry.policy_version === expectedPolicyVersion &&
-    timestampFresh(registry.evidence_checked_at, now) &&
-    timestampFresh(registry.last_verified_at, now);
-  const reconciliationFresh = reconciliation?.status === "succeeded" &&
-    timestampFresh(reconciliation.completed_at, now);
-  const auditFresh = audit?.audit_status === "passed" && timestampFresh(audit.created_at, now);
+  const verificationEpochValid = registry.policy_version === expectedPolicyVersion &&
+    effectivePublicationContractValid(effective, registry.release_epoch) &&
+    durableTimestampValid(registry.evidence_checked_at, now) &&
+    durableTimestampValid(registry.last_verified_at, now);
+  const reconciliationValid = reconciliation?.status === "succeeded" &&
+    durableTimestampValid(reconciliation.completed_at, now);
+  const auditValid = audit?.audit_status === "passed" &&
+    durableTimestampValid(audit.created_at, now);
   const effectivelyVisible = effective?.effectively_verified === true;
   const cohortReady = effective?.cohort_ready === true;
-  const status = cohortReady && evidenceFresh && completedRoles.length === stage1ReleaseManifestRoles.length &&
-    freshRoles.length === stage1ReleaseManifestRoles.length && reconciliationFresh && auditFresh && quarantineCount === 0
+  const status = cohortReady && verificationEpochValid && completedRoles.length === stage1ReleaseManifestRoles.length &&
+    verifiedRoles.length === stage1ReleaseManifestRoles.length && reconciliationValid && auditValid && quarantineCount === 0
     ? "ready"
     : "hold";
 
@@ -550,17 +599,17 @@ function summarizeAward({
       : cleanText(effective?.cohort_readiness_reason) || "Award-level publication readiness is missing.",
     cohortReady,
     effectivelyVisible,
-    evidenceFresh,
+    verificationEpochValid,
     evidenceCheckedAt: registry.evidence_checked_at,
     completedManifestRoles: completedRoles.length,
-    freshManifestRoles: freshRoles.length,
+    verifiedManifestRoles: verifiedRoles.length,
     missingManifestRoles: missingRoles,
     reconciliationStatus: reconciliation?.status || "missing",
     reconciliationAt: reconciliation?.completed_at || reconciliation?.created_at || null,
-    reconciliationFresh,
+    reconciliationValid,
     auditStatus: audit?.audit_status || "missing",
     auditAt: audit?.created_at || null,
-    auditFresh,
+    auditValid,
     quarantineCount,
     status,
   };
@@ -575,17 +624,17 @@ function missingAward(launchRank: number): Stage1ReleaseAwardSummary {
     effectiveReason: "No registry row exists for this required release position.",
     cohortReady: false,
     effectivelyVisible: false,
-    evidenceFresh: false,
+    verificationEpochValid: false,
     evidenceCheckedAt: null,
     completedManifestRoles: 0,
-    freshManifestRoles: 0,
+    verifiedManifestRoles: 0,
     missingManifestRoles: [...stage1ReleaseManifestRoles],
     reconciliationStatus: "missing",
     reconciliationAt: null,
-    reconciliationFresh: false,
+    reconciliationValid: false,
     auditStatus: "missing",
     auditAt: null,
-    auditFresh: false,
+    auditValid: false,
     quarantineCount: 0,
     status: "hold",
   };
@@ -1087,12 +1136,19 @@ function manifestComplete(manifest: ManifestRow) {
     (manifest.manifest_status === "not_published" || factCandidates.length > 0);
 }
 
-function manifestFresh(manifest: ManifestRow, now: Date) {
+function manifestVerificationTimeValid(manifest: ManifestRow, now: Date) {
   if (!isObject(manifest.evidence)) return false;
-  return timestampFresh(manifest.checked_at, now) &&
-    timestampFresh(cleanText(manifest.evidence.captured_at), now) &&
-    timestampFresh(cleanText(manifest.evidence.r2_verified_at), now) &&
-    timestampFresh(cleanText(manifest.evidence.local_verified_at), now);
+  return durableTimestampValid(manifest.checked_at, now) &&
+    durableTimestampValid(cleanText(manifest.evidence.captured_at), now) &&
+    durableTimestampValid(cleanText(manifest.evidence.r2_verified_at), now) &&
+    durableTimestampValid(cleanText(manifest.evidence.local_verified_at), now);
+}
+
+function durableTimestampValid(value: string | null | undefined, now: Date) {
+  const timestamp = Date.parse(value || "");
+  const nowMs = now.getTime();
+  return Number.isFinite(timestamp) && Number.isFinite(nowMs) &&
+    timestamp <= nowMs + futureClockToleranceMs;
 }
 
 function timestampFresh(value: string | null | undefined, now: Date) {

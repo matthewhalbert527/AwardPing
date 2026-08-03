@@ -10,6 +10,7 @@ import {
   materializeFirstObservationCaptureFromAcquisition,
   persistPostRetentionCaptureFailure,
   restoreInitialOfficialDocumentCandidateArtifactsFromAcquisition,
+  retainFirstObservationIntakeArtifact,
   retainFirstObservationIntakePdfArtifact,
   resumeFirstObservationIntakeArtifactRetention,
   serializableRetainedCaptureMetadata,
@@ -31,7 +32,7 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop(), { recursive: true, force: true });
 });
 
-describe("immutable source-intake PDF retention", () => {
+describe("immutable source-intake artifact retention", () => {
   it("retains and read-verifies exact request/hash-bound PDF, text, and metadata", async () => {
     const root = temporaryRoot();
     const r2 = memoryR2();
@@ -62,6 +63,78 @@ describe("immutable source-intake PDF retention", () => {
     expect(retried.file_hash).toBe(manifest.file_hash);
     expect(r2.preconditions).toBe(3);
     expect(r2.gets).toBe(6);
+  });
+
+  it("preserves the PDF-specific integrity error contract through the compatibility entry point", async () => {
+    const capture = pdfCapture(Buffer.from("%PDF-1.4 missing exposed bytes"));
+    delete capture.artifact_bytes;
+
+    await expect(retainFirstObservationIntakePdfArtifact({
+      request: liveRequest(),
+      capture,
+      archiveRoot: temporaryRoot(),
+      bucket: "awardping-snapshots",
+      client: memoryR2(),
+      config: testStore,
+    })).rejects.toMatchObject({ code: "intake_pdf_bytes_unavailable" });
+  });
+
+  it("retains exact HTML bytes for reviewed low-coverage onboarding before operator approval", async () => {
+    const root = temporaryRoot();
+    const r2 = memoryR2();
+    const html = Buffer.from("<main><h1>Marshall Scholarship eligibility</h1></main>");
+    const url = "https://example.edu/marshall/apply";
+    const manifest = await retainFirstObservationIntakeArtifact({
+      request: {
+        id: requestId,
+        acquisition_kind: "admin_intake",
+        notification_mode: "manual_review",
+        onboarding_batch_id: "low-coverage-source-backfill-v1",
+        ai_review: {
+          backfill_discovery_evidence: {
+            policy_version: "low-coverage-source-backfill-v1",
+            source_activation: "manual_only",
+            notification_after_approval: "baseline_only",
+          },
+        },
+      },
+      capture: {
+        artifact_bytes: html,
+        capture_file_hash: sha256(html),
+        byte_length: html.length,
+        captured_at: capturedAt,
+        final_url: url,
+        canonical_url: url,
+        content_type: "text/html; charset=utf-8",
+        status_code: 200,
+        title: "Marshall Scholarship eligibility",
+        text: "Marshall Scholarship eligibility",
+      },
+      archiveRoot: root,
+      bucket: "awardping-snapshots",
+      client: r2,
+      config: testStore,
+    });
+
+    expect(manifest).toMatchObject({
+      file_hash: sha256(html),
+      final_url: url,
+      document_kind: "html",
+      document_content_type: "text/html; charset=utf-8",
+      r2_verified_at: expect.stringMatching(/Z$/),
+      artifacts: {
+        pdf: expect.objectContaining({
+          sha256: sha256(html),
+          content_type: "text/html; charset=utf-8",
+        }),
+      },
+    });
+    expect(validateRetainedIntakeArtifactManifest(manifest, {
+      requestId,
+      fileHash: sha256(html),
+      finalUrl: url,
+      requireR2Verified: true,
+    }).document_content_type).toBe("text/html; charset=utf-8");
   });
 
   it("stages hash A locally on R2 failure, then resumes A without recapturing URL hash B", async () => {

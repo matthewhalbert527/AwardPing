@@ -11,7 +11,7 @@ import {
 
 export const stage1PublicationPolicyVersion = "stage1-publication-v1";
 export const stage1AwardCount = 25;
-export const stage1EvidenceFreshnessMs = 24 * 60 * 60 * 1000;
+const stage1FutureClockToleranceMs = 5 * 60 * 1000;
 
 export type Stage1PublicationState =
   Database["public"]["Tables"]["stage1_award_registry"]["Row"]["publication_state"];
@@ -316,7 +316,7 @@ export function isEffectivelyVerifiedRegistryRow(
   }
 
   return [registry.evidence_checked_at, registry.last_verified_at].every(
-    (value) => isFreshTimestamp(value, now),
+    (value) => isDurableVerificationTimestamp(value, now),
   );
 }
 
@@ -500,12 +500,11 @@ export function isStage1SourceIdentityExcluded(
   );
 }
 
-function isFreshTimestamp(value: string | null, now: Date) {
+function isDurableVerificationTimestamp(value: string | null, now: Date) {
   if (!value) return false;
   const timestamp = Date.parse(value);
   if (!Number.isFinite(timestamp)) return false;
-  const age = now.getTime() - timestamp;
-  return age >= 0 && age <= stage1EvidenceFreshnessMs;
+  return timestamp <= now.getTime() + stage1FutureClockToleranceMs;
 }
 
 function buildUnavailableIndex(reason: string): Stage1PublicationIndex {

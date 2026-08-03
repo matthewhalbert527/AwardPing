@@ -54,7 +54,8 @@ describe("first-observation intake artifact wiring", () => {
       intakeWorker.indexOf("async function recoverStaleInFlightRequests"),
       intakeWorker.indexOf("async function loadSourceIntakeSpendReservation"),
     );
-    expect(recovery).toContain("acquisition_kind,notification_mode,onboarding_batch_id,capture_metadata");
+    expect(recovery).toContain("acquisition_kind,notification_mode,onboarding_batch_id");
+    expect(recovery).toContain("ai_review,capture_metadata");
     expect(recovery).toContain("isProtectedLiveFirstCaptureRow(row) && row.status === \"capturing\"");
     expect(recovery).toContain("hasProvenRetainedCaptureMetadata(row)");
     expect(recovery).toContain("hasProvenStagedCaptureMetadata(row)");
@@ -74,14 +75,14 @@ describe("first-observation intake artifact wiring", () => {
       intakeWorker.indexOf("async function recoverStaleInFlightRequests"),
     );
     expect(retry).toContain('"manual_reconciliation_retry_requested"');
-    expect(retry).toContain("validateRetainedIntakeArtifactManifest");
+    expect(retry).toContain("validateSourceIntakeProviderReplayBinding");
     expect(retry).toContain("finalizeReviewedRequest(");
     expect(retry).toContain("creates_api_charge: false");
     expect(retry).not.toContain("captureIntakePage(");
     expect(retry).not.toContain("reserveGeminiSpend(");
     expect(retry).not.toContain("submitGemini");
-    expect(retry).toContain('status_reason: "reconciliation_retry_preflight_failed_no_charge"');
-    expect(retry).toContain('.eq("status_reason", "manual_reconciliation_retry_requested")');
+    expect(retry).toContain('"reconciliation_retry_preflight_failed_no_charge"');
+    expect(retry).toContain('.eq("status_reason", requestedReason)');
   });
 
   it("recovers a crashed zero-charge replay back to the retained-result queue", () => {
@@ -89,7 +90,8 @@ describe("first-observation intake artifact wiring", () => {
       intakeWorker.indexOf("async function recoverStaleInFlightRequests"),
       intakeWorker.indexOf("async function processCaptureStage"),
     );
-    expect(recovery).toContain('.select("id,status,status_reason,updated_at,acquisition_kind,notification_mode,onboarding_batch_id,capture_metadata")');
+    expect(recovery).toContain("acquisition_kind,notification_mode,onboarding_batch_id");
+    expect(recovery).toContain("ai_review,capture_metadata");
     expect(recovery).toContain('row.status_reason === "manual_reconciliation_retry_claimed_no_charge"');
     expect(recovery).toContain('status_reason: "manual_reconciliation_retry_requested"');
     expect(recovery).toContain("stale_free_reconciliation_claims_requeued");

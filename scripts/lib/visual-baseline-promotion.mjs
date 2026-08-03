@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  statSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
@@ -989,6 +990,12 @@ function captureMetadata(capture) {
     status_text: capture.status_text || null,
     content_type: capture.content_type || null,
     text_length: capture.text_length || 0,
+    // The semantic text hash excludes the one newline stored in text.txt.
+    // Retain the raw UTF-8 object length for exact R2 recovery verification.
+    text_object_bytes:
+      capture.text_path && existsSync(capture.text_path)
+        ? statSync(capture.text_path).size
+        : null,
     body_text_length: capture.body_text_length || 0,
     main_content_text_length: capture.main_content_text_length || 0,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,

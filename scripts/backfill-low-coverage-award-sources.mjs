@@ -1,10 +1,16 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import * as cheerio from "cheerio";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 import { csvEscape } from "./source-cleanup-core.mjs";
+import { loadDeterministicSupabaseRows } from "./lib/deterministic-supabase-loader.mjs";
+import { captureIntakePage } from "./lib/source-intake.mjs";
+import {
+  buildLowCoverageSourceIntakeRequest,
+  enqueueLowCoverageSourceIntakeRequests,
+  openSourceRowsForCoverage,
+} from "./lib/source-backfill-intake.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -16,6 +22,8 @@ const maxSearchResults = positiveInt(args["max-search-results"], 8);
 const minScore = positiveInt(args["min-score"], 55);
 const concurrency = positiveInt(args.concurrency, 2);
 const timeoutMs = positiveInt(args["timeout-ms"], 20_000);
+const verifyMaxResponseBytes = positiveInt(args["verify-max-response-bytes"], 2_000_000);
+const searchMaxResponseBytes = positiveInt(args["search-max-response-bytes"], 2_000_000);
 const delayMs = positiveInt(args["delay-ms"], 800);
 const verifyPages = args["verify-pages"] !== "false";
 const includeOneSource = args["include-one-source"] !== "false";
@@ -111,9 +119,10 @@ const genericWords = new Set([
 
 const supabase = createSupabaseClient();
 const { awards, sources } = await loadCatalog();
+const openSources = openSourceRowsForCoverage(sources);
 const sourceCounts = new Map();
 const sourcesByAwardId = new Map();
-for (const source of sources) {
+for (const source of openSources) {
   sourceCounts.set(source.shared_award_id, (sourceCounts.get(source.shared_award_id) || 0) + 1);
   sourcesByAwardId.set(source.shared_award_id, [...(sourcesByAwardId.get(source.shared_award_id) || []), source]);
 }
@@ -149,11 +158,14 @@ console.log(
 const stats = {
   awardsSearched: 0,
   awardsWithCandidates: 0,
+  enqueued: 0,
+  // Kept for report consumers that still read the former direct-insert field.
   inserted: 0,
+  alreadyQueued: 0,
   skippedExisting: 0,
   failed: 0,
 };
-const rowsToInsert = [];
+const requestsToEnqueue = [];
 const results = [];
 const reviewRows = [];
 
@@ -181,7 +193,7 @@ await mapWithConcurrency(limitedTargets, concurrency, async (award) => {
 
     if (accepted.length) {
       for (const candidate of accepted) {
-        rowsToInsert.push(rowForCandidate(award, candidate));
+        requestsToEnqueue.push(buildLowCoverageSourceIntakeRequest({ award, candidate }));
       }
     }
 
@@ -221,8 +233,14 @@ await mapWithConcurrency(limitedTargets, concurrency, async (award) => {
   }
 });
 
-if (apply && rowsToInsert.length && !reviewOnly) {
-  stats.inserted = await insertSourceRows(rowsToInsert);
+if (apply && requestsToEnqueue.length && !reviewOnly) {
+  const enqueueResult = await enqueueLowCoverageSourceIntakeRequests({
+    supabase,
+    requests: requestsToEnqueue,
+  });
+  stats.enqueued = enqueueResult.enqueued;
+  stats.inserted = enqueueResult.enqueued;
+  stats.alreadyQueued = enqueueResult.alreadyPresent;
 }
 
 if (reviewOnly) {
@@ -252,9 +270,10 @@ const report = {
   stats: {
     ...stats,
     targetsTotal: targets.length,
-    rowsReady: rowsToInsert.length,
+    rowsReady: requestsToEnqueue.length,
+    requestsReady: requestsToEnqueue.length,
   },
-  rowsToInsert,
+  requestsToEnqueue,
   reviewRows,
   results: results.sort((left, right) => left.awardName.localeCompare(right.awardName)),
 };
@@ -385,17 +404,7 @@ async function searchWeb(query) {
 
 async function searchDuckDuckGo(query) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0 AwardPingSourceBackfill/1.0 (+https://awardping.com)",
-      accept: "text/html,application/xhtml+xml",
-    },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-
-  if (!response.ok) throw new Error(`DuckDuckGo search failed with HTTP ${response.status}.`);
-
-  const $ = cheerio.load(await response.text());
+  const $ = cheerio.load(await fetchBoundedSearchHtml(url, "DuckDuckGo"));
   const rows = [];
   $(".result").each((index, element) => {
     const link = $(element).find(".result__a").first();
@@ -418,17 +427,7 @@ async function searchDuckDuckGo(query) {
 
 async function searchBing(query) {
   const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
-  const response = await fetch(url, {
-    headers: {
-      "user-agent": "Mozilla/5.0 AwardPingSourceBackfill/1.0 (+https://awardping.com)",
-      accept: "text/html,application/xhtml+xml",
-    },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
-
-  if (!response.ok) throw new Error(`Bing search failed with HTTP ${response.status}.`);
-
-  const $ = cheerio.load(await response.text());
+  const $ = cheerio.load(await fetchBoundedSearchHtml(url, "Bing"));
   const rows = [];
   $("li.b_algo").each((index, element) => {
     const link = $(element).find("h2 a").first();
@@ -447,6 +446,47 @@ async function searchBing(query) {
   });
 
   return rows.slice(0, maxSearchResults);
+}
+
+async function fetchBoundedSearchHtml(url, provider) {
+  const response = await fetch(url, {
+    redirect: "error",
+    headers: {
+      "user-agent": "Mozilla/5.0 AwardPingSourceBackfill/1.0 (+https://awardping.com)",
+      accept: "text/html,application/xhtml+xml",
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (!response.ok) throw new Error(`${provider} search failed with HTTP ${response.status}.`);
+  const contentLength = Number(response.headers.get("content-length") || 0);
+  if (Number.isFinite(contentLength) && contentLength > searchMaxResponseBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`${provider} search response exceeded ${searchMaxResponseBytes} bytes.`);
+  }
+  if (!response.body) return "";
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let html = "";
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = value instanceof Uint8Array ? value : new Uint8Array(value || 0);
+      bytesRead += chunk.byteLength;
+      if (bytesRead > searchMaxResponseBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`${provider} search response exceeded ${searchMaxResponseBytes} bytes.`);
+      }
+      html += decoder.decode(chunk, { stream: true });
+    }
+    html += decoder.decode();
+    return html;
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function scoreSearchResult(award, result) {
@@ -544,25 +584,24 @@ function scoreSearchResult(award, result) {
 }
 
 async function verifyCandidatePage(award, candidate) {
-  let response;
+  let capture;
   try {
-    response = await fetch(candidate.url, {
-      redirect: "follow",
-      headers: {
-        "user-agent": "Mozilla/5.0 AwardPingSourceVerifier/1.0 (+https://awardping.com)",
-        accept: "text/html,application/xhtml+xml,text/plain,application/pdf;q=0.8,*/*;q=0.5",
-      },
-      signal: AbortSignal.timeout(timeoutMs),
+    capture = await captureIntakePage(candidate.url, {
+      timeoutMs,
+      maxBytes: verifyMaxResponseBytes,
+      maxResponseBytes: verifyMaxResponseBytes,
+      maxPdfBytes: verifyMaxResponseBytes,
+      maxPdfPages: 50,
     });
   } catch (error) {
     return { ok: false, bonus: 0, reason: error instanceof Error ? error.message : "fetch failed" };
   }
 
-  if (!response.ok) {
-    return { ok: false, bonus: 0, reason: `HTTP ${response.status}` };
+  if (!capture.ok) {
+    return { ok: false, bonus: 0, reason: `HTTP ${capture.status_code}` };
   }
 
-  const contentType = response.headers.get("content-type") || "";
+  const contentType = capture.content_type || "";
   const urlText = candidate.url.toLowerCase();
   if (contentType.includes("application/pdf") || /\.pdf($|\?)/i.test(candidate.url)) {
     return urlContainsProgramTerms(award, urlText)
@@ -574,10 +613,7 @@ async function verifyCandidatePage(award, candidate) {
     return { ok: false, bonus: 0, reason: `Unsupported content type ${contentType || "unknown"}.` };
   }
 
-  const html = await response.text();
-  const pageText = contentType.includes("html")
-    ? normalizeText(cheerio.load(html)("body").text())
-    : normalizeText(html);
+  const pageText = normalizeText(capture.text || "");
   const haystack = `${candidate.url} ${candidate.title} ${pageText}`.toLowerCase();
   const exact = exactPhraseCandidates(award.name).some((phrase) => phrase.length >= 12 && haystack.includes(phrase));
   const nameParts = award.name.split(/\s+-\s+/).map((part) => normalizeText(part)).filter(Boolean);
@@ -720,18 +756,6 @@ function isAwardPageLikePath(url, title) {
   return /(fellow|scholar|award|grant|program|apply|application|deadline|eligib|requirement|guideline|research|internship|opportunit)/.test(lower);
 }
 
-function rowForCandidate(award, candidate) {
-  return {
-    shared_award_id: award.id,
-    url: candidate.url,
-    title: candidate.title,
-    page_type: candidate.pageType,
-    confidence: candidate.confidence,
-    reason: candidate.reason,
-    source: "admin",
-  };
-}
-
 function reviewRowForCandidate(award, candidate, autoEligible) {
   return {
     awardId: award.id,
@@ -780,36 +804,6 @@ function renderReviewCsv(rows) {
   ])].map((row) => row.map(csvEscape).join(",")).join("\n")}\n`;
 }
 
-async function insertSourceRows(rows) {
-  let count = 0;
-  for (const batch of chunk(rows, 100)) {
-    const { data, error } = await supabase
-      .from("shared_award_sources")
-      .upsert(batch, { onConflict: "shared_award_id,url" })
-      .select("id");
-    if (error) throw new Error(`shared_award_sources upsert failed: ${error.message}`);
-    count += data?.length || 0;
-  }
-
-  const homepageRows = rows.filter((row) => row.page_type === "homepage");
-  for (const row of homepageRows) {
-    const { data: award, error: loadError } = await supabase
-      .from("shared_awards")
-      .select("official_homepage")
-      .eq("id", row.shared_award_id)
-      .maybeSingle();
-    if (loadError) throw new Error(`shared_awards load failed: ${loadError.message}`);
-    if (award?.official_homepage) continue;
-    const { error: updateError } = await supabase
-      .from("shared_awards")
-      .update({ official_homepage: row.url, updated_at: new Date().toISOString() })
-      .eq("id", row.shared_award_id);
-    if (updateError) throw new Error(`shared_awards homepage update failed: ${updateError.message}`);
-  }
-
-  return count;
-}
-
 function shouldImproveOneSourceAward(source) {
   if (source.last_error) return true;
   if (source.page_type !== "homepage") return true;
@@ -827,7 +821,7 @@ function shouldAddOfficialHomepageSource(award, awardSources) {
 async function loadCatalog() {
   const [awards, sources] = await Promise.all([
     loadAll("shared_awards", "id,name,official_homepage,status,updated_at"),
-    loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,last_error,confidence,source,updated_at"),
+    loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,last_error,confidence,source,admin_review_status,updated_at"),
   ]);
   return {
     awards: awards.filter((award) => award.status === "active"),
@@ -836,40 +830,25 @@ async function loadCatalog() {
 }
 
 async function loadAll(table, select) {
-  const rows = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from(table).select(select).range(from, from + 999);
-    if (error) throw new Error(`${table}: ${error.message}`);
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
-  }
-  return rows;
+  return loadDeterministicSupabaseRows({
+    supabase,
+    table,
+    select,
+    revisionColumn: "updated_at",
+  });
 }
 
 function createSupabaseClient() {
   const env = { ...loadEnvFile(resolve(root, ".env.local")), ...process.env };
-  if (
-    env.NEXT_PUBLIC_SUPABASE_URL &&
-    env.SUPABASE_SERVICE_ROLE_KEY &&
-    !env.NEXT_PUBLIC_SUPABASE_URL.includes("127.0.0.1")
-  ) {
-    return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "Set NEXT_PUBLIC_SUPABASE_URL and a server-only sb_secret SUPABASE_SERVICE_ROLE_KEY. Automatic Supabase CLI key fallback is disabled.",
+    );
   }
-
-  const projectRef = readLinkedProjectRef();
-  if (!projectRef) {
-    throw new Error("Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY or link Supabase.");
+  if (!String(env.SUPABASE_SERVICE_ROLE_KEY).trim().startsWith("sb_secret_")) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a modern server-only sb_secret key.");
   }
-
-  const keys = JSON.parse(
-    execFileSync("npx", ["supabase", "projects", "api-keys", "--project-ref", projectRef, "--output", "json"], {
-      encoding: "utf8",
-      cwd: root,
-    }),
-  );
-  const serviceRoleKey = keys.find((key) => key.name === "service_role")?.api_key;
-  if (!serviceRoleKey) throw new Error(`Could not read service_role key for ${projectRef}.`);
-  return createSupabaseServiceClient(`https://${projectRef}.supabase.co`, serviceRoleKey);
+  return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
 function isExcludedUrl(url) {
@@ -1020,14 +999,6 @@ function loadEnvFile(path) {
   }
 }
 
-function readLinkedProjectRef() {
-  try {
-    return readFileSync(resolve(root, "supabase/.temp/project-ref"), "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-
 async function mapWithConcurrency(values, workerCount, callback) {
   let index = 0;
   const workers = Array.from({ length: Math.max(1, workerCount) }, async () => {
@@ -1038,14 +1009,6 @@ async function mapWithConcurrency(values, workerCount, callback) {
     }
   });
   await Promise.all(workers);
-}
-
-function chunk(values, size) {
-  const chunks = [];
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size));
-  }
-  return chunks;
 }
 
 function sleep(ms) {

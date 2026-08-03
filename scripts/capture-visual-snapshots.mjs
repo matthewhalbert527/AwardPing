@@ -8,6 +8,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -55,7 +56,11 @@ import {
   monitoringDateForVisualReportFilename,
   shouldReplaceLatestNightlyReport,
 } from "./lib/visual-capture-run-report.mjs";
-import { isScheduledNightlyVisualRun } from "./lib/visual-nightly-run-contract.mjs";
+import {
+  classifyScheduledNightlyVisualRun,
+  isScheduledNightlyVisualRun,
+  resolveVisualDiscoveryConfiguration,
+} from "./lib/visual-nightly-run-contract.mjs";
 import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
 import {
@@ -64,9 +69,13 @@ import {
   visualSnapshotKeysToDeleteAfterCas,
   visualSnapshotUploadedKeysToDeleteAfterLostCas,
 } from "./lib/visual-snapshot-history.mjs";
-import { bindVisualTextGeometry } from "./lib/visual-event-localization.mjs";
+import {
+  bindVisualTextGeometry,
+  verifyVisualScreenshotLayoutCapture,
+} from "./lib/visual-event-localization.mjs";
 import { captureVisibleTextGeometry } from "./lib/visible-text-geometry.mjs";
 import {
+  discoverExpansionStateDescriptors,
   verifyExpansionStateIsolation,
   withIsolatedExpansionStatePage,
 } from "./lib/expansion-state-isolation.mjs";
@@ -93,7 +102,10 @@ import {
   selectAiProvider as selectAiProviderForRun,
 } from "./lib/capture-ai-requirements.mjs";
 import { inspectLocalBaselineEvidence } from "./lib/local-baseline-evidence.mjs";
-import { rehydrateLocalBaselineFromR2 } from "./lib/r2-baseline-rehydration.mjs";
+import {
+  isExactHeldR2RepairTarget,
+  rehydrateLocalBaselineFromR2,
+} from "./lib/r2-baseline-rehydration.mjs";
 import {
   intakeArtifactFailureSolution,
   materializeFirstObservationCaptureFromAcquisition,
@@ -102,10 +114,22 @@ import {
   sourceBaselineFacts,
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import {
+  buildStage1BaselineActivationFailureRpcArgs,
+  buildStage1BaselineActivationFinalizeRpcArgs,
+  buildStage1BaselineActivationRecordRpcArgs,
+  evaluateStage1FirstVisualBaselineActivation,
+  isStage1BaselineActivationAcquisition,
+  isStage1PendingBaselineActivationSource,
+  stage1BaselineActivationPersistedTextIdentity,
+  stage1BaselineActivationFinalizationReceipt,
+  stage1BaselineActivationReceipt,
+} from "./lib/stage1-baseline-activation-guard.mjs";
 import { monitoringPromotionMatcherBundleHash } from "./lib/monitoring-promotion-matcher-bundle.mjs";
 import { insertedDiscoveryRows } from "./lib/source-discovery-write.mjs";
 import {
   buildDiscoveredPdfIntakeRequest,
+  captureIntakePage,
   normalizeSourceIntakeUrl,
 } from "./lib/source-intake.mjs";
 import {
@@ -138,8 +162,9 @@ const monitoringPromotionMatcherDigest =
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 11;
-const captureBehaviorName = "final-state-text-node-geometry-with-open-sections-semantic-crop-v3";
+const captureBehaviorVersion = 13;
+const captureBehaviorName =
+  "final-state-text-node-geometry-with-open-sections-semantic-crop-v3-visible-paint-v5-layout-bound-v1";
 const maxPdfDiscoveryRegistrationBatchSize = 500;
 const maxPdfDiscoveryQueueCandidates = 25;
 const maxSnapshotExpandableControls = 120;
@@ -258,17 +283,10 @@ const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
 const discoveryMode = boolArg(args["discovery-mode"] ?? env.AWARDPING_DISCOVERY_MODE, false);
-const requestedDiscoveryOnboardingBatchId = cleanText(
-  args["discovery-onboarding-batch-id"]
-    || env.AWARDPING_DISCOVERY_ONBOARDING_BATCH_ID,
-);
-const requestedDiscoveryIntent = cleanSlug(
-  args["discovery-intent"] || env.AWARDPING_DISCOVERY_INTENT || "historical_onboarding",
-);
-const discoveryIntent = requestedDiscoveryIntent === "live_recurring"
-  && !requestedDiscoveryOnboardingBatchId
-  ? "live_recurring"
-  : "historical_onboarding";
+const resolvedDiscoveryConfiguration = resolveVisualDiscoveryConfiguration({ args, env });
+const requestedDiscoveryOnboardingBatchId =
+  resolvedDiscoveryConfiguration.requestedOnboardingBatchId;
+const discoveryIntent = resolvedDiscoveryConfiguration.discoveryIntent;
 const discoveryOnboardingBatchId = discoveryIntent === "live_recurring"
   ? null
   : requestedDiscoveryOnboardingBatchId
@@ -589,6 +607,49 @@ if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAc
   process.exit(1);
 }
 
+const scheduledNightlyRunContract = classifyScheduledNightlyVisualRun({
+  runIdentity: { trigger: runTrigger },
+  options: {
+    run_trigger: runTrigger,
+    baseline_refresh: baselineRefresh,
+    complete_missing_baselines: completeMissingBaselines,
+    ai_review_evidence_capture: aiReviewEvidenceCapture,
+    localization_repair: localizationRepair,
+    r2_backfill_baselines: r2BackfillBaselines,
+    reset_previous_snapshot: resetPreviousSnapshot,
+    force_r2_snapshot_refresh: forceR2SnapshotRefresh,
+    source_id: sourceIdFilter,
+    source_url: sourceUrlFilter,
+    award: awardFilter,
+    source_ids_filter_count: sourceIdsFilter.size,
+    initial_official_document_materialization: initialOfficialDocumentMaterialization,
+    initial_official_document_acquisition_id: initialOfficialDocumentAcquisitionId,
+    pdf_only: pdfOnly,
+    web_only: webOnly,
+    skip_existing_baseline: skipExistingBaseline,
+    include_not_due: includeNotDue,
+    limit,
+    discovery_mode: discoveryMode,
+    discovery_intent: discoveryIntent,
+    discovery_onboarding_batch_id: discoveryOnboardingBatchId,
+    discover_pdf_subpages: discoverPdfSubpages,
+    discover_html_subpages: discoverHtmlSubpages,
+    visual_review_mode: visualReviewMode,
+    interpret_visual_changes: interpretVisualChanges,
+    r2_snapshot_sync: r2SnapshotSync,
+  },
+});
+if (runTrigger === "scheduled" && !scheduledNightlyRunContract.eligible) {
+  const option = scheduledNightlyRunContract.option
+    ? ` option=${scheduledNightlyRunContract.option}`
+    : "";
+  console.error(
+    `Invalid scheduled visual run contract: reason=${scheduledNightlyRunContract.reason}${option}. ` +
+      "Use --run-trigger=manual or --run-trigger=maintenance for explicit ad hoc modes.",
+  );
+  process.exit(1);
+}
+
 process.on("uncaughtException", (error) => {
   if (isBrowserClosedError(error)) {
     console.log(`NONFATAL_BROWSER_CLOSED ${errorMessage(error)}`);
@@ -875,6 +936,7 @@ async function runOnce() {
     r2_failed: 0,
     r2_skipped_existing: 0,
     r2_repaired_missing: 0,
+    r2_forced_refreshes: 0,
     r2_known_existing: 0,
     r2_known_missing: 0,
     r2_rehydrate_local_cache: 0,
@@ -907,6 +969,15 @@ async function runOnce() {
     baseline_facts_failed: 0,
     baseline_facts_skipped: 0,
     baseline_facts_backfilled: 0,
+    stage1_baseline_activation_binding_verified: 0,
+    stage1_baseline_activation_comparison_captures: 0,
+    stage1_baseline_activation_prepared: 0,
+    stage1_baseline_activation_verified: 0,
+    stage1_baseline_activation_quarantined: 0,
+    stage1_baseline_activation_quarantine_failed: 0,
+    stage1_baseline_activation_server_receipt_failed: 0,
+    stage1_baseline_activation_finalization_failed: 0,
+    stage1_baseline_activation_reasons: {},
     visual_interpreted: 0,
     visual_review_mode: visualReviewMode,
     visual_review_candidates_queued: 0,
@@ -1083,6 +1154,43 @@ async function runOnce() {
           continue;
         }
 
+        if (
+          error?.stage1BaselineActivationVisualCaptureFailure === true
+          || (
+            isStage1PendingBaselineActivationSource(source)
+            && isSourceTimeoutError(error)
+          )
+        ) {
+          if (hasOpenSourceIssue(source)) {
+            report.issue_sources_still_failing += 1;
+          } else {
+            report.issue_sources_new_failures += 1;
+          }
+          const preflight = evaluateStage1FirstVisualBaselineActivation({
+            acquisition: jsonObjectOrEmpty(source?.source_acquisition),
+            capture: null,
+            sourceId: source.id,
+            bindingOnly: true,
+          });
+          const activationFailure = preflight.allowed
+            ? failedStage1BaselineActivationEvaluation(
+                preflight,
+                "stage1_baseline_activation_visual_capture_failed",
+                `The first visual baseline capture failed before verification: ${errorMessage(error)}`,
+              )
+            : preflight;
+          await persistStage1BaselineActivationFailure({
+            source,
+            capture: null,
+            retainedComparisonCapture: null,
+            evaluation: activationFailure,
+            report,
+            failureStage: "first_visual_capture_before_exact_verification",
+          });
+          console.log(`FAILED ${errorMessage(error)} ${sourceLabel(source)}`);
+          break;
+        }
+
         report.failed += 1;
         if (hasOpenSourceIssue(source)) {
           report.issue_sources_still_failing += 1;
@@ -1151,6 +1259,14 @@ async function runOnce() {
     const loadedSources = authoritativeInventory
       ? authoritativeInventory.filter(sourceMatchesShard).slice(0, limit)
       : await loadSources(limit);
+    if (
+      sourceIdFilter &&
+      (loadedSources.length !== 1 || loadedSources[0]?.id !== sourceIdFilter)
+    ) {
+      throw new Error(
+        `Exact source load failed closed: requested ${sourceIdFilter}, loaded ${loadedSources.length}.`,
+      );
+    }
     if (authoritativeInventory) {
       report.source_inventory = buildVisualSourceInventoryProof({
         eligibleSources: authoritativeInventory,
@@ -1386,7 +1502,8 @@ async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
   // cache can be repaired. That exception must never become permission to run
   // a live capture while any review_later workflow still owns the source.
   const quarantineRepairOnly =
-    source.admin_review_status === "review_later";
+    source.admin_review_status === "review_later"
+    && !isStage1PendingBaselineActivationSource(source);
   if (
     !missingLocalBaseline &&
     !quarantineRepairOnly &&
@@ -1744,6 +1861,410 @@ async function processSource(source, context, browserMeta, report) {
   });
 }
 
+async function enforceStage1FirstVisualBaselineActivation({ source, capture, report }) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const preflight = evaluateStage1FirstVisualBaselineActivation({
+    acquisition,
+    capture,
+    sourceId: source.id,
+    bindingOnly: true,
+  });
+  if (!preflight.applies) return null;
+  if (!preflight.allowed) {
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: null,
+      evaluation: preflight,
+      report,
+      failureStage: "immutable_binding_preflight",
+    });
+    return { blocked: true, evaluation: preflight };
+  }
+  report.stage1_baseline_activation_binding_verified += 1;
+  if (!r2SnapshotSync) {
+    const r2ConfigurationFailure = failedStage1BaselineActivationEvaluation(
+      preflight,
+      "stage1_baseline_activation_r2_sync_required",
+      "Stage 1 baseline activation requires authoritative R2 snapshot synchronization.",
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: null,
+      evaluation: r2ConfigurationFailure,
+      report,
+      failureStage: "required_r2_configuration",
+    });
+    return { blocked: true, evaluation: r2ConfigurationFailure };
+  }
+
+  let retainedComparisonCapture;
+  try {
+    retainedComparisonCapture = await captureIntakePage(source.url, {
+      timeoutMs,
+      maxPdfBytes,
+    });
+    report.stage1_baseline_activation_comparison_captures += 1;
+  } catch (error) {
+    const comparisonFailure = failedStage1BaselineActivationEvaluation(
+      preflight,
+      "stage1_baseline_activation_intake_comparison_capture_failed",
+      `The free deterministic intake comparison capture failed: ${errorMessage(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: null,
+      evaluation: comparisonFailure,
+      report,
+      failureStage: "deterministic_intake_comparison_capture",
+    });
+    return { blocked: true, evaluation: comparisonFailure };
+  }
+
+  const evaluation = evaluateStage1FirstVisualBaselineActivation({
+    acquisition,
+    capture,
+    retainedComparisonCapture,
+    sourceId: source.id,
+  });
+  if (!evaluation.allowed) {
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation,
+      report,
+      failureStage: "exact_text_and_visual_evidence_verification",
+    });
+    return { blocked: true, evaluation };
+  }
+
+  const { data, error } = await supabase.rpc(
+    "record_stage1_source_baseline_activation",
+    buildStage1BaselineActivationRecordRpcArgs({
+      sourceId: source.id,
+      acquisition,
+      evaluation,
+    }),
+  );
+  if (error) {
+    report.stage1_baseline_activation_server_receipt_failed += 1;
+    const receiptFailure = failedStage1BaselineActivationEvaluation(
+      evaluation,
+      "stage1_baseline_activation_server_receipt_failed",
+      `The service-only activation receipt failed: ${error.message || String(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation: receiptFailure,
+      report,
+      failureStage: "server_activation_receipt",
+    });
+    return { blocked: true, evaluation: receiptFailure };
+  }
+
+  const receipt = stage1BaselineActivationReceipt(data, evaluation);
+  if (!receipt.allowed) {
+    report.stage1_baseline_activation_server_receipt_failed += 1;
+    const receiptFailure = failedStage1BaselineActivationEvaluation(
+      evaluation,
+      receipt.reason,
+      `The service-only activation receipt refused activation${
+        receipt.server_reason ? `: ${receipt.server_reason}` : "."
+      }`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation: receiptFailure,
+      report,
+      failureStage: "server_activation_receipt",
+    });
+    return { blocked: true, evaluation: receiptFailure };
+  }
+
+  try {
+    attachStage1BaselineActivationVerification(capture, receipt.verification);
+  } catch (error) {
+    const metadataFailure = failedStage1BaselineActivationEvaluation(
+      evaluation,
+      "stage1_baseline_activation_capture_metadata_write_failed",
+      `The server receipt succeeded but capture verification metadata could not be persisted: ${errorMessage(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation: metadataFailure,
+      report,
+      failureStage: "capture_verification_metadata",
+    });
+    return { blocked: true, evaluation: metadataFailure };
+  }
+
+  report.stage1_baseline_activation_prepared += 1;
+  console.log(`STAGE1_BASELINE_ACTIVATION_PREPARED ${sourceLabel(source)}`);
+  return {
+    blocked: false,
+    evaluation,
+    verification: receipt.verification,
+    prepareReceipt: receipt.receipt,
+    retainedComparisonCapture,
+  };
+}
+
+function attachStage1BaselineActivationVerification(capture, verification) {
+  if (!capture?.meta_path) {
+    throw new Error("Stage 1 baseline activation capture metadata path is missing.");
+  }
+  const metadata = readJsonIfExists(capture.meta_path);
+  if (!metadata) {
+    throw new Error("Stage 1 baseline activation capture metadata is missing or invalid.");
+  }
+  capture.stage1_baseline_activation = verification;
+  atomicWriteJson(capture.meta_path, {
+    ...metadata,
+    stage1_baseline_activation: verification,
+  });
+}
+
+function failedStage1BaselineActivationEvaluation(base, reason, detail) {
+  return {
+    ...base,
+    applies: true,
+    allowed: false,
+    status: "quarantine_required",
+    reason,
+    detail,
+    verification: null,
+  };
+}
+
+async function persistStage1BaselineActivationFailure({
+  source,
+  capture,
+  retainedComparisonCapture,
+  evaluation,
+  report,
+  failureStage,
+  persistenceState = null,
+}) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const rpcArgs = buildStage1BaselineActivationFailureRpcArgs({
+    sourceId: source.id,
+    acquisition,
+    evaluation,
+    capture,
+    retainedComparisonCapture,
+    failureStage,
+    persistenceState,
+  });
+  const { data, error } = await supabase.rpc(
+    "fail_stage1_source_baseline_activation",
+    rpcArgs,
+  );
+  if (error || data === null || data === undefined || data === false) {
+    report.stage1_baseline_activation_quarantine_failed += 1;
+    throw new Error(
+      `Durable Stage 1 baseline activation quarantine failed: ${
+        error?.message || "missing failure receipt"
+      }`,
+    );
+  }
+
+  report.failed += 1;
+  report.stage1_baseline_activation_quarantined += 1;
+  incrementCounterObject(report.stage1_baseline_activation_reasons, evaluation.reason);
+  const quarantineId = typeof data === "object"
+    ? data.quarantine_id || data.id || null
+    : data;
+  report.errors.push({
+    source_id: source.id,
+    source_url: source.url,
+    source_acquisition_id: acquisition.id,
+    source_page_request_id: acquisition.origin_source_page_request_id,
+    quarantine_id: quarantineId,
+    stage: "stage1_baseline_activation",
+    reason_code: evaluation.reason,
+    message: evaluation.detail,
+    evidence: rpcArgs.p_evidence,
+    creates_api_charge: false,
+  });
+  console.log(
+    `STAGE1_BASELINE_ACTIVATION_QUARANTINED reason=${evaluation.reason} ${sourceLabel(source)}`,
+  );
+}
+
+function restoreBaselineAfterFailedStage1Activation(source, previousBaseline) {
+  const path = baselinePathForSource(source.id);
+  if (previousBaseline) {
+    atomicWriteJson(path, previousBaseline);
+    localBaselineEvidenceCache.set(
+      source.id,
+      baselineEvidenceStatus(previousBaseline).ok,
+    );
+    return;
+  }
+  rmSync(path, { force: true });
+  localBaselineEvidenceCache.set(source.id, false);
+}
+
+function buildStage1BaselineActivationPersistenceEvidence({
+  source,
+  capture,
+  evaluation,
+  r2Result,
+}) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const baselinePath = baselinePathForSource(source.id);
+  const baseline = readJsonIfExists(baselinePath);
+  const localVerification = jsonObjectOrEmpty(
+    baseline?.summary_metadata?.stage1_baseline_activation,
+  );
+  const captureMetadata = readJsonIfExists(capture.meta_path);
+  const captureVerification = jsonObjectOrEmpty(
+    captureMetadata?.stage1_baseline_activation,
+  );
+  const latestObjectKeys = jsonObjectOrEmpty(r2Result?.latest_object_keys);
+  const latestHashes = jsonObjectOrEmpty(r2Result?.latest_hashes);
+  const latestMetadata = jsonObjectOrEmpty(r2Result?.latest_metadata);
+  const r2Verification = jsonObjectOrEmpty(latestMetadata.stage1_baseline_activation);
+  const persistedLocalText = capture?.text_path && existsSync(capture.text_path)
+    ? readFileSync(capture.text_path, "utf8")
+    : null;
+  const localTextIdentity = stage1BaselineActivationPersistedTextIdentity({
+    persistedText: persistedLocalText,
+    capturedText: capture?.text,
+  });
+  const localRawTextSha256 = localTextIdentity?.text_sha256 || null;
+  const localNormalizedTextSha256 =
+    localTextIdentity?.normalized_text_sha256 || null;
+  if (
+    !baseline
+    || localVerification.guard_sha256 !== evaluation.guard_sha256
+    || captureVerification.guard_sha256 !== evaluation.guard_sha256
+    || r2Verification.guard_sha256 !== evaluation.guard_sha256
+    || localVerification.observed_normalized_text_sha256 !==
+      evaluation.observed_normalized_text_sha256
+    || captureVerification.observed_normalized_text_sha256 !==
+      evaluation.observed_normalized_text_sha256
+    || r2Verification.observed_normalized_text_sha256 !==
+      evaluation.observed_normalized_text_sha256
+    || localVerification.visual_evidence_quotes_verified !== true
+    || captureVerification.visual_evidence_quotes_verified !== true
+    || r2Verification.visual_evidence_quotes_verified !== true
+    || r2Result?.succeeded !== true
+    || !cleanText(r2Result.bucket)
+    || !Object.keys(latestObjectKeys).length
+    || localRawTextSha256 !== baseline.text_hash
+    || !/^[0-9a-f]{64}$/.test(localNormalizedTextSha256 || "")
+    || latestHashes.text_hash !== capture.text_hash
+    || r2Result.latest_captured_at !== capture.captured_at
+  ) {
+    throw new Error("Local baseline, capture metadata, and authoritative R2 bindings are incomplete.");
+  }
+  return {
+    schema_version: "awardping.stage1.baseline-activation-persistence-evidence.v3",
+    persisted_at: new Date().toISOString(),
+    source_id: source.id,
+    acquisition_id: acquisition.id,
+    request_id: acquisition.origin_source_page_request_id,
+    guard_sha256: evaluation.guard_sha256,
+    observed_normalized_text_sha256: evaluation.observed_normalized_text_sha256,
+    local_baseline_written: true,
+    local_baseline: {
+      archive_relative_path: toArchiveRelative(baselinePath),
+      captured_at: baseline.captured_at,
+      kind: baseline.kind,
+      text_hash: baseline.text_hash,
+      normalized_text_sha256: localNormalizedTextSha256,
+      image_hash: baseline.image_hash,
+      file_hash: baseline.file_hash || null,
+      layout_hash: baseline.layout_hash || null,
+      capture_meta_path: baseline.capture?.meta || null,
+      activation_guard_sha256: localVerification.guard_sha256,
+      activation_status: localVerification.status,
+    },
+    r2_sync_succeeded: true,
+    r2: {
+      bucket: r2Result.bucket,
+      latest_captured_at: r2Result.latest_captured_at,
+      latest_object_keys: latestObjectKeys,
+      latest_hashes: latestHashes,
+      activation_guard_sha256: r2Verification.guard_sha256,
+      uploaded_object_count: nonNegativeInt(r2Result.uploaded, 0),
+    },
+    creates_api_charge: false,
+  };
+}
+
+async function finalizeStage1BaselineActivation({
+  source,
+  capture,
+  stage1Activation,
+  persistenceEvidence,
+  report,
+}) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const { data, error } = await supabase.rpc(
+    "finalize_stage1_source_baseline_activation",
+    buildStage1BaselineActivationFinalizeRpcArgs({
+      sourceId: source.id,
+      acquisition,
+      evaluation: stage1Activation.evaluation,
+      prepareReceipt: stage1Activation.prepareReceipt,
+      persistenceEvidence,
+    }),
+  );
+  if (error) {
+    report.stage1_baseline_activation_finalization_failed += 1;
+    const finalizationFailure = failedStage1BaselineActivationEvaluation(
+      stage1Activation.evaluation,
+      "stage1_baseline_activation_server_finalization_failed",
+      `The service-only activation finalization failed: ${error.message || String(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+      evaluation: finalizationFailure,
+      report,
+      failureStage: "server_activation_finalization",
+      persistenceState: persistenceEvidence,
+    });
+    return false;
+  }
+  const finalization = stage1BaselineActivationFinalizationReceipt(data);
+  if (!finalization.allowed) {
+    report.stage1_baseline_activation_finalization_failed += 1;
+    const finalizationFailure = failedStage1BaselineActivationEvaluation(
+      stage1Activation.evaluation,
+      finalization.reason,
+      `The service-only activation finalization refused activation${
+        finalization.server_reason ? `: ${finalization.server_reason}` : "."
+      }`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+      evaluation: finalizationFailure,
+      report,
+      failureStage: "server_activation_finalization",
+      persistenceState: persistenceEvidence,
+    });
+    return false;
+  }
+  report.stage1_baseline_activation_verified += 1;
+  console.log(`STAGE1_BASELINE_ACTIVATION_FINALIZED ${sourceLabel(source)}`);
+  return true;
+}
+
 async function processSourceUnlocked(source, context, browserMeta, report) {
   if (initialOfficialDocumentMaterialization) {
     await processInitialOfficialDocumentMaterializationOnly(source, report);
@@ -1790,7 +2311,9 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
       report.r2_rehydration_only_completed += 1;
       console.log(`R2_REHYDRATION_ONLY_COMPLETE ${sourceLabel(source)}`);
     } else {
-      console.log(`SOURCE_REVIEW_HOLD no_live_capture ${sourceLabel(source)}`);
+      console.log(
+        `SOURCE_REVIEW_HOLD no_live_capture reason=${recovery.failureReason || "review_later"} ${sourceLabel(source)}`,
+      );
     }
     return;
   }
@@ -1824,7 +2347,19 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     const currentReviewState = await loadSharedSourceReviewState(source.id, report, {
       stage: "exact_source_pre_capture_review_state",
     });
-    if (!currentReviewState || currentReviewState.admin_review_status !== "open") {
+    const exactPendingStage1Activation = currentReviewState
+      ? isStage1PendingBaselineActivationSource({
+          ...source,
+          ...currentReviewState,
+        })
+      : false;
+    if (
+      !currentReviewState
+      || (
+        currentReviewState.admin_review_status !== "open"
+        && !exactPendingStage1Activation
+      )
+    ) {
       console.log(`SOURCE_REVIEW_HOLD no_live_capture ${sourceLabel(source)}`);
       return;
     }
@@ -1840,12 +2375,155 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
   const pdfSource = isPdfSource(source);
-  const capture = pdfSource
-    ? await capturePdfSourceForBaseline(source, baseline, report)
-    : await captureSource(source, context, browserMeta, report, { baseline });
+  const pendingStage1Activation = isStage1PendingBaselineActivationSource(source);
+  let capture;
+  try {
+    capture = pdfSource
+      ? await capturePdfSourceForBaseline(source, baseline, report)
+      : await captureSource(source, context, browserMeta, report, {
+          baseline,
+          suppressDiscovery: pendingStage1Activation,
+        });
+  } catch (error) {
+    if (!pendingStage1Activation) throw error;
+    throw Object.assign(
+      new Error(errorMessage(error)),
+      {
+        cause: error,
+        stage1BaselineActivationVisualCaptureFailure: true,
+      },
+    );
+  }
   report.checked += 1;
   if (capture.kind === "pdf") {
     report.pdf_checked += 1;
+  }
+
+  const stage1Activation = pendingStage1Activation
+    ? await enforceStage1FirstVisualBaselineActivation({ source, capture, report })
+    : null;
+  if (stage1Activation?.blocked) return;
+  if (stage1Activation?.verification) {
+    let written = false;
+    try {
+      written = writeBaseline(source, capture, {
+        reason: "stage1_reviewed_baseline_activation",
+        previous_baseline: baseline || null,
+        stage1_baseline_activation: stage1Activation.verification,
+      });
+    } catch (error) {
+      const writeFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_baseline_write_failed",
+        `The exact verified visual baseline write failed: ${errorMessage(error)}`,
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: writeFailure,
+        report,
+        failureStage: "verified_baseline_write",
+      });
+      return;
+    }
+    if (!written) {
+      const writeFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_baseline_write_refused",
+        "The verified visual capture was older than the existing baseline; the old baseline was preserved.",
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: writeFailure,
+        report,
+        failureStage: "verified_baseline_write",
+      });
+      return;
+    }
+    const r2Result = await maybeSyncR2Snapshot(source, capture, report, {
+      reason: "stage1_reviewed_baseline_activation",
+    });
+    if (!r2Result) {
+      restoreBaselineAfterFailedStage1Activation(source, baseline);
+      const r2Failure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_r2_sync_failed",
+        "The verified local baseline was rolled back because required authoritative R2 synchronization failed.",
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: r2Failure,
+        report,
+        failureStage: "required_r2_persistence",
+      });
+      return;
+    }
+    let persistenceEvidence;
+    try {
+      persistenceEvidence = buildStage1BaselineActivationPersistenceEvidence({
+        source,
+        capture,
+        evaluation: stage1Activation.evaluation,
+        r2Result,
+      });
+    } catch (error) {
+      const evidenceFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_persistence_evidence_invalid",
+        `The local/R2 persistence receipt could not be constructed: ${errorMessage(error)}`,
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: evidenceFailure,
+        report,
+        failureStage: "persistence_evidence",
+        persistenceState: {
+          local_baseline_written: true,
+          r2_sync_succeeded: true,
+        },
+      });
+      return;
+    }
+    try {
+      await markSharedSourceVisualCheckSucceeded(source, capture, report, {
+        preserveReviewedUrl: true,
+        preserveReviewedMetadata: true,
+      });
+    } catch (error) {
+      const checkMetadataFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_source_check_metadata_failed",
+        `The verified source check metadata could not be recorded before activation: ${errorMessage(error)}`,
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: checkMetadataFailure,
+        report,
+        failureStage: "source_check_metadata_before_finalization",
+        persistenceState: persistenceEvidence,
+      });
+      return;
+    }
+    const finalized = await finalizeStage1BaselineActivation({
+      source,
+      capture,
+      stage1Activation,
+      persistenceEvidence,
+      report,
+    });
+    if (!finalized) return;
+    report.baselined += 1;
+    console.log(`BASELINE stage1_reviewed_activation ${sourceLabel(source)}`);
+    return;
   }
 
   const previous = baseline && !baselineRefresh
@@ -1886,7 +2564,11 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
 
-  if (needsCaptureBehaviorRefresh(baseline, capture)) {
+  const hashComparison = compareStableCaptureHashes(baseline, capture, {
+    profile: captureProfile,
+  });
+  if (needsCaptureBehaviorRefresh(baseline, capture) &&
+      captureBehaviorRefreshContentIsUnchanged(baseline, capture)) {
     await maybeExtractBaselineFacts(source, capture, report, {
       reason: "capture_behavior_refresh",
     });
@@ -1916,7 +2598,6 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
 
-  const hashComparison = compareStableCaptureHashes(baseline, capture, { profile: captureProfile });
   const screenshotChanged = hashComparison.screenshotChanged;
   const textChanged = hashComparison.textChanged;
   if (hashComparison.mainContentHashChanged) report.main_content_hash_changed += 1;
@@ -3674,7 +4355,13 @@ async function extractPdfText(buffer) {
   }
 }
 
-async function captureSource(source, context, browserMeta, report, { baseline = null } = {}) {
+async function captureSource(
+  source,
+  context,
+  browserMeta,
+  report,
+  { baseline = null, suppressDiscovery = false } = {},
+) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
   const sourceDir = join(archiveRoot, "sources", source.id);
@@ -3711,6 +4398,14 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     }
     await page.addStyleTag({ content: stableCaptureCss }).catch(() => null);
     const initialHiddenNoise = await hideNoiseElements(page);
+    // Activate lazy, scroll-triggered accordions before discovering their
+    // collapsed controls. Scrolling does not open expansion state.
+    const initialScrollActivation = await activateScrollTriggeredContent(page, {
+      source,
+      profile: captureProfile,
+    });
+    await hideNoiseElements(page);
+    await waitForPageSettledForSnapshot(page);
     // Capture each collapsed-section state before the whole-page expansion pass.
     // That keeps each candidate independent instead of inheriting panels forced
     // open for the main full-page capture.
@@ -3761,10 +4456,6 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         video.removeAttribute("autoplay");
       }
     }).catch(() => null);
-    const initialScrollActivation = await activateScrollTriggeredContent(page, {
-      source,
-      profile: captureProfile,
-    });
     await waitForPageSettledForSnapshot(page);
 
     let pdfDiscoveryForRegistration = null;
@@ -3801,7 +4492,7 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     // DOM that is about to be captured. A failed/capped expansion, capped
     // scroll, or unsettled page is an incomplete scan and must never establish
     // the historical seed watermark.
-    if (discoveryMode && discoverPdfSubpages) {
+    if (!suppressDiscovery && discoveryMode && discoverPdfSubpages) {
       const pdfDiscovery = await discoverPdfLinksOnPage(page, source);
       const completeness = pdfDiscoveryCompleteness({
         expanded: finalExpanded,
@@ -3837,7 +4528,7 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         });
       }
     }
-    if (discoveryMode && discoverHtmlSubpages) {
+    if (!suppressDiscovery && discoveryMode && discoverHtmlSubpages) {
       discoveredHtmlLinks = await discoverHtmlSubpageLinksOnPage(page, source);
     }
 
@@ -3874,10 +4565,22 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       );
     }
     const textHash = textBlocks.text_hash;
-    const finalTextGeometry = await captureStructuredVisibleTextGeometry(page, {
-      capturedAt,
-      stateId: "main",
-    });
+    // A full screenshot remains useful event-specific evidence when the page
+    // never settles, but its DOM rectangles cannot honestly be called exact.
+    // Bind an explicit empty/unavailable layout to that screenshot so
+    // downstream publication falls back to the full image instead of using
+    // coordinates sampled from a moving render.
+    let finalTextGeometry = pageSettle.stable
+      ? await captureStructuredVisibleTextGeometry(page, {
+          capturedAt,
+          stateId: "main",
+        })
+      : unavailableStructuredVisibleTextGeometry({
+          capturedAt,
+          stateId: "main",
+          dimensions,
+          reason: "page_did_not_settle_before_geometry_capture",
+        });
     const pageBuffer = await page.screenshot({
       path: pagePath,
       fullPage: true,
@@ -3889,6 +4592,18 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry, {
       stateId: "main",
     });
+    if (pageSettle.stable) {
+      const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(page, {
+        capturedAt,
+        stateId: "main",
+      });
+      finalTextGeometry = verifyVisualScreenshotLayoutCapture({
+        before: finalTextGeometry,
+        after: afterScreenshotGeometry,
+        screenshot: screenshotBinding,
+        stateId: "main",
+      });
+    }
     const textGeometry = bindVisualTextGeometry(finalTextGeometry, {
       capturedAt,
       imageHash,
@@ -3973,6 +4688,10 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       expanded_content: expanded,
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
       expansion_state_attempted: expansionStateEvidence.attempted || 0,
+      expansion_state_capture_limit: expansionStateEvidence.capture_limit || 0,
+      expansion_state_capture_complete: expansionStateEvidence.capture_complete !== false,
+      expansion_state_truncated: expansionStateEvidence.truncated === true,
+      expansion_state_truncated_count: expansionStateEvidence.truncated_count || 0,
       expansion_text_in_primary_hash: captureProfileConfig.includeExpansionTextInPrimary,
       expansion_state_screenshots: expansionStateEvidence.states.map((state) => ({
         state_id: state.state_id,
@@ -4020,7 +4739,7 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     if (pdfDiscoveryForRegistration) {
       await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration, expanded, report);
     }
-    if (discoveryMode && discoverHtmlSubpages) {
+    if (!suppressDiscovery && discoveryMode && discoverHtmlSubpages) {
       await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
     }
 
@@ -4286,174 +5005,46 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
 
 async function captureExpansionStateEvidence(page, context, captureDir, { source = null, profile = captureProfile } = {}) {
   if (maxExpansionStateScreenshots <= 0) {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: null };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: 0,
+      capture_complete: true, truncated: false, truncated_count: 0, failures: [], error: null,
+    };
   }
   const configuredRelevanceMode = expansionRelevanceModeForSource(source, profile);
   const relevanceMode = configuredRelevanceMode === "none" && ["stable-daily", "localization-repair"].includes(profile)
     ? "award-content"
     : configuredRelevanceMode;
   if (!captureProfileSettings(profile).allowExpansionScreenshots && relevanceMode === "none") {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: null, skipped: true };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
+      capture_complete: true, truncated: false, truncated_count: 0,
+      failures: [], error: null, skipped: true,
+    };
   }
   if (relevanceMode === "none") {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: null, skipped: true };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
+      capture_complete: true, truncated: false, truncated_count: 0,
+      failures: [], error: null, skipped: true,
+    };
   }
 
   try {
-    const setup = await page.evaluate(({ maxControls, relevanceMode }) => {
-      function textOf(element) {
-        return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
-      }
-
-      function signalFor(element) {
-        return [
-          element.id,
-          element.className,
-          element.getAttribute("aria-label"),
-          element.getAttribute("aria-controls"),
-          element.getAttribute("data-target"),
-          element.getAttribute("data-bs-target"),
-          element.getAttribute("data-toggle"),
-          element.getAttribute("data-bs-toggle"),
-          element.getAttribute("href"),
-          textOf(element),
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-      }
-
-      function isVisible(element) {
-        if (!(element instanceof HTMLElement)) return false;
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return (
-          rect.width > 0 &&
-          rect.height > 0 &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          Number(style.opacity || 1) > 0
-        );
-      }
-
-      function controlledTextFor(element) {
-        const values = [];
-        for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
-          const value = element.getAttribute(attr);
-          if (!value) continue;
-          for (const token of value.split(/\s+/).filter(Boolean)) {
-            const selector = token.startsWith("#")
-              ? token
-              : /^[A-Za-z][\w:-]*$/.test(token)
-                ? `#${CSS.escape(token)}`
-                : null;
-            if (!selector) continue;
-            try {
-              for (const target of document.querySelectorAll(selector)) values.push(textOf(target));
-            } catch {
-              // Ignore malformed third-party selectors.
-            }
-          }
-        }
-        return values.join(" ");
-      }
-
-      function selectorFor(element) {
-        if (element.id) return `#${CSS.escape(element.id)}`;
-        const parts = [];
-        let current = element;
-        while (current && current !== document.documentElement) {
-          const tag = current.tagName.toLowerCase();
-          const siblings = current.parentElement
-            ? [...current.parentElement.children].filter((sibling) => sibling.tagName === current.tagName)
-            : [];
-          const position = siblings.indexOf(current) + 1;
-          parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${position})` : tag);
-          current = current.parentElement;
-        }
-        return `html>${parts.join(">")}`;
-      }
-
-      function isExpandableStateControl(element) {
-        if (!(element instanceof HTMLElement)) return false;
-        if (!isVisible(element)) return false;
-        if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
-
-        const tag = element.tagName.toLowerCase();
-        const href = element.getAttribute("href") || "";
-        if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
-          return false;
-        }
-
-        const signal = signalFor(element);
-        if (/(menu|nav|navbar|search|login|log in|sign in|subscribe|newsletter|share|print|donate|cart|next|previous|prev|facebook|twitter|linkedin|instagram)/i.test(signal)) {
-          return false;
-        }
-
-        const explicit =
-          tag === "summary" ||
-          element.getAttribute("aria-expanded") !== null ||
-          element.getAttribute("aria-controls") ||
-          element.getAttribute("data-target") ||
-          element.getAttribute("data-bs-target") ||
-          element.getAttribute("data-toggle") ||
-          element.getAttribute("data-bs-toggle") ||
-          element.closest("details, .accordion, [class*='accordion' i], [class*='faq' i], [id*='faq' i], [role='tablist']");
-
-        const contentPattern =
-          relevanceMode === "award-content"
-            ? /\b(faq|questions?|answers?|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|guidelines?|instructions?|documents?|pdf|forms?|materials?|amount|tuition|stipend)\b/i
-            : /\b(faq|questions?|answers?|expand|show|more|details|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|deadlines?|guidelines?|instructions?|documents?|pdf|forms?|awards?|grants?|materials?|amount|tuition|stipend)\b/i;
-        const contentRelevant = contentPattern.test(`${signal} ${controlledTextFor(element)}`);
-
-        return Boolean(explicit && contentRelevant);
-      }
-
-      const controls = [
-        ...document.querySelectorAll(
-          [
-            "summary",
-            "details > :first-child",
-            "button",
-            "[role='button']",
-            "[role='tab']",
-            "a[href^='#']",
-            "a[data-toggle]",
-            "a[data-bs-toggle]",
-            "button[data-toggle]",
-            "button[data-bs-toggle]",
-            "[onclick]",
-            "[tabindex]",
-            "[class*='accordion' i]",
-            "[class*='toggle' i]",
-            "[class*='elementor-tab-title' i]",
-            "[class*='e-n-accordion-item-title' i]",
-          ].join(", "),
-        ),
-      ]
-        .filter(isExpandableStateControl)
-        .slice(0, maxControls);
-
-      return {
-        candidates: controls.length,
-        labels: controls.map((control, index) => ({
-          index,
-          tag: control.tagName,
-          selector: selectorFor(control),
-          id: control.id || null,
-          label: textOf(control).slice(0, 120) || control.getAttribute("aria-label") || `Section ${index + 1}`,
-          aria_controls: control.getAttribute("aria-controls") || null,
-          data_target: control.getAttribute("data-target") || control.getAttribute("data-bs-target") || null,
-          href: control.getAttribute("href") || null,
-        })),
-        base_text: document.body?.innerText || "",
-      };
-    }, { maxControls: maxExpansionStateScreenshots, relevanceMode });
+    const setup = await discoverExpansionStateDescriptors(page, {
+      maxControls: maxExpansionStateScreenshots,
+      relevanceMode,
+    });
+    const descriptors = setup.descriptors || [];
+    const truncationError = setup.truncated === true
+      ? `expansion_state_capture_truncated: eligible=${setup.candidates || 0} ` +
+        `capture_limit=${setup.capture_limit || maxExpansionStateScreenshots} ` +
+        `omitted=${setup.truncated_count || 0}. Exact opened-section localization is unavailable for omitted controls.`
+      : null;
 
     const states = [];
     const failures = [];
     const navigationUrl = cleanText(page.url()) || cleanText(source?.url);
-    for (const candidate of setup.labels || []) {
+    for (const candidate of descriptors) {
       const stateNumber = states.length + 1;
       const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
       const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
@@ -4461,89 +5052,114 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
       const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
       try {
         const state = await withIsolatedExpansionStatePage({
-        context,
-        url: navigationUrl,
-        descriptor: candidate,
-        descriptors: setup.labels,
-        timeoutMs,
-        preparePage: async (statePage) => {
-          await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
-          await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
-          if (delayMs > 0) await statePage.waitForTimeout(delayMs);
-          await waitForMeaningfulPageContent(statePage);
-          await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
-          await hideNoiseElements(statePage);
-          await statePage.evaluate(() => {
-            for (const video of document.querySelectorAll("video")) {
-              video.pause?.();
-              video.removeAttribute("autoplay");
+          context,
+          url: navigationUrl,
+          descriptor: candidate,
+          descriptors,
+          timeoutMs,
+          preparePage: async (statePage) => {
+            await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
+            await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
+            if (delayMs > 0) await statePage.waitForTimeout(delayMs);
+            await waitForMeaningfulPageContent(statePage);
+            await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
+            await hideNoiseElements(statePage);
+            await activateScrollTriggeredContent(statePage, { source, profile });
+            await hideNoiseElements(statePage);
+            const preparedStateSettle = await waitForPageSettledForSnapshot(statePage);
+            if (!preparedStateSettle.stable) {
+              throw new Error(
+                `Expansion state page did not settle before control resolution: waited_ms=${preparedStateSettle.waited_ms}.`,
+              );
             }
-          }).catch(() => null);
-        },
-        capture: async (statePage, openedIsolation) => {
-          await activateScrollTriggeredContent(statePage, { source, profile });
-          await hideNoiseElements(statePage);
-          await waitForPageSettledForSnapshot(statePage);
-          const isolation = await verifyExpansionStateIsolation(statePage, {
-            descriptor: candidate,
-            descriptors: setup.labels,
-          });
-          if (!isolation.verified) {
-            throw new Error(
-              `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
-            );
-          }
-          const stateCapturedAt = new Date().toISOString();
-          const finalStateText = await statePage.evaluate(() => document.body?.innerText || "");
-          const stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
-            capturedAt: stateCapturedAt,
-            stateId,
-          });
-          const pageBuffer = await statePage.screenshot({
-            path: pagePath,
-            fullPage: true,
-            type: "jpeg",
-            quality: jpegQuality,
-            timeout: timeoutMs,
-          });
-          const imageHash = hashBuffer(pageBuffer);
-          const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
-            stateId,
-          });
-          const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
-            capturedAt: stateCapturedAt,
-            imageHash,
-            imageRef: toArchiveRelative(pagePath),
-            screenshot: screenshotBinding,
-          });
-          writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
+            await statePage.evaluate(() => {
+              for (const video of document.querySelectorAll("video")) {
+                video.pause?.();
+                video.removeAttribute("autoplay");
+              }
+            }).catch(() => null);
+          },
+          capture: async (statePage, openedIsolation) => {
+            await activateScrollTriggeredContent(statePage, { source, profile });
+            await hideNoiseElements(statePage);
+            const captureStateSettle = await waitForPageSettledForSnapshot(statePage);
+            if (!captureStateSettle.stable) {
+              throw new Error(
+                `Expansion state page did not settle before geometry capture: waited_ms=${captureStateSettle.waited_ms}.`,
+              );
+            }
+            const isolation = await verifyExpansionStateIsolation(statePage, {
+              descriptor: candidate,
+              descriptors,
+            });
+            if (!isolation.verified) {
+              throw new Error(
+                `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
+              );
+            }
+            const stateCapturedAt = new Date().toISOString();
+            const finalStateText = await statePage.evaluate(() => document.body?.innerText || "");
+            let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+              capturedAt: stateCapturedAt,
+              stateId,
+            });
+            const pageBuffer = await statePage.screenshot({
+              path: pagePath,
+              fullPage: true,
+              type: "jpeg",
+              quality: jpegQuality,
+              timeout: timeoutMs,
+            });
+            const imageHash = hashBuffer(pageBuffer);
+            const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
+              stateId,
+            });
+            const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+              capturedAt: stateCapturedAt,
+              stateId,
+            });
+            stateTextGeometry = verifyVisualScreenshotLayoutCapture({
+              before: stateTextGeometry,
+              after: afterScreenshotGeometry,
+              screenshot: screenshotBinding,
+              stateId,
+            });
+            const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
+              capturedAt: stateCapturedAt,
+              imageHash,
+              imageRef: toArchiveRelative(pagePath),
+              screenshot: screenshotBinding,
+            });
+            writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
 
-          const normalizedText = normalizeVisibleText(finalStateText);
-          return {
-            state_id: stateId,
-            index: candidate.index,
-            tag: candidate.tag || null,
-            label: cleanText(candidate.label) || `Section ${stateNumber}`,
-            page: toArchiveRelative(pagePath),
-            page_path: pagePath,
-            image_hash: imageHash,
-            layout: toArchiveRelative(layoutPath),
-            layout_path: layoutPath,
-            layout_hash: textGeometry.geometry_hash,
-            text_geometry: textGeometry,
-            captured_at: stateCapturedAt,
-            page_bytes: pageBuffer.length,
-            text: normalizedText,
-            text_hash: hashText(normalizedText),
-            text_length: normalizedText.length,
-            targets: candidate.aria_controls || candidate.data_target ? 1 : 0,
-            isolation: {
-              ...openedIsolation,
-              ...isolation,
-              fresh_page: true,
-            },
-          };
-        },
+            const normalizedText = normalizeVisibleText(finalStateText);
+            return {
+              state_id: stateId,
+              index: candidate.index,
+              tag: candidate.tag || null,
+              label: cleanText(candidate.label) || `Section ${stateNumber}`,
+              page: toArchiveRelative(pagePath),
+              page_path: pagePath,
+              image_hash: imageHash,
+              layout: toArchiveRelative(layoutPath),
+              layout_path: layoutPath,
+              layout_hash: textGeometry.geometry_hash,
+              text_geometry: textGeometry,
+              captured_at: stateCapturedAt,
+              page_bytes: pageBuffer.length,
+              text: normalizedText,
+              text_hash: hashText(normalizedText),
+              text_length: normalizedText.length,
+              targets: candidate.state_kind === "targets"
+                ? Math.max(1, candidate.state_selectors?.length || 0)
+                : 0,
+              isolation: {
+                ...openedIsolation,
+                ...isolation,
+                fresh_page: true,
+              },
+            };
+          },
         });
         states.push(state);
       } catch (error) {
@@ -4559,12 +5175,20 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
     return {
       states,
       candidates: setup.candidates || 0,
-      attempted: setup.labels?.length || 0,
+      attempted: descriptors.length,
+      capture_limit: setup.capture_limit || maxExpansionStateScreenshots,
+      capture_complete: setup.descriptor_set_complete !== false && failures.length === 0,
+      truncated: setup.truncated === true,
+      truncated_count: setup.truncated_count || 0,
       failures,
-      error: null,
+      error: truncationError,
     };
   } catch (error) {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: errorMessage(error) };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
+      capture_complete: false, truncated: false, truncated_count: 0,
+      failures: [], error: errorMessage(error),
+    };
   }
 }
 
@@ -5356,6 +5980,43 @@ async function captureStructuredVisibleTextGeometry(page, { capturedAt = null, s
     });
   }
 }
+
+function unavailableStructuredVisibleTextGeometry({
+  capturedAt = null,
+  stateId = "main",
+  dimensions = null,
+  reason = "structured_geometry_unavailable",
+} = {}) {
+  const value = jsonObjectOrEmpty(dimensions);
+  return {
+    version: 1,
+    state_id: stateId,
+    captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
+    availability_status: "unavailable_page_not_settled",
+    unavailable_reason: reason,
+    document: {
+      width: positiveInt(value.scroll_width, viewportWidth),
+      height: positiveInt(value.scroll_height, viewportHeight),
+    },
+    viewport: {
+      width: positiveInt(value.viewport_width, viewportWidth),
+      height: positiveInt(value.viewport_height, viewportHeight),
+    },
+    device_pixel_ratio: nonNegativeNumber(value.device_pixel_ratio, 1) || 1,
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "unavailable",
+      unavailable_reason: reason,
+    },
+    capture_verification: {
+      contract: "visual-screenshot-layout-binding-v1",
+      status: "unavailable",
+      unavailable_reason: reason,
+    },
+    nodes: [],
+  };
+}
 async function screenshotBindingFromBuffer(buffer, geometry, { stateId = "main" } = {}) {
   try {
     const metadata = await sharp(buffer).metadata();
@@ -5380,19 +6041,44 @@ function screenshotBindingFromGeometry(geometry, imageMetadata = {}) {
   const devicePixelRatio = nonNegativeNumber(geometry?.device_pixel_ratio, 1) || 1;
   const cssWidth = nonNegativeNumber(documentSize.width, viewportWidth) || viewportWidth;
   const cssHeight = nonNegativeNumber(documentSize.height, viewportHeight) || viewportHeight;
+  const pixelWidth = positiveInt(
+    imageMetadata.pixel_width,
+    Math.max(1, Math.round(cssWidth * devicePixelRatio)),
+  );
+  const pixelHeight = positiveInt(
+    imageMetadata.pixel_height,
+    Math.max(1, Math.round(cssHeight * devicePixelRatio)),
+  );
+  const scaleX = pixelWidth / cssWidth;
+  const scaleY = pixelHeight / cssHeight;
+  const uniformScaleError = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY, 1e-9);
+  const deviceScaleError = Math.max(
+    Math.abs(scaleX - devicePixelRatio),
+    Math.abs(scaleY - devicePixelRatio),
+  ) / Math.max(devicePixelRatio, 1e-9);
+  const alignmentStatus = uniformScaleError <= 0.01 && deviceScaleError <= 0.01
+    ? "verified"
+    : "unavailable_nonuniform_or_unexpected_scale";
   return {
     css_width: cssWidth,
     css_height: cssHeight,
-    pixel_width: positiveInt(imageMetadata.pixel_width, Math.max(1, Math.round(cssWidth * devicePixelRatio))),
-    pixel_height: positiveInt(imageMetadata.pixel_height, Math.max(1, Math.round(cssHeight * devicePixelRatio))),
+    pixel_width: pixelWidth,
+    pixel_height: pixelHeight,
+    expected_device_pixel_ratio: devicePixelRatio,
+    scale_x: scaleX,
+    scale_y: scaleY,
+    alignment_status: alignmentStatus,
   };
 }
 
 function textGeometryReference(geometry, layoutPath = null) {
   if (!geometry || typeof geometry !== "object") return null;
+  const availabilityStatus = cleanText(geometry.availability_status);
   return {
     version: geometry.version || 1,
-    status: geometry.run_count > 0 ? "ready" : "unavailable_no_visible_text_nodes",
+    status: availabilityStatus ||
+      (geometry.run_count > 0 ? "ready" : "unavailable_no_visible_text_nodes"),
+    unavailable_reason: cleanText(geometry.unavailable_reason) || null,
     geometry_hash: geometry.geometry_hash || null,
     coordinate_space: geometry.coordinate_space || "document-css-pixels",
     node_count: geometry.node_count || 0,
@@ -7126,7 +7812,13 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
   const skipUnchanged =
     Boolean(options.unchanged) &&
     !forceR2SnapshotRefresh &&
-    !["initial_baseline", "baseline_refresh", "ai_approved_true_change"].includes(reason);
+    ![
+      "initial_baseline",
+      "baseline_refresh",
+      "ai_approved_true_change",
+      "capture_behavior_refresh",
+      "localization_repair",
+    ].includes(reason);
 
   if (skipNoise) {
     report.r2_uploads_skipped_noise += 1;
@@ -7149,7 +7841,7 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
     report.r2_previous_snapshots_reset += result.previousReset || 0;
     existingR2SnapshotSourceIds.add(source.id);
     console.log(`R2 SNAPSHOT uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
-    return true;
+    return { succeeded: true, ...result };
   } catch (error) {
     report.r2_failed += 1;
     const message = `R2 snapshot sync failed: ${errorMessage(error)}`;
@@ -7165,21 +7857,38 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
 
 async function maybeRepairMissingR2Snapshot(source, capture, report, options = {}) {
   if (!r2SnapshotSync || !r2RepairMissingSnapshots) return false;
-  if (existingR2SnapshotSourceIds.has(source.id)) return false;
+  const snapshotAlreadyExists = existingR2SnapshotSourceIds.has(source.id);
+  // A capture-behavior or operator-directed evidence refresh can intentionally
+  // replace the authoritative latest generation without publishing a change
+  // event. Do not let the existence-only cache defeat --force-r2-snapshot-refresh.
+  if (snapshotAlreadyExists && !forceR2SnapshotRefresh) return false;
 
   const repaired = await maybeSyncR2Snapshot(source, capture, report, {
     ...options,
     unchanged: true,
   });
   if (repaired) {
-    report.r2_repaired_missing += 1;
-    console.log(`R2 REPAIRED missing_snapshot ${sourceLabel(source)}`);
+    if (snapshotAlreadyExists) {
+      report.r2_forced_refreshes += 1;
+      console.log(`R2 REFRESHED authoritative_latest ${sourceLabel(source)}`);
+    } else {
+      report.r2_repaired_missing += 1;
+      console.log(`R2 REPAIRED missing_snapshot ${sourceLabel(source)}`);
+    }
   }
   return repaired;
 }
 
-async function markSharedSourceVisualCheckSucceeded(source, capture, report = null) {
+async function markSharedSourceVisualCheckSucceeded(
+  source,
+  capture,
+  report = null,
+  { preserveReviewedUrl = false, preserveReviewedMetadata = false } = {},
+) {
   const now = new Date().toISOString();
+  const metadataUpdate = preserveReviewedMetadata
+    ? {}
+    : sourcePageMetadataUpdate(source, capture);
   const { error } = await supabase
     .from("shared_award_sources")
     .update({
@@ -7188,14 +7897,16 @@ async function markSharedSourceVisualCheckSucceeded(source, capture, report = nu
       next_check_at: nextVisualSourceCheckDate(),
       consecutive_failures: 0,
       last_error: null,
-      ...sourcePageMetadataUpdate(source, capture),
+      ...metadataUpdate,
       updated_at: now,
     })
     .eq("id", source.id);
 
   if (error) throw error;
 
-  await maybeUpdateSafeRedirectUrl(source, capture, now, report);
+  if (!preserveReviewedUrl) {
+    await maybeUpdateSafeRedirectUrl(source, capture, now, report);
+  }
 }
 
 async function markSharedSourceReviewLater(source, hygiene) {
@@ -7276,7 +7987,7 @@ async function maybeResolveR2BaselineRecoveryQuarantine(source, recovery, report
 async function loadSharedSourceReviewState(sourceId, report, { stage }) {
   const { data, error } = await supabase
     .from("shared_award_sources")
-    .select("id, admin_review_status, admin_reviewed_by")
+    .select("id, admin_review_status, admin_review_note, admin_reviewed_by")
     .eq("id", sourceId)
     .maybeSingle();
   if (error || !data) {
@@ -7506,6 +8217,7 @@ function normalizeRedirectPath(pathname) {
 function sourcePageMetadataUpdate(source, capture) {
   const facts = capture?.baseline_facts ? normalizeBaselineFacts(capture.baseline_facts) : null;
   if (!facts) return {};
+  const protectedStage1Approval = stage1BaselineMonitoringApprovalMetadata(source);
 
   const metadata = capture.baseline_facts_metadata || {};
   const generatedAt = metadata.extracted_at || new Date().toISOString();
@@ -7527,6 +8239,7 @@ function sourcePageMetadataUpdate(source, capture) {
         baseline_facts_rejected: true,
         rejection_reason: sanity.reason,
         quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
+        ...protectedStage1Approval,
       },
       page_metadata_generated_at: generatedAt,
       page_metadata_model: metadata.model || aiModel,
@@ -7568,6 +8281,7 @@ function sourcePageMetadataUpdate(source, capture) {
       page_title: capture.page_title || null,
       baseline_facts: facts,
       baseline_facts_metadata: metadata,
+      ...protectedStage1Approval,
     },
     page_metadata_generated_at: generatedAt,
     page_metadata_model: metadata.model || aiModel,
@@ -7689,7 +8403,21 @@ async function syncR2SnapshotPair(source, capture) {
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: Object.keys(history.previous_object_keys).length,
+    bucket: r2Bucket,
+    latest_captured_at: capture.captured_at,
+    latest_object_keys: latestKeys,
+    latest_hashes: r2CaptureHashes(capture),
+    latest_metadata: r2CaptureMetadata(capture),
   };
+}
+
+function stage1BaselineMonitoringApprovalMetadata(source) {
+  const approval = jsonObjectOrEmpty(
+    jsonObjectOrEmpty(source?.page_metadata).stage1_baseline_monitoring_approval,
+  );
+  return Object.keys(approval).length
+    ? { stage1_baseline_monitoring_approval: approval }
+    : {};
 }
 
 async function markSharedSourceInitialDocumentQuarantined(source, capture, reason) {
@@ -7964,7 +8692,16 @@ function r2CaptureMetadata(capture) {
     status_code: capture.status_code || null,
     status_text: capture.status_text || null,
     content_type: capture.content_type || null,
+    stage1_baseline_activation: capture.stage1_baseline_activation || null,
     text_length: capture.text_length || 0,
+    // text_hash is calculated from the semantic UTF-8 text, while the retained
+    // text.txt object intentionally carries one trailing newline. Persist the
+    // raw object length so release recovery can verify the stored bytes and
+    // then apply that single, explicit normalization before checking text_hash.
+    text_object_bytes:
+      capture.text_path && existsSync(capture.text_path)
+        ? statSync(capture.text_path).size
+        : null,
     body_text_length: capture.body_text_length || 0,
     main_content_text_length: capture.main_content_text_length || 0,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,
@@ -8007,6 +8744,8 @@ function captureLocalizationMetadata(capture) {
   const dimensions = jsonObjectOrEmpty(capture.dimensions);
   const textGeometry = jsonObjectOrEmpty(capture.text_geometry);
   const geometryScreenshot = jsonObjectOrEmpty(textGeometry.screenshot);
+  const geometryAvailabilityStatus = cleanText(textGeometry.availability_status);
+  const geometryExplicitlyUnavailable = geometryAvailabilityStatus.startsWith("unavailable_");
   const hasLayoutSample = Boolean(cleanText(pageSettle.after_layout_sample));
   const hasScrollHeight = Boolean(
     nonNegativeNumber(dimensions.scroll_height, 0) ||
@@ -8023,12 +8762,16 @@ function captureLocalizationMetadata(capture) {
       ? "not_applicable_pdf"
       : geometryReady
         ? "geometry_ready"
-        : repairAttempted
-          ? "capture_layout_unavailable"
-          : "metadata_missing",
+        : geometryExplicitlyUnavailable
+          ? geometryAvailabilityStatus
+          : repairAttempted
+            ? "capture_layout_unavailable"
+            : "metadata_missing",
     exact: false,
-    accounted_for: capture.kind === "pdf" || geometryReady || repairAttempted,
+    accounted_for:
+      capture.kind === "pdf" || geometryReady || repairAttempted || geometryExplicitlyUnavailable,
     geometry_ready: geometryReady,
+    unavailable_reason: cleanText(textGeometry.unavailable_reason) || null,
     geometry_hash: cleanText(textGeometry.geometry_hash) || null,
     bound_image_hash: cleanText(geometryScreenshot.image_hash) || null,
     semantic_crop_contract: "visual-exact-text-binding-v2",
@@ -8858,6 +9601,11 @@ function writeBaseline(source, capture, details) {
         existingSummary.baseline_facts_metadata ||
         null,
       monitoring_disposition: details.monitoring_disposition || null,
+      stage1_baseline_activation:
+        details.stage1_baseline_activation
+        || capture.stage1_baseline_activation
+        || existingSummary.stage1_baseline_activation
+        || null,
     },
   };
   atomicWriteJson(baselinePath, baseline);
@@ -8928,6 +9676,9 @@ function baselineEvidenceStatus(baseline) {
   const meta = paths.metaPath && existsSync(paths.metaPath)
     ? readJsonIfExists(paths.metaPath)
     : null;
+  const capturedLocalizationStatus = String(
+    meta?.localization?.status || baseline.localization?.status || "",
+  ).trim();
   const metadataExpansionStates = Array.isArray(meta?.expansion_state_screenshots)
     ? meta.expansion_state_screenshots
     : [];
@@ -8963,7 +9714,11 @@ function baselineEvidenceStatus(baseline) {
   return {
     ok: true,
     kind,
-    localizationStatus: r2LocalizationStatus || "exact_geometry_available",
+    localizationStatus: r2LocalizationStatus || (
+      capturedLocalizationStatus && capturedLocalizationStatus !== "geometry_ready"
+        ? capturedLocalizationStatus
+        : "exact_geometry_available"
+    ),
     ...paths,
   };
 }
@@ -9330,7 +10085,21 @@ async function attachSourceAcquisitions(sources) {
       throw new Error(describeSupabaseError(error, "load immutable source acquisition provenance"));
     }
     for (const acquisition of data || []) {
-      acquisitionsBySourceId.set(acquisition.shared_award_source_id, acquisition);
+      const existing = acquisitionsBySourceId.get(acquisition.shared_award_source_id);
+      const exactStage1Activation = isStage1BaselineActivationAcquisition(acquisition);
+      const existingExactStage1Activation = isStage1BaselineActivationAcquisition(existing);
+      if (
+        exactStage1Activation
+        && existingExactStage1Activation
+        && existing.id !== acquisition.id
+      ) {
+        throw new Error(
+          `Multiple exact Stage 1 baseline activation acquisitions exist for source ${acquisition.shared_award_source_id}.`,
+        );
+      }
+      if (exactStage1Activation || !existingExactStage1Activation) {
+        acquisitionsBySourceId.set(acquisition.shared_award_source_id, acquisition);
+      }
     }
   }
   return (sources || []).map((source) => ({
@@ -9358,6 +10127,15 @@ function filterMonitorableSourcesForCapture(sources, { logRejected = true } = {}
   const rejected = new Map();
 
   for (const source of sources) {
+    if (isExactHeldR2RepairTarget({
+      source,
+      sourceIdFilter,
+      r2SnapshotSync,
+      r2RepairMissingSnapshots,
+    })) {
+      accepted.push(source);
+      continue;
+    }
     const decision = aiReviewEvidenceCapture
       ? sourceQualityDecision(source, { purpose: "discovery" })
       : sourceQualityDecision(source, { purpose: "monitoring" });
@@ -9446,6 +10224,27 @@ function needsCaptureBehaviorRefresh(baseline, capture) {
   if (baselineKind === "pdf" || captureKind === "pdf") return false;
   const baselineVersion = Number(baseline.capture_behavior_version || 0);
   return !Number.isFinite(baselineVersion) || baselineVersion < captureBehaviorVersion;
+}
+
+function captureBehaviorRefreshContentIsUnchanged(baseline, capture) {
+  const requiredHashFields = [
+    "text_hash",
+    "body_text_hash",
+    "main_content_hash",
+    "nav_header_footer_hash",
+    "expansion_hash",
+    "expandable_sections_hash",
+    "image_hash",
+  ];
+  return requiredHashFields.every((field) => {
+    const baselineHash = baseline?.[field];
+    const captureHash = capture?.[field];
+    return (
+      typeof baselineHash === "string" &&
+      /^[0-9a-f]{64}$/.test(baselineHash) &&
+      captureHash === baselineHash
+    );
+  });
 }
 
 function orderSourcesForBaselineCoverage(sources) {
@@ -9598,7 +10397,7 @@ function buildSourcesQuery(sourceIds = []) {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
     .eq("shared_awards.status", "active");
 
@@ -9620,7 +10419,10 @@ function buildSourcesQuery(sourceIds = []) {
       .order("created_at", { ascending: true });
   }
 
-  if (!includeNotDue) {
+  // An explicit source repair/check is an operator-scoped command, not a
+  // scheduler dequeue. Do not silently turn it into a zero-row load merely
+  // because that source's normal next_check_at is in the future or null.
+  if (!includeNotDue && !sourceIdFilter) {
     query = query.lte("next_check_at", new Date().toISOString());
   }
   if (sourceIdFilter) {
@@ -9733,7 +10535,7 @@ function buildAuthoritativeSourceInventoryQuery() {
   return supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
     .eq("shared_awards.status", "active")
     .eq("admin_review_status", "open")
@@ -10037,6 +10839,7 @@ function visualWorkerMetadata(report) {
       r2_failed: report.r2_failed,
       r2_skipped_existing: report.r2_skipped_existing,
       r2_repaired_missing: report.r2_repaired_missing,
+      r2_forced_refreshes: report.r2_forced_refreshes,
       r2_known_existing: report.r2_known_existing,
       r2_known_missing: report.r2_known_missing,
       r2_rehydrate_local_cache: report.r2_rehydrate_local_cache,
@@ -10063,6 +10866,20 @@ function visualWorkerMetadata(report) {
       baseline_facts_failed: report.baseline_facts_failed,
       baseline_facts_skipped: report.baseline_facts_skipped,
       baseline_facts_backfilled: report.baseline_facts_backfilled,
+      stage1_baseline_activation_binding_verified:
+        report.stage1_baseline_activation_binding_verified,
+      stage1_baseline_activation_comparison_captures:
+        report.stage1_baseline_activation_comparison_captures,
+      stage1_baseline_activation_prepared: report.stage1_baseline_activation_prepared,
+      stage1_baseline_activation_verified: report.stage1_baseline_activation_verified,
+      stage1_baseline_activation_quarantined: report.stage1_baseline_activation_quarantined,
+      stage1_baseline_activation_quarantine_failed:
+        report.stage1_baseline_activation_quarantine_failed,
+      stage1_baseline_activation_server_receipt_failed:
+        report.stage1_baseline_activation_server_receipt_failed,
+      stage1_baseline_activation_finalization_failed:
+        report.stage1_baseline_activation_finalization_failed,
+      stage1_baseline_activation_reasons: report.stage1_baseline_activation_reasons,
       visual_interpreted: report.visual_interpreted,
       visual_review_mode: report.visual_review_mode,
       visual_review_candidates_queued: report.visual_review_candidates_queued,

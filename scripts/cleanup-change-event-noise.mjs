@@ -16,7 +16,10 @@ import {
   changeEventSuppressionRulesRequiringEvidenceOrAi,
   deterministicChangeEventSuppressionPolicyFlagIds,
 } from "./lib/change-event-suppression.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -35,18 +38,23 @@ const limit = positiveInt(args.limit, 10_000);
 const batchSize = positiveInt(args["batch-size"], 500);
 const suppressionSource = cleanText(args["suppression-source"]) || "cleanup-change-event-noise";
 const sweepKey = monitoringPolicySweepKey({ awardId: awardIdFilter, sourceId: sourceIdFilter });
+const supabase = supabaseUrl && serviceRoleKey
+  ? createSupabaseServiceClient(supabaseUrl, serviceRoleKey)
+  : null;
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
-  process.exit(1);
+  process.exitCode = 1;
+} else {
+  try {
+    await run();
+  } catch (error) {
+    console.error(`CHANGE_EVENT_NOISE_CLEANUP_FATAL ${error.message || String(error)}`);
+    process.exitCode = 1;
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }
-
-const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
-
-await run().catch((error) => {
-  console.error(`CHANGE_EVENT_NOISE_CLEANUP_FATAL ${error.message || String(error)}`);
-  process.exit(1);
-});
 
 async function run() {
   const startedAt = new Date().toISOString();

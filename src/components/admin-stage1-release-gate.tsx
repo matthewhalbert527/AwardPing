@@ -28,7 +28,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
             Stage 1 Beta Release Gate
           </h2>
           <p className="mt-1 text-sm text-[var(--muted)]">
-            Release stays closed unless all 25 awards and every shared safety check have current, matching evidence.
+            Verified evidence stays valid while its exact keys and hashes still match. Live sources must be checked every 24 hours, and public visibility also requires a current signed R2 recovery drill.
           </p>
         </div>
         <div className="max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" role="status">
@@ -184,7 +184,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
             <tr>
               <th className="px-4 py-3" scope="col">Award</th>
               <th className="px-4 py-3" scope="col">Publication</th>
-              <th className="px-4 py-3" scope="col">Registry evidence</th>
+              <th className="px-4 py-3" scope="col">Registry verification</th>
               <th className="px-4 py-3" scope="col">Source manifest</th>
               <th className="px-4 py-3" scope="col">Reconciliation</th>
               <th className="px-4 py-3" scope="col">Page audit</th>
@@ -206,15 +206,15 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
                   <p className="mt-1 text-xs text-[var(--muted)]">{award.effectiveReason}</p>
                 </td>
                 <td className="px-4 py-3 align-top">
-                  <StatusPill label={award.evidenceFresh ? "Fresh" : "Stale / missing"} status={award.evidenceFresh ? "pass" : "hold"} />
+                  <StatusPill label={award.verificationEpochValid ? "Verified epoch" : "Missing / future"} status={award.verificationEpochValid ? "pass" : "hold"} />
                   <time className="mt-1 block text-xs text-[var(--muted)]" dateTime={award.evidenceCheckedAt || undefined}>
                     {formatDate(award.evidenceCheckedAt)}
                   </time>
                 </td>
                 <td className="px-4 py-3 align-top">
                   <StatusPill
-                    label={`${award.completedManifestRoles}/8 complete · ${award.freshManifestRoles}/8 fresh`}
-                    status={award.completedManifestRoles === 8 && award.freshManifestRoles === 8 ? "pass" : "hold"}
+                    label={`${award.completedManifestRoles}/8 complete · ${award.verifiedManifestRoles}/8 verified`}
+                    status={award.completedManifestRoles === 8 && award.verifiedManifestRoles === 8 ? "pass" : "hold"}
                   />
                   {award.missingManifestRoles.length > 0 && (
                     <p className="mt-1 max-w-xs text-xs text-[var(--muted)]">
@@ -223,13 +223,13 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
                   )}
                 </td>
                 <td className="px-4 py-3 align-top">
-                  <StatusPill label={humanize(award.reconciliationStatus)} status={award.reconciliationFresh ? "pass" : "hold"} />
+                  <StatusPill label={humanize(award.reconciliationStatus)} status={award.reconciliationValid ? "pass" : "hold"} />
                   <time className="mt-1 block text-xs text-[var(--muted)]" dateTime={award.reconciliationAt || undefined}>
                     {formatDate(award.reconciliationAt)}
                   </time>
                 </td>
                 <td className="px-4 py-3 align-top">
-                  <StatusPill label={humanize(award.auditStatus)} status={award.auditFresh ? "pass" : "hold"} />
+                  <StatusPill label={humanize(award.auditStatus)} status={award.auditValid ? "pass" : "hold"} />
                   <time className="mt-1 block text-xs text-[var(--muted)]" dateTime={award.auditAt || undefined}>
                     {formatDate(award.auditAt)}
                   </time>

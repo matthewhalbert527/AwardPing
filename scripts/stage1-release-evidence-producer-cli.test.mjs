@@ -38,6 +38,23 @@ describe("Stage 1 release evidence producer CLI", () => {
     expect(secretIndex).toBeGreaterThan(dryRunIndex);
   });
 
+  it("writes and prints a secret-free operator report on preview and apply", () => {
+    const dryRunStart = source.indexOf("if (args.apply !== true)");
+    const secretStart = source.indexOf("const signingSecret");
+    const dryRunPath = source.slice(dryRunStart, secretStart);
+    const applyPath = source.slice(secretStart);
+    expect(source).toContain("buildStage1ReleaseOperatorReport");
+    expect(source).toContain("writeStage1ReleaseOperatorReport");
+    expect(source.match(/operator_report_path:/g)).toHaveLength(2);
+    expect(source.match(/diagnostics: operatorReport\.diagnostics/g)).toHaveLength(2);
+    expect(source).toContain("p_evidence: measurement.evidence");
+    expect(source).not.toContain("p_evidence: measurement.diagnostics");
+    expect(dryRunPath).toContain("writeStage1ReleaseOperatorReport");
+    expect(dryRunPath).not.toContain("AWARDPING_STAGE1_RELEASE_EVIDENCE_HMAC_SECRET");
+    expect(applyPath).toContain("writeStage1ReleaseOperatorReport");
+    expect(source).not.toMatch(/measurement\.diagnostics[\s\S]{0,200}p_evidence/);
+  });
+
   it("requires an explicit exact production-origin confirmation for rollback", () => {
     expect(source).toContain('values["execute-production-rollback"] === true');
     expect(source).toContain('values["confirm-production-origin"]');
@@ -52,6 +69,7 @@ describe("Stage 1 release evidence producer CLI", () => {
     expect(source).toContain(
       'requireKeyPrefix(supabaseAnonKey, "sb_publishable_", "SUPABASE_ANON_KEY")',
     );
+    expect(source).toContain("supabaseServiceRoleKey: serviceKey");
     expect(source).not.toContain('createClient(supabaseUrl, serviceRoleKey');
   });
 });

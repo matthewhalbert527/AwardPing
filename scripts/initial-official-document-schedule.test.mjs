@@ -9,6 +9,10 @@ const installer = readFileSync(
   new URL("../installer/windows/Install-AwardPingWorker.ps1", import.meta.url),
   "utf8",
 );
+const capture = readFileSync(
+  new URL("./capture-visual-snapshots.mjs", import.meta.url),
+  "utf8",
+);
 
 describe("permanent first-observation discovery schedule", () => {
   it("enables bounded live PDF discovery in normal visual shards only", () => {
@@ -34,11 +38,26 @@ describe("permanent first-observation discovery schedule", () => {
     );
     expect(launcher).toContain('`$workerArgs += "--discovery-mode=true"');
     expect(launcher).toContain('`$workerArgs += "--discovery-intent=live_recurring"');
+    expect(launcher).toContain('`$workerArgs += "--discovery-onboarding-batch-id="');
     expect(launcher).toContain('`$workerArgs += "--discover-pdf-subpages=true"');
+    expect(launcher).toContain('"--visual-review-mode=batch"');
+    expect(launcher).toContain('"--localization-repair=false"');
+    expect(launcher).toContain('"--r2-snapshot-sync=true"');
     expect(launcher).not.toContain("`$BaselineRefresh");
     expect(launcher).not.toContain("`$CompleteMissingBaselines");
     expect(launcher).not.toContain("--discovery-mode=false");
     expect(installer).toContain("queues newly linked official PDFs for review daily");
+  });
+
+  it("validates the scheduled contract in the capture process before work starts", () => {
+    const validationIndex = capture.indexOf(
+      "const scheduledNightlyRunContract = classifyScheduledNightlyVisualRun({",
+    );
+    expect(validationIndex).toBeGreaterThan(0);
+    expect(capture).toContain('if (runTrigger === "scheduled" && !scheduledNightlyRunContract.eligible)');
+    expect(capture).toContain("Invalid scheduled visual run contract:");
+    expect(validationIndex).toBeLessThan(capture.indexOf('process.on("uncaughtException"'));
+    expect(validationIndex).toBeLessThan(capture.indexOf("await runOnce()"));
   });
 });
 

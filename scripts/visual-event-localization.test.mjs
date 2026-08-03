@@ -7,9 +7,11 @@ import {
   localizeVisualEventSide,
   normalizeVisualExactText,
   planVerifiedCrop,
+  recomputeRestoredVisualScreenshotLayoutCapture,
   verifyVisualTextGeometryBinding,
   verifyVisualEventSemanticBindings,
   verifyVisualExactTextSemanticBinding,
+  verifyVisualScreenshotLayoutCapture,
   visualChangeSemanticManifest,
   visualExactTokens,
 } from "./lib/visual-event-localization.mjs";
@@ -52,7 +54,7 @@ describe("visual event localization", () => {
     expect(result.semantic_verified).toBe(true);
     expect(result.semantic_binding).toMatchObject({
       contract: "visual-exact-text-binding-v2",
-      algorithm_version: 3,
+      algorithm_version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
       side: "current",
       wording_source: "change_details.exact_after",
       geometry_sha256: geometry.geometry_hash,
@@ -64,6 +66,185 @@ describe("visual event localization", () => {
       localization: result,
       capture: semanticCapture(result, geometry),
     })).toMatchObject({ valid: true });
+  });
+
+  it("keeps an unstable screenshot image-bound while refusing exact localization", () => {
+    const geometry = bindVisualTextGeometry({
+      captured_at: "2026-07-15T18:00:00.000Z",
+      availability_status: "unavailable_page_not_settled",
+      unavailable_reason: "page_did_not_settle_before_geometry_capture",
+      document: { width: 1_000, height: 2_000 },
+      viewport: { width: 1_000, height: 800 },
+      device_pixel_ratio: 1,
+      nodes: [],
+    }, {
+      capturedAt: "2026-07-15T18:00:00.000Z",
+      imageHash: "unstable-full-image",
+      imageRef: "visual-snapshots/published/event/full.jpg",
+      screenshot: {
+        css_width: 1_000,
+        css_height: 2_000,
+        pixel_width: 1_000,
+        pixel_height: 2_000,
+      },
+    });
+
+    expect(verifyVisualTextGeometryBinding(geometry, "unstable-full-image")).toMatchObject({
+      valid: true,
+    });
+    expect(geometry).toMatchObject({
+      availability_status: "unavailable_page_not_settled",
+      unavailable_reason: "page_did_not_settle_before_geometry_capture",
+      run_count: 0,
+    });
+    expect(localizeVisualEventSide({
+      side: "current",
+      changeDetails: { exact_after: "Applications close February 1, 2027." },
+      states: [state("main", "main", geometry, "unstable-full-image")],
+    })).toMatchObject({
+      status: "unavailable_geometry",
+      reason: "page_did_not_settle_before_geometry_capture",
+    });
+  });
+
+  it("fails exact localization without paint-stack and before/after screenshot proof", () => {
+    const geometry = bindVisualTextGeometry({
+      captured_at: "2026-07-15T18:00:00.000Z",
+      document: { width: 1_000, height: 2_000 },
+      viewport: { width: 1_000, height: 800 },
+      device_pixel_ratio: 1,
+      nodes: [textNode(0, "Applications close February 1, 2027.", 40, 300)],
+    }, {
+      imageHash: "legacy-unverified-image",
+      screenshot: {
+        css_width: 1_000,
+        css_height: 2_000,
+        pixel_width: 1_000,
+        pixel_height: 2_000,
+      },
+    });
+
+    expect(localizeVisualEventSide({
+      side: "current",
+      changeDetails: { exact_after: "Applications close February 1, 2027." },
+      states: [state("main", "main", geometry, "legacy-unverified-image")],
+    })).toMatchObject({
+      status: "unavailable_geometry",
+      reason: "The screenshot wording lacks verified browser paint-stack evidence.",
+    });
+  });
+
+  it("invalidates geometry when layout moves after capture or screenshot scaling is nonuniform", () => {
+    const before = rawVerifiedGeometry([
+      textNode(0, "Deadline March 1.", 40, 300),
+    ]);
+    const after = rawVerifiedGeometry([
+      textNode(0, "Deadline March 1.", 40, 420),
+    ]);
+    const moved = verifyVisualScreenshotLayoutCapture({
+      before,
+      after,
+      screenshot: { alignment_status: "verified" },
+      stateId: "main",
+    });
+    expect(moved).toMatchObject({
+      availability_status: "unavailable_layout_changed_during_screenshot",
+      capture_verification: {
+        contract: "visual-screenshot-layout-binding-v1",
+        status: "unavailable",
+      },
+      nodes: [],
+    });
+
+    const scaling = verifyVisualScreenshotLayoutCapture({
+      before,
+      after: before,
+      screenshot: { alignment_status: "unavailable_nonuniform_or_unexpected_scale" },
+      stateId: "main",
+    });
+    expect(scaling).toMatchObject({
+      availability_status: "unavailable_screenshot_geometry_mismatch",
+      nodes: [],
+    });
+  });
+
+  it("derives alignment from measured dimensions and rejects contradictory restored claims", () => {
+    const exactText = "Applications close February 1, 2027.";
+    const raw = rawVerifiedGeometry([
+      withRectEdges(textNode(0, exactText, 80, 300)),
+    ]);
+    const verified = verifyVisualScreenshotLayoutCapture({
+      before: raw,
+      after: raw,
+      screenshot: { alignment_status: "verified" },
+      stateId: "main",
+    });
+    const contradictory = bindVisualTextGeometry(verified, {
+      capturedAt: raw.captured_at,
+      imageHash: "contradictory-restored-image",
+      imageRef: "restored/current.jpg",
+      screenshot: {
+        css_width: 1_000,
+        css_height: 2_000,
+        pixel_width: 1_000,
+        pixel_height: 1_000,
+        alignment_status: "verified",
+      },
+    });
+
+    expect(contradictory.screenshot).toMatchObject({
+      scale_x: 1,
+      scale_y: 0.5,
+      alignment_status: "unavailable_nonuniform_or_unexpected_scale",
+    });
+    const restored = recomputeRestoredVisualScreenshotLayoutCapture({
+      geometry: contradictory,
+      screenshot: contradictory.screenshot,
+      stateId: "main",
+    });
+    expect(restored).toMatchObject({
+      availability_status: "unavailable_screenshot_geometry_mismatch",
+      capture_verification: {
+        status: "unavailable",
+        screenshot_alignment: "unavailable_nonuniform_or_unexpected_scale",
+        restored_proof_recomputed: true,
+      },
+      nodes: [],
+    });
+    const rebound = bindVisualTextGeometry(restored, {
+      imageHash: "contradictory-restored-image",
+      screenshot: contradictory.screenshot,
+    });
+    expect(localizeVisualEventSide({
+      side: "current",
+      changeDetails: { exact_after: exactText },
+      states: [state("main", "main", rebound, "contradictory-restored-image")],
+    })).toMatchObject({
+      status: "unavailable_geometry",
+      reason: "Restored screenshot dimensions do not uniformly match CSS geometry and device-pixel ratio.",
+    });
+
+    const aligned = bindVisualTextGeometry(verified, {
+      capturedAt: raw.captured_at,
+      imageHash: "aligned-restored-image",
+      screenshot: {
+        css_width: 1_000,
+        css_height: 2_000,
+        pixel_width: 1_000,
+        pixel_height: 2_000,
+      },
+    });
+    expect(recomputeRestoredVisualScreenshotLayoutCapture({
+      geometry: aligned,
+      screenshot: aligned.screenshot,
+    })).toMatchObject({
+      capture_verification: {
+        status: "verified",
+        screenshot_alignment: "verified",
+        restored_proof_recomputed: true,
+      },
+      nodes: expect.any(Array),
+    });
   });
 
   it("rejects exact wording synthesized across distant or unrelated text nodes", () => {
@@ -339,13 +520,7 @@ describe("visual event localization", () => {
 });
 
 function boundGeometry({ imageHash, nodes }) {
-  return bindVisualTextGeometry({
-    captured_at: "2026-07-15T18:00:00.000Z",
-    document: { width: 1_000, height: 2_000 },
-    viewport: { width: 1_000, height: 800 },
-    device_pixel_ratio: 1,
-    nodes,
-  }, {
+  return bindVisualTextGeometry(rawVerifiedGeometry(nodes), {
     capturedAt: "2026-07-15T18:00:00.000Z",
     imageHash,
     screenshot: {
@@ -355,6 +530,30 @@ function boundGeometry({ imageHash, nodes }) {
       pixel_height: 2_000,
     },
   });
+}
+
+function rawVerifiedGeometry(nodes) {
+  return {
+    captured_at: "2026-07-15T18:00:00.000Z",
+    document: { width: 1_000, height: 2_000 },
+    viewport: { width: 1_000, height: 800 },
+    scroll: { x: 0, y: 0 },
+    device_pixel_ratio: 1,
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "verified",
+      sampled_rect_count: 1,
+      rejected_rect_count: 0,
+    },
+    capture_verification: {
+      contract: "visual-screenshot-layout-binding-v1",
+      status: "verified",
+      before_fingerprint: "a".repeat(64),
+      after_fingerprint: "a".repeat(64),
+      screenshot_alignment: "verified",
+    },
+    nodes,
+  };
 }
 
 function textNode(order, text, x, y, { flowPath = null, separatorBefore = null } = {}) {
@@ -388,6 +587,22 @@ function state(stateId, kind, geometry, imageHash) {
     image_path: `C:/captures/${stateId}.jpg`,
     image_hash: imageHash,
     geometry,
+  };
+}
+
+function withRectEdges(node) {
+  const addEdges = (rect) => ({
+    ...rect,
+    right: rect.x + rect.width,
+    bottom: rect.y + rect.height,
+  });
+  return {
+    ...node,
+    rects: node.rects.map(addEdges),
+    runs: node.runs.map((run) => ({
+      ...run,
+      rects: run.rects.map(addEdges),
+    })),
   };
 }
 

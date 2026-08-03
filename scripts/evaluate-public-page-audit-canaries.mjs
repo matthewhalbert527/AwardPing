@@ -8,7 +8,11 @@ import {
   reconcileAwardFacts,
 } from "./lib/award-fact-reconciliation.mjs";
 import { isUsableAwardFactSource } from "./lib/source-quality.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import { requireRegressionEvaluation } from "./lib/regression-audit-observation.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
 
 const knownCanarySlugs = [
   "luce-acls-dissertation-fellowships-in-american-art",
@@ -47,6 +51,10 @@ const runKnownCanaries = boolArg(args["known-canaries"], !runAll && !slugFilter.
 const sampleSize = positiveInt(args["sample-size"], 25);
 const apply = boolArg(args.apply, false);
 const dryRun = boolArg(args["dry-run"], !apply);
+if (apply && dryRun) {
+  console.error("--apply=true cannot be combined with --dry-run=true.");
+  process.exit(2);
+}
 const json = boolArg(args.json, false);
 const failOnCritical = boolArg(args["fail-on-critical"], true);
 const failOnPublicFactsUsingRejectedSource = boolArg(args["fail-on-public-facts-using-rejected-source"], true);
@@ -79,6 +87,13 @@ const report = {
   failed: 0,
   critical_failures: 0,
   public_facts_using_rejected_source: 0,
+  audit_rows_persisted: 0,
+  audit_rows_deduplicated: 0,
+  blocked_audits_recorded: 0,
+  audit_results_superseded_by_newer_evaluation: 0,
+  regression_state_updates: 0,
+  operational_failures_recorded: 0,
+  operational_failure_recording_errors: 0,
   applied: 0,
   canaries: [],
   errors: [],
@@ -89,12 +104,15 @@ try {
   const awards = await loadAwards();
   for (const award of awards) {
     report.checked += 1;
+    let outcomeCounted = false;
+    let attemptStage = "evaluation";
     try {
-      const sources = await loadSources(award.id);
+      const evaluation = requireRegressionEvaluation(award);
+      const sources = evaluation.sources;
       const usableSources = sources.filter(isUsableAwardFactSource);
       const candidates = buildFactCandidatesFromSources(award, usableSources);
       const reconciliation = reconcileAwardFacts(award, usableSources, candidates, {
-        generatedAt: startedAt,
+        generatedAt: evaluation.selectedAt,
       });
       const audit = auditPublicAwardPage(award, reconciliation.selectedFacts, usableSources, { reconciliation });
       const diagnostics = diagnosePage({ award, reconciliation, audit });
@@ -104,12 +122,15 @@ try {
       if (audit.audit_status === "passed") report.passed += 1;
       else if (audit.audit_status === "warnings") report.warnings += 1;
       else report.failed += 1;
+      outcomeCounted = true;
       if (audit.severity === "critical" || audit.should_block_publication) report.critical_failures += 1;
 
       const entry = {
         award_id: award.id,
         slug: award.slug,
         award_name: award.name,
+        evaluation_revision: evaluation.revision,
+        evaluation_selected_at: evaluation.selectedAt,
         source_count: sources.length,
         usable_source_count: usableSources.length,
         candidate_count: candidates.length,
@@ -125,9 +146,22 @@ try {
       };
       report.canaries.push(entry);
 
-      if (apply && !audit.should_block_publication) {
-        await publishReconciledFacts(award, reconciliation, audit);
-        report.applied += 1;
+      if (apply) {
+        attemptStage = "persistence";
+        const persistence = await persistAuditResult(award, reconciliation, audit);
+        if (persistence.inserted) report.audit_rows_persisted += 1;
+        else report.audit_rows_deduplicated += 1;
+        report.regression_state_updates += 1;
+        if (audit.should_block_publication) report.blocked_audits_recorded += 1;
+        if (persistence.latest_state_advanced === false) {
+          report.audit_results_superseded_by_newer_evaluation += 1;
+        }
+        entry.persistence = {
+          audit_id: persistence.audit_id,
+          inserted: persistence.inserted,
+          latest_state_advanced: persistence.latest_state_advanced !== false,
+          evaluation_accepted_at: persistence.evaluation_accepted_at || null,
+        };
       }
 
       if (!json) {
@@ -136,59 +170,82 @@ try {
         );
       }
     } catch (error) {
-      report.failed += 1;
+      if (!outcomeCounted) report.failed += 1;
       const message = errorMessage(error);
-      report.errors.push({ award_id: award.id, slug: award.slug, message });
+      let failureState = null;
+      let failureStateError = null;
+      if (apply) {
+        try {
+          failureState = await persistOperationalFailure(
+            award.id,
+            `regression_audit_${attemptStage}_failed:${message}`,
+          );
+          report.operational_failures_recorded += 1;
+        } catch (stateError) {
+          failureStateError = errorMessage(stateError);
+          report.operational_failure_recording_errors += 1;
+        }
+      }
+      report.errors.push({
+        award_id: award.id,
+        slug: award.slug,
+        stage: attemptStage,
+        message,
+        failure_state: failureState,
+        failure_state_error: failureStateError,
+      });
       if (!json) console.log(`CANARY failed ${award.slug || award.name} | ${message}`);
     }
   }
-  report.status = "succeeded";
+  if (!report.errors.length) report.status = "succeeded";
+  else if (
+    apply
+    && report.operational_failures_recorded === report.errors.length
+    && report.operational_failure_recording_errors === 0
+  ) report.status = "succeeded_with_deferred_failures";
+  else {
+    report.status = "failed";
+    process.exitCode = 1;
+  }
 } catch (error) {
   report.status = "failed";
   report.errors.push({ message: errorMessage(error) });
   process.exitCode = 1;
 } finally {
-  report.finished_at = new Date().toISOString();
-  writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
-  if (json) console.log(JSON.stringify(report, null, 2));
-  else console.log(`CANARY_REPORT ${reportPath}`);
+  try {
+    report.finished_at = new Date().toISOString();
+    writeFileSync(reportPath, JSON.stringify(report, null, 2), "utf8");
+    if (json) console.log(JSON.stringify(report, null, 2));
+    else console.log(`CANARY_REPORT ${reportPath}`);
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }
 
-if (report.status === "succeeded") {
+if (report.status !== "failed") {
   if (failOnCritical && report.critical_failures > 0) process.exitCode = 1;
   if (failOnPublicFactsUsingRejectedSource && report.public_facts_using_rejected_source > 0) process.exitCode = 1;
 }
 
 async function loadAwards() {
-  let query = supabase
-    .from("shared_awards")
-    .select("id,name,slug,official_homepage,summary,public_facts,confidence,status,last_structure_scan_at,created_at")
-    .eq("status", "active")
-    .order("created_at", { ascending: true });
   const slugs = slugFilter.length ? slugFilter : runKnownCanaries ? knownCanarySlugs : [];
-  if (slugs.length) query = query.in("slug", slugs);
-  if (!runAll && !slugs.length) query = query.limit(sampleSize);
-  const { data, error } = await query;
+  const { data, error } = await supabase.rpc("list_shared_awards_for_regression_audit", {
+    p_limit: slugs.length || sampleSize,
+    p_slugs: slugs.length ? slugs : null,
+    p_include_deferred: dryRun || slugs.length > 0,
+  });
   if (error) throw new Error(`Load awards failed: ${error.message}`);
-  return runAll && sampleSize ? (data || []).slice(0, sampleSize) : data || [];
+  // `--all=true` selects from the whole active catalog, but each leased run is
+  // intentionally bounded. The service-only selector keeps its cursor and
+  // retry/backoff state outside shared_awards so operational scans cannot
+  // perturb public facts, structure freshness, or Stage 1 review hashes.
+  if (!Array.isArray(data)) throw new Error("Load awards failed: selector returned no award array.");
+  return data;
 }
 
-async function loadSources(awardId) {
-  const { data, error } = await supabase
-    .from("shared_award_sources")
-    .select("id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,confidence")
-    .eq("shared_award_id", awardId)
-    .eq("admin_review_status", "open")
-    .order("page_metadata_generated_at", { ascending: false });
-  if (error) throw new Error(`Load sources failed: ${error.message}`);
-  return data || [];
-}
-
-async function publishReconciledFacts(award, reconciliation, audit) {
-  const now = new Date().toISOString();
-  const summary = buildAwardSummaryFromFacts(award, reconciliation.selectedFacts);
-  const { error: auditError } = await supabase.from("shared_award_page_audits").insert({
-    shared_award_id: award.id,
+async function persistAuditResult(award, reconciliation, audit) {
+  const evaluation = requireRegressionEvaluation(award);
+  const auditRow = {
     audit_kind: "regression",
     audit_status: audit.audit_status,
     severity: audit.severity,
@@ -198,28 +255,93 @@ async function publishReconciledFacts(award, reconciliation, audit) {
     source_rejections: audit.source_rejections,
     selected_fact_summary: audit.selected_fact_summary,
     public_page_snapshot: {
-      summary,
-      public_facts: reconciliation.selectedFacts,
+      observed_summary: award.summary || null,
+      observed_public_facts: award.public_facts || {},
+      proposed_reconciled_summary: buildAwardSummaryFromFacts(award, reconciliation.selectedFacts),
+      proposed_reconciled_facts: reconciliation.selectedFacts,
+      selected_evidence_bindings: buildSelectedEvidenceBindings(reconciliation),
       generated_by: "evaluate-public-page-audit-canaries",
+      evaluation_contract_version: evaluation.contractVersion,
+      evaluation_revision: evaluation.revision,
+      evaluation_source_count: evaluation.sourceCount,
+      evaluated_at: evaluation.selectedAt,
+      applied_to_public: false,
+      observation_only: true,
     },
     model: "award-fact-reconciliation",
+  };
+  const { data, error } = await supabase.rpc("record_shared_award_regression_audit", {
+    p_shared_award_id: award.id,
+    p_audit_row: auditRow,
+    p_audit_outcome_error: regressionAuditErrorFor(audit),
   });
-  if (auditError) throw new Error(`Insert audit failed: ${auditError.message}`);
+  if (error) throw new Error(`Persist regression page audit failed: ${error.message}`);
+  if (!data?.audit_id || typeof data?.inserted !== "boolean") {
+    throw new Error("Persist regression page audit failed: RPC returned no durable audit identity.");
+  }
+  return data;
+}
 
-  const { error } = await supabase
-    .from("shared_awards")
-    .update({
-      summary,
-      public_facts: reconciliation.selectedFacts,
-      public_facts_generated_at: now,
-      public_facts_model: "award-fact-reconciliation",
-      confidence: confidenceScore(reconciliation.selectedFacts.confidence),
-      last_structure_scan_at: now,
-      structure_scan_error: null,
-      updated_at: now,
-    })
-    .eq("id", award.id);
-  if (error) throw new Error(`Publish reconciled facts failed: ${error.message}`);
+function buildSelectedEvidenceBindings(reconciliation) {
+  return Object.entries(reconciliation.selected || {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([fieldName, selection]) => {
+      const candidate = selection?.candidate || {};
+      const source = selection?.source || {};
+      const baselineFacts = source?.page_metadata?.baseline_facts || {};
+      return {
+        field_name: fieldName,
+        candidate_id: candidate.id || null,
+        source_id: source.id || candidate.shared_award_source_id || null,
+        source_url: source.url || candidate.source_url || null,
+        source_role: candidate.source_role || null,
+        normalized_value: candidate.normalized_value ?? selection?.value ?? null,
+        evidence_quote: candidate.evidence_quote || null,
+        evidence_location: candidate.evidence_location || null,
+        extracted_at: candidate.extracted_at || null,
+        source_captured_at: source.page_metadata_generated_at || null,
+        reconciliation_audit_signature:
+          source?.page_metadata?.reconciliation_audit_signature
+          || baselineFacts.reconciliation_audit_signature
+          || null,
+        source_evidence_hashes: {
+          capture_file_hash: baselineFacts.capture_file_hash || source?.page_metadata?.capture_file_hash || null,
+          file_hash: baselineFacts.file_hash || source?.page_metadata?.file_hash || null,
+          main_content_hash: baselineFacts.main_content_hash || source?.page_metadata?.main_content_hash || null,
+          text_hash: baselineFacts.text_hash || source?.page_metadata?.text_hash || null,
+        },
+      };
+    });
+}
+
+async function persistOperationalFailure(awardId, message) {
+  const operationalError = cleanString(message).slice(0, 1000) || "regression_audit_attempt_failed";
+  const { data, error } = await supabase.rpc(
+    "record_shared_award_regression_audit_attempt_failure",
+    {
+      p_shared_award_id: awardId,
+      p_operational_error: operationalError,
+    },
+  );
+  if (error) throw new Error(`Persist regression audit failure state failed: ${error.message}`);
+  if (!data?.attempt_recorded_at || !Number.isInteger(data?.consecutive_failures)) {
+    throw new Error("Persist regression audit failure state failed: RPC returned no durable retry state.");
+  }
+  return data;
+}
+
+function regressionAuditErrorFor(audit) {
+  if (!audit.should_block_publication) return null;
+  const findingCodes = (audit.findings || [])
+    .map((finding) => cleanString(finding?.code || finding?.field_name || "finding"))
+    .filter(Boolean)
+    .slice(0, 8);
+  return [
+    "regression_page_audit_blocked",
+    cleanString(audit.audit_status) || "failed",
+    cleanString(audit.severity) || "error",
+    ...findingCodes,
+  ].join(":").slice(0, 1000);
 }
 
 function diagnosePage({ reconciliation, audit }) {
@@ -252,14 +374,6 @@ function selectionHasEvidence(selection) {
 function deadlineIsPast(value) {
   const date = Date.parse(String(value || ""));
   return Number.isFinite(date) && date < Date.now();
-}
-
-function confidenceScore(value) {
-  const clean = String(value || "").toLowerCase();
-  if (clean === "high") return 90;
-  if (clean === "medium") return 70;
-  if (clean === "low") return 45;
-  return 60;
 }
 
 function parseArgs(argv) {
@@ -328,9 +442,9 @@ Examples:
 
 Options:
   --slug=a,b
-  --all=true
+  --all=true                Select a fair oldest-first batch from all active awards
   --known-canaries=true
-  --sample-size=25
+  --sample-size=25          Maximum awards per catalog batch; explicit slugs are capped at 250
   --dry-run=true
   --apply=false
   --json=false

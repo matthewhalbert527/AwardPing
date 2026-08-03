@@ -16,6 +16,7 @@ import { appConfig, hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/conf
 import type { Database } from "@/lib/database.types";
 import { loadAdminManualQuarantine } from "@/lib/admin-manual-quarantine";
 import { loadAdminInviteSecurityReissues } from "@/lib/admin-invite-security-reissues";
+import { loadAdminRegressionAuditFailures } from "@/lib/admin-regression-audit-state";
 import {
   defaultAdminManualQuarantineBacklogQuery,
   loadAdminManualQuarantineBacklog,
@@ -38,11 +39,17 @@ import {
 } from "@/lib/admin-worker-operations";
 import {
   buildOperatorActionInbox,
+  type OperatorActionInboxCaseSourceTotal,
   type OperatorDigestDeliveryFailureInput,
   type OperatorVisualReviewFailureInput,
 } from "@/lib/operator-action-inbox";
 import { currentMonitoringPromotionAppIdentity } from "@/lib/monitoring-feedback-promotion-identity";
 import { summarizeStage1BetaReleaseGate } from "@/lib/stage1-release-gate-summary";
+import {
+  loadStablePaginatedSnapshot,
+  stableJsonStringify,
+  type StablePaginatedSnapshotErrorCode,
+} from "@/lib/stable-paginated-snapshot";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
@@ -63,6 +70,21 @@ type AdminRecentChangeEvent = {
 };
 
 type LocalWorkerRun = Database["public"]["Tables"]["local_worker_runs"]["Row"];
+type VisualReviewFailureRow = Pick<
+  Database["public"]["Tables"]["shared_award_visual_review_candidates"]["Row"],
+  | "id"
+  | "shared_award_id"
+  | "shared_award_source_id"
+  | "source_title"
+  | "source_url"
+  | "candidate_signature"
+  | "rejection_reason"
+  | "gemini_batch_name"
+  | "model"
+  | "estimated_cost_usd"
+  | "worker_metadata"
+  | "updated_at"
+>;
 
 export default async function AdminActionInboxPage({ searchParams }: Props) {
   if (!hasSupabaseConfig()) return <SetupNotice />;
@@ -159,6 +181,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     workerOperations,
     releaseEvidence,
     inviteSecurityReissues,
+    regressionAuditFailures,
   ] = await Promise.all([
     loadAdminPageIssues(admin, workerRuns, {
       includeLegacyDiagnostics: false,
@@ -166,7 +189,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     }),
     loadAdminReviewLaterSources(admin),
     loadAdminMonitoringFeedbackPromotionClusters(admin),
-    loadAdminVisualReviewFailures(admin),
+    loadAdminVisualReviewFailures(
+      admin,
+      visualQuarantineRevisionMatches ? quarantinedVisualCandidates.ids : new Set<string>(),
+    ),
     loadAdminFailedPublicUpdateDeliveries(admin),
     loadAdminRecentChangeEvents(admin),
     loadAdminSuppressedChangeEvents(admin),
@@ -180,6 +206,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       ? loadAdminStage1ReleaseGateEvidence(admin)
       : Promise.resolve(null),
     loadAdminInviteSecurityReissues(admin),
+    loadAdminRegressionAuditFailures(admin),
   ]);
   const releaseGate = releaseEvidence
     ? summarizeStage1BetaReleaseGate({
@@ -213,6 +240,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     ...visualQuarantineRevisionErrors,
     ...workerOperations.loadErrors,
     ...inviteSecurityReissues.loadErrors,
+    ...regressionAuditFailures.loadErrors,
   ].filter((message): message is string => Boolean(message));
   const historyLoadErrors = [
     ...reviewLater.loadErrors,
@@ -238,17 +266,28 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
     promotionClusters: promotionClusters.clusters,
     nightlyFailureGroups: runReport.visualNightly?.failureGroups || [],
     nightlyReportedAt: runReport.visualNightly?.finishedAt || runReport.visualNightly?.startedAt || null,
-    visualReviewFailures: visualReviewFailures.failures.filter(
-      (failure) =>
-        !visualQuarantineRevisionMatches ||
-        !quarantinedVisualCandidates.ids.has(failure.id),
-    ),
+    visualReviewFailures: visualReviewFailures.failures,
     digestDeliveryFailures: deliveryFailures.failures,
     inviteSecurityReissues: inviteSecurityReissues.reissues,
+    regressionAuditFailures: regressionAuditFailures.failures,
     downstreamLanes: workerOperations.lanes,
     loadErrors: actionLoadErrors,
     now: renderedAt,
   });
+  const actionCaseSourceTotals: OperatorActionInboxCaseSourceTotal[] = [
+    {
+      key: "visual_review",
+      label: "visual-review failure cases",
+      renderedTotal: visualReviewFailures.failures.length,
+      exactTotal: visualReviewFailures.exactTotal,
+    },
+    {
+      key: "digest_delivery",
+      label: "public-update delivery failure cases",
+      renderedTotal: deliveryFailures.failures.length,
+      exactTotal: deliveryFailures.exactTotal,
+    },
+  ];
 
   return (
     <IssueShell>
@@ -355,7 +394,10 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       ) : activeTab === "inbox" ? (
         <>
           <AdminRunReport compact initialFeed={runReport} />
-          <OperatorActionInbox items={actionItems} />
+          <OperatorActionInbox
+            caseSourceTotals={actionCaseSourceTotals}
+            items={actionItems}
+          />
         </>
       ) : activeTab === "promotions" ? (
         <>
@@ -594,24 +636,41 @@ async function loadAdminRecentChangeEvents(
   };
 }
 
-async function loadAdminVisualReviewFailures(admin: ReturnType<typeof createSupabaseAdminClient>): Promise<{
+async function loadAdminVisualReviewFailures(
+  admin: ReturnType<typeof createSupabaseAdminClient>,
+  excludedCandidateIds: ReadonlySet<string>,
+): Promise<{
   failures: OperatorVisualReviewFailureInput[];
+  exactTotal: number | null;
   loadErrors: string[];
 }> {
-  const { data, error, count } = await admin
-    .from("shared_award_visual_review_candidates")
-    .select(
-      "id, shared_award_id, shared_award_source_id, source_title, source_url, candidate_signature, rejection_reason, gemini_batch_name, model, estimated_cost_usd, worker_metadata, updated_at",
-      {
-        count: "exact",
-      },
-    )
-    .eq("status", "failed")
-    .order("updated_at", { ascending: true })
-    .limit(500);
+  const snapshot = await loadStablePaginatedSnapshot<VisualReviewFailureRow>({
+    pageSize: 500,
+    renderLimit: 500,
+    loadPage: async (start, end) => {
+      const { data, error, count } = await admin
+        .from("shared_award_visual_review_candidates")
+        .select(
+          "id, shared_award_id, shared_award_source_id, source_title, source_url, candidate_signature, rejection_reason, gemini_batch_name, model, estimated_cost_usd, worker_metadata, updated_at",
+          { count: "exact" },
+        )
+        .eq("status", "failed")
+        .order("updated_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(start, end);
+      return {
+        rows: data || [],
+        count,
+        error: error?.message || null,
+      };
+    },
+    identity: (row) => row.id,
+    fingerprint: stableJsonStringify,
+    include: (row) => !excludedCandidateIds.has(row.id),
+  });
 
   return {
-    failures: (data || []).map((row) => ({
+    failures: snapshot.rows.map((row) => ({
       id: row.id,
       awardId: row.shared_award_id,
       sourceId: row.shared_award_source_id,
@@ -625,17 +684,36 @@ async function loadAdminVisualReviewFailures(admin: ReturnType<typeof createSupa
       workerMetadata: row.worker_metadata,
       updatedAt: row.updated_at,
     })),
-    loadErrors: [
-      error?.message,
-      (count || 0) > (data || []).length
-        ? `${(count || 0) - (data || []).length} additional visual-review failures are not shown because the inbox reached its 500-item limit.`
-        : null,
-    ].filter((message): message is string => Boolean(message)),
+    exactTotal: snapshot.exactTotal,
+    loadErrors: snapshot.errorCode
+      ? [visualFailureSnapshotError(snapshot.errorCode, snapshot.errorMessage)]
+      : [],
   };
+}
+
+function visualFailureSnapshotError(
+  code: StablePaginatedSnapshotErrorCode,
+  detail: string | null,
+) {
+  if (code === "query_error") return `Visual-review failures: ${detail || "query failed"}`;
+  if (code === "exact_total_unavailable") {
+    return "The exact visual-review failure total was unavailable. Rendered rows remain visible, but the inbox will not infer a total.";
+  }
+  if (code === "total_changed") {
+    return "The visual-review failure total changed during pagination. Rendered rows remain visible, but refresh before relying on a total.";
+  }
+  if (code === "pagination_ended_early") {
+    return "Visual-review failure pagination ended before the exact total. Rendered rows remain visible, but refresh before relying on a total.";
+  }
+  if (code === "duplicate_identity") {
+    return "Visual-review failure pagination returned a duplicate or missing candidate identity. Rendered rows remain visible, but refresh before relying on a total.";
+  }
+  return "Visual-review failure IDs or contents changed while the inbox was loading. Rendered rows remain visible, but refresh before relying on a total.";
 }
 
 async function loadAdminFailedPublicUpdateDeliveries(admin: ReturnType<typeof createSupabaseAdminClient>): Promise<{
   failures: OperatorDigestDeliveryFailureInput[];
+  exactTotal: number | null;
   loadErrors: string[];
 }> {
   const [outbox, legacy] = await Promise.all([
@@ -692,19 +770,35 @@ async function loadAdminFailedPublicUpdateDeliveries(admin: ReturnType<typeof cr
     })),
   ];
 
+  const outboxExactTotal = outbox.error
+    ? null
+    : exactQueryCount(outbox.count, (outbox.data || []).length);
+  const legacyExactTotal = legacy.error
+    ? null
+    : exactQueryCount(legacy.count, (legacy.data || []).length);
+
   return {
     failures,
+    exactTotal: outboxExactTotal === null || legacyExactTotal === null
+      ? null
+      : outboxExactTotal + legacyExactTotal,
     loadErrors: [
       outbox.error?.message,
       legacy.error?.message,
-      (outbox.count || 0) > (outbox.data || []).length
-        ? `${(outbox.count || 0) - (outbox.data || []).length} additional durable public digest outbox actions are not shown because the inbox reached its 500-item limit.`
+      !outbox.error && outboxExactTotal === null
+        ? "The exact durable public digest outbox total was unavailable; rendered rows remain visible."
         : null,
-      (legacy.count || 0) > (legacy.data || []).length
-        ? `${(legacy.count || 0) - (legacy.data || []).length} additional legacy public digest failures are not shown because the inbox reached its 500-item limit.`
+      !legacy.error && legacyExactTotal === null
+        ? "The exact legacy public digest failure total was unavailable; rendered rows remain visible."
         : null,
     ].filter((message): message is string => Boolean(message)),
   };
+}
+
+function exactQueryCount(value: number | null, minimum: number) {
+  return value !== null && Number.isSafeInteger(value) && value >= minimum
+    ? value
+    : null;
 }
 
 async function loadQuarantinedVisualCandidateIds(

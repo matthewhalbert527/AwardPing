@@ -8,6 +8,8 @@ const supabaseDispatcher = new Agent({
   keepAliveTimeout: 10_000,
   keepAliveMaxTimeout: 30_000,
 });
+let supabaseDispatcherClosePromise = null;
+let supabaseDispatcherDestroyPromise = null;
 
 export function createSupabaseServiceClient(url, key) {
   const options = {
@@ -16,6 +18,27 @@ export function createSupabaseServiceClient(url, key) {
   };
 
   return createClient(url, key, options);
+}
+
+/**
+ * Gracefully close the shared Undici dispatcher before a short-lived worker
+ * process exits. In particular, Windows Node builds can assert in libuv when
+ * process teardown races an Agent that is still closing after an HTTP error.
+ * Long-lived processes do not need to call this until their final shutdown.
+ */
+export function closeSupabaseServiceTransport() {
+  if (!supabaseDispatcherClosePromise) {
+    supabaseDispatcherClosePromise = supabaseDispatcher.close();
+  }
+  return supabaseDispatcherClosePromise;
+}
+
+/** Force terminal transport shutdown for a worker's explicit hard deadline. */
+export function destroySupabaseServiceTransport(cause = new Error("Supabase worker transport destroyed.")) {
+  if (!supabaseDispatcherDestroyPromise) {
+    supabaseDispatcherDestroyPromise = supabaseDispatcher.destroy(cause);
+  }
+  return supabaseDispatcherDestroyPromise;
 }
 
 export function isSupabaseSecretApiKey(key) {

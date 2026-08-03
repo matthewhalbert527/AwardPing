@@ -144,6 +144,39 @@ describe("source quality gate", () => {
     );
   });
 
+  it("honors an exact Stage 1 monitoring-only approval without granting fact authority", () => {
+    const approved = source({
+      page_metadata: {
+        baseline_facts: { award_relevance: "primary", cycle_relevance: "unclear" },
+        stage1_baseline_monitoring_approval: {
+          decision: "monitoring_only",
+          decision_item_sha256: "b".repeat(64),
+          evidence_packet_sha256: "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f",
+          exact_evidence_verified: true,
+          fact_candidate_authority: false,
+          notification_mode: "baseline_only",
+          policy_version: "stage1-baseline-source-disposition-v1",
+          public_fact_authority: false,
+          reviewed_roles: ["funding"],
+          schema_version: "awardping.stage1.baseline-monitoring-approval.v1",
+          shared_award_source_id: "source-1",
+          source_page_request_id: "62a291a2-e64d-5788-a876-f2dca551a021",
+        },
+      },
+    });
+
+    expect(sourceQualityDecision(approved, { purpose: "monitoring" })).toMatchObject({
+      allowed: true,
+      reason: "stage1_baseline_monitoring_only",
+    });
+    expect(sourceQualityDecision(approved, { purpose: "facts" }).reason)
+      .toBe("stage1_baseline_monitoring_only_no_fact_authority");
+    expect(sourceQualityDecision(approved, { purpose: "public" }).reason)
+      .toBe("stage1_baseline_monitoring_only_no_fact_authority");
+    expect(sourceQualityDecision(approved, { purpose: "discovery" }).reason)
+      .toBe("stage1_baseline_monitoring_only_no_discovery_authority");
+  });
+
   it("does not let missing baseline facts feed public facts or daily monitoring", () => {
     const missingFacts = source({
       page_type: "application",

@@ -15,7 +15,10 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
-import { bindVisualTextGeometry } from "./visual-event-localization.mjs";
+import {
+  bindVisualTextGeometry,
+  recomputeRestoredVisualScreenshotLayoutCapture,
+} from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
 
 const sourceIdPattern =
@@ -561,6 +564,22 @@ function pathEntryExists(path) {
   }
 }
 
+export function isExactHeldR2RepairTarget({
+  source,
+  sourceIdFilter,
+  r2SnapshotSync,
+  r2RepairMissingSnapshots,
+} = {}) {
+  const requestedSourceId = String(sourceIdFilter || "").trim();
+  return Boolean(
+    requestedSourceId &&
+    source?.id === requestedSourceId &&
+    source?.admin_review_status === "review_later" &&
+    r2SnapshotSync === true &&
+    r2RepairMissingSnapshots === true
+  );
+}
+
 /**
  * Restores the exact R2 generation already named by an incomplete local
  * baseline. The caller must hold the per-source visual-baseline lock.
@@ -691,7 +710,7 @@ export async function rehydrateLocalBaselineFromR2({
         rawMeta,
       });
     }
-    const localizationRecovery = assessLocalizationRecovery({
+    const declaredLocalizationRecovery = assessLocalizationRecovery({
       kind: currentBaseline.kind,
       manifest,
       generation,
@@ -716,6 +735,10 @@ export async function rehydrateLocalBaselineFromR2({
       localPaths,
       generation,
     });
+    const localizationRecovery = applyRestoredLayoutVerification(
+      declaredLocalizationRecovery,
+      sanitizedLayouts.verification,
+    );
     const sanitizedMeta = sanitizeDownloadedMeta({
       meta: rawMeta,
       localPaths,
@@ -1109,6 +1132,45 @@ function assessLocalizationRecovery({ kind, manifest, generation, rawMeta }) {
   };
 }
 
+function applyRestoredLayoutVerification(recovery, verification = {}) {
+  if (recovery.status === "not_applicable" || !recovery.main_geometry_available) {
+    return recovery;
+  }
+  const mainVerified = verification.layout === true;
+  const verifiedExpansionStates = Object.entries(verification)
+    .filter(([slot, verified]) => /^expansion_state_\d{2}_layout$/.test(slot) && verified === true)
+    .length;
+  const expansionVerified = verifiedExpansionStates === recovery.expected_expansion_states;
+  if (recovery.status !== "exact_geometry_available") {
+    return {
+      ...recovery,
+      main_geometry_verified: mainVerified,
+      verified_expansion_states: verifiedExpansionStates,
+    };
+  }
+  if (mainVerified && expansionVerified) {
+    return {
+      ...recovery,
+      main_geometry_verified: true,
+      verified_expansion_states: verifiedExpansionStates,
+    };
+  }
+  const status = !mainVerified
+    ? "evidence_only_geometry_verification_unavailable"
+    : "evidence_only_expansion_geometry_verification_unavailable";
+  return {
+    ...recovery,
+    status,
+    reason: status === "evidence_only_geometry_verification_unavailable"
+      ? "exact_r2_generation_rehydrated_evidence_only_geometry_verification_unavailable"
+      : "exact_r2_generation_rehydrated_evidence_only_expansion_geometry_verification_unavailable",
+    recovery_scope: "baseline_evidence_only",
+    localization_recovered: false,
+    main_geometry_verified: mainVerified,
+    verified_expansion_states: verifiedExpansionStates,
+  };
+}
+
 function slotDefinition(slot) {
   if (fixedSlots[slot]) return fixedSlots[slot];
   const pageMatch = /^expansion_state_(\d{2})$/.exec(slot);
@@ -1471,6 +1533,8 @@ function sanitizeDownloadedMeta({
     recovery_scope: localizationRecovery.recovery_scope,
     localization_status: localizationRecovery.status,
     localization_recovered: localizationRecovery.localization_recovered,
+    main_geometry_verified: localizationRecovery.main_geometry_verified ?? false,
+    verified_expansion_states: localizationRecovery.verified_expansion_states ?? 0,
     legacy_approved_without_geometry: localizationRecovery.legacy_approved_without_geometry,
     optional_local_only_artifacts_restored: false,
     omitted_local_only_artifacts: omittedArtifacts,
@@ -1542,6 +1606,7 @@ function sanitizeGeometry(value, { file, imageRef, imageHash, geometryHash }) {
 function sanitizeDownloadedLayoutArtifacts({ artifactBySlot, localPaths, generation }) {
   const buffers = new Map();
   const hashes = {};
+  const verification = {};
   for (const [slot, artifact] of Object.entries(artifactBySlot)) {
     if (slot !== "layout" && artifact.entry.expansionKind !== "layout") continue;
     const layout = parseJsonBytes(
@@ -1556,7 +1621,13 @@ function sanitizeDownloadedLayoutArtifacts({ artifactBySlot, localPaths, generat
     const pointer = suffix
       ? expansionMetadata(generation, artifact.entry.expansionIndex)
       : generation.hashes;
-    const rebound = bindVisualTextGeometry(stripLocalPathFields(layout), {
+    const strippedLayout = stripLocalPathFields(layout);
+    const reverifiedLayout = recomputeRestoredVisualScreenshotLayoutCapture({
+      geometry: strippedLayout,
+      screenshot: strippedLayout.screenshot,
+      stateId: strippedLayout.state_id || (suffix ? pointer?.state_id : "main"),
+    });
+    const rebound = bindVisualTextGeometry(reverifiedLayout, {
       capturedAt: layout.captured_at || generation.capturedAt,
       imageHash: pointer?.image_hash || null,
       imageRef: localPaths.bySlot[pageSlot] || null,
@@ -1564,17 +1635,55 @@ function sanitizeDownloadedLayoutArtifacts({ artifactBySlot, localPaths, generat
     });
     buffers.set(artifact.entry.fileName, Buffer.from(`${JSON.stringify(rebound, null, 2)}\n`, "utf8"));
     hashes[slot] = rebound.geometry_hash;
+    verification[slot] =
+      !String(rebound.availability_status || "").trim().startsWith("unavailable_") &&
+      rebound.capture_verification?.status === "verified" &&
+      rebound.screenshot?.alignment_status === "verified";
   }
-  return { buffers, hashes };
+  return { buffers, hashes, verification };
 }
+
+const explicitLocalFilesystemFields = new Set([
+  "analysis_path",
+  "baseline_path",
+  "capture_dir",
+  "capture_meta_path",
+  "capture_path",
+  "dir",
+  "directory",
+  "env_path",
+  "executable_path",
+  "expansion_text_path",
+  "file",
+  "gemini_cli_path",
+  "image_path",
+  "image_ref",
+  "layout_path",
+  "local_paths",
+  "log_path",
+  "meta_path",
+  "new_capture_path",
+  "page_path",
+  "pdf_path",
+  "previous_baseline_capture_path",
+  "prompt_path",
+  "raw_records_path",
+  "rejected_paths",
+  "review_paths",
+  "saved_change_paths",
+  "sections_json_path",
+  "sections_text_path",
+  "text_path",
+  "thumb_path",
+  "transcript_path",
+]);
 
 function stripLocalPathFields(value) {
   if (Array.isArray(value)) return value.map(stripLocalPathFields);
   if (!isObject(value)) return value;
   return Object.fromEntries(
     Object.entries(value)
-      .filter(([key]) => !/(?:^|_)(?:path|paths|dir|directory|image_ref)$/i.test(key))
-      .filter(([key]) => key !== "file")
+      .filter(([key]) => !explicitLocalFilesystemFields.has(key.toLowerCase()))
       .map(([key, entry]) => [key, stripLocalPathFields(entry)]),
   );
 }
@@ -1752,8 +1861,10 @@ function buildRehydratedBaseline({
         localization_status: localizationRecovery.status,
         localization_recovered: localizationRecovery.localization_recovered,
         main_geometry_available: localizationRecovery.main_geometry_available,
+        main_geometry_verified: localizationRecovery.main_geometry_verified ?? false,
         expected_expansion_states: localizationRecovery.expected_expansion_states,
         complete_expansion_states: localizationRecovery.complete_expansion_states,
+        verified_expansion_states: localizationRecovery.verified_expansion_states ?? 0,
         legacy_approved_without_geometry: localizationRecovery.legacy_approved_without_geometry,
         remote_layout_hash: generation.hashes.layout_hash || generation.metadata.layout_hash || null,
         omitted_local_only_artifacts: omittedLocalOnlyArtifacts(rawMeta, manifest),

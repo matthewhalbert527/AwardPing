@@ -140,7 +140,9 @@ describe("same-pass first-observation materialization", () => {
     expect(dedicated).not.toContain("initial_official_document_same_capture_baseline_repair");
 
     const sourceQuery = functionBody(captureWorker, "function buildSourcesQuery");
-    expect(sourceQuery).toContain("admin_review_status, admin_reviewed_by");
+    expect(sourceQuery).toContain(
+      "admin_review_status, admin_review_note, admin_reviewed_by",
+    );
     expect(sourceQuery).toContain("if (!sourceIdFilter)");
     expect(sourceQuery).toContain('query = query.eq("admin_review_status", "open")');
   });
@@ -160,7 +162,7 @@ describe("same-pass first-observation materialization", () => {
     expect(quarantine).toContain('retry_mode: "reconciliation_only_retained_result_replay"');
     expect(quarantine).toContain("creates_api_charge: false");
     expect(quarantine).toContain("fetches_source_url: false");
-    expect(retry).toContain("validateRetainedIntakeArtifactManifest");
+    expect(retry).toContain("validateSourceIntakeProviderReplayBinding");
     expect(retry).toContain("finalizeReviewedRequest(");
     expect(retry).not.toContain("captureIntakePage(");
     expect(retry).not.toContain("reserveGeminiSpend(");

@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import { loadDeterministicSupabaseRows } from "./lib/deterministic-supabase-loader.mjs";
+import {
+  applyAwardSourceCleanupPlanWithCas,
+  buildAwardSourceCleanupPlan,
+} from "./lib/source-cleanup-cas.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
-const projectRef = args["project-ref"] || readLinkedProjectRef();
 const outputPath =
   args.output ||
   join(root, "reports", `shared-source-audit-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
@@ -16,7 +19,7 @@ const sampleLimit = positiveInt(args["sample-limit"], 40);
 const supabase = createSupabaseClient();
 const [awards, sources] = await Promise.all([
   loadAll("shared_awards", "id,name,official_homepage,status,updated_at"),
-  loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,admin_review_status,updated_at"),
+  loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,last_error,admin_review_status,updated_at"),
 ]);
 
 const activeAwards = awards.filter((award) => award.status === "active");
@@ -28,20 +31,32 @@ const badSources = activeSources
   .map((source) => ({ ...source, reason: nonAwardReason(source.url, source.title) }))
   .filter((source) => source.reason);
 const duplicateSources = findDuplicateSources(activeSources);
+const cleanupRows = [
+  ...badSources,
+  ...duplicateSources.map((item) => item.remove),
+].filter(Boolean);
 let currentAwards = activeAwards;
 let currentSources = activeSources;
-let homepageRepairs = buildHomepageRepairs(currentAwards, groupBy(currentSources, (source) => source.shared_award_id));
+const homepageRepairs = buildHomepageRepairs(
+  currentAwards,
+  groupBy(currentSources, (source) => source.shared_award_id),
+  cleanupRows,
+);
 
 if (applyCleanup) {
-  await cleanupSources([...badSources, ...duplicateSources.map((item) => item.remove)].filter(Boolean));
+  const cleanupPlans = buildAuditCleanupPlans({
+    awards: activeAwards,
+    allSources: sources,
+    retireSources: cleanupRows,
+    homepageRepairs,
+  });
+  await applyCleanupPlans(cleanupPlans);
   currentSources = (
-    await loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,admin_review_status,updated_at")
+    await loadAll("shared_award_sources", "id,shared_award_id,url,title,page_type,confidence,source,last_error,admin_review_status,updated_at")
   ).filter(
     (source) => activeAwardIds.has(source.shared_award_id) && source.admin_review_status !== "review_later",
   );
 
-  homepageRepairs = buildHomepageRepairs(currentAwards, groupBy(currentSources, (source) => source.shared_award_id));
-  await cleanupAwardHomepages(homepageRepairs);
   currentAwards = (await loadAll("shared_awards", "id,name,official_homepage,status,updated_at")).filter(
     (award) => award.status === "active",
   );
@@ -91,28 +106,51 @@ console.log(
   ),
 );
 
-async function cleanupSources(rows) {
-  for (const sourceId of [...new Set(rows.map((row) => row.id).filter(Boolean))]) {
-    const { data, error } = await supabase.rpc("retire_shared_award_source_preserving_visual_history", {
-      p_source_id: sourceId,
-      p_reason: "Retired by shared-source coverage cleanup; immutable update and visual history were preserved.",
-      p_actor: "awardping-shared-source-coverage-cleanup",
+async function applyCleanupPlans(plans) {
+  for (const plan of plans) {
+    await applyAwardSourceCleanupPlanWithCas({
+      supabase,
+      plan,
+      reason: "Retired by shared-source coverage cleanup; immutable update and visual history were preserved.",
+      actor: "awardping-shared-source-coverage-cleanup",
     });
-    const result = Array.isArray(data) ? data[0] : data;
-    if (error || !result?.source_id) {
-      throw new Error(`Retire shared source ${sourceId}: ${error?.message || "no durable result"}`);
-    }
   }
 }
 
-async function cleanupAwardHomepages(repairs) {
-  for (const repair of repairs) {
-    const { error } = await supabase
-      .from("shared_awards")
-      .update({ official_homepage: repair.nextUrl })
-      .eq("id", repair.award.id);
-    if (error) throw new Error(`shared_awards.official_homepage ${repair.award.id}: ${error.message}`);
+function buildAuditCleanupPlans({ awards, allSources, retireSources, homepageRepairs }) {
+  const awardById = new Map(awards.map((award) => [award.id, award]));
+  const sourcesByAwardId = groupBy(allSources, (source) => source.shared_award_id);
+  const retireByAwardId = groupBy(retireSources, (source) => source.shared_award_id);
+  const repairByAwardId = new Map(
+    homepageRepairs.map((repair) => [repair.award.id, repair]),
+  );
+  const awardIds = new Set([
+    ...retireByAwardId.keys(),
+    ...repairByAwardId.keys(),
+  ]);
+  const plans = [];
+  for (const awardId of [...awardIds].sort()) {
+    const award = awardById.get(awardId);
+    if (!award) throw new Error(`Cleanup plan references inactive award ${awardId}.`);
+    const awardSources = sourcesByAwardId.get(awardId) || [];
+    const retiring = retireByAwardId.get(awardId) || [];
+    const retiringIds = new Set(retiring.map((source) => source.id));
+    const usefulRemainingSourceIds = awardSources
+      .filter((source) => source.admin_review_status === "open")
+      .filter((source) => !retiringIds.has(source.id))
+      .filter((source) => !nonAwardReason(source.url, source.title))
+      .map((source) => source.id);
+    const repair = repairByAwardId.get(awardId) || null;
+    plans.push(buildAwardSourceCleanupPlan({
+      award,
+      allSources: awardSources,
+      retireSources: retiring,
+      usefulRemainingSourceIds,
+      homepageAfter: repair ? repair.nextUrl : award.official_homepage,
+      homepageReplacementSourceId: repair?.replacementSourceId || null,
+    }));
   }
+  return plans;
 }
 
 function renderReport({ awardsWithCounts, buckets, badSources, duplicateSources, homepageRepairs }) {
@@ -279,17 +317,32 @@ function canonicalSearchParams(searchParams) {
   return kept.length ? `?${kept.map(([key, value]) => `${key}=${value}`).join("&")}` : "";
 }
 
-function buildHomepageRepairs(awards, sourcesByAward) {
+function buildHomepageRepairs(awards, sourcesByAward, retiredSources = []) {
+  const retiredIds = new Set(retiredSources.map((source) => source.id));
+  const retiredKeysByAwardId = new Map();
+  for (const source of retiredSources) {
+    retiredKeysByAwardId.set(source.shared_award_id, [
+      ...(retiredKeysByAwardId.get(source.shared_award_id) || []),
+      canonicalUrlKey(source.url),
+    ]);
+  }
   return awards
-    .filter((award) => award.official_homepage && nonAwardReason(award.official_homepage, award.name))
+    .filter((award) => {
+      if (!award.official_homepage) return false;
+      const homepageKey = canonicalUrlKey(award.official_homepage);
+      return Boolean(nonAwardReason(award.official_homepage, award.name)) ||
+        (retiredKeysByAwardId.get(award.id) || []).includes(homepageKey);
+    })
     .map((award) => {
       const replacement = [...(sourcesByAward.get(award.id) || [])]
+        .filter((source) => !retiredIds.has(source.id))
         .filter((source) => !nonAwardReason(source.url, source.title))
         .sort((left, right) => homepageCandidateScore(right) - homepageCandidateScore(left))[0];
       return {
         award,
         oldUrl: award.official_homepage,
         nextUrl: replacement?.url || null,
+        replacementSourceId: replacement?.id || null,
       };
     });
 }
@@ -345,47 +398,25 @@ function nonAwardReason(value, title = "") {
 }
 
 async function loadAll(table, select) {
-  const rows = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase
-      .from(table)
-      .select(select)
-      .range(from, from + 999);
-    if (error) throw new Error(`${table}: ${error.message}`);
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
-  }
-  return rows;
+  return loadDeterministicSupabaseRows({
+    supabase,
+    table,
+    select,
+    revisionColumn: "updated_at",
+  });
 }
 
 function createSupabaseClient() {
   const env = { ...loadEnvFile(resolve(root, ".env.local")), ...process.env };
-  if (env.NEXT_PUBLIC_SUPABASE_URL && env.SUPABASE_SERVICE_ROLE_KEY && !env.NEXT_PUBLIC_SUPABASE_URL.includes("127.0.0.1")) {
-    return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "Set NEXT_PUBLIC_SUPABASE_URL and a server-only sb_secret SUPABASE_SERVICE_ROLE_KEY. Automatic Supabase CLI key fallback is disabled.",
+    );
   }
-
-  if (!projectRef) {
-    throw new Error("Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY or link Supabase.");
+  if (!String(env.SUPABASE_SERVICE_ROLE_KEY).trim().startsWith("sb_secret_")) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a modern server-only sb_secret key.");
   }
-
-  const keys = JSON.parse(
-    execFileSync(
-      "npx",
-      ["supabase", "projects", "api-keys", "--project-ref", projectRef, "--output", "json"],
-      { encoding: "utf8", cwd: root },
-    ),
-  );
-  const serviceRoleKey = keys.find((key) => key.name === "service_role")?.api_key;
-  if (!serviceRoleKey) throw new Error(`Could not read service_role key for ${projectRef}.`);
-  return createSupabaseServiceClient(`https://${projectRef}.supabase.co`, serviceRoleKey);
-}
-
-function readLinkedProjectRef() {
-  try {
-    return readFileSync(resolve(root, "supabase/.temp/project-ref"), "utf8").trim();
-  } catch {
-    return "";
-  }
+  return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
 function loadEnvFile(path) {

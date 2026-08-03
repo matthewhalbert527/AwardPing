@@ -91,7 +91,10 @@ import {
   partitionPaidVisualReviewCandidates,
   runPaidVisualProviderCreateBoundary,
 } from "./lib/paid-visual-review-policy.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -324,9 +327,13 @@ try {
   report.error = errorMessage(error);
   throw error;
 } finally {
-  report.finished_at = new Date().toISOString();
-  writeReport();
-  console.log(`VISUAL_REVIEW_BATCH_REPORT ${reportPath}`);
+  try {
+    report.finished_at = new Date().toISOString();
+    writeReport();
+    console.log(`VISUAL_REVIEW_BATCH_REPORT ${reportPath}`);
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }
 
 async function pollExistingBatches() {

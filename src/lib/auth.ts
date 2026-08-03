@@ -34,7 +34,9 @@ export async function getUserProfile(userId: string) {
   const supabase = await createSupabaseServerClient();
   const { data } = await supabase
     .from("profiles")
-    .select("full_name, organization, full_name_encrypted, organization_encrypted")
+    .select(
+      "full_name, organization, full_name_encrypted, organization_encrypted, personal_data_reentry_required, personal_data_reentry_reason, personal_data_reentry_marked_at, personal_data_reentered_at",
+    )
     .eq("id", userId)
     .maybeSingle();
 

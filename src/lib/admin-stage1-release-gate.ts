@@ -4,6 +4,7 @@ import type { Database } from "@/lib/database.types";
 import { checkInviteOnlySignupReleaseReadiness } from "@/lib/invite-only-signup-readiness";
 import {
   stage1ReleaseArtifactKinds,
+  isCanonicalStage1ReleaseEpoch,
   type Stage1EffectivePublication,
   type Stage1MigrationIdentity,
   type Stage1ReleaseArtifact,
@@ -148,6 +149,7 @@ async function loadLatestCanonicalEvidence(admin: AdminClient, registry: Registr
           .from("shared_award_page_audits")
           .select("*")
           .eq("shared_award_id", award.canonical_shared_award_id)
+          .eq("audit_kind", "deterministic")
           .order("created_at", { ascending: false })
           .order("id", { ascending: false })
           .limit(1)
@@ -403,14 +405,23 @@ function migrationIdentity({
     if (!isRecord(cohort) || !isRecord(cohort.registry)) return undefined;
     return cohort.registry.release_epoch;
   });
+  const registryContractsValid = snapshot.cohorts.every((cohort) =>
+    isRecord(cohort) &&
+    isRecord(cohort.registry) &&
+    cohort.registry.policy_version === "stage1-publication-v1");
   const activeReleaseValid = releaseState === "verified_beta" &&
-    typeof releaseEpoch === "string" &&
+    isCanonicalStage1ReleaseEpoch(releaseEpoch) &&
+    registryContractsValid &&
     effectiveValues.every((value) => typeof value === "boolean") &&
     (effectiveCount === 0 || effectiveCount === 25) &&
     release.effectively_released === (effectiveCount === 25) &&
     registryEpochs.every((value) => value === releaseEpoch);
-  const closedReleaseValid = releaseState !== "verified_beta" &&
+  const closedReleaseValid = ["pending", "revalidation_pending", "suspended"].includes(
+    typeof releaseState === "string" ? releaseState : "",
+  ) &&
     releaseEpoch === null &&
+    registryContractsValid &&
+    release.effectively_released === false &&
     effectiveValues.every((value) => value === false) &&
     registryEpochs.every((value) => value === null);
   if (!activeReleaseValid && !closedReleaseValid) {

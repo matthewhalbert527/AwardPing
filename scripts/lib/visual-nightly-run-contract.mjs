@@ -1,4 +1,5 @@
 export const NIGHTLY_VISUAL_DISCOVERY_INTENT = "live_recurring";
+export const NIGHTLY_VISUAL_REVIEW_MODE = "batch";
 
 const REPAIR_OPTION_KEYS = Object.freeze([
   "baseline_refresh",
@@ -68,7 +69,59 @@ export function classifyScheduledNightlyVisualRun(input = {}) {
     return classification(false, "unsupported_discovery_intent", "discovery_intent");
   }
 
+  if (!flagEnabled(options.discover_pdf_subpages)) {
+    return classification(false, "pdf_discovery_disabled", "discover_pdf_subpages");
+  }
+  if (flagEnabled(options.discover_html_subpages)) {
+    return classification(false, "html_discovery_not_canonical", "discover_html_subpages");
+  }
+
+  if (cleanKey(options.visual_review_mode) !== NIGHTLY_VISUAL_REVIEW_MODE) {
+    return classification(false, "visual_review_not_canonical", "visual_review_mode");
+  }
+  if (!flagEnabled(options.interpret_visual_changes)) {
+    return classification(false, "visual_review_disabled", "interpret_visual_changes");
+  }
+  if (!flagEnabled(options.r2_snapshot_sync)) {
+    return classification(false, "immutable_evidence_sync_disabled", "r2_snapshot_sync");
+  }
+
   return classification(true, "scheduled_live_recurring_discovery");
+}
+
+/**
+ * Explicit command-line discovery settings outrank persistent worker defaults.
+ * In particular, a scheduled `--discovery-intent=live_recurring` invocation
+ * must not inherit an old onboarding batch ID from `.env.worker.local` and
+ * silently become historical onboarding.
+ */
+export function resolveVisualDiscoveryConfiguration({ args = {}, env = {} } = {}) {
+  const values = objectValue(args);
+  const environment = objectValue(env);
+  const hasIntentArgument = own(values, "discovery-intent");
+  const hasOnboardingArgument = own(values, "discovery-onboarding-batch-id");
+  const requestedIntent = cleanKey(
+    hasIntentArgument
+      ? values["discovery-intent"]
+      : environment.AWARDPING_DISCOVERY_INTENT || "historical_onboarding",
+  );
+  const requestedOnboardingBatchId = cleanText(
+    hasOnboardingArgument
+      ? values["discovery-onboarding-batch-id"]
+      : hasIntentArgument
+        ? ""
+        : environment.AWARDPING_DISCOVERY_ONBOARDING_BATCH_ID,
+  );
+  const discoveryIntent = requestedIntent === NIGHTLY_VISUAL_DISCOVERY_INTENT &&
+    !requestedOnboardingBatchId
+    ? NIGHTLY_VISUAL_DISCOVERY_INTENT
+    : "historical_onboarding";
+
+  return {
+    requestedIntent,
+    requestedOnboardingBatchId,
+    discoveryIntent,
+  };
 }
 
 export function isScheduledNightlyVisualRun(input = {}) {
@@ -81,6 +134,10 @@ function classification(eligible, reason, option = null) {
 
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function own(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function cleanText(value) {

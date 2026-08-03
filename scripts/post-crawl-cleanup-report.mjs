@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
@@ -9,11 +8,34 @@ import {
   cleanupActions,
   csvEscape,
   canonicalSourceUrlKey,
+  isUsefulOfficialSource,
 } from "./source-cleanup-core.mjs";
+import { loadDeterministicSupabaseRows } from "./lib/deterministic-supabase-loader.mjs";
+import {
+  applyAwardSourceCleanupPlanWithCas,
+  buildAwardSourceCleanupPlan,
+} from "./lib/source-cleanup-cas.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
-const projectRef = args["project-ref"] || readLinkedProjectRef();
+const env = { ...loadEnvFile(resolve(root, ".env.local")), ...process.env };
+const supabaseUrl = String(env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
+const serviceRoleKey = String(env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+if (!supabaseUrl || !serviceRoleKey) {
+  throw new Error(
+    "Set NEXT_PUBLIC_SUPABASE_URL and a server-only sb_secret SUPABASE_SERVICE_ROLE_KEY. Automatic Supabase CLI key fallback is disabled.",
+  );
+}
+if (!serviceRoleKey.startsWith("sb_secret_")) {
+  throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a modern server-only sb_secret key.");
+}
+const projectRef = projectRefFromSupabaseUrl(supabaseUrl);
+const requestedProjectRef = String(args["project-ref"] || "").trim();
+if (requestedProjectRef && requestedProjectRef !== projectRef) {
+  throw new Error(
+    `--project-ref=${requestedProjectRef} does not match the configured Supabase URL project ${projectRef}; refusing to run against an ambiguous target.`,
+  );
+}
 const apply = args.apply === true || args.apply === "true";
 const removeSafe = args["remove-safe"] === true || args["remove-safe"] === "true";
 const sampleLimit = positiveInt(args["sample-limit"], 40);
@@ -33,11 +55,19 @@ const [awards, sources, userAwards, monitors, awardSources, snapshots, changes] 
     "shared_award_sources",
     "id,shared_award_id,url,title,page_type,confidence,source,last_error,last_checked_at,next_check_at,consecutive_failures,admin_review_status,updated_at",
   ),
-  loadOptionalAll("awards", "id,shared_award_id"),
-  loadOptionalAll("monitors", "id,shared_award_source_id"),
-  loadOptionalAll("award_sources", "id,shared_award_source_id"),
-  loadOptionalAll("shared_award_source_snapshots", "id,shared_award_source_id,source_url"),
-  loadOptionalAll("shared_award_change_events", "id,shared_award_id,shared_award_source_id,source_url"),
+  loadAll("awards", "id,shared_award_id,updated_at"),
+  loadAll("monitors", "id,shared_award_source_id,updated_at"),
+  loadAll("award_sources", "id,shared_award_source_id,updated_at"),
+  loadAll(
+    "shared_award_source_snapshots",
+    "id,shared_award_source_id,source_url,created_at",
+    "created_at",
+  ),
+  loadAll(
+    "shared_award_change_events",
+    "id,shared_award_id,shared_award_source_id,source_url,detected_at",
+    "detected_at",
+  ),
 ]);
 
 const activeAwards = awards.filter((award) => award.status === "active");
@@ -73,11 +103,16 @@ if (removeSafe) {
     dependencies: dependencyCounts,
   };
   if (apply && safeRows.length) {
-    await cleanupSources(safeRows.map((row) => row.source));
-    const homepageResult = await repairRemovedHomepages(safeRows.map((row) => row.source));
+    const removedSources = safeRows.map((row) => row.source);
+    const homepageRepairs = buildRemovedHomepageRepairs(removedSources);
+    const cleanupPlans = buildPostCrawlCleanupPlans({
+      rows: safeRows,
+      homepageRepairs,
+    });
+    await applyCleanupPlans(cleanupPlans);
     removalResult.deletedRows = 0;
     removalResult.retiredRows = safeRows.length;
-    removalResult.homepageRepairs = homepageResult;
+    removalResult.homepageRepairs = homepageRepairs.length;
   }
 }
 
@@ -299,21 +334,18 @@ function countDependencies(sourceRows, tables) {
   };
 }
 
-async function cleanupSources(rows) {
-  for (const sourceId of [...new Set(rows.map((row) => row.id).filter(Boolean))]) {
-    const { data, error } = await supabase.rpc("retire_shared_award_source_preserving_visual_history", {
-      p_source_id: sourceId,
-      p_reason: "Retired by post-crawl source cleanup; immutable update and visual history were preserved.",
-      p_actor: "awardping-post-crawl-cleanup",
+async function applyCleanupPlans(plans) {
+  for (const plan of plans) {
+    await applyAwardSourceCleanupPlanWithCas({
+      supabase,
+      plan,
+      reason: "Retired by post-crawl source cleanup; immutable update and visual history were preserved.",
+      actor: "awardping-post-crawl-cleanup",
     });
-    const result = Array.isArray(data) ? data[0] : data;
-    if (error || !result?.source_id) {
-      throw new Error(`Retire shared source ${sourceId}: ${error?.message || "no durable result"}`);
-    }
   }
 }
 
-async function repairRemovedHomepages(removedRows) {
+function buildRemovedHomepageRepairs(removedRows) {
   const removedKeysByAwardId = new Map();
   for (const row of removedRows) {
     removedKeysByAwardId.set(row.shared_award_id, [
@@ -329,66 +361,88 @@ async function repairRemovedHomepages(removedRows) {
     remainingRowsByAwardId.set(row.shared_award_id, [...(remainingRowsByAwardId.get(row.shared_award_id) || []), row]);
   }
 
-  let repaired = 0;
+  const repairs = [];
   for (const award of activeAwards) {
     const removedKeys = removedKeysByAwardId.get(award.id) || [];
     if (!award.official_homepage || !removedKeys.includes(canonicalSourceUrlKey(award.official_homepage))) continue;
 
-    const replacement = (remainingRowsByAwardId.get(award.id) || [])[0] || null;
-    const { error } = await supabase
-      .from("shared_awards")
-      .update({ official_homepage: replacement?.url || null, updated_at: new Date().toISOString() })
-      .eq("id", award.id);
-    if (error) throw new Error(`shared_awards ${award.id}: ${error.message}`);
-    repaired += 1;
+    const replacement = (remainingRowsByAwardId.get(award.id) || [])
+      .filter((source) => isUsefulOfficialSource(source, award))[0] || null;
+    repairs.push({
+      award,
+      oldUrl: award.official_homepage,
+      nextUrl: replacement?.url || null,
+      replacementSourceId: replacement?.id || null,
+    });
   }
-
-  return repaired;
+  return repairs;
 }
 
-async function loadAll(table, select) {
-  const rows = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase.from(table).select(select).range(from, from + 999);
-    if (error) throw new Error(`${table}: ${error.message}`);
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
+function buildPostCrawlCleanupPlans({ rows, homepageRepairs }) {
+  const awardById = new Map(activeAwards.map((award) => [award.id, award]));
+  const sourcesByAwardId = groupBy(sources, (source) => source.shared_award_id);
+  const rowsByAwardId = groupBy(rows, (row) => row.source.shared_award_id);
+  const repairByAwardId = new Map(
+    homepageRepairs.map((repair) => [repair.award.id, repair]),
+  );
+  const plans = [];
+  for (const awardId of [...rowsByAwardId.keys()].sort()) {
+    const award = awardById.get(awardId);
+    if (!award) throw new Error(`Cleanup plan references inactive award ${awardId}.`);
+    const awardSources = sourcesByAwardId.get(awardId) || [];
+    const awardRows = rowsByAwardId.get(awardId) || [];
+    const retiring = awardRows.map((row) => row.source);
+    const retiringIds = new Set(retiring.map((source) => source.id));
+    const usefulRemainingSourceIds = awardSources
+      .filter((source) => source.admin_review_status === "open")
+      .filter((source) => !retiringIds.has(source.id))
+      .filter((source) => isUsefulOfficialSource(source, award))
+      .map((source) => source.id);
+    const repair = repairByAwardId.get(awardId) || null;
+    for (const row of awardRows) {
+      if (row.replacement?.id && !usefulRemainingSourceIds.includes(row.replacement.id)) {
+        throw new Error(
+          `Cleanup replacement ${row.replacement.id} is no longer useful for award ${awardId}.`,
+        );
+      }
+    }
+    plans.push(buildAwardSourceCleanupPlan({
+      award,
+      allSources: awardSources,
+      retireSources: retiring,
+      usefulRemainingSourceIds,
+      homepageAfter: repair ? repair.nextUrl : award.official_homepage,
+      homepageReplacementSourceId: repair?.replacementSourceId || null,
+    }));
   }
-  return rows;
+  return plans;
 }
 
-async function loadOptionalAll(table, select) {
-  try {
-    return await loadAll(table, select);
-  } catch (error) {
-    console.warn(`Skipping optional table ${table}: ${error instanceof Error ? error.message : String(error)}`);
-    return [];
-  }
+async function loadAll(table, select, revisionColumn = "updated_at") {
+  return loadDeterministicSupabaseRows({
+    supabase,
+    table,
+    select,
+    revisionColumn,
+  });
 }
 
 function createSupabaseClient() {
-  const env = { ...loadEnvFile(resolve(root, ".env.local")), ...process.env };
-  if (
-    env.NEXT_PUBLIC_SUPABASE_URL &&
-    env.SUPABASE_SERVICE_ROLE_KEY &&
-    !env.NEXT_PUBLIC_SUPABASE_URL.includes("127.0.0.1")
-  ) {
-    return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-  }
+  return createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
+}
 
-  if (!projectRef) {
-    throw new Error("Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY or link Supabase.");
+function projectRefFromSupabaseUrl(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL must be a valid hosted Supabase URL.");
   }
-
-  const keys = JSON.parse(
-    execFileSync("npx", ["supabase", "projects", "api-keys", "--project-ref", projectRef, "--output", "json"], {
-      encoding: "utf8",
-      cwd: root,
-    }),
-  );
-  const serviceRoleKey = keys.find((key) => key.name === "service_role")?.api_key;
-  if (!serviceRoleKey) throw new Error(`Could not read service_role key for ${projectRef}.`);
-  return createSupabaseServiceClient(`https://${projectRef}.supabase.co`, serviceRoleKey);
+  const match = parsed.hostname.match(/^([a-z]{20})\.supabase\.co$/i);
+  if (!match) {
+    throw new Error("NEXT_PUBLIC_SUPABASE_URL must identify a hosted Supabase project.");
+  }
+  return match[1].toLowerCase();
 }
 
 function countBy(values, getKey) {
@@ -415,17 +469,18 @@ function loadEnvFile(path) {
   }
 }
 
-function readLinkedProjectRef() {
-  try {
-    return readFileSync(resolve(root, "supabase/.temp/project-ref"), "utf8").trim();
-  } catch {
-    return "";
-  }
-}
-
 function positiveInt(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function groupBy(values, getKey) {
+  const groups = new Map();
+  for (const value of values) {
+    const key = getKey(value);
+    groups.set(key, [...(groups.get(key) || []), value]);
+  }
+  return groups;
 }
 
 function parseArgs(values) {

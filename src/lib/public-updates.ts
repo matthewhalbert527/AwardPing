@@ -21,9 +21,9 @@ import {
   type PublicDigestCandidate,
 } from "@/lib/public-updates-core";
 import {
-  decryptPersonalData,
   encryptedEmailFields,
   personalDataLookupHash,
+  readPersonalData,
 } from "@/lib/personal-data";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
@@ -71,6 +71,24 @@ export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) 
   }
 
   if (existing?.status === "active") {
+    const existingEmail = readPersonalData(existing.email_encrypted);
+    if (
+      existing.email !== null ||
+      existing.email_hash !== encryptedEmail.email_hash ||
+      existingEmail.status !== "available" ||
+      existingEmail.value !== email
+    ) {
+      const { error: updateError } = await supabase
+        .from("public_update_subscribers")
+        .update({
+          email: null,
+          email_hash: encryptedEmail.email_hash,
+          email_encrypted: encryptedEmail.email_encrypted,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id);
+      if (updateError) throw updateError;
+    }
     return { email, confirmationToken: null, shouldSendConfirmation: false };
   }
 
@@ -271,6 +289,7 @@ export async function enqueuePublicUpdateDigest(date = new Date()) {
 
   const entries: Json[] = [];
   let pendingEventCount = 0;
+  let unreadableSubscriberCount = 0;
   for (const subscriber of subscribers) {
     const pendingChanges = pendingPublicDigestChangesForSubscriber(
       digest.changes,
@@ -280,11 +299,17 @@ export async function enqueuePublicUpdateDigest(date = new Date()) {
     if (!pendingChanges.length) continue;
     pendingEventCount += pendingChanges.length;
     const email = publicSubscriberEmail(subscriber);
-    if (!email) continue;
+    if (!email) {
+      unreadableSubscriberCount += 1;
+      continue;
+    }
     const encrypted = encryptedEmailFields(email);
+    const storedEmail = readPersonalData(subscriber.email_encrypted);
     const recipientEncrypted =
       subscriber.email_encrypted &&
-      decryptPersonalData(subscriber.email_encrypted) === email
+      storedEmail.status === "available" &&
+      storedEmail.format === "ap:v2" &&
+      storedEmail.value === email
         ? subscriber.email_encrypted
         : encrypted.email_encrypted;
     const unsubscribeToken = createPublicUnsubscribeToken(
@@ -349,7 +374,7 @@ export async function enqueuePublicUpdateDigest(date = new Date()) {
   let enqueued = 0;
   let reactivated = 0;
   let alreadyFrozen = 0;
-  let legacyBlocked = 0;
+  let legacyBlocked = unreadableSubscriberCount;
   for (let start = 0; start < entries.length; start += 100) {
     const { data, error: enqueueError } = await supabase.rpc(
       "enqueue_public_digest_outbox",
@@ -418,6 +443,23 @@ export async function drainPublicDigestOutbox({
     skipped: false,
   };
   for (const claim of claims || []) {
+    if (!isV2PersonalDataCiphertext(claim.recipient_encrypted)) {
+      const { data: nextStatus, error: failureError } = await supabase.rpc(
+        "fail_public_digest_send",
+        {
+          p_outbox_id: claim.id,
+          p_lease_token: claim.lease_token,
+          p_error:
+            "Legacy or malformed recipient ciphertext was refused before provider authorization.",
+          p_ambiguous: false,
+          p_retryable: false,
+        },
+      );
+      if (failureError) throw failureError;
+      if (nextStatus === "release_blocked") result.releaseBlocked += 1;
+      else result.terminalFailed += 1;
+      continue;
+    }
     const { data: authorized, error: authorizeError } = await supabase.rpc(
       "authorize_public_digest_send",
       { p_outbox_id: claim.id, p_lease_token: claim.lease_token },
@@ -430,7 +472,15 @@ export async function drainPublicDigestOutbox({
 
     let providerAccepted = false;
     try {
-      const recipient = decryptPersonalData(claim.recipient_encrypted);
+      const recipientRead = readPersonalData(claim.recipient_encrypted);
+      if (recipientRead.status === "unavailable") {
+        throw new PublicDigestDeliveryError(
+          "The frozen digest recipient uses unavailable or unsupported encryption and cannot be sent safely.",
+          false,
+          false,
+        );
+      }
+      const recipient = recipientRead.value;
       if (!recipient || personalDataLookupHash(recipient) !== claim.recipient_hash) {
         throw new PublicDigestDeliveryError(
           "The frozen digest recipient could not be verified.",
@@ -663,7 +713,17 @@ function cryptoRandomUuid() {
 }
 
 function publicSubscriberEmail(subscriber: PublicSubscriberRow) {
-  return decryptPersonalData(subscriber.email_encrypted) || subscriber.email || null;
+  const encrypted = readPersonalData(subscriber.email_encrypted);
+  if (encrypted.status === "available" && encrypted.format === "ap:v2") {
+    return encrypted.value;
+  }
+  if (encrypted.status === "unavailable") return null;
+  if (encrypted.format === "ap:v1") return null;
+  return subscriber.email || null;
+}
+
+function isV2PersonalDataCiphertext(value: string | null | undefined) {
+  return typeof value === "string" && value.startsWith("ap:v2:");
 }
 
 function emptyEnqueueResult(digestKey: string, reason: string) {

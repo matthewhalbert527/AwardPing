@@ -82,9 +82,15 @@ describe("new official document source-intake wiring", () => {
     expect(capture.indexOf("const pageSettle = await waitForPageSettledForSnapshot")).toBeLessThan(
       capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage"),
     );
-    expect(capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage")).toBeLessThan(
-      capture.indexOf("const finalTextGeometry = await captureStructuredVisibleTextGeometry"),
+    const discoveryIndex = capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage");
+    const geometryIndex = capture.indexOf("let finalTextGeometry = pageSettle.stable");
+    const screenshotIndex = capture.indexOf("const pageBuffer = await page.screenshot");
+    const durableRegistrationIndex = capture.indexOf(
+      "await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration",
     );
+    expect(discoveryIndex).toBeLessThan(geometryIndex);
+    expect(geometryIndex).toBeLessThan(screenshotIndex);
+    expect(screenshotIndex).toBeLessThan(durableRegistrationIndex);
     expect(completeness).toContain('"final_expansion_failed"');
     expect(completeness).toContain('"expandable_control_cap_hit"');
     expect(completeness).toContain('"scroll_activation_failed"');
@@ -156,12 +162,13 @@ describe("new official document source-intake wiring", () => {
   it("persists deterministic access failures as operator-visible manual review", () => {
     const captureStage = functionBody(intakeWorker, "async function processCaptureStage");
     const manualReviewBranch = captureStage.slice(
-      captureStage.indexOf('deterministicReview.status === "needs_manual_review"'),
-      captureStage.indexOf('if (geminiApiMode === "none")'),
+      captureStage.indexOf('captureDisposition.status === "needs_manual_review"'),
+      captureStage.indexOf('if (captureDisposition.status === "needs_manual_review")',
+        captureStage.indexOf('captureDisposition.status === "needs_manual_review"') + 1),
     );
 
     expect(manualReviewBranch).toContain('status: "needs_manual_review"');
-    expect(manualReviewBranch).toContain("status_reason: deterministicReview.reason");
+    expect(manualReviewBranch).toContain("status_reason: captureDisposition.status_reason");
     expect(manualReviewBranch).toContain("processed_at: new Date().toISOString()");
     expect(manualReviewBranch).toContain("report.needs_manual_review += 1");
   });

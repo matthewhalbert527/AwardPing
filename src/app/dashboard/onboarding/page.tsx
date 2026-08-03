@@ -55,6 +55,12 @@ export default async function OnboardingPage() {
           <ProfileSettingsForm
             initialFullName={status.profile?.full_name || ""}
             initialOrganization={status.profile?.organization || ""}
+            reentryRequired={
+              status.profile?.personal_data_reentry_required || false
+            }
+            legacyRecoveryAvailable={
+              status.profile?.personal_data_legacy_recovery_available || false
+            }
           />
         )}
 
