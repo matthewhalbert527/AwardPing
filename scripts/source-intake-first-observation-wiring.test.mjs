@@ -107,6 +107,10 @@ describe("new official document source-intake wiring", () => {
 
   it("creates an immutable acquisition only after a genuinely new accepted source insert", () => {
     const acceptedSourceWrite = functionBody(intakeWorker, "async function registerAcceptedSource");
+    const sourceReviewLoad = functionBody(
+      intakeWorker,
+      "async function loadRegisteredSharedSourceReviewState",
+    );
 
     expect(acceptedSourceWrite).toContain("buildSourceAcquisitionProposal");
     expect(acceptedSourceWrite).toContain('.rpc("register_shared_award_source_from_intake"');
@@ -114,12 +118,24 @@ describe("new official document source-intake wiring", () => {
     expect(acceptedSourceWrite).toContain("p_acquisition: acquisitionProposal.row");
     expect(acceptedSourceWrite).toContain("source_inserted");
     expect(acceptedSourceWrite).toContain("effective_notification_mode");
+    expect(acceptedSourceWrite).toContain("loadRegisteredSharedSourceReviewState");
     expect(acceptedSourceWrite).not.toContain('.from("shared_award_sources")');
     expect(acceptedSourceWrite).not.toContain('.from("shared_award_source_acquisitions")');
+    expect(sourceReviewLoad).toContain(
+      '"id,shared_award_id,url,title,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by"',
+    );
   });
 
   it("fails a known live first-capture evidence gap before registration and quarantines an unexpected server downgrade", () => {
     const finalize = functionBody(intakeWorker, "async function finalizeReviewedRequest");
+    const quarantine = functionBody(
+      intakeWorker,
+      "async function quarantineDowngradedLiveSource",
+    );
+    const sourceDisposition = functionBody(
+      intakeWorker,
+      "function liveFirstCaptureSourceDisposition",
+    );
     const manualReview = functionBody(
       intakeWorker,
       "async function finalizeLiveFirstCaptureManualReview",
@@ -134,9 +150,18 @@ describe("new official document source-intake wiring", () => {
     expect(finalize).toMatch(
       /liveFirstCaptureRequested\s+&& sourceWrite\.acquisition\?\.create\s+&& sourceWrite\.acquisition\.notification_mode === "manual_review"/,
     );
-    expect(finalize).toContain('admin_review_status: "review_later"');
+    expect(finalize).toContain("quarantineDowngradedLiveSource");
+    expect(quarantine).toContain('source.admin_review_status !== "open"');
+    expect(quarantine).toContain("sourceMonitoringRestoreMarker");
+    expect(quarantine).toContain("guardAdminReviewMutation(mutation, source)");
+    expect(quarantine).toContain('.select("id").maybeSingle()');
+    expect(quarantine).toContain('admin_review_status: "review_later"');
+    expect(quarantine).toContain('admin_reviewed_by: "awardping-source-intake"');
+    expect(quarantine).toContain('reason: "stale_admin_review_plan_preserved"');
     expect(manualReview).toContain('status: "needs_manual_review"');
-    expect(manualReview).toContain("No source was registered from this request.");
+    expect(sourceDisposition).toContain("No source was registered from this request.");
+    expect(sourceDisposition).toContain("no automated quarantine was applied");
+    expect(manualReview).toContain("source_review_state_preserved");
     expect(manualReview).toContain("do not absorb this document as a healthy baseline");
   });
 

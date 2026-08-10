@@ -141,7 +141,7 @@ describe("same-pass first-observation materialization", () => {
 
     const sourceQuery = functionBody(captureWorker, "function buildSourcesQuery");
     expect(sourceQuery).toContain(
-      "admin_review_status, admin_review_note, admin_reviewed_by",
+      "admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by",
     );
     expect(sourceQuery).toContain("if (!sourceIdFilter)");
     expect(sourceQuery).toContain('query = query.eq("admin_review_status", "open")');

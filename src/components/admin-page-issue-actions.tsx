@@ -29,6 +29,10 @@ export function AdminPageIssueActions({ sourceId, mode, sourceTitle }: Props) {
   }
 
   async function restore() {
+    const confirmed = window.confirm(
+      `Verify and restore this source to monitoring?\n\n${sourceTitle}\n\nAwardPing will restore it only when the latest AI review is unclear and all non-AI source checks still pass. The action itself is free. If verified, capture checks resume, but public facts and updates remain unapproved; any later detected change still follows the separately capped review lane.`,
+    );
+    if (!confirmed) return;
     await runAction("restore", "PATCH", { action: "restore" });
   }
 
@@ -53,10 +57,20 @@ export function AdminPageIssueActions({ sourceId, mode, sourceTitle }: Props) {
         headers: body ? { "content-type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
-      const data = await response.json().catch(() => ({}));
+      const data = await response.json().catch(() => ({})) as {
+        error?: string;
+        message?: string;
+        monitoring?: { allowed?: boolean; reason?: string };
+      };
       if (!response.ok) {
         throw new Error(typeof data.error === "string" ? data.error : "Page action failed.");
       }
+      if (action === "restore" && data.monitoring?.allowed !== true) {
+        throw new Error(
+          "AwardPing did not confirm that monitoring resumed. Refresh and review the source evidence.",
+        );
+      }
+      if (data.message) setMessage(data.message);
       router.refresh();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Page action failed.");
@@ -85,7 +99,7 @@ export function AdminPageIssueActions({ sourceId, mode, sourceTitle }: Props) {
           type="button"
         >
           <RotateCcw size={13} aria-hidden="true" />
-          {busyAction === "restore" ? "Restoring" : "Restore"}
+          {busyAction === "restore" ? "Verifying restoration" : "Verify & restore monitoring"}
         </button>
       )}
       <button

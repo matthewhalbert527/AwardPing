@@ -14,6 +14,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
     <section
       aria-labelledby="stage1-release-gate-title"
       className="card admin-section-card space-y-5 p-5 sm:p-6"
+      data-release-gate-phase={summary.phase}
       data-release-gate-state={summary.state}
     >
       <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -48,10 +49,25 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <ReleaseCheckCard
-          detail={`${humanize(summary.release.effectiveReason)} · ${summary.release.epoch || "No active epoch"}`}
+          detail={`${summary.authoritativeGate.detail} Snapshot generated ${formatDate(summary.authoritativeGate.generatedAt)}.`}
+          label="Database release authority"
+          status={summary.authoritativeGate.status}
+          value={`${summary.authoritativeGate.currentValidArtifactBindings}/${summary.authoritativeGate.requiredArtifactBindings} exact ID + hash`}
+        />
+        <ReleaseCheckCard
+          detail={`Vault API surface safe: ${booleanLabel(summary.authoritativeGate.vaultApiSurfaceSafe)}. Service-role Data API profile blocked: ${booleanLabel(summary.authoritativeGate.serviceRoleDataApiProfileBlocked)}. Probe: ${summary.authoritativeGate.profileHttpStatus ?? "unavailable"} / ${summary.authoritativeGate.profilePostgrestCode || "unavailable"}.`}
+          label="Authoritative Vault security"
+          status={vaultStatus(summary.authoritativeGate)}
+          value={summary.authoritativeGate.vaultApiSurfaceSafe === true &&
+            summary.authoritativeGate.serviceRoleDataApiProfileBlocked === true
+            ? "Both controls safe"
+            : "Release blocked"}
+        />
+        <ReleaseCheckCard
+          detail={atomicReleaseDetail(summary)}
           label="Atomic cohort release"
-          status={summary.release.atomic ? "pass" : "hold"}
-          value={summary.release.atomic ? "25/25 on one epoch" : humanize(summary.release.state)}
+          status={atomicReleaseStatus(summary)}
+          value={atomicReleaseValue(summary)}
         />
         <ReleaseCheckCard
           detail={summary.invite.detail}
@@ -81,7 +97,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
         />
         {summary.acceptanceArtifacts.map((artifact) => (
           <ReleaseCheckCard
-            detail={`${artifact.detail}${artifact.validUntil ? ` Valid until ${formatDate(artifact.validUntil)}.` : ""}`}
+            detail={`${artifact.detail} Authoritative binding: ${artifact.authoritativeArtifactId || "none"} / ${artifact.authoritativeEvidenceHash || "none"}.${artifact.validUntil ? ` Valid until ${formatDate(artifact.validUntil)}.` : ""}`}
             key={artifact.kind}
             label={artifact.label}
             status={artifact.status}
@@ -309,4 +325,39 @@ function money(value: number | null) {
 
 function humanize(value: string) {
   return value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function booleanLabel(value: boolean | null) {
+  return value === true ? "yes" : value === false ? "no" : "unknown";
+}
+
+function atomicReleaseStatus(summary: Stage1ReleaseGateSummary): ReleaseCheckState {
+  if (summary.release.atomic || summary.phase === "preactivation_ready") return "pass";
+  return summary.phase === "unknown" ? "unknown" : "hold";
+}
+
+function atomicReleaseValue(summary: Stage1ReleaseGateSummary) {
+  if (summary.release.atomic) return "25/25 active on one epoch";
+  if (summary.phase === "preactivation_ready") return "Ready for atomic activation";
+  return humanize(summary.release.state);
+}
+
+function atomicReleaseDetail(summary: Stage1ReleaseGateSummary) {
+  if (summary.phase === "preactivation_ready") {
+    return "All 25 awards are release-ready and remain private pending the separate atomic activation step.";
+  }
+  return `${humanize(summary.release.effectiveReason)} · ${summary.release.epoch || "No active epoch"}`;
+}
+
+function vaultStatus(
+  authority: Stage1ReleaseGateSummary["authoritativeGate"],
+): ReleaseCheckState {
+  if (
+    authority.vaultApiSurfaceSafe === null ||
+    authority.serviceRoleDataApiProfileBlocked === null
+  ) return "unknown";
+  return authority.vaultApiSurfaceSafe &&
+    authority.serviceRoleDataApiProfileBlocked
+    ? "pass"
+    : "hold";
 }

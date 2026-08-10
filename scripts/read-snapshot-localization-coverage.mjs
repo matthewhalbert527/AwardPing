@@ -51,7 +51,7 @@ const startedAt = new Date().toISOString();
 try {
   const loadedSources = await loadRows(
     "shared_award_sources",
-    "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,created_at,shared_awards!inner(id,name,status,official_homepage)",
+    "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,created_at,shared_awards!inner(id,name,status,official_homepage)",
     (query) => query.eq("admin_review_status", "open").eq("shared_awards.status", "active"),
     { limit: limit + 1 },
   );

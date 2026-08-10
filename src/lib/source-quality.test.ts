@@ -110,6 +110,101 @@ describe("source quality gate", () => {
     expect(isMonitorableAwardSource(unclearFaq)).toBe(false);
   });
 
+  it("lets a later explicit operator restore an AI-unclear source for monitoring only", () => {
+    const restored = source({
+      url: "https://www.marshallscholarship.org/apply/faqs/",
+      page_type: "faq",
+      page_metadata: {
+        kind: "source_page_outline",
+        generated_at: "2026-07-08T02:10:45.237Z",
+        ai_review_coverage_backfill: { at: "2026-07-10T21:13:19.463Z" },
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+          confidence: "high",
+          quality_flags: [],
+        },
+      },
+      admin_review_status: "open",
+      admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+      admin_reviewed_by: "codex-stage1-marshall-review",
+      admin_review_note:
+        "Restored by explicit Stage 1 Marshall source review after checking the official FAQ.",
+    });
+
+    expect(sourceQualityDecision(restored, { purpose: "monitoring" })).toMatchObject({
+      allowed: true,
+      reason: "operator_review_restored_ai_unclear_monitoring_only",
+    });
+    expect(sourceQualityDecision(restored, { purpose: "facts" })).toMatchObject({
+      allowed: false,
+      reason: "ai_review_reviewed_unclear_needs_manual_review_cycle_relevance_unclear",
+    });
+    expect(sourceQualityDecision(restored, { purpose: "public" }).allowed).toBe(false);
+
+    const adminRestore = {
+      ...restored,
+      admin_review_note:
+        "monitoring_restore_v1: Explicitly restored by a site admin for monitoring only.",
+      admin_reviewed_by: "operator@example.edu",
+    };
+    expect(sourceQualityDecision(adminRestore, { purpose: "monitoring" }).allowed).toBe(true);
+    expect(
+      sourceQualityDecision(
+        { ...adminRestore, admin_review_note: null },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+  });
+
+  it("keeps stale, automated, and hard-rejected operator-looking restores blocked", () => {
+    const base = source({
+      page_metadata: {
+        kind: "source_page_outline",
+        generated_at: "2026-07-08T02:10:45.237Z",
+        ai_review_coverage_backfill: { at: "2026-07-10T21:13:19.463Z" },
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+          confidence: "high",
+        },
+      },
+      admin_review_status: "open",
+      admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+      admin_reviewed_by: "operator@example.edu",
+    });
+
+    expect(
+      sourceQualityDecision(
+        { ...base, admin_reviewed_at: "2026-07-09T00:00:00.000Z" },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+    expect(
+      sourceQualityDecision(
+        { ...base, admin_reviewed_by: "open-source-ai-coverage-backfill" },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+    expect(
+      sourceQualityDecision(
+        {
+          ...base,
+          page_metadata: {
+            ...(base.page_metadata as Record<string, unknown>),
+            baseline_facts: {
+              award_relevance: "primary",
+              cycle_relevance: "unclear",
+              confidence: "high",
+              quality_flags: ["sibling-program"],
+            },
+          },
+        },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+  });
+
   it("allows legitimate current application, deadline, and requirements metadata", () => {
     const legitimate = source({
       url: "https://knight-hennessy.stanford.edu/admission/application-deadlines",

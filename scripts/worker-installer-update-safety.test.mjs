@@ -664,6 +664,7 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\manual-quarantine.mjs",
       "scripts\\lib\\award-monitoring-policy.mjs",
       "scripts\\lib\\change-event-sweep-state.mjs",
+      "scripts\\lib\\admin-review-state-guard.mjs",
       "scripts\\lib\\source-quality.mjs",
       "scripts\\lib\\source-ai-review-status.mjs",
       "src\\lib\\change-event-suppression.ts",

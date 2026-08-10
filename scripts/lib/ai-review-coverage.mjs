@@ -1,8 +1,12 @@
 import { explainSourceAiReviewStatus, sourceBaselineFacts } from "./source-ai-review-status.mjs";
-import { sourceQualityDecision } from "./source-quality.mjs";
+import {
+  sourceMonitoringRestoreDecisionReason,
+  sourceQualityDecision,
+} from "./source-quality.mjs";
 
 export const aiCoverageCategories = [
   "complete_accepted",
+  "monitoring_restored",
   "complete_rejected",
   "unreviewed",
   "incomplete_review",
@@ -75,7 +79,9 @@ export function buildSourceAiCoverageRow(source, award = null) {
     ai_status: explanation.status,
     ai_complete: explanation.complete,
     needs_ai_review: explanation.needsAiReview || aiReviewCategories.has(category),
-    needs_manual_review: explanation.needsManualReview || category === "unclear" || category === "needs_manual_review",
+    needs_manual_review: category === "monitoring_restored"
+      ? false
+      : explanation.needsManualReview || category === "unclear" || category === "needs_manual_review",
     fact_eligible: factDecision.allowed,
     public_eligible: publicDecision.allowed,
     monitor_eligible: monitorDecision.allowed,
@@ -107,6 +113,11 @@ export function categorizeSourceAiCoverage({ source, explanation, factDecision, 
   const status = explanation.status;
   const qualityCategory = qualityDecisionCategory(source, monitorDecision, explanation);
 
+  if (
+    isOpen &&
+    monitorDecision.allowed &&
+    monitorDecision.reason === sourceMonitoringRestoreDecisionReason
+  ) return "monitoring_restored";
   if (isOpen && qualityCategory) return qualityCategory;
   if (status === "unreviewed") return needsCaptureBaseline(source, explanation) ? "needs_capture_baseline" : "unreviewed";
   if (status === "review_failed") return "review_failed";
@@ -132,6 +143,7 @@ export function categorizeSourceAiCoverage({ source, explanation, factDecision, 
 
 export function actionForAiCoverageCategory(category) {
   if (category === "complete_accepted") return { action: "leave_open", reason: "source_has_complete_clear_ai_review" };
+  if (category === "monitoring_restored") return { action: "leave_open", reason: "operator_monitoring_restore_preserved" };
   if (autoReviewLaterCategories.has(category)) return { action: "move_to_review_later", reason: category };
   if (aiReviewCategories.has(category)) return { action: "queue_ai_review", reason: category };
   return { action: "needs_manual_review", reason: category || "unknown" };

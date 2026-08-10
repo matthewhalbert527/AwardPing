@@ -871,6 +871,10 @@ function sourceRowQualityInput(row: SourceIssueRow): SourceQualitySource {
     source: row.source,
     reason: row.reason,
     submitted_by_user_id: row.submitted_by_user_id,
+    admin_review_status: row.admin_review_status,
+    admin_review_note: row.admin_review_note,
+    admin_reviewed_at: row.admin_reviewed_at,
+    admin_reviewed_by: row.admin_reviewed_by,
   };
 }
 

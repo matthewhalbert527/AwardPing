@@ -260,19 +260,17 @@ describe("Stage 1 producer-owned release measurements", () => {
     expect(JSON.stringify(refused.diagnostics)).not.toContain("secret-bearing");
   });
 
-  it("verifies mixed published and immutable manifest-source objects with declared hash modes", async () => {
+  it("verifies every published and immutable manifest-source artifact as exact raw bytes", async () => {
     const eventBytes = Buffer.from("immutable crop");
     const pageBytes = Buffer.from("immutable page image");
-    const semanticText = "Eligibility requires U.S. citizenship.";
-    const textBytes = Buffer.from(`${semanticText}\n`, "utf8");
-    const manifest = mixedR2Manifest({ eventBytes, pageBytes, semanticText, textBytes });
+    const textBytes = Buffer.from("Eligibility requires U.S. citizenship.\n", "utf8");
+    const manifest = mixedR2Manifest({ eventBytes, pageBytes, textBytes });
+    const sourceBodies = mixedR2SourceBodies({ pageBytes, textBytes });
     const bodies = new Map(manifest.objects.map((object) => [
       object.object_key,
-      object.artifact === "page"
-        ? { body: pageBytes, contentType: "image/jpeg" }
-        : object.artifact === "text"
-          ? { body: textBytes, contentType: "text/plain; charset=utf-8" }
-          : { body: eventBytes, contentType: "image/png" },
+      object.scope === "manifest_source"
+        ? { body: sourceBodies[object.artifact], contentType: object.content_type }
+        : { body: eventBytes, contentType: "image/png" },
     ]));
 
     const measured = await measureStage1R2RecoveryDrill({
@@ -286,19 +284,18 @@ describe("Stage 1 producer-owned release measurements", () => {
 
     expect(measured.status).toBe("passed");
     expect(measured.evidence).toMatchObject({
-      recovered_objects: 3,
+      recovered_objects: 8,
       published_event_objects_checked: 1,
-      manifest_source_objects_checked: 2,
-      visual_objects_checked: 3,
+      manifest_source_objects_checked: 7,
+      visual_objects_checked: 8,
     });
   });
 
-  it("rejects mutable, incomplete, mixed-generation, and duplicate source bindings", async () => {
+  it("rejects mutable, incomplete, mixed-generation, legacy-hash, and duplicate source bindings", async () => {
     const eventBytes = Buffer.from("immutable crop");
     const pageBytes = Buffer.from("immutable page image");
-    const semanticText = "Eligibility";
-    const textBytes = Buffer.from(`${semanticText}\n`, "utf8");
-    const base = mixedR2Manifest({ eventBytes, pageBytes, semanticText, textBytes });
+    const textBytes = Buffer.from("Eligibility\n", "utf8");
+    const base = mixedR2Manifest({ eventBytes, pageBytes, textBytes });
     const client = { async send() { throw new Error("validation must happen before R2"); } };
 
     for (const mutate of [
@@ -307,7 +304,7 @@ describe("Stage 1 producer-owned release measurements", () => {
           "visual-snapshots/sources/11111111-1111-4111-8111-111111111111/latest/text.txt";
       },
       (manifest) => {
-        manifest.objects = manifest.objects.filter((object) => object.artifact !== "text");
+        manifest.objects = manifest.objects.filter((object) => object.artifact !== "thumb");
         refreshManifestCounts(manifest);
       },
       (manifest) => {
@@ -317,6 +314,36 @@ describe("Stage 1 producer-owned release measurements", () => {
       (manifest) => {
         const text = manifest.objects.find((object) => object.artifact === "text");
         text.object_key = manifest.objects.find((object) => object.artifact === "page").object_key;
+      },
+      (manifest) => {
+        manifest.objects = manifest.objects.filter(
+          (object) => object.artifact !== "expansion_state_01_layout",
+        );
+        refreshManifestCounts(manifest);
+      },
+      (manifest) => {
+        manifest.objects = manifest.objects.filter(
+          (object) => object.artifact !== "layout",
+        );
+        refreshManifestCounts(manifest);
+      },
+      (manifest) => {
+        const text = manifest.objects.find((object) => object.artifact === "text");
+        text.hash_mode = "utf8_text_single_trailing_newline_v1";
+        text.semantic_length = "Eligibility".length;
+      },
+      (manifest) => {
+        manifest.objects.find((object) => object.artifact === "meta").content_type =
+          "application/json";
+      },
+      (manifest) => {
+        manifest.schema_version = "awardping.stage1.r2-verification-manifest.v2";
+      },
+      (manifest) => {
+        delete manifest.artifact_bindings_schema;
+      },
+      (manifest) => {
+        manifest.artifact_bindings_schema = "awardping.r2.capture-artifact-bindings.v0";
       },
     ]) {
       const malformed = structuredClone(base);
@@ -519,7 +546,8 @@ function leakManifest() {
 
 function r2Manifest(bytes) {
   return {
-    schema_version: "awardping.stage1.r2-verification-manifest.v2",
+    schema_version: "awardping.stage1.r2-verification-manifest.v3",
+    artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
     target,
     visual_object_count: 1,
     published_event_object_count: 1,
@@ -543,15 +571,42 @@ function r2Manifest(bytes) {
   };
 }
 
-function mixedR2Manifest({ eventBytes, pageBytes, semanticText, textBytes }) {
+function mixedR2Manifest({ eventBytes, pageBytes, textBytes }) {
   const sourceId = "11111111-1111-4111-8111-111111111111";
   const prefix = `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}`;
+  const sourceBodies = mixedR2SourceBodies({ pageBytes, textBytes });
+  const sourceContracts = [
+    ["page", "page.jpg", "image/jpeg"],
+    ["thumb", "thumb.jpg", "image/jpeg"],
+    ["text", "text.txt", "text/plain; charset=utf-8"],
+    ["meta", "meta.json", "application/json; charset=utf-8"],
+    ["layout", "layout.json", "application/json; charset=utf-8"],
+    ["expansion_state_01", "expansion-state-01.jpg", "image/jpeg"],
+    [
+      "expansion_state_01_layout",
+      "expansion-state-01-layout.json",
+      "application/json; charset=utf-8",
+    ],
+  ];
+  const sourceObjects = sourceContracts.map(([artifact, fileName, contentType]) => ({
+    bucket: target.r2_bucket,
+    scope: "manifest_source",
+    source_id: sourceId,
+    artifact,
+    object_key: `${prefix}/${fileName}`,
+    sha256: createHash("sha256").update(sourceBodies[artifact]).digest("hex"),
+    hash_mode: "raw_sha256",
+    byte_length: sourceBodies[artifact].length,
+    semantic_length: null,
+    content_type: contentType,
+  }));
   return {
-    schema_version: "awardping.stage1.r2-verification-manifest.v2",
+    schema_version: "awardping.stage1.r2-verification-manifest.v3",
+    artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
     target,
-    visual_object_count: 3,
+    visual_object_count: 1 + sourceObjects.length,
     published_event_object_count: 1,
-    manifest_source_object_count: 2,
+    manifest_source_object_count: sourceObjects.length,
     visual_object_set_hash: "f".repeat(64),
     unexpected_bucket_count: 0,
     malformed_object_count: 0,
@@ -569,31 +624,20 @@ function mixedR2Manifest({ eventBytes, pageBytes, semanticText, textBytes }) {
         semantic_length: null,
         content_type: "image/png",
       },
-      {
-        bucket: target.r2_bucket,
-        scope: "manifest_source",
-        source_id: sourceId,
-        artifact: "page",
-        object_key: `${prefix}/page.jpg`,
-        sha256: createHash("sha256").update(pageBytes).digest("hex"),
-        hash_mode: "raw_sha256",
-        byte_length: pageBytes.length,
-        semantic_length: null,
-        content_type: "image/jpeg",
-      },
-      {
-        bucket: target.r2_bucket,
-        scope: "manifest_source",
-        source_id: sourceId,
-        artifact: "text",
-        object_key: `${prefix}/text.txt`,
-        sha256: createHash("sha256").update(semanticText, "utf8").digest("hex"),
-        hash_mode: "utf8_text_single_trailing_newline_v1",
-        byte_length: textBytes.length,
-        semantic_length: semanticText.length,
-        content_type: "text/plain; charset=utf-8",
-      },
+      ...sourceObjects,
     ],
+  };
+}
+
+function mixedR2SourceBodies({ pageBytes, textBytes }) {
+  return {
+    page: pageBytes,
+    thumb: Buffer.from("immutable thumbnail image"),
+    text: textBytes,
+    meta: Buffer.from('{"capture":"bound"}\n'),
+    layout: Buffer.from('{"runs":[]}\n'),
+    expansion_state_01: Buffer.from("immutable expanded page image"),
+    expansion_state_01_layout: Buffer.from('{"runs":[{"text":"Eligibility"}]}\n'),
   };
 }
 

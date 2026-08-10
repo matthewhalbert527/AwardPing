@@ -6,6 +6,7 @@ import {
   stage1ReleaseArtifactKinds,
   isCanonicalStage1ReleaseEpoch,
   type Stage1EffectivePublication,
+  type Stage1AuthoritativeReleaseGateSnapshot,
   type Stage1MigrationIdentity,
   type Stage1ReleaseArtifact,
   type Stage1ReleaseArtifactKind,
@@ -37,6 +38,7 @@ export type AdminStage1ReleaseGateEvidence = Pick<
   | "inviteReadiness"
   | "inviteSecurityReissues"
   | "migrationIdentity"
+  | "authoritativeGate"
   | "releaseArtifacts"
   | "loadErrors"
 >;
@@ -53,7 +55,7 @@ export async function loadAdminStage1ReleaseGateEvidence(
     inviteReadiness,
     contractResult,
     inviteReissueStatusResult,
-    releaseArtifactsResult,
+    authoritativeGateEvidence,
   ] =
     await Promise.all([
       admin.from("stage1_award_registry").select("*").order("launch_rank", { ascending: true }),
@@ -64,13 +66,7 @@ export async function loadAdminStage1ReleaseGateEvidence(
       checkInviteOnlySignupReleaseReadiness(),
       admin.rpc("get_awardping_release_contract_status"),
       admin.rpc("get_office_invite_security_reissue_status"),
-      admin
-        .from("stage1_release_acceptance_artifacts")
-        .select("*")
-        .in("artifact_kind", [...stage1ReleaseArtifactKinds])
-        .order("completed_at", { ascending: false })
-        .order("id", { ascending: false })
-        .limit(40),
+      loadAuthoritativeReleaseGateEvidence(admin),
     ]);
 
   const registry = (registryResult.data || []) as RegistryRow[];
@@ -89,11 +85,8 @@ export async function loadAdminStage1ReleaseGateEvidence(
     ["Invite/free-check migration contract", contractResult.error?.message],
     ["Invite security reissue aggregate", inviteReissueStatusResult.error?.message],
     ["Invite security reissue evidence", inviteSecurityReissues.error || undefined],
-    ["Stage 1 release acceptance artifacts", releaseArtifactsResult.error?.message],
   ]);
-  const releaseArtifacts = latestReleaseArtifacts(
-    (releaseArtifactsResult.data || []) as Stage1ReleaseArtifact[],
-  );
+  loadErrors.push(...authoritativeGateEvidence.loadErrors);
 
   const [latestEvidence, quarantineEvidence] = await Promise.all([
     loadLatestCanonicalEvidence(admin, registry),
@@ -119,18 +112,221 @@ export async function loadAdminStage1ReleaseGateEvidence(
       snapshot: snapshotResult.data,
       contract: contractResult.data,
     }),
-    releaseArtifacts,
+    authoritativeGate: authoritativeGateEvidence.authoritativeGate,
+    releaseArtifacts: authoritativeGateEvidence.releaseArtifacts,
     loadErrors: [...new Set(loadErrors)],
   };
 }
 
-function latestReleaseArtifacts(rows: Stage1ReleaseArtifact[]) {
-  const latest: Partial<Record<Stage1ReleaseArtifactKind, Stage1ReleaseArtifact>> = {};
-  for (const row of rows) {
-    if (!stage1ReleaseArtifactKinds.includes(row.artifact_kind)) continue;
-    if (!latest[row.artifact_kind]) latest[row.artifact_kind] = row;
+async function loadAuthoritativeReleaseGateEvidence(admin: AdminClient) {
+  const releaseArtifacts: Partial<
+    Record<Stage1ReleaseArtifactKind, Stage1ReleaseArtifact>
+  > = {};
+  const loadErrors: string[] = [];
+  const gateResult = await admin.rpc("get_stage1_release_gate_snapshot");
+  if (gateResult.error) {
+    return {
+      authoritativeGate: null,
+      releaseArtifacts,
+      loadErrors: [
+        `Database-authoritative Stage 1 release gate: ${gateResult.error.message}`,
+      ],
+    };
   }
-  return latest;
+  const parsedGate = parseAuthoritativeReleaseGateSnapshot(gateResult.data);
+  if (!parsedGate.snapshot) {
+    return {
+      authoritativeGate: null,
+      releaseArtifacts,
+      loadErrors: [
+        `Database-authoritative Stage 1 release gate: ${parsedGate.error}`,
+      ],
+    };
+  }
+
+  const results = await Promise.all(
+    stage1ReleaseArtifactKinds.map(async (kind) => {
+      const binding = parsedGate.snapshot?.artifactBindings[kind];
+      if (!binding?.artifactId || !binding.evidenceHash) {
+        return { kind, binding, result: null };
+      }
+      return {
+        kind,
+        binding,
+        result: await admin
+          .from("stage1_release_acceptance_artifacts")
+          .select("*")
+          .eq("id", binding.artifactId)
+          .eq("artifact_kind", kind)
+          .eq("evidence_hash", binding.evidenceHash)
+          .limit(1)
+          .maybeSingle(),
+      };
+    }),
+  );
+  for (const { kind, binding, result } of results) {
+    if (!binding?.artifactId || !binding.evidenceHash) continue;
+    if (!result) {
+      loadErrors.push(
+        `Stage 1 release acceptance artifact (${kind}): authoritative binding could not be queried.`,
+      );
+      continue;
+    }
+    if (result.error) {
+      loadErrors.push(
+        `Stage 1 release acceptance artifact (${kind}): ${result.error.message}`,
+      );
+      continue;
+    }
+    if (!isObject(result.data)) {
+      loadErrors.push(
+        `Stage 1 release acceptance artifact (${kind}): authoritative ID ${binding.artifactId} and evidence hash do not resolve to a retained row.`,
+      );
+      continue;
+    }
+    const artifact = result.data as Stage1ReleaseArtifact;
+    if (
+      artifact.id !== binding.artifactId ||
+      artifact.artifact_kind !== kind ||
+      artifact.evidence_hash !== binding.evidenceHash
+    ) {
+      loadErrors.push(
+        `Stage 1 release acceptance artifact (${kind}): retained row does not match the database-authoritative ID, kind, and evidence hash.`,
+      );
+      continue;
+    }
+    releaseArtifacts[kind] = artifact;
+  }
+  return {
+    authoritativeGate: parsedGate.snapshot,
+    releaseArtifacts,
+    loadErrors,
+  };
+}
+
+function parseAuthoritativeReleaseGateSnapshot(value: unknown): {
+  snapshot: Stage1AuthoritativeReleaseGateSnapshot | null;
+  error: string | null;
+} {
+  if (!isObject(value)) return invalidGate("RPC returned a non-object snapshot");
+  if (value.schema_version !== "stage1-release-gate-acceptance-v2") {
+    return invalidGate("schema_version is missing or unsupported");
+  }
+  if (value.state !== "READY" && value.state !== "HOLD") {
+    return invalidGate("state is missing or invalid");
+  }
+  if (typeof value.state_hash !== "string" || !sha256Pattern.test(value.state_hash)) {
+    return invalidGate("state_hash is missing or invalid");
+  }
+  if (!validTimestamp(value.generated_at)) {
+    return invalidGate("generated_at is missing or invalid");
+  }
+  if (
+    !Array.isArray(value.failures) ||
+    value.failures.some((failure) =>
+      typeof failure !== "string" ||
+      failure !== failure.trim() ||
+      !failureCodePattern.test(failure))
+  ) {
+    return invalidGate("failures must be an array of non-empty strings");
+  }
+  if (
+    !isObject(value.production_target) ||
+    typeof value.production_target.configured !== "boolean"
+  ) {
+    return invalidGate("production_target.configured is missing or invalid");
+  }
+  if (
+    !isObject(value.vault_security) ||
+    typeof value.vault_security.api_surface_safe !== "boolean" ||
+    typeof value.vault_security.service_role_data_api_profile_blocked !== "boolean"
+  ) {
+    return invalidGate("Vault security booleans are missing or invalid");
+  }
+  if (!isObject(value.artifacts)) {
+    return invalidGate("current-valid artifact bindings are missing");
+  }
+
+  const artifactBindings = {} as Stage1AuthoritativeReleaseGateSnapshot["artifactBindings"];
+  for (const kind of stage1ReleaseArtifactKinds) {
+    const rawBinding = value.artifacts[kind];
+    if (!isObject(rawBinding)) {
+      return invalidGate(`current-valid artifact binding ${kind} is missing`);
+    }
+    const artifactId = rawBinding.id;
+    const evidenceHash = rawBinding.evidence_hash;
+    const emptyBinding = artifactId === null && evidenceHash === null;
+    const populatedBinding = typeof artifactId === "string" &&
+      uuidPattern.test(artifactId) &&
+      typeof evidenceHash === "string" &&
+      sha256Pattern.test(evidenceHash);
+    if (!emptyBinding && !populatedBinding) {
+      return invalidGate(`current-valid artifact binding ${kind} is malformed`);
+    }
+    artifactBindings[kind] = {
+      artifactId: populatedBinding ? artifactId : null,
+      evidenceHash: populatedBinding ? evidenceHash : null,
+    };
+  }
+
+  const profileHttpStatus = value.vault_security.profile_http_status;
+  if (
+    profileHttpStatus !== null &&
+    typeof profileHttpStatus !== "string" &&
+    typeof profileHttpStatus !== "number"
+  ) {
+    return invalidGate("Vault profile HTTP status is malformed");
+  }
+  const profilePostgrestCode = value.vault_security.profile_postgrest_code;
+  if (profilePostgrestCode !== null && typeof profilePostgrestCode !== "string") {
+    return invalidGate("Vault profile PostgREST code is malformed");
+  }
+  if (
+    value.vault_security.service_role_data_api_profile_blocked === true &&
+    (String(profileHttpStatus) !== "406" || profilePostgrestCode !== "PGRST106")
+  ) {
+    return invalidGate("Vault profile denial evidence contradicts its safe authority flag");
+  }
+
+  return {
+    snapshot: {
+      schemaVersion: "stage1-release-gate-acceptance-v2",
+      state: value.state,
+      stateHash: value.state_hash,
+      generatedAt: cleanText(value.generated_at),
+      failures: [...value.failures],
+      productionTargetConfigured: value.production_target.configured,
+      vaultSecurity: {
+        apiSurfaceSafe: value.vault_security.api_surface_safe,
+        serviceRoleDataApiProfileBlocked:
+          value.vault_security.service_role_data_api_profile_blocked,
+        profileHttpStatus,
+        profilePostgrestCode,
+      },
+      artifactBindings,
+    },
+    error: null,
+  };
+}
+
+const sha256Pattern = /^[0-9a-f]{64}$/;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const failureCodePattern = /^[a-z0-9_]+$/;
+
+function invalidGate(error: string) {
+  return { snapshot: null, error };
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cleanText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function validTimestamp(value: unknown) {
+  return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 
 async function loadLatestCanonicalEvidence(admin: AdminClient, registry: RegistryRow[]) {

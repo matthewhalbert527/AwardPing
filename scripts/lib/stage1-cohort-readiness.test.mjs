@@ -1,7 +1,9 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
+import { bindVisualTextGeometry } from "./visual-event-localization.mjs";
 import {
   REQUIRED_SOURCE_ROLES,
   STAGE1_REMOTE_EFFECTIVE_BLOCKER,
@@ -11,6 +13,7 @@ import {
   buildStage1ReadinessReport,
   effectiveStage1PromotionCounts,
   inspectLocalVisualEvidence,
+  inspectStage1ImmutableR2CaptureBinding,
   isStage1DurableVerificationTimestampValid,
   isStage1LiveSourceCheckCurrent,
   isStage1ReviewedPromotionReady,
@@ -24,6 +27,10 @@ import {
 } from "./stage1-cohort-readiness.mjs";
 
 const temporaryPaths = [];
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
 
 afterEach(() => {
   for (const path of temporaryPaths.splice(0)) rmSync(path, { recursive: true, force: true });
@@ -459,20 +466,709 @@ describe("Stage 1 cohort readiness preflight", () => {
   });
 
   it("proves local evidence only when identity, capture, hashes, safe paths, and files all match", () => {
-    const archiveRoot = join(tmpdir(), `awardping-stage1-${Date.now()}-${Math.random().toString(16).slice(2)}`);
-    temporaryPaths.push(archiveRoot);
     const sourceId = "11111111-1111-4111-8111-111111111111";
     const awardId = "22222222-2222-4222-8222-222222222222";
+    const fixture = writeWebEvidenceFixture({ sourceId, awardId });
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(result).toMatchObject({
+      baseline_exists: true,
+      baseline_readable: true,
+      source_identity_matches: true,
+      capture_timestamp_matches: true,
+      snapshot_hashes_match: true,
+      artifact_paths_safe: true,
+      missing_artifacts: [],
+      artifact_hashes_match: true,
+      recomputed_artifact_hashes: {
+        image_hash: fixture.imageHash,
+        text_hash: fixture.textHash,
+        layout_hash: fixture.layout.geometry_hash,
+      },
+      mismatched_artifact_hash_fields: [],
+      artifact_integrity_failures: [],
+      metadata_bindings_match: true,
+      text_object_bindings_match: true,
+      layout_binding_required: true,
+      layout_bindings_match: true,
+      exact_available: true,
+    });
+  });
+
+  it.each([
+    ["mutable latest alias", (snapshot) => {
+      snapshot.latest_object_keys.page = snapshot.latest_object_keys.page
+        .replace(/\/captures\/[a-f0-9]{32}\//, "/latest/");
+    }, "object_key_unsafe_or_mutable:page"],
+    ["mixed generation", (snapshot) => {
+      snapshot.latest_object_keys.thumb = snapshot.latest_object_keys.thumb
+        .replace("a".repeat(32), "b".repeat(32));
+    }, "object_keys_mixed_generations"],
+    ["wrong source", (snapshot) => {
+      snapshot.latest_object_keys.page = snapshot.latest_object_keys.page
+        .replace(snapshot.shared_award_source_id, "ffffffff-ffff-4fff-8fff-ffffffffffff");
+    }, "object_key_wrong_source:page"],
+    ["incomplete webpage core", (snapshot) => {
+      delete snapshot.latest_object_keys.thumb;
+    }, "object_key_core_slot_missing:thumb"],
+    ["missing artifact-binding schema", (snapshot) => {
+      delete snapshot.latest_metadata.artifact_bindings_schema;
+    }, "artifact_bindings_schema_missing_or_invalid"],
+    ["artifact-binding slot mismatch", (snapshot) => {
+      delete snapshot.latest_metadata.artifact_bindings.thumb;
+    }, "artifact_binding_slots_do_not_match_object_keys"],
+    ["malformed raw artifact binding", (snapshot) => {
+      snapshot.latest_metadata.artifact_bindings.page.hash_mode = "semantic";
+    }, "artifact_binding_missing_or_invalid:page"],
+    ["stringified raw artifact byte length", (snapshot) => {
+      snapshot.latest_metadata.artifact_bindings.page.byte_length = String(
+        snapshot.latest_metadata.artifact_bindings.page.byte_length,
+      );
+    }, "artifact_binding_missing_or_invalid:page"],
+    ["extra raw artifact binding field", (snapshot) => {
+      snapshot.latest_metadata.artifact_bindings.page.unreviewed = true;
+    }, "artifact_binding_missing_or_invalid:page"],
+    ["stringified pointer metadata length", (snapshot) => {
+      snapshot.latest_metadata.page_bytes = String(snapshot.latest_metadata.page_bytes);
+    }, "metadata_length_missing_or_invalid:page_bytes"],
+  ])("rejects %s in an otherwise complete immutable R2 capture binding", (
+    _label,
+    mutate,
+    expectedError,
+  ) => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "15151515-1515-4515-8515-151515151515",
+      awardId: "26262626-2626-4626-8626-262626262626",
+    });
+    mutate(fixture.snapshot);
+    const binding = inspectStage1ImmutableR2CaptureBinding(fixture.snapshot);
+    expect(binding.valid).toBe(false);
+    expect(binding.errors).toContain(expectedError);
+  });
+
+  it("requires every authoritative main-layout claim to form one consistent binding", () => {
+    const missingHash = writeWebEvidenceFixture({
+      sourceId: "16161616-1616-4616-8616-161616161616",
+      awardId: "27272727-2727-4727-8727-272727272727",
+    });
+    delete missingHash.snapshot.latest_hashes.layout_hash;
+    expect(inspectStage1ImmutableR2CaptureBinding(missingHash.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["layout_hash_binding_missing:hashes"]),
+    });
+
+    const metadataOnly = writeWebEvidenceFixture({
+      sourceId: "17171717-1717-4717-8717-171717171717",
+      awardId: "28282828-2828-4828-8828-282828282828",
+    });
+    delete metadataOnly.snapshot.latest_object_keys.layout;
+    expect(inspectStage1ImmutableR2CaptureBinding(metadataOnly.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["layout_object_key_missing"]),
+    });
+
+    const misleadingReadyState = writeWebEvidenceFixture({
+      sourceId: "57575757-5757-4757-8757-575757575757",
+      awardId: "68686868-6868-4868-8868-686868686868",
+    });
+    misleadingReadyState.snapshot.latest_metadata.localization = {
+      ...misleadingReadyState.snapshot.latest_metadata.localization,
+      status: "unavailable_capture_verification",
+      geometry_ready: false,
+      unavailable_reason: "The retained geometry was not verified.",
+    };
+    expect(inspectStage1ImmutableR2CaptureBinding(misleadingReadyState.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["layout_localization_state_mismatch"]),
+    });
+
+    const unaccounted = writeWebEvidenceFixture({
+      sourceId: "18181818-1818-4818-8818-181818181818",
+      awardId: "29292929-2929-4929-8929-292929292929",
+    });
+    removeAuthoritativeLayoutClaim(unaccounted.snapshot);
+    unaccounted.snapshot.latest_metadata.localization = {};
+    expect(inspectStage1ImmutableR2CaptureBinding(unaccounted.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["layout_missing_without_explicit_unavailable_status"]),
+    });
+
+    unaccounted.snapshot.latest_metadata.localization = {
+      status: "geometry_ready",
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason: "contradictory_ready_status",
+    };
+    expect(inspectStage1ImmutableR2CaptureBinding(unaccounted.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["layout_missing_without_explicit_unavailable_status"]),
+    });
+
+    unaccounted.snapshot.latest_metadata.localization = {
+      status: "evidence_only_geometry_unavailable",
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason: "authoritative_layout_not_retained",
+    };
+    expect(inspectStage1ImmutableR2CaptureBinding(unaccounted.snapshot)).toMatchObject({
+      valid: true,
+      layout_claimed: false,
+      layout_explicitly_unavailable: true,
+    });
+  });
+
+  it("requires every local webpage core slot, including the thumbnail", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "19191919-1919-4919-8919-191919191919",
+      awardId: "30303030-3030-4030-8030-303030303030",
+    });
+    rmSync(fixture.paths.thumb);
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(result.missing_artifacts).toContainEqual({ role: "thumb", reason: "file_missing" });
+    expect(result.exact_available).toBe(false);
+  });
+
+  it("canonicalizes benign URL syntax while preserving query meaning", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "20202020-2020-4020-8020-202020202020",
+      awardId: "31313131-3131-4131-8131-313131313131",
+      sourceUrl: "https://www.example.test/award/?cycle=2027",
+    });
+    fixture.meta.source.url = "https://EXAMPLE.test/award?cycle=2027#eligibility";
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    }).exact_available).toBe(true);
+
+    fixture.meta.source.url = "https://example.test/award?cycle=2028";
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
+    const changedQuery = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(changedQuery.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      artifact_role: "meta",
+      reason: "meta_source_url_mismatch",
+    }));
+    expect(changedQuery.exact_available).toBe(false);
+
+    fixture.meta.source.url = "https://example.test/award?cycle=2027";
+    fixture.snapshot.source_url = "https://example.test/award?cycle=2028";
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
+    const pointerQueryDrift = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(pointerQueryDrift.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      reason: "immutable_r2_source_url_binding_mismatch",
+    }));
+    expect(pointerQueryDrift.exact_available).toBe(false);
+  });
+
+  it("verifies every retained expansion-state screenshot and layout pair", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "21212121-2121-4121-8121-212121212121",
+      awardId: "32323232-3232-4232-8232-323232323232",
+    });
+    const expansion = addExpansionStateEvidence(fixture);
+    const valid = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(valid).toMatchObject({
+      immutable_r2_binding_valid: true,
+      expansion_state_bindings_match: true,
+      recomputed_artifact_hashes: {
+        expansion_state_01_image_hash: expansion.imageHash,
+        expansion_state_01_layout_hash: expansion.layout.geometry_hash,
+      },
+      exact_available: true,
+    });
+
+    writeFileSync(expansion.paths.page, Buffer.from("tampered expansion screenshot"));
+    const tampered = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(tampered.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      artifact_role: "expansion_state_01",
+      reason: "expansion_state_image_artifact_hash_mismatch",
+    }));
+    expect(tampered.exact_available).toBe(false);
+  });
+
+  it("rejects malformed, unsafe, or incomplete expansion-state evidence", () => {
+    const malformed = writeWebEvidenceFixture({
+      sourceId: "23232323-2323-4323-8323-232323232323",
+      awardId: "34343434-3434-4434-8434-343434343434",
+    });
+    const malformedExpansion = addExpansionStateEvidence(malformed);
+    writeFileSync(malformedExpansion.paths.layout, "{not-json");
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: malformed.archiveRoot,
+      source: malformed.source,
+      snapshot: malformed.snapshot,
+    })).toMatchObject({ expansion_state_bindings_match: false, exact_available: false });
+
+    const unsafe = writeWebEvidenceFixture({
+      sourceId: "24242424-2424-4424-8424-242424242424",
+      awardId: "35353535-3535-4535-8535-353535353535",
+    });
+    addExpansionStateEvidence(unsafe);
+    unsafe.baseline.capture.expansion_states[0].page = "../outside.jpg";
+    writeFileSync(
+      join(unsafe.archiveRoot, "sources", unsafe.source.id, "baseline.json"),
+      JSON.stringify(unsafe.baseline),
+    );
+    const unsafeResult = inspectLocalVisualEvidence({
+      archiveRoot: unsafe.archiveRoot,
+      source: unsafe.source,
+      snapshot: unsafe.snapshot,
+    });
+    expect(unsafeResult.artifact_paths_safe).toBe(false);
+    expect(unsafeResult.exact_available).toBe(false);
+
+    const incomplete = writeWebEvidenceFixture({
+      sourceId: "25252525-2525-4525-8525-252525252525",
+      awardId: "36363636-3636-4636-8636-363636363636",
+    });
+    addExpansionStateEvidence(incomplete);
+    delete incomplete.snapshot.latest_object_keys.expansion_state_01_layout;
+    expect(inspectStage1ImmutableR2CaptureBinding(incomplete.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["expansion_layout_key_missing:01"]),
+    });
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: incomplete.archiveRoot,
+      source: incomplete.source,
+      snapshot: incomplete.snapshot,
+    })).toMatchObject({
+      immutable_r2_binding_valid: false,
+      expansion_state_bindings_match: false,
+      exact_available: false,
+    });
+
+    const expansionWithoutMain = writeWebEvidenceFixture({
+      sourceId: "27272727-2727-4727-8727-272727272727",
+      awardId: "38383838-3838-4838-8838-383838383838",
+    });
+    addExpansionStateEvidence(expansionWithoutMain);
+    removeAuthoritativeLayoutClaim(expansionWithoutMain.snapshot);
+    expansionWithoutMain.snapshot.latest_metadata.localization = {
+      status: "evidence_only_geometry_unavailable",
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason: "main_layout_missing",
+    };
+    expect(inspectStage1ImmutableR2CaptureBinding(expansionWithoutMain.snapshot)).toMatchObject({
+      valid: false,
+      errors: expect.arrayContaining(["expansion_states_require_main_layout"]),
+    });
+  });
+
+  it("rejects local artifacts whose bytes do not match otherwise-consistent baseline and snapshot claims", () => {
+    const sourceId = "33333333-3333-4333-8333-333333333333";
+    const awardId = "44444444-4444-4444-8444-444444444444";
+    const fixture = writeWebEvidenceFixture({
+      sourceId,
+      awardId,
+      imageBytes: Buffer.from("expected-image"),
+      text: "expected text",
+    });
+    writeFileSync(fixture.paths.page, Buffer.from("tampered-image"));
+    writeFileSync(fixture.paths.text, "tampered text\n");
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+
+    expect(result.snapshot_hashes_match).toBe(true);
+    expect(result.artifact_hashes_match).toBe(false);
+    expect(result.mismatched_artifact_hash_fields).toEqual(["image_hash", "text_hash"]);
+    expect(result.artifact_integrity_failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hash_field: "image_hash", reason: "artifact_hash_mismatch" }),
+      expect.objectContaining({ hash_field: "text_hash", reason: "artifact_hash_mismatch" }),
+    ]));
+    expect(result.exact_available).toBe(false);
+  });
+
+  it.each([
+    ["source identity", (meta) => { meta.source.id = "ffffffff-ffff-4fff-8fff-ffffffffffff"; }, "meta_source_id_mismatch"],
+    ["award identity", (meta) => { meta.source.shared_award_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"; }, "meta_shared_award_id_mismatch"],
+    ["source URL", (meta) => { meta.source.url = "https://example.test/other"; }, "meta_source_url_mismatch"],
+    ["capture timestamp", (meta) => { meta.captured_at = "2026-07-16T12:01:00.000Z"; }, "meta_captured_at_mismatch"],
+    ["core image hash", (meta) => { meta.image_hash = "a".repeat(64); }, "meta_core_hash_mismatch"],
+    ["localization geometry hash", (meta) => { meta.localization.geometry_hash = "c".repeat(64); }, "meta_layout_hash_binding_mismatch"],
+    ["localization screenshot identity", (meta) => { meta.text_geometry.screenshot.image_ref = "sources/other/page.jpg"; }, "meta_layout_artifact_identity_mismatch"],
+    ["localization node count", (meta) => { meta.text_geometry.node_count += 1; }, "meta_layout_reference_mismatch"],
+    ["localization status", (meta) => { meta.localization.status = "unavailable"; }, "meta_localization_state_mismatch"],
+  ])("rejects altered metadata %s even when page, text, baseline, and snapshot hashes still match", (
+    _label,
+    mutate,
+    expectedReason,
+  ) => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "77777777-7777-4777-8777-777777777777",
+      awardId: "88888888-8888-4888-8888-888888888888",
+    });
+    mutate(fixture.meta);
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+
+    expect(result.snapshot_hashes_match).toBe(true);
+    expect(result.metadata_bindings_match).toBe(false);
+    expect(result.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      artifact_role: "meta",
+      reason: expectedReason,
+    }));
+    if (/^(?:meta_layout|meta_localization)/.test(expectedReason)) {
+      expect(result.layout_bindings_match).toBe(false);
+    }
+    expect(result.exact_available).toBe(false);
+  });
+
+  it.each([
+    ["geometry content", (layout) => { layout.nodes[0].text = "altered geometry text"; }, "layout_geometry_binding_invalid"],
+    ["screenshot hash", (layout) => { layout.screenshot.image_hash = "b".repeat(64); }, "layout_bound_image_hash_mismatch"],
+    ["screenshot identity", (layout) => { layout.screenshot.image_ref = "sources/other/captures/capture-1/page.jpg"; }, "layout_bound_image_identity_mismatch"],
+    ["capture state", (layout) => { layout.state_id = "other"; }, "layout_state_identity_mismatch"],
+  ])("rejects altered layout %s even when the screenshot and text bytes still match", (
+    _label,
+    mutate,
+    expectedReason,
+  ) => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "99999999-9999-4999-8999-999999999999",
+      awardId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    });
+    mutate(fixture.layout);
+    writeFileSync(fixture.paths.layout, JSON.stringify(fixture.layout));
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+
+    expect(result.snapshot_hashes_match).toBe(true);
+    expect(result.layout_binding_required).toBe(true);
+    expect(result.layout_bindings_match).toBe(false);
+    expect(result.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      artifact_role: "layout",
+      reason: expectedReason,
+    }));
+    expect(result.exact_available).toBe(false);
+  });
+
+  it("requires a valid layout artifact whenever the snapshot publishes a layout hash", () => {
+    const missing = writeWebEvidenceFixture({
+      sourceId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      awardId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    });
+    rmSync(missing.paths.layout);
+    const missingResult = inspectLocalVisualEvidence({
+      archiveRoot: missing.archiveRoot,
+      source: missing.source,
+      snapshot: missing.snapshot,
+    });
+    expect(missingResult.missing_artifacts).toContainEqual({ role: "layout", reason: "file_missing" });
+    expect(missingResult.layout_bindings_match).toBe(false);
+    expect(missingResult.exact_available).toBe(false);
+
+    const malformed = writeWebEvidenceFixture({
+      sourceId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      awardId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    });
+    writeFileSync(malformed.paths.layout, "{not-json");
+    const malformedResult = inspectLocalVisualEvidence({
+      archiveRoot: malformed.archiveRoot,
+      source: malformed.source,
+      snapshot: malformed.snapshot,
+    });
+    expect(malformedResult.artifact_integrity_failures).toContainEqual({
+      artifact_role: "layout",
+      reason: "layout_json_invalid",
+    });
+    expect(malformedResult.layout_bindings_match).toBe(false);
+    expect(malformedResult.exact_available).toBe(false);
+  });
+
+  it("rejects local layout claims that contradict an authoritative unavailable-layout contract", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "14141414-1414-4414-8414-141414141414",
+      awardId: "25252525-2525-4525-8525-252525252525",
+    });
+    delete fixture.snapshot.latest_object_keys.layout;
+    delete fixture.snapshot.latest_metadata.artifact_bindings.layout;
+    delete fixture.snapshot.latest_hashes.layout_hash;
+    delete fixture.snapshot.latest_metadata.layout_hash;
+    delete fixture.snapshot.latest_metadata.text_geometry;
+    fixture.snapshot.latest_metadata.localization = {
+      status: "evidence_only_geometry_unavailable",
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason: "authoritative_layout_not_retained",
+    };
+    delete fixture.meta.layout_hash;
+    delete fixture.meta.text_geometry;
+    fixture.meta.localization = structuredClone(fixture.snapshot.latest_metadata.localization);
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
+    writeFileSync(fixture.paths.layout, "{locally-altered-layout");
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(result).toMatchObject({
+      layout_binding_required: false,
+      layout_bindings_match: null,
+      exact_available: false,
+    });
+    expect(result.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      artifact_role: "layout",
+      reason: "local_layout_claim_conflicts_with_r2_unavailable",
+    }));
+
+    delete fixture.baseline.layout_hash;
+    delete fixture.baseline.text_geometry;
+    delete fixture.baseline.capture.layout;
+    writeFileSync(
+      join(fixture.archiveRoot, "sources", fixture.source.id, "baseline.json"),
+      JSON.stringify(fixture.baseline),
+    );
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    })).toMatchObject({
+      layout_binding_required: false,
+      layout_bindings_match: null,
+      exact_available: true,
+    });
+
+    fixture.meta.localization = {
+      status: "unavailable",
+      unavailable_reason: "evidence_only_geometry_unavailable",
+    };
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    })).toMatchObject({
+      metadata_bindings_match: true,
+      exact_available: true,
+    });
+
+    delete fixture.meta.localization;
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    })).toMatchObject({
+      metadata_bindings_match: true,
+      exact_available: true,
+    });
+  });
+
+  it("requires parseable metadata instead of trusting its mere file existence", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "12121212-1212-4212-8212-121212121212",
+      awardId: "34343434-3434-4434-8434-343434343434",
+    });
+    writeFileSync(fixture.paths.meta, "[]");
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(result.metadata_bindings_match).toBe(false);
+    expect(result.artifact_integrity_failures).toContainEqual({
+      artifact_role: "meta",
+      reason: "meta_object_invalid",
+    });
+    expect(result.exact_available).toBe(false);
+  });
+
+  it("hashes retained text semantically after exactly one writer framing newline", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "56565656-5656-4656-8656-565656565656",
+      awardId: "78787878-7878-4878-8878-787878787878",
+      text: "semantic text",
+      textArtifact: "semantic text\r\n",
+    });
+    const accepted = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(accepted.exact_available).toBe(true);
+
+    writeFileSync(fixture.paths.text, "semantic text\n\n");
+    const altered = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(altered.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      hash_field: "text_hash",
+      reason: "artifact_hash_mismatch",
+    }));
+    expect(altered.exact_available).toBe(false);
+  });
+
+  it("binds the raw text framing length recorded by the immutable snapshot metadata", () => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "13131313-1313-4313-8313-131313131313",
+      awardId: "24242424-2424-4424-8424-242424242424",
+      text: "same semantic text",
+    });
+    // Both encodings have the same semantic text_hash after stripping one
+    // framing newline, but only the original LF has the recorded byte length.
+    writeFileSync(fixture.paths.text, "same semantic text\r\n");
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      snapshot: fixture.snapshot,
+    });
+    expect(result.recomputed_artifact_hashes.text_hash).toBe(fixture.textHash);
+    expect(result.mismatched_artifact_hash_fields).not.toContain("text_hash");
+    expect(result.text_object_bindings_match).toBe(false);
+    expect(result.artifact_integrity_failures).toContainEqual(expect.objectContaining({
+      artifact_role: "text",
+      reason: "text_object_byte_length_mismatch",
+    }));
+    expect(result.exact_available).toBe(false);
+  });
+
+  it("binds PDF metadata and semantic text to the retained document bytes", () => {
+    const archiveRoot = temporaryArchiveRoot("pdf");
+    const sourceId = "90909090-9090-4090-8090-909090909090";
+    const awardId = "abababab-abab-4bab-8bab-abababababab";
+    const capturedAt = "2026-07-16T12:00:00.000Z";
+    const captureRelative = `sources/${sourceId}/captures/capture-1`;
+    const captureDir = join(archiveRoot, captureRelative);
+    mkdirSync(captureDir, { recursive: true });
+    const pdfBytes = Buffer.from("pdf bytes");
+    const text = "pdf text";
+    const fileHash = sha256(pdfBytes);
+    const textHash = sha256(Buffer.from(text, "utf8"));
+    const textBytes = Buffer.from(`${text}\n`, "utf8");
+    const metaBytes = Buffer.from(JSON.stringify({
+      version: 1,
+      kind: "pdf",
+      source: { id: sourceId, shared_award_id: awardId },
+      captured_at: capturedAt,
+      file_hash: fileHash,
+      image_hash: fileHash,
+      text_hash: textHash,
+      text_length: text.length,
+      file_bytes: pdfBytes.length,
+    }));
+    writeFileSync(join(captureDir, "document.pdf"), pdfBytes);
+    writeFileSync(join(captureDir, "text.txt"), textBytes);
+    writeFileSync(join(captureDir, "meta.json"), metaBytes);
+    writeFileSync(join(archiveRoot, "sources", sourceId, "baseline.json"), JSON.stringify({
+      version: 1,
+      kind: "pdf",
+      source: { id: sourceId, shared_award_id: awardId },
+      captured_at: capturedAt,
+      file_hash: fileHash,
+      image_hash: fileHash,
+      text_hash: textHash,
+      capture: {
+        dir: captureRelative,
+        pdf: `${captureRelative}/document.pdf`,
+        text: `${captureRelative}/text.txt`,
+        meta: `${captureRelative}/meta.json`,
+      },
+    }));
+
+    const result = inspectLocalVisualEvidence({
+      archiveRoot,
+      source: { id: sourceId, shared_award_id: awardId },
+      snapshot: {
+        shared_award_source_id: sourceId,
+        source_url: "https://example.test/document.pdf",
+        kind: "pdf",
+        bucket: "awardping-test",
+        latest_captured_at: "2026-07-16T12:00:00Z",
+        latest_object_keys: {
+          pdf: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/document.pdf`,
+          text: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/text.txt`,
+          meta: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/meta.json`,
+        },
+        latest_hashes: { file_hash: fileHash, image_hash: fileHash, text_hash: textHash },
+        latest_metadata: {
+          artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
+          artifact_bindings: {
+            pdf: rawArtifactBinding(pdfBytes, "application/pdf"),
+            text: rawArtifactBinding(textBytes, "text/plain; charset=utf-8"),
+            meta: rawArtifactBinding(metaBytes, "application/json; charset=utf-8"),
+          },
+          file_bytes: pdfBytes.length,
+          text_object_bytes: Buffer.byteLength(`${text}\n`, "utf8"),
+          text_length: text.length,
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      metadata_bindings_match: true,
+      text_object_bindings_match: true,
+      layout_binding_required: false,
+      layout_bindings_match: null,
+      artifact_hashes_match: true,
+      exact_available: true,
+    });
+  });
+
+  it("fails closed for malformed hash claims and missing required local artifacts", () => {
+    const archiveRoot = join(tmpdir(), `awardping-stage1-invalid-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    temporaryPaths.push(archiveRoot);
+    const sourceId = "55555555-5555-4555-8555-555555555555";
+    const awardId = "66666666-6666-4666-8666-666666666666";
     const captureDir = join(archiveRoot, "sources", sourceId, "captures", "capture-1");
     mkdirSync(captureDir, { recursive: true });
-    writeFileSync(join(captureDir, "page.jpg"), "image");
-    writeFileSync(join(captureDir, "text.txt"), "text");
+    writeFileSync(join(captureDir, "page.jpg"), Buffer.from("image"));
     writeFileSync(join(captureDir, "meta.json"), "{}");
+    const textHash = sha256(Buffer.from("text", "utf8"));
     writeFileSync(join(archiveRoot, "sources", sourceId, "baseline.json"), JSON.stringify({
+      kind: "webpage",
       source: { id: sourceId, shared_award_id: awardId },
       captured_at: "2026-07-16T12:00:00.000Z",
-      image_hash: "image-hash",
-      text_hash: "text-hash",
+      image_hash: "not-a-sha256",
+      text_hash: textHash,
       capture: {
         dir: `sources/${sourceId}/captures/capture-1`,
         page: `sources/${sourceId}/captures/capture-1/page.jpg`,
@@ -485,20 +1181,20 @@ describe("Stage 1 cohort readiness preflight", () => {
       archiveRoot,
       source: { id: sourceId, shared_award_id: awardId },
       snapshot: {
+        kind: "webpage",
         latest_captured_at: "2026-07-16T12:00:00Z",
-        latest_hashes: { image_hash: "image-hash", text_hash: "text-hash", file_hash: null },
+        latest_hashes: { image_hash: "not-a-sha256", text_hash: textHash },
       },
     });
-    expect(result).toMatchObject({
-      baseline_exists: true,
-      baseline_readable: true,
-      source_identity_matches: true,
-      capture_timestamp_matches: true,
-      snapshot_hashes_match: true,
-      artifact_paths_safe: true,
-      missing_artifacts: [],
-      exact_available: true,
-    });
+
+    expect(result.snapshot_hashes_match).toBe(true);
+    expect(result.artifact_hashes_match).toBe(false);
+    expect(result.missing_artifacts).toContainEqual({ role: "text", reason: "file_missing" });
+    expect(result.artifact_integrity_failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hash_field: "image_hash", reason: "claimed_hash_missing_or_malformed" }),
+      expect.objectContaining({ hash_field: "text_hash", reason: "artifact_file_missing" }),
+    ]));
+    expect(result.exact_available).toBe(false);
   });
 
   it("produces a fail-closed 25-award report and machine-readable no-charge registry action before deployment", () => {
@@ -690,6 +1386,368 @@ describe("Stage 1 cohort readiness preflight", () => {
     expect(cli).not.toContain("OPENAI_API_KEY");
   });
 });
+
+function writeWebEvidenceFixture({
+  sourceId,
+  awardId,
+  capturedAt = "2026-07-16T12:00:00.000Z",
+  imageBytes = Buffer.from("image"),
+  text = "text",
+  textArtifact = null,
+  sourceUrl = "https://example.test/award",
+} = {}) {
+  const archiveRoot = temporaryArchiveRoot("web");
+  const captureRelative = `sources/${sourceId}/captures/capture-1`;
+  const pageRelative = `${captureRelative}/page.jpg`;
+  const thumbRelative = `${captureRelative}/thumb.jpg`;
+  const textRelative = `${captureRelative}/text.txt`;
+  const layoutRelative = `${captureRelative}/layout.json`;
+  const metaRelative = `${captureRelative}/meta.json`;
+  const captureDir = join(archiveRoot, captureRelative);
+  mkdirSync(captureDir, { recursive: true });
+
+  const imageHash = sha256(imageBytes);
+  const textHash = sha256(Buffer.from(text, "utf8"));
+  const retainedText = textArtifact ?? `${text}\n`;
+  const thumbBytes = Buffer.from("thumbnail");
+  const layout = bindVisualTextGeometry({
+    version: 1,
+    state_id: "main",
+    captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
+    document: { width: 1_000, height: 2_000 },
+    viewport: { width: 1_000, height: 800 },
+    scroll: { x: 0, y: 0 },
+    device_pixel_ratio: 1,
+    nodes: [{
+      order: 0,
+      path: "html/body/main/p",
+      flow_path: "html/body/main/p",
+      text,
+      separator_before: "",
+      rects: [{ x: 20, y: 40, width: 200, height: 24 }],
+      runs: [{
+        start: 0,
+        end: text.length,
+        text,
+        rects: [{ x: 20, y: 40, width: 200, height: 24 }],
+      }],
+    }],
+  }, {
+    capturedAt,
+    imageHash,
+    imageRef: pageRelative,
+    screenshot: {
+      css_width: 1_000,
+      css_height: 2_000,
+      pixel_width: 1_000,
+      pixel_height: 2_000,
+    },
+  });
+  const textGeometry = {
+    version: layout.version,
+    status: "ready",
+    unavailable_reason: null,
+    geometry_hash: layout.geometry_hash,
+    coordinate_space: layout.coordinate_space,
+    node_count: layout.node_count,
+    run_count: layout.run_count,
+    document: layout.document,
+    viewport: layout.viewport,
+    screenshot: layout.screenshot,
+    file: layoutRelative,
+  };
+  const meta = {
+    version: 1,
+    kind: "webpage",
+    source: { id: sourceId, shared_award_id: awardId, url: sourceUrl },
+    captured_at: capturedAt,
+    image_hash: imageHash,
+    text_hash: textHash,
+    text_length: text.length,
+    page_bytes: imageBytes.length,
+    thumb_bytes: thumbBytes.length,
+    layout_hash: layout.geometry_hash,
+    text_geometry: textGeometry,
+    localization: {
+      status: "geometry_ready",
+      exact: false,
+      accounted_for: true,
+      geometry_ready: true,
+      unavailable_reason: null,
+      geometry_hash: layout.geometry_hash,
+      bound_image_hash: imageHash,
+      semantic_crop_contract: "visual-exact-text-binding-v2",
+      captured_at: capturedAt,
+    },
+    expansion_state_screenshots: [],
+    files: {
+      page: pageRelative,
+      thumb: thumbRelative,
+      text: textRelative,
+      layout: layoutRelative,
+      meta: metaRelative,
+      expansion_states: [],
+    },
+  };
+  const baseline = {
+    version: 1,
+    kind: "webpage",
+    source: { id: sourceId, shared_award_id: awardId, url: sourceUrl },
+    captured_at: capturedAt,
+    image_hash: imageHash,
+    text_hash: textHash,
+    layout_hash: layout.geometry_hash,
+    text_geometry: textGeometry,
+    capture: {
+      dir: captureRelative,
+      page: pageRelative,
+      thumb: thumbRelative,
+      text: textRelative,
+      layout: layoutRelative,
+      meta: metaRelative,
+      expansion_states: [],
+    },
+  };
+  const snapshot = {
+    shared_award_source_id: sourceId,
+    source_url: sourceUrl,
+    kind: "webpage",
+    bucket: "awardping-test",
+    latest_captured_at: capturedAt,
+    latest_object_keys: {
+      page: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/page.jpg`,
+      thumb: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/thumb.jpg`,
+      text: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/text.txt`,
+      layout: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/layout.json`,
+      meta: `visual-snapshots/sources/${sourceId}/captures/${"a".repeat(32)}/meta.json`,
+    },
+    latest_hashes: {
+      image_hash: imageHash,
+      text_hash: textHash,
+      layout_hash: layout.geometry_hash,
+      file_hash: null,
+    },
+    latest_metadata: {
+      artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
+      artifact_bindings: {
+        page: rawArtifactBinding(imageBytes, "image/jpeg"),
+        thumb: rawArtifactBinding(thumbBytes, "image/jpeg"),
+        text: rawArtifactBinding(Buffer.from(retainedText, "utf8"), "text/plain; charset=utf-8"),
+        layout: rawArtifactBinding(
+          Buffer.from(JSON.stringify(layout)),
+          "application/json; charset=utf-8",
+        ),
+        meta: rawArtifactBinding(
+          Buffer.from(JSON.stringify(meta)),
+          "application/json; charset=utf-8",
+        ),
+      },
+      text_object_bytes: Buffer.byteLength(retainedText, "utf8"),
+      text_length: text.length,
+      page_bytes: imageBytes.length,
+      thumb_bytes: thumbBytes.length,
+      layout_hash: layout.geometry_hash,
+      text_geometry: textGeometry,
+      localization: meta.localization,
+      expansion_state_count: 0,
+      expansion_state_screenshots: [],
+    },
+  };
+  const paths = {
+    page: join(captureDir, "page.jpg"),
+    thumb: join(captureDir, "thumb.jpg"),
+    text: join(captureDir, "text.txt"),
+    layout: join(captureDir, "layout.json"),
+    meta: join(captureDir, "meta.json"),
+  };
+  writeFileSync(paths.page, imageBytes);
+  writeFileSync(paths.thumb, thumbBytes);
+  // text_hash is semantic; the writer's LF (and legacy CRLF) is storage framing.
+  writeFileSync(paths.text, retainedText);
+  writeFileSync(paths.layout, JSON.stringify(layout));
+  writeFileSync(paths.meta, JSON.stringify(meta));
+  writeFileSync(
+    join(archiveRoot, "sources", sourceId, "baseline.json"),
+    JSON.stringify(baseline),
+  );
+
+  return {
+    archiveRoot,
+    source: { id: sourceId, shared_award_id: awardId, url: sourceUrl },
+    snapshot,
+    baseline,
+    layout,
+    meta,
+    paths,
+    imageHash,
+    textHash,
+  };
+}
+
+function addExpansionStateEvidence(fixture) {
+  const stateId = "expansion-state-01";
+  const capturedAt = "2026-07-16T12:00:01.000Z";
+  const captureRelative = fixture.baseline.capture.dir;
+  const pageRelative = `${captureRelative}/expansion-state-01.jpg`;
+  const layoutRelative = `${captureRelative}/expansion-state-01-layout.json`;
+  const pageBytes = Buffer.from("expanded accordion screenshot");
+  const imageHash = sha256(pageBytes);
+  const text = "Expanded eligibility wording";
+  const textHash = sha256(Buffer.from(text, "utf8"));
+  const layout = bindVisualTextGeometry({
+    version: 1,
+    state_id: stateId,
+    captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
+    document: { width: 1_000, height: 2_200 },
+    viewport: { width: 1_000, height: 800 },
+    scroll: { x: 0, y: 0 },
+    device_pixel_ratio: 1,
+    nodes: [{
+      order: 0,
+      path: "html/body/main/details/p",
+      flow_path: "html/body/main/details/p",
+      text,
+      separator_before: "",
+      rects: [{ x: 30, y: 400, width: 300, height: 24 }],
+      runs: [{
+        start: 0,
+        end: text.length,
+        text,
+        rects: [{ x: 30, y: 400, width: 300, height: 24 }],
+      }],
+    }],
+  }, {
+    capturedAt,
+    imageHash,
+    imageRef: pageRelative,
+    screenshot: {
+      css_width: 1_000,
+      css_height: 2_200,
+      pixel_width: 1_000,
+      pixel_height: 2_200,
+    },
+  });
+  const textGeometry = {
+    version: layout.version,
+    status: "ready",
+    unavailable_reason: null,
+    geometry_hash: layout.geometry_hash,
+    coordinate_space: layout.coordinate_space,
+    node_count: layout.node_count,
+    run_count: layout.run_count,
+    document: layout.document,
+    viewport: layout.viewport,
+    screenshot: layout.screenshot,
+    file: layoutRelative,
+  };
+  const isolation = { verified: true, fresh_page: true };
+  fixture.baseline.capture.expansion_states = [{
+    state_id: stateId,
+    index: 0,
+    label: "Eligibility",
+    captured_at: capturedAt,
+    image_hash: imageHash,
+    layout_hash: layout.geometry_hash,
+    isolation,
+    page: pageRelative,
+    layout: layoutRelative,
+  }];
+  fixture.meta.expansion_state_screenshots = [{
+    state_id: stateId,
+    index: 0,
+    tag: "details",
+    label: "Eligibility",
+    page: pageRelative,
+    image_hash: imageHash,
+    layout: layoutRelative,
+    layout_hash: layout.geometry_hash,
+    text_geometry: textGeometry,
+    text_hash: textHash,
+    text_length: text.length,
+    page_bytes: pageBytes.length,
+    isolation,
+  }];
+  fixture.meta.files.expansion_states = [{
+    state_id: stateId,
+    label: "Eligibility",
+    page: pageRelative,
+    layout: layoutRelative,
+  }];
+  const generationPrefix = fixture.snapshot.latest_object_keys.page.replace(/\/page[.]jpg$/, "");
+  fixture.snapshot.latest_object_keys.expansion_state_01 =
+    `${generationPrefix}/expansion-state-01.jpg`;
+  fixture.snapshot.latest_object_keys.expansion_state_01_layout =
+    `${generationPrefix}/expansion-state-01-layout.json`;
+  fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01 =
+    rawArtifactBinding(pageBytes, "image/jpeg");
+  fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01_layout =
+    rawArtifactBinding(
+      Buffer.from(JSON.stringify(layout)),
+      "application/json; charset=utf-8",
+    );
+  fixture.snapshot.latest_metadata.expansion_state_count = 1;
+  fixture.snapshot.latest_metadata.expansion_state_screenshots = [{
+    state_id: stateId,
+    label: "Eligibility",
+    image_hash: imageHash,
+    layout_hash: layout.geometry_hash,
+    text_geometry: textGeometry,
+    text_hash: textHash,
+    text_length: text.length,
+    page_bytes: pageBytes.length,
+    isolation,
+  }];
+  const paths = {
+    page: join(fixture.archiveRoot, pageRelative),
+    layout: join(fixture.archiveRoot, layoutRelative),
+  };
+  writeFileSync(paths.page, pageBytes);
+  writeFileSync(paths.layout, JSON.stringify(layout));
+  writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+  refreshFixtureMetaBinding(fixture);
+  writeFileSync(
+    join(fixture.archiveRoot, "sources", fixture.source.id, "baseline.json"),
+    JSON.stringify(fixture.baseline),
+  );
+  return { paths, layout, imageHash };
+}
+
+function removeAuthoritativeLayoutClaim(snapshot) {
+  delete snapshot.latest_object_keys.layout;
+  delete snapshot.latest_metadata.artifact_bindings.layout;
+  delete snapshot.latest_hashes.layout_hash;
+  delete snapshot.latest_metadata.layout_hash;
+  delete snapshot.latest_metadata.text_geometry;
+  delete snapshot.latest_metadata.localization?.geometry_hash;
+}
+
+function rawArtifactBinding(bytes, contentType) {
+  const body = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  return {
+    sha256: sha256(body),
+    byte_length: body.length,
+    content_type: contentType,
+    hash_mode: "raw_sha256",
+  };
+}
+
+function refreshFixtureMetaBinding(fixture) {
+  fixture.snapshot.latest_metadata.artifact_bindings.meta = rawArtifactBinding(
+    Buffer.from(JSON.stringify(fixture.meta)),
+    "application/json; charset=utf-8",
+  );
+}
+
+function temporaryArchiveRoot(label) {
+  const archiveRoot = join(
+    tmpdir(),
+    `awardping-stage1-${label}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  );
+  temporaryPaths.push(archiveRoot);
+  return archiveRoot;
+}
 
 function source(id, url, title, pageType) {
   return {

@@ -9,7 +9,7 @@ const source = readFileSync(
 describe("scheduled visual snapshot pointer wiring", () => {
   it("uploads immutable objects before CAS and cleans unreferenced losing uploads", () => {
     expect(source).toContain(
-      "visual-snapshots/sources/${sourceId}/captures/${version}/${file.fileName}",
+      "visual-snapshots/sources/${sourceId}/captures/${version}/${artifact.fileName}",
     );
     const upsertStart = source.indexOf("async function upsertR2SnapshotRecord");
     const upsertEnd = source.indexOf("function captureR2Files", upsertStart);

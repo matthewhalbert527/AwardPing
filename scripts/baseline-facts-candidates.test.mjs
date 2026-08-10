@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   baselineFactsRejectionDisposition,
@@ -11,6 +12,10 @@ const cleanSource = {
   page_type: "homepage",
   page_metadata: {},
 };
+const baselineFactsWorker = readFileSync(
+  new URL("./backfill-baseline-facts.mjs", import.meta.url),
+  "utf8",
+);
 
 describe("baseline fact candidate preflight", () => {
   it("allows a clean unreviewed source to receive its first AI review", () => {
@@ -39,6 +44,40 @@ describe("baseline fact candidate preflight", () => {
 
     expect(decision.shouldReview).toBe(false);
     expect(decision.reason).toBe("existing_complete_ai_review");
+  });
+
+  it("does not charge to rereview an AI-unclear source restored later by an operator", () => {
+    const source = {
+      ...cleanSource,
+      page_metadata_generated_at: "2026-07-08T02:10:45.237Z",
+      page_metadata_model: "gemini-test",
+      page_metadata: {
+        generated_at: "2026-07-08T02:10:45.237Z",
+        ai_review_coverage_backfill: { at: "2026-07-10T21:13:19.463Z" },
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+          confidence: "high",
+        },
+      },
+      admin_review_status: "open",
+      admin_review_note:
+        "monitoring_restore_v1: Explicitly restored by a site admin for monitoring only.",
+      admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+      admin_reviewed_by: "operator@example.edu",
+    };
+
+    expect(baselineReviewPreflightDecision({ source, hasExistingFacts: true })).toMatchObject({
+      shouldReview: false,
+      reason: "existing_complete_ai_review",
+      quality: {
+        allowed: true,
+        reason: "operator_review_restored_ai_unclear_monitoring_only",
+      },
+    });
+    expect(baselineFactsWorker).toContain(
+      "admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by",
+    );
   });
 
   it("allows a forced rereview when prior relevance is unclear", () => {

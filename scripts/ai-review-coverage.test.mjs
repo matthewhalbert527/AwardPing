@@ -51,6 +51,38 @@ describe("AI review coverage categorization", () => {
     expect(row.monitor_eligible).toBe(true);
   });
 
+  it("preserves an explicit monitoring-only restore without treating it as unresolved", () => {
+    const row = buildSourceAiCoverageRow(
+      source({
+        page_metadata: {
+          baseline_facts: {
+            ...acceptedFacts,
+            cycle_relevance: "unclear",
+          },
+        },
+        admin_review_note:
+          "monitoring_restore_v1: Explicitly restored by a site admin for monitoring only.",
+        admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+        admin_reviewed_by: "operator@example.edu",
+      }),
+      award,
+    );
+
+    expect(row).toMatchObject({
+      category: "monitoring_restored",
+      planned_action: "leave_open",
+      action_reason: "operator_monitoring_restore_preserved",
+      monitor_eligible: true,
+      public_eligible: false,
+      fact_eligible: false,
+      needs_manual_review: false,
+    });
+    const summary = summarizeAiReviewCoverage({ awards: [award], rows: [row] });
+    expect(summary.completion_blockers.open_unclear).toBe(0);
+    expect(summary.problem_source_examples).toEqual([]);
+    expect(summary.completion_passed).toBe(true);
+  });
+
   it("queues unreviewed and incomplete sources for AI review", () => {
     const unreviewed = buildSourceAiCoverageRow(
       source({

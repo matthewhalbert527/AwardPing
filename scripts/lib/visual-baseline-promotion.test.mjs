@@ -11,7 +11,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { bindVisualTextGeometry } from "./visual-event-localization.mjs";
+import {
+  bindVisualTextGeometry,
+  visualTextGeometryLayoutFingerprint,
+} from "./visual-event-localization.mjs";
 import {
   approvedR2SnapshotVersion,
   captureFromVisualReviewCandidate,
@@ -20,6 +23,7 @@ import {
   visualBaselinePublicationDecision,
   visualBaselinePromotionDecision,
 } from "./visual-baseline-promotion.mjs";
+import { inspectStage1ImmutableR2CaptureBinding } from "./stage1-cohort-readiness.mjs";
 
 const temporaryRoots = [];
 
@@ -475,7 +479,7 @@ describe("approved visual baseline promotion", () => {
     expect(Object.values(pointer.latest_object_keys)).toHaveLength(5);
     expect(Object.values(pointer.latest_object_keys).every((key) =>
       key.startsWith(
-        `visual-snapshots/sources/source-1/approved/${result.immutable_version}/`,
+        `visual-snapshots/sources/source-1/captures/${result.immutable_version}/`,
       ))).toBe(true);
     expect(operations.slice(-6).map((operation) => operation.type)).toEqual([
       "put",
@@ -567,13 +571,19 @@ describe("approved visual baseline promotion", () => {
   it("publishes exact main and opened-expansion geometry as one immutable approved generation", async () => {
     const archiveRoot = temporaryArchive();
     const captureDir = join(archiveRoot, "approved-geometry-r2");
-    const capture = verifiedWebCapture({ archiveRoot, captureDir, withExpansion: true });
+    const sourceId = "11111111-1111-4111-8111-111111111111";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir,
+      withExpansion: true,
+      sourceId,
+    });
     const operations = [];
     const database = r2DatabaseStub({ existing: null, operations });
     const result = await promoteApprovedVisualBaselineR2({
       candidate: candidateFixture(),
       source: {
-        id: "source-1",
+        id: sourceId,
         shared_award_id: "award-1",
         url: "https://example.edu/award",
       },
@@ -596,18 +606,162 @@ describe("approved visual baseline promotion", () => {
       expansion_states_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
     });
     expect(database.current.latest_metadata).toMatchObject({
+      artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
       text_object_bytes: readFileSync(capture.text_path).length,
       expansion_state_count: 1,
       expansion_state_screenshots: [{
-        state_id: "eligibility-open",
+        state_id: "expansion-state-01",
         image_hash: capture.expansion_state_screenshots[0].image_hash,
         layout_hash: capture.expansion_state_screenshots[0].layout_hash,
       }],
       localization_evidence: { status: "exact_geometry_available" },
     });
+    const pointer = database.upserts.at(-1);
+    expect(inspectStage1ImmutableR2CaptureBinding(pointer)).toMatchObject({
+      valid: true,
+      errors: [],
+      generation: result.immutable_version,
+    });
+    expect(Object.values(pointer.latest_object_keys).every((key) => (
+      key.startsWith(`visual-snapshots/sources/${sourceId}/captures/${result.immutable_version}/`)
+      && !key.includes("/approved/")
+    ))).toBe(true);
+    assertPointerBindingsMatchUploads(pointer, operations);
+
+    const operationCount = operations.length;
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture({ id: "candidate-2" }),
+      source: {
+        id: sourceId,
+        shared_award_id: "award-1",
+        url: "https://example.edu/award",
+      },
+      capture,
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    })).resolves.toMatchObject({
+      promoted: false,
+      already_current: true,
+      reason: "approved_r2_snapshot_already_current",
+    });
+    expect(operations).toHaveLength(operationCount);
   });
 
-  it("repairs a same-capture legacy pointer that has core evidence but no geometry", async () => {
+  it("publishes a PDF with the same exact immutable artifact contract", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "22222222-2222-4222-8222-222222222222";
+    const capture = verifiedPdfCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "approved-pdf-r2"),
+      sourceId,
+    });
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+    const result = await promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source: {
+        id: sourceId,
+        shared_award_id: "award-1",
+        url: "https://example.edu/award.pdf",
+      },
+      capture,
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    });
+
+    expect(result).toMatchObject({ promoted: true, uploaded: 3 });
+    const pointer = database.upserts.at(-1);
+    expect(inspectStage1ImmutableR2CaptureBinding(pointer)).toMatchObject({
+      valid: true,
+      errors: [],
+      kind: "pdf",
+      generation: result.immutable_version,
+    });
+    expect(pointer.latest_object_keys).toEqual({
+      meta: expect.stringMatching(/\/meta\.json$/),
+      pdf: expect.stringMatching(/\/document\.pdf$/),
+      text: expect.stringMatching(/\/text\.txt$/),
+    });
+    assertPointerBindingsMatchUploads(pointer, operations);
+  });
+
+  it("repairs hash-current pointers whose readiness metadata or identity is invalid", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "33333333-3333-4333-8333-333333333333";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "approved-repair-r2"),
+      withExpansion: true,
+      sourceId,
+    });
+    const source = {
+      id: sourceId,
+      shared_award_id: "award-1",
+      url: "https://example.edu/award",
+    };
+    const initialOperations = [];
+    const initialDatabase = r2DatabaseStub({ existing: null, operations: initialOperations });
+    await promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source,
+      capture,
+      supabase: initialDatabase.client,
+      s3Client: r2ClientStub({ operations: initialOperations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    });
+    const validPointer = initialDatabase.upserts.at(-1);
+    expect(inspectStage1ImmutableR2CaptureBinding(validPointer).valid).toBe(true);
+
+    const corruptions = [
+      ["native text length", (pointer) => {
+        pointer.latest_metadata.text_length = String(pointer.latest_metadata.text_length);
+      }],
+      ["localization state", (pointer) => {
+        pointer.latest_metadata.localization.geometry_ready = false;
+      }],
+      ["native expansion count", (pointer) => {
+        pointer.latest_metadata.expansion_state_count = "1";
+      }],
+      ["kind", (pointer) => {
+        pointer.kind = "pdf";
+      }],
+      ["source URL", (pointer) => {
+        pointer.source_url = "https://example.edu/wrong-award";
+      }],
+      ["bucket", (pointer) => {
+        pointer.bucket = "wrong-bucket";
+      }],
+      ["capture timestamp", (pointer) => {
+        pointer.latest_captured_at = "2026-07-14T19:00:00.000Z";
+      }],
+    ];
+    for (const [index, [label, corrupt]] of corruptions.entries()) {
+      const existing = structuredClone(validPointer);
+      corrupt(existing);
+      const operations = [];
+      const database = r2DatabaseStub({ existing, operations });
+      await expect(promoteApprovedVisualBaselineR2({
+        candidate: candidateFixture({ id: `repair-candidate-${index}` }),
+        source,
+        capture,
+        supabase: database.client,
+        s3Client: r2ClientStub({ operations }),
+        approved: true,
+        config: { enabled: true, bucket: "snapshots" },
+      }), label).resolves.toMatchObject({
+        promoted: true,
+        reason: "approved_whole_page_snapshot",
+      });
+      expect(operations.some((operation) => operation.type === "upsert"), label).toBe(true);
+    }
+  });
+
+  it("repairs a hash-current legacy pointer that lacks the exact capture manifest contract", async () => {
     const archiveRoot = temporaryArchive();
     const captureDir = join(archiveRoot, "legacy-pointer-geometry-repair");
     const capture = verifiedWebCapture({ archiveRoot, captureDir });
@@ -617,9 +771,14 @@ describe("approved visual baseline promotion", () => {
         page: "visual-snapshots/sources/source-1/approved/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/page.jpg",
         thumb: "visual-snapshots/sources/source-1/approved/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/thumb.jpg",
         text: "visual-snapshots/sources/source-1/approved/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/text.txt",
+        layout: "visual-snapshots/sources/source-1/approved/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/layout.json",
         meta: "visual-snapshots/sources/source-1/approved/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/meta.json",
       },
-      latest_hashes: { text_hash: capture.text_hash, image_hash: capture.image_hash },
+      latest_hashes: {
+        text_hash: capture.text_hash,
+        image_hash: capture.image_hash,
+        layout_hash: capture.layout_hash,
+      },
       latest_metadata: {},
       updated_at: "2026-07-14T20:30:00.000Z",
     };
@@ -652,7 +811,7 @@ describe("approved visual baseline promotion", () => {
       url: "https://example.edu/award",
     };
     const version = approvedR2SnapshotVersion({ candidate, capture });
-    const retainedPage = `visual-snapshots/sources/source-1/approved/${version}/page.jpg`;
+    const retainedPage = `visual-snapshots/sources/source-1/captures/${version}/page.jpg`;
     const operations = [];
     const database = r2DatabaseStub({
       existing: null,
@@ -690,6 +849,7 @@ function verifiedWebCapture({
   captureDir,
   text = "Application deadline: March 15, 2027",
   withExpansion = false,
+  sourceId = "source-1",
 } = {}) {
   mkdirSync(captureDir, { recursive: true });
   const paths = {
@@ -721,18 +881,21 @@ function verifiedWebCapture({
     const expansionGeometry = geometryFixture({
       imageHash: expansionImageHash,
       imageRef: archiveRelativeForTest(expansionPagePath, archiveRoot),
-      stateId: "eligibility-open",
+      stateId: "expansion-state-01",
       text: "Eligibility requirements",
     });
     writeFileSync(expansionLayoutPath, JSON.stringify(expansionGeometry));
     expansionStates.push({
-      state_id: "eligibility-open",
+      state_id: "expansion-state-01",
       index: 0,
       label: "Eligibility",
       captured_at: "2026-07-14T20:00:00.000Z",
       image_hash: expansionImageHash,
       layout_hash: expansionGeometry.geometry_hash,
       text_geometry: expansionGeometry,
+      text_hash: sha256ForTest(Buffer.from("Eligibility requirements", "utf8")),
+      text_length: "Eligibility requirements".length,
+      page_bytes: readFileSync(expansionPagePath).length,
       page_path: expansionPagePath,
       layout_path: expansionLayoutPath,
     });
@@ -741,6 +904,7 @@ function verifiedWebCapture({
   const meta = {
     version: 1,
     kind: "webpage",
+    source: { id: sourceId, shared_award_id: "award-1" },
     captured_at: "2026-07-14T20:00:00.000Z",
     final_url: "https://example.edu/award",
     page_title: "Example Award",
@@ -748,6 +912,7 @@ function verifiedWebCapture({
     image_hash: imageHash,
     layout_hash: mainGeometry.geometry_hash,
     text_geometry: mainGeometry,
+    localization: readyLocalizationForTest(mainGeometry, imageHash),
     text_length: text.length,
     dimensions: { width: 1365, height: 2400 },
     expansion_state_screenshots: expansionStates.map((state) => ({
@@ -782,12 +947,55 @@ function verifiedWebCapture({
   return capture;
 }
 
+function verifiedPdfCapture({ archiveRoot, captureDir, sourceId }) {
+  mkdirSync(captureDir, { recursive: true });
+  const pdfPath = join(captureDir, "document.pdf");
+  const textPath = join(captureDir, "text.txt");
+  const metaPath = join(captureDir, "meta.json");
+  const text = "Official award instructions for the 2027 cycle";
+  writeFileSync(pdfPath, "%PDF-1.7 immutable award guidance");
+  writeFileSync(textPath, `${text}\n`);
+  const fileHash = sha256ForTest(readFileSync(pdfPath));
+  const textHash = sha256ForTest(Buffer.from(text, "utf8"));
+  const meta = {
+    version: 1,
+    kind: "pdf",
+    source: { id: sourceId, shared_award_id: "award-1" },
+    captured_at: "2026-07-14T20:00:00.000Z",
+    final_url: "https://example.edu/award.pdf",
+    file_hash: fileHash,
+    text_hash: textHash,
+    text_length: text.length,
+    file_bytes: readFileSync(pdfPath).length,
+  };
+  writeFileSync(metaPath, JSON.stringify(meta));
+  const capture = {
+    ...meta,
+    archive_root: archiveRoot,
+    dir: captureDir,
+    pdf_path: pdfPath,
+    text_path: textPath,
+    meta_path: metaPath,
+  };
+  capture.artifact_bindings = {
+    pdf: artifactBindingForTest(pdfPath),
+    text: artifactBindingForTest(textPath),
+    meta: artifactBindingForTest(metaPath),
+  };
+  return capture;
+}
+
 function geometryFixture({ imageHash, imageRef, stateId, text = "Award information" }) {
-  return bindVisualTextGeometry({
+  const geometry = {
+    version: 1,
     state_id: stateId,
     document: { width: 1365, height: 2400 },
     viewport: { width: 1365, height: 768 },
     device_pixel_ratio: 1,
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "verified",
+    },
     nodes: [{
       order: 0,
       path: "main > p",
@@ -801,7 +1009,8 @@ function geometryFixture({ imageHash, imageRef, stateId, text = "Award informati
         rects: [{ x: 120, y: 420, width: 700, height: 28 }],
       }],
     }],
-  }, {
+  };
+  const binding = {
     capturedAt: "2026-07-14T20:00:00.000Z",
     imageHash,
     imageRef,
@@ -811,7 +1020,36 @@ function geometryFixture({ imageHash, imageRef, stateId, text = "Award informati
       pixel_width: 1365,
       pixel_height: 2400,
     },
+  };
+  const preliminary = bindVisualTextGeometry(geometry, binding);
+  const fingerprint = visualTextGeometryLayoutFingerprint({
+    ...preliminary,
+    version: 1,
   });
+  return bindVisualTextGeometry({
+    ...preliminary,
+    version: 1,
+    geometry_hash: undefined,
+    capture_verification: {
+      contract: "visual-screenshot-layout-binding-v1",
+      status: "verified",
+      before_fingerprint: fingerprint,
+      after_fingerprint: fingerprint,
+    },
+  }, binding);
+}
+
+function readyLocalizationForTest(geometry, imageHash) {
+  return {
+    status: "geometry_ready",
+    exact: false,
+    accounted_for: true,
+    geometry_ready: true,
+    unavailable_reason: null,
+    geometry_hash: geometry.geometry_hash,
+    bound_image_hash: imageHash,
+    semantic_crop_contract: "visual-exact-text-binding-v2",
+  };
 }
 
 function snapshotRefForCapture(capture, archiveRoot, overrides = {}) {
@@ -928,7 +1166,15 @@ function r2ClientStub({ operations, failAtSend = null }) {
     async send(command) {
       this.sendCount += 1;
       const type = command.constructor.name === "DeleteObjectCommand" ? "delete" : "put";
-      operations.push({ type, key: command.input.Key });
+      operations.push(type === "put"
+        ? {
+            type,
+            key: command.input.Key,
+            body: Buffer.from(command.input.Body),
+            content_type: command.input.ContentType,
+            metadata: structuredClone(command.input.Metadata),
+          }
+        : { type, key: command.input.Key });
       if (this.failAtSend === this.sendCount) throw new Error("simulated partial upload");
       return {};
     },
@@ -936,6 +1182,30 @@ function r2ClientStub({ operations, failAtSend = null }) {
       this.destroyed = true;
     },
   };
+}
+
+function assertPointerBindingsMatchUploads(pointer, operations) {
+  const uploads = new Map(
+    operations
+      .filter((operation) => operation.type === "put")
+      .map((operation) => [operation.key, operation]),
+  );
+  expect(Object.keys(pointer.latest_metadata.artifact_bindings).sort()).toEqual(
+    Object.keys(pointer.latest_object_keys).sort(),
+  );
+  for (const [slot, key] of Object.entries(pointer.latest_object_keys)) {
+    const upload = uploads.get(key);
+    expect(upload, `missing upload for ${slot}`).toBeTruthy();
+    expect(pointer.latest_metadata.artifact_bindings[slot]).toEqual({
+      sha256: sha256ForTest(upload.body),
+      byte_length: upload.body.length,
+      content_type: upload.content_type,
+      hash_mode: "raw_sha256",
+    });
+    expect(upload.metadata).toEqual({
+      sha256: sha256ForTest(upload.body),
+    });
+  }
 }
 
 function r2DatabaseStub({ existing, operations, upsertFailures = 0, casWinner = null }) {
@@ -970,17 +1240,7 @@ function r2DatabaseStub({ existing, operations, upsertFailures = 0, casWinner = 
           args.p_expected_exists !== Boolean(state.current) ||
           (state.current && args.p_expected_updated_at !== state.current.updated_at)
         ) return { data: false, error: null };
-        state.current = {
-          latest_captured_at: payload.latest_captured_at,
-          latest_object_keys: structuredClone(payload.latest_object_keys),
-          latest_hashes: structuredClone(payload.latest_hashes),
-          latest_metadata: structuredClone(payload.latest_metadata),
-          previous_captured_at: payload.previous_captured_at,
-          previous_object_keys: structuredClone(payload.previous_object_keys),
-          previous_hashes: structuredClone(payload.previous_hashes),
-          previous_metadata: structuredClone(payload.previous_metadata),
-          updated_at: payload.updated_at,
-        };
+        state.current = structuredClone(payload);
         return { data: true, error: null };
       },
       from() {

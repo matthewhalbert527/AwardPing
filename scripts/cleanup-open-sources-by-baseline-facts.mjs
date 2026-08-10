@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import {
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
@@ -43,6 +44,7 @@ async function run() {
     accepted: 0,
     rejected: 0,
     applied: 0,
+    stale_admin_review_plans_skipped: 0,
     failed: 0,
     rejection_counts: {},
     examples: {},
@@ -72,7 +74,8 @@ async function run() {
 
     if (!applyUpdates) continue;
 
-    const { error } = await supabase
+    const now = new Date().toISOString();
+    let mutation = supabase
       .from("shared_award_sources")
       .update({
         admin_review_status: "review_later",
@@ -80,12 +83,13 @@ async function run() {
           `Auto-cleaned by source quality gate (${decision.reason}). This source is not eligible for public display, facts, or monitoring.`,
           1000,
         ),
-        admin_reviewed_at: new Date().toISOString(),
+        admin_reviewed_at: now,
         admin_reviewed_by: "cleanup-open-sources-by-baseline-facts",
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       })
-      .eq("id", source.id)
-      .eq("admin_review_status", "open");
+      .eq("id", source.id);
+    mutation = guardAdminReviewMutation(mutation, source);
+    const { data, error } = await mutation.select("id").maybeSingle();
 
     if (error) {
       report.failed += 1;
@@ -94,8 +98,10 @@ async function run() {
         reason: decision.reason,
         message: error.message || String(error),
       });
-    } else {
+    } else if (data) {
       report.applied += 1;
+    } else {
+      report.stale_admin_review_plans_skipped += 1;
     }
   }
 
@@ -112,7 +118,7 @@ async function loadOpenSources() {
     let query = supabase
       .from("shared_award_sources")
       .select(
-        "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, created_at",
+        "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, created_at",
       )
       .eq("admin_review_status", "open")
       .order("created_at", { ascending: true })

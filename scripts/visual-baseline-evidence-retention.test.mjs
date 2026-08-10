@@ -221,8 +221,34 @@ describe("visual baseline evidence retention", () => {
     const metadata = functionBody("r2CaptureMetadata", "captureLocalizationMetadata");
 
     expect(metadata).toContain("text_object_bytes:");
-    expect(metadata).toContain("statSync(capture.text_path).size");
-    expect(source).toContain("statSync,");
+    expect(metadata).toContain("artifactBindings?.text?.byte_length || null");
+    expect(source).toContain("prepareR2CaptureArtifacts(files, { readFile: readFileSync })");
+  });
+
+  it("projects unavailable geometry honestly into hashes and pointer metadata", () => {
+    const hashes = functionBody("r2CaptureHashes", "r2CaptureMetadata");
+    const metadata = functionBody("r2CaptureMetadata", "unavailableR2TextGeometryReference");
+    const unavailableGeometry = functionBody(
+      "unavailableR2TextGeometryReference",
+      "r2CaptureLocalizationMetadata",
+    );
+    const unavailableLocalization = functionBody(
+      "r2CaptureLocalizationMetadata",
+      "unavailableR2Localization",
+    );
+    const version = functionBody("immutableR2CaptureVersion", "deleteR2Object");
+    const pointer = functionBody("upsertR2SnapshotRecord", "captureR2Files");
+
+    expect(hashes).toContain("artifactBindings.layout");
+    expect(hashes).toContain("layout_hash: retainedLayoutHash");
+    expect(metadata).toContain("const layoutRetained = Boolean(artifactBindings?.layout)");
+    expect(metadata).toContain("unavailableR2TextGeometryReference(capture)");
+    expect(unavailableGeometry).toContain("geometry_hash: null");
+    expect(unavailableGeometry).toContain("image_hash: null");
+    expect(unavailableLocalization).toContain("geometry_ready: false");
+    expect(unavailableLocalization).toContain("bound_image_hash: null");
+    expect(version).toContain("r2CaptureHashes(capture, artifactBindings)");
+    expect(pointer).toContain("latest_hashes: snapshot.latestHashes");
   });
 
   it("refreshes an existing authoritative pointer only when explicitly forced", () => {

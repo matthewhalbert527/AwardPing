@@ -1,5 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { isR2CaptureGeometryReady } from "./lib/r2-capture-artifact-bindings.mjs";
+import {
+  bindVisualTextGeometry,
+  visualTextGeometryLayoutFingerprint,
+} from "./lib/visual-event-localization.mjs";
 
 const captureSource = readFileSync(new URL("./capture-visual-snapshots.mjs", import.meta.url), "utf8");
 const expansionIsolationSource = readFileSync(new URL("./lib/expansion-state-isolation.mjs", import.meta.url), "utf8");
@@ -376,6 +381,114 @@ describe("visual event capture wiring", () => {
     expect(selection).toContain("baselineEvidenceStatus(baseline).ok");
   });
 
+  it("hydrates historical backfill geometry only from retained safe layout artifacts", () => {
+    const mainImageHash = "b".repeat(64);
+    const expansionImageHash = "d".repeat(64);
+    const mainLayout = readyGeometryFixture({
+      stateId: "main",
+      imageHash: mainImageHash,
+      text: "Main wording",
+    });
+    const expansionLayout = readyGeometryFixture({
+      stateId: "expansion-state-01",
+      imageHash: expansionImageHash,
+      text: "Eligibility wording",
+    });
+    const reads = [];
+    const hydrate = executableRetainedBaselineGeometryHydrator({
+      safePaths: new Set(["main-layout.json", "expansion-layout.json", "invalid-layout.json"]),
+      layoutsByPath: new Map([
+        ["main-layout.json", mainLayout],
+        ["expansion-layout.json", expansionLayout],
+        ["invalid-layout.json", null],
+      ]),
+      reads,
+    });
+    const evidence = {
+      layoutPath: "main-layout.json",
+      expansionStateScreenshots: [{
+        state_id: "expansion-state-01",
+        page_path: "expansion-page.jpg",
+        layout_path: "expansion-layout.json",
+      }],
+    };
+    const meta = {
+      text_geometry: {
+        geometry_hash: mainLayout.geometry_hash,
+        screenshot: mainLayout.screenshot,
+        nodes: [{ text: "Untrusted metadata copy" }],
+      },
+      expansion_state_screenshots: [{
+        state_id: "expansion-state-01",
+        label: "Eligibility",
+        image_hash: expansionImageHash,
+        layout_hash: expansionLayout.geometry_hash,
+        text_hash: "e".repeat(64),
+        text_length: 19,
+        page_bytes: 42,
+        text_geometry: {
+          geometry_hash: expansionLayout.geometry_hash,
+          screenshot: expansionLayout.screenshot,
+          nodes: [{ text: "Untrusted metadata copy" }],
+        },
+      }],
+    };
+
+    const hydrated = hydrate(evidence, meta);
+    expect(hydrated).toEqual({
+      textGeometry: mainLayout,
+      expansionStateScreenshots: [expect.objectContaining({
+        state_id: "expansion-state-01",
+        label: "Eligibility",
+        text_hash: "e".repeat(64),
+        text_length: 19,
+        page_bytes: 42,
+        text_geometry: expansionLayout,
+        page_path: "expansion-page.jpg",
+        layout_path: "expansion-layout.json",
+      })],
+    });
+    expect(isR2CaptureGeometryReady({
+      kind: "webpage",
+      image_hash: mainImageHash,
+      text_geometry: hydrated.textGeometry,
+    })).toBe(true);
+    expect(isR2CaptureGeometryReady({
+      kind: "webpage",
+      image_hash: expansionImageHash,
+      text_geometry: hydrated.expansionStateScreenshots[0].text_geometry,
+    })).toBe(true);
+    expect(reads).toEqual(["expansion-layout.json", "main-layout.json"]);
+
+    const unavailable = hydrate({
+      ...evidence,
+      layoutPath: "outside-layout.json",
+      expansionStateScreenshots: [{
+        ...evidence.expansionStateScreenshots[0],
+        layout_path: "invalid-layout.json",
+      }],
+    }, meta);
+    expect(unavailable.textGeometry).toMatchObject({
+      geometry_hash: mainLayout.geometry_hash,
+      screenshot: mainLayout.screenshot,
+    });
+    expect(unavailable.textGeometry).not.toHaveProperty("nodes");
+    expect(unavailable.expansionStateScreenshots[0].text_geometry).not.toHaveProperty("nodes");
+    expect(reads).not.toContain("outside-layout.json");
+
+    const captureFromBaseline = functionBody(
+      captureSource,
+      "captureFromBaseline",
+      "buildDiffSummary",
+    );
+    expect(captureFromBaseline).toContain("hydrateRetainedBaselineGeometry(evidence, meta)");
+    expect(captureFromBaseline).toContain("text_geometry: retainedGeometry.textGeometry");
+    expect(captureFromBaseline).toContain(
+      "expansion_state_screenshots: retainedGeometry.expansionStateScreenshots",
+    );
+    expect(captureFromBaseline).not.toContain("fetch(");
+  });
+
   it("builds byte-bound snapshot refs before deriving candidate evidence signatures", () => {
     const enqueue = functionBody(captureSource, "enqueueVisualReviewCandidate", "queueAwardReconciliationFromSource");
     const prompt = enqueue.indexOf("const promptPayload = buildVisualReviewPromptPayload");
@@ -428,6 +541,108 @@ function executableBaselineEvidenceStatus({ existingPaths, metadataByPath }) {
     (path) => existingPaths.has(path),
     (path) => metadataByPath.get(path) || null,
   );
+}
+
+function executableRetainedBaselineGeometryHydrator({
+  safePaths,
+  layoutsByPath,
+  reads,
+}) {
+  const readBody = functionBody(
+    captureSource,
+    "readRetainedBaselineLayout",
+    "hydrateRetainedBaselineGeometry",
+  );
+  const hydrateBody = functionBody(
+    captureSource,
+    "hydrateRetainedBaselineGeometry",
+    "captureFromBaseline",
+  );
+  return Function(
+    "existsSync",
+    "resolve",
+    "isPathInside",
+    "archiveRoot",
+    "lstatSync",
+    "realpathSync",
+    "readJsonIfExists",
+    "jsonObjectOrEmpty",
+    "textGeometryReference",
+    "cleanText",
+    `${readBody}\n${hydrateBody}\nreturn hydrateRetainedBaselineGeometry;`,
+  )(
+    (path) => safePaths.has(path) || path === "outside-layout.json",
+    (path) => path,
+    (candidate) => safePaths.has(candidate),
+    "archive",
+    () => ({ isFile: () => true, isSymbolicLink: () => false }),
+    (path) => path,
+    (path) => {
+      reads.push(path);
+      return layoutsByPath.get(path) || null;
+    },
+    (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+    (geometry) => ({
+      geometry_hash: geometry.geometry_hash || null,
+      screenshot: geometry.screenshot || null,
+      run_count: geometry.run_count || 0,
+    }),
+    (value) => String(value || "").trim(),
+  );
+}
+
+function readyGeometryFixture({ stateId, imageHash, text }) {
+  const geometry = {
+    version: 1,
+    state_id: stateId,
+    document: { width: 1365, height: 2400 },
+    viewport: { width: 1365, height: 768 },
+    device_pixel_ratio: 1,
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "verified",
+    },
+    nodes: [{
+      order: 0,
+      path: "main > p",
+      text,
+      separator_before: "",
+      rects: [{ x: 120, y: 420, width: 700, height: 28 }],
+      runs: [{
+        start: 0,
+        end: text.length,
+        text,
+        rects: [{ x: 120, y: 420, width: 700, height: 28 }],
+      }],
+    }],
+  };
+  const binding = {
+    capturedAt: "2026-07-14T20:00:00.000Z",
+    imageHash,
+    imageRef: `${stateId}.jpg`,
+    screenshot: {
+      css_width: 1365,
+      css_height: 2400,
+      pixel_width: 1365,
+      pixel_height: 2400,
+    },
+  };
+  const preliminary = bindVisualTextGeometry(geometry, binding);
+  const fingerprint = visualTextGeometryLayoutFingerprint({
+    ...preliminary,
+    version: 1,
+  });
+  return bindVisualTextGeometry({
+    ...preliminary,
+    version: 1,
+    geometry_hash: undefined,
+    capture_verification: {
+      contract: "visual-screenshot-layout-binding-v1",
+      status: "verified",
+      before_fingerprint: fingerprint,
+      after_fingerprint: fingerprint,
+    },
+  }, binding);
 }
 
 function webpageBaselineDescriptor() {

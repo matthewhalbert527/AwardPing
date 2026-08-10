@@ -3540,7 +3540,7 @@ async function loadSourcesById(ids) {
   for (const idChunk of chunks(uniqueIds, 500)) {
     const { data, error } = await supabase
       .from("shared_award_sources")
-      .select("id,shared_award_id,url,title,page_type,source,reason,page_metadata,page_metadata_generated_at,page_metadata_model,submitted_by_user_id,admin_review_status,shared_awards(name)")
+      .select("id,shared_award_id,url,title,page_type,source,reason,page_metadata,page_metadata_generated_at,page_metadata_model,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,shared_awards(name)")
       .in("id", idChunk);
     if (error) throw new Error(`Load shared award sources failed: ${error.message}`);
     for (const row of data || []) map.set(row.id, row);

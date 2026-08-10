@@ -322,6 +322,9 @@ export async function measureStage1R2RecoveryDrill({
         const actualLength = body.length;
         const actualContentType = cleanText(response?.ContentType).toLowerCase();
         const expectedContentType = object.contentType.toLowerCase();
+        const contentTypeMatches = object.scope === "manifest_source"
+          ? actualContentType === expectedContentType
+          : contentTypeFamily(actualContentType) === contentTypeFamily(expectedContentType);
         const verified =
           actualSha256 === object.sha256 &&
           actualLength === object.byteLength &&
@@ -329,7 +332,7 @@ export async function measureStage1R2RecoveryDrill({
             object.semanticLength === null ||
             measuredHash?.semanticLength === object.semanticLength
           ) &&
-          contentTypeFamily(actualContentType) === contentTypeFamily(expectedContentType);
+          contentTypeMatches;
         return {
           object_scope: object.scope,
           source_id: object.sourceId,
@@ -598,10 +601,11 @@ function validateR2Manifest(value, target) {
     const objectSha256 = requiredHash(object.sha256, "R2 object SHA-256");
     const byteLength = Number(object.byte_length);
     const hashMode = requiredText(object.hash_mode, "R2 object hash mode");
-    const contentType = requiredText(
+    const declaredContentType = requiredText(
       object.content_type,
       "R2 object content type",
-    ).toLowerCase();
+    );
+    const contentType = declaredContentType.toLowerCase();
     const semanticLength = object.semantic_length === null || object.semantic_length === undefined
       ? null
       : Number(object.semantic_length);
@@ -611,38 +615,19 @@ function validateR2Manifest(value, target) {
     const sourcePrefix = manifestSource && sourceUuidPattern.test(sourceId || "")
       ? `visual-snapshots/sources/${sourceId}/captures/`
       : null;
-    const sourcePathPattern = sourcePrefix
-      ? new RegExp(`^${escapeRegExp(sourcePrefix)}[0-9a-f]{32}/`)
-      : null;
     const sourceGenerationMatch = sourcePrefix
       ? objectKey.match(new RegExp(`^${escapeRegExp(sourcePrefix)}([0-9a-f]{32})/`))
       : null;
-    const expectedSourceFile = artifact === "page"
-      ? "page\\.jpg"
-      : artifact === "pdf"
-        ? "document\\.pdf"
-        : artifact === "text"
-          ? "text\\.txt"
-          : null;
+    const sourceArtifactContract = manifestSourceArtifactContract(artifact);
     const sourceBindingValid = Boolean(
       manifestSource
-      && sourcePathPattern
-      && expectedSourceFile
-      && new RegExp(`${sourcePathPattern.source}${expectedSourceFile}$`).test(objectKey)
+      && sourceGenerationMatch
+      && sourceArtifactContract
+      && objectKey === `${sourcePrefix}${sourceGenerationMatch[1]}/${sourceArtifactContract.fileName}`
       && !/(^|\/)latest(\/|$)/i.test(objectKey)
-      && (
-        artifact === "text"
-          ? hashMode === "utf8_text_single_trailing_newline_v1"
-            && Number.isSafeInteger(semanticLength)
-            && semanticLength >= 0
-            && contentTypeFamily(contentType) === "text/plain"
-          : hashMode === "raw_sha256"
-            && semanticLength === null
-            && (
-              (artifact === "page" && contentTypeFamily(contentType) === "image/jpeg")
-              || (artifact === "pdf" && contentTypeFamily(contentType) === "application/pdf")
-            )
-      )
+      && hashMode === "raw_sha256"
+      && semanticLength === null
+      && declaredContentType === sourceArtifactContract.contentType
     );
     const eventBindingValid = Boolean(
       publishedEvent
@@ -692,18 +677,12 @@ function validateR2Manifest(value, target) {
       [...(manifestSourceGroups.get(object.sourceId) || []), object],
     );
   }
-  const manifestSourceSetsValid = [...manifestSourceGroups.values()].every((entries) => {
-    const artifacts = entries.map((entry) => entry.artifact).sort();
-    const generations = new Set(entries.map((entry) => entry.generationId));
-    return entries.length === 2
-      && generations.size === 1
-      && (
-        artifacts.join(",") === "page,text"
-        || artifacts.join(",") === "pdf,text"
-      );
-  });
+  const manifestSourceSetsValid = [...manifestSourceGroups.values()]
+    .every(manifestSourceObjectSetValid);
   if (
-    manifest.schema_version !== "awardping.stage1.r2-verification-manifest.v2" ||
+    manifest.schema_version !== "awardping.stage1.r2-verification-manifest.v3" ||
+    manifest.artifact_bindings_schema
+      !== "awardping.r2.capture-artifact-bindings.v1" ||
     embeddedTarget.targetConfigHash !== target.targetConfigHash ||
     Number(manifest.unexpected_bucket_count) !== 0 ||
     Number(manifest.malformed_object_count) !== 0 ||
@@ -725,6 +704,67 @@ function validateR2Manifest(value, target) {
       "visual object-set hash",
     ),
   };
+}
+
+function manifestSourceArtifactContract(artifact) {
+  const fixed = {
+    page: { fileName: "page.jpg", contentType: "image/jpeg" },
+    thumb: { fileName: "thumb.jpg", contentType: "image/jpeg" },
+    pdf: { fileName: "document.pdf", contentType: "application/pdf" },
+    text: { fileName: "text.txt", contentType: "text/plain; charset=utf-8" },
+    meta: { fileName: "meta.json", contentType: "application/json; charset=utf-8" },
+    layout: { fileName: "layout.json", contentType: "application/json; charset=utf-8" },
+  };
+  if (fixed[artifact]) return fixed[artifact];
+  const page = artifact.match(/^expansion_state_(0[1-9]|[1-9][0-9]+)$/);
+  if (page) {
+    return {
+      fileName: `expansion-state-${page[1]}.jpg`,
+      contentType: "image/jpeg",
+    };
+  }
+  const layout = artifact.match(/^expansion_state_(0[1-9]|[1-9][0-9]+)_layout$/);
+  if (layout) {
+    return {
+      fileName: `expansion-state-${layout[1]}-layout.json`,
+      contentType: "application/json; charset=utf-8",
+    };
+  }
+  return null;
+}
+
+function manifestSourceObjectSetValid(entries) {
+  if (!entries.length) return false;
+  const generations = new Set(entries.map((entry) => entry.generationId));
+  const artifacts = new Set(entries.map((entry) => entry.artifact));
+  if (generations.size !== 1 || generations.has(null) || artifacts.size !== entries.length) {
+    return false;
+  }
+
+  const pdf = artifacts.has("pdf");
+  const required = pdf
+    ? ["meta", "pdf", "text"]
+    : ["meta", "page", "text", "thumb"];
+  if (required.some((artifact) => !artifacts.has(artifact))) return false;
+  if (pdf) return entries.length === required.length;
+  if (artifacts.has("pdf")) return false;
+
+  const expansionPages = new Set();
+  const expansionLayouts = new Set();
+  for (const artifact of artifacts) {
+    if (required.includes(artifact) || artifact === "layout") continue;
+    const page = artifact.match(/^expansion_state_(0[1-9]|[1-9][0-9]+)$/);
+    const layout = artifact.match(/^expansion_state_(0[1-9]|[1-9][0-9]+)_layout$/);
+    if (page) expansionPages.add(Number(page[1]));
+    else if (layout) expansionLayouts.add(Number(layout[1]));
+    else return false;
+  }
+  if (expansionPages.size !== expansionLayouts.size) return false;
+  if (expansionPages.size > 0 && !artifacts.has("layout")) return false;
+  const indexes = [...expansionPages].sort((left, right) => left - right);
+  return indexes.every(
+    (index, offset) => index === offset + 1 && expansionLayouts.has(index),
+  );
 }
 
 function measureR2ObjectHash(body, object) {

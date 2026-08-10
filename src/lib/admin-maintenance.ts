@@ -1183,7 +1183,7 @@ async function loadActiveSourcesForQuality(
     const { data, error } = await admin
       .from("shared_award_sources")
       .select(
-        "url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, shared_awards!inner(status)",
+        "url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, shared_awards!inner(status)",
       )
       .eq("shared_awards.status", "active")
       .eq("admin_review_status", status)

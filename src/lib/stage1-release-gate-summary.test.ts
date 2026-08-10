@@ -5,6 +5,7 @@ import type {
 } from "@/lib/admin-worker-operations";
 import type { Database } from "@/lib/database.types";
 import {
+  stage1ReleaseArtifactKinds,
   stage1ReleaseManifestRoles,
   summarizeStage1BetaReleaseGate,
   type Stage1ReleaseGateInput,
@@ -28,11 +29,33 @@ describe("summarizeStage1BetaReleaseGate", () => {
     const summary = summarizeStage1BetaReleaseGate(readyInput());
 
     expect(summary.state).toBe("READY");
+    expect(summary.phase).toBe("active_ready");
     expect(summary.registryCount).toBe(25);
     expect(summary.visibleCount).toBe(25);
     expect(summary.awards).toHaveLength(25);
     expect(summary.awards.every((award) => award.status === "ready")).toBe(true);
     expect(summary.release.atomic).toBe(true);
+    expect(summary.safeNextAction).toContain("Stage 1 is active");
+    expect(summary.safeNextAction).not.toContain("activation step");
+    expect(stage1ReleaseArtifactKinds).toEqual([
+      "hosted_runtime_identity",
+      "rollback_drill",
+      "non_cohort_leak_crawl",
+      "r2_recovery_drill",
+      "visual_crop_coverage",
+    ]);
+    expect(summary.acceptanceArtifacts).toHaveLength(5);
+    expect(summary.acceptanceArtifacts.every((artifact) => artifact.status === "pass")).toBe(true);
+    expect(summary.authoritativeGate).toMatchObject({
+      status: "pass",
+      databaseState: "HOLD",
+      currentValidArtifactBindings: 5,
+      vaultApiSurfaceSafe: true,
+      serviceRoleDataApiProfileBlocked: true,
+    });
+    expect(summary.authoritativeGate.failures).toEqual([
+      "release_state_not_closed_or_mismatched",
+    ]);
     expect(summary.nightly).toMatchObject({
       status: "pass",
       acceptance: {
@@ -55,13 +78,65 @@ describe("summarizeStage1BetaReleaseGate", () => {
       release_epoch: null,
       release_state: "pending",
     }));
+    input.authoritativeGate!.state = "READY";
+    input.authoritativeGate!.failures = [];
 
     const summary = summarizeStage1BetaReleaseGate(input);
 
     expect(summary.state).toBe("READY");
+    expect(summary.phase).toBe("preactivation_ready");
     expect(summary.visibleCount).toBe(0);
     expect(summary.release.atomic).toBe(false);
+    expect(summary.safeNextAction).toContain("cohort remains private");
+    expect(summary.safeNextAction).toContain("atomic activation step");
     expect(summary.awards.every((award) => award.cohortReady)).toBe(true);
+  });
+
+  it("does not tolerate the post-activation SQL failure before atomic activation", () => {
+    const input = readyInput();
+    input.registry = input.registry.map((row) => ({ ...row, release_epoch: null }));
+    input.effectivePublication = input.effectivePublication.map((row) => ({
+      ...row,
+      effectively_verified: false,
+      effective_reason: "cohort_release_pending",
+      release_epoch: null,
+      release_state: "pending",
+    }));
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.authoritativeGate.status).toBe("hold");
+    expect(summary.authoritativeGate.detail).toContain(
+      "pre-activation database gate is not READY with zero failures",
+    );
+  });
+
+  it("holds an atomic verified release when the database reports any extra failure", () => {
+    const input = readyInput();
+    input.authoritativeGate!.failures.push("legacy_contact_ciphertext_not_safe");
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.authoritativeGate.status).toBe("hold");
+    expect(summary.authoritativeGate.detail).toContain(
+      "beyond the single expected post-activation release-state failure",
+    );
+    expect(summary.authoritativeGate.failures).toContain(
+      "legacy_contact_ciphertext_not_safe",
+    );
+  });
+
+  it("holds an inconsistent database HOLD with no named failures", () => {
+    const input = readyInput();
+    input.authoritativeGate!.failures = [];
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.authoritativeGate.status).toBe("hold");
+    expect(summary.authoritativeGate.detail).toContain("Database gate reports HOLD");
   });
 
   it.each([
@@ -406,7 +481,117 @@ describe("summarizeStage1BetaReleaseGate", () => {
     expect(summary.state).toBe("HOLD");
     expect(summary.acceptanceArtifacts.find((artifact) =>
       artifact.kind === "non_cohort_leak_crawl")?.status).toBe("hold");
-    expect(summary.blockers.join(" ")).toContain("no retained release-bound proof artifact");
+    expect(summary.blockers.join(" ")).toContain("does not resolve to its exact retained artifact row");
+  });
+
+  it("does not trust an unbound newer artifact when the authoritative ID is missing", () => {
+    const input = readyInput();
+    input.authoritativeGate!.artifactBindings.non_cohort_leak_crawl = {
+      artifactId: null,
+      evidenceHash: null,
+    };
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.authoritativeGate.currentValidArtifactBindings).toBe(4);
+    expect(summary.acceptanceArtifacts.find((artifact) =>
+      artifact.kind === "non_cohort_leak_crawl")?.detail).toContain(
+      "no database-authoritative current-valid artifact binding",
+    );
+  });
+
+  it("holds when a retained artifact evidence hash differs from its authoritative binding", () => {
+    const input = readyInput();
+    input.authoritativeGate!.artifactBindings.rollback_drill.evidenceHash =
+      "9".repeat(64);
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.authoritativeGate.currentValidArtifactBindings).toBe(4);
+    expect(summary.acceptanceArtifacts.find((artifact) =>
+      artifact.kind === "rollback_drill")?.detail).toContain(
+      "does not match the database-authoritative current-valid ID and evidence hash",
+    );
+  });
+
+  it("fails closed when the authoritative Vault snapshot is unavailable", () => {
+    const input = readyInput();
+    input.authoritativeGate = null;
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("UNKNOWN");
+    expect(summary.authoritativeGate.status).toBe("unknown");
+    expect(summary.acceptanceArtifacts.every((artifact) =>
+      artifact.status === "unknown")).toBe(true);
+  });
+
+  it.each([
+    ["API surface", "apiSurfaceSafe"],
+    ["service-role Data API profile", "serviceRoleDataApiProfileBlocked"],
+  ] as const)("holds when authoritative Vault %s safety is false", (_label, key) => {
+    const input = readyInput();
+    input.authoritativeGate!.vaultSecurity[key] = false;
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.authoritativeGate.status).toBe("hold");
+    expect(summary.blockers.join(" ")).toContain("Vault");
+  });
+
+  it.each([
+    ["missing", (input: Stage1ReleaseGateInput) => {
+      delete input.releaseArtifacts.hosted_runtime_identity;
+    }],
+    ["stale", (input: Stage1ReleaseGateInput) => {
+      const hosted = requiredHostedRuntimeArtifact(input);
+      input.releaseArtifacts.hosted_runtime_identity = {
+        ...hosted,
+        started_at: "2026-07-17T10:50:00.000Z",
+        completed_at: "2026-07-17T10:59:00.000Z",
+        valid_until: "2026-07-17T12:30:00.000Z",
+        evidence: {
+          ...(hosted.evidence as Record<string, unknown>),
+          measured_at: "2026-07-17T10:59:00.000Z",
+          observed_at: "2026-07-17T10:59:00.000Z",
+        },
+      };
+    }],
+    ["malformed", (input: Stage1ReleaseGateInput) => {
+      const hosted = requiredHostedRuntimeArtifact(input);
+      input.releaseArtifacts.hosted_runtime_identity = {
+        ...hosted,
+        evidence: {
+          ...(hosted.evidence as Record<string, unknown>),
+          vault_profile_http_status: 200,
+          vault_profile_exposed: true,
+        },
+      };
+    }],
+    ["bound to the wrong revision", (input: Stage1ReleaseGateInput) => {
+      const hosted = requiredHostedRuntimeArtifact(input);
+      input.releaseArtifacts.hosted_runtime_identity = {
+        ...hosted,
+        app_revision: "revision-b",
+        evidence: {
+          ...(hosted.evidence as Record<string, unknown>),
+          app_revision: "revision-b",
+        },
+      };
+    }],
+  ])("holds when the hosted runtime proof is %s", (_label, mutate) => {
+    const input = readyInput();
+    mutate(input);
+
+    const summary = summarizeStage1BetaReleaseGate(input);
+
+    expect(summary.state).toBe("HOLD");
+    expect(summary.acceptanceArtifacts.find((artifact) =>
+      artifact.kind === "hosted_runtime_identity")?.status).toBe("hold");
+    expect(summary.blockers.join(" ")).toContain("Hosted runtime and Auth identity");
   });
 
   it("holds when a current R2 recovery shard reports a refused restore", () => {
@@ -465,6 +650,7 @@ function readyInput(): Stage1ReleaseGateInput {
   );
   const visualNightly = buildVisualNightlyReport(visualWorkerRuns, new Date(now));
   if (!visualNightly) throw new Error("Ready fixture requires a nightly report.");
+  const releaseArtifacts = releaseArtifactRows();
   return {
     now,
     registry,
@@ -500,7 +686,7 @@ function readyInput(): Stage1ReleaseGateInput {
       policy_hash: "policy-a",
       batch_policy_hash: "batch-a",
       suppression_policy_hash: "suppression-a",
-      matcher_hash: "matcher-a",
+      matcher_hash: "d".repeat(64),
     },
     migrationIdentity: {
       status: "match",
@@ -511,8 +697,38 @@ function readyInput(): Stage1ReleaseGateInput {
     budgets: budgetRows(),
     lanes: downstreamLaneRows(),
     evidenceRecovery: recoveryEvidence(),
-    releaseArtifacts: releaseArtifactRows(),
+    authoritativeGate: authoritativeGateSnapshot(releaseArtifacts),
+    releaseArtifacts,
     loadErrors: [],
+  };
+}
+
+function authoritativeGateSnapshot(
+  releaseArtifacts: Stage1ReleaseGateInput["releaseArtifacts"],
+): NonNullable<Stage1ReleaseGateInput["authoritativeGate"]> {
+  return {
+    schemaVersion: "stage1-release-gate-acceptance-v2",
+    state: "HOLD",
+    stateHash: "8".repeat(64),
+    generatedAt: now,
+    failures: ["release_state_not_closed_or_mismatched"],
+    productionTargetConfigured: true,
+    vaultSecurity: {
+      apiSurfaceSafe: true,
+      serviceRoleDataApiProfileBlocked: true,
+      profileHttpStatus: 406,
+      profilePostgrestCode: "PGRST106",
+    },
+    artifactBindings: Object.fromEntries(
+      stage1ReleaseArtifactKinds.map((kind) => {
+        const artifact = releaseArtifacts[kind];
+        if (!artifact) throw new Error(`Ready fixture requires ${kind}.`);
+        return [kind, {
+          artifactId: artifact.id,
+          evidenceHash: artifact.evidence_hash,
+        }];
+      }),
+    ) as NonNullable<Stage1ReleaseGateInput["authoritativeGate"]>["artifactBindings"],
   };
 }
 
@@ -553,6 +769,53 @@ function releaseArtifactRows(): Stage1ReleaseGateInput["releaseArtifacts"] {
     actor: "release-operator@example.edu",
   };
   return {
+    hosted_runtime_identity: {
+      ...shared,
+      id: "artifact-hosted-runtime",
+      artifact_kind: "hosted_runtime_identity",
+      environment: "production",
+      started_at: "2026-07-17T11:20:00.000Z",
+      completed_at: "2026-07-17T11:30:00.000Z",
+      valid_until: "2026-07-17T12:30:00.000Z",
+      evidence: {
+        producer_contract: "awardping.stage1.release-evidence-producer.v2",
+        producer_source_sha256: "c".repeat(64),
+        measurement_id: "11111111-1111-4111-8111-111111111111",
+        measured_at: "2026-07-17T11:30:00.000Z",
+        target_config_version: 1,
+        target_config_hash: "e".repeat(64),
+        production_app_origin: "https://awardping.example",
+        supabase_origin: "https://abcdefghijklmnopqrst.supabase.co",
+        supabase_project_ref: "abcdefghijklmnopqrst",
+        schema_version: "awardping.stage1.hosted-runtime-identity.v2",
+        measurement_method: "direct_no_redirect_https_and_vault_profile_get_v2",
+        base_url: "https://awardping.example",
+        identity_url: "https://awardping.example/api/monitoring-policy-identity",
+        auth_settings_url: "https://abcdefghijklmnopqrst.supabase.co/auth/v1/settings",
+        vault_profile_url:
+          "https://abcdefghijklmnopqrst.supabase.co/rest/v1/decrypted_secrets?select=id&limit=1",
+        deployment_provider: "vercel",
+        deployment_project_id: "prj_awardping",
+        app_revision: "revision-a",
+        policy_hash: "policy-a",
+        batch_policy_hash: "batch-a",
+        suppression_policy_hash: "suppression-a",
+        matcher_hash: "d".repeat(64),
+        disable_signup: true,
+        identity_http_status: 200,
+        auth_http_status: 200,
+        vault_profile_http_status: 406,
+        vault_profile_postgrest_code: "PGRST106",
+        vault_profile_exposed: false,
+        identity_redirected: false,
+        auth_redirected: false,
+        vault_profile_redirected: false,
+        identity_response_sha256: "f".repeat(64),
+        auth_response_sha256: "1".repeat(64),
+        vault_profile_response_sha256: "2".repeat(64),
+        observed_at: "2026-07-17T11:30:00.000Z",
+      },
+    },
     rollback_drill: {
       ...shared,
       id: "artifact-rollback",
@@ -601,6 +864,12 @@ function releaseArtifactRows(): Stage1ReleaseGateInput["releaseArtifacts"] {
       },
     },
   };
+}
+
+function requiredHostedRuntimeArtifact(input: Stage1ReleaseGateInput) {
+  const artifact = input.releaseArtifacts.hosted_runtime_identity;
+  if (!artifact) throw new Error("Ready fixture requires hosted runtime evidence.");
+  return artifact;
 }
 
 function registryRow(rank: number): RegistryRow {
@@ -724,7 +993,7 @@ function workerRun(shardNumber: number, monitoringDate: string): WorkerRun {
       monitoring_policy_bundle: { hash: "policy-a" },
       monitoring_policy: { hash: "batch-a" },
       suppression_policy: { hash: "suppression-a" },
-      matcher_digest: "matcher-a",
+      matcher_digest: "d".repeat(64),
       run_identity: {
         workflow: "visual_capture",
         trigger: "scheduled",

@@ -81,6 +81,8 @@ import {
   SOURCE_BACKFILL_APPROVAL_REQUEST_REASON,
   SOURCE_BACKFILL_MANUAL_STATUS_REASON,
 } from "./lib/source-backfill-intake.mjs";
+import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
+import { sourceMonitoringRestoreMarker } from "./lib/source-quality.mjs";
 import {
   closeSupabaseServiceTransport,
   createSupabaseServiceClient,
@@ -228,6 +230,9 @@ const report = {
   source_acquisitions_baseline_only: 0,
   source_acquisitions_manual_review: 0,
   live_first_capture_preflight_manual_review: 0,
+  live_first_capture_server_downgrade_quarantined: 0,
+  live_first_capture_server_downgrade_review_state_preserved: 0,
+  stale_admin_review_plans_skipped: 0,
   initial_document_materialization_attempted: 0,
   initial_document_materialization_subprocess_started: 0,
   initial_document_materialization_candidate_existing: 0,
@@ -2679,21 +2684,20 @@ async function finalizeReviewedRequest(
   ) {
     const dispositionReason = cleanNullable(sourceWrite.acquisition.reason)
       || "source_acquisition_requires_manual_review";
+    let sourceQuarantine = {
+      quarantined: false,
+      preserved: false,
+      reason: "dry_run",
+    };
     if (apply) {
       const quarantineMessage =
         `Unexpected server downgrade blocked first-capture publication (${dispositionReason}). ` +
         "The source remains review_later until its retained intake evidence is repaired.";
-      const { error: sourceQuarantineError } = await supabase
-        .from("shared_award_sources")
-        .update({
-          admin_review_status: "review_later",
-          last_error: quarantineMessage,
-          updated_at: now,
-        })
-        .eq("id", source.id);
-      if (sourceQuarantineError) {
-        throw new Error(`Quarantine downgraded live source failed: ${sourceQuarantineError.message}`);
-      }
+      sourceQuarantine = await quarantineDowngradedLiveSource({
+        source,
+        quarantineMessage,
+        reviewedAt: now,
+      });
     }
     await finalizeLiveFirstCaptureManualReview({
       row,
@@ -2702,6 +2706,8 @@ async function finalizeReviewedRequest(
       now,
       dispositionReason,
       source,
+      sourceInserted: sourceWrite.inserted,
+      sourceQuarantine,
       phase: "server_downgrade",
     });
     return;
@@ -2770,12 +2776,16 @@ async function finalizeLiveFirstCaptureManualReview({
   now,
   dispositionReason,
   source = null,
+  sourceInserted = false,
+  sourceQuarantine = null,
   phase,
 }) {
   const reason = cleanNullable(dispositionReason) || "live_first_capture_requires_manual_review";
-  const sourceDisposition = source?.id
-    ? "The newly inserted source was quarantined as review_later."
-    : "No source was registered from this request.";
+  const sourceDisposition = liveFirstCaptureSourceDisposition({
+    source,
+    sourceInserted,
+    sourceQuarantine,
+  });
   const message =
     `The requested live first-capture notification failed safe evidence or provenance validation ` +
     `(${reason}). ${sourceDisposition} Repair the retained request evidence before retrying; ` +
@@ -2786,6 +2796,9 @@ async function finalizeLiveFirstCaptureManualReview({
     source_id: source?.id || null,
     stage: `live_first_capture_${phase}`,
     message,
+    source_quarantined: sourceQuarantine?.quarantined === true,
+    source_review_state_preserved: sourceQuarantine?.preserved === true,
+    source_review_disposition_reason: cleanNullable(sourceQuarantine?.reason),
     solution:
       "Inspect the captured final URL, PDF hash, exact evidence quote, parent source, and worker/request provenance. Retry the retained evidence after repair; request another paid review only if the retained intake bytes themselves are invalid.",
   });
@@ -3287,17 +3300,94 @@ async function registerAcceptedSource(awardId, sourceLike, row, {
   if (inserted && !registration.acquisition_id) {
     throw new Error("A newly inserted source registration did not create immutable acquisition provenance.");
   }
+  const registeredSource = await loadRegisteredSharedSourceReviewState(registration.source_id);
+  if (
+    registeredSource.shared_award_id !== awardId
+    || registeredSource.url !== sourceLike.url
+  ) {
+    throw new Error("Registered source identity no longer matches the accepted intake source.");
+  }
 
   return {
-    source: {
-      id: registration.source_id,
-      shared_award_id: awardId,
-      url: sourceLike.url,
-      title: sourceLike.title,
-    },
+    source: registeredSource,
     inserted,
     acquisition,
   };
+}
+
+async function loadRegisteredSharedSourceReviewState(sourceId) {
+  const { data, error } = await supabase
+    .from("shared_award_sources")
+    .select(
+      "id,shared_award_id,url,title,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by",
+    )
+    .eq("id", sourceId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Load registered source review state failed: ${error.message}`);
+  }
+  if (!data) throw new Error("Registered source review state was not found.");
+  return data;
+}
+
+async function quarantineDowngradedLiveSource({ source, quarantineMessage, reviewedAt }) {
+  if (
+    source.admin_review_status !== "open"
+    || String(source.admin_review_note || "").includes(sourceMonitoringRestoreMarker)
+  ) {
+    report.live_first_capture_server_downgrade_review_state_preserved += 1;
+    return {
+      quarantined: false,
+      preserved: true,
+      reason: String(source.admin_review_note || "").includes(sourceMonitoringRestoreMarker)
+        ? "operator_monitoring_restore_preserved"
+        : `source_review_state_${source.admin_review_status || "unknown"}_preserved`,
+    };
+  }
+
+  let mutation = supabase
+    .from("shared_award_sources")
+    .update({
+      admin_review_status: "review_later",
+      admin_review_note: quarantineMessage,
+      admin_reviewed_at: reviewedAt,
+      admin_reviewed_by: "awardping-source-intake",
+      last_error: quarantineMessage,
+      updated_at: reviewedAt,
+    })
+    .eq("id", source.id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
+  if (error) {
+    throw new Error(`Quarantine downgraded live source failed: ${error.message}`);
+  }
+  if (!data) {
+    report.live_first_capture_server_downgrade_review_state_preserved += 1;
+    report.stale_admin_review_plans_skipped += 1;
+    return {
+      quarantined: false,
+      preserved: true,
+      reason: "stale_admin_review_plan_preserved",
+    };
+  }
+
+  report.live_first_capture_server_downgrade_quarantined += 1;
+  return {
+    quarantined: true,
+    preserved: false,
+    reason: "server_downgrade_quarantined",
+  };
+}
+
+function liveFirstCaptureSourceDisposition({ source, sourceInserted, sourceQuarantine }) {
+  if (!source?.id) return "No source was registered from this request.";
+  if (sourceQuarantine?.quarantined === true) {
+    return `${sourceInserted ? "The newly inserted source" : "The existing source"} was quarantined as review_later.`;
+  }
+  if (sourceQuarantine?.preserved === true) {
+    return "The source's current operator/workflow review state was preserved; no automated quarantine was applied.";
+  }
+  return "Dry run only: no source review state was changed.";
 }
 
 async function markBatchRowsFailed(batchName, message) {
@@ -3390,6 +3480,11 @@ function workerMetadata() {
       source_acquisitions_baseline_only: report.source_acquisitions_baseline_only,
       source_acquisitions_manual_review: report.source_acquisitions_manual_review,
       live_first_capture_preflight_manual_review: report.live_first_capture_preflight_manual_review,
+      live_first_capture_server_downgrade_quarantined:
+        report.live_first_capture_server_downgrade_quarantined,
+      live_first_capture_server_downgrade_review_state_preserved:
+        report.live_first_capture_server_downgrade_review_state_preserved,
+      stale_admin_review_plans_skipped: report.stale_admin_review_plans_skipped,
       initial_document_materialization_attempted: report.initial_document_materialization_attempted,
       initial_document_materialization_subprocess_started:
         report.initial_document_materialization_subprocess_started,

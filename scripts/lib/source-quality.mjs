@@ -5,6 +5,10 @@ import {
 
 export { sourceBaselineFacts } from "./source-ai-review-status.mjs";
 
+export const sourceMonitoringRestoreMarker = "monitoring_restore_v1";
+export const sourceMonitoringRestoreDecisionReason =
+  "operator_review_restored_ai_unclear_monitoring_only";
+
 const institutionalDiscoveryHosts = new Set([
   "fellowship-finder.grad.illinois.edu",
   "onsa.asu.edu",
@@ -120,6 +124,9 @@ export function sourceQualityDecision(source, { purpose }) {
   if (purpose === "public" || purpose === "facts" || purpose === "monitoring") {
     const review = explainSourceAiReviewStatus(source);
     if (purpose === "monitoring" && !review.canBeMonitored) {
+      if (hasLaterExplicitOperatorMonitoringRestore(source, metadata, review)) {
+        return allow(sourceMonitoringRestoreDecisionReason);
+      }
       return reject(`ai_review_${review.status}_${review.reason}`);
     }
     if ((purpose === "public" || purpose === "facts") && !review.canContributePublicFacts) {
@@ -153,6 +160,42 @@ export function sourceQualityDecision(source, { purpose }) {
   }
 
   return allow();
+}
+
+function hasLaterExplicitOperatorMonitoringRestore(source, metadata, review) {
+  if (
+    source?.admin_review_status !== "open" ||
+    review?.status !== "reviewed_unclear_needs_manual_review"
+  ) {
+    return false;
+  }
+
+  const actor = cleanText(source.admin_reviewed_by);
+  const note = cleanText(source.admin_review_note);
+  const actorIsAuthenticatedAdmin =
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(actor) &&
+    note.includes(sourceMonitoringRestoreMarker);
+  const actorIsRecordedStage1Operator =
+    /^codex-stage1-[a-z0-9-]+$/.test(cleanKey(actor)) &&
+    /\b(?:explicit|approved|restored)\b/i.test(note);
+  if (!actorIsAuthenticatedAdmin && !actorIsRecordedStage1Operator) return false;
+
+  const operatorReviewedAt = timestampMs(source.admin_reviewed_at);
+  if (operatorReviewedAt === null) return false;
+
+  const baselineFactsMetadata = objectValue(metadata.baseline_facts_metadata);
+  const coverageBackfill = objectValue(metadata.ai_review_coverage_backfill);
+  const aiReviewTimestamps = [
+    source.page_metadata_generated_at,
+    metadata.generated_at,
+    baselineFactsMetadata.extracted_at,
+    coverageBackfill.at,
+  ]
+    .map(timestampMs)
+    .filter((value) => value !== null);
+  if (!aiReviewTimestamps.length) return false;
+
+  return operatorReviewedAt > Math.max(...aiReviewTimestamps);
 }
 
 function stage1BaselineMonitoringApprovalStatus(source, metadata) {
@@ -425,6 +468,15 @@ function stringArray(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || ""));
   if (typeof value === "string") return value.split(/[,;|]/);
   return [];
+}
+
+function cleanText(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function timestampMs(value) {
+  const parsed = Date.parse(cleanText(value));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function cleanKey(value) {
