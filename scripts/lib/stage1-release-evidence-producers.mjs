@@ -322,9 +322,7 @@ export async function measureStage1R2RecoveryDrill({
         const actualLength = body.length;
         const actualContentType = cleanText(response?.ContentType).toLowerCase();
         const expectedContentType = object.contentType.toLowerCase();
-        const contentTypeMatches = object.scope === "manifest_source"
-          ? actualContentType === expectedContentType
-          : contentTypeFamily(actualContentType) === contentTypeFamily(expectedContentType);
+        const contentTypeMatches = actualContentType === expectedContentType;
         const verified =
           actualSha256 === object.sha256 &&
           actualLength === object.byteLength &&
@@ -595,7 +593,9 @@ function validateR2Manifest(value, target) {
     const object = objectValue(value);
     const scope = requiredText(object.scope, "R2 object scope");
     const sourceId = cleanText(object.source_id).toLowerCase() || null;
+    const candidateId = cleanText(object.candidate_id).toLowerCase() || null;
     const artifact = requiredText(object.artifact, "R2 object artifact");
+    const side = cleanText(object.side);
     const objectKey = requiredText(object.object_key, "R2 object key");
     const bucket = requiredText(object.bucket, "R2 object bucket");
     const objectSha256 = requiredHash(object.sha256, "R2 object SHA-256");
@@ -621,6 +621,8 @@ function validateR2Manifest(value, target) {
     const sourceArtifactContract = manifestSourceArtifactContract(artifact);
     const sourceBindingValid = Boolean(
       manifestSource
+      && candidateId === null
+      && side === "current"
       && sourceGenerationMatch
       && sourceArtifactContract
       && objectKey === `${sourcePrefix}${sourceGenerationMatch[1]}/${sourceArtifactContract.fileName}`
@@ -632,14 +634,18 @@ function validateR2Manifest(value, target) {
     const eventBindingValid = Boolean(
       publishedEvent
       && sourceId === null
-      && objectKey.startsWith("visual-snapshots/published/")
+      && uuidPattern.test(candidateId || "")
       && !/(^|\/)latest(\/|$)/i.test(objectKey)
       && hashMode === "raw_sha256"
       && semanticLength === null
-      && (
-        contentTypeFamily(contentType).startsWith("image/")
-        || contentTypeFamily(contentType) === "application/json"
-      )
+      && publishedEventArtifactBindingValid({
+        artifact,
+        candidateId,
+        contentType: declaredContentType,
+        objectKey,
+        sha256: objectSha256,
+        side,
+      })
     );
     if (
       bucket !== target.r2Bucket ||
@@ -652,6 +658,7 @@ function validateR2Manifest(value, target) {
     return {
       scope,
       sourceId,
+      candidateId,
       artifact,
       bucket,
       objectKey,
@@ -687,6 +694,7 @@ function validateR2Manifest(value, target) {
     Number(manifest.unexpected_bucket_count) !== 0 ||
     Number(manifest.malformed_object_count) !== 0 ||
     Number(manifest.manifest_binding_error_count) !== 0 ||
+    Number(manifest.duplicate_object_key_count) !== 0 ||
     Number(manifest.visual_object_count) !== objects.length ||
     Number(manifest.published_event_object_count) !== publishedEventObjectCount ||
     Number(manifest.manifest_source_object_count) !== manifestSourceObjectCount ||
@@ -704,6 +712,55 @@ function validateR2Manifest(value, target) {
       "visual object-set hash",
     ),
   };
+}
+
+function publishedEventArtifactBindingValid({
+  artifact,
+  candidateId,
+  contentType,
+  objectKey,
+  sha256,
+  side,
+}) {
+  if (side !== "previous" && side !== "current") return false;
+  const prefix = `visual-snapshots/published/${candidateId}/${side}/`;
+  if (!objectKey.startsWith(prefix)) return false;
+  const match = objectKey.slice(prefix.length).match(
+    /^([A-Za-z0-9._-]+)\/([0-9a-f]{64})[.]([a-z0-9]+)$/,
+  );
+  if (!match || match[2] !== sha256) return false;
+  const [, role, , extension] = match;
+
+  switch (artifact) {
+    case "full":
+      return (
+        contentType === "application/pdf"
+        && role === "document"
+        && extension === "pdf"
+      ) || (
+        contentType === "image/jpeg"
+        && (role === "main-full" || /^state-[A-Za-z0-9._-]+$/.test(role))
+        && extension === "jpg"
+      );
+    case "crop":
+      return contentType === "image/jpeg"
+        && role === "changed-section-crop"
+        && extension === "jpg";
+    case "layout":
+      return contentType === "application/json; charset=utf-8"
+        && /^geometry-[A-Za-z0-9._-]+$/.test(role)
+        && extension === "json";
+    case "metadata":
+      return contentType === "application/json; charset=utf-8"
+        && extension === "json"
+        && (
+          role === "metadata"
+          || role === "recovery-metadata"
+          || (role === "first-observation-attestation" && side === "previous")
+        );
+    default:
+      return false;
+  }
 }
 
 function manifestSourceArtifactContract(artifact) {
@@ -1019,10 +1076,6 @@ function r2AccessRefused(error) {
   const status = Number(error?.$metadata?.httpStatusCode);
   const code = cleanText(error?.name || error?.Code).toLowerCase();
   return status === 401 || status === 403 || /accessdenied|forbidden|unauthorized/.test(code);
-}
-
-function contentTypeFamily(value) {
-  return cleanText(value).toLowerCase().split(";", 1)[0];
 }
 
 function escapeRegExp(value) {

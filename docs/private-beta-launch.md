@@ -302,6 +302,16 @@ then compared with the semantic `text_hash`. A new published event, changed
 manifest binding, malformed source generation, or changed object-set hash
 invalidates an otherwise age-current signature until the drill is rerun.
 
+Current v3 published-event recovery enumerates only the top-level `full`,
+`metadata`, `layout`, and `crop` slots. It does not yet enumerate the additional
+immutable objects referenced by `main_full`, `thumbnail`, `text`, or every
+`states[].image` and `states[].geometry` entry. Those nested references can
+legitimately alias a selected top-level object, so the future expansion must
+normalize exact bucket/key aliases while still verifying every distinct object.
+Until that complete referenced-object enumeration is implemented and tested, an
+R2 drill pass is necessary but not sufficient for release and the Stage 1 gate
+must remain `HOLD`.
+
 Snapshots captured before `latest_metadata.text_object_bytes` was introduced
 cannot substantiate the text object contract and remain fail-closed. Recapture
 or repair those Stage 1 source generations before building their reviewed

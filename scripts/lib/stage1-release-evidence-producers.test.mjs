@@ -9,6 +9,7 @@ import {
   stage1ReleaseEvidenceProducerSourceSha256,
   validateStage1ReleaseProducerTarget,
 } from "./stage1-release-evidence-producers.mjs";
+import { publishedVisualEvidenceObjectKey } from "./visual-event-evidence.mjs";
 
 const target = Object.freeze({
   schema_version: "awardping.stage1.production-target.v1",
@@ -27,6 +28,7 @@ const target = Object.freeze({
 });
 const measuredAt = "2026-07-16T18:00:00.000Z";
 const measurementId = "12345678-1234-4234-9234-123456789abc";
+const publishedEventCandidateId = "22222222-2222-4222-8222-222222222222";
 
 describe("Stage 1 producer-owned release measurements", () => {
   it("accepts only the exact administrator-owned production identity", () => {
@@ -185,7 +187,7 @@ describe("Stage 1 producer-owned release measurements", () => {
       target,
       manifest,
       appRevision: "revision-current",
-      r2Client: r2Client(bytes),
+      r2Client: r2Client(bytes, manifest.objects[0].object_key),
       measuredAt,
       measurementId,
     });
@@ -205,7 +207,7 @@ describe("Stage 1 producer-owned release measurements", () => {
       target,
       manifest,
       appRevision: "revision-current",
-      r2Client: r2Client(Buffer.from("tampered")),
+      r2Client: r2Client(Buffer.from("tampered"), manifest.objects[0].object_key),
       measuredAt,
       measurementId,
     });
@@ -220,7 +222,7 @@ describe("Stage 1 producer-owned release measurements", () => {
       failures: [{
         object_scope: "published_event",
         artifact: "crop",
-        object_key: "visual-snapshots/published/event/current/crop.png",
+        object_key: manifest.objects[0].object_key,
         outcome: "mismatch",
         expected_sha256: createHash("sha256").update(bytes).digest("hex"),
         actual_sha256: createHash("sha256").update("tampered").digest("hex"),
@@ -231,6 +233,20 @@ describe("Stage 1 producer-owned release measurements", () => {
     );
     expect(mismatched.evidence).not.toHaveProperty("failures");
     expect(mismatched.evidence).not.toHaveProperty("diagnostics");
+
+    const mimeMismatched = await measureStage1R2RecoveryDrill({
+      target,
+      manifest,
+      appRevision: "revision-current",
+      r2Client: mappedR2Client(new Map([[
+        manifest.objects[0].object_key,
+        { body: bytes, contentType: "image/jpeg; charset=binary" },
+      ]])),
+      measuredAt,
+      measurementId,
+    });
+    expect(mimeMismatched.status).toBe("failed");
+    expect(mimeMismatched.evidence.failed_objects).toBe(1);
 
     const refused = await measureStage1R2RecoveryDrill({
       target,
@@ -253,11 +269,142 @@ describe("Stage 1 producer-owned release measurements", () => {
       failure_count: 1,
     });
     expect(refused.diagnostics.failures[0]).toMatchObject({
-      object_key: "visual-snapshots/published/event/current/crop.png",
+      object_key: manifest.objects[0].object_key,
       outcome: "refused",
       error_code: "AccessDenied",
     });
     expect(JSON.stringify(refused.diagnostics)).not.toContain("secret-bearing");
+  });
+
+  it("accepts only exact generator-bound published-event role contracts", async () => {
+    const contracts = [
+      ["full", "previous", "main-full", "image/jpeg", "jpg"],
+      ["full", "current", "state-expansion-state-01", "image/jpeg", "jpg"],
+      ["full", "current", "document", "application/pdf", "pdf"],
+      ["crop", "current", "changed-section-crop", "image/jpeg", "jpg"],
+      ["layout", "current", "geometry-main", "application/json; charset=utf-8", "json"],
+      ["layout", "current", "geometry-expansion-state-01", "application/json; charset=utf-8", "json"],
+      ["metadata", "current", "metadata", "application/json; charset=utf-8", "json"],
+      ["metadata", "previous", "recovery-metadata", "application/json; charset=utf-8", "json"],
+      ["metadata", "previous", "first-observation-attestation", "application/json; charset=utf-8", "json"],
+    ];
+
+    for (const [artifact, side, role, contentType, extension] of contracts) {
+      const bytes = Buffer.from(`immutable ${artifact} ${role}\n`, "utf8");
+      const manifest = r2Manifest(bytes, {
+        artifact,
+        side,
+        role,
+        contentType,
+        extension,
+      });
+      const object = manifest.objects[0];
+      const measured = await measureStage1R2RecoveryDrill({
+        target,
+        manifest,
+        appRevision: "revision-current",
+        r2Client: mappedR2Client(new Map([[
+          object.object_key,
+          { body: bytes, contentType },
+        ]])),
+        measuredAt,
+        measurementId,
+      });
+      expect(measured.status, `${artifact}:${role}`).toBe("passed");
+    }
+  });
+
+  it("rejects malformed, unbound, wrong-role, missing-key, and duplicate event rows", async () => {
+    const bytes = Buffer.from("%PDF-1.7\nimmutable official document\n", "utf8");
+    const valid = r2Manifest(bytes, {
+      artifact: "full",
+      side: "current",
+      role: "document",
+      contentType: "application/pdf",
+      extension: "pdf",
+    });
+    const invalidCases = [
+      ["unknown artifact", (manifest) => { manifest.objects[0].artifact = "unknown"; }],
+      ["candidate mismatch", (manifest) => {
+        manifest.objects[0].candidate_id = "33333333-3333-4333-8333-333333333333";
+      }],
+      ["missing candidate", (manifest) => { delete manifest.objects[0].candidate_id; }],
+      ["side mismatch", (manifest) => { manifest.objects[0].side = "previous"; }],
+      ["wrong role", (manifest) => {
+        setPublishedEventObjectKey(manifest.objects[0], {
+          role: "changed-section-crop",
+          extension: "jpg",
+        });
+      }],
+      ["role MIME mismatch", (manifest) => {
+        manifest.objects[0].content_type = "image/jpeg";
+      }],
+      ["PDF MIME on crop", (manifest) => {
+        manifest.objects[0].artifact = "crop";
+        setPublishedEventObjectKey(manifest.objects[0], {
+          role: "changed-section-crop",
+          extension: "jpg",
+        });
+      }],
+      ["PDF MIME on layout", (manifest) => {
+        manifest.objects[0].artifact = "layout";
+        setPublishedEventObjectKey(manifest.objects[0], {
+          role: "geometry-main",
+          extension: "json",
+        });
+      }],
+      ["PDF MIME on metadata", (manifest) => {
+        manifest.objects[0].artifact = "metadata";
+        setPublishedEventObjectKey(manifest.objects[0], {
+          role: "metadata",
+          extension: "json",
+        });
+      }],
+      ["current first-observation attestation", (manifest) => {
+        manifest.objects[0].artifact = "metadata";
+        manifest.objects[0].content_type = "application/json; charset=utf-8";
+        setPublishedEventObjectKey(manifest.objects[0], {
+          role: "first-observation-attestation",
+          extension: "json",
+        });
+      }],
+      ["filename hash mismatch", (manifest) => {
+        setPublishedEventObjectKey(manifest.objects[0], { sha256: "0".repeat(64) });
+      }],
+      ["extension mismatch", (manifest) => {
+        setPublishedEventObjectKey(manifest.objects[0], { extension: "json" });
+      }],
+      ["unknown role", (manifest) => {
+        setPublishedEventObjectKey(manifest.objects[0], { role: "arbitrary-document" });
+      }],
+      ["missing key", (manifest) => { delete manifest.objects[0].object_key; }],
+      ["duplicate key reuse", (manifest) => {
+        manifest.objects.push(structuredClone(manifest.objects[0]));
+        refreshManifestCounts(manifest);
+      }],
+      ["reported duplicate count", (manifest) => {
+        manifest.duplicate_object_key_count = 1;
+      }],
+    ];
+
+    for (const [label, mutate] of invalidCases) {
+      const malformed = structuredClone(valid);
+      mutate(malformed);
+      await expect(measureStage1R2RecoveryDrill({
+        target,
+        manifest: malformed,
+        appRevision: "revision-current",
+        r2Client: {
+          async send() {
+            throw new Error("Published-event validation must happen before R2");
+          },
+        },
+        measuredAt,
+        measurementId,
+      }), label).rejects.toThrow(
+        /R2 object key|invalid object binding|incomplete or target-mismatched/,
+      );
+    }
   });
 
   it("verifies every published and immutable manifest-source artifact as exact raw bytes", async () => {
@@ -270,7 +417,7 @@ describe("Stage 1 producer-owned release measurements", () => {
       object.object_key,
       object.scope === "manifest_source"
         ? { body: sourceBodies[object.artifact], contentType: object.content_type }
-        : { body: eventBytes, contentType: "image/png" },
+        : { body: eventBytes, contentType: "image/jpeg" },
     ]));
 
     const measured = await measureStage1R2RecoveryDrill({
@@ -291,6 +438,27 @@ describe("Stage 1 producer-owned release measurements", () => {
     });
   });
 
+  it("preserves the exact three-object manifest-source PDF contract", async () => {
+    const eventBytes = Buffer.from("immutable event crop");
+    const { manifest, bodies } = pdfSourceR2Fixture(eventBytes);
+    const measured = await measureStage1R2RecoveryDrill({
+      target,
+      manifest,
+      appRevision: "revision-current",
+      r2Client: mappedR2Client(bodies),
+      measuredAt,
+      measurementId,
+    });
+
+    expect(measured.status).toBe("passed");
+    expect(measured.evidence).toMatchObject({
+      recovered_objects: 4,
+      published_event_objects_checked: 1,
+      manifest_source_objects_checked: 3,
+      visual_objects_checked: 4,
+    });
+  });
+
   it("rejects mutable, incomplete, mixed-generation, legacy-hash, and duplicate source bindings", async () => {
     const eventBytes = Buffer.from("immutable crop");
     const pageBytes = Buffer.from("immutable page image");
@@ -299,6 +467,15 @@ describe("Stage 1 producer-owned release measurements", () => {
     const client = { async send() { throw new Error("validation must happen before R2"); } };
 
     for (const mutate of [
+      (manifest) => {
+        manifest.objects.find((object) => object.scope === "manifest_source").side =
+          "previous";
+      },
+      (manifest) => {
+        const meta = manifest.objects.find((object) => object.artifact === "meta");
+        meta.object_key = meta.object_key.replace(/meta[.]json$/, "document.pdf");
+        meta.content_type = "application/pdf";
+      },
       (manifest) => {
         manifest.objects.find((object) => object.artifact === "text").object_key =
           "visual-snapshots/sources/11111111-1111-4111-8111-111111111111/latest/text.txt";
@@ -544,7 +721,8 @@ function leakManifest() {
   };
 }
 
-function r2Manifest(bytes) {
+function r2Manifest(bytes, contract = {}) {
+  const eventObject = publishedEventObject(bytes, contract);
   return {
     schema_version: "awardping.stage1.r2-verification-manifest.v3",
     artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
@@ -556,19 +734,52 @@ function r2Manifest(bytes) {
     unexpected_bucket_count: 0,
     malformed_object_count: 0,
     manifest_binding_error_count: 0,
-    objects: [{
-      bucket: target.r2_bucket,
-      scope: "published_event",
-      source_id: null,
-      artifact: "crop",
-      object_key: "visual-snapshots/published/event/current/crop.png",
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-      hash_mode: "raw_sha256",
-      byte_length: bytes.length,
-      semantic_length: null,
-      content_type: "image/png",
-    }],
+    duplicate_object_key_count: 0,
+    objects: [eventObject],
   };
+}
+
+function publishedEventObject(bytes, {
+  artifact = "crop",
+  candidateId = publishedEventCandidateId,
+  side = "current",
+  role = "changed-section-crop",
+  contentType = "image/jpeg",
+  extension = "jpg",
+} = {}) {
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  return {
+    bucket: target.r2_bucket,
+    scope: "published_event",
+    source_id: null,
+    candidate_id: candidateId,
+    artifact,
+    side,
+    object_key: publishedVisualEvidenceObjectKey({
+      candidateId,
+      side,
+      role,
+      sha256,
+      extension,
+    }),
+    sha256,
+    hash_mode: "raw_sha256",
+    byte_length: bytes.length,
+    semantic_length: null,
+    content_type: contentType,
+  };
+}
+
+function setPublishedEventObjectKey(object, overrides = {}) {
+  const segments = String(object.object_key || "").split("/");
+  const fileName = segments.at(-1) || "";
+  object.object_key = publishedVisualEvidenceObjectKey({
+    candidateId: overrides.candidateId || object.candidate_id,
+    side: overrides.side || object.side,
+    role: overrides.role || segments.at(-2),
+    sha256: overrides.sha256 || object.sha256,
+    extension: overrides.extension || fileName.split(".").at(-1),
+  });
 }
 
 function mixedR2Manifest({ eventBytes, pageBytes, textBytes }) {
@@ -592,7 +803,9 @@ function mixedR2Manifest({ eventBytes, pageBytes, textBytes }) {
     bucket: target.r2_bucket,
     scope: "manifest_source",
     source_id: sourceId,
+    candidate_id: null,
     artifact,
+    side: "current",
     object_key: `${prefix}/${fileName}`,
     sha256: createHash("sha256").update(sourceBodies[artifact]).digest("hex"),
     hash_mode: "raw_sha256",
@@ -611,19 +824,9 @@ function mixedR2Manifest({ eventBytes, pageBytes, textBytes }) {
     unexpected_bucket_count: 0,
     malformed_object_count: 0,
     manifest_binding_error_count: 0,
+    duplicate_object_key_count: 0,
     objects: [
-      {
-        bucket: target.r2_bucket,
-        scope: "published_event",
-        source_id: null,
-        artifact: "crop",
-        object_key: "visual-snapshots/published/event/current/crop.png",
-        sha256: createHash("sha256").update(eventBytes).digest("hex"),
-        hash_mode: "raw_sha256",
-        byte_length: eventBytes.length,
-        semantic_length: null,
-        content_type: "image/png",
-      },
+      publishedEventObject(eventBytes),
       ...sourceObjects,
     ],
   };
@@ -639,6 +842,44 @@ function mixedR2SourceBodies({ pageBytes, textBytes }) {
     expansion_state_01: Buffer.from("immutable expanded page image"),
     expansion_state_01_layout: Buffer.from('{"runs":[{"text":"Eligibility"}]}\n'),
   };
+}
+
+function pdfSourceR2Fixture(eventBytes) {
+  const sourceId = "44444444-4444-4444-8444-444444444444";
+  const prefix = `visual-snapshots/sources/${sourceId}/captures/${"c".repeat(32)}`;
+  const sourceBodies = {
+    meta: Buffer.from('{"kind":"pdf"}\n', "utf8"),
+    pdf: Buffer.from("%PDF-1.7\nimmutable source document\n", "utf8"),
+    text: Buffer.from("Official source document\n", "utf8"),
+  };
+  const contracts = [
+    ["meta", "meta.json", "application/json; charset=utf-8"],
+    ["pdf", "document.pdf", "application/pdf"],
+    ["text", "text.txt", "text/plain; charset=utf-8"],
+  ];
+  const manifest = r2Manifest(eventBytes);
+  manifest.objects.push(...contracts.map(([artifact, fileName, contentType]) => ({
+    bucket: target.r2_bucket,
+    scope: "manifest_source",
+    source_id: sourceId,
+    candidate_id: null,
+    artifact,
+    side: "current",
+    object_key: `${prefix}/${fileName}`,
+    sha256: createHash("sha256").update(sourceBodies[artifact]).digest("hex"),
+    hash_mode: "raw_sha256",
+    byte_length: sourceBodies[artifact].length,
+    semantic_length: null,
+    content_type: contentType,
+  })));
+  refreshManifestCounts(manifest);
+  const bodies = new Map(manifest.objects.map((object) => [
+    object.object_key,
+    object.scope === "manifest_source"
+      ? { body: sourceBodies[object.artifact], contentType: object.content_type }
+      : { body: eventBytes, contentType: object.content_type },
+  ]));
+  return { manifest, bodies };
 }
 
 function refreshManifestCounts(manifest) {
@@ -664,15 +905,15 @@ function mappedR2Client(bodies) {
   };
 }
 
-function r2Client(bytes) {
+function r2Client(bytes, objectKey) {
   return {
     async send(command) {
       expect(command.input).toMatchObject({
         Bucket: target.r2_bucket,
-        Key: "visual-snapshots/published/event/current/crop.png",
+        Key: objectKey,
       });
       return {
-        ContentType: "image/png",
+        ContentType: "image/jpeg",
         Body: { async transformToByteArray() { return bytes; } },
       };
     },
