@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { GetObjectCommand } from "@aws-sdk/client-s3";
+import { canonicalStage1DiagnosticContentType } from "./stage1-release-diagnostics.mjs";
 
 export const stage1ReleaseEvidenceProducerContract =
   "awardping.stage1.release-evidence-producer.v2";
@@ -320,7 +321,9 @@ export async function measureStage1R2RecoveryDrill({
         const measuredHash = measureR2ObjectHash(body, object);
         const actualSha256 = measuredHash?.sha256 || null;
         const actualLength = body.length;
-        const actualContentType = cleanText(response?.ContentType).toLowerCase();
+        const actualContentType = canonicalStage1DiagnosticContentType(
+          response?.ContentType,
+        );
         const expectedContentType = object.contentType.toLowerCase();
         const contentTypeMatches = actualContentType === expectedContentType;
         const verified =
@@ -334,8 +337,10 @@ export async function measureStage1R2RecoveryDrill({
         return {
           object_scope: object.scope,
           source_id: object.sourceId,
-          artifact: object.artifact,
+          storage_role: object.storageRole,
           object_key: object.objectKey,
+          reference_count: object.referenceCount,
+          references: object.references,
           hash_mode: object.hashMode,
           expected_sha256: object.sha256,
           actual_sha256: actualSha256,
@@ -351,8 +356,10 @@ export async function measureStage1R2RecoveryDrill({
         return {
           object_scope: object.scope,
           source_id: object.sourceId,
-          artifact: object.artifact,
+          storage_role: object.storageRole,
           object_key: object.objectKey,
+          reference_count: object.referenceCount,
+          references: object.references,
           hash_mode: object.hashMode,
           expected_sha256: object.sha256,
           actual_sha256: null,
@@ -375,8 +382,8 @@ export async function measureStage1R2RecoveryDrill({
     .filter((row) => row.outcome !== "verified")
     .map(r2FailureDiagnostic)
     .sort((left, right) => compareFailureKey(
-      `${left.object_scope}\n${left.source_id || ""}\n${left.artifact}\n${left.object_key}`,
-      `${right.object_scope}\n${right.source_id || ""}\n${right.artifact}\n${right.object_key}`,
+      `${left.object_scope}\n${left.source_id || ""}\n${left.storage_role}\n${left.object_key}`,
+      `${right.object_scope}\n${right.source_id || ""}\n${right.storage_role}\n${right.object_key}`,
     ));
   const failureSetHash = sha256(stableJson(failures.map(r2FailureIdentity)));
   const passed = recovered === observations.length && failed === 0 && refused === 0;
@@ -391,6 +398,7 @@ export async function measureStage1R2RecoveryDrill({
       // mode; it does not mean every expected hash is over unmodified bytes.
       measurement_method: "r2_full_get_sha256_v1",
       hash_mode_contract: "db_manifest_declared_hash_modes_v1",
+      reference_schema: "awardping.r2.canonical-object-references.v1",
       r2_account_id: target.r2AccountId,
       r2_bucket: target.r2Bucket,
       r2_endpoint: `https://${target.r2AccountId}.r2.cloudflarestorage.com`,
@@ -401,13 +409,19 @@ export async function measureStage1R2RecoveryDrill({
       failure_count: failures.length,
       failure_set_hash: failureSetHash,
       visual_objects_checked: observations.length,
+      visual_references_checked: manifest.visualReferenceCount,
       published_event_objects_checked: manifest.publishedEventObjectCount,
+      published_event_references_checked: manifest.publishedEventReferenceCount,
       manifest_source_objects_checked: manifest.manifestSourceObjectCount,
+      manifest_source_references_checked: manifest.manifestSourceReferenceCount,
+      alias_references_checked: manifest.aliasReferenceCount,
+      aliased_objects_checked: manifest.aliasedObjectCount,
+      reference_set_hash: manifest.referenceSetHash,
       visual_object_set_hash: manifest.visualObjectSetHash,
       recovery_manifest_sha256: sha256(stableJson(observations)),
     },
     diagnostics: {
-      schema_version: "awardping.stage1.r2-recovery-diagnostics.v1",
+      schema_version: "awardping.stage1.r2-recovery-diagnostics.v2",
       total_observations: observations.length,
       failure_count: failures.length,
       failure_set_hash: failureSetHash,
@@ -589,17 +603,18 @@ function validateLeakManifest(value, target) {
 function validateR2Manifest(value, target) {
   const manifest = objectValue(value);
   const embeddedTarget = validateStage1ReleaseProducerTarget(manifest.target);
-  const objects = arrayValue(manifest.objects).map((value) => {
+  const rawObjects = arrayValue(manifest.objects);
+  const objects = rawObjects.map((value) => {
     const object = objectValue(value);
     const scope = requiredText(object.scope, "R2 object scope");
     const sourceId = cleanText(object.source_id).toLowerCase() || null;
     const candidateId = cleanText(object.candidate_id).toLowerCase() || null;
-    const artifact = requiredText(object.artifact, "R2 object artifact");
+    const storageRole = requiredText(object.storage_role, "R2 object storage role");
     const side = cleanText(object.side);
     const objectKey = requiredText(object.object_key, "R2 object key");
     const bucket = requiredText(object.bucket, "R2 object bucket");
     const objectSha256 = requiredHash(object.sha256, "R2 object SHA-256");
-    const byteLength = Number(object.byte_length);
+    const byteLength = exactPositiveInteger(object.byte_length);
     const hashMode = requiredText(object.hash_mode, "R2 object hash mode");
     const declaredContentType = requiredText(
       object.content_type,
@@ -609,6 +624,8 @@ function validateR2Manifest(value, target) {
     const semanticLength = object.semantic_length === null || object.semantic_length === undefined
       ? null
       : Number(object.semantic_length);
+    const referenceCount = object.reference_count;
+    const references = arrayValue(object.references).map(normalizeR2Reference);
     const publishedEvent = scope === "published_event";
     const manifestSource = scope === "manifest_source";
     const sourceUuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -618,7 +635,7 @@ function validateR2Manifest(value, target) {
     const sourceGenerationMatch = sourcePrefix
       ? objectKey.match(new RegExp(`^${escapeRegExp(sourcePrefix)}([0-9a-f]{32})/`))
       : null;
-    const sourceArtifactContract = manifestSourceArtifactContract(artifact);
+    const sourceArtifactContract = manifestSourceArtifactContract(storageRole);
     const sourceBindingValid = Boolean(
       manifestSource
       && candidateId === null
@@ -638,20 +655,39 @@ function validateR2Manifest(value, target) {
       && !/(^|\/)latest(\/|$)/i.test(objectKey)
       && hashMode === "raw_sha256"
       && semanticLength === null
-      && publishedEventArtifactBindingValid({
-        artifact,
+      && publishedEventPhysicalBindingValid({
+        storageRole,
         candidateId,
         contentType: declaredContentType,
         objectKey,
         sha256: objectSha256,
         side,
       })
+      && references.length > 0
+      && references.every((reference) => publishedEventReferenceBindingValid({
+        reference,
+        candidateId,
+        side,
+        storageRole,
+      }))
+    );
+    const sourceReferencesValid = Boolean(
+      sourceBindingValid
+      && references.length === 1
+      && manifestSourceReferenceBindingValid({
+        reference: references[0],
+        sourceId,
+        artifact: storageRole,
+      })
     );
     if (
       bucket !== target.r2Bucket ||
-      (!sourceBindingValid && !eventBindingValid) ||
+      (!(sourceReferencesValid || eventBindingValid)) ||
       !Number.isSafeInteger(byteLength) ||
-      byteLength < 1
+      byteLength < 1 ||
+      !Number.isSafeInteger(referenceCount) ||
+      referenceCount !== references.length ||
+      stableJson(references) !== stableJson([...references].sort(compareR2References))
     ) {
       throw new Error("The DB-owned R2 manifest contains an invalid object binding.");
     }
@@ -659,7 +695,7 @@ function validateR2Manifest(value, target) {
       scope,
       sourceId,
       candidateId,
-      artifact,
+      storageRole,
       bucket,
       objectKey,
       sha256: objectSha256,
@@ -668,6 +704,8 @@ function validateR2Manifest(value, target) {
       semanticLength,
       contentType,
       generationId: sourceGenerationMatch?.[1] || null,
+      referenceCount,
+      references,
     };
   });
   const uniqueObjectKeys = new Set(objects.map((object) => `${object.bucket}\n${object.objectKey}`));
@@ -677,6 +715,48 @@ function validateR2Manifest(value, target) {
   const manifestSourceObjectCount = objects.filter(
     (object) => object.scope === "manifest_source",
   ).length;
+  const publishedEventReferenceCount = objects
+    .filter((object) => object.scope === "published_event")
+    .reduce((total, object) => total + object.referenceCount, 0);
+  const manifestSourceReferenceCount = objects
+    .filter((object) => object.scope === "manifest_source")
+    .reduce((total, object) => total + object.referenceCount, 0);
+  const visualReferenceCount = publishedEventReferenceCount + manifestSourceReferenceCount;
+  const aliasReferenceCount = visualReferenceCount - objects.length;
+  const aliasedObjectCount = objects.filter((object) => object.referenceCount > 1).length;
+  const referenceIdentities = objects.flatMap((object) => object.references.map(
+    (reference) => r2ReferenceIdentity(reference),
+  ));
+  const uniqueReferenceIdentities = new Set(referenceIdentities);
+  const visualObjectSetHash = requiredHash(
+    manifest.visual_object_set_hash,
+    "visual object-set hash",
+  );
+  const referenceSetHash = requiredHash(
+    manifest.reference_set_hash,
+    "R2 reference-set hash",
+  );
+  const visualObjectSetHashInput = canonicalHashInput(
+    manifest.visual_object_set_hash_input,
+    "visual object-set hash input",
+  );
+  const referenceSetHashInput = canonicalHashInput(
+    manifest.reference_set_hash_input,
+    "R2 reference-set hash input",
+  );
+  const reconstructedReferences = rawObjects.flatMap((object) =>
+    arrayValue(object?.references).map((reference) => ({
+      bucket: object?.bucket,
+      object_key: object?.object_key,
+      reference,
+    })),
+  );
+  const graphHashesValid = Boolean(
+    sha256(visualObjectSetHashInput.text) === visualObjectSetHash
+    && sha256(referenceSetHashInput.text) === referenceSetHash
+    && stableJson(visualObjectSetHashInput.value) === stableJson(rawObjects)
+    && stableJson(referenceSetHashInput.value) === stableJson(reconstructedReferences)
+  );
   const manifestSourceGroups = new Map();
   for (const object of objects.filter((entry) => entry.scope === "manifest_source")) {
     manifestSourceGroups.set(
@@ -686,36 +766,65 @@ function validateR2Manifest(value, target) {
   }
   const manifestSourceSetsValid = [...manifestSourceGroups.values()]
     .every(manifestSourceObjectSetValid);
+  const publishedEventReferenceGraphValid = publishedEventReferenceGraphIsValid(objects);
   if (
-    manifest.schema_version !== "awardping.stage1.r2-verification-manifest.v3" ||
+    manifest.schema_version !== "awardping.stage1.r2-verification-manifest.v4" ||
     manifest.artifact_bindings_schema
       !== "awardping.r2.capture-artifact-bindings.v1" ||
+    manifest.reference_schema !== "awardping.r2.canonical-object-references.v1" ||
     embeddedTarget.targetConfigHash !== target.targetConfigHash ||
-    Number(manifest.unexpected_bucket_count) !== 0 ||
-    Number(manifest.malformed_object_count) !== 0 ||
-    Number(manifest.manifest_binding_error_count) !== 0 ||
-    Number(manifest.duplicate_object_key_count) !== 0 ||
-    Number(manifest.visual_object_count) !== objects.length ||
-    Number(manifest.published_event_object_count) !== publishedEventObjectCount ||
-    Number(manifest.manifest_source_object_count) !== manifestSourceObjectCount ||
+    manifest.unexpected_bucket_count !== 0 ||
+    manifest.malformed_object_count !== 0 ||
+    manifest.manifest_binding_error_count !== 0 ||
+    manifest.reference_binding_error_count !== 0 ||
+    manifest.inconsistent_alias_count !== 0 ||
+    manifest.unclassified_reference_count !== 0 ||
+    manifest.duplicate_object_key_count !== 0 ||
+    manifest.visual_object_count !== objects.length ||
+    manifest.published_event_object_count !== publishedEventObjectCount ||
+    manifest.visual_reference_count !== visualReferenceCount ||
+    manifest.published_event_reference_count !== publishedEventReferenceCount ||
+    manifest.manifest_source_object_count !== manifestSourceObjectCount ||
+    manifest.manifest_source_reference_count !== manifestSourceReferenceCount ||
+    manifest.alias_reference_count !== aliasReferenceCount ||
+    manifest.aliased_object_count !== aliasedObjectCount ||
     uniqueObjectKeys.size !== objects.length ||
-    !manifestSourceSetsValid
+    uniqueReferenceIdentities.size !== referenceIdentities.length ||
+    !graphHashesValid ||
+    !manifestSourceSetsValid ||
+    !publishedEventReferenceGraphValid
   ) {
     throw new Error("The DB-owned R2 verification manifest is incomplete or target-mismatched.");
   }
   return {
     objects,
+    visualReferenceCount,
     publishedEventObjectCount,
+    publishedEventReferenceCount,
     manifestSourceObjectCount,
-    visualObjectSetHash: requiredHash(
-      manifest.visual_object_set_hash,
-      "visual object-set hash",
-    ),
+    manifestSourceReferenceCount,
+    aliasReferenceCount,
+    aliasedObjectCount,
+    referenceSetHash,
+    visualObjectSetHash,
   };
 }
 
-function publishedEventArtifactBindingValid({
-  artifact,
+function canonicalHashInput(value, label) {
+  const text = requiredText(value, label);
+  if (text.length > 10_000_000) throw new Error(`${label} is too large.`);
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`${label} is not valid JSON.`);
+  }
+  if (!Array.isArray(parsed)) throw new Error(`${label} is not a JSON array.`);
+  return { text, value: parsed };
+}
+
+function publishedEventPhysicalBindingValid({
+  storageRole,
   candidateId,
   contentType,
   objectKey,
@@ -731,36 +840,268 @@ function publishedEventArtifactBindingValid({
   if (!match || match[2] !== sha256) return false;
   const [, role, , extension] = match;
 
-  switch (artifact) {
-    case "full":
-      return (
-        contentType === "application/pdf"
-        && role === "document"
-        && extension === "pdf"
-      ) || (
-        contentType === "image/jpeg"
-        && (role === "main-full" || /^state-[A-Za-z0-9._-]+$/.test(role))
-        && extension === "jpg"
-      );
-    case "crop":
-      return contentType === "image/jpeg"
-        && role === "changed-section-crop"
-        && extension === "jpg";
-    case "layout":
-      return contentType === "application/json; charset=utf-8"
-        && /^geometry-[A-Za-z0-9._-]+$/.test(role)
-        && extension === "json";
-    case "metadata":
-      return contentType === "application/json; charset=utf-8"
-        && extension === "json"
-        && (
-          role === "metadata"
-          || role === "recovery-metadata"
-          || (role === "first-observation-attestation" && side === "previous")
-        );
-    default:
-      return false;
+  if (role !== storageRole) return false;
+  if (storageRole === "document") {
+    return contentType === "application/pdf" && extension === "pdf";
   }
+  if (
+    storageRole === "main-full"
+    || storageRole === "changed-section-crop"
+    || storageRole === "thumbnail"
+    || /^state-[A-Za-z0-9._-]+$/.test(storageRole)
+  ) {
+    return contentType === "image/jpeg" && extension === "jpg";
+  }
+  if (
+    storageRole === "metadata"
+    || storageRole === "recovery-metadata"
+    || /^geometry-[A-Za-z0-9._-]+$/.test(storageRole)
+    || (storageRole === "first-observation-attestation" && side === "previous")
+  ) {
+    return contentType === "application/json; charset=utf-8" && extension === "json";
+  }
+  return storageRole === "text"
+    && contentType === "text/plain; charset=utf-8"
+    && extension === "txt";
+}
+
+function normalizeR2Reference(value) {
+  const reference = objectValue(value);
+  const changeEventId = cleanText(reference.change_event_id).toLowerCase() || null;
+  const sourceId = cleanText(reference.source_id).toLowerCase() || null;
+  const candidateId = cleanText(reference.candidate_id).toLowerCase() || null;
+  const side = cleanText(reference.side);
+  const role = requiredText(reference.role, "R2 logical reference role");
+  const logicalPath = requiredText(
+    reference.logical_path,
+    "R2 logical reference path",
+  );
+  const stateId = cleanText(reference.state_id) || null;
+  const stateKind = cleanText(reference.state_kind) || null;
+  const suppressed = typeof reference.suppressed === "boolean"
+    ? reference.suppressed
+    : reference.suppressed === null
+      ? null
+      : undefined;
+  const normalized = {
+    scope: cleanText(reference.scope),
+    change_event_id: changeEventId,
+    source_id: sourceId,
+    candidate_id: candidateId,
+    side,
+    role,
+    logical_path: logicalPath,
+    state_id: stateId,
+    state_kind: stateKind,
+    suppressed,
+  };
+  if (stableJson(reference) !== stableJson(normalized)) {
+    throw new Error("The DB-owned R2 manifest contains an invalid logical reference.");
+  }
+  return normalized;
+}
+
+function publishedEventReferenceBindingValid({
+  reference,
+  candidateId,
+  side,
+  storageRole,
+}) {
+  if (
+    reference.scope !== "published_event"
+    || !uuidPattern.test(reference.change_event_id || "")
+    || reference.source_id !== null
+    || reference.candidate_id !== candidateId
+    || reference.side !== side
+    || typeof reference.suppressed !== "boolean"
+  ) return false;
+
+  const statePath = reference.logical_path.match(
+    /^[$][.]states\[(0|[1-9][0-9]*)\][.](image|geometry)[.]object_key$/,
+  );
+  let expectedPath = null;
+  switch (reference.role) {
+    case "full": expectedPath = "$.full.object_key"; break;
+    case "metadata": expectedPath = "$.metadata.object_key"; break;
+    case "crop": expectedPath = "$.crop.object_key"; break;
+    case "main_full": expectedPath = "$.main_full.object_key"; break;
+    case "thumbnail": expectedPath = "$.thumbnail.object_key"; break;
+    case "text": expectedPath = "$.text.object_key"; break;
+    case "layout": expectedPath = "$.layout.object_key"; break;
+    case "crop.source_image": expectedPath = "$.crop.source_image_object_key"; break;
+    case "state.image":
+      if (!statePath || statePath[2] !== "image") return false;
+      break;
+    case "state.geometry":
+      if (!statePath || statePath[2] !== "geometry") return false;
+      break;
+    default: return false;
+  }
+  if (expectedPath !== null && reference.logical_path !== expectedPath) return false;
+
+  if (reference.role === "metadata") {
+    return reference.state_id === null
+      && reference.state_kind === null
+      && ["metadata", "recovery-metadata", "first-observation-attestation"]
+        .includes(storageRole);
+  }
+  if (reference.role === "crop") {
+    return reference.state_id === null
+      && reference.state_kind === null
+      && storageRole === "changed-section-crop";
+  }
+  if (reference.role === "thumbnail") {
+    return reference.state_id === null
+      && reference.state_kind === null
+      && storageRole === "thumbnail";
+  }
+  if (reference.role === "text") {
+    return reference.state_id === null
+      && reference.state_kind === null
+      && storageRole === "text";
+  }
+  if (reference.role === "main_full") {
+    return /^[A-Za-z0-9._-]+$/.test(reference.state_id || "")
+      && reference.state_kind === "main"
+      && storageRole === "main-full";
+  }
+  if (reference.role === "full" && storageRole === "document") {
+    return reference.state_id === null && reference.state_kind === null;
+  }
+  return publishedEventStateStorageRoleValid(reference, storageRole);
+}
+
+function publishedEventStateStorageRoleValid(reference, storageRole) {
+  if (
+    !/^[A-Za-z0-9._-]+$/.test(reference.state_id || "")
+    || !["main", "expansion_state"].includes(reference.state_kind)
+  ) return false;
+  if (reference.role === "layout" || reference.role === "state.geometry") {
+    return storageRole === `geometry-${reference.state_id}`;
+  }
+  if (
+    reference.role === "full"
+    || reference.role === "state.image"
+    || reference.role === "crop.source_image"
+  ) {
+    return storageRole === (reference.state_kind === "main"
+      ? "main-full"
+      : `state-${reference.state_id}`);
+  }
+  return false;
+}
+
+function manifestSourceReferenceBindingValid({ reference, sourceId, artifact }) {
+  return reference.scope === "manifest_source"
+    && reference.change_event_id === null
+    && reference.source_id === sourceId
+    && reference.candidate_id === null
+    && reference.side === "current"
+    && reference.role === artifact
+    && reference.logical_path === `$.object_keys.${artifact}`
+    && reference.state_id === null
+    && reference.state_kind === null
+    && reference.suppressed === null;
+}
+
+function compareR2References(left, right) {
+  return stableJson(left).localeCompare(stableJson(right));
+}
+
+function r2ReferenceIdentity(reference) {
+  return stableJson(reference);
+}
+
+function publishedEventReferenceGraphIsValid(objects) {
+  const eventObjects = objects.filter((object) => object.scope === "published_event");
+  const groups = new Map();
+  for (const object of eventObjects) {
+    for (const reference of object.references) {
+      const key = `${reference.change_event_id}\n${reference.candidate_id}\n${reference.side}`;
+      groups.set(key, [...(groups.get(key) || []), { object, reference }]);
+    }
+  }
+  return [...groups.values()].every(publishedEventReferenceGroupIsValid);
+}
+
+function publishedEventReferenceGroupIsValid(entries) {
+  const byPath = new Map(entries.map((entry) => [entry.reference.logical_path, entry]));
+  if (byPath.size !== entries.length) return false;
+  if (new Set(entries.map((entry) => entry.reference.suppressed)).size !== 1) return false;
+  const states = new Map();
+  for (const entry of entries) {
+    const match = entry.reference.logical_path.match(
+      /^[$][.]states\[(0|[1-9][0-9]*)\][.](image|geometry)[.]object_key$/,
+    );
+    if (!match) continue;
+    const index = Number(match[1]);
+    const state = states.get(index) || {};
+    state[match[2]] = entry;
+    states.set(index, state);
+  }
+  if (states.size) {
+    const indexes = [...states.keys()].sort((left, right) => left - right);
+    if (!indexes.every((index, offset) => index === offset)) return false;
+    for (const state of states.values()) {
+      if (!state.image || !state.geometry) return false;
+      if (
+        state.image.reference.state_id !== state.geometry.reference.state_id
+        || state.image.reference.state_kind !== state.geometry.reference.state_kind
+      ) return false;
+    }
+  }
+
+  const mainFull = byPath.get("$.main_full.object_key");
+  if (mainFull) {
+    const mainState = [...states.values()].find(
+      (state) => state.image?.reference.state_kind === "main"
+        && state.image.reference.state_id === mainFull.reference.state_id,
+    );
+    if (!mainState || mainState.image.object.objectKey !== mainFull.object.objectKey) return false;
+  }
+  for (const [path, kind] of [
+    ["$.full.object_key", "image"],
+    ["$.layout.object_key", "geometry"],
+    ["$.crop.source_image_object_key", "image"],
+  ]) {
+    const selected = byPath.get(path);
+    if (!selected || selected.object.storageRole === "document") continue;
+    if (states.size === 0) continue;
+    const state = [...states.values()].find(
+      (candidate) => candidate[kind]?.reference.state_id === selected.reference.state_id,
+    );
+    if (!state || state[kind].object.objectKey !== selected.object.objectKey) return false;
+  }
+
+  const full = byPath.get("$.full.object_key");
+  const metadata = byPath.get("$.metadata.object_key");
+  const crop = byPath.get("$.crop.object_key");
+  const cropSource = byPath.get("$.crop.source_image_object_key");
+  if (crop || cropSource) {
+    if (
+      !crop
+      || !cropSource
+      || !full
+      || cropSource.object.objectKey !== full.object.objectKey
+    ) return false;
+  }
+
+  if (metadata?.object.storageRole === "first-observation-attestation") {
+    return entries.length === 1;
+  }
+  if (full?.object.storageRole === "document") {
+    return entries.length === 3
+      && Boolean(metadata && byPath.get("$.text.object_key"));
+  }
+  return Boolean(
+    full
+    && metadata
+    && byPath.get("$.main_full.object_key")
+    && byPath.get("$.thumbnail.object_key")
+    && byPath.get("$.text.object_key")
+    && byPath.get("$.layout.object_key")
+    && states.size > 0
+  );
 }
 
 function manifestSourceArtifactContract(artifact) {
@@ -793,7 +1134,7 @@ function manifestSourceArtifactContract(artifact) {
 function manifestSourceObjectSetValid(entries) {
   if (!entries.length) return false;
   const generations = new Set(entries.map((entry) => entry.generationId));
-  const artifacts = new Set(entries.map((entry) => entry.artifact));
+  const artifacts = new Set(entries.map((entry) => entry.storageRole));
   if (generations.size !== 1 || generations.has(null) || artifacts.size !== entries.length) {
     return false;
   }
@@ -955,8 +1296,10 @@ function r2FailureDiagnostic(row) {
   return {
     object_scope: row.object_scope,
     source_id: row.source_id,
-    artifact: row.artifact,
+    storage_role: row.storage_role,
     object_key: row.object_key,
+    reference_count: row.reference_count,
+    references: row.references,
     hash_mode: row.hash_mode,
     outcome: row.outcome,
     error_code: row.error_code || null,
@@ -1152,6 +1495,13 @@ function requiredText(value, label) {
   const text = cleanText(value);
   if (!text) throw new Error(`${label}.`);
   return text;
+}
+
+function exactPositiveInteger(value) {
+  if (Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/.test(value)) return NaN;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : NaN;
 }
 
 function objectValue(value) {

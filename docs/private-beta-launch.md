@@ -253,7 +253,7 @@ are the monitoring authority. Historical user-level monitor timestamps and error
 Use the producer-owned release CLI; it measures the configured production
 target itself and cannot sign arbitrary JSON. Record:
 
-- hosted runtime/auth identity (fresh within 2 hours);
+- hosted runtime/auth identity (fresh within 1 hour);
 - exact R2 recovery verification (fresh within 24 hours);
 - non-cohort anonymous leak crawl (fresh within 24 hours);
 - rollback and restoration drill (fresh within 7 days);
@@ -302,15 +302,38 @@ then compared with the semantic `text_hash`. A new published event, changed
 manifest binding, malformed source generation, or changed object-set hash
 invalidates an otherwise age-current signature until the drill is rerun.
 
-Current v3 published-event recovery enumerates only the top-level `full`,
-`metadata`, `layout`, and `crop` slots. It does not yet enumerate the additional
-immutable objects referenced by `main_full`, `thumbnail`, `text`, or every
-`states[].image` and `states[].geometry` entry. Those nested references can
-legitimately alias a selected top-level object, so the future expansion must
-normalize exact bucket/key aliases while still verifying every distinct object.
-Until that complete referenced-object enumeration is implemented and tested, an
-R2 drill pass is necessary but not sufficient for release and the Stage 1 gate
-must remain `HOLD`.
+The v4 R2 manifest enumerates every reference-bearing published-event slot:
+`full`, `metadata`, `crop`, `main_full`, `thumbnail`, `text`, `layout`, every
+`states[].image` and `states[].geometry`, and `crop.source_image_object_key`.
+It retains candidate-bound evidence even after suppression, normalizes exact
+bucket/key aliases into one physical GET, and separately signs the complete
+logical-reference graph. Webpage, PDF, and first-observation sides must have
+their complete kind-specific role set; unknown fields, unsafe state IDs,
+missing descriptors, inconsistent aliases, or unclassified object-key paths
+fail before any R2 request. The evidence records both object and reference
+counts, alias counts, and the object/reference set hashes. A successful drill
+must GET and verify every distinct physical object exactly once.
+
+Candidate-free `historical_artifact_unrecoverable` rows intentionally contribute
+no invented R2 object. Their signed terminal limitation remains visible through
+crop coverage and quarantine. Effective publication requires a fresh hosted
+runtime, a current v4 R2 artifact bound to that runtime, and a current
+database-derived crop artifact bound to the same R2 artifact. Therefore a new
+unbound public event, stale crop proof, or missing historical evidence cannot
+remain effectively visible merely because the physical R2 object set did not
+change.
+
+Initial official PDFs count as covered only when the retained previous-side
+first-observation attestation and current PDF satisfy the exact candidate,
+acquisition, hash, R2-role, and localization bindings. Ordinary PDFs retain the
+candidate-bound `not_applicable_pdf` rule; every other PDF shape fails closed.
+
+Expect a deliberate `HOLD` window after a migration that changes any release
+evidence contract. Recover in this order: apply the migration; deploy the exact
+reviewed app revision and update the worker from that revision; record a fresh
+hosted-runtime proof; run and record the v4 R2 proof; record the database-derived
+crop proof bound to that R2 artifact; then rerun the gate/readiness report. Do
+not reuse an earlier artifact or reorder these steps to restore visibility.
 
 Snapshots captured before `latest_metadata.text_object_bytes` was introduced
 cannot substantiate the text object contract and remain fail-closed. Recapture

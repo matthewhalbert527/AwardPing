@@ -161,6 +161,15 @@ each required artifact. This report counts verified event crop sides, honest
 full-image fallbacks, and unrecoverable historical events separately; it does
 not treat the existence of source layout metadata as successful localization.
 
+The Stage 1 release proof is stricter than this operator coverage report. Its v4
+manifest canonicalizes every fixed, state, and crop-source logical reference by
+exact bucket/key, then fully downloads each distinct physical object once and
+checks its declared SHA-256, byte length, hash mode, and content type. The signed
+proof includes object/reference counts, alias counts, and both deterministic set
+hashes. Suppression does not remove candidate-bound evidence from that recovery
+set; candidate-free terminal historical limitations remain in crop coverage and
+quarantine instead of being represented by a fabricated R2 object.
+
 ```powershell
 npm run source:visual-evidence-coverage -- --env .env.worker.local
 ```

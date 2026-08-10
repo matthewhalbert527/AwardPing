@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { canonicalStage1DiagnosticContentType } from "./stage1-release-diagnostics.mjs";
 
 const hashPattern = /^[0-9a-f]{64}$/;
 const diagnosticSchemas = Object.freeze({
   non_cohort_leak_crawl:
     "awardping.stage1.non-cohort-leak-diagnostics.v1",
-  r2_recovery_drill: "awardping.stage1.r2-recovery-diagnostics.v1",
+  r2_recovery_drill: "awardping.stage1.r2-recovery-diagnostics.v2",
 });
 
 export function buildStage1ReleaseOperatorReport({
@@ -204,11 +205,28 @@ function normalizeFailure(kind, failureValue) {
     ) {
       throw new Error("R2 diagnostic source identity does not match its object scope.");
     }
+    const storageRole = safeToken(failure.storage_role, "R2 storage role");
+    const referenceCount = exactPositiveInteger(
+      failure.reference_count,
+      "R2 reference count",
+    );
+    const references = Array.isArray(failure.references)
+      ? failure.references.map((reference) => normalizeR2Reference({
+          reference,
+          objectScope,
+          sourceId,
+        }))
+      : [];
+    if (references.length !== referenceCount) {
+      throw new Error("R2 diagnostics do not contain the exact logical references.");
+    }
     return {
       object_scope: objectScope,
       source_id: sourceId,
-      artifact: safeToken(failure.artifact, "R2 artifact"),
+      storage_role: storageRole,
       object_key: exactR2ObjectKey(failure.object_key),
+      reference_count: referenceCount,
+      references,
       hash_mode: exactChoice(
         failure.hash_mode,
         ["raw_sha256", "utf8_text_single_trailing_newline_v1"],
@@ -236,6 +254,98 @@ function normalizeFailure(kind, failureValue) {
     };
   }
   throw new Error(`Unsupported operator diagnostic kind: ${kind}.`);
+}
+
+function normalizeR2Reference({ reference: referenceValue, objectScope, sourceId }) {
+  const reference = referenceValue && typeof referenceValue === "object"
+    && !Array.isArray(referenceValue)
+    ? referenceValue
+    : {};
+  const scope = exactChoice(
+    reference.scope,
+    ["published_event", "manifest_source"],
+    "R2 reference scope",
+  );
+  const changeEventId = nullableUuid(reference.change_event_id);
+  const referenceSourceId = nullableUuid(reference.source_id);
+  const candidateId = nullableUuid(reference.candidate_id);
+  const side = exactChoice(reference.side, ["previous", "current"], "R2 reference side");
+  const role = safeToken(reference.role, "R2 reference role");
+  const logicalPath = exactR2LogicalPath(reference.logical_path);
+  const stateId = nullableR2StateId(reference.state_id);
+  const stateKind = reference.state_kind === null
+    ? null
+    : exactChoice(
+        reference.state_kind,
+        ["main", "expansion_state"],
+        "R2 reference state kind",
+      );
+  const suppressed = typeof reference.suppressed === "boolean"
+    ? reference.suppressed
+    : reference.suppressed === null
+      ? null
+      : undefined;
+  if (
+    scope !== objectScope
+    || (
+      scope === "published_event"
+      && (
+        !changeEventId
+        || referenceSourceId !== null
+        || !candidateId
+        || typeof suppressed !== "boolean"
+      )
+    )
+    || (
+      scope === "manifest_source"
+      && (
+        changeEventId !== null
+        || referenceSourceId !== sourceId
+        || candidateId !== null
+        || side !== "current"
+        || suppressed !== null
+      )
+    )
+    || ((stateId === null) !== (stateKind === null))
+  ) {
+    throw new Error("R2 diagnostic reference identity is inconsistent.");
+  }
+  return {
+    scope,
+    change_event_id: changeEventId,
+    source_id: referenceSourceId,
+    candidate_id: candidateId,
+    side,
+    role,
+    logical_path: logicalPath,
+    state_id: stateId,
+    state_kind: stateKind,
+    suppressed,
+  };
+}
+
+function exactR2LogicalPath(value) {
+  const path = requiredText(value, "R2 logical reference path");
+  if (
+    path === "$.crop.source_image_object_key"
+    || /^[$][.](?:full|metadata|crop|main_full|thumbnail|text|layout)[.]object_key$/.test(
+      path,
+    )
+    || /^[$][.]states\[(?:0|[1-9][0-9]*)\][.](?:image|geometry)[.]object_key$/.test(
+      path,
+    )
+    || /^[$][.]object_keys[.][A-Za-z0-9._-]{1,160}$/.test(path)
+  ) return path;
+  throw new Error("R2 diagnostic logical reference path is invalid.");
+}
+
+function nullableR2StateId(value) {
+  if (value === null || value === undefined) return null;
+  const stateId = cleanText(value);
+  if (!/^[A-Za-z0-9._-]{1,160}$/.test(stateId)) {
+    throw new Error("R2 diagnostic state ID is invalid.");
+  }
+  return stateId;
 }
 
 function diagnosticFailureIdentity(kind, failure) {
@@ -357,11 +467,7 @@ function nullableErrorCode(value) {
 }
 
 function nullableContentType(value) {
-  const contentType = cleanText(value).toLowerCase();
-  if (!contentType) return null;
-  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+(?:;\s*charset=[a-z0-9._-]+)?$/.test(contentType)
-    ? contentType
-    : "application/octet-stream";
+  return canonicalStage1DiagnosticContentType(value);
 }
 
 function nullableUuid(value) {
@@ -409,6 +515,12 @@ function exactNonnegativeInteger(value, label) {
   if (!Number.isSafeInteger(number) || number < 0) {
     throw new Error(`${label} is invalid.`);
   }
+  return number;
+}
+
+function exactPositiveInteger(value, label) {
+  const number = exactNonnegativeInteger(value, label);
+  if (number < 1) throw new Error(`${label} is invalid.`);
   return number;
 }
 
