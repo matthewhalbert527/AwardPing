@@ -61,8 +61,24 @@ jobs:
       - name: Reapply every migration without seed data
         run: supabase db reset --local --no-seed
 
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes postgresql-client
+          fi
+
       - name: Exercise the Stage 1 R2 catalog and read paths
-        run: supabase db query --local --file supabase/tests/stage1_r2_reference_graph_smoke.sql
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql
+          --host=127.0.0.1
+          --port=54322
+          --username=postgres
+          --dbname=postgres
+          --set=ON_ERROR_STOP=1
+          --file=supabase/tests/stage1_r2_reference_graph_smoke.sql
 
       - name: Stop and remove local Supabase data
         if: always()
