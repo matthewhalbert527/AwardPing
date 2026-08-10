@@ -9,6 +9,7 @@ import {
   readdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -57,6 +58,7 @@ import {
   monitoringDateForTimestamp,
   monitoringDateForVisualReportFilename,
   shouldReplaceLatestNightlyReport,
+  visualRunTerminalDisposition,
 } from "./lib/visual-capture-run-report.mjs";
 import {
   classifyScheduledNightlyVisualRun,
@@ -142,6 +144,22 @@ import {
   captureIntakePage,
   normalizeSourceIntakeUrl,
 } from "./lib/source-intake.mjs";
+import {
+  fetchPublicHttpBuffer,
+  fetchPublicHttpResponse,
+  normalizePublicHttpUrl,
+  startPublicNetworkProxy,
+} from "./lib/public-network-safety.mjs";
+import {
+  assertCaptureNetworkWithinLimits,
+  assertCaptureRenderWithinLimits,
+  assertCaptureScreenshotBytes,
+  assertCaptureScreenshotDimensions,
+  captureBoundedBodyInnerText,
+  errorChainHasCode,
+  finalizeCaptureNetworkBoundary,
+  isCaptureResourceLimitError,
+} from "./lib/capture-resource-limits.mjs";
 import {
   buildVisualReviewPromptPayload,
   buildVisualReviewPromptText,
@@ -469,6 +487,69 @@ const visualWebConcurrency = boundedInt(
   8,
 );
 const maxPdfBytes = positiveInt(args["max-pdf-mb"], 50) * 1024 * 1024;
+const maxPdfPages = boundedInt(
+  args["max-pdf-pages"] || env.AWARDPING_MAX_PDF_PAGES,
+  200,
+  1,
+  2_000,
+);
+const pdfParseTimeoutMs = boundedInt(
+  args["pdf-parse-timeout-ms"] || env.AWARDPING_PDF_PARSE_TIMEOUT_MS,
+  Math.max(timeoutMs, 60_000),
+  5_000,
+  300_000,
+);
+// These defaults leave substantial headroom above legitimate long-form award
+// pages while preventing a hostile or runaway DOM from creating unbounded
+// geometry arrays or full-page render buffers.
+const maxCaptureTextChars = boundedInt(
+  args["max-capture-text-chars"] || env.AWARDPING_MAX_CAPTURE_TEXT_CHARS,
+  1_500_000,
+  100_000,
+  10_000_000,
+);
+const maxCaptureTextNodes = boundedInt(
+  args["max-capture-text-nodes"] || env.AWARDPING_MAX_CAPTURE_TEXT_NODES,
+  150_000,
+  10_000,
+  1_000_000,
+);
+const maxCaptureDomElements = boundedInt(
+  args["max-capture-dom-elements"] || env.AWARDPING_MAX_CAPTURE_DOM_ELEMENTS,
+  250_000,
+  10_000,
+  1_000_000,
+);
+const maxCaptureWidthCssPx = boundedInt(
+  args["max-capture-width-css-px"] || env.AWARDPING_MAX_CAPTURE_WIDTH_CSS_PX,
+  8_000,
+  2_000,
+  50_000,
+);
+const maxCaptureHeightCssPx = boundedInt(
+  args["max-capture-height-css-px"] || env.AWARDPING_MAX_CAPTURE_HEIGHT_CSS_PX,
+  60_000,
+  10_000,
+  250_000,
+);
+const maxCaptureRenderPixels = boundedInt(
+  args["max-capture-render-pixels"] || env.AWARDPING_MAX_CAPTURE_RENDER_PIXELS,
+  80_000_000,
+  10_000_000,
+  500_000_000,
+);
+const maxCaptureScreenshotBytes = boundedInt(
+  args["max-capture-screenshot-mb"] || env.AWARDPING_MAX_CAPTURE_SCREENSHOT_MB,
+  30,
+  1,
+  100,
+) * 1024 * 1024;
+const maxBrowserResponseBytes = boundedInt(
+  args["max-browser-response-mb"] || env.AWARDPING_MAX_BROWSER_RESPONSE_MB,
+  100,
+  5,
+  500,
+) * 1024 * 1024;
 const r2BackfillBaselines = boolArg(args["r2-backfill-baselines"], false);
 const r2BackfillFast = boolArg(args["r2-backfill-fast"], true);
 const r2BackfillSkipExisting = boolArg(args["r2-backfill-skip-existing"], true);
@@ -727,6 +808,7 @@ async function runOnce() {
     heartbeat_at: startedAt,
     finished_at: null,
     status: "running",
+    execution_status: "running",
     stop_reason: null,
     billing_blocked: false,
     blocking_reason: null,
@@ -809,6 +891,16 @@ async function runOnce() {
       safe_redirect_url_update: safeRedirectUrlUpdate,
       web_concurrency: visualWebConcurrency,
       max_pdf_bytes: maxPdfBytes,
+      max_pdf_pages: maxPdfPages,
+      pdf_parse_timeout_ms: pdfParseTimeoutMs,
+      max_capture_text_chars: maxCaptureTextChars,
+      max_capture_text_nodes: maxCaptureTextNodes,
+      max_capture_dom_elements: maxCaptureDomElements,
+      max_capture_width_css_px: maxCaptureWidthCssPx,
+      max_capture_height_css_px: maxCaptureHeightCssPx,
+      max_capture_render_pixels: maxCaptureRenderPixels,
+      max_capture_screenshot_bytes: maxCaptureScreenshotBytes,
+      max_browser_response_bytes: maxBrowserResponseBytes,
       r2_backfill_baselines: r2BackfillBaselines,
       r2_backfill_fast: r2BackfillFast,
       r2_backfill_skip_existing: r2BackfillSkipExisting,
@@ -1068,6 +1160,8 @@ async function runOnce() {
         browser: null,
         context: null,
         browserMeta: null,
+        networkProxy: null,
+        captureContextUsed: false,
         sourcesSinceBrowserStart: 0,
       };
       browserStatesByWorker.set(key, state);
@@ -1077,12 +1171,50 @@ async function runOnce() {
   }
 
   async function closeBrowserState(state) {
-    await state.context?.close().catch(() => null);
-    await state.browser?.close().catch(() => null);
-    state.context = null;
+    await closeCaptureContext(state);
+    if (state.browser) {
+      await withTimeout(
+        state.browser.close(),
+        6_000,
+        "Browser shutdown exceeded 6000ms.",
+      ).catch(() => null);
+    }
     state.browser = null;
     state.browserMeta = null;
     state.sourcesSinceBrowserStart = 0;
+  }
+
+  async function closeCaptureContext(state) {
+    if (state.context) {
+      await withTimeout(
+        state.context.close(),
+        5_000,
+        "Browser context shutdown exceeded 5000ms.",
+      ).catch(() => null);
+    }
+    await state.networkProxy?.close().catch(() => null);
+    state.context = null;
+    state.networkProxy = null;
+    state.captureContextUsed = false;
+  }
+
+  async function restartCaptureContext(state, reason) {
+    await closeCaptureContext(state);
+    const networkProxy = await startPublicNetworkProxy({
+      timeoutMs: Math.min(sourceTimeoutMs, 60_000),
+      maxResponseBytes: maxBrowserResponseBytes,
+    });
+    try {
+      state.context = await createBrowserContext(state.browser, networkProxy);
+      state.networkProxy = networkProxy;
+      state.captureContextUsed = false;
+    } catch (error) {
+      await networkProxy.close().catch(() => null);
+      throw error;
+    }
+    if (reason) {
+      console.log(`BROWSER_CONTEXT worker=${state.workerIndex} restarted ${reason}`);
+    }
   }
 
   async function restartBrowser(state, reason) {
@@ -1091,8 +1223,13 @@ async function runOnce() {
     const launched = await launchBrowser();
     state.browser = launched.browser;
     state.browserMeta = launched.browserMeta;
-    state.context = await createBrowserContext(state.browser);
     state.sourcesSinceBrowserStart = 0;
+    try {
+      await restartCaptureContext(state);
+    } catch (error) {
+      await closeBrowserState(state);
+      throw error;
+    }
 
     if (reason) {
       console.log(`BROWSER worker=${state.workerIndex} restarted ${reason}`);
@@ -1122,6 +1259,11 @@ async function runOnce() {
       await restartBrowser(state, "initial");
     } else if (!pdfSource && state.sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
       await restartBrowser(state, `after_${state.sourcesSinceBrowserStart}_sources`);
+    } else if (!pdfSource && state.captureContextUsed) {
+      // A fresh proxy/context gives every source an independent aggregate byte
+      // budget and prevents persistent HTTPS/H2 tunnels from carrying evidence
+      // or policy state into the next capture.
+      await restartCaptureContext(state, "source_boundary");
     }
 
     let retriedAfterBrowserRestart = false;
@@ -1129,11 +1271,27 @@ async function runOnce() {
     while (true) {
       try {
         await waitForDomain(source.url);
-        await withTimeout(
-          processSource(source, state.context, state.browserMeta, report),
-          sourceTimeoutMs,
-          `source hard timeout after ${sourceTimeoutMs}ms`,
+        if (!pdfSource) state.captureContextUsed = true;
+        const sourceOperation = processSource(
+          source,
+          state.context,
+          state.browserMeta,
+          report,
+          state.networkProxy,
         );
+        if (pdfSource) {
+          // PDF download, parsing, and cleanup each have their own bounded
+          // guards. Do not place them behind the non-cancelling page timeout:
+          // it could report failure while the same operation later mutates the
+          // baseline, R2 evidence, or downstream queues.
+          await sourceOperation;
+        } else {
+          await withTimeout(
+            sourceOperation,
+            sourceTimeoutMs,
+            `source hard timeout after ${sourceTimeoutMs}ms`,
+          );
+        }
         if (hasOpenSourceIssue(source)) {
           report.issue_sources_cleared += 1;
           console.log(`ISSUE_CLEARED ${sourceLabel(source)}`);
@@ -1144,7 +1302,11 @@ async function runOnce() {
         if (
           !pdfSource &&
           !retriedAfterBrowserRestart &&
-          (isBrowserClosedError(error) || isSourceTimeoutError(error))
+          (
+            isBrowserClosedError(error) ||
+            isSourceTimeoutError(error) ||
+            isCaptureNetworkBoundaryError(error)
+          )
         ) {
           console.log(`BROWSER closed ${sourceLabel(source)} | ${errorMessage(error)}`);
           await restartBrowser(state, "after_closed_context");
@@ -1199,6 +1361,16 @@ async function runOnce() {
             failureStage: "first_visual_capture_before_exact_verification",
           });
           console.log(`FAILED ${errorMessage(error)} ${sourceLabel(source)}`);
+          if (
+            !pdfSource &&
+            (
+              isBrowserClosedError(error) ||
+              isSourceTimeoutError(error) ||
+              isCaptureNetworkBoundaryError(error)
+            )
+          ) {
+            await restartBrowser(state, "after_failed_stage1_capture");
+          }
           break;
         }
 
@@ -1229,7 +1401,14 @@ async function runOnce() {
         }
         console.log(`FAILED ${message} ${sourceLabel(source)}`);
 
-        if (!pdfSource && (isBrowserClosedError(error) || isSourceTimeoutError(error))) {
+        if (
+          !pdfSource &&
+          (
+            isBrowserClosedError(error) ||
+            isSourceTimeoutError(error) ||
+            isCaptureNetworkBoundaryError(error)
+          )
+        ) {
           await restartBrowser(state, "after_failed_closed_context");
         }
         break;
@@ -1243,6 +1422,7 @@ async function runOnce() {
     const supabaseHealth = await checkSupabaseHealth(supabase);
     if (!supabaseHealth.ok) {
       report.status = "blocked";
+      report.execution_status = "blocked";
       report.stop_reason = "supabase_unavailable";
       report.errors.push({
         source_id: null,
@@ -1313,10 +1493,12 @@ async function runOnce() {
 
     if (r2BackfillBaselines) {
       await backfillR2Baselines(sources, workerRunId, report, coverageSources);
-      report.status = "succeeded";
+      const terminalDisposition = visualRunTerminalDisposition(report);
+      report.status = terminalDisposition.report_status;
+      report.execution_status = terminalDisposition.execution_status;
       report.baseline_coverage_finish = summarizeBaselineCoverage(await loadSources(limit));
       console.log(formatBaselineCoverage("BASELINE_COVERAGE finish", report.baseline_coverage_finish));
-      await finishWorkerRun(workerRunId, "succeeded", null, report);
+      await finishWorkerRun(workerRunId, terminalDisposition.worker_status, null, report);
       return;
     }
 
@@ -1379,12 +1561,15 @@ async function runOnce() {
       }
     }
 
-    report.status = "succeeded";
+    const terminalDisposition = visualRunTerminalDisposition(report);
+    report.status = terminalDisposition.report_status;
+    report.execution_status = terminalDisposition.execution_status;
     report.baseline_coverage_finish = summarizeBaselineCoverage(await loadSources(limit));
     console.log(formatBaselineCoverage("BASELINE_COVERAGE finish", report.baseline_coverage_finish));
-    await finishWorkerRun(workerRunId, "succeeded", null, report);
+    await finishWorkerRun(workerRunId, terminalDisposition.worker_status, null, report);
   } catch (error) {
     report.status = "failed";
+    report.execution_status = "failed";
     report.failed += 1;
     report.errors.push({
       source_id: null,
@@ -1863,12 +2048,18 @@ async function backfillOneR2BaselineUnlocked(source, report) {
   }
 }
 
-async function processSource(source, context, browserMeta, report) {
+async function processSource(source, context, browserMeta, report, networkProxy = null) {
   return withVisualBaselineLockAsync({
     archiveRoot,
     sourceId: source.id,
     timeoutMs: 5 * 60_000,
-    operation: () => processSourceUnlocked(source, context, browserMeta, report),
+    operation: () => processSourceUnlocked(
+      source,
+      context,
+      browserMeta,
+      report,
+      networkProxy,
+    ),
   });
 }
 
@@ -2276,7 +2467,13 @@ async function finalizeStage1BaselineActivation({
   return true;
 }
 
-async function processSourceUnlocked(source, context, browserMeta, report) {
+async function processSourceUnlocked(
+  source,
+  context,
+  browserMeta,
+  report,
+  networkProxy = null,
+) {
   if (initialOfficialDocumentMaterialization) {
     await processInitialOfficialDocumentMaterializationOnly(source, report);
     return;
@@ -2394,6 +2591,7 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
       : await captureSource(source, context, browserMeta, report, {
           baseline,
           suppressDiscovery: pendingStage1Activation,
+          networkProxy,
         });
   } catch (error) {
     if (!pendingStage1Activation) throw error;
@@ -4258,15 +4456,88 @@ async function capturePdfSource(source) {
   mkdirSync(captureDir, { recursive: true });
 
   const pdfPath = join(captureDir, "document.pdf");
+  const pendingPdfPath = join(captureDir, "pending-document.pdf");
+  const failedPdfPath = join(captureDir, "failed-document.pdf");
+  const failureMetaPath = join(captureDir, "capture-failure.json");
   const textPath = join(captureDir, "text.txt");
   const metaPath = join(captureDir, "meta.json");
   const download = await fetchPdfSource(source.url);
   const fileHash = hashBuffer(download.buffer);
-  const extracted = await extractPdfText(download.buffer);
+  // Retain the exact bounded response before invoking the in-process parser.
+  // It remains explicitly non-baseline evidence until parsing and cleanup pass.
+  writeFileSync(pendingPdfPath, download.buffer);
+  let extracted;
+  try {
+    extracted = await extractPdfText(download.buffer);
+  } catch (error) {
+    let retainedPdfPath = pendingPdfPath;
+    let retentionError = null;
+    try {
+      renameSync(pendingPdfPath, failedPdfPath);
+      retainedPdfPath = failedPdfPath;
+    } catch (renameError) {
+      retentionError = errorMessage(renameError);
+    }
+    const cleanupError = cleanText(error?.pdf_cleanup_error);
+    const failureMetadata = {
+      version: 1,
+      kind: "pdf_capture_failure",
+      status: "failed_not_baseline",
+      failure_stage: "pdf_text_extraction_or_cleanup",
+      captured_at: capturedAt,
+      source: sourceMetadata(source),
+      final_url: download.finalUrl,
+      status_code: download.status,
+      status_text: download.statusText,
+      content_type: download.contentType,
+      file_hash: fileHash,
+      file_bytes: download.buffer.length,
+      failure_code: cleanText(error?.code) || "AWARDPING_PDF_PARSE_FAILED",
+      error_message: errorMessage(error),
+      parser_cleanup_error: cleanupError || null,
+      retention_error: retentionError,
+      retention_policy: {
+        mode: "latest_failed_pdf_captures_per_source",
+        retained_limit: 3,
+      },
+      files: {
+        retained_pdf: toArchiveRelative(retainedPdfPath),
+      },
+    };
+    let manifestError = null;
+    try {
+      writeFileSync(failureMetaPath, JSON.stringify(failureMetadata, null, 2), "utf8");
+    } catch (writeError) {
+      manifestError = errorMessage(writeError);
+    }
+    let pruneError = null;
+    if (!manifestError) {
+      try {
+        pruneFailedPdfCaptureEvidence(sourceDir, { keep: 3 });
+      } catch (errorDuringPrune) {
+        pruneError = errorMessage(errorDuringPrune);
+      }
+    }
+    const failure = new Error(
+      `${errorMessage(error)}` +
+      `${cleanupError ? ` PDF parser cleanup also failed: ${cleanupError}.` : ""} ` +
+      `The bounded PDF was retained in the latest-three failed, non-baseline evidence set at ` +
+      `${toArchiveRelative(retainedPdfPath)} (sha256 ${fileHash}).` +
+      `${retentionError ? ` Failed-evidence rename also failed: ${retentionError}.` : ""}` +
+      `${manifestError ? ` Failure manifest write also failed: ${manifestError}.` : ""}` +
+      `${pruneError ? ` Older failed-evidence pruning also failed: ${pruneError}.` : ""}`,
+      { cause: error },
+    );
+    failure.code = error?.code || "AWARDPING_PDF_PARSE_FAILED";
+    failure.pdf_cleanup_error = cleanupError || null;
+    failure.retained_pdf_path = retainedPdfPath;
+    failure.retained_pdf_sha256 = fileHash;
+    throw failure;
+  }
+  renameSync(pendingPdfPath, pdfPath);
   const text = normalizeVisibleText(extracted.text || "");
   const textHash = hashText(text);
 
-  writeFileSync(pdfPath, download.buffer);
   writeFileSync(textPath, `${text}\n`, "utf8");
 
   const meta = {
@@ -4305,64 +4576,121 @@ async function capturePdfSource(source) {
   };
 }
 
-async function fetchPdfSource(url) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+function pruneFailedPdfCaptureEvidence(sourceDir, { keep = 3 } = {}) {
+  const retainedLimit = Math.max(1, Math.min(10, nonNegativeInt(keep, 3)));
+  const capturesRoot = join(sourceDir, "captures");
+  if (!existsSync(capturesRoot)) return { retained: 0, pruned: 0 };
+  const resolvedRoot = resolve(capturesRoot);
+  const candidates = [];
+  for (const entry of readdirSync(capturesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidateDir = resolve(capturesRoot, entry.name);
+    if (dirname(candidateDir) !== resolvedRoot) continue;
+    const failurePath = join(candidateDir, "capture-failure.json");
+    const successfulMetaPath = join(candidateDir, "meta.json");
+    if (!existsSync(failurePath) || existsSync(successfulMetaPath)) continue;
+    try {
+      const metadata = JSON.parse(readFileSync(failurePath, "utf8"));
+      if (
+        metadata?.kind !== "pdf_capture_failure" ||
+        metadata?.status !== "failed_not_baseline"
+      ) continue;
+      candidates.push({
+        dir: candidateDir,
+        capturedAt: cleanText(metadata.captured_at) || entry.name,
+      });
+    } catch {
+      // Never delete an unparseable artifact automatically.
+    }
+  }
+  candidates.sort((left, right) => right.capturedAt.localeCompare(left.capturedAt));
+  const removable = candidates.slice(retainedLimit);
+  for (const candidate of removable) {
+    if (dirname(candidate.dir) !== resolvedRoot) {
+      throw new Error("Refused to prune failed PDF evidence outside the source capture directory.");
+    }
+    rmSync(candidate.dir, { recursive: true, force: true });
+  }
+  return {
+    retained: Math.min(candidates.length, retainedLimit),
+    pruned: removable.length,
+  };
+}
 
-  try {
-    const response = await fetch(url, {
-      redirect: "follow",
-      signal: controller.signal,
+async function fetchPdfSource(url) {
+  const download = await fetchPublicHttpBuffer(url, {
+    maxBytes: maxPdfBytes,
+    timeoutMs,
+    maxRedirects: 5,
+    label: "PDF",
+    init: {
       headers: {
         "User-Agent": crawlerUserAgent,
         Accept: "application/pdf,application/octet-stream,text/html;q=0.8,*/*;q=0.5",
       },
-    });
-
-    if (!response.ok) {
-      throw new Error(`PDF download failed with HTTP ${response.status} ${response.statusText}`.trim());
-    }
-
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (contentLength > maxPdfBytes) {
-      throw new Error(`PDF is too large (${contentLength} bytes; limit ${maxPdfBytes} bytes)`);
-    }
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > maxPdfBytes) {
-      throw new Error(`PDF is too large (${buffer.length} bytes; limit ${maxPdfBytes} bytes)`);
-    }
-
-    return {
-      buffer,
-      finalUrl: response.url || url,
-      status: response.status,
-      statusText: response.statusText,
-      contentType: response.headers.get("content-type") || null,
-    };
-  } finally {
-    clearTimeout(timeout);
+    },
+  });
+  if (download.status < 200 || download.status >= 300) {
+    throw new Error(
+      `PDF download failed with HTTP ${download.status} ${download.statusText}`.trim(),
+    );
   }
+  return download;
 }
 
 async function extractPdfText(buffer) {
   let parser = null;
+  let primaryError = null;
   try {
     parser = new PDFParse({ data: new Uint8Array(buffer) });
-    const result = await parser.getText();
+    // Parsing no more than the configured first N pages prevents a crafted PDF
+    // from forcing unbounded work. result.total still reports the document's
+    // real page count, so an oversized document fails instead of publishing a
+    // misleading partial baseline.
+    const result = await withTimeout(
+      parser.getText({ first: maxPdfPages }),
+      pdfParseTimeoutMs,
+      `PDF text parsing exceeded ${pdfParseTimeoutMs}ms.`,
+    );
+    if (Number(result.total) > maxPdfPages) {
+      const error = new Error(`PDF has ${result.total} pages; limit ${maxPdfPages} pages.`);
+      error.code = "AWARDPING_PDF_PAGE_LIMIT";
+      throw error;
+    }
     return {
       text: result.text || "",
       pageCount: result.total || null,
       error: null,
     };
   } catch (error) {
-    return {
-      text: "",
-      pageCount: null,
-      error: errorMessage(error),
-    };
+    primaryError = error;
+    if (
+      error?.code === "AWARDPING_SOURCE_TIMEOUT" ||
+      error?.code === "AWARDPING_PDF_PAGE_LIMIT"
+    ) {
+      throw error;
+    }
+    const parseError = new Error(`PDF text parsing failed: ${errorMessage(error)}`, {
+      cause: error,
+    });
+    parseError.code = "AWARDPING_PDF_PARSE_FAILED";
+    primaryError = parseError;
+    throw parseError;
   } finally {
-    await parser?.destroy().catch(() => null);
+    if (parser) {
+      try {
+        await withTimeout(
+          parser.destroy(),
+          5_000,
+          "PDF parser cleanup exceeded 5000ms.",
+        );
+      } catch (cleanupError) {
+        if (!primaryError) throw cleanupError;
+        // Preserve the primary parsing/page-limit failure while retaining a
+        // bounded, reportable indication that parser cleanup also failed.
+        primaryError.pdf_cleanup_error = errorMessage(cleanupError);
+      }
+    }
   }
 }
 
@@ -4371,7 +4699,7 @@ async function captureSource(
   context,
   browserMeta,
   report,
-  { baseline = null, suppressDiscovery = false } = {},
+  { baseline = null, suppressDiscovery = false, networkProxy = null } = {},
 ) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
@@ -4387,11 +4715,18 @@ async function captureSource(
   const sectionsJsonPath = join(captureDir, "sections.json");
   const layoutPath = join(captureDir, "layout.json");
   const metaPath = join(captureDir, "meta.json");
+  const pendingMetaPath = join(captureDir, "meta.pending.json");
+  const captureUrl = normalizePublicHttpUrl(source.url).toString();
+  const networkCheckpoint = networkProxy?.policyCheckpoint?.() ?? null;
   const page = await context.newPage();
+
+  let completedCapture = null;
+  let discoveryCommit = null;
+  let captureFailed = false;
 
   let response = null;
   try {
-    response = await page.goto(source.url, {
+    response = await page.goto(captureUrl, {
       waitUntil: "domcontentloaded",
       timeout: timeoutMs,
     });
@@ -4499,6 +4834,11 @@ async function captureSource(
       report.capture_settle_wait_ms += pageSettle.waited_ms;
     }
 
+    // Fail before discovery walks the final DOM if expansion or lazy loading
+    // produced runaway content. A second snapshot below binds the exact text
+    // and dimensions used by geometry and screenshot capture.
+    await capturePageResourceSnapshot(page, { stateId: "main" });
+
     // Discover links only from the same fully expanded, fully scrolled, settled
     // DOM that is about to be captured. A failed/capped expansion, capped
     // scroll, or unsettled page is an incomplete scan and must never establish
@@ -4545,14 +4885,9 @@ async function captureSource(
 
     const pageTitle = await page.title().catch(() => "");
     const finalUrl = page.url();
-    const dimensions = await page.evaluate(() => ({
-      viewport_width: window.innerWidth,
-      viewport_height: window.innerHeight,
-      scroll_width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
-      scroll_height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0),
-      device_pixel_ratio: window.devicePixelRatio || 1,
-    }));
-    const rawText = await page.evaluate(() => document.body?.innerText || "");
+    const resourceSnapshot = await capturePageResourceSnapshot(page, { stateId: "main" });
+    const dimensions = resourceSnapshot.render.dimensions;
+    const rawText = resourceSnapshot.text.text;
     const stableTextSamples = await extractStableTextBlockSamples(page);
     const textBlocks = buildStableTextBlocks({
       rawText,
@@ -4593,7 +4928,6 @@ async function captureSource(
           reason: "page_did_not_settle_before_geometry_capture",
         });
     const pageBuffer = await page.screenshot({
-      path: pagePath,
       fullPage: true,
       type: "jpeg",
       quality: jpegQuality,
@@ -4603,6 +4937,7 @@ async function captureSource(
     const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry, {
       stateId: "main",
     });
+    assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId: "main" });
     if (pageSettle.stable) {
       const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(page, {
         capturedAt,
@@ -4621,6 +4956,7 @@ async function captureSource(
       imageRef: toArchiveRelative(pagePath),
       screenshot: screenshotBinding,
     });
+    writeFileSync(pagePath, pageBuffer);
     writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
     const thumbnail = await createThumbnail(context, pageBuffer);
     writeFileSync(thumbPath, thumbnail);
@@ -4742,20 +5078,18 @@ async function captureSource(
       },
     };
 
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+    assertCaptureNetworkWithinLimits(networkProxy, networkCheckpoint, {
+      stateId: "main",
+      maxBytes: maxBrowserResponseBytes,
+    });
+    writeFileSync(pendingMetaPath, JSON.stringify(meta, null, 2), "utf8");
 
-    // Discovery becomes durable only after the page has passed capture-quality
-    // validation and its evidence has been written successfully. A transient
-    // CAPTCHA, access-block, or soft-404 page must never establish an empty or
-    // partial historical watermark that turns old links into live alerts later.
-    if (pdfDiscoveryForRegistration) {
-      await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration, expanded, report);
-    }
-    if (!suppressDiscovery && discoveryMode && discoverHtmlSubpages) {
-      await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
-    }
-
-    return {
+    discoveryCommit = {
+      pdfDiscoveryForRegistration,
+      discoveredHtmlLinks,
+      expanded,
+    };
+    completedCapture = {
       ...meta,
       dir: captureDir,
       page_path: pagePath,
@@ -4784,9 +5118,73 @@ async function captureSource(
       expansion_text_length: textBlocks.expansion_text_length,
       section_text_length: sectionsText.length,
     };
+  } catch (error) {
+    captureFailed = true;
+    throw error;
   } finally {
-    await page.close().catch(() => null);
+    // The context/proxy pair belongs to exactly one source. Shutdown, DNS
+    // settlement, stream destruction, and the final policy snapshot form one
+    // required barrier before baseline, R2, or discovery mutation.
+    try {
+      await finalizeCaptureNetworkBoundary({
+        page,
+        context,
+        networkProxy,
+        checkpoint: networkCheckpoint,
+        stateId: "main",
+        maxBytes: maxBrowserResponseBytes,
+        shutdownTimeoutMs: Math.min(5_000, timeoutMs),
+      });
+    } catch (error) {
+      captureFailed = true;
+      throw error;
+    } finally {
+      if (captureFailed) {
+        // No metadata pointer may survive a failed source boundary. These files
+        // were never published or referenced, so removal is safer than leaving
+        // recoverable-looking evidence behind.
+        try {
+          rmSync(captureDir, { recursive: true, force: true });
+        } catch {
+          // The pending filename still prevents recovery tooling from treating
+          // a cleanup failure as a valid capture.
+        }
+      }
+    }
   }
+
+  try {
+    renameSync(pendingMetaPath, metaPath);
+  } catch (error) {
+    try {
+      rmSync(captureDir, { recursive: true, force: true });
+    } catch {
+      // Preserve the atomic-publication failure as the primary error.
+    }
+    throw error;
+  }
+
+  // Discovery becomes durable only after the page and every proxied resource
+  // have passed capture-quality validation. A failed/capped subresource must
+  // never establish an empty or partial historical watermark.
+  if (discoveryCommit.pdfDiscoveryForRegistration) {
+    await maybeRecordDiscoveredPdfSources(
+      source,
+      discoveryCommit.pdfDiscoveryForRegistration,
+      discoveryCommit.expanded,
+      report,
+    );
+  }
+  if (!suppressDiscovery && discoveryMode && discoverHtmlSubpages) {
+    await maybeRecordDiscoveredHtmlSources(
+      source,
+      discoveryCommit.discoveredHtmlLinks,
+      discoveryCommit.expanded,
+      report,
+    );
+  }
+
+  return completedCapture;
 }
 
 async function expandPageForSnapshot(page, { source = null, profile = captureProfile } = {}) {
@@ -5042,6 +5440,9 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
   }
 
   try {
+    // Descriptor discovery walks candidate controls and their text. Bound the
+    // unopened page first so a hostile DOM cannot make that scan unbounded.
+    await capturePageResourceSnapshot(page, { stateId: "expansion-discovery" });
     const setup = await discoverExpansionStateDescriptors(page, {
       maxControls: maxExpansionStateScreenshots,
       relevanceMode,
@@ -5110,13 +5511,13 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
               );
             }
             const stateCapturedAt = new Date().toISOString();
-            const finalStateText = await statePage.evaluate(() => document.body?.innerText || "");
+            const resourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
+            const finalStateText = resourceSnapshot.text.text;
             let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
               capturedAt: stateCapturedAt,
               stateId,
             });
             const pageBuffer = await statePage.screenshot({
-              path: pagePath,
               fullPage: true,
               type: "jpeg",
               quality: jpegQuality,
@@ -5126,6 +5527,7 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
             const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
               stateId,
             });
+            assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId });
             const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
               capturedAt: stateCapturedAt,
               stateId,
@@ -5142,6 +5544,7 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
               imageRef: toArchiveRelative(pagePath),
               screenshot: screenshotBinding,
             });
+            writeFileSync(pagePath, pageBuffer);
             writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
 
             const normalizedText = normalizeVisibleText(finalStateText);
@@ -5175,6 +5578,7 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
         });
         states.push(state);
       } catch (error) {
+        if (isCaptureResourceLimitError(error)) throw error;
         failures.push({
           index: candidate.index,
           label: candidate.label || null,
@@ -5196,6 +5600,7 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
       error: truncationError,
     };
   } catch (error) {
+    if (isCaptureResourceLimitError(error)) throw error;
     return {
       states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
       capture_complete: false, truncated: false, truncated_count: 0,
@@ -5479,6 +5884,7 @@ async function extractExpandableSectionsForCapture(
 
     return result;
   } catch (error) {
+    if (isCaptureResourceLimitError(error)) throw error;
     return {
       ...emptySectionExtractionResult(profile, "error"),
       enabled: true,
@@ -5560,6 +5966,7 @@ async function captureSectionEvidenceScreenshots(page, captureDir, sections) {
         y: Math.max(0, Math.floor(top - 16)),
         width: Math.max(120, Math.ceil(right - left + 32)),
         height: Math.max(80, Math.ceil(bottom - top + 32)),
+        device_pixel_ratio: Number(window.devicePixelRatio) || 1,
       };
     }, { index: section.index });
 
@@ -5572,13 +5979,19 @@ async function captureSectionEvidenceScreenshots(page, captureDir, sections) {
       width: Math.min(result.width, 1800),
       height: Math.min(result.height, 2200),
     };
+    const sectionStateId = `section:${section.section_key}`;
     const buffer = await page.screenshot({
-      path,
       clip,
       type: "jpeg",
       quality: jpegQuality,
       timeout: timeoutMs,
     });
+    const screenshotBinding = await screenshotBindingFromBuffer(buffer, {
+      document: { width: clip.width, height: clip.height },
+      device_pixel_ratio: result.device_pixel_ratio,
+    }, { stateId: sectionStateId });
+    assertCapturedScreenshotWithinLimits(buffer, screenshotBinding, { stateId: sectionStateId });
+    writeFileSync(path, buffer);
     evidence.push({
       section_key: section.section_key,
       section_label: section.label,
@@ -5978,6 +6391,35 @@ async function forceScrollRevealElementsVisible(page) {
       selectors: [],
       error: errorMessage(error),
     }));
+}
+
+async function capturePageResourceSnapshot(page, { stateId = "main" } = {}) {
+  const render = await assertCaptureRenderWithinLimits(page, {
+    stateId,
+    maxWidthCssPx: maxCaptureWidthCssPx,
+    maxHeightCssPx: maxCaptureHeightCssPx,
+    maxRenderPixels: maxCaptureRenderPixels,
+  });
+  const text = await captureBoundedBodyInnerText(page, {
+    stateId,
+    maxChars: maxCaptureTextChars,
+    maxTextNodes: maxCaptureTextNodes,
+    maxElements: maxCaptureDomElements,
+  });
+  return { render, text };
+}
+
+function assertCapturedScreenshotWithinLimits(buffer, screenshot, { stateId = "main" } = {}) {
+  assertCaptureScreenshotBytes(buffer, {
+    stateId,
+    maxBytes: maxCaptureScreenshotBytes,
+  });
+  assertCaptureScreenshotDimensions(screenshot, {
+    stateId,
+    maxWidthCssPx: maxCaptureWidthCssPx,
+    maxHeightCssPx: maxCaptureHeightCssPx,
+    maxRenderPixels: maxCaptureRenderPixels,
+  });
 }
 
 async function captureStructuredVisibleTextGeometry(page, { capturedAt = null, stateId = "main" } = {}) {
@@ -10675,10 +11117,12 @@ async function startWorkerRun(report) {
 async function finishWorkerRun(runId, status, errorMessageValue, report) {
   if (!runId) return;
 
+  const persistedStatus = visualRunTerminalDisposition(report, status).worker_status;
+
   const { error } = await supabase
     .from("local_worker_runs")
     .update({
-      status,
+      status: persistedStatus,
       checked_count: report.checked,
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
@@ -10693,7 +11137,7 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
 
   if (error) {
     if (isMissingMetadataColumnError(error)) {
-      await finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, report);
+      await finishWorkerRunWithoutMetadata(runId, persistedStatus, errorMessageValue, report);
       return;
     }
     console.log(`WORKER RUN LOG FAILED | ${error.message}`);
@@ -11260,6 +11704,7 @@ function parseHttpStatusFromMessage(message) {
 
 function failureTypeFromMessage(message, statusCode) {
   const lower = String(message || "").toLowerCase();
+  if (lower.includes("capture_resource_limit")) return "capture_resource_limit";
   if (statusCode === 404 || lower.includes("http 404")) return "http_404";
   if (lower.includes("security_challenge") || lower.includes("robot challenge")) return "security_challenge";
   if (lower.includes("soft_404") || lower.includes("page not found")) return "soft_404";
@@ -11291,21 +11736,26 @@ async function fetchProbe(url, method) {
   }
 
   try {
-    const response = await fetch(url, {
+    const fetched = await fetchPublicHttpResponse(url, {
       method,
-      redirect: "follow",
       signal: controller.signal,
       headers,
+    }, {
+      maxRedirects: 5,
     });
-
-    return {
-      status_code: response.status || null,
-      status_text: response.statusText || null,
-      final_url: response.url || url,
-      content_type: response.headers.get("content-type") || null,
-      content_length: numericHeader(response.headers.get("content-length")),
-      probe_error: null,
-    };
+    try {
+      return {
+        status_code: fetched.response.status || null,
+        status_text: fetched.response.statusText || null,
+        final_url: fetched.url.toString(),
+        content_type: fetched.response.headers.get("content-type") || null,
+        content_length: numericHeader(fetched.response.headers.get("content-length")),
+        probe_error: null,
+      };
+    } finally {
+      await fetched.response.body?.cancel().catch(() => null);
+      await fetched.close().catch(() => null);
+    }
   } finally {
     clearTimeout(timeout);
   }
@@ -11377,7 +11827,9 @@ async function launchBrowser() {
       "--disable-background-networking",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
+      "--disable-quic",
       "--disable-features=Translate,AutofillServerCommunication,MediaRouter",
+      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
       "--mute-audio",
     ],
   };
@@ -11407,13 +11859,17 @@ async function launchBrowser() {
   }
 }
 
-async function createBrowserContext(browser) {
+async function createBrowserContext(browser, networkProxy = null) {
   const context = await browser.newContext({
+    proxy: networkProxy
+      ? { server: networkProxy.url, bypass: "<-loopback>" }
+      : undefined,
     viewport: { width: viewportWidth, height: viewportHeight },
     userAgent: crawlerUserAgent,
     locale: "en-US",
     colorScheme: "light",
-    ignoreHTTPSErrors: true,
+    ignoreHTTPSErrors: false,
+    serviceWorkers: "block",
     deviceScaleFactor: 1,
     extraHTTPHeaders: {
       "Accept-Language": "en-US,en;q=0.9",
@@ -11435,15 +11891,53 @@ async function createBrowserContext(browser) {
   });
 
   await context.route("**/*", async (route) => {
-    const url = route.request().url().toLowerCase();
+    const rawUrl = route.request().url();
+    const url = rawUrl.toLowerCase();
     if (/(doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|facebook\.net|hotjar|intercom|drift|crisp|optimizely|segment\.io)/i.test(url)) {
       await route.abort().catch(() => null);
       return;
     }
+    let protocol = "";
+    try {
+      protocol = new URL(rawUrl).protocol;
+    } catch {
+      await route.abort().catch(() => null);
+      return;
+    }
+    if (!["http:", "https:", "data:", "blob:"].includes(protocol)) {
+      await route.abort().catch(() => null);
+      return;
+    }
+    // Every HTTP(S) request continues through the source-scoped pinned proxy so
+    // private literals, private DNS answers, and unsafe redirect targets are
+    // recorded against this capture instead of disappearing as aborted noise.
+    // Chromium fails the request if that proxy becomes unavailable.
     await route.continue().catch(() => null);
   });
 
+  context.on("page", (page) => {
+    page.on("requestfailed", (request) => {
+      const errorText = request.failure()?.errorText || "";
+      if (!isBrowserTransportSecurityFailure(errorText)) return;
+      networkProxy?.recordBrowserPolicyViolation?.({
+        kind: "browser_transport_security_refusal",
+        reason: "browser_transport_security_refusal",
+        url: request.url(),
+      });
+    });
+  });
+
   return context;
+}
+
+function isBrowserTransportSecurityFailure(errorText) {
+  const normalized = String(errorText || "").toUpperCase();
+  return [
+    "ERR_CERT_",
+    "ERR_SSL_",
+    "ERR_TLS_",
+    "ERR_INSECURE_RESPONSE",
+  ].some((fragment) => normalized.includes(fragment));
 }
 
 function findInstalledBrowserExecutable() {
@@ -13856,7 +14350,15 @@ function errorMessage(error) {
 }
 
 function isSourceTimeoutError(error) {
-  return error?.code === "AWARDPING_SOURCE_TIMEOUT";
+  return errorChainHasCode(error, "AWARDPING_SOURCE_TIMEOUT");
+}
+
+function isCaptureNetworkBoundaryError(error) {
+  return [
+    "AWARDPING_PROXY_SETTLE_TIMEOUT",
+    "AWARDPING_CAPTURE_CONTEXT_SHUTDOWN",
+    "AWARDPING_CAPTURE_PROXY_SHUTDOWN",
+  ].some((code) => errorChainHasCode(error, code));
 }
 
 function isBrowserClosedError(error) {

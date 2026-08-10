@@ -12,6 +12,7 @@ import {
   monitoringDateForTimestamp,
   monitoringDateForVisualReportFilename,
   shouldReplaceLatestNightlyReport,
+  visualRunTerminalDisposition,
 } from "./lib/visual-capture-run-report.mjs";
 import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 
@@ -76,6 +77,77 @@ function inventoryProof(shardIndex, partitionCounts = [100, 100, 100]) {
 }
 
 describe("visual capture run reporting", () => {
+  it.each([
+    {
+      label: "zero source failures",
+      report: { checked: 10, failed: 0, baseline_coverage_start: { loaded_sources: 10 } },
+      expected: {
+        report_status: "succeeded",
+        execution_status: "succeeded",
+        worker_status: "succeeded",
+        health_status: "healthy",
+      },
+    },
+    {
+      label: "partial source failures",
+      report: { checked: 9, failed: 1, baseline_coverage_start: { loaded_sources: 10 } },
+      expected: {
+        report_status: "degraded",
+        execution_status: "succeeded",
+        worker_status: "failed",
+        health_status: "degraded",
+      },
+    },
+    {
+      label: "total source failures",
+      report: { checked: 0, failed: 10, baseline_coverage_start: { loaded_sources: 10 } },
+      expected: {
+        report_status: "failed",
+        execution_status: "succeeded",
+        worker_status: "failed",
+        health_status: "failed",
+      },
+    },
+  ])("persists a truthful terminal outcome for $label", ({ report, expected }) => {
+    const disposition = visualRunTerminalDisposition(report);
+    const summary = buildVisualRunReportSummary({
+      ...report,
+      status: disposition.report_status,
+      execution_status: disposition.execution_status,
+      errors: Array.from({ length: report.failed }, (_, index) => ({
+        source_id: `source-${index}`,
+        message: "Source capture failed.",
+      })),
+    });
+
+    expect(disposition).toMatchObject({
+      report_status: expected.report_status,
+      execution_status: expected.execution_status,
+      worker_status: expected.worker_status,
+    });
+    expect(summary.run_health).toMatchObject({
+      status: expected.health_status,
+      execution_status: "succeeded",
+      loaded_sources: 10,
+      source_failures: report.failed,
+      inventory_complete: true,
+    });
+  });
+
+  it("applies the truthful disposition at every visual-worker success exit and persistence boundary", () => {
+    const workerSource = readFileSync(
+      new URL("./capture-visual-snapshots.mjs", import.meta.url),
+      "utf8",
+    );
+
+    expect(workerSource.match(/const terminalDisposition = visualRunTerminalDisposition\(report\);/g))
+      .toHaveLength(2);
+    expect(workerSource).toContain(
+      "const persistedStatus = visualRunTerminalDisposition(report, status).worker_status;",
+    );
+    expect(workerSource).not.toContain('finishWorkerRun(workerRunId, "succeeded"');
+  });
+
   it("marks process success with source failures as degraded and supplies a guarded repair", () => {
     const summary = buildVisualRunReportSummary({
       status: "succeeded",
@@ -113,6 +185,159 @@ describe("visual capture run reporting", () => {
     expect(classifyVisualCaptureFailure({
       message: "page.goto: Timeout 60000ms exceeded. Probe returned HTTP 200.",
     }).code).toBe("network_transient");
+  });
+
+  it.each([
+    {
+      message:
+        "capture_resource_limit: resource=browser_network_policy observed=https_tunnel_refusal timeout",
+      expectedCode: "browser_network_policy_refusal",
+    },
+    {
+      message:
+        "capture_resource_limit: resource=browser_network_settle observed=1_in_flight timeout",
+      expectedCode: "browser_network_settle_timeout",
+    },
+    {
+      message:
+        "capture_resource_limit: resource=browser_context_shutdown observed=context_close_failed",
+      expectedCode: "browser_capture_boundary_shutdown",
+    },
+    {
+      message:
+        "capture_resource_limit: resource=render_pixels observed=90000000 limit=80000000",
+      expectedCode: "capture_resource_limit",
+    },
+    {
+      message: "PDF is too large (52428801 bytes) after a fetch timeout.",
+      expectedCode: "pdf_size_or_page_limit",
+    },
+    {
+      message: "PDF has 501 pages; limit 500 pages. The parser timed out.",
+      expectedCode: "pdf_size_or_page_limit",
+    },
+    {
+      message: "PDF text parsing exceeded 30000ms after a network timeout.",
+      expectedCode: "pdf_parse_or_cleanup_failure",
+    },
+    {
+      message: "PDF parser cleanup timed out after 5000ms.",
+      expectedCode: "pdf_parse_or_cleanup_failure",
+    },
+    {
+      message: "PDF text parsing failed: malformed cross-reference table.",
+      expectedCode: "pdf_parse_or_cleanup_failure",
+    },
+  ])("classifies guarded capture failures before generic network errors", ({
+    message,
+    expectedCode,
+  }) => {
+    expect(classifyVisualCaptureFailure({ message }).code).toBe(expectedCode);
+  });
+
+  it("emits guarded repair actions for network, resource, and PDF limits", () => {
+    const summary = buildVisualRunReportSummary({
+      status: "succeeded",
+      checked: 0,
+      failed: 5,
+      baseline_coverage_start: { loaded_sources: 5 },
+      errors: [
+        {
+          source_id: "network-source",
+          message:
+            "capture_resource_limit: resource=browser_network_policy observed=http_policy_refusal",
+        },
+        {
+          source_id: "settle-source",
+          message:
+            "capture_resource_limit: resource=browser_network_settle observed=1_in_flight limit=0",
+        },
+        {
+          source_id: "render-source",
+          message:
+            "capture_resource_limit: resource=render_height_css_px observed=60001 limit=60000",
+        },
+        {
+          source_id: "large-pdf-source",
+          message: "PDF has 501 pages; limit 500 pages.",
+        },
+        {
+          source_id: "slow-pdf-source",
+          message: "PDF parser cleanup exceeded 5000ms after timeout.",
+        },
+      ],
+    });
+
+    expect(summary.repair_plan.requires_operator).toBe(true);
+    expect(summary.failure_groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "browser_network_policy_refusal",
+        group: "network_safety",
+        retry_mode: "operator_guarded",
+        repair_code: "verify_public_network_dependency",
+        solution: expect.stringContaining("never allow private, local, or reserved network access"),
+      }),
+      expect.objectContaining({
+        code: "browser_network_settle_timeout",
+        group: "network_safety",
+        retry_mode: "automatic_once_then_operator",
+        repair_code: "retry_fresh_proxy_then_inspect_dns",
+        solution: expect.stringContaining("never publish evidence"),
+      }),
+      expect.objectContaining({
+        code: "capture_resource_limit",
+        group: "evidence_integrity",
+        retry_mode: "operator_guarded",
+        repair_code: "inspect_capture_resource_limit",
+        solution: expect.stringContaining("never publish partial evidence"),
+      }),
+      expect.objectContaining({
+        code: "pdf_size_or_page_limit",
+        group: "evidence_integrity",
+        retry_mode: "operator_guarded",
+        repair_code: "inspect_pdf_size_or_page_limit",
+        solution: expect.stringContaining("never publish a truncated PDF"),
+      }),
+      expect.objectContaining({
+        code: "pdf_parse_or_cleanup_failure",
+        group: "evidence_integrity",
+        retry_mode: "operator_guarded",
+        repair_code: "inspect_pdf_parser_time_limit",
+        solution: expect.stringContaining("never publish missing or partial PDF text"),
+      }),
+    ]));
+    expect(summary.repair_plan.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        failure_code: "browser_network_policy_refusal",
+        retry_mode: "operator_guarded",
+        repair_code: "verify_public_network_dependency",
+        solution: expect.stringContaining("never allow private, local, or reserved network access"),
+      }),
+      expect.objectContaining({
+        failure_code: "browser_network_settle_timeout",
+        retry_mode: "automatic_once_then_operator",
+        repair_code: "retry_fresh_proxy_then_inspect_dns",
+        solution: expect.stringContaining("never publish evidence"),
+      }),
+      expect.objectContaining({
+        failure_code: "capture_resource_limit",
+        retry_mode: "operator_guarded",
+        repair_code: "inspect_capture_resource_limit",
+        solution: expect.stringContaining("never publish partial evidence"),
+      }),
+      expect.objectContaining({
+        failure_code: "pdf_size_or_page_limit",
+        retry_mode: "operator_guarded",
+        repair_code: "inspect_pdf_size_or_page_limit",
+        solution: expect.stringContaining("never publish a truncated PDF"),
+      }),
+      expect.objectContaining({
+        failure_code: "pdf_parse_or_cleanup_failure",
+        retry_mode: "operator_guarded",
+        repair_code: "inspect_pdf_parser_time_limit",
+        solution: expect.stringContaining("never publish missing or partial PDF text"),
+      }),
+    ]));
   });
 
   it("prioritizes the failed stage over a provider named in the message", () => {

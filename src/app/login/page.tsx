@@ -11,6 +11,7 @@ import { safeNextPath } from "@/lib/safe-next-path";
 
 export const metadata: Metadata = {
   title: "Log in",
+  robots: { index: false, follow: false },
 };
 
 type Props = {
@@ -18,6 +19,7 @@ type Props = {
     next?: string;
     account?: string;
     confirmation?: string;
+    recovery?: string;
   }>;
 };
 
@@ -32,9 +34,11 @@ export default async function LoginPage({ searchParams }: Props) {
   const nextPath = safeNextPath(query.next || null);
   const statusMessage = query.account === "created"
     ? "Your invited account was created. Log in to continue."
-    : query.confirmation === "invalid"
-      ? "That confirmation link is invalid or expired. Request a new invitation from your office administrator."
-      : null;
+    : query.recovery === "invalid"
+      ? "That password-reset link is invalid or expired. Request a new link below."
+      : query.confirmation === "invalid"
+        ? "That confirmation link is invalid or expired. Request a new invitation from your office administrator."
+        : null;
 
   return (
     <div className="page-shell">
@@ -53,6 +57,16 @@ export default async function LoginPage({ searchParams }: Props) {
           <div className="mt-6">
             {hasSupabaseConfig() ? <AuthForm mode="login" nextPath={nextPath} /> : <SetupNotice />}
           </div>
+          {hasSupabaseConfig() && (
+            <p className="mt-4 text-right text-sm">
+              <Link
+                className="font-bold text-[var(--brand)]"
+                href="/forgot-password"
+              >
+                Forgot your password?
+              </Link>
+            </p>
+          )}
           <p className="mt-5 text-sm text-[var(--muted)]">
             New accounts require a secure office invitation.{" "}
             <Link className="font-bold text-[var(--brand)]" href="/contact">

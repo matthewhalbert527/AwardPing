@@ -100,8 +100,17 @@ describe("Stage 1 first-visual-baseline activation worker wiring", () => {
       "async function captureSource",
       "async function captureExpansionStateEvidence",
     );
-    expect(capture).toContain("{ baseline = null, suppressDiscovery = false } = {}");
+    expect(capture).toContain(
+      "{ baseline = null, suppressDiscovery = false, networkProxy = null } = {}",
+    );
     expect(capture.match(/!suppressDiscovery && discoveryMode/g)).toHaveLength(3);
+  });
+
+  it("restarts a fresh browser when a wrapped source boundary cannot shut down", () => {
+    expect(worker).toContain("function isCaptureNetworkBoundaryError(error)");
+    expect(worker).toContain('"AWARDPING_CAPTURE_CONTEXT_SHUTDOWN"');
+    expect(worker).toContain('"AWARDPING_CAPTURE_PROXY_SHUTDOWN"');
+    expect(worker).toContain('await restartBrowser(state, "after_failed_stage1_capture")');
   });
 
   it("persists locally and to R2 after prepare, then finalizes before opening success", () => {

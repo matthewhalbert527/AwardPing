@@ -45,7 +45,7 @@ export type PublicDigestEventReceiptStatus =
   | "superseded_unsent"
   | "privacy_scrubbed";
 export type PublicFormRateLimitKind =
-  "subscribe" | "contact" | "source_request";
+  "subscribe" | "contact" | "source_request" | "password_recovery";
 export type SourcePageRequestStatus =
   | "pending"
   | "queued"

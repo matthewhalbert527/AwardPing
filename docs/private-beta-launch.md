@@ -46,6 +46,11 @@ In Supabase Auth:
 - set Site URL to `https://awardping.com`;
 - allow only the exact production confirmation/invitation redirects plus the
   explicit localhost development redirect;
+- set the minimum password length to 12;
+- install `supabase/templates/recovery.html` as the hosted **Reset password**
+  template so recovery links pass `token_hash` with `type=recovery` through
+  `/auth/confirm`; do not use the default fragment-based template for the SSR
+  recovery flow;
 - keep secret credentials server/worker-only.
 
 Using a direct PostgreSQL administrator session, provision the exact production
@@ -364,8 +369,10 @@ Verify anonymously that only effectively verified Stage 1 awards are
 discoverable, non-cohort slugs do not leak, Marshall has no Sherfield source,
 and failed localization shows the event-specific full screenshot with the
 honest unavailable label. Then verify an owner/admin invitation, watchlist,
-office notes/tasks, Operator Action Inbox, quarantine, digest outbox, and both
-paid-lane budget displays.
+office notes/tasks, password recovery from request through password update,
+Operator Action Inbox, quarantine, digest outbox, and both paid-lane budget
+displays. Use both a real invited email and an unregistered email and confirm
+the recovery request page gives the same public response for both.
 
 The 13:00 UTC daily digest job both freezes new digest payloads and immediately
 drains the durable outbox. A second Hobby-compatible daily job at 14:00 UTC

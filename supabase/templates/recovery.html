@@ -1,0 +1,15 @@
+<html>
+  <body>
+    <h2>Reset your AwardPing password</h2>
+    <p>
+      We received a request to reset the password for your invited AwardPing
+      account.
+    </p>
+    <p>
+      <a href="{{ .RedirectTo }}?token_hash={{ .TokenHash }}&amp;type=recovery&amp;next=%2Freset-password%3Fnext%3D%252Fupdates">
+        Choose a new password
+      </a>
+    </p>
+    <p>This one-time link expires shortly. If you did not request it, ignore this email.</p>
+  </body>
+</html>

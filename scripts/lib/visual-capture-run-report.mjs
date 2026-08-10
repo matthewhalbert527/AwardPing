@@ -177,6 +177,100 @@ const FAILURE_POLICIES = [
     ],
   },
   {
+    code: "browser_network_policy_refusal",
+    group: "network_safety",
+    label: "Browser dependency violated the public-network policy",
+    severity: "critical",
+    retry_mode: "operator_guarded",
+    repair_code: "verify_public_network_dependency",
+    solution:
+      "Keep the current baseline and inspect the official page dependency that was refused. Correct or remove the unsafe dependency only after verification; never allow private, local, or reserved network access merely to make the capture pass.",
+    matches: [
+      "resource=browser_network_policy",
+      "public_network_policy_refusal",
+      "public network policy refused",
+      "browser network policy",
+    ],
+  },
+  {
+    code: "browser_network_settle_timeout",
+    group: "network_safety",
+    label: "Browser network validation did not settle",
+    severity: "critical",
+    retry_mode: "automatic_once_then_operator",
+    repair_code: "retry_fresh_proxy_then_inspect_dns",
+    solution:
+      "The worker retries once with a fresh browser and proxy at no API charge. If it repeats, keep the current baseline and inspect slow DNS or a hanging page dependency; never publish evidence while a network-policy decision is still in flight.",
+    matches: [
+      "resource=browser_network_settle",
+      "awardping_proxy_settle_timeout",
+      "network-policy evaluation did not settle",
+    ],
+  },
+  {
+    code: "browser_capture_boundary_shutdown",
+    group: "network_safety",
+    label: "Source browser boundary could not close cleanly",
+    severity: "critical",
+    retry_mode: "automatic_once_then_operator",
+    repair_code: "retry_fresh_browser_then_inspect_shutdown",
+    solution:
+      "The worker retries once with a fresh browser and proxy at no API charge. If shutdown fails again, keep the current baseline and inspect the browser process or page dependency; never reuse or publish evidence from the failed source boundary.",
+    matches: [
+      "resource=browser_context_shutdown",
+      "resource=browser_proxy_shutdown",
+      "awardping_capture_context_shutdown",
+      "awardping_capture_proxy_shutdown",
+    ],
+  },
+  {
+    code: "capture_resource_limit",
+    group: "evidence_integrity",
+    label: "Capture exceeded a guarded resource limit",
+    severity: "critical",
+    retry_mode: "operator_guarded",
+    repair_code: "inspect_capture_resource_limit",
+    solution:
+      "Keep the current baseline and inspect the official page for runaway, infinite, or unexpectedly duplicated content. Change the configured cap only after operator review; never publish partial evidence to clear the failure.",
+    matches: ["capture_resource_limit", "awardping_capture_resource_limit"],
+  },
+  {
+    code: "pdf_size_or_page_limit",
+    group: "evidence_integrity",
+    label: "PDF exceeded the guarded size or page limit",
+    severity: "critical",
+    retry_mode: "operator_guarded",
+    repair_code: "inspect_pdf_size_or_page_limit",
+    solution:
+      "Keep the current baseline and verify that the oversized PDF is the intended official document. Increase a limit only after operator review and a safe targeted test; never publish a truncated PDF as complete evidence.",
+    matches: [
+      "pdf is too large",
+      "pdf has ",
+      "pdf page limit",
+      "awardping_pdf_page_limit",
+    ],
+  },
+  {
+    code: "pdf_parse_or_cleanup_failure",
+    group: "evidence_integrity",
+    label: "PDF parsing or cleanup failed",
+    severity: "critical",
+    retry_mode: "operator_guarded",
+    repair_code: "inspect_pdf_parser_time_limit",
+    solution:
+      "Keep the current baseline and inspect the retained PDF before a targeted parser retry. Adjust the parser time limit only after operator review; never publish missing or partial PDF text as complete evidence.",
+    matches: [
+      "pdf text parsing exceeded",
+      "pdf text parsing failed",
+      "pdf parser cleanup exceeded",
+      "pdf text parsing timed out",
+      "pdf parser cleanup timed out",
+      "pdf parse timeout",
+      "pdf cleanup timeout",
+      "awardping_pdf_parse_failed",
+    ],
+  },
+  {
     code: "capture_render_or_unsupported",
     group: "capture_runtime",
     label: "Page could not be rendered",
@@ -254,6 +348,12 @@ export function classifyVisualCaptureFailure(error) {
       "downstream_persistence_failed",
       "storage_sync_failed",
       "capture_blank_or_incomplete",
+      "browser_network_policy_refusal",
+      "browser_network_settle_timeout",
+      "browser_capture_boundary_shutdown",
+      "capture_resource_limit",
+      "pdf_size_or_page_limit",
+      "pdf_parse_or_cleanup_failure",
       "localization_evidence_unavailable",
     ].includes(candidate.code))
     .find((candidate) => candidate.matches.some((pattern) => lower.includes(pattern)));
@@ -339,9 +439,14 @@ export function buildVisualRunReportSummary(report = {}) {
   const inventoryProofComplete = !inventoryProofRequired || inventoryProof.complete;
   const inventoryComplete = loadedSources > 0 && processedSources === loadedSources &&
     inventoryProofComplete;
-  const executionStatus = cleanText(report.status) || "running";
+  const reportedStatus = cleanText(report.status) || "running";
+  const executionStatus = cleanText(report.execution_status) ||
+    cleanText(report.run_health?.execution_status) || reportedStatus;
   const operationalStatus = operationalStatusFor({
+    reportedStatus,
     executionStatus,
+    loadedSources,
+    pagesCaptured,
     failedSources,
     incidentCount: errors.length,
     inventoryComplete,
@@ -422,6 +527,38 @@ export function annotateVisualRunReport(report) {
   return report;
 }
 
+export function visualRunTerminalDisposition(report = {}, executionStatus = "succeeded") {
+  const normalizedExecutionStatus = cleanText(executionStatus) || "succeeded";
+  if (normalizedExecutionStatus !== "succeeded") {
+    return {
+      report_status: normalizedExecutionStatus,
+      execution_status: normalizedExecutionStatus,
+      worker_status: normalizedExecutionStatus === "running" ? "running" : "failed",
+    };
+  }
+
+  const pagesCaptured = nonNegativeNumber(report.checked);
+  const failedSources = nonNegativeNumber(report.failed);
+  const loadedSources = nonNegativeNumber(report.baseline_coverage_start?.loaded_sources) ||
+    Math.max(pagesCaptured, failedSources);
+  const allLoadedSourcesFailed = failedSources > 0 && pagesCaptured === 0 &&
+    loadedSources > 0 && failedSources >= loadedSources;
+
+  return {
+    report_status: allLoadedSourcesFailed
+      ? "failed"
+      : failedSources > 0
+        ? "degraded"
+        : "succeeded",
+    execution_status: "succeeded",
+    // local_worker_runs intentionally has no "degraded" enum value. Persist a
+    // non-success terminal status whenever any source failed, then use
+    // metadata.run_health to distinguish degraded completion from execution
+    // failure for operators and downstream reporting.
+    worker_status: failedSources > 0 ? "failed" : "succeeded",
+  };
+}
+
 export function buildNightlyVisualReport(reports, options = {}) {
   const candidates = (Array.isArray(reports) ? reports : [])
     .filter(isDailyVisualShardReport)
@@ -448,7 +585,8 @@ export function buildNightlyVisualReport(reports, options = {}) {
   const shards = [...canonicalByShard.entries()]
     .sort(([left], [right]) => left - right)
     .map(([shardIndex, report]) => {
-      const executionStatus = cleanText(report.status) || "unknown";
+      const executionStatus = cleanText(report.execution_status) ||
+        cleanText(report.run_health?.execution_status) || cleanText(report.status) || "unknown";
       const heartbeatAt = cleanText(report.heartbeat_at) || cleanText(report.started_at);
       const heartbeatAgeMs = generatedAtMs - dateMs(heartbeatAt);
       const stalled = executionStatus === "running" &&
@@ -725,11 +863,25 @@ export function shouldReplaceLatestNightlyReport(currentReport, candidateReport)
   return !currentDate || candidateDate >= currentDate;
 }
 
-function operationalStatusFor({ executionStatus, failedSources, incidentCount, inventoryComplete }) {
+function operationalStatusFor({
+  reportedStatus,
+  executionStatus,
+  loadedSources,
+  pagesCaptured,
+  failedSources,
+  incidentCount,
+  inventoryComplete,
+}) {
   if (executionStatus === "running") return "running";
   if (executionStatus === "blocked") return "blocked";
   if (executionStatus === "failed") return "failed";
+  if (reportedStatus === "failed") return "failed";
   if (!inventoryComplete) return "failed";
+  if (
+    failedSources > 0 && pagesCaptured === 0 && loadedSources > 0 &&
+    failedSources >= loadedSources
+  ) return "failed";
+  if (reportedStatus === "degraded") return "degraded";
   if (failedSources > 0 || incidentCount > 0) return "degraded";
   return "healthy";
 }

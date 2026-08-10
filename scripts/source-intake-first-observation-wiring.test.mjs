@@ -85,12 +85,22 @@ describe("new official document source-intake wiring", () => {
     const discoveryIndex = capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage");
     const geometryIndex = capture.indexOf("let finalTextGeometry = pageSettle.stable");
     const screenshotIndex = capture.indexOf("const pageBuffer = await page.screenshot");
+    const evidenceWriteIndex = capture.indexOf("writeFileSync(pendingMetaPath");
+    const boundaryIndex = capture.indexOf("await finalizeCaptureNetworkBoundary({");
+    const metadataPromotionIndex = capture.indexOf("renameSync(pendingMetaPath, metaPath)");
+    const finalNetworkValidationIndex = capture.indexOf(
+      "await finalizeCaptureNetworkBoundary({",
+    );
     const durableRegistrationIndex = capture.indexOf(
-      "await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration",
+      "await maybeRecordDiscoveredPdfSources(",
     );
     expect(discoveryIndex).toBeLessThan(geometryIndex);
     expect(geometryIndex).toBeLessThan(screenshotIndex);
-    expect(screenshotIndex).toBeLessThan(durableRegistrationIndex);
+    expect(screenshotIndex).toBeLessThan(evidenceWriteIndex);
+    expect(evidenceWriteIndex).toBeLessThan(boundaryIndex);
+    expect(boundaryIndex).toBe(finalNetworkValidationIndex);
+    expect(finalNetworkValidationIndex).toBeLessThan(metadataPromotionIndex);
+    expect(metadataPromotionIndex).toBeLessThan(durableRegistrationIndex);
     expect(completeness).toContain('"final_expansion_failed"');
     expect(completeness).toContain('"expandable_control_cap_hit"');
     expect(completeness).toContain('"scroll_activation_failed"');

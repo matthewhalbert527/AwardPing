@@ -127,13 +127,15 @@ export function isPrivateIp(value: string) {
   }
 
   if (version === 4) {
-    const [a, b, c] = address.split(".").map(Number);
+    const [a, b, c, d] = address.split(".").map(Number);
     return (
       a === 0 ||
       a === 10 ||
       a === 127 ||
       (a === 100 && b >= 64 && b <= 127) ||
       (a === 169 && b === 254) ||
+      // Azure exposes this platform virtual IP as a host-local endpoint.
+      (a === 168 && b === 63 && c === 129 && d === 16) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 0 && (c === 0 || c === 2)) ||
       (a === 192 && b === 168) ||
@@ -158,6 +160,12 @@ export function isPrivateIp(value: string) {
     return isPrivateIp(ipv4FromIpv6Words(words));
   }
 
+  // RFC 8215 reserves 64:ff9b:1::/48 for local-use translation. Its embedded
+  // IPv4 position is deployment-specific, so the entire prefix is unsafe for
+  // an outbound public-URL boundary.
+  const isLocalUseTranslation =
+    words[0] === 0x0064 && words[1] === 0xff9b && words[2] === 0x0001;
+
   const isUnspecified = words.every((word) => word === 0);
   const isLoopback = words.slice(0, 7).every((word) => word === 0) && words[7] === 1;
   const isIpv4Mapped =
@@ -178,6 +186,7 @@ export function isPrivateIp(value: string) {
     isUnspecified ||
     isLoopback ||
     isIpv4Mapped ||
+    isLocalUseTranslation ||
     isUniqueLocal ||
     isLinkLocal ||
     isMulticast ||
