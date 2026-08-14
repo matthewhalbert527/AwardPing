@@ -1,5 +1,9 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import {
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+} from "./lib/expansion-state-descriptor-canonicalization.mjs";
 import { isR2CaptureGeometryReady } from "./lib/r2-capture-artifact-bindings.mjs";
 import {
   bindVisualTextGeometry,
@@ -8,6 +12,10 @@ import {
 
 const captureSource = readFileSync(new URL("./capture-visual-snapshots.mjs", import.meta.url), "utf8");
 const expansionIsolationSource = readFileSync(new URL("./lib/expansion-state-isolation.mjs", import.meta.url), "utf8");
+const expansionCanonicalizationSource = readFileSync(
+  new URL("./lib/expansion-state-descriptor-canonicalization.mjs", import.meta.url),
+  "utf8",
+);
 const visibleGeometrySource = readFileSync(new URL("./lib/visible-text-geometry.mjs", import.meta.url), "utf8");
 
 describe("visual event capture wiring", () => {
@@ -116,12 +124,14 @@ describe("visual event capture wiring", () => {
 
     expect(body).toContain("const descriptors = setup.descriptors || []");
     expect(body).toContain("descriptor: candidate");
-    expect(body).toContain("descriptors,");
+    expect(body).toContain("const isolationDescriptors = setup.isolation_descriptors || descriptors");
+    expect(body).toContain("descriptors: isolationDescriptors");
+    expect(body).toContain("setup.isolation_descriptor_set_complete !== true");
     expect(body).toContain("capture: async (statePage, openedIsolation)");
     expect(body).toContain("fresh_page: true");
     expect(body).toContain("const failures = []");
     expect(body).toContain("failures.push({");
-    expect(body).toContain("attempted: descriptors.length");
+    expect(body).toContain("summarizeExpansionStateCapture(setup, { states, failures })");
     expect(body).not.toContain("page.evaluate(({ maxControls");
     expect(body).not.toContain("restoreExpansionState();");
     expect(discovery).toBeGreaterThan(-1);
@@ -137,13 +147,15 @@ describe("visual event capture wiring", () => {
 
     expect(body).toContain("setup.truncated === true");
     expect(body).toContain("expansion_state_capture_truncated:");
-    expect(body).toContain("candidates: setup.candidates || 0");
-    expect(body).toContain(
-      "capture_complete: setup.descriptor_set_complete !== false && failures.length === 0",
-    );
-    expect(body).toContain("truncated_count: setup.truncated_count || 0");
+    expect(body).toContain("summarizeExpansionStateCapture(setup, { states, failures })");
+    expect(expansionCanonicalizationSource).toContain(": descriptors.length");
+    expect(expansionCanonicalizationSource).toContain("attempted: attemptedCount");
+    expect(expansionCanonicalizationSource).toContain("truncated_count:");
     expect(captureSource).toContain(
-      "expansion_state_capture_complete: expansionStateEvidence.capture_complete !== false",
+      "expansion_state_capture_complete: expansionStateEvidence.capture_complete === true",
+    );
+    expect(captureSource).toContain(
+      'expansion_state_capture_status: expansionStateEvidence.capture_status || "unavailable_unknown"',
     );
     expect(captureSource).toContain(
       "expansion_state_truncated: expansionStateEvidence.truncated === true",
@@ -151,6 +163,49 @@ describe("visual event capture wiring", () => {
     expect(captureSource).toContain(
       "expansion_state_truncated_count: expansionStateEvidence.truncated_count || 0",
     );
+  });
+
+  it("rejects a partial nested completeness claim before retained projection can publish it", () => {
+    const body = functionBody(
+      captureSource,
+      "materializeRetainedCaptureAuthority",
+      "rewriteMatchingBaselineRetainedProjection",
+    );
+    const strictValidation = body.indexOf(
+      "legacyExpansionStateCaptureCoverageFromMetadata({",
+    );
+    const projection = body.indexOf(
+      "projectRetainedCaptureArtifactsForMaterialization(capture",
+    );
+    expect(strictValidation).toBeGreaterThan(-1);
+    expect(projection).toBeGreaterThan(strictValidation);
+
+    const materialize = Function(
+      "legacyExpansionStateCaptureCoverageFromMetadata",
+      "hasExpansionStateCaptureCoverageClaim",
+      `${body}\nreturn materializeRetainedCaptureAuthority;`,
+    )(
+      legacyExpansionStateCaptureCoverageFromMetadata,
+      hasExpansionStateCaptureCoverageClaim,
+    );
+    const malformedCoverage = {
+      complete: true,
+      status: "verified_complete",
+      raw_candidate_count_exact: true,
+      logical_candidate_count_exact: true,
+      truncated_count_exact: true,
+    };
+    const capture = {
+      kind: "webpage",
+      expansion_state_capture_coverage: malformedCoverage,
+      expansion_state_screenshots: [],
+    };
+
+    expect(() => materialize({ id: "source-1" }, capture)).toThrow(
+      "Capture expansion-state coverage claim is invalid before retained artifact projection.",
+    );
+    expect(capture.expansion_state_capture_coverage).toBe(malformedCoverage);
+    expect(capture).not.toHaveProperty("retained_artifact_projection");
   });
 
   it("fails expansion-state capture closed when either fresh-page settle check times out", () => {
@@ -175,7 +230,10 @@ describe("visual event capture wiring", () => {
     const dedupe = expansionIsolationSource.indexOf("seenStates.has(binding.key)");
     const count = expansionIsolationSource.indexOf("candidateCount += 1", dedupe);
     const retain = expansionIsolationSource.indexOf("controls.push({ control, binding })", dedupe);
-    const truncated = expansionIsolationSource.indexOf("const truncatedCount =", retain);
+    const canonicalize = expansionIsolationSource.indexOf(
+      "canonicalizeExpansionStateDescriptors(rawDiscovery",
+      retain,
+    );
 
     expect(expansionIsolationSource).toContain("const binding = stateBindingFor(element)");
     expect(expansionIsolationSource).toContain('kind: "adjacent-panel"');
@@ -188,8 +246,11 @@ describe("visual event capture wiring", () => {
     expect(dedupe).toBeGreaterThan(navFilter);
     expect(count).toBeGreaterThan(dedupe);
     expect(retain).toBeGreaterThan(count);
-    expect(truncated).toBeGreaterThan(retain);
+    expect(canonicalize).toBeGreaterThan(retain);
     expect(expansionIsolationSource).not.toContain("if (controls.length >= controlLimit) break");
+    expect(expansionCanonicalizationSource).toContain("logicalPanelKey(descriptor)");
+    expect(expansionCanonicalizationSource).toContain("duplicate_controls_removed");
+    expect(expansionCanonicalizationSource).toContain("descriptor_set_complete: descriptorSetComplete");
   });
 
   it("captures isolated accordion states before the whole-page force-open pass", () => {

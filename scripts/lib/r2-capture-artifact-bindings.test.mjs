@@ -14,6 +14,7 @@ import {
   bindVisualTextGeometry,
   visualTextGeometryLayoutFingerprint,
 } from "./visual-event-localization.mjs";
+import { expansionStateCaptureCoverage } from "./expansion-state-descriptor-canonicalization.mjs";
 
 describe("R2 capture artifact bindings", () => {
   it("reads each artifact once and returns a deterministic exact raw-byte map", () => {
@@ -378,6 +379,7 @@ describe("R2 capture artifact bindings", () => {
     const imageHash = sha256(page);
     const textHash = sha256(Buffer.from("Eligibility text", "utf8"));
     const projection = retainedProjection({ kind: "webpage" });
+    const coverage = completeCoverage(0);
     const capture = {
       kind: "webpage",
       captured_at: capturedAt,
@@ -387,6 +389,7 @@ describe("R2 capture artifact bindings", () => {
       text_hash: textHash,
       text_length: "Eligibility text".length,
       expansion_state_screenshots: [],
+      expansion_state_capture_coverage: coverage,
       retained_artifact_projection: projection,
     };
     const prepared = prepareFromBodies({
@@ -408,6 +411,7 @@ describe("R2 capture artifact bindings", () => {
         files: { layout: null, expansion_states: [] },
         expansion_state_count: 0,
         expansion_state_screenshots: [],
+        expansion_state_capture_coverage: coverage,
       }))],
     });
 
@@ -468,6 +472,7 @@ describe("R2 capture artifact bindings", () => {
         files: { layout: "sources/source/captures/capture/layout.json", expansion_states: [] },
         expansion_state_count: 0,
         expansion_state_screenshots: [],
+        expansion_state_capture_coverage: coverage,
       }))],
     });
     expect(() => assertR2CaptureArtifactIdentity(capture, overclaimingMeta, { sourceId }))
@@ -483,6 +488,7 @@ describe("R2 capture artifact bindings", () => {
     const expandedHash = sha256(expanded);
     const expandedLayout = readyGeometry(expandedHash, "expansion-state-01");
     const projection = retainedProjection({ kind: "webpage", expansionStateCount: 1 });
+    const coverage = completeCoverage(1, 2);
     const capture = {
       kind: "webpage",
       captured_at: capturedAt,
@@ -506,6 +512,7 @@ describe("R2 capture artifact bindings", () => {
         text_hash: "4".repeat(64),
         text_length: 4,
       }],
+      expansion_state_capture_coverage: coverage,
       retained_artifact_projection: projection,
     };
     const pageRef = "sources/source/captures/capture/expansion-state-01.jpg";
@@ -556,6 +563,7 @@ describe("R2 capture artifact bindings", () => {
           page: pageRef,
           layout: layoutRef,
         }],
+        expansion_state_capture_coverage: coverage,
         files: {
           layout: null,
           expansion_states: [{
@@ -651,6 +659,7 @@ describe("R2 capture artifact bindings", () => {
       layoutHash: mainGeometry,
       expansionStateCount: 1,
     });
+    const webCoverage = completeCoverage(1, 2);
     const webCapture = {
       kind: "webpage",
       captured_at: capturedAt,
@@ -670,6 +679,7 @@ describe("R2 capture artifact bindings", () => {
         text_hash: "4".repeat(64),
         text_length: 4,
       }],
+      expansion_state_capture_coverage: webCoverage,
       retained_artifact_projection: webProjection,
     };
     const webPrepared = prepareFromBodies({
@@ -711,6 +721,7 @@ describe("R2 capture artifact bindings", () => {
           page: "sources/source/captures/capture/expansion-state-01.jpg",
           layout: "sources/source/captures/capture/expansion-state-01-layout.json",
         }],
+        expansion_state_capture_coverage: webCoverage,
         files: {
           layout: "sources/source/captures/capture/layout.json",
           expansion_states: [{
@@ -803,6 +814,23 @@ function readyGeometry(imageHash, stateId) {
     imageHash,
     screenshot: { pixel_width: 100, pixel_height: 100 },
   });
+}
+
+function completeCoverage(retainedStateCount, rawCandidateCount = retainedStateCount) {
+  return expansionStateCaptureCoverage({
+    raw_candidates: rawCandidateCount,
+    raw_candidate_count_exact: true,
+    candidates: retainedStateCount,
+    candidate_count_exact: true,
+    attempted: retainedStateCount,
+    capture_limit: 24,
+    capture_complete: true,
+    capture_status: "verified_complete",
+    truncated: false,
+    truncated_count: 0,
+    truncated_count_exact: true,
+    failures: [],
+  }, { retainedStateCount });
 }
 
 function prepareFromBodies(definitions) {

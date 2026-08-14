@@ -646,6 +646,7 @@ describe("Windows worker update safety", () => {
 
   it("validates the immutable visual-evidence runtime closure and native crop dependency", () => {
     for (const relativePath of [
+      "scripts\\lib\\expansion-state-descriptor-canonicalization.mjs",
       "scripts\\lib\\expansion-state-isolation.mjs",
       "scripts\\lib\\visible-text-geometry.mjs",
       "scripts\\lib\\visual-event-localization.mjs",

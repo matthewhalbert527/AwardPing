@@ -263,6 +263,8 @@ async function runVisualSnapshots(completeMissing) {
       "--extract-expandable-sections=true",
       "--include-section-text-in-main-hash=false",
       "--capture-section-evidence=false",
+      "--max-expansion-state-screenshots=24",
+      "--expansion-state-timeout-per-state-ms=60000",
       completeMissing ? "--visual-review-mode=none" : "--visual-review-mode=batch",
       completeMissing ? "--discovery-mode=false" : "--discovery-mode=true",
       completeMissing ? "--discovery-intent=historical_onboarding" : "--discovery-intent=live_recurring",

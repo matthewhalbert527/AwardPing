@@ -1,18 +1,34 @@
 import {
   evaluateWithVisibleTextVisibilitySemantics,
 } from "./visible-text-geometry.mjs";
+import {
+  canonicalizeExpansionStateDescriptors,
+  MAX_RAW_EXPANSION_STATE_DESCRIPTORS,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 
 export async function discoverExpansionStateDescriptors(page, {
   maxControls = 8,
   relevanceMode = "award-content",
 } = {}) {
-  return page.evaluate(({ maxControlsValue, relevanceModeValue }) => {
+  if (!(Number(maxControls) > 0)) {
+    return canonicalizeExpansionStateDescriptors({
+      descriptors: [],
+      raw_candidates: 0,
+      raw_descriptor_set_complete: true,
+      base_text: "",
+    }, { maxControls: 0 });
+  }
+  const rawDiscovery = await page.evaluate(({ rawDescriptorLimitValue, relevanceModeValue }) => {
     function normalizedText(element) {
       return (element?.innerText || element?.textContent || "").replace(/\s+/g, " ").trim();
     }
 
     function classText(element) {
       return typeof element?.className === "string" ? element.className : "";
+    }
+
+    function rawText(element) {
+      return (element?.textContent || "").replace(/\s+/g, " ").trim();
     }
 
     function visible(element) {
@@ -117,6 +133,22 @@ export async function discoverExpansionStateDescriptors(page, {
     function meaningfulPanel(element, control) {
       return element instanceof HTMLElement && element !== control && !element.contains(control) &&
         normalizedText(element).length > 0;
+    }
+
+    function expandableControlSurface(element) {
+      if (!(element instanceof HTMLElement)) return false;
+      const tag = element.tagName.toLowerCase();
+      const role = (element.getAttribute("role") || "").toLowerCase();
+      const signal = classText(element);
+      return ["button", "summary"].includes(tag) || ["button", "tab"].includes(role) ||
+        element.hasAttribute("aria-controls") || element.hasAttribute("aria-expanded") ||
+        /accordion[^\s]*(?:toggle|title|button|header)|(?:toggle|title|button|header)[^\s]*accordion|elementor-tab-title|e-n-accordion-item-title/i
+          .test(signal);
+    }
+
+    function logicalStateKeyFor(panelSelectors) {
+      const selectors = [...new Set(panelSelectors.filter(Boolean))].sort();
+      return selectors.length ? `logical-panels:${JSON.stringify(selectors)}` : "";
     }
 
     function visiblePanel(element) {
@@ -247,11 +279,14 @@ export async function discoverExpansionStateDescriptors(page, {
         const stateSelector = selectorFor(details);
         const panels = detailsPanelsFor(details, element);
         const boundPanels = panels.length ? panels : [details];
+        const panelSelectors = boundPanels.map(selectorFor);
         return {
           kind: "details",
           key: `details:${stateSelector}`,
           state_selectors: [stateSelector],
-          panel_selectors: boundPanels.map(selectorFor),
+          panel_selectors: panelSelectors,
+          logical_state_key: logicalStateKeyFor(panelSelectors),
+          logical_panel_valid: true,
           structural_fingerprint: structuralFingerprintFor("details", element, [details]),
         };
       }
@@ -269,6 +304,8 @@ export async function discoverExpansionStateDescriptors(page, {
           key: `targets:${stateSelectors.join("|")}`,
           state_selectors: stateSelectors,
           panel_selectors: panelSelectors,
+          logical_state_key: logicalStateKeyFor(panelSelectors),
+          logical_panel_valid: panels.every((panel) => !expandableControlSurface(panel)),
           structural_fingerprint: structuralFingerprintFor(
             "targets",
             element,
@@ -286,6 +323,8 @@ export async function discoverExpansionStateDescriptors(page, {
           key: `adjacent-panel:${panelSelector}`,
           state_selectors: context instanceof HTMLElement ? [selectorFor(context)] : [],
           panel_selectors: [panelSelector],
+          logical_state_key: logicalStateKeyFor([panelSelector]),
+          logical_panel_valid: !expandableControlSurface(adjacentPanel),
           structural_fingerprint: structuralFingerprintFor("adjacent-panel", element, [adjacentPanel]),
         };
       }
@@ -317,9 +356,7 @@ export async function discoverExpansionStateDescriptors(page, {
         .flatMap((selector) => {
           try {
             return [...document.querySelectorAll(selector)].map((element) =>
-              binding.kind === "details"
-                ? (element.textContent || "").replace(/\s+/g, " ").trim()
-                : normalizedText(element));
+              rawText(element));
           } catch {
             return [];
           }
@@ -327,6 +364,17 @@ export async function discoverExpansionStateDescriptors(page, {
         .filter(Boolean)
         .join(" ")
         .toLowerCase();
+    }
+
+    function accordionGroupTextFor(element) {
+      const group = element.closest([
+        ".elementor-widget-accordion",
+        ".elementor-accordion",
+        "[data-accordion]",
+        "[role='tablist']",
+        ".accordions-container",
+      ].join(", "));
+      return rawText(group).toLowerCase();
     }
 
     function isCandidate(element) {
@@ -366,7 +414,9 @@ export async function discoverExpansionStateDescriptors(page, {
       const contentPattern = relevanceModeValue === "award-content"
         ? /\b(faq|questions?|answers?|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|deadlines?|guidelines?|instructions?|documents?|pdf|forms?|awards?|grants?|materials?|amount|tuition|stipend)\b/i
         : /\b(faq|questions?|answers?|expand|show|more|details|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|deadlines?|guidelines?|instructions?|documents?|pdf|forms?|awards?|grants?|materials?|amount|tuition|stipend)\b/i;
-      return contentPattern.test(`${controlSignal} ${boundTextFor(binding)}`) ? binding : null;
+      return contentPattern.test(
+        `${controlSignal} ${boundTextFor(binding)} ${accordionGroupTextFor(element)}`,
+      ) ? binding : null;
     }
 
     const selector = [
@@ -393,28 +443,22 @@ export async function discoverExpansionStateDescriptors(page, {
     const seenControls = new Set();
     const seenStates = new Set();
     const controls = [];
-    const controlLimit = Math.max(0, Number(maxControlsValue) || 0);
+    const rawDescriptorLimit = Math.max(1, Number(rawDescriptorLimitValue) || 1);
     let candidateCount = 0;
-    if (controlLimit > 0) {
-      for (const control of document.querySelectorAll(selector)) {
-        const binding = isCandidate(control);
-        if (!binding) continue;
-        const selectorValue = selectorFor(control);
-        if (seenControls.has(selectorValue) || seenStates.has(binding.key)) continue;
-        seenControls.add(selectorValue);
-        seenStates.add(binding.key);
-        candidateCount += 1;
-        if (controls.length < controlLimit) controls.push({ control, binding });
-      }
+    for (const control of document.querySelectorAll(selector)) {
+      const binding = isCandidate(control);
+      if (!binding) continue;
+      const selectorValue = selectorFor(control);
+      if (seenControls.has(selectorValue) || seenStates.has(binding.key)) continue;
+      seenControls.add(selectorValue);
+      seenStates.add(binding.key);
+      candidateCount += 1;
+      if (controls.length < rawDescriptorLimit) controls.push({ control, binding });
     }
-    const truncatedCount = Math.max(0, candidateCount - controls.length);
 
     return {
-      candidates: candidateCount,
-      capture_limit: controlLimit,
-      descriptor_set_complete: truncatedCount === 0,
-      truncated: truncatedCount > 0,
-      truncated_count: truncatedCount,
+      raw_candidates: candidateCount,
+      raw_descriptor_set_complete: candidateCount === controls.length,
       descriptors: controls.map(({ control, binding }, index) => ({
         index,
         selector: selectorFor(control),
@@ -431,13 +475,16 @@ export async function discoverExpansionStateDescriptors(page, {
         structural_fingerprint: binding.structural_fingerprint,
         state_selectors: binding.state_selectors,
         panel_selectors: binding.panel_selectors,
+        logical_state_key: binding.logical_state_key,
+        logical_panel_valid: binding.logical_panel_valid,
       })),
       base_text: document.body?.innerText || "",
     };
   }, {
-    maxControlsValue: maxControls,
+    rawDescriptorLimitValue: MAX_RAW_EXPANSION_STATE_DESCRIPTORS,
     relevanceModeValue: relevanceMode,
   });
+  return canonicalizeExpansionStateDescriptors(rawDiscovery, { maxControls });
 }
 
 async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptors, openTarget }, visibilityApi) {
@@ -541,10 +588,27 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
   const meaningfulPanel = (element, control) => element instanceof HTMLElement && element !== control &&
     !element.contains(control) && normalizedText(element).length > 0;
 
+  const expandableControlSurface = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const tag = element.tagName.toLowerCase();
+    const role = (element.getAttribute("role") || "").toLowerCase();
+    return ["button", "summary"].includes(tag) || ["button", "tab"].includes(role) ||
+      element.hasAttribute("aria-controls") || element.hasAttribute("aria-expanded") ||
+      /accordion[^\s]*(?:toggle|title|button|header)|(?:toggle|title|button|header)[^\s]*accordion|elementor-tab-title|e-n-accordion-item-title/i
+        .test(classText(element));
+  };
+
+  const logicalBindingKey = (binding) => {
+    const selectors = [...new Set((binding?.panels || []).map(selectorFor))].sort();
+    return selectors.length ? `logical-panels:${JSON.stringify(selectors)}` : "";
+  };
+
   const visiblePanel = (element) => {
     if (!(element instanceof HTMLElement) || element.hidden || element.getAttribute("aria-hidden") === "true") {
       return false;
     }
+    const closedDetails = element.closest("details:not([open])");
+    if (closedDetails && !element.closest("summary")) return false;
     const rect = element.getBoundingClientRect();
     const style = window.getComputedStyle(element);
     return rect.width > 0 && rect.height > 1 && style.display !== "none" &&
@@ -708,6 +772,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
         key: `details:${stateSelector}`,
         stateElements: [details],
         panels: boundPanels,
+        logicalPanelValid: true,
         structuralFingerprint: structuralFingerprintFor("details", element, [details]),
       };
     }
@@ -722,6 +787,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
         key: `targets:${targetSelectors.join("|")}`,
         stateElements: targets.map((entry) => entry.element),
         panels: [...new Set(panels)],
+        logicalPanelValid: panels.every((panel) => !expandableControlSurface(panel)),
         structuralFingerprint: structuralFingerprintFor(
           "targets",
           element,
@@ -737,6 +803,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
         key: `adjacent-panel:${selectorFor(panel)}`,
         stateElements: context instanceof HTMLElement ? [context] : [],
         panels: [panel],
+        logicalPanelValid: !expandableControlSurface(panel),
         structuralFingerprint: structuralFingerprintFor("adjacent-panel", element, [panel]),
       };
     }
@@ -752,10 +819,20 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     if (value.role && element.getAttribute("role") !== value.role) return false;
     const binding = stateBindingFor(element);
     if (!binding) return false;
+    if (!binding.logicalPanelValid) return false;
     if (value.state_kind && binding.kind !== value.state_kind) return false;
     const exactStateMatch = Boolean(value.state_key) && binding.key === value.state_key;
     const structuralMatch = Boolean(value.structural_fingerprint) &&
       binding.structuralFingerprint === value.structural_fingerprint;
+    const expectedLogicalKey = typeof value.logical_state_key === "string"
+      ? value.logical_state_key
+      : "";
+    if (
+      expectedLogicalKey &&
+      logicalBindingKey(binding) !== expectedLogicalKey &&
+      !exactStateMatch &&
+      !structuralMatch
+    ) return false;
     if ((value.state_key || value.structural_fingerprint) && !exactStateMatch && !structuralMatch) return false;
 
     if (mode === "structural") return structuralMatch;
@@ -819,13 +896,13 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     return panelsReadable;
   };
 
-  const boundContentSnapshot = (binding) => ({
+  const boundContentSnapshot = (binding, control) => ({
     panels_visible: binding.panels.length > 0 && binding.panels.every(visiblePanel),
     panels_readable: binding.panels.length > 0 &&
-      binding.panels.every((panel) => readablePanelEvidence(panel, target).readable),
+      binding.panels.every((panel) => readablePanelEvidence(panel, control).readable),
     signature: JSON.stringify(binding.panels.map((panel) => {
       const rect = panel.getBoundingClientRect();
-      const readable = readablePanelEvidence(panel, target);
+      const readable = readablePanelEvidence(panel, control);
       return {
         visible: visiblePanel(panel),
         readable: readable.readable,
@@ -843,49 +920,402 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
     element.click();
     element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
-    await delay(220);
+    await delay(40);
+  };
+
+  const waitForBindingState = async ({
+    element,
+    binding,
+    expectedOpen,
+    previousSignature = null,
+    timeoutMs = 2_000,
+  }) => {
+    const deadline = Date.now() + timeoutMs;
+    let previousStableSignature = null;
+    let stableSamples = 0;
+    let latest = boundContentSnapshot(binding, element);
+    while (Date.now() <= deadline) {
+      latest = boundContentSnapshot(binding, element);
+      const open = isOpen({ element, binding });
+      const desiredState = expectedOpen
+        ? open && latest.panels_readable
+        : !open && !latest.panels_readable;
+      const transitioned = previousSignature === null || latest.signature !== previousSignature;
+      if (desiredState && transitioned) {
+        if (latest.signature === previousStableSignature) stableSamples += 1;
+        else stableSamples = 1;
+        previousStableSignature = latest.signature;
+        if (stableSamples >= 2) {
+          return { verified: true, open, snapshot: latest };
+        }
+      } else {
+        stableSamples = 0;
+        previousStableSignature = null;
+      }
+      await delay(60);
+    }
+    return {
+      verified: false,
+      open: isOpen({ element, binding }),
+      snapshot: latest,
+    };
+  };
+
+  const exactElementorBinding = (element, binding) => {
+    if (!(element instanceof HTMLElement) || binding.panels.length !== 1) return false;
+    if (!element.matches(".elementor-tab-title[role='button'][aria-controls]")) return false;
+    const panel = binding.panels[0];
+    const panelId = element.getAttribute("aria-controls") || "";
+    const item = element.closest(".elementor-accordion-item");
+    return Boolean(panelId) && panel.id === panelId && panel.classList.contains("elementor-tab-content") &&
+      item instanceof HTMLElement && panel.closest(".elementor-accordion-item") === item;
+  };
+
+  const closeNonTargetBinding = async (item) => {
+    const beforeClose = boundContentSnapshot(item.binding, item.element);
+    if (!beforeClose.panels_readable && !isOpen(item)) {
+      return { verified: true, snapshot: beforeClose };
+    }
+    if (item.element.getAttribute("aria-expanded") === "false" && beforeClose.panels_readable) {
+      return {
+        verified: false,
+        reason: "other_control_aria_false_but_content_readable",
+        snapshot: beforeClose,
+      };
+    }
+    await click(item.element);
+    const closed = await waitForBindingState({
+      element: item.element,
+      binding: item.binding,
+      expectedOpen: false,
+      previousSignature: beforeClose.signature,
+    });
+    return closed.verified
+      ? closed
+      : { ...closed, reason: "other_control_content_did_not_close" };
+  };
+
+  const explicitExclusiveGroupKey = (element, binding) => {
+    if (!(element instanceof HTMLElement) || !binding?.panels?.length) return "";
+
+    if (
+      element.getAttribute("role") === "tab" &&
+      element.hasAttribute("aria-controls") &&
+      binding.panels.every((panel) => panel.getAttribute("role") === "tabpanel")
+    ) {
+      const tablist = element.closest("[role='tablist']");
+      if (tablist instanceof HTMLElement) return `aria-tablist:${selectorFor(tablist)}`;
+    }
+
+    if (binding.kind === "details") {
+      const details = binding.stateElements[0];
+      const name = details instanceof HTMLElement ? details.getAttribute("name")?.trim() : "";
+      if (name) {
+        const peers = [...document.querySelectorAll("details[name]")]
+          .filter((candidate) => candidate.getAttribute("name") === name);
+        if (peers.length > 1) return `details-name:${JSON.stringify(name)}`;
+      }
+    }
+
+    const parentTokens = [...new Set(binding.panels
+      .map((panel) => panel.getAttribute("data-bs-parent") || panel.getAttribute("data-parent") || "")
+      .map((value) => value.trim())
+      .filter(Boolean))];
+    if (parentTokens.length === 1) {
+      try {
+        const parent = document.querySelector(parentTokens[0]);
+        if (parent instanceof HTMLElement) return `collapse-parent:${selectorFor(parent)}`;
+      } catch {
+        // An invalid selector cannot prove mutual exclusion.
+      }
+    }
+    return "";
   };
 
   const target = resolveDescriptor(targetDescriptor);
   if (!target) return { verified: false, reason: "stable_target_descriptor_not_resolved" };
   const targetBinding = stateBindingFor(target);
-  if (!targetBinding) return { verified: false, reason: "stable_target_state_not_resolved" };
+  if (!targetBinding || !targetBinding.logicalPanelValid) {
+    return { verified: false, reason: "stable_target_state_not_resolved" };
+  }
+  const targetLogicalKey = logicalBindingKey(targetBinding);
+  if (!targetLogicalKey) {
+    return { verified: false, reason: "stable_target_logical_panel_not_resolved" };
+  }
 
-  const resolved = [];
+  const resolvedByLogicalKey = new Map();
   for (const value of allDescriptors) {
     const element = resolveDescriptor(value);
     if (!element) return { verified: false, reason: `descriptor_not_resolved:${value.selector}` };
     const binding = stateBindingFor(element);
-    if (!binding) return { verified: false, reason: `descriptor_state_not_resolved:${value.selector}` };
-    resolved.push({ descriptor: value, element, binding });
+    if (!binding || !binding.logicalPanelValid) {
+      return { verified: false, reason: `descriptor_state_not_resolved:${value.selector}` };
+    }
+    const logicalKey = logicalBindingKey(binding);
+    if (!logicalKey) {
+      return { verified: false, reason: `descriptor_logical_panel_not_resolved:${value.selector}` };
+    }
+    if (!resolvedByLogicalKey.has(logicalKey)) {
+      resolvedByLogicalKey.set(logicalKey, { descriptor: value, element, binding, logicalKey });
+    }
   }
+
+  const targetUsesExactElementorBinding = exactElementorBinding(target, targetBinding);
+  if (targetUsesExactElementorBinding) {
+    for (const element of document.querySelectorAll(
+      ".elementor-tab-title[role='button'][aria-controls]",
+    )) {
+      const binding = stateBindingFor(element);
+      if (!binding || !binding.logicalPanelValid || !exactElementorBinding(element, binding)) continue;
+      const logicalKey = logicalBindingKey(binding);
+      if (!logicalKey || resolvedByLogicalKey.has(logicalKey)) continue;
+      resolvedByLogicalKey.set(logicalKey, {
+        descriptor: {
+          selector: selectorFor(element),
+          label: controlLabel(element),
+          logical_state_key: logicalKey,
+        },
+        element,
+        binding,
+        logicalKey,
+      });
+    }
+  }
+  const targetExplicitExclusiveGroupKey = explicitExclusiveGroupKey(target, targetBinding);
+  if (!targetUsesExactElementorBinding && targetExplicitExclusiveGroupKey) {
+    const exclusiveControlSelector = [
+      "summary",
+      "button",
+      "[role='button']",
+      "[role='tab']",
+      "a[href^='#']",
+      "[aria-controls]",
+      "[data-target]",
+      "[data-bs-target]",
+    ].join(", ");
+    let groupPeerCount = 0;
+    for (const element of document.querySelectorAll(exclusiveControlSelector)) {
+      const binding = stateBindingFor(element);
+      if (!binding || !binding.logicalPanelValid) continue;
+      if (explicitExclusiveGroupKey(element, binding) !== targetExplicitExclusiveGroupKey) continue;
+      groupPeerCount += 1;
+      if (groupPeerCount > 512) {
+        return { verified: false, reason: "exclusive_group_peer_limit_exceeded" };
+      }
+      const logicalKey = logicalBindingKey(binding);
+      if (!logicalKey || resolvedByLogicalKey.has(logicalKey)) continue;
+      resolvedByLogicalKey.set(logicalKey, {
+        descriptor: {
+          selector: selectorFor(element),
+          label: controlLabel(element),
+          logical_state_key: logicalKey,
+        },
+        element,
+        binding,
+        logicalKey,
+      });
+    }
+  }
+  const resolved = [...resolvedByLogicalKey.values()];
 
   let transitionRequired = false;
   let transitionVerified = true;
   if (openTarget) {
-    for (const item of resolved) {
-      if (item.binding.key !== targetBinding.key && isOpen(item)) await click(item.element);
-    }
-    const beforeTarget = boundContentSnapshot(targetBinding);
-    const expandedBefore = target.getAttribute("aria-expanded");
-    const targetInitiallyOpen = isOpen({ element: target, binding: targetBinding });
-    if (!targetInitiallyOpen) await click(target);
-    const afterTarget = boundContentSnapshot(targetBinding);
-    const noAriaState = expandedBefore === null && targetBinding.kind !== "details";
-    transitionRequired = noAriaState || expandedBefore === "false";
-    transitionVerified = !transitionRequired || (
-      !targetInitiallyOpen &&
-      afterTarget.panels_readable &&
-      beforeTarget.signature !== afterTarget.signature
-    );
-    for (const item of resolved) {
-      if (item.binding.key !== targetBinding.key && isOpen(item)) await click(item.element);
+    if (targetUsesExactElementorBinding) {
+      const targetAccordion = target.closest(".elementor-accordion");
+      const sameAccordionOpen = [];
+      for (const item of resolved) {
+        if (item.logicalKey === targetLogicalKey || !isOpen(item)) continue;
+        if (item.element.closest(".elementor-accordion") === targetAccordion) {
+          sameAccordionOpen.push(item);
+          continue;
+        }
+        const beforeClose = boundContentSnapshot(item.binding, item.element);
+        await click(item.element);
+        const closed = await waitForBindingState({
+          element: item.element,
+          binding: item.binding,
+          expectedOpen: false,
+          previousSignature: beforeClose.signature,
+        });
+        if (!closed.verified) {
+          return {
+            verified: false,
+            reason: "other_control_could_not_close",
+            target_selector: targetDescriptor.selector,
+            target_label: targetDescriptor.label || null,
+            target_open: false,
+            target_state_key: targetBinding.key,
+            bound_content_transition_required: true,
+            bound_content_transition_verified: false,
+            other_open_selectors: [item.descriptor.selector],
+            fresh_page: true,
+          };
+        }
+      }
+
+      if (isOpen({ element: target, binding: targetBinding })) {
+        const beforeClose = boundContentSnapshot(targetBinding, target);
+        await click(target);
+        const closed = await waitForBindingState({
+          element: target,
+          binding: targetBinding,
+          expectedOpen: false,
+          previousSignature: beforeClose.signature,
+        });
+        if (!closed.verified) {
+          return { verified: false, reason: "target_could_not_close_for_transition" };
+        }
+      }
+
+      const beforeTarget = boundContentSnapshot(targetBinding, target);
+      transitionRequired = true;
+      await click(target);
+      const opened = await waitForBindingState({
+        element: target,
+        binding: targetBinding,
+        expectedOpen: true,
+        previousSignature: beforeTarget.signature,
+      });
+      transitionVerified = opened.verified && opened.snapshot.panels_readable &&
+        opened.snapshot.signature !== beforeTarget.signature;
+      for (const item of sameAccordionOpen) {
+        const closed = await waitForBindingState({
+          element: item.element,
+          binding: item.binding,
+          expectedOpen: false,
+        });
+        if (!closed.verified) transitionVerified = false;
+      }
+    } else {
+      const targetExclusiveGroupKey = explicitExclusiveGroupKey(target, targetBinding);
+      const exclusivePeers = [];
+      for (const item of resolved) {
+        if (item.logicalKey === targetLogicalKey) continue;
+        const peerExclusiveGroupKey = explicitExclusiveGroupKey(item.element, item.binding);
+        if (targetExclusiveGroupKey && peerExclusiveGroupKey === targetExclusiveGroupKey) {
+          exclusivePeers.push({
+            ...item,
+            beforeTarget: boundContentSnapshot(item.binding, item.element),
+            openBeforeTarget: isOpen(item),
+          });
+          continue;
+        }
+        const closed = await closeNonTargetBinding(item);
+        if (!closed.verified) {
+          return {
+            verified: false,
+            reason: closed.reason,
+            target_selector: targetDescriptor.selector,
+            target_label: targetDescriptor.label || null,
+            target_open: false,
+            target_state_key: targetBinding.key,
+            bound_content_transition_required: false,
+            bound_content_transition_verified: false,
+            other_open_selectors: [item.descriptor.selector],
+            fresh_page: true,
+          };
+        }
+      }
+      const targetInitiallyOpen = isOpen({ element: target, binding: targetBinding });
+      let forcedExclusiveTransition = false;
+      if (targetInitiallyOpen && targetExclusiveGroupKey) {
+        const switchPeer = exclusivePeers.find((item) =>
+          !item.openBeforeTarget && !item.beforeTarget.panels_readable);
+        if (!switchPeer) {
+          return {
+            verified: false,
+            reason: "exclusive_transition_peer_unavailable",
+            target_selector: targetDescriptor.selector,
+            target_label: targetDescriptor.label || null,
+            target_open: true,
+            target_state_key: targetBinding.key,
+            bound_content_transition_required: true,
+            bound_content_transition_verified: false,
+            other_open_selectors: [],
+            fresh_page: true,
+          };
+        }
+        const targetBeforeSwitch = boundContentSnapshot(targetBinding, target);
+        const peerBeforeSwitch = switchPeer.beforeTarget;
+        await click(switchPeer.element);
+        const peerOpened = await waitForBindingState({
+          element: switchPeer.element,
+          binding: switchPeer.binding,
+          expectedOpen: true,
+          previousSignature: peerBeforeSwitch.signature,
+        });
+        const targetClosed = await waitForBindingState({
+          element: target,
+          binding: targetBinding,
+          expectedOpen: false,
+          previousSignature: targetBeforeSwitch.signature,
+        });
+        if (!peerOpened.verified || !targetClosed.verified) {
+          return {
+            verified: false,
+            reason: "exclusive_transition_peer_did_not_replace_target",
+            target_selector: targetDescriptor.selector,
+            target_label: targetDescriptor.label || null,
+            target_open: isOpen({ element: target, binding: targetBinding }),
+            target_state_key: targetBinding.key,
+            bound_content_transition_required: true,
+            bound_content_transition_verified: false,
+            other_open_selectors: [switchPeer.descriptor.selector],
+            fresh_page: true,
+          };
+        }
+        switchPeer.beforeTarget = peerOpened.snapshot;
+        switchPeer.openBeforeTarget = true;
+        forcedExclusiveTransition = true;
+      }
+
+      const beforeTarget = boundContentSnapshot(targetBinding, target);
+      const expandedBefore = target.getAttribute("aria-expanded");
+      const targetOpenBeforeActivation = isOpen({ element: target, binding: targetBinding });
+      if (!targetOpenBeforeActivation) await click(target);
+      const opened = targetOpenBeforeActivation
+        ? { verified: true, snapshot: boundContentSnapshot(targetBinding, target) }
+        : await waitForBindingState({
+            element: target,
+            binding: targetBinding,
+            expectedOpen: true,
+            previousSignature: beforeTarget.signature,
+          });
+      const afterTarget = opened.snapshot;
+      const noAriaState = expandedBefore === null && targetBinding.kind !== "details";
+      transitionRequired = forcedExclusiveTransition || noAriaState || expandedBefore === "false";
+      transitionVerified = !transitionRequired || (
+        !targetOpenBeforeActivation &&
+        opened.verified &&
+        afterTarget.panels_readable &&
+        beforeTarget.signature !== afterTarget.signature
+      );
+      for (const item of exclusivePeers) {
+        if (!item.openBeforeTarget && !item.beforeTarget.panels_readable) continue;
+        const closed = await waitForBindingState({
+          element: item.element,
+          binding: item.binding,
+          expectedOpen: false,
+          previousSignature: item.beforeTarget.signature,
+        });
+        if (!closed.verified) transitionVerified = false;
+      }
+      for (const item of resolved) {
+        if (item.logicalKey === targetLogicalKey) continue;
+        if (targetExclusiveGroupKey &&
+          explicitExclusiveGroupKey(item.element, item.binding) === targetExclusiveGroupKey) continue;
+        const closed = await closeNonTargetBinding(item);
+        if (!closed.verified) transitionVerified = false;
+      }
     }
   }
 
   const targetOpen = isOpen({ element: target, binding: targetBinding }) && transitionVerified;
   const otherOpen = resolved
-    .filter((item) => item.binding.key !== targetBinding.key && isOpen(item))
+    .filter((item) => item.logicalKey !== targetLogicalKey && (
+      isOpen(item) || boundContentSnapshot(item.binding, item.element).panels_readable
+    ))
     .map((item) => item.descriptor.selector);
   return {
     verified: targetOpen && otherOpen.length === 0,
@@ -902,6 +1332,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     target_state_key: targetBinding.key,
     bound_content_transition_required: transitionRequired,
     bound_content_transition_verified: transitionVerified,
+    exact_elementor_binding: targetUsesExactElementorBinding,
     other_open_selectors: otherOpen,
     fresh_page: true,
   };

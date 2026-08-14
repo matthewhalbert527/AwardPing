@@ -70,6 +70,31 @@ describe("local baseline evidence repair", () => {
     expect(result.evidence_complete).toBe(true);
   });
 
+  it("accepts older true no-claim metadata only with conservative local coverage", () => {
+    const fixture = createWebFixture();
+    const meta = readJson(fixture.metaPath);
+    for (const field of [
+      "expansion_state_candidates",
+      "expansion_state_attempted",
+      "expansion_state_capture_limit",
+      "expansion_state_capture_complete",
+      "expansion_state_truncated",
+      "expansion_state_truncated_count",
+      "expansion_state_failures",
+    ]) {
+      delete meta[field];
+    }
+    writeJson(fixture.metaPath, meta);
+
+    expect(inspectLocalBaselineEvidence({
+      archiveRoot: fixture.archiveRoot,
+      sourceId,
+    })).toMatchObject({
+      reason: "current_evidence_valid",
+      evidence_complete: true,
+    });
+  });
+
   it("validates claimed layout files and independently retained expansion pairs", () => {
     const missingLayout = createWebFixture();
     const missingLayoutPath = join(missingLayout.captureDir, "layout.json");
@@ -171,6 +196,65 @@ describe("local baseline evidence repair", () => {
         image_ref: fixture.pageRef,
       },
     });
+    expect(repaired.summary_metadata.expansion_state_capture_coverage).toMatchObject({
+      schema: "awardping.expansion-state-capture-coverage.v1",
+      complete: false,
+      status: "incomplete_discovery",
+      raw_candidate_count_exact: false,
+      logical_candidate_count_exact: false,
+      retained_state_count: 0,
+    });
+    expect(readJson(fixture.metaPath)).not.toHaveProperty(
+      "expansion_state_capture_coverage",
+    );
+  });
+
+  it("rejects partial or contradictory coverage claims instead of using the legacy fallback", () => {
+    const partial = createWebFixture();
+    const partialMeta = readJson(partial.metaPath);
+    partialMeta.expansion_state_capture_status = "verified_complete";
+    writeJson(partial.metaPath, partialMeta);
+    expect(inspectLocalBaselineEvidence({
+      archiveRoot: partial.archiveRoot,
+      sourceId,
+    })).toMatchObject({ reason: "current_meta_expansion_state_coverage_invalid" });
+
+    const contradictory = createWebFixture();
+    const contradictoryMeta = readJson(contradictory.metaPath);
+    Object.assign(contradictoryMeta, {
+      expansion_state_capture_coverage: {
+        schema: "awardping.expansion-state-capture-coverage.v1",
+        complete: false,
+        status: "incomplete_discovery",
+        raw_candidate_count: 0,
+        raw_candidate_count_exact: false,
+        logical_candidate_count: 0,
+        logical_candidate_count_exact: false,
+        attempted_count: 0,
+        retained_state_count: 0,
+        capture_limit: 0,
+        truncated: false,
+        truncated_count: 0,
+        truncated_count_exact: false,
+        failure_count: 0,
+      },
+      expansion_state_candidates: 0,
+      expansion_state_attempted: 0,
+      expansion_state_capture_limit: 24,
+      expansion_state_capture_complete: true,
+      expansion_state_capture_status: "verified_complete",
+      expansion_state_raw_candidates: 0,
+      expansion_state_candidate_count_exact: true,
+      expansion_state_truncated: false,
+      expansion_state_truncated_count: 0,
+      expansion_state_truncated_count_exact: true,
+      expansion_state_failures: [],
+    });
+    writeJson(contradictory.metaPath, contradictoryMeta);
+    expect(inspectLocalBaselineEvidence({
+      archiveRoot: contradictory.archiveRoot,
+      sourceId,
+    })).toMatchObject({ reason: "current_meta_expansion_state_coverage_invalid" });
   });
 
   it.each([
@@ -505,6 +589,13 @@ function createWebFixtureAt({ archiveRoot, sourceDir, writeBaseline = true }) {
     image_hash: imageHash,
     page_bytes: pageBytes.length,
     thumb_bytes: thumbBytes.length,
+    expansion_state_candidates: 0,
+    expansion_state_attempted: 0,
+    expansion_state_capture_limit: 24,
+    expansion_state_capture_complete: true,
+    expansion_state_truncated: false,
+    expansion_state_truncated_count: 0,
+    expansion_state_failures: [],
     expansion_state_count: 0,
     expansion_state_screenshots: [],
     files: { ...descriptor, dir: undefined },
@@ -849,6 +940,12 @@ function addExactExpansionEvidence(fixture) {
     bound_image_hash: null,
   };
   meta.expansion_state_count = 1;
+  meta.expansion_state_candidates = 1;
+  meta.expansion_state_attempted = 1;
+  meta.expansion_state_capture_complete = true;
+  meta.expansion_state_truncated = false;
+  meta.expansion_state_truncated_count = 0;
+  meta.expansion_state_failures = [];
   meta.expansion_state_screenshots = [{
     state_id: stateId,
     captured_at: capturedAt,

@@ -371,7 +371,7 @@ async function applyReviewedPlan(args, dependencies) {
 
   const completedAt = new Date().toISOString();
   const receipt = {
-    schema_version: "awardping.legacy-r2-snapshot-pointer-migration-batch-receipt.v5",
+    schema_version: "awardping.legacy-r2-snapshot-pointer-migration-batch-receipt.v6",
     status: failures ? "completed_with_protected_failures" : "applied",
     plan_sha256: plan.confirmation.plan_sha256,
     completed_at: completedAt,

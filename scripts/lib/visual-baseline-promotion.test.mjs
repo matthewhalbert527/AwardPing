@@ -28,6 +28,10 @@ import {
   visualBaselinePromotionDecision,
 } from "./visual-baseline-promotion.mjs";
 import { inspectStage1ImmutableR2CaptureBinding } from "./stage1-cohort-readiness.mjs";
+import {
+  expansionStateCaptureCoverage,
+  expansionStateCaptureCoverageLegacyMirrors,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 
 const temporaryRoots = [];
 
@@ -820,7 +824,11 @@ describe("approved visual baseline promotion", () => {
     expect(result).toMatchObject({
       promoted: false,
       reason: "approved_snapshot_geometry_metadata_missing",
-      missing_metadata: ["retained_artifact_projection", "layout_hash"],
+      missing_metadata: [
+        "retained_artifact_projection",
+        "expansion_state_capture_coverage",
+        "layout_hash",
+      ],
     });
   });
 
@@ -1433,6 +1441,20 @@ function verifiedWebCapture({
     layout_path: paths.layout_path,
     expansion_state_screenshots: expansionStates,
   });
+  const expansionCoverage = expansionStateCaptureCoverage({
+    raw_candidates: expansionStates.length,
+    raw_candidate_count_exact: true,
+    candidates: expansionStates.length,
+    candidate_count_exact: true,
+    attempted: expansionStates.length,
+    capture_limit: 24,
+    capture_complete: true,
+    capture_status: "verified_complete",
+    truncated: false,
+    truncated_count: 0,
+    truncated_count_exact: true,
+    failures: [],
+  }, { retainedStateCount: expansionStates.length });
 
   const meta = {
     version: 1,
@@ -1455,6 +1477,8 @@ function verifiedWebCapture({
     thumb_bytes: readFileSync(paths.thumb_path).length,
     dimensions: { width: 1365, height: 2400 },
     expansion_state_count: expansionStates.length,
+    ...expansionStateCaptureCoverageLegacyMirrors(expansionCoverage),
+    expansion_state_capture_coverage: expansionCoverage,
     expansion_state_screenshots: expansionStates.map((state) => ({
       ...state,
       text_geometry: compactGeometryReferenceForTest(

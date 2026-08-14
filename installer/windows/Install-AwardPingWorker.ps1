@@ -1195,6 +1195,7 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-nightly-run-contract.mjs"),
+      (Join-Path $AppDir "scripts\lib\expansion-state-descriptor-canonicalization.mjs"),
       (Join-Path $AppDir "scripts\lib\expansion-state-isolation.mjs"),
       (Join-Path $AppDir "scripts\lib\visible-text-geometry.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-event-localization.mjs"),
@@ -1354,6 +1355,7 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\capture-visual-snapshots.mjs",
         "scripts\lib\visual-capture-run-report.mjs",
         "scripts\lib\visual-nightly-run-contract.mjs",
+        "scripts\lib\expansion-state-descriptor-canonicalization.mjs",
         "scripts\lib\expansion-state-isolation.mjs",
         "scripts\lib\visible-text-geometry.mjs",
         "scripts\lib\visual-event-localization.mjs",
@@ -2174,7 +2176,9 @@ if (-not (Test-Path -LiteralPath `$workerScript)) {
   "--force-r2-snapshot-refresh=false",
   "--visual-review-mode=batch",
   "--interpret-visual-changes=true",
-  "--r2-snapshot-sync=true"
+  "--r2-snapshot-sync=true",
+  "--max-expansion-state-screenshots=24",
+  "--expansion-state-timeout-per-state-ms=60000"
 )
 if (`$All) { `$workerArgs += "--all=true" }
 # The permanent capture path is the authoritative live discovery surface.

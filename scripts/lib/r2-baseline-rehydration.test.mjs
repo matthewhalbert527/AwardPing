@@ -277,6 +277,13 @@ describe("exact R2 local-baseline rehydration", () => {
     const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
     expect(published.summary_metadata).toMatchObject({
       reason: "r2_authoritative_local_cache_restore",
+      expansion_state_capture_coverage: {
+        complete: false,
+        status: "incomplete_discovery",
+        raw_candidate_count_exact: false,
+        logical_candidate_count_exact: false,
+        retained_state_count: 0,
+      },
       r2_local_rehydration: {
         restored_missing_baseline: true,
         integrity: "verified_before_atomic_baseline_repoint",
@@ -284,10 +291,107 @@ describe("exact R2 local-baseline rehydration", () => {
     });
     expect(readFileSync(join(fixture.archiveRoot, published.capture.page))).toEqual(fixture.page);
     const meta = JSON.parse(readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"));
+    expect(meta.expansion_state_capture_coverage).toEqual(
+      published.summary_metadata.expansion_state_capture_coverage,
+    );
+    expect(fixture.snapshot.latest_metadata).not.toHaveProperty(
+      "expansion_state_capture_coverage",
+    );
     expect(meta.files.page).toBe(published.capture.page);
     expect(meta.text_geometry.file).toBe(published.capture.layout);
     expect(JSON.stringify(meta)).not.toContain("C:\\\\stale");
     expect(readdirSync(join(fixture.archiveRoot, "sources"))).toEqual([sourceId]);
+  });
+
+  it.each([
+    ["malformed nested coverage", (meta) => {
+      meta.expansion_state_capture_coverage = {
+        schema: "awardping.expansion-state-capture-coverage.v1",
+        complete: "true",
+      };
+    }],
+    ["partial scalar coverage", (meta) => {
+      meta.expansion_state_capture_status = "verified_complete";
+    }],
+  ])("rejects %s instead of synthesizing legacy coverage", async (_name, mutate) => {
+    const fixture = recoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    const metaKey = fixture.snapshot.latest_object_keys.meta;
+    const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
+    mutate(meta);
+    const metaBytes = Buffer.from(JSON.stringify(meta), "utf8");
+    fixture.objects[metaKey] = objectFixture(
+      metaBytes,
+      "application/json; charset=utf-8",
+    );
+    fixture.snapshot.latest_metadata.artifact_bindings.meta = rawArtifactBinding(
+      metaBytes,
+      "application/json; charset=utf-8",
+    );
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({
+      rehydrated: false,
+      reason: "r2_authoritative_expansion_coverage_invalid",
+    });
+    expect(existsSync(sourceDir)).toBe(false);
+  });
+
+  it("rehydrates the exact legacy-v0 producer shape conservatively without pointer coverage", async () => {
+    const fixture = recoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    const metaKey = fixture.snapshot.latest_object_keys.meta;
+    const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
+    Object.assign(meta, {
+      expansion_state_candidates: 0,
+      expansion_state_attempted: 0,
+      expansion_state_capture_limit: 24,
+      expansion_state_capture_complete: true,
+      expansion_state_truncated: false,
+      expansion_state_truncated_count: 0,
+      expansion_state_failures: [],
+    });
+    const metaBytes = Buffer.from(JSON.stringify(meta), "utf8");
+    fixture.objects[metaKey] = objectFixture(
+      metaBytes,
+      "application/json; charset=utf-8",
+    );
+    fixture.snapshot.latest_metadata.artifact_bindings.meta = rawArtifactBinding(
+      metaBytes,
+      "application/json; charset=utf-8",
+    );
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({ rehydrated: true, generation: "latest" });
+    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
+    expect(published.summary_metadata.expansion_state_capture_coverage).toMatchObject({
+      complete: false,
+      status: "incomplete_discovery",
+      raw_candidate_count_exact: false,
+      logical_candidate_count_exact: false,
+      retained_state_count: 0,
+    });
+    expect(fixture.snapshot.latest_metadata).not.toHaveProperty(
+      "expansion_state_capture_coverage",
+    );
   });
 
   it("restores an authoritative PDF bundle with canonical projection parity and no geometry claims", async () => {

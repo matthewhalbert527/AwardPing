@@ -3,6 +3,11 @@ import {
   verifyVisualTextGeometryBinding,
   visualTextGeometryLayoutFingerprint,
 } from "./visual-event-localization.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 
 export const r2CaptureArtifactBindingsSchema =
   "awardping.r2.capture-artifact-bindings.v1";
@@ -549,6 +554,12 @@ export function assertR2CaptureArtifactIdentity(capture, prepared, { sourceId } 
   ) {
     throw new Error("R2 metadata expansion claims do not match retained artifact pairs.");
   }
+  assertExpansionStateCaptureCoverageParity({
+    capture,
+    metadata,
+    kind,
+    retainedExpansionCount,
+  });
   for (let index = 0; index < retainedExpansionCount; index += 1) {
     const suffix = String(index + 1).padStart(2, "0");
     const state = objectValue(capture?.expansion_state_screenshots?.[index]);
@@ -600,6 +611,37 @@ export function assertR2CaptureArtifactIdentity(capture, prepared, { sourceId } 
     ) {
       throw new Error(`R2 metadata expansion state ${suffix} references do not match.`);
     }
+  }
+}
+
+function assertExpansionStateCaptureCoverageParity({
+  capture,
+  metadata,
+  kind,
+  retainedExpansionCount,
+}) {
+  if (kind === "pdf") {
+    if (
+      capture?.expansion_state_capture_coverage != null
+      || metadata?.expansion_state_capture_coverage != null
+    ) {
+      throw new Error("R2 PDF capture contains expansion-state coverage metadata.");
+    }
+    return;
+  }
+  const options = { expectedRetainedStateCount: retainedExpansionCount };
+  const captureCoverage = canonicalExpansionStateCaptureCoverage(
+    capture?.expansion_state_capture_coverage,
+    options,
+  );
+  const rawCoverage = legacyExpansionStateCaptureCoverageFromMetadata(metadata, {
+    retainedStateCount: retainedExpansionCount,
+  });
+  if (!captureCoverage || !rawCoverage) {
+    throw new Error("R2 expansion-state capture coverage is missing or invalid.");
+  }
+  if (!sameExpansionStateCaptureCoverage(captureCoverage, rawCoverage, options)) {
+    throw new Error("R2 raw metadata and capture expansion-state coverage do not match.");
   }
 }
 

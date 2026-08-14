@@ -331,7 +331,8 @@ describe("visual capture resource limits", () => {
     expect(workerSource).toContain("if (pdfSource) {");
     expect(workerSource).toContain("Do not place them behind the non-cancelling page timeout");
     expect(workerSource.indexOf("if (pdfSource) {"))
-      .toBeLessThan(workerSource.indexOf("await withTimeout(\n            sourceOperation"));
+      .toBeLessThan(workerSource.indexOf("const sourceDeadline = createSourcePhaseDeadline("));
+    expect(workerSource).toContain("await sourceDeadline.run(() => processSource(");
     const fullPageScreenshotCalls = [...workerSource.matchAll(
       /const pageBuffer = await (?:page|statePage)\.screenshot\(\{([\s\S]*?)\n\s*\}\);/g,
     )];

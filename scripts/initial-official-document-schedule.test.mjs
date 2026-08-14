@@ -22,6 +22,9 @@ describe("permanent first-observation discovery schedule", () => {
     expect(visual).toContain('completeMissing ? "--discover-pdf-subpages=false" : "--discover-pdf-subpages=true"');
     expect(visual).toContain('"--discover-html-subpages=false"');
     expect(visual).toContain("--max-discoveries-per-award=");
+    expect(visual).toContain('"--max-expansion-state-screenshots=24"');
+    expect(visual).toContain('"--expansion-state-timeout-per-state-ms=60000"');
+    expect(visual).not.toContain('"--source-timeout-ms=1500000"');
   });
 
   it("keeps explicit operator discovery historical unless deliberately selected live", () => {
@@ -43,6 +46,9 @@ describe("permanent first-observation discovery schedule", () => {
     expect(launcher).toContain('"--visual-review-mode=batch"');
     expect(launcher).toContain('"--localization-repair=false"');
     expect(launcher).toContain('"--r2-snapshot-sync=true"');
+    expect(launcher).toContain('"--max-expansion-state-screenshots=24"');
+    expect(launcher).toContain('"--expansion-state-timeout-per-state-ms=60000"');
+    expect(launcher).not.toContain('"--source-timeout-ms=1500000"');
     expect(launcher).not.toContain("`$BaselineRefresh");
     expect(launcher).not.toContain("`$CompleteMissingBaselines");
     expect(launcher).not.toContain("--discovery-mode=false");
@@ -59,6 +65,58 @@ describe("permanent first-observation discovery schedule", () => {
     expect(validationIndex).toBeLessThan(capture.indexOf('process.on("uncaughtException"'));
     expect(validationIndex).toBeLessThan(capture.indexOf("await runOnce()"));
   });
+
+  it("keeps the normal source deadline and grants a separate post-discovery expansion phase", () => {
+    expect(capture).toContain('args["source-timeout-ms"]');
+    expect(capture).toContain("Math.max(timeoutMs + 30_000, 90_000)");
+    expect(capture).toContain("const sourceDeadline = createSourcePhaseDeadline(");
+    expect(capture).toContain("sourceDeadline.beginPhase({");
+    expect(capture).toContain('name: "expansion-state-capture"');
+    expect(capture).toContain("expansionStateCaptureBudgetMs(descriptors.length");
+    expect(capture).toContain("if (sourceDeadline?.expired?.()) throw error");
+    expect(capture).not.toContain("expansionAwareSourceTimeoutFloorMs");
+    expect(capture).toContain("timeoutMs: Math.min(sourceTimeoutMs, 60_000)");
+  });
+
+  it("pauses the short source budget only while the bounded expansion phase is active", async () => {
+    const createDeadline = executableSourcePhaseDeadline();
+    const deadline = createDeadline(100, "source deadline");
+    const result = await deadline.run(async () => {
+      await delay(20);
+      const endExpansion = deadline.beginPhase({
+        name: "expansion-state-capture",
+        timeoutMs: 250,
+        message: "expansion deadline",
+      });
+      await delay(150);
+      endExpansion();
+      await delay(20);
+      return "complete";
+    });
+    expect(result).toBe("complete");
+
+    const ordinary = createDeadline(40, "ordinary source deadline");
+    await expect(ordinary.run(async () => {
+      await delay(100);
+    })).rejects.toMatchObject({
+      code: "AWARDPING_SOURCE_TIMEOUT",
+      timeout_phase: "source",
+    });
+
+    const expansion = createDeadline(200, "ordinary source deadline");
+    await expect(expansion.run(async () => {
+      expansion.beginPhase({
+        name: "expansion-state-capture",
+        timeoutMs: 40,
+        message: "expansion deadline",
+      });
+      await delay(100);
+    })).rejects.toMatchObject({
+      code: "AWARDPING_SOURCE_TIMEOUT",
+      timeout_phase: "expansion-state-capture",
+    });
+    expect(expansion.expired()).toBe(true);
+  });
 });
 
 function functionBody(source, signature) {
@@ -66,4 +124,15 @@ function functionBody(source, signature) {
   if (start < 0) throw new Error(`Missing ${signature}`);
   const next = source.indexOf("\nasync function ", start + signature.length);
   return source.slice(start, next < 0 ? undefined : next);
+}
+
+function executableSourcePhaseDeadline() {
+  const start = capture.indexOf("function createSourcePhaseDeadline");
+  const end = capture.indexOf("\nfunction isCaptureNetworkBoundaryError", start);
+  if (start < 0 || end < 0) throw new Error("Missing createSourcePhaseDeadline");
+  return Function(`${capture.slice(start, end)}\nreturn createSourcePhaseDeadline;`)();
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

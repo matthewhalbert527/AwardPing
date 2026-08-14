@@ -18,6 +18,13 @@ import {
   withVisualBaselineLockAsync,
 } from "./visual-baseline-lock.mjs";
 import { retainedCaptureArtifactProjectionSchema } from "./r2-capture-artifact-bindings.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  conservativeExpansionStateCaptureCoverage,
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 
 export const LOCAL_BASELINE_EVIDENCE_REPAIR_REASON =
@@ -263,6 +270,8 @@ export function inspectLocalBaselineEvidence({
     danglingCapture: currentCapture.stored,
     previousCapture: previousCapture.stored,
     previousMeta,
+    previousExpansionStateCaptureCoverage:
+      metaValidation.expansion_state_capture_coverage,
     kind: previousKind.kind,
     now,
   });
@@ -285,6 +294,7 @@ export function buildRepairedBaseline({
   danglingCapture,
   previousCapture,
   previousMeta,
+  previousExpansionStateCaptureCoverage = null,
   kind,
   now,
 }) {
@@ -341,6 +351,15 @@ export function buildRepairedBaseline({
       baseline_facts_metadata: objectOrNull(previousMeta.baseline_facts_metadata),
       monitoring_disposition: objectOrNull(previousMeta.monitoring_disposition),
       stage1_baseline_activation: objectOrNull(previousMeta.stage1_baseline_activation),
+      expansion_state_capture_coverage:
+        kind === "webpage"
+          ? previousExpansionStateCaptureCoverage
+            ?? legacyExpansionStateCaptureCoverageFromMetadata(previousMeta, {
+                retainedStateCount: Array.isArray(previousCapture.expansion_states)
+                  ? previousCapture.expansion_states.length
+                  : 0,
+              })
+          : null,
       retained_artifact_projection:
         objectOrNull(previousMeta.retained_artifact_projection)
         ?? null,
@@ -498,6 +517,7 @@ function validateEvidenceMeta({
   label,
   expectedBaseline = null,
 }) {
+  let expansionStateCaptureCoverage = null;
   if (meta.source?.id !== sourceId) {
     return invalid(`${label}_meta_source_id_mismatch`);
   }
@@ -602,6 +622,42 @@ function validateEvidenceMeta({
       || captureStates.length !== declaredCount
     ) {
       return invalid(`${label}_meta_expansion_state_count_mismatch`);
+    }
+    const coverageClaimed = hasExpansionStateCaptureCoverageClaim(meta);
+    const coverage = legacyExpansionStateCaptureCoverageFromMetadata(meta, {
+      retainedStateCount: declaredCount,
+    });
+    if (!coverage && coverageClaimed) {
+      return invalid(`${label}_meta_expansion_state_coverage_invalid`);
+    }
+    expansionStateCaptureCoverage = coverage
+      ?? conservativeExpansionStateCaptureCoverage({
+        retainedStateCount: declaredCount,
+      });
+    const expectedSummary = expectedBaseline?.summary_metadata;
+    const expectedCoverageClaimed = Boolean(
+      expectedSummary
+      && typeof expectedSummary === "object"
+      && Object.hasOwn(expectedSummary, "expansion_state_capture_coverage"),
+    );
+    const expectedCoverageValue = expectedSummary?.expansion_state_capture_coverage;
+    if (expectedCoverageClaimed) {
+      const expectedCoverage = canonicalExpansionStateCaptureCoverage(
+        expectedCoverageValue,
+        { expectedRetainedStateCount: declaredCount },
+      );
+      if (
+        !expectedCoverage
+        || !sameExpansionStateCaptureCoverage(
+          expectedCoverage,
+          expansionStateCaptureCoverage,
+          {
+          expectedRetainedStateCount: declaredCount,
+          },
+        )
+      ) {
+        return invalid(`${label}_meta_expansion_state_coverage_mismatch`);
+      }
     }
     for (const [index, captureState] of captureStates.entries()) {
       const resolvedCaptureState = objectValue(resolvedCaptureStates[index]);
@@ -719,7 +775,10 @@ function validateEvidenceMeta({
   });
   if (!projectionValidation.ok) return projectionValidation;
 
-  return { ok: true };
+  return {
+    ok: true,
+    expansion_state_capture_coverage: expansionStateCaptureCoverage,
+  };
 }
 
 function validateRetainedArtifactProjection({ capture, kind, meta, label }) {

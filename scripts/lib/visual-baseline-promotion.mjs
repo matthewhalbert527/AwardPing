@@ -18,6 +18,11 @@ import {
   retainedCaptureArtifactProjectionSchema,
 } from "./r2-capture-artifact-bindings.mjs";
 import { inspectStage1ImmutableR2CaptureBinding } from "./stage1-cohort-readiness.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 import { advanceVisualSnapshotPointer } from "./visual-snapshot-pointer.mjs";
@@ -676,6 +681,10 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
       baseline_facts: capture.baseline_facts || existingSummary.baseline_facts || null,
       baseline_facts_metadata:
         capture.baseline_facts_metadata || existingSummary.baseline_facts_metadata || null,
+      expansion_state_capture_coverage:
+        capture.kind === "pdf"
+          ? null
+          : capture.expansion_state_capture_coverage || null,
       retained_artifact_projection:
         capture.retained_artifact_projection || null,
       approved_visual_candidate_id: candidate?.id || null,
@@ -958,6 +967,13 @@ function missingApprovedGeometryMetadata(capture) {
   }
   const missing = ["image_hash", "text_hash"].filter((field) => !cleanText(capture[field]));
   if (projectionMissing) missing.push("retained_artifact_projection");
+  if (!legacyExpansionStateCaptureCoverageFromMetadata({
+    ...capture,
+    expansion_state_count: approvedExpansionStateValues(capture).length,
+    expansion_state_screenshots: approvedExpansionStateValues(capture),
+  }, { retainedStateCount: approvedExpansionStateValues(capture).length })) {
+    missing.push("expansion_state_capture_coverage");
+  }
   const mainLayoutClaimed = approvedMainLayoutClaimed(capture);
   if (mainLayoutClaimed && !cleanText(capture.layout_hash || capture.text_geometry?.geometry_hash)) {
     missing.push("layout_hash");
@@ -1186,8 +1202,36 @@ function materializeApprovedRetainedArtifactProjection(capture, verifiedArtifact
     );
   }
 
+  const coverageOptions = {
+    expectedRetainedStateCount: expectedExpansionStateCount,
+  };
+  const declaredCoverage = capture.kind === "pdf"
+    ? null
+    : legacyExpansionStateCaptureCoverageFromMetadata({
+        ...capture,
+        expansion_state_count: expectedExpansionStateCount,
+        expansion_state_screenshots: approvedExpansionStateValues(capture),
+      }, { retainedStateCount: expectedExpansionStateCount });
+  const rawCoverage = capture.kind === "pdf"
+    ? null
+    : legacyExpansionStateCaptureCoverageFromMetadata(rawMetadata, {
+        retainedStateCount: expectedExpansionStateCount,
+      });
+  if (capture.kind !== "pdf" && (!declaredCoverage || !rawCoverage)) {
+    throw new Error("Approved snapshot expansion-state coverage is missing or invalid.");
+  }
+  if (
+    capture.kind !== "pdf"
+    && !sameExpansionStateCaptureCoverage(declaredCoverage, rawCoverage, coverageOptions)
+  ) {
+    throw new Error(
+      "Approved snapshot raw metadata and capture expansion-state coverage do not match.",
+    );
+  }
+
   const materialized = {
     ...capture,
+    expansion_state_capture_coverage: declaredCoverage,
     retained_artifact_projection: projection.manifest,
   };
   verifiedApprovedCaptureGeometry.set(materialized, verifiedGeometry);
@@ -1388,6 +1432,8 @@ function captureMetadata(capture, artifactBindings) {
     dimensions: capture.dimensions || null,
     layout_hash: layoutHash,
     text_geometry: kind === "webpage" ? capture.text_geometry || null : null,
+    expansion_state_capture_coverage:
+      kind === "webpage" ? capture.expansion_state_capture_coverage || null : null,
     expansion_state_count: expansionStates.length,
     expansion_state_screenshots: expansionStates.map((state, index) => ({
       state_id: state.state_id || null,
@@ -1615,6 +1661,13 @@ function approvedR2ReadinessMetadata(kindValue, value) {
   const identity = {
     text_length: metadata.text_length,
     text_object_bytes: metadata.text_object_bytes,
+    expansion_state_capture_coverage:
+      kind === "webpage"
+        ? canonicalExpansionStateCaptureCoverage(
+            metadata.expansion_state_capture_coverage,
+            { expectedRetainedStateCount: metadata.expansion_state_count },
+          )
+        : null,
     retained_artifact_projection: canonicalApprovedRetainedArtifactProjection(
       metadata.retained_artifact_projection,
     ),

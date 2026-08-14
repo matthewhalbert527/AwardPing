@@ -18,6 +18,15 @@ import { atomicWriteJson } from "./visual-baseline-lock.mjs";
 import { acquisitionDerivedCaptureMetadataFilename } from "./intake-artifact-retention.mjs";
 import { retainedCaptureArtifactProjectionSchema } from "./r2-capture-artifact-bindings.mjs";
 import {
+  canonicalExpansionStateCaptureCoverage,
+  conservativeExpansionStateCaptureCoverage,
+  expansionStateCaptureCoverage,
+  expansionStateCaptureCoverageLegacyMirrors,
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
+import {
   bindVisualTextGeometry,
   recomputeRestoredVisualScreenshotLayoutCapture,
   verifyVisualTextGeometryBinding,
@@ -730,6 +739,7 @@ export async function rehydrateLocalBaselineFromR2({
       requireComplete: authoritativeRecoveryBundle,
     });
     validateDownloadedLayouts({ artifactBySlot, generation });
+    let authoritativeExpansionCoverage = null;
     if (authoritativeRecoveryBundle) {
       validateAuthoritativeLayoutBindings({
         baseline: currentBaseline,
@@ -738,7 +748,7 @@ export async function rehydrateLocalBaselineFromR2({
         rawMeta,
         artifactBySlot,
       });
-      validateAuthoritativeRetainedProjectionParity({
+      authoritativeExpansionCoverage = validateAuthoritativeRetainedProjectionParity({
         kind: currentBaseline.kind,
         generation,
         manifest,
@@ -793,6 +803,16 @@ export async function rehydrateLocalBaselineFromR2({
       generation,
       localizationRecovery,
     });
+    const rehydratedExpansionCoverage = currentBaseline.kind === "webpage"
+      && authoritativeExpansionCoverage
+      ? expansionStateCaptureCoverage(
+          authoritativeExpansionCoverage,
+          {
+            retainedStateCount:
+              retainedArtifactProjection.authoritative?.expansion_state_count || 0,
+          },
+        )
+      : null;
     const sanitizedMeta = sanitizeDownloadedMeta({
       meta: rawMeta,
       localPaths,
@@ -801,6 +821,7 @@ export async function rehydrateLocalBaselineFromR2({
       layoutHashes: sanitizedLayouts.hashes,
       localizationRecovery,
       retainedArtifactProjection,
+      expansionStateCaptureCoverage: rehydratedExpansionCoverage,
     });
     const outputBuffers = localArtifactOutputBuffers({
       artifacts,
@@ -820,6 +841,7 @@ export async function rehydrateLocalBaselineFromR2({
           snapshotRecord,
           generation,
           rawMeta,
+          expansionStateCaptureCoverage: rehydratedExpansionCoverage,
         })
       : currentBaseline;
     const rehydratedBaseline = buildRehydratedBaseline({
@@ -831,6 +853,7 @@ export async function rehydrateLocalBaselineFromR2({
       layoutHashes: sanitizedLayouts.hashes,
       localizationRecovery,
       retainedArtifactProjection,
+      expansionStateCaptureCoverage: rehydratedExpansionCoverage,
       bucket,
       snapshotUpdatedAt: snapshotRecord.updated_at || null,
       now,
@@ -842,6 +865,7 @@ export async function rehydrateLocalBaselineFromR2({
         meta: sanitizedMeta,
         generation,
         retainedArtifactProjection,
+        expansionStateCaptureCoverage: rehydratedExpansionCoverage,
         localPaths,
         outputBuffers,
       });
@@ -1647,6 +1671,71 @@ function validateAuthoritativeRetainedProjectionParity({
       "The pointer and downloaded retained-artifact projections must canonically match the exact authoritative artifact set.",
     );
   }
+
+  if (kind === "webpage") {
+    const coverageOptions = {
+      expectedRetainedStateCount: expansionStateCount,
+    };
+    const pointerHasCoverage = Object.hasOwn(
+      generation.metadata,
+      "expansion_state_capture_coverage",
+    );
+    const rawHasNestedCoverage = Object.hasOwn(
+      rawMeta,
+      "expansion_state_capture_coverage",
+    );
+    const rawCoverageClaimed = hasExpansionStateCaptureCoverageClaim(rawMeta);
+    const pointerCoverage = canonicalExpansionStateCaptureCoverage(
+      generation.metadata?.expansion_state_capture_coverage,
+      coverageOptions,
+    );
+    const downloadedCoverage = legacyExpansionStateCaptureCoverageFromMetadata(
+      rawMeta,
+      { retainedStateCount: expansionStateCount },
+    );
+    if (pointerCoverage && downloadedCoverage) {
+      if (!sameExpansionStateCaptureCoverage(
+        pointerCoverage,
+        downloadedCoverage,
+        coverageOptions,
+      )) {
+        refuse(
+          "r2_authoritative_expansion_coverage_invalid",
+          "The pointer and downloaded expansion-state coverage verdicts disagree.",
+        );
+      }
+      return pointerCoverage;
+    }
+    if (!pointerHasCoverage && downloadedCoverage && !rawHasNestedCoverage) {
+      // The retained raw object may predate nested v1 coverage. Its exact
+      // legacy scalar shape is validated by the bridge and can only produce a
+      // conservative incomplete verdict, never verified completeness.
+      return downloadedCoverage;
+    }
+    if (
+      pointerCoverage
+      || downloadedCoverage
+      || pointerHasCoverage
+      || rawCoverageClaimed
+    ) {
+      refuse(
+        "r2_authoritative_expansion_coverage_invalid",
+        "Expansion-state coverage is one-sided, malformed, or incomplete across the pointer and retained metadata.",
+      );
+    }
+    return conservativeExpansionStateCaptureCoverage({
+      retainedStateCount: expansionStateCount,
+    });
+  } else if (
+    generation.metadata?.expansion_state_capture_coverage != null
+    || rawMeta?.expansion_state_capture_coverage != null
+  ) {
+    refuse(
+      "r2_authoritative_expansion_coverage_invalid",
+      "A PDF generation cannot carry webpage expansion-state coverage.",
+    );
+  }
+  return null;
 }
 
 function canonicalRetainedArtifactProjection(value) {
@@ -2208,6 +2297,7 @@ function sanitizeDownloadedMeta({
   layoutHashes,
   localizationRecovery,
   retainedArtifactProjection,
+  expansionStateCaptureCoverage: resolvedExpansionCoverage,
 }) {
   const value = stripLocalPathFields(structuredClone(meta));
   const omittedArtifacts = omittedLocalOnlyArtifacts(meta, manifest);
@@ -2283,6 +2373,13 @@ function sanitizeDownloadedMeta({
   };
   value.expansion_state_screenshots = expansionStates;
   value.expansion_state_count = expansionStates.length;
+  value.expansion_state_capture_coverage = resolvedExpansionCoverage || null;
+  if (resolvedExpansionCoverage) {
+    Object.assign(
+      value,
+      expansionStateCaptureCoverageLegacyMirrors(resolvedExpansionCoverage),
+    );
+  }
   value.retained_artifact_projection = retainedArtifactProjection;
   value.r2_local_rehydration = {
     generation: generation.name,
@@ -2535,6 +2632,7 @@ function buildAuthoritativeBaselineFromR2({
   snapshotRecord,
   generation,
   rawMeta,
+  expansionStateCaptureCoverage: resolvedExpansionCoverage,
 }) {
   const meta = stripLocalPathFields(structuredClone(rawMeta));
   const hashes = generation.hashes;
@@ -2608,6 +2706,10 @@ function buildAuthoritativeBaselineFromR2({
       stage1_baseline_activation: isObject(meta.stage1_baseline_activation)
         ? meta.stage1_baseline_activation
         : null,
+      expansion_state_capture_coverage:
+        snapshotRecord.kind === "webpage"
+          ? resolvedExpansionCoverage
+          : null,
       retained_artifact_projection: isObject(meta.retained_artifact_projection)
         ? meta.retained_artifact_projection
         : null,
@@ -2624,6 +2726,7 @@ function buildRehydratedBaseline({
   layoutHashes,
   localizationRecovery,
   retainedArtifactProjection,
+  expansionStateCaptureCoverage: resolvedExpansionCoverage,
   bucket,
   snapshotUpdatedAt,
   now,
@@ -2671,6 +2774,10 @@ function buildRehydratedBaseline({
         ? "r2_authoritative_local_cache_restore"
         : objectValue(baseline.summary_metadata).reason,
       updated_at: now,
+      expansion_state_capture_coverage:
+        baseline.kind === "webpage"
+          ? resolvedExpansionCoverage
+          : null,
       retained_artifact_projection: retainedArtifactProjection,
       r2_local_rehydration: {
         rehydrated_at: now,
@@ -2710,6 +2817,7 @@ function assertAuthoritativeRehydratedBundleParity({
   meta,
   generation,
   retainedArtifactProjection,
+  expansionStateCaptureCoverage: resolvedExpansionCoverage,
   localPaths,
   outputBuffers,
 }) {
@@ -2729,6 +2837,37 @@ function assertAuthoritativeRehydratedBundleParity({
       "r2_rehydrated_retained_projection_mismatch",
       "The rehydrated baseline and metadata retained-artifact projections disagree.",
     );
+  }
+
+
+  if (expectedProjection.kind === "webpage") {
+    const coverageOptions = {
+      expectedRetainedStateCount: expectedProjection.authoritative.expansion_state_count,
+    };
+    const expectedCoverage = canonicalExpansionStateCaptureCoverage(
+      resolvedExpansionCoverage,
+      coverageOptions,
+    );
+    const baselineCoverage = canonicalExpansionStateCaptureCoverage(
+      baseline.summary_metadata?.expansion_state_capture_coverage,
+      coverageOptions,
+    );
+    const metaCoverage = canonicalExpansionStateCaptureCoverage(
+      meta.expansion_state_capture_coverage,
+      coverageOptions,
+    );
+    if (
+      !expectedCoverage
+      || !baselineCoverage
+      || !metaCoverage
+      || !sameExpansionStateCaptureCoverage(expectedCoverage, baselineCoverage, coverageOptions)
+      || !sameExpansionStateCaptureCoverage(expectedCoverage, metaCoverage, coverageOptions)
+    ) {
+      refuse(
+        "r2_rehydrated_expansion_coverage_mismatch",
+        "The rehydrated baseline, metadata, and R2 pointer expansion coverage verdicts disagree.",
+      );
+    }
   }
 
   const authority = expectedProjection.authoritative;

@@ -95,6 +95,17 @@ import {
   withIsolatedExpansionStatePage,
 } from "./lib/expansion-state-isolation.mjs";
 import {
+  canonicalExpansionStateCaptureCoverage,
+  conservativeExpansionStateCaptureCoverage,
+  expansionStateCaptureCoverage,
+  expansionStateCaptureCoverageLegacyMirrors,
+  expansionStateCaptureBudgetMs,
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+  summarizeExpansionStateCapture,
+} from "./lib/expansion-state-descriptor-canonicalization.mjs";
+import {
   buildStableTextBlocks,
   captureProfileSettings,
   compareStableCaptureHashes,
@@ -411,7 +422,17 @@ const discoveryRunState = {
   byDomain: new Map(),
 };
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
-const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
+const sourceTimeoutMs = positiveInt(
+  args["source-timeout-ms"],
+  Math.max(timeoutMs + 30_000, 90_000),
+);
+const expansionStateTimeoutPerStateMs = boundedInt(
+  args["expansion-state-timeout-per-state-ms"] ||
+    env.AWARDPING_EXPANSION_STATE_TIMEOUT_PER_STATE_MS,
+  60_000,
+  5_000,
+  60_000,
+);
 const pageReadyTimeoutMs = positiveInt(args["page-ready-timeout-ms"] || env.AWARDPING_PAGE_READY_TIMEOUT_MS, 15_000);
 const captureSettleStableMs = boundedInt(
   args["capture-settle-stable-ms"] || env.AWARDPING_CAPTURE_SETTLE_STABLE_MS,
@@ -887,6 +908,7 @@ async function runOnce() {
       capture_scroll_final_wait_ms: captureScrollFinalWaitMs,
       capture_scroll_max_steps: captureScrollMaxSteps,
       source_timeout_ms: sourceTimeoutMs,
+      expansion_state_timeout_per_state_ms: expansionStateTimeoutPerStateMs,
       visual_source_check_minutes: visualSourceCheckMinutes,
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
@@ -1278,25 +1300,31 @@ async function runOnce() {
       try {
         await waitForDomain(source.url);
         if (!pdfSource) state.captureContextUsed = true;
-        const sourceOperation = processSource(
-          source,
-          state.context,
-          state.browserMeta,
-          report,
-          state.networkProxy,
-        );
         if (pdfSource) {
           // PDF download, parsing, and cleanup each have their own bounded
           // guards. Do not place them behind the non-cancelling page timeout:
           // it could report failure while the same operation later mutates the
           // baseline, R2 evidence, or downstream queues.
-          await sourceOperation;
+          await processSource(
+            source,
+            state.context,
+            state.browserMeta,
+            report,
+            state.networkProxy,
+          );
         } else {
-          await withTimeout(
-            sourceOperation,
+          const sourceDeadline = createSourcePhaseDeadline(
             sourceTimeoutMs,
             `source hard timeout after ${sourceTimeoutMs}ms`,
           );
+          await sourceDeadline.run(() => processSource(
+            source,
+            state.context,
+            state.browserMeta,
+            report,
+            state.networkProxy,
+            sourceDeadline,
+          ));
         }
         if (hasOpenSourceIssue(source)) {
           report.issue_sources_cleared += 1;
@@ -2070,7 +2098,14 @@ async function backfillOneR2BaselineUnlocked(source, report) {
   }
 }
 
-async function processSource(source, context, browserMeta, report, networkProxy = null) {
+async function processSource(
+  source,
+  context,
+  browserMeta,
+  report,
+  networkProxy = null,
+  sourceDeadline = null,
+) {
   return withVisualBaselineLockAsync({
     archiveRoot,
     sourceId: source.id,
@@ -2081,6 +2116,7 @@ async function processSource(source, context, browserMeta, report, networkProxy 
       browserMeta,
       report,
       networkProxy,
+      sourceDeadline,
     ),
   });
 }
@@ -2475,6 +2511,30 @@ function stage1RetainedArtifactProjectionParity({
   const authority = projections[0].authoritative;
   const layoutRetained = authority.layout_retained;
   const expectedExpansionCount = authority.expansion_state_count;
+  if (projections[0].kind === "webpage") {
+    const coverages = [
+      baseline?.summary_metadata?.expansion_state_capture_coverage,
+      captureMetadata?.expansion_state_capture_coverage,
+      latestMetadata?.expansion_state_capture_coverage,
+    ];
+    const canonicalCoverages = coverages.map((coverage) => (
+      canonicalExpansionStateCaptureCoverage(coverage, {
+        expectedRetainedStateCount: expectedExpansionCount,
+      })
+    ));
+    if (canonicalCoverages.some((coverage) => !coverage)) {
+      return { valid: false, reason: "expansion_capture_coverage_missing_or_invalid" };
+    }
+    if (
+      !sameExpansionStateCaptureCoverage(canonicalCoverages[0], canonicalCoverages[1])
+      || !sameExpansionStateCaptureCoverage(canonicalCoverages[0], canonicalCoverages[2])
+    ) {
+      return { valid: false, reason: "expansion_capture_coverage_disagrees" };
+    }
+    if (canonicalCoverages[0].complete !== true) {
+      return { valid: false, reason: "expansion_capture_coverage_incomplete" };
+    }
+  }
   const slots = Object.keys(jsonObjectOrEmpty(latestObjectKeys));
   const expansionPageCount = slots.filter((slot) => /^expansion_state_[0-9]{2}$/.test(slot)).length;
   const expansionLayoutCount = slots.filter((slot) => (
@@ -2619,6 +2679,7 @@ async function processSourceUnlocked(
   browserMeta,
   report,
   networkProxy = null,
+  sourceDeadline = null,
 ) {
   if (initialOfficialDocumentMaterialization) {
     await processInitialOfficialDocumentMaterializationOnly(source, report);
@@ -2738,6 +2799,7 @@ async function processSourceUnlocked(
           baseline,
           suppressDiscovery: pendingStage1Activation,
           networkProxy,
+          sourceDeadline,
         });
   } catch (error) {
     if (!pendingStage1Activation) throw error;
@@ -4921,7 +4983,12 @@ async function captureSource(
   context,
   browserMeta,
   report,
-  { baseline = null, suppressDiscovery = false, networkProxy = null } = {},
+  {
+    baseline = null,
+    suppressDiscovery = false,
+    networkProxy = null,
+    sourceDeadline = null,
+  } = {},
 ) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
@@ -4980,6 +5047,7 @@ async function captureSource(
     const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir, {
       source,
       profile: captureProfile,
+      sourceDeadline,
     });
     if (report && expansionStateEvidence.error) {
       const message = `Capture geometry expansion-state evidence unavailable: ${expansionStateEvidence.error}`;
@@ -5203,6 +5271,10 @@ async function captureSource(
       report.section_evidence_screenshots_taken += sections.evidence_screenshots_taken || 0;
     }
 
+    const expansionCoverage = expansionStateCaptureCoverage(
+      expansionStateEvidence,
+      { retainedStateCount: expansionStateEvidence.states.length },
+    );
     const meta = {
       version: 1,
       kind: "webpage",
@@ -5259,9 +5331,19 @@ async function captureSource(
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
       expansion_state_attempted: expansionStateEvidence.attempted || 0,
       expansion_state_capture_limit: expansionStateEvidence.capture_limit || 0,
-      expansion_state_capture_complete: expansionStateEvidence.capture_complete !== false,
+      expansion_state_capture_complete: expansionStateEvidence.capture_complete === true,
+      expansion_state_capture_status: expansionStateEvidence.capture_status || "unavailable_unknown",
+      expansion_state_raw_candidates: expansionStateEvidence.raw_candidates || 0,
+      expansion_state_raw_candidate_count_exact:
+        expansionStateEvidence.raw_candidate_count_exact === true,
+      expansion_state_candidate_count_exact: expansionStateEvidence.candidate_count_exact === true,
+      expansion_state_duplicate_controls_removed: expansionStateEvidence.duplicate_controls_removed || 0,
+      expansion_state_non_panel_controls_removed: expansionStateEvidence.non_panel_controls_removed || 0,
       expansion_state_truncated: expansionStateEvidence.truncated === true,
       expansion_state_truncated_count: expansionStateEvidence.truncated_count || 0,
+      expansion_state_truncated_count_exact: expansionStateEvidence.truncated_count_exact === true,
+      expansion_state_timeout_ms: expansionStateEvidence.capture_timeout_ms || 0,
+      expansion_state_capture_coverage: expansionCoverage,
       expansion_text_in_primary_hash: captureProfileConfig.includeExpansionTextInPrimary,
       expansion_state_screenshots: expansionStateEvidence.states.map((state) => ({
         state_id: state.state_id,
@@ -5635,11 +5717,17 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
   }
 }
 
-async function captureExpansionStateEvidence(page, context, captureDir, { source = null, profile = captureProfile } = {}) {
+async function captureExpansionStateEvidence(
+  page,
+  context,
+  captureDir,
+  { source = null, profile = captureProfile, sourceDeadline = null } = {},
+) {
   if (maxExpansionStateScreenshots <= 0) {
     return {
       states: [], candidates: 0, attempted: 0, capture_limit: 0,
-      capture_complete: true, truncated: false, truncated_count: 0, failures: [], error: null,
+      capture_complete: false, capture_status: "skipped_disabled",
+      truncated: false, truncated_count: 0, failures: [], error: null, skipped: true,
     };
   }
   const configuredRelevanceMode = expansionRelevanceModeForSource(source, profile);
@@ -5649,18 +5737,19 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
   if (!captureProfileSettings(profile).allowExpansionScreenshots && relevanceMode === "none") {
     return {
       states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
-      capture_complete: true, truncated: false, truncated_count: 0,
-      failures: [], error: null, skipped: true,
+      capture_complete: false, capture_status: "skipped_profile",
+      truncated: false, truncated_count: 0, failures: [], error: null, skipped: true,
     };
   }
   if (relevanceMode === "none") {
     return {
       states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
-      capture_complete: true, truncated: false, truncated_count: 0,
-      failures: [], error: null, skipped: true,
+      capture_complete: false, capture_status: "skipped_relevance",
+      truncated: false, truncated_count: 0, failures: [], error: null, skipped: true,
     };
   }
 
+  let expansionCaptureBudgetMs = 0;
   try {
     // Descriptor discovery walks candidate controls and their text. Bound the
     // unopened page first so a hostile DOM cannot make that scan unbounded.
@@ -5669,163 +5758,205 @@ async function captureExpansionStateEvidence(page, context, captureDir, { source
       maxControls: maxExpansionStateScreenshots,
       relevanceMode,
     });
+    if (sourceDeadline?.expired?.()) {
+      throw new Error("Expansion-state discovery completed after the source deadline expired.");
+    }
     const descriptors = setup.descriptors || [];
+    const isolationDescriptors = setup.isolation_descriptors || descriptors;
+    const candidateCountLabel = setup.candidate_count_exact === false ? "eligible_at_least" : "eligible";
+    const omittedSummary = setup.truncated_count_exact === false
+      ? "logical_omitted=unknown"
+      : `omitted=${setup.truncated_count || 0}`;
     const truncationError = setup.truncated === true
-      ? `expansion_state_capture_truncated: eligible=${setup.candidates || 0} ` +
+      ? `expansion_state_capture_truncated: ${candidateCountLabel}=${setup.candidates || 0} ` +
         `capture_limit=${setup.capture_limit || maxExpansionStateScreenshots} ` +
-        `omitted=${setup.truncated_count || 0}. Exact opened-section localization is unavailable for omitted controls.`
+        `${omittedSummary}. ` +
+        "Exact opened-section localization is unavailable for omitted controls."
       : null;
+
+    if (setup.isolation_descriptor_set_complete !== true) {
+      const discoveryError =
+        "expansion_state_isolation_unavailable: raw descriptor discovery exceeded its bounded scan; " +
+        "target-only evidence cannot be verified against unknown panels.";
+      return {
+        states: [],
+        ...summarizeExpansionStateCapture(setup, {
+          states: [],
+          failures: [],
+          attempted: 0,
+        }),
+        capture_timeout_ms: 0,
+        failures: [],
+        error: truncationError ? `${truncationError} ${discoveryError}` : discoveryError,
+      };
+    }
 
     const states = [];
     const failures = [];
     const navigationUrl = cleanText(page.url()) || cleanText(source?.url);
-    for (const candidate of descriptors) {
-      const stateNumber = states.length + 1;
-      const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
-      const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
-      const pagePath = join(captureDir, fileName);
-      const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
-      try {
-        const state = await withIsolatedExpansionStatePage({
-          context,
-          url: navigationUrl,
-          descriptor: candidate,
-          descriptors,
-          timeoutMs,
-          preparePage: async (statePage) => {
-            await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
-            await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
-            if (delayMs > 0) await statePage.waitForTimeout(delayMs);
-            await waitForMeaningfulPageContent(statePage);
-            await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
-            await hideNoiseElements(statePage);
-            await activateScrollTriggeredContent(statePage, { source, profile });
-            await hideNoiseElements(statePage);
-            const preparedStateSettle = await waitForPageSettledForSnapshot(statePage);
-            if (!preparedStateSettle.stable) {
-              throw new Error(
-                `Expansion state page did not settle before control resolution: waited_ms=${preparedStateSettle.waited_ms}.`,
-              );
-            }
-            await statePage.evaluate(() => {
-              for (const video of document.querySelectorAll("video")) {
-                video.pause?.();
-                video.removeAttribute("autoplay");
+    expansionCaptureBudgetMs = expansionStateCaptureBudgetMs(descriptors.length, {
+      operationTimeoutMs: Math.min(timeoutMs, 60_000),
+      perStateTimeoutMs: expansionStateTimeoutPerStateMs,
+    });
+    const endExpansionPhase = expansionCaptureBudgetMs > 0 && sourceDeadline
+      ? sourceDeadline.beginPhase({
+          name: "expansion-state-capture",
+          timeoutMs: expansionCaptureBudgetMs,
+          message: `expansion state hard timeout after ${expansionCaptureBudgetMs}ms ` +
+            `for ${descriptors.length} logical states`,
+        })
+      : () => {};
+    try {
+      for (const candidate of descriptors) {
+        const stateNumber = states.length + 1;
+        const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
+        const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
+        const pagePath = join(captureDir, fileName);
+        const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
+        try {
+          const state = await withIsolatedExpansionStatePage({
+            context,
+            url: navigationUrl,
+            descriptor: candidate,
+            descriptors: isolationDescriptors,
+            timeoutMs,
+            preparePage: async (statePage) => {
+              await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
+              await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
+              if (delayMs > 0) await statePage.waitForTimeout(delayMs);
+              await waitForMeaningfulPageContent(statePage);
+              await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
+              await hideNoiseElements(statePage);
+              await activateScrollTriggeredContent(statePage, { source, profile });
+              await hideNoiseElements(statePage);
+              const preparedStateSettle = await waitForPageSettledForSnapshot(statePage);
+              if (!preparedStateSettle.stable) {
+                throw new Error(
+                  `Expansion state page did not settle before control resolution: waited_ms=${preparedStateSettle.waited_ms}.`,
+                );
               }
-            }).catch(() => null);
-          },
-          capture: async (statePage, openedIsolation) => {
-            await activateScrollTriggeredContent(statePage, { source, profile });
-            await hideNoiseElements(statePage);
-            const captureStateSettle = await waitForPageSettledForSnapshot(statePage);
-            if (!captureStateSettle.stable) {
-              throw new Error(
-                `Expansion state page did not settle before geometry capture: waited_ms=${captureStateSettle.waited_ms}.`,
-              );
-            }
-            const isolation = await verifyExpansionStateIsolation(statePage, {
-              descriptor: candidate,
-              descriptors,
-            });
-            if (!isolation.verified) {
-              throw new Error(
-                `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
-              );
-            }
-            const stateCapturedAt = new Date().toISOString();
-            const resourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
-            const finalStateText = resourceSnapshot.text.text;
-            let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
-              capturedAt: stateCapturedAt,
-              stateId,
-            });
-            const pageBuffer = await statePage.screenshot({
-              fullPage: true,
-              type: "jpeg",
-              quality: jpegQuality,
-              timeout: timeoutMs,
-            });
-            const imageHash = hashBuffer(pageBuffer);
-            const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
-              stateId,
-            });
-            assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId });
-            const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
-              capturedAt: stateCapturedAt,
-              stateId,
-            });
-            stateTextGeometry = verifyVisualScreenshotLayoutCapture({
-              before: stateTextGeometry,
-              after: afterScreenshotGeometry,
-              screenshot: screenshotBinding,
-              stateId,
-            });
-            const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
-              capturedAt: stateCapturedAt,
-              imageHash,
-              imageRef: toArchiveRelative(pagePath),
-              screenshot: screenshotBinding,
-            });
-            writeFileSync(pagePath, pageBuffer);
-            writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
+              await statePage.evaluate(() => {
+                for (const video of document.querySelectorAll("video")) {
+                  video.pause?.();
+                  video.removeAttribute("autoplay");
+                }
+              }).catch(() => null);
+            },
+            capture: async (statePage, openedIsolation) => {
+              await activateScrollTriggeredContent(statePage, { source, profile });
+              await hideNoiseElements(statePage);
+              const captureStateSettle = await waitForPageSettledForSnapshot(statePage);
+              if (!captureStateSettle.stable) {
+                throw new Error(
+                  `Expansion state page did not settle before geometry capture: waited_ms=${captureStateSettle.waited_ms}.`,
+                );
+              }
+              const isolation = await verifyExpansionStateIsolation(statePage, {
+                descriptor: candidate,
+                descriptors: isolationDescriptors,
+              });
+              if (!isolation.verified) {
+                throw new Error(
+                  `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
+                );
+              }
+              const stateCapturedAt = new Date().toISOString();
+              const resourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
+              const finalStateText = resourceSnapshot.text.text;
+              let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+                capturedAt: stateCapturedAt,
+                stateId,
+              });
+              const pageBuffer = await statePage.screenshot({
+                fullPage: true,
+                type: "jpeg",
+                quality: jpegQuality,
+                timeout: timeoutMs,
+              });
+              const imageHash = hashBuffer(pageBuffer);
+              const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
+                stateId,
+              });
+              assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId });
+              const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+                capturedAt: stateCapturedAt,
+                stateId,
+              });
+              stateTextGeometry = verifyVisualScreenshotLayoutCapture({
+                before: stateTextGeometry,
+                after: afterScreenshotGeometry,
+                screenshot: screenshotBinding,
+                stateId,
+              });
+              const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
+                capturedAt: stateCapturedAt,
+                imageHash,
+                imageRef: toArchiveRelative(pagePath),
+                screenshot: screenshotBinding,
+              });
+              writeFileSync(pagePath, pageBuffer);
+              writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
 
-            const normalizedText = normalizeVisibleText(finalStateText);
-            return {
-              state_id: stateId,
-              index: candidate.index,
-              tag: candidate.tag || null,
-              label: cleanText(candidate.label) || `Section ${stateNumber}`,
-              page: toArchiveRelative(pagePath),
-              page_path: pagePath,
-              image_hash: imageHash,
-              layout: toArchiveRelative(layoutPath),
-              layout_path: layoutPath,
-              layout_hash: textGeometry.geometry_hash,
-              text_geometry: textGeometry,
-              captured_at: stateCapturedAt,
-              page_bytes: pageBuffer.length,
-              text: normalizedText,
-              text_hash: hashText(normalizedText),
-              text_length: normalizedText.length,
-              targets: candidate.state_kind === "targets"
-                ? Math.max(1, candidate.state_selectors?.length || 0)
-                : 0,
-              isolation: {
-                ...openedIsolation,
-                ...isolation,
-                fresh_page: true,
-              },
-            };
-          },
-        });
-        states.push(state);
-      } catch (error) {
-        if (isCaptureResourceLimitError(error)) throw error;
-        failures.push({
-          index: candidate.index,
-          label: candidate.label || null,
-          selector: candidate.selector || null,
-          error: errorMessage(error),
-        });
+              const normalizedText = normalizeVisibleText(finalStateText);
+              return {
+                state_id: stateId,
+                index: candidate.index,
+                tag: candidate.tag || null,
+                label: cleanText(candidate.label) || `Section ${stateNumber}`,
+                page: toArchiveRelative(pagePath),
+                page_path: pagePath,
+                image_hash: imageHash,
+                layout: toArchiveRelative(layoutPath),
+                layout_path: layoutPath,
+                layout_hash: textGeometry.geometry_hash,
+                text_geometry: textGeometry,
+                captured_at: stateCapturedAt,
+                page_bytes: pageBuffer.length,
+                text: normalizedText,
+                text_hash: hashText(normalizedText),
+                text_length: normalizedText.length,
+                targets: candidate.state_kind === "targets"
+                  ? Math.max(1, candidate.state_selectors?.length || 0)
+                  : 0,
+                isolation: {
+                  ...openedIsolation,
+                  ...isolation,
+                  fresh_page: true,
+                },
+              };
+            },
+          });
+          states.push(state);
+        } catch (error) {
+          if (sourceDeadline?.expired?.()) throw error;
+          if (isCaptureResourceLimitError(error)) throw error;
+          failures.push({
+            index: candidate.index,
+            label: candidate.label || null,
+            selector: candidate.selector || null,
+            error: errorMessage(error),
+          });
+        }
       }
+    } finally {
+      endExpansionPhase();
     }
 
     return {
       states,
-      candidates: setup.candidates || 0,
-      attempted: descriptors.length,
-      capture_limit: setup.capture_limit || maxExpansionStateScreenshots,
-      capture_complete: setup.descriptor_set_complete !== false && failures.length === 0,
-      truncated: setup.truncated === true,
-      truncated_count: setup.truncated_count || 0,
+      ...summarizeExpansionStateCapture(setup, { states, failures }),
+      capture_timeout_ms: expansionCaptureBudgetMs,
       failures,
       error: truncationError,
     };
   } catch (error) {
+    if (sourceDeadline?.expired?.()) throw error;
     if (isCaptureResourceLimitError(error)) throw error;
     return {
       states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
-      capture_complete: false, truncated: false, truncated_count: 0,
+      capture_complete: false, capture_status: "unavailable_error",
+      truncated: false, truncated_count: 0,
+      capture_timeout_ms: expansionCaptureBudgetMs,
       failures: [], error: errorMessage(error),
     };
   }
@@ -9445,12 +9576,43 @@ function materializeRetainedCaptureAuthority(source, capture, {
     throw new Error("A capture is required before retained artifact projection.");
   }
 
+  const preProjectionRetainedStates = Array.isArray(capture.expansion_state_screenshots)
+    ? capture.expansion_state_screenshots
+    : [];
+  const preProjectionRetainedStateCount = preProjectionRetainedStates.length;
+  const preProjectionCoverage = capture.kind === "pdf"
+    ? null
+    : legacyExpansionStateCaptureCoverageFromMetadata({
+        ...capture,
+        expansion_state_count: preProjectionRetainedStateCount,
+        expansion_state_screenshots: preProjectionRetainedStates,
+      }, { retainedStateCount: preProjectionRetainedStateCount });
+  if (
+    capture.kind !== "pdf"
+    && hasExpansionStateCaptureCoverageClaim(capture)
+    && !preProjectionCoverage
+  ) {
+    throw new Error(
+      "Capture expansion-state coverage claim is invalid before retained artifact projection.",
+    );
+  }
+
   const selected = projectRetainedCaptureArtifactsForMaterialization(capture, {
     exists: existsSync,
     identityScope: source?.id || null,
   });
   const projection = selected.manifest;
   const retainedStates = selected.retainedExpansionStates;
+  const coverageInput = preProjectionCoverage
+    || conservativeExpansionStateCaptureCoverage({
+      retainedStateCount: preProjectionRetainedStateCount,
+      captureLimit: preProjectionRetainedStateCount,
+    });
+  const projectedExpansionCoverage = capture.kind === "pdf"
+    ? null
+    : expansionStateCaptureCoverage(coverageInput, {
+        retainedStateCount: retainedStates.length,
+      });
   const layoutPath = selected.layoutRetained ? capture.layout_path : null;
   const layoutHash = selected.layoutRetained
     ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
@@ -9472,6 +9634,13 @@ function materializeRetainedCaptureAuthority(source, capture, {
   capture.localization = localization;
   capture.expansion_state_screenshots = retainedStates;
   capture.expansion_state_count = retainedStates.length;
+  capture.expansion_state_capture_coverage = projectedExpansionCoverage;
+  if (projectedExpansionCoverage) {
+    Object.assign(
+      capture,
+      expansionStateCaptureCoverageLegacyMirrors(projectedExpansionCoverage),
+    );
+  }
   capture.retained_artifact_projection = projection;
   if (retainedStates.length) capture.persist_expansion_state_screenshots = true;
 
@@ -9521,6 +9690,9 @@ function materializeRetainedCaptureAuthority(source, capture, {
     });
     const projectedMetadata = {
       ...metadata,
+      ...(projectedExpansionCoverage
+        ? expansionStateCaptureCoverageLegacyMirrors(projectedExpansionCoverage)
+        : {}),
       layout_hash: layoutHash,
       text_geometry: textGeometry
         ? textGeometryReference(textGeometry, layoutPath)
@@ -9528,6 +9700,7 @@ function materializeRetainedCaptureAuthority(source, capture, {
       localization,
       expansion_state_count: projectedMetadataStates.length,
       expansion_state_screenshots: projectedMetadataStates,
+      expansion_state_capture_coverage: projectedExpansionCoverage,
       retained_artifact_projection: projection,
       files: {
         ...jsonObjectOrEmpty(metadata.files),
@@ -9599,6 +9772,7 @@ function rewriteMatchingBaselineRetainedProjection(source, capture, projection) 
     },
     summary_metadata: {
       ...jsonObjectOrEmpty(baseline.summary_metadata),
+      expansion_state_capture_coverage: capture.expansion_state_capture_coverage || null,
       retained_artifact_projection: projection,
     },
   };
@@ -9668,6 +9842,10 @@ function r2CaptureMetadata(capture, artifactBindings) {
       : null,
     text_geometry: retainedTextGeometry,
     page_count: capture.page_count || null,
+    expansion_state_capture_coverage:
+      capture.kind === "pdf"
+        ? null
+        : capture.expansion_state_capture_coverage || null,
     expansion_state_count: retainedExpansionStates.length,
     expansion_state_screenshots:
       retainedExpansionStates.map((state, index) => ({
@@ -10635,6 +10813,10 @@ function writeBaseline(source, capture, details) {
         || capture.stage1_baseline_activation
         || existingSummary.stage1_baseline_activation
         || null,
+      expansion_state_capture_coverage:
+        capture.kind === "pdf"
+          ? null
+          : capture.expansion_state_capture_coverage || null,
       retained_artifact_projection: retainedArtifactProjection,
     },
   };
@@ -14865,6 +15047,91 @@ function errorMessage(error) {
 
 function isSourceTimeoutError(error) {
   return errorChainHasCode(error, "AWARDPING_SOURCE_TIMEOUT");
+}
+
+function createSourcePhaseDeadline(milliseconds, message) {
+  const baseTimeoutMs = Math.max(1, Number(milliseconds) || 1);
+  let baseRemainingMs = baseTimeoutMs;
+  let timer = null;
+  let armedAt = 0;
+  let activePhase = null;
+  let rejectTimeout = null;
+  let timedOut = false;
+  let settled = false;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    rejectTimeout = reject;
+  });
+
+  const clearTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    armedAt = 0;
+  };
+
+  const arm = (durationMs, timeoutMessage, phaseName) => {
+    clearTimer();
+    const boundedDurationMs = Math.max(1, Math.floor(Number(durationMs) || 1));
+    armedAt = Date.now();
+    timer = setTimeout(() => {
+      timedOut = true;
+      const error = new Error(timeoutMessage);
+      error.code = "AWARDPING_SOURCE_TIMEOUT";
+      error.timeout_phase = phaseName;
+      error.timeout_ms = boundedDurationMs;
+      rejectTimeout(error);
+    }, boundedDurationMs);
+  };
+
+  const consumeBaseTime = () => {
+    if (activePhase || !armedAt) return;
+    baseRemainingMs = Math.max(0, baseRemainingMs - (Date.now() - armedAt));
+  };
+
+  return {
+    async run(operation) {
+      if (typeof operation !== "function") {
+        throw new Error("Source deadline requires an operation callback.");
+      }
+      arm(baseRemainingMs, message, "source");
+      const guarded = Promise.resolve()
+        .then(operation)
+        .catch((error) => {
+          if (timedOut) return null;
+          throw error;
+        })
+        .finally(() => {
+          settled = true;
+          clearTimer();
+        });
+      return Promise.race([guarded, timeoutPromise]);
+    },
+
+    beginPhase({ name, timeoutMs: phaseTimeoutMs, message: phaseMessage }) {
+      if (settled || timedOut || activePhase || !(Number(phaseTimeoutMs) > 0)) return () => {};
+      consumeBaseTime();
+      if (baseRemainingMs <= 0) {
+        arm(1, message, "source");
+        return () => {};
+      }
+      const phase = { name: String(name || "phase") };
+      activePhase = phase;
+      arm(phaseTimeoutMs, phaseMessage, phase.name);
+      let ended = false;
+      return () => {
+        if (ended) return;
+        ended = true;
+        if (activePhase !== phase) return;
+        clearTimer();
+        activePhase = null;
+        if (!settled && !timedOut) arm(baseRemainingMs, message, "source");
+      };
+    },
+
+    expired() {
+      return timedOut;
+    },
+  };
 }
 
 function isCaptureNetworkBoundaryError(error) {

@@ -547,6 +547,9 @@ describe("legacy R2 snapshot pointer inspection", () => {
     );
     expect(inspected.bodies.get(latest.objectKeys.text)).toEqual(latest.text);
     expect(inspected.bodies.get(previous.objectKeys.text)).toEqual(previous.text);
+    expect(inspected.item.next_metadata.latest).not.toHaveProperty(
+      "expansion_state_capture_coverage",
+    );
     expect(inspected.item.safety).toMatchObject({
       legacy_objects_deleted: false,
       events_written: false,
@@ -554,6 +557,148 @@ describe("legacy R2 snapshot pointer inspection", () => {
       baseline_refreshed: false,
       paid_api_calls: 0,
     });
+  });
+
+  it("backfills scalar-only history as conservative coverage and never promotes it complete", async () => {
+    const value = fixture();
+    const metaKey = value.latest.objectKeys.meta;
+    const rawMeta = JSON.parse(value.objects.get(metaKey).body.toString("utf8"));
+    Object.assign(rawMeta, {
+      expansion_state_candidates: 0,
+      expansion_state_attempted: 0,
+      expansion_state_capture_limit: 24,
+      expansion_state_capture_complete: true,
+      expansion_state_capture_status: "verified_complete",
+      expansion_state_raw_candidates: 0,
+      expansion_state_candidate_count_exact: true,
+      expansion_state_truncated: false,
+      expansion_state_truncated_count: 0,
+      expansion_state_truncated_count_exact: true,
+      expansion_state_failures: [],
+      expansion_state_count: 0,
+      expansion_state_screenshots: [],
+    });
+    value.objects.set(
+      metaKey,
+      objectRecord(
+        Buffer.from(JSON.stringify(rawMeta), "utf8"),
+        "application/json; charset=utf-8",
+      ),
+    );
+    applyArtifactBindings(value.row.latest_metadata, value.latest.objectKeys, value.objects);
+
+    const inspected = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore: fakeObjectStore(value.objects),
+    });
+    expect(inspected.item.next_metadata.latest.expansion_state_capture_coverage)
+      .toMatchObject({
+        complete: false,
+        status: "incomplete_discovery",
+        raw_candidate_count_exact: false,
+        logical_candidate_count_exact: false,
+        retained_state_count: 0,
+      });
+
+    const legacyV0 = fixture();
+    const legacyV0Key = legacyV0.latest.objectKeys.meta;
+    const legacyV0Meta = JSON.parse(
+      legacyV0.objects.get(legacyV0Key).body.toString("utf8"),
+    );
+    Object.assign(legacyV0Meta, {
+      expansion_state_candidates: 0,
+      expansion_state_attempted: 0,
+      expansion_state_capture_limit: 24,
+      expansion_state_capture_complete: true,
+      expansion_state_truncated: false,
+      expansion_state_truncated_count: 0,
+      expansion_state_failures: [],
+      expansion_state_count: 0,
+      expansion_state_screenshots: [],
+    });
+    legacyV0.objects.set(
+      legacyV0Key,
+      objectRecord(
+        Buffer.from(JSON.stringify(legacyV0Meta), "utf8"),
+        "application/json; charset=utf-8",
+      ),
+    );
+    applyArtifactBindings(
+      legacyV0.row.latest_metadata,
+      legacyV0.latest.objectKeys,
+      legacyV0.objects,
+    );
+    const v0Inspected = await inspectLegacyR2SnapshotPointer({
+      row: legacyV0.row,
+      source: legacyV0.source,
+      objectStore: fakeObjectStore(legacyV0.objects),
+    });
+    expect(v0Inspected.item.next_metadata.latest.expansion_state_capture_coverage)
+      .toMatchObject({
+        complete: false,
+        status: "incomplete_discovery",
+        retained_state_count: 0,
+      });
+
+    const incompleteProof = fixture();
+    const incompleteKey = incompleteProof.latest.objectKeys.meta;
+    const incompleteMeta = JSON.parse(
+      incompleteProof.objects.get(incompleteKey).body.toString("utf8"),
+    );
+    incompleteMeta.expansion_state_count = 0;
+    incompleteMeta.expansion_state_screenshots = [];
+    incompleteProof.objects.set(
+      incompleteKey,
+      objectRecord(
+        Buffer.from(JSON.stringify(incompleteMeta), "utf8"),
+        "application/json; charset=utf-8",
+      ),
+    );
+    applyArtifactBindings(
+      incompleteProof.row.latest_metadata,
+      incompleteProof.latest.objectKeys,
+      incompleteProof.objects,
+    );
+    const withoutProof = await inspectLegacyR2SnapshotPointer({
+      row: incompleteProof.row,
+      source: incompleteProof.source,
+      objectStore: fakeObjectStore(incompleteProof.objects),
+    });
+    expect(withoutProof.item.next_metadata.latest).not.toHaveProperty(
+      "expansion_state_capture_coverage",
+    );
+  });
+
+  it.each([
+    ["malformed nested coverage", (meta) => {
+      meta.expansion_state_capture_coverage = {
+        schema: "awardping.expansion-state-capture-coverage.v1",
+        complete: "true",
+      };
+    }],
+    ["a partial scalar coverage claim", (meta) => {
+      meta.expansion_state_capture_status = "verified_complete";
+    }],
+  ])("quarantines %s instead of preserving it as absent", async (_name, mutate) => {
+    const value = fixture();
+    const metaKey = value.latest.objectKeys.meta;
+    const rawMeta = JSON.parse(value.objects.get(metaKey).body.toString("utf8"));
+    mutate(rawMeta);
+    value.objects.set(
+      metaKey,
+      objectRecord(
+        Buffer.from(JSON.stringify(rawMeta), "utf8"),
+        "application/json; charset=utf-8",
+      ),
+    );
+    applyArtifactBindings(value.row.latest_metadata, value.latest.objectKeys, value.objects);
+
+    await expect(inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore: fakeObjectStore(value.objects),
+    })).rejects.toMatchObject({ code: "r2_expansion_coverage_source_invalid" });
   });
 
   it("migrates exact retained PDF evidence without introducing webpage artifacts", async () => {

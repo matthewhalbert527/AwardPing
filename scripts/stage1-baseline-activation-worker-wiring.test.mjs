@@ -100,8 +100,8 @@ describe("Stage 1 first-visual-baseline activation worker wiring", () => {
       "async function captureSource",
       "async function captureExpansionStateEvidence",
     );
-    expect(capture).toContain(
-      "{ baseline = null, suppressDiscovery = false, networkProxy = null } = {}",
+    expect(capture).toMatch(
+      /\{\s*baseline = null,\s*suppressDiscovery = false,\s*networkProxy = null,\s*sourceDeadline = null,\s*\} = \{\}/u,
     );
     expect(capture.match(/!suppressDiscovery && discoveryMode/g)).toHaveLength(3);
   });

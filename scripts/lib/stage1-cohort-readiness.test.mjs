@@ -5,6 +5,10 @@ import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { bindVisualTextGeometry } from "./visual-event-localization.mjs";
 import {
+  expansionStateCaptureCoverage,
+  expansionStateCaptureCoverageLegacyMirrors,
+} from "./expansion-state-descriptor-canonicalization.mjs";
+import {
   REQUIRED_SOURCE_ROLES,
   STAGE1_REMOTE_EFFECTIVE_BLOCKER,
   STAGE1_PUBLICATION_SNAPSHOT_SCHEMA_VERSION,
@@ -1606,6 +1610,7 @@ function writeWebEvidenceFixture({
       excluded_state_count: 0,
     },
   };
+  const expansionCoverage = completeExpansionCoverage(0);
   const meta = {
     version: 1,
     kind: "webpage",
@@ -1630,6 +1635,9 @@ function writeWebEvidenceFixture({
       captured_at: capturedAt,
     },
     expansion_state_screenshots: [],
+    expansion_state_count: 0,
+    ...expansionStateCaptureCoverageLegacyMirrors(expansionCoverage),
+    expansion_state_capture_coverage: structuredClone(expansionCoverage),
     retained_artifact_projection: structuredClone(retainedProjection),
     files: {
       page: pageRelative,
@@ -1659,6 +1667,7 @@ function writeWebEvidenceFixture({
       expansion_states: [],
     },
     summary_metadata: {
+      expansion_state_capture_coverage: structuredClone(expansionCoverage),
       retained_artifact_projection: structuredClone(retainedProjection),
     },
   };
@@ -1705,6 +1714,7 @@ function writeWebEvidenceFixture({
       localization: meta.localization,
       expansion_state_count: 0,
       expansion_state_screenshots: [],
+      expansion_state_capture_coverage: structuredClone(expansionCoverage),
       retained_artifact_projection: structuredClone(retainedProjection),
     },
   };
@@ -1858,6 +1868,7 @@ function addExpansionStateEvidence(fixture) {
   fixture.meta.retained_artifact_projection.authoritative.expansion_state_count = 1;
   fixture.baseline.summary_metadata.retained_artifact_projection.authoritative
     .expansion_state_count = 1;
+  setFixtureExpansionCoverage(fixture, 1);
   const paths = {
     page: join(fixture.archiveRoot, pageRelative),
     layout: join(fixture.archiveRoot, layoutRelative),
@@ -1871,6 +1882,34 @@ function addExpansionStateEvidence(fixture) {
     JSON.stringify(fixture.baseline),
   );
   return { paths, layout, imageHash };
+}
+
+function completeExpansionCoverage(retainedStateCount) {
+  return expansionStateCaptureCoverage({
+    raw_candidates: retainedStateCount,
+    raw_candidate_count_exact: true,
+    candidates: retainedStateCount,
+    candidate_count_exact: true,
+    attempted: retainedStateCount,
+    capture_limit: 24,
+    capture_complete: true,
+    capture_status: "verified_complete",
+    truncated: false,
+    truncated_count: 0,
+    truncated_count_exact: true,
+    failures: [],
+  }, { retainedStateCount });
+}
+
+function setFixtureExpansionCoverage(fixture, retainedStateCount) {
+  const coverage = completeExpansionCoverage(retainedStateCount);
+  Object.assign(fixture.meta, expansionStateCaptureCoverageLegacyMirrors(coverage));
+  fixture.meta.expansion_state_count = retainedStateCount;
+  fixture.meta.expansion_state_capture_coverage = structuredClone(coverage);
+  fixture.baseline.summary_metadata.expansion_state_capture_coverage =
+    structuredClone(coverage);
+  fixture.snapshot.latest_metadata.expansion_state_capture_coverage =
+    structuredClone(coverage);
 }
 
 function removeAuthoritativeLayoutClaim(snapshot) {

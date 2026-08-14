@@ -1,6 +1,12 @@
 import { createHash } from "node:crypto";
 
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -38,14 +44,14 @@ const SNAPSHOT_FIELDS = Object.freeze([
 ]);
 
 export const LEGACY_R2_POINTER_PLAN_SCHEMA =
-  "awardping.legacy-r2-snapshot-pointer-migration-plan.v5";
+  "awardping.legacy-r2-snapshot-pointer-migration-plan.v6";
 export const LEGACY_R2_POINTER_RECEIPT_SCHEMA =
-  "awardping.legacy-r2-snapshot-pointer-migration-receipt.v5";
+  "awardping.legacy-r2-snapshot-pointer-migration-receipt.v6";
 export const LEGACY_R2_POINTER_POLICY = Object.freeze({
   id: "awardping-legacy-r2-snapshot-pointer-migration",
-  version: "5",
+  version: "6",
   hash: sha256Text(
-    "legacy-r2-pointer-v5:exact-selector-and-bucket:case-sensitive-url:head-get-verify:all-artifact-raw-bindings:layout-and-expansion-binding:captures-only:immutable-copy:destination-if-absent:cas-keys-plus-narrow-derived-metadata:preserve-legacy:no-live-fetch:no-events:no-paid-api",
+    "legacy-r2-pointer-v6:exact-selector-and-bucket:case-sensitive-url:head-get-verify:all-artifact-raw-bindings:layout-and-expansion-binding:conservative-legacy-v0-expansion-coverage:nested-v1-required-for-complete:captures-only:immutable-copy:destination-if-absent:cas-keys-plus-narrow-derived-metadata:preserve-legacy:no-live-fetch:no-events:no-paid-api",
   ),
 });
 
@@ -354,7 +360,7 @@ export async function inspectLegacyR2SnapshotPointer({
       baseline_refreshed: false,
       paid_api_calls: 0,
       metadata_repair:
-        "Only reviewed derived fields may be added: full raw artifact bindings, text_object_bytes from retained bytes, or truthful zero-layout/zero-expansion accounting when every geometry claim is absent.",
+        "Only reviewed derived fields may be added: full raw artifact bindings, text_object_bytes from retained bytes, a conservative incomplete expansion coverage verdict from the validated legacy producer shape, or truthful zero-layout/zero-expansion accounting when every geometry claim is absent. Verified completeness always requires an existing canonical nested v1 verdict.",
       pointer_fields_changed: pointerFieldsChanged,
     },
   };
@@ -432,6 +438,8 @@ export function buildLegacyR2PointerMigrationPlan({
       changes_only_object_keys_derived_metadata_additions_and_updated_at: true,
       missing_text_object_bytes_may_be_derived_from_verified_retained_bytes: true,
       missing_artifact_bindings_may_be_derived_from_verified_retained_bytes: true,
+      legacy_scalar_expansion_coverage_is_always_conservative_incomplete: true,
+      verified_complete_expansion_coverage_requires_nested_v1: true,
       zero_layout_accounting_may_be_added_only_when_all_geometry_claims_are_absent: true,
       existing_metadata_values_are_preserved: true,
       preserve_capture_timestamps_hashes_and_all_existing_metadata_values: true,
@@ -495,6 +503,8 @@ export function assertLegacyR2PointerMigrationPlan(plan, confirmation, {
     || safety.changes_only_object_keys_derived_metadata_additions_and_updated_at !== true
     || safety.missing_text_object_bytes_may_be_derived_from_verified_retained_bytes !== true
     || safety.missing_artifact_bindings_may_be_derived_from_verified_retained_bytes !== true
+    || safety.legacy_scalar_expansion_coverage_is_always_conservative_incomplete !== true
+    || safety.verified_complete_expansion_coverage_requires_nested_v1 !== true
     || safety.zero_layout_accounting_may_be_added_only_when_all_geometry_claims_are_absent !== true
     || safety.existing_metadata_values_are_preserved !== true
     || safety.preserve_capture_timestamps_hashes_and_all_existing_metadata_values !== true
@@ -665,7 +675,7 @@ export function migrationFailureQuarantineEvidence({ plan, item, error, observed
     ? cloneJson(error.details.post_cas_state)
     : null;
   return {
-    schema_version: "awardping.legacy-r2-pointer-migration-quarantine.v5",
+    schema_version: "awardping.legacy-r2-pointer-migration-quarantine.v6",
     observed_at: canonicalTimestamp(observedAt || new Date().toISOString(), "quarantine observed_at"),
     message: `Legacy R2 pointer migration failed closed (${reasonCode}): ${safeMessage(error || item?.failure?.message)}`,
     failure_stage: "legacy_r2_pointer_migration",
@@ -966,6 +976,12 @@ function validateWebpageLayoutEvidence({
     artifactsBySlot,
     rawMeta,
   });
+  const metadataAfterCoverage = bindOrValidateExpansionStateCaptureCoverage({
+    pointerMetadata: metadataAfterTextBinding,
+    rawMeta,
+    retainedStateCount: expansionCount,
+    generationName: generation.name,
+  });
   const pointerMetadata = generation.metadata;
   const layoutArtifact = artifactsBySlot.layout || null;
   const mainClaims = [
@@ -1000,7 +1016,7 @@ function validateWebpageLayoutEvidence({
       );
     }
     validateNoLayoutRawMetaClaims(rawMeta, generation.name);
-    return addNoLayoutMetadataAccounting(metadataAfterTextBinding, generation.name);
+    return addNoLayoutMetadataAccounting(metadataAfterCoverage, generation.name);
   }
 
   if (!layoutArtifact) {
@@ -1100,7 +1116,55 @@ function validateWebpageLayoutEvidence({
       );
     }
   }
-  return metadataAfterTextBinding;
+  return metadataAfterCoverage;
+}
+
+function bindOrValidateExpansionStateCaptureCoverage({
+  pointerMetadata,
+  rawMeta,
+  retainedStateCount,
+  generationName,
+}) {
+  const coverageOptions = { expectedRetainedStateCount: retainedStateCount };
+  const rawCoverage = legacyExpansionStateCaptureCoverageFromMetadata(rawMeta, {
+    retainedStateCount,
+  });
+  if (!rawCoverage) {
+    if (hasExpansionStateCaptureCoverageClaim(rawMeta)) {
+      fail(
+        "r2_expansion_coverage_source_invalid",
+        `${generationName} retained metadata contains malformed or partial expansion coverage.`,
+      );
+    }
+    if (Object.hasOwn(pointerMetadata, "expansion_state_capture_coverage")) {
+      fail(
+        "r2_expansion_coverage_source_incomplete",
+        `${generationName} pointer coverage has no exact retained-metadata proof.`,
+      );
+    }
+    return jsonObject(pointerMetadata);
+  }
+  const before = jsonObject(pointerMetadata);
+  const pointerCoverage = canonicalExpansionStateCaptureCoverage(
+    before.expansion_state_capture_coverage,
+    coverageOptions,
+  );
+  if (Object.hasOwn(before, "expansion_state_capture_coverage")) {
+    if (
+      !pointerCoverage
+      || !sameExpansionStateCaptureCoverage(pointerCoverage, rawCoverage, coverageOptions)
+    ) {
+      fail(
+        "r2_expansion_coverage_mismatch",
+        `${generationName} pointer expansion coverage differs from retained capture evidence.`,
+      );
+    }
+    return before;
+  }
+  return {
+    ...before,
+    expansion_state_capture_coverage: rawCoverage,
+  };
 }
 
 function validateSharedCaptureMetadataIdentity(pointerMetadata, rawMeta, generationName) {

@@ -178,8 +178,150 @@ describe("expansion state isolation", () => {
         truncated_count: 1,
       });
       expect(setup.descriptors).toHaveLength(8);
+      expect(setup.isolation_descriptors).toHaveLength(9);
       expect(setup.descriptors.at(-1)?.label).toBe("FAQ 8");
     });
+  }, 30_000);
+
+  browserIt("isolates against known logical panels beyond the screenshot cap", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(
+      manyFaqDetailsFixture(25, { openIndex: 25 }),
+    )}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 24,
+        relevanceMode: "award-content",
+      });
+      expect(setup).toMatchObject({
+        candidates: 25,
+        descriptor_set_complete: false,
+        isolation_descriptor_set_complete: true,
+        truncated_count: 1,
+      });
+      expect(setup.descriptors).toHaveLength(24);
+      expect(setup.isolation_descriptors).toHaveLength(25);
+      await discoveryPage.close();
+
+      const target = setup.descriptors[0];
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: target,
+        descriptors: setup.isolation_descriptors,
+        timeoutMs: 10_000,
+        capture: async (page, opened) => ({
+          opened,
+          openLabels: await page.locator("details[open] > summary")
+            .evaluateAll((elements) => elements.map((element) => element.textContent.trim())),
+        }),
+      });
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        other_open_selectors: [],
+      });
+      expect(captured.openLabels).toEqual(["FAQ 1"]);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  }, 30_000);
+
+  browserIt("canonicalizes all Samvid-style Elementor panels and captures one exact animated state", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 1365, height: 1600 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(samvidElementorFixture())}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 24,
+        relevanceMode: "award-content",
+      });
+
+      expect(setup).toMatchObject({
+        raw_candidates: 41,
+        candidates: 20,
+        duplicate_controls_removed: 20,
+        non_panel_controls_removed: 1,
+        capture_limit: 24,
+        descriptor_set_complete: true,
+        truncated: false,
+        truncated_count: 0,
+      });
+      expect(setup.descriptors).toHaveLength(20);
+      expect(setup.descriptors.every((descriptor) =>
+        descriptor.state_kind === "targets" &&
+        descriptor.role === "button" &&
+        descriptor.aria_controls &&
+        descriptor.panel_selectors?.[0] === `#${descriptor.aria_controls}`)).toBe(true);
+      expect(setup.descriptors.map((descriptor) => descriptor.id)).toEqual(expect.arrayContaining([
+        "elementor-tab-title-2303",
+        "elementor-tab-title-23010",
+        "elementor-tab-title-6241",
+        "elementor-tab-title-6243",
+      ]));
+
+      const capped = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 19,
+        relevanceMode: "award-content",
+      });
+      expect(capped).toMatchObject({
+        candidates: 20,
+        capture_limit: 19,
+        descriptor_set_complete: false,
+        truncated: true,
+        truncated_count: 1,
+      });
+      expect(capped.descriptors).toHaveLength(19);
+
+      await discoveryPage.close();
+      const target = setup.descriptors.find((descriptor) => descriptor.id === "elementor-tab-title-1055");
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: target,
+        descriptors: setup.descriptors,
+        timeoutMs: 10_000,
+        capture: async (page, opened) => ({
+          opened,
+          verification: await verifyExpansionStateIsolation(page, {
+            descriptor: target,
+            descriptors: setup.descriptors,
+          }),
+          openControls: await page.locator(".elementor-tab-title[aria-expanded='true']")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          text: geometryText(await captureVisibleTextGeometry(page, {
+            stateId: "samvid-elementor-1055",
+          })),
+        }),
+      });
+
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        exact_elementor_binding: true,
+        bound_content_transition_required: true,
+        bound_content_transition_verified: true,
+        other_open_selectors: [],
+      });
+      expect(captured.verification).toMatchObject({
+        verified: true,
+        exact_elementor_binding: true,
+      });
+      expect(captured.openControls).toEqual(["elementor-tab-title-1055"]);
+      expect(captured.text).toContain("Dual-degree candidates remain eligible");
+      expect(captured.text).not.toContain("Default-open content from another widget");
+      expect(context.pages()).toHaveLength(0);
+    } finally {
+      await discoveryPage.close().catch(() => null);
+      await context.close();
+      await browser.close();
+    }
   }, 30_000);
 
   browserIt("deduplicates native details aliases and keeps the opened wording in geometry", async () => {
@@ -343,6 +485,206 @@ describe("expansion state isolation", () => {
       expect(context.pages()).toHaveLength(0);
     } finally {
       await discoveryPage.close().catch(() => null);
+      await context.close();
+      await browser.close();
+    }
+  }, 30_000);
+
+  browserIt("fails closed when a non-target says collapsed but its wording remains readable", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(
+      genericExclusiveAccordionFixture({ stuckVisible: true }),
+    )}`;
+    const discoveryPage = await context.newPage();
+    let captureCalled = false;
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 8,
+        relevanceMode: "award-content",
+      });
+      expect(setup.descriptors).toHaveLength(2);
+      await discoveryPage.close();
+
+      await expect(withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: setup.descriptors[0],
+        descriptors: setup.isolation_descriptors,
+        timeoutMs: 10_000,
+        capture: async () => {
+          captureCalled = true;
+        },
+      })).rejects.toThrow(/other_control_aria_false_but_content_readable/);
+      expect(captureCalled).toBe(false);
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  }, 30_000);
+
+  browserIt("waits for a slow generic panel to become unreadable before capturing", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(
+      genericExclusiveAccordionFixture({ slowCloseMs: 500 }),
+    )}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 8,
+        relevanceMode: "award-content",
+      });
+      await discoveryPage.close();
+
+      const startedAt = Date.now();
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: setup.descriptors[0],
+        descriptors: setup.isolation_descriptors,
+        timeoutMs: 10_000,
+        capture: async (page, opened) => ({
+          opened,
+          otherHidden: await page.locator("#other-panel").evaluate((element) => element.hidden),
+          text: geometryText(await captureVisibleTextGeometry(page, { stateId: "slow-generic-close" })),
+        }),
+      });
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(450);
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        other_open_selectors: [],
+      });
+      expect(captured.otherHidden).toBe(true);
+      expect(captured.text).toContain("Target eligibility guidance");
+      expect(captured.text).not.toContain("Other application guidance");
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  }, 30_000);
+
+  browserIt("opens an inactive ARIA tab before verifying its active peer closed", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(exclusiveAriaTabsFixture())}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 8,
+        relevanceMode: "award-content",
+      });
+      expect(setup.descriptors).toHaveLength(2);
+      await discoveryPage.close();
+
+      const target = setup.descriptors.find((descriptor) => descriptor.id === "application-tab");
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: target,
+        descriptors: setup.isolation_descriptors,
+        timeoutMs: 10_000,
+        capture: async (page, opened) => ({
+          opened,
+          selectedTabs: await page.locator("[role='tab'][aria-selected='true']")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          visiblePanels: await page.locator("[role='tabpanel']:not([hidden])")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          text: geometryText(await captureVisibleTextGeometry(page, { stateId: "aria-tab-application" })),
+        }),
+      });
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        other_open_selectors: [],
+      });
+      expect(captured.selectedTabs).toEqual(["application-tab"]);
+      expect(captured.visiblePanels).toEqual(["application-panel"]);
+      expect(captured.text).toContain("Application materials require two recommendations");
+      expect(captured.text).not.toContain("Eligibility requires an undergraduate degree");
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  }, 30_000);
+
+  browserIt("cycles through a peer to prove an initially active ARIA tab state", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(exclusiveAriaTabsFixture())}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 8,
+        relevanceMode: "award-content",
+      });
+      await discoveryPage.close();
+
+      const target = setup.descriptors.find((descriptor) => descriptor.id === "eligibility-tab");
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: target,
+        descriptors: setup.isolation_descriptors,
+        timeoutMs: 10_000,
+        capture: async (page, opened) => ({
+          opened,
+          selectedTabs: await page.locator("[role='tab'][aria-selected='true']")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          visiblePanels: await page.locator("[role='tabpanel']:not([hidden])")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          text: geometryText(await captureVisibleTextGeometry(page, { stateId: "aria-tab-eligibility" })),
+        }),
+      });
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        bound_content_transition_required: true,
+        bound_content_transition_verified: true,
+        other_open_selectors: [],
+      });
+      expect(captured.selectedTabs).toEqual(["eligibility-tab"]);
+      expect(captured.visiblePanels).toEqual(["eligibility-panel"]);
+      expect(captured.text).toContain("Eligibility requires an undergraduate degree");
+      expect(captured.text).not.toContain("Application materials require two recommendations");
+    } finally {
+      await context.close();
+      await browser.close();
+    }
+  }, 30_000);
+
+  browserIt("finds non-relevant exclusive peers and rejects a target that leaves them readable", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(brokenExclusiveAriaTabsFixture())}`;
+    const discoveryPage = await context.newPage();
+    let captureCalled = false;
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 8,
+        relevanceMode: "award-content",
+      });
+      expect(setup.descriptors.map((descriptor) => descriptor.id)).toEqual(["relevant-tab"]);
+      await discoveryPage.close();
+
+      await expect(withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: setup.descriptors[0],
+        descriptors: setup.isolation_descriptors,
+        timeoutMs: 10_000,
+        capture: async () => {
+          captureCalled = true;
+        },
+      })).rejects.toThrow(/bound_content_did_not_transition|other_controls_remain_open/);
+      expect(captureCalled).toBe(false);
+    } finally {
       await context.close();
       await browser.close();
     }
@@ -1266,15 +1608,130 @@ function coreAwardDetailsFixture() {
 </html>`;
 }
 
-function manyFaqDetailsFixture(count) {
+function manyFaqDetailsFixture(count, { openIndex = null } = {}) {
   const sections = Array.from({ length: count }, (_, index) => `
-      <details><summary>FAQ ${index + 1}</summary><p>Answer ${index + 1} contains applicant guidance.</p></details>`)
+      <details${index + 1 === openIndex ? " open" : ""}><summary>FAQ ${index + 1}</summary><p>Answer ${index + 1} contains applicant guidance.</p></details>`)
     .join("");
   return `<!doctype html>
 <html>
   <body>
     <main>${sections}
     </main>
+  </body>
+</html>`;
+}
+
+function samvidElementorFixture() {
+  const widgets = [
+    {
+      heading: "Scholarship Eligibility Frequently Asked Questions",
+      ids: ["1051", "1052", "1053", "1054", "1055", "1056", "1057"],
+      labels: [
+        "Can I apply before choosing a graduate school?",
+        "Which graduate programs are eligible?",
+        "Is my STEM program a good fit?",
+        "Can a Master's/PhD student apply?",
+        "Am I eligible if I am pursuing a dual degree?",
+        "What are the citizenship rules?",
+        "Can I receive another scholarship?",
+      ],
+    },
+    {
+      heading: "Application Requirements",
+      ids: ["2301", "2302", "2303", "2304", "2305", "2306", "2307", "2308", "2309", "23010"],
+      labels: [
+        "What does the application consist of?",
+        "What are the essay questions?",
+        "What transcripts do I need to provide?",
+        "Must the transcript be official?",
+        "How is GPA considered?",
+        "Are there minimum test scores?",
+        "Which test scores are required?",
+        "What awards should I include?",
+        "Who should be my recommenders?",
+        "How many recommendations should I submit?",
+      ],
+    },
+    {
+      heading: "Cohort Announcement and Programming",
+      ids: ["6241", "6242", "6243"],
+      labels: [
+        "When will I be notified of a decision?",
+        "Will finalists provide supplemental materials?",
+        "What does leadership development programming entail?",
+      ],
+    },
+  ];
+  const markup = widgets.map(({ heading, ids, labels }, widgetIndex) => `
+    <section class="elementor-widget-accordion">
+      <h2>${heading}</h2>
+      <div class="elementor-accordion" data-widget="${widgetIndex}">
+        ${ids.map((id, index) => `
+          <div class="elementor-accordion-item">
+            <div id="elementor-tab-title-${id}" class="elementor-tab-title${index === 0 ? " elementor-active" : ""}"
+              role="button" aria-controls="elementor-tab-content-${id}" aria-expanded="${index === 0}">
+              <a class="elementor-accordion-title" tabindex="0">${labels[index]}</a>
+            </div>
+            <div id="elementor-tab-content-${id}" class="elementor-tab-content${index === 0 ? " elementor-active" : ""}"
+              style="${index === 0 ? "display:block;height:auto;overflow:visible" : "display:none;height:0;overflow:hidden"}">
+              ${id === "1055"
+                ? "Dual-degree candidates remain eligible. This exact short answer appears after the animated panel settles."
+                : index === 0 && widgetIndex > 0
+                  ? "Default-open content from another widget must be closed before capture."
+                  : `Official applicant guidance for panel ${id}.`}
+            </div>
+          </div>`).join("")}
+      </div>
+    </section>`).join("");
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font: 16px sans-serif; margin: 24px; }
+      .elementor-tab-title { cursor: pointer; padding: 8px; }
+      .elementor-tab-content { box-sizing: border-box; padding: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p><a id="eligibility-jump-link" href="#elementor-tab-title-1052">See the eligible graduate program FAQ</a></p>
+      ${markup}
+    </main>
+    <script>
+      const closePanel = (control) => {
+        const panel = document.getElementById(control.getAttribute('aria-controls'));
+        control.setAttribute('aria-expanded', 'false');
+        control.classList.remove('elementor-active');
+        panel.classList.remove('elementor-active');
+        panel.style.display = 'none';
+        panel.style.height = '0px';
+        panel.style.overflow = 'hidden';
+      };
+      for (const control of document.querySelectorAll('.elementor-tab-title[aria-controls]')) {
+        control.addEventListener('click', () => {
+          const panel = document.getElementById(control.getAttribute('aria-controls'));
+          if (control.getAttribute('aria-expanded') === 'true') {
+            closePanel(control);
+            return;
+          }
+          for (const peer of control.closest('.elementor-accordion').querySelectorAll('.elementor-tab-title[aria-controls]')) {
+            closePanel(peer);
+          }
+          control.setAttribute('aria-expanded', 'true');
+          control.classList.add('elementor-active');
+          panel.classList.add('elementor-active');
+          panel.style.display = 'block';
+          panel.style.height = '2px';
+          panel.style.overflow = 'hidden';
+          setTimeout(() => { panel.style.height = '52px'; }, 220);
+          setTimeout(() => {
+            panel.style.height = 'auto';
+            panel.style.overflow = 'visible';
+          }, 500);
+        });
+      }
+    </script>
   </body>
 </html>`;
 }
@@ -1368,6 +1825,87 @@ function noOpAccordionFixture() {
         <article>The panel must stay hidden because this control is broken.</article>
       </div>
     </main>
+  </body>
+</html>`;
+}
+
+function genericExclusiveAccordionFixture({ stuckVisible = false, slowCloseMs = 0 } = {}) {
+  return `<!doctype html>
+<html>
+  <body>
+    <main>
+      <button id="target-control" aria-expanded="false" aria-controls="target-panel">Eligibility FAQ</button>
+      <section id="target-panel" hidden>Target eligibility guidance</section>
+      <button id="other-control" aria-expanded="${stuckVisible ? "false" : "true"}" aria-controls="other-panel">Application FAQ</button>
+      <section id="other-panel">Other application guidance</section>
+    </main>
+    <script>
+      const target = document.getElementById("target-control");
+      const targetPanel = document.getElementById("target-panel");
+      const other = document.getElementById("other-control");
+      const otherPanel = document.getElementById("other-panel");
+      target.addEventListener("click", () => {
+        target.setAttribute("aria-expanded", "true");
+        targetPanel.hidden = false;
+      });
+      other.addEventListener("click", () => {
+        other.setAttribute("aria-expanded", "false");
+        setTimeout(() => { otherPanel.hidden = true; }, ${Number(slowCloseMs) || 0});
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function exclusiveAriaTabsFixture() {
+  return `<!doctype html>
+<html>
+  <body>
+    <main>
+      <div id="award-tabs" role="tablist" aria-label="Award guidance">
+        <button id="eligibility-tab" role="tab" aria-selected="true" aria-controls="eligibility-panel">Eligibility</button>
+        <button id="application-tab" role="tab" aria-selected="false" aria-controls="application-panel">Application</button>
+      </div>
+      <section id="eligibility-panel" role="tabpanel" aria-labelledby="eligibility-tab">Eligibility requires an undergraduate degree</section>
+      <section id="application-panel" role="tabpanel" aria-labelledby="application-tab" hidden>Application materials require two recommendations</section>
+    </main>
+    <script>
+      const tabs = [...document.querySelectorAll("[role='tab']")];
+      for (const tab of tabs) {
+        tab.addEventListener("click", () => {
+          if (tab.getAttribute("aria-selected") === "true") return;
+          for (const peer of tabs) {
+            const selected = peer === tab;
+            peer.setAttribute("aria-selected", String(selected));
+            document.getElementById(peer.getAttribute("aria-controls")).hidden = !selected;
+          }
+        });
+      }
+    </script>
+  </body>
+</html>`;
+}
+
+function brokenExclusiveAriaTabsFixture() {
+  return `<!doctype html>
+<html>
+  <body>
+    <main>
+      <div id="generic-tabs" role="tablist" aria-label="Program sections">
+        <button id="generic-tab" role="tab" aria-selected="true" aria-controls="generic-panel">Overview</button>
+        <button id="relevant-tab" role="tab" aria-selected="false" aria-controls="relevant-panel">More</button>
+      </div>
+      <section id="generic-panel" role="tabpanel" aria-labelledby="generic-tab">Welcome to this year's cohort</section>
+      <section id="relevant-panel" role="tabpanel" aria-labelledby="relevant-tab" hidden>Eligibility requirements include an undergraduate degree</section>
+    </main>
+    <script>
+      const target = document.getElementById("relevant-tab");
+      target.addEventListener("click", () => {
+        target.setAttribute("aria-selected", "true");
+        document.getElementById("relevant-panel").hidden = false;
+        // Deliberately broken: the active peer and its panel remain readable.
+      });
+    </script>
   </body>
 </html>`;
 }

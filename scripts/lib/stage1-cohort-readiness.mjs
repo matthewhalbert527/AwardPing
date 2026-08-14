@@ -3,6 +3,11 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 
 export const STAGE1_READINESS_SCHEMA_VERSION = "stage1-cohort-readiness-v2";
 export const STAGE1_POLICY_VERSION = "stage1-publication-v1";
@@ -804,6 +809,45 @@ function inspectLocalArtifactHashes({
       || !sameInstant(metadata.captured_at, snapshotCapturedAt)
     ) {
       failures.push({ artifact_role: "meta", reason: "meta_captured_at_mismatch" });
+    }
+
+    if (kind === "webpage") {
+      const retainedStateCount = immutableR2Binding.expansion_states.length;
+      const coverageOptions = { expectedRetainedStateCount: retainedStateCount };
+      const localCoverage = legacyExpansionStateCaptureCoverageFromMetadata(metadata, {
+        retainedStateCount,
+      });
+      const pointerCoverage = canonicalExpansionStateCaptureCoverage(
+        snapshotMetadata.expansion_state_capture_coverage,
+        coverageOptions,
+      );
+      const baselineCoverageValue = baseline?.summary_metadata
+        ?.expansion_state_capture_coverage;
+      const baselineCoverage = baselineCoverageValue == null
+        ? localCoverage
+        : canonicalExpansionStateCaptureCoverage(
+            baselineCoverageValue,
+            coverageOptions,
+          );
+      if (!localCoverage || !pointerCoverage || !baselineCoverage) {
+        failures.push({
+          artifact_role: "meta",
+          reason: "expansion_capture_coverage_missing_or_invalid",
+        });
+      } else if (
+        !sameExpansionStateCaptureCoverage(localCoverage, pointerCoverage, coverageOptions)
+        || !sameExpansionStateCaptureCoverage(localCoverage, baselineCoverage, coverageOptions)
+      ) {
+        failures.push({
+          artifact_role: "meta",
+          reason: "expansion_capture_coverage_binding_mismatch",
+        });
+      } else if (localCoverage.complete !== true) {
+        failures.push({
+          artifact_role: "meta",
+          reason: "expansion_capture_coverage_incomplete",
+        });
+      }
     }
 
     for (const specification of specifications) {
@@ -2215,6 +2259,19 @@ export function inspectStage1ImmutableR2CaptureBinding(snapshot) {
   ) {
     addError("expansion_state_count_mismatch");
   }
+  const expansionCoverage = kind === "webpage"
+    ? canonicalExpansionStateCaptureCoverage(
+        metadata.expansion_state_capture_coverage,
+        { expectedRetainedStateCount: expansionPageIndexes.length },
+      )
+    : null;
+  if (kind === "webpage" && !expansionCoverage) {
+    addError("expansion_capture_coverage_missing_or_invalid");
+  } else if (kind === "webpage" && expansionCoverage.complete !== true) {
+    addError("expansion_capture_coverage_incomplete");
+  } else if (kind === "pdf" && metadata.expansion_state_capture_coverage != null) {
+    addError("pdf_expansion_capture_coverage_forbidden");
+  }
   const expansionStates = expansionPageIndexes.map((suffix, arrayIndex) => {
     const state = objectValue(expansionMetadata[arrayIndex]);
     const expectedStateId = `expansion-state-${suffix}`;
@@ -2289,6 +2346,7 @@ export function inspectStage1ImmutableR2CaptureBinding(snapshot) {
     layout_explicitly_unavailable: layoutExplicitlyUnavailable,
     layout_hash: authoritativeLayoutHash,
     expansion_states: expansionStates,
+    expansion_state_capture_coverage: expansionCoverage,
     retained_artifact_projection: isPlainObject(rawProjection) ? rawProjection : null,
   };
 }
