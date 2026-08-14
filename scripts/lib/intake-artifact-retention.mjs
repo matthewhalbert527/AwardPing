@@ -22,6 +22,9 @@ const uuidPattern =
 const sha256Pattern = /^[0-9a-f]{64}$/i;
 const namespace = "source-intake-first-observation";
 const schemaVersion = 1;
+export const acquisitionDerivedCaptureMetadataSchema =
+  "awardping.acquisition-derived-capture-metadata.v1";
+export const acquisitionDerivedCaptureMetadataFilename = "capture-meta.json";
 // Schema v1 named the primary retained object `pdf`. Keep that role and file
 // name stable for existing acquisitions; document_kind/content type describe
 // non-PDF intake responses without invalidating old manifests.
@@ -517,6 +520,141 @@ export async function materializeFirstObservationCaptureFromAcquisition({
 }
 
 /**
+ * Gives the ordinary visual baseline/candidate pipeline a mutable metadata
+ * artifact without ever repurposing the acquisition-derived immutable
+ * `meta.json`. Repeated materialization reuses the same derived file only
+ * after proving that its immutable source/hash/timestamp bindings still match.
+ */
+export function prepareAcquisitionCaptureMetadataForProjection({
+  archiveRoot,
+  source,
+  acquisition,
+  capture,
+  publishDerivedMetadata = publishDerivedCaptureMetadataAtomic,
+} = {}) {
+  const identity = validateAcquisitionArtifactBinding({ source, acquisition });
+  const root = requireArchiveRoot(archiveRoot);
+  const captureDir = resolve(cleanText(capture?.dir));
+  const expectedCaptureDir = resolve(
+    root,
+    "sources",
+    identity.sourceId,
+    "captures",
+    timestampForPath(identity.manifest.captured_at),
+  );
+  if (!cleanText(capture?.dir) || captureDir !== expectedCaptureDir) {
+    refuse(
+      "intake_derived_capture_metadata_path_mismatch",
+      "The acquisition capture directory is not the deterministic source/timestamp path.",
+    );
+  }
+
+  const immutableMetaPath = join(captureDir, "meta.json");
+  const derivedMetaPath = join(captureDir, acquisitionDerivedCaptureMetadataFilename);
+  assertSafeLocalArtifactPath(immutableMetaPath, root);
+  assertSafeLocalArtifactPath(derivedMetaPath, root);
+  if (!existsSync(immutableMetaPath) || lstatSync(immutableMetaPath).isSymbolicLink()) {
+    refuse(
+      "intake_derived_capture_metadata_source_missing",
+      "The immutable acquisition-derived capture metadata is missing or unsafe.",
+    );
+  }
+
+  const immutableMetaBytes = readFileSync(immutableMetaPath);
+  const immutableMetadata = parseJson(
+    immutableMetaBytes,
+    "intake_derived_capture_metadata_source_invalid",
+  );
+  assertAcquisitionDerivedCaptureIdentity({
+    metadata: immutableMetadata,
+    capture,
+    identity,
+    root,
+    immutableMetaPath,
+    derivedMetaPath,
+    requireDerivedBinding: false,
+  });
+
+  const immutableMetaRelative = archiveRelative(root, immutableMetaPath);
+  const derivedMetaRelative = archiveRelative(root, derivedMetaPath);
+  const immutableMetaSha256 = sha256(immutableMetaBytes);
+  const seedMetadata = {
+    ...immutableMetadata,
+    acquisition_derived_capture_metadata: {
+      schema: acquisitionDerivedCaptureMetadataSchema,
+      immutable_meta: immutableMetaRelative,
+      immutable_meta_sha256: immutableMetaSha256,
+    },
+    files: {
+      ...objectValue(immutableMetadata.files),
+      meta: derivedMetaRelative,
+    },
+  };
+
+  const derivedExisted = existsSync(derivedMetaPath);
+  if (!derivedExisted) {
+    try {
+      publishDerivedMetadata({
+        path: derivedMetaPath,
+        body: canonicalJsonBytes(seedMetadata),
+        archiveRoot: root,
+      });
+    } catch (error) {
+      // The production publisher exposes the destination only after the full
+      // temporary file is durable, so an error cannot expose partial bytes.
+      // Do not delete the destination here: another source-locked process may
+      // have won the same deterministic publication race.
+      const failure = new IntakeArtifactRetentionError(
+        "intake_derived_capture_metadata_write_failed",
+        `Derived capture metadata could not be published atomically: ${cleanText(error?.message || error)}`,
+      );
+      failure.cause = error;
+      throw failure;
+    }
+  }
+
+  let derivedMetadata;
+  try {
+    if (lstatSync(derivedMetaPath).isSymbolicLink()) {
+      refuse(
+        "intake_local_unsafe_path",
+        "The derived capture metadata path is a symbolic link or junction.",
+      );
+    }
+    derivedMetadata = parseJson(
+      readFileSync(derivedMetaPath),
+      "intake_derived_capture_metadata_invalid",
+    );
+  } catch (error) {
+    if (error instanceof IntakeArtifactRetentionError) throw error;
+    refuse(
+      "intake_derived_capture_metadata_invalid",
+      `Derived capture metadata could not be read: ${cleanText(error?.message || error)}`,
+    );
+  }
+  assertAcquisitionDerivedCaptureIdentity({
+    metadata: derivedMetadata,
+    capture,
+    identity,
+    root,
+    immutableMetaPath,
+    derivedMetaPath,
+    immutableMetaSha256,
+    requireDerivedBinding: true,
+  });
+
+  // Do not redirect callers until the complete derived artifact has been
+  // published, read back, and identity-checked.
+  capture.immutable_intake_meta_path = immutableMetaPath;
+  capture.meta_path = derivedMetaPath;
+  capture.files = {
+    ...objectValue(capture.files),
+    meta: derivedMetaRelative,
+  };
+  return capture;
+}
+
+/**
  * Recreates the exact candidate-local PDF/text/meta paths from acquisition R2
  * when the rotating visual-snapshot pointer no longer retains generation A.
  */
@@ -546,6 +684,21 @@ export async function restoreInitialOfficialDocumentCandidateArtifactsFromAcquis
       client,
       sendCommand,
     });
+    const candidateMetaPath = cleanText(
+      objectValue(objectValue(candidate?.new_snapshot_ref).local_paths).meta?.archive_relative,
+    ).replace(/\\/g, "/");
+    const derivedMetaPath = archiveRelative(
+      requireArchiveRoot(archiveRoot),
+      join(capture.dir, acquisitionDerivedCaptureMetadataFilename),
+    );
+    if (candidateMetaPath === derivedMetaPath) {
+      prepareAcquisitionCaptureMetadataForProjection({
+        archiveRoot,
+        source,
+        acquisition,
+        capture,
+      });
+    }
     validateCaptureAgainstCandidate(capture, candidate, archiveRoot);
     return {
       restored: true,
@@ -1044,6 +1197,101 @@ function writeImmutableVerified(path, body, { code, label, archiveRoot }) {
     }
   } finally {
     rmSync(staged, { force: true });
+  }
+}
+
+function publishDerivedCaptureMetadataAtomic({ path, body, archiveRoot }) {
+  const expected = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  assertSafeLocalArtifactPath(path, archiveRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  assertSafeLocalArtifactPath(path, archiveRoot);
+  const staged = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(staged, expected, { flag: "wx" });
+    try {
+      linkSync(staged, path);
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      // A concurrent writer won the deterministic name. The caller reads and
+      // validates that complete artifact against the immutable binding.
+      return;
+    }
+    const current = readFileSync(path);
+    if (current.length !== expected.length || !sameHash(sha256(current), sha256(expected))) {
+      throw new Error("the published bytes did not match the complete staged metadata");
+    }
+  } finally {
+    rmSync(staged, { force: true });
+  }
+}
+
+function assertAcquisitionDerivedCaptureIdentity({
+  metadata,
+  capture,
+  identity,
+  root,
+  immutableMetaPath,
+  derivedMetaPath,
+  immutableMetaSha256 = null,
+  requireDerivedBinding,
+}) {
+  const sourceMetadata = objectValue(metadata.source);
+  const retained = objectValue(metadata.retained_intake_artifact);
+  const files = objectValue(metadata.files);
+  const expectedMetaPath = requireDerivedBinding ? derivedMetaPath : immutableMetaPath;
+  const expectedMetaRelative = archiveRelative(root, expectedMetaPath);
+  const expectedPdfRelative = archiveRelative(root, capture?.pdf_path);
+  const expectedTextRelative = archiveRelative(root, capture?.text_path);
+  if (
+    sourceMetadata.id !== identity.sourceId
+    || sourceMetadata.shared_award_id !== identity.awardId
+    || sourceMetadata.source_acquisition_id !== identity.acquisitionId
+    || sourceMetadata.source_page_request_id !== identity.requestId
+    || sourceMetadata.url !== identity.finalUrl
+    || metadata.captured_at !== identity.manifest.captured_at
+    || metadata.final_url !== identity.finalUrl
+    || !sameHash(metadata.file_hash, identity.manifest.file_hash)
+    || !sameHash(metadata.image_hash, identity.manifest.file_hash)
+    || !sameHash(metadata.text_hash, identity.manifest.text_hash)
+    || Number(metadata.file_bytes) !== identity.manifest.file_bytes
+    || Number(metadata.text_length) !== identity.manifest.text_length
+    || retained.schema_version !== schemaVersion
+    || retained.namespace !== namespace
+    || retained.request_id !== identity.requestId
+    || retained.acquisition_id !== identity.acquisitionId
+    || retained.prefix !== identity.manifest.prefix
+    || !sameHash(
+      retained.capture_metadata_sha256,
+      identity.manifest.artifacts.capture_metadata.sha256,
+    )
+    || files.pdf !== expectedPdfRelative
+    || files.text !== expectedTextRelative
+    || files.meta !== expectedMetaRelative
+    || capture?.captured_at !== identity.manifest.captured_at
+    || capture?.final_url !== identity.finalUrl
+    || !sameHash(capture?.file_hash, identity.manifest.file_hash)
+    || !sameHash(capture?.image_hash, identity.manifest.file_hash)
+    || !sameHash(capture?.text_hash, identity.manifest.text_hash)
+    || Number(capture?.file_bytes) !== identity.manifest.file_bytes
+    || Number(capture?.text_length) !== identity.manifest.text_length
+  ) {
+    refuse(
+      "intake_derived_capture_metadata_binding_mismatch",
+      "Derived capture metadata does not preserve the sealed source, hash, path, and timestamp bindings.",
+    );
+  }
+
+  if (!requireDerivedBinding) return;
+  const binding = objectValue(metadata.acquisition_derived_capture_metadata);
+  if (
+    binding.schema !== acquisitionDerivedCaptureMetadataSchema
+    || binding.immutable_meta !== archiveRelative(root, immutableMetaPath)
+    || !sameHash(binding.immutable_meta_sha256, immutableMetaSha256)
+  ) {
+    refuse(
+      "intake_derived_capture_metadata_provenance_mismatch",
+      "Derived capture metadata is not bound to the exact immutable acquisition metadata bytes.",
+    );
   }
 }
 

@@ -290,6 +290,211 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(readdirSync(join(fixture.archiveRoot, "sources"))).toEqual([sourceId]);
   });
 
+  it("restores an authoritative PDF bundle with canonical projection parity and no geometry claims", async () => {
+    const fixture = pdfRecoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+      now: "2026-07-16T01:15:00.000Z",
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({
+      rehydrated: true,
+      recovery_scope: "baseline_evidence",
+      localization_status: "not_applicable",
+      restored_missing_baseline: true,
+      restored_missing_source_directory: true,
+    });
+    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
+    expect(published.capture).toMatchObject({
+      dir: fixture.captureRelative,
+      pdf: fixture.paths.pdf,
+      text: fixture.paths.text,
+      meta: fixture.paths.meta,
+      page: null,
+      thumb: null,
+      layout: null,
+      expansion_states: [],
+    });
+    expect(published).toMatchObject({
+      file_hash: fixture.fileHash,
+      text_hash: fixture.textHash,
+      layout_hash: null,
+      text_geometry: null,
+      summary_metadata: {
+        retained_artifact_projection: fixture.retainedProjection,
+      },
+    });
+    expect(readFileSync(join(fixture.archiveRoot, published.capture.pdf))).toEqual(fixture.pdf);
+    const meta = JSON.parse(readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"));
+    expect(meta.retained_artifact_projection).toMatchObject(fixture.retainedProjection);
+    expect(meta.files).toMatchObject({
+      pdf: fixture.paths.pdf,
+      text: fixture.paths.text,
+      meta: fixture.paths.meta,
+      layout: null,
+      expansion_states: [],
+    });
+    expect(meta.layout_hash).toBeNull();
+    expect(meta.text_geometry).toBeNull();
+  });
+
+  it("requires canonical retained-artifact projection parity in pointer and raw metadata", async () => {
+    const scenarios = [
+      {
+        name: "main pointer projection omitted",
+        create: recoveryFixture,
+        mutate(fixture) {
+          delete fixture.snapshot.latest_metadata.retained_artifact_projection;
+        },
+      },
+      {
+        name: "main pointer projection hash mismatch",
+        create: recoveryFixture,
+        mutate(fixture) {
+          fixture.snapshot.latest_metadata.retained_artifact_projection.authoritative.layout_hash =
+            "e".repeat(64);
+        },
+      },
+      {
+        name: "main raw projection omitted",
+        create: recoveryFixture,
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            delete meta.retained_artifact_projection;
+          });
+        },
+      },
+      {
+        name: "main raw projection hash mismatch",
+        create: recoveryFixture,
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            meta.retained_artifact_projection.authoritative.layout_hash = "f".repeat(64);
+          });
+        },
+      },
+      {
+        name: "hybrid pointer projection omitted",
+        create: makeHybridExpansionRecoveryFixture,
+        mutate(fixture) {
+          delete fixture.snapshot.latest_metadata.retained_artifact_projection;
+        },
+      },
+      {
+        name: "hybrid raw projection count mismatch",
+        create: makeHybridExpansionRecoveryFixture,
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            meta.retained_artifact_projection.authoritative.expansion_state_count = 0;
+          });
+        },
+      },
+      {
+        name: "PDF raw projection omitted",
+        create: pdfRecoveryFixture,
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            delete meta.retained_artifact_projection;
+          });
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const fixture = scenario.create();
+      const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+      rmSync(sourceDir, { recursive: true, force: true });
+      scenario.mutate(fixture);
+
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: null,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+
+      expect(result, scenario.name).toMatchObject({
+        rehydrated: false,
+        reason: "r2_authoritative_retained_projection_invalid",
+      });
+      expect(existsSync(sourceDir), scenario.name).toBe(false);
+    }
+  });
+
+  it("rejects unsafe, cross-source, cross-capture, and wrong-role authoritative local paths", async () => {
+    const scenarios = [
+      ["traversal", `sources/${sourceId}/captures/../page.jpg`],
+      ["absolute", `C:/AwardPing/sources/${sourceId}/captures/original/page.jpg`],
+      [
+        "cross source",
+        "sources/33333333-3333-4333-8333-333333333333/captures/2026-07-15T23-00-00-000Z/page.jpg",
+      ],
+      ["cross capture", `sources/${sourceId}/captures/a-different-capture/page.jpg`],
+      [
+        "wrong role filename",
+        `sources/${sourceId}/captures/2026-07-15T23-00-00-000Z/document.pdf`,
+      ],
+    ];
+
+    for (const [name, pagePath] of scenarios) {
+      const fixture = recoveryFixture();
+      const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+      rmSync(sourceDir, { recursive: true, force: true });
+      rewriteFixtureMeta(fixture, (meta) => {
+        meta.files.page = pagePath;
+      });
+
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: null,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+
+      expect(result, name).toMatchObject({
+        rehydrated: false,
+        reason: "r2_authoritative_local_path_invalid",
+      });
+      expect(existsSync(sourceDir), name).toBe(false);
+    }
+  });
+
+  it("rejects geometry references that do not use the validated original screenshot path", async () => {
+    const fixture = recoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    rewriteFixtureMeta(fixture, (meta) => {
+      meta.text_geometry.screenshot.image_ref = fixture.paths.thumb;
+    });
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({
+      rehydrated: false,
+      reason: "r2_authoritative_geometry_path_mismatch",
+    });
+    expect(existsSync(sourceDir)).toBe(false);
+  });
+
   it("surfaces an unavailable exact generation without replacing or rolling back the baseline", async () => {
     const fixture = recoveryFixture();
     writeBaselineFixture(fixture);
@@ -369,13 +574,9 @@ describe("exact R2 local-baseline rehydration", () => {
       } else if (scenario === "bucket") {
         requestedBucket = "wrong-bucket";
       } else if (scenario === "kind") {
-        const metaKey = fixture.snapshot.latest_object_keys.meta;
-        const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
-        meta.kind = "pdf";
-        fixture.objects[metaKey] = objectFixture(
-          Buffer.from(JSON.stringify(meta), "utf8"),
-          "application/json; charset=utf-8",
-        );
+        rewriteFixtureMeta(fixture, (meta) => {
+          meta.kind = "pdf";
+        });
       } else if (scenario === "length") {
         delete fixture.snapshot.latest_metadata.page_bytes;
       }
@@ -416,7 +617,7 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(readFileSync(sourceDir, "utf8")).toBe("do not overwrite this local conflict");
   });
 
-  it("validates and atomically publishes an exact latest generation while sanitizing paths", async () => {
+  it("validates and atomically publishes an exact latest generation at its original capture paths", async () => {
     const fixture = recoveryFixture();
     const previousCapture = {
       dir: `sources/${sourceId}/captures/last-known-good`,
@@ -456,7 +657,7 @@ describe("exact R2 local-baseline rehydration", () => {
       generation: "latest",
       integrity: "verified_before_atomic_baseline_repoint",
     });
-    expect(published.capture.dir).toContain("r2-rehydrated-capture-");
+    expect(published.capture.dir).toBe(fixture.captureRelative);
     expect(readFileSync(join(fixture.archiveRoot, published.capture.page))).toEqual(fixture.page);
 
     const meta = JSON.parse(readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"));
@@ -478,8 +679,11 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(layout.capture_verification).toMatchObject({
       status: "verified",
       screenshot_alignment: "verified",
-      restored_proof_recomputed: true,
     });
+    expect(layout.capture_verification.restored_proof_recomputed).toBeUndefined();
+    expect(readFileSync(join(fixture.archiveRoot, published.capture.layout))).toEqual(
+      fixture.objects[fixture.snapshot.latest_object_keys.layout].body,
+    );
     expect(verifyVisualTextGeometryBinding(layout, published.image_hash)).toMatchObject({ valid: true });
   });
 
@@ -494,19 +698,35 @@ describe("exact R2 local-baseline rehydration", () => {
     malformed.screenshot.alignment_status = "verified";
     delete malformed.geometry_hash;
     malformed.geometry_hash = sha256VisualSemanticValue(malformed);
+    const malformedBody = Buffer.from(JSON.stringify(malformed), "utf8");
     fixture.objects[layoutKey] = objectFixture(
-      Buffer.from(JSON.stringify(malformed), "utf8"),
+      malformedBody,
+      "application/json; charset=utf-8",
+    );
+    fixture.snapshot.latest_metadata.artifact_bindings.layout = rawArtifactBinding(
+      malformedBody,
       "application/json; charset=utf-8",
     );
     fixture.snapshot.latest_hashes.layout_hash = malformed.geometry_hash;
     fixture.snapshot.latest_metadata.layout_hash = malformed.geometry_hash;
+    fixture.snapshot.latest_metadata.text_geometry = {
+      ...structuredClone(malformed),
+      file: fixture.paths.layout,
+    };
+    fixture.snapshot.latest_metadata.retained_artifact_projection.authoritative.layout_hash =
+      malformed.geometry_hash;
     const metaKey = fixture.snapshot.latest_object_keys.meta;
     const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
     meta.layout_hash = malformed.geometry_hash;
-    meta.text_geometry.geometry_hash = malformed.geometry_hash;
-    meta.text_geometry.screenshot = malformed.screenshot;
-    fixture.objects[metaKey] = objectFixture(
-      Buffer.from(JSON.stringify(meta), "utf8"),
+    meta.text_geometry = {
+      ...structuredClone(malformed),
+      file: fixture.paths.layout,
+    };
+    meta.retained_artifact_projection.authoritative.layout_hash = malformed.geometry_hash;
+    const metaBody = Buffer.from(JSON.stringify(meta), "utf8");
+    fixture.objects[metaKey] = objectFixture(metaBody, "application/json; charset=utf-8");
+    fixture.snapshot.latest_metadata.artifact_bindings.meta = rawArtifactBinding(
+      metaBody,
       "application/json; charset=utf-8",
     );
 
@@ -527,26 +747,11 @@ describe("exact R2 local-baseline rehydration", () => {
       localization_status: "evidence_only_geometry_verification_unavailable",
     });
     const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
-    const restored = JSON.parse(
-      readFileSync(join(fixture.archiveRoot, published.capture.layout), "utf8"),
-    );
-    expect(restored.screenshot).toMatchObject({
-      scale_x: 1,
-      scale_y: 0.5,
-      alignment_status: "unavailable_nonuniform_or_unexpected_scale",
-    });
-    expect(restored).toMatchObject({
-      availability_status: "unavailable_screenshot_geometry_mismatch",
-      capture_verification: {
-        status: "unavailable",
-        screenshot_alignment: "unavailable_nonuniform_or_unexpected_scale",
-        restored_proof_recomputed: true,
-      },
-      nodes: [],
-    });
-    expect(verifyVisualTextGeometryBinding(restored, published.image_hash)).toMatchObject({
-      valid: true,
-    });
+    expect(published.layout_hash).toBeNull();
+    expect(published.text_geometry).toBeNull();
+    expect(published.capture.layout).toBeNull();
+    const diagnosticLayoutPath = join(fixture.archiveRoot, fixture.paths.layout);
+    expect(readFileSync(diagnosticLayoutPath)).toEqual(malformedBody);
     expect(published.summary_metadata.r2_local_rehydration).toMatchObject({
       localization_recovered: false,
       localization_status: "evidence_only_geometry_verification_unavailable",
@@ -555,6 +760,16 @@ describe("exact R2 local-baseline rehydration", () => {
     const restoredMeta = JSON.parse(
       readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"),
     );
+    expect(restoredMeta.layout_hash).toBeNull();
+    expect(restoredMeta.text_geometry).toBeNull();
+    expect(restoredMeta.files.layout).toBeNull();
+    expect(restoredMeta.retained_artifact_projection).toMatchObject({
+      authoritative: {
+        layout_retained: false,
+        layout_hash: null,
+        expansion_state_count: 0,
+      },
+    });
     expect(restoredMeta.localization).toMatchObject({
       status: "unavailable",
       unavailable_reason: "evidence_only_geometry_verification_unavailable",
@@ -602,12 +817,18 @@ describe("exact R2 local-baseline rehydration", () => {
       family: "approved",
     });
     const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
-    expect(published.capture.dir).toContain("r2-rehydrated-approved-");
+    expect(published.capture.dir).toBe(fixture.captureRelative);
     expect(published.summary_metadata.r2_local_rehydration.generation).toBe("previous");
   });
 
   it("rehydrates a legacy approved generation as evidence-only when geometry was never retained", async () => {
     const fixture = recoveryFixture();
+    delete fixture.snapshot.latest_metadata.artifact_bindings_schema;
+    delete fixture.snapshot.latest_metadata.artifact_bindings;
+    delete fixture.snapshot.latest_metadata.retained_artifact_projection;
+    rewriteFixtureMeta(fixture, (meta) => {
+      delete meta.retained_artifact_projection;
+    });
     fixture.snapshot.latest_object_keys = Object.fromEntries(
       Object.entries(fixture.snapshot.latest_object_keys)
         .filter(([slot]) => slot !== "layout")
@@ -688,7 +909,7 @@ describe("exact R2 local-baseline rehydration", () => {
     expect(published.capture.expansion_states).toHaveLength(1);
     const state = published.capture.expansion_states[0];
     expect(state).toMatchObject({
-      state_id: "eligibility-open",
+      state_id: "expansion-state-01",
       label: "Eligibility",
       image_hash: fixture.expansionImageHash,
       layout_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -701,16 +922,461 @@ describe("exact R2 local-baseline rehydration", () => {
       flow_path: "body>main>details:nth-of-type(1)>p",
     });
     expect(layout.geometry_hash).toBe(state.layout_hash);
+    expect(layout.geometry_hash).toBe(fixture.expansionLayoutHash);
+    expect(published.layout_hash).toBe(fixture.layoutHash);
+    expect(published.summary_metadata.retained_artifact_projection).toMatchObject({
+      authoritative: {
+        layout_retained: true,
+        layout_hash: fixture.layoutHash,
+        expansion_state_count: 1,
+      },
+    });
+    const meta = JSON.parse(readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"));
+    expect(meta.retained_artifact_projection).toMatchObject({
+      authoritative: {
+        layout_retained: true,
+        layout_hash: fixture.layoutHash,
+        expansion_state_count: 1,
+      },
+    });
+    expect(readFileSync(join(fixture.archiveRoot, published.capture.layout))).toEqual(
+      fixture.objects[fixture.snapshot.latest_object_keys.layout].body,
+    );
+    expect(readFileSync(join(fixture.archiveRoot, state.layout))).toEqual(
+      fixture.objects[fixture.snapshot.latest_object_keys.expansion_state_01_layout].body,
+    );
     expect(verifyVisualTextGeometryBinding(layout, fixture.expansionImageHash)).toMatchObject({
       valid: true,
     });
   });
 
-  it("marks an unpaired retained accordion image as evidence-only instead of geometry-ready", async () => {
+  it("restores exact expansion localization when main-page geometry is explicitly unavailable", async () => {
+    const fixture = makeHybridExpansionRecoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+      now: "2026-07-16T01:15:00.000Z",
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({
+      rehydrated: true,
+      reason: "exact_r2_generation_rehydrated_with_exact_expansion_geometry",
+      recovery_scope: "baseline_and_expansion_localization_evidence",
+      localization_recovered: false,
+      expansion_localization_recovered: true,
+      expansion_localization_status: "exact_geometry_available",
+      localization_status: "exact_expansion_geometry_available",
+      restored_missing_baseline: true,
+    });
+    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
+    expect(published).toMatchObject({
+      layout_hash: null,
+      text_geometry: null,
+      capture: {
+        layout: null,
+        expansion_states: [{
+          state_id: "expansion-state-01",
+          image_hash: fixture.expansionImageHash,
+          layout_hash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }],
+      },
+      summary_metadata: {
+        baseline_facts_metadata: {
+          status: "verified",
+          evidence_source: "retained_capture",
+        },
+        monitoring_disposition: {
+          classification: "substantive_baseline",
+          reason: "stage1_activation",
+        },
+        stage1_baseline_activation: {
+          status: "verified",
+          plan_sha256: "a".repeat(64),
+        },
+        retained_artifact_projection: {
+          schema: "awardping.capture-retained-artifact-projection.v1",
+          kind: "webpage",
+          localization_status: "evidence_only_geometry_unavailable",
+          authoritative: {
+            layout_retained: false,
+            layout_hash: null,
+            expansion_state_count: 1,
+          },
+        },
+        r2_local_rehydration: {
+          localization_status: "exact_expansion_geometry_available",
+          localization_recovered: false,
+          expansion_localization_recovered: true,
+          expansion_localization_status: "exact_geometry_available",
+          main_geometry_available: false,
+          main_geometry_verified: false,
+          expected_expansion_states: 1,
+          complete_expansion_states: 1,
+          verified_expansion_states: 1,
+        },
+      },
+    });
+
+    const state = published.capture.expansion_states[0];
+    expect(readFileSync(join(fixture.archiveRoot, state.page))).toEqual(fixture.expansionPage);
+    const layout = JSON.parse(readFileSync(join(fixture.archiveRoot, state.layout), "utf8"));
+    expect(verifyVisualTextGeometryBinding(layout, fixture.expansionImageHash)).toMatchObject({
+      valid: true,
+    });
+    const meta = JSON.parse(readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"));
+    expect(meta).toMatchObject({
+      layout_hash: null,
+      text_geometry: null,
+      localization: {
+        status: "unavailable_layout_changed_during_screenshot",
+        accounted_for: true,
+        geometry_ready: false,
+        unavailable_reason: fixture.unavailableReason,
+        geometry_hash: null,
+        bound_image_hash: null,
+      },
+      expansion_localization: {
+        status: "exact_geometry_available",
+        exact: true,
+        geometry_ready: true,
+        expected_state_count: 1,
+        verified_state_count: 1,
+      },
+      baseline_facts_metadata: published.summary_metadata.baseline_facts_metadata,
+      monitoring_disposition: published.summary_metadata.monitoring_disposition,
+      stage1_baseline_activation: published.summary_metadata.stage1_baseline_activation,
+      retained_artifact_projection: {
+        schema: "awardping.capture-retained-artifact-projection.v1",
+        kind: "webpage",
+        localization_status: "evidence_only_geometry_unavailable",
+        authoritative: {
+          layout_retained: false,
+          layout_hash: null,
+          expansion_state_count: 1,
+        },
+      },
+      r2_local_rehydration: {
+        localization_status: "exact_expansion_geometry_available",
+        expansion_localization_recovered: true,
+      },
+    });
+  });
+
+  it("refuses missing-baseline hybrid recovery unless main unavailability is explicit and non-contradictory", async () => {
+    const scenarios = [
+      {
+        name: "pointer omission",
+        mutate(fixture) {
+          delete fixture.snapshot.latest_metadata.localization;
+        },
+      },
+      {
+        name: "pointer exact-localization contradiction",
+        mutate(fixture) {
+          fixture.snapshot.latest_metadata.localization.exact = true;
+        },
+      },
+      {
+        name: "raw metadata geometry-ready contradiction",
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            meta.localization.geometry_ready = true;
+          });
+        },
+      },
+      {
+        name: "raw metadata layout-hash contradiction",
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            meta.layout_hash = "f".repeat(64);
+          });
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const fixture = makeHybridExpansionRecoveryFixture();
+      const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+      rmSync(sourceDir, { recursive: true, force: true });
+      scenario.mutate(fixture);
+
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: null,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+
+      expect(result, scenario.name).toMatchObject({
+        rehydrated: false,
+        reason: "r2_authoritative_layout_unavailability_invalid",
+      });
+      expect(existsSync(sourceDir), scenario.name).toBe(false);
+    }
+  });
+
+  it("does not call hybrid expansion localization exact when restored geometry verification fails", async () => {
+    const fixture = makeHybridExpansionRecoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    const layoutKey = fixture.snapshot.latest_object_keys.expansion_state_01_layout;
+    const malformed = JSON.parse(fixture.objects[layoutKey].body.toString("utf8"));
+    malformed.screenshot.pixel_height = 1300;
+    malformed.screenshot.scale_y = 0.5;
+    malformed.screenshot.alignment_status = "verified";
+    delete malformed.geometry_hash;
+    malformed.geometry_hash = sha256VisualSemanticValue(malformed);
+    const malformedBody = Buffer.from(JSON.stringify(malformed), "utf8");
+    fixture.objects[layoutKey] = objectFixture(
+      malformedBody,
+      "application/json; charset=utf-8",
+    );
+    const pointerState = fixture.snapshot.latest_metadata.expansion_state_screenshots[0];
+    pointerState.layout_hash = malformed.geometry_hash;
+    pointerState.text_geometry = {
+      ...structuredClone(malformed),
+      file: `${fixture.captureRelative}/expansion-state-01-layout.json`,
+    };
+    fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01_layout =
+      rawArtifactBinding(malformedBody, "application/json; charset=utf-8");
+    rewriteFixtureMeta(fixture, (meta) => {
+      const rawState = meta.expansion_state_screenshots[0];
+      rawState.layout_hash = malformed.geometry_hash;
+      rawState.text_geometry.geometry_hash = malformed.geometry_hash;
+      rawState.text_geometry.screenshot = structuredClone(malformed.screenshot);
+    });
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({
+      rehydrated: true,
+      localization_status: "evidence_only_geometry_unavailable",
+      localization_recovered: false,
+      expansion_localization_recovered: false,
+      expansion_localization_status: "unavailable",
+      recovery_scope: "baseline_evidence_only",
+    });
+    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
+    expect(published.layout_hash).toBeNull();
+    expect(published.text_geometry).toBeNull();
+    expect(published.capture.expansion_states).toEqual([]);
+    expect(published.summary_metadata.retained_artifact_projection).toMatchObject({
+      authoritative: {
+        layout_retained: false,
+        layout_hash: null,
+        expansion_state_count: 0,
+      },
+    });
+    expect(readFileSync(
+      join(fixture.archiveRoot, fixture.captureRelative, "expansion-state-01-layout.json"),
+    )).toEqual(malformedBody);
+    const restoredMeta = JSON.parse(
+      readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"),
+    );
+    expect(restoredMeta.expansion_state_count).toBe(0);
+    expect(restoredMeta.expansion_state_screenshots).toEqual([]);
+    expect(restoredMeta.files.expansion_states).toEqual([]);
+  });
+
+  it("refuses an expansion layout whose declared semantic hash does not bind its original body", async () => {
+    const fixture = makeHybridExpansionRecoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    const layoutKey = fixture.snapshot.latest_object_keys.expansion_state_01_layout;
+    const malformed = JSON.parse(fixture.objects[layoutKey].body.toString("utf8"));
+    malformed.captured_at = "2026-07-15T23:00:01.000Z";
+    const malformedBody = Buffer.from(JSON.stringify(malformed), "utf8");
+    fixture.objects[layoutKey] = objectFixture(
+      malformedBody,
+      "application/json; charset=utf-8",
+    );
+    fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01_layout =
+      rawArtifactBinding(malformedBody, "application/json; charset=utf-8");
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({
+      rehydrated: false,
+      reason: "r2_authoritative_expansion_layout_binding_invalid",
+    });
+    expect(existsSync(sourceDir)).toBe(false);
+  });
+
+  it("requires an exact manifest-wide raw artifact-binding map before hybrid recovery", async () => {
+    const scenarios = [
+      {
+        name: "missing core binding",
+        mutate(fixture) {
+          delete fixture.snapshot.latest_metadata.artifact_bindings.meta;
+        },
+      },
+      {
+        name: "unexpected binding slot",
+        mutate(fixture) {
+          fixture.snapshot.latest_metadata.artifact_bindings.diagnostic = structuredClone(
+            fixture.snapshot.latest_metadata.artifact_bindings.page,
+          );
+        },
+      },
+      {
+        name: "metadata bytes differ from pointer binding",
+        mutate(fixture) {
+          const metaKey = fixture.snapshot.latest_object_keys.meta;
+          const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
+          meta.stage1_baseline_activation.plan_sha256 = "b".repeat(64);
+          fixture.objects[metaKey] = objectFixture(
+            Buffer.from(JSON.stringify(meta), "utf8"),
+            "application/json; charset=utf-8",
+          );
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const fixture = makeHybridExpansionRecoveryFixture();
+      const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+      rmSync(sourceDir, { recursive: true, force: true });
+      scenario.mutate(fixture);
+
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: null,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+
+      expect(result, scenario.name).toMatchObject({
+        rehydrated: false,
+        reason: "r2_authoritative_artifact_binding_invalid",
+      });
+      expect(existsSync(sourceDir), scenario.name).toBe(false);
+    }
+  });
+
+  it("rejects negative expansion counts even when no expansion artifacts exist", async () => {
+    for (const surface of ["pointer", "downloaded metadata"]) {
+      const fixture = recoveryFixture();
+      const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+      rmSync(sourceDir, { recursive: true, force: true });
+      if (surface === "pointer") {
+        fixture.snapshot.latest_metadata.expansion_state_count = -1;
+      } else {
+        rewriteFixtureMeta(fixture, (meta) => {
+          meta.expansion_state_count = -1;
+        });
+      }
+
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: null,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+
+      expect(result, surface).toMatchObject({
+        rehydrated: false,
+        reason: "r2_authoritative_expansion_metadata_invalid",
+      });
+      expect(existsSync(sourceDir), surface).toBe(false);
+    }
+  });
+
+  it("refuses incomplete or contradictory authoritative expansion bindings", async () => {
+    const scenarios = [
+      {
+        name: "missing paired layout",
+        reason: "r2_authoritative_expansion_layout_incomplete",
+        mutate(fixture) {
+          const key = fixture.snapshot.latest_object_keys.expansion_state_01_layout;
+          delete fixture.snapshot.latest_object_keys.expansion_state_01_layout;
+          delete fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01_layout;
+          delete fixture.objects[key];
+        },
+      },
+      {
+        name: "raw geometry hash contradiction",
+        reason: "r2_authoritative_expansion_layout_binding_invalid",
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            meta.expansion_state_screenshots[0].layout_hash = "e".repeat(64);
+          });
+        },
+      },
+      {
+        name: "raw file-reference contradiction",
+        reason: "r2_authoritative_expansion_layout_binding_invalid",
+        mutate(fixture) {
+          rewriteFixtureMeta(fixture, (meta) => {
+            meta.files.expansion_states[0].layout = "C:\\stale\\unrelated-layout.json";
+          });
+        },
+      },
+      {
+        name: "raw artifact binding contradiction",
+        reason: "r2_authoritative_expansion_artifact_binding_invalid",
+        mutate(fixture) {
+          fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01_layout.sha256 =
+            "d".repeat(64);
+        },
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      const fixture = makeHybridExpansionRecoveryFixture();
+      const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+      rmSync(sourceDir, { recursive: true, force: true });
+      scenario.mutate(fixture);
+
+      const result = await rehydrateLocalBaselineFromR2({
+        archiveRoot: fixture.archiveRoot,
+        source: fixture.source,
+        baseline: null,
+        snapshotRecord: fixture.snapshot,
+        bucket,
+        client: fakeR2Client(fixture.objects),
+      });
+
+      expect(result, scenario.name).toMatchObject({
+        rehydrated: false,
+        reason: scenario.reason,
+      });
+      expect(existsSync(sourceDir), scenario.name).toBe(false);
+    }
+  });
+
+  it("fails closed when an authoritative retained accordion image has no paired layout", async () => {
     const fixture = recoveryFixture();
     addExpansionState(fixture);
     const layoutKey = fixture.snapshot.latest_object_keys.expansion_state_01_layout;
     delete fixture.snapshot.latest_object_keys.expansion_state_01_layout;
+    delete fixture.snapshot.latest_metadata.artifact_bindings.expansion_state_01_layout;
     delete fixture.objects[layoutKey];
     writeBaselineFixture(fixture);
 
@@ -724,18 +1390,10 @@ describe("exact R2 local-baseline rehydration", () => {
     });
 
     expect(result).toMatchObject({
-      rehydrated: true,
-      recovery_scope: "baseline_evidence_only",
-      localization_recovered: false,
-      localization_status: "evidence_only_expansion_geometry_incomplete",
+      rehydrated: false,
+      reason: "r2_authoritative_expansion_layout_incomplete",
     });
-    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
-    expect(published.capture.expansion_states[0]).toMatchObject({
-      page: expect.any(String),
-      layout: null,
-      layout_hash: null,
-      text_geometry: null,
-    });
+    expect(JSON.parse(readFileSync(fixture.baselinePath, "utf8"))).toEqual(fixture.baseline);
   });
 
   it("fails closed on a byte-hash mismatch and removes all staged output", async () => {
@@ -847,6 +1505,50 @@ describe("initial official document candidate artifact restore", () => {
       },
     });
     expect(fixture.candidate).toEqual(originalCandidate);
+    expect(candidateRestoreStageDirectories(fixture.archiveRoot)).toEqual([]);
+  });
+
+  it("restores acquisition-derived capture-meta.json from the unchanged remote meta slot", async () => {
+    const fixture = initialDocumentRestoreFixture({ metaFileName: "capture-meta.json" });
+
+    const result = await restoreInitialOfficialDocumentCandidateArtifactsFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      candidate: fixture.candidate,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({
+      restored: true,
+      reason: "exact_candidate_r2_generation_restored",
+      restored_roles: ["pdf", "text", "meta"],
+    });
+    expect(fixture.snapshot.latest_object_keys.meta).toMatch(/\/meta\.json$/);
+    expect(fixture.targets.meta).toMatch(/capture-meta\.json$/);
+    expect(readFileSync(fixture.targets.meta)).toEqual(fixture.bodies.meta);
+    expect(existsSync(join(fixture.archiveRoot, fixture.captureRelative, "meta.json"))).toBe(false);
+    expect(candidateRestoreStageDirectories(fixture.archiveRoot)).toEqual([]);
+  });
+
+  it("rejects every candidate metadata basename outside the legacy and acquisition-derived pair", async () => {
+    const fixture = initialDocumentRestoreFixture({ metaFileName: "candidate-metadata.json" });
+
+    const result = await restoreInitialOfficialDocumentCandidateArtifactsFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      candidate: fixture.candidate,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({
+      restored: false,
+      reason: "candidate_restore_artifact_path_unsafe",
+    });
+    expect(Object.values(fixture.targets).some((target) => existsSync(target))).toBe(false);
     expect(candidateRestoreStageDirectories(fixture.archiveRoot)).toEqual([]);
   });
 
@@ -977,12 +1679,149 @@ describe("initial official document candidate artifact restore", () => {
   });
 });
 
+function pdfRecoveryFixture() {
+  const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-r2-pdf-rehydration-"));
+  temporaryRoots.push(archiveRoot);
+  const sourceDir = join(archiveRoot, "sources", sourceId);
+  mkdirSync(sourceDir, { recursive: true });
+  const baselinePath = join(sourceDir, "baseline.json");
+  const source = {
+    id: sourceId,
+    shared_award_id: awardId,
+    url: "https://example.edu/official-guidance.pdf",
+    title: "Official Guidance",
+  };
+  const captureRelative = `sources/${sourceId}/captures/2026-07-15T23-00-00-000Z`;
+  const paths = {
+    pdf: `${captureRelative}/document.pdf`,
+    text: `${captureRelative}/text.txt`,
+    meta: `${captureRelative}/meta.json`,
+  };
+  const textValue = "Official eligibility guidance for the 2027 competition.";
+  const pdf = Buffer.from(`%PDF-1.4\n${textValue}\n%%EOF\n`, "utf8");
+  const text = Buffer.from(`${textValue}\n`, "utf8");
+  const fileHash = sha256(pdf);
+  const textHash = sha256(textValue);
+  const retainedProjection = {
+    schema: "awardping.capture-retained-artifact-projection.v1",
+    kind: "pdf",
+    localization_status: "not_applicable_pdf",
+    authoritative: {
+      layout_retained: false,
+      layout_hash: null,
+      expansion_state_count: 0,
+    },
+  };
+  const metaValue = {
+    version: 1,
+    kind: "pdf",
+    source: {
+      id: sourceId,
+      shared_award_id: awardId,
+      url: source.url,
+      title: source.title,
+    },
+    captured_at: capturedAt,
+    final_url: source.url,
+    file_hash: fileHash,
+    text_hash: textHash,
+    file_bytes: pdf.length,
+    text_length: textValue.length,
+    layout_hash: null,
+    text_geometry: null,
+    expansion_state_count: 0,
+    expansion_state_screenshots: [],
+    retained_artifact_projection: structuredClone(retainedProjection),
+    files: {
+      page: null,
+      thumb: null,
+      pdf: paths.pdf,
+      text: paths.text,
+      layout: null,
+      meta: paths.meta,
+      expansion_states: [],
+    },
+  };
+  const meta = Buffer.from(JSON.stringify(metaValue), "utf8");
+  const version = "dddddddddddddddddddddddddddddddd";
+  const prefix = `visual-snapshots/sources/${sourceId}/captures/${version}`;
+  const objectKeys = {
+    pdf: `${prefix}/document.pdf`,
+    text: `${prefix}/text.txt`,
+    meta: `${prefix}/meta.json`,
+  };
+  const metadata = {
+    file_bytes: pdf.length,
+    text_length: textValue.length,
+    retained_artifact_projection: structuredClone(retainedProjection),
+    artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
+    artifact_bindings: {
+      pdf: rawArtifactBinding(pdf, "application/pdf"),
+      text: rawArtifactBinding(text, "text/plain; charset=utf-8"),
+      meta: rawArtifactBinding(meta, "application/json; charset=utf-8"),
+    },
+  };
+  const snapshot = {
+    shared_award_source_id: sourceId,
+    shared_award_id: awardId,
+    kind: "pdf",
+    bucket,
+    source_url: source.url,
+    latest_captured_at: capturedAt,
+    latest_object_keys: objectKeys,
+    latest_hashes: {
+      file_hash: fileHash,
+      text_hash: textHash,
+      image_hash: null,
+      layout_hash: null,
+    },
+    latest_metadata: metadata,
+    previous_captured_at: null,
+    previous_object_keys: {},
+    previous_hashes: {},
+    previous_metadata: {},
+    updated_at: "2026-07-16T00:30:00.000Z",
+  };
+  const objects = {
+    [objectKeys.pdf]: objectFixture(pdf, "application/pdf"),
+    [objectKeys.text]: objectFixture(text, "text/plain; charset=utf-8"),
+    [objectKeys.meta]: objectFixture(meta, "application/json; charset=utf-8"),
+  };
+  return {
+    archiveRoot,
+    baselinePath,
+    source,
+    captureRelative,
+    paths,
+    retainedProjection,
+    snapshot,
+    objects,
+    pdf,
+    fileHash,
+    textHash,
+  };
+}
+
 function recoveryFixture() {
   const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-r2-rehydrate-"));
   temporaryRoots.push(archiveRoot);
   const sourceDir = join(archiveRoot, "sources", sourceId);
   mkdirSync(sourceDir, { recursive: true });
   const baselinePath = join(sourceDir, "baseline.json");
+  const source = {
+    id: sourceId,
+    shared_award_id: awardId,
+    url: "https://example.edu/award",
+    title: "Example Award",
+  };
+  const captureRelative = `sources/${sourceId}/captures/2026-07-15T23-00-00-000Z`;
+  const paths = {
+    page: `${captureRelative}/page.jpg`,
+    thumb: `${captureRelative}/thumb.jpg`,
+    text: `${captureRelative}/text.txt`,
+    layout: `${captureRelative}/layout.json`,
+    meta: `${captureRelative}/meta.json`,
+  };
   const page = Buffer.from("verified full-page screenshot bytes");
   const thumb = Buffer.from("verified thumbnail bytes");
   const textValue = "Application deadline: March 15, 2027";
@@ -1027,15 +1866,23 @@ function recoveryFixture() {
   const layoutValue = bindVisualTextGeometry(verifiedLayoutValue, {
     capturedAt,
     imageHash,
-    imageRef: "C:\\stale\\page.jpg",
+    imageRef: paths.page,
     screenshot,
   });
   const layout = Buffer.from(JSON.stringify(layoutValue), "utf8");
-  const source = {
-    id: sourceId,
-    shared_award_id: awardId,
-    url: "https://example.edu/award",
-    title: "Example Award",
+  const mainGeometryReference = {
+    ...structuredClone(layoutValue),
+    file: paths.layout,
+  };
+  const retainedProjection = {
+    schema: "awardping.capture-retained-artifact-projection.v1",
+    kind: "webpage",
+    localization_status: "exact_geometry_available",
+    authoritative: {
+      layout_retained: true,
+      layout_hash: layoutValue.geometry_hash,
+      expansion_state_count: 0,
+    },
   };
   const baseline = {
     version: 1,
@@ -1050,28 +1897,25 @@ function recoveryFixture() {
     image_hash: imageHash,
     layout_hash: layoutValue.geometry_hash,
     file_hash: null,
-    text_geometry: {
-      geometry_hash: layoutValue.geometry_hash,
-      file: "C:\\stale\\layout.json",
-      screenshot: layoutValue.screenshot,
-    },
+    text_geometry: structuredClone(mainGeometryReference),
     capture: {
-      dir: `sources/${sourceId}/captures/missing`,
-      page: `sources/${sourceId}/captures/missing/page.jpg`,
-      thumb: `sources/${sourceId}/captures/missing/thumb.jpg`,
+      dir: captureRelative,
+      page: paths.page,
+      thumb: paths.thumb,
       pdf: null,
-      text: `sources/${sourceId}/captures/missing/text.txt`,
+      text: paths.text,
       expansion_text: null,
       sections_text: null,
       sections_json: null,
-      layout: `sources/${sourceId}/captures/missing/layout.json`,
-      meta: `sources/${sourceId}/captures/missing/meta.json`,
+      layout: paths.layout,
+      meta: paths.meta,
       expansion_states: [],
     },
     summary_metadata: {
       reason: "approved_visual_change",
       previous_baseline_capture: null,
       baseline_facts: null,
+      retained_artifact_projection: structuredClone(retainedProjection),
     },
   };
   const meta = Buffer.from(JSON.stringify({
@@ -1088,6 +1932,8 @@ function recoveryFixture() {
     text_length: textValue.length,
     page_bytes: page.length,
     thumb_bytes: thumb.length,
+    expansion_state_count: 0,
+    expansion_state_screenshots: [],
     browser: { executable_path: "C:\\stale\\chrome.exe", name: "Chromium" },
     expandable_sections: [{
       section_path: "main>details:nth-of-type(1)",
@@ -1095,17 +1941,23 @@ function recoveryFixture() {
       text: "Applications close March 15",
     }],
     layout_hash: layoutValue.geometry_hash,
-    text_geometry: {
+    text_geometry: structuredClone(mainGeometryReference),
+    localization: {
+      status: "exact_geometry_available",
+      exact: true,
+      accounted_for: true,
+      geometry_ready: true,
       geometry_hash: layoutValue.geometry_hash,
-      file: "C:\\stale\\layout.json",
-      screenshot: layoutValue.screenshot,
+      bound_image_hash: imageHash,
     },
+    retained_artifact_projection: structuredClone(retainedProjection),
     files: {
-      page: "C:\\stale\\page.jpg",
-      thumb: "C:\\stale\\thumb.jpg",
-      text: "C:\\stale\\text.txt",
-      layout: "C:\\stale\\layout.json",
-      meta: "C:\\stale\\meta.json",
+      page: paths.page,
+      thumb: paths.thumb,
+      text: paths.text,
+      layout: paths.layout,
+      meta: paths.meta,
+      expansion_states: [],
     },
   }), "utf8");
   const version = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1143,6 +1995,26 @@ function recoveryFixture() {
       page_bytes: page.length,
       thumb_bytes: thumb.length,
       layout_hash: layoutValue.geometry_hash,
+      text_geometry: structuredClone(mainGeometryReference),
+      localization: {
+        status: "exact_geometry_available",
+        exact: true,
+        accounted_for: true,
+        geometry_ready: true,
+        geometry_hash: layoutValue.geometry_hash,
+        bound_image_hash: imageHash,
+      },
+      expansion_state_count: 0,
+      expansion_state_screenshots: [],
+      retained_artifact_projection: structuredClone(retainedProjection),
+      artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
+      artifact_bindings: {
+        page: rawArtifactBinding(page, "image/jpeg"),
+        thumb: rawArtifactBinding(thumb, "image/jpeg"),
+        text: rawArtifactBinding(text, "text/plain; charset=utf-8"),
+        layout: rawArtifactBinding(layout, "application/json; charset=utf-8"),
+        meta: rawArtifactBinding(meta, "application/json; charset=utf-8"),
+      },
     },
     previous_captured_at: null,
     previous_object_keys: {},
@@ -1150,16 +2022,30 @@ function recoveryFixture() {
     previous_metadata: {},
     updated_at: "2026-07-16T00:30:00.000Z",
   };
-  return { archiveRoot, baselinePath, source, baseline, snapshot, objects, page };
+  return {
+    archiveRoot,
+    baselinePath,
+    source,
+    baseline,
+    snapshot,
+    objects,
+    page,
+    captureRelative,
+    paths,
+    retainedProjection,
+    layoutHash: layoutValue.geometry_hash,
+  };
 }
 
 function writeBaselineFixture(fixture) {
   writeFileSync(fixture.baselinePath, `${JSON.stringify(fixture.baseline, null, 2)}\n`, "utf8");
 }
 
-function addExpansionState(fixture) {
+function addExpansionState(fixture, { stateId = "expansion-state-01" } = {}) {
   const expansionPage = Buffer.from("verified opened eligibility accordion screenshot");
   const expansionImageHash = sha256(expansionPage);
+  const expansionText = "Applicants must satisfy the eligibility requirements";
+  const expansionTextHash = sha256(expansionText);
   const expansionScreenshot = {
     css_width: 1365,
     css_height: 2600,
@@ -1169,7 +2055,7 @@ function addExpansionState(fixture) {
   };
   const rawExpansionLayout = {
     version: 1,
-    state_id: "eligibility-open",
+    state_id: stateId,
     captured_at: capturedAt,
     coordinate_space: "document-css-pixels",
     document: { width: 1365, height: 2600 },
@@ -1183,7 +2069,7 @@ function addExpansionState(fixture) {
       rejected_rect_count: 0,
     },
     nodes: [geometryNode({
-      text: "Applicants must satisfy the eligibility requirements",
+      text: expansionText,
       path: "main>details:nth-of-type(1)>p",
       flowPath: "body>main>details:nth-of-type(1)>p",
       y: 420,
@@ -1193,14 +2079,18 @@ function addExpansionState(fixture) {
     before: rawExpansionLayout,
     after: rawExpansionLayout,
     screenshot: expansionScreenshot,
-    stateId: "eligibility-open",
+    stateId,
   });
   const expansionLayoutValue = bindVisualTextGeometry(verifiedExpansionLayout, {
     capturedAt,
     imageHash: expansionImageHash,
-    imageRef: "C:\\stale\\expansion-state-01.jpg",
+    imageRef: `${fixture.captureRelative}/expansion-state-01.jpg`,
     screenshot: expansionScreenshot,
   });
+  const expansionGeometryReference = {
+    ...structuredClone(expansionLayoutValue),
+    file: `${fixture.captureRelative}/expansion-state-01-layout.json`,
+  };
   const expansionLayout = Buffer.from(JSON.stringify(expansionLayoutValue), "utf8");
   const prefix = fixture.snapshot.latest_object_keys.page.slice(0, -"page.jpg".length);
   const pageKey = `${prefix}expansion-state-01.jpg`;
@@ -1209,46 +2099,180 @@ function addExpansionState(fixture) {
   fixture.snapshot.latest_object_keys.expansion_state_01_layout = layoutKey;
   fixture.snapshot.latest_metadata.expansion_state_count = 1;
   fixture.snapshot.latest_metadata.expansion_state_screenshots = [{
-    state_id: "eligibility-open",
+    state_id: stateId,
     label: "Eligibility",
     image_hash: expansionImageHash,
     layout_hash: expansionLayoutValue.geometry_hash,
+    text_geometry: expansionGeometryReference,
+    text_hash: expansionTextHash,
+    text_length: expansionText.length,
+    page_bytes: expansionPage.length,
   }];
   fixture.objects[pageKey] = objectFixture(expansionPage, "image/jpeg");
   fixture.objects[layoutKey] = objectFixture(expansionLayout, "application/json; charset=utf-8");
+  fixture.snapshot.latest_metadata.artifact_bindings_schema =
+    "awardping.r2.capture-artifact-bindings.v1";
+  fixture.snapshot.latest_metadata.artifact_bindings = {
+    ...fixture.snapshot.latest_metadata.artifact_bindings,
+    expansion_state_01: rawArtifactBinding(
+      expansionPage,
+      "image/jpeg",
+    ),
+    expansion_state_01_layout: rawArtifactBinding(
+      expansionLayout,
+      "application/json; charset=utf-8",
+    ),
+  };
 
   const metaKey = fixture.snapshot.latest_object_keys.meta;
   const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
+  const expansionPagePath = `${fixture.captureRelative}/expansion-state-01.jpg`;
+  const expansionLayoutPath = `${fixture.captureRelative}/expansion-state-01-layout.json`;
+  meta.expansion_state_count = 1;
   meta.expansion_state_screenshots = [{
-    state_id: "eligibility-open",
+    state_id: stateId,
     index: 0,
     label: "Eligibility",
-    page: "C:\\stale\\expansion-state-01.jpg",
-    layout: "C:\\stale\\expansion-state-01-layout.json",
+    page: expansionPagePath,
+    layout: expansionLayoutPath,
     image_hash: expansionImageHash,
     layout_hash: expansionLayoutValue.geometry_hash,
-    text_geometry: {
-      geometry_hash: expansionLayoutValue.geometry_hash,
-      file: "C:\\stale\\expansion-state-01-layout.json",
-      screenshot: expansionLayoutValue.screenshot,
-    },
+    text_hash: expansionTextHash,
+    text_length: expansionText.length,
+    page_bytes: expansionPage.length,
+    text_geometry: structuredClone(expansionGeometryReference),
   }];
   meta.files.expansion_states = [{
-    state_id: "eligibility-open",
+    state_id: stateId,
     label: "Eligibility",
-    page: "C:\\stale\\expansion-state-01.jpg",
-    layout: "C:\\stale\\expansion-state-01-layout.json",
+    page: expansionPagePath,
+    layout: expansionLayoutPath,
   }];
-  fixture.objects[metaKey] = objectFixture(
-    Buffer.from(JSON.stringify(meta), "utf8"),
+  const retainedProjection = {
+    ...structuredClone(fixture.retainedProjection),
+    authoritative: {
+      ...structuredClone(fixture.retainedProjection.authoritative),
+      expansion_state_count: 1,
+    },
+  };
+  meta.retained_artifact_projection = structuredClone(retainedProjection);
+  fixture.snapshot.latest_metadata.retained_artifact_projection =
+    structuredClone(retainedProjection);
+  fixture.baseline.summary_metadata.retained_artifact_projection =
+    structuredClone(retainedProjection);
+  fixture.retainedProjection = retainedProjection;
+  const metaBody = Buffer.from(JSON.stringify(meta), "utf8");
+  fixture.objects[metaKey] = objectFixture(metaBody, "application/json; charset=utf-8");
+  fixture.snapshot.latest_metadata.artifact_bindings.meta = rawArtifactBinding(
+    metaBody,
     "application/json; charset=utf-8",
   );
   fixture.expansionPage = expansionPage;
   fixture.expansionImageHash = expansionImageHash;
   fixture.expansionLayoutHash = expansionLayoutValue.geometry_hash;
+  fixture.expansionTextHash = expansionTextHash;
 }
 
-function initialDocumentRestoreFixture() {
+function rawArtifactBinding(body, contentType) {
+  return {
+    sha256: sha256(body),
+    byte_length: body.length,
+    content_type: contentType,
+    hash_mode: "raw_sha256",
+  };
+}
+
+function makeHybridExpansionRecoveryFixture() {
+  const fixture = recoveryFixture();
+  addExpansionState(fixture, { stateId: "expansion-state-01" });
+  const mainLayoutKey = fixture.snapshot.latest_object_keys.layout;
+  delete fixture.snapshot.latest_object_keys.layout;
+  delete fixture.objects[mainLayoutKey];
+  delete fixture.snapshot.latest_metadata.artifact_bindings.layout;
+
+  const unavailableReason = "The main page moved while its screenshot was captured.";
+  const unavailableGeometry = {
+    status: "unavailable_layout_changed_during_screenshot",
+    availability_status: "unavailable_layout_changed_during_screenshot",
+    unavailable_reason: unavailableReason,
+    geometry_hash: null,
+    node_count: 0,
+    run_count: 0,
+    screenshot: {
+      image_hash: null,
+      image_ref: null,
+    },
+    file: null,
+  };
+  const unavailableLocalization = {
+    status: "unavailable_layout_changed_during_screenshot",
+    exact: false,
+    accounted_for: true,
+    geometry_ready: false,
+    unavailable_reason: unavailableReason,
+    geometry_hash: null,
+    bound_image_hash: null,
+    semantic_crop_contract: "visual-exact-text-binding-v2",
+  };
+  const retainedProjection = {
+    schema: "awardping.capture-retained-artifact-projection.v1",
+    kind: "webpage",
+    localization_status: "evidence_only_geometry_unavailable",
+    authoritative: {
+      layout_retained: false,
+      layout_hash: null,
+      expansion_state_count: 1,
+    },
+    diagnostics: {
+      authority: "diagnostic_only",
+      storage_scope: "local_capture_directory_only",
+    },
+  };
+  fixture.snapshot.latest_hashes.layout_hash = null;
+  fixture.snapshot.latest_metadata.layout_hash = null;
+  fixture.snapshot.latest_metadata.text_geometry = structuredClone(unavailableGeometry);
+  fixture.snapshot.latest_metadata.localization = structuredClone(unavailableLocalization);
+  fixture.snapshot.latest_metadata.retained_artifact_projection = structuredClone(retainedProjection);
+
+  rewriteFixtureMeta(fixture, (meta) => {
+    meta.layout_hash = null;
+    meta.text_geometry = structuredClone(unavailableGeometry);
+    meta.localization = structuredClone(unavailableLocalization);
+    meta.files.layout = null;
+    meta.baseline_facts_metadata = {
+      status: "verified",
+      evidence_source: "retained_capture",
+    };
+    meta.monitoring_disposition = {
+      classification: "substantive_baseline",
+      reason: "stage1_activation",
+    };
+    meta.stage1_baseline_activation = {
+      status: "verified",
+      plan_sha256: "a".repeat(64),
+    };
+    meta.retained_artifact_projection = structuredClone(retainedProjection);
+  });
+  fixture.unavailableReason = unavailableReason;
+  fixture.retainedProjection = retainedProjection;
+  return fixture;
+}
+
+function rewriteFixtureMeta(fixture, mutate) {
+  const metaKey = fixture.snapshot.latest_object_keys.meta;
+  const meta = JSON.parse(fixture.objects[metaKey].body.toString("utf8"));
+  mutate(meta);
+  const body = Buffer.from(JSON.stringify(meta), "utf8");
+  fixture.objects[metaKey] = objectFixture(body, "application/json; charset=utf-8");
+  if (fixture.snapshot.latest_metadata.artifact_bindings?.meta) {
+    fixture.snapshot.latest_metadata.artifact_bindings.meta = rawArtifactBinding(
+      body,
+      "application/json; charset=utf-8",
+    );
+  }
+}
+
+function initialDocumentRestoreFixture({ metaFileName = "meta.json" } = {}) {
   const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-r2-candidate-restore-"));
   temporaryRoots.push(archiveRoot);
   const source = {
@@ -1261,7 +2285,7 @@ function initialDocumentRestoreFixture() {
   const targets = {
     pdf: join(captureDir, "document.pdf"),
     text: join(captureDir, "text.txt"),
-    meta: join(captureDir, "meta.json"),
+    meta: join(captureDir, metaFileName),
   };
   const textValue = "Applicants must submit two letters of recommendation.";
   const pdf = Buffer.from(`%PDF-1.4\n${textValue}\n%%EOF\n`, "utf8");
@@ -1297,7 +2321,7 @@ function initialDocumentRestoreFixture() {
     local_paths: Object.fromEntries(
       Object.entries(targets).map(([role, path]) => [role, {
         path,
-        archive_relative: `${captureRelative}/${initialDocumentFileName(role)}`,
+        archive_relative: `${captureRelative}/${initialDocumentFileName(role, metaFileName)}`,
         exists: true,
         bytes: bodies[role].length,
         byte_length: bodies[role].length,
@@ -1423,8 +2447,8 @@ function initialDocumentRestoreFixture() {
   };
 }
 
-function initialDocumentFileName(role) {
-  return role === "pdf" ? "document.pdf" : role === "text" ? "text.txt" : "meta.json";
+function initialDocumentFileName(role, metaFileName = "meta.json") {
+  return role === "pdf" ? "document.pdf" : role === "text" ? "text.txt" : metaFileName;
 }
 
 function geometryNode({ text, path, flowPath, y }) {

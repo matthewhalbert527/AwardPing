@@ -15,9 +15,12 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { GetObjectCommand, HeadObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
+import { acquisitionDerivedCaptureMetadataFilename } from "./intake-artifact-retention.mjs";
+import { retainedCaptureArtifactProjectionSchema } from "./r2-capture-artifact-bindings.mjs";
 import {
   bindVisualTextGeometry,
   recomputeRestoredVisualScreenshotLayoutCapture,
+  verifyVisualTextGeometryBinding,
 } from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
 
@@ -39,6 +42,10 @@ const initialDocumentArtifactFiles = {
   text: "text.txt",
   meta: "meta.json",
 };
+const initialDocumentCandidateMetaFileNames = new Set([
+  "meta.json",
+  acquisitionDerivedCaptureMetadataFilename,
+]);
 
 /**
  * Restores only the immutable local artifact paths already sealed into an
@@ -387,7 +394,11 @@ function validateInitialDocumentCandidateTargets({ archiveRoot, sourceId, ref })
       );
     }
     const targetPath = resolve(archiveRoot, ...archivePath.split("/"));
-    if (!pathIsWithin(capturesDir, targetPath) || basename(targetPath) !== fileName) {
+    const targetFileName = basename(targetPath);
+    const fileNameAllowed = role === "meta"
+      ? initialDocumentCandidateMetaFileNames.has(targetFileName)
+      : targetFileName === fileName;
+    if (!pathIsWithin(capturesDir, targetPath) || !fileNameAllowed) {
       refuse(
         "candidate_restore_artifact_path_unsafe",
         `The candidate ${role} path is outside this source's capture archive.`,
@@ -683,11 +694,28 @@ export async function rehydrateLocalBaselineFromR2({
     const artifactBySlot = Object.fromEntries(
       artifacts.map((artifact) => [artifact.entry.slot, artifact]),
     );
+    const hybridExpansionRecovery = Boolean(
+      currentBaseline.kind === "webpage"
+      && !manifest.entries.some((entry) => entry.slot === "layout")
+      && manifest.entries.some((entry) => entry.expansionIndex),
+    );
     const rawMeta = parseJsonBytes(
       artifactBySlot.meta.body,
       "r2_meta_json_invalid",
       "The R2 generation metadata is not valid JSON.",
     );
+    const authoritativeRecoveryBundle = Boolean(
+      missingLocalBaseline
+      || hybridExpansionRecovery
+      || generationUsesAuthoritativeArtifactSchema(generation, rawMeta),
+    );
+    if (authoritativeRecoveryBundle) {
+      validateAuthoritativeArtifactBindings({
+        generation,
+        manifest,
+        artifactBySlot,
+      });
+    }
     validateDownloadedMeta({
       meta: rawMeta,
       source,
@@ -699,12 +727,19 @@ export async function rehydrateLocalBaselineFromR2({
       baseline: currentBaseline,
       generation,
       artifactBySlot,
-      requireComplete: missingLocalBaseline,
+      requireComplete: authoritativeRecoveryBundle,
     });
     validateDownloadedLayouts({ artifactBySlot, generation });
-    if (missingLocalBaseline) {
+    if (authoritativeRecoveryBundle) {
       validateAuthoritativeLayoutBindings({
         baseline: currentBaseline,
+        generation,
+        manifest,
+        rawMeta,
+        artifactBySlot,
+      });
+      validateAuthoritativeRetainedProjectionParity({
+        kind: currentBaseline.kind,
         generation,
         manifest,
         rawMeta,
@@ -719,26 +754,45 @@ export async function rehydrateLocalBaselineFromR2({
 
     const capturesDir = join(sourceDir, "captures");
     const family = manifest.family === "approved" ? "approved" : "capture";
-    const localGenerationId = randomUUID().slice(0, 8);
-    finalDir = join(
-      capturesDir,
-      `r2-rehydrated-${family}-${manifest.version}-${localGenerationId}`,
-    );
-
-    const localPaths = localArtifactPaths({
-      archiveRoot: input.archiveRoot,
-      finalDir,
-      manifest,
-    });
+    let localPaths;
+    if (authoritativeRecoveryBundle) {
+      const originalPaths = authoritativeLocalArtifactPaths({
+        archiveRoot: input.archiveRoot,
+        sourceId: source.id,
+        rawMeta,
+        generation,
+        manifest,
+        artifactBySlot,
+      });
+      finalDir = originalPaths.finalDir;
+      localPaths = originalPaths.localPaths;
+    } else {
+      const localGenerationId = randomUUID().slice(0, 8);
+      finalDir = join(
+        capturesDir,
+        `r2-rehydrated-${family}-${manifest.version}-${localGenerationId}`,
+      );
+      localPaths = localArtifactPaths({
+        archiveRoot: input.archiveRoot,
+        finalDir,
+        manifest,
+      });
+    }
     const sanitizedLayouts = sanitizeDownloadedLayoutArtifacts({
       artifactBySlot,
       localPaths,
       generation,
+      preserveExactGeometryIdentity: authoritativeRecoveryBundle,
     });
     const localizationRecovery = applyRestoredLayoutVerification(
       declaredLocalizationRecovery,
       sanitizedLayouts.verification,
     );
+    const retainedArtifactProjection = recoveredRetainedArtifactProjection({
+      kind: currentBaseline.kind,
+      generation,
+      localizationRecovery,
+    });
     const sanitizedMeta = sanitizeDownloadedMeta({
       meta: rawMeta,
       localPaths,
@@ -746,14 +800,19 @@ export async function rehydrateLocalBaselineFromR2({
       manifest,
       layoutHashes: sanitizedLayouts.hashes,
       localizationRecovery,
+      retainedArtifactProjection,
     });
-    const outputBuffers = new Map(
-      artifacts.map((artifact) => [artifact.entry.fileName, artifact.body]),
-    );
+    const outputBuffers = localArtifactOutputBuffers({
+      artifacts,
+      localPaths,
+    });
     for (const [fileName, body] of sanitizedLayouts.buffers) {
       outputBuffers.set(fileName, body);
     }
-    outputBuffers.set("meta.json", Buffer.from(`${JSON.stringify(sanitizedMeta, null, 2)}\n`, "utf8"));
+    outputBuffers.set(
+      basename(localPaths.bySlot.meta),
+      Buffer.from(`${JSON.stringify(sanitizedMeta, null, 2)}\n`, "utf8"),
+    );
 
     const baselineTemplate = missingLocalBaseline
       ? buildAuthoritativeBaselineFromR2({
@@ -771,11 +830,22 @@ export async function rehydrateLocalBaselineFromR2({
       manifest,
       layoutHashes: sanitizedLayouts.hashes,
       localizationRecovery,
+      retainedArtifactProjection,
       bucket,
       snapshotUpdatedAt: snapshotRecord.updated_at || null,
       now,
       missingLocalBaseline,
     });
+    if (authoritativeRecoveryBundle) {
+      assertAuthoritativeRehydratedBundleParity({
+        baseline: rehydratedBaseline,
+        meta: sanitizedMeta,
+        generation,
+        retainedArtifactProjection,
+        localPaths,
+        outputBuffers,
+      });
+    }
 
     if (missingLocalBaseline && sourceDirectoryWasMissing) {
       const sourcesDir = ensureSafeSourcesDirectory(input.archiveRoot);
@@ -861,6 +931,13 @@ export async function rehydrateLocalBaselineFromR2({
       artifact_count: outputBuffers.size,
       recovery_scope: localizationRecovery.recovery_scope,
       localization_recovered: localizationRecovery.localization_recovered,
+      expansion_localization_recovered:
+        localizationRecovery.expansion_localization_recovered === true,
+      expansion_localization_status: localizationRecovery.expansion_localization_recovered
+        ? "exact_geometry_available"
+        : localizationRecovery.expected_expansion_states > 0
+          ? "unavailable"
+          : "not_applicable",
       localization_status: localizationRecovery.status,
       restored_missing_baseline: missingLocalBaseline,
       restored_missing_source_directory: missingLocalBaseline && sourceDirectoryWasMissing,
@@ -1076,6 +1153,7 @@ function assessLocalizationRecovery({ kind, manifest, generation, rawMeta }) {
       reason: "exact_r2_generation_rehydrated",
       recovery_scope: "baseline_evidence",
       localization_recovered: false,
+      expansion_localization_recovered: false,
       main_geometry_available: false,
       expected_expansion_states: 0,
       complete_expansion_states: 0,
@@ -1106,25 +1184,35 @@ function assessLocalizationRecovery({ kind, manifest, generation, rawMeta }) {
     }
   }
   const expansionGeometryComplete = completeExpansionStates === declaredCount;
+  const exactExpansionGeometryAvailable = Boolean(
+    !mainGeometryAvailable && declaredCount > 0 && expansionGeometryComplete,
+  );
   const localizationRecovered = mainGeometryAvailable && expansionGeometryComplete;
   const legacyApprovedWithoutGeometry = manifest.family === "approved" && !mainGeometryAvailable;
-  const status = !mainGeometryAvailable
-    ? "evidence_only_geometry_unavailable"
-    : expansionGeometryComplete
-      ? "exact_geometry_available"
-      : "evidence_only_expansion_geometry_incomplete";
+  const status = exactExpansionGeometryAvailable
+    ? "exact_expansion_geometry_available"
+    : !mainGeometryAvailable
+      ? "evidence_only_geometry_unavailable"
+      : expansionGeometryComplete
+        ? "exact_geometry_available"
+        : "evidence_only_expansion_geometry_incomplete";
   const reason = status === "exact_geometry_available"
     ? "exact_r2_generation_rehydrated"
-    : status === "evidence_only_geometry_unavailable"
-      ? "exact_r2_generation_rehydrated_evidence_only_geometry_unavailable"
-      : "exact_r2_generation_rehydrated_evidence_only_expansion_geometry_incomplete";
+    : status === "exact_expansion_geometry_available"
+      ? "exact_r2_generation_rehydrated_with_exact_expansion_geometry"
+      : status === "evidence_only_geometry_unavailable"
+        ? "exact_r2_generation_rehydrated_evidence_only_geometry_unavailable"
+        : "exact_r2_generation_rehydrated_evidence_only_expansion_geometry_incomplete";
   return {
     status,
     reason,
     recovery_scope: localizationRecovered
       ? "baseline_and_localization_evidence"
-      : "baseline_evidence_only",
+      : exactExpansionGeometryAvailable
+        ? "baseline_and_expansion_localization_evidence"
+        : "baseline_evidence_only",
     localization_recovered: localizationRecovered,
+    expansion_localization_recovered: exactExpansionGeometryAvailable,
     main_geometry_available: mainGeometryAvailable,
     expected_expansion_states: declaredCount,
     complete_expansion_states: completeExpansionStates,
@@ -1133,41 +1221,103 @@ function assessLocalizationRecovery({ kind, manifest, generation, rawMeta }) {
 }
 
 function applyRestoredLayoutVerification(recovery, verification = {}) {
-  if (recovery.status === "not_applicable" || !recovery.main_geometry_available) {
-    return recovery;
+  if (recovery.status === "not_applicable") {
+    return {
+      ...recovery,
+      main_geometry_verified: false,
+      verified_expansion_states: 0,
+      authoritative_expansion_indexes: [],
+    };
   }
-  const mainVerified = verification.layout === true;
-  const verifiedExpansionStates = Object.entries(verification)
-    .filter(([slot, verified]) => /^expansion_state_\d{2}_layout$/.test(slot) && verified === true)
-    .length;
+  const mainGeometryDeclared = recovery.main_geometry_available === true;
+  const mainVerified = mainGeometryDeclared && verification.layout === true;
+  const authoritativeExpansionIndexes = [];
+  for (let index = 1; index <= recovery.expected_expansion_states; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    if (verification[`expansion_state_${suffix}_layout`] !== true) break;
+    authoritativeExpansionIndexes.push(index);
+  }
+  const verifiedExpansionStates = authoritativeExpansionIndexes.length;
   const expansionVerified = verifiedExpansionStates === recovery.expected_expansion_states;
-  if (recovery.status !== "exact_geometry_available") {
-    return {
-      ...recovery,
-      main_geometry_verified: mainVerified,
-      verified_expansion_states: verifiedExpansionStates,
-    };
-  }
+  const expansionLocalizationRecovered = Boolean(
+    recovery.expected_expansion_states > 0 && expansionVerified,
+  );
+  let status;
+  let reason;
   if (mainVerified && expansionVerified) {
-    return {
-      ...recovery,
-      main_geometry_verified: true,
-      verified_expansion_states: verifiedExpansionStates,
-    };
+    status = "exact_geometry_available";
+    reason = "exact_r2_generation_rehydrated";
+  } else if (!mainVerified && expansionLocalizationRecovered) {
+    status = "exact_expansion_geometry_available";
+    reason = "exact_r2_generation_rehydrated_with_exact_expansion_geometry";
+  } else if (!mainVerified) {
+    status = mainGeometryDeclared
+      ? "evidence_only_geometry_verification_unavailable"
+      : "evidence_only_geometry_unavailable";
+    reason = mainGeometryDeclared
+      ? "exact_r2_generation_rehydrated_evidence_only_geometry_verification_unavailable"
+      : "exact_r2_generation_rehydrated_evidence_only_geometry_unavailable";
+  } else {
+    status = "evidence_only_expansion_geometry_verification_unavailable";
+    reason =
+      "exact_r2_generation_rehydrated_evidence_only_expansion_geometry_verification_unavailable";
   }
-  const status = !mainVerified
-    ? "evidence_only_geometry_verification_unavailable"
-    : "evidence_only_expansion_geometry_verification_unavailable";
+  const localizationRecovered = mainVerified && expansionVerified;
   return {
     ...recovery,
     status,
-    reason: status === "evidence_only_geometry_verification_unavailable"
-      ? "exact_r2_generation_rehydrated_evidence_only_geometry_verification_unavailable"
-      : "exact_r2_generation_rehydrated_evidence_only_expansion_geometry_verification_unavailable",
-    recovery_scope: "baseline_evidence_only",
-    localization_recovered: false,
+    reason,
+    recovery_scope: localizationRecovered
+      ? "baseline_and_localization_evidence"
+      : expansionLocalizationRecovered
+        ? "baseline_and_expansion_localization_evidence"
+        : "baseline_evidence_only",
+    localization_recovered: localizationRecovered,
+    expansion_localization_recovered: expansionLocalizationRecovered,
+    main_geometry_declared: mainGeometryDeclared,
+    main_geometry_available: mainVerified,
     main_geometry_verified: mainVerified,
     verified_expansion_states: verifiedExpansionStates,
+    authoritative_expansion_indexes: authoritativeExpansionIndexes,
+  };
+}
+
+function recoveredRetainedArtifactProjection({ kind, generation, localizationRecovery }) {
+  const layoutRetained = Boolean(
+    kind === "webpage" && localizationRecovery.main_geometry_available,
+  );
+  const expansionStateCount = kind === "webpage"
+    ? localizationRecovery.authoritative_expansion_indexes?.length || 0
+    : 0;
+  const layoutHash = layoutRetained
+    ? cleanNullableString(generation.hashes.layout_hash || generation.metadata.layout_hash)
+    : null;
+  return {
+    schema: retainedCaptureArtifactProjectionSchema,
+    kind,
+    localization_status: kind === "pdf"
+      ? "not_applicable_pdf"
+      : layoutRetained
+        ? "exact_geometry_available"
+        : "evidence_only_geometry_unavailable",
+    authoritative: {
+      layout_retained: layoutRetained,
+      layout_hash: layoutHash,
+      expansion_state_count: expansionStateCount,
+    },
+    diagnostics: {
+      authority: "diagnostic_only",
+      source: "verified_r2_rehydration",
+      omitted_main_layout: Boolean(
+        kind === "webpage"
+        && localizationRecovery.main_geometry_declared
+        && !layoutRetained,
+      ),
+      omitted_expansion_state_count: Math.max(
+        0,
+        Number(localizationRecovery.expected_expansion_states || 0) - expansionStateCount,
+      ),
+    },
   };
 }
 
@@ -1382,6 +1532,161 @@ function downloadedTextLength(body) {
   return content.length;
 }
 
+function validateAuthoritativeArtifactBindings({ generation, manifest, artifactBySlot }) {
+  const bindings = generation.metadata?.artifact_bindings;
+  const expectedSlots = manifest.entries.map((entry) => entry.slot).sort();
+  const bindingSlots = isObject(bindings) ? Object.keys(bindings).sort() : [];
+  if (
+    generation.metadata?.artifact_bindings_schema
+      !== "awardping.r2.capture-artifact-bindings.v1"
+    || !isObject(bindings)
+    || stableJson(bindingSlots) !== stableJson(expectedSlots)
+  ) {
+    refuse(
+      "r2_authoritative_artifact_binding_invalid",
+      "The authoritative R2 artifact-binding map does not exactly match its retained manifest.",
+    );
+  }
+
+  const exactFields = ["byte_length", "content_type", "hash_mode", "sha256"];
+  for (const entry of manifest.entries) {
+    const binding = bindings[entry.slot];
+    const artifact = artifactBySlot?.[entry.slot];
+    const bindingFields = isObject(binding) ? Object.keys(binding).sort() : [];
+    const expectedContentType = authoritativeBindingContentType(entry);
+    const bindingHash = String(binding?.sha256 || "");
+    const reason = entry.expansionIndex
+      ? "r2_authoritative_expansion_artifact_binding_invalid"
+      : "r2_authoritative_artifact_binding_invalid";
+    if (
+      !artifact
+      || !isObject(binding)
+      || stableJson(bindingFields) !== stableJson(exactFields)
+      || !/^[0-9a-f]{64}$/.test(bindingHash)
+      || !Number.isSafeInteger(binding.byte_length)
+      || binding.byte_length < 1
+      || binding.byte_length !== artifact.body.length
+      || binding.content_type !== expectedContentType
+      || binding.hash_mode !== "raw_sha256"
+      || !sameHash(bindingHash, sha256(artifact.body))
+    ) {
+      refuse(
+        reason,
+        `The authoritative ${entry.slot} raw artifact binding is incomplete or inconsistent.`,
+      );
+    }
+  }
+}
+
+function authoritativeBindingContentType(entry) {
+  if (entry.contentType === "text/plain") return "text/plain; charset=utf-8";
+  if (entry.contentType === "application/json") {
+    return "application/json; charset=utf-8";
+  }
+  return entry.contentType;
+}
+
+function generationUsesAuthoritativeArtifactSchema(generation, rawMeta = null) {
+  return Boolean(
+    generation.metadata?.artifact_bindings_schema
+      === "awardping.r2.capture-artifact-bindings.v1"
+    || generation.metadata?.retained_artifact_projection != null
+    || rawMeta?.retained_artifact_projection != null
+  );
+}
+
+function validateAuthoritativeRetainedProjectionParity({
+  kind,
+  generation,
+  manifest,
+  rawMeta,
+}) {
+  const slots = new Set(manifest.entries.map((entry) => entry.slot));
+  const layoutRetained = kind === "webpage" && slots.has("layout");
+  const pageIndexes = expansionIndexesForKind(manifest, "page");
+  const layoutIndexes = expansionIndexesForKind(manifest, "layout");
+  const expansionStateCount = pageIndexes.length;
+  const layoutHash = layoutRetained
+    ? cleanNullableString(generation.hashes.layout_hash || generation.metadata.layout_hash)
+    : null;
+  const actual = {
+    schema: retainedCaptureArtifactProjectionSchema,
+    kind,
+    localization_status: kind === "pdf"
+      ? "not_applicable_pdf"
+      : layoutRetained
+        ? "exact_geometry_available"
+        : "evidence_only_geometry_unavailable",
+    authoritative: {
+      layout_retained: layoutRetained,
+      layout_hash: layoutHash,
+      expansion_state_count: expansionStateCount,
+    },
+  };
+  const pointer = canonicalRetainedArtifactProjection(
+    generation.metadata?.retained_artifact_projection,
+  );
+  const downloaded = canonicalRetainedArtifactProjection(
+    rawMeta?.retained_artifact_projection,
+  );
+  if (
+    stableJson(pageIndexes) !== stableJson(layoutIndexes)
+    || pageIndexes.some((index, offset) => index !== offset + 1)
+    || (layoutRetained && !sha256Pattern.test(String(layoutHash || "")))
+    || (!layoutRetained && (
+      cleanNullableString(generation.hashes.layout_hash)
+      || cleanNullableString(generation.metadata.layout_hash)
+    ))
+    || !pointer
+    || !downloaded
+    || stableJson(pointer) !== stableJson(actual)
+    || stableJson(downloaded) !== stableJson(actual)
+  ) {
+    refuse(
+      "r2_authoritative_retained_projection_invalid",
+      "The pointer and downloaded retained-artifact projections must canonically match the exact authoritative artifact set.",
+    );
+  }
+}
+
+function canonicalRetainedArtifactProjection(value) {
+  const projection = objectValue(value);
+  const authority = objectValue(projection.authoritative);
+  const kind = projection.kind;
+  const layoutRetained = authority.layout_retained;
+  const expectedStatus = kind === "pdf"
+    ? "not_applicable_pdf"
+    : layoutRetained === true
+      ? "exact_geometry_available"
+      : "evidence_only_geometry_unavailable";
+  const layoutHash = authority.layout_hash === null
+    ? null
+    : cleanNullableString(authority.layout_hash);
+  if (
+    projection.schema !== retainedCaptureArtifactProjectionSchema
+    || !new Set(["webpage", "pdf"]).has(kind)
+    || projection.localization_status !== expectedStatus
+    || typeof layoutRetained !== "boolean"
+    || !Number.isSafeInteger(authority.expansion_state_count)
+    || authority.expansion_state_count < 0
+    || (layoutRetained && !sha256Pattern.test(String(layoutHash || "")))
+    || (!layoutRetained && authority.layout_hash !== null)
+    || (kind === "pdf" && (layoutRetained || authority.expansion_state_count !== 0))
+  ) {
+    return null;
+  }
+  return {
+    schema: projection.schema,
+    kind,
+    localization_status: projection.localization_status,
+    authoritative: {
+      layout_retained: layoutRetained,
+      layout_hash: layoutHash,
+      expansion_state_count: authority.expansion_state_count,
+    },
+  };
+}
+
 function validateDownloadedLayouts({ artifactBySlot, generation }) {
   for (const [slot, artifact] of Object.entries(artifactBySlot)) {
     if (slot !== "layout" && artifact.entry.expansionKind !== "layout") continue;
@@ -1405,56 +1710,274 @@ function validateDownloadedLayouts({ artifactBySlot, generation }) {
     ) {
       refuse("r2_layout_image_mismatch", `The downloaded ${slot} is bound to a different screenshot.`);
     }
+    if (artifact.entry.expansionKind === "layout") {
+      const binding = verifyVisualTextGeometryBinding(layout, expectedImageHash || null);
+      if (!binding.valid) {
+        refuse(
+          "r2_authoritative_expansion_layout_binding_invalid",
+          `The downloaded ${slot} semantic geometry hash is not bound to its retained layout body and screenshot.`,
+        );
+      }
+    }
   }
 }
 
-function validateAuthoritativeLayoutBindings({ baseline, generation, manifest, rawMeta }) {
+function validateAuthoritativeLayoutBindings({
+  baseline,
+  generation,
+  manifest,
+  rawMeta,
+  artifactBySlot,
+}) {
   if (baseline.kind === "pdf") return;
   const slots = new Set(manifest.entries.map((entry) => entry.slot));
-  if (!slots.has("layout")) {
-    refuse(
-      "r2_authoritative_layout_missing",
-      "The authoritative webpage generation has no structured text-layout object.",
+  if (slots.has("layout")) {
+    const expectedMainHash = generation.hashes.layout_hash || generation.metadata.layout_hash;
+    const metaMainHash = rawMeta.layout_hash || rawMeta.text_geometry?.geometry_hash;
+    if (
+      !sha256Pattern.test(String(expectedMainHash || "")) ||
+      !sameHash(metaMainHash, expectedMainHash)
+    ) {
+      refuse(
+        "r2_authoritative_layout_binding_invalid",
+        "The authoritative webpage layout is not hash-bound by both the pointer and metadata.",
+      );
+    }
+  } else {
+    validateExplicitMainGeometryUnavailability(
+      generation.metadata,
+      generation.hashes,
+      "pointer metadata",
     );
-  }
-  const expectedMainHash = generation.hashes.layout_hash || generation.metadata.layout_hash;
-  const metaMainHash = rawMeta.layout_hash || rawMeta.text_geometry?.geometry_hash;
-  if (
-    !sha256Pattern.test(String(expectedMainHash || "")) ||
-    !sameHash(metaMainHash, expectedMainHash)
-  ) {
-    refuse(
-      "r2_authoritative_layout_binding_invalid",
-      "The authoritative webpage layout is not hash-bound by both the pointer and metadata.",
+    validateExplicitMainGeometryUnavailability(
+      rawMeta,
+      generation.hashes,
+      "downloaded metadata",
+      { validateFileClaims: true },
     );
   }
 
-  const expansionIndexes = [...new Set(
-    manifest.entries
-      .map((entry) => entry.expansionIndex)
-      .filter((value) => Number.isInteger(value)),
-  )];
-  for (const index of expansionIndexes) {
+  const pageIndexes = expansionIndexesForKind(manifest, "page");
+  const layoutIndexes = expansionIndexesForKind(manifest, "layout");
+  if (
+    stableJson(pageIndexes) !== stableJson(layoutIndexes)
+    || pageIndexes.some((index, offset) => index !== offset + 1)
+  ) {
+    refuse(
+      "r2_authoritative_expansion_layout_incomplete",
+      "The authoritative expansion screenshot/layout pairs are incomplete or non-contiguous.",
+    );
+  }
+
+  const pointerCount = optionalNonNegativeInteger(generation.metadata.expansion_state_count);
+  const pointerStates = Array.isArray(generation.metadata.expansion_state_screenshots)
+    ? generation.metadata.expansion_state_screenshots
+    : null;
+  if (
+    !Number.isSafeInteger(generation.metadata.expansion_state_count)
+    || generation.metadata.expansion_state_count < 0
+    || !pointerStates
+  ) {
+    refuse(
+      "r2_authoritative_expansion_metadata_invalid",
+      "The authoritative pointer expansion fields are malformed.",
+    );
+  }
+  if (
+    pointerCount !== pageIndexes.length
+    || pointerStates.length !== pageIndexes.length
+  ) {
+    refuse(
+      "r2_authoritative_expansion_metadata_invalid",
+      "The authoritative expansion count and pointer metadata do not match the retained pairs.",
+    );
+  }
+  const rawCount = optionalNonNegativeInteger(rawMeta.expansion_state_count);
+  const rawStates = Array.isArray(rawMeta.expansion_state_screenshots)
+    ? rawMeta.expansion_state_screenshots
+    : null;
+  const rawFileStates = Array.isArray(rawMeta.files?.expansion_states)
+    ? rawMeta.files.expansion_states
+    : null;
+  if (
+    !Number.isSafeInteger(rawMeta.expansion_state_count)
+    || rawMeta.expansion_state_count < 0
+    || !rawStates
+    || !rawFileStates
+  ) {
+    refuse(
+      "r2_authoritative_expansion_metadata_invalid",
+      "The downloaded expansion fields are malformed.",
+    );
+  }
+  if (
+    rawStates.length !== pageIndexes.length
+    || rawFileStates.length !== pageIndexes.length
+    || rawCount !== pageIndexes.length
+  ) {
+    refuse(
+      "r2_authoritative_expansion_metadata_invalid",
+      "The downloaded expansion metadata does not match the retained pairs.",
+    );
+  }
+  for (const index of pageIndexes) {
     const suffix = String(index).padStart(2, "0");
+    const pointer = objectValue(pointerStates[index - 1]);
+    const rawState = objectValue(rawStates[index - 1]);
+    const rawFileState = objectValue(rawFileStates[index - 1]);
+    const expectedStateId = `expansion-state-${suffix}`;
     if (
-      !slots.has(`expansion_state_${suffix}`) ||
-      !slots.has(`expansion_state_${suffix}_layout`)
-    ) {
-      refuse(
-        "r2_authoritative_expansion_layout_incomplete",
-        `The authoritative expansion state ${suffix} is missing its screenshot or layout pair.`,
-      );
-    }
-    const pointer = expansionMetadata(generation, index);
-    if (
-      !sha256Pattern.test(String(pointer?.image_hash || "")) ||
-      !sha256Pattern.test(String(pointer?.layout_hash || ""))
+      pointer.state_id !== expectedStateId
+      || rawState.state_id !== expectedStateId
+      || rawFileState.state_id !== expectedStateId
+      || !sha256Pattern.test(String(pointer?.image_hash || ""))
+      || !sha256Pattern.test(String(pointer?.layout_hash || ""))
+      || !sha256Pattern.test(String(pointer?.text_hash || ""))
+      || !Number.isSafeInteger(pointer.text_length)
+      || pointer.text_length < 0
+      || !Number.isSafeInteger(pointer.page_bytes)
+      || pointer.page_bytes < 1
+      || !sameHash(pointer.text_geometry?.geometry_hash, pointer.layout_hash)
+      || !sameHash(pointer.text_geometry?.screenshot?.image_hash, pointer.image_hash)
+      || !sameHash(rawState.image_hash, pointer.image_hash)
+      || !sameHash(rawState.layout_hash, pointer.layout_hash)
+      || !sameHash(rawState.text_hash, pointer.text_hash)
+      || rawState.text_length !== pointer.text_length
+      || rawState.page_bytes !== pointer.page_bytes
+      || !sameHash(rawState.text_geometry?.geometry_hash, pointer.layout_hash)
+      || !sameHash(rawState.text_geometry?.screenshot?.image_hash, pointer.image_hash)
+      || !cleanNullableString(rawState.page)
+      || !cleanNullableString(rawState.layout)
+      || rawFileState.page !== rawState.page
+      || rawFileState.layout !== rawState.layout
     ) {
       refuse(
         "r2_authoritative_expansion_layout_binding_invalid",
-        `The authoritative expansion state ${suffix} is not hash-bound by the pointer.`,
+        `The authoritative expansion state ${suffix} is not consistently hash-bound by pointer and downloaded metadata.`,
       );
     }
+    validateAuthoritativeExpansionArtifactBinding({
+      generation,
+      artifactBySlot,
+      slot: `expansion_state_${suffix}`,
+      expectedHash: pointer.image_hash,
+      expectedLength: pointer.page_bytes,
+      expectedContentType: "image/jpeg",
+    });
+    validateAuthoritativeExpansionArtifactBinding({
+      generation,
+      artifactBySlot,
+      slot: `expansion_state_${suffix}_layout`,
+      expectedHash: null,
+      expectedLength: null,
+      expectedContentType: "application/json",
+    });
+    const downloadedLayout = parseJsonBytes(
+      artifactBySlot[`expansion_state_${suffix}_layout`].body,
+      "r2_layout_json_invalid",
+      `The downloaded expansion state ${suffix} layout is not valid JSON.`,
+    );
+    if (downloadedLayout.state_id !== expectedStateId) {
+      refuse(
+        "r2_authoritative_expansion_layout_binding_invalid",
+        `The authoritative expansion state ${suffix} layout has the wrong state identity.`,
+      );
+    }
+  }
+}
+
+function expansionIndexesForKind(manifest, kind) {
+  return [...new Set(
+    manifest.entries
+      .filter((entry) => entry.expansionKind === kind)
+      .map((entry) => entry.expansionIndex),
+  )].sort((left, right) => left - right);
+}
+
+function validateExplicitMainGeometryUnavailability(
+  metadata,
+  hashes,
+  label,
+  { validateFileClaims = false } = {},
+) {
+  const geometry = metadata?.text_geometry;
+  const geometryValue = objectValue(geometry);
+  const localization = objectValue(metadata?.localization);
+  const geometryStatuses = [geometryValue.status, geometryValue.availability_status]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  const localizationStatus = String(localization.status || "").trim();
+  const localizationUnavailable = localizationStatus === "unavailable"
+    || localizationStatus.startsWith("unavailable_")
+    || localizationStatus === "capture_layout_unavailable"
+    || localizationStatus === "evidence_only_geometry_unavailable";
+  const geometryExplicitlyUnavailable = geometry == null
+    || (
+      isObject(geometry)
+      && geometryStatuses.length > 0
+      && geometryStatuses.every(
+        (status) => status === "unavailable" || status.startsWith("unavailable_"),
+      )
+    );
+  const contradictoryClaim = Boolean(
+    cleanNullableString(hashes?.layout_hash)
+    || cleanNullableString(metadata?.layout_hash)
+    || cleanNullableString(geometryValue.geometry_hash)
+    || cleanNullableString(geometryValue.file)
+    || cleanNullableString(geometryValue.screenshot?.image_hash)
+    || cleanNullableString(geometryValue.screenshot?.image_ref)
+    || (geometryValue.node_count != null
+      && (!Number.isSafeInteger(geometryValue.node_count) || geometryValue.node_count !== 0))
+    || (geometryValue.run_count != null
+      && (!Number.isSafeInteger(geometryValue.run_count) || geometryValue.run_count !== 0))
+    || (validateFileClaims && cleanNullableString(metadata?.files?.layout))
+    || cleanNullableString(localization.geometry_hash)
+    || cleanNullableString(localization.bound_image_hash)
+    || (Object.prototype.hasOwnProperty.call(localization, "exact")
+      && localization.exact !== false)
+    || localization.geometry_ready !== false
+    || localization.accounted_for !== true
+    || !cleanNullableString(localization.unavailable_reason)
+  );
+  if (!geometryExplicitlyUnavailable || !localizationUnavailable || contradictoryClaim) {
+    refuse(
+      "r2_authoritative_layout_unavailability_invalid",
+      `The authoritative webpage ${label} does not explicitly and consistently mark main geometry unavailable.`,
+    );
+  }
+}
+
+function validateAuthoritativeExpansionArtifactBinding({
+  generation,
+  artifactBySlot,
+  slot,
+  expectedHash,
+  expectedLength,
+  expectedContentType,
+}) {
+  const binding = objectValue(generation.metadata?.artifact_bindings?.[slot]);
+  const artifact = artifactBySlot?.[slot];
+  const bindingHash = String(binding.sha256 || "").trim().toLowerCase();
+  const bindingLength = optionalNonNegativeInteger(binding.byte_length);
+  const bindingContentType = String(binding.content_type || "").split(";", 1)[0].trim().toLowerCase();
+  if (
+    !artifact
+    || generation.metadata?.artifact_bindings_schema
+      !== "awardping.r2.capture-artifact-bindings.v1"
+    || !sha256Pattern.test(bindingHash)
+    || !Number.isSafeInteger(binding.byte_length)
+    || bindingLength === null
+    || bindingLength !== artifact.body.length
+    || binding.hash_mode !== "raw_sha256"
+    || bindingContentType !== expectedContentType
+    || !sameHash(bindingHash, sha256(artifact.body))
+    || (expectedHash && !sameHash(bindingHash, expectedHash))
+    || (expectedLength !== null && bindingLength !== expectedLength)
+  ) {
+    refuse(
+      "r2_authoritative_expansion_artifact_binding_invalid",
+      `The authoritative ${slot} raw artifact binding is incomplete or inconsistent.`,
+    );
   }
 }
 
@@ -1469,6 +1992,214 @@ function localArtifactPaths({ archiveRoot, finalDir, manifest }) {
   };
 }
 
+function authoritativeLocalArtifactPaths({
+  archiveRoot,
+  sourceId,
+  rawMeta,
+  generation,
+  manifest,
+  artifactBySlot,
+}) {
+  const files = objectValue(rawMeta.files);
+  const rawStates = Array.isArray(rawMeta.expansion_state_screenshots)
+    ? rawMeta.expansion_state_screenshots
+    : [];
+  const bySlot = {};
+  let captureDir = null;
+  const usedPaths = new Set();
+
+  for (const entry of manifest.entries) {
+    let archivePath;
+    if (entry.expansionIndex) {
+      const state = objectValue(rawStates[entry.expansionIndex - 1]);
+      archivePath = entry.expansionKind === "page" ? state.page : state.layout;
+    } else {
+      archivePath = files[entry.slot];
+    }
+    const validated = validateAuthoritativeArchiveArtifactPath({
+      archiveRoot,
+      sourceId,
+      archivePath,
+      entry,
+    });
+    if (captureDir && captureDir !== validated.captureDir) {
+      refuse(
+        "r2_authoritative_local_path_invalid",
+        "Authoritative R2 artifacts do not resolve to one exact source capture directory.",
+      );
+    }
+    if (usedPaths.has(validated.archivePath)) {
+      refuse(
+        "r2_authoritative_local_path_invalid",
+        "Authoritative R2 artifact roles alias the same local recovery path.",
+      );
+    }
+    captureDir = validated.captureDir;
+    usedPaths.add(validated.archivePath);
+    bySlot[entry.slot] = validated.archivePath;
+  }
+
+  if (!captureDir || !bySlot.meta) {
+    refuse(
+      "r2_authoritative_local_path_invalid",
+      "Authoritative R2 metadata does not name a complete original capture directory.",
+    );
+  }
+  validateAuthoritativeGeometryPaths({
+    rawMeta,
+    generation,
+    manifest,
+    artifactBySlot,
+    bySlot,
+  });
+  return {
+    finalDir: captureDir,
+    localPaths: {
+      dir: archiveRelative(archiveRoot, captureDir),
+      bySlot,
+    },
+  };
+}
+
+function validateAuthoritativeArchiveArtifactPath({
+  archiveRoot,
+  sourceId,
+  archivePath,
+  entry,
+}) {
+  const value = String(archivePath || "");
+  const normalized = value.replaceAll("\\", "/");
+  const parts = normalized.split("/");
+  const expectedFileName = entry.slot === "meta"
+    ? null
+    : entry.fileName;
+  const fileName = parts.at(-1);
+  if (
+    !value
+    || value !== normalized
+    || value !== value.trim()
+    || isAbsolute(value)
+    || /^[A-Za-z]:\//.test(value)
+    || parts.length !== 5
+    || parts.some((part) => !part || part === "." || part === "..")
+    || parts[0] !== "sources"
+    || parts[1] !== sourceId
+    || parts[2] !== "captures"
+    || (entry.slot === "meta"
+      ? !initialDocumentCandidateMetaFileNames.has(fileName)
+      : fileName !== expectedFileName)
+  ) {
+    refuse(
+      "r2_authoritative_local_path_invalid",
+      `The authoritative ${entry.slot} local path is unsafe or does not use its exact role filename.`,
+    );
+  }
+  const target = resolve(archiveRoot, ...parts);
+  const capturesDir = resolve(archiveRoot, "sources", sourceId, "captures");
+  const captureDir = dirname(target);
+  if (
+    !pathIsWithin(capturesDir, target)
+    || dirname(captureDir) !== capturesDir
+  ) {
+    refuse(
+      "r2_authoritative_local_path_invalid",
+      `The authoritative ${entry.slot} local path escapes its exact source capture directory.`,
+    );
+  }
+  return { archivePath: normalized, target, captureDir };
+}
+
+function validateAuthoritativeGeometryPaths({
+  rawMeta,
+  generation,
+  manifest,
+  artifactBySlot,
+  bySlot,
+}) {
+  const slots = new Set(manifest.entries.map((entry) => entry.slot));
+  if (slots.has("layout")) {
+    for (const [label, geometry, requireFile] of [
+      ["pointer main geometry", generation.metadata.text_geometry],
+      ["downloaded main geometry", rawMeta.text_geometry],
+      ["downloaded main layout", parseJsonBytes(
+        artifactBySlot.layout.body,
+        "r2_layout_json_invalid",
+        "The downloaded main layout is not valid JSON.",
+      ), false],
+    ]) {
+      assertAuthoritativeGeometryPathPair(
+        geometry,
+        bySlot.layout,
+        bySlot.page,
+        label,
+        { requireFile: requireFile !== false },
+      );
+    }
+  }
+
+  const pointerStates = Array.isArray(generation.metadata.expansion_state_screenshots)
+    ? generation.metadata.expansion_state_screenshots
+    : [];
+  const rawStates = Array.isArray(rawMeta.expansion_state_screenshots)
+    ? rawMeta.expansion_state_screenshots
+    : [];
+  for (const index of expansionIndexesForKind(manifest, "page")) {
+    const suffix = String(index).padStart(2, "0");
+    const layoutPath = bySlot[`expansion_state_${suffix}_layout`];
+    const imagePath = bySlot[`expansion_state_${suffix}`];
+    const downloadedLayout = parseJsonBytes(
+      artifactBySlot[`expansion_state_${suffix}_layout`].body,
+      "r2_layout_json_invalid",
+      `The downloaded expansion state ${suffix} layout is not valid JSON.`,
+    );
+    for (const [label, geometry, requireFile] of [
+      [`pointer expansion state ${suffix}`, pointerStates[index - 1]?.text_geometry],
+      [`downloaded expansion state ${suffix}`, rawStates[index - 1]?.text_geometry],
+      [`downloaded expansion layout ${suffix}`, downloadedLayout, false],
+    ]) {
+      assertAuthoritativeGeometryPathPair(geometry, layoutPath, imagePath, label, {
+        requireFile: requireFile !== false,
+      });
+    }
+  }
+}
+
+function assertAuthoritativeGeometryPathPair(
+  geometry,
+  layoutPath,
+  imagePath,
+  label,
+  { requireFile = true } = {},
+) {
+  if (
+    !isObject(geometry)
+    || (requireFile && geometry.file !== layoutPath)
+    || (!requireFile && geometry.file != null && geometry.file !== layoutPath)
+    || geometry.screenshot?.image_ref !== imagePath
+  ) {
+    refuse(
+      "r2_authoritative_geometry_path_mismatch",
+      `The ${label} does not reference the exact validated layout and screenshot paths.`,
+    );
+  }
+}
+
+function localArtifactOutputBuffers({ artifacts, localPaths }) {
+  const output = new Map();
+  for (const artifact of artifacts) {
+    const localPath = localPaths.bySlot[artifact.entry.slot];
+    const fileName = basename(localPath || "");
+    if (!fileName || output.has(fileName)) {
+      refuse(
+        "r2_authoritative_local_path_invalid",
+        "Local recovery artifact filenames are incomplete or aliased.",
+      );
+    }
+    output.set(fileName, artifact.body);
+  }
+  return output;
+}
+
 function sanitizeDownloadedMeta({
   meta,
   localPaths,
@@ -1476,6 +2207,7 @@ function sanitizeDownloadedMeta({
   manifest,
   layoutHashes,
   localizationRecovery,
+  retainedArtifactProjection,
 }) {
   const value = stripLocalPathFields(structuredClone(meta));
   const omittedArtifacts = omittedLocalOnlyArtifacts(meta, manifest);
@@ -1485,6 +2217,7 @@ function sanitizeDownloadedMeta({
     generation,
     manifest,
     layoutHashes,
+    authoritativeIndexes: localizationRecovery.authoritative_expansion_indexes,
   });
   value.files = {
     page: localPaths.bySlot.page || null,
@@ -1494,7 +2227,9 @@ function sanitizeDownloadedMeta({
     expansion_text: null,
     sections_text: null,
     sections_json: null,
-    layout: localPaths.bySlot.layout || null,
+    layout: localizationRecovery.main_geometry_available
+      ? localPaths.bySlot.layout || null
+      : null,
     meta: localPaths.bySlot.meta,
     expansion_states: expansionStates.map((state) => ({
       state_id: state.state_id,
@@ -1517,14 +2252,38 @@ function sanitizeDownloadedMeta({
   if (isObject(value.localization) && layoutHashes.layout) {
     value.localization.geometry_hash = layoutHashes.layout;
   }
-  if (!localizationRecovery.localization_recovered) {
+  if (!localizationRecovery.main_geometry_available) {
+    const existingLocalization = objectValue(value.localization);
+    const existingStatus = String(existingLocalization.status || "").trim();
     value.localization = {
-      ...objectValue(value.localization),
-      status: "unavailable",
-      unavailable_reason: localizationRecovery.status,
+      ...existingLocalization,
+      status: isExplicitUnavailableLocalizationStatus(existingStatus)
+        ? existingStatus
+        : "unavailable",
+      exact: false,
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason:
+        cleanNullableString(existingLocalization.unavailable_reason)
+        || localizationRecovery.status,
+      geometry_hash: null,
+      bound_image_hash: null,
     };
   }
+  value.expansion_localization = {
+    status: localizationRecovery.expansion_localization_recovered
+      ? "exact_geometry_available"
+      : localizationRecovery.expected_expansion_states > 0
+        ? "unavailable"
+        : "not_applicable",
+    exact: localizationRecovery.expansion_localization_recovered === true,
+    geometry_ready: localizationRecovery.expansion_localization_recovered === true,
+    expected_state_count: localizationRecovery.expected_expansion_states,
+    verified_state_count: localizationRecovery.verified_expansion_states ?? 0,
+  };
   value.expansion_state_screenshots = expansionStates;
+  value.expansion_state_count = expansionStates.length;
+  value.retained_artifact_projection = retainedArtifactProjection;
   value.r2_local_rehydration = {
     generation: generation.name,
     immutable_family: manifest.family,
@@ -1533,6 +2292,13 @@ function sanitizeDownloadedMeta({
     recovery_scope: localizationRecovery.recovery_scope,
     localization_status: localizationRecovery.status,
     localization_recovered: localizationRecovery.localization_recovered,
+    expansion_localization_recovered:
+      localizationRecovery.expansion_localization_recovered === true,
+    expansion_localization_status: localizationRecovery.expansion_localization_recovered
+      ? "exact_geometry_available"
+      : localizationRecovery.expected_expansion_states > 0
+        ? "unavailable"
+        : "not_applicable",
     main_geometry_verified: localizationRecovery.main_geometry_verified ?? false,
     verified_expansion_states: localizationRecovery.verified_expansion_states ?? 0,
     legacy_approved_without_geometry: localizationRecovery.legacy_approved_without_geometry,
@@ -1543,16 +2309,33 @@ function sanitizeDownloadedMeta({
   return value;
 }
 
-function buildExpansionStates({ meta, localPaths, generation, manifest, layoutHashes = {} }) {
+function isExplicitUnavailableLocalizationStatus(status) {
+  return status === "unavailable"
+    || status.startsWith("unavailable_")
+    || status === "capture_layout_unavailable"
+    || status === "evidence_only_geometry_unavailable";
+}
+
+function buildExpansionStates({
+  meta,
+  localPaths,
+  generation,
+  manifest,
+  layoutHashes = {},
+  authoritativeIndexes = null,
+}) {
   const indexes = [...new Set(
     manifest.entries
       .filter((entry) => entry.expansionIndex)
       .map((entry) => entry.expansionIndex),
   )].sort((left, right) => left - right);
+  const allowedIndexes = Array.isArray(authoritativeIndexes)
+    ? new Set(authoritativeIndexes)
+    : null;
   const rawStates = Array.isArray(meta.expansion_state_screenshots)
     ? meta.expansion_state_screenshots
     : [];
-  return indexes.map((index) => {
+  return indexes.filter((index) => !allowedIndexes || allowedIndexes.has(index)).map((index) => {
     const suffix = String(index).padStart(2, "0");
     const raw = stripLocalPathFields(objectValue(rawStates[index - 1]));
     const pointer = objectValue(expansionMetadata(generation, index));
@@ -1603,7 +2386,12 @@ function sanitizeGeometry(value, { file, imageRef, imageHash, geometryHash }) {
   return geometry;
 }
 
-function sanitizeDownloadedLayoutArtifacts({ artifactBySlot, localPaths, generation }) {
+function sanitizeDownloadedLayoutArtifacts({
+  artifactBySlot,
+  localPaths,
+  generation,
+  preserveExactGeometryIdentity = false,
+}) {
   const buffers = new Map();
   const hashes = {};
   const verification = {};
@@ -1621,6 +2409,28 @@ function sanitizeDownloadedLayoutArtifacts({ artifactBySlot, localPaths, generat
     const pointer = suffix
       ? expansionMetadata(generation, artifact.entry.expansionIndex)
       : generation.hashes;
+    if (preserveExactGeometryIdentity) {
+      const expectedImageHash = pointer?.image_hash || null;
+      const expectedGeometryHash = suffix
+        ? pointer?.layout_hash || pointer?.text_geometry?.geometry_hash || null
+        : generation.hashes.layout_hash || generation.metadata.layout_hash || null;
+      const reverified = recomputeRestoredVisualScreenshotLayoutCapture({
+        geometry: layout,
+        screenshot: layout.screenshot,
+        stateId: layout.state_id || (suffix ? pointer?.state_id : "main"),
+      });
+      const binding = verifyVisualTextGeometryBinding(layout, expectedImageHash);
+      hashes[slot] = cleanNullableString(layout.geometry_hash);
+      verification[slot] = Boolean(
+        binding.valid
+        && sameHash(layout.geometry_hash, expectedGeometryHash)
+        && layout.screenshot?.image_ref === localPaths.bySlot[pageSlot]
+        && !String(reverified.availability_status || "").trim().startsWith("unavailable_")
+        && reverified.capture_verification?.status === "verified"
+        && reverified.screenshot?.alignment_status === "verified",
+      );
+      continue;
+    }
     const strippedLayout = stripLocalPathFields(layout);
     const reverifiedLayout = recomputeRestoredVisualScreenshotLayoutCapture({
       geometry: strippedLayout,
@@ -1792,6 +2602,15 @@ function buildAuthoritativeBaselineFromR2({
       baseline_facts_metadata: isObject(meta.baseline_facts_metadata)
         ? meta.baseline_facts_metadata
         : null,
+      monitoring_disposition: isObject(meta.monitoring_disposition)
+        ? meta.monitoring_disposition
+        : null,
+      stage1_baseline_activation: isObject(meta.stage1_baseline_activation)
+        ? meta.stage1_baseline_activation
+        : null,
+      retained_artifact_projection: isObject(meta.retained_artifact_projection)
+        ? meta.retained_artifact_projection
+        : null,
     },
   };
 }
@@ -1804,6 +2623,7 @@ function buildRehydratedBaseline({
   manifest,
   layoutHashes,
   localizationRecovery,
+  retainedArtifactProjection,
   bucket,
   snapshotUpdatedAt,
   now,
@@ -1815,6 +2635,7 @@ function buildRehydratedBaseline({
     generation,
     manifest,
     layoutHashes,
+    authoritativeIndexes: localizationRecovery.authoritative_expansion_indexes,
   });
   return {
     ...baseline,
@@ -1838,7 +2659,9 @@ function buildRehydratedBaseline({
       expansion_text: null,
       sections_text: null,
       sections_json: null,
-      layout: localPaths.bySlot.layout || null,
+      layout: localizationRecovery.main_geometry_available
+        ? localPaths.bySlot.layout || null
+        : null,
       meta: localPaths.bySlot.meta,
       expansion_states: states,
     },
@@ -1848,6 +2671,7 @@ function buildRehydratedBaseline({
         ? "r2_authoritative_local_cache_restore"
         : objectValue(baseline.summary_metadata).reason,
       updated_at: now,
+      retained_artifact_projection: retainedArtifactProjection,
       r2_local_rehydration: {
         rehydrated_at: now,
         generation: generation.name,
@@ -1860,6 +2684,13 @@ function buildRehydratedBaseline({
         recovery_scope: localizationRecovery.recovery_scope,
         localization_status: localizationRecovery.status,
         localization_recovered: localizationRecovery.localization_recovered,
+        expansion_localization_recovered:
+          localizationRecovery.expansion_localization_recovered === true,
+        expansion_localization_status: localizationRecovery.expansion_localization_recovered
+          ? "exact_geometry_available"
+          : localizationRecovery.expected_expansion_states > 0
+            ? "unavailable"
+            : "not_applicable",
         main_geometry_available: localizationRecovery.main_geometry_available,
         main_geometry_verified: localizationRecovery.main_geometry_verified ?? false,
         expected_expansion_states: localizationRecovery.expected_expansion_states,
@@ -1872,6 +2703,174 @@ function buildRehydratedBaseline({
       },
     },
   };
+}
+
+function assertAuthoritativeRehydratedBundleParity({
+  baseline,
+  meta,
+  generation,
+  retainedArtifactProjection,
+  localPaths,
+  outputBuffers,
+}) {
+  const expectedProjection = canonicalRetainedArtifactProjection(retainedArtifactProjection);
+  const baselineProjection = canonicalRetainedArtifactProjection(
+    baseline.summary_metadata?.retained_artifact_projection,
+  );
+  const metaProjection = canonicalRetainedArtifactProjection(
+    meta.retained_artifact_projection,
+  );
+  if (
+    !expectedProjection
+    || stableJson(baselineProjection) !== stableJson(expectedProjection)
+    || stableJson(metaProjection) !== stableJson(expectedProjection)
+  ) {
+    refuse(
+      "r2_rehydrated_retained_projection_mismatch",
+      "The rehydrated baseline and metadata retained-artifact projections disagree.",
+    );
+  }
+
+  const authority = expectedProjection.authoritative;
+  if (expectedProjection.kind === "pdf") {
+    if (
+      baseline.layout_hash
+      || baseline.text_geometry
+      || baseline.capture?.layout
+      || meta.layout_hash
+      || meta.text_geometry
+      || meta.files?.layout
+      || (baseline.capture?.expansion_states || []).length
+      || (meta.expansion_state_screenshots || []).length
+    ) {
+      refuse(
+        "r2_rehydrated_retained_projection_mismatch",
+        "The rehydrated PDF contains webpage geometry claims.",
+      );
+    }
+    return;
+  }
+
+  if (authority.layout_retained) {
+    const layoutPath = localPaths.bySlot.layout;
+    const pagePath = localPaths.bySlot.page;
+    const layoutBody = outputBuffers.get(basename(layoutPath || ""));
+    const layout = parseJsonBytes(
+      layoutBody,
+      "r2_rehydrated_layout_invalid",
+      "The rehydrated main layout is not valid JSON.",
+    );
+    if (
+      !layoutPath
+      || baseline.capture?.layout !== layoutPath
+      || meta.files?.layout !== layoutPath
+      || !sameHash(baseline.layout_hash, authority.layout_hash)
+      || !sameHash(meta.layout_hash, authority.layout_hash)
+      || !sameHash(baseline.text_geometry?.geometry_hash, authority.layout_hash)
+      || !sameHash(meta.text_geometry?.geometry_hash, authority.layout_hash)
+      || baseline.text_geometry?.file !== layoutPath
+      || meta.text_geometry?.file !== layoutPath
+      || baseline.text_geometry?.screenshot?.image_ref !== pagePath
+      || meta.text_geometry?.screenshot?.image_ref !== pagePath
+      || !sameHash(layout.geometry_hash, authority.layout_hash)
+      || layout.screenshot?.image_ref !== pagePath
+      || !verifyVisualTextGeometryBinding(layout, generation.hashes.image_hash).valid
+    ) {
+      refuse(
+        "r2_rehydrated_main_geometry_mismatch",
+        "The rehydrated main layout no longer matches the pointer, projection, screenshot, and metadata identity.",
+      );
+    }
+  } else {
+    const localization = objectValue(meta.localization);
+    if (
+      baseline.layout_hash
+      || baseline.text_geometry
+      || baseline.capture?.layout
+      || meta.layout_hash
+      || meta.text_geometry
+      || meta.files?.layout
+      || localization.exact !== false
+      || localization.accounted_for !== true
+      || localization.geometry_ready !== false
+      || cleanNullableString(localization.geometry_hash)
+      || cleanNullableString(localization.bound_image_hash)
+      || !cleanNullableString(localization.unavailable_reason)
+    ) {
+      refuse(
+        "r2_rehydrated_main_geometry_mismatch",
+        "The rehydrated baseline overclaims unavailable main geometry.",
+      );
+    }
+  }
+
+  const baselineStates = Array.isArray(baseline.capture?.expansion_states)
+    ? baseline.capture.expansion_states
+    : [];
+  const metaStates = Array.isArray(meta.expansion_state_screenshots)
+    ? meta.expansion_state_screenshots
+    : [];
+  const metaFileStates = Array.isArray(meta.files?.expansion_states)
+    ? meta.files.expansion_states
+    : [];
+  if (
+    baselineStates.length !== authority.expansion_state_count
+    || metaStates.length !== authority.expansion_state_count
+    || metaFileStates.length !== authority.expansion_state_count
+    || meta.expansion_state_count !== authority.expansion_state_count
+  ) {
+    refuse(
+      "r2_rehydrated_expansion_geometry_mismatch",
+      "The rehydrated expansion state count disagrees with the retained projection.",
+    );
+  }
+  const pointerStates = Array.isArray(generation.metadata.expansion_state_screenshots)
+    ? generation.metadata.expansion_state_screenshots
+    : [];
+  for (let offset = 0; offset < authority.expansion_state_count; offset += 1) {
+    const suffix = String(offset + 1).padStart(2, "0");
+    const pointer = objectValue(pointerStates[offset]);
+    const baselineState = objectValue(baselineStates[offset]);
+    const metaState = objectValue(metaStates[offset]);
+    const metaFileState = objectValue(metaFileStates[offset]);
+    const pagePath = localPaths.bySlot[`expansion_state_${suffix}`];
+    const layoutPath = localPaths.bySlot[`expansion_state_${suffix}_layout`];
+    const layout = parseJsonBytes(
+      outputBuffers.get(basename(layoutPath || "")),
+      "r2_rehydrated_layout_invalid",
+      `The rehydrated expansion state ${suffix} layout is not valid JSON.`,
+    );
+    if (
+      pointer.state_id !== `expansion-state-${suffix}`
+      || baselineState.state_id !== pointer.state_id
+      || metaState.state_id !== pointer.state_id
+      || metaFileState.state_id !== pointer.state_id
+      || baselineState.page !== pagePath
+      || metaState.page !== pagePath
+      || metaFileState.page !== pagePath
+      || baselineState.layout !== layoutPath
+      || metaState.layout !== layoutPath
+      || metaFileState.layout !== layoutPath
+      || !sameHash(baselineState.image_hash, pointer.image_hash)
+      || !sameHash(metaState.image_hash, pointer.image_hash)
+      || !sameHash(baselineState.layout_hash, pointer.layout_hash)
+      || !sameHash(metaState.layout_hash, pointer.layout_hash)
+      || !sameHash(baselineState.text_geometry?.geometry_hash, pointer.layout_hash)
+      || !sameHash(metaState.text_geometry?.geometry_hash, pointer.layout_hash)
+      || baselineState.text_geometry?.file !== layoutPath
+      || metaState.text_geometry?.file !== layoutPath
+      || baselineState.text_geometry?.screenshot?.image_ref !== pagePath
+      || metaState.text_geometry?.screenshot?.image_ref !== pagePath
+      || !sameHash(layout.geometry_hash, pointer.layout_hash)
+      || layout.screenshot?.image_ref !== pagePath
+      || !verifyVisualTextGeometryBinding(layout, pointer.image_hash).valid
+    ) {
+      refuse(
+        "r2_rehydrated_expansion_geometry_mismatch",
+        `The rehydrated expansion state ${suffix} no longer matches its pointer and projection identity.`,
+      );
+    }
+  }
 }
 
 function omittedLocalOnlyArtifacts(meta, manifest) {

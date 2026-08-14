@@ -164,18 +164,25 @@ export function visualChangeSemanticManifest(changeDetails = null) {
 }
 
 export function visualTextGeometryLayoutFingerprint(value) {
+  return sha256Stable(canonicalVisualTextGeometryLayout(value));
+}
+
+function canonicalVisualTextGeometryLayout(value) {
   const geometry = objectValue(value);
-  return sha256Stable({
-    version: geometry.version || 1,
+  return {
+    version: finiteNumber(geometry.version) ?? 1,
     state_id: cleanNullable(geometry.state_id),
-    coordinate_space: cleanText(geometry.coordinate_space) || "document-css-pixels",
-    document: objectValue(geometry.document),
-    viewport: objectValue(geometry.viewport),
-    scroll: objectValue(geometry.scroll),
+    coordinate_space: "document-css-pixels",
+    document: sizeValue(geometry.document),
+    viewport: sizeValue(geometry.viewport),
+    scroll: {
+      x: nonNegativeNumber(objectValue(geometry.scroll).x),
+      y: nonNegativeNumber(objectValue(geometry.scroll).y),
+    },
     device_pixel_ratio: positiveNumber(geometry.device_pixel_ratio) || 1,
     paint_stack: objectValue(geometry.paint_stack),
-    nodes: arrayValue(geometry.nodes),
-  });
+    nodes: normalizeGeometryNodes(geometry.nodes),
+  };
 }
 
 function measuredVisualScreenshotAlignment(geometry, screenshot) {
@@ -339,8 +346,9 @@ export function bindVisualTextGeometry(geometry, {
   screenshot = null,
 } = {}) {
   const source = objectValue(geometry);
-  const documentSize = sizeValue(source.document);
-  const viewport = sizeValue(source.viewport);
+  const canonicalLayout = canonicalVisualTextGeometryLayout(source);
+  const documentSize = canonicalLayout.document;
+  const viewport = canonicalLayout.viewport;
   const screenshotValue = objectValue(screenshot);
   const measured = measuredVisualScreenshotAlignment(source, screenshotValue);
   const {
@@ -355,22 +363,19 @@ export function bindVisualTextGeometry(geometry, {
   // Alignment is an observed property of the CSS and image dimensions. A
   // stored or caller-supplied verdict is evidence input, never authority.
   const alignmentStatus = measured.status;
-  const nodes = normalizeGeometryNodes(source.nodes);
+  const nodes = canonicalLayout.nodes;
   const availabilityStatus = cleanNullable(source.availability_status);
   const unavailableReason = cleanNullable(source.unavailable_reason);
-  const paintStack = objectValue(source.paint_stack);
+  const paintStack = canonicalLayout.paint_stack;
   const captureVerification = objectValue(source.capture_verification);
   const bound = {
     version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
-    state_id: cleanNullable(source.state_id),
-    coordinate_space: "document-css-pixels",
+    state_id: canonicalLayout.state_id,
+    coordinate_space: canonicalLayout.coordinate_space,
     captured_at: cleanNullable(capturedAt || source.captured_at),
     document: documentSize,
     viewport,
-    scroll: {
-      x: nonNegativeNumber(objectValue(source.scroll).x),
-      y: nonNegativeNumber(objectValue(source.scroll).y),
-    },
+    scroll: canonicalLayout.scroll,
     device_pixel_ratio: devicePixelRatio,
     node_count: nodes.length,
     run_count: nodes.reduce((count, node) => count + node.runs.length, 0),
@@ -1159,13 +1164,17 @@ function rectValue(value) {
   const width = positiveNumber(rect.width) || positiveNumber(right !== null && x !== null ? right - x : null);
   const height = positiveNumber(rect.height) || positiveNumber(bottom !== null && y !== null ? bottom - y : null);
   if (x === null || y === null || !width || !height) return null;
+  const roundedX = roundCoordinate(x);
+  const roundedY = roundCoordinate(y);
+  const roundedWidth = roundCoordinate(width);
+  const roundedHeight = roundCoordinate(height);
   return {
-    x: roundCoordinate(x),
-    y: roundCoordinate(y),
-    width: roundCoordinate(width),
-    height: roundCoordinate(height),
-    right: roundCoordinate(x + width),
-    bottom: roundCoordinate(y + height),
+    x: roundedX,
+    y: roundedY,
+    width: roundedWidth,
+    height: roundedHeight,
+    right: roundCoordinate(roundedX + roundedWidth),
+    bottom: roundCoordinate(roundedY + roundedHeight),
   };
 }
 

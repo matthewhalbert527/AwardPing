@@ -14,6 +14,7 @@ import {
   verifyVisualScreenshotLayoutCapture,
   visualChangeSemanticManifest,
   visualExactTokens,
+  visualTextGeometryLayoutFingerprint,
 } from "./lib/visual-event-localization.mjs";
 
 describe("visual event localization", () => {
@@ -245,6 +246,123 @@ describe("visual event localization", () => {
       },
       nodes: expect.any(Array),
     });
+  });
+
+  it("keeps production browser verification bound to the retained normalized geometry", () => {
+    const exactText = "Applications close February 1, 2027.";
+    const rawRect = {
+      x: 80.004,
+      y: 300.006,
+      width: 327.997,
+      height: 19.996,
+      right: 408.001,
+      bottom: 320.002,
+      browser_debug_id: "discarded-browser-only-field",
+    };
+    const raw = {
+      version: 1,
+      state_id: " main ",
+      captured_at: "2026-07-15T18:00:00.000Z",
+      coordinate_space: "document-css-pixels",
+      document: { width: "1000", height: 2_000, scroll_width: 1_000 },
+      viewport: { width: 1_000, height: "800", visual_scale: 1 },
+      scroll: { x: "0", y: 0, restoration: "manual" },
+      device_pixel_ratio: "1",
+      paint_stack: {
+        contract: "browser-paint-stack-v1",
+        status: "verified",
+        sample_points_per_rect: 3,
+        sampled_rect_count: 1,
+        rejected_rect_count: 0,
+        original_scroll: { x: 0, y: 0 },
+        restored_scroll: { x: 0, y: 0 },
+      },
+      browser_collection_debug: { isolated_world: true },
+      nodes: [{
+        order: "0",
+        path: " main > p ",
+        flow_path: " body > main ",
+        text: exactText,
+        separator_before: "",
+        rects: [rawRect],
+        browser_node_id: 42,
+        runs: [{
+          start: "0",
+          end: String(exactText.length),
+          text: exactText,
+          rects: [rawRect],
+          font_debug: "discarded-browser-only-field",
+        }],
+      }],
+    };
+    const verified = verifyVisualScreenshotLayoutCapture({
+      before: raw,
+      after: structuredClone(raw),
+      screenshot: { alignment_status: "verified" },
+      stateId: "main",
+    });
+    const bound = bindVisualTextGeometry(verified, {
+      capturedAt: raw.captured_at,
+      imageHash: "production-shaped-image",
+      imageRef: "visual-snapshots/production-shaped/page.jpg",
+      screenshot: {
+        css_width: 1_000,
+        css_height: 2_000,
+        pixel_width: 1_000,
+        pixel_height: 2_000,
+      },
+    });
+    const retainedFingerprint = visualTextGeometryLayoutFingerprint({
+      ...bound,
+      version: 1,
+    });
+
+    expect(bound).toMatchObject({
+      state_id: "main",
+      document: { width: 1_000, height: 2_000 },
+      viewport: { width: 1_000, height: 800 },
+      scroll: { x: 0, y: 0 },
+      nodes: [{
+        order: 0,
+        path: "main > p",
+        flow_path: "body > main",
+        rects: [{ x: 80, y: 300.01, width: 328, height: 20 }],
+      }],
+      capture_verification: {
+        status: "verified",
+        before_fingerprint: retainedFingerprint,
+        after_fingerprint: retainedFingerprint,
+      },
+    });
+    expect(bound.document).not.toHaveProperty("scroll_width");
+    expect(bound.nodes[0]).not.toHaveProperty("browser_node_id");
+    expect(bound.nodes[0].rects[0]).not.toHaveProperty("browser_debug_id");
+
+    const recomputed = recomputeRestoredVisualScreenshotLayoutCapture({
+      geometry: bound,
+      screenshot: bound.screenshot,
+      stateId: "main",
+    });
+    expect(recomputed.capture_verification).toMatchObject({
+      status: "verified",
+      before_fingerprint: retainedFingerprint,
+      after_fingerprint: retainedFingerprint,
+      restored_proof_recomputed: true,
+    });
+    expect(recomputed.nodes).toEqual(bound.nodes);
+
+    const changedNode = structuredClone(raw);
+    changedNode.nodes[0].runs[0].text = "Applications close March 1, 2027.";
+    const changedRect = structuredClone(raw);
+    changedRect.nodes[0].runs[0].rects[0].y += 20;
+    const changedPaint = structuredClone(raw);
+    changedPaint.paint_stack.rejected_rect_count = 1;
+    const changedDimension = structuredClone(raw);
+    changedDimension.document.height += 100;
+    const rawFingerprint = visualTextGeometryLayoutFingerprint(raw);
+    for (const changed of [changedNode, changedRect, changedPaint, changedDimension]) {
+      expect(visualTextGeometryLayoutFingerprint(changed)).not.toBe(rawFingerprint);
+    }
   });
 
   it("rejects exact wording synthesized across distant or unrelated text nodes", () => {

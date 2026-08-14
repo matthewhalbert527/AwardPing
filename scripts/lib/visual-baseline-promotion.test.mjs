@@ -16,6 +16,10 @@ import {
   visualTextGeometryLayoutFingerprint,
 } from "./visual-event-localization.mjs";
 import {
+  projectRetainedCaptureArtifacts,
+  retainedCaptureArtifactProjectionSchema,
+} from "./r2-capture-artifact-bindings.mjs";
+import {
   approvedR2SnapshotVersion,
   captureFromVisualReviewCandidate,
   promoteApprovedVisualBaselineLocal,
@@ -105,6 +109,241 @@ describe("approved visual baseline promotion", () => {
     });
   });
 
+  it("replaces stale local geometry authority when verified core evidence is unchanged", () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "source-geometry-replacement";
+    const source = {
+      id: sourceId,
+      shared_award_id: "award-1",
+      url: "https://example.edu/award",
+    };
+    const candidateFor = (capture, id) => candidateFixture({
+      id,
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+
+    const withExpansion = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "with-expansion"),
+      sourceId,
+      withExpansion: true,
+    });
+    expect(promoteApprovedVisualBaselineLocal({
+      candidate: candidateFor(withExpansion, "candidate-with-expansion"),
+      source,
+      archiveRoot,
+      approved: true,
+    })).toMatchObject({ promoted: true });
+
+    const withoutExpansion = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "without-expansion"),
+      sourceId,
+    });
+    const expansionRemoval = promoteApprovedVisualBaselineLocal({
+      candidate: candidateFor(withoutExpansion, "candidate-without-expansion"),
+      source,
+      archiveRoot,
+      approved: true,
+    });
+    expect(expansionRemoval).toMatchObject({
+      promoted: true,
+      baseline: { capture: { expansion_states: [] } },
+    });
+
+    const withoutMainLayout = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "without-main-layout"),
+      sourceId,
+    });
+    markMainGeometryUnavailable(withoutMainLayout);
+    const layoutRemoval = promoteApprovedVisualBaselineLocal({
+      candidate: candidateFor(withoutMainLayout, "candidate-without-main-layout"),
+      source,
+      archiveRoot,
+      approved: true,
+    });
+    expect(layoutRemoval).toMatchObject({
+      promoted: true,
+      baseline: {
+        layout_hash: null,
+        text_geometry: null,
+        capture: { layout: null, expansion_states: [] },
+      },
+    });
+  });
+
+  it("validates immutable raw metadata identity before advancing the local baseline", () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "source-local-meta-identity";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "mismatched-meta"),
+      sourceId,
+    });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.source.id = "different-source";
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    capture.artifact_bindings.meta = artifactBindingForTest(capture.meta_path);
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+
+    expect(() => promoteApprovedVisualBaselineLocal({
+      candidate,
+      source: { id: sourceId, shared_award_id: "award-1", url: "https://example.edu" },
+      archiveRoot,
+      approved: true,
+    })).toThrow("metadata source ID does not match");
+    expect(existsSync(join(archiveRoot, "sources", sourceId, "baseline.json"))).toBe(false);
+  });
+
+  it("uses the verified full layout artifact while preserving production compact metadata", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "55555555-5555-4555-8555-555555555555";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "compact-meta"),
+      sourceId,
+    });
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+    const source = {
+      id: sourceId,
+      shared_award_id: "award-1",
+      url: "https://example.edu/award",
+    };
+    const reconstructed = captureFromVisualReviewCandidate(candidate, archiveRoot);
+    expect(reconstructed.text_geometry).toMatchObject({
+      geometry_hash: capture.layout_hash,
+      screenshot: { image_hash: capture.image_hash },
+    });
+    expect(reconstructed.text_geometry).not.toHaveProperty("paint_stack");
+    expect(reconstructed.text_geometry).not.toHaveProperty("capture_verification");
+
+    const local = promoteApprovedVisualBaselineLocal({
+      candidate,
+      source,
+      archiveRoot,
+      approved: true,
+    });
+    expect(local).toMatchObject({
+      promoted: true,
+      baseline: {
+        layout_hash: capture.layout_hash,
+        capture: { layout: expect.stringMatching(/layout\.json$/) },
+      },
+    });
+    expect(local.baseline.text_geometry).not.toHaveProperty("paint_stack");
+    expect(local.baseline.text_geometry).not.toHaveProperty("capture_verification");
+
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+    const r2 = await promoteApprovedVisualBaselineR2({
+      candidate,
+      source,
+      capture: reconstructed,
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    });
+    expect(r2).toMatchObject({ promoted: true, uploaded: 5 });
+    expect(database.current.latest_object_keys).toHaveProperty("layout");
+    expect(database.current.latest_metadata.text_geometry).not.toHaveProperty("paint_stack");
+    expect(database.current.latest_metadata.text_geometry)
+      .not.toHaveProperty("capture_verification");
+  });
+
+  it("does not inherit a prior capture's retained-artifact projection", () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "source-projection";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "next-capture"),
+      sourceId,
+    });
+    const baselineDir = join(archiveRoot, "sources", sourceId);
+    mkdirSync(baselineDir, { recursive: true });
+    writeFileSync(join(baselineDir, "baseline.json"), JSON.stringify({
+      captured_at: "2026-07-13T20:00:00.000Z",
+      text_hash: "a".repeat(64),
+      image_hash: "b".repeat(64),
+      summary_metadata: {
+        retained_artifact_projection: {
+          schema: "awardping.capture-retained-artifact-projection.v1",
+          authoritative: {
+            layout_retained: false,
+            layout_hash: null,
+            expansion_state_count: 9,
+          },
+        },
+      },
+    }));
+    const result = promoteApprovedVisualBaselineLocal({
+      candidate: candidateFixture({
+        new_text_hash: capture.text_hash,
+        new_image_hash: capture.image_hash,
+        new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+      }),
+      source: { id: sourceId, shared_award_id: "award-1", url: "https://example.edu" },
+      archiveRoot,
+      approved: true,
+    });
+
+    expect(result).toMatchObject({ promoted: true });
+    expect(result.baseline.summary_metadata.retained_artifact_projection).toEqual(
+      capture.retained_artifact_projection,
+    );
+    expect(result.baseline.summary_metadata.retained_artifact_projection.authoritative)
+      .not.toEqual({
+        layout_retained: false,
+        layout_hash: null,
+        expansion_state_count: 9,
+      });
+  });
+
+  it("fails closed for a historical reviewed capture whose raw projection is missing", () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "source-missing-projection";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "historical"),
+      sourceId,
+    });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    delete rawMeta.retained_artifact_projection;
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+
+    const result = promoteApprovedVisualBaselineLocal({
+      candidate,
+      source: { id: sourceId, shared_award_id: "award-1", url: "https://example.edu" },
+      archiveRoot,
+      approved: true,
+    });
+
+    expect(result).toMatchObject({
+      promoted: false,
+      reason: "approved_snapshot_geometry_metadata_missing",
+      missing_metadata: ["retained_artifact_projection"],
+    });
+    expect(existsSync(join(archiveRoot, "sources", sourceId, "baseline.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(capture.meta_path, "utf8")))
+      .not.toHaveProperty("retained_artifact_projection");
+  });
+
   it("verifies retained PDF and extracted-text bytes before local promotion", () => {
     const archiveRoot = temporaryArchive();
     const captureDir = join(archiveRoot, "sources", "source-pdf", "captures", "capture-1");
@@ -119,9 +358,13 @@ describe("approved visual baseline promotion", () => {
     const textHash = sha256ForTest(Buffer.from(text));
     writeFileSync(metaPath, JSON.stringify({
       kind: "pdf",
+      source: { id: "source-pdf", shared_award_id: "award-1" },
       captured_at: "2026-07-14T20:00:00.000Z",
       file_hash: fileHash,
+      file_bytes: readFileSync(pdfPath).length,
       text_hash: textHash,
+      text_length: text.length,
+      retained_artifact_projection: retainedProjectionForTest({ kind: "pdf" }),
       files: {
         pdf: archiveRelativeForTest(pdfPath, archiveRoot),
         text: archiveRelativeForTest(textPath, archiveRoot),
@@ -495,6 +738,19 @@ describe("approved visual baseline promotion", () => {
     expect(s3.destroyed).toBe(false);
   });
 
+  it("returns the actionable missing-capture result before R2 canonicalization", async () => {
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source: { id: "source-1", shared_award_id: "award-1", url: "https://example.edu" },
+      capture: null,
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    })).resolves.toEqual({
+      promoted: false,
+      reason: "missing_local_capture_for_r2",
+    });
+  });
+
   it("refuses a partial required R2 capture even when some files remain", async () => {
     const archiveRoot = temporaryArchive();
     const captureDir = join(archiveRoot, "partial-r2");
@@ -564,8 +820,81 @@ describe("approved visual baseline promotion", () => {
     expect(result).toMatchObject({
       promoted: false,
       reason: "approved_snapshot_geometry_metadata_missing",
-      missing_metadata: ["layout_hash"],
+      missing_metadata: ["retained_artifact_projection", "layout_hash"],
     });
+  });
+
+  it("rejects a contradictory reviewed projection before any R2 upload", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "99999999-9999-4999-8999-999999999999";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "contradictory-projection-r2"),
+      sourceId,
+    });
+    const contradictoryProjection = {
+      schema: retainedCaptureArtifactProjectionSchema,
+      kind: "webpage",
+      localization_status: "exact_geometry_available",
+      authoritative: {
+        layout_retained: true,
+        layout_hash: "f".repeat(64),
+        expansion_state_count: 0,
+      },
+    };
+    capture.retained_artifact_projection = contradictoryProjection;
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.retained_artifact_projection = contradictoryProjection;
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    capture.artifact_bindings.meta = artifactBindingForTest(capture.meta_path);
+    const operations = [];
+
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source: { id: sourceId, shared_award_id: "award-1", url: "https://example.edu" },
+      capture,
+      supabase: r2DatabaseStub({ existing: null, operations }).client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    })).rejects.toThrow(
+      "retained artifact projection does not match verified publication evidence",
+    );
+    expect(operations).toHaveLength(0);
+  });
+
+  it("rejects raw metadata that contradicts the capture projection", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "88888888-8888-4888-8888-888888888888";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "raw-projection-mismatch-r2"),
+      sourceId,
+    });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.retained_artifact_projection = {
+      ...rawMeta.retained_artifact_projection,
+      authoritative: {
+        ...rawMeta.retained_artifact_projection.authoritative,
+        expansion_state_count: 1,
+      },
+    };
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    capture.artifact_bindings.meta = artifactBindingForTest(capture.meta_path);
+    const operations = [];
+
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source: { id: sourceId, shared_award_id: "award-1", url: "https://example.edu" },
+      capture,
+      supabase: r2DatabaseStub({ existing: null, operations }).client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    })).rejects.toThrow(
+      "raw metadata and capture retained artifact projections do not match",
+    );
+    expect(operations).toHaveLength(0);
   });
 
   it("publishes exact main and opened-expansion geometry as one immutable approved generation", async () => {
@@ -607,6 +936,16 @@ describe("approved visual baseline promotion", () => {
     });
     expect(database.current.latest_metadata).toMatchObject({
       artifact_bindings_schema: "awardping.r2.capture-artifact-bindings.v1",
+      retained_artifact_projection: {
+        schema: retainedCaptureArtifactProjectionSchema,
+        kind: "webpage",
+        localization_status: "exact_geometry_available",
+        authoritative: {
+          layout_retained: true,
+          layout_hash: capture.layout_hash,
+          expansion_state_count: 1,
+        },
+      },
       text_object_bytes: readFileSync(capture.text_path).length,
       expansion_state_count: 1,
       expansion_state_screenshots: [{
@@ -647,6 +986,130 @@ describe("approved visual baseline promotion", () => {
       reason: "approved_r2_snapshot_already_current",
     });
     expect(operations).toHaveLength(operationCount);
+  });
+
+  it("publishes exact opened-accordion evidence when main-page geometry is explicitly unavailable", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "44444444-4444-4444-8444-444444444444";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "approved-expansion-only-r2"),
+      withExpansion: true,
+      sourceId,
+    });
+    markMainGeometryUnavailable(capture);
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+
+    const result = await promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source: {
+        id: sourceId,
+        shared_award_id: "award-1",
+        url: "https://example.edu/award",
+      },
+      capture,
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    });
+
+    expect(result).toMatchObject({ promoted: true, uploaded: 6 });
+    const pointer = database.upserts.at(-1);
+    expect(pointer.latest_object_keys).toMatchObject({
+      expansion_state_01: expect.stringMatching(/\/expansion-state-01\.jpg$/),
+      expansion_state_01_layout: expect.stringMatching(/\/expansion-state-01-layout\.json$/),
+    });
+    expect(pointer.latest_object_keys).not.toHaveProperty("layout");
+    expect(pointer.latest_hashes.layout_hash).toBeNull();
+    expect(pointer.latest_metadata).toMatchObject({
+      expansion_state_count: 1,
+      localization: {
+        accounted_for: true,
+        geometry_ready: false,
+      },
+      localization_evidence: {
+        status: "exact_expansion_geometry_available",
+        main_layout_hash: null,
+        expansion_state_count: 1,
+      },
+    });
+    expect(inspectStage1ImmutableR2CaptureBinding(pointer)).toMatchObject({
+      valid: true,
+      errors: [],
+      generation: result.immutable_version,
+    });
+    assertPointerBindingsMatchUploads(pointer, operations);
+  });
+
+  it("rejects incomplete unavailable-main markers before publishing R2 evidence", async () => {
+    const cases = [
+      ["exact", (capture, meta) => {
+        delete capture.localization.exact;
+        delete meta.localization.exact;
+      }],
+      ["accounted_for", (capture, meta) => {
+        delete capture.localization.accounted_for;
+        delete meta.localization.accounted_for;
+      }],
+      ["geometry_ready", (capture, meta) => {
+        delete capture.localization.geometry_ready;
+        delete meta.localization.geometry_ready;
+      }],
+      ["localization unavailable reason", (capture, meta) => {
+        delete capture.localization.unavailable_reason;
+        delete meta.localization.unavailable_reason;
+      }],
+      ["geometry unavailable reason", (capture, meta) => {
+        delete capture.text_geometry.unavailable_reason;
+        delete meta.text_geometry.unavailable_reason;
+      }],
+      ["zero geometry runs", (capture, meta) => {
+        capture.text_geometry.run_count = 1;
+        meta.text_geometry.run_count = 1;
+      }],
+      ["raw layout claim", (capture, meta) => {
+        capture.files.layout = "sources/source/captures/capture/layout.json";
+        meta.files.layout = capture.files.layout;
+      }],
+    ];
+
+    for (const [index, [label, mutate]] of cases.entries()) {
+      const archiveRoot = temporaryArchive();
+      const sourceId = `${index + 6}`.repeat(8).slice(0, 8)
+        + "-6666-4666-8666-666666666666";
+      const capture = verifiedWebCapture({
+        archiveRoot,
+        captureDir: join(archiveRoot, `invalid-unavailable-${index}`),
+        sourceId,
+      });
+      markMainGeometryUnavailable(capture);
+      capture.layout_path = null;
+      capture.artifact_bindings.layout = null;
+      const meta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+      mutate(capture, meta);
+      writeFileSync(capture.meta_path, JSON.stringify(meta));
+      capture.artifact_bindings.meta = artifactBindingForTest(capture.meta_path);
+      const operations = [];
+
+      const result = await promoteApprovedVisualBaselineR2({
+        candidate: candidateFixture({ id: `candidate-invalid-${index}` }),
+        source: { id: sourceId, shared_award_id: "award-1", url: "https://example.edu" },
+        capture,
+        supabase: r2DatabaseStub({ existing: null, operations }).client,
+        s3Client: r2ClientStub({ operations }),
+        approved: true,
+        config: { enabled: true, bucket: "snapshots" },
+      });
+
+      expect(result, label).toMatchObject({
+        promoted: false,
+        reason: "approved_snapshot_geometry_metadata_missing",
+        missing_metadata: ["main_layout_unavailable_contract"],
+      });
+      expect(operations, label).toHaveLength(0);
+    }
   });
 
   it("publishes a PDF with the same exact immutable artifact contract", async () => {
@@ -738,6 +1201,12 @@ describe("approved visual baseline promotion", () => {
       }],
       ["capture timestamp", (pointer) => {
         pointer.latest_captured_at = "2026-07-14T19:00:00.000Z";
+      }],
+      ["missing retained projection", (pointer) => {
+        delete pointer.latest_metadata.retained_artifact_projection;
+      }],
+      ["contradictory retained projection", (pointer) => {
+        pointer.latest_metadata.retained_artifact_projection.authoritative.expansion_state_count = 0;
       }],
     ];
     for (const [index, [label, corrupt]] of corruptions.entries()) {
@@ -842,6 +1311,61 @@ describe("approved visual baseline promotion", () => {
       (operation) => operation.key,
     )).not.toContain(retainedPage);
   });
+
+  it("reports post-CAS cleanup debt without misreporting an authoritative promotion", async () => {
+    const archiveRoot = temporaryArchive();
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "cleanup-debt-r2"),
+    });
+    const stalePage = "visual-snapshots/sources/source-1/captures/old/page.jpg";
+    const staleText = "visual-snapshots/sources/source-1/captures/old/text.txt";
+    const existing = {
+      latest_captured_at: "2026-07-13T20:00:00.000Z",
+      latest_object_keys: {
+        page: "visual-snapshots/sources/source-1/captures/current/page.jpg",
+        text: "visual-snapshots/sources/source-1/captures/current/text.txt",
+      },
+      latest_hashes: { text_hash: "old-text", image_hash: "old-image" },
+      latest_metadata: { page_title: "Current" },
+      previous_captured_at: "2026-07-12T20:00:00.000Z",
+      previous_object_keys: { page: stalePage, text: staleText },
+      previous_hashes: { text_hash: "stale-text", image_hash: "stale-image" },
+      previous_metadata: { page_title: "Stale" },
+      updated_at: "2026-07-13T21:00:00.000Z",
+    };
+    const operations = [];
+    const database = r2DatabaseStub({ existing, operations });
+    const result = await promoteApprovedVisualBaselineR2({
+      candidate: candidateFixture(),
+      source: {
+        id: "source-1",
+        shared_award_id: "award-1",
+        url: "https://example.edu/award",
+      },
+      capture,
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations, failDeleteKeys: [stalePage] }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+      now: "2026-07-14T21:00:00.000Z",
+    });
+
+    expect(result).toMatchObject({
+      promoted: true,
+      deleted: 1,
+      cleanup: {
+        attempted: 2,
+        deleted: 1,
+        failed: 1,
+        failures: [{ key: stalePage, message: "simulated delete failure" }],
+      },
+    });
+    expect(database.current.latest_captured_at).toBe(capture.captured_at);
+    expect(operations.filter((operation) => operation.type === "delete").map(
+      (operation) => operation.key,
+    )).toEqual(expect.arrayContaining([stalePage, staleText]));
+  });
 });
 
 function verifiedWebCapture({
@@ -901,6 +1425,15 @@ function verifiedWebCapture({
     });
   }
 
+  const retainedArtifactProjection = retainedProjectionForTest({
+    kind: "webpage",
+    image_hash: imageHash,
+    layout_hash: mainGeometry.geometry_hash,
+    text_geometry: mainGeometry,
+    layout_path: paths.layout_path,
+    expansion_state_screenshots: expansionStates,
+  });
+
   const meta = {
     version: 1,
     kind: "webpage",
@@ -911,12 +1444,23 @@ function verifiedWebCapture({
     text_hash: textHash,
     image_hash: imageHash,
     layout_hash: mainGeometry.geometry_hash,
-    text_geometry: mainGeometry,
+    text_geometry: compactGeometryReferenceForTest(
+      mainGeometry,
+      archiveRelativeForTest(paths.layout_path, archiveRoot),
+    ),
     localization: readyLocalizationForTest(mainGeometry, imageHash),
+    retained_artifact_projection: retainedArtifactProjection,
     text_length: text.length,
+    page_bytes: readFileSync(paths.page_path).length,
+    thumb_bytes: readFileSync(paths.thumb_path).length,
     dimensions: { width: 1365, height: 2400 },
+    expansion_state_count: expansionStates.length,
     expansion_state_screenshots: expansionStates.map((state) => ({
       ...state,
+      text_geometry: compactGeometryReferenceForTest(
+        state.text_geometry,
+        archiveRelativeForTest(state.layout_path, archiveRoot),
+      ),
       page: archiveRelativeForTest(state.page_path, archiveRoot),
       layout: archiveRelativeForTest(state.layout_path, archiveRoot),
     })),
@@ -938,6 +1482,7 @@ function verifiedWebCapture({
 
   const capture = {
     ...meta,
+    text_geometry: mainGeometry,
     archive_root: archiveRoot,
     dir: captureDir,
     ...paths,
@@ -965,6 +1510,7 @@ function verifiedPdfCapture({ archiveRoot, captureDir, sourceId }) {
     final_url: "https://example.edu/award.pdf",
     file_hash: fileHash,
     text_hash: textHash,
+    retained_artifact_projection: retainedProjectionForTest({ kind: "pdf" }),
     text_length: text.length,
     file_bytes: readFileSync(pdfPath).length,
   };
@@ -983,6 +1529,41 @@ function verifiedPdfCapture({ archiveRoot, captureDir, sourceId }) {
     meta: artifactBindingForTest(metaPath),
   };
   return capture;
+}
+
+function markMainGeometryUnavailable(capture) {
+  const unavailableReason = "The page moved while the main screenshot was captured.";
+  const textGeometry = {
+    version: 1,
+    availability_status: "unavailable_layout_changed_during_screenshot",
+    status: "unavailable_layout_changed_during_screenshot",
+    unavailable_reason: unavailableReason,
+    run_count: 0,
+  };
+  const localization = {
+    status: "evidence_only_geometry_unavailable",
+    exact: false,
+    accounted_for: true,
+    geometry_ready: false,
+    unavailable_reason: unavailableReason,
+    geometry_hash: null,
+    bound_image_hash: null,
+    semantic_crop_contract: "visual-exact-text-binding-v2",
+  };
+  capture.layout_hash = null;
+  capture.text_geometry = textGeometry;
+  capture.localization = localization;
+  capture.files = { ...capture.files, layout: null };
+  capture.retained_artifact_projection = retainedProjectionForTest(capture);
+
+  const meta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+  meta.layout_hash = null;
+  meta.text_geometry = textGeometry;
+  meta.localization = localization;
+  meta.files = { ...meta.files, layout: null };
+  meta.retained_artifact_projection = capture.retained_artifact_projection;
+  writeFileSync(capture.meta_path, JSON.stringify(meta));
+  capture.artifact_bindings.meta = artifactBindingForTest(capture.meta_path);
 }
 
 function geometryFixture({ imageHash, imageRef, stateId, text = "Award information" }) {
@@ -1039,6 +1620,23 @@ function geometryFixture({ imageHash, imageRef, stateId, text = "Award informati
   }, binding);
 }
 
+function compactGeometryReferenceForTest(geometry, file) {
+  return {
+    version: geometry.version || 1,
+    status: geometry.availability_status
+      || (geometry.run_count > 0 ? "ready" : "unavailable_no_visible_text_nodes"),
+    unavailable_reason: geometry.unavailable_reason || null,
+    geometry_hash: geometry.geometry_hash || null,
+    coordinate_space: geometry.coordinate_space || "document-css-pixels",
+    node_count: geometry.node_count || 0,
+    run_count: geometry.run_count || 0,
+    document: geometry.document || null,
+    viewport: geometry.viewport || null,
+    screenshot: geometry.screenshot || null,
+    file: file || null,
+  };
+}
+
 function readyLocalizationForTest(geometry, imageHash) {
   return {
     status: "geometry_ready",
@@ -1050,6 +1648,10 @@ function readyLocalizationForTest(geometry, imageHash) {
     bound_image_hash: imageHash,
     semantic_crop_contract: "visual-exact-text-binding-v2",
   };
+}
+
+function retainedProjectionForTest(capture) {
+  return projectRetainedCaptureArtifacts(capture, { exists: existsSync }).manifest;
 }
 
 function snapshotRefForCapture(capture, archiveRoot, overrides = {}) {
@@ -1158,7 +1760,8 @@ function candidateFixture(overrides = {}) {
   };
 }
 
-function r2ClientStub({ operations, failAtSend = null }) {
+function r2ClientStub({ operations, failAtSend = null, failDeleteKeys = [] }) {
+  const deleteFailures = new Set(failDeleteKeys);
   return {
     destroyed: false,
     failAtSend,
@@ -1176,6 +1779,9 @@ function r2ClientStub({ operations, failAtSend = null }) {
           }
         : { type, key: command.input.Key });
       if (this.failAtSend === this.sendCount) throw new Error("simulated partial upload");
+      if (type === "delete" && deleteFailures.has(command.input.Key)) {
+        throw new Error("simulated delete failure");
+      }
       return {};
     },
     destroy() {

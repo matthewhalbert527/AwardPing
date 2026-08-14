@@ -679,10 +679,14 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\gemini-batch-support.mjs",
       "scripts\\lib\\paid-visual-review-policy.mjs",
       "scripts\\lib\\r2-baseline-rehydration.mjs",
+      "scripts\\lib\\r2-capture-artifact-bindings.mjs",
+      "scripts\\lib\\local-baseline-evidence.mjs",
       "scripts\\lib\\award-fact-reconciliation.mjs",
       "scripts\\lib\\source-backfill-intake.mjs",
       "scripts\\lib\\source-intake.mjs",
       "scripts\\lib\\initial-document-recovery.mjs",
+      "scripts\\lib\\visual-snapshot-pointer-reconciliation.mjs",
+      "scripts\\lib\\visual-baseline-retained-projection-identity.mjs",
       "scripts\\evaluate-public-page-audit-canaries.mjs",
     ]) {
       expect(installer.split(`"${relativePath}"`).length - 1).toBeGreaterThanOrEqual(2);

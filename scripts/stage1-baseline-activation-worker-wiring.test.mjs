@@ -177,10 +177,21 @@ describe("Stage 1 first-visual-baseline activation worker wiring", () => {
       "r2Verification.observed_normalized_text_sha256 !==",
     );
     expect(evidence).toContain("r2Verification.visual_evidence_quotes_verified !== true");
+    expect(evidence).toContain("stage1RetainedArtifactProjectionParity");
+    expect(evidence).toContain("!artifactProjectionParity.valid");
     expect(evidence).toContain("normalized_text_sha256: localNormalizedTextSha256");
     expect(evidence).toContain("local_baseline_written: true");
     expect(evidence).toContain("r2_sync_succeeded: true");
     expect(evidence).toContain("creates_api_charge: false");
+
+    const projectionParity = functionBody(
+      "function stage1RetainedArtifactProjectionParity",
+      "async function finalizeStage1BaselineActivation",
+    );
+    expect(projectionParity).toContain("retained_artifact_projection_disagrees");
+    expect(projectionParity).toContain("retained_expansion_projection_disagrees");
+    expect(projectionParity).toContain("retained_layout_projection_disagrees");
+    expect(projectionParity).toContain("unavailable_layout_projection_overclaimed");
 
     const finalize = functionBody(
       "async function finalizeStage1BaselineActivation",

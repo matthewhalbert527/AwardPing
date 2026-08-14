@@ -535,11 +535,15 @@ function executableBaselineEvidenceStatus({ existingPaths, metadataByPath }) {
     "fromArchiveRelative",
     "existsSync",
     "readJsonIfExists",
+    "jsonObjectOrEmpty",
+    "retainedCaptureArtifactProjectionSchema",
     `${body}\nreturn baselineEvidenceStatus;`,
   )(
     (value) => value || null,
     (path) => existingPaths.has(path),
     (path) => metadataByPath.get(path) || null,
+    (value) => value && typeof value === "object" && !Array.isArray(value) ? value : {},
+    "awardping.capture-retained-artifact-projection.v1",
   );
 }
 

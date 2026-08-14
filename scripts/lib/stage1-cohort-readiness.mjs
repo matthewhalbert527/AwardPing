@@ -886,31 +886,33 @@ function inspectLocalArtifactHashes({
     } else if (kind === "webpage") {
       const localLayoutClaimed = Boolean(
         baseline.layout_hash
-        || Object.keys(objectValue(baseline.text_geometry)).length
+        || baseline.text_geometry?.geometry_hash
+        || baseline.text_geometry?.file
+        || baseline.text_geometry?.screenshot?.image_hash
+        || baseline.text_geometry?.screenshot?.image_ref
         || capture.layout
         || metadata.layout_hash
-        || Object.keys(objectValue(metadata.text_geometry)).length
+        || metadata.text_geometry?.geometry_hash
+        || metadata.text_geometry?.file
+        || metadata.text_geometry?.screenshot?.image_hash
+        || metadata.text_geometry?.screenshot?.image_ref
+        || metadata.files?.layout
         || metadata.localization?.geometry_hash
         || metadata.localization?.bound_image_hash
+        || metadata.localization?.geometry_ready === true
       );
       if (localLayoutClaimed) {
         failures.push({ artifact_role: "layout", reason: "local_layout_claim_conflicts_with_r2_unavailable" });
       }
       const localUnavailable = objectValue(metadata.localization);
-      if (Object.keys(localUnavailable).length) {
-        if (!localStage1LayoutExplicitlyUnavailable(localUnavailable)) {
-          failures.push({ artifact_role: "meta", reason: "meta_layout_unavailable_status_mismatch" });
-        }
-        if (
-          localUnavailable.geometry_ready === true
-          || localUnavailable.accounted_for === false
-          || (
-            localUnavailable.captured_at
-            && !sameInstant(localUnavailable.captured_at, snapshotCapturedAt)
-          )
-        ) {
-          failures.push({ artifact_role: "meta", reason: "meta_layout_unavailable_contract_mismatch" });
-        }
+      if (!stage1PointerLayoutExplicitlyUnavailable(metadata)) {
+        failures.push({ artifact_role: "meta", reason: "meta_layout_unavailable_status_mismatch" });
+      }
+      if (
+        localUnavailable.captured_at
+        && !sameInstant(localUnavailable.captured_at, snapshotCapturedAt)
+      ) {
+        failures.push({ artifact_role: "meta", reason: "meta_layout_unavailable_contract_mismatch" });
       }
     }
   }
@@ -2187,9 +2189,6 @@ export function inspectStage1ImmutableR2CaptureBinding(snapshot) {
     .map((slot) => /^expansion_state_(\d{2})_layout$/.exec(slot)?.[1] || null)
     .filter(Boolean)
     .toSorted();
-  if (expansionPageIndexes.length > 0 && !layoutClaimed) {
-    addError("expansion_states_require_main_layout");
-  }
   for (const suffix of new Set([...expansionPageIndexes, ...expansionLayoutIndexes])) {
     if (!expansionPageIndexes.includes(suffix)) addError(`expansion_page_key_missing:${suffix}`);
     if (!expansionLayoutIndexes.includes(suffix)) addError(`expansion_layout_key_missing:${suffix}`);
@@ -2245,6 +2244,36 @@ export function inspectStage1ImmutableR2CaptureBinding(snapshot) {
     };
   });
 
+  const rawProjection = metadata.retained_artifact_projection;
+  const projection = objectValue(rawProjection);
+  const projectionAuthority = objectValue(projection.authoritative);
+  const projectionExpectedLayoutRetained = kind === "webpage" && layoutClaimed;
+  const projectionExpectedLayoutHash = projectionExpectedLayoutRetained
+    ? authoritativeLayoutHash
+    : null;
+  const projectionExpectedExpansionCount = kind === "webpage"
+    ? expansionPageIndexes.length
+    : 0;
+  const projectionExpectedLocalizationStatus = kind === "pdf"
+    ? "not_applicable_pdf"
+    : projectionExpectedLayoutRetained
+      ? "exact_geometry_available"
+      : "evidence_only_geometry_unavailable";
+  if (
+    !isPlainObject(rawProjection)
+    || projection.schema !== "awardping.capture-retained-artifact-projection.v1"
+    || projection.kind !== kind
+    || projection.localization_status !== projectionExpectedLocalizationStatus
+    || !isPlainObject(projection.authoritative)
+    || projectionAuthority.layout_retained !== projectionExpectedLayoutRetained
+    || projectionAuthority.expansion_state_count !== projectionExpectedExpansionCount
+    || (projectionExpectedLayoutHash
+      ? !sameSha256(projectionAuthority.layout_hash, projectionExpectedLayoutHash)
+      : projectionAuthority.layout_hash !== null)
+  ) {
+    addError("retained_artifact_projection_missing_or_invalid");
+  }
+
   return {
     valid: errors.length === 0,
     errors,
@@ -2260,6 +2289,7 @@ export function inspectStage1ImmutableR2CaptureBinding(snapshot) {
     layout_explicitly_unavailable: layoutExplicitlyUnavailable,
     layout_hash: authoritativeLayoutHash,
     expansion_states: expansionStates,
+    retained_artifact_projection: isPlainObject(rawProjection) ? rawProjection : null,
   };
 }
 
@@ -2310,6 +2340,7 @@ function stage1LayoutExplicitlyUnavailable(value) {
   const status = String(localization.status || "").trim();
   return Boolean(
     stage1UnavailableLocalizationStatus(status)
+    && localization.exact === false
     && localization.accounted_for === true
     && localization.geometry_ready === false
     && String(localization.unavailable_reason || "").trim()
@@ -2323,26 +2354,24 @@ function stage1PointerLayoutExplicitlyUnavailable(metadataValue) {
   const textGeometryValue = metadata.text_geometry;
   const textGeometry = objectValue(textGeometryValue);
   const textGeometryAbsent = textGeometryValue === null || textGeometryValue === undefined;
+  const textGeometryStatus = String(textGeometry.status || "").trim();
+  const availabilityStatus = String(textGeometry.availability_status || "").trim();
+  const nodeCount = textGeometry.node_count;
+  const runCount = textGeometry.run_count;
   const textGeometryUnavailable = isPlainObject(textGeometryValue)
-    && (String(textGeometry.status || "").trim() === "unavailable"
-      || String(textGeometry.status || "").trim().startsWith("unavailable_"))
+    && stage1UnavailableLocalizationStatus(textGeometryStatus)
+    && (!availabilityStatus || stage1UnavailableLocalizationStatus(availabilityStatus))
+    && String(textGeometry.unavailable_reason || "").trim()
     && !String(textGeometry.geometry_hash || "").trim()
-    && !String(textGeometry.screenshot?.image_hash || "").trim();
+    && !String(textGeometry.file || "").trim()
+    && (nodeCount === undefined || nodeCount === null || nodeCount === 0)
+    && (runCount === undefined || runCount === null || runCount === 0)
+    && !String(textGeometry.screenshot?.image_hash || "").trim()
+    && !String(textGeometry.screenshot?.image_ref || "").trim();
   return stage1LayoutExplicitlyUnavailable(metadata.localization)
+    && !String(metadata.layout_hash || "").trim()
+    && !String(metadata.files?.layout || "").trim()
     && (textGeometryAbsent || textGeometryUnavailable);
-}
-
-function localStage1LayoutExplicitlyUnavailable(value) {
-  const localization = objectValue(value);
-  const status = String(localization.status || "").trim();
-  return Boolean(
-    stage1UnavailableLocalizationStatus(status)
-    && localization.geometry_ready !== true
-    && localization.accounted_for !== false
-    && String(localization.unavailable_reason || "").trim()
-    && !localization.geometry_hash
-    && !localization.bound_image_hash
-  );
 }
 
 function stage1UnavailableLocalizationStatus(status) {

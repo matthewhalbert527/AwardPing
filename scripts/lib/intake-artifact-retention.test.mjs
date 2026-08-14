@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,8 +14,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { buildInitialOfficialDocumentCandidate } from "./initial-official-document.mjs";
 import {
   POST_RETENTION_CAPTURE_FAILURE_REASON,
+  acquisitionDerivedCaptureMetadataFilename,
+  acquisitionDerivedCaptureMetadataSchema,
   materializeFirstObservationCaptureFromAcquisition,
   persistPostRetentionCaptureFailure,
+  prepareAcquisitionCaptureMetadataForProjection,
   restoreInitialOfficialDocumentCandidateArtifactsFromAcquisition,
   retainFirstObservationIntakeArtifact,
   retainFirstObservationIntakePdfArtifact,
@@ -16,6 +26,10 @@ import {
   serializableRetainedCaptureMetadata,
   validateRetainedIntakeArtifactManifest,
 } from "./intake-artifact-retention.mjs";
+import {
+  projectRetainedCaptureArtifactsForMaterialization,
+} from "./r2-capture-artifact-bindings.mjs";
+import { atomicWriteJson } from "./visual-baseline-lock.mjs";
 import { buildVisualSnapshotRef } from "./visual-review-queue.mjs";
 
 const requestId = "11111111-1111-4111-8111-111111111111";
@@ -272,6 +286,134 @@ describe("immutable source-intake artifact retention", () => {
     });
     expect(readFileSync(firstCapture.pdf_path)).toEqual(pdfA);
     expect(readFileSync(firstCapture.meta_path)).toEqual(originalMeta);
+  });
+
+  it("reuses derived projection metadata across consecutive sealed materialization and baseline cycles", async () => {
+    const root = temporaryRoot();
+    const r2 = memoryR2();
+    const pdfA = Buffer.from("%PDF-1.4 repeatable derived capture metadata A");
+    const manifest = await retain(root, r2, pdfA);
+    const acquisition = sealedAcquisition(manifest);
+    let immutableMetaPath;
+    let immutableMetaBytes;
+    let derivedMetaPath;
+
+    for (let cycle = 1; cycle <= 2; cycle += 1) {
+      const capture = await materializeFirstObservationCaptureFromAcquisition({
+        archiveRoot: root,
+        source: source(),
+        acquisition,
+        bucket: "awardping-snapshots",
+        client: r2,
+        config: testStore,
+      });
+      immutableMetaPath ||= capture.meta_path;
+      immutableMetaBytes ||= readFileSync(immutableMetaPath);
+
+      prepareAcquisitionCaptureMetadataForProjection({
+        archiveRoot: root,
+        source: source(),
+        acquisition,
+        capture,
+      });
+      derivedMetaPath ||= capture.meta_path;
+      expect(capture.meta_path).toBe(derivedMetaPath);
+      expect(capture.meta_path).not.toBe(immutableMetaPath);
+      expect(capture.meta_path).toBe(join(capture.dir, acquisitionDerivedCaptureMetadataFilename));
+      expect(capture.immutable_intake_meta_path).toBe(immutableMetaPath);
+
+      const selected = projectRetainedCaptureArtifactsForMaterialization(capture, {
+        exists: existsSync,
+        identityScope: sourceId,
+      });
+      capture.retained_artifact_projection = selected.manifest;
+      const metadata = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+      atomicWriteJson(capture.meta_path, {
+        ...metadata,
+        layout_hash: null,
+        text_geometry: null,
+        expansion_state_count: 0,
+        expansion_state_screenshots: [],
+        retained_artifact_projection: selected.manifest,
+        files: {
+          ...metadata.files,
+          layout: null,
+          expansion_states: [],
+        },
+      });
+      atomicWriteJson(join(capture.dir, "baseline-write-equivalent.json"), {
+        captured_at: capture.captured_at,
+        file_hash: capture.file_hash,
+        text_hash: capture.text_hash,
+        capture: { meta: relative(root, capture.meta_path).replace(/\\/g, "/") },
+        summary_metadata: { retained_artifact_projection: selected.manifest },
+      });
+
+      expect(readFileSync(immutableMetaPath)).toEqual(immutableMetaBytes);
+      const immutableMetadata = JSON.parse(immutableMetaBytes.toString("utf8"));
+      expect(immutableMetadata).not.toHaveProperty("retained_artifact_projection");
+      expect(immutableMetadata.files.meta).toBe(
+        relative(root, immutableMetaPath).replace(/\\/g, "/"),
+      );
+    }
+
+    const derivedMetadata = JSON.parse(readFileSync(derivedMetaPath, "utf8"));
+    expect(derivedMetadata).toMatchObject({
+      captured_at: manifest.captured_at,
+      file_hash: manifest.file_hash,
+      text_hash: manifest.text_hash,
+      source: {
+        id: sourceId,
+        shared_award_id: awardId,
+        source_acquisition_id: acquisitionId,
+        source_page_request_id: requestId,
+      },
+      acquisition_derived_capture_metadata: {
+        schema: acquisitionDerivedCaptureMetadataSchema,
+        immutable_meta: relative(root, immutableMetaPath).replace(/\\/g, "/"),
+        immutable_meta_sha256: sha256(immutableMetaBytes),
+      },
+    });
+    expect(derivedMetadata.files.meta).toBe(
+      relative(root, derivedMetaPath).replace(/\\/g, "/"),
+    );
+  });
+
+  it("does not redirect or create derived metadata when atomic publication fails", async () => {
+    const root = temporaryRoot();
+    const r2 = memoryR2();
+    const manifest = await retain(
+      root,
+      r2,
+      Buffer.from("%PDF-1.4 atomic derived metadata failure A"),
+    );
+    const acquisition = sealedAcquisition(manifest);
+    const capture = await materializeFirstObservationCaptureFromAcquisition({
+      archiveRoot: root,
+      source: source(),
+      acquisition,
+      bucket: "awardping-snapshots",
+      client: r2,
+      config: testStore,
+    });
+    const immutableMetaPath = capture.meta_path;
+    const immutableMetaBytes = readFileSync(immutableMetaPath);
+    const derivedMetaPath = join(capture.dir, acquisitionDerivedCaptureMetadataFilename);
+
+    expect(() => prepareAcquisitionCaptureMetadataForProjection({
+      archiveRoot: root,
+      source: source(),
+      acquisition,
+      capture,
+      publishDerivedMetadata: () => {
+        throw new Error("injected derived write failure");
+      },
+    })).toThrow(/could not be published atomically/i);
+
+    expect(capture.meta_path).toBe(immutableMetaPath);
+    expect(capture).not.toHaveProperty("immutable_intake_meta_path");
+    expect(readFileSync(immutableMetaPath)).toEqual(immutableMetaBytes);
+    expect(existsSync(derivedMetaPath)).toBe(false);
   });
 
   it("refuses a 412 collision when the existing R2 object is not the exact retained artifact", async () => {

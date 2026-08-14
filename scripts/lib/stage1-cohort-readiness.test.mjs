@@ -535,6 +535,12 @@ describe("Stage 1 cohort readiness preflight", () => {
     ["stringified pointer metadata length", (snapshot) => {
       snapshot.latest_metadata.page_bytes = String(snapshot.latest_metadata.page_bytes);
     }, "metadata_length_missing_or_invalid:page_bytes"],
+    ["missing retained-artifact projection", (snapshot) => {
+      delete snapshot.latest_metadata.retained_artifact_projection;
+    }, "retained_artifact_projection_missing_or_invalid"],
+    ["contradictory retained-artifact projection", (snapshot) => {
+      snapshot.latest_metadata.retained_artifact_projection.authoritative.layout_retained = false;
+    }, "retained_artifact_projection_missing_or_invalid"],
   ])("rejects %s in an otherwise complete immutable R2 capture binding", (
     _label,
     mutate,
@@ -610,9 +616,12 @@ describe("Stage 1 cohort readiness preflight", () => {
 
     unaccounted.snapshot.latest_metadata.localization = {
       status: "evidence_only_geometry_unavailable",
+      exact: false,
       accounted_for: true,
       geometry_ready: false,
       unavailable_reason: "authoritative_layout_not_retained",
+      geometry_hash: null,
+      bound_image_hash: null,
     };
     expect(inspectStage1ImmutableR2CaptureBinding(unaccounted.snapshot)).toMatchObject({
       valid: true,
@@ -773,13 +782,106 @@ describe("Stage 1 cohort readiness preflight", () => {
     removeAuthoritativeLayoutClaim(expansionWithoutMain.snapshot);
     expansionWithoutMain.snapshot.latest_metadata.localization = {
       status: "evidence_only_geometry_unavailable",
+      exact: false,
       accounted_for: true,
       geometry_ready: false,
       unavailable_reason: "main_layout_missing",
+      geometry_hash: null,
+      bound_image_hash: null,
     };
     expect(inspectStage1ImmutableR2CaptureBinding(expansionWithoutMain.snapshot)).toMatchObject({
+      valid: true,
+      errors: [],
+      layout_claimed: false,
+      expansion_states: [expect.objectContaining({ state_id: "expansion-state-01" })],
+    });
+    delete expansionWithoutMain.baseline.layout_hash;
+    delete expansionWithoutMain.baseline.text_geometry;
+    delete expansionWithoutMain.baseline.capture.layout;
+    expansionWithoutMain.meta.layout_hash = null;
+    expansionWithoutMain.meta.text_geometry = {
+      status: "unavailable_layout_changed_during_screenshot",
+      unavailable_reason: "main_layout_missing",
+      geometry_hash: null,
+      node_count: 0,
+      run_count: 0,
+      file: null,
+      screenshot: { image_hash: null, image_ref: null },
+    };
+    expansionWithoutMain.meta.localization = structuredClone(
+      expansionWithoutMain.snapshot.latest_metadata.localization,
+    );
+    expansionWithoutMain.meta.retained_artifact_projection = structuredClone(
+      expansionWithoutMain.snapshot.latest_metadata.retained_artifact_projection,
+    );
+    expansionWithoutMain.meta.files.layout = null;
+    expansionWithoutMain.baseline.summary_metadata.retained_artifact_projection = structuredClone(
+      expansionWithoutMain.snapshot.latest_metadata.retained_artifact_projection,
+    );
+    writeFileSync(expansionWithoutMain.paths.meta, JSON.stringify(expansionWithoutMain.meta));
+    refreshFixtureMetaBinding(expansionWithoutMain);
+    writeFileSync(
+      join(
+        expansionWithoutMain.archiveRoot,
+        "sources",
+        expansionWithoutMain.source.id,
+        "baseline.json",
+      ),
+      JSON.stringify(expansionWithoutMain.baseline),
+    );
+    expect(inspectLocalVisualEvidence({
+      archiveRoot: expansionWithoutMain.archiveRoot,
+      source: expansionWithoutMain.source,
+      snapshot: expansionWithoutMain.snapshot,
+    })).toMatchObject({
+      immutable_r2_binding_valid: true,
+      expansion_state_bindings_match: true,
+      layout_binding_required: false,
+      exact_available: true,
+    });
+  });
+
+  it.each([
+    ["missing exact=false", (metadata) => { delete metadata.localization.exact; }],
+    ["exact=true", (metadata) => { metadata.localization.exact = true; }],
+    ["unaccounted", (metadata) => { metadata.localization.accounted_for = false; }],
+    ["geometry ready", (metadata) => { metadata.localization.geometry_ready = true; }],
+    ["localization geometry hash", (metadata) => { metadata.localization.geometry_hash = "a".repeat(64); }],
+    ["retained layout file", (metadata) => { metadata.files = { layout: "layout.json" }; }],
+    ["geometry file", (metadata) => { metadata.text_geometry.file = "layout.json"; }],
+    ["geometry image ref", (metadata) => { metadata.text_geometry.screenshot.image_ref = "page.jpg"; }],
+    ["nonzero node count", (metadata) => { metadata.text_geometry.node_count = 1; }],
+    ["nonzero run count", (metadata) => { metadata.text_geometry.run_count = 1; }],
+    ["contradictory availability", (metadata) => { metadata.text_geometry.availability_status = "ready"; }],
+  ])("rejects a non-canonical unavailable-layout marker: %s", (_label, mutate) => {
+    const fixture = writeWebEvidenceFixture({
+      sourceId: "28282828-2828-4828-8828-282828282828",
+      awardId: "39393939-3939-4939-8939-393939393939",
+    });
+    removeAuthoritativeLayoutClaim(fixture.snapshot);
+    fixture.snapshot.latest_metadata.text_geometry = {
+      status: "unavailable_layout_changed_during_screenshot",
+      unavailable_reason: "The page moved.",
+      geometry_hash: null,
+      node_count: 0,
+      run_count: 0,
+      file: null,
+      screenshot: { image_hash: null, image_ref: null },
+    };
+    fixture.snapshot.latest_metadata.files = { layout: null };
+    fixture.snapshot.latest_metadata.localization = {
+      status: "evidence_only_geometry_unavailable",
+      exact: false,
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason: "The page moved.",
+      geometry_hash: null,
+      bound_image_hash: null,
+    };
+    mutate(fixture.snapshot.latest_metadata);
+    expect(inspectStage1ImmutableR2CaptureBinding(fixture.snapshot)).toMatchObject({
       valid: false,
-      errors: expect.arrayContaining(["expansion_states_require_main_layout"]),
+      layout_explicitly_unavailable: false,
     });
   });
 
@@ -922,20 +1024,25 @@ describe("Stage 1 cohort readiness preflight", () => {
       sourceId: "14141414-1414-4414-8414-141414141414",
       awardId: "25252525-2525-4525-8525-252525252525",
     });
-    delete fixture.snapshot.latest_object_keys.layout;
-    delete fixture.snapshot.latest_metadata.artifact_bindings.layout;
-    delete fixture.snapshot.latest_hashes.layout_hash;
-    delete fixture.snapshot.latest_metadata.layout_hash;
-    delete fixture.snapshot.latest_metadata.text_geometry;
+    removeAuthoritativeLayoutClaim(fixture.snapshot);
     fixture.snapshot.latest_metadata.localization = {
       status: "evidence_only_geometry_unavailable",
+      exact: false,
       accounted_for: true,
       geometry_ready: false,
       unavailable_reason: "authoritative_layout_not_retained",
+      geometry_hash: null,
+      bound_image_hash: null,
     };
     delete fixture.meta.layout_hash;
     delete fixture.meta.text_geometry;
     fixture.meta.localization = structuredClone(fixture.snapshot.latest_metadata.localization);
+    fixture.meta.retained_artifact_projection = structuredClone(
+      fixture.snapshot.latest_metadata.retained_artifact_projection,
+    );
+    fixture.baseline.summary_metadata.retained_artifact_projection = structuredClone(
+      fixture.snapshot.latest_metadata.retained_artifact_projection,
+    );
     writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
     refreshFixtureMetaBinding(fixture);
     writeFileSync(fixture.paths.layout, "{locally-altered-layout");
@@ -958,6 +1065,9 @@ describe("Stage 1 cohort readiness preflight", () => {
     delete fixture.baseline.layout_hash;
     delete fixture.baseline.text_geometry;
     delete fixture.baseline.capture.layout;
+    fixture.meta.files.layout = null;
+    writeFileSync(fixture.paths.meta, JSON.stringify(fixture.meta));
+    refreshFixtureMetaBinding(fixture);
     writeFileSync(
       join(fixture.archiveRoot, "sources", fixture.source.id, "baseline.json"),
       JSON.stringify(fixture.baseline),
@@ -983,8 +1093,8 @@ describe("Stage 1 cohort readiness preflight", () => {
       source: fixture.source,
       snapshot: fixture.snapshot,
     })).toMatchObject({
-      metadata_bindings_match: true,
-      exact_available: true,
+      metadata_bindings_match: false,
+      exact_available: false,
     });
 
     delete fixture.meta.localization;
@@ -995,8 +1105,8 @@ describe("Stage 1 cohort readiness preflight", () => {
       source: fixture.source,
       snapshot: fixture.snapshot,
     })).toMatchObject({
-      metadata_bindings_match: true,
-      exact_available: true,
+      metadata_bindings_match: false,
+      exact_available: false,
     });
   });
 
@@ -1085,6 +1195,23 @@ describe("Stage 1 cohort readiness preflight", () => {
     const fileHash = sha256(pdfBytes);
     const textHash = sha256(Buffer.from(text, "utf8"));
     const textBytes = Buffer.from(`${text}\n`, "utf8");
+    const retainedProjection = {
+      schema: "awardping.capture-retained-artifact-projection.v1",
+      kind: "pdf",
+      localization_status: "not_applicable_pdf",
+      authoritative: {
+        layout_retained: false,
+        layout_hash: null,
+        expansion_state_count: 0,
+      },
+      diagnostics: {
+        authority: "diagnostic_only",
+        storage_scope: "local_capture_directory_only",
+        main_layout: null,
+        expansion_states: [],
+        excluded_state_count: 0,
+      },
+    };
     const metaBytes = Buffer.from(JSON.stringify({
       version: 1,
       kind: "pdf",
@@ -1095,6 +1222,7 @@ describe("Stage 1 cohort readiness preflight", () => {
       text_hash: textHash,
       text_length: text.length,
       file_bytes: pdfBytes.length,
+      retained_artifact_projection: retainedProjection,
     }));
     writeFileSync(join(captureDir, "document.pdf"), pdfBytes);
     writeFileSync(join(captureDir, "text.txt"), textBytes);
@@ -1112,6 +1240,9 @@ describe("Stage 1 cohort readiness preflight", () => {
         pdf: `${captureRelative}/document.pdf`,
         text: `${captureRelative}/text.txt`,
         meta: `${captureRelative}/meta.json`,
+      },
+      summary_metadata: {
+        retained_artifact_projection: retainedProjection,
       },
     }));
 
@@ -1140,6 +1271,7 @@ describe("Stage 1 cohort readiness preflight", () => {
           file_bytes: pdfBytes.length,
           text_object_bytes: Buffer.byteLength(`${text}\n`, "utf8"),
           text_length: text.length,
+          retained_artifact_projection: retainedProjection,
         },
       },
     });
@@ -1457,6 +1589,23 @@ function writeWebEvidenceFixture({
     screenshot: layout.screenshot,
     file: layoutRelative,
   };
+  const retainedProjection = {
+    schema: "awardping.capture-retained-artifact-projection.v1",
+    kind: "webpage",
+    localization_status: "exact_geometry_available",
+    authoritative: {
+      layout_retained: true,
+      layout_hash: layout.geometry_hash,
+      expansion_state_count: 0,
+    },
+    diagnostics: {
+      authority: "diagnostic_only",
+      storage_scope: "local_capture_directory_only",
+      main_layout: null,
+      expansion_states: [],
+      excluded_state_count: 0,
+    },
+  };
   const meta = {
     version: 1,
     kind: "webpage",
@@ -1481,6 +1630,7 @@ function writeWebEvidenceFixture({
       captured_at: capturedAt,
     },
     expansion_state_screenshots: [],
+    retained_artifact_projection: structuredClone(retainedProjection),
     files: {
       page: pageRelative,
       thumb: thumbRelative,
@@ -1507,6 +1657,9 @@ function writeWebEvidenceFixture({
       layout: layoutRelative,
       meta: metaRelative,
       expansion_states: [],
+    },
+    summary_metadata: {
+      retained_artifact_projection: structuredClone(retainedProjection),
     },
   };
   const snapshot = {
@@ -1552,6 +1705,7 @@ function writeWebEvidenceFixture({
       localization: meta.localization,
       expansion_state_count: 0,
       expansion_state_screenshots: [],
+      retained_artifact_projection: structuredClone(retainedProjection),
     },
   };
   const paths = {
@@ -1699,6 +1853,11 @@ function addExpansionStateEvidence(fixture) {
     page_bytes: pageBytes.length,
     isolation,
   }];
+  fixture.snapshot.latest_metadata.retained_artifact_projection.authoritative
+    .expansion_state_count = 1;
+  fixture.meta.retained_artifact_projection.authoritative.expansion_state_count = 1;
+  fixture.baseline.summary_metadata.retained_artifact_projection.authoritative
+    .expansion_state_count = 1;
   const paths = {
     page: join(fixture.archiveRoot, pageRelative),
     layout: join(fixture.archiveRoot, layoutRelative),
@@ -1721,6 +1880,15 @@ function removeAuthoritativeLayoutClaim(snapshot) {
   delete snapshot.latest_metadata.layout_hash;
   delete snapshot.latest_metadata.text_geometry;
   delete snapshot.latest_metadata.localization?.geometry_hash;
+  snapshot.latest_metadata.retained_artifact_projection = {
+    ...snapshot.latest_metadata.retained_artifact_projection,
+    localization_status: "evidence_only_geometry_unavailable",
+    authoritative: {
+      ...snapshot.latest_metadata.retained_artifact_projection?.authoritative,
+      layout_retained: false,
+      layout_hash: null,
+    },
+  };
 }
 
 function rawArtifactBinding(bytes, contentType) {

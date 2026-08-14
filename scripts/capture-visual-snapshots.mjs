@@ -67,19 +67,22 @@ import {
 } from "./lib/visual-nightly-run-contract.mjs";
 import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
+import { reconcileVisualSnapshotPointerAdvance } from "./lib/visual-snapshot-pointer-reconciliation.mjs";
+import { baselineMatchesRetainedProjectionCapture } from "./lib/visual-baseline-retained-projection-identity.mjs";
 import {
   assertR2CaptureArtifactIdentity,
   assertR2CaptureArtifactSlots,
   collectR2CaptureArtifactFiles,
   isR2CaptureGeometryReady,
   prepareR2CaptureArtifacts,
+  projectRetainedCaptureArtifacts,
+  projectRetainedCaptureArtifactsForMaterialization,
   r2CaptureArtifactBindingsSchema,
+  retainedCaptureArtifactProjectionSchema,
 } from "./lib/r2-capture-artifact-bindings.mjs";
 import {
   refreshedLatestVisualSnapshotHistory,
   rotatedVisualSnapshotHistory,
-  visualSnapshotKeysToDeleteAfterCas,
-  visualSnapshotUploadedKeysToDeleteAfterLostCas,
 } from "./lib/visual-snapshot-history.mjs";
 import {
   bindVisualTextGeometry,
@@ -121,6 +124,7 @@ import {
 import {
   intakeArtifactFailureSolution,
   materializeFirstObservationCaptureFromAcquisition,
+  prepareAcquisitionCaptureMetadataForProjection,
 } from "./lib/intake-artifact-retention.mjs";
 import {
   sourceBaselineFacts,
@@ -1037,6 +1041,8 @@ async function runOnce() {
     r2_rotated: 0,
     r2_previous_snapshots_reset: 0,
     r2_failed: 0,
+    r2_cleanup_failed: 0,
+    r2_cleanup_debt: [],
     r2_skipped_existing: 0,
     r2_repaired_missing: 0,
     r2_forced_refreshes: 0,
@@ -1859,6 +1865,12 @@ async function maybeRecoverIncompleteBaselineFromIntakeAcquisition({ source, bas
         secretAccessKey: r2SecretAccessKey,
       },
     });
+    prepareAcquisitionCaptureMetadataForProjection({
+      archiveRoot,
+      source,
+      acquisition,
+      capture,
+    });
     const baselineFileHash = cleanText(baseline.file_hash || baseline.image_hash).toLowerCase();
     const baselineTextHash = cleanText(baseline.text_hash).toLowerCase();
     const captureFileHash = cleanText(capture.file_hash).toLowerCase();
@@ -1882,7 +1894,15 @@ async function maybeRecoverIncompleteBaselineFromIntakeAcquisition({ source, bas
     };
     for (const [role, expected] of Object.entries(expectedPaths)) {
       const sealedPath = cleanText(jsonObjectOrEmpty(baseline.capture)[role]).replace(/\\/g, "/");
-      if (sealedPath && sealedPath !== expected) {
+      const compatiblePaths = role === "meta"
+        ? new Set([
+            expected,
+            capture.immutable_intake_meta_path
+              ? toArchiveRelative(capture.immutable_intake_meta_path)
+              : null,
+          ].filter(Boolean))
+        : new Set([expected]);
+      if (sealedPath && !compatiblePaths.has(sealedPath)) {
         throw Object.assign(
           new Error(`The incomplete baseline ${role} path conflicts with deterministic acquisition materialization.`),
           { code: "intake_artifact_incomplete_baseline_path_mismatch" },
@@ -2035,8 +2055,10 @@ async function backfillOneR2BaselineUnlocked(source, report) {
         : await syncR2SnapshotPair(source, capture);
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
+    recordR2CleanupDebt(report, source, result.cleanup);
     console.log(`R2 BACKFILL uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
   } catch (error) {
+    recordR2CleanupDebt(report, source, error?.r2Cleanup);
     report.r2_failed += 1;
     const message = `R2 baseline backfill failed: ${errorMessage(error)}`;
     report.errors.push({
@@ -2346,6 +2368,13 @@ function buildStage1BaselineActivationPersistenceEvidence({
   const localRawTextSha256 = localTextIdentity?.text_sha256 || null;
   const localNormalizedTextSha256 =
     localTextIdentity?.normalized_text_sha256 || null;
+  const artifactProjectionParity = stage1RetainedArtifactProjectionParity({
+    baseline,
+    captureMetadata,
+    latestObjectKeys,
+    latestHashes,
+    latestMetadata,
+  });
   if (
     !baseline
     || localVerification.guard_sha256 !== evaluation.guard_sha256
@@ -2367,8 +2396,15 @@ function buildStage1BaselineActivationPersistenceEvidence({
     || !/^[0-9a-f]{64}$/.test(localNormalizedTextSha256 || "")
     || latestHashes.text_hash !== capture.text_hash
     || r2Result.latest_captured_at !== capture.captured_at
+    || !artifactProjectionParity.valid
   ) {
-    throw new Error("Local baseline, capture metadata, and authoritative R2 bindings are incomplete.");
+    throw new Error(
+      `Local baseline, capture metadata, and authoritative R2 bindings are incomplete: ${
+        artifactProjectionParity.valid
+          ? "core_persistence_binding_incomplete"
+          : artifactProjectionParity.reason
+      }.`,
+    );
   }
   return {
     schema_version: "awardping.stage1.baseline-activation-persistence-evidence.v3",
@@ -2402,6 +2438,116 @@ function buildStage1BaselineActivationPersistenceEvidence({
       uploaded_object_count: nonNegativeInt(r2Result.uploaded, 0),
     },
     creates_api_charge: false,
+  };
+}
+
+function stage1RetainedArtifactProjectionParity({
+  baseline,
+  captureMetadata,
+  latestObjectKeys,
+  latestHashes,
+  latestMetadata,
+}) {
+  const projections = [
+    baseline?.summary_metadata?.retained_artifact_projection,
+    captureMetadata?.retained_artifact_projection,
+    latestMetadata?.retained_artifact_projection,
+  ].map(jsonObjectOrEmpty);
+  if (projections.some((projection) => (
+    projection.schema !== retainedCaptureArtifactProjectionSchema
+    || !["webpage", "pdf"].includes(projection.kind)
+    || typeof projection.authoritative?.layout_retained !== "boolean"
+    || !Number.isSafeInteger(projection.authoritative?.expansion_state_count)
+    || projection.authoritative.expansion_state_count < 0
+  ))) {
+    return { valid: false, reason: "retained_artifact_projection_missing_or_invalid" };
+  }
+  const signatures = projections.map((projection) => JSON.stringify({
+    schema: projection.schema,
+    kind: projection.kind,
+    localization_status: projection.localization_status,
+    authoritative: projection.authoritative,
+  }));
+  if (new Set(signatures).size !== 1) {
+    return { valid: false, reason: "retained_artifact_projection_disagrees" };
+  }
+
+  const authority = projections[0].authoritative;
+  const layoutRetained = authority.layout_retained;
+  const expectedExpansionCount = authority.expansion_state_count;
+  const slots = Object.keys(jsonObjectOrEmpty(latestObjectKeys));
+  const expansionPageCount = slots.filter((slot) => /^expansion_state_[0-9]{2}$/.test(slot)).length;
+  const expansionLayoutCount = slots.filter((slot) => (
+    /^expansion_state_[0-9]{2}_layout$/.test(slot)
+  )).length;
+  const baselineStates = Array.isArray(baseline?.capture?.expansion_states)
+    ? baseline.capture.expansion_states
+    : [];
+  const captureStates = Array.isArray(captureMetadata?.expansion_state_screenshots)
+    ? captureMetadata.expansion_state_screenshots
+    : [];
+  const r2States = Array.isArray(latestMetadata?.expansion_state_screenshots)
+    ? latestMetadata.expansion_state_screenshots
+    : [];
+  if (
+    expansionPageCount !== expectedExpansionCount
+    || expansionLayoutCount !== expectedExpansionCount
+    || baselineStates.length !== expectedExpansionCount
+    || captureStates.length !== expectedExpansionCount
+    || r2States.length !== expectedExpansionCount
+  ) {
+    return { valid: false, reason: "retained_expansion_projection_disagrees" };
+  }
+  for (let index = 0; index < expectedExpansionCount; index += 1) {
+    const expectedStateId = `expansion-state-${String(index + 1).padStart(2, "0")}`;
+    const local = jsonObjectOrEmpty(baselineStates[index]);
+    const raw = jsonObjectOrEmpty(captureStates[index]);
+    const remote = jsonObjectOrEmpty(r2States[index]);
+    if (
+      local.state_id !== expectedStateId
+      || raw.state_id !== expectedStateId
+      || remote.state_id !== expectedStateId
+      || local.image_hash !== raw.image_hash
+      || raw.image_hash !== remote.image_hash
+      || local.layout_hash !== raw.layout_hash
+      || raw.layout_hash !== remote.layout_hash
+    ) {
+      return { valid: false, reason: `retained_expansion_state_${index + 1}_disagrees` };
+    }
+  }
+
+  const baselineLayoutHash = cleanText(baseline?.layout_hash) || null;
+  const rawLayoutHash = cleanText(captureMetadata?.layout_hash) || null;
+  const remoteLayoutHash = cleanText(latestMetadata?.layout_hash) || null;
+  const pointerLayoutHash = cleanText(latestHashes?.layout_hash) || null;
+  const layoutClaims = [
+    baselineLayoutHash,
+    rawLayoutHash,
+    remoteLayoutHash,
+    pointerLayoutHash,
+  ];
+  if (layoutRetained) {
+    if (
+      !slots.includes("layout")
+      || !baseline?.capture?.layout
+      || layoutClaims.some((hash) => !/^[0-9a-f]{64}$/.test(hash || ""))
+      || new Set(layoutClaims).size !== 1
+      || authority.layout_hash !== layoutClaims[0]
+    ) {
+      return { valid: false, reason: "retained_layout_projection_disagrees" };
+    }
+  } else if (
+    slots.includes("layout")
+    || baseline?.capture?.layout
+    || layoutClaims.some(Boolean)
+    || authority.layout_hash !== null
+  ) {
+    return { valid: false, reason: "unavailable_layout_projection_overclaimed" };
+  }
+
+  return {
+    valid: true,
+    reason: "retained_artifact_projection_matches",
   };
 }
 
@@ -2603,6 +2749,7 @@ async function processSourceUnlocked(
       },
     );
   }
+  materializeRetainedCaptureAuthority(source, capture);
   report.checked += 1;
   if (capture.kind === "pdf") {
     report.pdf_checked += 1;
@@ -2746,16 +2893,21 @@ async function processSourceUnlocked(
     await maybeExtractBaselineFacts(source, capture, report, {
       reason: baseline ? "baseline_refresh" : "initial_baseline",
     });
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: baseline ? "baseline_refresh" : "initial_baseline",
       previous_baseline: baseline || null,
       baseline_facts: capture.baseline_facts || null,
       baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
-    report.baselined += 1;
-    await maybeSyncR2Snapshot(source, capture, report, {
+    if (!written) throw new Error("The captured baseline was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline || null,
       reason: baseline ? "baseline_refresh" : "initial_baseline",
     });
+    report.baselined += 1;
     const initialDocumentResult = !baseline
       ? await maybeEnqueueInitialOfficialDocumentCandidate({ source, capture, report })
       : null;
@@ -2781,14 +2933,22 @@ async function processSourceUnlocked(
     await maybeExtractBaselineFacts(source, capture, report, {
       reason: "capture_behavior_refresh",
     });
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "capture_behavior_refresh",
       previous_baseline: baseline || null,
       baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
       baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
+    if (!written) throw new Error("The capture-behavior refresh was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline,
+      reason: "capture_behavior_refresh",
+      unchanged: true,
+    });
     report.capture_behavior_refreshed += 1;
-    await maybeSyncR2Snapshot(source, capture, report, { reason: "capture_behavior_refresh", unchanged: true });
     if (localizationRepair) report.localization_repair_synced += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(
@@ -2832,15 +2992,23 @@ async function processSourceUnlocked(
         reason: "baseline_facts_backfill",
       });
       if (capture.baseline_facts) {
-        writeBaseline(source, capture, {
+        const written = writeBaseline(source, capture, {
           reason: "baseline_facts_backfill",
           previous_baseline: baseline || null,
           baseline_facts: capture.baseline_facts,
           baseline_facts_metadata: capture.baseline_facts_metadata || null,
         });
+        if (!written) throw new Error("The baseline-facts backfill was older than the retained baseline.");
+        await requireR2SnapshotForBaseline({
+          source,
+          capture,
+          report,
+          previousBaseline: baseline,
+          reason: "baseline_facts_backfill",
+          unchanged: true,
+        });
         baselineUpdatedForFacts = true;
         report.baseline_facts_backfilled += 1;
-        await maybeSyncR2Snapshot(source, capture, report, { reason: "baseline_facts_backfill", unchanged: true });
       }
     }
     await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "unchanged" });
@@ -2957,12 +3125,22 @@ async function processLocalizationRepairSource(source, baseline, capture, report
     return;
   }
 
-  await maybeSyncR2Snapshot(source, capture, report, { reason: "localization_repair", unchanged: true });
-  writeBaseline(source, capture, {
+  capture.baseline_facts = baseline?.summary_metadata?.baseline_facts || null;
+  capture.baseline_facts_metadata = baseline?.summary_metadata?.baseline_facts_metadata || null;
+  const written = writeBaseline(source, capture, {
     reason: "localization_repair",
     previous_baseline: baseline || null,
     baseline_facts: baseline?.summary_metadata?.baseline_facts || null,
     baseline_facts_metadata: baseline?.summary_metadata?.baseline_facts_metadata || null,
+  });
+  if (!written) throw new Error("The localization repair was older than the retained baseline.");
+  await requireR2SnapshotForBaseline({
+    source,
+    capture,
+    report,
+    previousBaseline: baseline,
+    reason: "localization_repair",
+    unchanged: true,
   });
   report.localization_repair_synced += 1;
   report.unchanged += 1;
@@ -3108,16 +3286,24 @@ async function processExpandableSectionComparison(
   );
   if (!previousSections.size) {
     if (!allowFirstBaseline) return { handled: false, reason: "missing_section_baseline_visible_change_pending" };
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "section_baseline_created",
       previous_baseline: baseline || null,
       baseline_facts: baseline?.summary_metadata?.baseline_facts || capture.baseline_facts || null,
       baseline_facts_metadata:
         baseline?.summary_metadata?.baseline_facts_metadata || capture.baseline_facts_metadata || null,
     });
+    if (!written) throw new Error("The section baseline was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline,
+      reason: "section_baseline_created",
+      unchanged: true,
+    });
     report.section_baseline_created += 1;
     report.unchanged += 1;
-    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "section_baseline_created" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`SECTION_BASELINE created sections=${currentSections.length} ${sourceLabel(source)}`);
     return { handled: true, reason: "section_baseline_created" };
@@ -3497,13 +3683,17 @@ async function finishSafeDeterministicNoise({
         capture.baseline_facts_metadata || baseline?.summary_metadata?.baseline_facts_metadata || null,
       monitoring_disposition: monitoringDisposition,
     });
-    if (baselinePromoted) report.promoted += 1;
     if (baselinePromoted) {
-      await maybeSyncR2Snapshot(source, capture, report, {
+      await requireR2SnapshotForBaseline({
+        source,
+        capture,
+        report,
+        previousBaseline: baseline,
         reason: "deterministic_noise_absorbed",
         noise: textOnly,
         unchanged: textOnly,
       });
+      report.promoted += 1;
     }
   }
 
@@ -4154,7 +4344,17 @@ async function processPdfComparison(source, baseline, previous, capture, report)
         baseline_facts: capture.baseline_facts || null,
         baseline_facts_metadata: capture.baseline_facts_metadata || null,
       });
-      if (baselinePromoted) report.promoted += 1;
+      if (baselinePromoted) {
+        await requireR2SnapshotForBaseline({
+          source,
+          capture,
+          report,
+          previousBaseline: baseline,
+          reason: "pdf_file_hash_changed_text_match_ignored",
+          unchanged: true,
+        });
+        report.promoted += 1;
+      }
     }
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`NOISE pdf_file_hash_changed_text_match_ignored ${sourceLabel(source)}`);
@@ -4220,12 +4420,20 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   report.review_paths.push(toArchiveRelative(reviewPath));
 
   if (promote) {
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "pdf_file_hash_changed",
       previous_baseline_capture: baseline.capture || null,
     });
+    if (!written) throw new Error("The reviewed PDF baseline was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline,
+      reason: "pdf_review_promoted",
+      unchanged: true,
+    });
     report.promoted += 1;
-    await maybeSyncR2Snapshot(source, capture, report, { reason: "pdf_review_promoted", unchanged: true });
   }
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
 
@@ -4291,15 +4499,20 @@ async function processInitialOfficialDocumentMaterializationOnly(source, report)
   report.pdf_checked += 1;
 
   if (!baseline) {
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "initial_official_document_first_observation",
       previous_baseline: null,
     });
-    report.baselined += 1;
-    report.initial_official_document_materialization_only_baseline_written += 1;
-    await maybeSyncR2Snapshot(source, capture, report, {
+    if (!written) throw new Error("The sealed first observation was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: null,
       reason: "initial_official_document_first_observation",
     });
+    report.baselined += 1;
+    report.initial_official_document_materialization_only_baseline_written += 1;
   } else {
     // A later healthy baseline must never be rolled back to the first-observed
     // bytes merely to reconstruct the event candidate.
@@ -4354,6 +4567,15 @@ async function materializeSealedFirstObservationCapture(source, report) {
         accessKeyId: r2AccessKeyId,
         secretAccessKey: r2SecretAccessKey,
       },
+    });
+    prepareAcquisitionCaptureMetadataForProjection({
+      archiveRoot,
+      source,
+      acquisition,
+      capture,
+    });
+    materializeRetainedCaptureAuthority(source, capture, {
+      rewriteMatchingBaseline: false,
     });
     report.initial_official_document_intake_artifact_materialized += 1;
     if (capture.intake_artifact_local_cache_rehydrated) {
@@ -8262,10 +8484,12 @@ function readablePdfLinkTitle(link, source) {
 async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
   if (!r2SnapshotSync) return;
   const reason = cleanText(options.reason) || "unspecified";
-  const skipNoise = Boolean(options.noise) && !forceR2SnapshotRefresh;
+  const required = options.required === true;
+  const skipNoise = Boolean(options.noise) && !forceR2SnapshotRefresh && !required;
   const skipUnchanged =
     Boolean(options.unchanged) &&
     !forceR2SnapshotRefresh &&
+    !required &&
     ![
       "initial_baseline",
       "baseline_refresh",
@@ -8293,10 +8517,12 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
     report.r2_previous_snapshots_reset += result.previousReset || 0;
+    recordR2CleanupDebt(report, source, result.cleanup);
     existingR2SnapshotSourceIds.add(source.id);
     console.log(`R2 SNAPSHOT uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
     return { succeeded: true, ...result };
   } catch (error) {
+    recordR2CleanupDebt(report, source, error?.r2Cleanup);
     report.r2_failed += 1;
     const message = `R2 snapshot sync failed: ${errorMessage(error)}`;
     report.errors.push({
@@ -8307,6 +8533,48 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
     console.log(`R2 FAILED ${message} ${sourceLabel(source)}`);
     return false;
   }
+}
+
+function recordR2CleanupDebt(report, source, cleanup) {
+  const failed = nonNegativeInt(cleanup?.failed, 0);
+  if (!failed) return;
+  report.r2_cleanup_failed = nonNegativeInt(report.r2_cleanup_failed, 0) + failed;
+  if (!Array.isArray(report.r2_cleanup_debt)) report.r2_cleanup_debt = [];
+  report.r2_cleanup_debt.push({
+    source_id: source?.id || null,
+    source_url: source?.url || null,
+    failed,
+    failures: Array.isArray(cleanup?.failures) ? cleanup.failures : [],
+  });
+  console.log(`R2 CLEANUP DEBT failed=${failed} ${sourceLabel(source)}`);
+}
+
+async function requireR2SnapshotForBaseline({
+  source,
+  capture,
+  report,
+  previousBaseline,
+  reason,
+  noise = false,
+  unchanged = false,
+}) {
+  const result = await maybeSyncR2Snapshot(source, capture, report, {
+    reason,
+    noise,
+    unchanged,
+    required: true,
+  });
+  if (result?.succeeded === true) return result;
+  restoreBaselineAfterFailedStage1Activation(source, previousBaseline || null);
+  const failureCode = r2SnapshotSync
+    ? "required_r2_baseline_persistence_failed"
+    : "required_r2_baseline_persistence_disabled";
+  throw Object.assign(
+    new Error(
+      `Required authoritative R2 persistence ${r2SnapshotSync ? "failed" : "is disabled"}; the local baseline was rolled back (${reason}).`,
+    ),
+    { code: failureCode },
+  );
 }
 
 async function maybeRepairMissingR2Snapshot(source, capture, report, options = {}) {
@@ -8867,6 +9135,7 @@ function distinctiveSourceTokens(value) {
 }
 
 async function syncR2SnapshotPair(source, capture) {
+  materializeRetainedCaptureAuthority(source, capture);
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   const latestFiles = captureR2Files(capture);
@@ -8880,7 +9149,7 @@ async function syncR2SnapshotPair(source, capture) {
   const latestHashes = r2CaptureHashes(capture, latestUpload.artifactBindings);
   const latestMetadata = r2CaptureMetadata(capture, latestUpload.artifactBindings);
   const history = rotatedVisualSnapshotHistory(existingRecord, latestKeys);
-  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+  const pointer = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
     latestHashes,
@@ -8890,7 +9159,6 @@ async function syncR2SnapshotPair(source, capture) {
     previousMetadata: history.previous_metadata,
     previousCapturedAt: history.previous_captured_at,
   });
-  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
 
   return {
     uploaded: Object.keys(latestKeys).length,
@@ -8900,6 +9168,7 @@ async function syncR2SnapshotPair(source, capture) {
     latest_object_keys: latestKeys,
     latest_hashes: latestHashes,
     latest_metadata: latestMetadata,
+    cleanup: pointer.cleanup,
   };
 }
 
@@ -8931,6 +9200,7 @@ async function markSharedSourceInitialDocumentQuarantined(source, capture, reaso
 }
 
 async function syncR2LocalizationLatest(source, capture) {
+  materializeRetainedCaptureAuthority(source, capture);
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   const latestFiles = captureR2Files(capture);
@@ -8949,7 +9219,7 @@ async function syncR2LocalizationLatest(source, capture) {
     resetPrevious: resetPreviousSnapshot,
   });
 
-  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+  const pointer = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
     latestHashes,
@@ -8959,16 +9229,16 @@ async function syncR2LocalizationLatest(source, capture) {
     previousMetadata: history.previous_metadata,
     previousCapturedAt: history.previous_captured_at,
   });
-  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
-
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: 0,
     previousReset: resetPreviousSnapshot && hadPrevious ? 1 : 0,
+    cleanup: pointer.cleanup,
   };
 }
 
 async function syncR2BackfillLatestOnly(source, capture) {
+  materializeRetainedCaptureAuthority(source, capture);
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   if (Object.keys(jsonObjectOrEmpty(existingRecord?.latest_object_keys)).length) {
@@ -8985,7 +9255,7 @@ async function syncR2BackfillLatestOnly(source, capture) {
   const latestHashes = r2CaptureHashes(capture, latestUpload.artifactBindings);
   const latestMetadata = r2CaptureMetadata(capture, latestUpload.artifactBindings);
 
-  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+  const pointer = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
     latestHashes,
@@ -8995,11 +9265,10 @@ async function syncR2BackfillLatestOnly(source, capture) {
     previousMetadata: {},
     previousCapturedAt: null,
   });
-  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
-
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: 0,
+    cleanup: pointer.cleanup,
   };
 }
 
@@ -9051,7 +9320,7 @@ async function loadR2SnapshotRecord(sourceId) {
   const { data, error } = await supabase
     .from("shared_award_source_visual_snapshots")
     .select(
-      "shared_award_source_id, shared_award_id, kind, bucket, source_url, latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
+      "shared_award_source_id, shared_award_id, kind, bucket, source_url, source_title, source_page_type, latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
     )
     .eq("shared_award_source_id", sourceId)
     .maybeSingle();
@@ -9138,24 +9407,204 @@ async function upsertR2SnapshotRecord(source, capture, snapshot) {
     previous_metadata: snapshot.previousMetadata,
     updated_at: new Date().toISOString(),
   };
-  const advanced = await advanceVisualSnapshotPointer(supabase, {
+  return reconcileVisualSnapshotPointerAdvance({
+    advance: () => advanceVisualSnapshotPointer(supabase, {
+      existing: snapshot.expectedRecord,
+      snapshot: snapshotRow,
+    }),
+    reload: () => loadR2SnapshotRecord(source.id),
+    cleanup: (keys) => cleanupCommittedR2SnapshotObjects(getR2Client(), keys),
     existing: snapshot.expectedRecord,
-    snapshot: snapshotRow,
+    proposed: snapshotRow,
+    uploaded: snapshot.latestKeys,
   });
-  if (!advanced) {
-    const current = await loadR2SnapshotRecord(source.id);
-    const orphanKeys = visualSnapshotUploadedKeysToDeleteAfterLostCas({
-      uploaded: snapshot.latestKeys,
-      current,
-    });
-    await Promise.all(orphanKeys.map((key) => deleteR2Object(getR2Client(), key)));
-    throw new Error("Visual snapshot pointer compare-and-set lost to another source writer.");
+}
+
+async function cleanupCommittedR2SnapshotObjects(client, keys) {
+  const uniqueKeys = [...new Set((keys || []).filter((key) => cleanText(key)))];
+  const settled = await Promise.allSettled(
+    uniqueKeys.map((key) => deleteR2Object(client, key)),
+  );
+  const failures = settled.flatMap((result, index) => (
+    result.status === "rejected"
+      ? [{ key: uniqueKeys[index], message: errorMessage(result.reason) }]
+      : []
+  ));
+  return {
+    attempted: uniqueKeys.length,
+    deleted: uniqueKeys.length - failures.length,
+    failed: failures.length,
+    failures,
+  };
+}
+
+function materializeRetainedCaptureAuthority(source, capture, {
+  rewriteMatchingBaseline = true,
+} = {}) {
+  if (!capture || typeof capture !== "object") {
+    throw new Error("A capture is required before retained artifact projection.");
   }
-  return visualSnapshotKeysToDeleteAfterCas({
-    pointerAdvanced: advanced,
-    existing: snapshot.expectedRecord,
-    next: snapshotRow,
+
+  const selected = projectRetainedCaptureArtifactsForMaterialization(capture, {
+    exists: existsSync,
+    identityScope: source?.id || null,
   });
+  const projection = selected.manifest;
+  const retainedStates = selected.retainedExpansionStates;
+  const layoutPath = selected.layoutRetained ? capture.layout_path : null;
+  const layoutHash = selected.layoutRetained
+    ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+    : null;
+  const textGeometry = capture.kind === "pdf"
+    ? null
+    : selected.layoutRetained
+      ? capture.text_geometry
+      : unavailableR2TextGeometryReference(capture);
+  const localization = capture.kind === "pdf"
+    ? captureLocalizationMetadata(capture)
+    : selected.layoutRetained
+      ? captureLocalizationMetadata(capture)
+      : r2CaptureLocalizationMetadata(capture, { layoutRetained: false });
+
+  capture.layout_path = layoutPath;
+  capture.layout_hash = layoutHash;
+  capture.text_geometry = textGeometry;
+  capture.localization = localization;
+  capture.expansion_state_screenshots = retainedStates;
+  capture.expansion_state_count = retainedStates.length;
+  capture.retained_artifact_projection = projection;
+  if (retainedStates.length) capture.persist_expansion_state_screenshots = true;
+
+  if (capture.meta_path && existsSync(capture.meta_path)) {
+    const metadata = readJsonIfExists(capture.meta_path);
+    if (!metadata || typeof metadata !== "object") {
+      throw new Error("Capture metadata could not be read for retained artifact projection.");
+    }
+    if (cleanText(metadata.captured_at) !== cleanText(capture.captured_at)) {
+      throw new Error("Capture metadata timestamp changed before retained artifact projection.");
+    }
+    if (
+      source?.id
+      && cleanText(metadata.source?.id)
+      && cleanText(metadata.source.id) !== cleanText(source.id)
+    ) {
+      throw new Error("Capture metadata source changed before retained artifact projection.");
+    }
+
+    const metadataStates = Array.isArray(metadata.expansion_state_screenshots)
+      ? metadata.expansion_state_screenshots
+      : [];
+    const metadataByStateId = new Map(
+      metadataStates.map((state) => [cleanText(state?.state_id), state]),
+    );
+    const projectedMetadataStates = retainedStates.map((state, index) => {
+      const existing = jsonObjectOrEmpty(metadataByStateId.get(cleanText(state?.state_id)));
+      return {
+        ...existing,
+        state_id: state.state_id || null,
+        index: Number.isSafeInteger(state.index) ? state.index : index,
+        tag: state.tag || existing.tag || null,
+        label: state.label || null,
+        captured_at: state.captured_at || existing.captured_at || capture.captured_at || null,
+        page: state.page_path ? toArchiveRelative(state.page_path) : state.page || null,
+        image_hash: state.image_hash || null,
+        layout: state.layout_path ? toArchiveRelative(state.layout_path) : state.layout || null,
+        layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+        text_geometry: state.text_geometry
+          ? textGeometryReference(state.text_geometry, state.layout_path || null)
+          : null,
+        text_hash: state.text_hash || null,
+        text_length: Number.isSafeInteger(state.text_length) ? state.text_length : null,
+        page_bytes: Number.isSafeInteger(state.page_bytes) ? state.page_bytes : null,
+        isolation: state.isolation || null,
+      };
+    });
+    const projectedMetadata = {
+      ...metadata,
+      layout_hash: layoutHash,
+      text_geometry: textGeometry
+        ? textGeometryReference(textGeometry, layoutPath)
+        : null,
+      localization,
+      expansion_state_count: projectedMetadataStates.length,
+      expansion_state_screenshots: projectedMetadataStates,
+      retained_artifact_projection: projection,
+      files: {
+        ...jsonObjectOrEmpty(metadata.files),
+        layout: layoutPath ? toArchiveRelative(layoutPath) : null,
+        expansion_states: projectedMetadataStates.map((state) => ({
+          state_id: state.state_id,
+          label: state.label,
+          page: state.page,
+          layout: state.layout,
+        })),
+      },
+      ...(capture.baseline_facts !== undefined
+        ? { baseline_facts: capture.baseline_facts }
+        : {}),
+      ...(capture.baseline_facts_metadata !== undefined
+        ? { baseline_facts_metadata: capture.baseline_facts_metadata }
+        : {}),
+      ...(capture.monitoring_disposition !== undefined
+        ? { monitoring_disposition: capture.monitoring_disposition }
+        : {}),
+      ...(capture.stage1_baseline_activation !== undefined
+        ? { stage1_baseline_activation: capture.stage1_baseline_activation }
+        : {}),
+    };
+    atomicWriteJson(capture.meta_path, projectedMetadata);
+  }
+
+  if (rewriteMatchingBaseline && source?.id) {
+    rewriteMatchingBaselineRetainedProjection(source, capture, projection);
+  }
+  return projection;
+}
+
+function rewriteMatchingBaselineRetainedProjection(source, capture, projection) {
+  const baselinePath = baselinePathForSource(source.id);
+  const baseline = readJsonIfExists(baselinePath);
+  const baselineMeta = cleanText(jsonObjectOrEmpty(baseline?.capture).meta).replace(/\\/g, "/");
+  const captureMeta = capture.meta_path
+    ? cleanText(toArchiveRelative(capture.meta_path)).replace(/\\/g, "/")
+    : "";
+  if (!baselineMatchesRetainedProjectionCapture({
+    sourceId: source.id,
+    baseline,
+    capture,
+    baselineMetaPath: baselineMeta,
+    captureMetaPath: captureMeta,
+  })) return false;
+
+  const projected = {
+    ...baseline,
+    layout_hash: capture.layout_hash || null,
+    text_geometry: projection.authoritative?.layout_retained && capture.text_geometry
+      ? textGeometryReference(capture.text_geometry, capture.layout_path || null)
+      : null,
+    capture: {
+      ...jsonObjectOrEmpty(baseline.capture),
+      layout: capture.layout_path ? toArchiveRelative(capture.layout_path) : null,
+      expansion_states: (capture.expansion_state_screenshots || []).map((state) => ({
+        state_id: state.state_id || null,
+        index: state.index,
+        label: state.label || null,
+        captured_at: state.captured_at || null,
+        image_hash: state.image_hash || null,
+        layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+        isolation: state.isolation || null,
+        page: state.page_path ? toArchiveRelative(state.page_path) : state.page || null,
+        layout: state.layout_path ? toArchiveRelative(state.layout_path) : state.layout || null,
+      })),
+    },
+    summary_metadata: {
+      ...jsonObjectOrEmpty(baseline.summary_metadata),
+      retained_artifact_projection: projection,
+    },
+  };
+  atomicWriteJson(baselinePath, projected);
+  localBaselineEvidenceCache.set(source.id, true);
+  return true;
 }
 
 function captureR2Files(capture) {
@@ -9179,18 +9628,19 @@ function r2CaptureHashes(capture, artifactBindings = {}) {
 }
 
 function r2CaptureMetadata(capture, artifactBindings) {
-  const layoutRetained = Boolean(artifactBindings?.layout);
-  const retainedExpansionStates = (capture.expansion_state_screenshots || [])
-    .filter((_state, index) => Boolean(
-      artifactBindings?.[`expansion_state_${String(index + 1).padStart(2, "0")}`]
-      && artifactBindings?.[`expansion_state_${String(index + 1).padStart(2, "0")}_layout`],
-    ));
+  const retainedProjection = projectRetainedCaptureArtifacts(capture, {
+    exists: existsSync,
+    artifactBindings,
+  });
+  const layoutRetained = retainedProjection.layoutRetained;
+  const retainedExpansionStates = retainedProjection.retainedExpansionStates;
   const retainedTextGeometry = layoutRetained
     ? textGeometryReference(capture.text_geometry, capture.layout_path)
     : unavailableR2TextGeometryReference(capture);
   return {
     artifact_bindings_schema: r2CaptureArtifactBindingsSchema,
     artifact_bindings: artifactBindings,
+    retained_artifact_projection: retainedProjection.manifest,
     capture_profile: capture.capture_profile || null,
     final_url: capture.final_url || null,
     page_title: capture.page_title || null,
@@ -10075,6 +10525,19 @@ function writeBaseline(source, capture, details) {
   ) {
     return false;
   }
+  if (details.baseline_facts !== undefined) {
+    capture.baseline_facts = details.baseline_facts;
+  }
+  if (details.baseline_facts_metadata !== undefined) {
+    capture.baseline_facts_metadata = details.baseline_facts_metadata;
+  }
+  if (details.monitoring_disposition !== undefined) {
+    capture.monitoring_disposition = details.monitoring_disposition;
+  }
+  if (details.stage1_baseline_activation !== undefined) {
+    capture.stage1_baseline_activation = details.stage1_baseline_activation;
+  }
+  const retainedArtifactProjection = materializeRetainedCaptureAuthority(source, capture);
   if (capture.expansion_state_screenshots?.length) {
     // Expansion screenshots are part of the baseline used to localize wording
     // inside accordions. A baseline must never reference files that cleanup
@@ -10100,8 +10563,10 @@ function writeBaseline(source, capture, details) {
     expansion_hash: capture.expansion_hash || null,
     expandable_sections_hash: capture.expandable_sections_hash || null,
     image_hash: capture.image_hash,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
-    text_geometry: capture.text_geometry
+    layout_hash: retainedArtifactProjection.authoritative?.layout_retained
+      ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+      : null,
+    text_geometry: retainedArtifactProjection.authoritative?.layout_retained && capture.text_geometry
       ? textGeometryReference(capture.text_geometry, capture.layout_path)
       : null,
     file_hash: capture.file_hash || null,
@@ -10170,6 +10635,7 @@ function writeBaseline(source, capture, details) {
         || capture.stage1_baseline_activation
         || existingSummary.stage1_baseline_activation
         || null,
+      retained_artifact_projection: retainedArtifactProjection,
     },
   };
   atomicWriteJson(baselinePath, baseline);
@@ -10194,12 +10660,34 @@ function baselineEvidenceStatus(baseline) {
   const r2LocalizationStatus = String(
     baseline.summary_metadata?.r2_local_rehydration?.localization_status || "",
   ).trim();
+  const retainedProjection = jsonObjectOrEmpty(
+    baseline.summary_metadata?.retained_artifact_projection,
+  );
+  const retainedProjectionAuthority = jsonObjectOrEmpty(retainedProjection.authoritative);
+  const retainedProjectionValid = Boolean(
+    retainedProjection.schema === retainedCaptureArtifactProjectionSchema
+    && retainedProjection.kind === kind
+    && typeof retainedProjectionAuthority.layout_retained === "boolean"
+    && Number.isSafeInteger(retainedProjectionAuthority.expansion_state_count)
+    && retainedProjectionAuthority.expansion_state_count >= 0,
+  );
+  const retainedProjectionMainUnavailable = Boolean(
+    kind === "webpage"
+    && retainedProjectionValid
+    && retainedProjectionAuthority.layout_retained === false
+    && !baseline.layout_hash
+    && !baseline.text_geometry
+    && !capture.layout,
+  );
   const mainGeometryIntentionallyUnavailable =
-    r2LocalizationStatus === "evidence_only_geometry_unavailable";
-  const expansionGeometryIntentionallyIncomplete = new Set([
-    "evidence_only_geometry_unavailable",
-    "evidence_only_expansion_geometry_incomplete",
-  ]).has(r2LocalizationStatus);
+    r2LocalizationStatus === "evidence_only_geometry_unavailable"
+    || retainedProjectionMainUnavailable;
+  const expansionGeometryIntentionallyIncomplete =
+    r2LocalizationStatus === "evidence_only_expansion_geometry_incomplete"
+    || (
+      r2LocalizationStatus === "evidence_only_geometry_unavailable"
+      && !retainedProjectionValid
+    );
   const captureExpansionStates = Array.isArray(capture.expansion_states)
     ? capture.expansion_states
     : [];
@@ -10260,7 +10748,31 @@ function baselineEvidenceStatus(baseline) {
       baseline.summary_metadata.r2_local_rehydration.expected_expansion_states >= 0
       ? baseline.summary_metadata.r2_local_rehydration.expected_expansion_states
       : 0,
+    retainedProjectionValid
+      ? retainedProjectionAuthority.expansion_state_count
+      : 0,
   );
+  if (
+    retainedProjectionMainUnavailable
+    && (
+      meta?.layout_hash
+      || meta?.files?.layout
+      || meta?.text_geometry?.geometry_hash
+      || meta?.text_geometry?.file
+      || meta?.text_geometry?.screenshot?.image_hash
+      || meta?.localization?.geometry_hash
+      || meta?.localization?.bound_image_hash
+      || meta?.localization?.geometry_ready === true
+    )
+  ) {
+    missing.push("retained_projection_layout_conflict");
+  }
+  if (
+    retainedProjectionValid
+    && meta?.retained_artifact_projection?.schema !== retainedCaptureArtifactProjectionSchema
+  ) {
+    missing.push("retained_projection_meta_missing");
+  }
   if (kind !== "pdf" && !expansionGeometryIntentionallyIncomplete) {
     for (let index = 0; index < expectedExpansionStateCount; index += 1) {
       const state = paths.expansionStateScreenshots[index];
@@ -10278,7 +10790,7 @@ function baselineEvidenceStatus(baseline) {
   return {
     ok: true,
     kind,
-    localizationStatus: r2LocalizationStatus || (
+    localizationStatus: r2LocalizationStatus || retainedProjection.localization_status || (
       capturedLocalizationStatus && capturedLocalizationStatus !== "geometry_ready"
         ? capturedLocalizationStatus
         : "exact_geometry_available"
@@ -11491,6 +12003,8 @@ function visualWorkerMetadata(report) {
       r2_rotated: report.r2_rotated,
       r2_previous_snapshots_reset: report.r2_previous_snapshots_reset,
       r2_failed: report.r2_failed,
+      r2_cleanup_failed: report.r2_cleanup_failed,
+      r2_cleanup_debt: report.r2_cleanup_debt,
       r2_skipped_existing: report.r2_skipped_existing,
       r2_repaired_missing: report.r2_repaired_missing,
       r2_forced_refreshes: report.r2_forced_refreshes,

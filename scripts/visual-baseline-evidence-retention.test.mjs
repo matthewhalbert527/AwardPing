@@ -9,6 +9,14 @@ const catchupSource = readFileSync(
   new URL("./run-one-time-catchup.mjs", import.meta.url),
   "utf8",
 );
+const maintenanceSource = readFileSync(
+  new URL("./run-awardping-maintenance.mjs", import.meta.url),
+  "utf8",
+);
+const pointerReconciliationSource = readFileSync(
+  new URL("./lib/visual-snapshot-pointer-reconciliation.mjs", import.meta.url),
+  "utf8",
+);
 
 function functionBody(name, nextName) {
   const start = source.indexOf(`function ${name}`);
@@ -23,6 +31,17 @@ function catchupFunctionBody(name, nextName) {
 }
 
 describe("visual baseline evidence retention", () => {
+  it("requires authoritative R2 persistence in every maintenance visual shard", () => {
+    const start = maintenanceSource.indexOf("async function runVisualSnapshots");
+    const end = maintenanceSource.indexOf("async function runSourceDiscovery", start);
+    const visualSnapshots = maintenanceSource.slice(start, end);
+
+    expect(visualSnapshots.match(/"--r2-snapshot-sync=true"/g)).toHaveLength(1);
+    expect(visualSnapshots.indexOf('"--r2-snapshot-sync=true"')).toBeLessThan(
+      visualSnapshots.indexOf("if (completeMissing)"),
+    );
+  });
+
   it("absorbs safe deterministic noise without deleting its promoted evidence", () => {
     const body = functionBody("finishSafeDeterministicNoise", "reviewAndApplyCandidateChange");
 
@@ -241,7 +260,8 @@ describe("visual baseline evidence retention", () => {
 
     expect(hashes).toContain("artifactBindings.layout");
     expect(hashes).toContain("layout_hash: retainedLayoutHash");
-    expect(metadata).toContain("const layoutRetained = Boolean(artifactBindings?.layout)");
+    expect(metadata).toContain("projectRetainedCaptureArtifacts(capture");
+    expect(metadata).toContain("const layoutRetained = retainedProjection.layoutRetained");
     expect(metadata).toContain("unavailableR2TextGeometryReference(capture)");
     expect(unavailableGeometry).toContain("geometry_hash: null");
     expect(unavailableGeometry).toContain("image_hash: null");
@@ -270,7 +290,43 @@ describe("visual baseline evidence retention", () => {
 
     expect(sync).toContain('"capture_behavior_refresh"');
     expect(sync).toContain('"localization_repair"');
-    expect(process).toContain('reason: "capture_behavior_refresh", unchanged: true');
-    expect(localization).toContain('reason: "localization_repair", unchanged: true');
+    expect(process).toContain("await requireR2SnapshotForBaseline");
+    expect(process).toContain('reason: "capture_behavior_refresh"');
+    expect(process).toContain("unchanged: true");
+    expect(localization).toContain("await requireR2SnapshotForBaseline");
+    expect(localization).toContain('reason: "localization_repair"');
+  });
+
+  it("fails required R2 persistence closed while treating post-CAS deletion as cleanup debt", () => {
+    const required = functionBody("requireR2SnapshotForBaseline", "maybeRepairMissingR2Snapshot");
+    const pair = functionBody("syncR2SnapshotPair", "stage1BaselineMonitoringApprovalMetadata");
+    const localization = functionBody("syncR2LocalizationLatest", "syncR2BackfillLatestOnly");
+    const backfill = functionBody("syncR2BackfillLatestOnly", "getR2Client");
+    const upsert = functionBody("upsertR2SnapshotRecord", "cleanupCommittedR2SnapshotObjects");
+    const cleanup = functionBody("cleanupCommittedR2SnapshotObjects", "upsertR2SnapshotRecord");
+    const materialize = functionBody(
+      "materializeRetainedCaptureAuthority",
+      "rewriteMatchingBaselineRetainedProjection",
+    );
+    const rewrite = functionBody(
+      "rewriteMatchingBaselineRetainedProjection",
+      "captureR2Files",
+    );
+    const metadata = functionBody("r2CaptureMetadata", "unavailableR2TextGeometryReference");
+
+    expect(required).not.toContain("!r2SnapshotSync ||");
+    expect(required).toContain("required_r2_baseline_persistence_disabled");
+    expect(required).toContain("restoreBaselineAfterFailedStage1Activation");
+    expect(pair).toContain("cleanup: pointer.cleanup");
+    expect(localization).toContain("cleanup: pointer.cleanup");
+    expect(backfill).toContain("cleanup: pointer.cleanup");
+    expect(upsert).toContain("reconcileVisualSnapshotPointerAdvance");
+    expect(upsert).toContain("cleanupCommittedR2SnapshotObjects");
+    expect(cleanup).toContain("Promise.allSettled");
+    expect(pointerReconciliationSource).toContain("cleanupWithoutMasking");
+    expect(materialize).toContain("const projection = selected.manifest");
+    expect(materialize).not.toContain("priorProjection");
+    expect(rewrite).toContain("baselineMatchesRetainedProjectionCapture");
+    expect(metadata).toContain("retained_artifact_projection: retainedProjection.manifest");
   });
 });
