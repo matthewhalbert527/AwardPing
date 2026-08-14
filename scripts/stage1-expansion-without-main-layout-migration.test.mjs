@@ -128,85 +128,85 @@ describe("expansion evidence without main layout migration", () => {
       [
         `    or coalesce(p_metadata ->> 'text_object_bytes', '') !~ '^[1-9][0-9]*$'`,
         `    or coalesce(p_metadata ->> 'text_object_bytes', '') !~ '^[1-9][0-9]*$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(p_metadata -> 'text_object_bytes') = 'number'
         then (p_metadata ->> 'text_object_bytes')::numeric > v_max_safe_integer
       else false
-    end`,
+    end)`,
       ],
       [
         `    or coalesce(p_metadata ->> 'text_length', '') !~ '^(0|[1-9][0-9]*)$'`,
         `    or coalesce(p_metadata ->> 'text_length', '') !~ '^(0|[1-9][0-9]*)$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(p_metadata -> 'text_length') = 'number'
         then (p_metadata ->> 'text_length')::numeric > v_max_safe_integer
       else false
-    end`,
+    end)`,
       ],
       [
         `      or coalesce(binding.value ->> 'byte_length', '') !~ '^[1-9][0-9]*$'`,
         `      or coalesce(binding.value ->> 'byte_length', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(binding.value -> 'byte_length') = 'number'
           then (binding.value ->> 'byte_length')::numeric > v_max_safe_integer
         else false
-      end`,
+      end)`,
       ],
       [
         `      or coalesce(p_metadata ->> 'page_bytes', '') !~ '^[1-9][0-9]*$'`,
         `      or coalesce(p_metadata ->> 'page_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(p_metadata -> 'page_bytes') = 'number'
           then (p_metadata ->> 'page_bytes')::numeric > v_max_safe_integer
         else false
-      end`,
+      end)`,
       ],
       [
         `      or coalesce(p_metadata ->> 'thumb_bytes', '') !~ '^[1-9][0-9]*$'`,
         `      or coalesce(p_metadata ->> 'thumb_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(p_metadata -> 'thumb_bytes') = 'number'
           then (p_metadata ->> 'thumb_bytes')::numeric > v_max_safe_integer
         else false
-      end`,
+      end)`,
       ],
       [
         `      or coalesce(p_metadata ->> 'file_bytes', '') !~ '^[1-9][0-9]*$'`,
         `      or coalesce(p_metadata ->> 'file_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(p_metadata -> 'file_bytes') = 'number'
           then (p_metadata ->> 'file_bytes')::numeric > v_max_safe_integer
         else false
-      end`,
+      end)`,
       ],
       [
         `    or coalesce(p_metadata ->> 'expansion_state_count', '')
       !~ '^(0|[1-9][0-9]*)$'`,
         `    or coalesce(p_metadata ->> 'expansion_state_count', '')
       !~ '^(0|[1-9][0-9]*)$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(p_metadata -> 'expansion_state_count') = 'number'
         then (p_metadata ->> 'expansion_state_count')::numeric > v_max_safe_integer
       else false
-    end`,
+    end)`,
       ],
       [
         `      or coalesce(state.value ->> 'page_bytes', '') !~ '^[1-9][0-9]*$'`,
         `      or coalesce(state.value ->> 'page_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(state.value -> 'page_bytes') = 'number'
           then (state.value ->> 'page_bytes')::numeric > v_max_safe_integer
         else false
-      end`,
+      end)`,
       ],
       [
         `      or coalesce(state.value ->> 'text_length', '') !~ '^(0|[1-9][0-9]*)$'`,
         `      or coalesce(state.value ->> 'text_length', '') !~ '^(0|[1-9][0-9]*)$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(state.value -> 'text_length') = 'number'
           then (state.value ->> 'text_length')::numeric > v_max_safe_integer
         else false
-      end`,
+      end)`,
       ],
     ];
     for (const [needle, replacement] of safeIntegerGuards) {
@@ -239,7 +239,7 @@ describe("expansion evidence without main layout migration", () => {
     or coalesce(p_metadata #>>
       '{retained_artifact_projection,authoritative,expansion_state_count}', ''
     ) !~ '^(0|[1-9][0-9]*)$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(
         p_metadata #> '{retained_artifact_projection,authoritative,expansion_state_count}'
       ) = 'number'
@@ -247,7 +247,7 @@ describe("expansion evidence without main layout migration", () => {
           '{retained_artifact_projection,authoritative,expansion_state_count}'
         )::numeric > v_max_safe_integer
       else false
-    end`,
+    end)`,
       ],
       [
         `  if p_kind = 'pdf' then
@@ -307,7 +307,26 @@ describe("expansion evidence without main layout migration", () => {
       expected = expected.replace(needle, () => replacement);
     }
 
+    const unparenthesizedObjectPathCase = `      or case
+        when object_entry.slot_name = 'page' then`;
+    expect(expected).toContain(unparenthesizedObjectPathCase);
+    expected = expected
+      .replace(
+        unparenthesizedObjectPathCase,
+        `      or (case
+        when object_entry.slot_name = 'page' then`,
+      )
+      .replace(
+        `        else true
+      end
+  ) then`,
+        `        else true
+      end)
+  ) then`,
+      );
+
     expect(updatedBindingFunction).toBe(expected);
+    expect(updatedBindingFunction).not.toMatch(/^\s+or case$/mu);
     expect(updatedBindingFunction).not.toContain(
       "if v_expansion_page_count <> 0",
     );

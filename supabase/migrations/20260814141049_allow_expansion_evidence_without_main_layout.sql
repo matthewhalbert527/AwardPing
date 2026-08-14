@@ -50,7 +50,7 @@ begin
     or coalesce(p_metadata #>>
       '{retained_artifact_projection,authoritative,expansion_state_count}', ''
     ) !~ '^(0|[1-9][0-9]*)$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(
         p_metadata #> '{retained_artifact_projection,authoritative,expansion_state_count}'
       ) = 'number'
@@ -58,23 +58,23 @@ begin
           '{retained_artifact_projection,authoritative,expansion_state_count}'
         )::numeric > v_max_safe_integer
       else false
-    end
+    end)
     or pg_catalog.jsonb_typeof(p_metadata -> 'text_object_bytes')
       is distinct from 'number'
     or coalesce(p_metadata ->> 'text_object_bytes', '') !~ '^[1-9][0-9]*$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(p_metadata -> 'text_object_bytes') = 'number'
         then (p_metadata ->> 'text_object_bytes')::numeric > v_max_safe_integer
       else false
-    end
+    end)
     or pg_catalog.jsonb_typeof(p_metadata -> 'text_length')
       is distinct from 'number'
     or coalesce(p_metadata ->> 'text_length', '') !~ '^(0|[1-9][0-9]*)$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(p_metadata -> 'text_length') = 'number'
         then (p_metadata ->> 'text_length')::numeric > v_max_safe_integer
       else false
-    end
+    end)
   then
     return false;
   end if;
@@ -121,11 +121,11 @@ begin
       or pg_catalog.jsonb_typeof(binding.value -> 'byte_length')
         is distinct from 'number'
       or coalesce(binding.value ->> 'byte_length', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(binding.value -> 'byte_length') = 'number'
           then (binding.value ->> 'byte_length')::numeric > v_max_safe_integer
         else false
-      end
+      end)
       or pg_catalog.jsonb_typeof(binding.value -> 'content_type')
         is distinct from 'string'
       or pg_catalog.jsonb_typeof(binding.value -> 'hash_mode')
@@ -159,19 +159,19 @@ begin
       or pg_catalog.jsonb_typeof(p_metadata -> 'page_bytes')
         is distinct from 'number'
       or coalesce(p_metadata ->> 'page_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(p_metadata -> 'page_bytes') = 'number'
           then (p_metadata ->> 'page_bytes')::numeric > v_max_safe_integer
         else false
-      end
+      end)
       or pg_catalog.jsonb_typeof(p_metadata -> 'thumb_bytes')
         is distinct from 'number'
       or coalesce(p_metadata ->> 'thumb_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(p_metadata -> 'thumb_bytes') = 'number'
           then (p_metadata ->> 'thumb_bytes')::numeric > v_max_safe_integer
         else false
-      end
+      end)
       or p_metadata #>> '{artifact_bindings,page,sha256}'
         is distinct from p_hashes ->> 'image_hash'
       or p_metadata #>> '{artifact_bindings,page,byte_length}'
@@ -203,11 +203,11 @@ begin
       or pg_catalog.jsonb_typeof(p_metadata -> 'file_bytes')
         is distinct from 'number'
       or coalesce(p_metadata ->> 'file_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(p_metadata -> 'file_bytes') = 'number'
           then (p_metadata ->> 'file_bytes')::numeric > v_max_safe_integer
         else false
-      end
+      end)
       or p_metadata #>> '{artifact_bindings,pdf,sha256}'
         is distinct from p_hashes ->> 'file_hash'
       or p_metadata #>> '{artifact_bindings,pdf,byte_length}'
@@ -244,7 +244,7 @@ begin
       or object_entry.value #>> '{}' ~* '(^|/)(latest|previous)(/|$)'
       or object_entry.value #>> '{}' ~ '[\\]'
       or object_entry.value #>> '{}' ~ '(^|/)[.][.](/|$)'
-      or case
+      or (case
         when object_entry.slot_name = 'page' then
           object_entry.value #>> '{}' is distinct from
             v_generation_prefix || 'page.jpg'
@@ -273,7 +273,7 @@ begin
             pg_catalog.substring(object_entry.slot_name, '[0-9]{2}') ||
             '-layout.json'
         else true
-      end
+      end)
   ) then
     return false;
   end if;
@@ -319,11 +319,11 @@ begin
       is distinct from 'number'
     or coalesce(p_metadata ->> 'expansion_state_count', '')
       !~ '^(0|[1-9][0-9]*)$'
-    or case
+    or (case
       when pg_catalog.jsonb_typeof(p_metadata -> 'expansion_state_count') = 'number'
         then (p_metadata ->> 'expansion_state_count')::numeric > v_max_safe_integer
       else false
-    end
+    end)
     or pg_catalog.jsonb_typeof(p_metadata -> 'expansion_state_screenshots')
       is distinct from 'array'
   then
@@ -383,19 +383,19 @@ begin
       or pg_catalog.jsonb_typeof(state.value -> 'page_bytes')
         is distinct from 'number'
       or coalesce(state.value ->> 'page_bytes', '') !~ '^[1-9][0-9]*$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(state.value -> 'page_bytes') = 'number'
           then (state.value ->> 'page_bytes')::numeric > v_max_safe_integer
         else false
-      end
+      end)
       or pg_catalog.jsonb_typeof(state.value -> 'text_length')
         is distinct from 'number'
       or coalesce(state.value ->> 'text_length', '') !~ '^(0|[1-9][0-9]*)$'
-      or case
+      or (case
         when pg_catalog.jsonb_typeof(state.value -> 'text_length') = 'number'
           then (state.value ->> 'text_length')::numeric > v_max_safe_integer
         else false
-      end
+      end)
       or state.value #>> '{text_geometry,geometry_hash}'
         is distinct from state.value ->> 'layout_hash'
       or state.value #>> '{text_geometry,screenshot,image_hash}'

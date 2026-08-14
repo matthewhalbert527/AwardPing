@@ -99,6 +99,8 @@ describe("Stage 1 expansion-without-main-layout linked rollback probe", () => {
       expect(sql).toContain(contract);
     }
     expect(sql.match(/has_function_privilege\(/g)).toHaveLength(6);
+    expect(sql).not.toContain("pg_catalog.position(");
+    expect(sql.match(/(?<![\w.])position\(/g)).toHaveLength(3);
     for (const role of ["anon", "authenticated", "service_role"]) {
       expect(sql.match(new RegExp(`'${role}'`, "g"))).toHaveLength(2);
     }

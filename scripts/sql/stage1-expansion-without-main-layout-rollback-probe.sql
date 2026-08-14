@@ -73,7 +73,7 @@ begin
     'migration 20260814141049 is already recorded as applied'
   );
   perform pg_temp.awardping_expansion_probe_assert(
-    pg_catalog.position(
+    position(
       'if v_expansion_page_count <> 0' in
       pg_catalog.pg_get_functiondef(v_function_oid)
     ) > 0,
@@ -134,7 +134,7 @@ begin
     'CREATE OR REPLACE changed the validator identity'
   );
   perform pg_temp.awardping_expansion_probe_assert(
-    pg_catalog.position(
+    position(
       'if v_expansion_page_count <> 0' in
       pg_catalog.pg_get_functiondef(v_function_oid)
     ) = 0,
@@ -203,7 +203,7 @@ begin
     'the validator definition or catalog metadata survived rollback'
   );
   perform pg_temp.awardping_expansion_probe_assert(
-    pg_catalog.position(
+    position(
       'if v_expansion_page_count <> 0' in
       pg_catalog.pg_get_functiondef(v_function_oid)
     ) > 0,
