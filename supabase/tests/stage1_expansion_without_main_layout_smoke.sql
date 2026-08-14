@@ -78,6 +78,22 @@ begin
         'expansion_state_count', 1
       )
     ),
+    'expansion_state_capture_coverage', pg_catalog.jsonb_build_object(
+      'schema', 'awardping.expansion-state-capture-coverage.v1',
+      'status', 'verified_complete',
+      'complete', true,
+      'raw_candidate_count', 1,
+      'raw_candidate_count_exact', true,
+      'logical_candidate_count', 1,
+      'logical_candidate_count_exact', true,
+      'attempted_count', 1,
+      'retained_state_count', 1,
+      'capture_limit', 24,
+      'truncated', false,
+      'truncated_count', 0,
+      'truncated_count_exact', true,
+      'failure_count', 0
+    ),
     'text_object_bytes', 75,
     'text_length', 20,
     'page_bytes', 100,
@@ -365,6 +381,26 @@ begin
     v_invalid,
     '{retained_artifact_projection,authoritative,expansion_state_count}',
     '0'::jsonb
+  );
+  v_invalid := pg_catalog.jsonb_set(
+    v_invalid,
+    '{expansion_state_capture_coverage}',
+    pg_catalog.jsonb_build_object(
+      'schema', 'awardping.expansion-state-capture-coverage.v1',
+      'status', 'verified_complete',
+      'complete', true,
+      'raw_candidate_count', 0,
+      'raw_candidate_count_exact', true,
+      'logical_candidate_count', 0,
+      'logical_candidate_count_exact', true,
+      'attempted_count', 0,
+      'retained_state_count', 0,
+      'capture_limit', 24,
+      'truncated', false,
+      'truncated_count', 0,
+      'truncated_count_exact', true,
+      'failure_count', 0
+    )
   );
   if private.stage1_manifest_source_capture_binding_valid(
       v_source_id,

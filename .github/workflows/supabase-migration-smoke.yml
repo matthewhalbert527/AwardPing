@@ -82,6 +82,7 @@ jobs:
           --set=ON_ERROR_STOP=1
           --file=supabase/tests/stage1_r2_reference_graph_smoke.sql
           --file=supabase/tests/stage1_expansion_without_main_layout_smoke.sql
+          --file=supabase/tests/stage1_expansion_capture_coverage_smoke.sql
 
       - name: Stop and remove local Supabase data
         if: always()
