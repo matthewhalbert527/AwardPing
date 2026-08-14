@@ -32,6 +32,9 @@ import {
   verifyVisualTextGeometryBinding,
 } from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
+import {
+  isExactLegacyRetainedProjectionProvenance,
+} from "./legacy-r2-retained-projection-provenance.mjs";
 
 const sourceIdPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab0-9a-f][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -753,6 +756,7 @@ export async function rehydrateLocalBaselineFromR2({
         generation,
         manifest,
         rawMeta,
+        artifactBySlot,
       });
     }
     const declaredLocalizationRecovery = assessLocalizationRecovery({
@@ -1624,6 +1628,7 @@ function validateAuthoritativeRetainedProjectionParity({
   generation,
   manifest,
   rawMeta,
+  artifactBySlot,
 }) {
   const slots = new Set(manifest.entries.map((entry) => entry.slot));
   const layoutRetained = kind === "webpage" && slots.has("layout");
@@ -1653,6 +1658,32 @@ function validateAuthoritativeRetainedProjectionParity({
   const downloaded = canonicalRetainedArtifactProjection(
     rawMeta?.retained_artifact_projection,
   );
+  const pointerHasProjection = Object.hasOwn(
+    objectValue(generation.metadata),
+    "retained_artifact_projection",
+  );
+  const rawHasProjection = Object.hasOwn(
+    objectValue(rawMeta),
+    "retained_artifact_projection",
+  );
+  const provenanceField = "legacy_retained_artifact_projection_provenance";
+  const pointerHasProvenance = Object.hasOwn(
+    objectValue(generation.metadata),
+    provenanceField,
+  );
+  const rawHasProvenance = Object.hasOwn(objectValue(rawMeta), provenanceField);
+  const exactProjection = stableJson(pointer) === stableJson(actual);
+  const exactRawProjection = stableJson(downloaded) === stableJson(actual);
+  const legacyRawProjectionBridge = Boolean(
+    pointerHasProjection
+    && exactProjection
+    && !rawHasProjection
+    && exactLegacyRetainedProjectionProvenance({
+      value: generation.metadata?.[provenanceField],
+      rawMetaBody: artifactBySlot?.meta?.body,
+      projection: actual,
+    })
+  );
   if (
     stableJson(pageIndexes) !== stableJson(layoutIndexes)
     || pageIndexes.some((index, offset) => index !== offset + 1)
@@ -1662,13 +1693,17 @@ function validateAuthoritativeRetainedProjectionParity({
       || cleanNullableString(generation.metadata.layout_hash)
     ))
     || !pointer
-    || !downloaded
-    || stableJson(pointer) !== stableJson(actual)
-    || stableJson(downloaded) !== stableJson(actual)
+    || !exactProjection
+    || rawHasProvenance
+    || (
+      rawHasProjection
+        ? !downloaded || !exactRawProjection || pointerHasProvenance
+        : !legacyRawProjectionBridge
+    )
   ) {
     refuse(
       "r2_authoritative_retained_projection_invalid",
-      "The pointer and downloaded retained-artifact projections must canonically match the exact authoritative artifact set.",
+      "The pointer and downloaded retained-artifact projections must canonically match the exact authoritative artifact set, except for an exact immutable v7 raw-absence provenance bridge.",
     );
   }
 
@@ -1736,6 +1771,19 @@ function validateAuthoritativeRetainedProjectionParity({
     );
   }
   return null;
+}
+
+function exactLegacyRetainedProjectionProvenance({
+  value,
+  rawMetaBody,
+  projection,
+}) {
+  if (!Buffer.isBuffer(rawMetaBody)) return false;
+  return isExactLegacyRetainedProjectionProvenance({
+    value,
+    rawMetaSha256: sha256(rawMetaBody),
+    projectionSha256: sha256(Buffer.from(stableJson(projection), "utf8")),
+  });
 }
 
 function canonicalRetainedArtifactProjection(value) {

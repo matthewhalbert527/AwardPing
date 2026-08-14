@@ -26,6 +26,9 @@ import {
   verifyVisualTextGeometryBinding,
 } from "./visual-event-localization.mjs";
 import { visualSnapshotArtifactManifest } from "./visual-review-queue.mjs";
+import {
+  buildLegacyRetainedProjectionProvenance,
+} from "./legacy-r2-retained-projection-provenance.mjs";
 
 const sourceId = "11111111-1111-4111-8111-111111111111";
 const awardId = "22222222-2222-4222-8222-222222222222";
@@ -448,6 +451,117 @@ describe("exact R2 local-baseline rehydration", () => {
     });
     expect(meta.layout_hash).toBeNull();
     expect(meta.text_geometry).toBeNull();
+  });
+
+  it.each([
+    ["PDF", pdfRecoveryFixture],
+    ["webpage", recoveryFixture],
+  ])("rehydrates %s raw projection absence only through exact immutable v7 provenance", async (_kind, createFixture) => {
+    const fixture = createFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    const bridge = bindLegacyRetainedProjectionBridge(fixture);
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+      now: "2026-07-16T01:20:00.000Z",
+    });
+
+    expect(result, JSON.stringify(result)).toMatchObject({
+      rehydrated: true,
+      generation: "latest",
+      restored_missing_baseline: true,
+    });
+    const immutableRawMeta = JSON.parse(
+      fixture.objects[bridge.metaKey].body.toString("utf8"),
+    );
+    expect(immutableRawMeta).not.toHaveProperty("retained_artifact_projection");
+    const published = JSON.parse(readFileSync(fixture.baselinePath, "utf8"));
+    const restoredMeta = JSON.parse(
+      readFileSync(join(fixture.archiveRoot, published.capture.meta), "utf8"),
+    );
+    expect(published.summary_metadata.retained_artifact_projection).toMatchObject(
+      bridge.projection,
+    );
+    expect(restoredMeta.retained_artifact_projection).toMatchObject(bridge.projection);
+  });
+
+  it.each([
+    ["wrong raw-meta hash", (fixture) => {
+      fixture.snapshot.latest_metadata
+        .legacy_retained_artifact_projection_provenance.raw_meta_sha256 = "f".repeat(64);
+    }],
+    ["wrong projection hash", (fixture) => {
+      fixture.snapshot.latest_metadata
+        .legacy_retained_artifact_projection_provenance.projection_sha256 = "e".repeat(64);
+    }],
+    ["future mutable policy identity", (fixture) => {
+      fixture.snapshot.latest_metadata
+        .legacy_retained_artifact_projection_provenance.policy_version = "8";
+    }],
+    ["different policy id", (fixture) => {
+      fixture.snapshot.latest_metadata
+        .legacy_retained_artifact_projection_provenance.policy_id = "future-migration";
+    }],
+    ["different policy hash", (fixture) => {
+      fixture.snapshot.latest_metadata
+        .legacy_retained_artifact_projection_provenance.policy_hash = "d".repeat(64);
+    }],
+    ["missing pointer projection", (fixture) => {
+      delete fixture.snapshot.latest_metadata.retained_artifact_projection;
+    }],
+    ["partial raw projection claim", (fixture) => {
+      rewriteFixtureMeta(fixture, (meta) => {
+        meta.retained_artifact_projection = { schema: "partial" };
+      });
+    }],
+    ["valid v7 provenance beside a modern raw projection", (fixture) => {
+      const projection = structuredClone(
+        fixture.snapshot.latest_metadata.retained_artifact_projection,
+      );
+      rewriteFixtureMeta(fixture, (meta) => {
+        meta.retained_artifact_projection = projection;
+      });
+      const metaKey = fixture.snapshot.latest_object_keys.meta;
+      fixture.snapshot.latest_metadata
+        .legacy_retained_artifact_projection_provenance.raw_meta_sha256 = sha256(
+          fixture.objects[metaKey].body,
+        );
+    }],
+    ["pointer-only provenance copied into raw meta", (fixture) => {
+      rewriteFixtureMeta(fixture, (meta) => {
+        meta.legacy_retained_artifact_projection_provenance = structuredClone(
+          fixture.snapshot.latest_metadata
+            .legacy_retained_artifact_projection_provenance,
+        );
+      });
+    }],
+  ])("refuses the v7 raw-absence bridge with %s", async (_name, mutate) => {
+    const fixture = pdfRecoveryFixture();
+    const sourceDir = join(fixture.archiveRoot, "sources", sourceId);
+    rmSync(sourceDir, { recursive: true, force: true });
+    bindLegacyRetainedProjectionBridge(fixture);
+    mutate(fixture);
+
+    const result = await rehydrateLocalBaselineFromR2({
+      archiveRoot: fixture.archiveRoot,
+      source: fixture.source,
+      baseline: null,
+      snapshotRecord: fixture.snapshot,
+      bucket,
+      client: fakeR2Client(fixture.objects),
+    });
+
+    expect(result).toMatchObject({
+      rehydrated: false,
+      reason: "r2_authoritative_retained_projection_invalid",
+    });
+    expect(existsSync(sourceDir)).toBe(false);
   });
 
   it("requires canonical retained-artifact projection parity in pointer and raw metadata", async () => {
@@ -2376,6 +2490,24 @@ function rewriteFixtureMeta(fixture, mutate) {
   }
 }
 
+function bindLegacyRetainedProjectionBridge(fixture) {
+  rewriteFixtureMeta(fixture, (meta) => {
+    delete meta.retained_artifact_projection;
+    delete meta.legacy_retained_artifact_projection_provenance;
+  });
+  const metaKey = fixture.snapshot.latest_object_keys.meta;
+  const rawMetaBody = Buffer.from(fixture.objects[metaKey].body);
+  const projection = structuredClone(
+    fixture.snapshot.latest_metadata.retained_artifact_projection,
+  );
+  fixture.snapshot.latest_metadata.legacy_retained_artifact_projection_provenance =
+    buildLegacyRetainedProjectionProvenance({
+      rawMetaSha256: sha256(rawMetaBody),
+      projectionSha256: sha256(stableJson(projection)),
+    });
+  return { metaKey, projection, rawMetaBody };
+}
+
 function initialDocumentRestoreFixture({ metaFileName = "meta.json" } = {}) {
   const archiveRoot = mkdtempSync(join(tmpdir(), "awardping-r2-candidate-restore-"));
   temporaryRoots.push(archiveRoot);
@@ -2639,6 +2771,20 @@ function candidateRestoreMemoryStore() {
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortStableJsonValue(value));
+}
+
+function sortStableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortStableJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortStableJsonValue(value[key])]),
+  );
 }
 
 function sourceFunctionBody(source, name, nextName) {

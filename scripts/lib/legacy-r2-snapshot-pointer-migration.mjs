@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 import {
+  buildLegacyRetainedProjectionProvenance,
+  isExactLegacyRetainedProjectionProvenance,
+  legacyR2PointerV7Policy,
+  legacyRetainedProjectionProvenanceSchema,
+} from "./legacy-r2-retained-projection-provenance.mjs";
+import {
   canonicalExpansionStateCaptureCoverage,
   hasExpansionStateCaptureCoverageClaim,
   legacyExpansionStateCaptureCoverageFromMetadata,
@@ -23,6 +29,12 @@ const FIXED_SLOTS = Object.freeze({
   meta: { fileName: "meta.json", contentType: "application/json; charset=utf-8" },
 });
 const ARTIFACT_BINDINGS_SCHEMA = "awardping.r2.capture-artifact-bindings.v1";
+const RETAINED_ARTIFACT_PROJECTION_SCHEMA =
+  "awardping.capture-retained-artifact-projection.v1";
+export const LEGACY_RETAINED_PROJECTION_PROVENANCE_SCHEMA =
+  legacyRetainedProjectionProvenanceSchema;
+const LEGACY_RETAINED_PROJECTION_PLAN_BINDING_SCHEMA =
+  "awardping.legacy-retained-artifact-projection-plan-binding.v1";
 
 const SNAPSHOT_FIELDS = Object.freeze([
   "shared_award_source_id",
@@ -44,16 +56,10 @@ const SNAPSHOT_FIELDS = Object.freeze([
 ]);
 
 export const LEGACY_R2_POINTER_PLAN_SCHEMA =
-  "awardping.legacy-r2-snapshot-pointer-migration-plan.v6";
+  "awardping.legacy-r2-snapshot-pointer-migration-plan.v7";
 export const LEGACY_R2_POINTER_RECEIPT_SCHEMA =
-  "awardping.legacy-r2-snapshot-pointer-migration-receipt.v6";
-export const LEGACY_R2_POINTER_POLICY = Object.freeze({
-  id: "awardping-legacy-r2-snapshot-pointer-migration",
-  version: "6",
-  hash: sha256Text(
-    "legacy-r2-pointer-v6:exact-selector-and-bucket:case-sensitive-url:head-get-verify:all-artifact-raw-bindings:layout-and-expansion-binding:conservative-legacy-v0-expansion-coverage:nested-v1-required-for-complete:captures-only:immutable-copy:destination-if-absent:cas-keys-plus-narrow-derived-metadata:preserve-legacy:no-live-fetch:no-events:no-paid-api",
-  ),
-});
+  "awardping.legacy-r2-snapshot-pointer-migration-receipt.v7";
+export const LEGACY_R2_POINTER_POLICY = legacyR2PointerV7Policy;
 
 export class LegacyR2PointerMigrationError extends Error {
   constructor(code, message, details = null) {
@@ -248,6 +254,7 @@ export async function inspectLegacyR2SnapshotPointer({
         metadata_after: payload.metadataAfter,
         metadata_enriched: payload.metadataEnriched,
         metadata_added_paths: payload.metadataAddedPaths,
+        retained_projection_binding: payload.retainedProjectionBinding,
         verified_artifacts: verifiedArtifacts,
         artifact_manifest_sha256: sha256Text(stableJson(verifiedArtifacts)),
       };
@@ -287,6 +294,7 @@ export async function inspectLegacyR2SnapshotPointer({
       metadata_after: payload.metadataAfter,
       metadata_enriched: payload.metadataEnriched,
       metadata_added_paths: payload.metadataAddedPaths,
+      retained_projection_binding: payload.retainedProjectionBinding,
       localization_status: manifest.entries.some((entry) => entry.slot === "layout")
         ? "retained_layout_requires_rehydration_verification"
         : "evidence_only_geometry_unavailable",
@@ -360,7 +368,7 @@ export async function inspectLegacyR2SnapshotPointer({
       baseline_refreshed: false,
       paid_api_calls: 0,
       metadata_repair:
-        "Only reviewed derived fields may be added: full raw artifact bindings, text_object_bytes from retained bytes, a conservative incomplete expansion coverage verdict from the validated legacy producer shape, or truthful zero-layout/zero-expansion accounting when every geometry claim is absent. Verified completeness always requires an existing canonical nested v1 verdict.",
+        "Only reviewed derived fields may be added: full raw artifact bindings, text_object_bytes from retained bytes, a canonical retained-artifact projection tied to the verified raw meta hash, a conservative incomplete expansion coverage verdict from the validated legacy producer shape, or truthful zero-layout/zero-expansion accounting when every geometry claim is absent. Verified completeness always requires an existing canonical nested v1 verdict.",
       pointer_fields_changed: pointerFieldsChanged,
     },
   };
@@ -438,6 +446,8 @@ export function buildLegacyR2PointerMigrationPlan({
       changes_only_object_keys_derived_metadata_additions_and_updated_at: true,
       missing_text_object_bytes_may_be_derived_from_verified_retained_bytes: true,
       missing_artifact_bindings_may_be_derived_from_verified_retained_bytes: true,
+      missing_retained_projection_may_be_derived_from_verified_manifest: true,
+      legacy_raw_meta_projection_absence_requires_hash_bound_provenance: true,
       legacy_scalar_expansion_coverage_is_always_conservative_incomplete: true,
       verified_complete_expansion_coverage_requires_nested_v1: true,
       zero_layout_accounting_may_be_added_only_when_all_geometry_claims_are_absent: true,
@@ -503,6 +513,8 @@ export function assertLegacyR2PointerMigrationPlan(plan, confirmation, {
     || safety.changes_only_object_keys_derived_metadata_additions_and_updated_at !== true
     || safety.missing_text_object_bytes_may_be_derived_from_verified_retained_bytes !== true
     || safety.missing_artifact_bindings_may_be_derived_from_verified_retained_bytes !== true
+    || safety.missing_retained_projection_may_be_derived_from_verified_manifest !== true
+    || safety.legacy_raw_meta_projection_absence_requires_hash_bound_provenance !== true
     || safety.legacy_scalar_expansion_coverage_is_always_conservative_incomplete !== true
     || safety.verified_complete_expansion_coverage_requires_nested_v1 !== true
     || safety.zero_layout_accounting_may_be_added_only_when_all_geometry_claims_are_absent !== true
@@ -605,6 +617,10 @@ export async function applyLegacyR2SnapshotPointerItem({
     }
   }
 
+  // Bind the reviewed raw-meta projection state to one final immutable
+  // HEAD/GET verification immediately before advancing the pointer.
+  await verifyPlannedImmutableDestinations(inspected.item, objectStore);
+
   const casResult = await compareAndSetObjectKeys({
     sourceId: planItem.source_id,
     expectedUpdatedAt: canonicalCurrent.updated_at,
@@ -675,7 +691,7 @@ export function migrationFailureQuarantineEvidence({ plan, item, error, observed
     ? cloneJson(error.details.post_cas_state)
     : null;
   return {
-    schema_version: "awardping.legacy-r2-pointer-migration-quarantine.v6",
+    schema_version: "awardping.legacy-r2-pointer-migration-quarantine.v7",
     observed_at: canonicalTimestamp(observedAt || new Date().toISOString(), "quarantine observed_at"),
     message: `Legacy R2 pointer migration failed closed (${reasonCode}): ${safeMessage(error || item?.failure?.message)}`,
     failure_stage: "legacy_r2_pointer_migration",
@@ -950,8 +966,16 @@ function validateGenerationPayload({ snapshot, source, generation, manifest, art
         metadataAfterTextBinding: textObjectBinding.metadataAfter,
       })
     : textObjectBinding.metadataAfter;
+  const retainedProjection = bindOrValidateRetainedArtifactProjection({
+    pointerMetadata: metadataAfterLayout,
+    rawMeta: meta,
+    kind: snapshot.kind,
+    generation,
+    manifest,
+    artifactsBySlot: bySlot,
+  });
   const metadataAfter = bindOrValidateArtifactBindings(
-    metadataAfterLayout,
+    retainedProjection.metadataAfter,
     artifacts,
     generation.name,
   );
@@ -960,6 +984,7 @@ function validateGenerationPayload({ snapshot, source, generation, manifest, art
     metadataAfter,
     metadataEnriched: stableJson(metadataAfter) !== stableJson(generation.metadata),
     metadataAddedPaths: addedJsonPaths(generation.metadata, metadataAfter),
+    retainedProjectionBinding: retainedProjection.binding,
   };
 }
 
@@ -1233,6 +1258,179 @@ function bindOrValidateArtifactBindings(metadata, artifacts, generationName) {
     );
   }
   return after;
+}
+
+function bindOrValidateRetainedArtifactProjection({
+  pointerMetadata,
+  rawMeta,
+  kind,
+  generation,
+  manifest,
+  artifactsBySlot,
+}) {
+  const before = jsonObject(pointerMetadata);
+  const after = cloneJson(before);
+  const expected = retainedArtifactProjectionFromManifest({
+    kind,
+    generation,
+    manifest,
+  });
+  const pointerHasProjection = Object.hasOwn(before, "retained_artifact_projection");
+  const rawHasProjection = Object.hasOwn(rawMeta, "retained_artifact_projection");
+  if (Object.hasOwn(rawMeta, "legacy_retained_artifact_projection_provenance")) {
+    fail(
+      "r2_retained_projection_raw_provenance_unexpected",
+      `${generation.name} retained raw metadata contains pointer-only projection provenance.`,
+    );
+  }
+  const pointerProjection = canonicalRetainedArtifactProjection(
+    before.retained_artifact_projection,
+  );
+  const rawProjection = canonicalRetainedArtifactProjection(
+    rawMeta.retained_artifact_projection,
+  );
+
+  if (pointerHasProjection && stableJson(pointerProjection) !== stableJson(expected)) {
+    fail(
+      "r2_retained_projection_pointer_mismatch",
+      `${generation.name} pointer retained-artifact projection differs from the verified manifest.`,
+    );
+  }
+  if (rawHasProjection && stableJson(rawProjection) !== stableJson(expected)) {
+    fail(
+      "r2_retained_projection_meta_mismatch",
+      `${generation.name} retained metadata projection differs from the verified manifest.`,
+    );
+  }
+  if (!pointerHasProjection) after.retained_artifact_projection = expected;
+
+  const provenanceField = "legacy_retained_artifact_projection_provenance";
+  const metaHash = requiredSha256(
+    artifactsBySlot.meta?.sha256,
+    `${generation.name} retained metadata raw SHA-256`,
+  );
+  if (!rawHasProjection) {
+    const expectedProvenance = buildLegacyRetainedProjectionProvenance({
+      rawMetaSha256: metaHash,
+      projectionSha256: sha256Text(stableJson(expected)),
+    });
+    if (Object.hasOwn(before, provenanceField)) {
+      if (stableJson(before[provenanceField]) !== stableJson(expectedProvenance)) {
+        fail(
+          "r2_retained_projection_provenance_mismatch",
+          `${generation.name} legacy projection provenance is invalid.`,
+        );
+      }
+    } else {
+      after[provenanceField] = expectedProvenance;
+    }
+  } else if (Object.hasOwn(before, provenanceField)) {
+    fail(
+      "r2_retained_projection_provenance_unexpected",
+      `${generation.name} legacy projection provenance conflicts with a retained raw projection.`,
+    );
+  }
+  return {
+    metadataAfter: after,
+    binding: {
+      schema: LEGACY_RETAINED_PROJECTION_PLAN_BINDING_SCHEMA,
+      raw_meta_projection_state: rawHasProjection
+        ? "canonical_present"
+        : "absent",
+      raw_meta_sha256: metaHash,
+      projection_sha256: sha256Text(stableJson(expected)),
+    },
+  };
+}
+
+function retainedArtifactProjectionFromManifest({ kind, generation, manifest }) {
+  const slots = new Set(manifest.entries.map((entry) => entry.slot));
+  const layoutRetained = kind === "webpage" && slots.has("layout");
+  const expansionPages = [...slots]
+    .map((slot) => /^expansion_state_(\d{2})$/u.exec(slot)?.[1] || null)
+    .filter(Boolean)
+    .toSorted();
+  const expansionLayouts = [...slots]
+    .map((slot) => /^expansion_state_(\d{2})_layout$/u.exec(slot)?.[1] || null)
+    .filter(Boolean)
+    .toSorted();
+  if (
+    stableJson(expansionPages) !== stableJson(expansionLayouts)
+    || expansionPages.some((suffix, index) => suffix !== String(index + 1).padStart(2, "0"))
+    || (kind === "pdf" && (
+      slots.has("layout")
+      || expansionPages.length > 0
+      || expansionLayouts.length > 0
+    ))
+  ) {
+    fail(
+      "r2_retained_projection_expansion_manifest_invalid",
+      `${generation.name} expansion artifact manifest is incomplete or non-contiguous.`,
+    );
+  }
+  const claimedLayoutHash = optionalSha256(
+    generation.hashes?.layout_hash || generation.metadata?.layout_hash,
+  );
+  const layoutHash = layoutRetained
+    ? requiredSha256(
+        claimedLayoutHash,
+        `${generation.name} retained layout hash`,
+      )
+    : null;
+  if (!layoutRetained && claimedLayoutHash) {
+    fail(
+      "r2_retained_projection_layout_hash_unretained",
+      `${generation.name} claims a layout hash without a retained layout artifact.`,
+    );
+  }
+  return {
+    schema: RETAINED_ARTIFACT_PROJECTION_SCHEMA,
+    kind,
+    localization_status: kind === "pdf"
+      ? "not_applicable_pdf"
+      : layoutRetained
+        ? "exact_geometry_available"
+        : "evidence_only_geometry_unavailable",
+    authoritative: {
+      layout_retained: layoutRetained,
+      layout_hash: layoutHash,
+      expansion_state_count: kind === "webpage" ? expansionPages.length : 0,
+    },
+  };
+}
+
+function canonicalRetainedArtifactProjection(value) {
+  if (!isObject(value)) return null;
+  const authority = jsonObject(value.authoritative);
+  const kind = value.kind;
+  const layoutHash = authority.layout_hash === null
+    ? null
+    : optionalSha256(authority.layout_hash);
+  const expectedStatus = kind === "pdf"
+    ? "not_applicable_pdf"
+    : authority.layout_retained === true
+      ? "exact_geometry_available"
+      : "evidence_only_geometry_unavailable";
+  if (
+    value.schema !== RETAINED_ARTIFACT_PROJECTION_SCHEMA
+    || !new Set(["webpage", "pdf"]).has(kind)
+    || value.localization_status !== expectedStatus
+    || typeof authority.layout_retained !== "boolean"
+    || nonNegativeInteger(authority.expansion_state_count) === null
+    || (authority.layout_retained && !layoutHash)
+    || (!authority.layout_retained && authority.layout_hash !== null)
+    || (kind === "pdf" && (authority.layout_retained || authority.expansion_state_count !== 0))
+  ) return null;
+  return {
+    schema: value.schema,
+    kind,
+    localization_status: value.localization_status,
+    authoritative: {
+      layout_retained: authority.layout_retained,
+      layout_hash: layoutHash,
+      expansion_state_count: authority.expansion_state_count,
+    },
+  };
 }
 
 function artifactBindingsFromArtifacts(artifacts) {
@@ -1684,6 +1882,7 @@ function migrationItemExecutionBinding(item) {
         metadata_after: generation.metadata_after || null,
         metadata_enriched: generation.metadata_enriched === true,
         metadata_added_paths: generation.metadata_added_paths || null,
+        retained_projection_binding: generation.retained_projection_binding || null,
         artifacts: generation.artifacts || null,
         verified_artifacts: generation.verified_artifacts || null,
         artifact_manifest_sha256: generation.artifact_manifest_sha256 || null,
@@ -1793,11 +1992,12 @@ async function verifyPlannedImmutableDestinations(item, objectStore) {
   if (!objectStore || typeof objectStore.readObject !== "function") {
     fail("object_store_invalid", "An R2 objectStore.readObject function is required.");
   }
-  for (const generation of Object.values(item.generations || {})) {
+  for (const [generationName, generation] of Object.entries(item.generations || {})) {
     const migrated = generation?.state === "migrate_legacy_mutable";
     const existingImmutable = generation?.state === "already_immutable";
     if (!migrated && !existingImmutable) continue;
     const artifacts = migrated ? generation.artifacts || [] : generation.verified_artifacts || [];
+    const verifiedBySlot = new Map();
     for (const artifact of artifacts) {
       const key = migrated ? artifact.immutable_key : artifact.source_key;
       const destination = validateReadObject(
@@ -1824,7 +2024,76 @@ async function verifyPlannedImmutableDestinations(item, objectStore) {
           `Immutable destination verification failed for ${key}.`,
         );
       }
+      verifiedBySlot.set(artifact.slot, destination);
     }
+    validateReReadRetainedProjectionState({
+      itemKind: item.kind,
+      generationName,
+      generation,
+      metaArtifact: verifiedBySlot.get("meta"),
+    });
+  }
+}
+
+function validateReReadRetainedProjectionState({
+  itemKind,
+  generationName,
+  generation,
+  metaArtifact,
+}) {
+  if (!Buffer.isBuffer(metaArtifact?.body)) {
+    fail(
+      "immutable_destination_meta_missing",
+      `Immutable ${generationName} metadata bytes are unavailable.`,
+    );
+  }
+  let rawMeta;
+  try {
+    rawMeta = JSON.parse(decodeUtf8(metaArtifact.body, `${generationName} immutable meta`));
+  } catch (error) {
+    fail(
+      "immutable_destination_meta_invalid",
+      `Immutable ${generationName} metadata is invalid JSON: ${safeMessage(error)}`,
+    );
+  }
+  const binding = jsonObject(generation.retained_projection_binding);
+  const actualRawMetaSha256 = sha256Bytes(metaArtifact.body);
+  if (binding.raw_meta_sha256 !== actualRawMetaSha256) {
+    fail(
+      "immutable_destination_projection_raw_meta_mismatch",
+      `Immutable ${generationName} metadata differs from its reviewed projection binding.`,
+    );
+  }
+  const rawHasProjection = Object.hasOwn(rawMeta, "retained_artifact_projection");
+  const expectedRawHasProjection =
+    binding.raw_meta_projection_state === "canonical_present";
+  if (
+    rawHasProjection !== expectedRawHasProjection
+    || Object.hasOwn(rawMeta, "legacy_retained_artifact_projection_provenance")
+  ) {
+    fail(
+      "immutable_destination_projection_presence_mismatch",
+      `Immutable ${generationName} retained-projection field presence differs from the reviewed plan.`,
+    );
+  }
+  if (!rawHasProjection) return;
+  const pointerProjection = canonicalRetainedArtifactProjection(
+    generation.metadata_after?.retained_artifact_projection,
+  );
+  const rawProjection = canonicalRetainedArtifactProjection(
+    rawMeta.retained_artifact_projection,
+  );
+  if (
+    !pointerProjection
+    || !rawProjection
+    || pointerProjection.kind !== itemKind
+    || stableJson(pointerProjection) !== stableJson(rawProjection)
+    || sha256Text(stableJson(pointerProjection)) !== binding.projection_sha256
+  ) {
+    fail(
+      "immutable_destination_projection_mismatch",
+      `Immutable ${generationName} retained projection differs from the reviewed canonical projection.`,
+    );
   }
 }
 
@@ -1976,6 +2245,13 @@ function validatePlanItem(item) {
           `Plan ${generationName} artifact bindings differ from its verified object set.`,
         );
       }
+      validateRetainedProjectionPlanBinding({
+        itemKind: expected.kind,
+        generationName,
+        generation,
+        plannedArtifacts,
+        metadataAfter: after,
+      });
       if (generation.metadata_enriched !== fields.includes(databaseField)) {
         fail("plan_metadata_enrichment_flag_mismatch", `Plan ${generationName} enrichment flag differs.`);
       }
@@ -2005,6 +2281,100 @@ function validatePlanItem(item) {
     "plan execution binding SHA-256",
   )) {
     fail("plan_item_execution_binding_invalid", "Plan item execution binding is invalid.");
+  }
+}
+
+function validateRetainedProjectionPlanBinding({
+  itemKind,
+  generationName,
+  generation,
+  plannedArtifacts,
+  metadataAfter,
+}) {
+  const binding = jsonObject(generation.retained_projection_binding);
+  const exactBindingKeys = [
+    "projection_sha256",
+    "raw_meta_projection_state",
+    "raw_meta_sha256",
+    "schema",
+  ];
+  if (
+    stableJson(Object.keys(binding).toSorted()) !== stableJson(exactBindingKeys)
+    || binding.schema !== LEGACY_RETAINED_PROJECTION_PLAN_BINDING_SCHEMA
+    || !new Set(["absent", "canonical_present"]).has(
+      binding.raw_meta_projection_state,
+    )
+  ) {
+    fail(
+      "plan_retained_projection_binding_invalid",
+      `Plan ${generationName} retained-projection binding is invalid.`,
+    );
+  }
+  const metaArtifact = plannedArtifacts.find((artifact) => artifact?.slot === "meta");
+  const rawMetaSha256 = requiredSha256(
+    binding.raw_meta_sha256,
+    `Plan ${generationName} retained raw metadata SHA-256`,
+  );
+  if (
+    !metaArtifact
+    || rawMetaSha256 !== requiredSha256(
+      metaArtifact.sha256,
+      `Plan ${generationName} meta artifact SHA-256`,
+    )
+  ) {
+    fail(
+      "plan_retained_projection_raw_meta_binding_mismatch",
+      `Plan ${generationName} retained-projection provenance is not bound to its exact meta artifact.`,
+    );
+  }
+  const expectedProjection = retainedArtifactProjectionFromManifest({
+    kind: itemKind,
+    generation: {
+      name: generationName,
+      hashes: jsonObject(generation.hashes),
+      metadata: metadataAfter,
+    },
+    manifest: {
+      entries: plannedArtifacts.map((artifact) => ({ slot: artifact?.slot })),
+    },
+  });
+  const expectedProjectionSha256 = sha256Text(stableJson(expectedProjection));
+  if (
+    requiredSha256(
+      binding.projection_sha256,
+      `Plan ${generationName} retained projection SHA-256`,
+    ) !== expectedProjectionSha256
+    || stableJson(canonicalRetainedArtifactProjection(
+      metadataAfter.retained_artifact_projection,
+    )) !== stableJson(expectedProjection)
+  ) {
+    fail(
+      "plan_retained_projection_manifest_mismatch",
+      `Plan ${generationName} retained projection differs from its exact artifact manifest.`,
+    );
+  }
+
+  const provenanceField = "legacy_retained_artifact_projection_provenance";
+  const provenancePresent = Object.hasOwn(metadataAfter, provenanceField);
+  if (binding.raw_meta_projection_state === "absent") {
+    const expectedProvenance = buildLegacyRetainedProjectionProvenance({
+      rawMetaSha256,
+      projectionSha256: expectedProjectionSha256,
+    });
+    if (
+      !provenancePresent
+      || stableJson(metadataAfter[provenanceField]) !== stableJson(expectedProvenance)
+    ) {
+      fail(
+        "plan_retained_projection_provenance_mismatch",
+        `Plan ${generationName} missing-raw projection provenance is invalid.`,
+      );
+    }
+  } else if (provenancePresent) {
+    fail(
+      "plan_retained_projection_provenance_unexpected",
+      `Plan ${generationName} carries legacy provenance despite a retained raw projection.`,
+    );
   }
 }
 
@@ -2077,6 +2447,16 @@ function validateDerivedMetadataAddition({ path, value }, generationName) {
     if (value === ARTIFACT_BINDINGS_SCHEMA) return;
   } else if (path === "artifact_bindings") {
     if (validArtifactBindingsShape(value)) return;
+  } else if (path === "retained_artifact_projection") {
+    if (canonicalRetainedArtifactProjection(value)) return;
+  } else if (path === "legacy_retained_artifact_projection_provenance") {
+    if (
+      isExactLegacyRetainedProjectionProvenance({
+        value,
+        rawMetaSha256: value?.raw_meta_sha256,
+        projectionSha256: value?.projection_sha256,
+      })
+    ) return;
   } else if (path === "localization") {
     if (stableJson(value) === stableJson(canonicalLocalization)) return;
   } else if (path === "localization.status") {

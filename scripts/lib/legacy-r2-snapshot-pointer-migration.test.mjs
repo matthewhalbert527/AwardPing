@@ -9,9 +9,13 @@ import {
   blockedLegacyR2MigrationItem,
   buildLegacyR2PointerMigrationPlan,
   inspectLegacyR2SnapshotPointer,
+  LEGACY_R2_POINTER_PLAN_SCHEMA,
+  LEGACY_R2_POINTER_POLICY,
+  LEGACY_R2_POINTER_RECEIPT_SCHEMA,
   legacyR2CaptureVersion,
   migrationFailureQuarantineEvidence,
   sha256Bytes,
+  snapshotPostconditionFingerprint,
 } from "./legacy-r2-snapshot-pointer-migration.mjs";
 import { bindVisualTextGeometry } from "./visual-event-localization.mjs";
 import {
@@ -35,6 +39,68 @@ function sha256(value) {
 
 function md5(value) {
   return createHash("md5").update(value).digest("hex");
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortStableJsonValue(value));
+}
+
+function sortStableJsonValue(value) {
+  if (Array.isArray(value)) return value.map(sortStableJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .map((key) => [key, sortStableJsonValue(value[key])]),
+  );
+}
+
+function executionBindingForTest(item) {
+  return sha256(stableJson({
+    source_id: item.source_id,
+    expected_snapshot_sha256: item.expected_snapshot_sha256,
+    expected_preserved_fields_sha256: item.expected_preserved_fields_sha256,
+    expected_postcondition_sha256: item.expected_postcondition_sha256,
+    next_object_keys: item.next_object_keys,
+    next_metadata: item.next_metadata,
+    metadata_fields_to_update: item.metadata_fields_to_update,
+    generations: Object.fromEntries(
+      Object.entries(item.generations || {}).map(([name, generation]) => [name, {
+        state: generation.state,
+        version: generation.version || null,
+        captured_at: generation.captured_at || null,
+        object_keys_before: generation.object_keys_before || generation.object_keys || null,
+        object_keys_after: generation.object_keys_after || generation.object_keys || null,
+        hashes: generation.hashes || null,
+        metadata_before: generation.metadata_before || null,
+        metadata_after: generation.metadata_after || null,
+        metadata_enriched: generation.metadata_enriched === true,
+        metadata_added_paths: generation.metadata_added_paths || null,
+        retained_projection_binding: generation.retained_projection_binding || null,
+        artifacts: generation.artifacts || null,
+        verified_artifacts: generation.verified_artifacts || null,
+        artifact_manifest_sha256: generation.artifact_manifest_sha256 || null,
+      }]),
+    ),
+  }));
+}
+
+function retainedProjection({ kind = "webpage", layoutHash = null, expansionStateCount = 0 } = {}) {
+  const layoutRetained = kind === "webpage" && Boolean(layoutHash);
+  return {
+    schema: "awardping.capture-retained-artifact-projection.v1",
+    kind,
+    localization_status: kind === "pdf"
+      ? "not_applicable_pdf"
+      : layoutRetained
+        ? "exact_geometry_available"
+        : "evidence_only_geometry_unavailable",
+    authoritative: {
+      layout_retained: layoutRetained,
+      layout_hash: layoutRetained ? layoutHash : null,
+      expansion_state_count: kind === "webpage" ? expansionStateCount : 0,
+    },
+  };
 }
 
 function sourceRow() {
@@ -77,6 +143,7 @@ function generationFixture(name, capturedAt, marker) {
       accounted_for: true,
       unavailable_reason: "legacy_no_retained_geometry",
     },
+    retained_artifact_projection: retainedProjection(),
   };
   const metaValue = {
     version: 1,
@@ -99,6 +166,7 @@ function generationFixture(name, capturedAt, marker) {
     page_bytes: page.length,
     thumb_bytes: thumb.length,
     expansion_state_screenshots: [],
+    retained_artifact_projection: retainedProjection(),
   };
   const meta = Buffer.from(JSON.stringify(metaValue, null, 2), "utf8");
   const prefix = `visual-snapshots/sources/${sourceId}/${name}`;
@@ -206,6 +274,7 @@ function pdfFixture() {
     file_bytes: pdf.length,
     page_count: 1,
     pdf_text_error: null,
+    retained_artifact_projection: retainedProjection({ kind: "pdf" }),
   };
   const meta = Buffer.from(JSON.stringify({
     version: 1,
@@ -223,6 +292,7 @@ function pdfFixture() {
     file_bytes: pdf.length,
     page_count: 1,
     pdf_text_error: null,
+    retained_artifact_projection: retainedProjection({ kind: "pdf" }),
   }), "utf8");
   const prefix = `visual-snapshots/sources/${sourceId}/latest`;
   const objectKeys = {
@@ -339,6 +409,10 @@ function addMainLayoutEvidence(value) {
     semantic_crop_contract: "visual-exact-text-binding-v2",
     captured_at: generation.capturedAt,
   };
+  value.row.latest_metadata.retained_artifact_projection = retainedProjection({
+    layoutHash: layout.geometry_hash,
+    expansionStateCount: Number(value.row.latest_metadata.expansion_state_count || 0),
+  });
   value.objects.set(layoutKey, objectRecord(layoutBody, "application/json; charset=utf-8"));
 
   const metaRecord = value.objects.get(generation.objectKeys.meta);
@@ -346,6 +420,9 @@ function addMainLayoutEvidence(value) {
   meta.layout_hash = layout.geometry_hash;
   meta.text_geometry = geometryReference(layout, layoutRef);
   meta.localization = structuredClone(value.row.latest_metadata.localization);
+  meta.retained_artifact_projection = structuredClone(
+    value.row.latest_metadata.retained_artifact_projection,
+  );
   meta.files = { ...(meta.files || {}), page: pageRef, layout: layoutRef };
   value.objects.set(
     generation.objectKeys.meta,
@@ -398,6 +475,10 @@ function addExpansionStateEvidence(value) {
   value.row.latest_object_keys.expansion_state_01_layout = layoutKey;
   value.row.latest_metadata.expansion_state_count = 1;
   value.row.latest_metadata.expansion_state_screenshots = [pointerState];
+  value.row.latest_metadata.retained_artifact_projection = retainedProjection({
+    layoutHash: generation.hashes.layout_hash,
+    expansionStateCount: 1,
+  });
   value.objects.set(pageKey, objectRecord(page, "image/jpeg"));
   value.objects.set(
     layoutKey,
@@ -407,6 +488,9 @@ function addExpansionStateEvidence(value) {
   const meta = JSON.parse(metaRecord.body.toString("utf8"));
   meta.expansion_state_count = 1;
   meta.expansion_state_screenshots = [rawState];
+  meta.retained_artifact_projection = structuredClone(
+    value.row.latest_metadata.retained_artifact_projection,
+  );
   meta.files = {
     ...(meta.files || {}),
     expansion_states: [{ state_id: stateId, label: "Eligibility", page: pageRef, layout: layoutRef }],
@@ -433,6 +517,9 @@ function removeMainLayoutEvidence(value) {
   delete generation.metadata.layout_hash;
   delete generation.metadata.text_geometry;
   generation.metadata.localization = structuredClone(unavailable);
+  generation.metadata.retained_artifact_projection = retainedProjection({
+    expansionStateCount: Number(generation.metadata.expansion_state_count || 0),
+  });
   value.objects.delete(mainLayoutKey);
 
   const metaRecord = value.objects.get(generation.objectKeys.meta);
@@ -440,12 +527,56 @@ function removeMainLayoutEvidence(value) {
   delete meta.layout_hash;
   delete meta.text_geometry;
   meta.localization = structuredClone(unavailable);
+  meta.retained_artifact_projection = structuredClone(
+    generation.metadata.retained_artifact_projection,
+  );
   if (meta.files) delete meta.files.layout;
   value.objects.set(
     generation.objectKeys.meta,
     objectRecord(Buffer.from(JSON.stringify(meta), "utf8"), "application/json; charset=utf-8"),
   );
   applyArtifactBindings(generation.metadata, generation.objectKeys, value.objects);
+}
+
+function removeRetainedProjectionEvidence(value, generationName = "latest") {
+  const metadataField = `${generationName}_metadata`;
+  const objectKeysField = `${generationName}_object_keys`;
+  delete value.row[metadataField].retained_artifact_projection;
+  delete value.row[metadataField].legacy_retained_artifact_projection_provenance;
+  const metaKey = value.row[objectKeysField].meta;
+  const meta = JSON.parse(value.objects.get(metaKey).body.toString("utf8"));
+  delete meta.retained_artifact_projection;
+  delete meta.legacy_retained_artifact_projection_provenance;
+  value.objects.set(
+    metaKey,
+    objectRecord(
+      Buffer.from(JSON.stringify(meta), "utf8"),
+      "application/json; charset=utf-8",
+    ),
+  );
+  applyArtifactBindings(
+    value.row[metadataField],
+    value.row[objectKeysField],
+    value.objects,
+  );
+}
+
+function seedLatestAsImmutable(value, objectStore) {
+  const version = legacyR2CaptureVersion({
+    capturedAt: value.row.latest_captured_at,
+    hashes: value.row.latest_hashes,
+  });
+  const immutableKeys = {};
+  for (const [slot, oldKey] of Object.entries(value.row.latest_object_keys)) {
+    const fileName = oldKey.split("/").at(-1);
+    const immutableKey =
+      `visual-snapshots/sources/${sourceId}/captures/${version}/${fileName}`;
+    const record = value.objects.get(oldKey);
+    objectStore.seedImmutable(immutableKey, record.body, writerContentType(slot));
+    immutableKeys[slot] = immutableKey;
+  }
+  value.row.latest_object_keys = immutableKeys;
+  return { immutableKeys, version };
 }
 
 function fakeObjectStore(initialObjects) {
@@ -735,6 +866,175 @@ describe("legacy R2 snapshot pointer inspection", () => {
       source: expansionPdf.source,
       objectStore: fakeObjectStore(expansionPdf.objects),
     })).rejects.toMatchObject({ code: "generation_kind_ambiguous" });
+  });
+
+  it("repairs an already-immutable v6 PDF pointer metadata-only with exact v7 projection provenance", async () => {
+    const value = pdfFixture();
+    removeRetainedProjectionEvidence(value);
+    const rawMetaKey = value.row.latest_object_keys.meta;
+    const rawMetaBody = Buffer.from(value.objects.get(rawMetaKey).body);
+    const objectStore = fakeObjectStore(value.objects);
+    const { immutableKeys } = seedLatestAsImmutable(value, objectStore);
+
+    const inspected = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore,
+    });
+
+    expect(inspected.item.action).toBe("migrate");
+    expect(inspected.item.generations.latest).toMatchObject({
+      state: "already_immutable",
+      metadata_enriched: true,
+      metadata_added_paths: [
+        "legacy_retained_artifact_projection_provenance",
+        "retained_artifact_projection",
+      ],
+      retained_projection_binding: {
+        schema: "awardping.legacy-retained-artifact-projection-plan-binding.v1",
+        raw_meta_projection_state: "absent",
+        raw_meta_sha256: sha256(rawMetaBody),
+        projection_sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      },
+    });
+    expect(inspected.item.metadata_fields_to_update).toEqual(["latest_metadata"]);
+    expect(inspected.item.next_object_keys.latest).toEqual(immutableKeys);
+    expect(inspected.item.next_metadata.latest).toMatchObject({
+      retained_artifact_projection: retainedProjection({ kind: "pdf" }),
+      legacy_retained_artifact_projection_provenance: {
+        schema: "awardping.legacy-retained-artifact-projection-provenance.v1",
+        policy_id: "awardping-legacy-r2-snapshot-pointer-migration",
+        policy_version: "7",
+        policy_hash: "d78f759ade653117a7c8ffae6de9d30d73d33b26a8b03f3e44d998d9fd850a53",
+        derived_from: "verified_immutable_r2_manifest",
+        raw_meta_projection_present: false,
+        raw_meta_sha256: sha256(rawMetaBody),
+        projection_sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      },
+    });
+
+    const plan = buildLegacyR2PointerMigrationPlan({
+      items: [inspected.item],
+      selector: { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 },
+      builtAt,
+    });
+    expect(plan.schema_version).toBe(LEGACY_R2_POINTER_PLAN_SCHEMA);
+    expect(plan.policy).toEqual(LEGACY_R2_POINTER_POLICY);
+    expect(plan.policy).toEqual({
+      id: "awardping-legacy-r2-snapshot-pointer-migration",
+      version: "7",
+      hash: "d78f759ade653117a7c8ffae6de9d30d73d33b26a8b03f3e44d998d9fd850a53",
+    });
+
+    let current = structuredClone(value.row);
+    const compareAndSetObjectKeys = vi.fn(async (input) => {
+      expect(input.latestObjectKeys).toEqual(immutableKeys);
+      expect(input.previousObjectKeys).toEqual({});
+      expect(Object.keys(input.metadataUpdates)).toEqual(["latest_metadata"]);
+      current = {
+        ...current,
+        ...structuredClone(input.metadataUpdates),
+        updated_at: "2026-08-10T15:05:00.000Z",
+      };
+      return { advanced: true, row: current };
+    });
+    const receipt = await applyLegacyR2SnapshotPointerItem({
+      planItem: inspected.item,
+      currentRow: current,
+      source: value.source,
+      objectStore,
+      compareAndSetObjectKeys,
+      loadCurrentRow: async () => current,
+      now: "2026-08-10T15:05:01.000Z",
+    });
+
+    expect(receipt.schema_version).toBe(LEGACY_R2_POINTER_RECEIPT_SCHEMA);
+    expect(receipt).toMatchObject({ status: "applied", immutable_objects_uploaded: 0 });
+    expect(objectStore.puts).toHaveLength(0);
+    expect(objectStore.objects.get(immutableKeys.meta).body).toEqual(rawMetaBody);
+    expect(current.latest_object_keys).toEqual(immutableKeys);
+  });
+
+  it("rederives projection and provenance bindings while validating a reviewed v7 plan", async () => {
+    const value = pdfFixture();
+    removeRetainedProjectionEvidence(value);
+    const inspected = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore: fakeObjectStore(value.objects),
+    });
+    const selector = { mode: "exact_allowlist", source_ids: [sourceId], source_count: 1 };
+
+    const wrongMetaBinding = structuredClone(inspected.item);
+    wrongMetaBinding.generations.latest.retained_projection_binding.raw_meta_sha256 =
+      "f".repeat(64);
+    expect(() => buildLegacyR2PointerMigrationPlan({
+      items: [wrongMetaBinding],
+      selector,
+      builtAt,
+    })).toThrow(expect.objectContaining({
+      code: "plan_retained_projection_raw_meta_binding_mismatch",
+    }));
+
+    const wrongProjectionBinding = structuredClone(inspected.item);
+    wrongProjectionBinding.generations.latest.retained_projection_binding.projection_sha256 =
+      "e".repeat(64);
+    expect(() => buildLegacyR2PointerMigrationPlan({
+      items: [wrongProjectionBinding],
+      selector,
+      builtAt,
+    })).toThrow(expect.objectContaining({
+      code: "plan_retained_projection_manifest_mismatch",
+    }));
+
+    const falseRawPresence = structuredClone(inspected.item);
+    falseRawPresence.generations.latest.retained_projection_binding.raw_meta_projection_state =
+      "canonical_present";
+    expect(() => buildLegacyR2PointerMigrationPlan({
+      items: [falseRawPresence],
+      selector,
+      builtAt,
+    })).toThrow(expect.objectContaining({
+      code: "plan_retained_projection_provenance_unexpected",
+    }));
+  });
+
+  it.each([
+    ["malformed raw projection", (value, meta) => {
+      meta.retained_artifact_projection = { schema: "partial" };
+      delete value.row.latest_metadata.retained_artifact_projection;
+    }, "r2_retained_projection_meta_mismatch"],
+    ["malformed pointer projection", (value) => {
+      value.row.latest_metadata.retained_artifact_projection = { schema: "partial" };
+    }, "r2_retained_projection_pointer_mismatch"],
+    ["legacy provenance beside a modern raw projection", (value) => {
+      value.row.latest_metadata.legacy_retained_artifact_projection_provenance = {
+        schema: "awardping.legacy-retained-artifact-projection-provenance.v1",
+      };
+    }, "r2_retained_projection_provenance_unexpected"],
+  ])("fails closed for %s", async (_name, mutate, reasonCode) => {
+    const value = pdfFixture();
+    const metaKey = value.row.latest_object_keys.meta;
+    const rawMeta = JSON.parse(value.objects.get(metaKey).body.toString("utf8"));
+    mutate(value, rawMeta);
+    value.objects.set(
+      metaKey,
+      objectRecord(
+        Buffer.from(JSON.stringify(rawMeta), "utf8"),
+        "application/json; charset=utf-8",
+      ),
+    );
+    applyArtifactBindings(
+      value.row.latest_metadata,
+      value.row.latest_object_keys,
+      value.objects,
+    );
+
+    await expect(inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore: fakeObjectStore(value.objects),
+    })).rejects.toMatchObject({ code: reasonCode });
   });
 
   it("derives only an absent raw text-object binding and rejects malformed or wrong values", async () => {
@@ -1308,6 +1608,49 @@ describe("legacy R2 snapshot pointer apply", () => {
     expect(second.status).toBe("already_applied");
     expect(objectStore.puts).toHaveLength(putsAfterFirstApply);
     expect(compareAndSetObjectKeys).toHaveBeenCalledTimes(1);
+  });
+
+  it("reparses immutable meta before CAS when a plan forges raw presence and removes provenance consistently", async () => {
+    const value = pdfFixture();
+    removeRetainedProjectionEvidence(value);
+    const objectStore = fakeObjectStore(value.objects);
+    seedLatestAsImmutable(value, objectStore);
+    const inspected = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore,
+    });
+    const forged = structuredClone(inspected.item);
+    forged.generations.latest.retained_projection_binding.raw_meta_projection_state =
+      "canonical_present";
+    delete forged.next_metadata.latest
+      .legacy_retained_artifact_projection_provenance;
+    delete forged.generations.latest.metadata_after
+      .legacy_retained_artifact_projection_provenance;
+    forged.generations.latest.metadata_added_paths = [
+      "retained_artifact_projection",
+    ];
+    const expectedAfter = {
+      ...structuredClone(forged.expected_snapshot),
+      latest_object_keys: structuredClone(forged.next_object_keys.latest),
+      previous_object_keys: structuredClone(forged.next_object_keys.previous),
+      latest_metadata: structuredClone(forged.next_metadata.latest),
+      previous_metadata: structuredClone(forged.next_metadata.previous),
+    };
+    forged.expected_postcondition_sha256 = snapshotPostconditionFingerprint(expectedAfter);
+    forged.execution_binding_sha256 = executionBindingForTest(forged);
+    const compareAndSetObjectKeys = vi.fn();
+
+    await expect(applyLegacyR2SnapshotPointerItem({
+      planItem: forged,
+      currentRow: value.row,
+      source: value.source,
+      objectStore,
+      compareAndSetObjectKeys,
+      loadCurrentRow: async () => value.row,
+    })).rejects.toMatchObject({ code: "legacy_r2_evidence_changed" });
+    expect(compareAndSetObjectKeys).not.toHaveBeenCalled();
+    expect(objectStore.puts).toHaveLength(0);
   });
 
   it("refuses an occupied destination with different bytes before pointer CAS", async () => {

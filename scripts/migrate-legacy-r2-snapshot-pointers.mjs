@@ -371,7 +371,7 @@ async function applyReviewedPlan(args, dependencies) {
 
   const completedAt = new Date().toISOString();
   const receipt = {
-    schema_version: "awardping.legacy-r2-snapshot-pointer-migration-batch-receipt.v6",
+    schema_version: "awardping.legacy-r2-snapshot-pointer-migration-batch-receipt.v7",
     status: failures ? "completed_with_protected_failures" : "applied",
     plan_sha256: plan.confirmation.plan_sha256,
     completed_at: completedAt,
@@ -929,7 +929,11 @@ Safety contract:
   retained text bytes prove that an older generation lacks text_object_bytes,
   it may also add only that derived field to the corresponding metadata JSON.
   It may add the shared artifact-bindings schema and exact raw SHA/length/type
-  map for every already-verified object referenced by that generation.
+  map for every already-verified object referenced by that generation. It may
+  add the canonical retained-artifact projection derived from that exact map.
+  When immutable raw metadata predates the projection, it adds fixed-v7
+  provenance bound to both the raw metadata and projection hashes; it never
+  rewrites that immutable metadata object.
   For a generation with no layout or expansion claim, it may add only truthful
   zero-expansion and evidence-only geometry-unavailable accounting. Existing
   metadata values are never overwritten; conflicts fail closed to quarantine.

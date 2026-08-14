@@ -212,6 +212,10 @@ const maxPdfDiscoveryRegistrationBatchSize = 500;
 const maxPdfDiscoveryQueueCandidates = 25;
 const maxSnapshotExpandableControls = 120;
 const args = parseArgs(process.argv.slice(2));
+if (boolArg(args.help ?? args.h, false)) {
+  console.log(captureVisualSnapshotsHelp());
+  process.exit(0);
+}
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
   ...loadEnvFile(envPath),
@@ -15047,6 +15051,25 @@ function errorMessage(error) {
 
 function isSourceTimeoutError(error) {
   return errorChainHasCode(error, "AWARDPING_SOURCE_TIMEOUT");
+}
+
+function captureVisualSnapshotsHelp() {
+  return [
+    "AwardPing visual snapshot worker",
+    "",
+    "Usage:",
+    "  node scripts/capture-visual-snapshots.mjs [options]",
+    "",
+    "Safety:",
+    "  --help                     Print this text and exit without loading runtime configuration or starting a run.",
+    "  --source-id=<uuid>         Restrict the run to one exact source.",
+    "  --source-ids-file=<path>   Restrict the run to an allowlisted source-ID file.",
+    "  --gemini-api-max-calls=0   Disable paid Gemini calls for the run.",
+    "  --visual-review-mode=none  Disable visual-review interpretation.",
+    "  --r2-snapshot-sync=true    Require immutable R2 snapshot synchronization.",
+    "",
+    "This command performs work unless --help is supplied. Use a reviewed launcher or an exact source allowlist.",
+  ].join("\n");
 }
 
 function createSourcePhaseDeadline(milliseconds, message) {
