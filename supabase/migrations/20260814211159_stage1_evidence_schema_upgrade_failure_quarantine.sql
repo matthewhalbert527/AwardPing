@@ -1599,20 +1599,27 @@ begin
         or v_journal_read_absent is not null
       )
     )
-    or v_availability #>> array['r2_binding', 'status'] is distinct from case
-      when v_r2 = 'null'::jsonb then 'not_observed'
-      else 'sealed_present'
-    end
-    or v_availability #>> array['commit_recovery', 'status'] is distinct from
+    -- Parentheses keep each CASE nested while PL/pgSQL scans for this IF's THEN.
+    or v_availability #>> array['r2_binding', 'status'] is distinct from (
       case
-        when v_recovery <> 'null'::jsonb then 'sealed_present'
-        when v_journal_read_unavailable is not null then 'unavailable'
-        when v_journal_read_absent is not null then 'verified_absent'
-        else 'not_observed'
+        when v_r2 = 'null'::jsonb then 'not_observed'
+        else 'sealed_present'
       end
+    )
+    or v_availability #>> array['commit_recovery', 'status'] is distinct from
+      (
+        case
+          when v_recovery <> 'null'::jsonb then 'sealed_present'
+          when v_journal_read_unavailable is not null then 'unavailable'
+          when v_journal_read_absent is not null then 'verified_absent'
+          else 'not_observed'
+        end
+      )
     or v_availability #>> array['candidate_artifacts', 'status'] is distinct
-      from case when v_candidate = 'null'::jsonb then 'not_observed'
-      else 'sealed_present' end
+      from (
+        case when v_candidate = 'null'::jsonb then 'not_observed'
+        else 'sealed_present' end
+      )
     or (
       v_r2 = 'null'::jsonb
       and v_availability #>> array['r2_binding', 'unavailable_reason']

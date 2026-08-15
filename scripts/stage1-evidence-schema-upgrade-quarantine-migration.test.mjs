@@ -39,6 +39,18 @@ describe("Stage 1 evidence-schema-upgrade quarantine migration", () => {
     );
   });
 
+  it("nests availability CASE expressions inside the PL/pgSQL IF condition", () => {
+    expect(rpc).toMatch(
+      /#>> array\['r2_binding', 'status'\] is distinct from \(\s*case\s+when v_r2 = 'null'::jsonb then 'not_observed'\s+else 'sealed_present'\s+end\s*\)/iu,
+    );
+    expect(rpc).toMatch(
+      /#>> array\['commit_recovery', 'status'\] is distinct from\s*\(\s*case\s+when v_recovery <> 'null'::jsonb then 'sealed_present'[\s\S]*?else 'not_observed'\s+end\s*\)/iu,
+    );
+    expect(rpc).toMatch(
+      /#>> array\['candidate_artifacts', 'status'\] is distinct\s+from \(\s*case when v_candidate = 'null'::jsonb then 'not_observed'\s+else 'sealed_present' end\s*\)/iu,
+    );
+  });
+
   it("creates an append-only private failure audit with exact content seals", () => {
     for (const contract of [
       "create table private.stage1_evidence_schema_upgrade_failures",
