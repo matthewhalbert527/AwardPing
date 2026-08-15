@@ -44,6 +44,10 @@ describe("R2 capture artifact bindings", () => {
     );
     expect(readFile).toHaveBeenCalledTimes(2);
     expect(prepared.artifacts.map((artifact) => artifact.name)).toEqual(["meta", "page"]);
+    expect(prepared.artifacts.map(({ name, path }) => ({ name, path }))).toEqual([
+      { name: "meta", path: "C:/capture/meta.json" },
+      { name: "page", path: "C:/capture/page.jpg" },
+    ]);
     expect(Object.keys(prepared.artifactBindings)).toEqual(["meta", "page"]);
     expect(prepared.artifactBindings).toEqual({
       meta: {

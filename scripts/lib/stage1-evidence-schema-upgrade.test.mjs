@@ -41,7 +41,8 @@ function enqueuePolicy() {
   });
 }
 
-function validAcquisition() {
+function validAcquisition(reviewedSource = stage1EvidenceSchemaUpgradeExpectedManifest().sources[0]) {
+  const reviewedSourceId = reviewedSource.source_id;
   const disposition = {
     schema_version: "awardping.stage1.baseline-source-human-disposition.v1",
     policy_version: "stage1-baseline-source-disposition-v1",
@@ -70,7 +71,7 @@ function validAcquisition() {
       onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
       notification_mode: "baseline_only",
       source_page_request_id: requestId,
-      shared_award_source_id: sourceId,
+      shared_award_source_id: reviewedSourceId,
       shared_award_source_acquisition_id: acquisitionId,
       evidence_packet_sha256: "c".repeat(64),
       decision_item_sha256: "d".repeat(64),
@@ -99,7 +100,7 @@ function validAcquisition() {
   disposition.guard_sha256 = stage1BaselineActivationGuardSha256(disposition);
   return {
     id: acquisitionId,
-    shared_award_source_id: sourceId,
+    shared_award_source_id: reviewedSourceId,
     origin_source_page_request_id: requestId,
     acquisition_kind: "historical_import",
     notification_mode: "baseline_only",
@@ -113,17 +114,20 @@ function validAcquisition() {
   };
 }
 
-function validFinalizedSource() {
-  const acquisition = validAcquisition();
+function validFinalizedSource(
+  reviewedSource = stage1EvidenceSchemaUpgradeExpectedManifest().sources[0],
+) {
+  const reviewedSourceId = reviewedSource.source_id;
+  const acquisition = validAcquisition(reviewedSource);
   const persistenceEvidence = {
     schema_version: "awardping.stage1.baseline-activation-persistence-evidence.v3",
-    source_id: sourceId,
+    source_id: reviewedSourceId,
     acquisition_id: acquisitionId,
   };
   const receipt = {
     schema_version: "awardping.stage1.baseline-activation-finalization-receipt.v1",
     status: "finalized_open",
-    shared_award_source_id: sourceId,
+    shared_award_source_id: reviewedSourceId,
     source_acquisition_id: acquisitionId,
     source_page_request_id: requestId,
     decision_item_sha256: acquisition.review_seal.human_source_disposition.activation_guard
@@ -137,17 +141,22 @@ function validFinalizedSource() {
     creates_api_charge: false,
   };
   return {
-    id: sourceId,
+    id: reviewedSourceId,
+    shared_award_id: reviewedSource.shared_award_id,
     url: finalUrl,
     admin_review_status: "open",
     admin_review_note: "exact_first_visual_baseline_verified",
     admin_reviewed_by: "stage1-baseline-activation-receipt",
     admin_reviewed_at: finalizedAt,
-    shared_awards: { name: "Beinecke Scholarship", status: "active" },
+    shared_awards: {
+      id: reviewedSource.shared_award_id,
+      name: reviewedSource.award,
+      status: "active",
+    },
     source_acquisition: acquisition,
     source_activation_finalization: {
       source_acquisition_id: acquisitionId,
-      shared_award_source_id: sourceId,
+      shared_award_source_id: reviewedSourceId,
       source_page_request_id: requestId,
       disposition_item_sha256: receipt.decision_item_sha256,
       prepare_receipt_sha256: receipt.prepare_receipt_sha256,
@@ -210,6 +219,26 @@ describe("Stage 1 evidence-schema-upgrade reviewed-nine boundary", () => {
     );
     expect(validateStage1EvidenceSchemaUpgradeManifest(JSON.stringify(manifest)))
       .toEqual(manifest);
+    const ndseg = manifest.sources.find((source) => source.cohort_key === "ndseg");
+    expect(ndseg).toEqual(expect.objectContaining({
+      cohort_key: "ndseg",
+      shared_award_id: "e776ca2f-4b2c-431e-a3f9-248ad78c30e8",
+      award: "National Defense Science and Engineering Graduate Fellowship",
+      source_id: "fa4088a7-706e-4ad3-ae12-3653751dd5e1",
+    }));
+    expect(manifest.sources.some((source) => source.award === "NDSEG")).toBe(false);
+    expect(manifest.identity_binding).toEqual({
+      schema_version: "awardping.stage1.canonical-award-identity-binding.v1",
+      canonical_cohort_key_required: true,
+      canonical_shared_award_id_required: true,
+      canonical_name_required: true,
+      aliases_allowed: false,
+      source_membership_changed: false,
+      supersedes_manifest_schema_version:
+        "awardping.stage1.reviewed-source-capture-allowlist.v1",
+      supersedes_manifest_sha256:
+        "f2a16adec57b3a66c3e467599bbf962cf02c94d1f6ded1daf5db09bf980c0184",
+    });
     expect(assertExactStage1EvidenceSchemaUpgradeSourceIds(
       [...STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS].reverse(),
     )).toEqual(STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS);
@@ -339,6 +368,36 @@ describe("Stage 1 evidence-schema-upgrade finalized eligibility", () => {
       finalization_binding: { present: true },
       semantic_difference_checked: false,
       evidence_completeness_checked: false,
+    });
+  });
+
+  it("binds NDSEG to its canonical key, UUID, and name instead of its alias", () => {
+    const manifest = stage1EvidenceSchemaUpgradeExpectedManifest();
+    const ndseg = manifest.sources.find((source) => source.cohort_key === "ndseg");
+    expect(evaluateStage1EvidenceSchemaUpgradeEligibility({
+      source: validFinalizedSource(ndseg),
+      manifest,
+    })).toMatchObject({ eligible: true, reason_codes: [] });
+
+    const aliased = validFinalizedSource(ndseg);
+    aliased.shared_awards.name = "NDSEG";
+    expect(evaluateStage1EvidenceSchemaUpgradeEligibility({
+      source: aliased,
+      manifest,
+    })).toMatchObject({
+      eligible: false,
+      reason_codes: expect.arrayContaining(["award_identity_mismatch"]),
+    });
+
+    const reparented = validFinalizedSource(ndseg);
+    reparented.shared_award_id = "5c2678e8-7c01-4781-ade3-cfa0b2ba326b";
+    reparented.shared_awards.id = reparented.shared_award_id;
+    expect(evaluateStage1EvidenceSchemaUpgradeEligibility({
+      source: reparented,
+      manifest,
+    })).toMatchObject({
+      eligible: false,
+      reason_codes: expect.arrayContaining(["canonical_award_id_mismatch"]),
     });
   });
 

@@ -37,6 +37,7 @@ export type DailyDigestEmail = {
 export type PublicUpdateConfirmationEmail = {
   to: string;
   confirmUrl: string;
+  idempotencyKey: string;
 };
 
 export type PublicDailyDigestRenderInput = {
@@ -72,6 +73,7 @@ export type ContactFormEmail = {
   name: string;
   email: string;
   message: string;
+  idempotencyKey?: string;
 };
 
 export async function sendChangeAlertEmail(input: ChangeAlertEmail) {
@@ -194,20 +196,23 @@ export async function sendPublicUpdateConfirmationEmail(input: PublicUpdateConfi
 
   resend ??= new Resend(appConfig.resendApiKey);
 
-  return resend.emails.send({
-    from: appConfig.alertFromEmail,
-    to: input.to,
-    subject: "Confirm your AwardPing daily updates",
-    html: `
-      <div style="font-family: Arial, sans-serif; color: #17211b; line-height: 1.55;">
-        <h1 style="font-size: 22px;">Confirm your daily AwardPing updates</h1>
-        <p>Use the link below to receive daily emails when AwardPing detects useful public award-page updates.</p>
-        <p><a href="${escapeHtml(input.confirmUrl)}">Confirm daily updates</a></p>
-        <p style="color: #626b7c; font-size: 13px;">If you did not request this, you can ignore this email.</p>
-      </div>
-    `,
-    text: `Confirm your daily AwardPing updates\n\n${input.confirmUrl}\n\nIf you did not request this, you can ignore this email.`,
-  });
+  return resend.emails.send(
+    {
+      from: appConfig.alertFromEmail,
+      to: input.to,
+      subject: "Confirm your AwardPing daily updates",
+      html: `
+        <div style="font-family: Arial, sans-serif; color: #17211b; line-height: 1.55;">
+          <h1 style="font-size: 22px;">Confirm your daily AwardPing updates</h1>
+          <p>Use the link below to receive daily emails when AwardPing detects useful public award-page updates.</p>
+          <p><a href="${escapeHtml(input.confirmUrl)}">Confirm daily updates</a></p>
+          <p style="color: #626b7c; font-size: 13px;">If you did not request this, you can ignore this email.</p>
+        </div>
+      `,
+      text: `Confirm your daily AwardPing updates\n\n${input.confirmUrl}\n\nIf you did not request this, you can ignore this email.`,
+    },
+    { idempotencyKey: input.idempotencyKey },
+  );
 }
 
 export function renderPublicDailyDigestEmail(
@@ -316,7 +321,7 @@ export async function sendContactFormEmail(input: ContactFormEmail) {
 
   resend ??= new Resend(appConfig.resendApiKey);
 
-  return resend.emails.send({
+  const message = {
     from: appConfig.alertFromEmail,
     to: input.to,
     replyTo: input.email,
@@ -331,7 +336,10 @@ export async function sendContactFormEmail(input: ContactFormEmail) {
       </div>
     `,
     text: `AwardPing contact form\n\nName: ${input.name}\nEmail: ${input.email}\n\n${input.message}`,
-  });
+  };
+  return input.idempotencyKey
+    ? resend.emails.send(message, { idempotencyKey: input.idempotencyKey })
+    : resend.emails.send(message);
 }
 
 function escapeHtml(value: string) {

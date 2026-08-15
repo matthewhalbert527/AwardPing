@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPublicDigestChanges,
+  createPublicConfirmationToken,
   createPublicUnsubscribeToken,
   filterSubscribersWithoutDigestDelivery,
   hashToken,
+  isPublicUpdateConfirmationFresh,
   normalizePublicUpdateEmail,
   pendingPublicDigestChangesForSubscriber,
+  planPublicUpdateConfirmationAttempt,
+  PUBLIC_UPDATE_CONFIRMATION_TTL_MS,
   publicDigestKey,
+  publicUpdateConfirmationExpiresAt,
   splitPublicDigestChanges,
   type PublicDigestCandidate,
 } from "@/lib/public-updates-core";
@@ -29,6 +34,144 @@ describe("public update digest helpers", () => {
     expect(token).toBe(createPublicUnsubscribeToken(subscriber, "test-secret"));
     expect(token).not.toBe(createPublicUnsubscribeToken(subscriber, "other-secret"));
     expect(hashToken(token)).toHaveLength(64);
+  });
+
+  it("creates stable confirmation tokens bound to subscriber, email, and secret", () => {
+    const subscriber = {
+      id: "7d669bcb-7e7b-43b1-a20d-76ec977db7bf",
+      created_at: "2026-05-27T15:00:00.000Z",
+      email_hash: "a".repeat(64),
+      attempted_at: "2026-08-15T01:00:00.000Z",
+    };
+
+    const token = createPublicConfirmationToken(subscriber, "test-secret");
+    expect(token).toBe(createPublicConfirmationToken(subscriber, "test-secret"));
+    expect(token).not.toBe(
+      createPublicConfirmationToken(
+        { ...subscriber, email_hash: "b".repeat(64) },
+        "test-secret",
+      ),
+    );
+    expect(token).not.toBe(createPublicConfirmationToken(subscriber, "other-secret"));
+    expect(token).not.toBe(
+      createPublicConfirmationToken(
+        { ...subscriber, attempted_at: "2026-08-15T02:00:00.000Z" },
+        "test-secret",
+      ),
+    );
+    expect(hashToken(token)).toHaveLength(64);
+  });
+
+  it("uses a 24-hour confirmation-link TTL with an exact expiry boundary", () => {
+    const sentAt = "2026-08-15T01:00:00.000Z";
+    expect(PUBLIC_UPDATE_CONFIRMATION_TTL_MS).toBe(24 * 60 * 60 * 1000);
+    expect(publicUpdateConfirmationExpiresAt(sentAt)).toBe(
+      "2026-08-16T01:00:00.000Z",
+    );
+    expect(
+      isPublicUpdateConfirmationFresh(
+        sentAt,
+        new Date("2026-08-16T00:59:59.999Z"),
+      ),
+    ).toBe(true);
+    expect(
+      isPublicUpdateConfirmationFresh(
+        sentAt,
+        new Date("2026-08-16T01:00:00.000Z"),
+      ),
+    ).toBe(false);
+    expect(isPublicUpdateConfirmationFresh(null, new Date(sentAt))).toBe(false);
+  });
+
+  it("suppresses resend while a pending confirmation link is fresh", () => {
+    expect(
+      planPublicUpdateConfirmationAttempt(
+        {
+          status: "pending",
+          confirmation_sent_at: "2026-08-15T01:00:00.000Z",
+          updated_at: "2026-08-15T01:00:00.000Z",
+        },
+        new Date("2026-08-15T13:00:00.000Z"),
+      ),
+    ).toEqual({
+      shouldSendConfirmation: false,
+      attemptSeal: null,
+      reason: "pending_confirmation_fresh",
+    });
+  });
+
+  it("derives expired and failed-delivery retries from persisted pre-state", () => {
+    const expiredState = {
+      status: "pending" as const,
+      confirmation_sent_at: "2026-08-15T01:00:00.000Z",
+      updated_at: "2026-08-15T01:00:05.000Z",
+    };
+    const firstExpiredPlan = planPublicUpdateConfirmationAttempt(
+      expiredState,
+      new Date("2026-08-16T03:00:00.000Z"),
+    );
+    const laterConcurrentPlan = planPublicUpdateConfirmationAttempt(
+      expiredState,
+      new Date("2026-08-16T04:00:00.000Z"),
+    );
+    expect(firstExpiredPlan).toEqual(laterConcurrentPlan);
+    expect(firstExpiredPlan).toEqual({
+      shouldSendConfirmation: true,
+      attemptSeal: "2026-08-16T01:00:00.000Z",
+      reason: "pending_confirmation_expired",
+    });
+
+    expect(
+      planPublicUpdateConfirmationAttempt(
+        {
+          status: "pending",
+          confirmation_sent_at: null,
+          updated_at: "2026-08-16T01:00:00.000Z",
+        },
+        new Date("2026-08-16T04:00:00.000Z"),
+      ),
+    ).toEqual({
+      shouldSendConfirmation: true,
+      attemptSeal: "2026-08-16T01:00:00.000Z",
+      reason: "pending_delivery_retry",
+    });
+
+    expect(
+      planPublicUpdateConfirmationAttempt(
+        {
+          status: "pending",
+          confirmation_sent_at: null,
+          updated_at: "2026-08-15T01:00:00.000Z",
+        },
+        new Date("2026-08-17T03:00:00.000Z"),
+      ),
+    ).toEqual({
+      shouldSendConfirmation: true,
+      attemptSeal: "2026-08-17T01:00:00.000Z",
+      reason: "pending_delivery_retry",
+    });
+  });
+
+  it("derives concurrent resubscriptions from the unsubscribe transition", () => {
+    const state = {
+      status: "unsubscribed" as const,
+      confirmation_sent_at: "2026-07-01T00:00:00.000Z",
+      updated_at: "2026-08-15T01:23:45.000Z",
+    };
+    expect(
+      planPublicUpdateConfirmationAttempt(
+        state,
+        new Date("2026-08-15T02:00:00.000Z"),
+      ),
+    ).toEqual(
+      planPublicUpdateConfirmationAttempt(
+        state,
+        new Date("2026-08-15T03:00:00.000Z"),
+      ),
+    );
+    expect(
+      planPublicUpdateConfirmationAttempt(state).attemptSeal,
+    ).toBe("2026-08-15T01:23:45.000Z");
   });
 
   it("uses UTC digest keys without a rolling delivery window", () => {

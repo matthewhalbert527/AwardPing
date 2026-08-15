@@ -300,6 +300,7 @@ export function prepareR2CaptureArtifacts(files, { readFile } = {}) {
       return {
         name,
         fileName,
+        path,
         contentType,
         body,
         binding: {

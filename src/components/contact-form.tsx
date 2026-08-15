@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2, Send } from "lucide-react";
 
 type SubmitState =
@@ -15,6 +15,11 @@ export function ContactForm() {
   const [website, setWebsite] = useState("");
   const [state, setState] = useState<SubmitState>({ type: "idle", message: "" });
   const [loading, setLoading] = useState(false);
+  const requestIdRef = useRef<string | null>(null);
+
+  function resetRequestAttempt() {
+    requestIdRef.current = null;
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -22,10 +27,12 @@ export function ContactForm() {
     setState({ type: "idle", message: "" });
 
     try {
+      const requestId = requestIdRef.current ?? globalThis.crypto.randomUUID();
+      requestIdRef.current = requestId;
       const response = await fetch("/api/contact", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name, email, message, website }),
+        body: JSON.stringify({ requestId, name, email, message, website }),
       });
       const data = await response.json();
       if (!response.ok || !data.ok) {
@@ -36,9 +43,12 @@ export function ContactForm() {
         return;
       }
 
-      setName("");
-      setEmail("");
-      setMessage("");
+      if (requestIdRef.current === requestId) {
+        requestIdRef.current = null;
+        setName("");
+        setEmail("");
+        setMessage("");
+      }
       setState({
         type: "success",
         message: data.message || "Thanks. Your message was sent.",
@@ -63,7 +73,10 @@ export function ContactForm() {
           id="contact-name"
           className="input mt-2"
           value={name}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            resetRequestAttempt();
+            setName(event.target.value);
+          }}
           required
         />
       </div>
@@ -77,7 +90,10 @@ export function ContactForm() {
           className="input mt-2"
           type="email"
           value={email}
-          onChange={(event) => setEmail(event.target.value)}
+          onChange={(event) => {
+            resetRequestAttempt();
+            setEmail(event.target.value);
+          }}
           required
         />
       </div>
@@ -90,7 +106,10 @@ export function ContactForm() {
           id="contact-message"
           className="input mt-2 min-h-40 resize-y"
           value={message}
-          onChange={(event) => setMessage(event.target.value)}
+          onChange={(event) => {
+            resetRequestAttempt();
+            setMessage(event.target.value);
+          }}
           required
         />
       </div>
@@ -102,7 +121,10 @@ export function ContactForm() {
           tabIndex={-1}
           autoComplete="off"
           value={website}
-          onChange={(event) => setWebsite(event.target.value)}
+          onChange={(event) => {
+            resetRequestAttempt();
+            setWebsite(event.target.value);
+          }}
         />
       </div>
 

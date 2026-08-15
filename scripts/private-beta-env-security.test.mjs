@@ -51,6 +51,46 @@ describe("private beta environment security gate", () => {
     );
   });
 
+  it("requires a Resend-shaped key and non-placeholder sender", () => {
+    const badKey = runLaunchCheck({ RESEND_API_KEY: "not-resend" });
+    expect(badKey.status).toBe(1);
+    expect(badKey.stdout).toContain(
+      "RESEND_API_KEY does not have the expected Resend key shape.",
+    );
+
+    const placeholderSender = runLaunchCheck({
+      ALERT_FROM_EMAIL: "AwardPing <alerts@example.com>",
+    });
+    expect(placeholderSender.status).toBe(1);
+    expect(placeholderSender.stdout).toContain(
+      "ALERT_FROM_EMAIL must be a valid non-placeholder Resend sender.",
+    );
+  });
+
+  it.each([
+    {
+      key: "CRON_SECRET",
+      value: "awardping-local-public-update-token",
+      expected: "CRON_SECRET must be a long production-only random value.",
+    },
+    {
+      key: "APP_DATA_ENCRYPTION_KEY",
+      value: "awardping-local-development-personal-data-encryption-key",
+      expected:
+        "APP_DATA_ENCRYPTION_KEY must be a production-only random value with at least 32 characters.",
+    },
+    {
+      key: "APP_DATA_LOOKUP_HMAC_KEY",
+      value: "awardping-local-development-personal-data-lookup-key",
+      expected:
+        "APP_DATA_LOOKUP_HMAC_KEY must be a production-only random value with at least 32 characters.",
+    },
+  ])("rejects the source-known $key development fallback", ({ key, value, expected }) => {
+    const result = runLaunchCheck({ [key]: value });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain(`FAIL   ${expected}`);
+  });
+
   it("accepts the exact short legacy v1 key without weakening active-key checks", () => {
     const result = runLaunchCheck({
       APP_DATA_LEGACY_V1_ENCRYPTION_KEY: "old-v1-key",
@@ -101,7 +141,7 @@ function runLaunchCheck(overrides = {}) {
     APP_DATA_ENCRYPTION_KEY_ID: "prod-2026-07",
     APP_DATA_LOOKUP_HMAC_KEY: "lookup-material-0123456789abcdefghijkl",
     RESEND_API_KEY: "re_test-only-value",
-    ALERT_FROM_EMAIL: "AwardPing <alerts@awardping.test>",
+    ALERT_FROM_EMAIL: "AwardPing <alerts@awardping.com>",
     CONTACT_TO_EMAIL: "support@awardping.test",
     ...overrides,
   };

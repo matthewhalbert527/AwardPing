@@ -5,6 +5,7 @@ import {
   assertStage1EvidenceSchemaUpgradeR2BindingReceipt,
   verifyStage1EvidenceSchemaUpgradeR2Binding,
 } from "./stage1-evidence-schema-upgrade-r2-binding.mjs";
+import { prepareR2CaptureArtifacts } from "./r2-capture-artifact-bindings.mjs";
 
 const sourceId = "11111111-1111-4111-8111-111111111111";
 const capturedAt = "2026-08-14T18:00:00.000Z";
@@ -248,6 +249,27 @@ describe("Stage 1 legacy local/R2 core binding", () => {
     const pageArtifact = artifact(localSwap, "page");
     pageArtifact.path = localSwap.existingCapture.thumb_path;
     expectCode(() => verify(localSwap), "local_artifact_path_binding_invalid");
+  });
+
+  it.each([
+    [
+      "a sibling source directory",
+      (path) => path.replace(sourceId, "22222222-2222-4222-8222-222222222222"),
+    ],
+    [
+      "a parent traversal",
+      (path) => path.replace("/page.jpg", "/../page.jpg"),
+    ],
+    [
+      "a mutable latest alias",
+      (path) => path.replace(localGeneration, "latest"),
+    ],
+  ])("rejects a prepared local artifact rebound through %s", (_label, rebind) => {
+    const fixture = webpageFixture();
+    const pageArtifact = artifact(fixture, "page");
+    pageArtifact.path = rebind(pageArtifact.path.replaceAll("\\", "/"));
+
+    expectCode(() => verify(fixture), "local_artifact_path_binding_invalid");
   });
 
   it("rejects self-consistently rebound but stale raw metadata", () => {
@@ -604,25 +626,15 @@ function finishFixture({ kind, capture, baseline, prepared, metadata }) {
 }
 
 function prepare(definitions) {
-  const artifacts = Object.entries(definitions)
-    .map(([name, [fileName, contentType, value]]) => {
-      const body = Buffer.from(value);
-      return {
-        name,
-        fileName,
-        contentType,
-        path: `${localPrefix()}${fileName}`,
-        body,
-        binding: binding(body, contentType),
-      };
-    })
-    .sort((left, right) => left.name.localeCompare(right.name));
-  return {
-    artifacts,
-    artifactBindings: Object.fromEntries(
-      artifacts.map((item) => [item.name, structuredClone(item.binding)]),
-    ),
-  };
+  const bodies = new Map();
+  const files = Object.entries(definitions).map(([name, [fileName, contentType, value]]) => {
+    const path = `${localPrefix()}${fileName}`;
+    bodies.set(path, Buffer.from(value));
+    return { name, fileName, contentType, path };
+  });
+  return prepareR2CaptureArtifacts(files, {
+    readFile: (path) => bodies.get(path),
+  });
 }
 
 function addLocalExpansionPair(fixture, number) {
@@ -711,11 +723,11 @@ function binding(body, contentType) {
 }
 
 function localPrefix() {
-  return `history/visual-snapshots/sources/${sourceId}/captures/${localGeneration}/`;
+  return `D:\\AwardPingVisualSnapshots\\sources\\${sourceId}\\captures\\${localGeneration}\\`;
 }
 
 function relativePrefix() {
-  return `visual-snapshots/sources/${sourceId}/captures/${localGeneration}/`;
+  return `sources/${sourceId}/captures/${localGeneration}/`;
 }
 
 function remoteKey(fileName) {

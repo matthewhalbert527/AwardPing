@@ -12,7 +12,7 @@ import {
 } from "./stage1-evidence-schema-upgrade-mutation-accounting.mjs";
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SCHEMA =
-  "awardping.stage1.reviewed-source-capture-allowlist.v1";
+  "awardping.stage1.reviewed-source-capture-allowlist.v2";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_RESULT_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-source-result.v1";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REPORT_SCHEMA =
@@ -33,15 +33,15 @@ const dispositionConfirmationSha256 =
   "b967506e8cb67f1f9315d9b9ece9a5a8bd658e34bb5452c769e801c8f7703866";
 
 const reviewedSources = Object.freeze([
-  Object.freeze({ item: 1, award: "Beinecke Scholarship", page: "About", source_id: "c30778fe-43d7-57be-842a-e046d84baaee" }),
-  Object.freeze({ item: 2, award: "Beinecke Scholarship", page: "Scholar FAQs", source_id: "2ea41875-5c88-5794-81b3-afa8ddaf31c1" }),
-  Object.freeze({ item: 3, award: "Beinecke Scholarship", page: "Submission Materials", source_id: "af1367b5-0cb0-5b21-8e78-7dc195dd996f" }),
-  Object.freeze({ item: 5, award: "Fulbright U.S. Student Program", page: "Competition & Selection", source_id: "b9407ce4-71f8-5c97-8f98-8466d640d4de" }),
-  Object.freeze({ item: 6, award: "Hertz Fellowship", page: "Fellowship Overview", source_id: "5ec9a453-fd62-53e5-b885-726b21ce7247" }),
-  Object.freeze({ item: 8, award: "NDSEG", page: "Homepage", source_id: "fa4088a7-706e-4ad3-ae12-3653751dd5e1" }),
-  Object.freeze({ item: 9, award: "Samvid Scholars", page: "Homepage", source_id: "664d38ba-c717-5d51-b7ce-9e3a27f41fec" }),
-  Object.freeze({ item: 10, award: "Schwarzman Scholars", page: "2026 Application Instructions", source_id: "719ffd9e-f97c-5c6d-8a5a-71b617cadf49" }),
-  Object.freeze({ item: 11, award: "Yenching Academy", page: "Frequently Asked Questions", source_id: "c28878c0-6a8b-5fa8-b99b-ec826b86d8f2" }),
+  Object.freeze({ item: 1, cohort_key: "beinecke", shared_award_id: "26b5b55f-57e9-42a7-ae4c-37d389c5e70c", award: "Beinecke Scholarship", page: "About", source_id: "c30778fe-43d7-57be-842a-e046d84baaee" }),
+  Object.freeze({ item: 2, cohort_key: "beinecke", shared_award_id: "26b5b55f-57e9-42a7-ae4c-37d389c5e70c", award: "Beinecke Scholarship", page: "Scholar FAQs", source_id: "2ea41875-5c88-5794-81b3-afa8ddaf31c1" }),
+  Object.freeze({ item: 3, cohort_key: "beinecke", shared_award_id: "26b5b55f-57e9-42a7-ae4c-37d389c5e70c", award: "Beinecke Scholarship", page: "Submission Materials", source_id: "af1367b5-0cb0-5b21-8e78-7dc195dd996f" }),
+  Object.freeze({ item: 5, cohort_key: "fulbright_us_student", shared_award_id: "5dd1afc1-a560-495a-9bee-1f26f835475b", award: "Fulbright U.S. Student Program", page: "Competition & Selection", source_id: "b9407ce4-71f8-5c97-8f98-8466d640d4de" }),
+  Object.freeze({ item: 6, cohort_key: "hertz", shared_award_id: "4d2f6a7f-024e-4194-be31-1b9f63e497bc", award: "Hertz Fellowship", page: "Fellowship Overview", source_id: "5ec9a453-fd62-53e5-b885-726b21ce7247" }),
+  Object.freeze({ item: 8, cohort_key: "ndseg", shared_award_id: "e776ca2f-4b2c-431e-a3f9-248ad78c30e8", award: "National Defense Science and Engineering Graduate Fellowship", page: "Homepage", source_id: "fa4088a7-706e-4ad3-ae12-3653751dd5e1" }),
+  Object.freeze({ item: 9, cohort_key: "samvid", shared_award_id: "406c12bc-49f3-4d4c-b90d-9ba7e4e0f70e", award: "Samvid Scholars", page: "Homepage", source_id: "664d38ba-c717-5d51-b7ce-9e3a27f41fec" }),
+  Object.freeze({ item: 10, cohort_key: "schwarzman", shared_award_id: "dd23afbb-299e-489f-8a0b-e4d7506848de", award: "Schwarzman Scholars", page: "2026 Application Instructions", source_id: "719ffd9e-f97c-5c6d-8a5a-71b617cadf49" }),
+  Object.freeze({ item: 11, cohort_key: "yenching", shared_award_id: "2da1b35d-fe8b-46cd-bc4b-b099e0fd1363", award: "Yenching Academy", page: "Frequently Asked Questions", source_id: "c28878c0-6a8b-5fa8-b99b-ec826b86d8f2" }),
 ]);
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS = Object.freeze(
@@ -71,15 +71,31 @@ const exactManifest = Object.freeze({
   source_count: 9,
   source_ids: STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS,
   sources: reviewedSources,
+  identity_binding: Object.freeze({
+    schema_version: "awardping.stage1.canonical-award-identity-binding.v1",
+    canonical_cohort_key_required: true,
+    canonical_shared_award_id_required: true,
+    canonical_name_required: true,
+    aliases_allowed: false,
+    source_membership_changed: false,
+    supersedes_manifest_schema_version:
+      "awardping.stage1.reviewed-source-capture-allowlist.v1",
+    supersedes_manifest_sha256:
+      "f2a16adec57b3a66c3e467599bbf962cf02c94d1f6ded1daf5db09bf980c0184",
+  }),
   excluded: Object.freeze([
     Object.freeze({
       item: 4,
+      cohort_key: "churchill",
+      shared_award_id: "0695c116-1151-4b68-997e-93df400734dd",
       award: "Churchill Scholarship",
       source_id: STAGE1_EVIDENCE_SCHEMA_UPGRADE_CHURCHILL_SOURCE_ID,
       reason: "User-directed quarantine pending Churchill-only evidence review.",
     }),
     Object.freeze({
       item: 7,
+      cohort_key: "luce",
+      shared_award_id: "a643d94e-216b-4449-bf2f-99d8503793d7",
       award: "Luce Scholars Program",
       source_id: null,
       reason: "User-directed quarantine because the reviewed page lacks current funding evidence.",
@@ -404,6 +420,17 @@ export function evaluateStage1EvidenceSchemaUpgradeEligibility({
     && cleanText(source?.shared_awards?.name) !== manifestSource.award
   ) {
     reasons.push("award_identity_mismatch");
+  }
+  if (
+    manifestSource
+    && (
+      cleanText(source?.shared_award_id).toLowerCase()
+        !== manifestSource.shared_award_id
+      || cleanText(source?.shared_awards?.id).toLowerCase()
+        !== manifestSource.shared_award_id
+    )
+  ) {
+    reasons.push("canonical_award_id_mismatch");
   }
   if (!isExactPublicHttpsUrl(source?.url)) reasons.push("source_url_not_public_https");
   if (

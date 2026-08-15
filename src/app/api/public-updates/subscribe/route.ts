@@ -1,9 +1,17 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
-import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
+import {
+  appConfig,
+  hasPublicUpdateDeliveryConfig,
+  hasSupabaseAdminConfig,
+} from "@/lib/config";
 import { sendPublicUpdateConfirmationEmail } from "@/lib/email";
 import { ensurePublicFormRateLimit } from "@/lib/public-form-rate-limit";
-import { createOrRefreshPublicUpdateSubscription } from "@/lib/public-updates";
+import {
+  createOrRefreshPublicUpdateSubscription,
+  markPublicUpdateConfirmationSent,
+  publicUpdateConfirmationDeliveryIsCurrent,
+} from "@/lib/public-updates";
 
 export const runtime = "nodejs";
 
@@ -12,6 +20,8 @@ const subscribeSchema = z.object({
   privacyConsent: z.literal(true),
   website: z.string().optional(),
 });
+const genericSubscriptionMessage =
+  "Request received. If confirmation is needed, check your email; links expire after 24 hours, and if nothing arrives you can try again.";
 
 export async function POST(request: Request) {
   const parsed = subscribeSchema.safeParse(await request.json().catch(() => null));
@@ -29,6 +39,13 @@ export async function POST(request: Request) {
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
       { ok: false, error: "Public updates are not configured yet." },
+      { status: 503 },
+    );
+  }
+
+  if (!hasPublicUpdateDeliveryConfig()) {
+    return NextResponse.json(
+      { ok: false, error: "Public-update email delivery is not configured yet." },
       { status: 503 },
     );
   }
@@ -59,16 +76,65 @@ export async function POST(request: Request) {
   }
 
   const result = await createOrRefreshPublicUpdateSubscription(parsed.data.email);
-  if (result.shouldSendConfirmation && result.confirmationToken) {
+  if (
+    result.shouldSendConfirmation &&
+    result.confirmationToken &&
+    result.confirmationAttemptSeal &&
+    result.confirmationIdempotencyKey
+  ) {
     const confirmUrl = `${appConfig.url}/api/public-updates/confirm?token=${encodeURIComponent(result.confirmationToken)}`;
-    await sendPublicUpdateConfirmationEmail({
-      to: result.email,
-      confirmUrl,
+    after(async () => {
+      try {
+        const deliveryIsCurrent =
+          await publicUpdateConfirmationDeliveryIsCurrent({
+            subscriberId: result.subscriberId,
+            confirmationToken: result.confirmationToken,
+            confirmationAttemptSeal: result.confirmationAttemptSeal,
+          });
+        if (!deliveryIsCurrent) return;
+        const delivery = await sendPublicUpdateConfirmationEmail({
+          to: result.email,
+          confirmUrl,
+          idempotencyKey: result.confirmationIdempotencyKey,
+        });
+        if (!emailRequestAccepted(delivery)) {
+          console.error(
+            "Public-update confirmation provider did not accept the request",
+          );
+          return;
+        }
+        await markPublicUpdateConfirmationSent({
+          subscriberId: result.subscriberId,
+          confirmationToken: result.confirmationToken,
+          confirmationAttemptSeal: result.confirmationAttemptSeal,
+        });
+      } catch (error) {
+        console.error("Public-update confirmation delivery failed", error);
+      }
     });
   }
 
-  return NextResponse.json({
-    ok: true,
-    message: "Check your email to confirm daily AwardPing updates.",
-  });
+  return subscriptionRequestResponse();
+}
+
+function subscriptionRequestResponse() {
+  return NextResponse.json(
+    { ok: true, message: genericSubscriptionMessage },
+    { status: 202 },
+  );
+}
+
+function emailRequestAccepted(delivery: unknown) {
+  if (!delivery || typeof delivery !== "object") return false;
+  const result = delivery as {
+    skipped?: unknown;
+    error?: unknown;
+    data?: { id?: unknown } | null;
+  };
+  return (
+    result.skipped !== true &&
+    result.error === null &&
+    typeof result.data?.id === "string" &&
+    result.data.id.trim().length > 0
+  );
 }

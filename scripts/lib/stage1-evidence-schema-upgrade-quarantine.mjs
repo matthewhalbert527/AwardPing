@@ -42,7 +42,7 @@ export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_EVIDENCE_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-recovery-evidence.v1";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_ID =
   "awardping-stage1-evidence-schema-upgrade-quarantine";
-export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_VERSION = "1";
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_VERSION = "2";
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;

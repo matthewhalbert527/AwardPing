@@ -11,11 +11,14 @@ import {
 } from "@/lib/email";
 import {
   buildPublicDigestChanges,
+  createPublicConfirmationToken,
   createPublicUnsubscribeToken,
-  createPublicUpdateToken,
   hashToken,
+  isPublicUpdateConfirmationFresh,
   normalizePublicUpdateEmail,
   pendingPublicDigestChangesForSubscriber,
+  planPublicUpdateConfirmationAttempt,
+  PUBLIC_UPDATE_CONFIRMATION_TTL_MS,
   publicDigestKey,
   splitPublicDigestChanges,
   type PublicDigestCandidate,
@@ -40,112 +43,215 @@ const PUBLIC_DIGEST_SUBSCRIBER_CHUNK_SIZE = 25;
 const PUBLIC_DIGEST_EVENT_CHUNK_SIZE = 75;
 const PUBLIC_DIGEST_SUBSCRIBER_SELECT =
   "id, email, email_hash, email_encrypted, status, confirmation_token_hash, unsubscribe_token_hash, confirmation_sent_at, confirmed_at, unsubscribed_at, last_digest_sent_at, digest_started_at, created_at, updated_at";
+const PUBLIC_UPDATE_SUBSCRIPTION_WRITE_RETRIES = 4;
 
 export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) {
   const email = normalizePublicUpdateEmail(rawEmail);
   const encryptedEmail = encryptedEmailFields(email);
   const supabase = createSupabaseAdminClient();
-  const existingResult = await supabase
-    .from("public_update_subscribers")
-    .select("*")
-    .eq("email_hash", encryptedEmail.email_hash)
-    .maybeSingle();
-  let existing = existingResult.data;
 
-  if (existingResult.error) {
-    throw existingResult.error;
-  }
+  for (
+    let writeAttempt = 0;
+    writeAttempt < PUBLIC_UPDATE_SUBSCRIPTION_WRITE_RETRIES;
+    writeAttempt += 1
+  ) {
+    const existing = await loadPublicUpdateSubscriber(
+      supabase,
+      encryptedEmail.email_hash,
+      email,
+    );
+    const now = new Date();
+    const lifecyclePlan = existing
+      ? planPublicUpdateConfirmationAttempt(existing, now)
+      : null;
 
-  if (!existing) {
-    const legacy = await supabase
-      .from("public_update_subscribers")
-      .select("*")
-      .eq("email", email)
-      .maybeSingle();
-
-    if (legacy.error) {
-      throw legacy.error;
+    if (existing && lifecyclePlan?.shouldSendConfirmation === false) {
+      if (subscriberEmailNeedsRepair(existing, encryptedEmail.email_hash, email)) {
+        const repaired = await repairPublicUpdateSubscriberEmail({
+          supabase,
+          subscriber: existing,
+          emailHash: encryptedEmail.email_hash,
+          emailEncrypted: encryptedEmail.email_encrypted,
+          repairedAt: now.toISOString(),
+        });
+        if (!repaired) continue;
+      }
+      return {
+        subscriberId: existing.id,
+        email,
+        confirmationToken: null,
+        shouldSendConfirmation: false,
+      };
     }
 
-    existing = legacy.data;
-  }
+    const createdAt = existing?.created_at || now.toISOString();
+    const subscriberId = existing?.id || cryptoRandomUuid();
+    const confirmationAttemptSeal =
+      lifecyclePlan?.attemptSeal || now.toISOString();
+    const confirmationToken = createPublicConfirmationToken(
+      {
+        id: subscriberId,
+        created_at: createdAt,
+        email_hash: encryptedEmail.email_hash,
+        attempted_at: confirmationAttemptSeal,
+      },
+      appConfig.cronSecret,
+    );
+    const confirmationTokenHash = hashToken(confirmationToken);
+    const unsubscribeTokenHash = hashToken(
+      createPublicUnsubscribeToken(
+        { id: subscriberId, created_at: createdAt },
+        appConfig.cronSecret,
+      ),
+    );
 
-  if (existing?.status === "active") {
-    const existingEmail = readPersonalData(existing.email_encrypted);
-    if (
-      existing.email !== null ||
-      existing.email_hash !== encryptedEmail.email_hash ||
-      existingEmail.status !== "available" ||
-      existingEmail.value !== email
-    ) {
-      const { error: updateError } = await supabase
+    if (existing) {
+      let update = supabase
         .from("public_update_subscribers")
         .update({
           email: null,
           email_hash: encryptedEmail.email_hash,
           email_encrypted: encryptedEmail.email_encrypted,
-          updated_at: new Date().toISOString(),
+          status: "pending",
+          confirmation_token_hash: confirmationTokenHash,
+          unsubscribe_token_hash: unsubscribeTokenHash,
+          confirmation_sent_at: null,
+          confirmed_at: null,
+          unsubscribed_at: null,
+          updated_at: confirmationAttemptSeal,
         })
-        .eq("id", existing.id);
+        .eq("id", existing.id)
+        .eq("status", existing.status)
+        .eq("updated_at", existing.updated_at);
+      update =
+        existing.confirmation_sent_at === null
+          ? update.is("confirmation_sent_at", null)
+          : update.eq("confirmation_sent_at", existing.confirmation_sent_at);
+      const { data: updated, error: updateError } = await update
+        .select("id")
+        .maybeSingle();
+
       if (updateError) throw updateError;
-    }
-    return { email, confirmationToken: null, shouldSendConfirmation: false };
-  }
-
-  const confirmationToken = createPublicUpdateToken();
-  const now = new Date().toISOString();
-  const baseSubscriber = existing || {
-    id: cryptoRandomUuid(),
-    email,
-    created_at: now,
-  };
-  const unsubscribeTokenHash = hashToken(
-    createPublicUnsubscribeToken(baseSubscriber, appConfig.cronSecret),
-  );
-
-  if (existing) {
-    const { error: updateError } = await supabase
-      .from("public_update_subscribers")
-      .update({
+      if (!updated) continue;
+    } else {
+      const insert: PublicSubscriberInsert = {
+        id: subscriberId,
         email: null,
         email_hash: encryptedEmail.email_hash,
         email_encrypted: encryptedEmail.email_encrypted,
         status: "pending",
-        confirmation_token_hash: hashToken(confirmationToken),
+        confirmation_token_hash: confirmationTokenHash,
         unsubscribe_token_hash: unsubscribeTokenHash,
-        confirmation_sent_at: now,
-        confirmed_at: null,
-        unsubscribed_at: null,
-        updated_at: now,
-      })
-      .eq("id", existing.id);
+        confirmation_sent_at: null,
+        created_at: createdAt,
+        updated_at: confirmationAttemptSeal,
+      };
+      const { error: insertError } = await supabase
+        .from("public_update_subscribers")
+        .insert(insert);
 
-    if (updateError) {
-      throw updateError;
+      if (insertError) {
+        if (insertError.code === "23505") continue;
+        throw insertError;
+      }
     }
-  } else {
-    const insert: PublicSubscriberInsert = {
-      id: baseSubscriber.id,
-      email: null,
-      email_hash: encryptedEmail.email_hash,
-      email_encrypted: encryptedEmail.email_encrypted,
-      status: "pending",
-      confirmation_token_hash: hashToken(confirmationToken),
-      unsubscribe_token_hash: unsubscribeTokenHash,
-      confirmation_sent_at: now,
-      created_at: now,
-      updated_at: now,
+
+    return {
+      subscriberId,
+      email,
+      confirmationToken,
+      confirmationAttemptSeal,
+      confirmationIdempotencyKey: `awardping-public-confirmation:${confirmationTokenHash}`,
+      shouldSendConfirmation: true,
     };
-    const { error: insertError } = await supabase
-      .from("public_update_subscribers")
-      .insert(insert);
-
-    if (insertError) {
-      throw insertError;
-    }
   }
 
-  return { email, confirmationToken, shouldSendConfirmation: true };
+  throw new Error(
+    "Public-update subscription state changed too often; retry the request.",
+  );
+}
+
+export async function markPublicUpdateConfirmationSent(input: {
+  subscriberId: string;
+  confirmationToken: string;
+  confirmationAttemptSeal: string;
+}) {
+  const acceptedAtDate = new Date();
+  if (
+    !isPublicUpdateConfirmationFresh(
+      input.confirmationAttemptSeal,
+      acceptedAtDate,
+    )
+  ) {
+    throw new Error(
+      "Public-update confirmation attempt expired before provider acceptance could be recorded.",
+    );
+  }
+  const acceptedAt = acceptedAtDate.toISOString();
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("public_update_subscribers")
+    .update({
+      confirmation_sent_at: input.confirmationAttemptSeal,
+      updated_at: acceptedAt,
+    })
+    .eq("id", input.subscriberId)
+    .eq("status", "pending")
+    .eq("confirmation_token_hash", hashToken(input.confirmationToken))
+    .eq("updated_at", input.confirmationAttemptSeal)
+    .is("confirmation_sent_at", null)
+    .select("id, confirmation_sent_at")
+    .maybeSingle();
+
+  if (error) throw error;
+  if (data) {
+    return {
+      sentAt: input.confirmationAttemptSeal,
+      acceptedAt,
+      alreadyRecorded: false,
+    };
+  }
+
+  const { data: current, error: currentError } = await supabase
+    .from("public_update_subscribers")
+    .select("confirmation_sent_at")
+    .eq("id", input.subscriberId)
+    .eq("status", "pending")
+    .eq("confirmation_token_hash", hashToken(input.confirmationToken))
+    .maybeSingle();
+  if (currentError) throw currentError;
+  if (current?.confirmation_sent_at) {
+    return {
+      sentAt: current.confirmation_sent_at,
+      acceptedAt: null,
+      alreadyRecorded: true,
+    };
+  }
+  throw new Error(
+    "Public-update confirmation state changed before provider acceptance could be recorded.",
+  );
+}
+
+export async function publicUpdateConfirmationDeliveryIsCurrent(input: {
+  subscriberId: string;
+  confirmationToken: string;
+  confirmationAttemptSeal: string;
+}) {
+  if (!isPublicUpdateConfirmationFresh(input.confirmationAttemptSeal)) {
+    return false;
+  }
+  const supabase = createSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("public_update_subscribers")
+    .select("id")
+    .eq("id", input.subscriberId)
+    .eq("status", "pending")
+    .eq("confirmation_token_hash", hashToken(input.confirmationToken))
+    .eq("updated_at", input.confirmationAttemptSeal)
+    .is("confirmation_sent_at", null)
+    .maybeSingle();
+  if (error) throw error;
+  return data !== null;
 }
 
 export async function confirmPublicUpdateSubscription(token: string) {
@@ -161,15 +267,33 @@ export async function confirmPublicUpdateSubscription(token: string) {
     throw error;
   }
 
-  if (!subscriber) {
+  const nowDate = new Date();
+  if (
+    !subscriber ||
+    subscriber.status !== "pending" ||
+    !isPublicUpdateConfirmationFresh(subscriber.confirmation_sent_at, nowDate)
+  ) {
     return false;
   }
 
-  const now = new Date().toISOString();
+  const mutationTime = new Date();
+  if (
+    !isPublicUpdateConfirmationFresh(
+      subscriber.confirmation_sent_at,
+      mutationTime,
+    )
+  ) {
+    return false;
+  }
+  const now = mutationTime.toISOString();
+  const oldestValidConfirmation = new Date(
+    mutationTime.getTime() - PUBLIC_UPDATE_CONFIRMATION_TTL_MS,
+  ).toISOString();
+  const confirmationSentAt = subscriber.confirmation_sent_at!;
   const unsubscribeTokenHash = hashToken(
     createPublicUnsubscribeToken(subscriber, appConfig.cronSecret),
   );
-  const { error: updateError } = await supabase
+  const { data: updated, error: updateError } = await supabase
     .from("public_update_subscribers")
     .update({
       status: "active",
@@ -180,13 +304,86 @@ export async function confirmPublicUpdateSubscription(token: string) {
       unsubscribed_at: null,
       updated_at: now,
     })
-    .eq("id", subscriber.id);
+    .eq("id", subscriber.id)
+    .eq("status", "pending")
+    .eq("confirmation_token_hash", tokenHash)
+    .eq("confirmation_sent_at", confirmationSentAt)
+    .gt("confirmation_sent_at", oldestValidConfirmation)
+    .lte("confirmation_sent_at", now)
+    .select("id")
+    .maybeSingle();
 
   if (updateError) {
     throw updateError;
   }
 
-  return true;
+  return updated !== null;
+}
+
+async function loadPublicUpdateSubscriber(
+  supabase: SupabaseAdminClient,
+  emailHash: string,
+  legacyEmail: string,
+) {
+  const existingResult = await supabase
+    .from("public_update_subscribers")
+    .select("*")
+    .eq("email_hash", emailHash)
+    .maybeSingle();
+  if (existingResult.error) throw existingResult.error;
+  if (existingResult.data) return existingResult.data;
+
+  const legacyResult = await supabase
+    .from("public_update_subscribers")
+    .select("*")
+    .eq("email", legacyEmail)
+    .maybeSingle();
+  if (legacyResult.error) throw legacyResult.error;
+  return legacyResult.data;
+}
+
+function subscriberEmailNeedsRepair(
+  subscriber: PublicSubscriberRow,
+  emailHash: string,
+  email: string,
+) {
+  const existingEmail = readPersonalData(subscriber.email_encrypted);
+  return (
+    subscriber.email !== null ||
+    subscriber.email_hash !== emailHash ||
+    existingEmail.status !== "available" ||
+    existingEmail.value !== email
+  );
+}
+
+async function repairPublicUpdateSubscriberEmail(input: {
+  supabase: SupabaseAdminClient;
+  subscriber: PublicSubscriberRow;
+  emailHash: string;
+  emailEncrypted: string;
+  repairedAt: string;
+}) {
+  let update = input.supabase
+    .from("public_update_subscribers")
+    .update({
+      email: null,
+      email_hash: input.emailHash,
+      email_encrypted: input.emailEncrypted,
+      updated_at: input.repairedAt,
+    })
+    .eq("id", input.subscriber.id)
+    .eq("status", input.subscriber.status)
+    .eq("updated_at", input.subscriber.updated_at);
+  update =
+    input.subscriber.confirmation_sent_at === null
+      ? update.is("confirmation_sent_at", null)
+      : update.eq(
+          "confirmation_sent_at",
+          input.subscriber.confirmation_sent_at,
+        );
+  const { data, error } = await update.select("id").maybeSingle();
+  if (error) throw error;
+  return data !== null;
 }
 
 export async function unsubscribePublicUpdateSubscriber(token: string) {

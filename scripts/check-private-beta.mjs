@@ -121,16 +121,33 @@ function checkRequiredEnv() {
 
   if (hasValue("CRON_SECRET")) {
     const secret = env.CRON_SECRET.trim();
-    if (secret.length < 24 || /replace|changeme|secret/i.test(secret)) {
+    if (
+      secret.length < 24 ||
+      /replace|changeme|secret/i.test(secret) ||
+      secret === "awardping-local-public-update-token"
+    ) {
       fail("CRON_SECRET must be a long production-only random value.");
     } else {
       pass("CRON_SECRET is not a placeholder and is long enough for launch.");
     }
   }
 
+  if (hasValue("RESEND_API_KEY")) {
+    if (!/^re_[A-Za-z0-9_-]+$/.test(env.RESEND_API_KEY.trim())) {
+      fail("RESEND_API_KEY does not have the expected Resend key shape.");
+    } else {
+      pass("RESEND_API_KEY has the expected Resend key shape.");
+    }
+  }
+
   if (hasValue("APP_DATA_ENCRYPTION_KEY")) {
     const encryptionKey = env.APP_DATA_ENCRYPTION_KEY.trim();
-    if (encryptionKey.length < 32 || /replace|changeme|example|secret/i.test(encryptionKey)) {
+    if (
+      encryptionKey.length < 32 ||
+      /replace|changeme|example|secret/i.test(encryptionKey) ||
+      encryptionKey ===
+        "awardping-local-development-personal-data-encryption-key"
+    ) {
       fail("APP_DATA_ENCRYPTION_KEY must be a production-only random value with at least 32 characters.");
     } else if (hasValue("CRON_SECRET") && encryptionKey === env.CRON_SECRET.trim()) {
       fail("APP_DATA_ENCRYPTION_KEY must be independent from CRON_SECRET.");
@@ -150,7 +167,11 @@ function checkRequiredEnv() {
 
   if (hasValue("APP_DATA_LOOKUP_HMAC_KEY")) {
     const lookupKey = env.APP_DATA_LOOKUP_HMAC_KEY.trim();
-    if (lookupKey.length < 32 || /replace|changeme|example|secret/i.test(lookupKey)) {
+    if (
+      lookupKey.length < 32 ||
+      /replace|changeme|example|secret/i.test(lookupKey) ||
+      lookupKey === "awardping-local-development-personal-data-lookup-key"
+    ) {
       fail("APP_DATA_LOOKUP_HMAC_KEY must be a production-only random value with at least 32 characters.");
     } else if (
       (hasValue("APP_DATA_ENCRYPTION_KEY") &&
@@ -273,8 +294,24 @@ function checkProductionEnv() {
     pass("NEXT_PUBLIC_APP_URL is an https production URL.");
   }
 
-  if (hasValue("ALERT_FROM_EMAIL") && /example\.com/i.test(env.ALERT_FROM_EMAIL)) {
-    fail("ALERT_FROM_EMAIL still uses example.com; configure a verified Resend sender.");
+  if (hasValue("ALERT_FROM_EMAIL")) {
+    const address = senderAddress(env.ALERT_FROM_EMAIL);
+    const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+    if (
+      !address ||
+      domain === "example.com" ||
+      domain === "example.net" ||
+      domain === "example.org" ||
+      domain === "localhost" ||
+      domain.endsWith(".localhost") ||
+      domain.endsWith(".example") ||
+      domain.endsWith(".invalid") ||
+      domain.endsWith(".test")
+    ) {
+      fail("ALERT_FROM_EMAIL must be a valid non-placeholder Resend sender.");
+    } else {
+      pass("ALERT_FROM_EMAIL has a non-placeholder sender shape.");
+    }
   }
 
   if (hasValue("NEXT_PUBLIC_SUPABASE_URL")) {
@@ -291,6 +328,14 @@ function checkProductionEnv() {
       fail("NEXT_PUBLIC_SUPABASE_URL is not a valid URL.");
     }
   }
+}
+
+function senderAddress(value) {
+  const trimmed = String(value || "").trim();
+  const namedAddress = /^[^<>]*<([^<>]+)>$/.exec(trimmed);
+  if (!namedAddress && /[<>]/.test(trimmed)) return "";
+  const address = (namedAddress?.[1] || trimmed).trim().toLowerCase();
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address) ? address : "";
 }
 
 function checkVercelProjectLink() {

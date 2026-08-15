@@ -1,12 +1,20 @@
 import { NextResponse } from "next/server";
-import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
+import {
+  appConfig,
+  hasPublicUpdateTokenConfig,
+  hasSupabaseAdminConfig,
+} from "@/lib/config";
 import { confirmPublicUpdateSubscription } from "@/lib/public-updates";
 
 export const runtime = "nodejs";
 
 export async function GET(request: Request) {
   const token = new URL(request.url).searchParams.get("token") || "";
-  if (!token || !hasSupabaseAdminConfig()) {
+  if (
+    !token ||
+    !hasSupabaseAdminConfig() ||
+    !hasPublicUpdateTokenConfig()
+  ) {
     return redirectToUpdates("confirmed=invalid");
   }
 
