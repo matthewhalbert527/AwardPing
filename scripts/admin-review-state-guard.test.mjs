@@ -55,7 +55,8 @@ describe("admin review mutation guard", () => {
     );
 
     expect(body).toContain("sourcePageMetadataUpdate(source, capture)");
-    expect(body).toContain("guardAdminReviewMutation(mutation, source)");
+    expect(body).toContain("guardAdminReviewMutation(mutation, source, {");
+    expect(body).toContain("requiredStatus: requiredAdminReviewStatus");
     expect(body).toContain('.select("id").maybeSingle()');
     expect(body).toContain('recordStaleAdminReviewPlan(report, source, "visual_check_succeeded")');
     expect(body).toContain("return false");

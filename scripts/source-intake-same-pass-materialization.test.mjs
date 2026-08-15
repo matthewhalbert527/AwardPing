@@ -168,7 +168,10 @@ describe("same-pass first-observation materialization", () => {
     expect(sourceQuery).toContain(
       "admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by",
     );
-    expect(sourceQuery).toContain("if (!sourceIdFilter)");
+    expect(sourceQuery).toContain(
+      "if (!sourceIdFilter && !stage1EvidenceSchemaUpgrade)",
+    );
+    expect(sourceQuery).toContain("if (!stage1EvidenceSchemaUpgrade)");
     expect(sourceQuery).toContain('query = query.eq("admin_review_status", "open")');
   });
 

@@ -186,6 +186,42 @@ const alwaysBlockedApplicantSourceShapePattern =
 const strictApplicantFacingEvidencePattern =
   /\b(?:application deadline|deadline|due date|opening date|applications? (?:open|close|are open|are due)|closing date|award amount|funding|stipend|tuition|eligib(?:ility|le)|application requirements?|award conditions?|letters? of recommendation|transcript|essay|nomination|application materials?|required documents?|how to apply|apply by|submit by|application portal|application instructions?|citizenship|gpa|interview)\b/i;
 
+export const visualReviewEnqueueContexts = Object.freeze({
+  capture: "capture_visual_snapshots",
+  stage1EvidenceSchemaUpgrade: "stage1_evidence_schema_upgrade",
+});
+
+export function visualReviewEnqueuePolicy({
+  context = visualReviewEnqueueContexts.capture,
+  bypassRejectionLedger = false,
+  queueReconciliation = true,
+} = {}) {
+  if (!Object.values(visualReviewEnqueueContexts).includes(context)) {
+    throw new Error(`Unsupported visual review enqueue context \"${String(context)}\".`);
+  }
+  if (typeof bypassRejectionLedger !== "boolean") {
+    throw new Error("Visual review rejection-ledger bypass must be an explicit boolean.");
+  }
+  if (typeof queueReconciliation !== "boolean") {
+    throw new Error("Visual review reconciliation queuing must be an explicit boolean.");
+  }
+
+  const stage1Upgrade = context === visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade;
+  if (stage1Upgrade !== bypassRejectionLedger || stage1Upgrade === queueReconciliation) {
+    throw new Error(
+      stage1Upgrade
+        ? "Stage1 evidence-schema upgrade enqueueing must bypass the rejection ledger and must not queue reconciliation."
+        : "Only Stage1 evidence-schema upgrade enqueueing may bypass the rejection ledger or skip reconciliation.",
+    );
+  }
+
+  return Object.freeze({
+    context,
+    bypassRejectionLedger,
+    queueReconciliation,
+  });
+}
+
 export function normalizeVisualReviewMode(value, fallback = "batch") {
   if (value === undefined || value === null || value === "") return fallback;
   const raw = String(value).trim().toLowerCase();

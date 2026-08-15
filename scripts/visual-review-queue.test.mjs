@@ -23,6 +23,8 @@ import {
   visualReviewBatchPollFailureDisposition,
   visualReviewCandidateSignature,
   visualReviewCandidateSignatureFromStoredCandidate,
+  visualReviewEnqueueContexts,
+  visualReviewEnqueuePolicy,
   visualReviewEvidenceSignature,
   visualReviewEvidenceSignatureFromStoredCandidate,
   visualSnapshotArtifactManifestDigest,
@@ -84,6 +86,62 @@ function sourceFixture(overrides = {}) {
 }
 
 describe("visual review queue helpers", () => {
+  it("preserves the standard enqueue policy for existing callers", () => {
+    expect(visualReviewEnqueuePolicy()).toEqual({
+      context: "capture_visual_snapshots",
+      bypassRejectionLedger: false,
+      queueReconciliation: true,
+    });
+  });
+
+  it("grants only the exact Stage1 evidence-schema upgrade enqueue exception", () => {
+    expect(visualReviewEnqueuePolicy({
+      context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+      bypassRejectionLedger: true,
+      queueReconciliation: false,
+    })).toEqual({
+      context: "stage1_evidence_schema_upgrade",
+      bypassRejectionLedger: true,
+      queueReconciliation: false,
+    });
+
+    for (const options of [
+      {
+        context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+      },
+      {
+        context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+        bypassRejectionLedger: true,
+      },
+      {
+        context: visualReviewEnqueueContexts.capture,
+        bypassRejectionLedger: true,
+        queueReconciliation: true,
+      },
+      {
+        context: visualReviewEnqueueContexts.capture,
+        bypassRejectionLedger: false,
+        queueReconciliation: false,
+      },
+      {
+        context: "stage1-evidence-schema-upgrade",
+        bypassRejectionLedger: true,
+        queueReconciliation: false,
+      },
+    ]) {
+      expect(() => visualReviewEnqueuePolicy(options)).toThrow();
+    }
+  });
+
+  it("rejects ambiguous non-boolean enqueue controls", () => {
+    expect(() => visualReviewEnqueuePolicy({
+      bypassRejectionLedger: "false",
+    })).toThrow(/rejection-ledger bypass must be an explicit boolean/i);
+    expect(() => visualReviewEnqueuePolicy({
+      queueReconciliation: 0,
+    })).toThrow(/reconciliation queuing must be an explicit boolean/i);
+  });
+
   it("attaches only bytes matching the immutable thumbnail reference", () => {
     const dir = mkdtempSync(join(tmpdir(), "awardping-verified-thumb-"));
     const path = join(dir, "thumb.png");

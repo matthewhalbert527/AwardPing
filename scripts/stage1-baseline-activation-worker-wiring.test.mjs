@@ -221,9 +221,10 @@ describe("Stage 1 first-visual-baseline activation worker wiring", () => {
       "async function markSharedSourceVisualCheckSucceeded",
       "async function markSharedSourceReviewLater",
     );
-    expect(success).toContain(
-      "{ preserveReviewedUrl = false, preserveReviewedMetadata = false } = {}",
-    );
+    expect(success).toContain("preserveReviewedUrl = false");
+    expect(success).toContain("preserveReviewedMetadata = false");
+    expect(success).toContain('requiredAdminReviewStatus = "open"');
+    expect(success).toContain("requiredStatus: requiredAdminReviewStatus");
     expect(success).toContain("const metadataUpdate = preserveReviewedMetadata");
     expect(success).toContain("if (!preserveReviewedUrl)");
     expect(success).toContain("maybeUpdateSafeRedirectUrl");

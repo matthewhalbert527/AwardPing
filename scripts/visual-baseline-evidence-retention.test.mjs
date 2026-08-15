@@ -166,7 +166,9 @@ describe("visual baseline evidence retention", () => {
     expect(runBody).toContain("loadedSources[0]?.id !== sourceIdFilter");
 
     const queryBody = functionBody("buildSourcesQuery", "startWorkerRun");
-    expect(queryBody).toContain("if (!includeNotDue && !sourceIdFilter)");
+    expect(queryBody).toContain(
+      "if (!includeNotDue && !sourceIdFilter && !stage1EvidenceSchemaUpgrade)",
+    );
   });
 
   it("repairs and verifies local evidence before submitting source AI review", () => {

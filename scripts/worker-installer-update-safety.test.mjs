@@ -686,7 +686,18 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\award-fact-reconciliation.mjs",
       "scripts\\lib\\source-backfill-intake.mjs",
       "scripts\\lib\\source-intake.mjs",
+      "scripts\\lib\\source-intake-provider-binding.mjs",
       "scripts\\lib\\initial-document-recovery.mjs",
+      "scripts\\lib\\stage1-baseline-activation-guard.mjs",
+      "scripts\\lib\\stage1-baseline-source-disposition.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-validation.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-transaction.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-commit.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-mutation-accounting.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-r2-binding.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-quarantine.mjs",
+      "scripts\\lib\\visual-snapshot-latest-only-reconciliation.mjs",
       "scripts\\lib\\visual-snapshot-pointer-reconciliation.mjs",
       "scripts\\lib\\visual-baseline-retained-projection-identity.mjs",
       "scripts\\evaluate-public-page-audit-canaries.mjs",
@@ -696,7 +707,7 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain('"sharp",');
   });
 
-  it("hash-validates every reconciliation and source-backfill runtime dependency", () => {
+  it("hash-validates every Stage 1, reconciliation, and source-backfill runtime dependency", () => {
     const runtimeValidation = extractPowerShellFunction(
       installer,
       "Get-AwardPingInstalledRuntimeProblems",
@@ -708,8 +719,19 @@ describe("Windows worker update safety", () => {
     const hashPairValidation = runtimeValidation.slice(hashPairStart);
 
     for (const relativePath of [
+      "scripts\\lib\\stage1-baseline-activation-guard.mjs",
+      "scripts\\lib\\stage1-baseline-source-disposition.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-validation.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-transaction.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-commit.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-mutation-accounting.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-r2-binding.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-quarantine.mjs",
+      "scripts\\lib\\visual-snapshot-latest-only-reconciliation.mjs",
       "scripts\\lib\\award-fact-reconciliation.mjs",
       "scripts\\lib\\source-backfill-intake.mjs",
+      "scripts\\lib\\source-intake-provider-binding.mjs",
     ]) {
       expect(requiredPathValidation).toContain(`"${relativePath}"`);
       expect(hashPairValidation).toContain(`"${relativePath}"`);

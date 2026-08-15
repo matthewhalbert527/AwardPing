@@ -41,6 +41,12 @@ jobs:
           scripts/stage1-initial-document-crop-coverage-migration.test.mjs
           scripts/stage1-expansion-without-main-layout-migration.test.mjs
           scripts/stage1-expansion-without-main-layout-rollback-probe.test.mjs
+          scripts/stage1-source-activation-finalizations-getter-migration.test.mjs
+          scripts/stage1-source-activation-finalizations-getter-rollback-probe.test.mjs
+          scripts/stage1-evidence-schema-upgrade-quarantine-migration.test.mjs
+          scripts/stage1-evidence-schema-upgrade-quarantine-rollback-probe.test.mjs
+          scripts/stage1-activation-release-lock-order-migration.test.mjs
+          scripts/stage1-activation-release-lock-order-rollback-probe.test.mjs
           scripts/stage1-published-event-r2-reference-graph-migration.test.mjs
           scripts/stage1-r2-manifest-hash-input-migration.test.mjs
 
@@ -83,6 +89,9 @@ jobs:
           --file=supabase/tests/stage1_r2_reference_graph_smoke.sql
           --file=supabase/tests/stage1_expansion_without_main_layout_smoke.sql
           --file=supabase/tests/stage1_expansion_capture_coverage_smoke.sql
+          --file=supabase/tests/stage1_source_activation_finalizations_getter_smoke.sql
+          --file=supabase/tests/stage1_evidence_schema_upgrade_failure_quarantine_smoke.sql
+          --file=supabase/tests/stage1_activation_release_lock_order_smoke.sql
 
       - name: Stop and remove local Supabase data
         if: always()

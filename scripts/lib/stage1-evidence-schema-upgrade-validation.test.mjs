@@ -1,0 +1,901 @@
+import { createHash } from "node:crypto";
+import { describe, expect, it } from "vitest";
+import {
+  conservativeExpansionStateCaptureCoverage,
+  expansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
+import {
+  STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+  stage1BaselineActivationGuardSha256,
+  stage1BaselineActivationTextSha256,
+} from "./stage1-baseline-activation-guard.mjs";
+import {
+  prepareR2CaptureArtifacts,
+  retainedCaptureArtifactProjectionSchema,
+} from "./r2-capture-artifact-bindings.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS,
+  evaluateStage1EvidenceSchemaUpgradeCapture,
+} from "./stage1-evidence-schema-upgrade-validation.mjs";
+import {
+  bindVisualTextGeometry,
+  visualTextGeometryLayoutFingerprint,
+} from "./visual-event-localization.mjs";
+
+const sourceId = "11111111-1111-4111-8111-111111111111";
+const acquisitionId = "22222222-2222-4222-8222-222222222222";
+const requestId = "33333333-3333-4333-8333-333333333333";
+const finalUrl = "https://example.org/award/eligibility";
+const reviewedQuote = "Applicants must be enrolled full time.";
+const reviewedText = `Award eligibility\n${reviewedQuote}`;
+const existingAt = "2026-08-14T18:00:00.000Z";
+const captureAt = "2026-08-14T18:05:00.000Z";
+
+describe("Stage 1 evidence-schema upgrade validation", () => {
+  it("allows a zero-charge unchanged webpage upgrade from explicit legacy limitations", () => {
+    const fixture = validWebFixture({ candidateExpansionCount: 1 });
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
+      creates_api_charge: false,
+      outcome: {
+        would_commit: true,
+        would_queue_visual_candidate: false,
+        would_quarantine: false,
+        creates_api_charge: false,
+      },
+    });
+    expect(decision.evidence.existing.legacy_limitations).toEqual(expect.arrayContaining([
+      "raw_expansion_state_count_missing",
+      "raw_metadata_retained_projection_missing",
+      "baseline_retained_projection_missing",
+      "expansion_coverage_incomplete_discovery",
+    ]));
+    expect(decision.evidence.capture).toMatchObject({
+      expansion_coverage_status: "verified_complete",
+      retained_expansion_state_count: 1,
+      raw_metadata_verified: true,
+      legacy_limitations: [],
+    });
+    expect(decision.evidence.comparison.primary_visual_identity).toMatchObject({
+      matches: true,
+      equivalence_basis: "exact_hash",
+    });
+  });
+
+  it("allows explicitly unavailable Fulbright-style legacy geometry as a repair limitation", () => {
+    const fixture = validWebFixture({ existingLayoutUnavailable: true });
+    const unavailableProjection = {
+      schema: retainedCaptureArtifactProjectionSchema,
+      kind: "webpage",
+      localization_status: "evidence_only_geometry_unavailable",
+      authoritative: {
+        layout_retained: false,
+        layout_hash: null,
+        expansion_state_count: 0,
+      },
+    };
+    fixture.existingCapture.retained_artifact_projection = unavailableProjection;
+    fixture.existingBaseline.summary_metadata.retained_artifact_projection = unavailableProjection;
+    fixture.existingPreparedArtifacts = mutatePreparedArtifact(
+      fixture.existingPreparedArtifacts,
+      "meta",
+      (body) => {
+        const metadata = JSON.parse(body.toString("utf8"));
+        metadata.retained_artifact_projection = unavailableProjection;
+        return Buffer.from(JSON.stringify(metadata));
+      },
+    );
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision.decision).toBe(
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
+    );
+    expect(decision.evidence.existing.legacy_limitations).toContain(
+      "main_layout_explicitly_unavailable",
+    );
+    expect(decision.evidence.capture.legacy_limitations).toEqual([]);
+  });
+
+  it("treats stable current wording and reviewed-quote removal as material", () => {
+    const changedText = "Award eligibility\nApplicants must be enrolled part time.";
+    const fixture = validWebFixture({
+      candidateText: changedText,
+      candidatePage: Buffer.from("changed page image"),
+      intakeText: changedText,
+    });
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision.decision).toBe(
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.MATERIAL_DIFFERENCE_CANDIDATE,
+    );
+    expect(decision.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining([
+      "material_text_hash_changed",
+      "material_primary_image_changed",
+      "material_intake_text_changed_from_acquisition",
+      "material_reviewed_quotes_removed",
+    ]));
+    expect(decision.outcome).toMatchObject({
+      would_commit: false,
+      would_queue_visual_candidate: true,
+      would_quarantine: false,
+      creates_api_charge: false,
+    });
+    expect(decision.evidence.intake).toMatchObject({
+      matches_immutable_acquisition: false,
+      capture_matches_stable_intake: true,
+      evidence_quotes_verified: false,
+    });
+  });
+
+  it("never absorbs an unexplained visual-only webpage change", () => {
+    const fixture = validWebFixture({ candidatePage: Buffer.from("visual-only change") });
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision.decision).toBe(
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.MATERIAL_DIFFERENCE_CANDIDATE,
+    );
+    expect(decision.reasons.map((reason) => reason.code)).toContain(
+      "material_primary_image_changed",
+    );
+  });
+
+  it("quarantines unstable pre/post intake instead of claiming a change", () => {
+    const fixture = validWebFixture();
+    fixture.postIntake = intake("Award eligibility changed during capture");
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "web_intake_not_stable",
+      creates_api_charge: false,
+      outcome: { would_quarantine: true, would_queue_visual_candidate: false },
+    });
+  });
+
+  it("quarantines stable changed intake when the prospective visual capture still shows old text", () => {
+    const fixture = validWebFixture({
+      candidateText: reviewedText,
+      intakeText: [
+        "Award eligibility revised",
+        reviewedQuote,
+        "Additional current guidance.",
+      ].join("\n"),
+    });
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "web_intake_capture_text_mismatch",
+      creates_api_charge: false,
+      outcome: { would_quarantine: true, would_queue_visual_candidate: false },
+    });
+  });
+
+  it("quarantines incomplete prospective expansion discovery", () => {
+    const fixture = validWebFixture({ candidateCoverageComplete: false });
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision.decision).toBe(
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+    );
+    expect(decision.reason).toBe("capture_expansion_coverage_incomplete");
+  });
+
+  it("quarantines stale geometry, URL drift, and sibling generation paths", () => {
+    const geometry = validWebFixture();
+    geometry.capturePreparedArtifacts = mutatePreparedArtifact(
+      geometry.capturePreparedArtifacts,
+      "layout",
+      (body) => {
+        const value = JSON.parse(body.toString("utf8"));
+        value.nodes[0].text = "tampered without recomputing geometry";
+        return Buffer.from(JSON.stringify(value));
+      },
+    );
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(geometry)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "capture_retained_artifact_identity_invalid",
+    });
+
+    const urlDrift = validWebFixture();
+    urlDrift.postIntake = { ...urlDrift.postIntake, canonical_url: "https://example.org/sibling" };
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(urlDrift)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "post_intake_url_drift",
+    });
+
+    const sibling = validWebFixture();
+    sibling.capture = {
+      ...sibling.capture,
+      page_path: sibling.capture.page_path.replace(
+        generation(captureAt),
+        generation("2026-08-14T18:06:00.000Z"),
+      ),
+    };
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(sibling)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "capture_page_path_binding_invalid",
+    });
+  });
+
+  it("rejects locally tampered text even if baseline, metadata, and hashes were resealed", () => {
+    const fixture = validWebFixture();
+    const tampered = webCapture({
+      capturedAt: existingAt,
+      text: "Award eligibility\nApplicants must be enrolled part time.",
+      page: Buffer.from("stable page image"),
+      layoutX: 1,
+      modern: false,
+      expansionCount: 0,
+    });
+    fixture.existingCapture = { ...tampered.capture, text: `${tampered.capture.text}\n` };
+    fixture.existingPreparedArtifacts = tampered.prepared;
+    fixture.existingBaseline = baselineFor(tampered.capture, fixture.immutableAcquisition.acquisition);
+
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+    expect(decision).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "existing_baseline_normalized_text_disagrees_with_acquisition",
+    });
+  });
+
+  it("requires exact PDF acquisition hashes and classifies a new PDF as material", () => {
+    const unchanged = validPdfFixture();
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(unchanged)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
+      creates_api_charge: false,
+      outcome: { would_commit: true },
+    });
+
+    const changed = validPdfFixture({ candidatePdf: Buffer.from("new official PDF bytes") });
+    const changedDecision = evaluateStage1EvidenceSchemaUpgradeCapture(changed);
+    expect(changedDecision.decision).toBe(
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.MATERIAL_DIFFERENCE_CANDIDATE,
+    );
+    expect(changedDecision.reasons.map((reason) => reason.code)).toEqual(expect.arrayContaining([
+      "material_pdf_identity_changed_from_acquisition",
+      "material_pdf_file_changed",
+    ]));
+
+    const missingTextIdentity = validPdfFixture();
+    delete missingTextIdentity.immutableAcquisition.identity.text_hash;
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(missingTextIdentity)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "immutable_acquisition_pdf_text_hash_missing",
+    });
+  });
+});
+
+function validWebFixture({
+  candidateText = reviewedText,
+  candidatePage = Buffer.from("stable page image"),
+  intakeText = candidateText,
+  candidateExpansionCount = 0,
+  candidateCoverageComplete = true,
+  existingLayoutUnavailable = false,
+} = {}) {
+  const existing = webCapture({
+    capturedAt: existingAt,
+    text: reviewedText,
+    page: Buffer.from("stable page image"),
+    layoutX: 1,
+    modern: false,
+    expansionCount: 0,
+    layoutUnavailable: existingLayoutUnavailable,
+  });
+  const candidate = webCapture({
+    capturedAt: captureAt,
+    text: candidateText,
+    page: candidatePage,
+    layoutX: 2,
+    modern: true,
+    expansionCount: candidateExpansionCount,
+    coverageComplete: candidateCoverageComplete,
+  });
+  const acquisition = validAcquisition({ fileHash: "a".repeat(64), text: reviewedText });
+  return {
+    sourceId,
+    sourceKind: "webpage",
+    reviewedFinalUrl: finalUrl,
+    reviewedEvidenceQuotes: [reviewedQuote],
+    immutableAcquisition: {
+      acquisition,
+      identity: { file_hash: "a".repeat(64) },
+    },
+    existingBaseline: baselineFor(existing.capture, acquisition),
+    existingCapture: { ...existing.capture, text: `${existing.capture.text}\n` },
+    existingPreparedArtifacts: existing.prepared,
+    capture: candidate.capture,
+    capturePreparedArtifacts: candidate.prepared,
+    preIntake: intake(intakeText),
+    postIntake: intake(intakeText),
+  };
+}
+
+function validPdfFixture({ candidatePdf = Buffer.from("reviewed official PDF bytes") } = {}) {
+  const reviewedPdf = Buffer.from("reviewed official PDF bytes");
+  const existing = pdfCapture({ capturedAt: existingAt, pdf: reviewedPdf, modern: false });
+  const candidate = pdfCapture({ capturedAt: captureAt, pdf: candidatePdf, modern: true });
+  const acquisition = validAcquisition({ fileHash: sha256(reviewedPdf), text: reviewedText });
+  return {
+    sourceId,
+    sourceKind: "pdf",
+    reviewedFinalUrl: finalUrl,
+    reviewedEvidenceQuotes: [reviewedQuote],
+    immutableAcquisition: {
+      acquisition,
+      identity: {
+        file_hash: sha256(reviewedPdf),
+        text_hash: sha256(Buffer.from(reviewedText)),
+      },
+    },
+    existingBaseline: baselineFor(existing.capture, acquisition),
+    existingCapture: { ...existing.capture, text: `${existing.capture.text}\n` },
+    existingPreparedArtifacts: existing.prepared,
+    capture: candidate.capture,
+    capturePreparedArtifacts: candidate.prepared,
+  };
+}
+
+function webCapture({
+  capturedAt,
+  text,
+  page,
+  layoutX,
+  modern,
+  expansionCount,
+  coverageComplete = true,
+  layoutUnavailable = false,
+}) {
+  const directory = captureDirectory(capturedAt);
+  const prefix = archivePrefix(capturedAt);
+  const thumb = Buffer.from("thumbnail");
+  const imageHash = sha256(page);
+  const textHash = sha256(Buffer.from(text));
+  const geometry = readyGeometry(
+    imageHash,
+    "main",
+    capturedAt,
+    layoutX,
+    layoutUnavailable,
+  );
+  const expansionStates = Array.from({ length: expansionCount }, (_, index) => {
+    const suffix = String(index + 1).padStart(2, "0");
+    const statePage = Buffer.from(`expanded state ${suffix}`);
+    const stateImageHash = sha256(statePage);
+    const stateText = reviewedQuote;
+    const stateGeometry = readyGeometry(
+      stateImageHash,
+      `expansion-state-${suffix}`,
+      capturedAt,
+      10 + index,
+    );
+    return {
+      state_id: `expansion-state-${suffix}`,
+      index,
+      label: `Panel ${suffix}`,
+      captured_at: capturedAt,
+      image_hash: stateImageHash,
+      layout_hash: stateGeometry.geometry_hash,
+      text_geometry: stateGeometry,
+      text_hash: sha256(Buffer.from(stateText)),
+      text_length: stateText.length,
+      page_bytes: statePage.length,
+      page_path: `${directory}/expansion-state-${suffix}.jpg`,
+      layout_path: `${directory}/expansion-state-${suffix}-layout.json`,
+      page_body: statePage,
+    };
+  });
+  const coverage = modern
+    ? coverageComplete
+      ? completeCoverage(expansionCount)
+      : conservativeExpansionStateCaptureCoverage({
+          retainedStateCount: expansionCount,
+          captureLimit: Math.max(1, expansionCount),
+        })
+    : conservativeExpansionStateCaptureCoverage({ retainedStateCount: 0, captureLimit: 24 });
+  const projection = modern
+    ? retainedProjection("webpage", geometry.geometry_hash, expansionCount)
+    : null;
+  const semantic = semanticFields(text);
+  const capture = {
+    version: 1,
+    kind: "webpage",
+    source: { id: sourceId },
+    captured_at: capturedAt,
+    final_url: finalUrl,
+    text,
+    text_hash: textHash,
+    text_length: text.length,
+    ...semantic,
+    image_hash: imageHash,
+    page_bytes: page.length,
+    thumb_bytes: thumb.length,
+    layout_hash: geometry.geometry_hash,
+    text_geometry: geometry,
+    localization: layoutUnavailable
+      ? unavailableLocalization(geometry.geometry_hash, imageHash)
+      : {
+          status: "geometry_ready",
+          geometry_hash: geometry.geometry_hash,
+          bound_image_hash: imageHash,
+        },
+    retained_artifact_projection: projection,
+    expansion_state_capture_coverage: coverage,
+    expansion_state_screenshots: expansionStates,
+    dir: directory,
+    page_path: `${directory}/page.jpg`,
+    thumb_path: `${directory}/thumb.jpg`,
+    text_path: `${directory}/text.txt`,
+    layout_path: `${directory}/layout.json`,
+    meta_path: `${directory}/meta.json`,
+  };
+  const metadata = {
+    version: 1,
+    kind: "webpage",
+    source: { id: sourceId },
+    captured_at: capturedAt,
+    final_url: finalUrl,
+    text_hash: textHash,
+    text_length: text.length,
+    ...semantic,
+    image_hash: imageHash,
+    page_bytes: page.length,
+    thumb_bytes: thumb.length,
+    layout_hash: geometry.geometry_hash,
+    text_geometry: { ...geometry, file: `${prefix}layout.json` },
+    localization: layoutUnavailable
+      ? unavailableLocalization(geometry.geometry_hash, imageHash)
+      : {
+          status: "geometry_ready",
+          geometry_hash: geometry.geometry_hash,
+          bound_image_hash: imageHash,
+        },
+    retained_artifact_projection: projection,
+    ...(modern
+      ? {
+          expansion_state_count: expansionCount,
+          expansion_state_capture_coverage: coverage,
+        }
+      : legacyCoverageScalars()),
+    expansion_state_screenshots: expansionStates.map((state, index) => {
+      const suffix = String(index + 1).padStart(2, "0");
+      return {
+        state_id: state.state_id,
+        index,
+        label: state.label,
+        captured_at: capturedAt,
+        image_hash: state.image_hash,
+        layout_hash: state.layout_hash,
+        text_geometry: {
+          ...state.text_geometry,
+          file: `${prefix}expansion-state-${suffix}-layout.json`,
+        },
+        text_hash: state.text_hash,
+        text_length: state.text_length,
+        page_bytes: state.page_bytes,
+        page: `${prefix}expansion-state-${suffix}.jpg`,
+        layout: `${prefix}expansion-state-${suffix}-layout.json`,
+      };
+    }),
+    files: {
+      page: `${prefix}page.jpg`,
+      thumb: `${prefix}thumb.jpg`,
+      text: `${prefix}text.txt`,
+      layout: `${prefix}layout.json`,
+      meta: `${prefix}meta.json`,
+      expansion_states: expansionStates.map((state, index) => {
+        const suffix = String(index + 1).padStart(2, "0");
+        return {
+          state_id: state.state_id,
+          page: `${prefix}expansion-state-${suffix}.jpg`,
+          layout: `${prefix}expansion-state-${suffix}-layout.json`,
+        };
+      }),
+    },
+  };
+  const definitions = {
+    page: ["page.jpg", "image/jpeg", page, capture.page_path],
+    thumb: ["thumb.jpg", "image/jpeg", thumb, capture.thumb_path],
+    text: ["text.txt", "text/plain; charset=utf-8", Buffer.from(`${text}\n`), capture.text_path],
+    layout: [
+      "layout.json",
+      "application/json; charset=utf-8",
+      Buffer.from(JSON.stringify(geometry)),
+      capture.layout_path,
+    ],
+    meta: [
+      "meta.json",
+      "application/json; charset=utf-8",
+      Buffer.from(JSON.stringify(metadata)),
+      capture.meta_path,
+    ],
+  };
+  for (const [index, state] of expansionStates.entries()) {
+    const suffix = String(index + 1).padStart(2, "0");
+    definitions[`expansion_state_${suffix}`] = [
+      `expansion-state-${suffix}.jpg`,
+      "image/jpeg",
+      state.page_body,
+      state.page_path,
+    ];
+    definitions[`expansion_state_${suffix}_layout`] = [
+      `expansion-state-${suffix}-layout.json`,
+      "application/json; charset=utf-8",
+      Buffer.from(JSON.stringify(state.text_geometry)),
+      state.layout_path,
+    ];
+  }
+  return { capture, prepared: prepareFromDefinitions(definitions) };
+}
+
+function pdfCapture({ capturedAt, pdf, modern }) {
+  const directory = captureDirectory(capturedAt);
+  const prefix = archivePrefix(capturedAt);
+  const fileHash = sha256(pdf);
+  const textHash = sha256(Buffer.from(reviewedText));
+  const projection = modern ? retainedProjection("pdf", null, 0) : null;
+  const capture = {
+    version: 1,
+    kind: "pdf",
+    source: { id: sourceId },
+    captured_at: capturedAt,
+    final_url: finalUrl,
+    text: reviewedText,
+    text_hash: textHash,
+    text_length: reviewedText.length,
+    file_hash: fileHash,
+    image_hash: fileHash,
+    file_bytes: pdf.length,
+    retained_artifact_projection: projection,
+    expansion_state_capture_coverage: null,
+    expansion_state_screenshots: [],
+    localization: { status: "not_applicable_pdf" },
+    dir: directory,
+    pdf_path: `${directory}/document.pdf`,
+    text_path: `${directory}/text.txt`,
+    meta_path: `${directory}/meta.json`,
+  };
+  const metadata = {
+    version: 1,
+    kind: "pdf",
+    source: { id: sourceId },
+    captured_at: capturedAt,
+    final_url: finalUrl,
+    text_hash: textHash,
+    text_length: reviewedText.length,
+    file_hash: fileHash,
+    image_hash: fileHash,
+    file_bytes: pdf.length,
+    retained_artifact_projection: projection,
+    expansion_state_capture_coverage: null,
+    expansion_state_count: 0,
+    expansion_state_screenshots: [],
+    localization: { status: "not_applicable_pdf" },
+    files: {
+      pdf: `${prefix}document.pdf`,
+      text: `${prefix}text.txt`,
+      meta: `${prefix}meta.json`,
+      expansion_states: [],
+    },
+  };
+  const prepared = prepareFromDefinitions({
+    pdf: ["document.pdf", "application/pdf", pdf, capture.pdf_path],
+    text: [
+      "text.txt",
+      "text/plain; charset=utf-8",
+      Buffer.from(`${reviewedText}\n`),
+      capture.text_path,
+    ],
+    meta: [
+      "meta.json",
+      "application/json; charset=utf-8",
+      Buffer.from(JSON.stringify(metadata)),
+      capture.meta_path,
+    ],
+  });
+  return { capture, prepared };
+}
+
+function baselineFor(capture, acquisition) {
+  const guard = acquisition.review_seal.human_source_disposition.activation_guard;
+  const activation = {
+    status: "server_prepare_recorded",
+    shared_award_source_id: sourceId,
+    source_acquisition_id: acquisitionId,
+    source_page_request_id: requestId,
+    expected_normalized_text_sha256: guard.normalized_retained_text_sha256,
+    observed_normalized_text_sha256: guard.normalized_retained_text_sha256,
+    guard_sha256: acquisition.review_seal.human_source_disposition.guard_sha256,
+    reviewed_final_url: finalUrl,
+    observed_final_url: finalUrl,
+    visual_evidence_quotes_verified: true,
+    retained_evidence_quotes_verified: true,
+  };
+  return {
+    version: 1,
+    kind: capture.kind,
+    source: { id: sourceId },
+    captured_at: capture.captured_at,
+    final_url: finalUrl,
+    text_hash: capture.text_hash,
+    text_length: capture.text_length,
+    body_text_hash: capture.body_text_hash || null,
+    body_text_length: capture.body_text_length ?? null,
+    main_content_hash: capture.main_content_hash || null,
+    main_content_text_length: capture.main_content_text_length ?? null,
+    nav_header_footer_hash: capture.nav_header_footer_hash || null,
+    nav_header_footer_text_length: capture.nav_header_footer_text_length ?? null,
+    expansion_hash: capture.expansion_hash || null,
+    expansion_text_length: capture.expansion_text_length ?? null,
+    expandable_sections_hash: capture.expandable_sections_hash ?? null,
+    image_hash: capture.image_hash,
+    layout_hash: capture.layout_hash || null,
+    file_hash: capture.file_hash || null,
+    file_bytes: capture.file_bytes || null,
+    capture: {
+      meta: `${archivePrefix(capture.captured_at)}meta.json`,
+      expansion_states: capture.expansion_state_screenshots.map((state) => ({
+        state_id: state.state_id,
+        image_hash: state.image_hash,
+        layout_hash: state.layout_hash,
+        page: state.page_path,
+        layout: state.layout_path,
+      })),
+    },
+    summary_metadata: {
+      stage1_baseline_activation: activation,
+      retained_artifact_projection: capture.retained_artifact_projection,
+      expansion_state_capture_coverage: capture.expansion_state_capture_coverage,
+    },
+  };
+}
+
+function validAcquisition({ fileHash, text }) {
+  const normalizedHash = stage1BaselineActivationTextSha256(text);
+  const acquisition = {
+    id: acquisitionId,
+    shared_award_source_id: sourceId,
+    origin_source_page_request_id: requestId,
+    acquisition_kind: "historical_import",
+    notification_mode: "baseline_only",
+    onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+    review_seal: {
+      source_page_request_id: requestId,
+      capture_file_hash: fileHash,
+      capture_final_url: finalUrl,
+      human_source_disposition: {
+        schema_version: "awardping.stage1.baseline-source-human-disposition.v1",
+        policy_version: "stage1-baseline-source-disposition-v1",
+        decision: "approve_baseline_only",
+        effective_source_review: {
+          status: "accepted",
+          source_relevance: "primary",
+          cycle_relevance: "evergreen",
+          officialness: "official",
+          confidence: "high",
+          page_type: "eligibility",
+          evidence_quotes: [reviewedQuote],
+          exact_evidence_verified: true,
+          facts: {
+            description: null,
+            deadline: null,
+            amount: null,
+            eligibility: [],
+            application_materials: [],
+            important_dates: [],
+          },
+          reviewed_roles: ["eligibility"],
+        },
+        activation_guard: {
+          mode: "first_visual_baseline_exact_normalized_retained_text",
+          onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+          notification_mode: "baseline_only",
+          source_page_request_id: requestId,
+          shared_award_source_id: sourceId,
+          shared_award_source_acquisition_id: acquisitionId,
+          evidence_packet_sha256: "c".repeat(64),
+          decision_item_sha256: "d".repeat(64),
+          normalized_retained_text_sha256: normalizedHash,
+          retained_text_artifact: {
+            store_id: "awardping-r2-production",
+            bucket: "awardping-snapshots",
+            key:
+              `source-intake-first-observation/v1/requests/${requestId}/sha256/` +
+              `${fileHash}/text.txt`,
+            sha256: "b".repeat(64),
+            bytes: Buffer.byteLength(`${text}\n`, "utf8"),
+            r2_verified_at: "2026-08-03T16:00:00.000Z",
+          },
+          capture_file_sha256: fileHash,
+          final_url: finalUrl,
+        },
+        authority: {
+          monitoring: true,
+          public_facts: false,
+          fact_candidates: false,
+          reconciliation: false,
+          publication: false,
+          first_observation_notification: false,
+        },
+        guard_sha256: null,
+      },
+    },
+  };
+  const disposition = acquisition.review_seal.human_source_disposition;
+  disposition.guard_sha256 = stage1BaselineActivationGuardSha256(disposition);
+  return acquisition;
+}
+
+function readyGeometry(imageHash, stateId, capturedAt, x, unavailable = false) {
+  const source = {
+    version: 1,
+    state_id: stateId,
+    captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
+    document: { width: 100, height: 100 },
+    viewport: { width: 100, height: 100 },
+    scroll: { x: 0, y: 0 },
+    device_pixel_ratio: 1,
+    paint_stack: { contract: "browser-paint-stack-v1", status: "verified" },
+    ...(unavailable
+      ? {
+          availability_status: "unavailable_layout_changed_during_screenshot",
+          unavailable_reason: "The page moved while the screenshot was taken.",
+        }
+      : {}),
+    nodes: [{
+      order: 0,
+      path: null,
+      flow_path: null,
+      text: "Text",
+      separator_before: " ",
+      rects: [{ x, y: 1, width: 20, height: 10, right: x + 20, bottom: 11 }],
+      runs: [{
+        start: 0,
+        end: 4,
+        text: "Text",
+        rects: [{ x, y: 1, width: 20, height: 10, right: x + 20, bottom: 11 }],
+      }],
+    }],
+  };
+  const fingerprint = visualTextGeometryLayoutFingerprint(source);
+  source.capture_verification = {
+    contract: "visual-screenshot-layout-binding-v1",
+    status: "verified",
+    before_fingerprint: fingerprint,
+    after_fingerprint: fingerprint,
+  };
+  return bindVisualTextGeometry(source, {
+    capturedAt,
+    imageHash,
+    screenshot: { pixel_width: 100, pixel_height: 100 },
+  });
+}
+
+function unavailableLocalization(geometryHash, imageHash) {
+  return {
+    status: "evidence_only_geometry_unavailable",
+    exact: false,
+    accounted_for: true,
+    geometry_ready: false,
+    unavailable_reason: "The page moved while the screenshot was taken.",
+    geometry_hash: geometryHash,
+    bound_image_hash: imageHash,
+  };
+}
+
+function completeCoverage(retainedStateCount) {
+  return expansionStateCaptureCoverage({
+    raw_candidates: retainedStateCount,
+    raw_candidate_count_exact: true,
+    candidates: retainedStateCount,
+    candidate_count_exact: true,
+    attempted: retainedStateCount,
+    capture_limit: 24,
+    capture_complete: true,
+    capture_status: "verified_complete",
+    truncated: false,
+    truncated_count: 0,
+    truncated_count_exact: true,
+    failures: [],
+  }, { retainedStateCount });
+}
+
+function legacyCoverageScalars() {
+  return {
+    expansion_state_attempted: 0,
+    expansion_state_candidates: 0,
+    expansion_state_capture_limit: 24,
+    expansion_state_capture_complete: true,
+    expansion_state_truncated: false,
+    expansion_state_truncated_count: 0,
+    expansion_state_failures: [],
+  };
+}
+
+function retainedProjection(kind, layoutHash, expansionStateCount) {
+  return {
+    schema: retainedCaptureArtifactProjectionSchema,
+    kind,
+    localization_status: kind === "pdf"
+      ? "not_applicable_pdf"
+      : "exact_geometry_available",
+    authoritative: {
+      layout_retained: kind === "webpage",
+      layout_hash: kind === "webpage" ? layoutHash : null,
+      expansion_state_count: expansionStateCount,
+    },
+  };
+}
+
+function semanticFields(text) {
+  return {
+    body_text_hash: sha256(Buffer.from(`body:${text}`)),
+    body_text_length: text.length,
+    main_content_hash: sha256(Buffer.from(`main:${text}`)),
+    main_content_text_length: text.length,
+    nav_header_footer_hash: sha256(Buffer.from(`chrome:${text}`)),
+    nav_header_footer_text_length: 0,
+    expansion_hash: sha256(Buffer.from(`expansion:${text}`)),
+    expansion_text_length: reviewedQuote.length,
+    expandable_sections_hash: null,
+  };
+}
+
+function intake(text) {
+  return {
+    ok: true,
+    text,
+    final_url: finalUrl,
+    canonical_url: finalUrl,
+    capture_method: "fetch_html",
+  };
+}
+
+function prepareFromDefinitions(definitions) {
+  const bodies = new Map();
+  const files = Object.entries(definitions).map(([name, [fileName, contentType, body, path]]) => {
+    bodies.set(path, body);
+    return { name, fileName, path, contentType };
+  });
+  const prepared = prepareR2CaptureArtifacts(files, { readFile: (path) => bodies.get(path) });
+  return {
+    ...prepared,
+    artifacts: prepared.artifacts.map((artifact) => ({
+      ...artifact,
+      path: definitions[artifact.name][3],
+    })),
+  };
+}
+
+function mutatePreparedArtifact(prepared, name, mutate) {
+  const definitions = {};
+  for (const artifact of prepared.artifacts) {
+    definitions[artifact.name] = [
+      artifact.fileName,
+      artifact.contentType,
+      artifact.name === name ? mutate(artifact.body) : artifact.body,
+      artifact.path,
+    ];
+  }
+  return prepareFromDefinitions(definitions);
+}
+
+function captureDirectory(capturedAt) {
+  return `C:/archive/sources/${sourceId}/captures/${generation(capturedAt)}`;
+}
+
+function archivePrefix(capturedAt) {
+  return `sources/${sourceId}/captures/${generation(capturedAt)}/`;
+}
+
+function generation(capturedAt) {
+  return new Date(capturedAt).toISOString().replace(/[:.]/gu, "-");
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
+}

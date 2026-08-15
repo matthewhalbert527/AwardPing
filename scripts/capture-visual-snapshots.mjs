@@ -16,6 +16,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -152,6 +153,43 @@ import {
   stage1BaselineActivationFinalizationReceipt,
   stage1BaselineActivationReceipt,
 } from "./lib/stage1-baseline-activation-guard.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS,
+  assertExactStage1EvidenceSchemaUpgradeSourceIds,
+  assertStage1EvidenceSchemaUpgradeCliContract,
+  buildStage1EvidenceSchemaUpgradeFailureResult,
+  createStage1EvidenceSchemaUpgradeReport,
+  runStage1EvidenceSchemaUpgradeSource,
+  validateStage1EvidenceSchemaUpgradeManifest,
+} from "./lib/stage1-evidence-schema-upgrade.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS,
+  evaluateStage1EvidenceSchemaUpgradeCapture,
+} from "./lib/stage1-evidence-schema-upgrade-validation.mjs";
+import {
+  verifyStage1EvidenceSchemaUpgradeR2Binding,
+} from "./lib/stage1-evidence-schema-upgrade-r2-binding.mjs";
+import {
+  runStage1EvidenceSchemaUpgradeCommit,
+} from "./lib/stage1-evidence-schema-upgrade-commit.mjs";
+import {
+  buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs,
+  prepareStage1EvidenceSchemaUpgradeQuarantineValidation,
+  stage1EvidenceSchemaUpgradeQuarantineSafeAction,
+  stage1EvidenceSchemaUpgradeQuarantineReceipt,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_CANDIDATE_ARTIFACTS_SCHEMA,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_EVIDENCE_SCHEMA,
+} from "./lib/stage1-evidence-schema-upgrade-quarantine.mjs";
+import {
+  sealStage1EvidenceSchemaUpgradeMutationAccounting,
+} from "./lib/stage1-evidence-schema-upgrade-mutation-accounting.mjs";
+import {
+  assertStage1EvidenceSchemaUpgradeJournal,
+} from "./lib/stage1-evidence-schema-upgrade-transaction.mjs";
+import {
+  buildLatestOnlyVisualSnapshotPointerReplacement,
+  visualSnapshotPointerIdentity,
+} from "./lib/visual-snapshot-latest-only-reconciliation.mjs";
 import { monitoringPromotionMatcherBundleHash } from "./lib/monitoring-promotion-matcher-bundle.mjs";
 import { insertedDiscoveryRows } from "./lib/source-discovery-write.mjs";
 import {
@@ -183,6 +221,8 @@ import {
   currentMonitoringPolicyAuditIdentity,
   currentVisualReviewPolicyIdentity,
   normalizeVisualReviewMode,
+  visualReviewEnqueueContexts,
+  visualReviewEnqueuePolicy,
   visualReviewCandidateSignature,
   visualReviewEvidenceSignature,
   stableJsonStringify,
@@ -216,6 +256,20 @@ if (boolArg(args.help ?? args.h, false)) {
   console.log(captureVisualSnapshotsHelp());
   process.exit(0);
 }
+const stage1EvidenceSchemaUpgrade = strictBoolArg(
+  args["stage1-evidence-schema-upgrade"],
+  false,
+  "--stage1-evidence-schema-upgrade",
+);
+const stage1EvidenceSchemaUpgradeDryRun = strictBoolArg(
+  args["stage1-evidence-schema-upgrade-dry-run"],
+  true,
+  "--stage1-evidence-schema-upgrade-dry-run",
+);
+if (!stage1EvidenceSchemaUpgrade && args["stage1-evidence-schema-upgrade-dry-run"] !== undefined) {
+  console.error("--stage1-evidence-schema-upgrade-dry-run requires --stage1-evidence-schema-upgrade=true.");
+  process.exit(1);
+}
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
   ...loadEnvFile(envPath),
@@ -233,7 +287,9 @@ const brokenSourcesDir = join(archiveRoot, "broken-sources");
 const brokenSourcesCurrentPath = join(brokenSourcesDir, "broken-sources-current.json");
 const brokenSourcesJsonlPath = join(brokenSourcesDir, "broken-sources-events.jsonl");
 const brokenSourcesCsvPath = join(brokenSourcesDir, "broken-sources-current.csv");
-const limit = positiveInt(args.limit, 25);
+const limit = stage1EvidenceSchemaUpgrade
+  ? STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS.length
+  : positiveInt(args.limit, 25);
 const shardCount = boundedInt(args["shard-count"] || env.AWARDPING_VISUAL_SHARD_COUNT, 1, 1, 64);
 const shardIndex = nonNegativeInt(args["shard-index"] || env.AWARDPING_VISUAL_SHARD_INDEX, 0);
 const requestedRunTrigger = cleanText(args["run-trigger"] || env.AWARDPING_VISUAL_RUN_TRIGGER).toLowerCase();
@@ -244,7 +300,12 @@ const requestedRunCohortId = cleanText(args["run-cohort-id"] || env.AWARDPING_VI
 const includeNotDue = boolArg(args.all, false) || boolArg(args["include-not-due"], false);
 const sourceIdFilter = cleanText(args["source-id"]);
 const sourceIdsFile = cleanText(args["source-ids-file"]);
-const sourceIdsFilter = loadSourceIdsFilter(sourceIdsFile);
+const stage1EvidenceSchemaUpgradeManifest = stage1EvidenceSchemaUpgrade
+  ? loadStage1EvidenceSchemaUpgradeManifest(sourceIdsFile)
+  : null;
+const sourceIdsFilter = stage1EvidenceSchemaUpgrade
+  ? new Set(stage1EvidenceSchemaUpgradeManifest.source_ids)
+  : loadSourceIdsFilter(sourceIdsFile);
 const sourceUrlFilter = cleanText(args["source-url"]);
 const awardFilter = cleanText(args.award);
 const initialOfficialDocumentMaterialization = boolArg(
@@ -261,7 +322,7 @@ const visualSourceCheckMinutes = positiveInt(
   24 * 60,
 );
 const baselineRefresh = boolArg(args["baseline-refresh"], false);
-const promote = boolArg(args.promote, true);
+const promote = stage1EvidenceSchemaUpgrade ? false : boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
 const completeMissingBaselines = boolArg(args["complete-missing-baselines"], false);
@@ -321,10 +382,14 @@ const forceR2SnapshotRefresh = boolArg(
   args["force-r2-snapshot-refresh"] ?? env.AWARDPING_FORCE_R2_SNAPSHOT_REFRESH,
   localizationRepair,
 );
-const extractBaselineInfo = localizationRepair
+const extractBaselineInfo = stage1EvidenceSchemaUpgrade
+  ? false
+  : localizationRepair
   ? false
   : boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
-const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
+const backfillBaselineInfo = stage1EvidenceSchemaUpgrade
+  ? false
+  : boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
 const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
@@ -340,7 +405,9 @@ const discoveryOnboardingBatchId = discoveryIntent === "live_recurring"
     || cleanText(args["run-cohort-id"])
     || "operator_historical_discovery";
 const captureProfile = normalizeCaptureProfile(
-  args["capture-profile"] || env.AWARDPING_CAPTURE_PROFILE,
+  args["capture-profile"]
+    || env.AWARDPING_CAPTURE_PROFILE
+    || (stage1EvidenceSchemaUpgrade ? "baseline-rich" : null),
   defaultCaptureProfile({
     localizationRepair,
     discoveryMode,
@@ -351,7 +418,9 @@ const captureProfile = normalizeCaptureProfile(
 );
 const captureProfileConfig = captureProfileSettings(captureProfile);
 const sectionExtractionProfile = normalizeSectionExtractionProfile(
-  args["section-extraction-profile"] || env.AWARDPING_SECTION_EXTRACTION_PROFILE,
+  args["section-extraction-profile"]
+    || env.AWARDPING_SECTION_EXTRACTION_PROFILE
+    || (stage1EvidenceSchemaUpgrade ? "baseline-rich" : null),
   defaultSectionExtractionProfile({
     completeMissingBaselines,
     baselineRefresh,
@@ -373,7 +442,9 @@ const captureSectionEvidence = boolArg(
 );
 const defaultMaxExpansionStateScreenshots = captureProfile === "stable-daily"
   ? 8
-  : captureProfileConfig.defaultMaxExpansionStateScreenshots;
+  : stage1EvidenceSchemaUpgrade
+    ? 24
+    : captureProfileConfig.defaultMaxExpansionStateScreenshots;
 const maxExpansionStateScreenshots = boundedInt(
   args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
   defaultMaxExpansionStateScreenshots,
@@ -590,10 +661,15 @@ const r2RepairMissingSnapshots = boolArg(
 );
 const r2SnapshotSync = boolArg(
   args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
-  r2BackfillBaselines || localizationRepair || forceR2SnapshotRefresh,
+  stage1EvidenceSchemaUpgrade
+    || r2BackfillBaselines
+    || localizationRepair
+    || forceR2SnapshotRefresh,
 );
 const visualReviewDefaultMode =
-  completeMissingBaselines || localizationRepair || r2BackfillBaselines || forceR2SnapshotRefresh
+  stage1EvidenceSchemaUpgrade
+    ? "none"
+    : completeMissingBaselines || localizationRepair || r2BackfillBaselines || forceR2SnapshotRefresh
     ? "none"
     : "batch";
 const visualReviewMode = normalizeVisualReviewMode(
@@ -605,6 +681,13 @@ if (visualReviewMode === "immediate") {
   process.exit(1);
 }
 const interpretVisualChanges = visualReviewMode !== "none";
+const stage1EvidenceSchemaUpgradeEnqueuePolicy = stage1EvidenceSchemaUpgrade
+  ? visualReviewEnqueuePolicy({
+      context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+      bypassRejectionLedger: true,
+      queueReconciliation: false,
+    })
+  : null;
 const visualReviewBatchModel = geminiWorkerModel();
 const snapshotHistoryPrune = boolArg(
   args["snapshot-history-prune"] ?? env.AWARDPING_SNAPSHOT_HISTORY_PRUNE,
@@ -637,6 +720,15 @@ const r2Endpoint = cleanText(
 );
 const r2AccessKeyId = cleanText(args["r2-access-key-id"] || env.R2_ACCESS_KEY_ID);
 const r2SecretAccessKey = cleanText(args["r2-secret-access-key"] || env.R2_SECRET_ACCESS_KEY);
+const requestedSourceQualityMode = cleanText(
+  args["source-quality-mode"]
+    || args["source-quality-ai-mode"]
+    || env.AWARDPING_SOURCE_QUALITY_MODE
+    || env.AWARDPING_SOURCE_QUALITY_AI_MODE,
+).toLowerCase();
+const sourceQualityMode = stage1EvidenceSchemaUpgrade
+  ? requestedSourceQualityMode || "deterministic"
+  : requestedSourceQualityMode;
 const aiRequired = runRequiresAi();
 const aiDisabledReason = aiRequired ? null : aiDisabledReasonForRun();
 const aiProvider = aiRequired
@@ -658,6 +750,48 @@ let lastBaselineCoverageProgressProcessed = 0;
 const crawlerUserAgent =
   cleanText(args["crawler-user-agent"] || env.AWARDPING_CRAWLER_USER_AGENT) ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+const stage1EvidenceSchemaUpgradeSelectorContract = stage1EvidenceSchemaUpgrade
+  ? assertStage1EvidenceSchemaUpgradeCliContract({
+      args,
+      effectiveArgs: {
+        ...args,
+        all: includeNotDue,
+        "ai-review-evidence-capture": aiReviewEvidenceCapture,
+        "backfill-baseline-info": backfillBaselineInfo,
+        "baseline-refresh": baselineRefresh,
+        "complete-missing-baselines": completeMissingBaselines,
+        "discover-html-subpages": discoverHtmlSubpages,
+        "discover-pdf-subpages": discoverPdfSubpages,
+        "discovery-mode": discoveryMode,
+        "extract-baseline-info": extractBaselineInfo,
+        "force-r2-snapshot-refresh": forceR2SnapshotRefresh,
+        "gemini-api-max-calls": geminiApiMaxCalls,
+        "initial-official-document-materialization": initialOfficialDocumentMaterialization,
+        "keep-rejected": keepRejected,
+        "keep-rejected-evidence": keepRejectedEvidence,
+        "keep-unchanged": keepUnchanged,
+        "localization-repair": localizationRepair,
+        "max-expansion-state-screenshots": maxExpansionStateScreenshots,
+        "pdf-only": pdfOnly,
+        promote,
+        "reset-previous-snapshot": resetPreviousSnapshot,
+        "r2-backfill-baselines": r2BackfillBaselines,
+        "r2-snapshot-sync": r2SnapshotSync,
+        "run-trigger": runTrigger,
+        "capture-profile": captureProfile,
+        "section-extraction-profile": sectionExtractionProfile,
+        "shard-count": shardCount,
+        "shard-index": shardIndex,
+        "source-quality-mode": sourceQualityMode,
+        "visual-review-mode": visualReviewMode,
+        "web-concurrency": visualWebConcurrency,
+        "web-only": webOnly,
+      },
+      manifest: stage1EvidenceSchemaUpgradeManifest,
+      sourceIds: [...sourceIdsFilter],
+    })
+  : null;
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -856,6 +990,12 @@ async function runOnce() {
       include_not_due: includeNotDue,
       source_id: sourceIdFilter || null,
       source_ids_filter_count: sourceIdsFilter.size,
+      stage1_evidence_schema_upgrade: stage1EvidenceSchemaUpgrade,
+      stage1_evidence_schema_upgrade_dry_run: stage1EvidenceSchemaUpgrade
+        ? stage1EvidenceSchemaUpgradeDryRun
+        : null,
+      stage1_evidence_schema_upgrade_selector:
+        stage1EvidenceSchemaUpgradeSelectorContract,
       initial_official_document_materialization: initialOfficialDocumentMaterialization,
       initial_official_document_acquisition_id: initialOfficialDocumentAcquisitionId || null,
       source_url: sourceUrlFilter || null,
@@ -1113,6 +1253,7 @@ async function runOnce() {
     stage1_baseline_activation_server_receipt_failed: 0,
     stage1_baseline_activation_finalization_failed: 0,
     stage1_baseline_activation_reasons: {},
+    stage1_evidence_schema_upgrade: null,
     visual_interpreted: 0,
     visual_review_mode: visualReviewMode,
     visual_review_candidates_queued: 0,
@@ -1473,6 +1614,32 @@ async function runOnce() {
       return;
     }
 
+    if (stage1EvidenceSchemaUpgrade) {
+      if (!stage1EvidenceSchemaUpgradeDryRun) {
+        workerRunId = await startWorkerRun(report);
+        if (!workerRunId) {
+          throw new Error(
+            "Stage 1 evidence-schema-upgrade apply requires a durable local_worker_runs identity.",
+          );
+        }
+        report.worker_run_id = workerRunId;
+      }
+      await runStage1EvidenceSchemaUpgradeMode(report, {
+        browserStateForWorker,
+        restartBrowser,
+        restartCaptureContext,
+      });
+      if (!stage1EvidenceSchemaUpgradeDryRun) {
+        await finishWorkerRun(
+          workerRunId,
+          report.status === "completed" ? "completed" : "failed",
+          report.status === "completed" ? null : report.stop_reason,
+          report,
+        );
+      }
+      return;
+    }
+
     workerRunId = await startWorkerRun(report);
     report.worker_run_id = workerRunId;
     const authoritativeInventory = isScheduledNightlyVisualRun({
@@ -1619,7 +1786,7 @@ async function runOnce() {
   } finally {
     await Promise.all([...browserStates].map((state) => closeBrowserState(state)));
     clearInterval(heartbeat);
-    if (snapshotHistoryPrune && report.status !== "blocked") {
+    if (!stage1EvidenceSchemaUpgrade && snapshotHistoryPrune && report.status !== "blocked") {
       await maybePruneSnapshotHistory(report);
     }
     report.finished_at = new Date().toISOString();
@@ -1629,6 +1796,86 @@ async function runOnce() {
     console.log(`REPORT ${reportPath}`);
     await maybeWriteNightlyVisualReport(report, reportPath);
   }
+}
+
+async function runStage1EvidenceSchemaUpgradeMode(report, {
+  browserStateForWorker,
+  restartBrowser,
+  restartCaptureContext,
+}) {
+  // This branch never calls the normal source queue. Dry-run executes before
+  // local_worker_runs insertion; apply has a durable run ID for candidate
+  // observation. Neither mode can enter generic source-failure mutations.
+  const loadedSources = await loadSources(STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS.length);
+  assertExactStage1EvidenceSchemaUpgradeSourceIds(
+    loadedSources.map((source) => source.id),
+    "loaded source IDs",
+  );
+  const sources = await attachStage1SourceActivationFinalizations(
+    await attachSourceAcquisitions(loadedSources),
+  );
+  const results = [];
+  for (const source of sources) {
+    const pdfSource = isPdfSource(source);
+    const state = browserStateForWorker(0);
+    try {
+      if (!pdfSource && !state.context) {
+        await restartBrowser(state, "stage1_evidence_schema_upgrade_initial");
+      } else if (!pdfSource && state.captureContextUsed) {
+        await restartCaptureContext(state, "stage1_evidence_schema_upgrade_source_boundary");
+      }
+      if (!pdfSource) state.captureContextUsed = true;
+      const sourceDeadline = pdfSource
+        ? null
+        : createSourcePhaseDeadline(
+            sourceTimeoutMs,
+            `source hard timeout after ${sourceTimeoutMs}ms`,
+          );
+      const operation = () => processSource(
+        source,
+        state.context,
+        state.browserMeta,
+        report,
+        state.networkProxy,
+        sourceDeadline,
+      );
+      // The source deadline belongs only to the live capture adapter. It is a
+      // non-cancelling Promise race, so wrapping pointer/baseline mutations in
+      // it would allow late writes after the run had already reported a
+      // timeout. The adapter must settle capture before any mutation begins.
+      results.push(await operation());
+    } catch (error) {
+      // Do not route isolated-mode failures through broken-source, source
+      // health, candidate observation, or generic quarantine mutations.
+      results.push(buildStage1EvidenceSchemaUpgradeFailureResult({
+        sourceId: source.id,
+        manifest: stage1EvidenceSchemaUpgradeManifest,
+        dryRun: stage1EvidenceSchemaUpgradeDryRun,
+        enqueuePolicy: stage1EvidenceSchemaUpgradeEnqueuePolicy,
+        error,
+      }));
+    }
+  }
+  report.stage1_evidence_schema_upgrade = createStage1EvidenceSchemaUpgradeReport({
+    manifest: stage1EvidenceSchemaUpgradeManifest,
+    dryRun: stage1EvidenceSchemaUpgradeDryRun,
+    results,
+    generatedAt: new Date().toISOString(),
+  });
+  const successful = new Set(["dry_run_complete", "completed"])
+    .has(report.stage1_evidence_schema_upgrade.status);
+  report.status = successful ? "completed" : "blocked";
+  report.execution_status = successful ? "completed" : "blocked";
+  report.stop_reason = successful
+    ? null
+    : "stage1_evidence_schema_upgrade_not_ready";
+  console.log(
+    `STAGE1_EVIDENCE_SCHEMA_UPGRADE mode=${stage1EvidenceSchemaUpgradeDryRun ? "dry_run" : "apply"}` +
+      ` status=${report.stage1_evidence_schema_upgrade.status}` +
+      ` evaluated=${report.stage1_evidence_schema_upgrade.evaluated_source_count}` +
+      ` eligible=${report.stage1_evidence_schema_upgrade.eligible_source_count}` +
+      ` blocked=${report.stage1_evidence_schema_upgrade.blocked_source_count}`,
+  );
 }
 
 async function maybeWriteNightlyVisualReport(report, reportPath) {
@@ -2058,6 +2305,7 @@ function authoritativeR2MissingBaselineError(recovery) {
 }
 
 async function backfillOneR2BaselineUnlocked(source, report) {
+  if (shouldBlockOrdinaryProcessingForStage1UpgradeRecovery(source, report)) return;
   let baseline = readJsonIfExists(baselinePathForSource(source.id));
   const recovery = await maybeRehydrateIncompleteLocalBaseline(source, baseline, report);
   baseline = recovery.baseline;
@@ -2362,6 +2610,11 @@ async function persistStage1BaselineActivationFailure({
   console.log(
     `STAGE1_BASELINE_ACTIVATION_QUARANTINED reason=${evaluation.reason} ${sourceLabel(source)}`,
   );
+  return {
+    quarantine_id: quarantineId,
+    receipt: data,
+    rpc_args: rpcArgs,
+  };
 }
 
 function restoreBaselineAfterFailedStage1Activation(source, previousBaseline) {
@@ -2685,6 +2938,25 @@ async function processSourceUnlocked(
   networkProxy = null,
   sourceDeadline = null,
 ) {
+  if (stage1EvidenceSchemaUpgrade) {
+    return runStage1EvidenceSchemaUpgradeSource({
+      source,
+      manifest: stage1EvidenceSchemaUpgradeManifest,
+      dryRun: stage1EvidenceSchemaUpgradeDryRun,
+      enqueuePolicy: stage1EvidenceSchemaUpgradeEnqueuePolicy,
+      interfaces: stage1EvidenceSchemaUpgradeOperationInterfaces({
+        source,
+        context,
+        browserMeta,
+        report,
+        networkProxy,
+        sourceDeadline,
+      }),
+    });
+  }
+
+  if (shouldBlockOrdinaryProcessingForStage1UpgradeRecovery(source, report)) return;
+
   if (initialOfficialDocumentMaterialization) {
     await processInitialOfficialDocumentMaterializationOnly(source, report);
     return;
@@ -3167,6 +3439,1211 @@ async function processSourceUnlocked(
   throw new Error(
     `Unsupported visual review mode \"${visualReviewMode}\": published changes require a retained batch candidate with immutable evidence.`,
   );
+}
+
+function stage1EvidenceSchemaUpgradeOperationInterfaces({
+  source,
+  context,
+  browserMeta,
+  report,
+  networkProxy,
+  sourceDeadline,
+}) {
+  const state = {
+    baseline: null,
+    baselineBytes: null,
+    existingCapture: null,
+    existingPrepared: null,
+    previousEvidence: null,
+    r2Pointer: null,
+    r2BindingReceipt: null,
+    preIntake: null,
+    postIntake: null,
+    capture: null,
+    capturePrepared: null,
+    validation: null,
+    candidatePlan: null,
+    candidatePointer: null,
+    activeJournal: null,
+    recoveredCommit: null,
+    recoveryReceipt: null,
+    pendingMutationFailure: null,
+  };
+
+  const commitInterfaces = (prepared = null) =>
+    stage1EvidenceSchemaUpgradeCommitInterfaces({
+      source,
+      report,
+      prepared,
+    });
+
+  return Object.freeze({
+    async preflightActiveJournal({ dry_run: dryRun }) {
+      const activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+      if (!activeJournal) return null;
+      state.activeJournal = activeJournal;
+      if (dryRun) {
+        const mutationCounts = stage1EvidenceSchemaUpgradeMutationCounts();
+        return {
+          status: "dry_run_recovery_required",
+          source_id: source.id,
+          context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+          creates_api_charge: false,
+          mutation_counts: mutationCounts,
+          receipt: {
+            schema_version:
+              "awardping.stage1.evidence-schema-upgrade-active-journal-preflight.v1",
+            source_id: source.id,
+            context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+            operation: "pointer_commit",
+            status: "dry_run_recovery_required",
+            creates_api_charge: false,
+            journal_phase: activeJournal.phase || null,
+            journal_sha256: activeJournal.journal_sha256 || null,
+            mutation_counts: mutationCounts,
+          },
+        };
+      }
+      const recovery = await runStage1EvidenceSchemaUpgradeCommit({
+        sourceId: source.id,
+        interfaces: commitInterfaces(),
+      });
+      state.recoveryReceipt = recovery.receipt;
+      if (recovery.status !== "recovery_required") state.activeJournal = null;
+      if (recovery.status === "upgraded") state.recoveredCommit = recovery;
+      return recovery;
+    },
+
+    async captureAndValidate({ dry_run: dryRun }) {
+      try {
+        const activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+        if (activeJournal) {
+          state.activeJournal = activeJournal;
+          if (dryRun) {
+            return stage1EvidenceSchemaUpgradeFailureValidation({
+              sourceId: source.id,
+              reason: "active_upgrade_journal_requires_apply_recovery",
+              detail:
+                "A sealed Stage 1 evidence-schema-upgrade journal is active. Dry-run left it untouched; run reviewed apply mode to reconcile the authoritative pointer before any new capture.",
+              evidence: {
+                journal_phase: activeJournal.phase || null,
+                journal_sha256: activeJournal.journal_sha256 || null,
+              },
+            });
+          }
+          const recovery = await runStage1EvidenceSchemaUpgradeCommit({
+            sourceId: source.id,
+            interfaces: commitInterfaces(),
+          });
+          state.recoveryReceipt = recovery.receipt;
+          if (recovery.status !== "recovery_required") state.activeJournal = null;
+          if (recovery.status === "upgraded") {
+            state.recoveredCommit = recovery;
+            return stage1EvidenceSchemaUpgradeRecoveredValidation(recovery);
+          }
+          if (recovery.status !== "abandoned_old_authority") {
+            const recoveryAccounting = recovery.mutation_accounting
+              || recovery.receipt?.mutation_accounting
+              || null;
+            const recoveryError = Object.assign(
+              new Error(
+                `Stage 1 active-journal recovery remains ambiguous: ${
+                  recovery.receipt?.outcome || recovery.status
+                }.`,
+              ),
+              {
+                code: "upgrade_pointer_commit_recovery_required",
+                stage1EvidenceSchemaUpgradeRecovery: recovery.receipt || null,
+                stage1_mutation_accounting: recoveryAccounting,
+              },
+            );
+            state.pendingMutationFailure = {
+              operation: "pointer_commit",
+              error: recoveryError,
+              mutation_accounting: recoveryAccounting,
+            };
+            return stage1EvidenceSchemaUpgradeFailureValidation({
+              sourceId: source.id,
+              reason: "upgrade_journal_authority_ambiguous",
+              detail:
+                "The sealed upgrade journal could not be reconciled to either the old or candidate authority. No new capture was attempted.",
+              evidence: { recovery: recovery.receipt || null },
+            });
+          }
+        }
+
+        const baselinePath = baselinePathForSource(source.id);
+        if (!existsSync(baselinePath)) {
+          throw Object.assign(
+            new Error("The reviewed source has no local baseline bytes to bind to authoritative R2 evidence."),
+            { code: "existing_baseline_missing" },
+          );
+        }
+        state.baselineBytes = readFileSync(baselinePath);
+        state.baseline = readJsonIfExists(baselinePath);
+        state.existingCapture = captureFromBaseline(state.baseline);
+        if (!state.baseline || !state.existingCapture) {
+          throw Object.assign(
+            new Error("The reviewed local baseline or its retained evidence could not be loaded exactly."),
+            { code: "existing_baseline_evidence_invalid" },
+          );
+        }
+        state.previousEvidence = readBaselineEvidence(state.baseline);
+        if (!state.previousEvidence.ok) {
+          throw Object.assign(
+            new Error(
+              `The reviewed local baseline is missing retained evidence: ${state.previousEvidence.missing.join(", ")}.`,
+            ),
+            { code: "existing_baseline_evidence_incomplete" },
+          );
+        }
+        state.existingPrepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+          state.existingCapture,
+          { legacy: true },
+        );
+        state.r2Pointer = await loadR2SnapshotRecord(source.id);
+        if (state.r2Pointer?.bucket !== r2Bucket) {
+          throw Object.assign(
+            new Error(
+              "The authoritative Stage 1 pointer bucket differs from the configured immutable-evidence bucket.",
+            ),
+            { code: "authoritative_r2_pointer_bucket_mismatch" },
+          );
+        }
+        const remoteArtifacts = await loadStage1EvidenceSchemaUpgradeR2Artifacts(
+          state.r2Pointer,
+        );
+        state.r2BindingReceipt = verifyStage1EvidenceSchemaUpgradeR2Binding({
+          sourceId: source.id,
+          sourceKind: state.existingCapture.kind,
+          existingBaseline: state.baseline,
+          existingCapture: state.existingCapture,
+          localPreparedArtifacts: state.existingPrepared,
+          r2Pointer: state.r2Pointer,
+          remoteArtifactsByRole: remoteArtifacts,
+        });
+
+        const pdfSource = state.existingCapture.kind === "pdf";
+        if (!pdfSource) {
+          state.preIntake = await captureIntakePage(source.url, {
+            timeoutMs,
+            maxPdfBytes,
+          });
+        }
+        const liveCapture = () => (
+          pdfSource
+            ? capturePdfSourceForBaseline(source, state.baseline, report)
+            : captureSource(source, context, browserMeta, report, {
+                baseline: state.baseline,
+                suppressDiscovery: true,
+                networkProxy,
+                sourceDeadline,
+              })
+        );
+        state.capture = sourceDeadline && !pdfSource
+          ? await sourceDeadline.run(liveCapture, {
+              settleAfterTimeout: true,
+              onTimeout: async () => {
+                if (context && typeof context.close === "function") {
+                  await context.close().catch(() => undefined);
+                }
+              },
+            })
+          : await liveCapture();
+        if (sourceDeadline?.expired()) {
+          throw Object.assign(
+            new Error("The live capture deadline expired before Stage 1 mutation boundaries."),
+            { code: "live_capture_deadline_expired" },
+          );
+        }
+        materializeRetainedCaptureAuthority(source, state.capture, {
+          rewriteMatchingBaseline: false,
+        });
+        if (!pdfSource) {
+          state.postIntake = await captureIntakePage(source.url, {
+            timeoutMs,
+            maxPdfBytes,
+          });
+        }
+        state.capturePrepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+          state.capture,
+        );
+        state.validation = evaluateStage1EvidenceSchemaUpgradeCapture({
+          sourceId: source.id,
+          sourceKind: state.existingCapture.kind,
+          immutableAcquisition: source.source_acquisition,
+          existingBaseline: state.baseline,
+          existingCapture: state.existingCapture,
+          existingPreparedArtifacts: state.existingPrepared,
+          capture: state.capture,
+          capturePreparedArtifacts: state.capturePrepared,
+          preIntake: state.preIntake,
+          postIntake: state.postIntake,
+        });
+        state.validation = {
+          ...state.validation,
+          evidence: {
+            ...jsonObjectOrEmpty(state.validation.evidence),
+            authoritative_existing_r2_binding: state.r2BindingReceipt,
+            prior_recovery: state.recoveryReceipt,
+          },
+        };
+        report.checked += 1;
+        if (pdfSource) report.pdf_checked += 1;
+        return state.validation;
+      } catch (error) {
+        state.validation = stage1EvidenceSchemaUpgradeFailureValidation({
+          sourceId: source.id,
+          reason: cleanStage1EvidenceSchemaUpgradeReason(error?.code || "capture_validation_failed"),
+          detail: errorMessage(error),
+          evidence: {
+            authoritative_existing_r2_binding: state.r2BindingReceipt,
+            prior_recovery: state.recoveryReceipt,
+          },
+        });
+        return state.validation;
+      }
+    },
+
+    async upgradeEvidenceSchema({ capture_validation: captureValidation }) {
+      if (state.recoveredCommit) return state.recoveredCommit;
+      if (
+        captureValidation?.decision
+          !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE
+        || !state.capture
+        || !state.baseline
+      ) {
+        throw new Error("Stage 1 pointer commit was requested without an exact unchanged validation.");
+      }
+      if (sourceDeadline?.expired()) {
+        throw new Error("Stage 1 pointer commit was refused after the live capture deadline expired.");
+      }
+
+      const existingSummary = jsonObjectOrEmpty(state.baseline.summary_metadata);
+      state.capture.baseline_facts = existingSummary.baseline_facts ?? null;
+      state.capture.baseline_facts_metadata = existingSummary.baseline_facts_metadata ?? null;
+      state.capture.monitoring_disposition = existingSummary.monitoring_disposition ?? null;
+      state.capture.stage1_baseline_activation = existingSummary.stage1_baseline_activation ?? null;
+      state.capture.stage1_evidence_schema_upgrade = stage1EvidenceSchemaUpgradeProvenance({
+        source,
+        captureValidation,
+        r2BindingReceipt: state.r2BindingReceipt,
+        recoveryReceipt: state.recoveryReceipt,
+        workerRunId: report.worker_run_id,
+      });
+      materializeRetainedCaptureAuthority(source, state.capture, {
+        rewriteMatchingBaseline: false,
+      });
+      const prepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(state.capture);
+      const candidateBaseline = buildBaselineRecord(source, state.capture, {
+        reason: "stage1_evidence_schema_upgrade",
+        previous_baseline: null,
+        baseline_facts: state.capture.baseline_facts,
+        baseline_facts_metadata: state.capture.baseline_facts_metadata,
+        monitoring_disposition: state.capture.monitoring_disposition,
+        stage1_baseline_activation: state.capture.stage1_baseline_activation,
+        stage1_evidence_schema_upgrade: state.capture.stage1_evidence_schema_upgrade,
+      }, {
+        existingBaseline: state.baseline,
+      });
+      const plan = buildStage1EvidenceSchemaUpgradeR2CandidatePlan(
+        source,
+        state.capture,
+        prepared,
+      );
+      const candidatePointer = buildLatestOnlyVisualSnapshotPointerReplacement({
+        existing: state.r2Pointer,
+        replacement: {
+          latest_captured_at: state.capture.captured_at,
+          latest_object_keys: plan.objectKeys,
+          latest_hashes: plan.hashes,
+          latest_metadata: plan.metadata,
+        },
+        updatedAt: stage1EvidenceSchemaUpgradePointerUpdatedAt(state.r2Pointer),
+      });
+      state.candidatePlan = plan;
+      state.candidatePointer = candidatePointer;
+      const result = await runStage1EvidenceSchemaUpgradeCommit({
+        sourceId: source.id,
+        transactionId: `stage1-${source.id}-${crypto.randomUUID()}`,
+        candidateBaselineBytes: serializedJsonBytes(candidateBaseline),
+        candidatePointer,
+        candidateArtifacts: plan.artifactsByRole,
+        interfaces: commitInterfaces(prepared),
+      });
+      if (result.status === "abandoned_old_authority") {
+        state.recoveryReceipt = result.receipt || null;
+        state.activeJournal = null;
+        return result;
+      }
+      if (result.status !== "upgraded") {
+        state.recoveryReceipt = result.receipt || null;
+        throw Object.assign(
+          new Error(`Stage 1 pointer commit requires recovery: ${result.receipt?.outcome || result.status}.`),
+          {
+            code: "upgrade_pointer_commit_recovery_required",
+            stage1EvidenceSchemaUpgradeRecovery: result.receipt,
+            stage1_mutation_accounting:
+              result.mutation_accounting
+              || result.receipt?.mutation_accounting
+              || null,
+          },
+        );
+      }
+      return result;
+    },
+
+    async enqueueVisualReviewCandidate({ capture_validation: captureValidation, enqueue_policy: policy }) {
+      if (
+        captureValidation?.decision
+          !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.MATERIAL_DIFFERENCE_CANDIDATE
+        || !state.capture
+        || !state.baseline
+        || !state.previousEvidence?.ok
+      ) {
+        throw stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(
+          new Error("Stage 1 candidate enqueue was requested without exact material evidence."),
+        );
+      }
+      if (sourceDeadline?.expired()) {
+        throw stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(
+          new Error("Stage 1 candidate enqueue was refused after the live capture deadline expired."),
+        );
+      }
+      let diff;
+      let deterministic;
+      try {
+        state.capture.stage1_evidence_schema_upgrade = stage1EvidenceSchemaUpgradeProvenance({
+          source,
+          captureValidation,
+          r2BindingReceipt: state.r2BindingReceipt,
+          recoveryReceipt: state.recoveryReceipt,
+          workerRunId: report.worker_run_id,
+        });
+        materializeRetainedCaptureAuthority(source, state.capture, {
+          rewriteMatchingBaseline: false,
+        });
+        diff = buildDiffSummary(state.previousEvidence.text, state.capture.text, source);
+        deterministic = {
+          classification: "stage1_evidence_schema_upgrade_material_difference",
+          reason: captureValidation.reason || "stage1_evidence_schema_upgrade_material_difference",
+          candidate_change: true,
+          stage1_evidence_schema_upgrade: true,
+        };
+      } catch (error) {
+        throw stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(error);
+      }
+      const candidate = await enqueueVisualReviewCandidate({
+        source,
+        baseline: state.baseline,
+        previous: state.previousEvidence,
+        capture: state.capture,
+        diff,
+        deterministic,
+        report,
+        enqueuePolicy: policy,
+      });
+      let status;
+      let candidateInserted;
+      let observationInserted;
+      try {
+        if (!candidate?.id || candidate.absorbed) {
+          throw new Error("Stage 1 material evidence was not retained as a visual-review candidate.");
+        }
+        status = candidate.existing ? "existing" : "queued";
+        candidateInserted = candidate.candidate_inserted === true;
+        observationInserted = candidate.observation_inserted === true;
+        const retainedCandidateStatus = cleanText(candidate.status).toLowerCase();
+        if (
+          candidate.existing
+          && !new Set([
+            "pending",
+            "submitted",
+            "processing",
+            "succeeded",
+            "published",
+          ]).has(retainedCandidateStatus)
+        ) {
+          throw Object.assign(
+            new Error(
+              `Stage 1 material evidence matched a terminal ${
+                retainedCandidateStatus || "unknown"
+              } visual-review candidate and requires operator quarantine.`,
+            ),
+            { code: "stage1_existing_candidate_not_actionable" },
+          );
+        }
+        if (
+          (status === "queued" && !candidateInserted)
+          || (status === "existing" && candidateInserted)
+        ) {
+          throw new Error(
+            "Stage 1 candidate enqueue returned contradictory insert evidence.",
+          );
+        }
+      } catch (error) {
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        if (candidate?.stage1_mutation_accounting) {
+          wrapped.stage1_mutation_accounting = candidate.stage1_mutation_accounting;
+        }
+        throw wrapped;
+      }
+      const mutationCounts = stage1EvidenceSchemaUpgradeMutationCounts({
+        database_writes: Number(candidateInserted) + Number(observationInserted),
+        candidate_writes: Number(candidateInserted),
+      });
+      return {
+        status,
+        source_id: source.id,
+        context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+        creates_api_charge: false,
+        mutation_counts: mutationCounts,
+        mutation_accounting: candidate.stage1_mutation_accounting,
+        receipt: {
+          schema_version: "awardping.stage1.evidence-schema-upgrade-candidate-receipt.v1",
+          source_id: source.id,
+          context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+          operation: "candidate_enqueue",
+          status,
+          creates_api_charge: false,
+          candidate_id: candidate.id,
+          candidate_signature: candidate.candidate_signature || null,
+          candidate_inserted: candidateInserted,
+          observation_inserted: observationInserted,
+          rejection_ledger_bypassed: true,
+          reconciliation_queued: false,
+          mutation_counts: mutationCounts,
+          mutation_accounting: candidate.stage1_mutation_accounting,
+        },
+      };
+    },
+
+    async quarantineEvidenceFailure({
+      capture_validation: captureValidation,
+      mutation_failure: mutationFailure = null,
+    }) {
+      return persistStage1EvidenceSchemaUpgradeQuarantine({
+        source,
+        state,
+        captureValidation,
+        mutationFailure: mutationFailure || state.pendingMutationFailure,
+      });
+    },
+  });
+}
+
+function stage1EvidenceSchemaUpgradeFailureValidation({
+  sourceId,
+  reason,
+  detail,
+  evidence = null,
+}) {
+  const reasonCode = cleanStage1EvidenceSchemaUpgradeReason(reason);
+  return {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-validation.v1",
+    decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+    creates_api_charge: false,
+    reason: reasonCode,
+    reasons: [{ code: reasonCode, detail: cleanText(detail) || reasonCode }],
+    evidence: {
+      source_id: sourceId,
+      ...jsonObjectOrEmpty(evidence),
+    },
+    outcome: {
+      would_commit: false,
+      would_queue_visual_candidate: false,
+      would_quarantine: true,
+      creates_api_charge: false,
+    },
+  };
+}
+
+function stage1EvidenceSchemaUpgradeRecoveredValidation(commitResult) {
+  return {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-validation.v1",
+    decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
+    creates_api_charge: false,
+    reason: "sealed_candidate_authority_recovered",
+    reasons: [{
+      code: "sealed_candidate_authority_recovered",
+      detail:
+        "A previously validated sealed transaction was reconciled to its exact candidate pointer and baseline without a new capture.",
+    }],
+    evidence: { recovered_commit: commitResult.receipt },
+    outcome: {
+      would_commit: true,
+      would_queue_visual_candidate: false,
+      would_quarantine: false,
+      creates_api_charge: false,
+    },
+  };
+}
+
+function cleanStage1EvidenceSchemaUpgradeReason(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160) || "evidence_schema_upgrade_failed";
+}
+
+function cleanOptionalStage1EvidenceSchemaUpgradeReason(value) {
+  return cleanText(value)
+    ? cleanStage1EvidenceSchemaUpgradeReason(value)
+    : null;
+}
+
+function stage1EvidenceSchemaUpgradeProvenance({
+  source,
+  captureValidation,
+  r2BindingReceipt,
+  recoveryReceipt,
+  workerRunId,
+}) {
+  const validationProjection = {
+    decision: captureValidation?.decision || null,
+    reason: captureValidation?.reason || null,
+    reasons: captureValidation?.reasons || [],
+    evidence: captureValidation?.evidence || null,
+  };
+  return {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-capture-provenance.v1",
+    source_id: source.id,
+    recorded_at: new Date().toISOString(),
+    worker_run_id: cleanText(workerRunId) || null,
+    manifest_sha256: hashText(stableJsonStringify(stage1EvidenceSchemaUpgradeManifest)),
+    validation_sha256: hashText(stableJsonStringify(validationProjection)),
+    validation: validationProjection,
+    existing_r2_binding_receipt: r2BindingReceipt || null,
+    prior_recovery_receipt: recoveryReceipt || null,
+    creates_api_charge: false,
+    public_fact_authority: false,
+  };
+}
+
+function stage1EvidenceSchemaUpgradePointerUpdatedAt(existing) {
+  const existingMs = Date.parse(cleanText(existing?.updated_at));
+  return new Date(Math.max(Date.now(), Number.isFinite(existingMs) ? existingMs + 1 : 0)).toISOString();
+}
+
+function stage1EvidenceSchemaUpgradeMutationCounts(overrides = {}) {
+  return {
+    database_writes: 0,
+    r2_writes: 0,
+    local_baseline_writes: 0,
+    candidate_writes: 0,
+    quarantine_writes: 0,
+    source_state_writes: 0,
+    ...overrides,
+  };
+}
+
+function stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId = null) {
+  const journalRoot = join(
+    archiveRoot,
+    "sources",
+    sourceId,
+    "stage1-evidence-schema-upgrade-journals",
+  );
+  return {
+    root: journalRoot,
+    active: join(journalRoot, "active.json"),
+    completed: transactionId
+      ? join(journalRoot, "completed", `${transactionId}.json`)
+      : null,
+  };
+}
+
+function loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId) {
+  const path = stage1EvidenceSchemaUpgradeJournalPaths(sourceId).active;
+  if (!existsSync(path)) return null;
+  const journal = readJsonIfExists(path);
+  if (!journal) {
+    throw new Error("The active Stage 1 evidence-schema-upgrade journal is unreadable.");
+  }
+  return assertStage1EvidenceSchemaUpgradeJournal(journal);
+}
+
+function shouldBlockOrdinaryProcessingForStage1UpgradeRecovery(source, report) {
+  let activeJournal;
+  try {
+    activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+  } catch (error) {
+    const message =
+      `Ordinary processing was skipped because the active Stage 1 evidence-schema-upgrade journal is unreadable: ${errorMessage(error)}`;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      stage: "stage1_evidence_schema_upgrade_recovery_gate",
+      reason: "active_upgrade_journal_unreadable",
+      message,
+      creates_api_charge: false,
+    });
+    console.log(`STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_REQUIRED ${message} ${sourceLabel(source)}`);
+    return true;
+  }
+  if (!activeJournal) return false;
+  const message =
+    "Ordinary processing was skipped until reviewed Stage 1 apply mode reconciles the active upgrade journal.";
+  report.errors.push({
+    source_id: source.id,
+    source_url: source.url,
+    stage: "stage1_evidence_schema_upgrade_recovery_gate",
+    reason: "active_upgrade_journal_requires_apply_recovery",
+    message,
+    journal_phase: activeJournal.phase || null,
+    journal_sha256: activeJournal.journal_sha256 || null,
+    creates_api_charge: false,
+  });
+  console.log(`STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_REQUIRED ${message} ${sourceLabel(source)}`);
+  return true;
+}
+
+function stage1EvidenceSchemaUpgradeCommitInterfaces({ source, report, prepared = null }) {
+  const preparedByRole = new Map(
+    (prepared?.artifacts || []).map((artifact) => [artifact.name, artifact]),
+  );
+  return {
+    async loadActiveJournal({ source_id: sourceId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 journal source changed.");
+      return loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+    },
+
+    async persistActiveJournalAtomically({
+      source_id: sourceId,
+      transaction_id: transactionId,
+      journal,
+      expected_journal_sha256: expectedJournalSha256,
+    }) {
+      if (sourceId !== source.id || journal?.transaction_id !== transactionId) {
+        throw new Error("Stage 1 journal persistence identity changed.");
+      }
+      const paths = stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId);
+      const current = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+      if (
+        expectedJournalSha256 === null
+          ? current !== null
+          : current?.journal_sha256 !== expectedJournalSha256
+      ) {
+        throw new Error("Stage 1 journal compare-and-swap precondition failed.");
+      }
+      atomicWriteJson(paths.active, journal);
+      return {
+        status: "persisted",
+        journal_sha256: journal.journal_sha256,
+      };
+    },
+
+    async archiveCompletedJournalAtomically({
+      source_id: sourceId,
+      transaction_id: transactionId,
+      journal,
+      expected_journal_sha256: expectedJournalSha256,
+    }) {
+      if (
+        sourceId !== source.id
+        || journal?.transaction_id !== transactionId
+        || journal?.journal_sha256 !== expectedJournalSha256
+      ) {
+        throw new Error("Stage 1 completed journal archive identity changed.");
+      }
+      const paths = stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId);
+      const active = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+      if (active?.journal_sha256 !== expectedJournalSha256) {
+        throw new Error("Stage 1 completed journal is not the exact active journal.");
+      }
+      const archived = paths.completed && existsSync(paths.completed)
+        ? readJsonIfExists(paths.completed)
+        : null;
+      if (archived && archived.journal_sha256 !== expectedJournalSha256) {
+        throw new Error("Stage 1 completed journal archive path contains different evidence.");
+      }
+      if (!archived) atomicWriteJson(paths.completed, journal);
+      const verified = readJsonIfExists(paths.completed);
+      if (verified?.journal_sha256 !== expectedJournalSha256) {
+        throw new Error("Stage 1 completed journal did not read back exactly.");
+      }
+      rmSync(paths.active, { force: true });
+      return {
+        status: "archived",
+        source_id: sourceId,
+        transaction_id: transactionId,
+        journal_sha256: expectedJournalSha256,
+        creates_api_charge: false,
+      };
+    },
+
+    async readArchivedJournal({ source_id: sourceId, transaction_id: transactionId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 archived journal source changed.");
+      const path = stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId).completed;
+      if (!path || !existsSync(path)) return null;
+      const journal = readJsonIfExists(path);
+      if (!journal) throw new Error("The archived Stage 1 journal is unreadable.");
+      return journal;
+    },
+
+    async readBaselineBytes({ source_id: sourceId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 baseline source changed.");
+      const path = baselinePathForSource(sourceId);
+      return existsSync(path) ? readFileSync(path) : null;
+    },
+
+    async writeBaselineBytesAtomically({
+      source_id: sourceId,
+      bytes,
+      expected_sha256: expectedSha256,
+      expected_byte_length: expectedByteLength,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 baseline write source changed.");
+      const value = bytes === null ? null : Buffer.from(bytes);
+      if (
+        value !== null
+        && (
+          value.byteLength !== expectedByteLength
+          || hashBuffer(value) !== expectedSha256
+        )
+      ) {
+        throw new Error("Stage 1 baseline write bytes differ from their journal envelope.");
+      }
+      if (value === null && (expectedSha256 !== null || expectedByteLength !== 0)) {
+        throw new Error("Stage 1 absent baseline envelope is inconsistent.");
+      }
+      atomicWriteBytes(baselinePathForSource(sourceId), value);
+      localBaselineEvidenceCache.set(sourceId, value !== null);
+      return { status: value === null ? "removed" : "written" };
+    },
+
+    async readLatestPointer({ source_id: sourceId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 pointer read source changed.");
+      return loadR2SnapshotRecord(sourceId);
+    },
+
+    async uploadImmutableCandidateArtifact({
+      source_id: sourceId,
+      bucket,
+      slot,
+      object_key: objectKey,
+      bytes,
+      sha256,
+      byte_length: byteLength,
+      content_type: contentType,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 immutable upload source changed.");
+      if (!cleanText(bucket) || bucket !== r2Bucket) {
+        throw new Error("Stage 1 immutable upload bucket differs from configured R2 authority.");
+      }
+      const artifact = preparedByRole.get(slot);
+      const body = Buffer.from(bytes);
+      if (
+        !artifact
+        || artifact.body.byteLength !== byteLength
+        || artifact.binding?.sha256 !== sha256
+        || artifact.contentType !== contentType
+        || !Buffer.from(artifact.body).equals(body)
+      ) {
+        throw new Error(`Stage 1 immutable upload ${slot} differs from prepared evidence.`);
+      }
+      const uploaded = await uploadStage1EvidenceSchemaUpgradeImmutableObject({
+        client: getR2Client(),
+        bucket,
+        key: objectKey,
+        body,
+        contentType: artifact.contentType,
+      });
+      const status = uploaded.status === "created" ? "uploaded" : "existing_verified";
+      return {
+        status,
+        creates_api_charge: false,
+        immutable: true,
+        bucket,
+        object_key: objectKey,
+        sha256,
+        byte_length: byteLength,
+        content_type: contentType,
+        r2_writes: status === "uploaded" ? 1 : 0,
+      };
+    },
+
+    async compareAndSwapLatestPointer({
+      source_id: sourceId,
+      expected_pointer: expectedPointer,
+      candidate_pointer: candidatePointer,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 pointer CAS source changed.");
+      return advanceVisualSnapshotPointer(supabase, {
+        existing: expectedPointer,
+        snapshot: candidatePointer,
+      });
+    },
+
+    async markSourceHealthSucceeded({
+      source_id: sourceId,
+      candidate_baseline_sha256: expectedBaselineSha256,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 source-health source changed.");
+      const baselinePath = baselinePathForSource(sourceId);
+      const baselineBytes = existsSync(baselinePath) ? readFileSync(baselinePath) : null;
+      if (!baselineBytes || hashBuffer(baselineBytes) !== expectedBaselineSha256) {
+        throw new Error("Stage 1 source health refused a baseline outside the committed journal.");
+      }
+      let baseline;
+      try {
+        baseline = JSON.parse(baselineBytes.toString("utf8"));
+      } catch {
+        throw new Error("Stage 1 committed baseline bytes are not valid JSON.");
+      }
+      const authoritativeCapture = captureFromBaseline(baseline);
+      if (!authoritativeCapture) {
+        throw new Error("Stage 1 committed baseline evidence could not reconstruct source health.");
+      }
+      const updated = await markSharedSourceVisualCheckSucceeded(
+        source,
+        authoritativeCapture,
+        report,
+        {
+          preserveReviewedUrl: true,
+          preserveReviewedMetadata: true,
+          requiredAdminReviewStatus:
+            source.admin_review_status === "review_later" ? "review_later" : "open",
+        },
+      );
+      if (!updated) {
+        throw new Error("Stage 1 source health lost its exact reviewed-state guard.");
+      }
+      return {
+        status: "succeeded",
+        source_id: sourceId,
+        context: "stage1_evidence_schema_upgrade",
+        creates_api_charge: false,
+        mutation_counts: stage1EvidenceSchemaUpgradeMutationCounts({
+          database_writes: 1,
+          source_state_writes: 1,
+        }),
+      };
+    },
+  };
+}
+
+async function persistStage1EvidenceSchemaUpgradeQuarantine({
+  source,
+  state,
+  captureValidation,
+  mutationFailure = null,
+}) {
+  const mutationOperation = cleanOptionalStage1EvidenceSchemaUpgradeReason(
+    mutationFailure?.operation || "",
+  );
+  const mutationError = mutationFailure?.error;
+  const mutationErrorCode = cleanOptionalStage1EvidenceSchemaUpgradeReason(
+    mutationError?.code || "",
+  );
+  if (mutationFailure && !mutationOperation) {
+    throw new Error("Stage 1 quarantine requires the exact failed mutation operation.");
+  }
+  const reasonCode = cleanStage1EvidenceSchemaUpgradeReason(
+    mutationFailure
+      ? `${mutationOperation}_mutation_failed`
+      : captureValidation?.reason || "evidence_failure",
+  );
+  const journalObservation = stage1EvidenceSchemaUpgradeObservedJournal(source.id, state);
+  const activeJournal = journalObservation.journal;
+  const commitRecovery = activeJournal
+    ? stage1EvidenceSchemaUpgradeRecoveryEvidence({
+        sourceId: source.id,
+        journal: activeJournal,
+        state,
+      })
+    : null;
+  const candidateArtifacts = stage1EvidenceSchemaUpgradeCandidateEvidence({
+    sourceId: source.id,
+    state,
+    journal: activeJournal,
+  });
+  const quarantineValidation = prepareStage1EvidenceSchemaUpgradeQuarantineValidation({
+    validation: captureValidation,
+    candidateArtifacts,
+    commitRecovery,
+    pointerCommitReceipt:
+      mutationOperation === "pointer_commit"
+        ? mutationError?.stage1EvidenceSchemaUpgradeRecovery || null
+        : null,
+    mutationFailure: mutationFailure
+      ? {
+          operation: mutationOperation,
+          error: mutationError,
+          mutation_accounting: mutationFailure.mutation_accounting,
+        }
+      : null,
+    journalReadUnavailable:
+      journalObservation.status === "unavailable" ? journalObservation : null,
+    journalReadAbsent:
+      journalObservation.status === "absent" ? journalObservation : null,
+  });
+  const failureStage = mutationOperation
+    || (activeJournal ? "journal_recovery" : "capture_validation");
+  const detail = mutationFailure
+    ? `Stage 1 ${mutationOperation || "unknown"} mutation failed (${
+        mutationErrorCode || reasonCode
+      }): ${
+        errorMessage(mutationError)
+      }`
+    : cleanText(captureValidation?.reasons?.[0]?.detail)
+      || `Stage 1 evidence-schema upgrade failed (${reasonCode}).`;
+  const candidateMutationAccounting = mutationOperation === "candidate_enqueue"
+    ? jsonObjectOrEmpty(mutationFailure?.mutation_accounting)
+    : {};
+  const candidateAccountingEvidence = jsonObjectOrEmpty(
+    candidateMutationAccounting.evidence,
+  );
+  const candidateSignature = cleanText(candidateAccountingEvidence.candidate_signature);
+  const candidateWritesMayBeUnknown = Array.isArray(
+    candidateMutationAccounting.unknown_write_categories,
+  ) && candidateMutationAccounting.unknown_write_categories.some(
+    (category) => category === "candidate_writes" || category === "database_writes",
+  );
+  const fallbackSafeAction =
+    journalObservation.status === "unavailable" && candidateSignature
+      ? `Keep this source quarantined. Repair access to the durable upgrade journal and reconcile any active or archived transaction, then reconcile the exact visual-review candidate signature ${candidateSignature} and its terminal/observation state before any retry; do not enqueue a duplicate.`
+      : journalObservation.status === "unavailable" && mutationOperation === "candidate_enqueue"
+        ? "Keep this source quarantined. Repair access to the durable upgrade journal and reconcile any active or archived transaction, then determine whether the visual-review candidate or observation write committed before any retry; do not enqueue a duplicate while write outcome is unknown."
+        : journalObservation.status === "unavailable"
+          ? "Keep this source quarantined. Repair access to the durable upgrade journal, obtain and validate its exact fresh state, then verify current pointer, baseline, source-health, and archived transaction state and reconcile any active journal before any new capture or retry."
+    : mutationOperation === "candidate_enqueue" && candidateSignature
+      ? `Keep this source quarantined. Reconcile the exact visual-review candidate signature ${candidateSignature} and its current terminal/observation state before any retry; do not enqueue a duplicate.`
+      : mutationOperation === "candidate_enqueue" && candidateWritesMayBeUnknown
+        ? "Keep this source quarantined. Determine whether the visual-review candidate or observation write committed before any retry; do not enqueue a duplicate while write outcome is unknown."
+    : activeJournal
+      ? "Keep this source quarantined. Reconcile the sealed upgrade journal to exact old or candidate authority before retrying the zero-charge upgrade."
+      : mutationOperation === "pointer_commit" && candidateArtifacts
+        ? "Keep this source quarantined. Verify current pointer, baseline, source-health, and archived transaction/journal state, reconcile the sealed possible writes, and retry only if the pointer commit did not complete."
+      : candidateArtifacts
+        ? "Keep this source quarantined. Verify the sealed candidate pointer and artifacts, then retry the zero-charge upgrade without changing public facts."
+        : "Keep this source quarantined. Repair the stated evidence failure, then rerun the reviewed zero-charge evidence-schema upgrade.";
+  const safeAction = stage1EvidenceSchemaUpgradeQuarantineSafeAction(
+    quarantineValidation,
+    fallbackSafeAction,
+  );
+  const args = buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs({
+    source,
+    acquisition: source.source_acquisition,
+    finalization: source.source_activation_finalization,
+    failureStage,
+    reasonCode,
+    detail,
+    safeAction,
+    validation: quarantineValidation,
+    r2Binding: state.r2BindingReceipt,
+    commitRecovery,
+    candidateArtifacts,
+    r2BindingObserved: state.r2BindingReceipt !== null,
+    journalObserved: activeJournal !== null,
+    candidatePlanObserved: candidateArtifacts !== null,
+  });
+  const invocation = await invokeStage1EvidenceSchemaUpgradeQuarantineRpc(args);
+  const checked = stage1EvidenceSchemaUpgradeQuarantineReceipt(invocation.data, args);
+  if (!checked.allowed) {
+    throw stage1EvidenceSchemaUpgradeQuarantineRpcError({
+      reason: checked.reason,
+      attempts: invocation.attempts,
+      priorErrors: invocation.errors,
+    });
+  }
+  const mutationCounts = stage1EvidenceSchemaUpgradeMutationCounts({
+    database_writes: checked.mutation_counts.database_writes,
+    r2_writes: checked.mutation_counts.r2_writes,
+    local_baseline_writes: checked.mutation_counts.local_baseline_writes,
+    candidate_writes: checked.mutation_counts.candidate_writes,
+    quarantine_writes: checked.mutation_counts.quarantine_writes,
+    source_state_writes: checked.mutation_counts.source_state_writes,
+  });
+  const mutationAccounting = invocation.errors.length
+    ? sealStage1EvidenceSchemaUpgradeMutationAccounting({
+        operation: "quarantine",
+        lowerBoundCounts: mutationCounts,
+        unknownWriteCategories: [
+          "database_writes",
+          "quarantine_writes",
+          "source_state_writes",
+        ],
+        evidence: {
+          source: "idempotent_quarantine_rpc_retry_after_ambiguous_response",
+          ambiguous_attempt_count: invocation.errors.length,
+          final_attempt_count: invocation.attempts,
+        },
+      })
+    : null;
+  const receipt = {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-quarantine-adapter-receipt.v1",
+    source_id: source.id,
+    context: "stage1_evidence_schema_upgrade",
+    operation: "quarantine",
+    status: "quarantined",
+    reason_code: reasonCode,
+    creates_api_charge: false,
+    quarantine_id: checked.quarantine_id,
+    failure_sha256: checked.failure_sha256,
+    evidence_sha256: checked.evidence_sha256,
+    rpc_attempt_count: invocation.attempts,
+    rpc_receipt: checked.receipt,
+    mutation_counts: mutationCounts,
+    ...(mutationAccounting ? { mutation_accounting: mutationAccounting } : {}),
+  };
+  return {
+    status: "quarantined",
+    reason_code: reasonCode,
+    source_id: source.id,
+    context: "stage1_evidence_schema_upgrade",
+    creates_api_charge: false,
+    mutation_counts: mutationCounts,
+    ...(mutationAccounting ? { mutation_accounting: mutationAccounting } : {}),
+    receipt,
+  };
+}
+
+function stage1EvidenceSchemaUpgradeObservedJournal(sourceId, state) {
+  try {
+    const journal = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+    state.activeJournal = journal;
+    return {
+      status: journal ? "verified" : "absent",
+      journal,
+      error: null,
+    };
+  } catch (error) {
+    state.activeJournal = null;
+    return {
+      status: "unavailable",
+      journal: null,
+      error: {
+        name: cleanText(error?.name) || "Error",
+        code: cleanText(error?.code) || null,
+        message: errorMessage(error),
+      },
+    };
+  }
+}
+
+function stage1EvidenceSchemaUpgradeRecoveryEvidence({ sourceId, journal, state }) {
+  const priorReceipt = state.recoveryReceipt;
+  const priorReceiptMatchesFreshJournal =
+    priorReceipt?.source_id === sourceId
+    && priorReceipt?.context === "stage1_evidence_schema_upgrade"
+    && priorReceipt?.operation === "pointer_commit"
+    && priorReceipt?.status === "recovery_required"
+    && priorReceipt?.journal_archived === false
+    && cleanText(priorReceipt?.journal_sha256)
+      === cleanText(journal.journal_sha256);
+  return {
+    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_EVIDENCE_SCHEMA,
+    source_id: sourceId,
+    context: "stage1_evidence_schema_upgrade",
+    status: "recovery_required",
+    creates_api_charge: false,
+    journal_sha256: journal.journal_sha256,
+    journal,
+    reason: priorReceiptMatchesFreshJournal
+      ? (cleanText(priorReceipt?.outcome)
+        || "active_upgrade_journal_authority_ambiguous")
+      : "fresh_active_upgrade_journal_requires_reconciliation",
+    safe_action:
+      "Keep the source quarantined and reconcile this exact freshly verified journal before retrying.",
+  };
+}
+
+function stage1EvidenceSchemaUpgradeCandidateEvidence({ sourceId, state, journal }) {
+  const pointerIdentity = journal?.candidate_pointer_identity
+    || (state.candidatePointer
+      ? visualSnapshotPointerIdentity(state.candidatePointer)
+      : null);
+  if (!pointerIdentity) return null;
+  const pointer = jsonObjectOrEmpty(pointerIdentity.projection);
+  const objectKeys = jsonObjectOrEmpty(pointer.latest_object_keys);
+  const bindings = jsonObjectOrEmpty(pointer.latest_metadata?.artifact_bindings);
+  const roles = Object.keys(objectKeys).sort();
+  if (!roles.length || roles.some((role) => !bindings[role])) {
+    throw new Error("Stage 1 quarantine candidate evidence lacks exact pointer artifact bindings.");
+  }
+  const versions = new Set(roles.map((role) => (
+    stage1EvidenceSchemaUpgradeCandidateVersion(objectKeys[role], sourceId)
+  )));
+  if (versions.size !== 1 || versions.has(null)) {
+    throw new Error("Stage 1 quarantine candidate artifacts do not share one immutable generation.");
+  }
+  const [version] = versions;
+  return {
+    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_CANDIDATE_ARTIFACTS_SCHEMA,
+    source_id: sourceId,
+    kind: pointer.kind,
+    bucket: pointer.bucket,
+    version,
+    captured_at: pointer.latest_captured_at,
+    candidate_pointer_identity: pointerIdentity,
+    journal_sha256: journal?.journal_sha256 || null,
+    artifacts: roles.map((role) => ({
+      role,
+      bucket: pointer.bucket,
+      version,
+      object_key: objectKeys[role],
+      sha256: bindings[role].sha256,
+      byte_length: bindings[role].byte_length,
+      content_type: bindings[role].content_type,
+      hash_mode: bindings[role].hash_mode,
+    })),
+    creates_api_charge: false,
+    public_fact_authority: false,
+  };
+}
+
+function stage1EvidenceSchemaUpgradeCandidateVersion(key, sourceId) {
+  const prefix = `visual-snapshots/sources/${sourceId}/captures/`;
+  const value = cleanText(key);
+  if (!value.startsWith(prefix)) return null;
+  const version = value.slice(prefix.length).split("/", 1)[0];
+  return /^[0-9a-f]{32}$/.test(version) ? version : null;
+}
+
+async function invokeStage1EvidenceSchemaUpgradeQuarantineRpc(args) {
+  const errors = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { data, error } = await supabase.rpc(
+      "quarantine_stage1_evidence_schema_upgrade_failure",
+      args,
+    );
+    if (!error) return { data, attempts: attempt, errors };
+    errors.push({
+      code: cleanText(error.code) || null,
+      message: errorMessage(error),
+    });
+  }
+  throw stage1EvidenceSchemaUpgradeQuarantineRpcError({
+    reason: "quarantine_rpc_failed_after_idempotent_retry",
+    attempts: 2,
+    priorErrors: errors,
+  });
+}
+
+function stage1EvidenceSchemaUpgradeQuarantineRpcError({ reason, attempts, priorErrors }) {
+  const error = Object.assign(
+    new Error(
+      `Stage 1 evidence-schema-upgrade quarantine persistence failed after ${attempts} attempt(s): ${reason}.`,
+    ),
+    { code: "stage1_evidence_schema_upgrade_quarantine_rpc_failed" },
+  );
+  error.stage1_mutation_accounting = sealStage1EvidenceSchemaUpgradeMutationAccounting({
+    operation: "quarantine",
+    lowerBoundCounts: stage1EvidenceSchemaUpgradeMutationCounts(),
+    unknownWriteCategories: [
+      "database_writes",
+      "quarantine_writes",
+      "source_state_writes",
+    ],
+    evidence: {
+      source: "quarantine_rpc_response_not_verified",
+      attempt_count: attempts,
+      error_count: priorErrors.length,
+    },
+  });
+  return error;
 }
 
 async function processLocalizationRepairSource(source, baseline, capture, report) {
@@ -4089,8 +5566,21 @@ async function enqueueVisualReviewCandidate({
   diff,
   deterministic,
   report,
+  enqueuePolicy = null,
 }) {
+  const stage1MutationAccounting = enqueuePolicy?.context
+    === visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade
+    ? {
+        counts: stage1EvidenceSchemaUpgradeMutationCounts(),
+        unknown_write_categories: [],
+        boundary: "before_candidate_enqueue",
+        candidate_signature: null,
+      }
+    : null;
   try {
+    const effectiveEnqueuePolicy = enqueuePolicy
+      ? visualReviewEnqueuePolicy(enqueuePolicy)
+      : visualReviewEnqueuePolicy();
     const monitoringPolicy = currentVisualReviewPolicyIdentity();
     const promptPayload = buildVisualReviewPromptPayload({
       source,
@@ -4116,30 +5606,32 @@ async function enqueueVisualReviewCandidate({
       deterministic,
       behaviorVersion: captureBehaviorVersion,
     });
-    try {
-      const ledger = await findVisualRejectionLedgerMatch(supabase, {
-        sourceId: source?.id,
-        evidenceSignature,
-        policyHash: monitoringPolicy?.hash,
-      });
-      if (ledger.unavailable) {
+    if (!effectiveEnqueuePolicy.bypassRejectionLedger) {
+      try {
+        const ledger = await findVisualRejectionLedgerMatch(supabase, {
+          sourceId: source?.id,
+          evidenceSignature,
+          policyHash: monitoringPolicy?.hash,
+        });
+        if (ledger.unavailable) {
+          report.visual_rejection_ledger_unavailable += 1;
+        } else if (ledger.match) {
+          await touchVisualRejectionLedgerMatch(supabase, ledger.match);
+          report.visual_review_rejected_evidence_absorbed += 1;
+          return {
+            absorbed: true,
+            evidence_signature: evidenceSignature,
+            rejection_reason: ledger.match.rejection_reason || "previously_policy_rejected",
+          };
+        }
+      } catch (ledgerError) {
         report.visual_rejection_ledger_unavailable += 1;
-      } else if (ledger.match) {
-        await touchVisualRejectionLedgerMatch(supabase, ledger.match);
-        report.visual_review_rejected_evidence_absorbed += 1;
-        return {
-          absorbed: true,
-          evidence_signature: evidenceSignature,
-          rejection_reason: ledger.match.rejection_reason || "previously_policy_rejected",
-        };
+        report.errors.push({
+          source_id: source?.id || null,
+          source_url: source?.url || null,
+          message: `Visual rejection ledger lookup failed: ${errorMessage(ledgerError)}`,
+        });
       }
-    } catch (ledgerError) {
-      report.visual_rejection_ledger_unavailable += 1;
-      report.errors.push({
-        source_id: source?.id || null,
-        source_url: source?.url || null,
-        message: `Visual rejection ledger lookup failed: ${errorMessage(ledgerError)}`,
-      });
     }
     const candidateSignature = visualReviewCandidateSignature({
       source,
@@ -4151,6 +5643,9 @@ async function enqueueVisualReviewCandidate({
       deterministic,
       behaviorVersion: captureBehaviorVersion,
     });
+    if (stage1MutationAccounting) {
+      stage1MutationAccounting.candidate_signature = candidateSignature;
+    }
     const promptContext = buildVisualReviewPromptText(promptPayload);
     const row = {
       shared_award_id: source.shared_award_id,
@@ -4186,10 +5681,18 @@ async function enqueueVisualReviewCandidate({
         monitoring_policy: monitoringPolicy,
         monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
         evidence_signature: evidenceSignature,
+        enqueue_context: effectiveEnqueuePolicy.context,
+        rejection_ledger_bypassed: effectiveEnqueuePolicy.bypassRejectionLedger,
+        reconciliation_queued: effectiveEnqueuePolicy.queueReconciliation,
       },
       updated_at: new Date().toISOString(),
     };
 
+    beginStage1CandidateMutationAccounting(
+      stage1MutationAccounting,
+      ["candidate_writes", "database_writes"],
+      "candidate_upsert_response_pending",
+    );
     const { data, error } = await supabase
       .from("shared_award_visual_review_candidates")
       .upsert(row, {
@@ -4200,6 +5703,16 @@ async function enqueueVisualReviewCandidate({
       .maybeSingle();
 
     if (error) throw error;
+    if (stage1MutationAccounting) {
+      if (data?.id) {
+        stage1MutationAccounting.counts.database_writes += 1;
+        stage1MutationAccounting.counts.candidate_writes += 1;
+      }
+      completeStage1CandidateMutationAccounting(
+        stage1MutationAccounting,
+        "candidate_upsert_response_received",
+      );
+    }
 
     let candidate = data || null;
     if (!candidate?.id) {
@@ -4217,27 +5730,55 @@ async function enqueueVisualReviewCandidate({
       candidate = existingCandidate;
     }
 
-    await recordVisualReviewCandidateRunObservation(candidate.id, report);
+    beginStage1CandidateMutationAccounting(
+      stage1MutationAccounting,
+      ["database_writes"],
+      "candidate_observation_response_pending",
+    );
+    const observation = await recordVisualReviewCandidateRunObservation(
+      candidate.id,
+      report,
+    );
+    if (stage1MutationAccounting) {
+      stage1MutationAccounting.counts.database_writes += Number(observation.inserted);
+      completeStage1CandidateMutationAccounting(
+        stage1MutationAccounting,
+        "candidate_observation_response_received",
+      );
+    }
+
+    const sealedStage1MutationAccounting = stage1MutationAccounting
+      ? sealStage1CandidateMutationAccounting(stage1MutationAccounting)
+      : null;
 
     if (data?.id) {
       capture.persist_expansion_state_screenshots = true;
       report.visual_review_candidates_queued += 1;
-      await queueAwardReconciliationFromSource({
-        source,
-        report,
-        reason: "visual_review_candidate",
-        candidateIds: [candidate.id],
-        priority: 80,
-        metadata: {
-          candidate_signature: candidateSignature,
-          deterministic_classification: row.deterministic_classification,
-          monitoring_policy: monitoringPolicy,
-          monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
-          evidence_signature: evidenceSignature,
-          queued_by: "capture-visual-snapshots",
-        },
-      });
-      return candidate;
+      if (effectiveEnqueuePolicy.queueReconciliation) {
+        await queueAwardReconciliationFromSource({
+          source,
+          report,
+          reason: "visual_review_candidate",
+          candidateIds: [candidate.id],
+          priority: 80,
+          metadata: {
+            candidate_signature: candidateSignature,
+            deterministic_classification: row.deterministic_classification,
+            monitoring_policy: monitoringPolicy,
+            monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+            evidence_signature: evidenceSignature,
+            queued_by: "capture-visual-snapshots",
+          },
+        });
+      }
+      return {
+        ...candidate,
+        candidate_inserted: true,
+        observation_inserted: observation.inserted,
+        ...(sealedStage1MutationAccounting
+          ? { stage1_mutation_accounting: sealedStage1MutationAccounting }
+          : {}),
+      };
     }
 
     report.visual_review_candidates_existing += 1;
@@ -4247,9 +5788,21 @@ async function enqueueVisualReviewCandidate({
       status: candidate.status,
       existing: true,
       duplicate: true,
+      candidate_inserted: false,
+      observation_inserted: observation.inserted,
       candidate_signature: candidateSignature,
+      ...(sealedStage1MutationAccounting
+        ? { stage1_mutation_accounting: sealedStage1MutationAccounting }
+        : {}),
     };
   } catch (error) {
+    if (stage1MutationAccounting) {
+      const wrapped = error instanceof Error ? error : new Error(String(error));
+      wrapped.stage1_mutation_accounting = sealStage1CandidateMutationAccounting(
+        stage1MutationAccounting,
+      );
+      error = wrapped;
+    }
     report.visual_review_candidates_failed += 1;
     const message = `Visual review candidate enqueue failed: ${errorMessage(error)}`;
     report.errors.push({
@@ -4262,15 +5815,63 @@ async function enqueueVisualReviewCandidate({
   }
 }
 
+function beginStage1CandidateMutationAccounting(accounting, categories, boundary) {
+  if (!accounting) return;
+  accounting.unknown_write_categories = [...new Set(categories)].sort();
+  accounting.boundary = boundary;
+}
+
+function stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(error) {
+  const wrapped = error instanceof Error ? error : new Error(String(error));
+  if (!wrapped.stage1_mutation_accounting) {
+    wrapped.stage1_mutation_accounting =
+      sealStage1EvidenceSchemaUpgradeMutationAccounting({
+        operation: "candidate_enqueue",
+        lowerBoundCounts: stage1EvidenceSchemaUpgradeMutationCounts(),
+        unknownWriteCategories: [],
+        evidence: {
+          boundary: "before_candidate_enqueue",
+          candidate_signature: null,
+          response_loss_possible: false,
+        },
+      });
+  }
+  return wrapped;
+}
+
+function completeStage1CandidateMutationAccounting(accounting, boundary) {
+  if (!accounting) return;
+  accounting.unknown_write_categories = [];
+  accounting.boundary = boundary;
+}
+
+function sealStage1CandidateMutationAccounting(accounting) {
+  return sealStage1EvidenceSchemaUpgradeMutationAccounting({
+    operation: "candidate_enqueue",
+    lowerBoundCounts: accounting.counts,
+    unknownWriteCategories: accounting.unknown_write_categories,
+    evidence: {
+      boundary: accounting.boundary,
+      candidate_signature: accounting.candidate_signature,
+      response_loss_possible: accounting.unknown_write_categories.length > 0,
+    },
+  });
+}
+
 async function recordVisualReviewCandidateRunObservation(candidateId, report) {
-  if (!candidateId || observedVisualReviewCandidateIds.has(candidateId)) return;
+  if (!candidateId) {
+    return { status: "not_requested", inserted: false };
+  }
+  if (observedVisualReviewCandidateIds.has(candidateId)) {
+    return { status: "already_observed_in_process", inserted: false };
+  }
   if (!report.worker_run_id) {
     report.visual_review_candidate_observation_failures += 1;
     throw new Error(
       "Cannot bind a visual review candidate to this capture because the durable worker run ID is unavailable.",
     );
   }
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("shared_award_visual_review_candidate_run_observations")
     .upsert(
       {
@@ -4281,7 +5882,9 @@ async function recordVisualReviewCandidateRunObservation(candidateId, report) {
         onConflict: "run_id,candidate_id",
         ignoreDuplicates: true,
       },
-    );
+    )
+    .select("candidate_id")
+    .maybeSingle();
   if (error) {
     report.visual_review_candidate_observation_failures += 1;
     throw new Error(
@@ -4290,6 +5893,10 @@ async function recordVisualReviewCandidateRunObservation(candidateId, report) {
   }
   observedVisualReviewCandidateIds.add(candidateId);
   report.visual_review_candidate_observations += 1;
+  return {
+    status: data?.candidate_id ? "inserted" : "existing",
+    inserted: Boolean(data?.candidate_id),
+  };
 }
 
 async function queueAwardReconciliationFromSource({
@@ -8740,7 +10347,11 @@ async function markSharedSourceVisualCheckSucceeded(
   source,
   capture,
   report = null,
-  { preserveReviewedUrl = false, preserveReviewedMetadata = false } = {},
+  {
+    preserveReviewedUrl = false,
+    preserveReviewedMetadata = false,
+    requiredAdminReviewStatus = "open",
+  } = {},
 ) {
   const now = new Date().toISOString();
   const metadataUpdate = preserveReviewedMetadata
@@ -8758,7 +10369,9 @@ async function markSharedSourceVisualCheckSucceeded(
       updated_at: now,
     })
     .eq("id", source.id);
-  mutation = guardAdminReviewMutation(mutation, source);
+  mutation = guardAdminReviewMutation(mutation, source, {
+    requiredStatus: requiredAdminReviewStatus,
+  });
   const { data, error } = await mutation.select("id").maybeSingle();
 
   if (error) throw error;
@@ -9464,6 +11077,48 @@ async function loadR2SnapshotRecord(sourceId) {
   return data || null;
 }
 
+async function loadStage1EvidenceSchemaUpgradeR2Artifacts(pointer) {
+  const objectKeys = jsonObjectOrEmpty(pointer?.latest_object_keys);
+  if (!Object.keys(objectKeys).length) {
+    throw new Error("Stage 1 evidence-schema upgrade requires an existing authoritative R2 latest generation.");
+  }
+  const client = getR2Client();
+  const entries = await Promise.all(Object.entries(objectKeys).map(async ([role, key]) => {
+    const response = await sendR2Command(
+      client,
+      () => new GetObjectCommand({ Bucket: pointer.bucket || r2Bucket, Key: key }),
+      `get ${key}`,
+    );
+    const body = await r2ResponseBodyBuffer(response?.Body);
+    const pointerBindings = jsonObjectOrEmpty(pointer?.latest_metadata?.artifact_bindings);
+    return [role, {
+      key,
+      body,
+      content_type: cleanText(response?.ContentType) || null,
+      byte_length: Number.isSafeInteger(response?.ContentLength)
+        ? response.ContentLength
+        : body.byteLength,
+      ...(Object.hasOwn(pointerBindings, role)
+        ? { binding: pointerBindings[role] }
+        : {}),
+    }];
+  }));
+  return Object.fromEntries(entries);
+}
+
+async function r2ResponseBodyBuffer(body) {
+  if (body && typeof body.transformToByteArray === "function") {
+    return Buffer.from(await body.transformToByteArray());
+  }
+  if (body instanceof Uint8Array || Buffer.isBuffer(body)) return Buffer.from(body);
+  if (body && typeof body[Symbol.asyncIterator] === "function") {
+    const chunks = [];
+    for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+  throw new Error("R2 object response body is missing or unreadable.");
+}
+
 async function uploadR2CaptureFiles(client, sourceId, files, capture) {
   const prepared = prepareR2CaptureArtifacts(files, { readFile: readFileSync });
   const layoutClaimed = Boolean(prepared.artifactBindings.layout);
@@ -9508,6 +11163,30 @@ function immutableR2CaptureVersion(capture, artifactBindings) {
   })).digest("hex").slice(0, 32);
 }
 
+function buildStage1EvidenceSchemaUpgradeR2CandidatePlan(source, capture, prepared) {
+  assertR2CaptureArtifactSlots(capture.kind || "webpage", prepared.artifactBindings, {
+    layoutClaimed: Boolean(prepared.artifactBindings.layout),
+    expansionStateCount: Object.keys(prepared.artifactBindings)
+      .filter((slot) => /^expansion_state_[0-9]{2}$/.test(slot)).length,
+  });
+  assertR2CaptureArtifactIdentity(capture, prepared, { sourceId: source.id });
+  const version = immutableR2CaptureVersion(capture, prepared.artifactBindings);
+  const objectKeys = Object.fromEntries(prepared.artifacts.map((artifact) => [
+    artifact.name,
+    `visual-snapshots/sources/${source.id}/captures/${version}/${artifact.fileName}`,
+  ]));
+  return {
+    version,
+    objectKeys,
+    hashes: r2CaptureHashes(capture, prepared.artifactBindings),
+    metadata: r2CaptureMetadata(capture, prepared.artifactBindings),
+    artifactsByRole: Object.fromEntries(prepared.artifacts.map((artifact) => [
+      artifact.name,
+      artifact.body,
+    ])),
+  };
+}
+
 async function deleteR2Object(client, key) {
   try {
     await sendR2Command(
@@ -9521,6 +11200,48 @@ async function deleteR2Object(client, key) {
   } catch (error) {
     if (!isR2NotFoundError(error)) throw error;
   }
+}
+
+async function uploadStage1EvidenceSchemaUpgradeImmutableObject({
+  client,
+  bucket,
+  key,
+  body,
+  contentType,
+}) {
+  const expected = Buffer.from(body);
+  try {
+    await sendR2Command(
+      client,
+      () => new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: expected,
+        ContentType: contentType,
+        IfNoneMatch: "*",
+      }),
+      `put immutable ${key}`,
+    );
+    return { status: "created", byte_length: expected.byteLength };
+  } catch (error) {
+    if (!isR2PreconditionFailed(error)) throw error;
+    const response = await sendR2Command(
+      client,
+      () => new GetObjectCommand({ Bucket: bucket, Key: key }),
+      `verify immutable ${key}`,
+    );
+    const existing = await r2ResponseBodyBuffer(response?.Body);
+    if (!existing.equals(expected)) {
+      throw new Error(`Immutable R2 object already exists with different bytes: ${key}`);
+    }
+    return { status: "already_exact", byte_length: existing.byteLength };
+  }
+}
+
+function isR2PreconditionFailed(error) {
+  const status = Number(error?.$metadata?.httpStatusCode || error?.statusCode || 0);
+  const name = cleanText(error?.name || error?.code).toLowerCase();
+  return status === 412 || name === "preconditionfailed" || name === "precondition_failed";
 }
 
 async function upsertR2SnapshotRecord(source, capture, snapshot) {
@@ -9728,6 +11449,9 @@ function materializeRetainedCaptureAuthority(source, capture, {
       ...(capture.stage1_baseline_activation !== undefined
         ? { stage1_baseline_activation: capture.stage1_baseline_activation }
         : {}),
+      ...(capture.stage1_evidence_schema_upgrade !== undefined
+        ? { stage1_evidence_schema_upgrade: capture.stage1_evidence_schema_upgrade }
+        : {}),
     };
     atomicWriteJson(capture.meta_path, projectedMetadata);
   }
@@ -9789,6 +11513,65 @@ function captureR2Files(capture) {
   return collectR2CaptureArtifactFiles(capture, { exists: existsSync });
 }
 
+function stage1EvidenceSchemaUpgradeLegacyCaptureFiles(capture) {
+  if (capture?.kind === "pdf") {
+    return [
+      { name: "pdf", fileName: "document.pdf", path: capture.pdf_path, contentType: "application/pdf" },
+      { name: "text", fileName: "text.txt", path: capture.text_path, contentType: "text/plain; charset=utf-8" },
+      { name: "meta", fileName: "meta.json", path: capture.meta_path, contentType: "application/json; charset=utf-8" },
+    ];
+  }
+  const files = [
+    { name: "page", fileName: "page.jpg", path: capture?.page_path, contentType: "image/jpeg" },
+    { name: "thumb", fileName: "thumb.jpg", path: capture?.thumb_path, contentType: "image/jpeg" },
+    { name: "text", fileName: "text.txt", path: capture?.text_path, contentType: "text/plain; charset=utf-8" },
+  ];
+  if (capture?.layout_path) {
+    files.push({
+      name: "layout",
+      fileName: "layout.json",
+      path: capture.layout_path,
+      contentType: "application/json; charset=utf-8",
+    });
+  }
+  for (const [index, state] of (capture?.expansion_state_screenshots || []).entries()) {
+    const suffix = String(index + 1).padStart(2, "0");
+    files.push(
+      {
+        name: `expansion_state_${suffix}`,
+        fileName: `expansion-state-${suffix}.jpg`,
+        path: state.page_path,
+        contentType: "image/jpeg",
+      },
+      {
+        name: `expansion_state_${suffix}_layout`,
+        fileName: `expansion-state-${suffix}-layout.json`,
+        path: state.layout_path,
+        contentType: "application/json; charset=utf-8",
+      },
+    );
+  }
+  files.push({
+    name: "meta",
+    fileName: "meta.json",
+    path: capture?.meta_path,
+    contentType: "application/json; charset=utf-8",
+  });
+  return files;
+}
+
+function prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(capture, { legacy = false } = {}) {
+  const files = legacy
+    ? stage1EvidenceSchemaUpgradeLegacyCaptureFiles(capture)
+    : captureR2Files(capture);
+  if (files.some((file) => !file?.path || !existsSync(file.path))) {
+    throw new Error(
+      `Stage 1 evidence-schema-upgrade ${legacy ? "legacy" : "prospective"} artifact set is incomplete.`,
+    );
+  }
+  return prepareR2CaptureArtifacts(files, { readFile: readFileSync });
+}
+
 function r2CaptureHashes(capture, artifactBindings = {}) {
   const retainedLayoutHash = artifactBindings.layout
     ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
@@ -9826,6 +11609,7 @@ function r2CaptureMetadata(capture, artifactBindings) {
     status_text: capture.status_text || null,
     content_type: capture.content_type || null,
     stage1_baseline_activation: capture.stage1_baseline_activation || null,
+    stage1_evidence_schema_upgrade: capture.stage1_evidence_schema_upgrade || null,
     text_length: capture.text_length || 0,
     // text_hash is calculated from the semantic UTF-8 text, while the retained
     // text.txt object intentionally carries one trailing newline. Persist the
@@ -10694,10 +12478,13 @@ function copyEvidenceFiles(targetDir, previous, capture) {
   );
 }
 
-function writeBaseline(source, capture, details) {
+function writeBaseline(source, capture, details, options = {}) {
+  const persist = options.persist !== false;
   const baselinePath = baselinePathForSource(source.id);
-  mkdirSync(dirname(baselinePath), { recursive: true });
-  const existingBaseline = readJsonIfExists(baselinePath);
+  if (persist) mkdirSync(dirname(baselinePath), { recursive: true });
+  const existingBaseline = Object.hasOwn(options, "existingBaseline")
+    ? options.existingBaseline
+    : readJsonIfExists(baselinePath);
   const existingCapturedAt = Date.parse(String(existingBaseline?.captured_at || ""));
   const candidateCapturedAt = Date.parse(String(capture?.captured_at || ""));
   if (
@@ -10719,7 +12506,9 @@ function writeBaseline(source, capture, details) {
   if (details.stage1_baseline_activation !== undefined) {
     capture.stage1_baseline_activation = details.stage1_baseline_activation;
   }
-  const retainedArtifactProjection = materializeRetainedCaptureAuthority(source, capture);
+  const retainedArtifactProjection = materializeRetainedCaptureAuthority(source, capture, {
+    rewriteMatchingBaseline: persist,
+  });
   if (capture.expansion_state_screenshots?.length) {
     // Expansion screenshots are part of the baseline used to localize wording
     // inside accordions. A baseline must never reference files that cleanup
@@ -10727,6 +12516,9 @@ function writeBaseline(source, capture, details) {
     capture.persist_expansion_state_screenshots = true;
   }
   const existingSummary = existingBaseline?.summary_metadata || {};
+  const baselineUpdatedAt = options.updatedAt
+    ? new Date(options.updatedAt).toISOString()
+    : new Date().toISOString();
   const baseline = {
     version: 1,
     kind: capture.kind || "webpage",
@@ -10787,7 +12579,7 @@ function writeBaseline(source, capture, details) {
     },
     summary_metadata: {
       reason: details.reason,
-      updated_at: new Date().toISOString(),
+      updated_at: baselineUpdatedAt,
       ai_provider: aiProvider,
       ai_model: aiModel,
       previous_baseline: details.previous_baseline
@@ -10817,6 +12609,10 @@ function writeBaseline(source, capture, details) {
         || capture.stage1_baseline_activation
         || existingSummary.stage1_baseline_activation
         || null,
+      stage1_evidence_schema_upgrade:
+        details.stage1_evidence_schema_upgrade
+        || capture.stage1_evidence_schema_upgrade
+        || null,
       expansion_state_capture_coverage:
         capture.kind === "pdf"
           ? null
@@ -10824,9 +12620,37 @@ function writeBaseline(source, capture, details) {
       retained_artifact_projection: retainedArtifactProjection,
     },
   };
+  if (!persist) return baseline;
   atomicWriteJson(baselinePath, baseline);
   localBaselineEvidenceCache.set(source.id, true);
   return true;
+}
+
+function buildBaselineRecord(source, capture, details, options = {}) {
+  const baseline = writeBaseline(source, capture, details, {
+    ...options,
+    persist: false,
+  });
+  if (!baseline || typeof baseline !== "object") {
+    throw new Error("Stage 1 evidence-schema upgrade candidate baseline is older than the retained baseline.");
+  }
+  return baseline;
+}
+
+function serializedJsonBytes(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function atomicWriteBytes(path, value) {
+  if (value === null) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const bytes = Buffer.from(value);
+  mkdirSync(dirname(path), { recursive: true });
+  const tempPath = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  writeFileSync(tempPath, bytes);
+  renameSync(tempPath, path);
 }
 
 function readBaselineEvidence(baseline) {
@@ -11457,6 +13281,54 @@ async function attachSourceAcquisitions(sources) {
   }));
 }
 
+async function attachStage1SourceActivationFinalizations(sources) {
+  const sourceIds = (sources || []).map((source) => source?.id);
+  assertExactStage1EvidenceSchemaUpgradeSourceIds(
+    sourceIds,
+    "finalization lookup source IDs",
+  );
+  const { data, error } = await supabase.rpc(
+    "get_stage1_source_activation_finalizations",
+    { p_source_ids: sourceIds },
+  );
+  if (error) {
+    throw new Error(describeSupabaseError(
+      error,
+      "load exact Stage 1 activation finalization receipts",
+    ));
+  }
+  const rows = Array.isArray(data) ? data : [];
+  const expectedKeys = [
+    "source_acquisition_id",
+    "shared_award_source_id",
+    "source_page_request_id",
+    "disposition_item_sha256",
+    "prepare_receipt_sha256",
+    "guard_sha256",
+    "observed_normalized_text_sha256",
+    "persistence_evidence",
+    "finalization_receipt_sha256",
+    "receipt",
+    "finalized_at",
+  ].sort();
+  if (
+    rows.length !== sourceIds.length
+    || rows.some((row, index) => (
+      row?.shared_award_source_id !== sourceIds[index]
+      || JSON.stringify(Object.keys(jsonObjectOrEmpty(row)).sort())
+        !== JSON.stringify(expectedKeys)
+    ))
+  ) {
+    throw new Error(
+      "Stage 1 activation finalization getter did not return one exact ordered receipt per reviewed source.",
+    );
+  }
+  return sources.map((source, index) => ({
+    ...source,
+    source_activation_finalization: rows[index],
+  }));
+}
+
 async function loadSourcesByIds(pageLimit) {
   const ids = [...sourceIdsFilter].slice(0, pageLimit);
   const sources = [];
@@ -11471,6 +13343,7 @@ async function loadSourcesByIds(pageLimit) {
 
 function filterMonitorableSourcesForCapture(sources, { logRejected = true } = {}) {
   if (initialOfficialDocumentMaterialization) return sources;
+  if (stage1EvidenceSchemaUpgrade) return sources;
 
   const accepted = [];
   const rejected = new Map();
@@ -11747,12 +13620,14 @@ function buildSourcesQuery(sourceIds = []) {
     .from("shared_award_sources")
     .select(
       "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
-    )
-    .eq("shared_awards.status", "active");
+    );
+  if (!stage1EvidenceSchemaUpgrade) {
+    query = query.eq("shared_awards.status", "active");
+  }
 
   // Exact operator repair is allowed to address one quarantined source. Broad
   // and file-based scans must continue excluding review_later sources.
-  if (!sourceIdFilter) {
+  if (!sourceIdFilter && !stage1EvidenceSchemaUpgrade) {
     query = query.eq("admin_review_status", "open");
   }
 
@@ -11771,7 +13646,7 @@ function buildSourcesQuery(sourceIds = []) {
   // An explicit source repair/check is an operator-scoped command, not a
   // scheduler dequeue. Do not silently turn it into a zero-row load merely
   // because that source's normal next_check_at is in the future or null.
-  if (!includeNotDue && !sourceIdFilter) {
+  if (!includeNotDue && !sourceIdFilter && !stage1EvidenceSchemaUpgrade) {
     query = query.lte("next_check_at", new Date().toISOString());
   }
   if (sourceIdFilter) {
@@ -14636,11 +16511,7 @@ function aiRequirementOptions() {
     r2SnapshotSync,
     r2RepairMissingSnapshots,
     r2BackfillBaselines,
-    sourceQualityMode:
-      args["source-quality-mode"] ||
-      args["source-quality-ai-mode"] ||
-      env.AWARDPING_SOURCE_QUALITY_MODE ||
-      env.AWARDPING_SOURCE_QUALITY_AI_MODE,
+    sourceQualityMode,
   };
 }
 
@@ -14925,6 +16796,19 @@ function loadSourceIdsFilter(value) {
   }
 }
 
+function loadStage1EvidenceSchemaUpgradeManifest(value) {
+  if (!value) {
+    throw new Error(
+      "Stage 1 evidence-schema upgrade requires --source-ids-file with the exact reviewed-nine manifest.",
+    );
+  }
+  const path = isAbsolute(value) ? value : resolve(root, value);
+  if (!existsSync(path)) {
+    throw new Error(`Stage 1 evidence-schema-upgrade manifest does not exist: ${path}`);
+  }
+  return validateStage1EvidenceSchemaUpgradeManifest(readFileSync(path, "utf8"));
+}
+
 function parseArgs(values) {
   const parsed = {};
   for (let index = 0; index < values.length; index += 1) {
@@ -14983,6 +16867,15 @@ function boolArg(value, fallback) {
   if (["true", "1", "yes", "y"].includes(normalized)) return true;
   if (["false", "0", "no", "n"].includes(normalized)) return false;
   return fallback;
+}
+
+function strictBoolArg(value, fallback, label) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["false", "0", "no", "n"].includes(normalized)) return false;
+  throw new Error(`${label} must be true or false.`);
 }
 
 function listArg(value, fallback = []) {
@@ -15064,10 +16957,22 @@ function captureVisualSnapshotsHelp() {
     "  --help                     Print this text and exit without loading runtime configuration or starting a run.",
     "  --source-id=<uuid>         Restrict the run to one exact source.",
     "  --source-ids-file=<path>   Restrict the run to an allowlisted source-ID file.",
+    "  --stage1-evidence-schema-upgrade=true",
+    "                             Use the isolated reviewed-nine evidence upgrade path.",
+    "  --stage1-evidence-schema-upgrade-dry-run=true",
+    "                             Capture and validate fully, but make zero remote or baseline mutations.",
+    "  --all=true                 Required: evaluate the indivisible reviewed-nine set regardless of schedule.",
+    "  --capture-profile=baseline-rich",
+    "  --section-extraction-profile=baseline-rich",
+    "  --max-expansion-state-screenshots=24",
+    "                             Required: retain the full reviewed capture/evidence profile.",
+    "  --source-quality-mode=deterministic",
+    "  --web-concurrency=1        Required: use deterministic sequential capture.",
     "  --gemini-api-max-calls=0   Disable paid Gemini calls for the run.",
     "  --visual-review-mode=none  Disable visual-review interpretation.",
     "  --r2-snapshot-sync=true    Require immutable R2 snapshot synchronization.",
     "",
+    "Stage 1 evidence-schema upgrade requires the exact reviewed-nine manifest; Churchill and Luce remain quarantined.",
     "This command performs work unless --help is supplied. Use a reviewed launcher or an exact source allowlist.",
   ].join("\n");
 }
@@ -15112,7 +17017,10 @@ function createSourcePhaseDeadline(milliseconds, message) {
   };
 
   return {
-    async run(operation) {
+    async run(operation, {
+      onTimeout = null,
+      settleAfterTimeout = false,
+    } = {}) {
       if (typeof operation !== "function") {
         throw new Error("Source deadline requires an operation callback.");
       }
@@ -15127,7 +17035,22 @@ function createSourcePhaseDeadline(milliseconds, message) {
           settled = true;
           clearTimer();
         });
-      return Promise.race([guarded, timeoutPromise]);
+      try {
+        return await Promise.race([guarded, timeoutPromise]);
+      } catch (error) {
+        if (timedOut && settleAfterTimeout) {
+          if (typeof onTimeout === "function") {
+            try {
+              await onTimeout(error);
+            } catch {
+              // Preserve the authoritative timeout while still awaiting the
+              // now-aborted capture task below.
+            }
+          }
+          await guarded.catch(() => null);
+        }
+        throw error;
+      }
     },
 
     beginPhase({ name, timeoutMs: phaseTimeoutMs, message: phaseMessage }) {
