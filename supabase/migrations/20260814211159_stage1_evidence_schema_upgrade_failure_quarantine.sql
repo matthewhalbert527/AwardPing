@@ -1913,13 +1913,13 @@ begin
             when artifact.value ->> 'role' = 'meta' then 'meta.json'
             when artifact.value ->> 'role' ~
                 '^expansion_state_(0[1-9]|[1-9][0-9]+)$'
-              then 'expansion-state-' || pg_catalog.substring(
+              then 'expansion-state-' || substring(
                 artifact.value ->> 'role'
                 from '^expansion_state_([0-9]+)$'
               ) || '.jpg'
             when artifact.value ->> 'role' ~
                 '^expansion_state_(0[1-9]|[1-9][0-9]+)_layout$'
-              then 'expansion-state-' || pg_catalog.substring(
+              then 'expansion-state-' || substring(
                 artifact.value ->> 'role'
                 from '^expansion_state_([0-9]+)_layout$'
               ) || '-layout.json'
@@ -2147,13 +2147,15 @@ begin
         'stage1_evidence_schema_upgrade'
       or v_recovery -> 'creates_api_charge' is distinct from 'false'::jsonb
       or v_recovery ->> 'status' is distinct from 'recovery_required'
-      or v_recovery ->> 'reason' is distinct from case
-        when v_pointer_commit_receipt is not null
-          and v_pointer_commit_receipt ->> 'journal_sha256' =
-            v_recovery ->> 'journal_sha256'
-          then v_pointer_commit_receipt ->> 'outcome'
-        else 'fresh_active_upgrade_journal_requires_reconciliation'
-      end
+      or v_recovery ->> 'reason' is distinct from (
+        case
+          when v_pointer_commit_receipt is not null
+            and v_pointer_commit_receipt ->> 'journal_sha256' =
+              v_recovery ->> 'journal_sha256'
+            then v_pointer_commit_receipt ->> 'outcome'
+          else 'fresh_active_upgrade_journal_requires_reconciliation'
+        end
+      )
       or v_recovery ->> 'safe_action' is distinct from
         'Keep the source quarantined and reconcile this exact freshly verified journal before retrying.'
       or coalesce(v_recovery ->> 'journal_sha256', '') !~

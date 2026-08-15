@@ -39,7 +39,7 @@ describe("Stage 1 evidence-schema-upgrade quarantine migration", () => {
     );
   });
 
-  it("nests availability CASE expressions inside the PL/pgSQL IF condition", () => {
+  it("nests top-level CASE expressions inside PL/pgSQL IF conditions", () => {
     expect(rpc).toMatch(
       /#>> array\['r2_binding', 'status'\] is distinct from \(\s*case\s+when v_r2 = 'null'::jsonb then 'not_observed'\s+else 'sealed_present'\s+end\s*\)/iu,
     );
@@ -49,6 +49,15 @@ describe("Stage 1 evidence-schema-upgrade quarantine migration", () => {
     expect(rpc).toMatch(
       /#>> array\['candidate_artifacts', 'status'\] is distinct\s+from \(\s*case when v_candidate = 'null'::jsonb then 'not_observed'\s+else 'sealed_present' end\s*\)/iu,
     );
+    expect(rpc).toMatch(
+      /v_recovery ->> 'reason' is distinct from \(\s*case\s+when v_pointer_commit_receipt is not null[\s\S]*?else 'fresh_active_upgrade_journal_requires_reconciliation'\s+end\s*\)/iu,
+    );
+  });
+
+  it("uses PostgreSQL's unqualified substring special form", () => {
+    expect(rpc).not.toContain("pg_catalog.substring(");
+    expect(rpc.match(/\bsubstring\(\s*artifact\.value ->> 'role'\s+from /giu))
+      .toHaveLength(2);
   });
 
   it("creates an append-only private failure audit with exact content seals", () => {
