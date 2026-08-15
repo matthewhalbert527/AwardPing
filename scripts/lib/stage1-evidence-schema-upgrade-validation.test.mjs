@@ -21,6 +21,10 @@ import {
   bindVisualTextGeometry,
   visualTextGeometryLayoutFingerprint,
 } from "./visual-event-localization.mjs";
+import {
+  beineckeFaqLegacyFixtureBody,
+  beineckeFaqLegacyFixtureJson,
+} from "./fixtures/beinecke-faq-legacy-geometry-fixture.mjs";
 
 const sourceId = "11111111-1111-4111-8111-111111111111";
 const acquisitionId = "22222222-2222-4222-8222-222222222222";
@@ -170,6 +174,79 @@ describe("Stage 1 evidence-schema upgrade validation", () => {
       reason: "web_intake_capture_text_mismatch",
       creates_api_charge: false,
       outcome: { would_quarantine: true, would_queue_visual_candidate: false },
+    });
+  });
+
+  it("accepts the exact Beinecke FAQ main-content bridge through the public evaluator", () => {
+    const fixture = validBeineckeFaqSemanticBridgeFixture();
+    const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+
+    expect(decision).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
+      creates_api_charge: false,
+      evidence: {
+        intake: {
+          pre_normalized_text_hash:
+            "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+          post_normalized_text_hash:
+            "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+          capture_matches_stable_intake: false,
+          capture_matches_stable_intake_basis:
+            "exact_source_bound_main_content_hash_bridge",
+          capture_main_content_matches_stable_intake: true,
+          evidence_quotes_verified: true,
+          semantic_scope_bridge: {
+            schema: "awardping.stage1.beinecke-faq-legacy-main-content-bridge.v1",
+            source_id: "2ea41875-5c88-5794-81b3-afa8ddaf31c1",
+            immutable_generation: "f9e4d3ca743b366c1e4d2897a4822c45",
+            comparison_scope: "main_content_only",
+            geometry_authority: "generic_current_geometry_verifier",
+            current_geometry_verified_roles: [
+              "expansion_state_01_layout",
+              "expansion_state_02_layout",
+              "expansion_state_03_layout",
+              "expansion_state_04_layout",
+              "layout",
+            ],
+          },
+        },
+        comparison: {
+          semantic_fields: {
+            main_content_hash: { matches: true },
+          },
+          primary_visual_identity: {
+            matches: true,
+            equivalence_basis: "exact_hash",
+          },
+        },
+      },
+      outcome: {
+        would_commit: true,
+        would_queue_visual_candidate: false,
+        would_quarantine: false,
+      },
+    });
+    expect(decision.evidence.intake.capture_normalized_text_hash)
+      .not.toBe(decision.evidence.intake.pre_normalized_text_hash);
+    expect(decision.evidence.intake.limitations).toContain(
+      "full_browser_text_mismatch_is_preserved_and_explicit_not_treated_as_equality",
+    );
+  });
+
+  it("quarantines stable drifted intake even when the prospective Beinecke main hash is old", () => {
+    const fixture = validBeineckeFaqSemanticBridgeFixture();
+    const changedIntake = `${beineckeReviewedIntakeText()}\nUnexpected changed intake wording.`;
+    fixture.preIntake = beineckeIntake(changedIntake);
+    fixture.postIntake = beineckeIntake(changedIntake);
+
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(fixture)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "web_intake_capture_text_mismatch",
+      outcome: {
+        would_commit: false,
+        would_queue_visual_candidate: false,
+        would_quarantine: true,
+      },
     });
   });
 
@@ -339,6 +416,189 @@ function validPdfFixture({ candidatePdf = Buffer.from("reviewed official PDF byt
   };
 }
 
+function validBeineckeFaqSemanticBridgeFixture() {
+  const boundSourceId = "2ea41875-5c88-5794-81b3-afa8ddaf31c1";
+  const boundFinalUrl =
+    "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs";
+  const fullText = beineckeLegacyFullText();
+  const intakeText = beineckeReviewedIntakeText();
+  const semantic = {
+    body_text_hash: "62753e4c86d848ed9b394337f6f17777171fe3ef78d734944696982095bce936",
+    body_text_length: 2378,
+    main_content_hash: "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+    main_content_text_length: 2224,
+    nav_header_footer_hash:
+      "05c1a5128b0b539512ec1de5e7b5079964d72a3829b3d2daad047fab48bf04de",
+    nav_header_footer_text_length: 163,
+    expansion_hash: "59b1a04cf0430a8a3b20ed185c50db62cd0759ad025397707f6317ae3293e042",
+    expansion_text_length: 4266,
+    expandable_sections_hash:
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  };
+  const page = Buffer.from("stable Beinecke FAQ primary screenshot fixture");
+  const existing = webCapture({
+    capturedAt: "2026-08-03T18:44:41.262Z",
+    text: fullText,
+    page,
+    layoutX: 1,
+    modern: false,
+    expansionCount: 4,
+    captureSourceId: boundSourceId,
+    captureFinalUrl: `${boundFinalUrl}/`,
+    semantic,
+  });
+  const candidate = webCapture({
+    capturedAt: "2026-08-15T01:53:39.593Z",
+    text: fullText,
+    page,
+    layoutX: 2,
+    modern: true,
+    expansionCount: 4,
+    captureSourceId: boundSourceId,
+    captureFinalUrl: `${boundFinalUrl}/`,
+    semantic,
+  });
+  const acquisition = beineckeAcquisition();
+  return {
+    sourceId: boundSourceId,
+    sourceKind: "webpage",
+    reviewedFinalUrl: boundFinalUrl,
+    reviewedEvidenceQuotes:
+      acquisition.review_seal.human_source_disposition.effective_source_review.evidence_quotes,
+    immutableAcquisition: {
+      acquisition,
+      identity: {
+        file_hash: "6ee5b5322ed5f5563063d919e552839d434bf08456d8176fbfda9404e015e7e2",
+      },
+    },
+    existingBaseline: baselineFor(existing.capture, acquisition),
+    existingCapture: { ...existing.capture, text: `${existing.capture.text}\n` },
+    existingPreparedArtifacts: existing.prepared,
+    authoritativeExistingR2Binding:
+      beineckeFaqLegacyFixtureJson("r2_binding_receipt"),
+    capture: candidate.capture,
+    capturePreparedArtifacts: candidate.prepared,
+    preIntake: beineckeIntake(intakeText),
+    postIntake: beineckeIntake(intakeText),
+  };
+}
+
+function beineckeAcquisition() {
+  const boundSourceId = "2ea41875-5c88-5794-81b3-afa8ddaf31c1";
+  const boundAcquisitionId = "42e72340-c3b8-5ca2-8913-aed7f7c56be5";
+  const boundRequestId = "cc190ad2-8240-5b8c-b5ac-a73180094d24";
+  const boundFinalUrl =
+    "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs";
+  return {
+    id: boundAcquisitionId,
+    shared_award_source_id: boundSourceId,
+    origin_source_page_request_id: boundRequestId,
+    acquisition_kind: "historical_import",
+    notification_mode: "baseline_only",
+    onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+    review_seal: {
+      source_page_request_id: boundRequestId,
+      capture_file_hash:
+        "6ee5b5322ed5f5563063d919e552839d434bf08456d8176fbfda9404e015e7e2",
+      capture_final_url: boundFinalUrl,
+      human_source_disposition: {
+        schema_version: "awardping.stage1.baseline-source-human-disposition.v1",
+        policy_version: "stage1-baseline-source-disposition-v1",
+        decision: "approve_baseline_only",
+        effective_source_review: {
+          status: "accepted",
+          source_relevance: "primary",
+          cycle_relevance: "evergreen",
+          officialness: "official",
+          confidence: "high",
+          page_type: "faq",
+          evidence_quotes: [
+            "Scholars are eligible to begin receiving their Beinecke Scholarship funds only after they have completed their undergraduate degree and accepted an offer to pursue graduate study as a full-time student in an accredited degree-granting program.",
+            "Yes, the most that Scholars can receive from the Beinecke Scholarship in a fiscal year is $15,000, exclusive of the $5,000 start-up funds.",
+          ],
+          exact_evidence_verified: true,
+          reviewed_roles: ["faq"],
+          facts: {
+            description: null,
+            deadline: null,
+            amount: null,
+            eligibility: [],
+            application_materials: [],
+            important_dates: [],
+          },
+        },
+        activation_guard: {
+          mode: "first_visual_baseline_exact_normalized_retained_text",
+          onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+          shared_award_source_id: boundSourceId,
+          source_page_request_id: boundRequestId,
+          shared_award_source_acquisition_id: boundAcquisitionId,
+          evidence_packet_sha256:
+            "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f",
+          decision_item_sha256:
+            "03afd34c72a611776473793f5b7c5a3cfdf48848c6de687a6354046a48e10b87",
+          normalized_retained_text_sha256:
+            "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+          retained_text_artifact: {
+            store_id: "46963c344e088c9dbf4913651a8d2c6c.r2.cloudflarestorage.com",
+            bucket: "awardping-snapshots",
+            key:
+              "source-intake-first-observation/v1/requests/" +
+              `${boundRequestId}/sha256/` +
+              "6ee5b5322ed5f5563063d919e552839d434bf08456d8176fbfda9404e015e7e2/text.txt",
+            sha256: "20cd1159b40045dd34fdd7cc674c34e617ab2b2dd878e25755270e2611ad98aa",
+            bytes: 2225,
+            r2_verified_at: "2026-07-27T22:21:15.422Z",
+          },
+          capture_file_sha256:
+            "6ee5b5322ed5f5563063d919e552839d434bf08456d8176fbfda9404e015e7e2",
+          final_url: boundFinalUrl,
+          notification_mode: "baseline_only",
+        },
+        authority: {
+          monitoring: true,
+          public_facts: false,
+          fact_candidates: false,
+          reconciliation: false,
+          publication: false,
+          first_observation_notification: false,
+        },
+        guard_sha256:
+          "6f0d052effa393a460bd5b91d5051a8d23dfbb7272073c150ad0903f5e66eadb",
+      },
+    },
+  };
+}
+
+function beineckeLegacyFullText() {
+  return withoutWriterNewline(beineckeFaqLegacyFixtureBody("legacy_full_text").toString("utf8"));
+}
+
+function beineckeReviewedIntakeText() {
+  return withoutWriterNewline(
+    beineckeFaqLegacyFixtureBody("reviewed_intake_text").toString("utf8"),
+  );
+}
+
+function beineckeIntake(text) {
+  const url = "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs";
+  return {
+    ok: true,
+    text,
+    final_url: `${url}/`,
+    canonical_url: url,
+    capture_method: "fetch_html",
+  };
+}
+
+function withoutWriterNewline(value) {
+  return value.endsWith("\r\n")
+    ? value.slice(0, -2)
+    : value.endsWith("\n")
+      ? value.slice(0, -1)
+      : value;
+}
+
 function webCapture({
   capturedAt,
   text,
@@ -348,9 +608,12 @@ function webCapture({
   expansionCount,
   coverageComplete = true,
   layoutUnavailable = false,
+  captureSourceId = sourceId,
+  captureFinalUrl = finalUrl,
+  semantic = null,
 }) {
-  const directory = captureDirectory(capturedAt);
-  const prefix = archivePrefix(capturedAt);
+  const directory = captureDirectory(capturedAt, captureSourceId);
+  const prefix = archivePrefix(capturedAt, captureSourceId);
   const thumb = Buffer.from("thumbnail");
   const imageHash = sha256(page);
   const textHash = sha256(Buffer.from(text));
@@ -395,21 +658,24 @@ function webCapture({
           retainedStateCount: expansionCount,
           captureLimit: Math.max(1, expansionCount),
         })
-    : conservativeExpansionStateCaptureCoverage({ retainedStateCount: 0, captureLimit: 24 });
+    : conservativeExpansionStateCaptureCoverage({
+        retainedStateCount: expansionCount,
+        captureLimit: 24,
+      });
   const projection = modern
     ? retainedProjection("webpage", geometry.geometry_hash, expansionCount)
     : null;
-  const semantic = semanticFields(text);
+  const semanticIdentity = semantic || semanticFields(text);
   const capture = {
     version: 1,
     kind: "webpage",
-    source: { id: sourceId },
+    source: { id: captureSourceId },
     captured_at: capturedAt,
-    final_url: finalUrl,
+    final_url: captureFinalUrl,
     text,
     text_hash: textHash,
     text_length: text.length,
-    ...semantic,
+    ...semanticIdentity,
     image_hash: imageHash,
     page_bytes: page.length,
     thumb_bytes: thumb.length,
@@ -435,12 +701,12 @@ function webCapture({
   const metadata = {
     version: 1,
     kind: "webpage",
-    source: { id: sourceId },
+    source: { id: captureSourceId },
     captured_at: capturedAt,
-    final_url: finalUrl,
+    final_url: captureFinalUrl,
     text_hash: textHash,
     text_length: text.length,
-    ...semantic,
+    ...semanticIdentity,
     image_hash: imageHash,
     page_bytes: page.length,
     thumb_bytes: thumb.length,
@@ -459,7 +725,7 @@ function webCapture({
           expansion_state_count: expansionCount,
           expansion_state_capture_coverage: coverage,
         }
-      : legacyCoverageScalars()),
+      : legacyCoverageScalars(expansionCount)),
     expansion_state_screenshots: expansionStates.map((state, index) => {
       const suffix = String(index + 1).padStart(2, "0");
       return {
@@ -601,25 +867,29 @@ function pdfCapture({ capturedAt, pdf, modern }) {
 
 function baselineFor(capture, acquisition) {
   const guard = acquisition.review_seal.human_source_disposition.activation_guard;
+  const boundSourceId = capture.source.id;
+  const boundAcquisitionId = acquisition.id;
+  const boundRequestId = acquisition.origin_source_page_request_id;
+  const boundFinalUrl = guard.final_url;
   const activation = {
     status: "server_prepare_recorded",
-    shared_award_source_id: sourceId,
-    source_acquisition_id: acquisitionId,
-    source_page_request_id: requestId,
+    shared_award_source_id: boundSourceId,
+    source_acquisition_id: boundAcquisitionId,
+    source_page_request_id: boundRequestId,
     expected_normalized_text_sha256: guard.normalized_retained_text_sha256,
     observed_normalized_text_sha256: guard.normalized_retained_text_sha256,
     guard_sha256: acquisition.review_seal.human_source_disposition.guard_sha256,
-    reviewed_final_url: finalUrl,
-    observed_final_url: finalUrl,
+    reviewed_final_url: boundFinalUrl,
+    observed_final_url: capture.final_url,
     visual_evidence_quotes_verified: true,
     retained_evidence_quotes_verified: true,
   };
   return {
     version: 1,
     kind: capture.kind,
-    source: { id: sourceId },
+    source: { id: boundSourceId },
     captured_at: capture.captured_at,
-    final_url: finalUrl,
+    final_url: capture.final_url,
     text_hash: capture.text_hash,
     text_length: capture.text_length,
     body_text_hash: capture.body_text_hash || null,
@@ -636,7 +906,7 @@ function baselineFor(capture, acquisition) {
     file_hash: capture.file_hash || null,
     file_bytes: capture.file_bytes || null,
     capture: {
-      meta: `${archivePrefix(capture.captured_at)}meta.json`,
+      meta: `${archivePrefix(capture.captured_at, boundSourceId)}meta.json`,
       expansion_states: capture.expansion_state_screenshots.map((state) => ({
         state_id: state.state_id,
         image_hash: state.image_hash,
@@ -804,10 +1074,10 @@ function completeCoverage(retainedStateCount) {
   }, { retainedStateCount });
 }
 
-function legacyCoverageScalars() {
+function legacyCoverageScalars(expansionCount = 0) {
   return {
-    expansion_state_attempted: 0,
-    expansion_state_candidates: 0,
+    expansion_state_attempted: expansionCount,
+    expansion_state_candidates: expansionCount,
     expansion_state_capture_limit: 24,
     expansion_state_capture_complete: true,
     expansion_state_truncated: false,
@@ -884,12 +1154,12 @@ function mutatePreparedArtifact(prepared, name, mutate) {
   return prepareFromDefinitions(definitions);
 }
 
-function captureDirectory(capturedAt) {
-  return `C:/archive/sources/${sourceId}/captures/${generation(capturedAt)}`;
+function captureDirectory(capturedAt, captureSourceId = sourceId) {
+  return `C:/archive/sources/${captureSourceId}/captures/${generation(capturedAt)}`;
 }
 
-function archivePrefix(capturedAt) {
-  return `sources/${sourceId}/captures/${generation(capturedAt)}/`;
+function archivePrefix(capturedAt, captureSourceId = sourceId) {
+  return `sources/${captureSourceId}/captures/${generation(capturedAt)}/`;
 }
 
 function generation(capturedAt) {

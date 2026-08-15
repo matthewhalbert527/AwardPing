@@ -1,29 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   after: vi.fn(),
   deferredTasks: [] as Array<() => Promise<void> | void>,
   hasPublicUpdateDeliveryConfig: vi.fn(),
   hasSupabaseAdminConfig: vi.fn(),
-  sendPublicUpdateConfirmationEmail: vi.fn(),
   ensurePublicFormRateLimit: vi.fn(),
   createOrRefreshPublicUpdateSubscription: vi.fn(),
-  markPublicUpdateConfirmationSent: vi.fn(),
-  publicUpdateConfirmationDeliveryIsCurrent: vi.fn(),
+  drainPublicUpdateConfirmationOutbox: vi.fn(),
 }));
 
 vi.mock("next/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("next/server")>();
   return { ...actual, after: mocks.after };
 });
-
 vi.mock("@/lib/config", () => ({
-  appConfig: { url: "https://awardping.test" },
   hasPublicUpdateDeliveryConfig: mocks.hasPublicUpdateDeliveryConfig,
   hasSupabaseAdminConfig: mocks.hasSupabaseAdminConfig,
-}));
-vi.mock("@/lib/email", () => ({
-  sendPublicUpdateConfirmationEmail: mocks.sendPublicUpdateConfirmationEmail,
 }));
 vi.mock("@/lib/public-form-rate-limit", () => ({
   ensurePublicFormRateLimit: mocks.ensurePublicFormRateLimit,
@@ -31,12 +24,96 @@ vi.mock("@/lib/public-form-rate-limit", () => ({
 vi.mock("@/lib/public-updates", () => ({
   createOrRefreshPublicUpdateSubscription:
     mocks.createOrRefreshPublicUpdateSubscription,
-  markPublicUpdateConfirmationSent: mocks.markPublicUpdateConfirmationSent,
-  publicUpdateConfirmationDeliveryIsCurrent:
-    mocks.publicUpdateConfirmationDeliveryIsCurrent,
+  drainPublicUpdateConfirmationOutbox:
+    mocks.drainPublicUpdateConfirmationOutbox,
 }));
 
 import { POST } from "@/app/api/public-updates/subscribe/route";
+
+describe("public-update confirmation enqueue", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    mocks.deferredTasks.length = 0;
+    mocks.after.mockImplementation((task) => mocks.deferredTasks.push(task));
+    mocks.hasSupabaseAdminConfig.mockReturnValue(true);
+    mocks.hasPublicUpdateDeliveryConfig.mockReturnValue(true);
+    mocks.ensurePublicFormRateLimit.mockResolvedValue({ allowed: true });
+    mocks.createOrRefreshPublicUpdateSubscription.mockResolvedValue({
+      outboxId: "89e2ec55-b95e-4e2f-97c3-c67daef39ffc",
+      needsDelivery: true,
+    });
+    mocks.drainPublicUpdateConfirmationOutbox.mockResolvedValue({
+      claimed: 1,
+      accepted: 1,
+    });
+  });
+
+  afterEach(() => vi.useRealTimers());
+
+  it("fails before mutation when private delivery configuration is absent", async () => {
+    mocks.hasPublicUpdateDeliveryConfig.mockReturnValue(false);
+    const response = await POST(request());
+
+    expect(response.status).toBe(503);
+    expect(mocks.ensurePublicFormRateLimit).not.toHaveBeenCalled();
+    expect(mocks.createOrRefreshPublicUpdateSubscription).not.toHaveBeenCalled();
+  });
+
+  it("returns one delayed non-enumerating response before deferred provider work", async () => {
+    const pending = POST(request());
+    let settled = false;
+    pending.then(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(249);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const response = await pending;
+    const payload = await response.json();
+    expect(response.status).toBe(202);
+    expect(payload.message).toContain("If confirmation is needed");
+    expect(payload.message).toContain("expire after 24 hours");
+    expect(mocks.after).toHaveBeenCalledOnce();
+    expect(mocks.drainPublicUpdateConfirmationOutbox).not.toHaveBeenCalled();
+
+    await runDeferredTasks();
+    expect(mocks.drainPublicUpdateConfirmationOutbox).toHaveBeenCalledWith({
+      outboxId: "89e2ec55-b95e-4e2f-97c3-c67daef39ffc",
+    });
+  });
+
+  it("uses the same response and deferred path when no new delivery is needed", async () => {
+    mocks.createOrRefreshPublicUpdateSubscription.mockResolvedValue({
+      outboxId: null,
+      needsDelivery: false,
+    });
+
+    const response = await completePost();
+    expect(response.status).toBe(202);
+    expect((await response.json()).message).toContain("If confirmation is needed");
+    expect(mocks.after).toHaveBeenCalledOnce();
+    await runDeferredTasks();
+    expect(mocks.drainPublicUpdateConfirmationOutbox).toHaveBeenCalledWith({
+      outboxId: null,
+    });
+  });
+
+  it("does not enumerate persistence failures in the public response", async () => {
+    mocks.createOrRefreshPublicUpdateSubscription.mockRejectedValue(
+      new Error("database unavailable"),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await completePost();
+    expect(response.status).toBe(202);
+    expect((await response.json()).message).toContain("If confirmation is needed");
+    expect(mocks.after).toHaveBeenCalledOnce();
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+});
 
 function request() {
   return new Request("https://awardping.test/api/public-updates/subscribe", {
@@ -49,142 +126,11 @@ function request() {
   });
 }
 
-describe("public-update confirmation delivery", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mocks.deferredTasks.length = 0;
-    mocks.after.mockImplementation((task) => {
-      mocks.deferredTasks.push(task);
-    });
-    mocks.hasSupabaseAdminConfig.mockReturnValue(true);
-    mocks.hasPublicUpdateDeliveryConfig.mockReturnValue(true);
-    mocks.ensurePublicFormRateLimit.mockResolvedValue({ allowed: true });
-    mocks.createOrRefreshPublicUpdateSubscription.mockResolvedValue({
-      subscriberId: "subscriber-1",
-      email: "reader@example.org",
-      confirmationToken: "token-1",
-      confirmationAttemptSeal: "2026-08-15T01:00:00.000Z",
-      confirmationIdempotencyKey: `awardping-public-confirmation:${"a".repeat(64)}`,
-      shouldSendConfirmation: true,
-    });
-    mocks.sendPublicUpdateConfirmationEmail.mockResolvedValue({
-      data: { id: "email-1" },
-      error: null,
-    });
-    mocks.publicUpdateConfirmationDeliveryIsCurrent.mockResolvedValue(true);
-    mocks.markPublicUpdateConfirmationSent.mockResolvedValue({
-      sentAt: "2026-08-15T01:00:00.000Z",
-    });
-  });
-
-  it("fails before database or rate-limit mutation when email is not configured", async () => {
-    mocks.hasPublicUpdateDeliveryConfig.mockReturnValue(false);
-    const response = await POST(request());
-
-    expect(response.status).toBe(503);
-    expect(mocks.ensurePublicFormRateLimit).not.toHaveBeenCalled();
-    expect(mocks.createOrRefreshPublicUpdateSubscription).not.toHaveBeenCalled();
-  });
-
-  it("returns the same non-enumerating response for an active subscriber", async () => {
-    mocks.createOrRefreshPublicUpdateSubscription.mockResolvedValue({
-      subscriberId: "subscriber-1",
-      email: "reader@example.org",
-      confirmationToken: null,
-      shouldSendConfirmation: false,
-    });
-    const response = await POST(request());
-    const payload = await response.json();
-
-    expect(response.status).toBe(202);
-    expect(payload.message).toContain("If confirmation is needed");
-    expect(payload.message).toContain("expire after 24 hours");
-    expect(mocks.after).not.toHaveBeenCalled();
-    expect(mocks.sendPublicUpdateConfirmationEmail).not.toHaveBeenCalled();
-    expect(mocks.markPublicUpdateConfirmationSent).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [{ skipped: true }],
-    [{ data: null, error: { message: "provider rejected" } }],
-    [{ data: null, error: null }],
-    [{ data: { id: "" }, error: null }],
-    [{ data: { id: "email-without-explicit-success" } }],
-  ])("never claims a confirmation was sent for an unaccepted result", async (delivery) => {
-    mocks.sendPublicUpdateConfirmationEmail.mockResolvedValue(delivery);
-    const response = await POST(request());
-    const payload = await response.json();
-
-    expect(response.status).toBe(202);
-    expect(payload.ok).toBe(true);
-    expect(payload.message).toContain("If confirmation is needed");
-    expect(mocks.sendPublicUpdateConfirmationEmail).not.toHaveBeenCalled();
-    await runDeferredTasks();
-    expect(mocks.markPublicUpdateConfirmationSent).not.toHaveBeenCalled();
-  });
-
-  it("does not claim success when the accepted send cannot be bound to the pending token", async () => {
-    mocks.markPublicUpdateConfirmationSent.mockRejectedValue(
-      new Error("confirmation state changed"),
-    );
-    const response = await POST(request());
-    const payload = await response.json();
-
-    expect(response.status).toBe(202);
-    expect(payload.ok).toBe(true);
-    expect(payload.message).toContain("If confirmation is needed");
-    await runDeferredTasks();
-    expect(mocks.markPublicUpdateConfirmationSent).toHaveBeenCalledTimes(1);
-  });
-
-  it("returns before provider work, then uses the sealed key and records acceptance", async () => {
-    const response = await POST(request());
-    const payload = await response.json();
-
-    expect(response.status).toBe(202);
-    expect(payload.message).toContain("If confirmation is needed");
-    expect(mocks.after).toHaveBeenCalledTimes(1);
-    expect(mocks.sendPublicUpdateConfirmationEmail).not.toHaveBeenCalled();
-    expect(mocks.markPublicUpdateConfirmationSent).not.toHaveBeenCalled();
-
-    await runDeferredTasks();
-
-    expect(mocks.sendPublicUpdateConfirmationEmail).toHaveBeenCalledWith({
-      to: "reader@example.org",
-      confirmUrl:
-        "https://awardping.test/api/public-updates/confirm?token=token-1",
-      idempotencyKey: `awardping-public-confirmation:${"a".repeat(64)}`,
-    });
-    expect(mocks.markPublicUpdateConfirmationSent).toHaveBeenCalledWith({
-      subscriberId: "subscriber-1",
-      confirmationToken: "token-1",
-      confirmationAttemptSeal: "2026-08-15T01:00:00.000Z",
-    });
-  });
-
-  it("skips deferred delivery when the sealed attempt is no longer current", async () => {
-    mocks.publicUpdateConfirmationDeliveryIsCurrent.mockResolvedValue(false);
-
-    const response = await POST(request());
-    expect(response.status).toBe(202);
-
-    await runDeferredTasks();
-    expect(mocks.sendPublicUpdateConfirmationEmail).not.toHaveBeenCalled();
-    expect(mocks.markPublicUpdateConfirmationSent).not.toHaveBeenCalled();
-  });
-
-  it("keeps the attempt retryable when deferred delivery throws", async () => {
-    mocks.sendPublicUpdateConfirmationEmail.mockRejectedValue(
-      new Error("provider unavailable"),
-    );
-
-    const response = await POST(request());
-    expect(response.status).toBe(202);
-
-    await runDeferredTasks();
-    expect(mocks.markPublicUpdateConfirmationSent).not.toHaveBeenCalled();
-  });
-});
+async function completePost() {
+  const pending = POST(request());
+  await vi.advanceTimersByTimeAsync(250);
+  return pending;
+}
 
 async function runDeferredTasks() {
   const tasks = mocks.deferredTasks.splice(0);

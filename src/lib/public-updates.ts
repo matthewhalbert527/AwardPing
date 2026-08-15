@@ -1,29 +1,33 @@
 import "server-only";
 
 import crypto from "node:crypto";
-import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
+import {
+  appConfig,
+  hasPublicUpdateDeliveryConfig,
+  hasSupabaseAdminConfig,
+} from "@/lib/config";
 import type { Database, Json } from "@/lib/database.types";
 import {
   PublicDigestDeliveryError,
+  renderPublicUpdateConfirmationEmail,
   renderPublicDailyDigestEmail,
+  sendFrozenPublicUpdateConfirmationEmail,
   sendFrozenPublicDailyDigestEmail,
+  type RenderedPublicUpdateConfirmationEmail,
   type RenderedPublicDailyDigestEmail,
 } from "@/lib/email";
 import {
   buildPublicDigestChanges,
-  createPublicConfirmationToken,
   createPublicUnsubscribeToken,
   hashToken,
-  isPublicUpdateConfirmationFresh,
   normalizePublicUpdateEmail,
   pendingPublicDigestChangesForSubscriber,
-  planPublicUpdateConfirmationAttempt,
-  PUBLIC_UPDATE_CONFIRMATION_TTL_MS,
   publicDigestKey,
   splitPublicDigestChanges,
   type PublicDigestCandidate,
 } from "@/lib/public-updates-core";
 import {
+  encryptPersonalData,
   encryptedEmailFields,
   personalDataLookupHash,
   readPersonalData,
@@ -34,356 +38,379 @@ import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
 
 type PublicSubscriberRow =
   Database["public"]["Tables"]["public_update_subscribers"]["Row"];
-type PublicSubscriberInsert =
-  Database["public"]["Tables"]["public_update_subscribers"]["Insert"];
 type SupabaseAdminClient = ReturnType<typeof createSupabaseAdminClient>;
 
 const PUBLIC_DIGEST_READ_PAGE_SIZE = 500;
 const PUBLIC_DIGEST_SUBSCRIBER_CHUNK_SIZE = 25;
 const PUBLIC_DIGEST_EVENT_CHUNK_SIZE = 75;
 const PUBLIC_DIGEST_SUBSCRIBER_SELECT =
-  "id, email, email_hash, email_encrypted, status, confirmation_token_hash, unsubscribe_token_hash, confirmation_sent_at, confirmed_at, unsubscribed_at, last_digest_sent_at, digest_started_at, created_at, updated_at";
-const PUBLIC_UPDATE_SUBSCRIPTION_WRITE_RETRIES = 4;
+  "id, email, email_hash, email_encrypted, status, confirmation_token_hash, unsubscribe_token_hash, confirmation_sent_at, confirmed_at, unsubscribed_at, last_digest_sent_at, digest_started_at, confirmation_generation, confirmation_issued_at, confirmation_expires_at, confirmation_contract_version, created_at, updated_at";
 
 export async function createOrRefreshPublicUpdateSubscription(rawEmail: string) {
   const email = normalizePublicUpdateEmail(rawEmail);
   const encryptedEmail = encryptedEmailFields(email);
-  const supabase = createSupabaseAdminClient();
-
-  for (
-    let writeAttempt = 0;
-    writeAttempt < PUBLIC_UPDATE_SUBSCRIPTION_WRITE_RETRIES;
-    writeAttempt += 1
-  ) {
-    const existing = await loadPublicUpdateSubscriber(
-      supabase,
-      encryptedEmail.email_hash,
-      email,
-    );
-    const now = new Date();
-    const lifecyclePlan = existing
-      ? planPublicUpdateConfirmationAttempt(existing, now)
-      : null;
-
-    if (existing && lifecyclePlan?.shouldSendConfirmation === false) {
-      if (subscriberEmailNeedsRepair(existing, encryptedEmail.email_hash, email)) {
-        const repaired = await repairPublicUpdateSubscriberEmail({
-          supabase,
-          subscriber: existing,
-          emailHash: encryptedEmail.email_hash,
-          emailEncrypted: encryptedEmail.email_encrypted,
-          repairedAt: now.toISOString(),
-        });
-        if (!repaired) continue;
-      }
-      return {
-        subscriberId: existing.id,
-        email,
-        confirmationToken: null,
-        shouldSendConfirmation: false,
-      };
-    }
-
-    const createdAt = existing?.created_at || now.toISOString();
-    const subscriberId = existing?.id || cryptoRandomUuid();
-    const confirmationAttemptSeal =
-      lifecyclePlan?.attemptSeal || now.toISOString();
-    const confirmationToken = createPublicConfirmationToken(
-      {
-        id: subscriberId,
-        created_at: createdAt,
-        email_hash: encryptedEmail.email_hash,
-        attempted_at: confirmationAttemptSeal,
-      },
+  const subscriberId = cryptoRandomUuid();
+  const createdAt = new Date().toISOString();
+  const confirmationToken = crypto.randomBytes(32).toString("base64url");
+  const confirmationTokenHash = hashToken(confirmationToken);
+  const confirmationTokenEncrypted = encryptPersonalData(confirmationToken);
+  const renderedPayload = renderPublicUpdateConfirmationEmail({
+    to: email,
+    confirmUrl: `${appConfig.url}/api/public-updates/confirm?token=${encodeURIComponent(confirmationToken)}`,
+  });
+  const serializedPayload = JSON.stringify(renderedPayload);
+  const payloadHash = hashToken(serializedPayload);
+  const renderedPayloadEncrypted = encryptPersonalData(serializedPayload);
+  const unsubscribeTokenHash = hashToken(
+    createPublicUnsubscribeToken(
+      { id: subscriberId, created_at: createdAt },
       appConfig.cronSecret,
-    );
-    const confirmationTokenHash = hashToken(confirmationToken);
-    const unsubscribeTokenHash = hashToken(
-      createPublicUnsubscribeToken(
-        { id: subscriberId, created_at: createdAt },
-        appConfig.cronSecret,
-      ),
-    );
-
-    if (existing) {
-      let update = supabase
-        .from("public_update_subscribers")
-        .update({
-          email: null,
-          email_hash: encryptedEmail.email_hash,
-          email_encrypted: encryptedEmail.email_encrypted,
-          status: "pending",
-          confirmation_token_hash: confirmationTokenHash,
-          unsubscribe_token_hash: unsubscribeTokenHash,
-          confirmation_sent_at: null,
-          confirmed_at: null,
-          unsubscribed_at: null,
-          updated_at: confirmationAttemptSeal,
-        })
-        .eq("id", existing.id)
-        .eq("status", existing.status)
-        .eq("updated_at", existing.updated_at);
-      update =
-        existing.confirmation_sent_at === null
-          ? update.is("confirmation_sent_at", null)
-          : update.eq("confirmation_sent_at", existing.confirmation_sent_at);
-      const { data: updated, error: updateError } = await update
-        .select("id")
-        .maybeSingle();
-
-      if (updateError) throw updateError;
-      if (!updated) continue;
-    } else {
-      const insert: PublicSubscriberInsert = {
-        id: subscriberId,
-        email: null,
-        email_hash: encryptedEmail.email_hash,
-        email_encrypted: encryptedEmail.email_encrypted,
-        status: "pending",
-        confirmation_token_hash: confirmationTokenHash,
-        unsubscribe_token_hash: unsubscribeTokenHash,
-        confirmation_sent_at: null,
-        created_at: createdAt,
-        updated_at: confirmationAttemptSeal,
-      };
-      const { error: insertError } = await supabase
-        .from("public_update_subscribers")
-        .insert(insert);
-
-      if (insertError) {
-        if (insertError.code === "23505") continue;
-        throw insertError;
-      }
-    }
-
-    return {
-      subscriberId,
-      email,
-      confirmationToken,
-      confirmationAttemptSeal,
-      confirmationIdempotencyKey: `awardping-public-confirmation:${confirmationTokenHash}`,
-      shouldSendConfirmation: true,
-    };
-  }
-
-  throw new Error(
-    "Public-update subscription state changed too often; retry the request.",
+    ),
   );
-}
-
-export async function markPublicUpdateConfirmationSent(input: {
-  subscriberId: string;
-  confirmationToken: string;
-  confirmationAttemptSeal: string;
-}) {
-  const acceptedAtDate = new Date();
-  if (
-    !isPublicUpdateConfirmationFresh(
-      input.confirmationAttemptSeal,
-      acceptedAtDate,
-    )
-  ) {
-    throw new Error(
-      "Public-update confirmation attempt expired before provider acceptance could be recorded.",
-    );
-  }
-  const acceptedAt = acceptedAtDate.toISOString();
   const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("public_update_subscribers")
-    .update({
-      confirmation_sent_at: input.confirmationAttemptSeal,
-      updated_at: acceptedAt,
-    })
-    .eq("id", input.subscriberId)
-    .eq("status", "pending")
-    .eq("confirmation_token_hash", hashToken(input.confirmationToken))
-    .eq("updated_at", input.confirmationAttemptSeal)
-    .is("confirmation_sent_at", null)
-    .select("id, confirmation_sent_at")
-    .maybeSingle();
-
-  if (error) throw error;
-  if (data) {
-    return {
-      sentAt: input.confirmationAttemptSeal,
-      acceptedAt,
-      alreadyRecorded: false,
-    };
-  }
-
-  const { data: current, error: currentError } = await supabase
-    .from("public_update_subscribers")
-    .select("confirmation_sent_at")
-    .eq("id", input.subscriberId)
-    .eq("status", "pending")
-    .eq("confirmation_token_hash", hashToken(input.confirmationToken))
-    .maybeSingle();
-  if (currentError) throw currentError;
-  if (current?.confirmation_sent_at) {
-    return {
-      sentAt: current.confirmation_sent_at,
-      acceptedAt: null,
-      alreadyRecorded: true,
-    };
-  }
-  throw new Error(
-    "Public-update confirmation state changed before provider acceptance could be recorded.",
+  const { data, error } = await supabase.rpc(
+    "enqueue_public_update_confirmation",
+    {
+      p_subscriber_id: subscriberId,
+      p_created_at: createdAt,
+      p_legacy_email: email,
+      p_recipient_hash: encryptedEmail.email_hash,
+      p_recipient_encrypted: encryptedEmail.email_encrypted,
+      p_confirmation_token_hash: confirmationTokenHash,
+      p_confirmation_token_encrypted: confirmationTokenEncrypted,
+      p_rendered_payload_encrypted: renderedPayloadEncrypted,
+      p_payload_schema_version: "public-confirmation-render-v1",
+      p_payload_hash: payloadHash,
+      p_unsubscribe_token_hash: unsubscribeTokenHash,
+    },
   );
-}
-
-export async function publicUpdateConfirmationDeliveryIsCurrent(input: {
-  subscriberId: string;
-  confirmationToken: string;
-  confirmationAttemptSeal: string;
-}) {
-  if (!isPublicUpdateConfirmationFresh(input.confirmationAttemptSeal)) {
-    return false;
-  }
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
-    .from("public_update_subscribers")
-    .select("id")
-    .eq("id", input.subscriberId)
-    .eq("status", "pending")
-    .eq("confirmation_token_hash", hashToken(input.confirmationToken))
-    .eq("updated_at", input.confirmationAttemptSeal)
-    .is("confirmation_sent_at", null)
-    .maybeSingle();
   if (error) throw error;
-  return data !== null;
+  return {
+    outboxId: data?.[0]?.outbox_id || null,
+    needsDelivery: data?.[0]?.needs_delivery === true,
+  };
 }
 
 export async function confirmPublicUpdateSubscription(token: string) {
-  const tokenHash = hashToken(token);
   const supabase = createSupabaseAdminClient();
-  const { data: subscriber, error } = await supabase
-    .from("public_update_subscribers")
-    .select("*")
-    .eq("confirmation_token_hash", tokenHash)
-    .maybeSingle();
-
-  if (error) {
-    throw error;
-  }
-
-  const nowDate = new Date();
-  if (
-    !subscriber ||
-    subscriber.status !== "pending" ||
-    !isPublicUpdateConfirmationFresh(subscriber.confirmation_sent_at, nowDate)
-  ) {
-    return false;
-  }
-
-  const mutationTime = new Date();
-  if (
-    !isPublicUpdateConfirmationFresh(
-      subscriber.confirmation_sent_at,
-      mutationTime,
-    )
-  ) {
-    return false;
-  }
-  const now = mutationTime.toISOString();
-  const oldestValidConfirmation = new Date(
-    mutationTime.getTime() - PUBLIC_UPDATE_CONFIRMATION_TTL_MS,
-  ).toISOString();
-  const confirmationSentAt = subscriber.confirmation_sent_at!;
-  const unsubscribeTokenHash = hashToken(
-    createPublicUnsubscribeToken(subscriber, appConfig.cronSecret),
+  const { data, error } = await supabase.rpc(
+    "confirm_public_update_subscription",
+    { p_confirmation_token_hash: hashToken(token) },
   );
-  const { data: updated, error: updateError } = await supabase
-    .from("public_update_subscribers")
-    .update({
-      status: "active",
-      confirmation_token_hash: null,
-      unsubscribe_token_hash: unsubscribeTokenHash,
-      confirmed_at: subscriber.confirmed_at || now,
-      digest_started_at: now,
-      unsubscribed_at: null,
-      updated_at: now,
-    })
-    .eq("id", subscriber.id)
-    .eq("status", "pending")
-    .eq("confirmation_token_hash", tokenHash)
-    .eq("confirmation_sent_at", confirmationSentAt)
-    .gt("confirmation_sent_at", oldestValidConfirmation)
-    .lte("confirmation_sent_at", now)
-    .select("id")
-    .maybeSingle();
-
-  if (updateError) {
-    throw updateError;
-  }
-
-  return updated !== null;
-}
-
-async function loadPublicUpdateSubscriber(
-  supabase: SupabaseAdminClient,
-  emailHash: string,
-  legacyEmail: string,
-) {
-  const existingResult = await supabase
-    .from("public_update_subscribers")
-    .select("*")
-    .eq("email_hash", emailHash)
-    .maybeSingle();
-  if (existingResult.error) throw existingResult.error;
-  if (existingResult.data) return existingResult.data;
-
-  const legacyResult = await supabase
-    .from("public_update_subscribers")
-    .select("*")
-    .eq("email", legacyEmail)
-    .maybeSingle();
-  if (legacyResult.error) throw legacyResult.error;
-  return legacyResult.data;
-}
-
-function subscriberEmailNeedsRepair(
-  subscriber: PublicSubscriberRow,
-  emailHash: string,
-  email: string,
-) {
-  const existingEmail = readPersonalData(subscriber.email_encrypted);
-  return (
-    subscriber.email !== null ||
-    subscriber.email_hash !== emailHash ||
-    existingEmail.status !== "available" ||
-    existingEmail.value !== email
-  );
-}
-
-async function repairPublicUpdateSubscriberEmail(input: {
-  supabase: SupabaseAdminClient;
-  subscriber: PublicSubscriberRow;
-  emailHash: string;
-  emailEncrypted: string;
-  repairedAt: string;
-}) {
-  let update = input.supabase
-    .from("public_update_subscribers")
-    .update({
-      email: null,
-      email_hash: input.emailHash,
-      email_encrypted: input.emailEncrypted,
-      updated_at: input.repairedAt,
-    })
-    .eq("id", input.subscriber.id)
-    .eq("status", input.subscriber.status)
-    .eq("updated_at", input.subscriber.updated_at);
-  update =
-    input.subscriber.confirmation_sent_at === null
-      ? update.is("confirmation_sent_at", null)
-      : update.eq(
-          "confirmation_sent_at",
-          input.subscriber.confirmation_sent_at,
-        );
-  const { data, error } = await update.select("id").maybeSingle();
   if (error) throw error;
-  return data !== null;
+  return data === true;
+}
+
+class PublicUpdateConfirmationDeliveryError extends Error {
+  constructor(
+    message: string,
+    readonly ambiguous: boolean,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = "PublicUpdateConfirmationDeliveryError";
+  }
+}
+
+export async function drainPublicUpdateConfirmationOutbox({
+  limit = 10,
+  outboxId = null,
+  workerId = `public-confirmation:${process.env.VERCEL_REGION || "local"}:${crypto.randomUUID()}`,
+}: {
+  limit?: number;
+  outboxId?: string | null;
+  workerId?: string;
+} = {}) {
+  if (!hasSupabaseAdminConfig() || !hasPublicUpdateDeliveryConfig()) {
+    return emptyConfirmationDrainResult(true);
+  }
+
+  const supabase = createSupabaseAdminClient();
+  const { data: claims, error } = await supabase.rpc(
+    "claim_public_update_confirmations",
+    {
+      p_worker_id: workerId,
+      p_limit: limit,
+      p_lease_seconds: 300,
+      p_outbox_id: outboxId,
+    },
+  );
+  if (error) throw error;
+
+  const result = {
+    ...emptyConfirmationDrainResult(false),
+    claimed: claims?.length || 0,
+  };
+  for (const claim of claims || []) {
+    const { data: authorized, error: authorizeError } = await supabase.rpc(
+      "authorize_public_update_confirmation_send",
+      { p_outbox_id: claim.id, p_lease_token: claim.lease_token },
+    );
+    if (authorizeError) throw authorizeError;
+    if (!authorized) {
+      result.stale += 1;
+      continue;
+    }
+
+    let providerStarted = false;
+    let providerAccepted = false;
+    try {
+      if (
+        !isV2PersonalDataCiphertext(claim.recipient_encrypted) ||
+        !isV2PersonalDataCiphertext(claim.confirmation_token_encrypted) ||
+        !isV2PersonalDataCiphertext(claim.rendered_payload_encrypted)
+      ) {
+        throw new PublicUpdateConfirmationDeliveryError(
+          "Legacy or malformed confirmation delivery ciphertext was refused.",
+          false,
+          false,
+        );
+      }
+      const recipientRead = readPersonalData(claim.recipient_encrypted);
+      const tokenRead = readPersonalData(claim.confirmation_token_encrypted);
+      const payloadRead = readPersonalData(claim.rendered_payload_encrypted);
+      const recipient =
+        recipientRead.status === "available" ? recipientRead.value : null;
+      const confirmationToken =
+        tokenRead.status === "available" ? tokenRead.value : null;
+      const serializedPayload =
+        payloadRead.status === "available" ? payloadRead.value : null;
+      if (
+        !recipient ||
+        personalDataLookupHash(recipient) !== claim.recipient_hash ||
+        !confirmationToken ||
+        hashToken(confirmationToken) !== claim.confirmation_token_hash ||
+        !serializedPayload ||
+        hashToken(serializedPayload) !== claim.payload_hash ||
+        claim.payload_schema_version !== "public-confirmation-render-v1"
+      ) {
+        throw new PublicUpdateConfirmationDeliveryError(
+          "The encrypted confirmation recipient/token binding could not be verified.",
+          false,
+          false,
+        );
+      }
+
+      const payload = frozenConfirmationPayload({
+        serializedPayload,
+        recipient,
+        confirmationToken,
+      });
+
+      providerStarted = true;
+      const delivery = await sendFrozenPublicUpdateConfirmationEmail({
+        ...payload,
+        idempotencyKey: claim.provider_idempotency_key,
+      });
+      const accepted = acceptedConfirmationProviderResult(delivery);
+      providerAccepted = true;
+      const { data: completionStatus, error: completionError } =
+        await supabase.rpc("complete_public_update_confirmation_send", {
+          p_outbox_id: claim.id,
+          p_lease_token: claim.lease_token,
+          p_provider_message_id: accepted.providerMessageId,
+        });
+      if (completionError) {
+        throw new PublicUpdateConfirmationDeliveryError(
+          `Provider accepted the confirmation but its receipt was not durably recorded: ${completionError.message}`,
+          true,
+          true,
+        );
+      }
+      if (completionStatus === "accepted") result.accepted += 1;
+      else if (completionStatus === "accepted_stale") result.acceptedStale += 1;
+      else {
+        throw new PublicUpdateConfirmationDeliveryError(
+          `Provider accepted the confirmation but the database returned ${String(completionStatus)}.`,
+          true,
+          true,
+        );
+      }
+    } catch (deliveryError) {
+      const classified = classifyConfirmationDeliveryError(deliveryError, {
+        providerStarted,
+        providerAccepted,
+      });
+      const { data: nextStatus, error: failureError } = await supabase.rpc(
+        "fail_public_update_confirmation_send",
+        {
+          p_outbox_id: claim.id,
+          p_lease_token: claim.lease_token,
+          p_error: classified.message,
+          p_ambiguous: classified.ambiguous,
+          p_retryable: classified.retryable,
+        },
+      );
+      if (failureError) {
+        throw new AggregateError(
+          [deliveryError, failureError],
+          "Confirmation delivery outcome and retry state could not both be persisted.",
+        );
+      }
+      if (nextStatus === "accepted") result.accepted += 1;
+      else if (nextStatus === "accepted_stale") result.acceptedStale += 1;
+      else if (nextStatus === "retry") result.retry += 1;
+      else if (nextStatus === "ambiguous") result.ambiguous += 1;
+      else if (nextStatus === "stale") result.stale += 1;
+      else result.terminalFailed += 1;
+    }
+  }
+  return result;
+}
+
+function acceptedConfirmationProviderResult(delivery: unknown) {
+  if (!delivery || typeof delivery !== "object") {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "The confirmation provider returned no result.",
+      true,
+      true,
+    );
+  }
+  const candidate = delivery as {
+    skipped?: unknown;
+    error?: {
+      message?: unknown;
+      name?: unknown;
+      statusCode?: unknown;
+    } | null;
+    data?: { id?: unknown } | null;
+  };
+  if (candidate.skipped === true) {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "Confirmation email delivery is not configured.",
+      false,
+      false,
+    );
+  }
+  if (candidate.error) {
+    const statusCode = candidate.error.statusCode;
+    const concurrentIdempotentRequest =
+      statusCode === 409 &&
+      candidate.error.name === "concurrent_idempotent_requests";
+    const definiteHttpRejection =
+      typeof statusCode === "number" &&
+      Number.isInteger(statusCode) &&
+      statusCode >= 400 &&
+      statusCode <= 599 &&
+      !concurrentIdempotentRequest;
+    const retryableHttpRejection =
+      concurrentIdempotentRequest ||
+      (definiteHttpRejection &&
+        (statusCode >= 500 ||
+          statusCode === 408 ||
+          statusCode === 429));
+    throw new PublicUpdateConfirmationDeliveryError(
+      `The confirmation provider rejected the request: ${
+        typeof candidate.error?.message === "string"
+          ? candidate.error.message
+          : "unknown provider error"
+      }`,
+      !definiteHttpRejection,
+      !definiteHttpRejection || retryableHttpRejection,
+    );
+  }
+  if (
+    typeof candidate.data?.id !== "string" ||
+    candidate.data.id.trim().length === 0
+  ) {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "The confirmation provider did not return an accepted message ID.",
+      true,
+      true,
+    );
+  }
+  return { providerMessageId: candidate.data.id.trim() };
+}
+
+function frozenConfirmationPayload({
+  serializedPayload,
+  recipient,
+  confirmationToken,
+}: {
+  serializedPayload: string;
+  recipient: string;
+  confirmationToken: string;
+}): RenderedPublicUpdateConfirmationEmail {
+  let value: unknown;
+  try {
+    value = JSON.parse(serializedPayload);
+  } catch {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "The frozen confirmation provider payload is not valid JSON.",
+      false,
+      false,
+    );
+  }
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "The frozen confirmation provider payload is not an object.",
+      false,
+      false,
+    );
+  }
+  const candidate = value as Record<string, unknown>;
+  const expectedKeys = ["from", "to", "subject", "html", "text"];
+  const payload = {
+    from: candidate.from,
+    to: candidate.to,
+    subject: candidate.subject,
+    html: candidate.html,
+    text: candidate.text,
+  };
+  if (
+    Object.keys(candidate).sort().join("\u0000") !==
+      expectedKeys.slice().sort().join("\u0000") ||
+    Object.values(payload).some(
+      (field) => typeof field !== "string" || field.trim().length === 0,
+    ) ||
+    payload.to !== recipient ||
+    JSON.stringify(payload) !== serializedPayload
+  ) {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "The frozen confirmation provider payload shape or recipient is invalid.",
+      false,
+      false,
+    );
+  }
+  const confirmationPath =
+    `/api/public-updates/confirm?token=${encodeURIComponent(confirmationToken)}`;
+  if (
+    !(payload.html as string).includes(confirmationPath) ||
+    !(payload.text as string).includes(confirmationPath)
+  ) {
+    throw new PublicUpdateConfirmationDeliveryError(
+      "The frozen confirmation provider payload is not bound to its token.",
+      false,
+      false,
+    );
+  }
+  return payload as RenderedPublicUpdateConfirmationEmail;
+}
+
+function classifyConfirmationDeliveryError(
+  error: unknown,
+  state: { providerStarted: boolean; providerAccepted: boolean },
+) {
+  if (error instanceof PublicUpdateConfirmationDeliveryError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  return new PublicUpdateConfirmationDeliveryError(
+    message,
+    state.providerStarted || state.providerAccepted,
+    state.providerStarted || state.providerAccepted,
+  );
+}
+
+function emptyConfirmationDrainResult(skipped: boolean) {
+  return {
+    claimed: 0,
+    accepted: 0,
+    acceptedStale: 0,
+    retry: 0,
+    ambiguous: 0,
+    terminalFailed: 0,
+    stale: 0,
+    skipped,
+  };
 }
 
 export async function unsubscribePublicUpdateSubscriber(token: string) {

@@ -1,14 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  hasPublicUpdateTokenConfig: vi.fn(),
   hasSupabaseAdminConfig: vi.fn(),
   confirmPublicUpdateSubscription: vi.fn(),
 }));
 
 vi.mock("@/lib/config", () => ({
   appConfig: { url: "https://awardping.test" },
-  hasPublicUpdateTokenConfig: mocks.hasPublicUpdateTokenConfig,
   hasSupabaseAdminConfig: mocks.hasSupabaseAdminConfig,
 }));
 vi.mock("@/lib/public-updates", () => ({
@@ -17,16 +15,15 @@ vi.mock("@/lib/public-updates", () => ({
 
 import { GET } from "@/app/api/public-updates/confirm/route";
 
-describe("public-update confirmation token configuration", () => {
+describe("public-update confirmation activation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.hasSupabaseAdminConfig.mockReturnValue(true);
-    mocks.hasPublicUpdateTokenConfig.mockReturnValue(true);
     mocks.confirmPublicUpdateSubscription.mockResolvedValue(true);
   });
 
-  it("fails closed before activation when token signing is unavailable", async () => {
-    mocks.hasPublicUpdateTokenConfig.mockReturnValue(false);
+  it("fails closed before activation when database authority is unavailable", async () => {
+    mocks.hasSupabaseAdminConfig.mockReturnValue(false);
     const response = await GET(
       new Request("https://awardping.test/api/public-updates/confirm?token=token-1"),
     );
@@ -37,7 +34,7 @@ describe("public-update confirmation token configuration", () => {
     expect(mocks.confirmPublicUpdateSubscription).not.toHaveBeenCalled();
   });
 
-  it("activates only with both database and signing configuration", async () => {
+  it("passes only the opaque token to database-authoritative activation", async () => {
     const response = await GET(
       new Request("https://awardping.test/api/public-updates/confirm?token=token-1"),
     );

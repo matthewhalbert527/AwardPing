@@ -3675,6 +3675,7 @@ function stage1EvidenceSchemaUpgradeOperationInterfaces({
           existingBaseline: state.baseline,
           existingCapture: state.existingCapture,
           existingPreparedArtifacts: state.existingPrepared,
+          authoritativeExistingR2Binding: state.r2BindingReceipt,
           capture: state.capture,
           capturePreparedArtifacts: state.capturePrepared,
           preIntake: state.preIntake,

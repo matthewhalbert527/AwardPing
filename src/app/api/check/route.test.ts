@@ -73,6 +73,50 @@ describe("POST /api/check", () => {
     expect(mocks.fetchExtractedContent).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized declared request before reserving or fetching", async () => {
+    const response = await POST(
+      requestFor("https://example.org", {
+        headers: { "content-length": "4097" },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    expect(mocks.fetchExtractedContent).not.toHaveBeenCalled();
+  });
+
+  it("bounds chunked request bytes before reserving or fetching", async () => {
+    let cancelled = false;
+    let emitted = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        emitted += 1;
+        controller.enqueue(new Uint8Array(1_024));
+        if (emitted >= 8) controller.close();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const request = new Request("https://awardping.test/api/check", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-vercel-forwarded-for": "203.0.113.8",
+      },
+      body,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" });
+
+    const response = await POST(request as NextRequest);
+
+    expect(response.status).toBe(400);
+    expect(cancelled).toBe(true);
+    expect(emitted).toBeLessThan(8);
+    expect(mocks.rpc).not.toHaveBeenCalled();
+    expect(mocks.fetchExtractedContent).not.toHaveBeenCalled();
+  });
+
   it("fails closed when the reservation RPC is unavailable or malformed", async () => {
     mocks.rpc.mockResolvedValue({ data: null, error: { message: "offline" } });
     const unavailable = await POST(requestFor("https://example.org"));
@@ -200,12 +244,16 @@ describe("POST /api/check", () => {
   });
 });
 
-function requestFor(url: string) {
+function requestFor(
+  url: string,
+  options: { headers?: Record<string, string> } = {},
+) {
   return new NextRequest("https://awardping.test/api/check", {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "x-vercel-forwarded-for": "203.0.113.8",
+      ...options.headers,
     },
     body: JSON.stringify({ url }),
   });

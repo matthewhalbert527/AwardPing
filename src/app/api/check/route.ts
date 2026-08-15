@@ -12,8 +12,10 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 export const runtime = "nodejs";
 
 const schema = z.object({
-  url: z.string().url(),
-});
+  url: z.string().max(2_048).url(),
+}).strict();
+
+const maxRequestBytes = 4_096;
 
 const reservationSchema = z.object({
   attempt_id: z.string().uuid(),
@@ -31,7 +33,7 @@ export async function POST(request: NextRequest) {
     return checkerUnavailable();
   }
 
-  const parsed = schema.safeParse(await request.json().catch(() => null));
+  const parsed = schema.safeParse(await readJsonBodyBounded(request));
   if (!parsed.success) {
     return NextResponse.json(
       { ok: false, error: "Enter a valid public URL." },
@@ -105,6 +107,56 @@ export async function POST(request: NextRequest) {
       },
       { status: 400 },
     );
+  }
+}
+
+async function readJsonBodyBounded(request: Request) {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null) {
+    const parsedLength = Number(declaredLength);
+    if (
+      !Number.isSafeInteger(parsedLength)
+      || parsedLength < 0
+      || parsedLength > maxRequestBytes
+    ) {
+      await request.body?.cancel().catch(() => undefined);
+      return null;
+    }
+  }
+
+  if (!request.body) return null;
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value?.byteLength) continue;
+      byteLength += value.byteLength;
+      if (byteLength > maxRequestBytes) {
+        await reader.cancel("AwardPing checker request byte limit exceeded")
+          .catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  try {
+    return JSON.parse(new TextDecoder().decode(body)) as unknown;
+  } catch {
+    return null;
   }
 }
 

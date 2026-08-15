@@ -9,6 +9,7 @@ vi.mock("undici", async (importOriginal) => {
 });
 
 import { extractHtmlText, fetchExtractedContent, hashText, normalizeText } from "@/lib/extract";
+import { fetchPublicHttpResponse } from "@/lib/url-safety";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -124,6 +125,54 @@ describe("content extraction helpers", () => {
       redirect: "manual",
       dispatcher: expect.anything(),
     });
+  });
+
+  it("applies the request deadline while the initial hostname is resolving", async () => {
+    vi.spyOn(dns, "lookup").mockImplementation(
+      () => new Promise(() => undefined) as never,
+    );
+    const controller = new AbortController();
+    const pending = fetchPublicHttpResponse("https://example.edu/award", {
+      signal: controller.signal,
+    });
+
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/hostname resolution timed out/i);
+    expect(undiciFetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps one deadline while a redirected hostname is resolving", async () => {
+    const lookup = vi.spyOn(dns, "lookup").mockImplementation(async (hostname) => {
+      if (hostname === "example.edu") {
+        return [{ address: "93.184.216.34", family: 4 }] as never;
+      }
+      if (hostname === "slow.example.edu") {
+        return await new Promise(() => undefined) as never;
+      }
+      throw new Error(`Unexpected hostname: ${hostname}`);
+    });
+    undiciFetch.mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://slow.example.edu/current" },
+      }),
+    );
+    const controller = new AbortController();
+    const pending = fetchPublicHttpResponse("https://example.edu/award", {
+      signal: controller.signal,
+    });
+
+    await vi.waitFor(() => {
+      expect(lookup).toHaveBeenCalledWith("slow.example.edu", {
+        all: true,
+        verbatim: true,
+      });
+    });
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(/hostname resolution timed out/i);
+    expect(undiciFetch).toHaveBeenCalledTimes(1);
   });
 
   it("rejects a redirect whose hostname resolves to a link-local address", async () => {

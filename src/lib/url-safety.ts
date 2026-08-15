@@ -5,6 +5,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 const unsafeHostPattern =
   /(?:^|\.)localhost$|(?:^|\.)local$|(?:^|\.)internal$|(?:^|\.)invalid$|(?:^|\.)test$|(?:^|\.)example$/i;
 const redirectStatuses = new Set([301, 302, 303, 307, 308]);
+const defaultDnsLookupTimeoutMs = 10_000;
 
 type PublicAddress = {
   address: string;
@@ -52,7 +53,10 @@ export async function assertPublicHttpUrl(input: string) {
     throw new Error(normalized.reason);
   }
 
-  await resolvePublicAddresses(normalized.url);
+  await resolvePublicAddresses(
+    normalized.url,
+    AbortSignal.timeout(defaultDnsLookupTimeoutMs),
+  );
   return normalized.url;
 }
 
@@ -62,6 +66,8 @@ export async function fetchPublicHttpResponse(
   maxRedirects = 5,
 ): Promise<PublicHttpResponse> {
   let currentUrl = input.toString();
+  const requestDeadline =
+    init.signal ?? AbortSignal.timeout(defaultDnsLookupTimeoutMs);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     const normalized = normalizeHttpUrl(currentUrl);
@@ -69,13 +75,14 @@ export async function fetchPublicHttpResponse(
       throw new Error(normalized.reason);
     }
 
-    const addresses = await resolvePublicAddresses(normalized.url);
+    const addresses = await resolvePublicAddresses(normalized.url, requestDeadline);
     const dispatcher = createPinnedDispatcher(normalized.url, addresses);
     let response: Awaited<ReturnType<typeof undiciFetch>>;
 
     try {
       response = await undiciFetch(normalized.url, {
         ...init,
+        signal: requestDeadline,
         redirect: "manual",
         dispatcher,
       } as Parameters<typeof undiciFetch>[1]);
@@ -248,12 +255,18 @@ function ipv4FromIpv6Words(words: number[]) {
   );
 }
 
-async function resolvePublicAddresses(url: URL): Promise<PublicAddress[]> {
+async function resolvePublicAddresses(
+  url: URL,
+  deadline: AbortSignal,
+): Promise<PublicAddress[]> {
   const hostname = normalizedHostname(url.hostname);
   const literalFamily = net.isIP(hostname);
   const resolved = literalFamily
     ? [{ address: hostname, family: literalFamily }]
-    : await dns.lookup(hostname, { all: true, verbatim: true });
+    : await waitForDnsLookup(
+        dns.lookup(hostname, { all: true, verbatim: true }),
+        deadline,
+      );
   const addresses = resolved
     .map((entry) => ({
       address: String(entry.address || "").trim(),
@@ -271,6 +284,31 @@ async function resolvePublicAddresses(url: URL): Promise<PublicAddress[]> {
     throw new Error("This URL resolves to a private network or reserved address.");
   }
   return addresses;
+}
+
+async function waitForDnsLookup<T>(lookup: Promise<T>, deadline: AbortSignal) {
+  if (deadline.aborted) {
+    throw new Error("Public hostname resolution timed out.");
+  }
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      deadline.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      settle(() => reject(new Error("Public hostname resolution timed out.")));
+    };
+
+    deadline.addEventListener("abort", onAbort, { once: true });
+    lookup.then(
+      (value) => settle(() => resolve(value)),
+      (error) => settle(() => reject(error)),
+    );
+  });
 }
 
 function createPinnedDispatcher(url: URL, addresses: PublicAddress[]) {

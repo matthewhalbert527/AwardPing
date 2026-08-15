@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  createSupabaseAdminClient: vi.fn(),
+  rpc: vi.fn(),
+  hasPublicUpdateDeliveryConfig: vi.fn(),
+  renderPublicUpdateConfirmationEmail: vi.fn(),
+  sendFrozenPublicUpdateConfirmationEmail: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -11,20 +14,31 @@ vi.mock("@/lib/config", () => ({
     url: "https://awardping.test",
   },
   hasSupabaseAdminConfig: () => true,
+  hasPublicUpdateDeliveryConfig: mocks.hasPublicUpdateDeliveryConfig,
+}));
+vi.mock("@/lib/email", () => ({
+  PublicDigestDeliveryError: class PublicDigestDeliveryError extends Error {},
+  renderPublicUpdateConfirmationEmail:
+    mocks.renderPublicUpdateConfirmationEmail,
+  renderPublicDailyDigestEmail: vi.fn(),
+  sendFrozenPublicUpdateConfirmationEmail:
+    mocks.sendFrozenPublicUpdateConfirmationEmail,
+  sendFrozenPublicDailyDigestEmail: vi.fn(),
 }));
 vi.mock("@/lib/personal-data", () => ({
+  encryptPersonalData: (value: string) => `ap:v2:test:${value}`,
   encryptedEmailFields: (email: string) => ({
     email_hash: "a".repeat(64),
-    email_encrypted: `encrypted:${email}`,
+    email_encrypted: `ap:v2:test:${email}`,
   }),
   personalDataLookupHash: () => "a".repeat(64),
   readPersonalData: (value: string | null) =>
-    value?.startsWith("encrypted:")
-      ? { status: "available", value: value.slice("encrypted:".length) }
-      : { status: "missing", value: null },
+    value?.startsWith("ap:v2:test:")
+      ? { status: "available", value: value.slice("ap:v2:test:".length) }
+      : { status: "unavailable", value: null },
 }));
 vi.mock("@/lib/supabase/admin", () => ({
-  createSupabaseAdminClient: mocks.createSupabaseAdminClient,
+  createSupabaseAdminClient: () => ({ rpc: mocks.rpc }),
 }));
 vi.mock("@/lib/stage1-publication", () => ({
   loadStage1PublicationIndex: vi.fn(),
@@ -36,402 +50,372 @@ vi.mock("@/lib/public-change-events", () => ({
 import {
   confirmPublicUpdateSubscription,
   createOrRefreshPublicUpdateSubscription,
-  markPublicUpdateConfirmationSent,
-  publicUpdateConfirmationDeliveryIsCurrent,
+  drainPublicUpdateConfirmationOutbox,
 } from "@/lib/public-updates";
 import { hashToken } from "@/lib/public-updates-core";
 
-const subscriberId = "7d669bcb-7e7b-43b1-a20d-76ec977db7bf";
-const emailHash = "a".repeat(64);
+const outboxId = "89e2ec55-b95e-4e2f-97c3-c67daef39ffc";
+const leaseToken = "ac757a70-0e5b-4dcb-9e76-cdc61e535fd9";
+const confirmationToken = "confirmation-token";
+const frozenPayload = {
+  from: "AwardPing <alerts@awardping.test>",
+  to: "reader@example.org",
+  subject: "Frozen confirmation subject",
+  html:
+    '<a href="https://awardping.test/api/public-updates/confirm?token=confirmation-token">Confirm</a>',
+  text:
+    "https://awardping.test/api/public-updates/confirm?token=confirmation-token",
+};
+const serializedFrozenPayload = JSON.stringify(frozenPayload);
+const frozenPayloadHash = hashToken(serializedFrozenPayload);
 
-describe("public-update confirmation persistence", () => {
+describe("durable public-update confirmation", () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-08-16T03:00:00.000Z"));
     vi.clearAllMocks();
+    mocks.hasPublicUpdateDeliveryConfig.mockReturnValue(true);
+    mocks.renderPublicUpdateConfirmationEmail.mockImplementation(
+      ({ to, confirmUrl }: { to: string; confirmUrl: string }) => ({
+        from: "AwardPing <alerts@awardping.test>",
+        to,
+        subject: "Current confirmation subject",
+        html: `<a href="${confirmUrl}">Confirm</a>`,
+        text: confirmUrl,
+      }),
+    );
+    mocks.sendFrozenPublicUpdateConfirmationEmail.mockResolvedValue({
+      data: { id: "provider-message-1" },
+      error: null,
+    });
   });
 
-  it("suppresses resend while the persisted pending link is fresh", async () => {
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "pending",
-        confirmation_sent_at: "2026-08-16T02:00:00.000Z",
-        updated_at: "2026-08-16T02:00:00.000Z",
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
+  it("atomically supplies encrypted delivery material to the enqueue RPC", async () => {
+    mocks.rpc.mockResolvedValue({
+      data: [{ outbox_id: outboxId, needs_delivery: true }],
+      error: null,
+    });
 
     await expect(
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-    ).resolves.toMatchObject({
-      subscriberId,
-      confirmationToken: null,
-      shouldSendConfirmation: false,
+      createOrRefreshPublicUpdateSubscription(" Reader@Example.org "),
+    ).resolves.toEqual({ outboxId, needsDelivery: true });
+
+    const [name, input] = mocks.rpc.mock.calls[0];
+    expect(name).toBe("enqueue_public_update_confirmation");
+    expect(input).toMatchObject({
+      p_legacy_email: "reader@example.org",
+      p_recipient_hash: "a".repeat(64),
+      p_recipient_encrypted: "ap:v2:test:reader@example.org",
+      p_confirmation_token_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      p_confirmation_token_encrypted: expect.stringMatching(/^ap:v2:test:/),
+      p_rendered_payload_encrypted: expect.stringMatching(/^ap:v2:test:/),
+      p_payload_schema_version: "public-confirmation-render-v1",
+      p_payload_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      p_unsubscribe_token_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
-    expect(fake.rows[0].confirmation_sent_at).toBe(
-      "2026-08-16T02:00:00.000Z",
+    expect(input.p_confirmation_token_encrypted).not.toBe(
+      input.p_confirmation_token_hash,
     );
+    const serializedPayload = input.p_rendered_payload_encrypted.slice(
+      "ap:v2:test:".length,
+    );
+    expect(input.p_payload_hash).toBe(hashToken(serializedPayload));
   });
 
-  it("makes concurrent expired-link retries converge on one token and key", async () => {
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "pending",
-        confirmation_sent_at: "2026-08-15T01:00:00.000Z",
-        updated_at: "2026-08-15T01:00:05.000Z",
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
-
-    const [first, second] = await Promise.all([
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-    ]);
-
-    expect(first.confirmationToken).toBe(second.confirmationToken);
-    expect(first.confirmationIdempotencyKey).toBe(
-      second.confirmationIdempotencyKey,
-    );
-    expect(first.shouldSendConfirmation).toBe(true);
-    expect(second.shouldSendConfirmation).toBe(true);
-    expect(fake.rows).toHaveLength(1);
-    expect(fake.rows[0]).toMatchObject({
-      status: "pending",
-      confirmation_sent_at: null,
-      updated_at: "2026-08-16T01:00:00.000Z",
-      confirmation_token_hash: hashToken(first.confirmationToken!),
-    });
-  });
-
-  it("converges concurrent first-time inserts through the email-hash constraint", async () => {
-    const fake = statefulSubscriberStore([]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
-
-    const [first, second] = await Promise.all([
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-    ]);
-
-    expect(fake.rows).toHaveLength(1);
-    expect(first.subscriberId).toBe(second.subscriberId);
-    expect(first.confirmationToken).toBe(second.confirmationToken);
-    expect(first.confirmationIdempotencyKey).toBe(
-      second.confirmationIdempotencyKey,
-    );
-  });
-
-  it("makes concurrent resubscriptions converge on the unsubscribe transition", async () => {
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "unsubscribed",
-        confirmation_sent_at: "2026-07-01T00:00:00.000Z",
-        unsubscribed_at: "2026-08-15T08:30:00.000Z",
-        updated_at: "2026-08-15T08:30:00.000Z",
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
-
-    const [first, second] = await Promise.all([
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-      createOrRefreshPublicUpdateSubscription("reader@example.org"),
-    ]);
-
-    expect(first.confirmationToken).toBe(second.confirmationToken);
-    expect(first.confirmationIdempotencyKey).toBe(
-      second.confirmationIdempotencyKey,
-    );
-    expect(fake.rows[0]).toMatchObject({
-      status: "pending",
-      confirmation_sent_at: null,
-      unsubscribed_at: null,
-      updated_at: "2026-08-15T08:30:00.000Z",
-    });
-  });
-
-  it("keeps a failed background attempt retryable with the same sealed key", async () => {
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "pending",
-        confirmation_sent_at: null,
-        updated_at: "2026-08-16T01:00:00.000Z",
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
-
-    const first = await createOrRefreshPublicUpdateSubscription(
-      "reader@example.org",
-    );
-    vi.setSystemTime(new Date("2026-08-16T05:00:00.000Z"));
-    const retry = await createOrRefreshPublicUpdateSubscription(
-      "reader@example.org",
-    );
-
-    expect(retry.confirmationToken).toBe(first.confirmationToken);
-    expect(retry.confirmationIdempotencyKey).toBe(
-      first.confirmationIdempotencyKey,
-    );
-    expect(retry.shouldSendConfirmation).toBe(true);
-
-    vi.setSystemTime(new Date("2026-08-17T02:00:00.000Z"));
-    const nextWindow = await createOrRefreshPublicUpdateSubscription(
-      "reader@example.org",
-    );
-    expect(nextWindow.confirmationToken).not.toBe(first.confirmationToken);
-    expect(nextWindow.confirmationIdempotencyKey).not.toBe(
-      first.confirmationIdempotencyKey,
-    );
-    expect(nextWindow.confirmationAttemptSeal).toBe(
-      "2026-08-17T01:00:00.000Z",
-    );
-  });
-
-  it("records provider acceptance once without extending the TTL on duplicates", async () => {
-    const token = "confirmation-token";
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "pending",
-        confirmation_token_hash: hashToken(token),
-        confirmation_sent_at: null,
-        updated_at: "2026-08-16T02:00:00.000Z",
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
-
-    const first = await markPublicUpdateConfirmationSent({
-      subscriberId,
-      confirmationToken: token,
-      confirmationAttemptSeal: "2026-08-16T02:00:00.000Z",
-    });
-    vi.setSystemTime(new Date("2026-08-16T04:00:00.000Z"));
-    const duplicate = await markPublicUpdateConfirmationSent({
-      subscriberId,
-      confirmationToken: token,
-      confirmationAttemptSeal: "2026-08-16T02:00:00.000Z",
-    });
-
-    expect(first).toEqual({
-      sentAt: "2026-08-16T02:00:00.000Z",
-      acceptedAt: "2026-08-16T03:00:00.000Z",
-      alreadyRecorded: false,
-    });
-    expect(duplicate).toEqual({
-      sentAt: "2026-08-16T02:00:00.000Z",
-      acceptedAt: null,
-      alreadyRecorded: true,
-    });
-    expect(fake.rows[0].confirmation_sent_at).toBe(
-      "2026-08-16T02:00:00.000Z",
-    );
-    vi.setSystemTime(new Date("2026-08-17T02:00:00.000Z"));
-    await expect(confirmPublicUpdateSubscription(token)).resolves.toBe(false);
-  });
-
-  it("authorizes deferred delivery only while its unsent seal is current", async () => {
-    const token = "confirmation-token";
-    const attemptSeal = "2026-08-16T02:00:00.000Z";
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "pending",
-        confirmation_token_hash: hashToken(token),
-        confirmation_sent_at: null,
-        updated_at: attemptSeal,
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
+  it("delegates expiry and activation to one database-clock RPC", async () => {
+    mocks.rpc.mockResolvedValue({ data: true, error: null });
 
     await expect(
-      publicUpdateConfirmationDeliveryIsCurrent({
-        subscriberId,
-        confirmationToken: token,
-        confirmationAttemptSeal: attemptSeal,
-      }),
+      confirmPublicUpdateSubscription(confirmationToken),
     ).resolves.toBe(true);
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "confirm_public_update_subscription",
+      { p_confirmation_token_hash: hashToken(confirmationToken) },
+    );
+  });
 
-    fake.rows[0].confirmation_token_hash = "d".repeat(64);
-    await expect(
-      publicUpdateConfirmationDeliveryIsCurrent({
-        subscriberId,
-        confirmationToken: token,
-        confirmationAttemptSeal: attemptSeal,
-      }),
-    ).resolves.toBe(false);
+  it("claims, authorizes, sends with the sealed key, and records acceptance", async () => {
+    mockSuccessfulDrain();
+
+    const result = await drainPublicUpdateConfirmationOutbox({
+      outboxId,
+      workerId: "test-worker",
+    });
+
+    expect(result).toMatchObject({ claimed: 1, accepted: 1, ambiguous: 0 });
+    expect(mocks.sendFrozenPublicUpdateConfirmationEmail).toHaveBeenCalledWith({
+      ...frozenPayload,
+      idempotencyKey: `awardping-public-confirmation:${frozenPayloadHash}`,
+    });
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "complete_public_update_confirmation_send",
+      {
+        p_outbox_id: outboxId,
+        p_lease_token: leaseToken,
+        p_provider_message_id: "provider-message-1",
+      },
+    );
+  });
+
+  it("records an explicit provider rejection as a non-ambiguous retry", async () => {
+    mockSuccessfulDrain({ completionStatus: null });
+    mocks.sendFrozenPublicUpdateConfirmationEmail.mockResolvedValue({
+      data: null,
+      error: { message: "rate limited", name: "rate_limit_exceeded", statusCode: 429 },
+    });
+    mocks.rpc.mockImplementation(async (name: string) => {
+      if (name === "claim_public_update_confirmations") {
+        return { data: [claim()], error: null };
+      }
+      if (name === "authorize_public_update_confirmation_send") {
+        return { data: true, error: null };
+      }
+      if (name === "fail_public_update_confirmation_send") {
+        return { data: "retry", error: null };
+      }
+      throw new Error(`Unexpected RPC ${name}`);
+    });
+
+    const result = await drainPublicUpdateConfirmationOutbox();
+    expect(result.retry).toBe(1);
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "fail_public_update_confirmation_send",
+      expect.objectContaining({ p_ambiguous: false, p_retryable: true }),
+    );
+  });
+
+  it("records a thrown provider outcome as ambiguous for same-key retry", async () => {
+    mocks.sendFrozenPublicUpdateConfirmationEmail.mockRejectedValue(
+      new Error("connection reset"),
+    );
+    mocks.rpc.mockImplementation(async (name: string) => {
+      if (name === "claim_public_update_confirmations") {
+        return { data: [claim()], error: null };
+      }
+      if (name === "authorize_public_update_confirmation_send") {
+        return { data: true, error: null };
+      }
+      if (name === "fail_public_update_confirmation_send") {
+        return { data: "ambiguous", error: null };
+      }
+      throw new Error(`Unexpected RPC ${name}`);
+    });
+
+    const result = await drainPublicUpdateConfirmationOutbox();
+    expect(result.ambiguous).toBe(1);
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "fail_public_update_confirmation_send",
+      expect.objectContaining({ p_ambiguous: true, p_retryable: true }),
+    );
+  });
+
+  it("records an SDK application error without an HTTP status as ambiguous", async () => {
+    mocks.sendFrozenPublicUpdateConfirmationEmail.mockResolvedValue({
+      data: null,
+      error: {
+        message: "Unable to determine provider response",
+        name: "application_error",
+        statusCode: null,
+      },
+    });
+    mockFailureDrain("ambiguous");
+
+    const result = await drainPublicUpdateConfirmationOutbox();
+
+    expect(result.ambiguous).toBe(1);
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "fail_public_update_confirmation_send",
+      expect.objectContaining({ p_ambiguous: true, p_retryable: true }),
+    );
+  });
+
+  it("records a concurrent same-key 409 response as ambiguous", async () => {
+    mocks.sendFrozenPublicUpdateConfirmationEmail.mockResolvedValue({
+      data: null,
+      error: {
+        message: "The original idempotent request is still in progress",
+        name: "concurrent_idempotent_requests",
+        statusCode: 409,
+      },
+    });
+    mockFailureDrain("ambiguous");
+
+    const result = await drainPublicUpdateConfirmationOutbox();
+
+    expect(result.ambiguous).toBe(1);
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "fail_public_update_confirmation_send",
+      expect.objectContaining({ p_ambiguous: true, p_retryable: true }),
+    );
   });
 
   it.each([
-    ["absent", null],
-    ["unsent", { confirmation_sent_at: null }],
-    ["expired", { confirmation_sent_at: "2026-08-15T01:00:00.000Z" }],
-  ])("rejects %s confirmation tokens without mutation", async (label, override) => {
-    const token = "confirmation-token";
-    const fake = statefulSubscriberStore(
-      override
-        ? [
-            subscriber({
-              status: "pending",
-              confirmation_token_hash: hashToken(token),
-              ...override,
-            }),
-          ]
-        : [],
-    );
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
+    {
+      label: "non-retryable 400",
+      name: "validation_error",
+      statusCode: 400,
+      nextStatus: "terminal_failed",
+      retryable: false,
+    },
+    {
+      label: "invalid-idempotency 409",
+      name: "invalid_idempotent_request",
+      statusCode: 409,
+      nextStatus: "terminal_failed",
+      retryable: false,
+    },
+    {
+      label: "retryable 500",
+      name: "application_error",
+      statusCode: 500,
+      nextStatus: "retry",
+      retryable: true,
+    },
+  ])(
+    "records a definite $label HTTP rejection as non-ambiguous",
+    async ({ name, statusCode, nextStatus, retryable }) => {
+      mocks.sendFrozenPublicUpdateConfirmationEmail.mockResolvedValue({
+        data: null,
+        error: {
+          message: "Definite HTTP rejection",
+          name,
+          statusCode,
+        },
+      });
+      mockFailureDrain(nextStatus);
 
-    await expect(confirmPublicUpdateSubscription(token)).resolves.toBe(false);
-    if (label === "absent") expect(fake.rows).toHaveLength(0);
-    else expect(fake.rows[0]?.status).toBe("pending");
+      await drainPublicUpdateConfirmationOutbox();
+
+      expect(mocks.rpc).toHaveBeenCalledWith(
+        "fail_public_update_confirmation_send",
+        expect.objectContaining({ p_ambiguous: false, p_retryable: retryable }),
+      );
+    },
+  );
+
+  it("retries the byte-identical frozen provider payload after runtime rendering changes", async () => {
+    mocks.sendFrozenPublicUpdateConfirmationEmail.mockRejectedValue(
+      new Error("connection reset"),
+    );
+    mockFailureDrain("ambiguous");
+
+    await drainPublicUpdateConfirmationOutbox();
+    mocks.renderPublicUpdateConfirmationEmail.mockReturnValue({
+      ...frozenPayload,
+      from: "changed@example.org",
+      subject: "Changed after deploy",
+    });
+    await drainPublicUpdateConfirmationOutbox();
+
+    const exactSend = {
+      ...frozenPayload,
+      idempotencyKey: `awardping-public-confirmation:${frozenPayloadHash}`,
+    };
+    expect(mocks.sendFrozenPublicUpdateConfirmationEmail).toHaveBeenNthCalledWith(
+      1,
+      exactSend,
+    );
+    expect(mocks.sendFrozenPublicUpdateConfirmationEmail).toHaveBeenNthCalledWith(
+      2,
+      exactSend,
+    );
+    expect(mocks.renderPublicUpdateConfirmationEmail).not.toHaveBeenCalled();
   });
 
-  it("activates only a sent, unexpired token through a fenced update", async () => {
-    const token = "confirmation-token";
-    const fake = statefulSubscriberStore([
-      subscriber({
-        status: "pending",
-        confirmation_token_hash: hashToken(token),
-        confirmation_sent_at: "2026-08-16T02:00:00.000Z",
-      }),
-    ]);
-    mocks.createSupabaseAdminClient.mockReturnValue(fake.client);
-
-    await expect(confirmPublicUpdateSubscription(token)).resolves.toBe(true);
-    expect(fake.rows[0]).toMatchObject({
-      status: "active",
-      confirmation_token_hash: null,
-      confirmed_at: "2026-08-16T03:00:00.000Z",
-      digest_started_at: "2026-08-16T03:00:00.000Z",
+  it("fails closed before provider I/O when the frozen payload hash changes", async () => {
+    const tamperedPayload = JSON.stringify({
+      ...frozenPayload,
+      subject: "Tampered confirmation subject",
     });
+    mocks.rpc.mockImplementation(async (name: string) => {
+      if (name === "claim_public_update_confirmations") {
+        return {
+          data: [
+            claim({
+              rendered_payload_encrypted: `ap:v2:test:${tamperedPayload}`,
+            }),
+          ],
+          error: null,
+        };
+      }
+      if (name === "authorize_public_update_confirmation_send") {
+        return { data: true, error: null };
+      }
+      if (name === "fail_public_update_confirmation_send") {
+        return { data: "terminal_failed", error: null };
+      }
+      throw new Error(`Unexpected RPC ${name}`);
+    });
+
+    const result = await drainPublicUpdateConfirmationOutbox();
+
+    expect(result.terminalFailed).toBe(1);
+    expect(mocks.sendFrozenPublicUpdateConfirmationEmail).not.toHaveBeenCalled();
+    expect(mocks.rpc).toHaveBeenCalledWith(
+      "fail_public_update_confirmation_send",
+      expect.objectContaining({ p_ambiguous: false, p_retryable: false }),
+    );
+  });
+
+  it("does not claim work without the complete private delivery configuration", async () => {
+    mocks.hasPublicUpdateDeliveryConfig.mockReturnValue(false);
+
+    await expect(drainPublicUpdateConfirmationOutbox()).resolves.toMatchObject({
+      claimed: 0,
+      skipped: true,
+    });
+    expect(mocks.rpc).not.toHaveBeenCalled();
   });
 });
 
-type Subscriber = {
-  id: string;
-  email: string | null;
-  email_hash: string | null;
-  email_encrypted: string | null;
-  status: "pending" | "active" | "unsubscribed";
-  confirmation_token_hash: string | null;
-  unsubscribe_token_hash: string;
-  confirmation_sent_at: string | null;
-  confirmed_at: string | null;
-  unsubscribed_at: string | null;
-  last_digest_sent_at: string | null;
-  digest_started_at: string;
-  created_at: string;
-  updated_at: string;
-};
-type SubscriberPatch = Partial<Subscriber>;
-
-function subscriber(overrides: SubscriberPatch = {}): Subscriber {
-  const timestamp = "2026-08-15T01:00:00.000Z";
+function claim(overrides: Record<string, unknown> = {}) {
   return {
-    id: subscriberId,
-    email: null as string | null,
-    email_hash: emailHash as string | null,
-    email_encrypted: "encrypted:reader@example.org" as string | null,
-    status: "pending" as "pending" | "active" | "unsubscribed",
-    confirmation_token_hash: "b".repeat(64) as string | null,
-    unsubscribe_token_hash: "c".repeat(64),
-    confirmation_sent_at: null as string | null,
-    confirmed_at: null as string | null,
-    unsubscribed_at: null as string | null,
-    last_digest_sent_at: null as string | null,
-    digest_started_at: timestamp,
-    created_at: timestamp,
-    updated_at: timestamp,
+    id: outboxId,
+    lease_token: leaseToken,
+    recipient_hash: "a".repeat(64),
+    recipient_encrypted: "ap:v2:test:reader@example.org",
+    confirmation_token_hash: hashToken(confirmationToken),
+    confirmation_token_encrypted: `ap:v2:test:${confirmationToken}`,
+    rendered_payload_encrypted: `ap:v2:test:${serializedFrozenPayload}`,
+    payload_schema_version: "public-confirmation-render-v1",
+    payload_hash: frozenPayloadHash,
+    provider_idempotency_key:
+      `awardping-public-confirmation:${frozenPayloadHash}`,
+    expires_at: "2026-08-16T12:00:00.000Z",
+    send_attempt_count: 0,
     ...overrides,
   };
 }
 
-function statefulSubscriberStore(initialRows: Subscriber[]) {
-  const rows = initialRows.map((row) => ({ ...row }));
-  const client = {
-    from(table: string) {
-      if (table !== "public_update_subscribers") {
-        throw new Error(`Unexpected table: ${table}`);
-      }
-      let operation: "select" | "update" | "insert" = "select";
-      let payload: SubscriberPatch | SubscriberPatch[] | null = null;
-      const filters: Array<(row: Subscriber) => boolean> = [];
-      let executed = false;
+function mockSuccessfulDrain({
+  completionStatus = "accepted",
+}: { completionStatus?: string | null } = {}) {
+  mocks.rpc.mockImplementation(async (name: string) => {
+    if (name === "claim_public_update_confirmations") {
+      return { data: [claim()], error: null };
+    }
+    if (name === "authorize_public_update_confirmation_send") {
+      return { data: true, error: null };
+    }
+    if (name === "complete_public_update_confirmation_send") {
+      return { data: completionStatus, error: null };
+    }
+    if (name === "fail_public_update_confirmation_send") {
+      return { data: "ambiguous", error: null };
+    }
+    throw new Error(`Unexpected RPC ${name}`);
+  });
+}
 
-      const execute = async (single: boolean) => {
-        if (executed) throw new Error("Query executed more than once.");
-        executed = true;
-
-        if (operation === "insert") {
-          const inserts = Array.isArray(payload) ? payload : [payload || {}];
-          if (
-            inserts.some((candidate) =>
-              rows.some(
-                (row) =>
-                  candidate.email_hash !== null &&
-                  row.email_hash === candidate.email_hash,
-              ),
-            )
-          ) {
-            return { data: null, error: { code: "23505" } };
-          }
-          for (const candidate of inserts) {
-            rows.push(subscriber(candidate));
-          }
-          return { data: null, error: null };
-        }
-
-        const matches = rows.filter((row) =>
-          filters.every((filter) => filter(row)),
-        );
-        if (operation === "update") {
-          for (const row of matches) Object.assign(row, payload);
-        }
-        const data = single
-          ? matches[0]
-            ? { ...matches[0] }
-            : null
-          : matches.map((row) => ({ ...row }));
-        return { data, error: null };
-      };
-
-      const builder = {
-        select() {
-          return builder;
-        },
-        update(value: SubscriberPatch) {
-          operation = "update";
-          payload = value;
-          return builder;
-        },
-        insert(value: SubscriberPatch | SubscriberPatch[]) {
-          operation = "insert";
-          payload = value;
-          return builder;
-        },
-        eq(column: keyof Subscriber, value: unknown) {
-          filters.push((row) => row[column] === value);
-          return builder;
-        },
-        is(column: keyof Subscriber, value: unknown) {
-          filters.push((row) => row[column] === value);
-          return builder;
-        },
-        gt(column: keyof Subscriber, value: string) {
-          filters.push((row) => String(row[column]) > value);
-          return builder;
-        },
-        lte(column: keyof Subscriber, value: string) {
-          filters.push((row) => String(row[column]) <= value);
-          return builder;
-        },
-        maybeSingle() {
-          return execute(true);
-        },
-        then<TResult1 = unknown, TResult2 = never>(
-          resolve?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
-          reject?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
-        ) {
-          return execute(false).then(resolve, reject);
-        },
-      };
-      return builder;
-    },
-  };
-  return { client, rows };
+function mockFailureDrain(nextStatus: string) {
+  mocks.rpc.mockImplementation(async (name: string) => {
+    if (name === "claim_public_update_confirmations") {
+      return { data: [claim()], error: null };
+    }
+    if (name === "authorize_public_update_confirmation_send") {
+      return { data: true, error: null };
+    }
+    if (name === "fail_public_update_confirmation_send") {
+      return { data: nextStatus, error: null };
+    }
+    throw new Error(`Unexpected RPC ${name}`);
+  });
 }

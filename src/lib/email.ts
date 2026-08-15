@@ -40,6 +40,19 @@ export type PublicUpdateConfirmationEmail = {
   idempotencyKey: string;
 };
 
+export type RenderedPublicUpdateConfirmationEmail = {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+};
+
+export type FrozenPublicUpdateConfirmationEmail =
+  RenderedPublicUpdateConfirmationEmail & {
+    idempotencyKey: string;
+  };
+
 export type PublicDailyDigestRenderInput = {
   changes: PublicDigestChange[];
   unsubscribeUrl: string;
@@ -185,12 +198,31 @@ export async function sendDailyDigestEmail(input: DailyDigestEmail) {
   });
 }
 
-export async function sendPublicUpdateConfirmationEmail(input: PublicUpdateConfirmationEmail) {
+export function renderPublicUpdateConfirmationEmail(input: {
+  to: string;
+  confirmUrl: string;
+}): RenderedPublicUpdateConfirmationEmail {
+  return {
+    from: appConfig.alertFromEmail,
+    to: input.to,
+    subject: "Confirm your AwardPing daily updates",
+    html: `
+      <div style="font-family: Arial, sans-serif; color: #17211b; line-height: 1.55;">
+        <h1 style="font-size: 22px;">Confirm your daily AwardPing updates</h1>
+        <p>Use the link below to receive daily emails when AwardPing detects useful public award-page updates.</p>
+        <p><a href="${escapeHtml(input.confirmUrl)}">Confirm daily updates</a></p>
+        <p style="color: #626b7c; font-size: 13px;">If you did not request this, you can ignore this email.</p>
+      </div>
+    `,
+    text: `Confirm your daily AwardPing updates\n\n${input.confirmUrl}\n\nIf you did not request this, you can ignore this email.`,
+  };
+}
+
+export async function sendFrozenPublicUpdateConfirmationEmail(
+  input: FrozenPublicUpdateConfirmationEmail,
+) {
   if (!appConfig.resendApiKey) {
-    logSkippedEmail("public update confirmation", {
-      to: input.to,
-      confirmUrl: "[redacted]",
-    });
+    logSkippedEmail("public update confirmation", { to: input.to });
     return { skipped: true };
   }
 
@@ -198,21 +230,23 @@ export async function sendPublicUpdateConfirmationEmail(input: PublicUpdateConfi
 
   return resend.emails.send(
     {
-      from: appConfig.alertFromEmail,
+      from: input.from,
       to: input.to,
-      subject: "Confirm your AwardPing daily updates",
-      html: `
-        <div style="font-family: Arial, sans-serif; color: #17211b; line-height: 1.55;">
-          <h1 style="font-size: 22px;">Confirm your daily AwardPing updates</h1>
-          <p>Use the link below to receive daily emails when AwardPing detects useful public award-page updates.</p>
-          <p><a href="${escapeHtml(input.confirmUrl)}">Confirm daily updates</a></p>
-          <p style="color: #626b7c; font-size: 13px;">If you did not request this, you can ignore this email.</p>
-        </div>
-      `,
-      text: `Confirm your daily AwardPing updates\n\n${input.confirmUrl}\n\nIf you did not request this, you can ignore this email.`,
+      subject: input.subject,
+      html: input.html,
+      text: input.text,
     },
     { idempotencyKey: input.idempotencyKey },
   );
+}
+
+export async function sendPublicUpdateConfirmationEmail(
+  input: PublicUpdateConfirmationEmail,
+) {
+  return sendFrozenPublicUpdateConfirmationEmail({
+    ...renderPublicUpdateConfirmationEmail(input),
+    idempotencyKey: input.idempotencyKey,
+  });
 }
 
 export function renderPublicDailyDigestEmail(

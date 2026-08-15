@@ -21,6 +21,10 @@ import {
 } from "./r2-capture-artifact-bindings.mjs";
 import { baselineMatchesRetainedProjectionCapture } from "./visual-baseline-retained-projection-identity.mjs";
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
+import {
+  evaluateStage1BeineckeFaqLegacyGeometryBridge,
+  evaluateStage1BeineckeFaqLegacyMainContentBridge,
+} from "./stage1-evidence-schema-upgrade-beinecke-faq-legacy-geometry.mjs";
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_VALIDATION_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-validation.v1";
@@ -77,6 +81,7 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
   existingBaseline,
   existingCapture,
   existingPreparedArtifacts,
+  authoritativeExistingR2Binding = null,
   capture,
   capturePreparedArtifacts,
   preIntake = null,
@@ -161,7 +166,39 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
       prepared: existingPreparedArtifacts,
       requireVerifiedCompleteCoverage: false,
       allowLegacySchema: true,
+      legacyGeometryBridgeContext: {
+        exactSourceId: sourceId,
+        authoritativeR2Binding: authoritativeExistingR2Binding,
+        immutableGuardMainContentHash: sealed.normalized_text_hash,
+        prospectiveMainContentHash: capture?.main_content_hash,
+        reviewedFinalUrl: sealed.final_url_exact,
+        reviewedSourcePageType: sealed.page_type_exact,
+        reviewedSourceRoles: sealed.reviewed_roles_exact,
+      },
     });
+    const legacyMainContentBridge = kind === "webpage"
+      ? evaluateStage1BeineckeFaqLegacyMainContentBridge({
+          sourceId: canonicalSourceId,
+          exactSourceId: sourceId,
+          kind,
+          reviewedFinalUrl: sealed.final_url_exact,
+          sealedAcquisition: sealed,
+          activationGuardSha256: binding.guard_sha256,
+          existingBaselineActivation:
+            existingBaseline?.summary_metadata?.stage1_baseline_activation,
+          existingCaptureIdentity: baselineCapture,
+          existingNormalizedTextHash:
+            stage1BaselineActivationTextSha256(baselineCapture.text),
+          prospectiveMainContentHash: capture?.main_content_hash,
+          prospectiveMainContentTextLength: capture?.main_content_text_length,
+          prospectiveSourceId: capture?.source?.id,
+          prospectiveFinalUrl: capture?.final_url,
+          authoritativeR2Binding: authoritativeExistingR2Binding,
+          legacyGeometryBridges: existingArtifacts.legacyGeometryBridges,
+          currentGeometryVerifiedRoles: existingArtifacts.currentGeometryVerifiedRoles,
+          existingArtifactLimitations: existingArtifacts.limitations,
+        })
+      : null;
     assertExistingActivationBinding({
       baseline: existingBaseline,
       acquisition,
@@ -169,6 +206,7 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
       sealed,
       sourceId: canonicalSourceId,
       existingCapture: baselineCapture,
+      legacyMainContentBridge,
     });
     assertQuotePresence("existing_visual", baselineCapture.text, sealed.evidence_quotes);
     assertImmutableBaselineIdentity({ kind, capture: baselineCapture, sealed });
@@ -196,6 +234,7 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
         postIntake,
         capture,
         sealed,
+        legacyMainContentBridge,
       });
     } else {
       assertPdfNotApplicableContract(capture, prospectiveArtifacts.metadata, "capture");
@@ -261,11 +300,13 @@ function sealedAcquisitionIdentity(acquisition, supplied) {
       || supplied?.retained_artifact
       || reviewSeal.retained_artifact,
   );
-  const fileHash = requiredSha256(
+  const exactFileHash =
     suppliedIdentity.file_hash
-      || supplied?.file_hash
-      || retainedManifest.file_hash
-      || guard.capture_file_sha256,
+    || supplied?.file_hash
+    || retainedManifest.file_hash
+    || guard.capture_file_sha256;
+  const fileHash = requiredSha256(
+    exactFileHash,
     "immutable acquisition file_hash",
   );
   if (fileHash !== requiredSha256(guard.capture_file_sha256, "activation guard file hash")) {
@@ -300,12 +341,21 @@ function sealedAcquisitionIdentity(acquisition, supplied) {
   }
   return {
     file_hash: fileHash,
+    file_hash_exact: exactFileHash,
     text_hash: textHash,
     normalized_text_hash: normalizedTextHash,
+    normalized_text_hash_exact: guard.normalized_retained_text_sha256,
     final_url: finalUrl,
+    final_url_exact: guard.final_url,
     evidence_quotes: [...quotes],
+    page_type_exact: review.page_type,
+    reviewed_roles_exact: Array.isArray(review.reviewed_roles)
+      ? [...review.reviewed_roles]
+      : [],
     source_acquisition_id: cleanText(acquisition.id),
+    source_acquisition_id_exact: acquisition.id,
     request_id: cleanText(acquisition.origin_source_page_request_id),
+    request_id_exact: acquisition.origin_source_page_request_id,
   };
 }
 
@@ -398,6 +448,7 @@ function assertExistingActivationBinding({
   sealed,
   sourceId,
   existingCapture,
+  legacyMainContentBridge = null,
 }) {
   const activation = objectValue(baseline?.summary_metadata?.stage1_baseline_activation);
   const validStatus = new Set([
@@ -422,9 +473,11 @@ function assertExistingActivationBinding({
       "The existing baseline does not carry its exact immutable Stage 1 activation verification.",
     );
   }
+  const existingNormalizedTextHash =
+    stage1BaselineActivationTextSha256(existingCapture?.text);
   if (
-    stage1BaselineActivationTextSha256(existingCapture?.text)
-      !== sealed.normalized_text_hash
+    existingNormalizedTextHash !== sealed.normalized_text_hash
+    && legacyMainContentBridge?.accepted !== true
   ) {
     refuse(
       "existing_baseline_normalized_text_disagrees_with_acquisition",
@@ -458,6 +511,7 @@ function validatePreparedCaptureArtifacts({
   prepared,
   requireVerifiedCompleteCoverage,
   allowLegacySchema,
+  legacyGeometryBridgeContext = null,
 }) {
   const suppliedArtifacts = Array.isArray(prepared?.artifacts) ? prepared.artifacts : [];
   if (!suppliedArtifacts.length) {
@@ -534,6 +588,7 @@ function validatePreparedCaptureArtifacts({
       prepared: rebuilt,
       metadata,
       expansionCount,
+      legacyGeometryBridgeContext,
     });
   }
   try {
@@ -617,8 +672,11 @@ function validateLegacyExistingCaptureArtifacts({
   prepared,
   metadata,
   expansionCount,
+  legacyGeometryBridgeContext,
 }) {
   const limitations = [];
+  const legacyGeometryBridges = [];
+  const currentGeometryVerifiedRoles = [];
   const bindings = prepared.artifactBindings;
   const hasLayout = kind === "webpage" && Boolean(bindings.layout);
   let authoritativeLayoutRetained = hasLayout;
@@ -742,11 +800,26 @@ function validateLegacyExistingCaptureArtifacts({
       expectedLayoutHash: capture.layout_hash,
       metadataLayoutHash: metadata.layout_hash,
       allowExplicitUnavailable: true,
+      legacyGeometryBridgeContext: {
+        ...objectValue(legacyGeometryBridgeContext),
+        sourceId,
+        kind,
+        existingCapturedAt: capture.captured_at,
+        existingCaptureIdentity: capture,
+        artifactSlot: "layout",
+      },
     });
-    if (geometryStatus === "explicitly_unavailable") {
+    if (geometryStatus.status === "explicitly_unavailable") {
       assertExplicitLegacyUnavailableLocalization(capture, metadata, label);
       limitations.push("main_layout_explicitly_unavailable");
       authoritativeLayoutRetained = false;
+    }
+    if (geometryStatus.bridge) {
+      legacyGeometryBridges.push(geometryStatus.bridge);
+      limitations.push(...geometryStatus.bridge.limitations);
+    }
+    if (geometryStatus.currentGeometryVerified) {
+      currentGeometryVerifiedRoles.push("layout");
     }
     if (baseline?.layout_hash !== capture.layout_hash) {
       refuse(
@@ -831,9 +904,24 @@ function validateLegacyExistingCaptureArtifacts({
       expectedLayoutHash: state.layout_hash,
       metadataLayoutHash: metadataState.layout_hash,
       allowExplicitUnavailable: true,
+      legacyGeometryBridgeContext: {
+        ...objectValue(legacyGeometryBridgeContext),
+        sourceId,
+        kind,
+        existingCapturedAt: capture.captured_at,
+        existingCaptureIdentity: capture,
+        artifactSlot: `expansion_state_${suffix}_layout`,
+      },
     });
-    if (stateGeometryStatus === "explicitly_unavailable") {
+    if (stateGeometryStatus.status === "explicitly_unavailable") {
       limitations.push(`expansion_state_${suffix}_layout_explicitly_unavailable`);
+    }
+    if (stateGeometryStatus.bridge) {
+      legacyGeometryBridges.push(stateGeometryStatus.bridge);
+      limitations.push(...stateGeometryStatus.bridge.limitations);
+    }
+    if (stateGeometryStatus.currentGeometryVerified) {
+      currentGeometryVerifiedRoles.push(`expansion_state_${suffix}_layout`);
     }
   }
 
@@ -871,6 +959,8 @@ function validateLegacyExistingCaptureArtifacts({
     metadata,
     limitations: [...new Set(limitations)],
     coverage,
+    legacyGeometryBridges,
+    currentGeometryVerifiedRoles,
   };
 }
 
@@ -939,6 +1029,7 @@ function assertLegacyGeometryArtifact({
   expectedLayoutHash,
   metadataLayoutHash,
   allowExplicitUnavailable = false,
+  legacyGeometryBridgeContext = null,
 }) {
   const layout = parseJsonArtifact(artifact?.body, `${label} ${role}`);
   const layoutHash = requiredSha256(expectedLayoutHash, `${label} ${role} hash`);
@@ -955,8 +1046,35 @@ function assertLegacyGeometryArtifact({
   const explicitlyUnavailable = allowExplicitUnavailable
     && exactUnavailableGeometry(layout, expectedImageHash)
     && exactUnavailableGeometry(captureGeometry, expectedImageHash);
+  const currentGeometryVerified = layoutReady && captureReady;
+  let bridge = null;
+  if (!currentGeometryVerified && !explicitlyUnavailable) {
+    const bridgeDecision = evaluateStage1BeineckeFaqLegacyGeometryBridge({
+      ...objectValue(legacyGeometryBridgeContext),
+      artifact: artifact || null,
+      layout,
+      captureGeometry,
+      metadataGeometry,
+      expectedImageHash,
+      expectedLayoutHash,
+      metadataLayoutHash,
+      currentGeometryVerification: {
+        ran_first: true,
+        layout_ready: layoutReady,
+        capture_ready: captureReady,
+      },
+    });
+    if (bridgeDecision.applies && bridgeDecision.accepted) {
+      bridge = bridgeDecision.evidence;
+    } else if (bridgeDecision.applies) {
+      refuse(
+        `${label}_legacy_geometry_bridge_invalid`,
+        `The ${label} ${role} source-bound legacy geometry bridge refused the tuple: ${bridgeDecision.reason}.`,
+      );
+    }
+  }
   if (
-    (!(layoutReady && captureReady) && !explicitlyUnavailable)
+    (!currentGeometryVerified && !explicitlyUnavailable && !bridge)
     || requiredSha256(layout.geometry_hash, `${label} ${role} geometry_hash`) !== layoutHash
     || requiredSha256(captureGeometry?.geometry_hash, `${label} ${role} capture geometry_hash`)
       !== layoutHash
@@ -976,7 +1094,11 @@ function assertLegacyGeometryArtifact({
       `The ${label} ${role} does not exactly bind its geometry to the retained screenshot.`,
     );
   }
-  return explicitlyUnavailable ? "explicitly_unavailable" : "verified";
+  return {
+    status: explicitlyUnavailable ? "explicitly_unavailable" : "verified",
+    bridge,
+    currentGeometryVerified,
+  };
 }
 
 function exactUnavailableGeometry(value, expectedImageHash) {
@@ -1257,7 +1379,13 @@ function assertPdfNotApplicableContract(capture, metadata, label) {
   }
 }
 
-function validateWebIntakePair({ preIntake, postIntake, capture, sealed }) {
+function validateWebIntakePair({
+  preIntake,
+  postIntake,
+  capture,
+  sealed,
+  legacyMainContentBridge = null,
+}) {
   const pre = validateIntake("pre", preIntake, sealed);
   const post = validateIntake("post", postIntake, sealed);
   if (pre.normalized_text_hash !== post.normalized_text_hash) {
@@ -1267,20 +1395,44 @@ function validateWebIntakePair({ preIntake, postIntake, capture, sealed }) {
     );
   }
   const captureNormalizedTextHash = stage1BaselineActivationTextSha256(capture.text);
-  if (captureNormalizedTextHash !== pre.normalized_text_hash) {
-    refuse(
-      "web_intake_capture_text_mismatch",
-      "The prospective visual capture text does not match the stable pre/post deterministic intake.",
-    );
-  }
   const preQuotes = quotePresence(preIntake.text, sealed.evidence_quotes);
   const postQuotes = quotePresence(postIntake.text, sealed.evidence_quotes);
   const visualQuotes = quotePresence(capture.text, sealed.evidence_quotes);
+  const captureMatchesStableIntake =
+    captureNormalizedTextHash === pre.normalized_text_hash;
+  const bridgeMatchesStableMainContent = Boolean(
+    !captureMatchesStableIntake
+      && legacyMainContentBridge?.accepted === true
+      && pre.normalized_text_hash === sealed.normalized_text_hash
+      && post.normalized_text_hash === sealed.normalized_text_hash
+      && capture.main_content_hash === sealed.normalized_text_hash,
+  );
+  if (!captureMatchesStableIntake && !bridgeMatchesStableMainContent) {
+    refuse(
+      "web_intake_capture_text_mismatch",
+      "The prospective visual capture does not match the stable pre/post deterministic intake at either the generic full-text scope or an exact source-bound main-content scope.",
+    );
+  }
   return {
     pre_normalized_text_hash: pre.normalized_text_hash,
     post_normalized_text_hash: post.normalized_text_hash,
     capture_normalized_text_hash: captureNormalizedTextHash,
-    capture_matches_stable_intake: true,
+    capture_matches_stable_intake: captureMatchesStableIntake,
+    capture_matches_stable_intake_basis: captureMatchesStableIntake
+      ? "exact_full_normalized_text_hash"
+      : "exact_source_bound_main_content_hash_bridge",
+    capture_main_content_matches_stable_intake:
+      bridgeMatchesStableMainContent
+        ? true
+        : null,
+    semantic_scope_bridge:
+      bridgeMatchesStableMainContent
+        ? legacyMainContentBridge.evidence
+        : null,
+    limitations:
+      bridgeMatchesStableMainContent
+        ? legacyMainContentBridge.evidence.limitations
+        : [],
     immutable_normalized_text_hash: sealed.normalized_text_hash,
     matches_immutable_acquisition:
       pre.normalized_text_hash === sealed.normalized_text_hash,
@@ -1491,6 +1643,7 @@ function captureEvidenceSummary(capture, verified) {
     artifact_slots: verified.prepared.artifacts.map((artifact) => artifact.name),
     raw_metadata_verified: true,
     legacy_limitations: verified.limitations,
+    legacy_geometry_bridges: verified.legacyGeometryBridges || [],
   };
 }
 

@@ -1,8 +1,15 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
+import {
+  appConfig,
+  hasPublicUpdateTokenConfig,
+  hasSupabaseAdminConfig,
+} from "@/lib/config";
 import type { Json } from "@/lib/database.types";
 import { errorMessage, finishJobRun, startJobRun } from "@/lib/job-runs";
-import { drainPublicDigestOutbox } from "@/lib/public-updates";
+import {
+  drainPublicDigestOutbox,
+  drainPublicUpdateConfirmationOutbox,
+} from "@/lib/public-updates";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -11,7 +18,7 @@ export async function GET(request: NextRequest) {
   const authorization = request.headers.get("authorization") || "";
   const secret = request.headers.get("x-cron-secret") || "";
   if (
-    !appConfig.cronSecret ||
+    !hasPublicUpdateTokenConfig() ||
     (
       authorization !== `Bearer ${appConfig.cronSecret}` &&
       secret !== appConfig.cronSecret
@@ -31,20 +38,29 @@ export async function GET(request: NextRequest) {
     runId = await startJobRun("send-digests", {
       mode: "durable-public-outbox-drain",
     });
-    const result = await drainPublicDigestOutbox();
+    const confirmation = await drainPublicUpdateConfirmationOutbox();
+    const digest = await drainPublicDigestOutbox();
+    const terminalFailed =
+      confirmation.terminalFailed + digest.terminalFailed;
     await finishJobRun(runId, {
-      status: result.terminalFailed > 0 ? "failed" : "succeeded",
-      processedCount: result.claimed,
+      status: terminalFailed > 0 ? "failed" : "succeeded",
+      processedCount: confirmation.claimed + digest.claimed,
       error:
-        result.terminalFailed > 0
-          ? `${result.terminalFailed} public digest delivery attempt(s) became terminal.`
+        terminalFailed > 0
+          ? `${terminalFailed} public email delivery attempt(s) became terminal.`
           : null,
       metadata: {
         mode: "durable-public-outbox-drain",
-        result: JSON.parse(JSON.stringify(result)) as Json,
+        result: JSON.parse(JSON.stringify(digest)) as Json,
+        confirmation: JSON.parse(JSON.stringify(confirmation)) as Json,
       },
     });
-    return NextResponse.json({ ok: true, runId, result });
+    return NextResponse.json({
+      ok: true,
+      runId,
+      result: digest,
+      confirmation,
+    });
   } catch (error) {
     const message = errorMessage(error);
     if (runId) {

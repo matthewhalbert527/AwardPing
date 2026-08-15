@@ -37,6 +37,18 @@ export type PublicDigestOutboxStatus =
   | "terminal_failed"
   | "release_blocked"
   | "privacy_scrubbed";
+export type PublicUpdateConfirmationOutboxStatus =
+  | "queued"
+  | "claimed"
+  | "sending"
+  | "accepted"
+  | "accepted_stale"
+  | "ambiguous"
+  | "retry"
+  | "terminal_failed"
+  | "stale"
+  | "confirmed"
+  | "privacy_scrubbed";
 export type PublicDigestEventReceiptStatus =
   | "reserved"
   | "sent"
@@ -2790,6 +2802,10 @@ export type Database = {
           confirmation_token_hash: string | null;
           unsubscribe_token_hash: string;
           confirmation_sent_at: string | null;
+          confirmation_generation: number;
+          confirmation_issued_at: string | null;
+          confirmation_expires_at: string | null;
+          confirmation_contract_version: string | null;
           confirmed_at: string | null;
           unsubscribed_at: string | null;
           last_digest_sent_at: string | null;
@@ -2806,6 +2822,10 @@ export type Database = {
           confirmation_token_hash?: string | null;
           unsubscribe_token_hash: string;
           confirmation_sent_at?: string | null;
+          confirmation_generation?: number;
+          confirmation_issued_at?: string | null;
+          confirmation_expires_at?: string | null;
+          confirmation_contract_version?: string | null;
           confirmed_at?: string | null;
           unsubscribed_at?: string | null;
           last_digest_sent_at?: string | null;
@@ -2821,6 +2841,10 @@ export type Database = {
           confirmation_token_hash?: string | null;
           unsubscribe_token_hash?: string;
           confirmation_sent_at?: string | null;
+          confirmation_generation?: number;
+          confirmation_issued_at?: string | null;
+          confirmation_expires_at?: string | null;
+          confirmation_contract_version?: string | null;
           confirmed_at?: string | null;
           unsubscribed_at?: string | null;
           last_digest_sent_at?: string | null;
@@ -4164,6 +4188,70 @@ export type Database = {
           p_retryable?: boolean;
         };
         Returns: PublicDigestOutboxStatus;
+      };
+      enqueue_public_update_confirmation: {
+        Args: {
+          p_subscriber_id: string;
+          p_created_at: string;
+          p_legacy_email: string;
+          p_recipient_hash: string;
+          p_recipient_encrypted: string;
+          p_confirmation_token_hash: string;
+          p_confirmation_token_encrypted: string;
+          p_rendered_payload_encrypted: string;
+          p_payload_schema_version: string;
+          p_payload_hash: string;
+          p_unsubscribe_token_hash: string;
+        };
+        Returns: Array<{ outbox_id: string | null; needs_delivery: boolean }>;
+      };
+      claim_public_update_confirmations: {
+        Args: {
+          p_worker_id: string;
+          p_limit?: number;
+          p_lease_seconds?: number;
+          p_outbox_id?: string | null;
+        };
+        Returns: Array<{
+          id: string;
+          lease_token: string;
+          recipient_hash: string;
+          recipient_encrypted: string;
+          confirmation_token_hash: string;
+          confirmation_token_encrypted: string;
+          rendered_payload_encrypted: string;
+          payload_schema_version: string;
+          payload_hash: string;
+          provider_idempotency_key: string;
+          expires_at: string;
+          send_attempt_count: number;
+        }>;
+      };
+      authorize_public_update_confirmation_send: {
+        Args: { p_outbox_id: string; p_lease_token: string };
+        Returns: boolean;
+      };
+      complete_public_update_confirmation_send: {
+        Args: {
+          p_outbox_id: string;
+          p_lease_token: string;
+          p_provider_message_id: string;
+        };
+        Returns: PublicUpdateConfirmationOutboxStatus | "missing";
+      };
+      fail_public_update_confirmation_send: {
+        Args: {
+          p_outbox_id: string;
+          p_lease_token: string;
+          p_error: string;
+          p_ambiguous: boolean;
+          p_retryable?: boolean;
+        };
+        Returns: PublicUpdateConfirmationOutboxStatus | "missing";
+      };
+      confirm_public_update_subscription: {
+        Args: { p_confirmation_token_hash: string };
+        Returns: boolean;
       };
       unsubscribe_public_update_subscriber: {
         Args: { p_unsubscribe_token_hash: string };
