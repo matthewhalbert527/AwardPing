@@ -10,6 +10,10 @@ import {
   advanceStage1EvidenceSchemaUpgradeJournal,
   buildStage1EvidenceSchemaUpgradeJournal,
 } from "./stage1-evidence-schema-upgrade-transaction.mjs";
+import {
+  runStage1EvidenceSchemaUpgradeCommit,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_ARCHIVE_ACCOUNTING_SCHEMA,
+} from "./stage1-evidence-schema-upgrade-commit.mjs";
 import { visualSnapshotPointerIdentity } from "./visual-snapshot-latest-only-reconciliation.mjs";
 import {
   buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs,
@@ -525,6 +529,204 @@ describe("Stage 1 evidence-schema-upgrade quarantine RPC contract", () => {
     expect(() => buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs(
       unicodeString,
     )).not.toThrow();
+  });
+
+  it("accepts only exact legacy-four or sealed current-six pointer accounting", () => {
+    const accepted = [
+      { label: "legacy", accountingShape: "legacy" },
+      { label: "current-not-started", accountingShape: "current" },
+      {
+        label: "current-verified",
+        accountingShape: "current",
+        journalPersistence: {
+          state: "verified",
+          local_journal_writes_lower_bound: 2,
+          response_loss_possible: false,
+        },
+      },
+    ];
+    for (const options of accepted) {
+      const candidate = candidateEvidence();
+      const journal = recoveryJournal(
+        candidate,
+        `stage1-${options.label}-accounting`,
+      );
+      candidate.journal_sha256 = journal.journal_sha256;
+      const failure = pointerCommitFailure(options);
+      const receipt = pointerCommitReceipt({
+        journal,
+        mutationFailure: failure,
+        candidate,
+      });
+      const validation = fixture().validation;
+      validation.evidence = {
+        source_id: sourceId,
+        pointer_commit_receipt: receipt,
+      };
+      expect(() => prepareStage1EvidenceSchemaUpgradeQuarantineValidation({
+        validation,
+        candidateArtifacts: candidate,
+        commitRecovery: recoveryEvidence(journal, "ambiguous_authority"),
+        pointerCommitReceipt: receipt,
+        mutationFailure: failure,
+      })).not.toThrow();
+    }
+  });
+
+  it("rejects extra keys and invalid nested journal accounting after outer resealing", () => {
+    const candidate = candidateEvidence();
+    const journal = recoveryJournal(candidate, "stage1-nested-accounting");
+    candidate.journal_sha256 = journal.journal_sha256;
+    const validation = fixture().validation;
+    validation.evidence = { source_id: sourceId };
+    const cases = [
+      pointerCommitFailure({ accountingEvidenceExtra: { future: true } }),
+      pointerCommitFailure({
+        journalPersistence: {
+          state: "not_started",
+          local_journal_writes_lower_bound: 0,
+          response_loss_possible: false,
+          future: true,
+        },
+      }),
+      pointerCommitFailure({
+        journalPersistence: {
+          state: "write_in_flight",
+          local_journal_writes_lower_bound: 0,
+          response_loss_possible: true,
+        },
+      }),
+      pointerCommitFailure({
+        journalPersistence: {
+          state: "write_acknowledged_readback_unverified",
+          local_journal_writes_lower_bound: 1,
+          response_loss_possible: false,
+        },
+      }),
+      pointerCommitFailure({
+        journalArchive: journalArchiveAccounting({ future: true }),
+      }),
+      pointerCommitFailure({
+        journalArchive: {
+          ...journalArchiveAccounting(),
+          state: "archive_write_response_unknown",
+          response_loss_possible: true,
+        },
+      }),
+      pointerCommitFailure({
+        journalArchive: journalArchiveAccounting({
+          state: "verified",
+          local_journal_archive_writes_lower_bound: 1,
+          archive_receipt_acknowledged: true,
+          archived_readback_verified: true,
+          active_absence_verified: true,
+        }),
+      }),
+    ];
+    for (const failure of cases) {
+      const receipt = pointerCommitReceipt({
+        journal,
+        mutationFailure: failure,
+        candidate,
+      });
+      expect(() => prepareStage1EvidenceSchemaUpgradeQuarantineValidation({
+        validation,
+        candidateArtifacts: candidate,
+        commitRecovery: recoveryEvidence(journal, "ambiguous_authority"),
+        pointerCommitReceipt: receipt,
+        mutationFailure: failure,
+      })).toThrow(/accounting|journal|recovery-required/iu);
+    }
+  });
+
+  it("preserves an actual current commit recovery receipt through prepare and RPC shape", async () => {
+    const candidate = candidateEvidence();
+    const journal = recoveryJournalWithOldAuthority(candidate);
+    candidate.journal_sha256 = journal.journal_sha256;
+    const result = await runStage1EvidenceSchemaUpgradeCommit({
+      sourceId,
+      transactionId: journal.transaction_id,
+      expectedActiveJournalSha256: journal.journal_sha256,
+      operationBinding: null,
+      interfaces: {
+        async loadActiveJournal() {
+          return structuredClone(journal);
+        },
+        async persistActiveJournalAtomically() {
+          throw new Error("an already recovery-required journal must not be rewritten");
+        },
+        async archiveCompletedJournalAtomically() {
+          throw new Error("a recovery-required journal must not be archived");
+        },
+        async readArchivedJournal() {
+          throw new Error("a recovery-required journal must not read the archive");
+        },
+        async readBaselineBytes() {
+          throw new Error("authoritative baseline unavailable");
+        },
+        async writeBaselineBytesAtomically() {
+          throw new Error("ambiguous authority must not rewrite the baseline");
+        },
+        async readLatestPointer() {
+          throw new Error("authoritative pointer unavailable");
+        },
+      },
+      now: () => "2026-08-14T21:10:00.000Z",
+    });
+    expect(result.status).toBe("recovery_required");
+    expect(Object.keys(result.mutation_accounting.evidence).sort()).toEqual([
+      "boundary",
+      "cas",
+      "journal_archive",
+      "journal_persistence",
+      "journal_phase",
+      "response_loss_possible",
+    ]);
+
+    const failure = {
+      operation: "pointer_commit",
+      error: Object.assign(new Error("pointer commit needs recovery"), {
+        code: "pointer_commit_recovery_required",
+      }),
+      mutation_accounting: result.mutation_accounting,
+    };
+    const validation = fixture().validation;
+    validation.reason = "active_upgrade_journal_authority_ambiguous";
+    validation.reasons = [{
+      code: validation.reason,
+      detail: "The exact active journal still needs reconciliation.",
+    }];
+    validation.evidence = {
+      source_id: sourceId,
+      pointer_commit_receipt: result.receipt,
+    };
+    const prepared = prepareStage1EvidenceSchemaUpgradeQuarantineValidation({
+      validation,
+      candidateArtifacts: candidate,
+      commitRecovery: recoveryEvidence(journal, "ambiguous_authority"),
+      pointerCommitReceipt: result.receipt,
+      mutationFailure: failure,
+    });
+    expect(prepared.evidence.mutation_failure.mutation_accounting)
+      .toEqual(result.mutation_accounting);
+    expect(prepared.evidence.pointer_commit_receipt.mutation_accounting)
+      .toEqual(result.mutation_accounting);
+
+    const rpcInput = fixture();
+    rpcInput.failureStage = "pointer_commit";
+    rpcInput.reasonCode = validation.reason;
+    rpcInput.validation = prepared;
+    rpcInput.candidateArtifacts = candidate;
+    rpcInput.candidatePlanObserved = true;
+    rpcInput.commitRecovery = recoveryEvidence(journal, "ambiguous_authority");
+    rpcInput.journalObserved = true;
+    rpcInput.safeAction = stage1EvidenceSchemaUpgradeQuarantineSafeAction(
+      prepared,
+      rpcInput.safeAction,
+    );
+    const args = buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs(rpcInput);
+    expect(args.p_evidence.validation.evidence.pointer_commit_receipt
+      .mutation_accounting).toEqual(result.mutation_accounting);
   });
 
   it("prepares a detached recovery-required validation from the sealed candidate pointer", () => {
@@ -1479,6 +1681,14 @@ function pointerCommitFailure({
   unknownWriteCategories = [],
   cas = recoveredCasReceipt(),
   boundary = "result_built",
+  accountingShape = "current",
+  journalPersistence = {
+    state: "not_started",
+    local_journal_writes_lower_bound: 0,
+    response_loss_possible: false,
+  },
+  journalArchive = journalArchiveAccounting(),
+  accountingEvidenceExtra = {},
 } = {}) {
   const counts = zeroStage1EvidenceSchemaUpgradeMutationCounts();
   Object.assign(counts, lowerBoundCounts);
@@ -1489,8 +1699,19 @@ function pointerCommitFailure({
     evidence: {
       boundary,
       journal_phase: "recovery_required",
-      response_loss_possible: unknownWriteCategories.length > 0,
+      response_loss_possible: unknownWriteCategories.length > 0
+        || (accountingShape === "current" && (
+          journalPersistence.response_loss_possible === true
+          || journalArchive.response_loss_possible === true
+        )),
+      ...(accountingShape === "current"
+        ? {
+            journal_persistence: journalPersistence,
+            journal_archive: journalArchive,
+          }
+        : {}),
       cas,
+      ...accountingEvidenceExtra,
     },
   });
   return {
@@ -1499,6 +1720,24 @@ function pointerCommitFailure({
       code: "pointer_commit_failed",
     }),
     mutation_accounting: accounting,
+  };
+}
+
+function journalArchiveAccounting(overrides = {}) {
+  const content = {
+    schema_version:
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_ARCHIVE_ACCOUNTING_SCHEMA,
+    state: "not_started",
+    local_journal_archive_writes_lower_bound: 0,
+    archive_receipt_acknowledged: false,
+    archived_readback_verified: false,
+    active_absence_verified: false,
+    response_loss_possible: false,
+    ...overrides,
+  };
+  return {
+    ...content,
+    evidence_sha256: hashJson(content),
   };
 }
 
@@ -1613,6 +1852,35 @@ function recoveryJournal(candidate, transactionId = "stage1-recovery-test") {
     sourceId,
     oldBaselineBytes: null,
     oldPointer: null,
+    candidateBaselineBytes: Buffer.from('{"kind":"webpage"}\n', "utf8"),
+    candidatePointer: candidate.candidate_pointer_identity.projection,
+    createdAt: candidate.captured_at,
+  });
+  return advanceStage1EvidenceSchemaUpgradeJournal(prepared, {
+    expectedPhase: "prepared",
+    nextPhase: "recovery_required",
+    at: candidate.captured_at,
+    detail: { outcome: "ambiguous_authority" },
+  });
+}
+
+function recoveryJournalWithOldAuthority(candidate) {
+  const oldCandidate = candidateEvidence({
+    version: "0".repeat(32),
+    capturedAt: "2026-08-14T20:00:00.000Z",
+    imageHash: "7".repeat(64),
+    textHash: "8".repeat(64),
+    layoutHash: "a".repeat(64),
+  });
+  const oldPointer = structuredClone(
+    oldCandidate.candidate_pointer_identity.projection,
+  );
+  oldPointer.updated_at = "2026-08-14T20:00:01.000Z";
+  const prepared = buildStage1EvidenceSchemaUpgradeJournal({
+    transactionId: "stage1-actual-current-accounting",
+    sourceId,
+    oldBaselineBytes: Buffer.from('{"kind":"old"}\n', "utf8"),
+    oldPointer,
     candidateBaselineBytes: Buffer.from('{"kind":"webpage"}\n', "utf8"),
     candidatePointer: candidate.candidate_pointer_identity.projection,
     createdAt: candidate.captured_at,

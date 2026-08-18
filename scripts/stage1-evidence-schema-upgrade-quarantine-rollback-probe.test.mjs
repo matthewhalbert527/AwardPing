@@ -14,6 +14,7 @@ import {
 import {
   runStage1EvidenceSchemaUpgradeQuarantineRollbackProbe,
   runStage1EvidenceSchemaUpgradeQuarantineRollbackProbeCli,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_ROLLBACK_PROBE_EXPECTED_ROW,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_ROLLBACK_PROBE_USAGE,
 } from "./run-stage1-evidence-schema-upgrade-quarantine-rollback-probe.mjs";
 
@@ -268,7 +269,11 @@ describe("Stage 1 evidence-schema-upgrade quarantine rollback executable", () =>
       render,
     })).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
     expect(execute).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
   });
 
   it.each(["--help", "-h"])(

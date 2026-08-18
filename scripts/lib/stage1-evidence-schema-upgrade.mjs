@@ -10,6 +10,7 @@ import {
   assertStage1EvidenceSchemaUpgradeMutationAccounting,
   sealStage1EvidenceSchemaUpgradeMutationAccounting,
 } from "./stage1-evidence-schema-upgrade-mutation-accounting.mjs";
+import { comparePreciseRfc3339 } from "./monitoring-feedback-promotion-verification.mjs";
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SCHEMA =
   "awardping.stage1.reviewed-source-capture-allowlist.v2";
@@ -19,6 +20,12 @@ export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REPORT_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-report.v1";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUEUE_CONTEXT =
   "stage1_evidence_schema_upgrade";
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG =
+  "stage1-evidence-schema-upgrade-reviewed-apply-plan-file";
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG =
+  "stage1-evidence-schema-upgrade-reviewed-apply-plan-sha256";
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG =
+  "stage1-evidence-schema-upgrade-reviewed-dry-run-report-file";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_CHURCHILL_SOURCE_ID =
   "c5961d93-9f1f-504e-8dd4-c4ec06a833a2";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_LUCE_REQUEST_ID =
@@ -183,6 +190,31 @@ export function assertStage1EvidenceSchemaUpgradeCliContract({
   validateStage1EvidenceSchemaUpgradeManifest(manifest);
   assertExactStage1EvidenceSchemaUpgradeSourceIds(sourceIds, "CLI selector source IDs");
   assertRawStage1EvidenceSchemaUpgradeCliContract(args);
+  const dryRun = boolValue(
+    effectiveArgs["stage1-evidence-schema-upgrade-dry-run"],
+    true,
+  );
+  const reviewedApplyArgs = [
+    STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG,
+    STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG,
+    STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG,
+  ];
+  if (dryRun && reviewedApplyArgs.some((key) => Object.hasOwn(args, key))) {
+    throw new Error("Stage 1 dry-run forbids reviewed apply-plan/report arguments.");
+  }
+  if (!dryRun) {
+    const missing = reviewedApplyArgs.filter((key) => !cleanText(args[key]));
+    if (missing.length) {
+      throw new Error(
+        `Stage 1 apply requires exact reviewed authority arguments: ${missing.join(", ")}.`,
+      );
+    }
+    if (!/^[0-9a-f]{64}$/u.test(
+      cleanText(args[STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG]),
+    )) {
+      throw new Error("Stage 1 reviewed apply-plan SHA-256 must be exact lowercase hex.");
+    }
+  }
   if (!cleanText(args["source-ids-file"])) {
     throw new Error("Stage 1 evidence-schema upgrade requires --source-ids-file with the exact reviewed-nine manifest.");
   }
@@ -268,7 +300,8 @@ export function assertStage1EvidenceSchemaUpgradeCliContract({
   return Object.freeze({
     exact_source_count: STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS.length,
     source_ids: Object.freeze([...STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS]),
-    dry_run: boolValue(effectiveArgs["stage1-evidence-schema-upgrade-dry-run"], true),
+    dry_run: dryRun,
+    reviewed_exact_one_apply: !dryRun,
   });
 }
 
@@ -480,9 +513,11 @@ export function evaluateStage1EvidenceSchemaUpgradeEligibility({
 
 /**
  * Orchestrates the isolated source operation through injectable interfaces.
- * Dry-run still calls the full capture-and-validation interface; it skips only
- * the mutation interfaces. That keeps dry-run representative without granting
- * database, R2, baseline, candidate, quarantine, or source-state authority.
+ * Dry-run still calls the full capture-and-validation interface unless an
+ * optional completed-authority preflight proves that the source was already
+ * upgraded. It skips every mutation interface. That keeps dry-run
+ * representative without granting database, R2, baseline, candidate,
+ * quarantine, or source-state authority.
  */
 export async function runStage1EvidenceSchemaUpgradeSource({
   source,
@@ -726,6 +761,38 @@ export async function runStage1EvidenceSchemaUpgradeSource({
         : base.quarantine,
     });
   }
+
+  const preflightCompletedAuthority = interfaces.preflightCompletedAuthority;
+  if (typeof preflightCompletedAuthority === "function") {
+    let completedAuthorityRaw;
+    let completedAuthority;
+    try {
+      completedAuthorityRaw = await preflightCompletedAuthority({
+        source,
+        manifest_source: reviewedSourcesById.get(eligibility.source_id),
+        dry_run: dryRun,
+      });
+      if (completedAuthorityRaw !== null && completedAuthorityRaw !== undefined) {
+        assertZeroChargeResult(completedAuthorityRaw, "completed-authority preflight");
+        completedAuthority = normalizeCompletedAuthorityValidation(completedAuthorityRaw);
+      }
+    } catch (error) {
+      completedAuthority = invalidCompletedAuthorityValidation(error);
+    }
+    if (completedAuthority) {
+      const accepted = completedAuthority.decision === "already_upgraded_verified";
+      return Object.freeze({
+        ...base,
+        status: accepted
+          ? dryRun ? "dry_run_already_upgraded" : "already_upgraded"
+          : dryRun ? "dry_run_completed_authority_invalid" : "completed_authority_invalid",
+        reason_code: completedAuthority.reason_code,
+        capture_validation: completedAuthority.capture_validation,
+        mutation_counts: zeroMutationCounts(),
+      });
+    }
+  }
+
   const captureAndValidate = interfaces.captureAndValidate;
   const upgradeEvidenceSchema = interfaces.upgradeEvidenceSchema;
   const enqueueVisualReviewCandidate = interfaces.enqueueVisualReviewCandidate;
@@ -939,6 +1006,10 @@ export function createStage1EvidenceSchemaUpgradeReport({
     "upgraded_and_queued",
     "candidate_queued",
   ]);
+  const alreadyUpgradedStatuses = new Set([
+    "dry_run_already_upgraded",
+    "already_upgraded",
+  ]);
   const quarantinedStatuses = new Set([
     "evidence_failure_quarantined",
     "journal_recovered_quarantine_remaining",
@@ -947,6 +1018,7 @@ export function createStage1EvidenceSchemaUpgradeReport({
   const successfulStatuses = new Set([
     ...upgradedStatuses,
     ...candidateStatuses,
+    ...alreadyUpgradedStatuses,
   ]);
   const upgraded = rows.filter((row) => upgradedStatuses.has(row?.status)).length;
   const candidates = rows.filter((row) => candidateStatuses.has(row?.status)).length;
@@ -1122,15 +1194,18 @@ function validateFinalizedActivationMetadata({ source, acquisition, activation }
           !== row.observed_normalized_text_sha256
         || receipt.persistence_evidence_sha256
           !== sha256(canonicalJson(row.persistence_evidence))
-        || row.finalization_receipt_sha256 !== sha256(canonicalJson(receipt))
+        || row.finalization_receipt_sha256
+          !== stage1EvidenceSchemaUpgradeFinalizationReceiptSha256(receipt)
       ) {
         reasons.push("stage1_activation_finalization_receipt_binding_invalid");
       }
-      const finalizedAt = canonicalTimestamp(row.finalized_at);
+      const finalizedAt = stage1EvidenceSchemaUpgradeCanonicalTimestamp(
+        row.finalized_at,
+      );
       if (
         !finalizedAt
-        || canonicalTimestamp(receipt.finalized_at) !== finalizedAt
-        || canonicalTimestamp(source?.admin_reviewed_at) !== finalizedAt
+        || comparePreciseRfc3339(row.finalized_at, receipt.finalized_at) !== 0
+        || comparePreciseRfc3339(row.finalized_at, source?.admin_reviewed_at) !== 0
       ) {
         reasons.push("stage1_activation_finalization_timestamp_mismatch");
       }
@@ -1143,7 +1218,7 @@ function validateFinalizedActivationMetadata({ source, acquisition, activation }
       present: Boolean(row && typeof row === "object" && !Array.isArray(row)),
       source_acquisition_id: cleanText(row?.source_acquisition_id) || null,
       finalization_receipt_sha256: cleanText(row?.finalization_receipt_sha256) || null,
-      finalized_at: canonicalTimestamp(row?.finalized_at),
+      finalized_at: stage1EvidenceSchemaUpgradeCanonicalTimestamp(row?.finalized_at),
     }),
   });
 }
@@ -1186,6 +1261,79 @@ function normalizeCaptureValidation(value) {
       decision,
       reason: normalizedReason,
       evidence: value?.evidence ?? null,
+    }),
+  });
+}
+
+function normalizeCompletedAuthorityValidation(value) {
+  const decisions = new Set([
+    "already_upgraded_verified",
+    "completed_authority_invalid",
+  ]);
+  const decision = cleanText(value?.decision);
+  if (value?.decision !== decision || !decisions.has(decision)) {
+    throw new Error("Stage 1 completed-authority preflight returned an unsupported decision.");
+  }
+  const outcome = value?.outcome;
+  const expectedOutcome = Object.freeze({
+    would_commit: false,
+    would_queue_visual_candidate: false,
+    would_quarantine: false,
+  });
+  const expectedOutcomeKeys = Object.keys(expectedOutcome).sort();
+  const outcomeKeys = outcome && typeof outcome === "object" && !Array.isArray(outcome)
+    ? Object.keys(outcome).sort()
+    : [];
+  if (
+    canonicalJson(outcomeKeys) !== canonicalJson(expectedOutcomeKeys)
+    || outcome.would_commit !== false
+    || outcome.would_queue_visual_candidate !== false
+    || outcome.would_quarantine !== false
+  ) {
+    throw new Error(
+      "Stage 1 completed-authority decision must have an exact all-false planned outcome.",
+    );
+  }
+  const reason = cleanText(value?.reason);
+  const legacyReasonCode = cleanText(value?.reason_code);
+  if (reason && legacyReasonCode && reason !== legacyReasonCode) {
+    throw new Error("Stage 1 completed-authority reason and reason_code disagree.");
+  }
+  const normalizedReason = reason || legacyReasonCode || (
+    decision === "already_upgraded_verified"
+      ? "already_upgraded_completed_authority_verified"
+      : "completed_authority_invalid"
+  );
+  return Object.freeze({
+    decision,
+    reason_code: normalizedReason,
+    outcome: expectedOutcome,
+    capture_validation: Object.freeze({
+      status: "evaluated",
+      decision,
+      reason: normalizedReason,
+      evidence: value?.evidence ?? null,
+    }),
+  });
+}
+
+function invalidCompletedAuthorityValidation(error) {
+  const reason = "completed_authority_preflight_invalid";
+  return Object.freeze({
+    decision: "completed_authority_invalid",
+    reason_code: reason,
+    outcome: Object.freeze({
+      would_commit: false,
+      would_queue_visual_candidate: false,
+      would_quarantine: false,
+    }),
+    capture_validation: Object.freeze({
+      status: "failed",
+      decision: "completed_authority_invalid",
+      reason,
+      evidence: Object.freeze({
+        error: cleanText(error?.message || error) || "Unknown completed-authority failure.",
+      }),
     }),
   });
 }
@@ -1780,9 +1928,13 @@ function requiredTimestamp(value, label) {
   return new Date(parsed).toISOString();
 }
 
-function canonicalTimestamp(value) {
+export function stage1EvidenceSchemaUpgradeCanonicalTimestamp(value) {
   const parsed = Date.parse(cleanText(value));
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
+
+export function stage1EvidenceSchemaUpgradeFinalizationReceiptSha256(receipt) {
+  return sha256(canonicalJson(receipt));
 }
 
 function canonicalJson(value) {

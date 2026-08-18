@@ -1,7 +1,23 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { renderPublicUpdateConfirmationOutboxRollbackProbe } from "./render-public-update-confirmation-outbox-rollback-probe.mjs";
-import { runStage1PendingMigrationRollbackProbe } from "./run-stage1-pending-migration-rollback-probe.mjs";
+import {
+  runStage1PendingMigrationRollbackProbe,
+  STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
+} from "./run-stage1-pending-migration-rollback-probe.mjs";
+
+export const PUBLIC_UPDATE_CONFIRMATION_OUTBOX_ROLLBACK_PROBE_EXPECTED_ROW =
+  Object.freeze({
+    status: STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
+    probe: "awardping_public_update_confirmation_outbox_rollback_probe_passed",
+    exact_migration_count: 1,
+    exact_smoke_count: 1,
+    exact_migration:
+      "20260815023357_durable_public_update_confirmation_outbox.sql",
+    exact_smoke: "public_update_confirmation_outbox_smoke.sql",
+    persistence_result:
+      "migration/smoke/table/column/function changes rolled back",
+  });
 
 export const PUBLIC_UPDATE_CONFIRMATION_OUTBOX_ROLLBACK_PROBE_USAGE = `Usage: node scripts/run-public-update-confirmation-outbox-rollback-probe.mjs [--help|-h]
 
@@ -18,7 +34,11 @@ export function runPublicUpdateConfirmationOutboxRollbackProbe({
   execute = runStage1PendingMigrationRollbackProbe,
   render = renderPublicUpdateConfirmationOutboxRollbackProbe,
 } = {}) {
-  return execute({ render });
+  return execute({
+    render,
+    expectedResultRow:
+      PUBLIC_UPDATE_CONFIRMATION_OUTBOX_ROLLBACK_PROBE_EXPECTED_ROW,
+  });
 }
 
 export function runPublicUpdateConfirmationOutboxRollbackProbeCli({

@@ -13,6 +13,7 @@ import {
 import {
   runStage1SourceActivationFinalizationsGetterRollbackProbe,
   runStage1SourceActivationFinalizationsGetterRollbackProbeCli,
+  STAGE1_SOURCE_ACTIVATION_FINALIZATIONS_GETTER_ROLLBACK_PROBE_EXPECTED_ROW,
   STAGE1_FINALIZATION_GETTER_ROLLBACK_PROBE_USAGE,
 } from "./run-stage1-source-activation-finalizations-getter-rollback-probe.mjs";
 
@@ -171,7 +172,11 @@ describe("Stage 1 source-finalization getter rollback probe executable", () => {
         render,
       });
     expect(execute).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        STAGE1_SOURCE_ACTIVATION_FINALIZATIONS_GETTER_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
     expect(result).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
   });
 

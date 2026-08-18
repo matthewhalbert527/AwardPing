@@ -507,18 +507,26 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
 
 function canonicalizeApprovedCaptureAuthority(capture) {
   if (capture.kind === "pdf") return capture;
-  const artifactBindings = { ...objectValue(capture.artifact_bindings) };
-  const layoutRetained = approvedMainLayoutRetained(capture);
-  const layoutExplicitlyUnavailable = approvedMainLayoutExplicitlyUnavailable(capture);
+  const expansionTextLength = requiredApprovedWebpageExpansionTextLength(
+    capture.expansion_text_length,
+    "capture",
+  );
+  const canonicalCapture = {
+    ...capture,
+    expansion_text_length: expansionTextLength,
+  };
+  const artifactBindings = { ...objectValue(canonicalCapture.artifact_bindings) };
+  const layoutRetained = approvedMainLayoutRetained(canonicalCapture);
+  const layoutExplicitlyUnavailable = approvedMainLayoutExplicitlyUnavailable(canonicalCapture);
 
   // An approved candidate that still claims main geometry must be verified as
   // claimed. Never turn a corrupt or incomplete claim into an honest
   // unavailable state by silently discarding it. Only an already explicit,
   // accounted unavailable contract may shed diagnostic-only layout paths.
-  if (layoutRetained || !layoutExplicitlyUnavailable) return capture;
+  if (layoutRetained || !layoutExplicitlyUnavailable) return canonicalCapture;
   artifactBindings.layout = null;
   return {
-    ...capture,
+    ...canonicalCapture,
     layout_hash: null,
     layout_path: null,
     artifact_bindings: artifactBindings,
@@ -601,6 +609,9 @@ function approvedMainLayoutExplicitlyUnavailable(capture) {
 }
 
 function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseline, now }) {
+  const expansionTextLength = capture.kind === "pdf"
+    ? null
+    : requiredApprovedWebpageExpansionTextLength(capture.expansion_text_length, "capture");
   const existingSummary = objectValue(existingBaseline?.summary_metadata);
   const mainLayoutRetained = approvedMainLayoutRetained(capture);
   const sourceMetadata = {
@@ -640,7 +651,7 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
     body_text_length: capture.body_text_length || null,
     main_content_text_length: capture.main_content_text_length || null,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || null,
-    expansion_text_length: capture.expansion_text_length || null,
+    expansion_text_length: expansionTextLength,
     section_text_length: capture.section_text_length || null,
     expandable_sections: Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [],
     dimensions: capture.dimensions || null,
@@ -1073,6 +1084,23 @@ function verifyApprovedCaptureArtifacts(capture, { requireR2GeometryReady = fals
     });
   }
 
+  if (capture.kind !== "pdf") {
+    const captureExpansionTextLength = requiredApprovedWebpageExpansionTextLength(
+      capture.expansion_text_length,
+      "capture",
+    );
+    const rawMetadata = parseApprovedMetadataArtifact(verified.get("meta")?.body);
+    const rawExpansionTextLength = requiredApprovedWebpageExpansionTextLength(
+      rawMetadata.expansion_text_length,
+      "raw metadata",
+    );
+    if (rawExpansionTextLength !== captureExpansionTextLength) {
+      throw new Error(
+        "Approved snapshot raw metadata expansion_text_length does not match the capture.",
+      );
+    }
+  }
+
   let verifiedMainGeometry = null;
   const verifiedExpansionGeometries = [];
   if (capture.kind === "pdf") {
@@ -1277,6 +1305,15 @@ function parseApprovedMetadataArtifact(body) {
   }
 }
 
+function requiredApprovedWebpageExpansionTextLength(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `Approved webpage snapshot ${label} expansion_text_length must be a non-negative safe integer.`,
+    );
+  }
+  return value;
+}
+
 function canonicalApprovedRetainedArtifactProjection(value) {
   const projection = objectValue(value);
   const authority = objectValue(projection.authoritative);
@@ -1402,6 +1439,9 @@ function captureHashes(capture) {
 
 function captureMetadata(capture, artifactBindings) {
   const kind = capture.kind === "pdf" ? "pdf" : "webpage";
+  const expansionTextLength = kind === "webpage"
+    ? requiredApprovedWebpageExpansionTextLength(capture.expansion_text_length, "capture")
+    : 0;
   const expansionStates = kind === "webpage"
     ? approvedExpansionStateValues(capture)
     : [];
@@ -1425,7 +1465,7 @@ function captureMetadata(capture, artifactBindings) {
     body_text_length: capture.body_text_length || 0,
     main_content_text_length: capture.main_content_text_length || 0,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,
-    expansion_text_length: capture.expansion_text_length || 0,
+    expansion_text_length: expansionTextLength,
     file_bytes: artifactBindings?.pdf?.byte_length ?? null,
     page_bytes: artifactBindings?.page?.byte_length ?? null,
     thumb_bytes: artifactBindings?.thumb?.byte_length ?? null,

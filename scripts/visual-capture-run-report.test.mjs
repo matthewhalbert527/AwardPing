@@ -376,6 +376,333 @@ describe("visual capture run reporting", () => {
     ]));
   });
 
+  it("turns blocked Stage 1 results into an operator repair group", () => {
+    const blockedSourceIds = Array.from(
+      { length: 8 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const summary = buildVisualRunReportSummary({
+      status: "blocked",
+      execution_status: "blocked",
+      checked: 9,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 9 },
+      errors: [],
+      stage1_evidence_schema_upgrade: {
+        schema_version: "awardping.stage1.evidence-schema-upgrade-report.v1",
+        status: "blocked",
+        blocked_source_count: 8,
+        results: [
+          {
+            source_id: "00000000-0000-4000-8000-000000000009",
+            status: "dry_run_ready",
+            reason_code: "exact_semantic_and_primary_visual_identity_verified",
+          },
+          ...blockedSourceIds.map((sourceId, index) => ({
+            source_id: sourceId,
+            status: "dry_run_evidence_failure",
+            reason_code: index === 7
+              ? "existing_baseline_normalized_text_disagrees_with_acquisition"
+              : "existing_baseline_semantic_identity_mismatch",
+          })),
+        ],
+      },
+    });
+
+    expect(summary.failure_groups).toEqual([
+      expect.objectContaining({
+        code: "stage1_evidence_schema_upgrade_work_remaining",
+        group: "evidence_integrity",
+        severity: "critical",
+        retry_mode: "operator_guarded",
+        repair_code: "review_stage1_evidence_schema_upgrade_work",
+        count: 8,
+        source_id_count: 8,
+        source_ids: blockedSourceIds,
+      }),
+    ]);
+    expect(summary.failure_groups[0].examples[0]).toMatchObject({
+      source_id: blockedSourceIds[0],
+      message: expect.stringContaining("existing_baseline_semantic_identity_mismatch"),
+    });
+    expect(summary.repair_plan).toMatchObject({
+      requires_operator: true,
+      actions: [expect.objectContaining({
+        failure_code: "stage1_evidence_schema_upgrade_work_remaining",
+        affected_count: 8,
+        source_id_count: 8,
+        solution: expect.stringContaining("rerun the exact reviewed dry-run"),
+      })],
+    });
+  });
+
+  it("keeps already-upgraded authority clear while invalid authority needs operator work", () => {
+    const alreadyUpgradedSourceId = "00000000-0000-4000-8000-000000000001";
+    const invalidAuthoritySourceId = "00000000-0000-4000-8000-000000000002";
+    const applyAlreadyUpgradedSourceId = "00000000-0000-4000-8000-000000000004";
+    const summary = buildVisualRunReportSummary({
+      status: "blocked",
+      execution_status: "blocked",
+      checked: 4,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 4 },
+      errors: [],
+      stage1_evidence_schema_upgrade: {
+        schema_version: "awardping.stage1.evidence-schema-upgrade-report.v1",
+        status: "blocked",
+        completed_source_count: 1,
+        blocked_source_count: 1,
+        results: [
+          {
+            source_id: alreadyUpgradedSourceId,
+            status: "dry_run_already_upgraded",
+            reason_code: "completed_upgrade_authority_verified",
+          },
+          {
+            source_id: invalidAuthoritySourceId,
+            status: "dry_run_completed_authority_invalid",
+            reason_code: "completed_upgrade_authority_provenance_invalid",
+          },
+          {
+            source_id: "00000000-0000-4000-8000-000000000003",
+            status: "dry_run_ready",
+            reason_code: "exact_semantic_and_primary_visual_identity_verified",
+          },
+          {
+            source_id: applyAlreadyUpgradedSourceId,
+            status: "already_upgraded",
+            reason_code: "completed_upgrade_authority_verified",
+          },
+        ],
+      },
+    });
+
+    expect(summary.failure_groups).toEqual([
+      expect.objectContaining({
+        code: "stage1_evidence_schema_upgrade_work_remaining",
+        count: 1,
+        source_id_count: 1,
+        source_ids: [invalidAuthoritySourceId],
+      }),
+    ]);
+    expect(summary.failure_groups[0].examples).toEqual([
+      expect.objectContaining({
+        source_id: invalidAuthoritySourceId,
+        message: expect.stringContaining("dry_run_completed_authority_invalid"),
+      }),
+    ]);
+    expect(summary.failure_groups[0].source_ids).not.toContain(alreadyUpgradedSourceId);
+    expect(summary.failure_groups[0].source_ids).not.toContain(applyAlreadyUpgradedSourceId);
+    expect(summary.repair_plan).toMatchObject({
+      requires_operator: true,
+      actions: [expect.objectContaining({ affected_count: 1 })],
+    });
+  });
+
+  it("keeps quarantined-only Stage 1 work operator-visible", () => {
+    const quarantinedSourceIds = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+    ];
+    const summary = buildVisualRunReportSummary({
+      status: "blocked",
+      execution_status: "blocked",
+      checked: 2,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 2 },
+      errors: [],
+      stage1_evidence_schema_upgrade: {
+        schema_version: "awardping.stage1.evidence-schema-upgrade-report.v1",
+        status: "quarantined_work_remaining",
+        blocked_source_count: 0,
+        quarantined_work_remaining: 2,
+        results: [
+          {
+            source_id: quarantinedSourceIds[0],
+            status: "evidence_failure_quarantined",
+            reason_code: "existing_baseline_semantic_identity_mismatch",
+          },
+          {
+            source_id: quarantinedSourceIds[1],
+            status: "journal_recovered_quarantine_remaining",
+            reason_code: "active_upgrade_journal_recovered_existing_quarantine_preserved",
+          },
+        ],
+      },
+    });
+
+    expect(summary.failure_groups).toEqual([
+      expect.objectContaining({
+        code: "stage1_evidence_schema_upgrade_work_remaining",
+        label: "Stage 1 evidence-schema upgrade needs reviewed follow-up",
+        count: 2,
+        source_id_count: 2,
+        source_ids: quarantinedSourceIds,
+      }),
+    ]);
+    expect(summary.failure_groups[0].examples).toEqual([
+      expect.objectContaining({ message: expect.stringContaining("evidence_failure_quarantined") }),
+      expect.objectContaining({
+        message: expect.stringContaining("journal_recovered_quarantine_remaining"),
+      }),
+    ]);
+    expect(summary.repair_plan).toMatchObject({
+      requires_operator: true,
+      actions: [expect.objectContaining({
+        failure_code: "stage1_evidence_schema_upgrade_work_remaining",
+        affected_count: 2,
+        solution: expect.stringContaining("Keep quarantined sources held"),
+      })],
+    });
+  });
+
+  it("keeps all eight explicitly deferred sources visible after a successful reviewed exact-one apply", () => {
+    const selectedSourceId = "00000000-0000-4000-8000-000000000009";
+    const deferredSourceIds = Array.from(
+      { length: 8 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const summary = buildVisualRunReportSummary({
+      status: "completed",
+      execution_status: "completed",
+      checked: 1,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 1 },
+      errors: [],
+      stage1_evidence_schema_upgrade_reviewed_apply: {
+        schema_version:
+          "awardping.stage1.evidence-schema-upgrade-reviewed-exact-one-apply-report.v1",
+        status: "selected_completed",
+        selected_source_id: selectedSourceId,
+        selected_source_count: 1,
+        deferred_source_ids: deferredSourceIds,
+        deferred_source_count: 8,
+        blocked_source_count: 0,
+        selected: {
+          source_id: selectedSourceId,
+          status: "selected_completed",
+          reason_code: "reviewed_unchanged_upgrade_committed",
+        },
+      },
+    });
+
+    expect(summary.failure_groups).toEqual([
+      expect.objectContaining({
+        code: "stage1_evidence_schema_upgrade_work_remaining",
+        count: 8,
+        source_id_count: 8,
+        source_ids: deferredSourceIds,
+      }),
+    ]);
+    expect(summary.failure_groups[0].examples[0]).toMatchObject({
+      source_id: deferredSourceIds[0],
+      message: expect.stringContaining("explicitly deferred"),
+    });
+    expect(summary.run_health).toMatchObject({
+      status: "degraded",
+      execution_status: "completed",
+      requires_attention: true,
+    });
+    expect(summary.repair_plan).toMatchObject({
+      requires_operator: true,
+      actions: [expect.objectContaining({
+        affected_count: 8,
+        solution: expect.stringContaining("fresh exact-nine dry-run"),
+      })],
+    });
+  });
+
+  it("adds the selected source to deferred work when reviewed exact-one apply blocks", () => {
+    const selectedSourceId = "00000000-0000-4000-8000-000000000009";
+    const deferredSourceIds = Array.from(
+      { length: 8 },
+      (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    );
+    const summary = buildVisualRunReportSummary({
+      status: "blocked",
+      execution_status: "blocked",
+      checked: 1,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 1 },
+      errors: [],
+      stage1_evidence_schema_upgrade_reviewed_apply: {
+        schema_version:
+          "awardping.stage1.evidence-schema-upgrade-reviewed-exact-one-apply-report.v1",
+        status: "selected_recovery_required",
+        reason_code: "reviewed_unchanged_upgrade_recovery_required",
+        selected_source_id: selectedSourceId,
+        deferred_source_ids: deferredSourceIds,
+        deferred_source_count: 8,
+        blocked_source_count: 1,
+        selected: {
+          source_id: selectedSourceId,
+          status: "selected_recovery_required",
+          reason_code: "reviewed_unchanged_upgrade_recovery_required",
+        },
+      },
+    });
+
+    expect(summary.failure_groups[0]).toMatchObject({
+      count: 9,
+      source_id_count: 9,
+      source_ids: [selectedSourceId, ...deferredSourceIds],
+    });
+    expect(summary.failure_groups[0].examples[0]).toMatchObject({
+      source_id: selectedSourceId,
+      message: expect.stringContaining("selected_recovery_required"),
+    });
+  });
+
+  it("preserves recovery-required execution while marking operational health blocked", () => {
+    const summary = buildVisualRunReportSummary({
+      status: "recovery_required",
+      execution_status: "recovery_required",
+      checked: 0,
+      failed: 0,
+      errors: [],
+    });
+
+    expect(summary.run_health).toMatchObject({
+      status: "blocked",
+      execution_status: "recovery_required",
+      requires_attention: true,
+    });
+    expect(summary.failure_groups).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "source_inventory_empty_or_incomplete" }),
+    ]));
+  });
+
+  it("does not change normal-mode or fully ready Stage 1 repair grouping", () => {
+    const base = {
+      status: "blocked",
+      execution_status: "blocked",
+      checked: 1,
+      failed: 0,
+      baseline_coverage_start: { loaded_sources: 1 },
+      errors: [],
+    };
+    const normal = buildVisualRunReportSummary(base);
+    const ready = buildVisualRunReportSummary({
+      ...base,
+      status: "succeeded",
+      execution_status: "succeeded",
+      stage1_evidence_schema_upgrade: {
+        schema_version: "awardping.stage1.evidence-schema-upgrade-report.v1",
+        status: "dry_run_complete",
+        blocked_source_count: 0,
+        results: [{
+          source_id: "00000000-0000-4000-8000-000000000001",
+          status: "dry_run_ready",
+        }],
+      },
+    });
+
+    for (const summary of [normal, ready]) {
+      expect(summary.failure_groups).toEqual([]);
+      expect(summary.repair_plan).toEqual({ requires_operator: false, actions: [] });
+    }
+  });
+
   it("never reports a zero-page or partially processed inventory as healthy", () => {
     const empty = buildVisualRunReportSummary({
       status: "succeeded",

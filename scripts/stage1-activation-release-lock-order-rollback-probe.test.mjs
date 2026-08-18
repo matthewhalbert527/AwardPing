@@ -14,6 +14,7 @@ import {
 import {
   runStage1ActivationReleaseLockOrderRollbackProbe,
   runStage1ActivationReleaseLockOrderRollbackProbeCli,
+  STAGE1_ACTIVATION_RELEASE_LOCK_ORDER_ROLLBACK_PROBE_EXPECTED_ROW,
   STAGE1_ACTIVATION_RELEASE_LOCK_ORDER_ROLLBACK_PROBE_USAGE,
 } from "./run-stage1-activation-release-lock-order-rollback-probe.mjs";
 
@@ -170,7 +171,11 @@ describe("Stage 1 activation release-lock rollback probe executable", () => {
       render,
     });
     expect(execute).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        STAGE1_ACTIVATION_RELEASE_LOCK_ORDER_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
     expect(result).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
   });
 

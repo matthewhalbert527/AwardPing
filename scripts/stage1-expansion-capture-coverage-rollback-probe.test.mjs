@@ -10,6 +10,7 @@ import {
 import {
   runStage1ExpansionCaptureCoverageRollbackProbe,
   runStage1ExpansionCaptureCoverageRollbackProbeCli,
+  STAGE1_EXPANSION_CAPTURE_COVERAGE_ROLLBACK_PROBE_EXPECTED_ROW,
   STAGE1_EXPANSION_COVERAGE_ROLLBACK_PROBE_USAGE,
 } from "./run-stage1-expansion-capture-coverage-rollback-probe.mjs";
 
@@ -154,7 +155,11 @@ describe("Stage 1 expansion coverage rollback probe executable", () => {
       render,
     });
     expect(execute).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        STAGE1_EXPANSION_CAPTURE_COVERAGE_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
     expect(result).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
   });
 

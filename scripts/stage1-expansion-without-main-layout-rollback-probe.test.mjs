@@ -9,6 +9,7 @@ import {
 import {
   runStage1ExpansionWithoutMainLayoutRollbackProbe,
   runStage1ExpansionWithoutMainLayoutRollbackProbeCli,
+  STAGE1_EXPANSION_WITHOUT_MAIN_LAYOUT_ROLLBACK_PROBE_EXPECTED_ROW,
   STAGE1_EXPANSION_ROLLBACK_PROBE_USAGE,
 } from "./run-stage1-expansion-without-main-layout-rollback-probe.mjs";
 
@@ -135,7 +136,11 @@ describe("Stage 1 expansion rollback probe executable", () => {
       render,
     });
     expect(execute).toHaveBeenCalledOnce();
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        STAGE1_EXPANSION_WITHOUT_MAIN_LAYOUT_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
     expect(result).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
   });
 

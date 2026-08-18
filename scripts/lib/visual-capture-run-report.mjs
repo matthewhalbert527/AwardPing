@@ -19,6 +19,18 @@ import {
 const MAX_EXAMPLES_PER_GROUP = 3;
 const MAX_SOURCE_IDS_PER_GROUP = 500;
 const RUN_HEARTBEAT_STALE_MS = 15 * 60 * 1000;
+const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REPORT_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-report.v1";
+const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_REPORT_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-reviewed-exact-one-apply-report.v1";
+const STAGE1_EVIDENCE_SCHEMA_UPGRADE_CLEAR_RESULT_STATUSES = new Set([
+  "dry_run_already_upgraded",
+  "already_upgraded",
+  "dry_run_ready",
+  "upgraded_and_queued",
+  "upgraded",
+  "candidate_queued",
+]);
 
 const FAILURE_POLICIES = [
   {
@@ -412,7 +424,10 @@ export function buildVisualRunReportSummary(report = {}) {
     groups.set(classification.code, current);
   }
 
-  let failureGroups = [...groups.values()].sort(compareFailureGroups);
+  let failureGroups = [
+    ...groups.values(),
+    ...stage1EvidenceSchemaUpgradeFailureGroups(report),
+  ].sort(compareFailureGroups);
   const pagesCaptured = nonNegativeNumber(report.checked);
   const failedSources = nonNegativeNumber(report.failed);
   const unrepresentedFailures = Math.max(0, failedSources - errors.length);
@@ -442,7 +457,7 @@ export function buildVisualRunReportSummary(report = {}) {
   const reportedStatus = cleanText(report.status) || "running";
   const executionStatus = cleanText(report.execution_status) ||
     cleanText(report.run_health?.execution_status) || reportedStatus;
-  const operationalStatus = operationalStatusFor({
+  const initialOperationalStatus = operationalStatusFor({
     reportedStatus,
     executionStatus,
     loadedSources,
@@ -451,7 +466,10 @@ export function buildVisualRunReportSummary(report = {}) {
     incidentCount: errors.length,
     inventoryComplete,
   });
-  if (!["running", "blocked", "failed"].includes(executionStatus) && !inventoryComplete) {
+  if (
+    !["running", "blocked", "failed", "recovery_required"].includes(executionStatus)
+    && !inventoryComplete
+  ) {
     failureGroups = mergeFailureGroups([...failureGroups, {
       code: "source_inventory_empty_or_incomplete",
       group: "platform_dependency",
@@ -471,7 +489,7 @@ export function buildVisualRunReportSummary(report = {}) {
   if (
     inventoryProofRequired &&
     !inventoryProof.complete &&
-    !["running", "blocked"].includes(executionStatus)
+    !["running", "blocked", "recovery_required"].includes(executionStatus)
   ) {
     failureGroups = mergeFailureGroups([...failureGroups, {
       code: "source_inventory_proof_missing_or_mismatched",
@@ -494,6 +512,12 @@ export function buildVisualRunReportSummary(report = {}) {
     }]);
   }
 
+  const repairPlan = buildRepairPlan(failureGroups);
+  const operationalStatus =
+    initialOperationalStatus === "healthy" && repairPlan.requires_operator
+      ? "degraded"
+      : initialOperationalStatus;
+
   return {
     run_health: {
       schema_version: 2,
@@ -514,7 +538,7 @@ export function buildVisualRunReportSummary(report = {}) {
       requires_attention: ["blocked", "degraded", "failed"].includes(operationalStatus),
     },
     failure_groups: failureGroups,
-    repair_plan: buildRepairPlan(failureGroups),
+    repair_plan: repairPlan,
   };
 }
 
@@ -873,6 +897,7 @@ function operationalStatusFor({
   inventoryComplete,
 }) {
   if (executionStatus === "running") return "running";
+  if (executionStatus === "recovery_required") return "blocked";
   if (executionStatus === "blocked") return "blocked";
   if (executionStatus === "failed") return "failed";
   if (reportedStatus === "failed") return "failed";
@@ -902,6 +927,153 @@ function buildRepairPlan(failureGroups) {
       solution: group.solution,
     })),
   };
+}
+
+function stage1EvidenceSchemaUpgradeFailureGroups(report) {
+  return [
+    ...stage1EvidenceSchemaUpgradeLegacyFailureGroups(report),
+    ...stage1EvidenceSchemaUpgradeReviewedApplyFailureGroups(report),
+  ];
+}
+
+function stage1EvidenceSchemaUpgradeLegacyFailureGroups(report) {
+  const upgrade = report?.stage1_evidence_schema_upgrade;
+  if (
+    !upgrade
+    || typeof upgrade !== "object"
+    || Array.isArray(upgrade)
+    || upgrade.schema_version !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_REPORT_SCHEMA
+  ) {
+    return [];
+  }
+
+  const results = Array.isArray(upgrade.results) ? upgrade.results : [];
+  const affectedResults = results.filter((result) => (
+    !STAGE1_EVIDENCE_SCHEMA_UPGRADE_CLEAR_RESULT_STATUSES.has(
+      cleanText(result?.status),
+    )
+  ));
+  const reportedBlocked = Math.floor(nonNegativeNumber(upgrade.blocked_source_count));
+  const reportedQuarantined = Math.floor(
+    nonNegativeNumber(upgrade.quarantined_work_remaining),
+  );
+  const affectedCount = Math.max(
+    reportedBlocked,
+    reportedQuarantined,
+    affectedResults.length,
+  );
+  if (affectedCount === 0) return [];
+
+  const sourceIds = [...new Set(affectedResults
+    .map((result) => cleanText(result?.source_id))
+    .filter(Boolean))];
+  const examples = affectedResults.slice(0, MAX_EXAMPLES_PER_GROUP).map((result) => {
+    const status = cleanText(result?.status) || "unknown_status";
+    const reason = cleanText(result?.reason_code)
+      || cleanText(result?.capture_validation?.reason)
+      || "reason_not_reported";
+    return {
+      source_id: cleanText(result?.source_id) || null,
+      source_url: null,
+      message: truncate(`Stage 1 result ${status}: ${reason}.`, 500),
+    };
+  });
+  if (examples.length === 0) {
+    examples.push({
+      source_id: null,
+      source_url: null,
+      message: `Stage 1 reported ${affectedCount} non-clear evidence-schema upgrade result(s).`,
+    });
+  }
+
+  return [{
+    code: "stage1_evidence_schema_upgrade_work_remaining",
+    group: "evidence_integrity",
+    label: "Stage 1 evidence-schema upgrade needs reviewed follow-up",
+    severity: "critical",
+    retry_mode: "operator_guarded",
+    repair_code: "review_stage1_evidence_schema_upgrade_work",
+    solution:
+      "Review each non-clear Stage 1 result and its immutable evidence. Keep quarantined sources held, reconcile any exact active recovery journal before a new capture, and repair the cited source, acquisition, or baseline binding, then rerun the exact reviewed dry-run. Do not run apply or clear a hold until every remaining disposition is explicitly reviewed.",
+    count: affectedCount,
+    source_ids: sourceIds.slice(0, MAX_SOURCE_IDS_PER_GROUP),
+    source_id_count: sourceIds.length,
+    source_ids_truncated: sourceIds.length > MAX_SOURCE_IDS_PER_GROUP,
+    examples,
+  }];
+}
+
+function stage1EvidenceSchemaUpgradeReviewedApplyFailureGroups(report) {
+  const apply = report?.stage1_evidence_schema_upgrade_reviewed_apply;
+  if (
+    !apply
+    || typeof apply !== "object"
+    || Array.isArray(apply)
+    || apply.schema_version
+      !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_REPORT_SCHEMA
+  ) {
+    return [];
+  }
+
+  const selectedStatus = cleanText(apply.selected?.status || apply.status);
+  const selectedSourceId = cleanText(
+    apply.selected?.source_id || apply.selected_source_id,
+  );
+  const selectedNeedsWork = selectedStatus !== "selected_completed";
+  const deferredSourceIds = [...new Set(
+    (Array.isArray(apply.deferred_source_ids) ? apply.deferred_source_ids : [])
+      .map(cleanText)
+      .filter(Boolean),
+  )];
+  const reportedDeferred = Math.floor(nonNegativeNumber(apply.deferred_source_count));
+  const reportedBlocked = Math.floor(nonNegativeNumber(apply.blocked_source_count));
+  const affectedCount = Math.max(
+    reportedDeferred + (selectedNeedsWork ? 1 : 0),
+    deferredSourceIds.length + (selectedNeedsWork && selectedSourceId ? 1 : 0),
+    reportedBlocked + reportedDeferred,
+  );
+  if (affectedCount === 0) return [];
+
+  const sourceIds = [...new Set([
+    ...(selectedNeedsWork && selectedSourceId ? [selectedSourceId] : []),
+    ...deferredSourceIds,
+  ])];
+  const examples = [];
+  if (selectedNeedsWork) {
+    examples.push({
+      source_id: selectedSourceId || null,
+      source_url: null,
+      message: truncate(
+        `Reviewed exact-one Stage 1 apply ended ${selectedStatus || "unknown_status"}: ${cleanText(apply.selected?.reason_code || apply.reason_code) || "reason_not_reported"}.`,
+        500,
+      ),
+    });
+  }
+  for (const sourceId of deferredSourceIds) {
+    if (examples.length >= MAX_EXAMPLES_PER_GROUP) break;
+    examples.push({
+      source_id: sourceId,
+      source_url: null,
+      message:
+        "This source was explicitly deferred by the reviewed exact-one apply plan and remains outside its mutation authority.",
+    });
+  }
+
+  return [{
+    code: "stage1_evidence_schema_upgrade_work_remaining",
+    group: "evidence_integrity",
+    label: "Stage 1 evidence-schema upgrade needs reviewed follow-up",
+    severity: "critical",
+    retry_mode: "operator_guarded",
+    repair_code: "review_stage1_evidence_schema_upgrade_work",
+    solution:
+      "Keep every deferred source unchanged. Review a fresh exact-nine dry-run before creating another exact-one apply plan. If the selected source reports recovery_required, reconcile its exact journal and authority before any new capture or retry; never broaden the completed plan or clear a hold implicitly.",
+    count: affectedCount,
+    source_ids: sourceIds.slice(0, MAX_SOURCE_IDS_PER_GROUP),
+    source_id_count: sourceIds.length,
+    source_ids_truncated: sourceIds.length > MAX_SOURCE_IDS_PER_GROUP,
+    examples,
+  }];
 }
 
 function mergeFailureGroups(groups) {

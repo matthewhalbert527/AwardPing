@@ -6,7 +6,21 @@ import {
 } from "./render-stage1-evidence-schema-upgrade-quarantine-v2-reseal-rollback-probe.mjs";
 import {
   runStage1PendingMigrationRollbackProbe,
+  STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
 } from "./run-stage1-pending-migration-rollback-probe.mjs";
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_V2_ROLLBACK_PROBE_EXPECTED_ROW =
+  Object.freeze({
+    status: STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
+    probe: "awardping_stage1_quarantine_v2_reseal_rollback_probe_passed",
+    exact_migration_count: 1,
+    exact_smoke_count: 1,
+    function_definition_restored: true,
+    function_metadata_restored: true,
+    v1_constraint_restored: true,
+    application_rows_unchanged: true,
+    migration_history_unchanged: true,
+  });
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_V2_ROLLBACK_PROBE_USAGE = `Usage: node scripts/run-stage1-evidence-schema-upgrade-quarantine-v2-reseal-rollback-probe.mjs [--help|-h]
 
@@ -23,7 +37,11 @@ export function runStage1EvidenceSchemaUpgradeQuarantineV2RollbackProbe({
   execute = runStage1PendingMigrationRollbackProbe,
   render = renderStage1EvidenceSchemaUpgradeQuarantineV2RollbackProbe,
 } = {}) {
-  return execute({ render });
+  return execute({
+    render,
+    expectedResultRow:
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_V2_ROLLBACK_PROBE_EXPECTED_ROW,
+  });
 }
 
 export function runStage1EvidenceSchemaUpgradeQuarantineV2RollbackProbeCli({

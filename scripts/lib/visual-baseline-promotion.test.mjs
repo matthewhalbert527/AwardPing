@@ -94,6 +94,7 @@ describe("approved visual baseline promotion", () => {
       captured_at: "2026-07-14T20:00:00.000Z",
       text_hash: capture.text_hash,
       image_hash: capture.image_hash,
+      expansion_text_length: 0,
       summary_metadata: {
         reason: "batch_approved_true_change",
         approved_visual_candidate_id: "candidate-1",
@@ -206,6 +207,95 @@ describe("approved visual baseline promotion", () => {
     expect(existsSync(join(archiveRoot, "sources", sourceId, "baseline.json"))).toBe(false);
   });
 
+  it.each([
+    ["boolean false", false],
+    ["empty string", ""],
+  ])("rejects %s expansion length before any local or R2 write", async (_label, invalidValue) => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = `source-invalid-expansion-length-${_label.replaceAll(" ", "-")}`;
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "invalid-length"),
+      sourceId,
+    });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.expansion_text_length = invalidValue;
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+    const source = {
+      id: sourceId,
+      shared_award_id: "award-1",
+      url: "https://example.edu/award",
+    };
+    const expectedError =
+      "Approved webpage snapshot capture expansion_text_length must be a non-negative safe integer.";
+
+    expect(() => promoteApprovedVisualBaselineLocal({
+      candidate,
+      source,
+      archiveRoot,
+      approved: true,
+    })).toThrow(expectedError);
+    expect(existsSync(join(archiveRoot, "sources", sourceId, "baseline.json"))).toBe(false);
+
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate,
+      source,
+      capture: captureFromVisualReviewCandidate(candidate, archiveRoot),
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    })).rejects.toThrow(expectedError);
+    expect(operations).toEqual([]);
+    expect(database.upserts).toEqual([]);
+  });
+
+  it("rejects malformed raw expansion length even when the caller capture claims zero", async () => {
+    const archiveRoot = temporaryArchive();
+    const sourceId = "source-invalid-raw-expansion-length";
+    const capture = verifiedWebCapture({
+      archiveRoot,
+      captureDir: join(archiveRoot, "sources", sourceId, "captures", "invalid-raw-length"),
+      sourceId,
+    });
+    const rawMeta = JSON.parse(readFileSync(capture.meta_path, "utf8"));
+    rawMeta.expansion_text_length = false;
+    writeFileSync(capture.meta_path, JSON.stringify(rawMeta));
+    capture.artifact_bindings.meta = artifactBindingForTest(capture.meta_path);
+    const candidate = candidateFixture({
+      new_text_hash: capture.text_hash,
+      new_image_hash: capture.image_hash,
+      new_snapshot_ref: snapshotRefForCapture(capture, archiveRoot),
+    });
+    const operations = [];
+    const database = r2DatabaseStub({ existing: null, operations });
+
+    await expect(promoteApprovedVisualBaselineR2({
+      candidate,
+      source: {
+        id: sourceId,
+        shared_award_id: "award-1",
+        url: "https://example.edu/award",
+      },
+      capture,
+      supabase: database.client,
+      s3Client: r2ClientStub({ operations }),
+      approved: true,
+      config: { enabled: true, bucket: "snapshots" },
+    })).rejects.toThrow(
+      "Approved webpage snapshot raw metadata expansion_text_length must be a non-negative safe integer.",
+    );
+    expect(operations).toEqual([]);
+    expect(database.upserts).toEqual([]);
+  });
+
   it("uses the verified full layout artifact while preserving production compact metadata", async () => {
     const archiveRoot = temporaryArchive();
     const sourceId = "55555555-5555-4555-8555-555555555555";
@@ -241,6 +331,7 @@ describe("approved visual baseline promotion", () => {
     expect(local).toMatchObject({
       promoted: true,
       baseline: {
+        expansion_text_length: 0,
         layout_hash: capture.layout_hash,
         capture: { layout: expect.stringMatching(/layout\.json$/) },
       },
@@ -261,6 +352,7 @@ describe("approved visual baseline promotion", () => {
     });
     expect(r2).toMatchObject({ promoted: true, uploaded: 5 });
     expect(database.current.latest_object_keys).toHaveProperty("layout");
+    expect(database.current.latest_metadata.expansion_text_length).toBe(0);
     expect(database.current.latest_metadata.text_geometry).not.toHaveProperty("paint_stack");
     expect(database.current.latest_metadata.text_geometry)
       .not.toHaveProperty("capture_verification");
@@ -776,6 +868,7 @@ describe("approved visual baseline promotion", () => {
         text_hash: "new-text",
         image_hash: "new-image",
         layout_hash: "new-layout",
+        expansion_text_length: 0,
         page_path: pagePath,
         thumb_path: join(captureDir, "missing-thumb.jpg"),
         text_path: textPath,
@@ -814,6 +907,7 @@ describe("approved visual baseline promotion", () => {
         captured_at: "2026-07-14T20:00:00.000Z",
         text_hash: "new-text",
         image_hash: "new-image",
+        expansion_text_length: 0,
         ...paths,
       },
       supabase: r2DatabaseStub({ existing: null, operations: [] }).client,
@@ -1473,6 +1567,7 @@ function verifiedWebCapture({
     localization: readyLocalizationForTest(mainGeometry, imageHash),
     retained_artifact_projection: retainedArtifactProjection,
     text_length: text.length,
+    expansion_text_length: 0,
     page_bytes: readFileSync(paths.page_path).length,
     thumb_bytes: readFileSync(paths.thumb_path).length,
     dimensions: { width: 1365, height: 2400 },

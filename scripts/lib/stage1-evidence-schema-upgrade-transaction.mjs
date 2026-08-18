@@ -9,6 +9,90 @@ import {
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-journal.v1";
 
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-journal.v2";
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_OPERATION_BINDING_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-reviewed-operation-binding.v1";
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_PRECOMMIT_SOURCE_AUTHORITY_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-reviewed-apply-source-authority.v1";
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_PRECOMMIT_SOURCE_AUTHORITY_PROJECTION_KEYS =
+  Object.freeze([
+    "admin_review_note",
+    "admin_review_status",
+    "admin_reviewed_at",
+    "admin_reviewed_by",
+    "consecutive_failures",
+    "created_at",
+    "display_title",
+    "id",
+    "last_checked_at",
+    "last_error",
+    "last_hash",
+    "next_check_at",
+    "page_description",
+    "page_metadata",
+    "page_metadata_generated_at",
+    "page_metadata_model",
+    "page_type",
+    "reason",
+    "shared_award_id",
+    "shared_awards",
+    "source",
+    "submitted_by_user_id",
+    "title",
+    "updated_at",
+    "url",
+  ]);
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_ARCHIVED_COMPLETION_PROOF_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-archived-completion-proof.v1";
+
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const UUID_V4_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+const reviewedOperationBindingKeys = Object.freeze([
+  "audit_run_id",
+  "binding_sha256",
+  "execution_nonce",
+  "fresh_capture_result_sha256",
+  "fresh_capture_sha256",
+  "fresh_capture_validation_sha256",
+  "fresh_validation_projection_sha256",
+  "precommit_authority_receipt_sha256",
+  "precommit_source_authority",
+  "reviewed_apply_plan_file_sha256",
+  "reviewed_apply_plan_sha256",
+  "reviewed_report_attempt_id",
+  "schema_version",
+  "source_id",
+  "transaction_id",
+]);
+const journalV1Keys = Object.freeze([
+  "candidate_baseline",
+  "candidate_object_keys",
+  "candidate_pointer_identity",
+  "created_at",
+  "journal_sha256",
+  "old_baseline",
+  "old_pointer_identity",
+  "phase",
+  "phase_history",
+  "schema_version",
+  "source_id",
+  "transaction_id",
+  "updated_at",
+]);
+const journalV2Keys = Object.freeze([
+  ...journalV1Keys,
+  "operation_binding",
+]);
+
 export const stage1EvidenceSchemaUpgradePhases = Object.freeze([
   "prepared",
   "local_candidate_written",
@@ -45,6 +129,7 @@ export function buildStage1EvidenceSchemaUpgradeJournal({
   oldPointer,
   candidateBaselineBytes,
   candidatePointer,
+  operationBinding = null,
   createdAt,
 } = {}) {
   const id = requiredText(transactionId, "transactionId");
@@ -67,8 +152,24 @@ export function buildStage1EvidenceSchemaUpgradeJournal({
   assertPointerSource(oldPointerIdentity, source, "old");
   assertPointerSource(candidatePointerIdentity, source, "candidate");
 
+  const reviewedBinding = operationBinding === null
+    ? null
+    : assertStage1EvidenceSchemaUpgradeReviewedOperationBinding(operationBinding);
+  if (
+    reviewedBinding
+    && (
+      reviewedBinding.source_id !== source
+      || reviewedBinding.transaction_id !== id
+    )
+  ) {
+    throw new Error(
+      "Stage 1 reviewed operation binding does not match the journal source and transaction.",
+    );
+  }
   const journal = {
-    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_SCHEMA,
+    schema_version: reviewedBinding
+      ? STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA
+      : STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_SCHEMA,
     transaction_id: id,
     source_id: source,
     created_at: timestamp,
@@ -81,9 +182,226 @@ export function buildStage1EvidenceSchemaUpgradeJournal({
     candidate_object_keys: cloneJson(
       candidatePointerIdentity.projection.latest_object_keys,
     ),
+    ...(reviewedBinding ? { operation_binding: cloneJson(reviewedBinding) } : {}),
     phase_history: [{ phase: "prepared", at: timestamp, detail: null }],
   };
   return sealJournal(journal);
+}
+
+/**
+ * Builds the immutable identity that ties a reviewed apply journal to the one
+ * separately reviewed plan, running audit row, execution, and fresh capture.
+ */
+export function buildStage1EvidenceSchemaUpgradeReviewedOperationBinding({
+  sourceId,
+  transactionId,
+  reviewedApplyPlanFileSha256,
+  reviewedApplyPlanSha256,
+  auditRunId,
+  executionNonce,
+  reviewedReportAttemptId,
+  freshCaptureSha256,
+  freshCaptureResultSha256,
+  freshCaptureValidationSha256,
+  freshValidationProjectionSha256,
+  precommitAuthorityReceiptSha256,
+  precommitSourceAuthority,
+} = {}) {
+  const content = {
+    schema_version:
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_OPERATION_BINDING_SCHEMA,
+    source_id: requiredUuid(sourceId, "operation binding source_id"),
+    transaction_id: requiredText(transactionId, "operation binding transaction_id"),
+    reviewed_apply_plan_file_sha256: requiredSha256(
+      reviewedApplyPlanFileSha256,
+      "operation binding reviewed apply plan file SHA-256",
+    ),
+    reviewed_apply_plan_sha256: requiredSha256(
+      reviewedApplyPlanSha256,
+      "operation binding reviewed apply plan self SHA-256",
+    ),
+    audit_run_id: requiredUuid(auditRunId, "operation binding audit_run_id"),
+    execution_nonce: requiredUuidV4(
+      executionNonce,
+      "operation binding execution_nonce",
+    ),
+    reviewed_report_attempt_id: requiredUuid(
+      reviewedReportAttemptId,
+      "operation binding reviewed report attempt_id",
+    ),
+    fresh_capture_sha256: requiredSha256(
+      freshCaptureSha256,
+      "operation binding fresh capture SHA-256",
+    ),
+    fresh_capture_result_sha256: requiredSha256(
+      freshCaptureResultSha256,
+      "operation binding fresh capture result SHA-256",
+    ),
+    fresh_capture_validation_sha256: requiredSha256(
+      freshCaptureValidationSha256,
+      "operation binding fresh capture validation SHA-256",
+    ),
+    fresh_validation_projection_sha256: requiredSha256(
+      freshValidationProjectionSha256,
+      "operation binding fresh validation projection SHA-256",
+    ),
+    precommit_authority_receipt_sha256: requiredSha256(
+      precommitAuthorityReceiptSha256,
+      "operation binding precommit authority receipt SHA-256",
+    ),
+    precommit_source_authority:
+      cloneJson(assertStage1EvidenceSchemaUpgradePrecommitSourceAuthority(
+        precommitSourceAuthority,
+      )),
+  };
+  const sealed = {
+    ...content,
+    binding_sha256: sha256Text(stableJson(content)),
+  };
+  return Object.freeze(
+    cloneJson(assertStage1EvidenceSchemaUpgradeReviewedOperationBinding(sealed)),
+  );
+}
+
+export function assertStage1EvidenceSchemaUpgradeReviewedOperationBinding(value) {
+  const binding = requirePlainObject(value, "reviewed operation binding");
+  assertExactKeys(binding, reviewedOperationBindingKeys, "reviewed operation binding");
+  if (
+    binding.schema_version
+      !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_OPERATION_BINDING_SCHEMA
+  ) {
+    throw new Error("Stage 1 reviewed operation binding schema is invalid.");
+  }
+  requiredUuid(binding.source_id, "operation binding source_id");
+  requiredText(binding.transaction_id, "operation binding transaction_id");
+  requiredSha256(
+    binding.reviewed_apply_plan_file_sha256,
+    "operation binding reviewed apply plan file SHA-256",
+  );
+  const sourceAuthority = assertStage1EvidenceSchemaUpgradePrecommitSourceAuthority(
+    binding.precommit_source_authority,
+  );
+  if (sourceAuthority.source_id !== binding.source_id) {
+    throw new Error(
+      "Operation binding precommit source authority belongs to another source.",
+    );
+  }
+  requiredSha256(
+    binding.reviewed_apply_plan_sha256,
+    "operation binding reviewed apply plan self SHA-256",
+  );
+  requiredUuid(binding.audit_run_id, "operation binding audit_run_id");
+  requiredUuidV4(binding.execution_nonce, "operation binding execution_nonce");
+  requiredUuid(
+    binding.reviewed_report_attempt_id,
+    "operation binding reviewed report attempt_id",
+  );
+  requiredSha256(binding.fresh_capture_sha256, "operation binding fresh capture SHA-256");
+  requiredSha256(
+    binding.fresh_capture_result_sha256,
+    "operation binding fresh capture result SHA-256",
+  );
+  requiredSha256(
+    binding.fresh_capture_validation_sha256,
+    "operation binding fresh capture validation SHA-256",
+  );
+  requiredSha256(
+    binding.fresh_validation_projection_sha256,
+    "operation binding fresh validation projection SHA-256",
+  );
+  requiredSha256(
+    binding.precommit_authority_receipt_sha256,
+    "operation binding precommit authority receipt SHA-256",
+  );
+  const content = cloneJson(binding);
+  delete content.binding_sha256;
+  if (
+    requiredSha256(binding.binding_sha256, "operation binding self SHA-256")
+      !== sha256Text(stableJson(content))
+  ) {
+    throw new Error("Stage 1 reviewed operation binding seal is invalid.");
+  }
+  return binding;
+}
+
+export function stage1EvidenceSchemaUpgradeReviewedAuthorityReceiptSha256(value) {
+  return sha256Text(stableJson(requirePlainObject(
+    value,
+    "reviewed precommit authority receipt",
+  )));
+}
+
+export function buildStage1EvidenceSchemaUpgradePrecommitSourceAuthority({
+  sourceId,
+  sourceProjection,
+} = {}) {
+  const source = requiredUuid(sourceId, "precommit source authority source_id");
+  const projection = cloneJson(requirePlainObject(
+    sourceProjection,
+    "precommit source authority projection",
+  ));
+  assertExactKeys(
+    projection,
+    STAGE1_EVIDENCE_SCHEMA_UPGRADE_PRECOMMIT_SOURCE_AUTHORITY_PROJECTION_KEYS,
+    "precommit source authority projection",
+  );
+  if (projection.id !== source) {
+    throw new Error("Precommit source authority projection belongs to another source.");
+  }
+  const content = {
+    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_PRECOMMIT_SOURCE_AUTHORITY_SCHEMA,
+    source_id: source,
+    projection,
+    projection_sha256: sha256Text(stableJson(projection)),
+  };
+  return Object.freeze({
+    ...content,
+    source_authority_sha256: sha256Text(stableJson(content)),
+  });
+}
+
+export function assertStage1EvidenceSchemaUpgradePrecommitSourceAuthority(value) {
+  const authority = requirePlainObject(value, "precommit source authority");
+  assertExactKeys(authority, [
+    "projection",
+    "projection_sha256",
+    "schema_version",
+    "source_id",
+    "source_authority_sha256",
+  ], "precommit source authority");
+  const source = requiredUuid(authority.source_id, "precommit source authority source_id");
+  const projection = requirePlainObject(
+    authority.projection,
+    "precommit source authority projection",
+  );
+  assertExactKeys(
+    projection,
+    STAGE1_EVIDENCE_SCHEMA_UPGRADE_PRECOMMIT_SOURCE_AUTHORITY_PROJECTION_KEYS,
+    "precommit source authority projection",
+  );
+  if (
+    authority.schema_version
+      !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_PRECOMMIT_SOURCE_AUTHORITY_SCHEMA
+    || projection.id !== source
+    || requiredSha256(
+      authority.projection_sha256,
+      "precommit source projection SHA-256",
+    ) !== sha256Text(stableJson(projection))
+  ) {
+    throw new Error("Precommit source authority projection or identity is invalid.");
+  }
+  const content = cloneJson(authority);
+  delete content.source_authority_sha256;
+  if (
+    requiredSha256(
+      authority.source_authority_sha256,
+      "precommit source authority SHA-256",
+    )
+      !== sha256Text(stableJson(content))
+  ) {
+    throw new Error("Precommit source authority seal is invalid.");
+  }
+  return authority;
 }
 
 /**
@@ -127,11 +445,39 @@ export function advanceStage1EvidenceSchemaUpgradeJournal(journal, {
 
 export function assertStage1EvidenceSchemaUpgradeJournal(journal) {
   const value = requirePlainObject(journal, "Stage 1 evidence upgrade journal");
-  if (value.schema_version !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_SCHEMA) {
+  const reviewed = value.schema_version
+    === STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA;
+  if (
+    !reviewed
+    && value.schema_version !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_SCHEMA
+  ) {
     throw new Error("Stage 1 evidence upgrade journal schema is invalid.");
   }
-  requiredText(value.transaction_id, "journal transaction_id");
+  if (
+    stableJson(Object.keys(value).sort())
+      !== stableJson([...(reviewed ? journalV2Keys : journalV1Keys)].sort())
+  ) {
+    throw new Error(reviewed
+      ? "Stage 1 evidence upgrade v2 reviewed journal has unexpected or missing fields."
+      : "active journal must contain only the exact sealed journal fields");
+  }
+  const transactionId = requiredText(value.transaction_id, "journal transaction_id");
   const sourceId = requiredText(value.source_id, "journal source_id");
+  if (reviewed) {
+    const binding = assertStage1EvidenceSchemaUpgradeReviewedOperationBinding(
+      value.operation_binding,
+    );
+    if (
+      binding.source_id !== sourceId
+      || binding.transaction_id !== transactionId
+    ) {
+      throw new Error(
+        "Stage 1 reviewed journal operation binding does not match its identity.",
+      );
+    }
+  } else if (Object.hasOwn(value, "operation_binding")) {
+    throw new Error("Stage 1 v1 journal must not contain a reviewed operation binding.");
+  }
   requiredTimestamp(value.created_at, "journal created_at");
   requiredTimestamp(value.updated_at, "journal updated_at");
   if (!stage1EvidenceSchemaUpgradePhases.includes(value.phase)) {
@@ -166,6 +512,101 @@ export function assertStage1EvidenceSchemaUpgradeJournal(journal) {
     throw new Error("Stage 1 evidence upgrade journal seal does not match its content.");
   }
   return value;
+}
+
+/**
+ * Proves that an exact archived v2 journal reached a terminal authority and
+ * that the current local baseline and pointer still match that authority.
+ * The proof is read-only and content sealed; callers separately bind any R2,
+ * source, acquisition, and finalization evidence.
+ */
+export function proveStage1EvidenceSchemaUpgradeArchivedCompletion({
+  journal,
+  expectedJournalSha256,
+  expectedTransactionId,
+  expectedOperationBinding,
+  currentBaselineBytes,
+  currentPointer,
+} = {}) {
+  const archived = assertStage1EvidenceSchemaUpgradeJournal(journal);
+  if (
+    archived.schema_version
+      !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA
+  ) {
+    throw new Error(
+      "Reviewed archived completion proof requires a v2 operation-bound journal; v1 requires explicit operator migration.",
+    );
+  }
+  const expectedSha = requiredSha256(
+    expectedJournalSha256,
+    "expected archived journal SHA-256",
+  );
+  const expectedTransaction = requiredText(
+    expectedTransactionId,
+    "expected archived transaction_id",
+  );
+  const expectedBinding = assertStage1EvidenceSchemaUpgradeReviewedOperationBinding(
+    expectedOperationBinding,
+  );
+  if (
+    archived.phase !== "completed"
+    || archived.journal_sha256 !== expectedSha
+    || archived.transaction_id !== expectedTransaction
+    || stableJson(archived.operation_binding) !== stableJson(expectedBinding)
+  ) {
+    throw new Error("Archived reviewed journal does not match the exact recovery authority.");
+  }
+  const recovery = classifyStage1EvidenceSchemaUpgradeRecovery({
+    journal: archived,
+    currentBaselineBytes,
+    currentPointer,
+  });
+  const terminal = archived.phase_history.at(-1)?.detail;
+  let disposition;
+  let authority;
+  if (
+    recovery.classification === "candidate"
+    && ["candidate", "both"].includes(recovery.baseline_state)
+    && hasExactCandidateCompletionProof(archived, terminal)
+  ) {
+    disposition = "archived_candidate_completed";
+    authority = "candidate";
+  } else if (
+    recovery.classification === "old"
+    && ["old", "both"].includes(recovery.baseline_state)
+    && hasExactOldCompletionProof(archived, terminal)
+  ) {
+    disposition = "archived_old_abandoned";
+    authority = "old";
+  } else {
+    throw new Error(
+      "Archived reviewed journal does not prove an exact current terminal authority.",
+    );
+  }
+  const content = {
+    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_ARCHIVED_COMPLETION_PROOF_SCHEMA,
+    disposition,
+    authority,
+    source_id: archived.source_id,
+    transaction_id: archived.transaction_id,
+    journal_sha256: archived.journal_sha256,
+    operation_binding_sha256: archived.operation_binding.binding_sha256,
+    authoritative_pointer_sha256: authority === "candidate"
+      ? archived.candidate_pointer_identity.canonical_sha256
+      : archived.old_pointer_identity.canonical_sha256,
+    authoritative_baseline_sha256: authority === "candidate"
+      ? archived.candidate_baseline.sha256
+      : archived.old_baseline.sha256,
+    source_health_status: authority === "candidate"
+      ? terminal.source_health_status
+      : null,
+    mutation_performed: false,
+    creates_api_charge: false,
+  };
+  return Object.freeze({
+    ...content,
+    proof_sha256: sha256Text(stableJson(content)),
+  });
 }
 
 /**
@@ -420,6 +861,25 @@ function assertPhaseHistory(journal) {
   }
 }
 
+function hasExactCandidateCompletionProof(journal, detail) {
+  return isPlainObject(detail)
+    && detail.outcome === "committed_candidate"
+    && detail.authoritative_pointer_sha256
+      === journal.candidate_pointer_identity.canonical_sha256
+    && detail.authoritative_baseline_sha256 === journal.candidate_baseline.sha256
+    && new Set(["succeeded", "already_current"]).has(detail.source_health_status)
+    && detail.cleanup_debt_delete_performed === false;
+}
+
+function hasExactOldCompletionProof(journal, detail) {
+  return isPlainObject(detail)
+    && detail.outcome === "abandoned_old_authority"
+    && detail.authoritative_pointer_sha256
+      === journal.old_pointer_identity.canonical_sha256
+    && detail.authoritative_baseline_sha256 === journal.old_baseline.sha256
+    && detail.cleanup_debt_delete_performed === false;
+}
+
 function sealJournal(journal) {
   const value = cloneJson(journal);
   value.journal_sha256 = journalSha256(value);
@@ -452,6 +912,24 @@ function requiredText(value, label) {
   return text;
 }
 
+function requiredSha256(value, label) {
+  const text = requiredText(value, label);
+  if (!SHA256_PATTERN.test(text)) throw new Error(`${label} is invalid.`);
+  return text;
+}
+
+function requiredUuid(value, label) {
+  const text = requiredText(value, label);
+  if (!UUID_PATTERN.test(text)) throw new Error(`${label} is invalid.`);
+  return text;
+}
+
+function requiredUuidV4(value, label) {
+  const text = requiredText(value, label);
+  if (!UUID_V4_PATTERN.test(text)) throw new Error(`${label} is invalid.`);
+  return text;
+}
+
 function requiredTimestamp(value, label) {
   const text = requiredText(value, label);
   const milliseconds = Date.parse(text);
@@ -467,6 +945,16 @@ function stableJson(value) {
     )).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function sha256Text(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function assertExactKeys(value, expected, label) {
+  if (stableJson(Object.keys(value).sort()) !== stableJson([...expected].sort())) {
+    throw new Error(`${label} has unexpected or missing fields.`);
+  }
 }
 
 function requirePlainObject(value, label) {

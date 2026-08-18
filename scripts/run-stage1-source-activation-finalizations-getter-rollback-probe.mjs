@@ -1,7 +1,22 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { renderStage1SourceActivationFinalizationsGetterRollbackProbe } from "./render-stage1-source-activation-finalizations-getter-rollback-probe.mjs";
-import { runStage1PendingMigrationRollbackProbe } from "./run-stage1-pending-migration-rollback-probe.mjs";
+import {
+  runStage1PendingMigrationRollbackProbe,
+  STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
+} from "./run-stage1-pending-migration-rollback-probe.mjs";
+
+export const STAGE1_SOURCE_ACTIVATION_FINALIZATIONS_GETTER_ROLLBACK_PROBE_EXPECTED_ROW =
+  Object.freeze({
+    [STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER]: true,
+    awardping_stage1_finalization_getter_rollback_probe_passed: true,
+    exact_migration_count: 1,
+    exact_smoke_count: 1,
+    exact_migration:
+      "20260814203233_get_stage1_source_activation_finalizations.sql",
+    exact_smoke: "stage1_source_activation_finalizations_getter_smoke.sql",
+    persistence_result: "migration/smoke/catalog changes rolled back",
+  });
 
 export const STAGE1_FINALIZATION_GETTER_ROLLBACK_PROBE_USAGE = `Usage: node scripts/run-stage1-source-activation-finalizations-getter-rollback-probe.mjs [--help|-h]
 
@@ -18,7 +33,11 @@ export function runStage1SourceActivationFinalizationsGetterRollbackProbe({
   execute = runStage1PendingMigrationRollbackProbe,
   render = renderStage1SourceActivationFinalizationsGetterRollbackProbe,
 } = {}) {
-  return execute({ render });
+  return execute({
+    render,
+    expectedResultRow:
+      STAGE1_SOURCE_ACTIVATION_FINALIZATIONS_GETTER_ROLLBACK_PROBE_EXPECTED_ROW,
+  });
 }
 
 export function runStage1SourceActivationFinalizationsGetterRollbackProbeCli({

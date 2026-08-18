@@ -14,6 +14,7 @@ import {
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_MUTATION_COUNT_KEYS,
 } from "./stage1-evidence-schema-upgrade-mutation-accounting.mjs";
 import {
+  assertStage1EvidenceSchemaUpgradeJournalArchiveAccounting,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_COMMIT_RECEIPT_SCHEMA,
 } from "./stage1-evidence-schema-upgrade-commit.mjs";
 import {
@@ -42,7 +43,7 @@ export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_EVIDENCE_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-recovery-evidence.v1";
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_ID =
   "awardping-stage1-evidence-schema-upgrade-quarantine";
-export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_VERSION = "2";
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_VERSION = "3";
 
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -852,6 +853,10 @@ function normalizePointerCommitReceipt(value, sourceId, expectedAccounting) {
   const cas = normalizePriorPointerCommitCas(receipt.cas);
   const cleanupDebt = normalizePriorPointerCleanupDebt(receipt.cleanup_debt);
   const accountingEvidence = objectValue(accounting.evidence);
+  const accountingEvidenceShape = assertPriorPointerAccountingEvidence({
+    accountingEvidence,
+    receipt,
+  });
   const sourceHealth = normalizePriorPointerSourceHealth(
     receipt.source_health,
     receipt.outcome,
@@ -859,18 +864,15 @@ function normalizePointerCommitReceipt(value, sourceId, expectedAccounting) {
   );
   assertPriorPointerReceiptAuthority(receipt);
   if (
-    !hasExactKeys(accountingEvidence, [
-      "boundary",
-      "cas",
-      "journal_phase",
-      "response_loss_possible",
-    ])
-    || !requiredText(
+    !requiredText(
       accountingEvidence.boundary,
       "prior pointer-commit accounting boundary",
     )
     || accountingEvidence.journal_phase !== receipt.journal_phase
-    || accountingEvidence.response_loss_possible !== !accounting.exact
+    || accountingEvidence.response_loss_possible !== (
+      !accounting.exact
+      || accountingEvidenceShape.nestedResponseLossPossible
+    )
     || canonicalJson(accountingEvidence.cas) !== canonicalJson(cas)
     || accounting.exact !== !cas.threw
     || (cas.threw
@@ -906,6 +908,106 @@ function normalizePointerCommitReceipt(value, sourceId, expectedAccounting) {
     mutation_counts: cloneJson(mutationCounts),
     mutation_accounting: cloneJson(accounting),
   };
+}
+
+function assertPriorPointerAccountingEvidence({ accountingEvidence, receipt }) {
+  const legacy = hasExactKeys(accountingEvidence, [
+    "boundary",
+    "cas",
+    "journal_phase",
+    "response_loss_possible",
+  ]);
+  const current = hasExactKeys(accountingEvidence, [
+    "boundary",
+    "cas",
+    "journal_archive",
+    "journal_persistence",
+    "journal_phase",
+    "response_loss_possible",
+  ]);
+  if (!legacy && !current) {
+    throw new Error(
+      "Prior pointer-commit accounting evidence must use the exact legacy or current journal-accounting shape.",
+    );
+  }
+  if (legacy) return { shape: "legacy", nestedResponseLossPossible: false };
+
+  const journalPersistence = assertPriorJournalPersistenceAccounting(
+    accountingEvidence.journal_persistence,
+  );
+  let journalArchive;
+  try {
+    journalArchive = assertStage1EvidenceSchemaUpgradeJournalArchiveAccounting(
+      accountingEvidence.journal_archive,
+    );
+  } catch (error) {
+    throw new Error(
+      `Prior pointer-commit journal-archive accounting is invalid: ${error.message}`,
+    );
+  }
+  if (
+    receipt.status === "recovery_required"
+    && (
+      receipt.journal_archived !== false
+      || !(
+        (journalPersistence.state === "not_started"
+          && journalPersistence.local_journal_writes_lower_bound === 0
+          && journalPersistence.response_loss_possible === false)
+        || (journalPersistence.state === "verified"
+          && journalPersistence.local_journal_writes_lower_bound >= 1
+          && journalPersistence.response_loss_possible === false)
+      )
+      || journalArchive.state !== "not_started"
+      || journalArchive.local_journal_archive_writes_lower_bound !== 0
+      || journalArchive.archive_receipt_acknowledged !== false
+      || journalArchive.archived_readback_verified !== false
+      || journalArchive.active_absence_verified !== false
+      || journalArchive.response_loss_possible !== false
+    )
+  ) {
+    throw new Error(
+      "A recovery-required pointer receipt must have settled active-journal persistence and cannot claim any completed-journal archive attempt or proof.",
+    );
+  }
+  return {
+    shape: "current",
+    nestedResponseLossPossible:
+      journalPersistence.response_loss_possible
+      || journalArchive.response_loss_possible,
+  };
+}
+
+function assertPriorJournalPersistenceAccounting(value) {
+  const evidence = objectValue(value);
+  if (!hasExactKeys(evidence, [
+    "local_journal_writes_lower_bound",
+    "response_loss_possible",
+    "state",
+  ])) {
+    throw new Error("Prior pointer-commit journal-persistence accounting is invalid.");
+  }
+  const state = cleanText(evidence.state);
+  const lowerBound = evidence.local_journal_writes_lower_bound;
+  const responseLoss = evidence.response_loss_possible;
+  const noWrite = lowerBound === 0;
+  const acknowledged = Number.isSafeInteger(lowerBound) && lowerBound >= 1;
+  const valid = typeof responseLoss === "boolean" && (
+    (state === "not_started" && noWrite && !responseLoss)
+    || (new Set(["write_in_flight", "write_response_unknown"]).has(state)
+      && noWrite
+      && responseLoss)
+    || (new Set([
+      "write_acknowledged_readback_pending",
+      "write_acknowledged_readback_unverified",
+      "verified",
+    ]).has(state)
+      && acknowledged
+      && !responseLoss)
+  );
+  if (!valid) {
+    throw new Error("Prior pointer-commit journal-persistence accounting is invalid.");
+  }
+  return evidence;
 }
 
 function assertCandidateMutationAccountingEvidence(accounting) {

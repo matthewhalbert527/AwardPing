@@ -368,8 +368,8 @@ end;
 $post_rollback$;
 
 select
-  true as awardping_stage1_pending_migration_rollback_probe_passed,
-  true as awardping_public_update_confirmation_outbox_rollback_probe_passed,
+  'awardping_stage1_pending_migration_rollback_probe_passed' as status,
+  'awardping_public_update_confirmation_outbox_rollback_probe_passed' as probe,
   1 as exact_migration_count,
   1 as exact_smoke_count,
   '20260815023357_durable_public_update_confirmation_outbox.sql'::text

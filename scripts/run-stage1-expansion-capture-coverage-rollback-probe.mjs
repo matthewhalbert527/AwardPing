@@ -1,7 +1,20 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { renderStage1ExpansionCaptureCoverageRollbackProbe } from "./render-stage1-expansion-capture-coverage-rollback-probe.mjs";
-import { runStage1PendingMigrationRollbackProbe } from "./run-stage1-pending-migration-rollback-probe.mjs";
+import {
+  runStage1PendingMigrationRollbackProbe,
+  STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
+} from "./run-stage1-pending-migration-rollback-probe.mjs";
+
+export const STAGE1_EXPANSION_CAPTURE_COVERAGE_ROLLBACK_PROBE_EXPECTED_ROW =
+  Object.freeze({
+    [STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER]: true,
+    awardping_stage1_expansion_coverage_rollback_probe_passed: true,
+    exact_migration_count: 1,
+    exact_migration:
+      "20260814173236_require_stage1_expansion_capture_coverage.sql",
+    persistence_result: "migration/schema/assertion changes rolled back",
+  });
 
 export const STAGE1_EXPANSION_COVERAGE_ROLLBACK_PROBE_USAGE = `Usage: node scripts/run-stage1-expansion-capture-coverage-rollback-probe.mjs [--help|-h]
 
@@ -17,7 +30,11 @@ export function runStage1ExpansionCaptureCoverageRollbackProbe({
   execute = runStage1PendingMigrationRollbackProbe,
   render = renderStage1ExpansionCaptureCoverageRollbackProbe,
 } = {}) {
-  return execute({ render });
+  return execute({
+    render,
+    expectedResultRow:
+      STAGE1_EXPANSION_CAPTURE_COVERAGE_ROLLBACK_PROBE_EXPECTED_ROW,
+  });
 }
 
 export function runStage1ExpansionCaptureCoverageRollbackProbeCli({

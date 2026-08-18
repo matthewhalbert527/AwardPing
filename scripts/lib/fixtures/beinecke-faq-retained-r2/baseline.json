@@ -1,0 +1,241 @@
+{
+  "version": 1,
+  "kind": "webpage",
+  "capture_behavior_version": 13,
+  "capture_behavior_name": "final-state-text-node-geometry-with-open-sections-semantic-crop-v3-visible-paint-v5-layout-bound-v1",
+  "capture_profile": "baseline-rich",
+  "section_extraction_profile": "baseline-rich",
+  "source": {
+    "id": "2ea41875-5c88-5794-81b3-afa8ddaf31c1",
+    "shared_award_id": "26b5b55f-57e9-42a7-ae4c-37d389c5e70c",
+    "award_name": "Beinecke Scholarship",
+    "title": "Beinecke Scholarship — Scholar FAQs",
+    "display_title": "Beinecke Scholarship — Scholar FAQs",
+    "page_description": null,
+    "page_metadata_generated_at": "2026-08-03T18:20:09.625+00:00",
+    "page_metadata_model": "stage1-baseline-source-disposition-v1",
+    "url": "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs",
+    "page_type": "faq",
+    "last_checked_at": null,
+    "next_check_at": "2026-08-03T18:20:18.378068+00:00"
+  },
+  "captured_at": "2026-08-03T18:44:41.262Z",
+  "final_url": "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs/",
+  "page_title": "Scholar FAQs – The Sperry Fund and The Beinecke Scholarship",
+  "text_hash": "334c6ac6e56b611e6bf021a53ba1a339639ff3c221253d6aa78a1161143a24d4",
+  "body_text_hash": "62753e4c86d848ed9b394337f6f17777171fe3ef78d734944696982095bce936",
+  "main_content_hash": "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+  "nav_header_footer_hash": "05c1a5128b0b539512ec1de5e7b5079964d72a3829b3d2daad047fab48bf04de",
+  "expansion_hash": "59b1a04cf0430a8a3b20ed185c50db62cd0759ad025397707f6317ae3293e042",
+  "expandable_sections_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "image_hash": "70c8ca6cfaeefa8113481a0054a1fa57845dec7a8426795be6aac0ac97df524f",
+  "layout_hash": "d30eda33e1e958f8cdea54e80942276fd9963577ceae41f658c85a61101f5c8b",
+  "text_geometry": {
+    "version": 3,
+    "status": "ready",
+    "unavailable_reason": null,
+    "geometry_hash": "d30eda33e1e958f8cdea54e80942276fd9963577ceae41f658c85a61101f5c8b",
+    "coordinate_space": "document-css-pixels",
+    "node_count": 24,
+    "run_count": 381,
+    "document": {
+      "width": 1365,
+      "height": 1922
+    },
+    "viewport": {
+      "width": 1365,
+      "height": 1600
+    },
+    "screenshot": {
+      "image_hash": "70c8ca6cfaeefa8113481a0054a1fa57845dec7a8426795be6aac0ac97df524f",
+      "image_ref": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/page.jpg",
+      "css_width": 1365,
+      "css_height": 1922,
+      "pixel_width": 1365,
+      "pixel_height": 1922,
+      "expected_device_pixel_ratio": 1,
+      "scale_x": 1,
+      "scale_y": 1,
+      "alignment_status": "verified"
+    },
+    "file": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/layout.json"
+  },
+  "file_hash": null,
+  "file_bytes": null,
+  "text_length": 6646,
+  "body_text_length": 2378,
+  "main_content_text_length": 2224,
+  "nav_header_footer_text_length": 163,
+  "expansion_text_length": 4266,
+  "section_text_length": null,
+  "expandable_sections": [],
+  "dimensions": {
+    "viewport_width": 1365,
+    "viewport_height": 1600,
+    "scroll_width": 1365,
+    "scroll_height": 1922,
+    "device_pixel_ratio": 1
+  },
+  "hidden_noise_counts": {
+    "sticky-social-share": 2
+  },
+  "capture": {
+    "dir": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z",
+    "page": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/page.jpg",
+    "thumb": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/thumb.jpg",
+    "pdf": null,
+    "text": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/text.txt",
+    "expansion_text": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-text.txt",
+    "sections_text": null,
+    "sections_json": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/sections.json",
+    "layout": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/layout.json",
+    "meta": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/meta.json",
+    "expansion_states": [
+      {
+        "state_id": "expansion-state-01",
+        "index": 0,
+        "label": "When do Beinecke Scholars begin receiving scholarship payments?",
+        "captured_at": "2026-08-03T18:45:47.844Z",
+        "image_hash": "fcad2c0ab755d734db32a73990d4bd8d27138baa03da700d81901c183b5e3e22",
+        "layout_hash": "9add9cc3137b6a03014a4de9581f783defb90606f3ec7d9614ca9e48b819018c",
+        "isolation": {
+          "verified": true,
+          "reason": "target_only_verified",
+          "target_selector": "html>body>div:nth-of-type(1)>div>div>div>main>article>div>div>div:nth-of-type(2)>div>div>div>div>details:nth-of-type(1)>summary",
+          "target_label": "When do Beinecke Scholars begin receiving scholarship payments?",
+          "target_open": true,
+          "target_state_key": "details:#e-n-accordion-item-6930",
+          "bound_content_transition_required": false,
+          "bound_content_transition_verified": true,
+          "other_open_selectors": [],
+          "fresh_page": true
+        },
+        "page": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-01.jpg",
+        "layout": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-01-layout.json"
+      },
+      {
+        "state_id": "expansion-state-02",
+        "index": 1,
+        "label": "Can students receive Beinecke funding along with another nationally competitive fellowship?",
+        "captured_at": "2026-08-03T18:46:31.959Z",
+        "image_hash": "639cd0eda7a34e78c130ba695d0bd7efd4b546e0475cae237054a528f5a782c7",
+        "layout_hash": "3c6a86fbcdbf41f6b6515eab67a9191ccb700e680d403095552711cb97f7d156",
+        "isolation": {
+          "verified": true,
+          "reason": "target_only_verified",
+          "target_selector": "html>body>div:nth-of-type(1)>div>div>div>main>article>div>div>div:nth-of-type(2)>div>div>div>div>details:nth-of-type(4)>summary",
+          "target_label": "Can students receive Beinecke funding along with another nationally competitive fellowship?",
+          "target_open": true,
+          "target_state_key": "details:#e-n-accordion-item-6933",
+          "bound_content_transition_required": false,
+          "bound_content_transition_verified": true,
+          "other_open_selectors": [],
+          "fresh_page": true
+        },
+        "page": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-02.jpg",
+        "layout": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-02-layout.json"
+      },
+      {
+        "state_id": "expansion-state-03",
+        "index": 2,
+        "label": "Can students receive Beinecke funding in addition to other internal grants from their graduate school?",
+        "captured_at": "2026-08-03T18:47:16.127Z",
+        "image_hash": "1b0ca507360826e22530e051162844edd20d2ba7816a7a7305007b3ea459400d",
+        "layout_hash": "e222dc4822adb9cc02c6612a6277b0011a24f3feb4f8ec5c9c1626490423b840",
+        "isolation": {
+          "verified": true,
+          "reason": "target_only_verified",
+          "target_selector": "html>body>div:nth-of-type(1)>div>div>div>main>article>div>div>div:nth-of-type(2)>div>div>div>div>details:nth-of-type(5)>summary",
+          "target_label": "Can students receive Beinecke funding in addition to other internal grants from their graduate school?",
+          "target_open": true,
+          "target_state_key": "details:#e-n-accordion-item-6934",
+          "bound_content_transition_required": false,
+          "bound_content_transition_verified": true,
+          "other_open_selectors": [],
+          "fresh_page": true
+        },
+        "page": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-03.jpg",
+        "layout": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-03-layout.json"
+      },
+      {
+        "state_id": "expansion-state-04",
+        "index": 3,
+        "label": "What happens if a Scholar changes their mind about graduate study?",
+        "captured_at": "2026-08-03T18:48:00.223Z",
+        "image_hash": "50de0f171ec738e8b4ddb9a8c494d0c6594b4e01c3bbb13712fb7fad945ecd64",
+        "layout_hash": "f299beaa1004a23390cec1d6a1969284fe2d86a87c07de19f056dc63258a53cd",
+        "isolation": {
+          "verified": true,
+          "reason": "target_only_verified",
+          "target_selector": "html>body>div:nth-of-type(1)>div>div>div>main>article>div>div>div:nth-of-type(2)>div>div>div>div>details:nth-of-type(7)>summary",
+          "target_label": "What happens if a Scholar changes their mind about graduate study?",
+          "target_open": true,
+          "target_state_key": "details:#e-n-accordion-item-6936",
+          "bound_content_transition_required": false,
+          "bound_content_transition_verified": true,
+          "other_open_selectors": [],
+          "fresh_page": true
+        },
+        "page": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-04.jpg",
+        "layout": "sources/2ea41875-5c88-5794-81b3-afa8ddaf31c1/captures/2026-08-03T18-44-41-262Z/expansion-state-04-layout.json"
+      }
+    ]
+  },
+  "summary_metadata": {
+    "reason": "stage1_reviewed_baseline_activation",
+    "updated_at": "2026-08-03T18:48:13.327Z",
+    "ai_provider": null,
+    "ai_model": null,
+    "previous_baseline": null,
+    "previous_baseline_capture": null,
+    "baseline_facts": null,
+    "baseline_facts_metadata": null,
+    "monitoring_disposition": null,
+    "stage1_baseline_activation": {
+      "schema_version": "awardping.stage1.first-visual-baseline-activation-verification.v1",
+      "status": "server_prepare_recorded",
+      "verified_at": "2026-08-03T18:48:12.530Z",
+      "mode": "first_visual_baseline_exact_normalized_retained_text",
+      "text_normalization": "source-intake-collapsed-whitespace-v1",
+      "onboarding_batch_id": "stage1-national-25-reviewed-sources-v1",
+      "shared_award_source_id": "2ea41875-5c88-5794-81b3-afa8ddaf31c1",
+      "source_acquisition_id": "42e72340-c3b8-5ca2-8913-aed7f7c56be5",
+      "source_page_request_id": "cc190ad2-8240-5b8c-b5ac-a73180094d24",
+      "disposition_schema_version": "awardping.stage1.baseline-source-human-disposition.v1",
+      "disposition_decision": "approve_baseline_only",
+      "expected_normalized_text_sha256": "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+      "observed_normalized_text_sha256": "4cbc91149287266cd6c0a1a4156d05a1c74bc393be29ca73369aa613b6f49c27",
+      "comparison_capture_method": "fetch_html",
+      "evidence_packet_sha256": "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f",
+      "decision_item_sha256": "03afd34c72a611776473793f5b7c5a3cfdf48848c6de687a6354046a48e10b87",
+      "retained_text_artifact": {
+        "key": "source-intake-first-observation/v1/requests/cc190ad2-8240-5b8c-b5ac-a73180094d24/sha256/6ee5b5322ed5f5563063d919e552839d434bf08456d8176fbfda9404e015e7e2/text.txt",
+        "bytes": 2225,
+        "bucket": "awardping-snapshots",
+        "sha256": "20cd1159b40045dd34fdd7cc674c34e617ab2b2dd878e25755270e2611ad98aa",
+        "store_id": "46963c344e088c9dbf4913651a8d2c6c.r2.cloudflarestorage.com",
+        "r2_verified_at": "2026-07-27T22:21:15.422Z"
+      },
+      "capture_file_sha256": "6ee5b5322ed5f5563063d919e552839d434bf08456d8176fbfda9404e015e7e2",
+      "reviewed_final_url": "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs",
+      "observed_final_url": "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs/",
+      "comparison_final_url": "https://beineckescholarship.org/beinecke-scholarship/scholar-faqs",
+      "visual_evidence_quote_count": 2,
+      "visual_evidence_quotes_verified": true,
+      "retained_evidence_quotes_verified": true,
+      "guard_sha256": "6f0d052effa393a460bd5b91d5051a8d23dfbb7272073c150ad0903f5e66eadb",
+      "authority": {
+        "monitoring": true,
+        "public_facts": false,
+        "fact_candidates": false,
+        "reconciliation": false,
+        "publication": false,
+        "first_observation_notification": false
+      },
+      "server_prepare_receipt": {
+        "allowed": true,
+        "prepare_receipt_sha256": "65692504214fb8a64c3a4f04e7def50f1ce9ab3ae4980f9fe0f824b4bf90f29a"
+      }
+    }
+  }
+}

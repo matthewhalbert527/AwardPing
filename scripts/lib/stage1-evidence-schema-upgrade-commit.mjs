@@ -2,11 +2,16 @@ import { createHash } from "node:crypto";
 import {
   advanceStage1EvidenceSchemaUpgradeJournal,
   assertStage1EvidenceSchemaUpgradeJournal,
+  assertStage1EvidenceSchemaUpgradeReviewedOperationBinding,
   buildStage1EvidenceSchemaUpgradeJournal,
   classifyStage1EvidenceSchemaUpgradeRecovery,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA,
   stage1EvidenceSchemaUpgradeBaselineBytes,
 } from "./stage1-evidence-schema-upgrade-transaction.mjs";
 import {
+  VISUAL_SNAPSHOT_POINTER_IDENTITY_SCHEMA,
+  assertLatestOnlyVisualSnapshotPointerReplacement,
+  assertVisualSnapshotPointerIdentity,
   planLatestOnlyVisualSnapshotPointerReconciliation,
   visualSnapshotPointerIdentity,
 } from "./visual-snapshot-latest-only-reconciliation.mjs";
@@ -19,6 +24,47 @@ export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_COMMIT_RECEIPT_SCHEMA =
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_CONTEXT =
   "stage1_evidence_schema_upgrade";
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_ARCHIVE_ACCOUNTING_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-journal-archive-accounting.v1";
+
+export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_RECONCILIATION_EVIDENCE_SCHEMA =
+  "awardping.stage1.evidence-schema-upgrade-reviewed-reconciliation-evidence.v1";
+
+const REVIEWED_RECONCILIATION_EVIDENCE_KEYS = Object.freeze([
+  "candidate_object_keys",
+  "candidate_pointer_identity",
+  "evidence_sha256",
+  "journal_sha256",
+  "old_pointer_identity",
+  "schema_version",
+  "source_id",
+  "transaction_id",
+]);
+
+const JOURNAL_ARCHIVE_ACCOUNTING_STATES = Object.freeze([
+  "not_started",
+  "archive_write_in_flight",
+  "archive_write_response_unknown",
+  "archive_receipt_unverified",
+  "archive_write_acknowledged_readback_pending",
+  "archive_write_acknowledged_readback_unverified",
+  "archived_readback_verified_active_absence_pending",
+  "archived_readback_verified_active_absence_response_unknown",
+  "archived_readback_verified_active_still_present",
+  "verified",
+]);
+
+const JOURNAL_ARCHIVE_ACCOUNTING_KEYS = Object.freeze([
+  "active_absence_verified",
+  "archive_receipt_acknowledged",
+  "archived_readback_verified",
+  "evidence_sha256",
+  "local_journal_archive_writes_lower_bound",
+  "response_loss_possible",
+  "schema_version",
+  "state",
+]);
 
 /**
  * Checkpoints are test/fault-injection seams, not persistence hooks. A caller
@@ -41,6 +87,102 @@ export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_COMMIT_BOUNDARIES = Object.freeze([
   "completed_journal_persisted",
   "before_completed_journal_archive",
 ]);
+
+/**
+ * Builds the small, content-sealed journal projection that a reviewed caller
+ * needs in order to recompute cleanup debt without exposing baseline bytes or
+ * the rest of the durable journal.
+ */
+export function buildStage1EvidenceSchemaUpgradeReviewedReconciliationEvidence({
+  sourceId,
+  transactionId,
+  journalSha256,
+  oldPointerIdentity,
+  candidatePointerIdentity,
+  candidateObjectKeys,
+} = {}) {
+  const source = requiredText(sourceId, "reviewed reconciliation source ID");
+  const transaction = requiredText(
+    transactionId,
+    "reviewed reconciliation transaction ID",
+  );
+  const journalHash = requiredSha256Text(
+    journalSha256,
+    "reviewed reconciliation journal SHA-256",
+  );
+  const oldIdentity = reviewedReconciliationPointerIdentity(
+    oldPointerIdentity,
+    "old",
+  );
+  const candidateIdentity = reviewedReconciliationPointerIdentity(
+    candidatePointerIdentity,
+    "candidate",
+  );
+  if (!oldIdentity.exists || !candidateIdentity.exists) {
+    throw new Error(
+      "Reviewed reconciliation evidence requires existing old and candidate pointers.",
+    );
+  }
+  if (
+    oldIdentity.projection.shared_award_source_id !== source
+    || candidateIdentity.projection.shared_award_source_id !== source
+  ) {
+    throw new Error(
+      "Reviewed reconciliation pointer evidence belongs to another source.",
+    );
+  }
+  assertLatestOnlyVisualSnapshotPointerReplacement(
+    oldIdentity.projection,
+    candidateIdentity.projection,
+  );
+  const objectKeys = reviewedCandidateObjectKeys(candidateObjectKeys);
+  if (stableJson(objectKeys) !== stableJson(
+    candidateIdentity.projection.latest_object_keys,
+  )) {
+    throw new Error(
+      "Reviewed reconciliation candidate object keys differ from its pointer.",
+    );
+  }
+  const content = {
+    schema_version:
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_RECONCILIATION_EVIDENCE_SCHEMA,
+    source_id: source,
+    transaction_id: transaction,
+    journal_sha256: journalHash,
+    old_pointer_identity: cloneJson(oldIdentity),
+    candidate_pointer_identity: cloneJson(candidateIdentity),
+    candidate_object_keys: cloneJson(objectKeys),
+  };
+  return deepFreeze({
+    ...content,
+    evidence_sha256: sha256Bytes(Buffer.from(stableJson(content), "utf8")),
+  });
+}
+
+export function assertStage1EvidenceSchemaUpgradeReviewedReconciliationEvidence(
+  evidence,
+) {
+  if (!isPlainObject(evidence)) {
+    throw new TypeError("Reviewed reconciliation evidence must be an object.");
+  }
+  if (stableJson(Object.keys(evidence).sort()) !== stableJson(
+    [...REVIEWED_RECONCILIATION_EVIDENCE_KEYS].sort(),
+  )) {
+    throw new Error("Reviewed reconciliation evidence has unexpected or missing fields.");
+  }
+  const rebuilt = buildStage1EvidenceSchemaUpgradeReviewedReconciliationEvidence({
+    sourceId: evidence.source_id,
+    transactionId: evidence.transaction_id,
+    journalSha256: evidence.journal_sha256,
+    oldPointerIdentity: evidence.old_pointer_identity,
+    candidatePointerIdentity: evidence.candidate_pointer_identity,
+    candidateObjectKeys: evidence.candidate_object_keys,
+  });
+  if (stableJson(rebuilt) !== stableJson(evidence)) {
+    throw new Error("Reviewed reconciliation evidence seal does not match its content.");
+  }
+  return deepFreeze(cloneJson(evidence));
+}
 
 const MUTATION_COUNT_KEYS = Object.freeze([
   "database_writes",
@@ -70,8 +212,10 @@ const mutationAccountingSymbol = Symbol("stage1EvidenceSchemaUpgradeMutationAcco
  * All I/O is injected. The runner never deletes an object and treats the R2
  * latest pointer as the authority whenever local and remote state diverge.
  *
- * An active journal always wins over the supplied candidate inputs. Recovery
- * is completed or left durably fail-closed before a new transaction may begin.
+ * An active journal normally wins over supplied candidate inputs. A caller
+ * beginning a freshly reviewed transaction must explicitly require
+ * `expectedActiveJournalSha256: null`; that mode refuses any raced journal
+ * without recovering or mutating it.
  */
 export async function runStage1EvidenceSchemaUpgradeCommit(options = {}) {
   const accounting = {
@@ -80,6 +224,19 @@ export async function runStage1EvidenceSchemaUpgradeCommit(options = {}) {
     prior_unknown_categories: [],
     boundary: "before_io",
     journal_phase: null,
+    journal_persistence: {
+      state: "not_started",
+      local_journal_writes_lower_bound: 0,
+      response_loss_possible: false,
+    },
+    journal_archive: {
+      state: "not_started",
+      local_journal_archive_writes_lower_bound: 0,
+      archive_receipt_acknowledged: false,
+      archived_readback_verified: false,
+      active_absence_verified: false,
+      response_loss_possible: false,
+    },
   };
   try {
     return await runStage1EvidenceSchemaUpgradeCommitInternal(options, accounting);
@@ -92,7 +249,12 @@ export async function runStage1EvidenceSchemaUpgradeCommit(options = {}) {
       evidence: {
         boundary: accounting.boundary,
         journal_phase: accounting.journal_phase,
-        response_loss_possible: accounting.in_flight_categories.length > 0,
+        response_loss_possible:
+          accounting.in_flight_categories.length > 0
+          || accounting.journal_persistence.response_loss_possible
+          || accounting.journal_archive.response_loss_possible,
+        journal_persistence: journalPersistenceEvidence(accounting),
+        journal_archive: journalArchiveAccountingEvidence(accounting),
       },
     });
     throw wrapped;
@@ -102,6 +264,10 @@ export async function runStage1EvidenceSchemaUpgradeCommit(options = {}) {
 async function runStage1EvidenceSchemaUpgradeCommitInternal({
   sourceId,
   transactionId,
+  expectedActiveJournalSha256,
+  expectedOldBaseline,
+  expectedOldPointerIdentity,
+  operationBinding = null,
   candidateBaselineBytes,
   candidatePointer,
   candidateArtifacts,
@@ -128,30 +294,53 @@ async function runStage1EvidenceSchemaUpgradeCommitInternal({
         "Stage 1 evidence-schema upgrade recovery requires a journaled existing pointer.",
       );
     }
+    if (expectedActiveJournalSha256 === null) {
+      throw new Error(
+        "A Stage 1 active journal appeared after fresh reviewed authority was established.",
+      );
+    }
+    assertExpectedRecoveryJournal({
+      journal,
+      transactionId,
+      expectedActiveJournalSha256,
+      operationBinding,
+    });
     return recoverJournal({ journal, io, counts, now });
   }
 
+  if (expectedActiveJournalSha256 !== null) {
+    throw new TypeError(
+      "A fresh Stage 1 commit must explicitly require expectedActiveJournalSha256 null.",
+    );
+  }
   requireNewCommitInterfaces(io);
   const id = requiredText(transactionId, "transactionId");
-  const currentPointer = await readRequiredExistingPointer(io, source);
-  const currentBaselineBytes = await readBaselineStrict(io, source);
+  const reviewedOldBaseline = normalizeExpectedOldBaseline(expectedOldBaseline);
+  const reviewedOldPointer = normalizeExpectedOldPointerIdentity(
+    expectedOldPointerIdentity,
+  );
   const artifacts = normalizeCandidateArtifacts({
     value: candidateArtifacts,
     candidatePointer,
     candidateBaselineBytes,
     sourceId: source,
   });
+  const currentPointerIdentity = await readRequiredExistingPointerIdentity(io, source);
+  assertExpectedOldPointerIdentity(currentPointerIdentity, reviewedOldPointer);
+  const currentBaselineBytes = await readBaselineStrict(io, source);
+  assertExpectedOldBaseline(currentBaselineBytes, reviewedOldBaseline);
   let journal = buildStage1EvidenceSchemaUpgradeJournal({
     transactionId: id,
     sourceId: source,
     oldBaselineBytes: currentBaselineBytes,
-    oldPointer: currentPointer,
+    oldPointer: currentPointerIdentity.projection,
     candidateBaselineBytes,
     candidatePointer,
+    operationBinding,
     createdAt: timestamp(now),
   });
 
-  journal = await persistJournalExactly(io, journal, null);
+  journal = await persistJournalExactly(io, journal, null, counts);
   await checkpoint(io, "prepared_journal_persisted", journalCheckpoint(journal));
 
   const uploadedKeys = [];
@@ -204,7 +393,12 @@ async function runStage1EvidenceSchemaUpgradeCommitInternal({
       uploaded_keys: [...uploadedKeys],
     },
   });
-  journal = await persistJournalExactly(io, journal, beforeLocalPhase.journal_sha256);
+  journal = await persistJournalExactly(
+    io,
+    journal,
+    beforeLocalPhase.journal_sha256,
+    counts,
+  );
   await checkpoint(io, "local_candidate_phase_persisted", journalCheckpoint(journal));
 
   const beforeCasPhase = journal;
@@ -217,7 +411,12 @@ async function runStage1EvidenceSchemaUpgradeCommitInternal({
       candidate_pointer_sha256: journal.candidate_pointer_identity.canonical_sha256,
     },
   });
-  journal = await persistJournalExactly(io, journal, beforeCasPhase.journal_sha256);
+  journal = await persistJournalExactly(
+    io,
+    journal,
+    beforeCasPhase.journal_sha256,
+    counts,
+  );
   await checkpoint(io, "pointer_cas_attempt_phase_persisted", journalCheckpoint(journal));
 
   const cas = await attemptPointerCas(io, journal, counts);
@@ -296,6 +495,7 @@ async function resolveJournalAuthority({
     const retained = await retainRecoveryRequired({
       journal,
       io,
+      counts,
       now,
       detail: {
         outcome: "ambiguous_authority",
@@ -350,6 +550,7 @@ async function resolveOldAuthority({
   let current = await retainRecoveryRequired({
     journal,
     io,
+    counts,
     now,
     detail: {
       outcome: "restore_old_authority",
@@ -396,6 +597,7 @@ async function resolveOldAuthority({
     current = await retainRecoveryRequired({
       journal: current,
       io,
+      counts,
       now,
       detail: {
         outcome: "old_authority_convergence_failed",
@@ -433,12 +635,17 @@ async function resolveOldAuthority({
       cleanup_debt_delete_performed: false,
     },
   });
-  current = await persistJournalExactly(io, current, beforeComplete.journal_sha256);
+  current = await persistJournalExactly(
+    io,
+    current,
+    beforeComplete.journal_sha256,
+    counts,
+  );
   await checkpoint(io, "completed_journal_persisted", {
     ...journalCheckpoint(current),
     outcome: "abandoned_old_authority",
   });
-  await archiveCompletedJournal(io, current);
+  await archiveCompletedJournal(io, current, counts);
   return buildResult({
     status: "abandoned_old_authority",
     outcome: "abandoned_old_authority",
@@ -466,6 +673,7 @@ async function resolveCandidateAuthority({
     current = await retainRecoveryRequired({
       journal: current,
       io,
+      counts,
       now,
       detail: {
         outcome: "completed_candidate_proof_invalid",
@@ -478,6 +686,7 @@ async function resolveCandidateAuthority({
       current = await retainRecoveryRequired({
         journal: current,
         io,
+        counts,
         now,
         detail: {
           outcome: "candidate_observed_from_pre_cas_phase",
@@ -495,7 +704,12 @@ async function resolveCandidateAuthority({
         authoritative_pointer_sha256: current.candidate_pointer_identity.canonical_sha256,
       },
     });
-    current = await persistJournalExactly(io, current, beforeCandidate.journal_sha256);
+    current = await persistJournalExactly(
+      io,
+      current,
+      beforeCandidate.journal_sha256,
+      counts,
+    );
     await checkpoint(io, "resolution_journal_persisted", {
       ...journalCheckpoint(current),
       authority: "candidate",
@@ -538,6 +752,7 @@ async function resolveCandidateAuthority({
     current = await retainRecoveryRequired({
       journal: current,
       io,
+      counts,
       now,
       detail: {
         outcome: "candidate_authority_convergence_failed",
@@ -564,7 +779,7 @@ async function resolveCandidateAuthority({
   });
 
   if (current.phase === "completed") {
-    await archiveCompletedJournal(io, current);
+    await archiveCompletedJournal(io, current, counts);
     return buildResult({
       status: "upgraded",
       outcome: "candidate_authority_recovered",
@@ -591,6 +806,10 @@ async function resolveCandidateAuthority({
       context: STAGE1_EVIDENCE_SCHEMA_UPGRADE_CONTEXT,
       authoritative_pointer: cloneJson(current.candidate_pointer_identity.projection),
       candidate_baseline_sha256: current.candidate_baseline.sha256,
+      precommit_source_authority:
+        current.operation_binding?.precommit_source_authority
+          ? cloneJson(current.operation_binding.precommit_source_authority)
+          : null,
       preserve_reviewed_url: true,
       preserve_reviewed_metadata: true,
       creates_api_charge: false,
@@ -620,6 +839,7 @@ async function resolveCandidateAuthority({
     current = await retainRecoveryRequired({
       journal: current,
       io,
+      counts,
       now,
       detail: {
         outcome: "authority_changed_after_source_health",
@@ -653,12 +873,17 @@ async function resolveCandidateAuthority({
       cleanup_debt_delete_performed: false,
     },
   });
-  current = await persistJournalExactly(io, current, beforeComplete.journal_sha256);
+  current = await persistJournalExactly(
+    io,
+    current,
+    beforeComplete.journal_sha256,
+    counts,
+  );
   await checkpoint(io, "completed_journal_persisted", {
     ...journalCheckpoint(current),
     outcome: "committed_candidate",
   });
-  await archiveCompletedJournal(io, current);
+  await archiveCompletedJournal(io, current, counts);
   return buildResult({
     status: "upgraded",
     outcome: "committed_candidate",
@@ -672,7 +897,7 @@ async function resolveCandidateAuthority({
   });
 }
 
-async function retainRecoveryRequired({ journal, io, now, detail }) {
+async function retainRecoveryRequired({ journal, io, counts, now, detail }) {
   if (journal.phase === "recovery_required") {
     return journal;
   }
@@ -683,7 +908,12 @@ async function retainRecoveryRequired({ journal, io, now, detail }) {
     at: transitionTimestamp(now, journal.updated_at),
     detail,
   });
-  const persisted = await persistJournalExactly(io, next, before.journal_sha256);
+  const persisted = await persistJournalExactly(
+    io,
+    next,
+    before.journal_sha256,
+    counts,
+  );
   await checkpoint(io, "resolution_journal_persisted", {
     ...journalCheckpoint(persisted),
     authority: "ambiguous_or_old",
@@ -691,71 +921,111 @@ async function retainRecoveryRequired({ journal, io, now, detail }) {
   return persisted;
 }
 
-async function persistJournalExactly(io, journal, expectedJournalSha256) {
+async function persistJournalExactly(
+  io,
+  journal,
+  expectedJournalSha256,
+  counts,
+) {
   assertStage1EvidenceSchemaUpgradeJournal(journal);
-  await requireFunction(
-    io.persistActiveJournalAtomically,
-    "persistActiveJournalAtomically",
-  )({
-    source_id: journal.source_id,
-    transaction_id: journal.transaction_id,
-    journal: cloneJson(journal),
-    expected_journal_sha256: expectedJournalSha256,
-  });
-  const observed = await io.loadActiveJournal({ source_id: journal.source_id });
-  const persisted = assertStage1EvidenceSchemaUpgradeJournal(observed);
-  if (
-    persisted.source_id !== journal.source_id
-    || persisted.transaction_id !== journal.transaction_id
-    || persisted.journal_sha256 !== journal.journal_sha256
-  ) {
-    throw new Error("Atomically persisted Stage 1 evidence upgrade journal did not read back exactly.");
+  beginJournalPersistenceAccounting(counts, journal.phase);
+  let writeAcknowledged = false;
+  try {
+    await requireFunction(
+      io.persistActiveJournalAtomically,
+      "persistActiveJournalAtomically",
+    )({
+      source_id: journal.source_id,
+      transaction_id: journal.transaction_id,
+      journal: cloneJson(journal),
+      expected_journal_sha256: expectedJournalSha256,
+    });
+    writeAcknowledged = true;
+    acknowledgeJournalPersistenceAccounting(counts, journal.phase);
+    const observed = await io.loadActiveJournal({ source_id: journal.source_id });
+    const persisted = assertStage1EvidenceSchemaUpgradeJournal(observed);
+    if (
+      persisted.source_id !== journal.source_id
+      || persisted.transaction_id !== journal.transaction_id
+      || persisted.journal_sha256 !== journal.journal_sha256
+    ) {
+      throw new Error(
+        "Atomically persisted Stage 1 evidence upgrade journal did not read back exactly.",
+      );
+    }
+    completeJournalPersistenceAccounting(counts, journal.phase);
+    return persisted;
+  } catch (error) {
+    failJournalPersistenceAccounting(counts, journal.phase, { writeAcknowledged });
+    throw error;
   }
-  return persisted;
 }
 
-async function archiveCompletedJournal(io, journal) {
+async function archiveCompletedJournal(io, journal, counts) {
   if (journal.phase !== "completed") {
     throw new Error("Stage 1 evidence upgrade journal cannot be archived before completion.");
   }
   await checkpoint(io, "before_completed_journal_archive", journalCheckpoint(journal));
-  const receipt = await requireFunction(
-    io.archiveCompletedJournalAtomically,
-    "archiveCompletedJournalAtomically",
-  )({
-    source_id: journal.source_id,
-    transaction_id: journal.transaction_id,
-    journal: cloneJson(journal),
-    expected_journal_sha256: journal.journal_sha256,
-    creates_api_charge: false,
-  });
-  if (
-    !isPlainObject(receipt)
-    || receipt.status !== "archived"
-    || receipt.source_id !== journal.source_id
-    || receipt.transaction_id !== journal.transaction_id
-    || receipt.journal_sha256 !== journal.journal_sha256
-    || receipt.creates_api_charge !== false
-  ) {
-    throw new Error("Stage 1 completed-journal archive receipt is invalid.");
-  }
-  const archived = assertStage1EvidenceSchemaUpgradeJournal(
-    await io.readArchivedJournal({
+  beginJournalArchiveAccounting(counts, journal.phase);
+  let archiveResponseReceived = false;
+  let archiveReceiptAcknowledged = false;
+  let archivedReadbackVerified = false;
+  let activeAbsenceResponseReceived = false;
+  try {
+    const receipt = await requireFunction(
+      io.archiveCompletedJournalAtomically,
+      "archiveCompletedJournalAtomically",
+    )({
       source_id: journal.source_id,
       transaction_id: journal.transaction_id,
-    }),
-  );
-  if (
-    archived.phase !== "completed"
-    || archived.source_id !== journal.source_id
-    || archived.transaction_id !== journal.transaction_id
-    || archived.journal_sha256 !== journal.journal_sha256
-  ) {
-    throw new Error("Archived Stage 1 evidence upgrade journal did not read back exactly.");
-  }
-  const active = await io.loadActiveJournal({ source_id: journal.source_id });
-  if (active !== null && active !== undefined) {
-    throw new Error("Completed Stage 1 evidence upgrade journal remained active after archive.");
+      journal: cloneJson(journal),
+      expected_journal_sha256: journal.journal_sha256,
+      creates_api_charge: false,
+    });
+    archiveResponseReceived = true;
+    if (
+      !isPlainObject(receipt)
+      || receipt.status !== "archived"
+      || receipt.source_id !== journal.source_id
+      || receipt.transaction_id !== journal.transaction_id
+      || receipt.journal_sha256 !== journal.journal_sha256
+      || receipt.creates_api_charge !== false
+    ) {
+      throw new Error("Stage 1 completed-journal archive receipt is invalid.");
+    }
+    archiveReceiptAcknowledged = true;
+    acknowledgeJournalArchiveAccounting(counts, journal.phase);
+    const archived = assertStage1EvidenceSchemaUpgradeJournal(
+      await io.readArchivedJournal({
+        source_id: journal.source_id,
+        transaction_id: journal.transaction_id,
+      }),
+    );
+    if (
+      archived.phase !== "completed"
+      || archived.source_id !== journal.source_id
+      || archived.transaction_id !== journal.transaction_id
+      || archived.journal_sha256 !== journal.journal_sha256
+    ) {
+      throw new Error("Archived Stage 1 evidence upgrade journal did not read back exactly.");
+    }
+    archivedReadbackVerified = true;
+    markJournalArchiveReadbackVerified(counts, journal.phase);
+    const active = await io.loadActiveJournal({ source_id: journal.source_id });
+    activeAbsenceResponseReceived = true;
+    if (active !== null && active !== undefined) {
+      markJournalArchiveActiveStillPresent(counts, journal.phase);
+      throw new Error("Completed Stage 1 evidence upgrade journal remained active after archive.");
+    }
+    completeJournalArchiveAccounting(counts, journal.phase);
+  } catch (error) {
+    failJournalArchiveAccounting(counts, journal.phase, {
+      archiveResponseReceived,
+      archiveReceiptAcknowledged,
+      archivedReadbackVerified,
+      activeAbsenceResponseReceived,
+    });
+    throw error;
   }
 }
 
@@ -893,7 +1163,7 @@ async function readRecoveryState(io, sourceId) {
   };
 }
 
-async function readRequiredExistingPointer(io, sourceId) {
+async function readRequiredExistingPointerIdentity(io, sourceId) {
   const pointer = await io.readLatestPointer({ source_id: sourceId });
   const identity = visualSnapshotPointerIdentity(pointer);
   if (!identity.exists) {
@@ -902,7 +1172,7 @@ async function readRequiredExistingPointer(io, sourceId) {
   if (identity.projection.shared_award_source_id !== sourceId) {
     throw new Error("Existing Stage 1 latest pointer belongs to another source.");
   }
-  return identity.projection;
+  return identity;
 }
 
 async function readBaselineStrict(io, sourceId) {
@@ -914,6 +1184,123 @@ async function readBaselineStrict(io, sourceId) {
     return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
   }
   throw new TypeError("Baseline reader must return exact bytes or null.");
+}
+
+function normalizeExpectedOldBaseline(value) {
+  if (
+    !isPlainObject(value)
+    || stableJson(Object.keys(value).sort())
+      !== stableJson(["byte_length", "sha256"])
+    || typeof value.sha256 !== "string"
+    || !SHA256_PATTERN.test(value.sha256)
+    || !Number.isSafeInteger(value.byte_length)
+    || value.byte_length < 0
+  ) {
+    throw new TypeError(
+      "expectedOldBaseline must be an exact old-baseline authority object with sha256 and byte_length.",
+    );
+  }
+  return Object.freeze({
+    sha256: value.sha256,
+    byte_length: value.byte_length,
+  });
+}
+
+function normalizeExpectedOldPointerIdentity(value) {
+  if (
+    !isPlainObject(value)
+    || stableJson(Object.keys(value).sort()) !== stableJson([
+      "canonical_sha256",
+      "exists",
+      "schema_version",
+    ])
+    || value.schema_version !== VISUAL_SNAPSHOT_POINTER_IDENTITY_SCHEMA
+    || value.exists !== true
+    || typeof value.canonical_sha256 !== "string"
+    || !SHA256_PATTERN.test(value.canonical_sha256)
+  ) {
+    throw new TypeError(
+      "expectedOldPointerIdentity must be an exact existing old-pointer identity without a projection.",
+    );
+  }
+  return Object.freeze({
+    schema_version: value.schema_version,
+    exists: true,
+    canonical_sha256: value.canonical_sha256,
+  });
+}
+
+function assertExpectedOldPointerIdentity(observed, expected) {
+  if (
+    observed.schema_version !== expected.schema_version
+    || observed.exists !== expected.exists
+    || observed.canonical_sha256 !== expected.canonical_sha256
+  ) {
+    throw new Error(
+      "Current Stage 1 old pointer differs from the reviewed identity.",
+    );
+  }
+}
+
+function assertExpectedOldBaseline(bytes, expected) {
+  if (
+    !Buffer.isBuffer(bytes)
+    || bytes.byteLength !== expected.byte_length
+    || sha256Bytes(bytes) !== expected.sha256
+  ) {
+    throw new Error(
+      "Current Stage 1 old baseline bytes differ from the reviewed authority.",
+    );
+  }
+}
+
+function assertExpectedRecoveryJournal({
+  journal,
+  transactionId,
+  expectedActiveJournalSha256,
+  operationBinding,
+}) {
+  const reviewed = journal.schema_version
+    === STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA;
+  const expectedTransactionId = requiredText(
+    transactionId,
+    "recovery transactionId",
+  );
+  if (expectedTransactionId !== journal.transaction_id) {
+    throw new Error(
+      "Active Stage 1 evidence upgrade journal differs from the expected recovery transaction.",
+    );
+  }
+  if (
+    typeof expectedActiveJournalSha256 !== "string"
+    || !SHA256_PATTERN.test(expectedActiveJournalSha256)
+    || expectedActiveJournalSha256 !== journal.journal_sha256
+  ) {
+    throw new Error(
+      "Active Stage 1 evidence upgrade journal differs from the expected recovery journal.",
+    );
+  }
+  if (!reviewed) {
+    if (operationBinding !== null) {
+      throw new Error(
+        "Reviewed Stage 1 recovery refuses an unbound v1 active journal.",
+      );
+    }
+    return;
+  }
+  if (operationBinding === null) {
+    throw new Error(
+      "A v2 reviewed Stage 1 active journal requires its exact operation binding.",
+    );
+  }
+  const expectedBinding = assertStage1EvidenceSchemaUpgradeReviewedOperationBinding(
+    operationBinding,
+  );
+  if (stableJson(expectedBinding) !== stableJson(journal.operation_binding)) {
+    throw new Error(
+      "Reviewed Stage 1 active journal operation binding differs from recovery authority.",
+    );
+  }
 }
 
 function normalizeCandidateArtifacts({
@@ -1074,6 +1461,12 @@ function assertCandidateCoreIdentity({ sourceId, pointer, baselineBytes, artifac
   if (byRole.get(primaryRole)?.sha256 !== primaryHash) {
     throw new Error(`Candidate ${primaryRole} bytes do not match baseline ${primaryField}.`);
   }
+  if (
+    kind === "pdf"
+    && requiredSha256(baseline.image_hash, "candidate baseline image_hash") !== primaryHash
+  ) {
+    throw new Error("Candidate PDF baseline image_hash does not match file_hash.");
+  }
   const semanticText = decodeWriterText(byRole.get("text")?.bytes);
   const semanticTextHash = sha256Bytes(Buffer.from(semanticText, "utf8"));
   if (
@@ -1085,7 +1478,7 @@ function assertCandidateCoreIdentity({ sourceId, pointer, baselineBytes, artifac
   }
 
   const expectedHashes = {
-    image_hash: kind === "webpage" ? primaryHash : null,
+    image_hash: primaryHash,
     text_hash: semanticTextHash,
     body_text_hash: kind === "webpage"
       ? optionalSha256(baseline.body_text_hash, "candidate baseline body_text_hash")
@@ -1148,6 +1541,7 @@ function assertCandidateCoreIdentity({ sourceId, pointer, baselineBytes, artifac
     || canonicalTimestampOrNull(rawMetadata.captured_at) !== pointer.latest_captured_at
     || rawMetadata.text_hash !== expectedHashes.text_hash
     || rawMetadata[primaryField] !== expectedHashes[primaryField]
+    || rawMetadata.image_hash !== expectedHashes.image_hash
   ) {
     throw new Error("Candidate raw metadata does not match baseline core identity.");
   }
@@ -1272,7 +1666,11 @@ function buildResult({
       boundary: accountingState?.boundary || "result_built",
       journal_phase: journal.phase,
       response_loss_possible:
-        Boolean(accountingState?.in_flight_categories?.length),
+        Boolean(accountingState?.in_flight_categories?.length)
+        || accountingState?.journal_persistence?.response_loss_possible === true
+        || accountingState?.journal_archive?.response_loss_possible === true,
+      journal_persistence: journalPersistenceEvidence(accountingState),
+      journal_archive: journalArchiveAccountingEvidence(accountingState),
       cas: publicCasReceipt(cas),
     },
   });
@@ -1308,6 +1706,17 @@ function buildResult({
     mutation_counts: mutationCounts,
     mutation_accounting: mutationAccounting,
   });
+  const reviewedReconciliationEvidence = journal.schema_version
+      === STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_JOURNAL_SCHEMA
+    ? buildStage1EvidenceSchemaUpgradeReviewedReconciliationEvidence({
+        sourceId: journal.source_id,
+        transactionId: journal.transaction_id,
+        journalSha256: journal.journal_sha256,
+        oldPointerIdentity: journal.old_pointer_identity,
+        candidatePointerIdentity: journal.candidate_pointer_identity,
+        candidateObjectKeys: journal.candidate_object_keys,
+      })
+    : null;
   return Object.freeze({
     status,
     source_id: journal.source_id,
@@ -1322,6 +1731,9 @@ function buildResult({
         : "confirmed_lower_bounds_with_unknown_writes",
       unknown_write_categories: mutationAccounting.unknown_write_categories,
     }),
+    ...(reviewedReconciliationEvidence
+      ? { reviewed_reconciliation_evidence: reviewedReconciliationEvidence }
+      : {}),
     receipt,
   });
 }
@@ -1515,9 +1927,333 @@ function completeMutationAccounting(counts, boundary, journalPhase = null) {
   accounting.journal_phase = journalPhase;
 }
 
+function beginJournalPersistenceAccounting(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "active_journal_write_in_flight";
+  accounting.journal_phase = journalPhase;
+  accounting.journal_persistence.state = "write_in_flight";
+  accounting.journal_persistence.response_loss_possible = true;
+}
+
+function acknowledgeJournalPersistenceAccounting(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "active_journal_write_acknowledged_readback_pending";
+  accounting.journal_phase = journalPhase;
+  accounting.journal_persistence.state = "write_acknowledged_readback_pending";
+  accounting.journal_persistence.local_journal_writes_lower_bound += 1;
+  accounting.journal_persistence.response_loss_possible = false;
+}
+
+function completeJournalPersistenceAccounting(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "active_journal_persisted_exactly";
+  accounting.journal_phase = journalPhase;
+  accounting.journal_persistence.state = "verified";
+  accounting.journal_persistence.response_loss_possible = false;
+}
+
+function failJournalPersistenceAccounting(counts, journalPhase, {
+  writeAcknowledged,
+}) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = writeAcknowledged
+    ? "active_journal_write_acknowledged_readback_unverified"
+    : "active_journal_write_response_unknown";
+  accounting.journal_phase = journalPhase;
+  accounting.journal_persistence.state = writeAcknowledged
+    ? "write_acknowledged_readback_unverified"
+    : "write_response_unknown";
+  accounting.journal_persistence.response_loss_possible = !writeAcknowledged;
+}
+
+function journalPersistenceEvidence(accounting) {
+  const journalPersistence = accounting?.journal_persistence;
+  return {
+    state: cleanText(journalPersistence?.state) || "not_started",
+    local_journal_writes_lower_bound:
+      Number.isSafeInteger(journalPersistence?.local_journal_writes_lower_bound)
+        ? journalPersistence.local_journal_writes_lower_bound
+        : 0,
+    response_loss_possible:
+      journalPersistence?.response_loss_possible === true,
+  };
+}
+
+function beginJournalArchiveAccounting(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "completed_journal_archive_write_in_flight";
+  accounting.journal_phase = journalPhase;
+  Object.assign(accounting.journal_archive, {
+    state: "archive_write_in_flight",
+    archive_receipt_acknowledged: false,
+    archived_readback_verified: false,
+    active_absence_verified: false,
+    response_loss_possible: true,
+  });
+}
+
+function acknowledgeJournalArchiveAccounting(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "completed_journal_archive_write_acknowledged_readback_pending";
+  accounting.journal_phase = journalPhase;
+  Object.assign(accounting.journal_archive, {
+    state: "archive_write_acknowledged_readback_pending",
+    local_journal_archive_writes_lower_bound: 1,
+    archive_receipt_acknowledged: true,
+    response_loss_possible: true,
+  });
+}
+
+function markJournalArchiveReadbackVerified(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "completed_journal_archive_readback_verified_active_absence_pending";
+  accounting.journal_phase = journalPhase;
+  Object.assign(accounting.journal_archive, {
+    state: "archived_readback_verified_active_absence_pending",
+    archived_readback_verified: true,
+    response_loss_possible: true,
+  });
+}
+
+function markJournalArchiveActiveStillPresent(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "completed_journal_archive_active_still_present";
+  accounting.journal_phase = journalPhase;
+  Object.assign(accounting.journal_archive, {
+    state: "archived_readback_verified_active_still_present",
+    active_absence_verified: false,
+    response_loss_possible: false,
+  });
+}
+
+function completeJournalArchiveAccounting(counts, journalPhase) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.boundary = "completed_journal_archive_verified";
+  accounting.journal_phase = journalPhase;
+  Object.assign(accounting.journal_archive, {
+    state: "verified",
+    archive_receipt_acknowledged: true,
+    archived_readback_verified: true,
+    active_absence_verified: true,
+    response_loss_possible: false,
+  });
+}
+
+function failJournalArchiveAccounting(counts, journalPhase, {
+  archiveResponseReceived,
+  archiveReceiptAcknowledged,
+  archivedReadbackVerified,
+  activeAbsenceResponseReceived,
+}) {
+  const accounting = mutationAccountingForCounts(counts);
+  if (!accounting) return;
+  accounting.journal_phase = journalPhase;
+  if (!archiveReceiptAcknowledged) {
+    accounting.boundary = archiveResponseReceived
+      ? "completed_journal_archive_receipt_unverified"
+      : "completed_journal_archive_write_response_unknown";
+    Object.assign(accounting.journal_archive, {
+      state: archiveResponseReceived
+        ? "archive_receipt_unverified"
+        : "archive_write_response_unknown",
+      response_loss_possible: true,
+    });
+    return;
+  }
+  if (!archivedReadbackVerified) {
+    accounting.boundary = "completed_journal_archive_write_acknowledged_readback_unverified";
+    Object.assign(accounting.journal_archive, {
+      state: "archive_write_acknowledged_readback_unverified",
+      response_loss_possible: true,
+    });
+    return;
+  }
+  if (!activeAbsenceResponseReceived) {
+    accounting.boundary =
+      "completed_journal_archive_readback_verified_active_absence_response_unknown";
+    Object.assign(accounting.journal_archive, {
+      state: "archived_readback_verified_active_absence_response_unknown",
+      response_loss_possible: true,
+    });
+  }
+}
+
+function journalArchiveAccountingEvidence(accounting) {
+  const archive = accounting?.journal_archive || {};
+  const content = {
+    schema_version:
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_ARCHIVE_ACCOUNTING_SCHEMA,
+    state: cleanText(archive.state) || "not_started",
+    local_journal_archive_writes_lower_bound:
+      Number.isSafeInteger(archive.local_journal_archive_writes_lower_bound)
+        ? archive.local_journal_archive_writes_lower_bound
+        : 0,
+    archive_receipt_acknowledged: archive.archive_receipt_acknowledged === true,
+    archived_readback_verified: archive.archived_readback_verified === true,
+    active_absence_verified: archive.active_absence_verified === true,
+    response_loss_possible: archive.response_loss_possible === true,
+  };
+  return Object.freeze({
+    ...content,
+    evidence_sha256: sha256Bytes(Buffer.from(stableJson(content), "utf8")),
+  });
+}
+
+export function assertStage1EvidenceSchemaUpgradeJournalArchiveAccounting(value) {
+  if (
+    !isPlainObject(value)
+    || stableJson(Object.keys(value).sort())
+      !== stableJson([...JOURNAL_ARCHIVE_ACCOUNTING_KEYS].sort())
+  ) {
+    throw new Error("Stage 1 completed-journal archive accounting is invalid.");
+  }
+  const content = cloneJson(value);
+  const evidenceSha256 = content.evidence_sha256;
+  delete content.evidence_sha256;
+  const state = cleanText(content.state);
+  const lowerBound = content.local_journal_archive_writes_lower_bound;
+  const flags = [
+    content.archive_receipt_acknowledged,
+    content.archived_readback_verified,
+    content.active_absence_verified,
+    content.response_loss_possible,
+  ];
+  if (
+    content.schema_version
+      !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_JOURNAL_ARCHIVE_ACCOUNTING_SCHEMA
+    || !JOURNAL_ARCHIVE_ACCOUNTING_STATES.includes(state)
+    || !Number.isSafeInteger(lowerBound)
+    || lowerBound < 0
+    || flags.some((flag) => typeof flag !== "boolean")
+    || !SHA256_PATTERN.test(String(evidenceSha256 || ""))
+    || evidenceSha256
+      !== sha256Bytes(Buffer.from(stableJson(content), "utf8"))
+    || !validJournalArchiveAccountingState(content)
+  ) {
+    throw new Error("Stage 1 completed-journal archive accounting is invalid.");
+  }
+  return Object.freeze({ ...content, evidence_sha256: evidenceSha256 });
+}
+
+function validJournalArchiveAccountingState(value) {
+  const none = value.local_journal_archive_writes_lower_bound === 0
+    && value.archive_receipt_acknowledged === false
+    && value.archived_readback_verified === false
+    && value.active_absence_verified === false;
+  const acknowledged = value.local_journal_archive_writes_lower_bound === 1
+    && value.archive_receipt_acknowledged === true;
+  if (value.state === "not_started") return none && !value.response_loss_possible;
+  if (value.state === "archive_write_in_flight") {
+    return none && value.response_loss_possible;
+  }
+  if (new Set(["archive_write_response_unknown", "archive_receipt_unverified"])
+    .has(value.state)) {
+    return none && value.response_loss_possible;
+  }
+  if (new Set([
+    "archive_write_acknowledged_readback_pending",
+    "archive_write_acknowledged_readback_unverified",
+  ]).has(value.state)) {
+    return acknowledged
+      && !value.archived_readback_verified
+      && !value.active_absence_verified
+      && value.response_loss_possible;
+  }
+  if (new Set([
+    "archived_readback_verified_active_absence_pending",
+    "archived_readback_verified_active_absence_response_unknown",
+  ]).has(value.state)) {
+    return acknowledged
+      && value.archived_readback_verified
+      && !value.active_absence_verified
+      && value.response_loss_possible;
+  }
+  if (value.state === "archived_readback_verified_active_still_present") {
+    return acknowledged
+      && value.archived_readback_verified
+      && !value.active_absence_verified
+      && !value.response_loss_possible;
+  }
+  return value.state === "verified"
+    && acknowledged
+    && value.archived_readback_verified
+    && value.active_absence_verified
+    && !value.response_loss_possible;
+}
+
 function requireFunction(value, label) {
   if (typeof value !== "function") throw new Error(`${label} interface is required.`);
   return value;
+}
+
+function reviewedReconciliationPointerIdentity(value, label) {
+  if (
+    !isPlainObject(value)
+    || stableJson(Object.keys(value).sort()) !== stableJson([
+      "canonical_sha256",
+      "exists",
+      "projection",
+      "schema_version",
+    ])
+  ) {
+    throw new Error(
+      `Reviewed reconciliation ${label} pointer identity has unexpected or missing fields.`,
+    );
+  }
+  const identity = assertVisualSnapshotPointerIdentity(value);
+  if (
+    identity.schema_version !== VISUAL_SNAPSHOT_POINTER_IDENTITY_SCHEMA
+    || identity.exists !== true
+    || !isPlainObject(identity.projection)
+  ) {
+    throw new Error(
+      `Reviewed reconciliation ${label} pointer identity is absent or unsupported.`,
+    );
+  }
+  return identity;
+}
+
+function reviewedCandidateObjectKeys(value) {
+  if (!isPlainObject(value) || Object.keys(value).length === 0) {
+    throw new Error("Reviewed reconciliation candidate object keys are required.");
+  }
+  const entries = Object.entries(value).sort(([left], [right]) => (
+    left.localeCompare(right)
+  ));
+  const normalized = {};
+  const seen = new Set();
+  for (const [rawRole, rawKey] of entries) {
+    const role = requiredText(rawRole, "reviewed reconciliation candidate role");
+    const objectKey = requiredText(
+      rawKey,
+      `reviewed reconciliation candidate object key ${role}`,
+    );
+    if (role !== rawRole || objectKey !== rawKey || seen.has(objectKey)) {
+      throw new Error(
+        "Reviewed reconciliation candidate object keys are not unique canonical strings.",
+      );
+    }
+    seen.add(objectKey);
+    normalized[role] = objectKey;
+  }
+  return normalized;
+}
+
+function requiredSha256Text(value, label) {
+  const hash = requiredText(value, label).toLowerCase();
+  if (!SHA256_PATTERN.test(hash) || hash !== value) {
+    throw new Error(`${label} must be a lowercase SHA-256 hash.`);
+  }
+  return hash;
 }
 
 function requiredText(value, label) {
@@ -1542,6 +2278,12 @@ function stableJson(value) {
 
 function cloneJson(value) {
   return JSON.parse(JSON.stringify(value));
+}
+
+function deepFreeze(value) {
+  if (!value || typeof value !== "object" || Object.isFrozen(value)) return value;
+  for (const nested of Object.values(value)) deepFreeze(nested);
+  return Object.freeze(value);
 }
 
 function isPlainObject(value) {

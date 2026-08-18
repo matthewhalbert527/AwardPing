@@ -11,8 +11,6 @@ import {
 } from "./lib/stage1-evidence-schema-upgrade.mjs";
 import {
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SHA256,
-  STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_SHA256,
-  STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_VERSION,
 } from "./lib/stage1-evidence-schema-upgrade-quarantine.mjs";
 import {
   listStage1EvidenceSchemaUpgradeQuarantineV2PriorVersions,
@@ -23,6 +21,7 @@ import {
 import {
   runStage1EvidenceSchemaUpgradeQuarantineV2RollbackProbe,
   runStage1EvidenceSchemaUpgradeQuarantineV2RollbackProbeCli,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_V2_ROLLBACK_PROBE_EXPECTED_ROW,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_V2_ROLLBACK_PROBE_USAGE,
 } from "./run-stage1-evidence-schema-upgrade-quarantine-v2-reseal-rollback-probe.mjs";
 
@@ -32,6 +31,8 @@ const oldManifestSha256 =
   "f2a16adec57b3a66c3e467599bbf962cf02c94d1f6ded1daf5db09bf980c0184";
 const oldPolicySha256 =
   "1921da9c76a2e02665eee8e5f6df2bc0216273e31acb13d5d75a7da99c6a3f6c";
+const v2PolicySha256 =
+  "917076584e316b4412d998ad820111046c1caf89f492012ed5061513ed7eef37";
 
 function normalizedFile(url) {
   return readFileSync(url, "utf8").replace(/\r\n/g, "\n").trim();
@@ -92,7 +93,7 @@ describe("Stage 1 evidence-schema-upgrade quarantine v2 forward reseal", () => {
       STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SHA256,
     );
     expect(historicalMigration).not.toContain(
-      STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_SHA256,
+      v2PolicySha256,
     );
   });
 
@@ -114,23 +115,18 @@ describe("Stage 1 evidence-schema-upgrade quarantine v2 forward reseal", () => {
     );
   });
 
-  it("reseals the exact deployed v1 definition to runtime manifest v2 and policy v2", () => {
+  it("reseals the exact deployed v1 definition to historical manifest/policy v2", () => {
     expect(STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SCHEMA).toBe(
       "awardping.stage1.reviewed-source-capture-allowlist.v2",
     );
     expect(STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SHA256).toBe(
       "42241673b1acf00b22f5e47f7a5fa1368ad0237ba9c4795a05541941ec2209c4",
     );
-    expect(STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_VERSION).toBe("2");
-    expect(STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_SHA256).toBe(
-      "917076584e316b4412d998ad820111046c1caf89f492012ed5061513ed7eef37",
-    );
-
     for (const contract of [
       oldManifestSha256,
       oldPolicySha256,
       STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SHA256,
-      STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_SHA256,
+      v2PolicySha256,
       "awardping.stage1.reviewed-source-capture-allowlist.v1",
       STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SCHEMA,
       "v_policy ->> 'policy_version' is distinct from '1'",
@@ -161,7 +157,7 @@ describe("Stage 1 evidence-schema-upgrade quarantine v2 forward reseal", () => {
           `[\\s\\S]*?policy_sha256\\s*=\\s*'${oldPolicySha256}'` +
           `[\\s\\S]*?\\)\\s*or\\s*\\(` +
           `[\\s\\S]*?manifest_sha256\\s*=\\s*'${STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SHA256}'` +
-          `[\\s\\S]*?policy_sha256\\s*=\\s*'${STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_SHA256}'`,
+          `[\\s\\S]*?policy_sha256\\s*=\\s*'${v2PolicySha256}'`,
         "u",
       ),
     );
@@ -174,7 +170,7 @@ describe("Stage 1 evidence-schema-upgrade quarantine v2 forward reseal", () => {
     for (const contract of [
       "b0859cb4807b2a914800105154bf508be308fb1aa6943a10fb1b42b3b340083f",
       STAGE1_EVIDENCE_SCHEMA_UPGRADE_MANIFEST_SHA256,
-      STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_POLICY_SHA256,
+      v2PolicySha256,
       oldManifestSha256,
       oldPolicySha256,
       "set role anon;",
@@ -278,7 +274,11 @@ describe("Stage 1 quarantine v2 linked rollback probe", () => {
       execute,
       render,
     })).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        STAGE1_EVIDENCE_SCHEMA_UPGRADE_QUARANTINE_V2_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
 
     const run = vi.fn(() => ({ status: "passed" }));
     const stdout = { write: vi.fn() };

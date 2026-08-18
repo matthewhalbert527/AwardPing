@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   conservativeExpansionStateCaptureCoverage,
@@ -6,6 +7,7 @@ import {
 } from "./expansion-state-descriptor-canonicalization.mjs";
 import {
   STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+  normalizeStage1BaselineEvidenceWords,
   stage1BaselineActivationGuardSha256,
   stage1BaselineActivationTextSha256,
 } from "./stage1-baseline-activation-guard.mjs";
@@ -25,6 +27,9 @@ import {
   beineckeFaqLegacyFixtureBody,
   beineckeFaqLegacyFixtureJson,
 } from "./fixtures/beinecke-faq-legacy-geometry-fixture.mjs";
+import {
+  STAGE1_PRE_1FC005C_LEGACY_GEOMETRY_SOURCE_IDS,
+} from "./stage1-evidence-schema-upgrade-pre-1fc005c-legacy-geometry.mjs";
 
 const sourceId = "11111111-1111-4111-8111-111111111111";
 const acquisitionId = "22222222-2222-4222-8222-222222222222";
@@ -34,6 +39,42 @@ const reviewedQuote = "Applicants must be enrolled full time.";
 const reviewedText = `Award eligibility\n${reviewedQuote}`;
 const existingAt = "2026-08-14T18:00:00.000Z";
 const captureAt = "2026-08-14T18:05:00.000Z";
+const exactSixArchiveRoot = "D:/AwardPingVisualSnapshots";
+const exactSixReportPath = new URL(
+  "../../reports/visual-snapshot-run-2026-08-15T05-35-20-918Z-shard-1-e72368f4.json",
+  import.meta.url,
+);
+const exactSixRetainedDefinitions = Object.freeze([
+  Object.freeze({
+    sourceId: "c30778fe-43d7-57be-842a-e046d84baaee",
+    captureDirectory: "2026-08-03T18-37-29-113Z",
+  }),
+  Object.freeze({
+    sourceId: "af1367b5-0cb0-5b21-8e78-7dc195dd996f",
+    captureDirectory: "2026-08-03T18-38-42-518Z",
+  }),
+  Object.freeze({
+    sourceId: "5ec9a453-fd62-53e5-b885-726b21ce7247",
+    captureDirectory: "2026-08-03T18-50-08-220Z",
+  }),
+  Object.freeze({
+    sourceId: "fa4088a7-706e-4ad3-ae12-3653751dd5e1",
+    captureDirectory: "2026-08-03T18-50-42-281Z",
+  }),
+  Object.freeze({
+    sourceId: "664d38ba-c717-5d51-b7ce-9e3a27f41fec",
+    captureDirectory: "2026-08-03T18-51-38-842Z",
+  }),
+  Object.freeze({
+    sourceId: "c28878c0-6a8b-5fa8-b99b-ec826b86d8f2",
+    captureDirectory: "2026-08-03T18-52-22-287Z",
+  }),
+]);
+const exactSixRetainedFixtureAvailable = existsSync(exactSixReportPath)
+  && exactSixRetainedDefinitions.every(exactSixFixtureExists);
+const exactSixReport = exactSixRetainedFixtureAvailable
+  ? JSON.parse(readFileSync(exactSixReportPath, "utf8"))
+  : null;
 
 describe("Stage 1 evidence-schema upgrade validation", () => {
   it("allows a zero-charge unchanged webpage upgrade from explicit legacy limitations", () => {
@@ -318,6 +359,24 @@ describe("Stage 1 evidence-schema upgrade validation", () => {
     });
   });
 
+  it("does not waive a current-fingerprint mismatch for a sibling source", () => {
+    const fixture = validWebFixture();
+    const staleGeometry = structuredClone(fixture.existingCapture.text_geometry);
+    staleGeometry.capture_verification.before_fingerprint = "0".repeat(64);
+    staleGeometry.capture_verification.after_fingerprint = "0".repeat(64);
+    fixture.existingCapture.text_geometry = staleGeometry;
+    fixture.existingPreparedArtifacts = mutatePreparedArtifact(
+      fixture.existingPreparedArtifacts,
+      "layout",
+      () => Buffer.from(JSON.stringify(staleGeometry)),
+    );
+
+    expect(evaluateStage1EvidenceSchemaUpgradeCapture(fixture)).toMatchObject({
+      decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+      reason: "existing_legacy_geometry_binding_invalid",
+    });
+  });
+
   it("requires exact PDF acquisition hashes and classifies a new PDF as material", () => {
     const unchanged = validPdfFixture();
     expect(evaluateStage1EvidenceSchemaUpgradeCapture(unchanged)).toMatchObject({
@@ -344,6 +403,246 @@ describe("Stage 1 evidence-schema upgrade validation", () => {
     });
   });
 });
+
+describe.runIf(exactSixRetainedFixtureAvailable)(
+  "exact-six historical geometry bridge through the Stage 1 evaluator",
+  () => {
+    it("waives only the exact historical layout fingerprint mismatch for all six tuples", () => {
+      expect(exactSixRetainedDefinitions.map((definition) => definition.sourceId)).toEqual(
+        STAGE1_PRE_1FC005C_LEGACY_GEOMETRY_SOURCE_IDS,
+      );
+      for (const definition of exactSixRetainedDefinitions) {
+        const fixture = exactSixRetainedValidationFixture(definition);
+        const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+        expect(decision).toMatchObject({
+          decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+          reason: "existing_baseline_normalized_text_disagrees_with_acquisition",
+          outcome: {
+            would_commit: false,
+            would_queue_visual_candidate: false,
+            would_quarantine: true,
+          },
+        });
+        expect(decision.reason).not.toBe("existing_legacy_geometry_binding_invalid");
+      }
+    });
+
+    it("refuses non-historical geometry drift inside an otherwise exact tuple", () => {
+      const fixture = exactSixRetainedValidationFixture(exactSixRetainedDefinitions[0]);
+      fixture.existingPreparedArtifacts = mutatePreparedArtifact(
+        fixture.existingPreparedArtifacts,
+        "layout",
+        (body) => {
+          const layout = JSON.parse(body.toString("utf8"));
+          layout.capture_verification.after_fingerprint = "0".repeat(64);
+          return Buffer.from(JSON.stringify(layout));
+        },
+      );
+
+      expect(evaluateStage1EvidenceSchemaUpgradeCapture(fixture)).toMatchObject({
+        decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+        reason: "existing_legacy_geometry_bridge_invalid",
+      });
+    });
+  },
+);
+
+function exactSixFixtureExists(definition) {
+  try {
+    const paths = exactSixFixturePaths(definition);
+    if (!Object.values(paths).every(existsSync)) return false;
+    const baseline = JSON.parse(readFileSync(paths.baseline, "utf8"));
+    return existsSync(exactSixIntakeTextPath(
+      baseline.summary_metadata.stage1_baseline_activation,
+    ));
+  } catch {
+    return false;
+  }
+}
+
+function exactSixRetainedValidationFixture(definition) {
+  const paths = exactSixFixturePaths(definition);
+  const baseline = JSON.parse(readFileSync(paths.baseline, "utf8"));
+  const metadataBody = readFileSync(paths.meta);
+  const metadata = JSON.parse(metadataBody.toString("utf8"));
+  const layoutBody = readFileSync(paths.layout);
+  const layout = JSON.parse(layoutBody.toString("utf8"));
+  const textBody = readFileSync(paths.text);
+  const browserText = withoutWriterNewline(textBody.toString("utf8"));
+  const intakeText = withoutWriterNewline(readFileSync(
+    exactSixIntakeTextPath(baseline.summary_metadata.stage1_baseline_activation),
+    "utf8",
+  ));
+  const reviewed = exactSixReviewedAcquisition({
+    baseline,
+    metadata,
+    intakeText,
+    browserText,
+  });
+  const captureRoot = exactSixCaptureRoot(definition);
+  const existingCapture = {
+    ...metadata,
+    text: browserText,
+    dir: captureRoot,
+    page_path: paths.page,
+    thumb_path: paths.thumb,
+    text_path: paths.text,
+    expansion_text_path: null,
+    sections_text_path: null,
+    sections_json_path: `${captureRoot}/sections.json`,
+    layout_path: paths.layout,
+    text_geometry: layout,
+    meta_path: paths.meta,
+  };
+  const reportResult = exactSixReport.stage1_evidence_schema_upgrade.results
+    .find((result) => result.source_id === definition.sourceId);
+  return {
+    sourceId: definition.sourceId,
+    sourceKind: "webpage",
+    reviewedFinalUrl: reviewed.finalUrl,
+    reviewedEvidenceQuotes: [reviewed.evidenceQuote],
+    immutableAcquisition: {
+      acquisition: reviewed.acquisition,
+      identity: { file_hash: reviewed.fileHash },
+    },
+    existingBaseline: baseline,
+    existingCapture,
+    existingPreparedArtifacts: prepareFromDefinitions({
+      layout: ["layout.json", "application/json; charset=utf-8", layoutBody, paths.layout],
+      meta: ["meta.json", "application/json; charset=utf-8", metadataBody, paths.meta],
+      page: ["page.jpg", "image/jpeg", readFileSync(paths.page), paths.page],
+      text: ["text.txt", "text/plain; charset=utf-8", textBody, paths.text],
+      thumb: ["thumb.jpg", "image/jpeg", readFileSync(paths.thumb), paths.thumb],
+    }),
+    authoritativeExistingR2Binding: structuredClone(
+      reportResult.capture_validation.evidence.authoritative_existing_r2_binding,
+    ),
+    capture: { main_content_hash: null },
+    capturePreparedArtifacts: null,
+  };
+}
+
+function exactSixReviewedAcquisition({ baseline, metadata, intakeText, browserText }) {
+  const activation = baseline.summary_metadata.stage1_baseline_activation;
+  const evidenceQuote = exactCommonEvidenceQuote(intakeText, browserText);
+  const guard = {
+    mode: "first_visual_baseline_exact_normalized_retained_text",
+    onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+    notification_mode: "baseline_only",
+    source_page_request_id: activation.source_page_request_id,
+    shared_award_source_id: activation.shared_award_source_id,
+    shared_award_source_acquisition_id: activation.source_acquisition_id,
+    evidence_packet_sha256: activation.evidence_packet_sha256,
+    decision_item_sha256: activation.decision_item_sha256,
+    normalized_retained_text_sha256: activation.expected_normalized_text_sha256,
+    retained_text_artifact: structuredClone(activation.retained_text_artifact),
+    capture_file_sha256: activation.capture_file_sha256,
+    final_url: activation.reviewed_final_url,
+  };
+  const disposition = {
+    schema_version: "awardping.stage1.baseline-source-human-disposition.v1",
+    policy_version: "stage1-baseline-source-disposition-v1",
+    decision: "approve_baseline_only",
+    effective_source_review: {
+      status: "accepted",
+      source_relevance: "primary",
+      cycle_relevance: "evergreen",
+      officialness: "official",
+      confidence: "high",
+      page_type: metadata.source?.page_type || "other",
+      evidence_quotes: [evidenceQuote],
+      exact_evidence_verified: true,
+      reviewed_roles: ["identity_home"],
+      facts: {
+        description: null,
+        deadline: null,
+        amount: null,
+        eligibility: [],
+        application_materials: [],
+        important_dates: [],
+      },
+    },
+    activation_guard: guard,
+    authority: {
+      monitoring: true,
+      public_facts: false,
+      fact_candidates: false,
+      reconciliation: false,
+      publication: false,
+      first_observation_notification: false,
+    },
+    guard_sha256: null,
+  };
+  disposition.guard_sha256 = stage1BaselineActivationGuardSha256(disposition);
+  Object.assign(activation, {
+    status: "server_prepare_recorded",
+    shared_award_source_id: guard.shared_award_source_id,
+    source_acquisition_id: guard.shared_award_source_acquisition_id,
+    source_page_request_id: guard.source_page_request_id,
+    capture_file_sha256: guard.capture_file_sha256,
+    expected_normalized_text_sha256: guard.normalized_retained_text_sha256,
+    observed_normalized_text_sha256: guard.normalized_retained_text_sha256,
+    guard_sha256: disposition.guard_sha256,
+    reviewed_final_url: guard.final_url,
+    observed_final_url: metadata.final_url,
+    visual_evidence_quotes_verified: true,
+    retained_evidence_quotes_verified: true,
+  });
+  return {
+    acquisition: {
+      id: guard.shared_award_source_acquisition_id,
+      shared_award_source_id: guard.shared_award_source_id,
+      origin_source_page_request_id: guard.source_page_request_id,
+      acquisition_kind: "historical_import",
+      notification_mode: "baseline_only",
+      onboarding_batch_id: STAGE1_BASELINE_ACTIVATION_BATCH_ID,
+      review_seal: {
+        source_page_request_id: guard.source_page_request_id,
+        capture_file_hash: guard.capture_file_sha256,
+        capture_final_url: guard.final_url,
+        human_source_disposition: disposition,
+      },
+    },
+    evidenceQuote,
+    fileHash: guard.capture_file_sha256,
+    finalUrl: guard.final_url,
+  };
+}
+
+function exactCommonEvidenceQuote(intakeText, browserText) {
+  const intakeWords = normalizeStage1BaselineEvidenceWords(intakeText).split(" ");
+  const browserWords = ` ${normalizeStage1BaselineEvidenceWords(browserText)} `;
+  for (let length = 20; length >= 8; length -= 1) {
+    for (let index = 0; index + length <= intakeWords.length; index += 1) {
+      const candidate = intakeWords.slice(index, index + length).join(" ");
+      if (browserWords.includes(` ${candidate} `)) return candidate;
+    }
+  }
+  throw new Error("The retained intake and browser fixture have no shared evidence quote.");
+}
+
+function exactSixFixturePaths(definition) {
+  const captureRoot = exactSixCaptureRoot(definition);
+  return {
+    baseline: `${exactSixArchiveRoot}/sources/${definition.sourceId}/baseline.json`,
+    layout: `${captureRoot}/layout.json`,
+    meta: `${captureRoot}/meta.json`,
+    page: `${captureRoot}/page.jpg`,
+    text: `${captureRoot}/text.txt`,
+    thumb: `${captureRoot}/thumb.jpg`,
+  };
+}
+
+function exactSixCaptureRoot(definition) {
+  return `${exactSixArchiveRoot}/sources/${definition.sourceId}/captures/${definition.captureDirectory}`;
+}
+
+function exactSixIntakeTextPath(activation) {
+  const match = /^source-intake-first-observation\/v1\/requests\/([^/]+)\/sha256\/([a-f0-9]{64})\/text\.txt$/u
+    .exec(String(activation?.retained_text_artifact?.key || ""));
+  if (!match) throw new Error("The retained activation has no exact intake text path.");
+  return `${exactSixArchiveRoot}/intake-artifacts/requests/${match[1]}/sha256/${match[2]}/text.txt`;
+}
 
 function validWebFixture({
   candidateText = reviewedText,

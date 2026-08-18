@@ -1,7 +1,22 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { renderStage1ActivationReleaseLockOrderRollbackProbe } from "./render-stage1-activation-release-lock-order-rollback-probe.mjs";
-import { runStage1PendingMigrationRollbackProbe } from "./run-stage1-pending-migration-rollback-probe.mjs";
+import {
+  runStage1PendingMigrationRollbackProbe,
+  STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER,
+} from "./run-stage1-pending-migration-rollback-probe.mjs";
+
+export const STAGE1_ACTIVATION_RELEASE_LOCK_ORDER_ROLLBACK_PROBE_EXPECTED_ROW =
+  Object.freeze({
+    [STAGE1_ROLLBACK_PROBE_SUCCESS_MARKER]: true,
+    awardping_stage1_activation_release_lock_rollback_probe_passed: true,
+    exact_migration_count: 1,
+    exact_smoke_count: 1,
+    exact_migration:
+      "20260814223000_order_stage1_activation_release_locks.sql",
+    exact_smoke: "stage1_activation_release_lock_order_smoke.sql",
+    persistence_result: "migration/smoke/function-catalog changes rolled back",
+  });
 
 export const STAGE1_ACTIVATION_RELEASE_LOCK_ORDER_ROLLBACK_PROBE_USAGE = `Usage: node scripts/run-stage1-activation-release-lock-order-rollback-probe.mjs [--help|-h]
 
@@ -18,7 +33,11 @@ export function runStage1ActivationReleaseLockOrderRollbackProbe({
   execute = runStage1PendingMigrationRollbackProbe,
   render = renderStage1ActivationReleaseLockOrderRollbackProbe,
 } = {}) {
-  return execute({ render });
+  return execute({
+    render,
+    expectedResultRow:
+      STAGE1_ACTIVATION_RELEASE_LOCK_ORDER_ROLLBACK_PROBE_EXPECTED_ROW,
+  });
 }
 
 export function runStage1ActivationReleaseLockOrderRollbackProbeCli({

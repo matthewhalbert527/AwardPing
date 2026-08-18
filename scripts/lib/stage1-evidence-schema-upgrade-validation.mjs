@@ -25,6 +25,15 @@ import {
   evaluateStage1BeineckeFaqLegacyGeometryBridge,
   evaluateStage1BeineckeFaqLegacyMainContentBridge,
 } from "./stage1-evidence-schema-upgrade-beinecke-faq-legacy-geometry.mjs";
+import {
+  evaluateStage1Pre1fc005cLegacyGeometryBridge,
+} from "./stage1-evidence-schema-upgrade-pre-1fc005c-legacy-geometry.mjs";
+import {
+  evaluateStage1LegacyEmptyExpansionLengthBridge,
+} from "./stage1-evidence-schema-upgrade-legacy-empty-expansion.mjs";
+import {
+  evaluateStage1SchwarzmanPdfRecoveryReceipt,
+} from "./stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs";
 
 export const STAGE1_EVIDENCE_SCHEMA_UPGRADE_VALIDATION_SCHEMA =
   "awardping.stage1.evidence-schema-upgrade-validation.v1";
@@ -86,6 +95,7 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
   capturePreparedArtifacts,
   preIntake = null,
   postIntake = null,
+  pdfTextRecoveryReceipt = null,
 } = {}) {
   const evidence = {
     source_id: cleanText(sourceId) || null,
@@ -96,6 +106,7 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
     capture: null,
     intake: null,
     comparison: null,
+    pdf_text_recovery: null,
   };
 
   try {
@@ -152,10 +163,16 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
       capture: baselineCapture,
       reviewedFinalUrl: sealed.final_url,
     });
-    assertExistingBaselineIdentity({
+    const legacyEmptyExpansionLengthBridge = assertExistingBaselineIdentity({
       sourceId: canonicalSourceId,
+      exactSourceId: sourceId,
+      kind,
+      reviewedFinalUrl: sealed.final_url_exact,
+      sealedAcquisition: sealed,
+      activationGuardSha256: binding.guard_sha256,
       baseline: existingBaseline,
       capture: baselineCapture,
+      authoritativeR2Binding: authoritativeExistingR2Binding,
     });
     const existingArtifacts = validatePreparedCaptureArtifacts({
       label: "existing",
@@ -199,6 +216,29 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
           existingArtifactLimitations: existingArtifacts.limitations,
         })
       : null;
+    const pdfTextRecovery = evaluateStage1SchwarzmanPdfRecoveryReceipt({
+      sourceId: canonicalSourceId,
+      exactSourceId: sourceId,
+      kind,
+      reviewedFinalUrl: sealed.final_url_exact,
+      activationGuardSha256: binding.guard_sha256,
+      sealedAcquisition: sealed,
+      existingBaselineActivation:
+        existingBaseline?.summary_metadata?.stage1_baseline_activation,
+      existingCapture: baselineCapture,
+      prospectiveCapture: capture,
+      authoritativeR2Binding: authoritativeExistingR2Binding,
+      receipt: pdfTextRecoveryReceipt,
+    });
+    if (pdfTextRecovery.applies && !pdfTextRecovery.accepted) {
+      refuse(
+        `pdf_text_recovery_${pdfTextRecovery.reason}`,
+        `The exact source-bound PDF text-recovery receipt was refused: ${pdfTextRecovery.reason}.`,
+      );
+    }
+    evidence.pdf_text_recovery = pdfTextRecovery.accepted
+      ? pdfTextRecovery.evidence
+      : null;
     assertExistingActivationBinding({
       baseline: existingBaseline,
       acquisition,
@@ -207,9 +247,15 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
       sourceId: canonicalSourceId,
       existingCapture: baselineCapture,
       legacyMainContentBridge,
+      pdfTextRecovery,
     });
     assertQuotePresence("existing_visual", baselineCapture.text, sealed.evidence_quotes);
-    assertImmutableBaselineIdentity({ kind, capture: baselineCapture, sealed });
+    assertImmutableBaselineIdentity({
+      kind,
+      capture: baselineCapture,
+      sealed,
+      pdfTextRecovery,
+    });
 
     assertCaptureEnvelope({
       label: "capture",
@@ -250,8 +296,13 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
       capture,
       sealed,
       intake,
+      pdfTextRecovery,
     });
-    evidence.existing = captureEvidenceSummary(baselineCapture, existingArtifacts);
+    evidence.existing = captureEvidenceSummary(
+      baselineCapture,
+      existingArtifacts,
+      legacyEmptyExpansionLengthBridge,
+    );
     evidence.capture = captureEvidenceSummary(capture, prospectiveArtifacts);
     evidence.intake = intake;
     evidence.comparison = comparison.evidence;
@@ -264,13 +315,20 @@ export function evaluateStage1EvidenceSchemaUpgradeCapture({
       );
     }
 
+    const eligibleReason = pdfTextRecovery.accepted
+      ? {
+          code: "exact_pdf_bytes_and_sealed_intake_text_recovery_verified",
+          detail:
+            "The prospective generation preserves the exact PDF bytes and uses the exact sealed intake text under the source-bound parser-omission recovery receipt; the unequal legacy text remains explicit.",
+        }
+      : {
+          code: "exact_semantic_and_primary_visual_identity_verified",
+          detail:
+            "The prospective capture preserves the exact semantic and primary visual identity while supplying fully verified evidence-schema artifacts.",
+        };
     return result(
       STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
-      [{
-        code: "exact_semantic_and_primary_visual_identity_verified",
-        detail:
-          "The prospective capture preserves the exact semantic and primary visual identity while supplying fully verified evidence-schema artifacts.",
-      }],
+      [eligibleReason],
       evidence,
     );
   } catch (error) {
@@ -397,7 +455,17 @@ function assertCaptureEnvelope({ label, sourceId, kind, capture, reviewedFinalUr
   }
 }
 
-function assertExistingBaselineIdentity({ sourceId, baseline, capture }) {
+function assertExistingBaselineIdentity({
+  sourceId,
+  exactSourceId,
+  kind,
+  reviewedFinalUrl,
+  sealedAcquisition,
+  activationGuardSha256,
+  baseline,
+  capture,
+  authoritativeR2Binding,
+}) {
   const baselineMetaPath = normalizedPath(baseline?.capture?.meta);
   const captureMetaPath = archiveCaptureRef(sourceId, capture.captured_at, "meta.json");
   if (!baselineMatchesRetainedProjectionCapture({
@@ -421,8 +489,9 @@ function assertExistingBaselineIdentity({ sourceId, baseline, capture }) {
   const fields = capture.kind === "pdf"
     ? [["text_hash", "text_length"], ["file_hash", "file_bytes"]]
     : exactWebSemanticFields.map(([hashField, lengthField]) => [hashField, lengthField]);
+  let legacyEmptyExpansionLengthBridge = null;
   for (const [hashField, lengthField] of fields) {
-    if (
+    const mismatch = (
       !Object.hasOwn(objectValue(baseline), hashField)
       || baseline[hashField] !== capture[hashField]
       || (
@@ -432,13 +501,32 @@ function assertExistingBaselineIdentity({ sourceId, baseline, capture }) {
           || baseline[lengthField] !== capture[lengthField]
         )
       )
-    ) {
+    );
+    if (mismatch) {
+      if (hashField === "expansion_hash" && lengthField === "expansion_text_length") {
+        const bridge = evaluateStage1LegacyEmptyExpansionLengthBridge({
+          sourceId,
+          exactSourceId,
+          kind,
+          reviewedFinalUrl,
+          sealedAcquisition,
+          activationGuardSha256,
+          existingBaseline: baseline,
+          existingCaptureIdentity: capture,
+          authoritativeR2Binding,
+        });
+        if (bridge.accepted) {
+          legacyEmptyExpansionLengthBridge = bridge.evidence;
+          continue;
+        }
+      }
       refuse(
         "existing_baseline_semantic_identity_mismatch",
         `The local baseline ${hashField}${lengthField ? ` or ${lengthField}` : ""} differs from retained raw metadata.`,
       );
     }
   }
+  return legacyEmptyExpansionLengthBridge;
 }
 
 function assertExistingActivationBinding({
@@ -449,6 +537,7 @@ function assertExistingActivationBinding({
   sourceId,
   existingCapture,
   legacyMainContentBridge = null,
+  pdfTextRecovery = null,
 }) {
   const activation = objectValue(baseline?.summary_metadata?.stage1_baseline_activation);
   const validStatus = new Set([
@@ -478,6 +567,7 @@ function assertExistingActivationBinding({
   if (
     existingNormalizedTextHash !== sealed.normalized_text_hash
     && legacyMainContentBridge?.accepted !== true
+    && pdfTextRecovery?.accepted !== true
   ) {
     refuse(
       "existing_baseline_normalized_text_disagrees_with_acquisition",
@@ -486,7 +576,12 @@ function assertExistingActivationBinding({
   }
 }
 
-function assertImmutableBaselineIdentity({ kind, capture, sealed }) {
+function assertImmutableBaselineIdentity({
+  kind,
+  capture,
+  sealed,
+  pdfTextRecovery = null,
+}) {
   if (kind !== "pdf") return;
   if (!sealed.text_hash) {
     refuse(
@@ -494,7 +589,13 @@ function assertImmutableBaselineIdentity({ kind, capture, sealed }) {
       "PDF upgrade validation requires the immutable retained intake manifest text_hash.",
     );
   }
-  if (capture.file_hash !== sealed.file_hash || capture.text_hash !== sealed.text_hash) {
+  if (
+    capture.file_hash !== sealed.file_hash
+    || (
+      capture.text_hash !== sealed.text_hash
+      && pdfTextRecovery?.accepted !== true
+    )
+  ) {
     refuse(
       "existing_pdf_identity_disagrees_with_acquisition",
       "The existing PDF baseline does not match the immutable acquisition file and text hashes.",
@@ -1049,7 +1150,7 @@ function assertLegacyGeometryArtifact({
   const currentGeometryVerified = layoutReady && captureReady;
   let bridge = null;
   if (!currentGeometryVerified && !explicitlyUnavailable) {
-    const bridgeDecision = evaluateStage1BeineckeFaqLegacyGeometryBridge({
+    const bridgeInput = {
       ...objectValue(legacyGeometryBridgeContext),
       artifact: artifact || null,
       layout,
@@ -1063,10 +1164,21 @@ function assertLegacyGeometryArtifact({
         layout_ready: layoutReady,
         capture_ready: captureReady,
       },
-    });
-    if (bridgeDecision.applies && bridgeDecision.accepted) {
+    };
+    const applicableBridgeDecisions = [
+      evaluateStage1BeineckeFaqLegacyGeometryBridge(bridgeInput),
+      evaluateStage1Pre1fc005cLegacyGeometryBridge(bridgeInput),
+    ].filter((decision) => decision.applies);
+    if (applicableBridgeDecisions.length > 1) {
+      refuse(
+        `${label}_legacy_geometry_bridge_ambiguous`,
+        `The ${label} ${role} matched more than one source-bound legacy geometry bridge.`,
+      );
+    }
+    const [bridgeDecision] = applicableBridgeDecisions;
+    if (bridgeDecision?.accepted) {
       bridge = bridgeDecision.evidence;
-    } else if (bridgeDecision.applies) {
+    } else if (bridgeDecision) {
       refuse(
         `${label}_legacy_geometry_bridge_invalid`,
         `The ${label} ${role} source-bound legacy geometry bridge refused the tuple: ${bridgeDecision.reason}.`,
@@ -1470,7 +1582,14 @@ function validateIntake(label, intake, sealed) {
   };
 }
 
-function compareCaptureIdentity({ kind, existing, capture, sealed, intake }) {
+function compareCaptureIdentity({
+  kind,
+  existing,
+  capture,
+  sealed,
+  intake,
+  pdfTextRecovery = null,
+}) {
   const materialReasons = [];
   const semanticFields = kind === "pdf"
     ? [["text_hash", "text_length", false]]
@@ -1496,11 +1615,25 @@ function compareCaptureIdentity({ kind, existing, capture, sealed, intake }) {
       previous: left,
       current: right,
       matches,
+      ...(kind === "pdf" && hashField === "text_hash" && pdfTextRecovery?.accepted
+        ? {
+            accepted_recovery: true,
+            equivalence_basis: null,
+            recovery_basis:
+              "exact_source_bound_parser_omission_with_same_pdf_and_sealed_intake_text",
+          }
+        : {}),
       ...(lengthField
         ? { previous_length: existing[lengthField], current_length: capture[lengthField] }
         : {}),
     };
-    if (!matches) {
+    const acceptedPdfTextRecovery = Boolean(
+      !matches
+      && kind === "pdf"
+      && hashField === "text_hash"
+      && pdfTextRecovery?.accepted === true,
+    );
+    if (!matches && !acceptedPdfTextRecovery) {
       materialReasons.push({
         code: `material_${hashField}_changed`,
         detail: `The capture ${hashField}${lengthField ? ` or ${lengthField}` : ""} differs from the existing baseline.`,
@@ -1621,7 +1754,7 @@ function quotePresence(text, quotes) {
   };
 }
 
-function captureEvidenceSummary(capture, verified) {
+function captureEvidenceSummary(capture, verified, legacySemanticIdentityBridge = null) {
   const projection = projectionAuthority(capture.retained_artifact_projection);
   const canonicalCoverage = capture.kind === "webpage"
     ? canonicalExpansionStateCaptureCoverage(
@@ -1644,6 +1777,9 @@ function captureEvidenceSummary(capture, verified) {
     raw_metadata_verified: true,
     legacy_limitations: verified.limitations,
     legacy_geometry_bridges: verified.legacyGeometryBridges || [],
+    legacy_semantic_identity_bridges: legacySemanticIdentityBridge
+      ? [legacySemanticIdentityBridge]
+      : [],
   };
 }
 

@@ -12,6 +12,7 @@ import {
   renderPublicUpdateConfirmationOutboxRollbackProbe,
 } from "./render-public-update-confirmation-outbox-rollback-probe.mjs";
 import {
+  PUBLIC_UPDATE_CONFIRMATION_OUTBOX_ROLLBACK_PROBE_EXPECTED_ROW,
   PUBLIC_UPDATE_CONFIRMATION_OUTBOX_ROLLBACK_PROBE_USAGE,
   runPublicUpdateConfirmationOutboxRollbackProbe,
   runPublicUpdateConfirmationOutboxRollbackProbeCli,
@@ -172,7 +173,11 @@ describe("public-update confirmation rollback probe executable", () => {
     expect(
       runPublicUpdateConfirmationOutboxRollbackProbe({ execute, render }),
     ).toEqual({ status: "passed", sql: "begin;\nrollback;\n" });
-    expect(execute).toHaveBeenCalledWith({ render });
+    expect(execute).toHaveBeenCalledWith({
+      render,
+      expectedResultRow:
+        PUBLIC_UPDATE_CONFIRMATION_OUTBOX_ROLLBACK_PROBE_EXPECTED_ROW,
+    });
   });
 
   it.each(["--help", "-h"])(

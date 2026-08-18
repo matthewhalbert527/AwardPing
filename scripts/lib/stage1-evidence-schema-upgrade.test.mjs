@@ -3,12 +3,16 @@ import { describe, expect, it, vi } from "vitest";
 import {
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_CHURCHILL_SOURCE_ID,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_LUCE_SOURCE_ID,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS,
   assertExactStage1EvidenceSchemaUpgradeSourceIds,
   assertStage1EvidenceSchemaUpgradeCliContract,
   createStage1EvidenceSchemaUpgradeReport,
   evaluateStage1EvidenceSchemaUpgradeEligibility,
   runStage1EvidenceSchemaUpgradeSource,
+  stage1EvidenceSchemaUpgradeCanonicalTimestamp,
   stage1EvidenceSchemaUpgradeExpectedManifest,
   validateStage1EvidenceSchemaUpgradeManifest,
 } from "./stage1-evidence-schema-upgrade.mjs";
@@ -32,6 +36,19 @@ const requestId = "33333333-3333-4333-8333-333333333333";
 const finalUrl = "https://example.org/beinecke/about";
 const retainedText = "The Beinecke Scholarship supports graduate study.";
 const finalizedAt = "2026-08-14T18:00:00.000Z";
+
+describe("Stage 1 evidence-schema-upgrade canonical timestamps", () => {
+  it("normalizes equivalent PostgreSQL microseconds while preserving instant changes", () => {
+    expect(stage1EvidenceSchemaUpgradeCanonicalTimestamp(
+      "2026-08-03T18:48:15.25105+00:00",
+    )).toBe("2026-08-03T18:48:15.251Z");
+    expect(stage1EvidenceSchemaUpgradeCanonicalTimestamp(
+      "2026-08-03T18:48:15.25205+00:00",
+    )).toBe("2026-08-03T18:48:15.252Z");
+    expect(stage1EvidenceSchemaUpgradeCanonicalTimestamp("not-a-timestamp")).toBeNull();
+    expect(stage1EvidenceSchemaUpgradeCanonicalTimestamp(null)).toBeNull();
+  });
+});
 
 function enqueuePolicy() {
   return visualReviewEnqueuePolicy({
@@ -170,6 +187,22 @@ function validFinalizedSource(
   };
 }
 
+function preciselyTimedFinalizedSource({
+  rowFinalizedAt = "2026-08-14T18:00:00.000050Z",
+  receiptFinalizedAt = "2026-08-14T13:00:00.00005-05:00",
+  adminReviewedAt = "2026-08-14T19:00:00.000050+01:00",
+} = {}) {
+  const source = validFinalizedSource();
+  const finalization = source.source_activation_finalization;
+  finalization.finalized_at = rowFinalizedAt;
+  finalization.receipt.finalized_at = receiptFinalizedAt;
+  finalization.finalization_receipt_sha256 = sha256(
+    canonicalJson(finalization.receipt),
+  );
+  source.admin_reviewed_at = adminReviewedAt;
+  return source;
+}
+
 function captureDecision(decision) {
   return {
     decision,
@@ -181,6 +214,21 @@ function captureDecision(decision) {
       would_quarantine: decision === "evidence_failure_quarantine",
     },
     evidence: { exact_test_evidence: true },
+  };
+}
+
+function completedAuthorityDecision(decision, overrides = {}) {
+  return {
+    decision,
+    reason: `${decision}_test`,
+    creates_api_charge: false,
+    outcome: {
+      would_commit: false,
+      would_queue_visual_candidate: false,
+      would_quarantine: false,
+    },
+    evidence: { exact_completed_authority_evidence: true },
+    ...overrides,
   };
 }
 
@@ -287,7 +335,11 @@ describe("Stage 1 evidence-schema-upgrade reviewed-nine boundary", () => {
       args: base,
       manifest,
       sourceIds: manifest.source_ids,
-    })).toMatchObject({ exact_source_count: 9, dry_run: true });
+    })).toMatchObject({
+      exact_source_count: 9,
+      dry_run: true,
+      reviewed_exact_one_apply: false,
+    });
     expect(() => assertStage1EvidenceSchemaUpgradeCliContract({
       args: { ...base, "source-id": sourceId }, manifest, sourceIds: manifest.source_ids,
     })).toThrow(/forbids --source-id/i);
@@ -349,11 +401,52 @@ describe("Stage 1 evidence-schema-upgrade reviewed-nine boundary", () => {
         sourceIds: manifest.source_ids,
       })).toThrow(new RegExp(`raw --${key} must equal literal true`, "i"));
     }
+    const applyArgs = {
+      ...base,
+      "stage1-evidence-schema-upgrade-dry-run": "false",
+      [STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG]:
+        "reviewed-exact-one-plan.json",
+      [STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG]:
+        "a".repeat(64),
+      [STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG]:
+        "reviewed-dry-run-report.json",
+    };
     expect(assertStage1EvidenceSchemaUpgradeCliContract({
-      args: { ...base, "stage1-evidence-schema-upgrade-dry-run": "false" },
+      args: applyArgs,
       manifest,
       sourceIds: manifest.source_ids,
-    }).dry_run).toBe(false);
+    })).toMatchObject({ dry_run: false, reviewed_exact_one_apply: true });
+    for (const missingKey of [
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG,
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG,
+      STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG,
+    ]) {
+      const missing = { ...applyArgs };
+      delete missing[missingKey];
+      expect(() => assertStage1EvidenceSchemaUpgradeCliContract({
+        args: missing,
+        manifest,
+        sourceIds: manifest.source_ids,
+      })).toThrow(/requires exact reviewed authority arguments/i);
+    }
+    expect(() => assertStage1EvidenceSchemaUpgradeCliContract({
+      args: {
+        ...base,
+        [STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG]:
+          "unexpected-plan.json",
+      },
+      manifest,
+      sourceIds: manifest.source_ids,
+    })).toThrow(/dry-run forbids reviewed apply-plan\/report arguments/i);
+    expect(() => assertStage1EvidenceSchemaUpgradeCliContract({
+      args: {
+        ...applyArgs,
+        [STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG]:
+          "A".repeat(64),
+      },
+      manifest,
+      sourceIds: manifest.source_ids,
+    })).toThrow(/SHA-256 must be exact lowercase hex/i);
   });
 });
 
@@ -369,6 +462,32 @@ describe("Stage 1 evidence-schema-upgrade finalized eligibility", () => {
       semantic_difference_checked: false,
       evidence_completeness_checked: false,
     });
+  });
+
+  it("accepts offset-equivalent microseconds and emits the canonical millisecond binding", () => {
+    expect(evaluateStage1EvidenceSchemaUpgradeEligibility({
+      source: preciselyTimedFinalizedSource(),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+    })).toMatchObject({
+      eligible: true,
+      reason_codes: [],
+      finalization_binding: {
+        finalized_at: "2026-08-14T18:00:00.000Z",
+      },
+    });
+  });
+
+  it.each([
+    ["row", { rowFinalizedAt: "2026-08-14T18:00:00.000051Z" }],
+    ["receipt", { receiptFinalizedAt: "2026-08-14T18:00:00.000051Z" }],
+    ["admin", { adminReviewedAt: "2026-08-14T18:00:00.000051Z" }],
+    ["invalid row", { rowFinalizedAt: "not-a-timestamp" }],
+    ["null row", { rowFinalizedAt: null }],
+  ])("rejects precise %s finalization timestamp drift", (_label, timestamps) => {
+    expect(evaluateStage1EvidenceSchemaUpgradeEligibility({
+      source: preciselyTimedFinalizedSource(timestamps),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+    }).reason_codes).toContain("stage1_activation_finalization_timestamp_mismatch");
   });
 
   it("binds NDSEG to its canonical key, UUID, and name instead of its alias", () => {
@@ -478,6 +597,259 @@ describe("Stage 1 evidence-schema-upgrade orchestration", () => {
       quarantined_work_remaining: 0,
       automated_work_clear: false,
     });
+  });
+
+  it("runs completed-authority preflight after active-journal and eligibility checks", async () => {
+    const callOrder = [];
+    const preflightActiveJournal = vi.fn(async () => {
+      callOrder.push("active_journal");
+      return null;
+    });
+    const preflightCompletedAuthority = vi.fn(async () => {
+      callOrder.push("completed_authority");
+      return null;
+    });
+    const captureAndValidate = vi.fn(async () => {
+      callOrder.push("capture");
+      return captureDecision("eligible_unchanged_upgrade");
+    });
+    const result = await runStage1EvidenceSchemaUpgradeSource({
+      source: validFinalizedSource(),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+      dryRun: true,
+      enqueuePolicy: enqueuePolicy(),
+      interfaces: {
+        preflightActiveJournal,
+        preflightCompletedAuthority,
+        captureAndValidate,
+      },
+      now: finalizedAt,
+    });
+
+    expect(callOrder).toEqual(["active_journal", "completed_authority", "capture"]);
+    expect(preflightCompletedAuthority).toHaveBeenCalledWith(expect.objectContaining({
+      source: expect.objectContaining({ id: sourceId }),
+      manifest_source: expect.objectContaining({ source_id: sourceId }),
+      dry_run: true,
+    }));
+    expect(result.status).toBe("dry_run_ready");
+
+    const completedForIneligible = vi.fn();
+    await runStage1EvidenceSchemaUpgradeSource({
+      source: { ...validFinalizedSource(), admin_review_status: "review_later" },
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+      dryRun: true,
+      enqueuePolicy: enqueuePolicy(),
+      interfaces: { preflightCompletedAuthority: completedForIneligible },
+      now: finalizedAt,
+    });
+    expect(completedForIneligible).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, "dry_run_already_upgraded"],
+    [false, "already_upgraded"],
+  ])("short-circuits verified completed authority in %s mode", async (dryRun, status) => {
+    const preflightCompletedAuthority = vi.fn(async () => (
+      completedAuthorityDecision("already_upgraded_verified")
+    ));
+    const captureAndValidate = vi.fn();
+    const upgradeEvidenceSchema = vi.fn();
+    const enqueueVisualReviewCandidate = vi.fn();
+    const quarantineEvidenceFailure = vi.fn();
+    const result = await runStage1EvidenceSchemaUpgradeSource({
+      source: validFinalizedSource(),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+      dryRun,
+      enqueuePolicy: enqueuePolicy(),
+      interfaces: {
+        preflightCompletedAuthority,
+        captureAndValidate,
+        upgradeEvidenceSchema,
+        enqueueVisualReviewCandidate,
+        quarantineEvidenceFailure,
+      },
+      now: finalizedAt,
+    });
+
+    expect(result).toMatchObject({
+      status,
+      reason_code: "already_upgraded_verified_test",
+      capture_validation: {
+        status: "evaluated",
+        decision: "already_upgraded_verified",
+        reason: "already_upgraded_verified_test",
+        evidence: { exact_completed_authority_evidence: true },
+      },
+      pointer_journal: { status: "not_requested" },
+      visual_review_candidate: { status: "not_requested" },
+      quarantine: { status: "not_requested" },
+      mutation_counts: {
+        database_writes: 0,
+        r2_writes: 0,
+        local_baseline_writes: 0,
+        candidate_writes: 0,
+        quarantine_writes: 0,
+        source_state_writes: 0,
+      },
+    });
+    expect(captureAndValidate).not.toHaveBeenCalled();
+    expect(upgradeEvidenceSchema).not.toHaveBeenCalled();
+    expect(enqueueVisualReviewCandidate).not.toHaveBeenCalled();
+    expect(quarantineEvidenceFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [true, "dry_run_completed_authority_invalid"],
+    [false, "completed_authority_invalid"],
+  ])("blocks a clean invalid completed-authority decision in %s mode", async (
+    dryRun,
+    status,
+  ) => {
+    const captureAndValidate = vi.fn();
+    const quarantineEvidenceFailure = vi.fn();
+    const result = await runStage1EvidenceSchemaUpgradeSource({
+      source: validFinalizedSource(),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+      dryRun,
+      enqueuePolicy: enqueuePolicy(),
+      interfaces: {
+        preflightCompletedAuthority: async () => completedAuthorityDecision(
+          "completed_authority_invalid",
+          {
+            reason: "completed_authority_receipt_mismatch",
+            evidence: { mismatch: "pointer_identity" },
+          },
+        ),
+        captureAndValidate,
+        quarantineEvidenceFailure,
+      },
+      now: finalizedAt,
+    });
+
+    expect(result).toMatchObject({
+      status,
+      reason_code: "completed_authority_receipt_mismatch",
+      capture_validation: {
+        status: "evaluated",
+        decision: "completed_authority_invalid",
+        reason: "completed_authority_receipt_mismatch",
+        evidence: { mismatch: "pointer_identity" },
+      },
+      pointer_journal: { status: "not_requested" },
+      visual_review_candidate: { status: "not_requested" },
+      quarantine: { status: "not_requested" },
+      mutation_counts: {
+        database_writes: 0,
+        r2_writes: 0,
+        local_baseline_writes: 0,
+        candidate_writes: 0,
+        quarantine_writes: 0,
+        source_state_writes: 0,
+      },
+    });
+    expect(captureAndValidate).not.toHaveBeenCalled();
+    expect(quarantineEvidenceFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["unsupported decision", completedAuthorityDecision("eligible_unchanged_upgrade")],
+    ["missing charge proof", {
+      ...completedAuthorityDecision("already_upgraded_verified"),
+      creates_api_charge: undefined,
+    }],
+    ["outcome mismatch", completedAuthorityDecision("already_upgraded_verified", {
+      outcome: {
+        would_commit: true,
+        would_queue_visual_candidate: false,
+        would_quarantine: false,
+      },
+    })],
+    ["extra outcome authority", completedAuthorityDecision("already_upgraded_verified", {
+      outcome: {
+        would_commit: false,
+        would_queue_visual_candidate: false,
+        would_quarantine: false,
+        would_publish: false,
+      },
+    })],
+    ["conflicting reason", completedAuthorityDecision("already_upgraded_verified", {
+      reason_code: "different_reason",
+    })],
+  ])("fails closed for completed-authority normalization: %s", async (_label, authority) => {
+    const captureAndValidate = vi.fn();
+    const quarantineEvidenceFailure = vi.fn();
+    const result = await runStage1EvidenceSchemaUpgradeSource({
+      source: validFinalizedSource(),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+      dryRun: true,
+      enqueuePolicy: enqueuePolicy(),
+      interfaces: {
+        preflightCompletedAuthority: async () => authority,
+        captureAndValidate,
+        quarantineEvidenceFailure,
+      },
+      now: finalizedAt,
+    });
+
+    expect(result).toMatchObject({
+      status: "dry_run_completed_authority_invalid",
+      reason_code: "completed_authority_preflight_invalid",
+      capture_validation: {
+        status: "failed",
+        decision: "completed_authority_invalid",
+        reason: "completed_authority_preflight_invalid",
+      },
+      pointer_journal: { status: "not_requested" },
+      visual_review_candidate: { status: "not_requested" },
+      quarantine: { status: "not_requested" },
+      mutation_counts: {
+        database_writes: 0,
+        r2_writes: 0,
+        local_baseline_writes: 0,
+        candidate_writes: 0,
+        quarantine_writes: 0,
+        source_state_writes: 0,
+      },
+    });
+    expect(captureAndValidate).not.toHaveBeenCalled();
+    expect(quarantineEvidenceFailure).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when completed-authority preflight throws", async () => {
+    const captureAndValidate = vi.fn();
+    const result = await runStage1EvidenceSchemaUpgradeSource({
+      source: validFinalizedSource(),
+      manifest: stage1EvidenceSchemaUpgradeExpectedManifest(),
+      dryRun: false,
+      enqueuePolicy: enqueuePolicy(),
+      interfaces: {
+        preflightCompletedAuthority: async () => {
+          throw new Error("authority lookup failed");
+        },
+        captureAndValidate,
+      },
+      now: finalizedAt,
+    });
+
+    expect(result).toMatchObject({
+      status: "completed_authority_invalid",
+      reason_code: "completed_authority_preflight_invalid",
+      capture_validation: {
+        status: "failed",
+        decision: "completed_authority_invalid",
+        evidence: { error: "authority lookup failed" },
+      },
+      mutation_counts: {
+        database_writes: 0,
+        r2_writes: 0,
+        local_baseline_writes: 0,
+        candidate_writes: 0,
+        quarantine_writes: 0,
+        source_state_writes: 0,
+      },
+    });
+    expect(captureAndValidate).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1810,6 +2182,76 @@ describe("Stage 1 evidence-schema-upgrade orchestration", () => {
       terminal_failure_source_count: 0,
       automated_work_clear: false,
       quarantined_work_remaining: 9,
+    });
+  });
+
+  it.each([
+    [true, "dry_run_already_upgraded", "dry_run_complete"],
+    [false, "already_upgraded", "completed"],
+  ])("counts already-upgraded authority as completed but not newly upgraded", (
+    dryRun,
+    sourceStatus,
+    reportStatus,
+  ) => {
+    const manifest = stage1EvidenceSchemaUpgradeExpectedManifest();
+    const rows = manifest.source_ids.map((id) => ({
+      source_id: id,
+      source_eligible: true,
+      status: sourceStatus,
+      mutation_counts: mutationResult("pointer_commit", "upgraded").mutation_counts,
+    }));
+    expect(createStage1EvidenceSchemaUpgradeReport({
+      manifest,
+      dryRun,
+      results: rows,
+      generatedAt: finalizedAt,
+    })).toMatchObject({
+      status: reportStatus,
+      upgraded_source_count: 0,
+      candidate_source_count: 0,
+      quarantined_source_count: 0,
+      completed_source_count: 9,
+      blocked_source_count: 0,
+      terminal_failure_source_count: 0,
+      automated_work_clear: true,
+      mutation_counts: {
+        database_writes: 0,
+        r2_writes: 0,
+        local_baseline_writes: 0,
+        candidate_writes: 0,
+        quarantine_writes: 0,
+        source_state_writes: 0,
+      },
+    });
+  });
+
+  it.each([
+    [true, "dry_run_completed_authority_invalid", "dry_run_already_upgraded"],
+    [false, "completed_authority_invalid", "already_upgraded"],
+  ])("counts invalid completed authority as blocked in %s mode", (
+    dryRun,
+    invalidStatus,
+    acceptedStatus,
+  ) => {
+    const manifest = stage1EvidenceSchemaUpgradeExpectedManifest();
+    const rows = manifest.source_ids.map((id, index) => ({
+      source_id: id,
+      source_eligible: true,
+      status: index === 0 ? invalidStatus : acceptedStatus,
+      mutation_counts: mutationResult("pointer_commit", "upgraded").mutation_counts,
+    }));
+    expect(createStage1EvidenceSchemaUpgradeReport({
+      manifest,
+      dryRun,
+      results: rows,
+      generatedAt: finalizedAt,
+    })).toMatchObject({
+      status: "blocked",
+      upgraded_source_count: 0,
+      completed_source_count: 8,
+      blocked_source_count: 1,
+      terminal_failure_source_count: 1,
+      automated_work_clear: false,
     });
   });
 });

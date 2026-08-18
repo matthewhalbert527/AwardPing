@@ -55,6 +55,7 @@
     "stage1:import-reviewed": "node scripts/import-reviewed-stage1-candidates.mjs",
     "stage1:reconcile-reviewed": "node scripts/reconcile-reviewed-stage1-selection.mjs",
     "stage1:promote": "node scripts/promote-stage1-cohort.mjs",
+    "stage1:reviewed-recovery": "node scripts/stage1-evidence-schema-upgrade-reviewed-recovery.mjs",
     "command:center": "node scripts/awardping-command-center.mjs",
     "command:center:web": "node scripts/awardping-command-center-web.mjs",
     "award:baseline-facts-aggregate": "node scripts/aggregate-award-baseline-facts.mjs",
