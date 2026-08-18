@@ -236,6 +236,10 @@ a {
   line-height: 1;
 }
 
+.brand-logo picture {
+  display: contents;
+}
+
 .brand-logo-image {
   display: block;
   width: 100%;
@@ -7679,15 +7683,6 @@ a {
   .manual-backlog-case {
     gap: 0.42rem;
     padding-inline: 0.62rem;
-  }
-}
-
-/* Single-asset brand mark: no light variant exists, so invert lightness in
-   dark mode rather than shipping an invisible logo. Replace with a real
-   light-mode asset when one is produced. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .brand-logo-image {
-    filter: invert(1) hue-rotate(180deg);
   }
 }
 
