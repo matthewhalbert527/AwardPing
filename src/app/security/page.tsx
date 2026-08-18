@@ -147,7 +147,7 @@ export default function SecurityPage() {
               <div className="mt-5 grid gap-3">
                 {allowlistDomains.map((domain) => (
                   <code
-                    className="block overflow-x-auto rounded-xl border border-[var(--line)] bg-white px-4 py-3 text-sm font-bold text-[var(--foreground)]"
+                    className="block overflow-x-auto rounded-xl border border-[var(--line)] bg-[var(--surface)] px-4 py-3 text-sm font-bold text-[var(--foreground)]"
                     key={domain}
                   >
                     {domain}
@@ -198,7 +198,7 @@ export default function SecurityPage() {
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
                 {notPresent.map((item) => (
                   <div
-                    className="flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-white p-4"
+                    className="flex items-center gap-3 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4"
                     key={item}
                   >
                     <CheckCircle2
@@ -221,7 +221,7 @@ export default function SecurityPage() {
               <div className="mt-5 grid gap-3">
                 {processors.map((processor) => (
                   <div
-                    className="rounded-2xl border border-[var(--line)] bg-white p-4"
+                    className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4"
                     key={processor.title}
                   >
                     <h3 className="font-black">{processor.title}</h3>
@@ -263,7 +263,7 @@ export default function SecurityPage() {
                 Help desk note
               </span>
               <h2 className="mt-5 text-3xl font-black">Allowlist request text</h2>
-              <pre className="mt-5 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold leading-6 text-[var(--foreground)]">
+              <pre className="mt-5 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--foreground)]">
                 {allowlistNote}
               </pre>
             </article>

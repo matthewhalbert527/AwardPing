@@ -230,7 +230,7 @@ export function AwardDiscoveryWorkspace({
                 className={`rounded-full border text-sm font-black transition ${
                   activeLetter === letter
                     ? "border-[var(--brand)] bg-[var(--brand-blue-soft)] text-[var(--brand)]"
-                    : "border-[var(--line)] bg-white text-[var(--muted)] hover:border-[var(--brand)] hover:text-[var(--brand)]"
+                    : "border-[var(--line)] bg-[var(--surface)] text-[var(--muted)] hover:border-[var(--brand)] hover:text-[var(--brand)]"
                 } disabled:cursor-not-allowed disabled:opacity-35`}
                 disabled={!enabled}
                 key={letter}

@@ -67,13 +67,13 @@ export default async function UpdatesPage({ searchParams }: Props) {
         </section>
 
         {statusMessage && (
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
+          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
             {statusMessage}
           </div>
         )}
 
         {updateLoadError && (
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
+          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
             Live updates could not be loaded from Supabase right now. The feed is temporarily unavailable, not confirmed empty.
           </div>
         )}

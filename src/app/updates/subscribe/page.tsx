@@ -51,7 +51,7 @@ export default async function UpdatesSubscribePage({ searchParams }: Props) {
 
           <div>
             {statusMessage && (
-              <div className="mb-4 rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[0_18px_45px_rgba(22,34,74,0.05)]">
+              <div className="mb-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
                 {statusMessage}
               </div>
             )}

@@ -154,7 +154,7 @@ export default function PrivacyPage() {
               <ul className="mt-5 grid gap-3">
                 {processors.map((item) => (
                   <li
-                    className="rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
+                    className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
                     key={item}
                   >
                     {item}
@@ -172,7 +172,7 @@ export default function PrivacyPage() {
               <ul className="mt-5 grid gap-3">
                 {rights.map((item) => (
                   <li
-                    className="rounded-2xl border border-[var(--line)] bg-white p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
+                    className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--muted)]"
                     key={item}
                   >
                     {item}

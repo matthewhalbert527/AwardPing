@@ -50,7 +50,7 @@ export function ProfileMenu({
         aria-controls={menuId}
         aria-expanded={open}
         aria-haspopup="true"
-        className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-white/70 p-0 font-black text-white shadow-[0_14px_34px_rgba(108,90,146,0.26)] transition hover:-translate-y-0.5"
+        className="inline-flex h-12 w-12 items-center justify-center rounded-full border border-[color-mix(in_srgb,var(--accent-contrast)_70%,transparent)] p-0 font-black text-[var(--accent-contrast)] shadow-[var(--shadow-lg)] transition hover:-translate-y-0.5"
         onClick={() => setOpen((current) => !current)}
         type="button"
         aria-label={`Profile menu for ${displayName}`}
@@ -65,7 +65,7 @@ export function ProfileMenu({
         className={`absolute right-0 top-full z-50 w-64 pt-2 ${open ? "block" : "hidden"}`}
         id={menuId}
       >
-        <div className="rounded-2xl border border-[var(--line)] bg-white p-2 text-sm shadow-[0_24px_60px_rgba(22,34,74,0.14)]">
+        <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-2 text-sm shadow-[var(--shadow-xl)]">
           {fullName && (
             <p className="truncate px-3 pt-2 font-black text-[var(--foreground)]">{fullName}</p>
           )}

@@ -2,7 +2,7 @@ import Link from "next/link";
 
 export function SiteFooter() {
   return (
-    <footer className="border-t border-[var(--line)] bg-white text-[var(--foreground)]">
+    <footer className="border-t border-[var(--line)] bg-[var(--surface)] text-[var(--foreground)]">
       <div className="mx-auto grid max-w-6xl gap-8 px-5 py-12 md:grid-cols-[1.2fr_1fr_1fr]">
         <div>
           <p className="text-lg font-black">AwardPing</p>

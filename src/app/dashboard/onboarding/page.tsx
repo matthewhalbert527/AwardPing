@@ -109,7 +109,7 @@ function OnboardingStep({
           className={`mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${
             complete
               ? "bg-[#eaf5ff] text-[var(--brand)]"
-              : "bg-[#f5f7ff] text-[var(--muted)]"
+              : "bg-[var(--surface-inset)] text-[var(--muted)]"
           }`}
         >
           <Icon size={19} aria-hidden="true" />

@@ -258,7 +258,7 @@ export default async function OpsPage() {
           <div className="mt-5 grid gap-3">
             {workerRuns.map((run) => (
               <div
-                className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4"
+                className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4"
                 key={run.id}
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -292,7 +292,7 @@ export default async function OpsPage() {
           <div className="mt-5 grid gap-3">
             {officialRecentSharedSources.map((source) => (
               <a
-                className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4"
+                className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4"
                 href={source.url}
                 key={source.id}
                 rel="noreferrer"
@@ -327,7 +327,7 @@ export default async function OpsPage() {
           </p>
           <div className="mt-5 grid gap-3">
             {laneStatuses.map((lane) => (
-              <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={lane.lane_key}>
+              <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4" key={lane.lane_key}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <p className="font-black">{lane.display_name}</p>
@@ -372,7 +372,7 @@ export default async function OpsPage() {
               <h3 className="font-black">Shared-source errors</h3>
               <div className="mt-3 grid gap-3">
                 {(errorSharedSources || []).map((source) => (
-                  <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={source.id}>
+                  <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4" key={source.id}>
                     <p className="font-bold">
                       {sharedAwardName.get(source.shared_award_id) || readableSourceTitle(source.title, source.url)}
                     </p>
@@ -399,7 +399,7 @@ export default async function OpsPage() {
               <h3 className="font-black">Failed email deliveries</h3>
               <div className="mt-3 grid gap-3">
                 {(failedDeliveries || []).map((delivery) => (
-                  <div className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4" key={delivery.id}>
+                  <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4" key={delivery.id}>
                     <p className="font-bold capitalize">
                       {delivery.delivery_type} to {delivery.recipient}
                     </p>
@@ -424,7 +424,7 @@ export default async function OpsPage() {
           <div className="mt-5 grid gap-3">
             {officialRecentSharedChanges.map((change) => (
               <article
-                className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4"
+                className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4"
                 key={change.id}
               >
                 <p className="font-black">
@@ -456,7 +456,7 @@ export default async function OpsPage() {
           <div className="mt-5 grid gap-3">
             {(structureErrors || []).map((award) => (
               <div
-                className="rounded-2xl border border-[var(--line)] bg-[#f5f7ff] p-4"
+                className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4"
                 key={award.id}
               >
                 <p className="font-black">{award.name}</p>

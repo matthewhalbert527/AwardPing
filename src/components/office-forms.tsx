@@ -538,7 +538,7 @@ export function PrivacyControls() {
           Download my data
         </a>
       </div>
-      <div className="mt-5 rounded-2xl border border-[var(--line)] bg-white p-4">
+      <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4">
         <label className="block">
           <span className="text-sm font-bold">Type DELETE to delete your account</span>
           <input
