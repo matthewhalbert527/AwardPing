@@ -112,7 +112,7 @@ export default function SecurityPage() {
                 <ShieldCheck size={15} aria-hidden="true" />
                 Security and network access
               </span>
-              <h1 className="mt-5 text-4xl font-black leading-tight md:text-6xl">
+              <h1 className="mt-5 text-4xl font-bold leading-[1.1] tracking-[-0.02em] md:text-[3rem]">
                 University IT review details for AwardPing.
               </h1>
               <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)]">
@@ -138,10 +138,10 @@ export default function SecurityPage() {
                   <Server size={20} aria-hidden="true" />
                 </span>
                 <div>
-                  <p className="text-sm font-black uppercase text-[var(--muted)]">
+                  <p className="text-sm font-bold uppercase text-[var(--muted)]">
                     Network allowlist
                   </p>
-                  <h2 className="text-2xl font-black">Primary domains</h2>
+                  <h2 className="text-2xl font-bold">Primary domains</h2>
                 </div>
               </div>
               <div className="mt-5 grid gap-3">
@@ -155,7 +155,7 @@ export default function SecurityPage() {
                 ))}
               </div>
               <div className="mt-5">
-                <p className="text-sm font-black uppercase text-[var(--muted)]">
+                <p className="text-sm font-bold uppercase text-[var(--muted)]">
                   Recommended category
                 </p>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -177,7 +177,7 @@ export default function SecurityPage() {
               return (
                 <article className="card home-feature-card rounded-[1.6rem] p-6" key={fact.title}>
                   <Icon className="home-feature-icon" size={24} aria-hidden="true" />
-                  <h2 className="mt-5 text-xl font-black">{fact.title}</h2>
+                  <h2 className="mt-5 text-xl font-bold">{fact.title}</h2>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                     {fact.text}
                   </p>
@@ -194,7 +194,7 @@ export default function SecurityPage() {
                 <Ban size={15} aria-hidden="true" />
                 Not part of AwardPing
               </span>
-              <h2 className="mt-5 text-3xl font-black">Common filter concerns</h2>
+              <h2 className="mt-5 text-3xl font-bold">Common filter concerns</h2>
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
                 {notPresent.map((item) => (
                   <div
@@ -206,7 +206,7 @@ export default function SecurityPage() {
                       size={18}
                       aria-hidden="true"
                     />
-                    <span className="text-sm font-black">{item}</span>
+                    <span className="text-sm font-bold">{item}</span>
                   </div>
                 ))}
               </div>
@@ -217,14 +217,14 @@ export default function SecurityPage() {
                 <Database size={15} aria-hidden="true" />
                 Service providers
               </span>
-              <h2 className="mt-5 text-3xl font-black">Operational dependencies</h2>
+              <h2 className="mt-5 text-3xl font-bold">Operational dependencies</h2>
               <div className="mt-5 grid gap-3">
                 {processors.map((processor) => (
                   <div
                     className="rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4"
                     key={processor.title}
                   >
-                    <h3 className="font-black">{processor.title}</h3>
+                    <h3 className="font-bold">{processor.title}</h3>
                     <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
                       {processor.text}
                     </p>
@@ -242,11 +242,11 @@ export default function SecurityPage() {
                 <School size={15} aria-hidden="true" />
                 IT review checklist
               </span>
-              <h2 className="mt-5 text-3xl font-black">Suggested review steps</h2>
+              <h2 className="mt-5 text-3xl font-bold">Suggested review steps</h2>
               <ol className="mt-5 grid gap-3">
                 {reviewChecklist.map((item, index) => (
                   <li className="flex gap-3" key={item}>
-                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--brand-blue-soft)] text-sm font-black">
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[var(--brand-blue-soft)] text-sm font-bold">
                       {index + 1}
                     </span>
                     <span className="pt-0.5 text-sm font-bold leading-6 text-[var(--foreground)]">
@@ -262,7 +262,7 @@ export default function SecurityPage() {
                 <FileText size={15} aria-hidden="true" />
                 Help desk note
               </span>
-              <h2 className="mt-5 text-3xl font-black">Allowlist request text</h2>
+              <h2 className="mt-5 text-3xl font-bold">Allowlist request text</h2>
               <pre className="mt-5 max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold leading-6 text-[var(--foreground)]">
                 {allowlistNote}
               </pre>

@@ -55,7 +55,7 @@ export function PublicUpdatesForm() {
   return (
     <form className="card rounded-3xl p-5 sm:p-6" onSubmit={submit}>
       <div>
-        <label className="text-sm font-black" htmlFor="public-updates-email">
+        <label className="text-sm font-bold" htmlFor="public-updates-email">
           Email address
         </label>
         <div className="mt-2 flex flex-col gap-3 sm:flex-row">
@@ -90,7 +90,7 @@ export function PublicUpdatesForm() {
         <span>
           I agree to receive AwardPing public update emails and understand my
           data is handled under the{" "}
-          <Link className="font-black text-[var(--brand)] underline" href="/privacy">
+          <Link className="font-bold text-[var(--brand)] underline" href="/privacy">
             privacy policy
           </Link>
           .

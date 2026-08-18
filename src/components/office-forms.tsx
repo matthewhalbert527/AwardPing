@@ -82,7 +82,7 @@ export function ProfileSettingsForm({
       </h2>
       {reentryRequired && (
         <div className="mt-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-          <p className="font-black">
+          <p className="font-bold">
             {legacyRecoveryAvailable
               ? "Your previous profile values were recovered."
               : "Your previous profile values cannot be decrypted."}
@@ -158,7 +158,7 @@ export function CreateOfficeForm() {
 
   return (
     <form className="card rounded-3xl p-5" onSubmit={submit}>
-      <h2 className="text-2xl font-black">Create university office</h2>
+      <h2 className="text-2xl font-bold">Create university office</h2>
       <p className="mt-2 text-sm text-[var(--muted)]">
         Use the name your school uses, such as University Fellowship Office,
         Office of Nationally Competitive Awards, or Honors Advising.
@@ -349,7 +349,7 @@ export function InviteMemberForm() {
       {(inviteUrl || inviteCode) && (
         <div className="dashboard-list-item mt-4">
           {inviteCode && (
-            <p className="text-sm font-black">
+            <p className="text-sm font-bold">
               Code: <span className="font-mono">{inviteCode}</span>
             </p>
           )}
@@ -415,7 +415,7 @@ export function ReissueInviteButton({ inviteId }: { inviteId: string }) {
         {loading ? "Creating replacement..." : "Create and resend secure replacement"}
       </button>
       {inviteCode && (
-        <p className="mt-2 text-sm font-black">
+        <p className="mt-2 text-sm font-bold">
           New code: <span className="font-mono">{inviteCode}</span>
         </p>
       )}

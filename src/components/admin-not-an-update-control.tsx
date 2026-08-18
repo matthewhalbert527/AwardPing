@@ -100,7 +100,7 @@ export function AdminNotAnUpdateControl({ eventId, policyRuleIds }: Props) {
     <form className="mt-4 grid gap-3" onSubmit={submit}>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-sm font-black">Suppress and record feedback</p>
+          <p className="text-sm font-bold">Suppress and record feedback</p>
           <p className="mt-1 text-xs font-semibold leading-5 text-[var(--muted)]">
             This event is hidden immediately. A broader scope is only a review
             request until it is approved and implemented.
@@ -118,7 +118,7 @@ export function AdminNotAnUpdateControl({ eventId, policyRuleIds }: Props) {
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
-        <label className="grid gap-1 text-xs font-black">
+        <label className="grid gap-1 text-xs font-bold">
           Reason
           <select
             className="input"
@@ -137,7 +137,7 @@ export function AdminNotAnUpdateControl({ eventId, policyRuleIds }: Props) {
           </select>
         </label>
 
-        <label className="grid gap-1 text-xs font-black">
+        <label className="grid gap-1 text-xs font-bold">
           Requested scope
           <select
             className="input"
@@ -157,7 +157,7 @@ export function AdminNotAnUpdateControl({ eventId, policyRuleIds }: Props) {
         </label>
       </div>
 
-      <label className="grid gap-1 text-xs font-black">
+      <label className="grid gap-1 text-xs font-bold">
         Existing active rule
         <select
           className="input"
@@ -181,7 +181,7 @@ export function AdminNotAnUpdateControl({ eventId, policyRuleIds }: Props) {
         </span>
       </label>
 
-      <label className="grid gap-1 text-xs font-black">
+      <label className="grid gap-1 text-xs font-bold">
         Note{noteRequired ? " (required)" : " (optional)"}
         <textarea
           className="input min-h-24 text-sm"
@@ -209,7 +209,7 @@ export function AdminNotAnUpdateControl({ eventId, policyRuleIds }: Props) {
         {message && (
           <p
             aria-live="polite"
-            className="text-xs font-black text-[var(--brand-burgundy)]"
+            className="text-xs font-bold text-[var(--brand-burgundy)]"
           >
             {message}
           </p>

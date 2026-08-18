@@ -58,15 +58,15 @@ export default async function Home() {
               <Bell size={15} aria-hidden="true" />
               National fellowship monitoring
             </span>
-            <h1 className="mt-4 text-4xl font-black leading-tight md:text-6xl">
+            <h1 className="mt-5 max-w-[13ch] text-4xl font-bold leading-[1.08] tracking-[-0.02em] md:text-[3.4rem]">
               The early-warning system for nationally competitive fellowships.
             </h1>
-            <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
+            <p className="mt-5 max-w-[46ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
               AwardPing watches official award pages, PDFs, deadline lists, and
               application instructions, then turns meaningful changes into
               plain-English updates.
             </p>
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+            <div className="mt-7 flex flex-col gap-3 sm:flex-row">
               <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
                 {user ? signedInLandingLabel() : "Request beta access"}
                 <ArrowRight size={17} aria-hidden="true" />
@@ -100,7 +100,7 @@ export default async function Home() {
         <section className="mx-auto max-w-6xl px-5 py-14">
           <div className="mb-6 max-w-2xl">
             <p className="dashboard-label">Why it matters</p>
-            <h2 className="mt-2 text-3xl font-black md:text-4xl">
+            <h2 className="mt-2 max-w-[24ch] text-3xl font-bold leading-[1.15] tracking-[-0.02em] md:text-[2.5rem]">
               Award updates are usually small, buried, and easy to miss.
             </h2>
           </div>

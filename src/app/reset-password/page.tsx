@@ -28,7 +28,7 @@ export default async function ResetPasswordPage({ searchParams }: Props) {
       <SiteHeader />
       <main className="mx-auto flex max-w-md flex-col px-5 py-16">
         <div className="card rounded-3xl p-6">
-          <h1 className="text-3xl font-black">Choose a new password</h1>
+          <h1 className="text-3xl font-bold">Choose a new password</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
             Your one-time recovery link was verified. Set a new password for
             your invited account.

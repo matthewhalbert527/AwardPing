@@ -8,7 +8,7 @@ export function SetupNotice() {
           <Terminal size={20} aria-hidden="true" />
         </span>
         <div>
-          <h2 className="text-xl font-black">Environment setup needed</h2>
+          <h2 className="text-xl font-bold">Environment setup needed</h2>
           <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
             Add Supabase, Resend, Gemini, R2, and cron values to `.env.local`
             using `.env.example`, then restart the dev server.

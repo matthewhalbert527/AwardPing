@@ -46,10 +46,10 @@ export default async function UpdatesPage({ searchParams }: Props) {
               <Rss size={15} aria-hidden="true" />
               Live update feed
             </span>
-            <h1 className="mt-4 text-4xl font-black leading-tight md:text-6xl">
+            <h1 className="mt-5 max-w-[16ch] text-4xl font-bold leading-[1.08] tracking-[-0.02em] md:text-[3.1rem]">
               Plain-English award changes as they are found.
             </h1>
-            <p className="mt-4 max-w-3xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
+            <p className="mt-5 max-w-[56ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
               AwardPing watches official fellowship pages, PDFs, deadline lists,
               eligibility pages, and application instructions, then turns meaningful
               changes into a scannable feed.

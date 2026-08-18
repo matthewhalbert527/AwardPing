@@ -126,7 +126,7 @@ export function PipelineBoard({
         {grouped.map((group) => (
           <section className="card rounded-3xl p-5" key={group.status}>
             <div className="flex items-center justify-between gap-4">
-              <h2 className="text-2xl font-black">{workflowStatusLabels[group.status]}</h2>
+              <h2 className="text-2xl font-bold">{workflowStatusLabels[group.status]}</h2>
               <span className="badge">{group.awards.length}</span>
             </div>
             <div className="mt-4 overflow-x-auto">
@@ -150,7 +150,7 @@ export function PipelineBoard({
                     return (
                       <tr className="rounded-2xl bg-[var(--brand-blue-soft)]" key={award.id}>
                         <td className="rounded-l-2xl px-3 py-3">
-                          <p className="font-black">{award.name}</p>
+                          <p className="font-bold">{award.name}</p>
                           {summary && (
                             <p className="mt-1 line-clamp-2 max-w-md text-[var(--muted)]">
                               {summary}

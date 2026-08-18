@@ -115,7 +115,7 @@ function OnboardingStep({
           <Icon size={19} aria-hidden="true" />
         </span>
         <div>
-          <h2 className="text-lg font-black">{title}</h2>
+          <h2 className="text-lg font-bold">{title}</h2>
           <p className="mt-1 text-sm leading-6 text-[var(--muted)]">{text}</p>
         </div>
       </div>

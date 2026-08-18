@@ -18,7 +18,7 @@ export function ChangeTicker({ items }: { items: ChangeTickerItem[] }) {
     <section className="mx-auto max-w-6xl px-5 pb-12">
       <div className="change-ticker-shell">
         <div className="change-ticker-copy">
-          <h2 className="flex items-center gap-3 text-4xl font-black">
+          <h2 className="flex items-center gap-3 text-4xl font-bold">
             <Sparkles className="change-ticker-sparkles" size={30} aria-hidden="true" />
             Update ticker
           </h2>

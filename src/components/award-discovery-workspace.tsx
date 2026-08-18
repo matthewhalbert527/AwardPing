@@ -227,7 +227,7 @@ export function AwardDiscoveryWorkspace({
             const enabled = availableLetters.has(letter);
             return (
               <button
-                className={`rounded-full border text-sm font-black transition ${
+                className={`rounded-full border text-sm font-bold transition ${
                   activeLetter === letter
                     ? "border-[var(--brand)] bg-[var(--brand-blue-soft)] text-[var(--brand)]"
                     : "border-[var(--line)] bg-[var(--surface)] text-[var(--muted)] hover:border-[var(--brand)] hover:text-[var(--brand)]"
@@ -464,7 +464,7 @@ export function AwardDiscoveryWorkspace({
               >
                 <Link className="award-row-summary block" href={awardHref(award)}>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <span className="inline-flex min-w-0 items-center gap-2 font-black">
+                    <span className="inline-flex min-w-0 items-center gap-2 font-bold">
                       <span>{award.name}</span>
                       <ChevronRight size={17} aria-hidden="true" />
                     </span>

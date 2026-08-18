@@ -29,7 +29,7 @@ export default async function OpsPage() {
       <div>
         <div className="mb-8">
           <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+          <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available only to AwardPing site administrators.
@@ -45,7 +45,7 @@ export default async function OpsPage() {
       <div>
         <div className="mb-8">
           <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+          <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available to office owners and admins.
@@ -59,7 +59,7 @@ export default async function OpsPage() {
       <div>
         <div className="mb-8">
           <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+          <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           Operational data is unavailable because trusted server access is not configured.
@@ -220,7 +220,7 @@ export default async function OpsPage() {
     <div>
       <div className="mb-8">
         <span className="badge">Ops</span>
-        <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+        <h1 className="mt-4 text-4xl font-bold">Private beta health</h1>
         <p className="mt-2 text-[var(--muted)]">
           Review the shared visual worker, independent downstream lanes, source failures, and alert delivery.
         </p>
@@ -248,7 +248,7 @@ export default async function OpsPage() {
         <section className="card rounded-3xl p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-2xl font-black">Local source worker</h2>
+              <h2 className="text-2xl font-bold">Local source worker</h2>
               <p className="mt-1 text-sm text-[var(--muted)]">
                 Last run: {lastWorkerRun ? formatDate(lastWorkerRun.started_at) : "No run logged"}
               </p>
@@ -263,7 +263,7 @@ export default async function OpsPage() {
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-black">{run.worker_name}</p>
+                    <p className="font-bold">{run.worker_name}</p>
                     <p className="text-sm text-[var(--muted)]">
                       {formatDate(run.started_at)}
                       {run.finished_at ? `, finished ${formatDate(run.finished_at)}` : ""}
@@ -288,7 +288,7 @@ export default async function OpsPage() {
         </section>
 
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-black">Recent source checks</h2>
+          <h2 className="text-2xl font-bold">Recent source checks</h2>
           <div className="mt-5 grid gap-3">
             {officialRecentSharedSources.map((source) => (
               <a
@@ -298,7 +298,7 @@ export default async function OpsPage() {
                 rel="noreferrer"
                 target="_blank"
               >
-                <p className="font-black">
+                <p className="font-bold">
                   {sharedAwardName.get(source.shared_award_id) || source.title}
                 </p>
                 <p className="text-sm capitalize text-[var(--muted)]">
@@ -321,7 +321,7 @@ export default async function OpsPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-black">Downstream lanes</h2>
+          <h2 className="text-2xl font-bold">Downstream lanes</h2>
           <p className="mt-1 text-sm text-[var(--muted)]">
             Each lane has its own lease, retry state, timeout, and oldest-item service target.
           </p>
@@ -330,7 +330,7 @@ export default async function OpsPage() {
               <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4" key={lane.lane_key}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-black">{lane.display_name}</p>
+                    <p className="font-bold">{lane.display_name}</p>
                     <p className="text-sm text-[var(--muted)]">
                       {lane.queue_depth} waiting - {lane.creates_api_charge ? "Paid review lane" : "No API charge"}
                     </p>
@@ -366,10 +366,10 @@ export default async function OpsPage() {
         </section>
 
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-black">Needs attention</h2>
+          <h2 className="text-2xl font-bold">Needs attention</h2>
           <div className="mt-5 grid gap-4">
             <div>
-              <h3 className="font-black">Shared-source errors</h3>
+              <h3 className="font-bold">Shared-source errors</h3>
               <div className="mt-3 grid gap-3">
                 {(errorSharedSources || []).map((source) => (
                   <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4" key={source.id}>
@@ -396,7 +396,7 @@ export default async function OpsPage() {
             </div>
 
             <div>
-              <h3 className="font-black">Failed email deliveries</h3>
+              <h3 className="font-bold">Failed email deliveries</h3>
               <div className="mt-3 grid gap-3">
                 {(failedDeliveries || []).map((delivery) => (
                   <div className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4" key={delivery.id}>
@@ -420,14 +420,14 @@ export default async function OpsPage() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_0.9fr]">
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-black">Recent shared updates</h2>
+          <h2 className="text-2xl font-bold">Recent shared updates</h2>
           <div className="mt-5 grid gap-3">
             {officialRecentSharedChanges.map((change) => (
               <article
                 className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4"
                 key={change.id}
               >
-                <p className="font-black">
+                <p className="font-bold">
                   {sharedAwardName.get(change.shared_award_id) ||
                     readableSourceTitle(change.source_title, change.source_url)}
                 </p>
@@ -452,14 +452,14 @@ export default async function OpsPage() {
         </section>
 
         <section className="card rounded-3xl p-6">
-          <h2 className="text-2xl font-black">Structure scan errors</h2>
+          <h2 className="text-2xl font-bold">Structure scan errors</h2>
           <div className="mt-5 grid gap-3">
             {(structureErrors || []).map((award) => (
               <div
                 className="rounded-2xl border border-[var(--line)] bg-[var(--surface-inset)] p-4"
                 key={award.id}
               >
-                <p className="font-black">{award.name}</p>
+                <p className="font-bold">{award.name}</p>
                 <p className="mt-1 text-sm text-[var(--muted)]">
                   Last scan:{" "}
                   {award.last_structure_scan_at ? formatDate(award.last_structure_scan_at) : "Not scanned"}
@@ -487,7 +487,7 @@ function MetricCard({ label, value }: { label: string; value: string | number })
       <p className="text-sm font-bold uppercase text-[var(--muted)]">
         {label}
       </p>
-      <p className="mt-3 text-3xl font-black capitalize">{value}</p>
+      <p className="mt-3 text-3xl font-bold capitalize">{value}</p>
     </div>
   );
 }

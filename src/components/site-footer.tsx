@@ -5,7 +5,7 @@ export function SiteFooter() {
     <footer className="border-t border-[var(--line)] bg-[var(--surface)] text-[var(--foreground)]">
       <div className="mx-auto grid max-w-6xl gap-8 px-5 py-12 md:grid-cols-[1.2fr_1fr_1fr]">
         <div>
-          <p className="text-lg font-black">AwardPing</p>
+          <p className="text-lg font-bold">AwardPing</p>
           <p className="mt-3 max-w-sm text-sm leading-6 text-[var(--muted)]">
             Official award page monitoring for updates you do not want to check manually.
           </p>

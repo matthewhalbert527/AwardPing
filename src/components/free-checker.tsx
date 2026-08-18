@@ -59,7 +59,7 @@ export function FreeChecker() {
         <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--brand-blue-soft)] p-4">
           {result.ok ? (
             <div>
-              <p className="text-sm font-black text-[var(--brand)]">
+              <p className="text-sm font-bold text-[var(--brand)]">
                 This exact award source has readable content.
               </p>
               <p className="mt-2 text-sm text-[var(--muted)]">

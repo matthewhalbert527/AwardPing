@@ -25,7 +25,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
               {summary.visibleCount}/25 effectively visible · {summary.registryCount}/25 registered
             </span>
           </div>
-          <h2 className="mt-3 text-2xl font-black" id="stage1-release-gate-title">
+          <h2 className="mt-3 text-2xl font-bold" id="stage1-release-gate-title">
             Stage 1 Beta Release Gate
           </h2>
           <p className="mt-1 text-sm text-[var(--muted)]">
@@ -33,7 +33,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
           </p>
         </div>
         <div className="max-w-xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4" role="status">
-          <p className="text-xs font-black uppercase tracking-[0.14em] text-[var(--muted)]">Safe next action</p>
+          <p className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--muted)]">Safe next action</p>
           <p className="mt-1 text-sm font-bold">{summary.safeNextAction}</p>
         </div>
       </header>
@@ -118,7 +118,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
       <section aria-labelledby="release-nightly-acceptance-title" className="rounded-2xl border border-[var(--border)] p-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-black" id="release-nightly-acceptance-title">6 PM acceptance history</h3>
+            <h3 className="text-sm font-bold" id="release-nightly-acceptance-title">6 PM acceptance history</h3>
             <p className="mt-1 text-xs text-[var(--muted)]">
               Only normal scheduled scans count. Targeted, repair, partial, and historical-onboarding runs are excluded.
             </p>
@@ -159,7 +159,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
 
       <section aria-labelledby="release-lanes-title" className="rounded-2xl border border-[var(--border)] p-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-black" id="release-lanes-title">Eight downstream lanes</h3>
+          <h3 className="text-sm font-bold" id="release-lanes-title">Eight downstream lanes</h3>
           <span className="text-xs font-bold text-[var(--muted)]">
             {summary.lanes.filter((lane) => lane.status === "pass").length}/8 healthy
           </span>
@@ -178,7 +178,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
       </section>
 
       <section aria-labelledby="release-identity-title" className="rounded-2xl border border-[var(--border)] p-4">
-        <h3 className="text-sm font-black" id="release-identity-title">Runtime and migration identity</h3>
+        <h3 className="text-sm font-bold" id="release-identity-title">Runtime and migration identity</h3>
         <ul className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {summary.identities.map((identity) => (
             <li className="flex min-w-0 items-start gap-2 text-sm" key={identity.key}>
@@ -211,7 +211,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
             {summary.awards.map((award) => (
               <tr key={award.cohortKey}>
                 <th className="px-4 py-3 align-top" scope="row">
-                  <span className="block font-black">{award.launchRank}. {award.canonicalName}</span>
+                  <span className="block font-bold">{award.launchRank}. {award.canonicalName}</span>
                   <span className="mt-1 block font-normal text-[var(--muted)]">{award.cohortKey}</span>
                 </th>
                 <td className="max-w-sm px-4 py-3 align-top">
@@ -276,10 +276,10 @@ function ReleaseCheckCard({
   return (
     <article className="rounded-2xl border border-[var(--border)] p-4">
       <div className="flex items-center justify-between gap-2">
-        <h3 className="text-xs font-black uppercase tracking-[0.12em] text-[var(--muted)]">{label}</h3>
+        <h3 className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">{label}</h3>
         <StatusPill label={statusLabel(status)} status={status} />
       </div>
-      <p className="mt-2 font-black">{value}</p>
+      <p className="mt-2 font-bold">{value}</p>
       <p className="mt-1 text-xs text-[var(--muted)]">{detail}</p>
     </article>
   );
@@ -295,7 +295,7 @@ function StatusPill({ label, status }: { label: string; status: ReleaseCheckStat
     : status === "hold"
       ? "border-rose-300 bg-rose-50 text-rose-950"
       : "border-amber-300 bg-amber-50 text-amber-950";
-  return <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-black ${className}`}>{label}</span>;
+  return <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-bold ${className}`}>{label}</span>;
 }
 
 function CheckIcon({ status }: { status: ReleaseCheckState }) {

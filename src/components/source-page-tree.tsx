@@ -779,7 +779,7 @@ function SourcePageOutline({
           {sections.map((section, index) => (
             <div className="source-tree-outline-section" key={`${section.title}-${index}`}>
               <div className="flex min-w-0 flex-wrap items-center gap-2">
-                <p className="min-w-0 font-black">{section.title}</p>
+                <p className="min-w-0 font-bold">{section.title}</p>
                 {section.status === "needs_review" && (
                   <span className="badge bg-[var(--brand-pink-soft)]">
                     {sectionStatusLabel(section.status)}

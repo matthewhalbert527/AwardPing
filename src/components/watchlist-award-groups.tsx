@@ -293,7 +293,7 @@ export function WatchlistAwardGroups({
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-wrap items-start gap-2">
-                  <h2 className="min-w-0 text-2xl font-black">
+                  <h2 className="min-w-0 text-2xl font-bold">
                     {group.sharedAwardId ? (
                       <Link
                         className="inline-flex min-w-0 items-center gap-2 text-[var(--foreground)] hover:text-[var(--brand)]"

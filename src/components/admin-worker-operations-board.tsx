@@ -54,7 +54,7 @@ function AdminEvidenceRecoveryBoard({ result }: { result: AdminWorkerOperations 
       <div className={attention ? "operator-history-load-warning" : "card flex gap-3 p-5"} role="status">
         {attention ? <AlertTriangle size={17} aria-hidden="true" /> : <CheckCircle2 size={17} aria-hidden="true" />}
         <div>
-          <p className="font-black">{recovery.statusReason}</p>
+          <p className="font-bold">{recovery.statusReason}</p>
           <p className="mt-1 text-sm font-semibold">Safe action: {recovery.safeAction}</p>
           {recovery.reasons.length > 0 && (
             <p className="mt-1 text-sm font-semibold">Reported reasons: {formatRecoveryReasons(recovery.reasons)}</p>
@@ -73,7 +73,7 @@ function AdminEvidenceRecoveryBoard({ result }: { result: AdminWorkerOperations 
         <RecoveryMetric label="Unsafe restores refused" value={recovery.refused} />
         <RecoveryMetric label="Recovery failures" value={recovery.failed} />
         <div className="card p-5">
-          <p className="text-xs font-black uppercase tracking-[0.12em] text-[var(--muted)]">Last worker report</p>
+          <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Last worker report</p>
           <p className="mt-2 text-sm font-bold">
             {recovery.lastReportedAt ? formatCentralDateTime(recovery.lastReportedAt) : "Awaiting first report"}
           </p>
@@ -115,12 +115,12 @@ function AdminLanesAndSpendingBoard({ result, now }: { result: AdminWorkerOperat
             <article className="card p-5" key={budget.laneKey}>
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="text-xs font-black uppercase tracking-[0.12em] text-[var(--muted)]">Paid pipeline</p>
-                  <h3 className="mt-1 text-lg font-black">{budget.label}</h3>
+                  <p className="text-xs font-bold uppercase tracking-[0.12em] text-[var(--muted)]">Paid pipeline</p>
+                  <h3 className="mt-1 text-lg font-bold">{budget.label}</h3>
                 </div>
                 <span className="badge">${formatMoney(budget.capUsd)}/day</span>
               </div>
-              <p className="mt-4 text-2xl font-black">${formatMoney(budget.remainingUsd)} remaining</p>
+              <p className="mt-4 text-2xl font-bold">${formatMoney(budget.remainingUsd)} remaining</p>
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-[var(--surface-strong)]" aria-hidden="true">
                 <div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${percent}%` }} />
               </div>
@@ -171,7 +171,7 @@ function LaneCard({ lane, now }: { lane: AdminDownstreamLane; now: string }) {
   return (
     <article className="card p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="font-black capitalize">{lane.label}</h3>
+        <h3 className="font-bold capitalize">{lane.label}</h3>
         <div className="flex flex-wrap items-center justify-end gap-2">
           <span className="badge">{lane.paid ? "$5/day" : "$0"}</span>
           <span className={attention ? "admin-severity-pill admin-severity-pill-high" : "badge"}>
@@ -225,7 +225,7 @@ function RecoveryMetric({ label, value }: { label: string; value: number | strin
   return (
     <div className="card p-5">
       <CloudDownload size={18} aria-hidden="true" />
-      <p className="mt-3 text-3xl font-black">{typeof value === "number" ? value.toLocaleString() : value}</p>
+      <p className="mt-3 text-3xl font-bold">{typeof value === "number" ? value.toLocaleString() : value}</p>
       <p className="mt-1 text-sm font-bold text-[var(--muted)]">{label}</p>
     </div>
   );
@@ -239,7 +239,7 @@ function formatRecoveryReasons(reasons: Array<{ code: string; count: number }>) 
 }
 
 function MoneyCell({ label, value }: { label: string; value: number }) {
-  return <div><p className="font-black">${formatMoney(value)}</p><p className="text-xs font-semibold text-[var(--muted)]">{label}</p></div>;
+  return <div><p className="font-bold">${formatMoney(value)}</p><p className="text-xs font-semibold text-[var(--muted)]">{label}</p></div>;
 }
 
 function formatMoney(value: number) {

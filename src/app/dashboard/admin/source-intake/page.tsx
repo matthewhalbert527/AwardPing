@@ -21,7 +21,7 @@ export default async function AdminSourceIntakePage() {
       <AdminSourceIntakeShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Source Intake</h1>
+          <h1 className="mt-4 text-3xl font-bold">Source Intake</h1>
           <p className="mt-2 text-[var(--muted)]">
             This page is limited to AwardPing site admins
             {appConfig.adminEmails.length ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}
@@ -36,7 +36,7 @@ export default async function AdminSourceIntakePage() {
       <AdminSourceIntakeShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Source Intake</h1>
+          <h1 className="mt-4 text-3xl font-bold">Source Intake</h1>
           <p className="mt-2 text-[var(--muted)]">
             Supabase service-role access is not configured for this deployment.
           </p>
@@ -85,7 +85,7 @@ export default async function AdminSourceIntakePage() {
           <div className="flex items-start gap-3">
             <AlertTriangle size={18} aria-hidden="true" />
             <div>
-              <h2 className="font-black">Some source-intake data could not be loaded</h2>
+              <h2 className="font-bold">Some source-intake data could not be loaded</h2>
               <p className="mt-1 text-sm text-[var(--muted)]">{loadErrors.join(" ")}</p>
             </div>
           </div>

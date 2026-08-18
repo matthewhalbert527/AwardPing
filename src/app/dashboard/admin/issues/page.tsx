@@ -99,7 +99,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
       <IssueShell>
         <div className="card p-6">
           <span className="badge">Admin</span>
-          <h1 className="mt-4 text-3xl font-black">Admin workflows</h1>
+          <h1 className="mt-4 text-3xl font-bold">Admin workflows</h1>
           <p className="mt-2 text-[var(--muted)]">
             Supabase service-role access is not configured, so operator actions cannot be loaded.
           </p>
@@ -455,7 +455,7 @@ function AccessDenied({ configured }: { configured: boolean }) {
     <IssueShell>
       <div className="card p-6">
         <span className="badge">Admin</span>
-        <h1 className="mt-4 text-3xl font-black">Admin workflows</h1>
+        <h1 className="mt-4 text-3xl font-bold">Admin workflows</h1>
         <p className="mt-2 text-[var(--muted)]">
           This page is limited to AwardPing site admins
           {configured ? "." : ". Set AWARDPING_ADMIN_EMAILS to enable access."}

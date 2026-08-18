@@ -28,7 +28,7 @@ export default async function UpdatesSubscribePage({ searchParams }: Props) {
               <BellRing size={15} aria-hidden="true" />
               Daily updates
             </span>
-            <h1 className="mt-4 text-4xl font-black leading-tight md:text-5xl">
+            <h1 className="mt-4 text-4xl font-bold leading-[1.1] tracking-[-0.02em] md:text-[2.8rem]">
               Useful award updates by email.
             </h1>
             <p className="mt-3 text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">

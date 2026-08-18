@@ -68,7 +68,7 @@ export function AwardWorkflowControls({
 
   return (
     <section className="card rounded-3xl p-6">
-      <h2 className="text-2xl font-black">Workflow</h2>
+      <h2 className="text-2xl font-bold">Workflow</h2>
       <div className="mt-5 grid gap-4 md:grid-cols-3">
         <div>
           <label className="text-sm font-bold" htmlFor="workflow-status">

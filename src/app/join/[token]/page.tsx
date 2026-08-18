@@ -30,7 +30,7 @@ export default async function JoinOfficePage({ params }: Props) {
       <SiteHeader />
       <main className="mx-auto max-w-md px-5 py-16">
         <div className="card rounded-3xl p-6">
-          <h1 className="text-3xl font-black">Join an AwardPing office</h1>
+          <h1 className="text-3xl font-bold">Join an AwardPing office</h1>
           <div className="mt-6">
             {user ? (
               <>

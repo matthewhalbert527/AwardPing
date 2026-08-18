@@ -66,7 +66,7 @@ export function ContactForm() {
   return (
     <form className="card grid gap-4 rounded-3xl p-5 sm:p-6" onSubmit={submit}>
       <div>
-        <label className="text-sm font-black" htmlFor="contact-name">
+        <label className="text-sm font-bold" htmlFor="contact-name">
           Name
         </label>
         <input
@@ -82,7 +82,7 @@ export function ContactForm() {
       </div>
 
       <div>
-        <label className="text-sm font-black" htmlFor="contact-email">
+        <label className="text-sm font-bold" htmlFor="contact-email">
           Email
         </label>
         <input
@@ -99,7 +99,7 @@ export function ContactForm() {
       </div>
 
       <div>
-        <label className="text-sm font-black" htmlFor="contact-message">
+        <label className="text-sm font-bold" htmlFor="contact-message">
           Message
         </label>
         <textarea

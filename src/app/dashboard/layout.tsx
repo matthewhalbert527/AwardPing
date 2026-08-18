@@ -74,7 +74,7 @@ export default async function DashboardLayout({
             className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"
             role="status"
           >
-            <p className="font-black">
+            <p className="font-bold">
               {profile.personal_data_legacy_recovery_available
                 ? "Your saved profile was recovered and needs current protection."
                 : "Your saved profile could not be decrypted."}

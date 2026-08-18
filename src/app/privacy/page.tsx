@@ -77,7 +77,7 @@ export default function PrivacyPage() {
                 <ShieldCheck size={15} aria-hidden="true" />
                 Privacy policy
               </span>
-              <h1 className="mt-5 text-4xl font-black leading-tight md:text-6xl">
+              <h1 className="mt-5 text-4xl font-bold leading-[1.1] tracking-[-0.02em] md:text-[3rem]">
                 Privacy for students, advisors, and award offices.
               </h1>
               <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)]">
@@ -94,7 +94,7 @@ export default function PrivacyPage() {
                 <Lock size={15} aria-hidden="true" />
                 Short version
               </span>
-              <h2 className="mt-5 text-3xl font-black">What AwardPing protects</h2>
+              <h2 className="mt-5 text-3xl font-bold">What AwardPing protects</h2>
               <p className="mt-4 leading-7 text-[var(--muted)]">
                 AwardPing is an educational monitoring tool. It does not sell user
                 contact details, does not run third-party ads, and does not collect
@@ -123,7 +123,7 @@ export default function PrivacyPage() {
               return (
                 <article className="card home-feature-card rounded-[1.6rem] p-6" key={item.title}>
                   <Icon className="home-feature-icon" size={24} aria-hidden="true" />
-                  <h2 className="mt-5 text-xl font-black">{item.title}</h2>
+                  <h2 className="mt-5 text-xl font-bold">{item.title}</h2>
                   <p className="mt-2 text-sm leading-6 text-[var(--muted)]">
                     {item.text}
                   </p>
@@ -136,7 +136,7 @@ export default function PrivacyPage() {
         <section className="mx-auto max-w-6xl px-5 py-14">
           <div className="grid gap-6 lg:grid-cols-2">
             <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-black">How data is used</h2>
+              <h2 className="text-3xl font-bold">How data is used</h2>
               <ul className="mt-5 grid gap-3">
                 {useCases.map((item) => (
                   <li className="flex gap-3" key={item}>
@@ -150,7 +150,7 @@ export default function PrivacyPage() {
             </article>
 
             <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-black">Service providers</h2>
+              <h2 className="text-3xl font-bold">Service providers</h2>
               <ul className="mt-5 grid gap-3">
                 {processors.map((item) => (
                   <li
@@ -168,7 +168,7 @@ export default function PrivacyPage() {
         <section className="mx-auto max-w-6xl px-5 pb-14">
          <div className="grid gap-6 lg:grid-cols-2">
             <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-black">Privacy rights</h2>
+              <h2 className="text-3xl font-bold">Privacy rights</h2>
               <ul className="mt-5 grid gap-3">
                 {rights.map((item) => (
                   <li
@@ -182,7 +182,7 @@ export default function PrivacyPage() {
             </article>
 
             <article className="card rounded-3xl p-5 sm:p-6">
-              <h2 className="text-3xl font-black">Encryption and safeguards</h2>
+              <h2 className="text-3xl font-bold">Encryption and safeguards</h2>
               <p className="mt-4 leading-7 text-[var(--muted)]">
                 AwardPing uses HTTPS in transit and encrypted hosted storage.
                 Public update subscriber email addresses and selected profile
@@ -203,7 +203,7 @@ export default function PrivacyPage() {
           <div className="card rounded-3xl p-5 sm:p-6">
             <div className="grid gap-8 lg:grid-cols-3">
               <div>
-                <h2 className="text-2xl font-black">Retention</h2>
+                <h2 className="text-2xl font-bold">Retention</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   Account, office, watchlist, and monitoring data is retained
                   while the account or workspace is active, unless deletion is
@@ -211,7 +211,7 @@ export default function PrivacyPage() {
                 </p>
               </div>
               <div>
-                <h2 className="text-2xl font-black">Deletion</h2>
+                <h2 className="text-2xl font-bold">Deletion</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   Logged-in users can export or delete account data from dashboard
                   privacy controls. AwardPing may retain minimal records needed
@@ -219,7 +219,7 @@ export default function PrivacyPage() {
                 </p>
               </div>
               <div>
-                <h2 className="text-2xl font-black">Security</h2>
+                <h2 className="text-2xl font-bold">Security</h2>
                 <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
                   AwardPing uses HTTPS, access-controlled account workflows, and
                   hosted infrastructure providers. Security or abuse reports can

@@ -92,7 +92,7 @@ export default async function OfficePage() {
                   key={member.id}
                 >
                   <div>
-                    <p className="font-black">{member.email || "Advisor"}</p>
+                    <p className="font-bold">{member.email || "Advisor"}</p>
                     <p className="text-sm capitalize text-[var(--muted)]">
                       {member.role === "owner" ? "Owner/admin" : member.role}
                     </p>

@@ -129,7 +129,7 @@ export function AdminSourceIntakePanel({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <span className="badge">Source Intake</span>
-            <h2 className="mt-3 text-2xl font-black">Paste new official sources</h2>
+            <h2 className="mt-3 text-2xl font-bold">Paste new official sources</h2>
             <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
               One URL per line. You can also paste lines as <code>url | award name | notes</code>.
               The worker will capture, quality-gate, Gemini Batch review, match/create the award,
@@ -154,15 +154,15 @@ export function AdminSourceIntakePanel({
             onChange={(event) => setUrls(event.target.value)}
           />
           <div className="grid gap-3 md:grid-cols-[1fr_1fr_220px]">
-            <label className="grid gap-2 text-sm font-black">
+            <label className="grid gap-2 text-sm font-bold">
               Optional award name
               <input className="input" value={awardName} onChange={(event) => setAwardName(event.target.value)} />
             </label>
-            <label className="grid gap-2 text-sm font-black">
+            <label className="grid gap-2 text-sm font-bold">
               Shared notes
               <input className="input" value={notes} onChange={(event) => setNotes(event.target.value)} />
             </label>
-            <label className="grid gap-2 text-sm font-black">
+            <label className="grid gap-2 text-sm font-bold">
               Intake type
               <select
                 className="input"
@@ -191,7 +191,7 @@ export function AdminSourceIntakePanel({
       <section className="card p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-2xl font-black">Recent intake requests</h2>
+            <h2 className="text-2xl font-bold">Recent intake requests</h2>
             <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
               Ambiguous requests should be attached or retried; rejected requests stay available for audit.
             </p>
@@ -288,7 +288,7 @@ function SourceIntakeRow({
             <span className="badge">{labelize(request.intake_type)}</span>
             {request.created_source_ids?.length ? <span className="badge">{request.created_source_ids.length} source</span> : null}
           </div>
-          <h3 className="mt-3 text-lg font-black">{request.detected_award_name || request.award_name}</h3>
+          <h3 className="mt-3 text-lg font-bold">{request.detected_award_name || request.award_name}</h3>
           <p className="mt-1 break-all text-sm font-semibold text-[var(--muted)]">
             {request.normalized_url || request.homepage_url}
           </p>
@@ -300,7 +300,7 @@ function SourceIntakeRow({
             <Detail label="Matched award" value={matchedAward?.name || request.created_shared_award_id || "None yet"} />
             <Detail label="Updated" value={formatDate(request.updated_at)} />
           </dl>
-          {request.error && <p className="mt-3 text-sm font-black text-[var(--brand-burgundy)]">{request.error}</p>}
+          {request.error && <p className="mt-3 text-sm font-bold text-[var(--brand-burgundy)]">{request.error}</p>}
           {restrictedRecovery && (
             <p className={`mt-3 text-sm font-bold ${protectedRecovery.mode !== "manual_only" ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
               {protectedRecovery.protected
@@ -412,7 +412,7 @@ function SourceIntakeRow({
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <dt className="text-xs font-black uppercase text-[var(--muted)]">{label}</dt>
+      <dt className="text-xs font-bold uppercase text-[var(--muted)]">{label}</dt>
       <dd className="font-bold">{value}</dd>
     </div>
   );

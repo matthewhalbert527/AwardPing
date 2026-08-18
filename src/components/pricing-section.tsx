@@ -18,12 +18,12 @@ export async function PricingSection() {
     <div className="card max-w-3xl rounded-3xl p-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-2xl font-black">Invitation-only beta</h2>
+          <h2 className="text-2xl font-bold">Invitation-only beta</h2>
           <p className="mt-2 text-[var(--muted)]">
             Beta access is free for invited advising offices while Stage 1 is verified.
           </p>
         </div>
-        <p className="text-4xl font-black">$0</p>
+        <p className="text-4xl font-bold">$0</p>
       </div>
       <ul className="mt-6 grid gap-3 sm:grid-cols-2">
         {features.map((feature) => (
