@@ -413,6 +413,7 @@ function visualNightlyShard(run: WorkerRun, shardIndex: number, now: Date): Visu
   const metadata = record(run.metadata);
   const runHealth = record(metadata.run_health);
   const healthStatus = cleanText(runHealth.status);
+  const executionStatus = cleanText(runHealth.execution_status) || run.status;
   const stalled = visualRunIsStalled(run, now);
   const checked = numberValue(run.checked_count);
   const failed = numberValue(run.failed_count);
@@ -424,11 +425,19 @@ function visualNightlyShard(run: WorkerRun, shardIndex: number, now: Date): Visu
     shardIndex,
   });
   const inventoryComplete = loaded > 0 && processed === loaded && inventoryProof.complete;
+  const degradedCompletion = run.status === "failed" && executionStatus === "succeeded" &&
+    healthStatus === "degraded" && run.failed_count > 0;
   let status: VisualNightlyShard["status"] = "healthy";
   if (stalled) status = "failed";
-  else if (run.status === "running" || healthStatus === "running") status = "running";
-  else if (run.status === "failed" || ["failed", "blocked"].includes(healthStatus) || !inventoryComplete) status = "failed";
-  else if (run.failed_count > 0 || healthStatus === "degraded" || runFailureGroups(run).length) status = "degraded";
+  else if (run.status === "running" || executionStatus === "running" || healthStatus === "running") status = "running";
+  else if (
+    (run.status === "failed" && !degradedCompletion) ||
+    ["failed", "blocked"].includes(healthStatus) || !inventoryComplete
+  ) status = "failed";
+  else if (
+    degradedCompletion || run.failed_count > 0 || healthStatus === "degraded" ||
+    runFailureGroups(run).length
+  ) status = "degraded";
 
   return {
     runId: run.id,

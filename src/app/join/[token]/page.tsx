@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 import { AcceptInviteButton } from "@/components/accept-invite-button";
 import { AuthForm } from "@/components/auth-form";
 import { SetupNotice } from "@/components/setup-notice";
@@ -6,6 +7,13 @@ import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+
+export const metadata: Metadata = {
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 type Props = {
   params: Promise<{ token: string }>;

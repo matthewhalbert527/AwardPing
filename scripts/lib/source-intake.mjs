@@ -5,6 +5,13 @@ import * as cheerio from "cheerio";
 import { Agent, fetch as undiciFetch } from "undici";
 import { normalizeAwardName, awardIdentityScore } from "./award-fact-reconciliation.mjs";
 import { validateRetainedIntakeArtifactManifest } from "./intake-artifact-retention.mjs";
+import {
+  SOURCE_INTAKE_PROVIDER_PROMPT_POLICY,
+  sourceIntakeProviderCaptureIdentity,
+  sourceIntakeProviderRequestFields,
+  sourceIntakeProviderTextExcerpt,
+  validateSourceIntakeProviderInputBinding,
+} from "./source-intake-provider-binding.mjs";
 import { sourceQualityDecision } from "./source-quality.mjs";
 
 export const intakeStatuses = new Set([
@@ -60,6 +67,14 @@ const acquisitionReviewPolicyHash = createHash("sha256")
   .digest("hex");
 
 export function normalizeSourceIntakeUrl(value) {
+  return normalizeSourceIntakeUrlForUse(value);
+}
+
+function normalizeSourceIntakeFetchUrl(value) {
+  return normalizeSourceIntakeUrlForUse(value, { preserveTrailingSlash: true });
+}
+
+function normalizeSourceIntakeUrlForUse(value, { preserveTrailingSlash = false } = {}) {
   const raw = String(value || "").trim();
   if (!raw) throw new Error("Enter a URL.");
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
@@ -74,7 +89,9 @@ export function normalizeSourceIntakeUrl(value) {
   }
   url.searchParams.sort();
   url.pathname = url.pathname.replace(/\/{2,}/g, "/");
-  if (url.pathname !== "/") url.pathname = url.pathname.replace(/\/+$/g, "");
+  if (!preserveTrailingSlash && url.pathname !== "/") {
+    url.pathname = url.pathname.replace(/\/+$/g, "");
+  }
   return url.toString();
 }
 
@@ -142,12 +159,12 @@ export async function captureIntakePage(url, options = {}) {
       },
     });
     const { response, bytes, finalUrl, contentType, isPdf } = fetched;
-    // pdf-parse may transfer/detach the Buffer it receives. Preserve one
-    // untouched copy as the immutable reviewed artifact and parse a separate
-    // copy so the returned bytes can never become empty or mutated.
-    const artifactBytes = isPdf ? Buffer.from(bytes) : null;
+    // Preserve one untouched copy of every response as the immutable reviewed
+    // artifact. PDF parsing may transfer/detach its input, and HTML parsing
+    // must not leave retention dependent on a later URL fetch.
+    const artifactBytes = Buffer.from(bytes);
     const responseByteLength = bytes.length;
-    const captureFileHash = createHash("sha256").update(artifactBytes || bytes).digest("hex");
+    const captureFileHash = createHash("sha256").update(artifactBytes).digest("hex");
     let parsed;
     let pdfPageCount = null;
     let pdfTextError = null;
@@ -189,21 +206,38 @@ export async function captureIntakePage(url, options = {}) {
       duration_ms: Date.now() - startedAt,
       capture_method: isPdf ? "fetch_pdf_text" : "fetch_html",
     };
-    // The intake worker may retain the exact accepted PDF, but these bytes are
-    // deliberately non-enumerable so spreading/JSON-serializing a capture can
-    // never put a multi-megabyte document into source_page_requests.
-    if (isPdf) {
-      Object.defineProperty(capture, "artifact_bytes", {
-        value: artifactBytes,
-        enumerable: false,
-        writable: false,
-        configurable: false,
-      });
-    }
+    // The intake worker may retain these exact bytes, but they are deliberately
+    // non-enumerable so spreading/JSON-serializing a capture can never put a
+    // multi-megabyte response into source_page_requests.
+    Object.defineProperty(capture, "artifact_bytes", {
+      value: artifactBytes,
+      enumerable: false,
+      writable: false,
+      configurable: false,
+    });
     return capture;
   } finally {
     clearTimeout(timeout);
   }
+}
+
+export function sourceIntakeCaptureDisposition(deterministicReview, geminiApiMode = "batch") {
+  const status = cleanText(deterministicReview?.status);
+  const reason = cleanText(deterministicReview?.reason) || "source_intake_capture_review_incomplete";
+  if (status === "rejected") return { status: "rejected", status_reason: reason };
+  if (status === "needs_manual_review") {
+    return { status: "needs_manual_review", status_reason: reason };
+  }
+  if (status !== "plausible") {
+    return {
+      status: "needs_manual_review",
+      status_reason: "deterministic_capture_disposition_unknown",
+    };
+  }
+  if (cleanText(geminiApiMode) !== "batch") {
+    return { status: "needs_manual_review", status_reason: "gemini_review_disabled" };
+  }
+  return { status: "ai_review_pending", status_reason: "ready_for_gemini_batch_review" };
 }
 
 export async function parseCapturedPdf({
@@ -255,9 +289,14 @@ export async function parseCapturedPdf({
 }
 
 async function fetchPublicIntakeBytes(rawUrl, options) {
-  let currentUrl = normalizeSourceIntakeUrl(rawUrl);
+  let currentUrl = normalizeSourceIntakeFetchUrl(rawUrl);
+  const visitedUrls = new Set();
 
   for (let redirectCount = 0; redirectCount <= options.maxRedirects; redirectCount += 1) {
+    if (visitedUrls.has(currentUrl)) {
+      throw new Error("Source intake encountered a redirect loop.");
+    }
+    visitedUrls.add(currentUrl);
     const parsedUrl = new URL(currentUrl);
     const addresses = await resolvePublicAddresses(parsedUrl, options.lookupImpl);
     const dispatcher = options.dispatcherFactory(parsedUrl, addresses);
@@ -270,7 +309,10 @@ async function fetchPublicIntakeBytes(rawUrl, options) {
         headers: options.headers,
       });
 
-      if (response.redirected || (response.url && normalizeSourceIntakeUrl(response.url) !== currentUrl)) {
+      if (
+        response.redirected
+        || (response.url && normalizeSourceIntakeFetchUrl(response.url) !== currentUrl)
+      ) {
         throw new Error("Source intake fetch followed an unvalidated redirect.");
       }
 
@@ -280,7 +322,7 @@ async function fetchPublicIntakeBytes(rawUrl, options) {
           throw new Error(`Source intake exceeded ${options.maxRedirects} redirects.`);
         }
         await response.body?.cancel().catch(() => undefined);
-        currentUrl = normalizeSourceIntakeUrl(new URL(location, currentUrl).toString());
+        currentUrl = normalizeSourceIntakeFetchUrl(new URL(location, currentUrl).toString());
         continue;
       }
 
@@ -464,7 +506,21 @@ export function inferIntakePageType(input) {
   return "homepage";
 }
 
-export function buildGeminiIntakeRequest(request, capture, deterministicReview, model = "gemini-2.5-flash-lite") {
+export function buildGeminiIntakeRequest(
+  request,
+  capture,
+  deterministicReview,
+  model = "gemini-2.5-flash-lite",
+  providerInputBinding = null,
+) {
+  if (providerInputBinding) {
+    return validateSourceIntakeProviderInputBinding(providerInputBinding, {
+      request,
+      capture,
+      deterministicReview,
+    }).provider_envelope;
+  }
+  const captureIdentity = sourceIntakeProviderCaptureIdentity(request, capture);
   return {
     request: {
       systemInstruction: {
@@ -480,7 +536,14 @@ export function buildGeminiIntakeRequest(request, capture, deterministicReview, 
       },
       contents: [{
         role: "user",
-        parts: [{ text: buildGeminiIntakePrompt(request, capture, deterministicReview) }],
+        parts: [{
+          text: buildGeminiIntakePrompt(
+            request,
+            capture,
+            deterministicReview,
+            captureIdentity,
+          ),
+        }],
       }],
       generationConfig: {
         temperature: 0.1,
@@ -489,11 +552,20 @@ export function buildGeminiIntakeRequest(request, capture, deterministicReview, 
         responseMimeType: "application/json",
       },
     },
-    metadata: { key: request.id, source_page_request_id: request.id, model },
+    metadata: {
+      key: request.id,
+      source_page_request_id: request.id,
+      model,
+    },
   };
 }
 
-export function buildGeminiIntakePrompt(request, capture, deterministicReview) {
+export function buildGeminiIntakePrompt(
+  request,
+  capture,
+  deterministicReview,
+  captureIdentity = null,
+) {
   return [
     "Review this pasted source URL for AwardPing intake.",
     "Strict output schema:",
@@ -520,25 +592,20 @@ export function buildGeminiIntakePrompt(request, capture, deterministicReview) {
       manual_review_reason: "string|null",
     }),
     "Submitted request:",
-    JSON.stringify({
-      id: request.id,
-      requested_award_name: request.award_name || null,
-      notes: request.notes || null,
-      submitted_url: request.submitted_url || request.homepage_url,
-      normalized_url: request.normalized_url,
-      intake_type: request.intake_type || "unknown",
-    }),
+    JSON.stringify(sourceIntakeProviderRequestFields(request)),
     "Deterministic review:",
     JSON.stringify(deterministicReview),
     "Captured page:",
     JSON.stringify({
+      retained_capture_identity: captureIdentity,
+      prompt_policy: SOURCE_INTAKE_PROVIDER_PROMPT_POLICY,
       final_url: capture.final_url,
       canonical_url: capture.canonical_url,
       status_code: capture.status_code,
       content_type: capture.content_type,
       title: capture.title,
       page_description: capture.page_description,
-      text_excerpt: cleanText(capture.text).slice(0, 16000),
+      text_excerpt: sourceIntakeProviderTextExcerpt(capture.text),
       pdf_links: (capture.pdf_links || []).slice(0, 10),
       links: (capture.links || []).slice(0, 20),
     }),

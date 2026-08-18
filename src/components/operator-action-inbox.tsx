@@ -14,16 +14,18 @@ import { AdminPaidReviewRetryAction } from "@/components/admin-paid-review-retry
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import {
   operatorActionInboxSummary,
+  type OperatorActionInboxCaseSourceTotal,
   type OperatorActionInboxItem,
 } from "@/lib/operator-action-inbox";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
 type Props = {
   items: OperatorActionInboxItem[];
+  caseSourceTotals?: OperatorActionInboxCaseSourceTotal[];
 };
 
-export function OperatorActionInbox({ items }: Props) {
-  const summary = operatorActionInboxSummary(items);
+export function OperatorActionInbox({ items, caseSourceTotals = [] }: Props) {
+  const summary = operatorActionInboxSummary(items, caseSourceTotals);
 
   return (
     <section className="operator-inbox" aria-labelledby="operator-inbox-title">
@@ -35,13 +37,24 @@ export function OperatorActionInbox({ items }: Props) {
               ? "The Action Inbox is clear"
               : summary.needsOperator === 0
                 ? "Everything open is retrying automatically"
-                : `${formatNumber(summary.needsOperator)} ${summary.needsOperator === 1 ? "item needs" : "items need"} a person`}
+                : `${formatNumber(summary.needsOperator)} ${summary.needsOperator === 1 ? "action group needs" : "action groups need"} a person`}
           </h2>
           <p>
             {summary.total === 0
               ? "There are no current operator decisions, publication blockers, or failed automatic retries."
-              : `${formatNumber(summary.autoRetrying)} ${summary.autoRetrying === 1 ? "item is" : "items are"} retrying automatically. Every row says what failed, who owns it, whether a retry costs money, and the safest next step.`}
+              : `${formatNumber(summary.total)} ${summary.total === 1 ? "action group is" : "action groups are"} rendered; ${formatNumber(summary.autoRetrying)} ${summary.autoRetrying === 1 ? "group is" : "groups are"} retrying automatically. Every row says what failed, who owns it, whether a retry costs money, and the safest next step.`}
           </p>
+          {summary.caseSources.length > 0 && (
+            <ul className="mt-3 grid gap-1 text-sm text-[var(--muted)]" aria-label="Underlying failure case totals">
+              {summary.caseSources.map((source) => (
+                <li key={source.key}>
+                  {source.exactTotal === null
+                    ? `${formatNumber(source.renderedTotal)} ${source.label} rendered; exact underlying total unavailable.`
+                    : `${formatNumber(source.renderedTotal)} of ${formatNumber(source.exactTotal)} ${source.label} rendered${source.omittedTotal ? `; ${formatNumber(source.omittedTotal)} remain outside this page.` : "."}`}
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
         {summary.publicBlockers > 0 ? (
           <span className="operator-inbox-summary-status operator-inbox-summary-status-attention">

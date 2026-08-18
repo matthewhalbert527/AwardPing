@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  closeSupabaseServiceTransport,
   isRetryableSupabaseNetworkError,
   isSupabaseSecretApiKey,
   prepareSupabaseServiceHeaders,
@@ -50,5 +51,13 @@ describe("Supabase service client transport", () => {
     }))).toBe(true);
     expect(isRetryableSupabaseNetworkError({ cause: { code: "ECONNRESET" }, message: "fetch failed" })).toBe(true);
     expect(isRetryableSupabaseNetworkError(new Error("permission denied"))).toBe(false);
+  });
+
+  it("provides an idempotent graceful shutdown for short-lived workers", async () => {
+    const firstClose = closeSupabaseServiceTransport();
+    const secondClose = closeSupabaseServiceTransport();
+
+    expect(secondClose).toBe(firstClose);
+    await expect(firstClose).resolves.toBeNull();
   });
 });

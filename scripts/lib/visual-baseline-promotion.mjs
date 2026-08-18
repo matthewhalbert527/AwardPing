@@ -8,6 +8,21 @@ import {
   realpathSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  assertR2CaptureArtifactIdentity,
+  assertR2CaptureArtifactSlots,
+  isR2CaptureGeometryReady,
+  prepareR2CaptureArtifacts,
+  projectRetainedCaptureArtifacts,
+  r2CaptureArtifactBindingsSchema,
+  retainedCaptureArtifactProjectionSchema,
+} from "./r2-capture-artifact-bindings.mjs";
+import { inspectStage1ImmutableR2CaptureBinding } from "./stage1-cohort-readiness.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
 import { atomicWriteJson } from "./visual-baseline-lock.mjs";
 import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 import { advanceVisualSnapshotPointer } from "./visual-snapshot-pointer.mjs";
@@ -25,6 +40,11 @@ const r2Slots = [
   { name: "layout", fileName: "layout.json", contentType: "application/json; charset=utf-8" },
   { name: "meta", fileName: "meta.json", contentType: "application/json; charset=utf-8" },
 ];
+
+// Raw capture metadata intentionally stores a compact geometry reference. Keep
+// the full, byte-verified layout out of that persisted shape while making it
+// available to the promotion decision and publication contract.
+const verifiedApprovedCaptureGeometry = new WeakMap();
 
 export function visualBaselinePromotionDecision({
   candidate,
@@ -45,7 +65,7 @@ export function visualBaselinePromotionDecision({
   }
   const existingCapturedAt = timestampValue(existingBaseline?.captured_at);
   const candidateCapturedAt = timestampValue(snapshot?.captured_at || ref.captured_at);
-  const repairsMissingGeometry = canRepairMissingGeometry(existingBaseline, hashes);
+  const replacesGeometryAuthority = changesGeometryAuthority(existingBaseline, hashes);
   if (existingCapturedAt && candidateCapturedAt && existingCapturedAt > candidateCapturedAt) {
     return { promote: false, reason: "newer_whole_page_baseline_exists" };
   }
@@ -54,7 +74,7 @@ export function visualBaselinePromotionDecision({
     candidateCapturedAt &&
     existingCapturedAt === candidateCapturedAt &&
     !sameSnapshotHashes(existingBaseline, hashes) &&
-    !repairsMissingGeometry
+    !replacesGeometryAuthority
   ) {
     return { promote: false, reason: "same_timestamp_baseline_conflict" };
   }
@@ -102,16 +122,9 @@ export function promoteApprovedVisualBaselineLocal({
       ...visualBaselinePromotionDecision({ candidate, approved, existingBaseline }),
     };
   }
-  const capture = captureFromVisualReviewCandidate(candidate, archiveRoot);
-  const decision = visualBaselinePromotionDecision({
-    candidate,
-    approved,
-    existingBaseline,
-    snapshot: capture,
-  });
-  if (!decision.promote) {
-    return { promoted: false, baseline_path: baselinePath, ...decision };
-  }
+  let capture = canonicalizeApprovedCaptureAuthority(
+    captureFromVisualReviewCandidate(candidate, archiveRoot),
+  );
   const requiredPaths = requiredCapturePaths(capture);
   const missingPaths = requiredPaths.filter((path) => !path || !existsSync(path));
   if (missingPaths.length) {
@@ -131,7 +144,26 @@ export function promoteApprovedVisualBaselineLocal({
       missing_metadata: missingGeometryMetadata,
     };
   }
-  verifyApprovedCaptureArtifacts(capture);
+  const verifiedArtifacts = verifyApprovedCaptureArtifacts(capture, {
+    requireR2GeometryReady: true,
+  });
+  capture = materializeApprovedRetainedArtifactProjection(capture, verifiedArtifacts);
+  prepareVerifiedApprovedPublicationArtifacts(capture, verifiedArtifacts, {
+    sourceId: source.id,
+  });
+
+  // Verify the exact retained bytes even when this snapshot is already the
+  // current baseline. Otherwise a corrupt candidate can bypass verification
+  // through the hash-only idempotency path.
+  const decision = visualBaselinePromotionDecision({
+    candidate,
+    approved,
+    existingBaseline,
+    snapshot: capture,
+  });
+  if (!decision.promote) {
+    return { promoted: false, baseline_path: baselinePath, ...decision };
+  }
 
   const baseline = buildBaseline({
     candidate,
@@ -162,10 +194,11 @@ export async function promoteApprovedVisualBaselineR2({
   approved = false,
   now = new Date().toISOString(),
 } = {}) {
+  if (!capture) return { promoted: false, reason: "missing_local_capture_for_r2" };
+  capture = canonicalizeApprovedCaptureAuthority(capture);
   const decision = visualBaselinePromotionDecision({ candidate, approved, snapshot: capture });
   if (!decision.promote) return { promoted: false, ...decision };
   if (!config?.enabled) return { promoted: false, reason: "r2_snapshot_sync_disabled" };
-  if (!capture) return { promoted: false, reason: "missing_local_capture_for_r2" };
   if (!supabase) return { promoted: false, reason: "missing_supabase_client" };
 
   const ownsClient = !s3Client;
@@ -182,7 +215,7 @@ export async function promoteApprovedVisualBaselineR2({
     const { data: existing, error: loadError } = await supabase
       .from("shared_award_source_visual_snapshots")
       .select(
-        "latest_captured_at,latest_object_keys,latest_hashes,latest_metadata,previous_captured_at,previous_object_keys,previous_hashes,previous_metadata,updated_at",
+        "shared_award_source_id,source_url,kind,bucket,latest_captured_at,latest_object_keys,latest_hashes,latest_metadata,previous_captured_at,previous_object_keys,previous_hashes,previous_metadata,updated_at",
       )
       .eq("shared_award_source_id", source.id)
       .maybeSingle();
@@ -190,21 +223,20 @@ export async function promoteApprovedVisualBaselineR2({
 
     const candidateHashes = captureHashes(capture);
     const requiredSlots = requiredR2Slots(capture);
-    const existingKeys = objectValue(existing?.latest_object_keys);
     const hashesCurrent = sameSnapshotHashes(existing?.latest_hashes, candidateHashes);
-    const existingPointerComplete = requiredSlots.every((slot) => cleanText(existingKeys[slot]));
-    if (hashesCurrent && existingPointerComplete) {
-      return { promoted: false, reason: "approved_r2_snapshot_already_current", already_current: true };
-    }
+    const existingKeys = objectValue(existing?.latest_object_keys);
+    const existingRequiredSlotsPresent = requiredSlots.every(
+      (slot) => cleanText(existingKeys[slot]),
+    );
     const existingCapturedAt = timestampValue(existing?.latest_captured_at);
     const candidateCapturedAt = timestampValue(capture.captured_at);
-    const repairsMissingGeometry =
+    const replacesGeometryAuthority =
       sameCoreSnapshotHashes(existing?.latest_hashes, candidateHashes) &&
-      (!existingPointerComplete || canRepairMissingGeometry(existing?.latest_hashes, candidateHashes));
+      (!existingRequiredSlotsPresent || changesGeometryAuthority(existing?.latest_hashes, candidateHashes));
     if (
       existingCapturedAt && candidateCapturedAt &&
       (existingCapturedAt > candidateCapturedAt ||
-        (existingCapturedAt === candidateCapturedAt && !hashesCurrent && !repairsMissingGeometry))
+        (existingCapturedAt === candidateCapturedAt && !hashesCurrent && !replacesGeometryAuthority))
     ) {
       return { promoted: false, reason: "newer_or_conflicting_r2_baseline_exists" };
     }
@@ -227,23 +259,57 @@ export async function promoteApprovedVisualBaselineR2({
         missing_metadata: missingGeometryMetadata,
       };
     }
-    const verifiedArtifacts = verifyApprovedCaptureArtifacts(capture);
-    const immutableVersion = approvedR2SnapshotVersion({ candidate, capture });
+    const verifiedArtifacts = verifyApprovedCaptureArtifacts(capture, {
+      requireR2GeometryReady: true,
+    });
+    capture = materializeApprovedRetainedArtifactProjection(capture, verifiedArtifacts);
+    const prepared = prepareVerifiedApprovedPublicationArtifacts(
+      capture,
+      verifiedArtifacts,
+      { sourceId: source.id },
+    );
+    const kind = capture.kind === "pdf" ? "pdf" : "webpage";
+    const latestMetadata = captureMetadata(capture, prepared.artifactBindings);
+
+    const immutableVersion = approvedR2SnapshotVersion({
+      candidate,
+      capture,
+      artifactBindings: prepared.artifactBindings,
+    });
+    if (
+      hashesCurrent
+      && exactApprovedR2PointerMatches({
+        existing,
+        expected: {
+          sourceId: source.id,
+          sourceUrl: source.url,
+          kind,
+          bucket: config.bucket,
+          capturedAt: capture.captured_at,
+          hashes: candidateHashes,
+          metadata: latestMetadata,
+        },
+        prepared,
+      })
+    ) {
+      return {
+        promoted: false,
+        reason: "approved_r2_snapshot_already_current",
+        already_current: true,
+      };
+    }
+
     const latestObjectKeys = {};
-    for (const file of files) {
-      const key = approvedR2SnapshotKey(source.id, immutableVersion, file.fileName);
-      const body = verifiedArtifacts.get(file.name)?.body;
-      if (!body) {
-        throw new Error(`Approved snapshot artifact ${file.name} was not retained after verification.`);
-      }
+    for (const artifact of prepared.artifacts) {
+      const key = approvedR2SnapshotKey(source.id, immutableVersion, artifact.fileName);
       await client.send(new PutObjectCommand({
         Bucket: config.bucket,
         Key: key,
-        Body: body,
-        ContentType: file.contentType,
-        Metadata: { sha256: createHash("sha256").update(body).digest("hex") },
+        Body: artifact.body,
+        ContentType: artifact.contentType,
+        Metadata: { sha256: artifact.binding.sha256 },
       }));
-      latestObjectKeys[file.name] = key;
+      latestObjectKeys[artifact.name] = key;
     }
 
     // Immutable, candidate-specific objects are all durable before the pointer
@@ -261,7 +327,7 @@ export async function promoteApprovedVisualBaselineR2({
         latest_captured_at: capture.captured_at,
         latest_object_keys: latestObjectKeys,
         latest_hashes: candidateHashes,
-        latest_metadata: captureMetadata(capture),
+        latest_metadata: latestMetadata,
         previous_captured_at: history.previous_captured_at,
         previous_object_keys: history.previous_object_keys,
         previous_hashes: history.previous_hashes,
@@ -285,14 +351,12 @@ export async function promoteApprovedVisualBaselineR2({
         uploaded: latestObjectKeys,
         current,
       });
-      await Promise.all(orphanKeys.map((key) => client.send(new DeleteObjectCommand({
-        Bucket: config.bucket,
-        Key: key,
-      }))));
+      const cleanup = await deleteApprovedR2Objects(client, config.bucket, orphanKeys);
       return {
         promoted: false,
         reason: "r2_pointer_compare_and_set_lost",
-        deleted_orphan_uploads: orphanKeys.length,
+        deleted_orphan_uploads: cleanup.deleted,
+        cleanup,
       };
     }
     const staleKeys = visualSnapshotKeysToDeleteAfterCas({
@@ -300,22 +364,43 @@ export async function promoteApprovedVisualBaselineR2({
       existing,
       next: snapshotRow,
     });
-    await Promise.all(staleKeys.map((key) => client.send(new DeleteObjectCommand({
-      Bucket: config.bucket,
-      Key: key,
-    }))));
+    const cleanup = await deleteApprovedR2Objects(client, config.bucket, staleKeys);
 
     return {
       promoted: true,
       reason: "approved_whole_page_snapshot",
       uploaded: Object.keys(latestObjectKeys).length,
       rotated: Object.keys(history.previous_object_keys).length,
-      deleted: staleKeys.length,
+      deleted: cleanup.deleted,
+      cleanup,
       immutable_version: immutableVersion,
     };
   } finally {
     if (ownsClient) client.destroy();
   }
+}
+
+async function deleteApprovedR2Objects(client, bucket, keys) {
+  const uniqueKeys = [...new Set((keys || []).filter(Boolean))];
+  const settled = await Promise.allSettled(uniqueKeys.map((key) => (
+    client.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }))
+  )));
+  const failures = settled.flatMap((result, index) => (
+    result.status === "rejected"
+      ? [{
+          key: uniqueKeys[index],
+          message: result.reason instanceof Error
+            ? result.reason.message
+            : String(result.reason),
+        }]
+      : []
+  ));
+  return {
+    attempted: uniqueKeys.length,
+    deleted: uniqueKeys.length - failures.length,
+    failed: failures.length,
+    failures,
+  };
 }
 
 function candidateSnapshotRef(candidate) {
@@ -389,7 +474,7 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
     artifactBindings[`expansion_state_${suffix}`] = state.page_artifact || null;
     artifactBindings[`expansion_state_${suffix}_layout`] = state.layout_artifact || null;
   }
-  return {
+  const capture = {
     ...meta,
     kind: cleanText(ref.kind || meta.kind) || (resolvePathRef(paths.pdf, safeArchiveRoot) ? "pdf" : "webpage"),
     captured_at: ref.captured_at || meta.captured_at || null,
@@ -417,10 +502,118 @@ export function captureFromVisualReviewCandidate(candidate, archiveRoot) {
     expandable_sections: expandableSections,
     expansion_state_screenshots: expansionStateScreenshots,
   };
+  return capture;
+}
+
+function canonicalizeApprovedCaptureAuthority(capture) {
+  if (capture.kind === "pdf") return capture;
+  const expansionTextLength = requiredApprovedWebpageExpansionTextLength(
+    capture.expansion_text_length,
+    "capture",
+  );
+  const canonicalCapture = {
+    ...capture,
+    expansion_text_length: expansionTextLength,
+  };
+  const artifactBindings = { ...objectValue(canonicalCapture.artifact_bindings) };
+  const layoutRetained = approvedMainLayoutRetained(canonicalCapture);
+  const layoutExplicitlyUnavailable = approvedMainLayoutExplicitlyUnavailable(canonicalCapture);
+
+  // An approved candidate that still claims main geometry must be verified as
+  // claimed. Never turn a corrupt or incomplete claim into an honest
+  // unavailable state by silently discarding it. Only an already explicit,
+  // accounted unavailable contract may shed diagnostic-only layout paths.
+  if (layoutRetained || !layoutExplicitlyUnavailable) return canonicalCapture;
+  artifactBindings.layout = null;
+  return {
+    ...canonicalCapture,
+    layout_hash: null,
+    layout_path: null,
+    artifact_bindings: artifactBindings,
+  };
+}
+
+function approvedMainLayoutRetained(capture) {
+  const verifiedGeometry = verifiedApprovedCaptureGeometry.get(capture)?.main || null;
+  return Boolean(
+    capture?.kind !== "pdf"
+    && capture?.layout_path
+    && capture?.artifact_bindings?.layout
+    && verifiedGeometry
+    && isR2CaptureGeometryReady({
+      kind: "webpage",
+      image_hash: capture?.image_hash,
+      text_geometry: verifiedGeometry,
+    }),
+  );
+}
+
+function approvedMainLayoutClaimed(capture) {
+  if (capture?.kind === "pdf") return false;
+  const geometry = objectValue(capture?.text_geometry);
+  const localization = objectValue(capture?.localization);
+  return Boolean(
+    capture?.layout_path
+    || capture?.artifact_bindings?.layout
+    || cleanText(capture?.layout_hash)
+    || cleanText(geometry.geometry_hash)
+    || cleanText(geometry.file)
+    || cleanText(objectValue(geometry.screenshot).image_hash)
+    || cleanText(localization.geometry_hash)
+    || cleanText(localization.bound_image_hash),
+  );
+}
+
+function approvedMainLayoutExplicitlyUnavailable(capture) {
+  if (capture?.kind === "pdf") return true;
+  const localization = objectValue(capture?.localization);
+  const geometry = objectValue(capture?.text_geometry);
+  const geometryPresent = capture?.text_geometry !== null && capture?.text_geometry !== undefined;
+  const geometryStatuses = [geometry.status, geometry.availability_status]
+    .map(cleanText)
+    .filter(Boolean);
+  const geometryUnavailable = !geometryPresent || (
+    geometryStatuses.length > 0
+    && geometryStatuses.every(
+      (status) => status === "unavailable" || status.startsWith("unavailable_"),
+    )
+  );
+  const localizationStatus = cleanText(localization.status);
+  const localizationUnavailable = localizationStatus === "unavailable"
+    || localizationStatus.startsWith("unavailable_")
+    || localizationStatus === "capture_layout_unavailable"
+    || localizationStatus === "evidence_only_geometry_unavailable";
+  const nodeCountInvalid = geometry.node_count != null
+    && (!Number.isSafeInteger(geometry.node_count) || geometry.node_count !== 0);
+  const runCountInvalid = geometry.run_count != null
+    && (!Number.isSafeInteger(geometry.run_count) || geometry.run_count !== 0);
+  return Boolean(
+    geometryUnavailable
+    && localizationUnavailable
+    && localization.exact === false
+    && localization.accounted_for === true
+    && localization.geometry_ready === false
+    && cleanText(localization.unavailable_reason)
+    && (!geometryPresent || cleanText(geometry.unavailable_reason))
+    && !capture.layout_hash
+    && !cleanText(capture.files?.layout)
+    && !geometry.geometry_hash
+    && !geometry.file
+    && !geometry.screenshot?.image_hash
+    && !geometry.screenshot?.image_ref
+    && !nodeCountInvalid
+    && !runCountInvalid
+    && !localization.geometry_hash
+    && !localization.bound_image_hash,
+  );
 }
 
 function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseline, now }) {
+  const expansionTextLength = capture.kind === "pdf"
+    ? null
+    : requiredApprovedWebpageExpansionTextLength(capture.expansion_text_length, "capture");
   const existingSummary = objectValue(existingBaseline?.summary_metadata);
+  const mainLayoutRetained = approvedMainLayoutRetained(capture);
   const sourceMetadata = {
     id: source.id,
     shared_award_id: source.shared_award_id || null,
@@ -447,16 +640,18 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
     expansion_hash: capture.expansion_hash || null,
     expandable_sections_hash: capture.expandable_sections_hash || null,
     image_hash: capture.image_hash || null,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    layout_hash: mainLayoutRetained
+      ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+      : null,
     expansion_states_hash: approvedExpansionStatesHash(capture),
     file_hash: capture.file_hash || null,
-    text_geometry: capture.text_geometry || null,
+    text_geometry: mainLayoutRetained ? capture.text_geometry || null : null,
     file_bytes: capture.file_bytes || null,
     text_length: capture.text_length || null,
     body_text_length: capture.body_text_length || null,
     main_content_text_length: capture.main_content_text_length || null,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || null,
-    expansion_text_length: capture.expansion_text_length || null,
+    expansion_text_length: expansionTextLength,
     section_text_length: capture.section_text_length || null,
     expandable_sections: Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [],
     dimensions: capture.dimensions || null,
@@ -467,7 +662,7 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
       thumb: archiveRelative(capture.thumb_path, archiveRoot),
       pdf: archiveRelative(capture.pdf_path, archiveRoot),
       text: archiveRelative(capture.text_path, archiveRoot),
-      layout: archiveRelative(capture.layout_path, archiveRoot),
+      layout: mainLayoutRetained ? archiveRelative(capture.layout_path, archiveRoot) : null,
       expansion_text: archiveRelative(capture.expansion_text_path, archiveRoot),
       sections_text: archiveRelative(capture.sections_text_path, archiveRoot),
       sections_json: archiveRelative(capture.sections_json_path, archiveRoot),
@@ -497,6 +692,12 @@ function buildBaseline({ candidate, source, capture, archiveRoot, existingBaseli
       baseline_facts: capture.baseline_facts || existingSummary.baseline_facts || null,
       baseline_facts_metadata:
         capture.baseline_facts_metadata || existingSummary.baseline_facts_metadata || null,
+      expansion_state_capture_coverage:
+        capture.kind === "pdf"
+          ? null
+          : capture.expansion_state_capture_coverage || null,
+      retained_artifact_projection:
+        capture.retained_artifact_projection || null,
       approved_visual_candidate_id: candidate?.id || null,
       promotion_scope: "whole_page",
       approved_candidate_scope:
@@ -744,7 +945,7 @@ function requiredCapturePaths(capture) {
     capture.page_path,
     capture.thumb_path,
     capture.text_path,
-    capture.layout_path,
+    ...(approvedMainLayoutClaimed(capture) ? [capture.layout_path] : []),
     capture.meta_path,
     ...approvedExpansionStateValues(capture).flatMap((state) => [state.page_path, state.layout_path]),
   ];
@@ -756,7 +957,7 @@ function requiredR2Slots(capture) {
     "page",
     "thumb",
     "text",
-    "layout",
+    ...(approvedMainLayoutClaimed(capture) ? ["layout"] : []),
     "meta",
     ...approvedExpansionStateValues(capture).flatMap((_, index) => {
       const suffix = String(index + 1).padStart(2, "0");
@@ -766,12 +967,30 @@ function requiredR2Slots(capture) {
 }
 
 function missingApprovedGeometryMetadata(capture) {
+  const projectionMissing = !canonicalApprovedRetainedArtifactProjection(
+    capture?.retained_artifact_projection,
+  );
   if (capture.kind === "pdf") {
-    return ["file_hash", "text_hash"].filter((field) => !cleanText(capture[field]));
+    return [
+      ...["file_hash", "text_hash"].filter((field) => !cleanText(capture[field])),
+      ...(projectionMissing ? ["retained_artifact_projection"] : []),
+    ];
   }
   const missing = ["image_hash", "text_hash"].filter((field) => !cleanText(capture[field]));
-  if (!cleanText(capture.layout_hash || capture.text_geometry?.geometry_hash)) {
+  if (projectionMissing) missing.push("retained_artifact_projection");
+  if (!legacyExpansionStateCaptureCoverageFromMetadata({
+    ...capture,
+    expansion_state_count: approvedExpansionStateValues(capture).length,
+    expansion_state_screenshots: approvedExpansionStateValues(capture),
+  }, { retainedStateCount: approvedExpansionStateValues(capture).length })) {
+    missing.push("expansion_state_capture_coverage");
+  }
+  const mainLayoutClaimed = approvedMainLayoutClaimed(capture);
+  if (mainLayoutClaimed && !cleanText(capture.layout_hash || capture.text_geometry?.geometry_hash)) {
     missing.push("layout_hash");
+  }
+  if (!mainLayoutClaimed && !approvedMainLayoutExplicitlyUnavailable(capture)) {
+    missing.push("main_layout_unavailable_contract");
   }
   for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
     const prefix = `expansion_state_${String(index + 1).padStart(2, "0")}`;
@@ -797,6 +1016,7 @@ function captureFiles(capture) {
         meta: capture.meta_path,
       }[slot.name],
     }))
+    .filter((file) => file.name !== "layout" || approvedMainLayoutClaimed(capture))
     .filter((file) => file.path && pathEntryExists(file.path));
   for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
     const suffix = String(index + 1).padStart(2, "0");
@@ -820,7 +1040,8 @@ function captureFiles(capture) {
   return files;
 }
 
-function verifyApprovedCaptureArtifacts(capture) {
+function verifyApprovedCaptureArtifacts(capture, { requireR2GeometryReady = false } = {}) {
+  verifiedApprovedCaptureGeometry.delete(capture);
   const archiveRoot = resolveArchiveRoot(capture?.archive_root);
   const files = captureFiles(capture);
   const filesByName = new Map(files.map((file) => [file.name, file]));
@@ -863,6 +1084,25 @@ function verifyApprovedCaptureArtifacts(capture) {
     });
   }
 
+  if (capture.kind !== "pdf") {
+    const captureExpansionTextLength = requiredApprovedWebpageExpansionTextLength(
+      capture.expansion_text_length,
+      "capture",
+    );
+    const rawMetadata = parseApprovedMetadataArtifact(verified.get("meta")?.body);
+    const rawExpansionTextLength = requiredApprovedWebpageExpansionTextLength(
+      rawMetadata.expansion_text_length,
+      "raw metadata",
+    );
+    if (rawExpansionTextLength !== captureExpansionTextLength) {
+      throw new Error(
+        "Approved snapshot raw metadata expansion_text_length does not match the capture.",
+      );
+    }
+  }
+
+  let verifiedMainGeometry = null;
+  const verifiedExpansionGeometries = [];
   if (capture.kind === "pdf") {
     assertSemanticArtifactHash({
       role: "PDF",
@@ -875,12 +1115,15 @@ function verifyApprovedCaptureArtifacts(capture) {
       expected: capture.image_hash,
       actual: verified.get("page")?.sha256,
     });
-    verifyGeometryArtifact({
-      role: "main layout",
-      body: verified.get("layout")?.body,
-      expectedGeometryHash: capture.layout_hash || capture.text_geometry?.geometry_hash,
-      expectedImageHash: capture.image_hash,
-    });
+    if (approvedMainLayoutClaimed(capture)) {
+      verifiedMainGeometry = verifyGeometryArtifact({
+        role: "main layout",
+        body: verified.get("layout")?.body,
+        expectedGeometryHash: capture.layout_hash || capture.text_geometry?.geometry_hash,
+        expectedImageHash: capture.image_hash,
+        requireR2GeometryReady,
+      });
+    }
     for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
       const suffix = String(index + 1).padStart(2, "0");
       assertSemanticArtifactHash({
@@ -888,12 +1131,13 @@ function verifyApprovedCaptureArtifacts(capture) {
         expected: state.image_hash,
         actual: verified.get(`expansion_state_${suffix}`)?.sha256,
       });
-      verifyGeometryArtifact({
+      verifiedExpansionGeometries.push(verifyGeometryArtifact({
         role: `expansion state ${state.state_id || suffix} layout`,
         body: verified.get(`expansion_state_${suffix}_layout`)?.body,
         expectedGeometryHash: state.layout_hash || state.text_geometry?.geometry_hash,
         expectedImageHash: state.image_hash,
-      });
+        requireR2GeometryReady,
+      }));
     }
   }
 
@@ -911,10 +1155,211 @@ function verifyApprovedCaptureArtifacts(capture) {
     actual: sha256(Buffer.from(semanticText, "utf8")),
   });
 
+  verifiedApprovedCaptureGeometry.set(capture, {
+    main: verifiedMainGeometry,
+    expansion_states: verifiedExpansionGeometries,
+  });
+
   return verified;
 }
 
-function verifyGeometryArtifact({ role, body, expectedGeometryHash, expectedImageHash }) {
+/**
+ * Re-derives the publication projection from the exact bytes that just passed
+ * verification. The reviewed meta artifact must already contain the same
+ * authority: promotion may normalize its in-memory copy, but it must never
+ * rewrite immutable reviewed evidence to manufacture a missing contract.
+ */
+function materializeApprovedRetainedArtifactProjection(capture, verifiedArtifacts) {
+  const verifiedGeometry = verifiedApprovedCaptureGeometry.get(capture) || {};
+  const projectionCapture = {
+    ...capture,
+    text_geometry: verifiedGeometry.main || capture.text_geometry,
+    expansion_state_screenshots: approvedExpansionStateValues(capture).map(
+      (state, index) => ({
+        ...state,
+        text_geometry:
+          verifiedGeometry.expansion_states?.[index] || state.text_geometry,
+      }),
+    ),
+  };
+  const verifiedBindings = Object.fromEntries(
+    [...verifiedArtifacts.keys()].map((slot) => [slot, true]),
+  );
+  const projection = projectRetainedCaptureArtifacts(projectionCapture, {
+    exists: pathEntryExists,
+    artifactBindings: verifiedBindings,
+  });
+  const expectedLayoutRetained = capture.kind !== "pdf" && verifiedArtifacts.has("layout");
+  const expectedExpansionStateCount = capture.kind === "pdf"
+    ? 0
+    : approvedExpansionStateValues(capture).length;
+  if (
+    projection.layoutRetained !== expectedLayoutRetained
+    || projection.retainedExpansionStates.length !== expectedExpansionStateCount
+  ) {
+    throw new Error(
+      "Approved snapshot retained artifact projection excludes verified publication evidence.",
+    );
+  }
+
+  const actual = canonicalApprovedRetainedArtifactProjection(projection.manifest);
+  const declared = canonicalApprovedRetainedArtifactProjection(
+    capture.retained_artifact_projection,
+  );
+  if (!declared) {
+    throw new Error("Approved snapshot retained artifact projection is missing or invalid.");
+  }
+  if (!sameApprovedRetainedArtifactProjection(declared, actual)) {
+    throw new Error(
+      "Approved snapshot retained artifact projection does not match verified publication evidence.",
+    );
+  }
+
+  const rawMetadata = parseApprovedMetadataArtifact(verifiedArtifacts.get("meta")?.body);
+  const raw = canonicalApprovedRetainedArtifactProjection(
+    rawMetadata.retained_artifact_projection,
+  );
+  if (!raw) {
+    throw new Error(
+      "Approved snapshot raw metadata retained artifact projection is missing or invalid.",
+    );
+  }
+  if (!sameApprovedRetainedArtifactProjection(raw, declared)) {
+    throw new Error(
+      "Approved snapshot raw metadata and capture retained artifact projections do not match.",
+    );
+  }
+
+  const coverageOptions = {
+    expectedRetainedStateCount: expectedExpansionStateCount,
+  };
+  const declaredCoverage = capture.kind === "pdf"
+    ? null
+    : legacyExpansionStateCaptureCoverageFromMetadata({
+        ...capture,
+        expansion_state_count: expectedExpansionStateCount,
+        expansion_state_screenshots: approvedExpansionStateValues(capture),
+      }, { retainedStateCount: expectedExpansionStateCount });
+  const rawCoverage = capture.kind === "pdf"
+    ? null
+    : legacyExpansionStateCaptureCoverageFromMetadata(rawMetadata, {
+        retainedStateCount: expectedExpansionStateCount,
+      });
+  if (capture.kind !== "pdf" && (!declaredCoverage || !rawCoverage)) {
+    throw new Error("Approved snapshot expansion-state coverage is missing or invalid.");
+  }
+  if (
+    capture.kind !== "pdf"
+    && !sameExpansionStateCaptureCoverage(declaredCoverage, rawCoverage, coverageOptions)
+  ) {
+    throw new Error(
+      "Approved snapshot raw metadata and capture expansion-state coverage do not match.",
+    );
+  }
+
+  const materialized = {
+    ...capture,
+    expansion_state_capture_coverage: declaredCoverage,
+    retained_artifact_projection: projection.manifest,
+  };
+  verifiedApprovedCaptureGeometry.set(materialized, verifiedGeometry);
+  return materialized;
+}
+
+function prepareVerifiedApprovedPublicationArtifacts(capture, verifiedArtifacts, {
+  sourceId,
+} = {}) {
+  const files = captureFiles(capture);
+  const verifiedBodiesByPath = new Map(files.map((file) => [
+    file.path,
+    verifiedArtifacts.get(file.name)?.body,
+  ]));
+  const prepared = prepareR2CaptureArtifacts(files, {
+    readFile: (path) => {
+      const body = verifiedBodiesByPath.get(path);
+      if (!body) {
+        throw new Error(`Approved snapshot artifact was not retained after verification: ${path}`);
+      }
+      return body;
+    },
+  });
+  const kind = capture.kind === "pdf" ? "pdf" : "webpage";
+  assertR2CaptureArtifactSlots(kind, prepared.artifactBindings, {
+    layoutClaimed: Boolean(prepared.artifactBindings.layout),
+    expansionStateCount: kind === "webpage"
+      ? approvedExpansionStateValues(capture).length
+      : 0,
+  });
+  assertR2CaptureArtifactIdentity(capture, prepared, { sourceId });
+  assertApprovedR2MetadataContract(capture);
+  return prepared;
+}
+
+function parseApprovedMetadataArtifact(body) {
+  try {
+    const metadata = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) throw new Error();
+    return metadata;
+  } catch {
+    throw new Error("Approved snapshot metadata artifact is not a UTF-8 JSON object.");
+  }
+}
+
+function requiredApprovedWebpageExpansionTextLength(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `Approved webpage snapshot ${label} expansion_text_length must be a non-negative safe integer.`,
+    );
+  }
+  return value;
+}
+
+function canonicalApprovedRetainedArtifactProjection(value) {
+  const projection = objectValue(value);
+  const authority = objectValue(projection.authoritative);
+  const kind = projection.kind;
+  const expectedStatus = kind === "pdf"
+    ? "not_applicable_pdf"
+    : authority.layout_retained === true
+      ? "exact_geometry_available"
+      : "evidence_only_geometry_unavailable";
+  const layoutHash = authority.layout_hash === null
+    ? null
+    : normalizedSha256(authority.layout_hash);
+  if (
+    projection.schema !== retainedCaptureArtifactProjectionSchema
+    || !["webpage", "pdf"].includes(kind)
+    || projection.localization_status !== expectedStatus
+    || typeof authority.layout_retained !== "boolean"
+    || !Number.isSafeInteger(authority.expansion_state_count)
+    || authority.expansion_state_count < 0
+    || (authority.layout_retained && !layoutHash)
+    || (!authority.layout_retained && authority.layout_hash !== null)
+    || (kind === "pdf" && (authority.layout_retained || authority.expansion_state_count !== 0))
+  ) return null;
+  return {
+    schema: projection.schema,
+    kind,
+    localization_status: projection.localization_status,
+    authoritative: {
+      layout_retained: authority.layout_retained,
+      layout_hash: layoutHash,
+      expansion_state_count: authority.expansion_state_count,
+    },
+  };
+}
+
+function sameApprovedRetainedArtifactProjection(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function verifyGeometryArtifact({
+  role,
+  body,
+  expectedGeometryHash,
+  expectedImageHash,
+  requireR2GeometryReady = false,
+}) {
   const geometryHash = normalizedSha256(expectedGeometryHash);
   const imageHash = normalizedSha256(expectedImageHash);
   if (!geometryHash || !imageHash) {
@@ -941,6 +1386,16 @@ function verifyGeometryArtifact({ role, body, expectedGeometryHash, expectedImag
       `Approved snapshot artifact verification failed for ${role}: ${binding.reason}.`,
     );
   }
+  if (requireR2GeometryReady && !isR2CaptureGeometryReady({
+    kind: "webpage",
+    image_hash: imageHash,
+    text_geometry: geometry,
+  })) {
+    throw new Error(
+      `Approved snapshot artifact verification failed for ${role}: exact screenshot geometry is not ready.`,
+    );
+  }
+  return geometry;
 }
 
 function assertSemanticArtifactHash({ role, expected, actual }) {
@@ -974,33 +1429,53 @@ function captureHashes(capture) {
     main_content_hash: capture.main_content_hash || null,
     nav_header_footer_hash: capture.nav_header_footer_hash || null,
     expansion_hash: capture.expansion_hash || null,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    layout_hash: approvedMainLayoutClaimed(capture)
+      ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+      : null,
     expansion_states_hash: approvedExpansionStatesHash(capture),
     file_hash: capture.file_hash || null,
   };
 }
 
-function captureMetadata(capture) {
+function captureMetadata(capture, artifactBindings) {
+  const kind = capture.kind === "pdf" ? "pdf" : "webpage";
+  const expansionTextLength = kind === "webpage"
+    ? requiredApprovedWebpageExpansionTextLength(capture.expansion_text_length, "capture")
+    : 0;
+  const expansionStates = kind === "webpage"
+    ? approvedExpansionStateValues(capture)
+    : [];
+  const layoutHash = kind === "webpage" && approvedMainLayoutRetained(capture)
+    ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+    : null;
   return {
+    artifact_bindings_schema: r2CaptureArtifactBindingsSchema,
+    artifact_bindings: artifactBindings,
+    retained_artifact_projection: capture.retained_artifact_projection || null,
     capture_profile: capture.capture_profile || null,
     final_url: capture.final_url || null,
     page_title: capture.page_title || null,
     status_code: capture.status_code || null,
     status_text: capture.status_text || null,
     content_type: capture.content_type || null,
-    text_length: capture.text_length || 0,
+    text_length: capture.text_length ?? 0,
+    // The semantic text hash excludes the one newline stored in text.txt.
+    // Retain the raw UTF-8 object length for exact R2 recovery verification.
+    text_object_bytes: artifactBindings?.text?.byte_length ?? null,
     body_text_length: capture.body_text_length || 0,
     main_content_text_length: capture.main_content_text_length || 0,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,
-    expansion_text_length: capture.expansion_text_length || 0,
-    file_bytes: capture.file_bytes || null,
-    page_bytes: capture.page_bytes || null,
-    thumb_bytes: capture.thumb_bytes || null,
+    expansion_text_length: expansionTextLength,
+    file_bytes: artifactBindings?.pdf?.byte_length ?? null,
+    page_bytes: artifactBindings?.page?.byte_length ?? null,
+    thumb_bytes: artifactBindings?.thumb?.byte_length ?? null,
     dimensions: capture.dimensions || null,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
-    text_geometry: capture.text_geometry || null,
-    expansion_state_count: approvedExpansionStateValues(capture).length,
-    expansion_state_screenshots: approvedExpansionStateValues(capture).map((state, index) => ({
+    layout_hash: layoutHash,
+    text_geometry: kind === "webpage" ? capture.text_geometry || null : null,
+    expansion_state_capture_coverage:
+      kind === "webpage" ? capture.expansion_state_capture_coverage || null : null,
+    expansion_state_count: expansionStates.length,
+    expansion_state_screenshots: expansionStates.map((state, index) => ({
       state_id: state.state_id || null,
       index: Number.isFinite(Number(state.index)) ? Number(state.index) : index,
       label: state.label || null,
@@ -1010,35 +1485,300 @@ function captureMetadata(capture) {
       text_geometry: state.text_geometry || null,
       text_hash: state.text_hash || null,
       text_length: state.text_length ?? null,
-      page_bytes: state.page_bytes ?? null,
+      page_bytes:
+        artifactBindings?.[`expansion_state_${String(index + 1).padStart(2, "0")}`]
+          ?.byte_length ?? null,
       isolation: state.isolation || null,
     })),
     page_count: capture.page_count || null,
     baseline_facts: capture.baseline_facts || null,
     baseline_facts_metadata: capture.baseline_facts_metadata || null,
-    localization: capture.localization || null,
-    localization_evidence: capture.kind === "webpage"
+    localization: kind === "webpage"
+      ? approvedR2LocalizationMetadata(capture, layoutHash)
+      : capture.localization || { status: "not_applicable_pdf" },
+    localization_evidence: kind === "webpage"
       ? {
-          status: "exact_geometry_available",
-          main_layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
-          expansion_state_count: approvedExpansionStateValues(capture).length,
+          status: layoutHash
+            ? "exact_geometry_available"
+            : expansionStates.length
+              ? "exact_expansion_geometry_available"
+              : "evidence_only_geometry_unavailable",
+          main_layout_hash: layoutHash,
+          expansion_state_count: expansionStates.length,
         }
       : { status: "not_applicable" },
     promoted_by: "process-visual-review-batch",
   };
 }
 
-export function approvedR2SnapshotVersion({ candidate, capture } = {}) {
+export function approvedR2SnapshotVersion({
+  candidate,
+  capture,
+  artifactBindings = null,
+} = {}) {
   const identity = JSON.stringify({
     candidate_id: cleanText(candidate?.id) || null,
     captured_at: cleanText(capture?.captured_at) || null,
     hashes: captureHashes(capture),
+    artifacts: approvedR2ArtifactIdentity(
+      artifactBindings || capture?.artifact_bindings,
+    ),
   });
   return createHash("sha256").update(identity).digest("hex").slice(0, 32);
 }
 
 function approvedR2SnapshotKey(sourceId, version, fileName) {
-  return `visual-snapshots/sources/${sourceId}/approved/${version}/${fileName}`;
+  return `visual-snapshots/sources/${sourceId}/captures/${version}/${fileName}`;
+}
+
+function approvedR2LocalizationMetadata(capture, layoutHash) {
+  if (!layoutHash) {
+    const localization = objectValue(capture.localization);
+    const geometry = objectValue(capture.text_geometry);
+    return {
+      ...localization,
+      status: cleanText(localization.status || geometry.status || geometry.availability_status)
+        || "evidence_only_geometry_unavailable",
+      exact: false,
+      accounted_for: true,
+      geometry_ready: false,
+      unavailable_reason:
+        cleanText(localization.unavailable_reason || geometry.unavailable_reason)
+        || "The main screenshot has no retained exact text geometry.",
+      geometry_hash: null,
+      bound_image_hash: null,
+      semantic_crop_contract: "visual-exact-text-binding-v2",
+      captured_at: capture.captured_at || null,
+    };
+  }
+  return {
+    ...objectValue(capture.localization),
+    status: "geometry_ready",
+    exact: false,
+    accounted_for: true,
+    geometry_ready: true,
+    unavailable_reason: null,
+    geometry_hash: layoutHash,
+    bound_image_hash: capture.image_hash || null,
+    semantic_crop_contract: "visual-exact-text-binding-v2",
+    captured_at: capture.captured_at || null,
+  };
+}
+
+function assertApprovedR2MetadataContract(capture) {
+  if (capture.kind === "pdf") return;
+  const layoutHash = normalizedSha256(
+    capture.layout_hash || capture.text_geometry?.geometry_hash,
+  );
+  if (approvedMainLayoutRetained(capture)) {
+    if (
+      !layoutHash
+      || normalizedSha256(capture.text_geometry?.geometry_hash) !== layoutHash
+      || normalizedSha256(capture.text_geometry?.screenshot?.image_hash)
+        !== normalizedSha256(capture.image_hash)
+    ) {
+      throw new Error(
+        "Approved R2 snapshot metadata does not bind the main layout to its screenshot.",
+      );
+    }
+  } else if (!approvedMainLayoutExplicitlyUnavailable(capture)) {
+    throw new Error(
+      "Approved R2 snapshot metadata does not account for unavailable main geometry.",
+    );
+  }
+  for (const [index, state] of approvedExpansionStateValues(capture).entries()) {
+    const suffix = String(index + 1).padStart(2, "0");
+    const stateLayoutHash = normalizedSha256(
+      state.layout_hash || state.text_geometry?.geometry_hash,
+    );
+    if (
+      state.state_id !== `expansion-state-${suffix}`
+      || !isSha256(cleanText(state.text_hash))
+      || !Number.isSafeInteger(state.text_length)
+      || state.text_length < 0
+      || normalizedSha256(state.text_geometry?.geometry_hash) !== stateLayoutHash
+      || normalizedSha256(state.text_geometry?.screenshot?.image_hash)
+        !== normalizedSha256(state.image_hash)
+    ) {
+      throw new Error(
+        `Approved R2 snapshot metadata is incomplete for expansion state ${suffix}.`,
+      );
+    }
+  }
+}
+
+function approvedR2ArtifactIdentity(value) {
+  return Object.fromEntries(
+    Object.entries(objectValue(value))
+      .map(([slot, rawBinding]) => {
+        const binding = objectValue(rawBinding);
+        const sha256Value = cleanText(binding.sha256).toLowerCase();
+        const byteLength = Number(binding.byte_length ?? binding.bytes);
+        return [slot, { sha256: sha256Value, byte_length: byteLength }];
+      })
+      .filter(([, binding]) => (
+        isSha256(binding.sha256)
+        && Number.isSafeInteger(binding.byte_length)
+        && binding.byte_length > 0
+      ))
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function exactApprovedR2PointerMatches({
+  existing,
+  expected,
+  prepared,
+}) {
+  if (!inspectStage1ImmutableR2CaptureBinding(existing).valid) return false;
+  if (
+    cleanText(existing?.shared_award_source_id).toLowerCase()
+      !== cleanText(expected?.sourceId).toLowerCase()
+    || cleanText(existing?.source_url) !== cleanText(expected?.sourceUrl)
+    || cleanText(existing?.kind).toLowerCase() !== cleanText(expected?.kind).toLowerCase()
+    || cleanText(existing?.bucket) !== cleanText(expected?.bucket)
+    || timestampValue(existing?.latest_captured_at) !== timestampValue(expected?.capturedAt)
+    || !sameJsonValue(
+      approvedR2ReadinessHashes(existing?.latest_hashes),
+      approvedR2ReadinessHashes(expected?.hashes),
+    )
+    || !sameJsonValue(
+      approvedR2ReadinessMetadata(existing?.kind, existing?.latest_metadata),
+      approvedR2ReadinessMetadata(expected?.kind, expected?.metadata),
+    )
+  ) return false;
+
+  const objectKeys = objectValue(existing?.latest_object_keys);
+  const metadata = objectValue(existing?.latest_metadata);
+  const bindings = objectValue(metadata.artifact_bindings);
+  const expectedSlots = prepared.artifacts.map((artifact) => artifact.name).sort();
+  if (metadata.artifact_bindings_schema !== r2CaptureArtifactBindingsSchema) return false;
+  if (!sameStringSet(Object.keys(objectKeys), expectedSlots)) return false;
+  if (!sameStringSet(Object.keys(bindings), expectedSlots)) return false;
+
+  let retainedGeneration = null;
+  for (const artifact of prepared.artifacts) {
+    const prefix = `visual-snapshots/sources/${expected.sourceId}/captures/`;
+    const key = cleanText(objectKeys[artifact.name]);
+    if (!key.startsWith(prefix)) return false;
+    const parts = key.slice(prefix.length).split("/");
+    if (
+      parts.length !== 2
+      || !/^[a-f0-9]{32}$/u.test(parts[0])
+      || parts[1] !== artifact.fileName
+    ) return false;
+    if (retainedGeneration && retainedGeneration !== parts[0]) return false;
+    retainedGeneration ||= parts[0];
+    const binding = objectValue(bindings[artifact.name]);
+    if (
+      !sameStringSet(
+        Object.keys(binding),
+        ["sha256", "byte_length", "content_type", "hash_mode"],
+      )
+      || binding.sha256 !== artifact.binding.sha256
+      || binding.byte_length !== artifact.binding.byte_length
+      || binding.content_type !== artifact.binding.content_type
+      || binding.hash_mode !== artifact.binding.hash_mode
+    ) return false;
+  }
+  return true;
+}
+
+function approvedR2ReadinessHashes(value) {
+  const hashes = objectValue(value);
+  return {
+    image_hash: hashes.image_hash || null,
+    text_hash: hashes.text_hash || null,
+    file_hash: hashes.file_hash || null,
+    layout_hash: hashes.layout_hash || null,
+    expansion_states_hash: hashes.expansion_states_hash || null,
+  };
+}
+
+function approvedR2ReadinessMetadata(kindValue, value) {
+  const kind = kindValue === "pdf" ? "pdf" : "webpage";
+  const metadata = objectValue(value);
+  const identity = {
+    text_length: metadata.text_length,
+    text_object_bytes: metadata.text_object_bytes,
+    expansion_state_capture_coverage:
+      kind === "webpage"
+        ? canonicalExpansionStateCaptureCoverage(
+            metadata.expansion_state_capture_coverage,
+            { expectedRetainedStateCount: metadata.expansion_state_count },
+          )
+        : null,
+    retained_artifact_projection: canonicalApprovedRetainedArtifactProjection(
+      metadata.retained_artifact_projection,
+    ),
+  };
+  if (kind === "pdf") {
+    return {
+      ...identity,
+      file_bytes: metadata.file_bytes,
+    };
+  }
+  const localization = objectValue(metadata.localization);
+  const textGeometry = objectValue(metadata.text_geometry);
+  return {
+    ...identity,
+    page_bytes: metadata.page_bytes,
+    thumb_bytes: metadata.thumb_bytes,
+    layout_hash: metadata.layout_hash || null,
+    text_geometry: {
+      geometry_hash: textGeometry.geometry_hash || null,
+      image_hash: objectValue(textGeometry.screenshot).image_hash || null,
+    },
+    localization: {
+      status: localization.status || null,
+      geometry_ready: localization.geometry_ready,
+      accounted_for: localization.accounted_for,
+      unavailable_reason: cleanText(localization.unavailable_reason) || null,
+      geometry_hash: localization.geometry_hash || null,
+      bound_image_hash: localization.bound_image_hash || null,
+      semantic_crop_contract: localization.semantic_crop_contract || null,
+    },
+    expansion_state_count: metadata.expansion_state_count,
+    expansion_state_screenshots: Array.isArray(metadata.expansion_state_screenshots)
+      ? metadata.expansion_state_screenshots.map((stateValue) => {
+          const state = objectValue(stateValue);
+          const geometry = objectValue(state.text_geometry);
+          return {
+            state_id: state.state_id || null,
+            image_hash: state.image_hash || null,
+            layout_hash: state.layout_hash || null,
+            text_hash: state.text_hash || null,
+            text_length: state.text_length,
+            page_bytes: state.page_bytes,
+            text_geometry: {
+              geometry_hash: geometry.geometry_hash || null,
+              image_hash: objectValue(geometry.screenshot).image_hash || null,
+            },
+          };
+        })
+      : null,
+  };
+}
+
+function sameJsonValue(left, right) {
+  return JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
+}
+
+function canonicalJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.keys(value).sort().map((key) => [key, canonicalJsonValue(value[key])]),
+    );
+  }
+  return value;
+}
+
+function sameStringSet(left, right) {
+  const leftValues = [...left].sort();
+  const rightValues = [...right].sort();
+  return leftValues.length === rightValues.length
+    && leftValues.every((value, index) => value === rightValues[index]);
 }
 
 function sameSnapshotHashes(value, expected) {
@@ -1049,10 +1789,11 @@ function sameSnapshotHashes(value, expected) {
     "file_hash",
     "layout_hash",
     "expansion_states_hash",
-  ].filter(
+  ];
+  const hasCoreIdentity = ["text_hash", "image_hash", "file_hash"].some(
     (key) => cleanText(expected?.[key]),
   );
-  return Boolean(compared.length) && compared.every(
+  return hasCoreIdentity && compared.every(
     (key) => cleanText(actual[key]) === cleanText(expected[key]),
   );
 }
@@ -1067,11 +1808,11 @@ function sameCoreSnapshotHashes(value, expected) {
   );
 }
 
-function canRepairMissingGeometry(value, expected) {
+function changesGeometryAuthority(value, expected) {
   if (!sameCoreSnapshotHashes(value, expected)) return false;
   const actual = objectValue(value);
   return ["layout_hash", "expansion_states_hash"].some(
-    (key) => cleanText(expected?.[key]) && !cleanText(actual[key]),
+    (key) => cleanText(expected?.[key]) !== cleanText(actual[key]),
   );
 }
 

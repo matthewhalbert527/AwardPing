@@ -191,7 +191,7 @@ export const awardSeeds: AwardSeed[] = [
   },
   {
     "name": "Hertz Foundation Graduate Fellowship",
-    "starterUrl": "https://www.hertzfoundation.org/the-fellowship/"
+    "starterUrl": "https://www.hertzfoundation.org/hertz-fellowship/"
   },
   {
     "name": "Howard Hughes Institute Predoctoral Fellowship in Biological Sciences",
@@ -623,7 +623,7 @@ export const awardSeeds: AwardSeed[] = [
   },
   {
     "name": "Samvid Scholars Program",
-    "starterUrl": "https://onsa.asu.edu/scholarship/samvid-scholars-program"
+    "starterUrl": "https://samvidscholars.org/"
   },
   {
     "name": "Schwarzman Scholarship",
@@ -691,7 +691,7 @@ export const awardSeeds: AwardSeed[] = [
   },
   {
     "name": "Yenching Academy Scholars",
-    "starterUrl": "https://onsa.asu.edu/scholarship/yenching-academy-scholars"
+    "starterUrl": "https://yenchingacademy.pku.edu.cn/"
   },
   {
     "name": "Academy of Natural Sciences of Philadelphia - Jessup Short-Term Research Awards",

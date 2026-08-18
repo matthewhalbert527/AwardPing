@@ -1,0 +1,98 @@
+name: Supabase migration smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/supabase-migration-smoke.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/**"
+      - "supabase/config.toml"
+      - "supabase/migrations/**"
+      - "supabase/tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-evidence-tests:
+    name: Stage 1 release-evidence tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run release-evidence and migration contract tests
+        run: >-
+          npx vitest run
+          scripts/lib/stage1-release-evidence-producers.test.mjs
+          scripts/lib/stage1-release-operator-report.test.mjs
+          scripts/stage1-initial-document-crop-coverage-migration.test.mjs
+          scripts/stage1-expansion-without-main-layout-migration.test.mjs
+          scripts/stage1-expansion-without-main-layout-rollback-probe.test.mjs
+          scripts/stage1-source-activation-finalizations-getter-migration.test.mjs
+          scripts/stage1-source-activation-finalizations-getter-rollback-probe.test.mjs
+          scripts/stage1-evidence-schema-upgrade-quarantine-migration.test.mjs
+          scripts/stage1-evidence-schema-upgrade-quarantine-rollback-probe.test.mjs
+          scripts/stage1-activation-release-lock-order-migration.test.mjs
+          scripts/stage1-activation-release-lock-order-rollback-probe.test.mjs
+          scripts/stage1-published-event-r2-reference-graph-migration.test.mjs
+          scripts/stage1-r2-manifest-hash-input-migration.test.mjs
+
+  migration-smoke:
+    name: Fresh PostgreSQL migration chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pinned Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.109.1
+
+      - name: Start local Supabase PostgreSQL
+        run: supabase db start
+
+      - name: Reapply every migration without seed data
+        run: supabase db reset --local --no-seed
+
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes postgresql-client
+          fi
+
+      - name: Exercise the Stage 1 R2 catalog and read paths
+        env:
+          PGPASSWORD: postgres
+        run: >-
+          psql
+          --host=127.0.0.1
+          --port=54322
+          --username=postgres
+          --dbname=postgres
+          --set=ON_ERROR_STOP=1
+          --file=supabase/tests/stage1_r2_reference_graph_smoke.sql
+          --file=supabase/tests/stage1_expansion_without_main_layout_smoke.sql
+          --file=supabase/tests/stage1_expansion_capture_coverage_smoke.sql
+          --file=supabase/tests/stage1_source_activation_finalizations_getter_smoke.sql
+          --file=supabase/tests/stage1_evidence_schema_upgrade_failure_quarantine_smoke.sql
+          --file=supabase/tests/stage1_activation_release_lock_order_smoke.sql
+
+      - name: Stop and remove local Supabase data
+        if: always()
+        run: supabase stop --no-backup

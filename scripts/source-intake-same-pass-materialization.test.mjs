@@ -101,8 +101,32 @@ describe("same-pass first-observation materialization", () => {
     expect(dedicated).not.toMatch(/await\s+capturePdfSource\(/);
     expect(dedicated).not.toMatch(/await\s+fetchPdfSource\(/);
     expect(sealed).toContain("materializeFirstObservationCaptureFromAcquisition({");
+    expect(sealed).toContain("prepareAcquisitionCaptureMetadataForProjection({");
+    expect(sealed).toContain("materializeRetainedCaptureAuthority(source, capture");
+    expect(sealed.indexOf("prepareAcquisitionCaptureMetadataForProjection({"))
+      .toBeGreaterThan(sealed.indexOf("materializeFirstObservationCaptureFromAcquisition({"));
+    expect(sealed.indexOf("materializeRetainedCaptureAuthority(source, capture"))
+      .toBeGreaterThan(sealed.indexOf("prepareAcquisitionCaptureMetadataForProjection({"));
     expect(sealed).not.toMatch(/await\s+capturePdfSource\(/);
     expect(sealed).not.toMatch(/await\s+fetchPdfSource\(/);
+  });
+
+  it("redirects acquisition captures to derived metadata before baseline projection", () => {
+    const recovery = functionBody(
+      captureWorker,
+      "async function maybeRecoverIncompleteBaselineFromIntakeAcquisition",
+    );
+    const sealed = functionBody(
+      captureWorker,
+      "async function materializeSealedFirstObservationCapture",
+    );
+    for (const flow of [recovery, sealed]) {
+      const materialize = flow.indexOf("materializeFirstObservationCaptureFromAcquisition({");
+      const derive = flow.indexOf("prepareAcquisitionCaptureMetadataForProjection({");
+      expect(materialize).toBeGreaterThan(-1);
+      expect(derive).toBeGreaterThan(materialize);
+    }
+    expect(recovery).toContain("capture.immutable_intake_meta_path");
   });
 
   it("proves authoritative R2 state before an absent baseline can be written or rotated", () => {
@@ -118,13 +142,14 @@ describe("same-pass first-observation materialization", () => {
       "materializeSealedFirstObservationCapture(source, report)",
     );
     const baselineWrite = dedicated.indexOf("writeBaseline(source, capture");
-    const r2Sync = dedicated.indexOf("maybeSyncR2Snapshot(source, capture, report");
+    const r2Sync = dedicated.indexOf("requireR2SnapshotForBaseline({");
 
     expect(recovery).toBeGreaterThan(-1);
     expect(failClosed).toBeGreaterThan(recovery);
     expect(sealedReplay).toBeGreaterThan(failClosed);
     expect(baselineWrite).toBeGreaterThan(sealedReplay);
     expect(r2Sync).toBeGreaterThan(baselineWrite);
+    expect(dedicated).toContain('reason: "initial_official_document_first_observation"');
     expect(dedicated).toContain("baseline = recovery.baseline");
     expect(dedicated).toContain("throw authoritativeR2MissingBaselineError(recovery)");
     expect(dedicated).toContain("recovery?.quarantineResolutionSucceeded !== true");
@@ -140,8 +165,13 @@ describe("same-pass first-observation materialization", () => {
     expect(dedicated).not.toContain("initial_official_document_same_capture_baseline_repair");
 
     const sourceQuery = functionBody(captureWorker, "function buildSourcesQuery");
-    expect(sourceQuery).toContain("admin_review_status, admin_reviewed_by");
-    expect(sourceQuery).toContain("if (!sourceIdFilter)");
+    expect(sourceQuery).toContain(
+      "admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by",
+    );
+    expect(sourceQuery).toContain(
+      "if (!sourceIdFilter && !stage1EvidenceSchemaUpgrade)",
+    );
+    expect(sourceQuery).toContain("if (!stage1EvidenceSchemaUpgrade)");
     expect(sourceQuery).toContain('query = query.eq("admin_review_status", "open")');
   });
 
@@ -160,7 +190,7 @@ describe("same-pass first-observation materialization", () => {
     expect(quarantine).toContain('retry_mode: "reconciliation_only_retained_result_replay"');
     expect(quarantine).toContain("creates_api_charge: false");
     expect(quarantine).toContain("fetches_source_url: false");
-    expect(retry).toContain("validateRetainedIntakeArtifactManifest");
+    expect(retry).toContain("validateSourceIntakeProviderReplayBinding");
     expect(retry).toContain("finalizeReviewedRequest(");
     expect(retry).not.toContain("captureIntakePage(");
     expect(retry).not.toContain("reserveGeminiSpend(");

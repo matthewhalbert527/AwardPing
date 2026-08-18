@@ -175,6 +175,43 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain("Pop-Location");
   });
 
+  it("hardens a fresh secret file before dependency install or task registration", () => {
+    const writeEnv = extractPowerShellFunction(
+      installer,
+      "Write-EnvFile",
+      "Update-ExistingEnvFileDefaults",
+    );
+    const writeContent = writeEnv.indexOf(
+      "Set-Content -Path $Path -Value $content -Encoding UTF8",
+    );
+    const immediateAcl = writeEnv.indexOf(
+      "Set-AwardPingWorkerEnvFileAcl -Path $Path -TaskSnapshots @()",
+    );
+    expect(writeContent).toBeGreaterThan(0);
+    expect(immediateAcl).toBeGreaterThan(writeContent);
+
+    const mainTry = installer.indexOf(
+      "\ntry {",
+      installer.indexOf("$strictRetirementCommitted = $false"),
+    );
+    const freshInstallStart = installer.indexOf("  } else {", mainTry);
+    const writeCall = installer.indexOf("Write-EnvFile `", freshInstallStart);
+    const dependencyInstall = installer.indexOf(
+      "Install-Dependencies -AppDir $appDir",
+      writeCall,
+    );
+    const taskRegistration = installer.indexOf(
+      "Register-VisualSnapshotTask -InstallRoot",
+      writeCall,
+    );
+    expect(writeCall).toBeGreaterThan(freshInstallStart);
+    expect(dependencyInstall).toBeGreaterThan(writeCall);
+    expect(taskRegistration).toBeGreaterThan(dependencyInstall);
+    expect(installer).toMatch(
+      /-Path \$envPath `\r?\n\s+-TaskSnapshots \$finalizationSnapshots/,
+    );
+  });
+
   it("restores exact task XML on failure and enforces canonical triggers on success", () => {
     expect(installer).toContain("Export-ScheduledTask");
     expect(installer).toContain("Register-ScheduledTask");
@@ -609,6 +646,7 @@ describe("Windows worker update safety", () => {
 
   it("validates the immutable visual-evidence runtime closure and native crop dependency", () => {
     for (const relativePath of [
+      "scripts\\lib\\expansion-state-descriptor-canonicalization.mjs",
       "scripts\\lib\\expansion-state-isolation.mjs",
       "scripts\\lib\\visible-text-geometry.mjs",
       "scripts\\lib\\visual-event-localization.mjs",
@@ -627,6 +665,7 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\manual-quarantine.mjs",
       "scripts\\lib\\award-monitoring-policy.mjs",
       "scripts\\lib\\change-event-sweep-state.mjs",
+      "scripts\\lib\\admin-review-state-guard.mjs",
       "scripts\\lib\\source-quality.mjs",
       "scripts\\lib\\source-ai-review-status.mjs",
       "src\\lib\\change-event-suppression.ts",
@@ -641,8 +680,40 @@ describe("Windows worker update safety", () => {
       "scripts\\lib\\gemini-batch-support.mjs",
       "scripts\\lib\\paid-visual-review-policy.mjs",
       "scripts\\lib\\r2-baseline-rehydration.mjs",
+      "scripts\\lib\\legacy-r2-retained-projection-provenance.mjs",
+      "scripts\\lib\\r2-capture-artifact-bindings.mjs",
+      "scripts\\lib\\local-baseline-evidence.mjs",
+      "scripts\\lib\\award-fact-reconciliation.mjs",
+      "scripts\\lib\\source-backfill-intake.mjs",
       "scripts\\lib\\source-intake.mjs",
+      "scripts\\lib\\source-intake-provider-binding.mjs",
       "scripts\\lib\\initial-document-recovery.mjs",
+      "scripts\\lib\\stage1-baseline-activation-guard.mjs",
+      "scripts\\lib\\stage1-baseline-source-disposition.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-validation.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-apply-plan.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-apply-audit.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-completed-authority.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-apply-execution.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-source-authority.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-plan.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-execution.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-worker.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-runtime.mjs",
+      "scripts\\stage1-evidence-schema-upgrade-reviewed-recovery.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-beinecke-faq-legacy-geometry.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-pre-1fc005c-legacy-geometry.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-legacy-empty-expansion.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-transaction.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-commit.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-mutation-accounting.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-r2-binding.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-quarantine.mjs",
+      "scripts\\lib\\visual-snapshot-latest-only-reconciliation.mjs",
+      "scripts\\lib\\visual-snapshot-pointer-reconciliation.mjs",
+      "scripts\\lib\\visual-baseline-retained-projection-identity.mjs",
       "scripts\\evaluate-public-page-audit-canaries.mjs",
     ]) {
       expect(installer.split(`"${relativePath}"`).length - 1).toBeGreaterThanOrEqual(2);
@@ -650,7 +721,154 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain('"sharp",');
   });
 
-  it("requires a complete syntactically valid R2 configuration before tasks resume", () => {
+  it("hash-validates every Stage 1, reconciliation, and source-backfill runtime dependency", () => {
+    const runtimeValidation = extractPowerShellFunction(
+      installer,
+      "Get-AwardPingInstalledRuntimeProblems",
+      "Get-AwardPingTaskRestoreXml",
+    );
+    const hashPairStart = runtimeValidation.indexOf("$hashPairs = @()");
+    expect(hashPairStart).toBeGreaterThan(0);
+    const requiredPathValidation = runtimeValidation.slice(0, hashPairStart);
+    const hashPairValidation = runtimeValidation.slice(hashPairStart);
+
+    for (const relativePath of [
+      "scripts\\lib\\stage1-baseline-activation-guard.mjs",
+      "scripts\\lib\\stage1-baseline-source-disposition.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-validation.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-apply-plan.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-apply-audit.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-completed-authority.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-apply-execution.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-source-authority.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-plan.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-execution.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-worker.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-reviewed-recovery-runtime.mjs",
+      "scripts\\stage1-evidence-schema-upgrade-reviewed-recovery.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-beinecke-faq-legacy-geometry.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-pre-1fc005c-legacy-geometry.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-legacy-empty-expansion.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-transaction.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-commit.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-mutation-accounting.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-r2-binding.mjs",
+      "scripts\\lib\\stage1-evidence-schema-upgrade-quarantine.mjs",
+      "scripts\\lib\\visual-snapshot-latest-only-reconciliation.mjs",
+      "scripts\\lib\\award-fact-reconciliation.mjs",
+      "scripts\\lib\\source-backfill-intake.mjs",
+      "scripts\\lib\\source-intake-provider-binding.mjs",
+    ]) {
+      expect(requiredPathValidation).toContain(`"${relativePath}"`);
+      expect(hashPairValidation).toContain(`"${relativePath}"`);
+    }
+  });
+
+  windowsIt("removes inherited and unrelated access from the worker secret file", () => {
+    const aclFunctions = installer.slice(
+      installer.indexOf("function ConvertTo-AwardPingSecurityIdentifier {"),
+      installer.indexOf("\nfunction Get-AwardPingSourceRevision {"),
+    );
+    const simulation = [
+      aclFunctions,
+      "$path = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-worker-env-acl-' + [guid]::NewGuid().ToString('N'))",
+      "try {",
+      "  Set-Content -LiteralPath $path -Value 'SUPABASE_SERVICE_ROLE_KEY=not-a-real-secret'",
+      "  $acl = Get-Acl -LiteralPath $path",
+      "  $everyone = [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0')",
+      "  $unapprovedRule = [System.Security.AccessControl.FileSystemAccessRule]::new($everyone, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, [System.Security.AccessControl.AccessControlType]::Allow)",
+      "  [void]$acl.AddAccessRule($unapprovedRule)",
+      "  Set-Acl -LiteralPath $path -AclObject $acl",
+      "  Set-AwardPingWorkerEnvFileAcl -Path $path -TaskSnapshots @()",
+      "  $secured = Get-Acl -LiteralPath $path",
+      "  $rules = @($secured.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+      "  $everyoneRules = @($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-1-0' })",
+      "  $problems = @(Get-AwardPingWorkerEnvAclProblems -Path $path -TaskSnapshots @())",
+      "  'PROTECTED=' + $secured.AreAccessRulesProtected + ' EVERYONE=' + $everyoneRules.Count + ' PROBLEMS=' + $problems.Count",
+      "} finally {",
+      "  Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue",
+      "}",
+    ].join("\n");
+
+    const directory = mkdtempSync(join(tmpdir(), "awardping-worker-acl-test-"));
+    const scriptPath = join(directory, "verify-acl.ps1");
+    writeFileSync(scriptPath, simulation, "utf8");
+    try {
+      const result = spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("PROTECTED=True EVERYONE=0 PROBLEMS=0");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+    expect(installer).toContain(
+      "Get-AwardPingWorkerEnvAclProblems -Path $Path -TaskSnapshots $TaskSnapshots",
+    );
+  });
+
+  it("makes interactive-only task reliability an explicit durable acceptance", () => {
+    expect(installer).toContain("[switch]$AcceptInteractiveTaskLogon");
+    expect(installer).toContain("worker-operational-mode.json");
+    expect(installer).toContain('operational_mode = "interactive_logon_required"');
+    expect(installer).toContain("-AcceptInteractiveTaskLogon only after explicitly accepting");
+    expect(installer).toContain(
+      "interactive Scheduled Tasks lack a documented logged-in-operator acceptance",
+    );
+    expect(installerDocs).toContain("cannot run after the operator signs out");
+    expect(installerDocs).toContain("-AcceptInteractiveTaskLogon");
+    expect(installerDocs).toMatch(/not a\s+claim of logged-off unattended service/);
+  });
+
+  windowsIt("rejects an operational acceptance marker with an unapproved reader", () => {
+    const acceptanceFunctions = installer.slice(
+      installer.indexOf("function Test-AwardPingInteractiveLogonAcceptance {"),
+      installer.indexOf("\nfunction Get-AwardPingTaskSnapshotKey {"),
+    );
+    const aclFunctions = installer.slice(
+      installer.indexOf("function ConvertTo-AwardPingSecurityIdentifier {"),
+      installer.indexOf("\nfunction Get-AwardPingSourceRevision {"),
+    );
+    const simulation = [
+      aclFunctions,
+      acceptanceFunctions,
+      "$root = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-worker-mode-' + [guid]::NewGuid().ToString('N'))",
+      "try {",
+      "  New-Item -ItemType Directory -Path $root -Force | Out-Null",
+      "  Write-AwardPingInteractiveLogonAcceptance -InstallRoot $root -SourceRevision ('a' * 40)",
+      "  $validBefore = Test-AwardPingInteractiveLogonAcceptance -InstallRoot $root",
+      "  $path = Join-Path $root 'worker-operational-mode.json'",
+      "  & icacls.exe $path /grant '*S-1-1-0:(R)' | Out-Null",
+      "  if ($LASTEXITCODE -ne 0) { throw 'Could not add the test-only unapproved ACL entry.' }",
+      "  $validAfter = Test-AwardPingInteractiveLogonAcceptance -InstallRoot $root",
+      "  'BEFORE=' + $validBefore + ' AFTER=' + $validAfter",
+      "} finally {",
+      "  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue",
+      "}",
+    ].join("\n");
+    const directory = mkdtempSync(join(tmpdir(), "awardping-worker-mode-test-"));
+    const scriptPath = join(directory, "verify-mode.ps1");
+    writeFileSync(scriptPath, simulation, "utf8");
+    try {
+      const result = spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+        { encoding: "utf8" },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("BEFORE=True AFTER=False");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  windowsIt("requires a complete syntactically valid R2 configuration before tasks resume", () => {
     const validator = extractPowerShellFunction(
       installer,
       "Test-R2WorkerConfiguration",
@@ -928,7 +1146,7 @@ describe("Windows worker update safety", () => {
     const simulation = [
       updateFunction,
       "$path = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-env-' + [guid]::NewGuid().ToString('N'))",
-      "Set-Content -LiteralPath $path -Value \"NEXT_PUBLIC_APP_URL=https://old.example.com`r`nAWARDPING_WORKER_REVISION=0000000000000000000000000000000000000000`r`nAWARDPING_GEMINI_API_DAILY_COST_CAP_USD=15`r`n\"",
+      "Set-Content -LiteralPath $path -Value \"NEXT_PUBLIC_APP_URL=https://old.example.com`r`nAWARDPING_WORKER_REVISION=0000000000000000000000000000000000000000`r`nAWARDPING_GEMINI_API_DAILY_COST_CAP_USD=15`r`nAWARDPING_DISCOVERY_ONBOARDING_BATCH_ID=do-not-print-poison`r`nAWARDPING_DISCOVERY_INTENT=historical_onboarding`r`nAWARDPING_VISUAL_REVIEW_MODE=none`r`nAWARDPING_INTERPRET_VISUAL_CHANGES=false`r`nAWARDPING_LOCALIZATION_REPAIR=true`r`nAWARDPING_FORCE_R2_SNAPSHOT_REFRESH=true`r`nAWARDPING_RESET_PREVIOUS_SNAPSHOT=true`r`n\"",
       "Update-ExistingEnvFileDefaults -Path $path -AppUrl 'https://awardping.vercel.app' -SourceRevision '1111111111111111111111111111111111111111'",
       "Get-Content -LiteralPath $path -Raw",
       "Remove-Item -LiteralPath $path -Force",
@@ -944,6 +1162,18 @@ describe("Windows worker update safety", () => {
       "AWARDPING_WORKER_REVISION=1111111111111111111111111111111111111111",
     );
     expect(result.stdout).not.toContain("AWARDPING_GEMINI_API_DAILY_COST_CAP_USD");
+    expect(result.stdout).not.toContain("do-not-print-poison");
+    for (const key of [
+      "AWARDPING_DISCOVERY_ONBOARDING_BATCH_ID",
+      "AWARDPING_DISCOVERY_INTENT",
+      "AWARDPING_VISUAL_REVIEW_MODE",
+      "AWARDPING_INTERPRET_VISUAL_CHANGES",
+      "AWARDPING_LOCALIZATION_REPAIR",
+      "AWARDPING_FORCE_R2_SNAPSHOT_REFRESH",
+      "AWARDPING_RESET_PREVIOUS_SNAPSHOT",
+    ]) {
+      expect(result.stdout).not.toContain(key);
+    }
   });
 
   windowsIt("refuses to seal a dirty git source as the prior commit", () => {
@@ -1002,6 +1232,13 @@ describe("Windows worker update safety", () => {
     expect(installer).toContain('`$RunTrigger');
     expect(installer).toContain('`$workerArgs += "--discovery-mode=true"');
     expect(installer).toContain('`$workerArgs += "--discovery-intent=live_recurring"');
+    expect(installer).toContain('`$workerArgs += "--discovery-onboarding-batch-id="');
+    expect(installer).toContain('"--localization-repair=false"');
+    expect(installer).toContain('"--reset-previous-snapshot=false"');
+    expect(installer).toContain('"--force-r2-snapshot-refresh=false"');
+    expect(installer).toContain('"--visual-review-mode=batch"');
+    expect(installer).toContain('"--interpret-visual-changes=true"');
+    expect(installer).toContain('"--r2-snapshot-sync=true"');
     expect(installer).toContain("scripts\\lib\\visual-capture-run-report.mjs");
     expect(installer).toContain("scripts\\lib\\visual-nightly-run-contract.mjs");
     expect(installer).toContain("scripts\\report-visual-nightly.mjs");

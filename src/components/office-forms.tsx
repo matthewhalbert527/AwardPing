@@ -21,9 +21,13 @@ type SearchUser = {
 export function ProfileSettingsForm({
   initialFullName,
   initialOrganization,
+  reentryRequired = false,
+  legacyRecoveryAvailable = false,
 }: {
   initialFullName: string;
   initialOrganization: string;
+  reentryRequired?: boolean;
+  legacyRecoveryAvailable?: boolean;
 }) {
   const router = useRouter();
   const [fullName, setFullName] = useState(initialFullName);
@@ -36,29 +40,60 @@ export function ProfileSettingsForm({
     setLoading(true);
     setMessage("");
 
-    const response = await fetch("/api/profile", {
-      method: "PATCH",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ fullName, organization }),
-    });
-    const data = await response.json();
-    setLoading(false);
+    try {
+      const response = await fetch("/api/profile", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fullName, organization }),
+      });
+      const data = await response.json().catch(() => null);
 
-    if (!response.ok) {
-      setMessage(data.error || "Profile could not be saved.");
-      return;
+      if (!response.ok) {
+        setMessage(data?.error || "Profile could not be saved.");
+        return;
+      }
+
+      setMessage(
+        reentryRequired
+          ? "Profile restored with new encryption."
+          : "Profile saved.",
+      );
+      router.refresh();
+    } catch {
+      setMessage("Profile could not be saved. Check your connection and try again.");
+    } finally {
+      setLoading(false);
     }
-
-    setMessage("Profile saved.");
-    router.refresh();
   }
 
   return (
-    <form className="dashboard-panel dashboard-panel-pad" onSubmit={submit}>
+    <form
+      className="dashboard-panel dashboard-panel-pad"
+      id="profile-settings"
+      onSubmit={submit}
+    >
       <h2 className="dashboard-panel-title flex items-center gap-2">
         <UserRound size={21} aria-hidden="true" />
-        Your profile
+        {legacyRecoveryAvailable
+          ? "Protect your recovered profile"
+          : reentryRequired
+            ? "Re-enter your profile"
+            : "Your profile"}
       </h2>
+      {reentryRequired && (
+        <div className="mt-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+          <p className="font-black">
+            {legacyRecoveryAvailable
+              ? "Your previous profile values were recovered."
+              : "Your previous profile values cannot be decrypted."}
+          </p>
+          <p className="mt-1 leading-6">
+            {legacyRecoveryAvailable
+              ? "Review the recovered values and save them to create current v2 protected copies. The recovery archive remains unchanged."
+              : "AwardPing preserved the encrypted originals for possible recovery. Enter your name and organization again to save fresh protected copies; this does not overwrite the recovery archive."}
+          </p>
+        </div>
+      )}
       <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
         <label className="block">
           <span className="text-sm font-bold">Name</span>
@@ -83,7 +118,11 @@ export function ProfileSettingsForm({
           {loading ? "Saving..." : "Save"}
         </button>
       </div>
-      {message && <p className="mt-3 text-sm font-semibold">{message}</p>}
+      {message && (
+        <p className="mt-3 text-sm font-semibold" role="status">
+          {message}
+        </p>
+      )}
     </form>
   );
 }

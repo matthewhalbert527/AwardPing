@@ -7,6 +7,10 @@ import { getOnboardingStatus, onboardingRedirectPath } from "@/lib/onboarding";
 
 export const metadata: Metadata = {
   title: "Invitation Required",
+  robots: {
+    index: false,
+    follow: false,
+  },
 };
 
 export default async function SignupPage() {

@@ -33,6 +33,51 @@ function workerRun(metadata: Record<string, unknown>, overrides: Partial<WorkerR
 }
 
 describe("admin AI review coverage", () => {
+  it("preserves an explicit monitoring-only restore as a non-blocking open source", () => {
+    const award = {
+      id: "award-1",
+      name: "Example Award",
+      slug: "example-award",
+      status: "active",
+      public_facts: { overview: "Retained last-known-good facts." },
+    };
+    const row = buildSourceAiCoverageRow({
+      id: "source-restored",
+      shared_award_id: award.id,
+      admin_review_status: "open",
+      admin_review_note:
+        "monitoring_restore_v1: Explicitly restored by a site admin for monitoring only.",
+      admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+      admin_reviewed_by: "operator@example.edu",
+      url: "https://example.edu/award/faq",
+      title: "FAQ",
+      page_type: "faq",
+      page_metadata_generated_at: "2026-07-09T00:00:00.000Z",
+      page_metadata_model: "gemini-test",
+      page_metadata: {
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+          confidence: "medium",
+          evidence_quotes: ["Official FAQ wording."],
+        },
+      },
+    }, award);
+
+    expect(row).toMatchObject({
+      category: "monitoring_restored",
+      planned_action: "leave_open",
+      monitor_eligible: true,
+      public_eligible: false,
+      fact_eligible: false,
+      needs_manual_review: false,
+    });
+    const summary = summarizeAiReviewCoverage({ awards: [award], rows: [row] });
+    expect(summary.completion_blockers.open_unclear).toBe(0);
+    expect(summary.problem_source_examples).toEqual([]);
+    expect(summary.completion_passed).toBe(true);
+  });
+
   it("classifies unreviewed, unclear, and unrelated open sources as blockers", () => {
     const awards = [
       { id: "award-1", name: "Example Award", slug: "example-award", status: "active", public_facts: null },

@@ -83,7 +83,7 @@ describe("Stage 1 publication gate", () => {
     expect(index.unavailableReason).toContain("exact reviewed official-homepage");
   });
 
-  it("fails closed when verified evidence is stale, future-dated, or on another policy", () => {
+  it("keeps an immutable verification epoch durable but rejects missing, future, or wrong-policy evidence", () => {
     const fresh = registryRow(1, {
       publication_state: "verified_beta",
       evidence_checked_at: "2026-07-16T19:00:00.000Z",
@@ -95,10 +95,16 @@ describe("Stage 1 publication gate", () => {
         { ...fresh, evidence_checked_at: "2026-07-15T19:59:59.000Z" },
         now,
       ),
+    ).toBe(true);
+    expect(
+      isEffectivelyVerifiedRegistryRow(
+        { ...fresh, last_verified_at: "2026-07-16T20:05:01.000Z" },
+        now,
+      ),
     ).toBe(false);
     expect(
       isEffectivelyVerifiedRegistryRow(
-        { ...fresh, last_verified_at: "2026-07-16T20:00:01.000Z" },
+        { ...fresh, evidence_checked_at: null },
         now,
       ),
     ).toBe(false);

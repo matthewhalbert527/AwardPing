@@ -5,6 +5,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 const unsafeHostPattern =
   /(?:^|\.)localhost$|(?:^|\.)local$|(?:^|\.)internal$|(?:^|\.)invalid$|(?:^|\.)test$|(?:^|\.)example$/i;
 const redirectStatuses = new Set([301, 302, 303, 307, 308]);
+const defaultDnsLookupTimeoutMs = 10_000;
 
 type PublicAddress = {
   address: string;
@@ -52,7 +53,10 @@ export async function assertPublicHttpUrl(input: string) {
     throw new Error(normalized.reason);
   }
 
-  await resolvePublicAddresses(normalized.url);
+  await resolvePublicAddresses(
+    normalized.url,
+    AbortSignal.timeout(defaultDnsLookupTimeoutMs),
+  );
   return normalized.url;
 }
 
@@ -62,6 +66,8 @@ export async function fetchPublicHttpResponse(
   maxRedirects = 5,
 ): Promise<PublicHttpResponse> {
   let currentUrl = input.toString();
+  const requestDeadline =
+    init.signal ?? AbortSignal.timeout(defaultDnsLookupTimeoutMs);
 
   for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount += 1) {
     const normalized = normalizeHttpUrl(currentUrl);
@@ -69,13 +75,14 @@ export async function fetchPublicHttpResponse(
       throw new Error(normalized.reason);
     }
 
-    const addresses = await resolvePublicAddresses(normalized.url);
+    const addresses = await resolvePublicAddresses(normalized.url, requestDeadline);
     const dispatcher = createPinnedDispatcher(normalized.url, addresses);
     let response: Awaited<ReturnType<typeof undiciFetch>>;
 
     try {
       response = await undiciFetch(normalized.url, {
         ...init,
+        signal: requestDeadline,
         redirect: "manual",
         dispatcher,
       } as Parameters<typeof undiciFetch>[1]);
@@ -127,13 +134,15 @@ export function isPrivateIp(value: string) {
   }
 
   if (version === 4) {
-    const [a, b, c] = address.split(".").map(Number);
+    const [a, b, c, d] = address.split(".").map(Number);
     return (
       a === 0 ||
       a === 10 ||
       a === 127 ||
       (a === 100 && b >= 64 && b <= 127) ||
       (a === 169 && b === 254) ||
+      // Azure exposes this platform virtual IP as a host-local endpoint.
+      (a === 168 && b === 63 && c === 129 && d === 16) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 0 && (c === 0 || c === 2)) ||
       (a === 192 && b === 168) ||
@@ -158,6 +167,12 @@ export function isPrivateIp(value: string) {
     return isPrivateIp(ipv4FromIpv6Words(words));
   }
 
+  // RFC 8215 reserves 64:ff9b:1::/48 for local-use translation. Its embedded
+  // IPv4 position is deployment-specific, so the entire prefix is unsafe for
+  // an outbound public-URL boundary.
+  const isLocalUseTranslation =
+    words[0] === 0x0064 && words[1] === 0xff9b && words[2] === 0x0001;
+
   const isUnspecified = words.every((word) => word === 0);
   const isLoopback = words.slice(0, 7).every((word) => word === 0) && words[7] === 1;
   const isIpv4Mapped =
@@ -178,6 +193,7 @@ export function isPrivateIp(value: string) {
     isUnspecified ||
     isLoopback ||
     isIpv4Mapped ||
+    isLocalUseTranslation ||
     isUniqueLocal ||
     isLinkLocal ||
     isMulticast ||
@@ -239,12 +255,18 @@ function ipv4FromIpv6Words(words: number[]) {
   );
 }
 
-async function resolvePublicAddresses(url: URL): Promise<PublicAddress[]> {
+async function resolvePublicAddresses(
+  url: URL,
+  deadline: AbortSignal,
+): Promise<PublicAddress[]> {
   const hostname = normalizedHostname(url.hostname);
   const literalFamily = net.isIP(hostname);
   const resolved = literalFamily
     ? [{ address: hostname, family: literalFamily }]
-    : await dns.lookup(hostname, { all: true, verbatim: true });
+    : await waitForDnsLookup(
+        dns.lookup(hostname, { all: true, verbatim: true }),
+        deadline,
+      );
   const addresses = resolved
     .map((entry) => ({
       address: String(entry.address || "").trim(),
@@ -262,6 +284,31 @@ async function resolvePublicAddresses(url: URL): Promise<PublicAddress[]> {
     throw new Error("This URL resolves to a private network or reserved address.");
   }
   return addresses;
+}
+
+async function waitForDnsLookup<T>(lookup: Promise<T>, deadline: AbortSignal) {
+  if (deadline.aborted) {
+    throw new Error("Public hostname resolution timed out.");
+  }
+
+  return await new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const settle = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      deadline.removeEventListener("abort", onAbort);
+      callback();
+    };
+    const onAbort = () => {
+      settle(() => reject(new Error("Public hostname resolution timed out.")));
+    };
+
+    deadline.addEventListener("abort", onAbort, { once: true });
+    lookup.then(
+      (value) => settle(() => resolve(value)),
+      (error) => settle(() => reject(error)),
+    );
+  });
 }
 
 function createPinnedDispatcher(url: URL, addresses: PublicAddress[]) {

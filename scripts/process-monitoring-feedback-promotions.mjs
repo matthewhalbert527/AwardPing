@@ -36,7 +36,10 @@ import {
   validateVisualSourceInventoryCohort,
   validateVisualSourceInventoryProof,
 } from "./lib/visual-source-inventory-proof.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const defaultActorId = "eb5e708d-2b08-5b5f-8670-e6e56a9f3f63";
@@ -75,6 +78,8 @@ if (isDirectExecution()) {
         `MONITORING_FEEDBACK_PROMOTION_FATAL ${error?.message || String(error)}`,
       );
       process.exitCode = 1;
+    } finally {
+      await closeSupabaseServiceTransport();
     }
   }
 }

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { monitoringPolicyPromptLinesForScope } from "./lib/award-monitoring-policy.mjs";
+import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import {
   geminiSpendGuardStatus,
@@ -258,6 +259,7 @@ async function runOnce() {
     award_reconciliation_queue_failed: 0,
     skipped_existing: 0,
     skipped_ineligible: 0,
+    stale_admin_review_plans_skipped: 0,
     skip_reasons: {},
     failed: 0,
     stop_reason: null,
@@ -482,7 +484,7 @@ async function loadBaselineReviewSources() {
     let query = supabase
       .from("shared_award_sources")
       .select(
-        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,created_at",
+        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,created_at",
       )
       .order("id", { ascending: true })
       .limit(1000);
@@ -2320,12 +2322,23 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
     update.admin_reviewed_by = "awardping-baseline-facts-worker";
   }
 
-  const { error } = await supabase
+  let mutation = supabase
     .from("shared_award_sources")
     .update(update)
-    .eq("id", source.id)
-    .eq("admin_review_status", "open");
+    .eq("id", source.id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
   if (error) throw new Error(`shared_award_sources rejected metadata update failed: ${error.message}`);
+  if (!data) {
+    if (report) {
+      report.stale_admin_review_plans_skipped =
+        nonNegativeInt(report.stale_admin_review_plans_skipped, 0) + 1;
+    }
+    console.log(
+      `BASELINE_FACTS_STALE_ADMIN_REVIEW_PLAN source_id=${source.id}; rejected metadata and review-state mutation skipped.`,
+    );
+    return false;
+  }
   await queueAwardReconciliationFromBaselineSource({
     source,
     report,
@@ -2339,6 +2352,7 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
       cycle_relevance: facts.cycle_relevance || null,
     },
   });
+  return true;
 }
 
 async function queueAwardReconciliationFromBaselineSource({
@@ -2815,6 +2829,7 @@ function workerMetadata(report) {
       applied: report.applied,
       skipped_existing: report.skipped_existing,
       skipped_ineligible: report.skipped_ineligible,
+      stale_admin_review_plans_skipped: report.stale_admin_review_plans_skipped,
       failed: report.failed,
       skip_reasons: report.skip_reasons,
     },

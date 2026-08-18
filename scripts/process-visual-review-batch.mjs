@@ -91,7 +91,10 @@ import {
   partitionPaidVisualReviewCandidates,
   runPaidVisualProviderCreateBoundary,
 } from "./lib/paid-visual-review-policy.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -226,6 +229,8 @@ const report = {
     r2_already_current: 0,
     r2_skipped: 0,
     r2_failed: 0,
+    r2_cleanup_failed: 0,
+    r2_cleanup_debt: [],
   },
   options: {
     limit,
@@ -324,9 +329,13 @@ try {
   report.error = errorMessage(error);
   throw error;
 } finally {
-  report.finished_at = new Date().toISOString();
-  writeReport();
-  console.log(`VISUAL_REVIEW_BATCH_REPORT ${reportPath}`);
+  try {
+    report.finished_at = new Date().toISOString();
+    writeReport();
+    console.log(`VISUAL_REVIEW_BATCH_REPORT ${reportPath}`);
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }
 
 async function pollExistingBatches() {
@@ -3212,6 +3221,19 @@ async function promoteApprovedBaselineForCandidate({ candidate, source, now }) {
     if (r2Raw.promoted) report.baseline_advancement.r2_promoted += 1;
     else if (r2Raw.already_current) report.baseline_advancement.r2_already_current += 1;
     else report.baseline_advancement.r2_skipped += 1;
+    const cleanupFailed = Number(r2Raw.cleanup?.failed || 0);
+    if (cleanupFailed > 0) {
+      report.baseline_advancement.r2_cleanup_failed += cleanupFailed;
+      report.baseline_advancement.r2_cleanup_debt.push({
+        candidate_id: candidate.id,
+        source_id: source.id,
+        attempted: Number(r2Raw.cleanup?.attempted || 0),
+        failed: cleanupFailed,
+        failures: Array.isArray(r2Raw.cleanup?.failures)
+          ? r2Raw.cleanup.failures
+          : [],
+      });
+    }
     return { local, r2 };
   } catch (error) {
     report.baseline_advancement.r2_failed += 1;
@@ -3236,6 +3258,16 @@ function compactBaselinePromotionResult(value) {
     missing_paths: Array.isArray(value?.missing_paths) ? value.missing_paths : undefined,
     uploaded: Number(value?.uploaded || 0),
     rotated: Number(value?.rotated || 0),
+    cleanup: value?.cleanup
+      ? {
+          attempted: Number(value.cleanup.attempted || 0),
+          deleted: Number(value.cleanup.deleted || 0),
+          failed: Number(value.cleanup.failed || 0),
+          failures: Array.isArray(value.cleanup.failures)
+            ? value.cleanup.failures
+            : [],
+        }
+      : undefined,
   };
 }
 
@@ -3533,7 +3565,7 @@ async function loadSourcesById(ids) {
   for (const idChunk of chunks(uniqueIds, 500)) {
     const { data, error } = await supabase
       .from("shared_award_sources")
-      .select("id,shared_award_id,url,title,page_type,source,reason,page_metadata,page_metadata_generated_at,page_metadata_model,submitted_by_user_id,admin_review_status,shared_awards(name)")
+      .select("id,shared_award_id,url,title,page_type,source,reason,page_metadata,page_metadata_generated_at,page_metadata_model,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,shared_awards(name)")
       .in("id", idChunk);
     if (error) throw new Error(`Load shared award sources failed: ${error.message}`);
     for (const row of data || []) map.set(row.id, row);

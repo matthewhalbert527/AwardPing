@@ -122,6 +122,32 @@ describe("source intake operator actions", () => {
     }
   });
 
+  it("reports a historical accepted result without a provider binding truthfully and blocks $0 replay", () => {
+    const context = freeReconciliationContext();
+    const aiReview = context.aiReview as Record<string, unknown>;
+    (context as { aiReview: unknown }).aiReview = {
+      ...aiReview,
+      provider_input_binding: undefined,
+      provider_result_binding: undefined,
+    };
+
+    expect(sourceIntakeReconciliationRetryEligibility("needs_manual_review", context)).toMatchObject({
+      allowed: false,
+      reason: "provider_result_binding_missing_or_invalid",
+      explanation: expect.stringContaining("Historical unbound results require a new paid review"),
+    });
+    expect(sourceIntakeActionAllowedWithContext(
+      "retry_reconciliation",
+      "needs_manual_review",
+      context,
+    )).toBe(false);
+    expect(sourceIntakeProtectedRecovery("needs_manual_review", context)).toMatchObject({
+      mode: "rerun_ai_review_may_charge",
+      apiCharge: "may_charge",
+      refetchesPage: false,
+    });
+  });
+
   it("allows a no-charge preflight failure to be retried after its evidence is repaired", () => {
     const failed = {
       ...freeReconciliationContext(),
@@ -238,6 +264,9 @@ describe("source intake operator actions", () => {
       "intake_pdf_bytes_unavailable",
       "intake_pdf_hash_mismatch",
       "intake_pdf_length_mismatch",
+      "intake_artifact_bytes_unavailable",
+      "intake_artifact_hash_mismatch",
+      "intake_artifact_length_mismatch",
       "intake_local_conflict",
       "intake_local_unsafe_path",
     ]) {
@@ -336,6 +365,7 @@ describe("source intake operator actions", () => {
 function freeReconciliationContext() {
   const requestId = "11111111-1111-4111-8111-111111111111";
   const fileHash = "a".repeat(64);
+  const inputDigest = "f".repeat(64);
   const prefix = `source-intake-first-observation/v1/requests/${requestId}/sha256/${fileHash}`;
   return {
     statusReason: FREE_RECONCILIATION_FAILURE_REASON,
@@ -351,6 +381,44 @@ function freeReconciliationContext() {
       possible_external_batch_name: "batches/source-intake-1",
       submission_claim_token: "claim-terminal",
       gemini_batch_request_key: requestId,
+      model: "gemini-2.5-flash-lite",
+      provider_input_binding: {
+        schema_version: 2,
+        namespace: "source-intake-provider-input-v2",
+        request_id: requestId,
+        retained_capture_sha256: fileHash,
+        normalized_text_sha256: "c".repeat(64),
+        canonical_url: "https://example.org/official-2027.pdf",
+        response_final_url: "https://example.org/official-2027.pdf",
+        content_type: "application/pdf",
+        retained_capture_byte_length: 1234,
+        normalized_text_length: 987,
+        captured_at: "2026-07-16T11:59:00.000Z",
+        model: "gemini-2.5-flash-lite",
+        prompt_policy: { version: 2 },
+        prompt_policy_sha256: "1".repeat(64),
+        request_fields_sha256: "2".repeat(64),
+        deterministic_review_sha256: "3".repeat(64),
+        text_excerpt_sha256: "4".repeat(64),
+        system_instruction_sha256: "5".repeat(64),
+        user_prompt_sha256: "6".repeat(64),
+        generation_config_sha256: "7".repeat(64),
+        provider_envelope_sha256: "8".repeat(64),
+        provider_envelope: { request: {} },
+        digest_sha256: inputDigest,
+      },
+      provider_result_binding: {
+        schema_version: 2,
+        namespace: "source-intake-provider-result-v2",
+        request_id: requestId,
+        input_digest_sha256: inputDigest,
+        provider_batch_name: "batches/source-intake-1",
+        provider_batch_request_key: requestId,
+        model: "gemini-2.5-flash-lite",
+        provider_result_sha256: "9".repeat(64),
+        accepted_at: "2026-07-16T12:00:00.000Z",
+        digest_sha256: "8".repeat(64),
+      },
     },
     captureMetadata: {
       capture_file_hash: fileHash,

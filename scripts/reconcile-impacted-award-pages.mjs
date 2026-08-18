@@ -4,14 +4,22 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   auditPublicAwardPage,
+  buildAtomicCandidateChanges,
   buildAwardSummaryFromFacts,
+  buildCandidateDispositionEntries,
   enqueueAwardReconciliation,
   planMissingFactCandidateMaterialization,
   preserveLastKnownGoodAmountFacts,
   reconcileAwardFacts,
   resolveStage1ReconciliationTarget,
 } from "./lib/award-fact-reconciliation.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
+import {
+  loadStablePaginatedRows,
+} from "./lib/reconciliation-candidate-snapshot.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -43,6 +51,14 @@ const dryRun = boolArg(args["dry-run"], !boolArg(args.apply, false));
 const apply = boolArg(args.apply, !dryRun);
 const includeWarnings = boolArg(args["include-warnings"], true);
 const processingTimeoutMinutes = positiveInt(args["processing-timeout-minutes"], 45);
+const factCandidatePageSize = Math.min(
+  1_000,
+  positiveInt(args["fact-candidate-page-size"], 500),
+);
+const maxFactCandidates = Math.min(
+  1_000_000,
+  positiveInt(args["max-fact-candidates"], 100_000),
+);
 const json = boolArg(args.json, false);
 const reportDir = args["report-dir"] ? resolve(root, String(args["report-dir"])) : join(root, "reports");
 const reportPath = args.report
@@ -65,6 +81,8 @@ const report = {
     apply,
     include_warnings: includeWarnings,
     processing_timeout_minutes: processingTimeoutMinutes,
+    fact_candidate_page_size: factCandidatePageSize,
+    max_fact_candidates: maxFactCandidates,
   },
   queue_rows_loaded: 0,
   awards_checked: 0,
@@ -81,14 +99,22 @@ const report = {
   facts_published: 0,
   facts_dry_run: 0,
   candidate_rows_loaded: 0,
+  candidate_snapshot_verifications: 0,
+  candidate_snapshot_pages_read: 0,
+  candidate_snapshot_rows_observed: 0,
+  candidate_snapshots: [],
   generated_candidates: 0,
+  superseded_candidates: 0,
   candidate_source_owner_mismatches: 0,
   selected_candidates: 0,
   rejected_candidates: 0,
   source_rejections: 0,
   stale_processing_rows_requeued: 0,
   stage1_alias_queue_rows_canonicalized: 0,
+  stage1_reviewed_queue_rows_deferred: 0,
+  stage1_automatic_reconciliations_quarantined: 0,
   queue_claims_lost: 0,
+  transient_conflicts_requeued: 0,
   errors: [],
   awards: [],
 };
@@ -109,10 +135,14 @@ try {
   report.errors.push({ message: errorMessage(error) });
   throw error;
 } finally {
-  report.finished_at = new Date().toISOString();
-  writeReport();
-  if (json) console.log(JSON.stringify(report, null, 2));
-  else console.log(`AWARD_RECONCILIATION_REPORT ${reportPath}`);
+  try {
+    report.finished_at = new Date().toISOString();
+    writeReport();
+    if (json) console.log(JSON.stringify(report, null, 2));
+    else console.log(`AWARD_RECONCILIATION_REPORT ${reportPath}`);
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }
 
 async function targetQueueRows() {
@@ -191,6 +221,12 @@ async function recoverStaleProcessingQueueRows() {
 }
 
 async function processQueueRow(queueRow) {
+  // The explicit-review command owns its exact pending queue. The automatic
+  // worker must neither claim it nor broaden its source/candidate identities.
+  if (isExplicitReviewedStage1Queue(queueRow)) {
+    report.stage1_reviewed_queue_rows_deferred += 1;
+    return;
+  }
   const startedAt = new Date().toISOString();
   if (apply && queueRow.id) {
     const claimed = await claimQueueRow(queueRow, startedAt);
@@ -221,13 +257,32 @@ async function processQueueRow(queueRow) {
               : {}),
             canonicalized_from_queue_id: queueRow.id,
             canonicalized_from_member_award_id: queueRow.shared_award_id,
+            stage1_explicit_review_required: true,
+            automatic_reconciliation_blocked: true,
           },
         });
-        await updateOwnedQueue(queueRow.id, startedAt, {
-          status: "skipped",
-          completed_at: new Date().toISOString(),
-          error: `canonicalized_to:${stage1Scope.canonicalAwardId}:${canonicalQueue.id || "pending"}`,
-        });
+        await finishOwnedQueue(
+          queueRow,
+          startedAt,
+          "skipped",
+          `canonicalized_to:${stage1Scope.canonicalAwardId}:${canonicalQueue.id || "pending"}`,
+        );
+      }
+      return;
+    }
+
+    // Stage 1 publication is rooted in one versioned human review artifact.
+    // New automatic work remains durable and invalidates readiness, but it may
+    // not rank/materialize candidates or overwrite the last reviewed choice.
+    if (stage1Scope.cohortKey) {
+      report.stage1_automatic_reconciliations_quarantined += 1;
+      if (apply && queueRow.id) {
+        await finishOwnedQueue(
+          queueRow,
+          startedAt,
+          "failed",
+          `stage1_explicit_review_required:${stage1Scope.cohortKey}`,
+        );
       }
       return;
     }
@@ -235,11 +290,12 @@ async function processQueueRow(queueRow) {
     const award = await loadAwardById(stage1Scope.canonicalAwardId);
     if (!award) {
       if (apply && queueRow.id) {
-        await updateOwnedQueue(queueRow.id, startedAt, {
-          status: "skipped",
-          completed_at: new Date().toISOString(),
-          error: "award_not_found",
-        });
+        await finishOwnedQueue(
+          queueRow,
+          startedAt,
+          "skipped",
+          "award_not_found",
+        );
       }
       return;
     }
@@ -274,9 +330,17 @@ async function processQueueRow(queueRow) {
       !audit.should_block_publication &&
       (audit.audit_status === "passed" || includeWarnings);
     const conflictFields = new Set(reconciliation.conflicts.map((conflict) => conflict.field_name));
+    const candidateDispositions = buildCandidateDispositionEntries(
+      reconciliation,
+      conflictFields,
+    );
+    const supersededCandidateCount = candidateDispositions.filter(
+      (disposition) => disposition.candidate_status === "superseded",
+    ).length;
 
     report.selected_candidates += Object.keys(reconciliation.selected).length;
     report.rejected_candidates += reconciliation.rejected.length;
+    report.superseded_candidates += supersededCandidateCount;
     report.source_rejections += reconciliation.sourceRejections.length;
     report.sibling_sources_rejected += reconciliation.rejected.filter((item) => item.reason.includes("sibling")).length;
     report.deadline_conflicts_detected += reconciliation.conflicts.filter((conflict) => conflict.field_name === "deadline").length;
@@ -298,6 +362,7 @@ async function processQueueRow(queueRow) {
       candidate_count: candidates.length,
       selected_count: Object.keys(reconciliation.selected).length,
       rejected_count: reconciliation.rejected.length,
+      superseded_count: supersededCandidateCount,
       conflicts: reconciliation.conflicts.map((conflict) => ({ field_name: conflict.field_name, severity: conflict.severity, reason: conflict.reason })),
       audit_status: audit.audit_status,
       severity: audit.severity,
@@ -363,33 +428,48 @@ async function processQueueRow(queueRow) {
       report.awards_publication_blocked += 1;
       report.awards_used_last_known_good += 1;
       if (apply && queueRow.id) {
-        await persistPreparedGeneratedFactCandidates(
+        const candidateChanges = buildAtomicCandidateChanges({
           preparedGeneratedCandidates,
-        );
-        await persistAuditRow(
-          award,
-          buildAuditRow(award, audit, publishableFacts),
-        );
-        if (candidates.some((candidate) => candidate.id)) {
-          await updateCandidateStatuses(reconciliation, conflictFields);
-        }
-        await updateOwnedQueue(queueRow.id, startedAt, {
-          status: "failed",
-          completed_at: new Date().toISOString(),
-          error: amountPreservedForReview
-            ? `preserved_amount_requires_exact_evidence:${preservedAmountFields.join(",")}`
-            : `audit_${audit.audit_status}_${audit.severity}`,
+          reconciliation,
+          conflictFields,
         });
+        const failureReason = amountPreservedForReview
+          ? `preserved_amount_requires_exact_evidence:${preservedAmountFields.join(",")}`
+          : `audit_${audit.audit_status}_${audit.severity}`;
+        const blockedAudit = auditForBlockedDisposition(audit, failureReason);
+        awardSummary.audit_status = blockedAudit.audit_status;
+        awardSummary.severity = blockedAudit.severity;
+        awardSummary.findings = blockedAudit.findings;
+        const blockedStatus = await commitBlockedAwardReconciliation({
+          award,
+          queueRow,
+          startedAt,
+          generatedCandidateRows: candidateChanges.generatedCandidateRows,
+          candidateStatusUpdates: candidateChanges.candidateStatusUpdates,
+          auditRow: buildAuditRow(award, blockedAudit, publishableFacts),
+          failureReason,
+        });
+        if (blockedStatus !== "failed") {
+          report.queue_claims_lost += 1;
+          awardSummary.requeued_after_new_trigger = true;
+        }
       }
     }
   } catch (error) {
     report.errors.push({ award_id: queueRow.shared_award_id, message: errorMessage(error) });
     if (apply && queueRow.id) {
-      await updateOwnedQueue(queueRow.id, startedAt, {
-        status: "failed",
-        completed_at: new Date().toISOString(),
-        error: errorMessage(error).slice(0, 1000),
-      });
+      const retryableConflict = isRetryableReconciliationConflict(error);
+      const finished = await finishOwnedQueue(
+        queueRow,
+        startedAt,
+        retryableConflict ? "pending" : "failed",
+        retryableConflict
+          ? `requeued_after_transient_reconciliation_conflict:${errorMessage(error)}`
+          : errorMessage(error),
+      );
+      if (retryableConflict && finished?.status === "pending") {
+        report.transient_conflicts_requeued += 1;
+      }
     }
   }
 }
@@ -428,25 +508,55 @@ async function loadAwardSources(awardIds) {
 
 async function loadAwardFactCandidates(awardIds) {
   const ids = Array.isArray(awardIds) ? awardIds : [awardIds];
-  const { data, error } = await supabase
-    .from("shared_award_fact_candidates")
-    .select("*")
-    .in("shared_award_id", ids)
-    .in("candidate_status", [
-      "pending",
-      "selected",
-      "conflicted",
-      "rejected",
-      "superseded",
-    ])
-    .order("created_at", { ascending: false })
-    .limit(5000);
-  if (error) {
-    if (isMissingTableError(error)) return [];
-    throw new Error(`Load fact candidates failed: ${error.message}`);
-  }
-  report.candidate_rows_loaded += (data || []).length;
-  return (data || []).map((row) => ({
+  const statuses = [
+    "pending",
+    "selected",
+    "conflicted",
+    "rejected",
+    "superseded",
+  ];
+  const snapshot = await loadStablePaginatedRows({
+    pageSize: factCandidatePageSize,
+    maxRows: maxFactCandidates,
+    countRows: async () => {
+      const { count, error } = await supabase
+        .from("shared_award_fact_candidates")
+        .select("id", { count: "exact", head: true })
+        .in("shared_award_id", ids)
+        .in("candidate_status", statuses);
+      if (error) {
+        if (isMissingTableError(error)) return 0;
+        throw new Error(`Count fact candidates failed: ${error.message}`);
+      }
+      return count;
+    },
+    loadPage: async ({ offset, limit: pageLimit }) => {
+      const { data, error } = await supabase
+        .from("shared_award_fact_candidates")
+        .select("*")
+        .in("shared_award_id", ids)
+        .in("candidate_status", statuses)
+        .order("created_at", { ascending: false, nullsFirst: false })
+        .order("id", { ascending: false })
+        .range(offset, offset + pageLimit - 1);
+      if (error) {
+        if (isMissingTableError(error)) return [];
+        throw new Error(`Load fact candidates failed: ${error.message}`);
+      }
+      return data || [];
+    },
+  });
+  report.candidate_rows_loaded += snapshot.exactCount;
+  report.candidate_snapshot_verifications += 1;
+  report.candidate_snapshot_pages_read += snapshot.pagesRead;
+  report.candidate_snapshot_rows_observed += snapshot.rowsObserved;
+  report.candidate_snapshots.push({
+    shared_award_ids: ids,
+    exact_count: snapshot.exactCount,
+    revision_sha256: snapshot.revisionSha256,
+    pages_read: snapshot.pagesRead,
+  });
+  return snapshot.rows.map((row) => ({
     ...row,
     raw_value: rawValueFromCandidateRow(row),
   }));
@@ -508,19 +618,6 @@ function prepareGeneratedFactCandidateRows(candidates) {
       },
     };
   });
-}
-
-async function persistPreparedGeneratedFactCandidates(preparedCandidates) {
-  if (!preparedCandidates.length) return;
-  const rows = preparedCandidates.map((prepared) => prepared.row);
-  const { data, error } = await supabase
-    .from("shared_award_fact_candidates")
-    .insert(rows)
-    .select("*");
-  if (error) throw new Error(`Persist generated fact candidates failed: ${error.message}`);
-  if ((data || []).length !== rows.length) {
-    throw new Error("Not every prepared fact candidate was persisted.");
-  }
 }
 
 function buildReconciledFactEvidenceRows({
@@ -625,102 +722,30 @@ function rawValueFromCandidateRow(row) {
   return row.raw_value;
 }
 
-async function updateCandidateStatuses(reconciliation, conflictFields) {
-  for (const selection of Object.values(reconciliation.selected)) {
-    if (!selection.candidate.id) continue;
-    await updateCandidate(selection.candidate.id, {
-      candidate_status: conflictFields.has(selection.candidate.field_name) ? "conflicted" : "selected",
-      selected_reason: selection.reason,
-      rejection_reason: null,
-    });
-  }
-  for (const rejection of reconciliation.rejected) {
-    if (!rejection.candidate.id) continue;
-    await updateCandidate(rejection.candidate.id, {
-      candidate_status: "rejected",
-      rejection_reason: rejection.reason,
-      selected_reason: null,
-    });
-  }
-}
-
-function candidateDispositionEntries(reconciliation, conflictFields) {
-  const dispositions = new Map();
-  for (const selection of Object.values(reconciliation.selected)) {
-    if (!selection.candidate.id) continue;
-    dispositions.set(selection.candidate.id, {
-      candidate: selection.candidate,
-      candidate_status: conflictFields.has(selection.candidate.field_name)
-        ? "conflicted"
-        : "selected",
-      selected_reason: selection.reason,
-      rejection_reason: null,
-    });
-  }
-  for (const rejection of reconciliation.rejected) {
-    if (!rejection.candidate.id) continue;
-    dispositions.set(rejection.candidate.id, {
-      candidate: rejection.candidate,
-      candidate_status: "rejected",
-      rejection_reason: rejection.reason,
-      selected_reason: null,
-    });
-  }
-  return [...dispositions.values()];
-}
-
-function buildAtomicCandidateChanges({
-  preparedGeneratedCandidates,
-  reconciliation,
-  conflictFields,
-}) {
-  const dispositions = candidateDispositionEntries(reconciliation, conflictFields);
-  const dispositionById = new Map(
-    dispositions.map((disposition) => [disposition.candidate.id, disposition]),
-  );
-  const generatedIds = new Set(
-    preparedGeneratedCandidates.map((prepared) => prepared.row.id),
-  );
-  const generatedCandidateRows = preparedGeneratedCandidates.map((prepared) => {
-    const disposition = dispositionById.get(prepared.row.id);
-    if (!disposition) {
-      throw new Error(
-        `Generated fact candidate ${prepared.row.id} has no reconciliation disposition.`,
-      );
-    }
-    return {
-      ...prepared.row,
-      candidate_status: disposition.candidate_status,
-      selected_reason: disposition.selected_reason,
-      rejection_reason: disposition.rejection_reason,
-    };
-  });
-  const candidateStatusUpdates = dispositions
-    .filter((disposition) => !generatedIds.has(disposition.candidate.id))
-    .map((disposition) => {
-      if (!disposition.candidate.updated_at) {
-        throw new Error(
-          `Existing fact candidate ${disposition.candidate.id} is missing its CAS version.`,
-        );
-      }
-      return {
-        id: disposition.candidate.id,
-        expected_status: disposition.candidate.candidate_status,
-        expected_updated_at: disposition.candidate.updated_at,
-        candidate_status: disposition.candidate_status,
-        selected_reason: disposition.selected_reason,
-        rejection_reason: disposition.rejection_reason,
-      };
-    });
-  return { generatedCandidateRows, candidateStatusUpdates };
-}
-
-async function updateCandidate(id, patch) {
-  const { error } = await supabase
-    .from("shared_award_fact_candidates")
-    .update({ ...patch, updated_at: new Date().toISOString() })
-    .eq("id", id);
-  if (error) throw new Error(`Update fact candidate failed: ${error.message}`);
+function auditForBlockedDisposition(audit, failureReason) {
+  if (audit.audit_status !== "passed") return audit;
+  return {
+    ...audit,
+    audit_status: "needs_review",
+    severity: audit.severity === "info" ? "warning" : audit.severity,
+    findings: [
+      ...(Array.isArray(audit.findings) ? audit.findings : []),
+      {
+        code: "reconciliation_blocked_after_passing_field_audit",
+        severity: "warning",
+        message: "The deterministic field audit passed, but the reconciliation disposition still requires review.",
+        reason: failureReason,
+      },
+    ],
+    suggested_fixes: [
+      ...(Array.isArray(audit.suggested_fixes) ? audit.suggested_fixes : []),
+      {
+        reason: "resolve_blocking_reconciliation_disposition",
+        value: failureReason,
+      },
+    ],
+    should_block_publication: true,
+  };
 }
 
 function buildAuditRow(award, audit, publicPageSnapshot) {
@@ -757,35 +782,6 @@ function buildAuditRow(award, audit, publicPageSnapshot) {
   };
 }
 
-async function persistAuditRow(award, row) {
-  const reconciliationAuditSignature =
-    row.public_page_snapshot?.reconciliation_audit_signature;
-  if (!reconciliationAuditSignature) {
-    throw new Error("Deterministic page audit is missing its stable signature.");
-  }
-  let lastError = null;
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    const { data: existing, error: loadError } = await supabase
-      .from("shared_award_page_audits")
-      .select("id")
-      .eq("shared_award_id", award.id)
-      .eq("audit_kind", "deterministic")
-      .contains("public_page_snapshot", { reconciliation_audit_signature: reconciliationAuditSignature })
-      .limit(1);
-    if (loadError) {
-      lastError = loadError;
-    } else if ((existing || []).length) {
-      return;
-    } else {
-      const { error: insertError } = await supabase.from("shared_award_page_audits").insert(row);
-      if (!insertError) return;
-      lastError = insertError;
-    }
-    if (attempt < 4) await sleep(attempt * 1_500);
-  }
-  throw new Error(`Persist deterministic page audit failed: ${lastError?.message || "unknown Supabase error"}`);
-}
-
 async function commitQueuedAwardReconciliation({
   award,
   queueRow,
@@ -819,9 +815,42 @@ async function commitQueuedAwardReconciliation({
     },
   );
   if (error) {
-    throw new Error(`Atomic reconciliation publication failed: ${error.message}`);
+    throw reconciliationRpcError(
+      "Atomic reconciliation publication failed",
+      error,
+    );
   }
   return data?.status === "succeeded";
+}
+
+async function commitBlockedAwardReconciliation({
+  award,
+  queueRow,
+  startedAt,
+  generatedCandidateRows,
+  candidateStatusUpdates,
+  auditRow,
+  failureReason,
+}) {
+  const { data, error } = await supabase.rpc(
+    "commit_award_reconciliation_blocked",
+    {
+      p_reconciliation_id: queueRow.id,
+      p_shared_award_id: award.id,
+      p_expected_started_at: startedAt,
+      p_expected_queue_generation: queueRow.generation,
+      p_expected_award_updated_at: award.updated_at,
+      p_expected_public_facts: award.public_facts,
+      p_generated_candidates: generatedCandidateRows,
+      p_candidate_status_updates: candidateStatusUpdates,
+      p_audit_row: auditRow,
+      p_failure_reason: failureReason,
+    },
+  );
+  if (error) {
+    throw reconciliationRpcError("Atomic blocked reconciliation failed", error);
+  }
+  return data?.status || null;
 }
 
 async function claimQueueRow(queueRow, startedAt) {
@@ -843,17 +872,36 @@ async function claimQueueRow(queueRow, startedAt) {
   return (data || []).length === 1 ? data[0] : null;
 }
 
-async function updateOwnedQueue(id, startedAt, patch) {
-  const { data, error } = await supabase
-    .from("shared_award_reconciliation_queue")
-    .update(patch)
-    .eq("id", id)
-    .eq("status", "processing")
-    .eq("started_at", startedAt)
-    .select("id");
-  if (error) throw new Error(`Update owned reconciliation queue row failed: ${error.message}`);
-  if (!(data || []).length) report.queue_claims_lost += 1;
-  return (data || []).length === 1;
+async function finishOwnedQueue(queueRow, startedAt, terminalStatus, errorText) {
+  const { data, error } = await supabase.rpc(
+    "finish_or_requeue_award_reconciliation_claim",
+    {
+      p_reconciliation_id: queueRow.id,
+      p_shared_award_id: queueRow.shared_award_id,
+      p_expected_started_at: startedAt,
+      p_expected_queue_generation: queueRow.generation,
+      p_terminal_status: terminalStatus,
+      p_error: errorText,
+    },
+  );
+  if (error) throw new Error(`Finish reconciliation queue claim failed: ${error.message}`);
+  if (
+    !data ||
+    (data.status === "pending" && terminalStatus !== "pending")
+  ) {
+    report.queue_claims_lost += 1;
+  }
+  return data || null;
+}
+
+function isExplicitReviewedStage1Queue(queueRow) {
+  const metadata = queueRow?.metadata;
+  return Boolean(
+    metadata
+    && typeof metadata === "object"
+    && metadata.processor === "reconcile-reviewed-stage1-selection"
+    && metadata.selection_mode === "explicit_human_review"
+  );
 }
 
 function confidenceScore(value) {
@@ -929,8 +977,14 @@ function errorMessage(error) {
   return error && typeof error === "object" && "message" in error ? String(error.message) : String(error);
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function reconciliationRpcError(prefix, error) {
+  const wrapped = new Error(`${prefix}: ${error?.message || "unknown Supabase error"}`);
+  if (error?.code) wrapped.code = String(error.code);
+  return wrapped;
+}
+
+function isRetryableReconciliationConflict(error) {
+  return ["40001", "40P01"].includes(String(error?.code || ""));
 }
 
 function stableAuditSignatureValue(value) {
@@ -965,6 +1019,8 @@ Options:
   --apply=false
   --include-warnings=true
   --processing-timeout-minutes=45
+  --fact-candidate-page-size=500
+  --max-fact-candidates=100000
   --json=false
 `);
 }

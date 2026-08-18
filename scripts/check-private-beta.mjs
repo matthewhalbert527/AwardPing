@@ -104,6 +104,8 @@ function checkRequiredEnv() {
     ["SUPABASE_SERVICE_ROLE_KEY", "Supabase sb_secret key"],
     ["CRON_SECRET", "cron route secret"],
     ["APP_DATA_ENCRYPTION_KEY", "personal-data encryption"],
+    ["APP_DATA_ENCRYPTION_KEY_ID", "personal-data encryption key identity"],
+    ["APP_DATA_LOOKUP_HMAC_KEY", "stable personal-data lookup HMAC"],
     ["RESEND_API_KEY", "Resend email delivery"],
     ["ALERT_FROM_EMAIL", "verified email sender"],
     ["CONTACT_TO_EMAIL", "contact form recipient"],
@@ -119,22 +121,123 @@ function checkRequiredEnv() {
 
   if (hasValue("CRON_SECRET")) {
     const secret = env.CRON_SECRET.trim();
-    if (secret.length < 24 || /replace|changeme|secret/i.test(secret)) {
+    if (
+      secret.length < 24 ||
+      /replace|changeme|secret/i.test(secret) ||
+      secret === "awardping-local-public-update-token"
+    ) {
       fail("CRON_SECRET must be a long production-only random value.");
     } else {
       pass("CRON_SECRET is not a placeholder and is long enough for launch.");
     }
   }
 
+  if (hasValue("RESEND_API_KEY")) {
+    if (!/^re_[A-Za-z0-9_-]+$/.test(env.RESEND_API_KEY.trim())) {
+      fail("RESEND_API_KEY does not have the expected Resend key shape.");
+    } else {
+      pass("RESEND_API_KEY has the expected Resend key shape.");
+    }
+  }
+
   if (hasValue("APP_DATA_ENCRYPTION_KEY")) {
     const encryptionKey = env.APP_DATA_ENCRYPTION_KEY.trim();
-    if (encryptionKey.length < 32 || /replace|changeme|example|secret/i.test(encryptionKey)) {
+    if (
+      encryptionKey.length < 32 ||
+      /replace|changeme|example|secret/i.test(encryptionKey) ||
+      encryptionKey ===
+        "awardping-local-development-personal-data-encryption-key"
+    ) {
       fail("APP_DATA_ENCRYPTION_KEY must be a production-only random value with at least 32 characters.");
     } else if (hasValue("CRON_SECRET") && encryptionKey === env.CRON_SECRET.trim()) {
       fail("APP_DATA_ENCRYPTION_KEY must be independent from CRON_SECRET.");
     } else {
       pass("APP_DATA_ENCRYPTION_KEY is non-placeholder, long enough, and independent from CRON_SECRET.");
     }
+  }
+
+  if (hasValue("APP_DATA_ENCRYPTION_KEY_ID")) {
+    const keyId = env.APP_DATA_ENCRYPTION_KEY_ID.trim();
+    if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(keyId) || keyId === "local-dev") {
+      fail("APP_DATA_ENCRYPTION_KEY_ID must be a production key identifier, not a secret or local-dev value.");
+    } else {
+      pass("APP_DATA_ENCRYPTION_KEY_ID is a valid explicit v2 key identifier.");
+    }
+  }
+
+  if (hasValue("APP_DATA_LOOKUP_HMAC_KEY")) {
+    const lookupKey = env.APP_DATA_LOOKUP_HMAC_KEY.trim();
+    if (
+      lookupKey.length < 32 ||
+      /replace|changeme|example|secret/i.test(lookupKey) ||
+      lookupKey === "awardping-local-development-personal-data-lookup-key"
+    ) {
+      fail("APP_DATA_LOOKUP_HMAC_KEY must be a production-only random value with at least 32 characters.");
+    } else if (
+      (hasValue("APP_DATA_ENCRYPTION_KEY") &&
+        lookupKey === env.APP_DATA_ENCRYPTION_KEY.trim()) ||
+      (hasValue("CRON_SECRET") && lookupKey === env.CRON_SECRET.trim())
+    ) {
+      fail("APP_DATA_LOOKUP_HMAC_KEY must be independent from encryption and cron secrets.");
+    } else {
+      pass("APP_DATA_LOOKUP_HMAC_KEY is strong, stable, and independent from encryption and cron secrets.");
+    }
+  }
+
+  if (hasValue("APP_DATA_DECRYPTION_KEYRING_JSON")) {
+    try {
+      const keyring = JSON.parse(env.APP_DATA_DECRYPTION_KEYRING_JSON);
+      const entries =
+        keyring && !Array.isArray(keyring) && typeof keyring === "object"
+          ? Object.entries(keyring)
+          : [];
+      if (
+        entries.length === 0 ||
+        entries.some(
+          ([keyId, value]) =>
+            !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(keyId) ||
+            typeof value !== "string" ||
+            value.length < 32 ||
+            /replace|changeme|example|secret/i.test(value) ||
+            (hasValue("APP_DATA_ENCRYPTION_KEY_ID") &&
+              keyId === env.APP_DATA_ENCRYPTION_KEY_ID.trim()) ||
+            (hasValue("APP_DATA_ENCRYPTION_KEY") &&
+              value === env.APP_DATA_ENCRYPTION_KEY.trim()) ||
+            (hasValue("APP_DATA_LOOKUP_HMAC_KEY") &&
+              value === env.APP_DATA_LOOKUP_HMAC_KEY.trim()) ||
+            (hasValue("CRON_SECRET") && value === env.CRON_SECRET.trim()),
+        )
+      ) {
+        fail("APP_DATA_DECRYPTION_KEYRING_JSON must map distinct prior v2 key IDs to strong encryption-only material.");
+      } else {
+        pass("APP_DATA_DECRYPTION_KEYRING_JSON contains valid prior v2 key entries.");
+      }
+    } catch {
+      fail("APP_DATA_DECRYPTION_KEYRING_JSON must be valid JSON when it is set.");
+    }
+  }
+
+  if (hasValue("APP_DATA_LEGACY_V1_ENCRYPTION_KEY")) {
+    const legacyKey = env.APP_DATA_LEGACY_V1_ENCRYPTION_KEY.trim();
+    if (
+      /^(?:replace(?:[-_\s].*)?|change[-_\s]?me(?:[-_\s].*)?|example(?:[-_\s].*)?|secret)$/i.test(
+        legacyKey,
+      )
+    ) {
+      fail("APP_DATA_LEGACY_V1_ENCRYPTION_KEY is invalid; omit it unless the exact recovered legacy key is available.");
+    } else if (
+      (hasValue("APP_DATA_ENCRYPTION_KEY") &&
+        legacyKey === env.APP_DATA_ENCRYPTION_KEY.trim()) ||
+      (hasValue("APP_DATA_LOOKUP_HMAC_KEY") &&
+        legacyKey === env.APP_DATA_LOOKUP_HMAC_KEY.trim()) ||
+      (hasValue("CRON_SECRET") && legacyKey === env.CRON_SECRET.trim())
+    ) {
+      fail("The recovered legacy v1 key must not be reused by the active encryption, lookup, or cron purpose.");
+    } else {
+      pass("An explicit recovered legacy v1 key is configured for controlled recovery.");
+    }
+  } else {
+    pass("No legacy v1 key is claimed; affected profiles remain honestly marked for re-entry.");
   }
 }
 
@@ -191,8 +294,24 @@ function checkProductionEnv() {
     pass("NEXT_PUBLIC_APP_URL is an https production URL.");
   }
 
-  if (hasValue("ALERT_FROM_EMAIL") && /example\.com/i.test(env.ALERT_FROM_EMAIL)) {
-    fail("ALERT_FROM_EMAIL still uses example.com; configure a verified Resend sender.");
+  if (hasValue("ALERT_FROM_EMAIL")) {
+    const address = senderAddress(env.ALERT_FROM_EMAIL);
+    const domain = address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+    if (
+      !address ||
+      domain === "example.com" ||
+      domain === "example.net" ||
+      domain === "example.org" ||
+      domain === "localhost" ||
+      domain.endsWith(".localhost") ||
+      domain.endsWith(".example") ||
+      domain.endsWith(".invalid") ||
+      domain.endsWith(".test")
+    ) {
+      fail("ALERT_FROM_EMAIL must be a valid non-placeholder Resend sender.");
+    } else {
+      pass("ALERT_FROM_EMAIL has a non-placeholder sender shape.");
+    }
   }
 
   if (hasValue("NEXT_PUBLIC_SUPABASE_URL")) {
@@ -209,6 +328,14 @@ function checkProductionEnv() {
       fail("NEXT_PUBLIC_SUPABASE_URL is not a valid URL.");
     }
   }
+}
+
+function senderAddress(value) {
+  const trimmed = String(value || "").trim();
+  const namedAddress = /^[^<>]*<([^<>]+)>$/.exec(trimmed);
+  if (!namedAddress && /[<>]/.test(trimmed)) return "";
+  const address = (namedAddress?.[1] || trimmed).trim().toLowerCase();
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address) ? address : "";
 }
 
 function checkVercelProjectLink() {
@@ -302,6 +429,8 @@ function checkMigrations() {
     "20260717025000_harden_award_work_items_tenant_binding.sql",
     "20260717032000_atomic_public_form_rate_limits.sql",
     "20260717033000_public_digest_event_ledger.sql",
+    "20260717113112_preserve_legacy_personal_data_for_reentry.sql",
+    "20260717123000_legacy_contact_ciphertext_quarantine.sql",
   ];
 
   for (const file of expected) {
@@ -455,6 +584,36 @@ function checkMigrations() {
     pass("Public update subscriber and contact rate-limit migration is present.");
   } else {
     fail("Public update/contact migration is missing.");
+  }
+
+  const legacyContactPrivacy = readIfExists(
+    "supabase/migrations/20260717123000_legacy_contact_ciphertext_quarantine.sql",
+  );
+  const requiredLegacyContactContracts = [
+    "personal_data_legacy_contact_quarantine",
+    "personal_data_erasure_tombstones",
+    "recover_legacy_contact_ciphertext",
+    "quarantine_legacy_contact_ciphertext",
+    "erase_personal_data_for_privacy_request",
+    "erase_legacy_contact_ciphertext_for_privacy_request",
+    "coalesce(v_entry ->> 'recipient_encrypted', '') not like 'ap:v2:%'",
+    "coalesce(outbox.recipient_encrypted, '') like 'ap:v2:%'",
+    "coalesce(v_outbox.recipient_encrypted, '') not like 'ap:v2:%'",
+    "personal_data_legacy_contact_gate_snapshot",
+    "legacy_contact_ciphertext_not_safe",
+    "stage1_gate_without_contact_fence_20260717123000",
+  ];
+  const missingLegacyContactContracts = requiredLegacyContactContracts.filter(
+    (contract) => !legacyContactPrivacy.includes(contract),
+  );
+  if (missingLegacyContactContracts.length === 0) {
+    pass(
+      "Legacy contact ciphertext is inventoried, disabled, v2-fenced, erasable, and bound into the signed release gate.",
+    );
+  } else {
+    fail(
+      `Legacy contact privacy migration is incomplete; missing ${missingLegacyContactContracts.join(", ")}.`,
+    );
   }
 
   const structuredDetails = readIfExists("supabase/migrations/0017_structured_change_details.sql");

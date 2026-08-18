@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import type { Metadata } from "next";
 import {
   Inbox,
   SearchCheck,
@@ -10,6 +11,13 @@ import { OfficeSwitcher } from "@/components/office-switcher";
 import { ProfileMenu } from "@/components/profile-menu";
 import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { getOfficeContext } from "@/lib/offices";
+
+export const metadata: Metadata = {
+  robots: {
+    index: false,
+    follow: false,
+  },
+};
 
 export default async function DashboardLayout({
   children,
@@ -60,7 +68,32 @@ export default async function DashboardLayout({
         </div>
       </header>
 
-      <main className="dashboard-content">{children}</main>
+      <main className="dashboard-content">
+        {profile?.personal_data_reentry_required && (
+          <div
+            className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"
+            role="status"
+          >
+            <p className="font-black">
+              {profile.personal_data_legacy_recovery_available
+                ? "Your saved profile was recovered and needs current protection."
+                : "Your saved profile could not be decrypted."}
+            </p>
+            <p className="mt-1 leading-6">
+              {profile.personal_data_legacy_recovery_available
+                ? "Review and save the recovered values to migrate them to v2 protection."
+                : "The encrypted originals are preserved. Re-enter your name and organization to restore your profile with the current protection."}
+            </p>
+            <Link
+              className="button-secondary mt-3"
+              href="/dashboard/office#profile-settings"
+            >
+              Restore profile
+            </Link>
+          </div>
+        )}
+        {children}
+      </main>
     </div>
   );
 }

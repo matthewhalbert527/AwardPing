@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 import { csvEscape, sourceFailureBucket } from "./source-cleanup-core.mjs";
+import { loadDeterministicSupabaseRows } from "./lib/deterministic-supabase-loader.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
-const projectRef = args["project-ref"] || readLinkedProjectRef();
 const outputPrefix =
   args["output-prefix"] ||
   join(root, "reports", `broken-source-review-${new Date().toISOString().replace(/[:.]/g, "-")}`);
@@ -17,16 +16,16 @@ const jsonPath = `${outputPrefix}.json`;
 
 const supabase = createSupabaseClient();
 const [awards, sharedSources, monitors, officeAwards] = await Promise.all([
-  loadAll("shared_awards", "id,name,status"),
+  loadAll("shared_awards", "id,name,status,updated_at"),
   loadAll(
     "shared_award_sources",
-    "id,shared_award_id,title,url,page_type,last_error,last_checked_at,next_check_at,consecutive_failures",
+    "id,shared_award_id,title,url,page_type,last_error,last_checked_at,next_check_at,consecutive_failures,updated_at",
   ),
   loadOptionalAll(
     "monitors",
-    "id,award_id,label,url,status,last_error,last_checked_at,next_check_at,consecutive_failures",
+    "id,award_id,label,url,status,last_error,last_checked_at,next_check_at,consecutive_failures,updated_at",
   ),
-  loadOptionalAll("awards", "id,name,status"),
+  loadOptionalAll("awards", "id,name,status,updated_at"),
 ]);
 
 const activeAwardById = new Map(
@@ -202,17 +201,11 @@ function httpStatusFromError(value) {
 }
 
 async function loadAll(table, select) {
-  const rows = [];
-  for (let from = 0; ; from += 1000) {
-    const { data, error } = await supabase
-      .from(table)
-      .select(select)
-      .range(from, from + 999);
-    if (error) throw error;
-    rows.push(...(data || []));
-    if (!data || data.length < 1000) break;
-  }
-  return rows;
+  return loadDeterministicSupabaseRows({
+    supabase,
+    table,
+    select,
+  });
 }
 
 async function loadOptionalAll(table, select) {
@@ -226,27 +219,15 @@ async function loadOptionalAll(table, select) {
 
 function createSupabaseClient() {
   const env = { ...loadEnvFile(resolve(root, ".env.local")), ...process.env };
-  if (
-    env.NEXT_PUBLIC_SUPABASE_URL &&
-    env.SUPABASE_SERVICE_ROLE_KEY &&
-    !env.NEXT_PUBLIC_SUPABASE_URL.includes("127.0.0.1")
-  ) {
-    return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
+  if (!env.NEXT_PUBLIC_SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error(
+      "Set NEXT_PUBLIC_SUPABASE_URL and a server-only sb_secret SUPABASE_SERVICE_ROLE_KEY. Automatic Supabase CLI key fallback is disabled.",
+    );
   }
-
-  if (!projectRef) {
-    throw new Error("Set NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY or link Supabase.");
+  if (!String(env.SUPABASE_SERVICE_ROLE_KEY).trim().startsWith("sb_secret_")) {
+    throw new Error("SUPABASE_SERVICE_ROLE_KEY must be a modern server-only sb_secret key.");
   }
-
-  const keys = JSON.parse(
-    execFileSync("npx", ["supabase", "projects", "api-keys", "--project-ref", projectRef, "--output", "json"], {
-      encoding: "utf8",
-      cwd: root,
-    }),
-  );
-  const serviceRoleKey = keys.find((key) => key.name === "service_role")?.api_key;
-  if (!serviceRoleKey) throw new Error(`Could not read service_role key for ${projectRef}.`);
-  return createSupabaseServiceClient(`https://${projectRef}.supabase.co`, serviceRoleKey);
+  return createSupabaseServiceClient(env.NEXT_PUBLIC_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
 }
 
 function loadEnvFile(path) {
@@ -260,14 +241,6 @@ function loadEnvFile(path) {
     return env;
   } catch {
     return {};
-  }
-}
-
-function readLinkedProjectRef() {
-  try {
-    return readFileSync(resolve(root, "supabase/.temp/project-ref"), "utf8").trim();
-  } catch {
-    return "";
   }
 }
 

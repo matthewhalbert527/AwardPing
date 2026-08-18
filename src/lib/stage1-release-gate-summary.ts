@@ -11,7 +11,11 @@ import {
 } from "@/lib/admin-worker-operations";
 import type { Database, Json } from "@/lib/database.types";
 import type { InviteOnlySignupReadiness } from "@/lib/invite-only-signup-readiness";
-import { stage1CohortIdentityMismatch } from "@/lib/stage1-cohort-identity";
+import {
+  stage1CohortIdentityHash,
+  stage1CohortIdentityMismatch,
+  stage1CohortIdentityVersion,
+} from "@/lib/stage1-cohort-identity";
 import { classifyScheduledNightlyVisualRun } from "../../scripts/lib/visual-nightly-run-contract.mjs";
 
 export const stage1ReleaseAwardCount = 25;
@@ -28,9 +32,13 @@ export const stage1ReleaseManifestRoles = [
 
 const evidenceFreshnessMs = 24 * 60 * 60 * 1_000;
 const futureClockToleranceMs = 5 * 60 * 1_000;
+const authoritativeSnapshotFreshnessMs = 5 * 60 * 1_000;
+const hostedRuntimeFreshnessMs = 60 * 60 * 1_000;
+const hostedRuntimeMaximumValidityMs = 2 * 60 * 60 * 1_000;
 const nightlyAcceptanceCohortCount = 3 as const;
 const nightlyAcceptanceSoakMs = 24 * 60 * 60 * 1_000;
 const expectedPolicyVersion = "stage1-publication-v1";
+const canonicalReleaseEpochPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const expectedBudgetLanes = ["new_page_review", "changed_page_review"] as const;
 const expectedDownstreamLanes = [
   ["new_page_review", "New page review", true],
@@ -43,6 +51,7 @@ const expectedDownstreamLanes = [
   ["nightly_report", "Nightly report", false],
 ] as const;
 export const stage1ReleaseArtifactKinds = [
+  "hosted_runtime_identity",
   "rollback_drill",
   "non_cohort_leak_crawl",
   "r2_recovery_drill",
@@ -67,6 +76,30 @@ export type Stage1ReleaseArtifact = {
   actor: string;
 };
 
+export type Stage1AuthoritativeArtifactBinding = {
+  artifactId: string | null;
+  evidenceHash: string | null;
+};
+
+export type Stage1AuthoritativeReleaseGateSnapshot = {
+  schemaVersion: "stage1-release-gate-acceptance-v2";
+  state: "READY" | "HOLD";
+  stateHash: string;
+  generatedAt: string;
+  failures: string[];
+  productionTargetConfigured: boolean;
+  vaultSecurity: {
+    apiSurfaceSafe: boolean;
+    serviceRoleDataApiProfileBlocked: boolean;
+    profileHttpStatus: string | number | null;
+    profilePostgrestCode: string | null;
+  };
+  artifactBindings: Record<
+    Stage1ReleaseArtifactKind,
+    Stage1AuthoritativeArtifactBinding
+  >;
+};
+
 type RegistryRow = Database["public"]["Tables"]["stage1_award_registry"]["Row"];
 type ManifestRow = Database["public"]["Tables"]["stage1_award_source_manifest"]["Row"];
 type ReconciliationRow = Database["public"]["Tables"]["shared_award_reconciliation_queue"]["Row"];
@@ -85,6 +118,10 @@ export type Stage1EffectivePublication = {
   release_identity_version: string;
   release_identity_hash: string;
 };
+
+export function isCanonicalStage1ReleaseEpoch(value: unknown): value is string {
+  return typeof value === "string" && canonicalReleaseEpochPattern.test(value);
+}
 
 export type Stage1AppIdentity = {
   revision: string;
@@ -119,12 +156,18 @@ export type Stage1ReleaseGateInput = {
   budgets: AdminGeminiBudgetLane[];
   lanes: AdminDownstreamLane[];
   evidenceRecovery: AdminEvidenceRecoveryStatus;
+  authoritativeGate: Stage1AuthoritativeReleaseGateSnapshot | null;
   releaseArtifacts: Partial<Record<Stage1ReleaseArtifactKind, Stage1ReleaseArtifact>>;
   loadErrors?: string[];
 };
 
 export type ReleaseGateState = "READY" | "HOLD" | "UNKNOWN";
 export type ReleaseCheckState = "pass" | "hold" | "unknown";
+export type Stage1ReleasePhase =
+  | "preactivation_ready"
+  | "active_ready"
+  | "hold"
+  | "unknown";
 
 export type Stage1ReleaseAwardSummary = {
   launchRank: number;
@@ -134,17 +177,17 @@ export type Stage1ReleaseAwardSummary = {
   effectiveReason: string;
   cohortReady: boolean;
   effectivelyVisible: boolean;
-  evidenceFresh: boolean;
+  verificationEpochValid: boolean;
   evidenceCheckedAt: string | null;
   completedManifestRoles: number;
-  freshManifestRoles: number;
+  verifiedManifestRoles: number;
   missingManifestRoles: string[];
   reconciliationStatus: string;
   reconciliationAt: string | null;
-  reconciliationFresh: boolean;
+  reconciliationValid: boolean;
   auditStatus: string;
   auditAt: string | null;
-  auditFresh: boolean;
+  auditValid: boolean;
   quarantineCount: number;
   status: "ready" | "hold";
 };
@@ -183,14 +226,33 @@ export type Stage1ReleaseArtifactCheck = {
   label: string;
   status: ReleaseCheckState;
   artifactId: string | null;
+  authoritativeArtifactId: string | null;
   completedAt: string | null;
   validUntil: string | null;
   evidenceHash: string | null;
+  authoritativeEvidenceHash: string | null;
+  detail: string;
+};
+
+export type Stage1AuthoritativeGateCheck = {
+  status: ReleaseCheckState;
+  databaseState: "READY" | "HOLD" | null;
+  generatedAt: string | null;
+  stateHash: string | null;
+  failures: string[];
+  productionTargetConfigured: boolean | null;
+  vaultApiSurfaceSafe: boolean | null;
+  serviceRoleDataApiProfileBlocked: boolean | null;
+  profileHttpStatus: string | number | null;
+  profilePostgrestCode: string | null;
+  currentValidArtifactBindings: number;
+  requiredArtifactBindings: number;
   detail: string;
 };
 
 export type Stage1ReleaseGateSummary = {
   state: ReleaseGateState;
+  phase: Stage1ReleasePhase;
   generatedAt: string;
   awards: Stage1ReleaseAwardSummary[];
   registryCount: number;
@@ -246,6 +308,7 @@ export type Stage1ReleaseGateSummary = {
     refused: number;
     lastReportedAt: string | null;
   };
+  authoritativeGate: Stage1AuthoritativeGateCheck;
   acceptanceArtifacts: Stage1ReleaseArtifactCheck[];
   safeNextAction: string;
   blockers: string[];
@@ -292,7 +355,40 @@ export function summarizeStage1BetaReleaseGate(
   const budgets = summarizeBudgets(input.budgets);
   const lanes = summarizeLanes(input.lanes, now);
   const recovery = summarizeRecovery(input.evidenceRecovery, now);
-  const acceptanceArtifacts = summarizeAcceptanceArtifacts(input.releaseArtifacts, input.appIdentity, now);
+  const visibleCount = input.effectivePublication.filter((row) => row.effectively_verified).length;
+  const releaseStates = uniqueText(input.effectivePublication.map((row) => row.release_state));
+  const releaseEpochs = uniqueText(input.effectivePublication.map((row) => row.release_epoch || ""));
+  const releaseReasons = uniqueText(input.effectivePublication.map((row) => row.effective_reason));
+  const registryEpochs = uniqueText(input.registry.map((row) => row.release_epoch || ""));
+  const canonicalReleaseEpoch = releaseEpochs.length === 1 &&
+    isCanonicalStage1ReleaseEpoch(releaseEpochs[0])
+    ? releaseEpochs[0]
+    : null;
+  const effectiveReleaseContractsValid = input.effectivePublication.every((row) =>
+    effectivePublicationIdentityValid(row));
+  const registryReleaseContractsValid = input.registry.every((row) =>
+    row.policy_version === expectedPolicyVersion);
+  const atomicRelease = visibleCount === stage1ReleaseAwardCount &&
+    input.effectivePublication.length === stage1ReleaseAwardCount &&
+    input.registry.length === stage1ReleaseAwardCount &&
+    releaseStates.length === 1 && releaseStates[0] === "verified_beta" &&
+    canonicalReleaseEpoch !== null && registryEpochs.length === 1 &&
+    registryEpochs[0] === canonicalReleaseEpoch &&
+    effectiveReleaseContractsValid && registryReleaseContractsValid &&
+    input.effectivePublication.every((row) => row.release_epoch === canonicalReleaseEpoch) &&
+    input.registry.every((row) => row.release_epoch === canonicalReleaseEpoch);
+  const acceptanceArtifacts = summarizeAcceptanceArtifacts(
+    input.releaseArtifacts,
+    input.authoritativeGate,
+    input.appIdentity,
+    now,
+  );
+  const authoritativeGate = summarizeAuthoritativeGate(
+    input.authoritativeGate,
+    input.releaseArtifacts,
+    now,
+    atomicRelease,
+  );
   const laneIdentityIssue = downstreamLaneIdentityIssue(input.lanes);
   const loadErrors = uniqueText(input.loadErrors || []);
   const unknownReasons = [
@@ -304,18 +400,9 @@ export function summarizeStage1BetaReleaseGate(
       : []),
     ...lanes.filter((lane) => lane.status === "unknown").map((lane) => lane.detail),
     ...(recovery.status === "unknown" ? [recovery.detail] : []),
+    ...(authoritativeGate.status === "unknown" ? [authoritativeGate.detail] : []),
     ...acceptanceArtifacts.filter((artifact) => artifact.status === "unknown").map((artifact) => artifact.detail),
   ];
-  const visibleCount = input.effectivePublication.filter((row) => row.effectively_verified).length;
-  const releaseStates = uniqueText(input.effectivePublication.map((row) => row.release_state));
-  const releaseEpochs = uniqueText(input.effectivePublication.map((row) => row.release_epoch || ""));
-  const releaseReasons = uniqueText(input.effectivePublication.map((row) => row.effective_reason));
-  const registryEpochs = uniqueText(input.registry.map((row) => row.release_epoch || ""));
-  const atomicRelease = visibleCount === stage1ReleaseAwardCount &&
-    input.effectivePublication.length === stage1ReleaseAwardCount &&
-    releaseStates.length === 1 && releaseStates[0] === "verified_beta" &&
-    releaseEpochs.length === 1 && registryEpochs.length === 1 &&
-    releaseEpochs[0] === registryEpochs[0];
   const cohortIdentityMismatch = stage1CohortIdentityMismatch(input.registry);
   const releaseClaimsActive = releaseStates.length === 1 && releaseStates[0] === "verified_beta";
   const blockers = [
@@ -323,6 +410,12 @@ export function summarizeStage1BetaReleaseGate(
       ? []
       : [`The Stage 1 registry contains ${input.registry.length} awards; exactly 25 are required.`]),
     ...(cohortIdentityMismatch ? [cohortIdentityMismatch] : []),
+    ...(!registryReleaseContractsValid
+      ? [`Every Stage 1 registry row must use ${expectedPolicyVersion}.`]
+      : []),
+    ...(!effectiveReleaseContractsValid
+      ? ["Every effective publication row must match the reviewed Stage 1 release policy and cohort identity."]
+      : []),
     ...(visibleCount !== 0 && visibleCount !== stage1ReleaseAwardCount
       ? [`The publication result is partial (${visibleCount}/25); public release must fail closed to zero.`]
       : []),
@@ -348,6 +441,7 @@ export function summarizeStage1BetaReleaseGate(
     ),
     ...lanes.filter((lane) => lane.status === "hold").map((lane) => lane.detail),
     ...(recovery.status === "hold" ? [recovery.detail] : []),
+    ...(authoritativeGate.status === "hold" ? [authoritativeGate.detail] : []),
     ...acceptanceArtifacts.filter((artifact) => artifact.status === "hold").map((artifact) => artifact.detail),
   ];
   const cleanUnknownReasons = uniqueText(unknownReasons);
@@ -357,9 +451,17 @@ export function summarizeStage1BetaReleaseGate(
     : cleanBlockers.length > 0
       ? "HOLD"
       : "READY";
+  const phase: Stage1ReleasePhase = state === "UNKNOWN"
+    ? "unknown"
+    : state === "HOLD"
+      ? "hold"
+      : atomicRelease
+        ? "active_ready"
+        : "preactivation_ready";
 
   return {
     state,
+    phase,
     generatedAt: validDate(now) ? now.toISOString() : new Date(0).toISOString(),
     awards,
     registryCount: input.registry.length,
@@ -367,7 +469,7 @@ export function summarizeStage1BetaReleaseGate(
     expectedAwardCount: stage1ReleaseAwardCount,
     release: {
       state: releaseStates.length === 1 ? releaseStates[0] : "mixed_or_missing",
-      epoch: releaseEpochs.length === 1 ? releaseEpochs[0] : null,
+      epoch: canonicalReleaseEpoch,
       effectiveReason: releaseReasons.length === 1 ? releaseReasons[0] : "mixed_or_missing",
       atomic: atomicRelease,
     },
@@ -378,8 +480,9 @@ export function summarizeStage1BetaReleaseGate(
     budgets,
     lanes,
     recovery,
+    authoritativeGate,
     acceptanceArtifacts,
-    safeNextAction: safeNextAction(state, cleanUnknownReasons, cleanBlockers),
+    safeNextAction: safeNextAction(phase, cleanUnknownReasons, cleanBlockers),
     blockers: cleanBlockers,
     unknownReasons: cleanUnknownReasons,
   };
@@ -421,16 +524,47 @@ function summarizeRecovery(
 
 function summarizeAcceptanceArtifacts(
   artifacts: Stage1ReleaseGateInput["releaseArtifacts"],
+  authoritativeGate: Stage1ReleaseGateInput["authoritativeGate"],
   appIdentity: Stage1AppIdentity,
   now: Date,
 ): Stage1ReleaseArtifactCheck[] {
   const labels: Record<Stage1ReleaseArtifactKind, string> = {
+    hosted_runtime_identity: "Hosted runtime and Auth identity",
     rollback_drill: "Rollback and restoration drill",
     non_cohort_leak_crawl: "Anonymous non-cohort leak crawl",
     r2_recovery_drill: "Hash-verified R2 recovery drill",
     visual_crop_coverage: "Verified event-crop coverage",
   };
   return stage1ReleaseArtifactKinds.map((kind) => {
+    if (!authoritativeGate) {
+      return {
+        kind,
+        label: labels[kind],
+        status: "unknown",
+        artifactId: null,
+        authoritativeArtifactId: null,
+        completedAt: null,
+        validUntil: null,
+        evidenceHash: null,
+        authoritativeEvidenceHash: null,
+        detail: `${labels[kind]} cannot be verified because the authoritative database gate snapshot is unavailable.`,
+      };
+    }
+    const authoritativeBinding = authoritativeGate.artifactBindings[kind];
+    if (!authoritativeBinding.artifactId || !authoritativeBinding.evidenceHash) {
+      return {
+        kind,
+        label: labels[kind],
+        status: "hold",
+        artifactId: null,
+        authoritativeArtifactId: null,
+        completedAt: null,
+        validUntil: null,
+        evidenceHash: null,
+        authoritativeEvidenceHash: null,
+        detail: `${labels[kind]} has no database-authoritative current-valid artifact binding.`,
+      };
+    }
     const artifact = artifacts[kind];
     if (!artifact) {
       return {
@@ -438,41 +572,148 @@ function summarizeAcceptanceArtifacts(
         label: labels[kind],
         status: "hold",
         artifactId: null,
+        authoritativeArtifactId: authoritativeBinding.artifactId,
         completedAt: null,
         validUntil: null,
         evidenceHash: null,
-        detail: `${labels[kind]} has no retained release-bound proof artifact.`,
+        authoritativeEvidenceHash: authoritativeBinding.evidenceHash,
+        detail: `${labels[kind]} authoritative binding does not resolve to its exact retained artifact row.`,
       };
     }
+    const authoritativeBindingMatches =
+      artifact.id === authoritativeBinding.artifactId &&
+      artifact.evidence_hash === authoritativeBinding.evidenceHash;
     const identityMatches = artifact.artifact_kind === kind &&
-      artifact.cohort_identity_version === "stage1-national-25-v1" &&
-      artifact.cohort_identity_hash === "60261d07d5918554d0fb0b4ab895dbef3d57973f0a5b8d277ad0b128611d801e" &&
+      artifact.cohort_identity_version === stage1CohortIdentityVersion &&
+      artifact.cohort_identity_hash === stage1CohortIdentityHash &&
       artifact.policy_version === expectedPolicyVersion &&
-      artifact.app_revision === appIdentity.revision;
+      artifact.app_revision === appIdentity.revision &&
+      (kind !== "hosted_runtime_identity" || artifact.environment === "production");
     const timeValid = validTimestamp(artifact.started_at) && validTimestamp(artifact.completed_at) &&
       validTimestamp(artifact.valid_until) && Date.parse(artifact.started_at) <= Date.parse(artifact.completed_at) &&
       Date.parse(artifact.completed_at) <= now.getTime() + futureClockToleranceMs &&
-      Date.parse(artifact.valid_until) > now.getTime();
+      Date.parse(artifact.valid_until) > now.getTime() &&
+      (kind !== "hosted_runtime_identity" || hostedRuntimeTimeValid(artifact, now));
     const evidenceValid = /^[0-9a-f]{64}$/.test(artifact.evidence_hash) &&
-      releaseArtifactEvidenceValid(kind, artifact.evidence);
-    const passed = artifact.status === "passed" && identityMatches && timeValid && evidenceValid;
+      releaseArtifactEvidenceValid(kind, artifact.evidence, artifact, appIdentity);
+    const passed = authoritativeBindingMatches && artifact.status === "passed" &&
+      identityMatches && timeValid && evidenceValid;
     return {
       kind,
       label: labels[kind],
       status: passed ? "pass" : "hold",
       artifactId: artifact.id,
+      authoritativeArtifactId: authoritativeBinding.artifactId,
       completedAt: artifact.completed_at,
       validUntil: artifact.valid_until,
       evidenceHash: artifact.evidence_hash,
+      authoritativeEvidenceHash: authoritativeBinding.evidenceHash,
       detail: passed
-        ? `${labels[kind]} passed with current cohort, policy, app, and evidence hashes.`
-        : `${labels[kind]} is failed, stale, malformed, or bound to a different release identity.`,
+        ? `${labels[kind]} passed and matches the database-authoritative current-valid ID and evidence hash.`
+        : authoritativeBindingMatches
+          ? `${labels[kind]} is failed, stale, malformed, or bound to a different release identity.`
+          : `${labels[kind]} does not match the database-authoritative current-valid ID and evidence hash.`,
     };
   });
 }
 
-function releaseArtifactEvidenceValid(kind: Stage1ReleaseArtifactKind, value: Json) {
+function summarizeAuthoritativeGate(
+  snapshot: Stage1ReleaseGateInput["authoritativeGate"],
+  artifacts: Stage1ReleaseGateInput["releaseArtifacts"],
+  now: Date,
+  atomicRelease: boolean,
+): Stage1AuthoritativeGateCheck {
+  if (!snapshot) {
+    return {
+      status: "unknown",
+      databaseState: null,
+      generatedAt: null,
+      stateHash: null,
+      failures: [],
+      productionTargetConfigured: null,
+      vaultApiSurfaceSafe: null,
+      serviceRoleDataApiProfileBlocked: null,
+      profileHttpStatus: null,
+      profilePostgrestCode: null,
+      currentValidArtifactBindings: 0,
+      requiredArtifactBindings: stage1ReleaseArtifactKinds.length,
+      detail: "The database-authoritative release-gate snapshot is unavailable or malformed.",
+    };
+  }
+
+  const generatedAt = Date.parse(snapshot.generatedAt);
+  const snapshotCurrent = Number.isFinite(generatedAt) &&
+    generatedAt >= now.getTime() - authoritativeSnapshotFreshnessMs &&
+    generatedAt <= now.getTime() + futureClockToleranceMs;
+  const currentValidArtifactBindings = stage1ReleaseArtifactKinds.filter((kind) => {
+    const binding = snapshot.artifactBindings[kind];
+    const artifact = artifacts[kind];
+    return Boolean(
+      binding.artifactId &&
+      binding.evidenceHash &&
+      artifact &&
+      artifact.id === binding.artifactId &&
+      artifact.evidence_hash === binding.evidenceHash,
+    );
+  }).length;
+  const expectedPostActivationFailure = "release_state_not_closed_or_mismatched";
+  const databaseFailureContractSafe =
+    (snapshot.state === "READY" && snapshot.failures.length === 0) ||
+    (atomicRelease &&
+      snapshot.state === "HOLD" &&
+      snapshot.failures.length === 1 &&
+      snapshot.failures[0] === expectedPostActivationFailure);
+  const failures = [
+    ...(!snapshotCurrent ? ["the authoritative snapshot is not current"] : []),
+    ...(!databaseFailureContractSafe
+      ? [atomicRelease
+          ? "the database gate contains failures beyond the single expected post-activation release-state failure"
+          : "the pre-activation database gate is not READY with zero failures"]
+      : []),
+    ...(!snapshot.productionTargetConfigured ? ["the production target is not configured"] : []),
+    ...(!snapshot.vaultSecurity.apiSurfaceSafe ? ["the Vault API surface is unsafe"] : []),
+    ...(!snapshot.vaultSecurity.serviceRoleDataApiProfileBlocked
+      ? ["the service-role Data API can reach the Vault profile"]
+      : []),
+    ...(currentValidArtifactBindings !== stage1ReleaseArtifactKinds.length
+      ? [`only ${currentValidArtifactBindings}/${stage1ReleaseArtifactKinds.length} current-valid artifact bindings resolve exactly`]
+      : []),
+  ];
+  const status: ReleaseCheckState = failures.length === 0 ? "pass" : "hold";
+  const reportedFailures = snapshot.failures.length > 0
+    ? ` Database gate reports ${snapshot.state}: ${snapshot.failures.join(", ")}.`
+    : ` Database gate reports ${snapshot.state} with no failures.`;
+
+  return {
+    status,
+    databaseState: snapshot.state,
+    generatedAt: snapshot.generatedAt,
+    stateHash: snapshot.stateHash,
+    failures: snapshot.failures,
+    productionTargetConfigured: snapshot.productionTargetConfigured,
+    vaultApiSurfaceSafe: snapshot.vaultSecurity.apiSurfaceSafe,
+    serviceRoleDataApiProfileBlocked:
+      snapshot.vaultSecurity.serviceRoleDataApiProfileBlocked,
+    profileHttpStatus: snapshot.vaultSecurity.profileHttpStatus,
+    profilePostgrestCode: snapshot.vaultSecurity.profilePostgrestCode,
+    currentValidArtifactBindings,
+    requiredArtifactBindings: stage1ReleaseArtifactKinds.length,
+    detail: status === "pass"
+      ? `The database current-valid selectors bind all ${stage1ReleaseArtifactKinds.length} exact artifact IDs and evidence hashes; the production target, Vault controls, and database failure contract are safe.${reportedFailures}`
+      : `Database authority is not release-safe: ${failures.join("; ")}.${reportedFailures}`,
+  };
+}
+
+function releaseArtifactEvidenceValid(
+  kind: Stage1ReleaseArtifactKind,
+  value: Json,
+  artifact: Stage1ReleaseArtifact,
+  appIdentity: Stage1AppIdentity,
+) {
   if (!isObject(value)) return false;
+  if (kind === "hosted_runtime_identity") {
+    return hostedRuntimeEvidenceValid(value, artifact, appIdentity);
+  }
   if (kind === "rollback_drill") {
     return value.rollback_succeeded === true && value.restore_succeeded === true &&
       Boolean(cleanText(value.before_state_hash)) && Boolean(cleanText(value.rollback_state_hash)) &&
@@ -492,12 +733,108 @@ function releaseArtifactEvidenceValid(kind: Stage1ReleaseArtifactKind, value: Js
     value.r2_hashes_verified === true && /^[0-9a-f]{64}$/.test(cleanText(value.coverage_set_hash));
 }
 
+function hostedRuntimeTimeValid(artifact: Stage1ReleaseArtifact, now: Date) {
+  const startedAt = Date.parse(artifact.started_at);
+  const completedAt = Date.parse(artifact.completed_at);
+  const validUntil = Date.parse(artifact.valid_until);
+  if (
+    !Number.isFinite(startedAt) ||
+    !Number.isFinite(completedAt) ||
+    !Number.isFinite(validUntil)
+  ) return false;
+  return completedAt >= now.getTime() - hostedRuntimeFreshnessMs &&
+    validUntil <= completedAt + hostedRuntimeMaximumValidityMs;
+}
+
+function hostedRuntimeEvidenceValid(
+  value: Record<string, unknown>,
+  artifact: Stage1ReleaseArtifact,
+  appIdentity: Stage1AppIdentity,
+) {
+  const sha256 = /^[0-9a-f]{64}$/;
+  const measurementId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  const projectRef = cleanText(value.supabase_project_ref);
+  const productionOrigin = cleanText(value.production_app_origin);
+  const supabaseOrigin = cleanText(value.supabase_origin);
+  const measuredAt = Date.parse(cleanText(value.measured_at));
+  const observedAt = Date.parse(cleanText(value.observed_at));
+  const startedAt = Date.parse(artifact.started_at);
+  const completedAt = Date.parse(artifact.completed_at);
+  const measurementWindowValid = Number.isFinite(measuredAt) &&
+    measuredAt >= startedAt - futureClockToleranceMs &&
+    measuredAt <= completedAt + futureClockToleranceMs;
+  const observationWindowValid = Number.isFinite(observedAt) &&
+    Math.abs(completedAt - observedAt) <= futureClockToleranceMs;
+
+  return value.producer_contract === "awardping.stage1.release-evidence-producer.v2" &&
+    sha256.test(cleanText(value.producer_source_sha256)) &&
+    measurementId.test(cleanText(value.measurement_id)) &&
+    measurementWindowValid &&
+    positiveIntegerScalar(value.target_config_version) &&
+    sha256.test(cleanText(value.target_config_hash)) &&
+    productionOrigin.startsWith("https://") &&
+    /^[a-z0-9]{20}$/.test(projectRef) &&
+    supabaseOrigin === `https://${projectRef}.supabase.co` &&
+    value.schema_version === "awardping.stage1.hosted-runtime-identity.v2" &&
+    value.measurement_method === "direct_no_redirect_https_and_vault_profile_get_v2" &&
+    value.disable_signup === true &&
+    value.identity_http_status === 200 &&
+    value.auth_http_status === 200 &&
+    value.identity_redirected === false &&
+    value.auth_redirected === false &&
+    value.base_url === productionOrigin &&
+    value.identity_url === `${productionOrigin}/api/monitoring-policy-identity` &&
+    value.auth_settings_url === `${supabaseOrigin}/auth/v1/settings` &&
+    value.deployment_provider === "vercel" &&
+    Boolean(cleanText(value.deployment_project_id)) &&
+    value.app_revision === artifact.app_revision &&
+    value.app_revision === appIdentity.revision &&
+    value.policy_hash === appIdentity.policy_hash &&
+    value.batch_policy_hash === appIdentity.batch_policy_hash &&
+    value.suppression_policy_hash === appIdentity.suppression_policy_hash &&
+    value.matcher_hash === appIdentity.matcher_hash &&
+    sha256.test(cleanText(value.matcher_hash)) &&
+    sha256.test(cleanText(value.identity_response_sha256)) &&
+    sha256.test(cleanText(value.auth_response_sha256)) &&
+    value.vault_profile_url ===
+      `${supabaseOrigin}/rest/v1/decrypted_secrets?select=id&limit=1` &&
+    value.vault_profile_http_status === 406 &&
+    value.vault_profile_postgrest_code === "PGRST106" &&
+    value.vault_profile_exposed === false &&
+    value.vault_profile_redirected === false &&
+    sha256.test(cleanText(value.vault_profile_response_sha256)) &&
+    observationWindowValid;
+}
+
+function positiveIntegerScalar(value: unknown) {
+  return (typeof value === "number" || typeof value === "string") &&
+    /^[1-9][0-9]*$/.test(String(value));
+}
+
 function positiveInteger(value: unknown) {
   return Number.isInteger(value) && Number(value) > 0;
 }
 
 function nonNegativeInteger(value: unknown) {
   return Number.isInteger(value) && Number(value) >= 0;
+}
+
+function effectivePublicationIdentityValid(row: Stage1EffectivePublication) {
+  return row.release_policy_version === expectedPolicyVersion &&
+    row.release_identity_version === stage1CohortIdentityVersion &&
+    row.release_identity_hash === stage1CohortIdentityHash;
+}
+
+function effectivePublicationContractValid(
+  row: Stage1EffectivePublication | null,
+  registryEpoch: string | null,
+) {
+  if (!row || !effectivePublicationIdentityValid(row)) return false;
+  if (row.release_state === "verified_beta") {
+    return isCanonicalStage1ReleaseEpoch(row.release_epoch) &&
+      row.release_epoch === registryEpoch;
+  }
+  return row.release_epoch === null && registryEpoch === null;
 }
 
 function summarizeAward({
@@ -522,21 +859,25 @@ function summarizeAward({
     const manifest = manifestByRole.get(role);
     return manifest ? manifestComplete(manifest) : false;
   });
-  const freshRoles = stage1ReleaseManifestRoles.filter((role) => {
+  const verifiedRoles = stage1ReleaseManifestRoles.filter((role) => {
     const manifest = manifestByRole.get(role);
-    return manifest ? manifestComplete(manifest) && manifestFresh(manifest, now) : false;
+    return manifest
+      ? manifestComplete(manifest) && manifestVerificationTimeValid(manifest, now)
+      : false;
   });
   const missingRoles = stage1ReleaseManifestRoles.filter((role) => !completedRoles.includes(role));
-  const evidenceFresh = registry.policy_version === expectedPolicyVersion &&
-    timestampFresh(registry.evidence_checked_at, now) &&
-    timestampFresh(registry.last_verified_at, now);
-  const reconciliationFresh = reconciliation?.status === "succeeded" &&
-    timestampFresh(reconciliation.completed_at, now);
-  const auditFresh = audit?.audit_status === "passed" && timestampFresh(audit.created_at, now);
+  const verificationEpochValid = registry.policy_version === expectedPolicyVersion &&
+    effectivePublicationContractValid(effective, registry.release_epoch) &&
+    durableTimestampValid(registry.evidence_checked_at, now) &&
+    durableTimestampValid(registry.last_verified_at, now);
+  const reconciliationValid = reconciliation?.status === "succeeded" &&
+    durableTimestampValid(reconciliation.completed_at, now);
+  const auditValid = audit?.audit_status === "passed" &&
+    durableTimestampValid(audit.created_at, now);
   const effectivelyVisible = effective?.effectively_verified === true;
   const cohortReady = effective?.cohort_ready === true;
-  const status = cohortReady && evidenceFresh && completedRoles.length === stage1ReleaseManifestRoles.length &&
-    freshRoles.length === stage1ReleaseManifestRoles.length && reconciliationFresh && auditFresh && quarantineCount === 0
+  const status = cohortReady && verificationEpochValid && completedRoles.length === stage1ReleaseManifestRoles.length &&
+    verifiedRoles.length === stage1ReleaseManifestRoles.length && reconciliationValid && auditValid && quarantineCount === 0
     ? "ready"
     : "hold";
 
@@ -550,17 +891,17 @@ function summarizeAward({
       : cleanText(effective?.cohort_readiness_reason) || "Award-level publication readiness is missing.",
     cohortReady,
     effectivelyVisible,
-    evidenceFresh,
+    verificationEpochValid,
     evidenceCheckedAt: registry.evidence_checked_at,
     completedManifestRoles: completedRoles.length,
-    freshManifestRoles: freshRoles.length,
+    verifiedManifestRoles: verifiedRoles.length,
     missingManifestRoles: missingRoles,
     reconciliationStatus: reconciliation?.status || "missing",
     reconciliationAt: reconciliation?.completed_at || reconciliation?.created_at || null,
-    reconciliationFresh,
+    reconciliationValid,
     auditStatus: audit?.audit_status || "missing",
     auditAt: audit?.created_at || null,
-    auditFresh,
+    auditValid,
     quarantineCount,
     status,
   };
@@ -575,17 +916,17 @@ function missingAward(launchRank: number): Stage1ReleaseAwardSummary {
     effectiveReason: "No registry row exists for this required release position.",
     cohortReady: false,
     effectivelyVisible: false,
-    evidenceFresh: false,
+    verificationEpochValid: false,
     evidenceCheckedAt: null,
     completedManifestRoles: 0,
-    freshManifestRoles: 0,
+    verifiedManifestRoles: 0,
     missingManifestRoles: [...stage1ReleaseManifestRoles],
     reconciliationStatus: "missing",
     reconciliationAt: null,
-    reconciliationFresh: false,
+    reconciliationValid: false,
     auditStatus: "missing",
     auditAt: null,
-    auditFresh: false,
+    auditValid: false,
     quarantineCount: 0,
     status: "hold",
   };
@@ -1087,12 +1428,19 @@ function manifestComplete(manifest: ManifestRow) {
     (manifest.manifest_status === "not_published" || factCandidates.length > 0);
 }
 
-function manifestFresh(manifest: ManifestRow, now: Date) {
+function manifestVerificationTimeValid(manifest: ManifestRow, now: Date) {
   if (!isObject(manifest.evidence)) return false;
-  return timestampFresh(manifest.checked_at, now) &&
-    timestampFresh(cleanText(manifest.evidence.captured_at), now) &&
-    timestampFresh(cleanText(manifest.evidence.r2_verified_at), now) &&
-    timestampFresh(cleanText(manifest.evidence.local_verified_at), now);
+  return durableTimestampValid(manifest.checked_at, now) &&
+    durableTimestampValid(cleanText(manifest.evidence.captured_at), now) &&
+    durableTimestampValid(cleanText(manifest.evidence.r2_verified_at), now) &&
+    durableTimestampValid(cleanText(manifest.evidence.local_verified_at), now);
+}
+
+function durableTimestampValid(value: string | null | undefined, now: Date) {
+  const timestamp = Date.parse(value || "");
+  const nowMs = now.getTime();
+  return Number.isFinite(timestamp) && Number.isFinite(nowMs) &&
+    timestamp <= nowMs + futureClockToleranceMs;
 }
 
 function timestampFresh(value: string | null | undefined, now: Date) {
@@ -1102,9 +1450,10 @@ function timestampFresh(value: string | null | undefined, now: Date) {
     timestamp >= nowMs - evidenceFreshnessMs && timestamp <= nowMs + futureClockToleranceMs;
 }
 
-function safeNextAction(state: ReleaseGateState, unknownReasons: string[], blockers: string[]) {
-  if (state === "READY") return "All pre-release checks pass. Record and review immutable acceptance evidence before the separate activation step.";
-  if (state === "UNKNOWN") return `Keep release closed and restore the missing verification: ${unknownReasons[0] || "release evidence unavailable"}`;
+function safeNextAction(phase: Stage1ReleasePhase, unknownReasons: string[], blockers: string[]) {
+  if (phase === "preactivation_ready") return "All pre-activation checks pass and the cohort remains private. Review the immutable acceptance evidence, then run the separate atomic activation step.";
+  if (phase === "active_ready") return "Stage 1 is active and all release checks pass. Continue normal monitoring; any new blocker must fail closed before the next publication change.";
+  if (phase === "unknown") return `Keep release closed and restore the missing verification: ${unknownReasons[0] || "release evidence unavailable"}`;
   return `Keep release on hold and resolve: ${blockers[0] || "the first reported blocker"}`;
 }
 

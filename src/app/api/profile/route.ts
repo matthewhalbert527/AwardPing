@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentUser } from "@/lib/auth";
-import { encryptedProfileFields } from "@/lib/personal-data";
+import {
+  encryptedProfileFields,
+  PersonalDataUnavailableError,
+} from "@/lib/personal-data";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -25,6 +28,24 @@ export async function PATCH(request: Request) {
     );
   }
 
+  let protectedProfileFields: ReturnType<typeof encryptedProfileFields>;
+  try {
+    protectedProfileFields = encryptedProfileFields({
+      email: user.email,
+      fullName: parsed.data.fullName,
+      organization: parsed.data.organization,
+    });
+  } catch (error) {
+    if (!(error instanceof PersonalDataUnavailableError)) throw error;
+    return NextResponse.json(
+      {
+        error:
+          "Profile protection is not configured, so no profile data was saved. Try again after an administrator resolves it.",
+      },
+      { status: 503 },
+    );
+  }
+
   const admin = createSupabaseAdminClient();
   const { data: profile, error } = await admin
     .from("profiles")
@@ -32,16 +53,12 @@ export async function PATCH(request: Request) {
       {
         id: user.id,
         email: user.email || null,
-        ...encryptedProfileFields({
-          email: user.email,
-          fullName: parsed.data.fullName,
-          organization: parsed.data.organization,
-        }),
+        ...protectedProfileFields,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "id" },
     )
-    .select("*")
+    .select("id")
     .single();
 
   if (error || !profile) {
@@ -51,5 +68,8 @@ export async function PATCH(request: Request) {
     );
   }
 
-  return NextResponse.json({ ok: true, profile });
+  return NextResponse.json({
+    ok: true,
+    profile: { id: profile.id, personalDataStatus: "available" },
+  });
 }

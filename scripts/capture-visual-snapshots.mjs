@@ -4,15 +4,19 @@ import {
   appendFileSync,
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   DeleteObjectCommand,
+  GetObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -20,6 +24,7 @@ import { PDFParse } from "pdf-parse";
 import { chromium } from "playwright-core";
 import sharp from "sharp";
 import { deterministicNoiseBaselineDisposition } from "./lib/deterministic-noise-disposition.mjs";
+import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
 import { runGeminiCliJsonAnalysis } from "./lib/gemini-cli-analysis.mjs";
 import {
   aiReviewLooksLikeRelativeAgeOnlyChange,
@@ -54,22 +59,53 @@ import {
   monitoringDateForTimestamp,
   monitoringDateForVisualReportFilename,
   shouldReplaceLatestNightlyReport,
+  visualRunTerminalDisposition,
 } from "./lib/visual-capture-run-report.mjs";
-import { isScheduledNightlyVisualRun } from "./lib/visual-nightly-run-contract.mjs";
+import {
+  classifyScheduledNightlyVisualRun,
+  isScheduledNightlyVisualRun,
+  resolveVisualDiscoveryConfiguration,
+} from "./lib/visual-nightly-run-contract.mjs";
 import { buildVisualSourceInventoryProof } from "./lib/visual-source-inventory-proof.mjs";
 import { advanceVisualSnapshotPointer } from "./lib/visual-snapshot-pointer.mjs";
+import { reconcileVisualSnapshotPointerAdvance } from "./lib/visual-snapshot-pointer-reconciliation.mjs";
+import { baselineMatchesRetainedProjectionCapture } from "./lib/visual-baseline-retained-projection-identity.mjs";
+import {
+  assertR2CaptureArtifactIdentity,
+  assertR2CaptureArtifactSlots,
+  collectR2CaptureArtifactFiles,
+  isR2CaptureGeometryReady,
+  prepareR2CaptureArtifacts,
+  projectRetainedCaptureArtifacts,
+  projectRetainedCaptureArtifactsForMaterialization,
+  r2CaptureArtifactBindingsSchema,
+  retainedCaptureArtifactProjectionSchema,
+} from "./lib/r2-capture-artifact-bindings.mjs";
 import {
   refreshedLatestVisualSnapshotHistory,
   rotatedVisualSnapshotHistory,
-  visualSnapshotKeysToDeleteAfterCas,
-  visualSnapshotUploadedKeysToDeleteAfterLostCas,
 } from "./lib/visual-snapshot-history.mjs";
-import { bindVisualTextGeometry } from "./lib/visual-event-localization.mjs";
+import {
+  bindVisualTextGeometry,
+  verifyVisualScreenshotLayoutCapture,
+} from "./lib/visual-event-localization.mjs";
 import { captureVisibleTextGeometry } from "./lib/visible-text-geometry.mjs";
 import {
+  discoverExpansionStateDescriptors,
   verifyExpansionStateIsolation,
   withIsolatedExpansionStatePage,
 } from "./lib/expansion-state-isolation.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  conservativeExpansionStateCaptureCoverage,
+  expansionStateCaptureCoverage,
+  expansionStateCaptureCoverageLegacyMirrors,
+  expansionStateCaptureBudgetMs,
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+  summarizeExpansionStateCapture,
+} from "./lib/expansion-state-descriptor-canonicalization.mjs";
 import {
   buildStableTextBlocks,
   captureProfileSettings,
@@ -93,21 +129,133 @@ import {
   selectAiProvider as selectAiProviderForRun,
 } from "./lib/capture-ai-requirements.mjs";
 import { inspectLocalBaselineEvidence } from "./lib/local-baseline-evidence.mjs";
-import { rehydrateLocalBaselineFromR2 } from "./lib/r2-baseline-rehydration.mjs";
+import {
+  isExactHeldR2RepairTarget,
+  rehydrateLocalBaselineFromR2,
+} from "./lib/r2-baseline-rehydration.mjs";
 import {
   intakeArtifactFailureSolution,
   materializeFirstObservationCaptureFromAcquisition,
+  prepareAcquisitionCaptureMetadataForProjection,
 } from "./lib/intake-artifact-retention.mjs";
 import {
   sourceBaselineFacts,
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
+import {
+  buildStage1BaselineActivationFailureRpcArgs,
+  buildStage1BaselineActivationFinalizeRpcArgs,
+  buildStage1BaselineActivationRecordRpcArgs,
+  evaluateStage1FirstVisualBaselineActivation,
+  isStage1BaselineActivationAcquisition,
+  isStage1PendingBaselineActivationSource,
+  stage1BaselineActivationPersistedTextIdentity,
+  stage1BaselineActivationFinalizationReceipt,
+  stage1BaselineActivationReceipt,
+} from "./lib/stage1-baseline-activation-guard.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS,
+  assertExactStage1EvidenceSchemaUpgradeSourceIds,
+  assertStage1EvidenceSchemaUpgradeCliContract,
+  buildStage1EvidenceSchemaUpgradeFailureResult,
+  createStage1EvidenceSchemaUpgradeReport,
+  runStage1EvidenceSchemaUpgradeSource,
+  stage1EvidenceSchemaUpgradeCanonicalTimestamp,
+  stage1EvidenceSchemaUpgradeFinalizationReceiptSha256,
+  validateStage1EvidenceSchemaUpgradeManifest,
+} from "./lib/stage1-evidence-schema-upgrade.mjs";
+import {
+  comparePreciseRfc3339,
+} from "./lib/monitoring-feedback-promotion-verification.mjs";
+import {
+  validateStage1EvidenceSchemaUpgradeReviewedApplyPlan,
+} from "./lib/stage1-evidence-schema-upgrade-reviewed-apply-plan.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_AUDIT_MODE,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_AUDIT_ROW_COLUMNS,
+  inspectStage1EvidenceSchemaUpgradeCompletedAuthorityAuditRow,
+  finishStage1EvidenceSchemaUpgradeReviewedApplyAudit,
+  stage1EvidenceSchemaUpgradeReviewedApplyAuthorityReceipt,
+  stage1EvidenceSchemaUpgradeReviewedApplyAuditRunId,
+  stage1EvidenceSchemaUpgradeReviewedApplyFreshCaptureEvidence,
+  startStage1EvidenceSchemaUpgradeReviewedApplyAudit,
+} from "./lib/stage1-evidence-schema-upgrade-reviewed-apply-audit.mjs";
+import {
+  assertStage1EvidenceSchemaUpgradeCompletedAuthorityReceipt,
+  evaluateStage1EvidenceSchemaUpgradeCompletedAuthority,
+} from "./lib/stage1-evidence-schema-upgrade-completed-authority.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_HEALTH_AUTHORITY_COLUMNS,
+} from "./lib/stage1-evidence-schema-upgrade-reviewed-source-authority.mjs";
+import {
+  runStage1EvidenceSchemaUpgradeReviewedApplyExecution,
+  stage1EvidenceSchemaUpgradeReviewedApplyTransactionId,
+} from "./lib/stage1-evidence-schema-upgrade-reviewed-apply-execution.mjs";
+import {
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS,
+  evaluateStage1EvidenceSchemaUpgradeCapture,
+} from "./lib/stage1-evidence-schema-upgrade-validation.mjs";
+import {
+  STAGE1_SCHWARZMAN_PDF_RECOVERY_SOURCE_ID,
+  assertStage1SchwarzmanPdfRecoveryCandidateNotFenced,
+  commitStage1SchwarzmanPdfRecoveryCandidateFiles,
+  evaluateStage1SchwarzmanPdfRecovery,
+  loadStage1SchwarzmanPdfRecoveryCandidatePreimages,
+  loadStage1SchwarzmanPdfSealedIntakeArtifacts,
+} from "./lib/stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs";
+import {
+  verifyStage1EvidenceSchemaUpgradeR2Binding,
+} from "./lib/stage1-evidence-schema-upgrade-r2-binding.mjs";
+import {
+  runStage1EvidenceSchemaUpgradeCommit,
+} from "./lib/stage1-evidence-schema-upgrade-commit.mjs";
+import {
+  buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs,
+  prepareStage1EvidenceSchemaUpgradeQuarantineValidation,
+  stage1EvidenceSchemaUpgradeQuarantineSafeAction,
+  stage1EvidenceSchemaUpgradeQuarantineReceipt,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_CANDIDATE_ARTIFACTS_SCHEMA,
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_EVIDENCE_SCHEMA,
+} from "./lib/stage1-evidence-schema-upgrade-quarantine.mjs";
+import {
+  sealStage1EvidenceSchemaUpgradeMutationAccounting,
+} from "./lib/stage1-evidence-schema-upgrade-mutation-accounting.mjs";
+import {
+  assertStage1EvidenceSchemaUpgradeJournal,
+  buildStage1EvidenceSchemaUpgradeReviewedOperationBinding,
+  proveStage1EvidenceSchemaUpgradeArchivedCompletion,
+  stage1EvidenceSchemaUpgradeReviewedAuthorityReceiptSha256,
+} from "./lib/stage1-evidence-schema-upgrade-transaction.mjs";
+import {
+  buildLatestOnlyVisualSnapshotPointerReplacement,
+  visualSnapshotPointerIdentity,
+} from "./lib/visual-snapshot-latest-only-reconciliation.mjs";
 import { monitoringPromotionMatcherBundleHash } from "./lib/monitoring-promotion-matcher-bundle.mjs";
 import { insertedDiscoveryRows } from "./lib/source-discovery-write.mjs";
 import {
   buildDiscoveredPdfIntakeRequest,
+  captureIntakePage,
   normalizeSourceIntakeUrl,
 } from "./lib/source-intake.mjs";
+import {
+  fetchPublicHttpBuffer,
+  fetchPublicHttpResponse,
+  normalizePublicHttpUrl,
+  startPublicNetworkProxy,
+} from "./lib/public-network-safety.mjs";
+import {
+  assertCaptureNetworkWithinLimits,
+  assertCaptureRenderWithinLimits,
+  assertCaptureScreenshotBytes,
+  assertCaptureScreenshotDimensions,
+  captureBoundedBodyInnerText,
+  errorChainHasCode,
+  finalizeCaptureNetworkBoundary,
+  isCaptureResourceLimitError,
+} from "./lib/capture-resource-limits.mjs";
 import {
   buildVisualReviewPromptPayload,
   buildVisualReviewPromptText,
@@ -116,6 +264,8 @@ import {
   currentMonitoringPolicyAuditIdentity,
   currentVisualReviewPolicyIdentity,
   normalizeVisualReviewMode,
+  visualReviewEnqueueContexts,
+  visualReviewEnqueuePolicy,
   visualReviewCandidateSignature,
   visualReviewEvidenceSignature,
   stableJsonStringify,
@@ -133,17 +283,38 @@ import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+const stage1EvidenceSchemaUpgradeReviewedApplyAuditProjection =
+  STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_AUDIT_ROW_COLUMNS.join(",");
 const monitoringPromotionMatcherDigest =
   monitoringPromotionMatcherBundleHash;
 const defaultArchiveRoot = "D:\\AwardPingVisualSnapshots";
 const sentenceDotPlaceholder = "__AP_SENTENCE_DOT__";
 const promptChars = 12_000;
-const captureBehaviorVersion = 11;
-const captureBehaviorName = "final-state-text-node-geometry-with-open-sections-semantic-crop-v3";
+const captureBehaviorVersion = 13;
+const captureBehaviorName =
+  "final-state-text-node-geometry-with-open-sections-semantic-crop-v3-visible-paint-v5-layout-bound-v1";
 const maxPdfDiscoveryRegistrationBatchSize = 500;
 const maxPdfDiscoveryQueueCandidates = 25;
 const maxSnapshotExpandableControls = 120;
 const args = parseArgs(process.argv.slice(2));
+if (boolArg(args.help ?? args.h, false)) {
+  console.log(captureVisualSnapshotsHelp());
+  process.exit(0);
+}
+const stage1EvidenceSchemaUpgrade = strictBoolArg(
+  args["stage1-evidence-schema-upgrade"],
+  false,
+  "--stage1-evidence-schema-upgrade",
+);
+const stage1EvidenceSchemaUpgradeDryRun = strictBoolArg(
+  args["stage1-evidence-schema-upgrade-dry-run"],
+  true,
+  "--stage1-evidence-schema-upgrade-dry-run",
+);
+if (!stage1EvidenceSchemaUpgrade && args["stage1-evidence-schema-upgrade-dry-run"] !== undefined) {
+  console.error("--stage1-evidence-schema-upgrade-dry-run requires --stage1-evidence-schema-upgrade=true.");
+  process.exit(1);
+}
 const envPath = args.env ? resolve(root, String(args.env)) : resolve(root, ".env.local");
 const env = {
   ...loadEnvFile(envPath),
@@ -161,7 +332,9 @@ const brokenSourcesDir = join(archiveRoot, "broken-sources");
 const brokenSourcesCurrentPath = join(brokenSourcesDir, "broken-sources-current.json");
 const brokenSourcesJsonlPath = join(brokenSourcesDir, "broken-sources-events.jsonl");
 const brokenSourcesCsvPath = join(brokenSourcesDir, "broken-sources-current.csv");
-const limit = positiveInt(args.limit, 25);
+const limit = stage1EvidenceSchemaUpgrade
+  ? STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS.length
+  : positiveInt(args.limit, 25);
 const shardCount = boundedInt(args["shard-count"] || env.AWARDPING_VISUAL_SHARD_COUNT, 1, 1, 64);
 const shardIndex = nonNegativeInt(args["shard-index"] || env.AWARDPING_VISUAL_SHARD_INDEX, 0);
 const requestedRunTrigger = cleanText(args["run-trigger"] || env.AWARDPING_VISUAL_RUN_TRIGGER).toLowerCase();
@@ -172,7 +345,12 @@ const requestedRunCohortId = cleanText(args["run-cohort-id"] || env.AWARDPING_VI
 const includeNotDue = boolArg(args.all, false) || boolArg(args["include-not-due"], false);
 const sourceIdFilter = cleanText(args["source-id"]);
 const sourceIdsFile = cleanText(args["source-ids-file"]);
-const sourceIdsFilter = loadSourceIdsFilter(sourceIdsFile);
+const stage1EvidenceSchemaUpgradeManifest = stage1EvidenceSchemaUpgrade
+  ? loadStage1EvidenceSchemaUpgradeManifest(sourceIdsFile)
+  : null;
+const sourceIdsFilter = stage1EvidenceSchemaUpgrade
+  ? new Set(stage1EvidenceSchemaUpgradeManifest.source_ids)
+  : loadSourceIdsFilter(sourceIdsFile);
 const sourceUrlFilter = cleanText(args["source-url"]);
 const awardFilter = cleanText(args.award);
 const initialOfficialDocumentMaterialization = boolArg(
@@ -189,7 +367,7 @@ const visualSourceCheckMinutes = positiveInt(
   24 * 60,
 );
 const baselineRefresh = boolArg(args["baseline-refresh"], false);
-const promote = boolArg(args.promote, true);
+const promote = stage1EvidenceSchemaUpgrade ? false : boolArg(args.promote, true);
 const pdfOnly = boolArg(args["pdf-only"], false);
 const webOnly = boolArg(args["web-only"], false);
 const completeMissingBaselines = boolArg(args["complete-missing-baselines"], false);
@@ -249,33 +427,32 @@ const forceR2SnapshotRefresh = boolArg(
   args["force-r2-snapshot-refresh"] ?? env.AWARDPING_FORCE_R2_SNAPSHOT_REFRESH,
   localizationRepair,
 );
-const extractBaselineInfo = localizationRepair
+const extractBaselineInfo = stage1EvidenceSchemaUpgrade
+  ? false
+  : localizationRepair
   ? false
   : boolArg(args["extract-baseline-info"] ?? env.AWARDPING_EXTRACT_BASELINE_INFO, true);
-const backfillBaselineInfo = boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
+const backfillBaselineInfo = stage1EvidenceSchemaUpgrade
+  ? false
+  : boolArg(args["backfill-baseline-info"] ?? env.AWARDPING_BACKFILL_BASELINE_INFO, false);
 const viewportWidth = positiveInt(args["viewport-width"], 1365);
 const viewportHeight = positiveInt(args["viewport-height"], 1600);
 const jpegQuality = boundedInt(args["jpeg-quality"], 72, 30, 95);
 const thumbWidth = positiveInt(args["thumb-width"], 900);
 const discoveryMode = boolArg(args["discovery-mode"] ?? env.AWARDPING_DISCOVERY_MODE, false);
-const requestedDiscoveryOnboardingBatchId = cleanText(
-  args["discovery-onboarding-batch-id"]
-    || env.AWARDPING_DISCOVERY_ONBOARDING_BATCH_ID,
-);
-const requestedDiscoveryIntent = cleanSlug(
-  args["discovery-intent"] || env.AWARDPING_DISCOVERY_INTENT || "historical_onboarding",
-);
-const discoveryIntent = requestedDiscoveryIntent === "live_recurring"
-  && !requestedDiscoveryOnboardingBatchId
-  ? "live_recurring"
-  : "historical_onboarding";
+const resolvedDiscoveryConfiguration = resolveVisualDiscoveryConfiguration({ args, env });
+const requestedDiscoveryOnboardingBatchId =
+  resolvedDiscoveryConfiguration.requestedOnboardingBatchId;
+const discoveryIntent = resolvedDiscoveryConfiguration.discoveryIntent;
 const discoveryOnboardingBatchId = discoveryIntent === "live_recurring"
   ? null
   : requestedDiscoveryOnboardingBatchId
     || cleanText(args["run-cohort-id"])
     || "operator_historical_discovery";
 const captureProfile = normalizeCaptureProfile(
-  args["capture-profile"] || env.AWARDPING_CAPTURE_PROFILE,
+  args["capture-profile"]
+    || env.AWARDPING_CAPTURE_PROFILE
+    || (stage1EvidenceSchemaUpgrade ? "baseline-rich" : null),
   defaultCaptureProfile({
     localizationRepair,
     discoveryMode,
@@ -286,7 +463,9 @@ const captureProfile = normalizeCaptureProfile(
 );
 const captureProfileConfig = captureProfileSettings(captureProfile);
 const sectionExtractionProfile = normalizeSectionExtractionProfile(
-  args["section-extraction-profile"] || env.AWARDPING_SECTION_EXTRACTION_PROFILE,
+  args["section-extraction-profile"]
+    || env.AWARDPING_SECTION_EXTRACTION_PROFILE
+    || (stage1EvidenceSchemaUpgrade ? "baseline-rich" : null),
   defaultSectionExtractionProfile({
     completeMissingBaselines,
     baselineRefresh,
@@ -308,7 +487,9 @@ const captureSectionEvidence = boolArg(
 );
 const defaultMaxExpansionStateScreenshots = captureProfile === "stable-daily"
   ? 8
-  : captureProfileConfig.defaultMaxExpansionStateScreenshots;
+  : stage1EvidenceSchemaUpgrade
+    ? 24
+    : captureProfileConfig.defaultMaxExpansionStateScreenshots;
 const maxExpansionStateScreenshots = boundedInt(
   args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
   defaultMaxExpansionStateScreenshots,
@@ -361,7 +542,17 @@ const discoveryRunState = {
   byDomain: new Map(),
 };
 const timeoutMs = positiveInt(args["timeout-ms"], 60_000);
-const sourceTimeoutMs = positiveInt(args["source-timeout-ms"], Math.max(timeoutMs + 30_000, 90_000));
+const sourceTimeoutMs = positiveInt(
+  args["source-timeout-ms"],
+  Math.max(timeoutMs + 30_000, 90_000),
+);
+const expansionStateTimeoutPerStateMs = boundedInt(
+  args["expansion-state-timeout-per-state-ms"] ||
+    env.AWARDPING_EXPANSION_STATE_TIMEOUT_PER_STATE_MS,
+  60_000,
+  5_000,
+  60_000,
+);
 const pageReadyTimeoutMs = positiveInt(args["page-ready-timeout-ms"] || env.AWARDPING_PAGE_READY_TIMEOUT_MS, 15_000);
 const captureSettleStableMs = boundedInt(
   args["capture-settle-stable-ms"] || env.AWARDPING_CAPTURE_SETTLE_STABLE_MS,
@@ -441,6 +632,69 @@ const visualWebConcurrency = boundedInt(
   8,
 );
 const maxPdfBytes = positiveInt(args["max-pdf-mb"], 50) * 1024 * 1024;
+const maxPdfPages = boundedInt(
+  args["max-pdf-pages"] || env.AWARDPING_MAX_PDF_PAGES,
+  200,
+  1,
+  2_000,
+);
+const pdfParseTimeoutMs = boundedInt(
+  args["pdf-parse-timeout-ms"] || env.AWARDPING_PDF_PARSE_TIMEOUT_MS,
+  Math.max(timeoutMs, 60_000),
+  5_000,
+  300_000,
+);
+// These defaults leave substantial headroom above legitimate long-form award
+// pages while preventing a hostile or runaway DOM from creating unbounded
+// geometry arrays or full-page render buffers.
+const maxCaptureTextChars = boundedInt(
+  args["max-capture-text-chars"] || env.AWARDPING_MAX_CAPTURE_TEXT_CHARS,
+  1_500_000,
+  100_000,
+  10_000_000,
+);
+const maxCaptureTextNodes = boundedInt(
+  args["max-capture-text-nodes"] || env.AWARDPING_MAX_CAPTURE_TEXT_NODES,
+  150_000,
+  10_000,
+  1_000_000,
+);
+const maxCaptureDomElements = boundedInt(
+  args["max-capture-dom-elements"] || env.AWARDPING_MAX_CAPTURE_DOM_ELEMENTS,
+  250_000,
+  10_000,
+  1_000_000,
+);
+const maxCaptureWidthCssPx = boundedInt(
+  args["max-capture-width-css-px"] || env.AWARDPING_MAX_CAPTURE_WIDTH_CSS_PX,
+  8_000,
+  2_000,
+  50_000,
+);
+const maxCaptureHeightCssPx = boundedInt(
+  args["max-capture-height-css-px"] || env.AWARDPING_MAX_CAPTURE_HEIGHT_CSS_PX,
+  60_000,
+  10_000,
+  250_000,
+);
+const maxCaptureRenderPixels = boundedInt(
+  args["max-capture-render-pixels"] || env.AWARDPING_MAX_CAPTURE_RENDER_PIXELS,
+  80_000_000,
+  10_000_000,
+  500_000_000,
+);
+const maxCaptureScreenshotBytes = boundedInt(
+  args["max-capture-screenshot-mb"] || env.AWARDPING_MAX_CAPTURE_SCREENSHOT_MB,
+  30,
+  1,
+  100,
+) * 1024 * 1024;
+const maxBrowserResponseBytes = boundedInt(
+  args["max-browser-response-mb"] || env.AWARDPING_MAX_BROWSER_RESPONSE_MB,
+  100,
+  5,
+  500,
+) * 1024 * 1024;
 const r2BackfillBaselines = boolArg(args["r2-backfill-baselines"], false);
 const r2BackfillFast = boolArg(args["r2-backfill-fast"], true);
 const r2BackfillSkipExisting = boolArg(args["r2-backfill-skip-existing"], true);
@@ -452,10 +706,15 @@ const r2RepairMissingSnapshots = boolArg(
 );
 const r2SnapshotSync = boolArg(
   args["r2-snapshot-sync"] ?? env.AWARDPING_R2_SNAPSHOT_SYNC ?? env.R2_SNAPSHOT_SYNC,
-  r2BackfillBaselines || localizationRepair || forceR2SnapshotRefresh,
+  stage1EvidenceSchemaUpgrade
+    || r2BackfillBaselines
+    || localizationRepair
+    || forceR2SnapshotRefresh,
 );
 const visualReviewDefaultMode =
-  completeMissingBaselines || localizationRepair || r2BackfillBaselines || forceR2SnapshotRefresh
+  stage1EvidenceSchemaUpgrade
+    ? "none"
+    : completeMissingBaselines || localizationRepair || r2BackfillBaselines || forceR2SnapshotRefresh
     ? "none"
     : "batch";
 const visualReviewMode = normalizeVisualReviewMode(
@@ -467,6 +726,13 @@ if (visualReviewMode === "immediate") {
   process.exit(1);
 }
 const interpretVisualChanges = visualReviewMode !== "none";
+const stage1EvidenceSchemaUpgradeEnqueuePolicy = stage1EvidenceSchemaUpgrade
+  ? visualReviewEnqueuePolicy({
+      context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+      bypassRejectionLedger: true,
+      queueReconciliation: false,
+    })
+  : null;
 const visualReviewBatchModel = geminiWorkerModel();
 const snapshotHistoryPrune = boolArg(
   args["snapshot-history-prune"] ?? env.AWARDPING_SNAPSHOT_HISTORY_PRUNE,
@@ -499,6 +765,15 @@ const r2Endpoint = cleanText(
 );
 const r2AccessKeyId = cleanText(args["r2-access-key-id"] || env.R2_ACCESS_KEY_ID);
 const r2SecretAccessKey = cleanText(args["r2-secret-access-key"] || env.R2_SECRET_ACCESS_KEY);
+const requestedSourceQualityMode = cleanText(
+  args["source-quality-mode"]
+    || args["source-quality-ai-mode"]
+    || env.AWARDPING_SOURCE_QUALITY_MODE
+    || env.AWARDPING_SOURCE_QUALITY_AI_MODE,
+).toLowerCase();
+const sourceQualityMode = stage1EvidenceSchemaUpgrade
+  ? requestedSourceQualityMode || "deterministic"
+  : requestedSourceQualityMode;
 const aiRequired = runRequiresAi();
 const aiDisabledReason = aiRequired ? null : aiDisabledReasonForRun();
 const aiProvider = aiRequired
@@ -520,6 +795,60 @@ let lastBaselineCoverageProgressProcessed = 0;
 const crawlerUserAgent =
   cleanText(args["crawler-user-agent"] || env.AWARDPING_CRAWLER_USER_AGENT) ||
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+const stage1EvidenceSchemaUpgradeSelectorContract = stage1EvidenceSchemaUpgrade
+  ? assertStage1EvidenceSchemaUpgradeCliContract({
+      args,
+      effectiveArgs: {
+        ...args,
+        all: includeNotDue,
+        "ai-review-evidence-capture": aiReviewEvidenceCapture,
+        "backfill-baseline-info": backfillBaselineInfo,
+        "baseline-refresh": baselineRefresh,
+        "complete-missing-baselines": completeMissingBaselines,
+        "discover-html-subpages": discoverHtmlSubpages,
+        "discover-pdf-subpages": discoverPdfSubpages,
+        "discovery-mode": discoveryMode,
+        "extract-baseline-info": extractBaselineInfo,
+        "force-r2-snapshot-refresh": forceR2SnapshotRefresh,
+        "gemini-api-max-calls": geminiApiMaxCalls,
+        "initial-official-document-materialization": initialOfficialDocumentMaterialization,
+        "keep-rejected": keepRejected,
+        "keep-rejected-evidence": keepRejectedEvidence,
+        "keep-unchanged": keepUnchanged,
+        "localization-repair": localizationRepair,
+        "max-expansion-state-screenshots": maxExpansionStateScreenshots,
+        "pdf-only": pdfOnly,
+        promote,
+        "reset-previous-snapshot": resetPreviousSnapshot,
+        "r2-backfill-baselines": r2BackfillBaselines,
+        "r2-snapshot-sync": r2SnapshotSync,
+        "run-trigger": runTrigger,
+        "capture-profile": captureProfile,
+        "section-extraction-profile": sectionExtractionProfile,
+        "shard-count": shardCount,
+        "shard-index": shardIndex,
+        "source-quality-mode": sourceQualityMode,
+        "visual-review-mode": visualReviewMode,
+        "web-concurrency": visualWebConcurrency,
+        "web-only": webOnly,
+      },
+      manifest: stage1EvidenceSchemaUpgradeManifest,
+      sourceIds: [...sourceIdsFilter],
+    })
+  : null;
+const stage1EvidenceSchemaUpgradeReviewedApplyAuthority =
+  stage1EvidenceSchemaUpgrade && !stage1EvidenceSchemaUpgradeDryRun
+    ? loadStage1EvidenceSchemaUpgradeReviewedApplyAuthority({
+        planFile: args[STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG],
+        expectedPlanFileSha256:
+          args[STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG],
+        reportFile:
+          args[STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG],
+        manifest: stage1EvidenceSchemaUpgradeManifest,
+        now: new Date().toISOString(),
+      })
+    : null;
 
 if (!supabaseUrl || !serviceRoleKey) {
   console.error("NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
@@ -585,6 +914,49 @@ if (initialOfficialDocumentMaterialization) {
 if (r2SnapshotSync && (!r2Bucket || !r2Endpoint || !r2AccessKeyId || !r2SecretAccessKey)) {
   console.error(
     "R2 snapshot sync is enabled, but R2_BUCKET, R2_ACCOUNT_ID/R2_ENDPOINT, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY are required.",
+  );
+  process.exit(1);
+}
+
+const scheduledNightlyRunContract = classifyScheduledNightlyVisualRun({
+  runIdentity: { trigger: runTrigger },
+  options: {
+    run_trigger: runTrigger,
+    baseline_refresh: baselineRefresh,
+    complete_missing_baselines: completeMissingBaselines,
+    ai_review_evidence_capture: aiReviewEvidenceCapture,
+    localization_repair: localizationRepair,
+    r2_backfill_baselines: r2BackfillBaselines,
+    reset_previous_snapshot: resetPreviousSnapshot,
+    force_r2_snapshot_refresh: forceR2SnapshotRefresh,
+    source_id: sourceIdFilter,
+    source_url: sourceUrlFilter,
+    award: awardFilter,
+    source_ids_filter_count: sourceIdsFilter.size,
+    initial_official_document_materialization: initialOfficialDocumentMaterialization,
+    initial_official_document_acquisition_id: initialOfficialDocumentAcquisitionId,
+    pdf_only: pdfOnly,
+    web_only: webOnly,
+    skip_existing_baseline: skipExistingBaseline,
+    include_not_due: includeNotDue,
+    limit,
+    discovery_mode: discoveryMode,
+    discovery_intent: discoveryIntent,
+    discovery_onboarding_batch_id: discoveryOnboardingBatchId,
+    discover_pdf_subpages: discoverPdfSubpages,
+    discover_html_subpages: discoverHtmlSubpages,
+    visual_review_mode: visualReviewMode,
+    interpret_visual_changes: interpretVisualChanges,
+    r2_snapshot_sync: r2SnapshotSync,
+  },
+});
+if (runTrigger === "scheduled" && !scheduledNightlyRunContract.eligible) {
+  const option = scheduledNightlyRunContract.option
+    ? ` option=${scheduledNightlyRunContract.option}`
+    : "";
+  console.error(
+    `Invalid scheduled visual run contract: reason=${scheduledNightlyRunContract.reason}${option}. ` +
+      "Use --run-trigger=manual or --run-trigger=maintenance for explicit ad hoc modes.",
   );
   process.exit(1);
 }
@@ -656,6 +1028,7 @@ async function runOnce() {
     heartbeat_at: startedAt,
     finished_at: null,
     status: "running",
+    execution_status: "running",
     stop_reason: null,
     billing_blocked: false,
     blocking_reason: null,
@@ -674,6 +1047,27 @@ async function runOnce() {
       include_not_due: includeNotDue,
       source_id: sourceIdFilter || null,
       source_ids_filter_count: sourceIdsFilter.size,
+      stage1_evidence_schema_upgrade: stage1EvidenceSchemaUpgrade,
+      stage1_evidence_schema_upgrade_dry_run: stage1EvidenceSchemaUpgrade
+        ? stage1EvidenceSchemaUpgradeDryRun
+        : null,
+      stage1_evidence_schema_upgrade_selector:
+        stage1EvidenceSchemaUpgradeSelectorContract,
+      stage1_evidence_schema_upgrade_reviewed_apply:
+        stage1EvidenceSchemaUpgradeReviewedApplyAuthority
+          ? {
+              schema_version:
+                stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.schema_version,
+              plan_file_sha256:
+                stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.plan_file_sha256,
+              plan_sha256:
+                stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.plan_sha256,
+              selected_source_id:
+                stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.selected_source_id,
+              deferred_source_ids:
+                stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.deferred_source_ids,
+            }
+          : null,
       initial_official_document_materialization: initialOfficialDocumentMaterialization,
       initial_official_document_acquisition_id: initialOfficialDocumentAcquisitionId || null,
       source_url: sourceUrlFilter || null,
@@ -730,6 +1124,7 @@ async function runOnce() {
       capture_scroll_final_wait_ms: captureScrollFinalWaitMs,
       capture_scroll_max_steps: captureScrollMaxSteps,
       source_timeout_ms: sourceTimeoutMs,
+      expansion_state_timeout_per_state_ms: expansionStateTimeoutPerStateMs,
       visual_source_check_minutes: visualSourceCheckMinutes,
       delay_ms: delayMs,
       domain_delay_ms: domainDelayMs,
@@ -738,6 +1133,16 @@ async function runOnce() {
       safe_redirect_url_update: safeRedirectUrlUpdate,
       web_concurrency: visualWebConcurrency,
       max_pdf_bytes: maxPdfBytes,
+      max_pdf_pages: maxPdfPages,
+      pdf_parse_timeout_ms: pdfParseTimeoutMs,
+      max_capture_text_chars: maxCaptureTextChars,
+      max_capture_text_nodes: maxCaptureTextNodes,
+      max_capture_dom_elements: maxCaptureDomElements,
+      max_capture_width_css_px: maxCaptureWidthCssPx,
+      max_capture_height_css_px: maxCaptureHeightCssPx,
+      max_capture_render_pixels: maxCaptureRenderPixels,
+      max_capture_screenshot_bytes: maxCaptureScreenshotBytes,
+      max_browser_response_bytes: maxBrowserResponseBytes,
       r2_backfill_baselines: r2BackfillBaselines,
       r2_backfill_fast: r2BackfillFast,
       r2_backfill_skip_existing: r2BackfillSkipExisting,
@@ -810,6 +1215,7 @@ async function runOnce() {
     safe_redirect_url_updates: 0,
     safe_redirect_url_update_skipped: 0,
     safe_redirect_url_update_failed: 0,
+    stale_admin_review_plans_skipped: 0,
     failed: 0,
     promoted: 0,
     pdf_checked: 0,
@@ -873,8 +1279,11 @@ async function runOnce() {
     r2_rotated: 0,
     r2_previous_snapshots_reset: 0,
     r2_failed: 0,
+    r2_cleanup_failed: 0,
+    r2_cleanup_debt: [],
     r2_skipped_existing: 0,
     r2_repaired_missing: 0,
+    r2_forced_refreshes: 0,
     r2_known_existing: 0,
     r2_known_missing: 0,
     r2_rehydrate_local_cache: 0,
@@ -907,6 +1316,16 @@ async function runOnce() {
     baseline_facts_failed: 0,
     baseline_facts_skipped: 0,
     baseline_facts_backfilled: 0,
+    stage1_baseline_activation_binding_verified: 0,
+    stage1_baseline_activation_comparison_captures: 0,
+    stage1_baseline_activation_prepared: 0,
+    stage1_baseline_activation_verified: 0,
+    stage1_baseline_activation_quarantined: 0,
+    stage1_baseline_activation_quarantine_failed: 0,
+    stage1_baseline_activation_server_receipt_failed: 0,
+    stage1_baseline_activation_finalization_failed: 0,
+    stage1_baseline_activation_reasons: {},
+    stage1_evidence_schema_upgrade: null,
     visual_interpreted: 0,
     visual_review_mode: visualReviewMode,
     visual_review_candidates_queued: 0,
@@ -986,6 +1405,8 @@ async function runOnce() {
         browser: null,
         context: null,
         browserMeta: null,
+        networkProxy: null,
+        captureContextUsed: false,
         sourcesSinceBrowserStart: 0,
       };
       browserStatesByWorker.set(key, state);
@@ -995,12 +1416,50 @@ async function runOnce() {
   }
 
   async function closeBrowserState(state) {
-    await state.context?.close().catch(() => null);
-    await state.browser?.close().catch(() => null);
-    state.context = null;
+    await closeCaptureContext(state);
+    if (state.browser) {
+      await withTimeout(
+        state.browser.close(),
+        6_000,
+        "Browser shutdown exceeded 6000ms.",
+      ).catch(() => null);
+    }
     state.browser = null;
     state.browserMeta = null;
     state.sourcesSinceBrowserStart = 0;
+  }
+
+  async function closeCaptureContext(state) {
+    if (state.context) {
+      await withTimeout(
+        state.context.close(),
+        5_000,
+        "Browser context shutdown exceeded 5000ms.",
+      ).catch(() => null);
+    }
+    await state.networkProxy?.close().catch(() => null);
+    state.context = null;
+    state.networkProxy = null;
+    state.captureContextUsed = false;
+  }
+
+  async function restartCaptureContext(state, reason) {
+    await closeCaptureContext(state);
+    const networkProxy = await startPublicNetworkProxy({
+      timeoutMs: Math.min(sourceTimeoutMs, 60_000),
+      maxResponseBytes: maxBrowserResponseBytes,
+    });
+    try {
+      state.context = await createBrowserContext(state.browser, networkProxy);
+      state.networkProxy = networkProxy;
+      state.captureContextUsed = false;
+    } catch (error) {
+      await networkProxy.close().catch(() => null);
+      throw error;
+    }
+    if (reason) {
+      console.log(`BROWSER_CONTEXT worker=${state.workerIndex} restarted ${reason}`);
+    }
   }
 
   async function restartBrowser(state, reason) {
@@ -1009,8 +1468,13 @@ async function runOnce() {
     const launched = await launchBrowser();
     state.browser = launched.browser;
     state.browserMeta = launched.browserMeta;
-    state.context = await createBrowserContext(state.browser);
     state.sourcesSinceBrowserStart = 0;
+    try {
+      await restartCaptureContext(state);
+    } catch (error) {
+      await closeBrowserState(state);
+      throw error;
+    }
 
     if (reason) {
       console.log(`BROWSER worker=${state.workerIndex} restarted ${reason}`);
@@ -1040,6 +1504,11 @@ async function runOnce() {
       await restartBrowser(state, "initial");
     } else if (!pdfSource && state.sourcesSinceBrowserStart >= maxSourcesPerBrowser) {
       await restartBrowser(state, `after_${state.sourcesSinceBrowserStart}_sources`);
+    } else if (!pdfSource && state.captureContextUsed) {
+      // A fresh proxy/context gives every source an independent aggregate byte
+      // budget and prevents persistent HTTPS/H2 tunnels from carrying evidence
+      // or policy state into the next capture.
+      await restartCaptureContext(state, "source_boundary");
     }
 
     let retriedAfterBrowserRestart = false;
@@ -1047,11 +1516,33 @@ async function runOnce() {
     while (true) {
       try {
         await waitForDomain(source.url);
-        await withTimeout(
-          processSource(source, state.context, state.browserMeta, report),
-          sourceTimeoutMs,
-          `source hard timeout after ${sourceTimeoutMs}ms`,
-        );
+        if (!pdfSource) state.captureContextUsed = true;
+        if (pdfSource) {
+          // PDF download, parsing, and cleanup each have their own bounded
+          // guards. Do not place them behind the non-cancelling page timeout:
+          // it could report failure while the same operation later mutates the
+          // baseline, R2 evidence, or downstream queues.
+          await processSource(
+            source,
+            state.context,
+            state.browserMeta,
+            report,
+            state.networkProxy,
+          );
+        } else {
+          const sourceDeadline = createSourcePhaseDeadline(
+            sourceTimeoutMs,
+            `source hard timeout after ${sourceTimeoutMs}ms`,
+          );
+          await sourceDeadline.run(() => processSource(
+            source,
+            state.context,
+            state.browserMeta,
+            report,
+            state.networkProxy,
+            sourceDeadline,
+          ));
+        }
         if (hasOpenSourceIssue(source)) {
           report.issue_sources_cleared += 1;
           console.log(`ISSUE_CLEARED ${sourceLabel(source)}`);
@@ -1062,7 +1553,11 @@ async function runOnce() {
         if (
           !pdfSource &&
           !retriedAfterBrowserRestart &&
-          (isBrowserClosedError(error) || isSourceTimeoutError(error))
+          (
+            isBrowserClosedError(error) ||
+            isSourceTimeoutError(error) ||
+            isCaptureNetworkBoundaryError(error)
+          )
         ) {
           console.log(`BROWSER closed ${sourceLabel(source)} | ${errorMessage(error)}`);
           await restartBrowser(state, "after_closed_context");
@@ -1081,6 +1576,53 @@ async function runOnce() {
           await restartBrowser(state, "after_access_block");
           retriedAfterAccessBlock = true;
           continue;
+        }
+
+        if (
+          error?.stage1BaselineActivationVisualCaptureFailure === true
+          || (
+            isStage1PendingBaselineActivationSource(source)
+            && isSourceTimeoutError(error)
+          )
+        ) {
+          if (hasOpenSourceIssue(source)) {
+            report.issue_sources_still_failing += 1;
+          } else {
+            report.issue_sources_new_failures += 1;
+          }
+          const preflight = evaluateStage1FirstVisualBaselineActivation({
+            acquisition: jsonObjectOrEmpty(source?.source_acquisition),
+            capture: null,
+            sourceId: source.id,
+            bindingOnly: true,
+          });
+          const activationFailure = preflight.allowed
+            ? failedStage1BaselineActivationEvaluation(
+                preflight,
+                "stage1_baseline_activation_visual_capture_failed",
+                `The first visual baseline capture failed before verification: ${errorMessage(error)}`,
+              )
+            : preflight;
+          await persistStage1BaselineActivationFailure({
+            source,
+            capture: null,
+            retainedComparisonCapture: null,
+            evaluation: activationFailure,
+            report,
+            failureStage: "first_visual_capture_before_exact_verification",
+          });
+          console.log(`FAILED ${errorMessage(error)} ${sourceLabel(source)}`);
+          if (
+            !pdfSource &&
+            (
+              isBrowserClosedError(error) ||
+              isSourceTimeoutError(error) ||
+              isCaptureNetworkBoundaryError(error)
+            )
+          ) {
+            await restartBrowser(state, "after_failed_stage1_capture");
+          }
+          break;
         }
 
         report.failed += 1;
@@ -1104,13 +1646,20 @@ async function runOnce() {
           await recordBrokenSourceFailure(source, message).catch((recordError) => {
             console.log(`BROKEN_SOURCE_LOG_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
           });
-          await markSharedSourceVisualCheckFailed(source, message).catch((recordError) => {
+          await markSharedSourceVisualCheckFailed(source, message, report).catch((recordError) => {
             console.log(`SOURCE_STATUS_UPDATE_FAILED ${errorMessage(recordError)} ${sourceLabel(source)}`);
           });
         }
         console.log(`FAILED ${message} ${sourceLabel(source)}`);
 
-        if (!pdfSource && (isBrowserClosedError(error) || isSourceTimeoutError(error))) {
+        if (
+          !pdfSource &&
+          (
+            isBrowserClosedError(error) ||
+            isSourceTimeoutError(error) ||
+            isCaptureNetworkBoundaryError(error)
+          )
+        ) {
           await restartBrowser(state, "after_failed_closed_context");
         }
         break;
@@ -1124,6 +1673,7 @@ async function runOnce() {
     const supabaseHealth = await checkSupabaseHealth(supabase);
     if (!supabaseHealth.ok) {
       report.status = "blocked";
+      report.execution_status = "blocked";
       report.stop_reason = "supabase_unavailable";
       report.errors.push({
         source_id: null,
@@ -1133,6 +1683,23 @@ async function runOnce() {
       console.log(
         `SUPABASE_UNAVAILABLE reason=${supabaseHealth.reason} message=${truncate(supabaseHealth.message, 500)}`,
       );
+      return;
+    }
+
+    if (stage1EvidenceSchemaUpgrade) {
+      if (stage1EvidenceSchemaUpgradeDryRun) {
+        await runStage1EvidenceSchemaUpgradeMode(report, {
+          browserStateForWorker,
+          restartBrowser,
+          restartCaptureContext,
+        });
+      } else {
+        await runStage1EvidenceSchemaUpgradeReviewedApplyMode(report, {
+          browserStateForWorker,
+          restartBrowser,
+          restartCaptureContext,
+        });
+      }
       return;
     }
 
@@ -1151,6 +1718,14 @@ async function runOnce() {
     const loadedSources = authoritativeInventory
       ? authoritativeInventory.filter(sourceMatchesShard).slice(0, limit)
       : await loadSources(limit);
+    if (
+      sourceIdFilter &&
+      (loadedSources.length !== 1 || loadedSources[0]?.id !== sourceIdFilter)
+    ) {
+      throw new Error(
+        `Exact source load failed closed: requested ${sourceIdFilter}, loaded ${loadedSources.length}.`,
+      );
+    }
     if (authoritativeInventory) {
       report.source_inventory = buildVisualSourceInventoryProof({
         eligibleSources: authoritativeInventory,
@@ -1186,10 +1761,12 @@ async function runOnce() {
 
     if (r2BackfillBaselines) {
       await backfillR2Baselines(sources, workerRunId, report, coverageSources);
-      report.status = "succeeded";
+      const terminalDisposition = visualRunTerminalDisposition(report);
+      report.status = terminalDisposition.report_status;
+      report.execution_status = terminalDisposition.execution_status;
       report.baseline_coverage_finish = summarizeBaselineCoverage(await loadSources(limit));
       console.log(formatBaselineCoverage("BASELINE_COVERAGE finish", report.baseline_coverage_finish));
-      await finishWorkerRun(workerRunId, "succeeded", null, report);
+      await finishWorkerRun(workerRunId, terminalDisposition.worker_status, null, report);
       return;
     }
 
@@ -1252,12 +1829,15 @@ async function runOnce() {
       }
     }
 
-    report.status = "succeeded";
+    const terminalDisposition = visualRunTerminalDisposition(report);
+    report.status = terminalDisposition.report_status;
+    report.execution_status = terminalDisposition.execution_status;
     report.baseline_coverage_finish = summarizeBaselineCoverage(await loadSources(limit));
     console.log(formatBaselineCoverage("BASELINE_COVERAGE finish", report.baseline_coverage_finish));
-    await finishWorkerRun(workerRunId, "succeeded", null, report);
+    await finishWorkerRun(workerRunId, terminalDisposition.worker_status, null, report);
   } catch (error) {
     report.status = "failed";
+    report.execution_status = "failed";
     report.failed += 1;
     report.errors.push({
       source_id: null,
@@ -1269,7 +1849,7 @@ async function runOnce() {
   } finally {
     await Promise.all([...browserStates].map((state) => closeBrowserState(state)));
     clearInterval(heartbeat);
-    if (snapshotHistoryPrune && report.status !== "blocked") {
+    if (!stage1EvidenceSchemaUpgrade && snapshotHistoryPrune && report.status !== "blocked") {
       await maybePruneSnapshotHistory(report);
     }
     report.finished_at = new Date().toISOString();
@@ -1279,6 +1859,582 @@ async function runOnce() {
     console.log(`REPORT ${reportPath}`);
     await maybeWriteNightlyVisualReport(report, reportPath);
   }
+}
+
+async function runStage1EvidenceSchemaUpgradeMode(report, {
+  browserStateForWorker,
+  restartBrowser,
+  restartCaptureContext,
+}) {
+  if (!stage1EvidenceSchemaUpgradeDryRun) {
+    throw new Error(
+      "The exact reviewed-nine Stage 1 path is dry-run only; apply requires the reviewed exact-one executor.",
+    );
+  }
+  // This branch never calls the normal source queue or local_worker_runs. It
+  // evaluates the full reviewed-nine parent authority without mutations.
+  const sources = await loadExactStage1EvidenceSchemaUpgradeSources();
+  const results = [];
+  for (const source of sources) {
+    const pdfSource = isPdfSource(source);
+    const state = browserStateForWorker(0);
+    try {
+      if (!pdfSource && !state.context) {
+        await restartBrowser(state, "stage1_evidence_schema_upgrade_initial");
+      } else if (!pdfSource && state.captureContextUsed) {
+        await restartCaptureContext(state, "stage1_evidence_schema_upgrade_source_boundary");
+      }
+      if (!pdfSource) state.captureContextUsed = true;
+      const sourceDeadline = pdfSource
+        ? null
+        : createSourcePhaseDeadline(
+            sourceTimeoutMs,
+            `source hard timeout after ${sourceTimeoutMs}ms`,
+          );
+      const operation = () => processSource(
+        source,
+        state.context,
+        state.browserMeta,
+        report,
+        state.networkProxy,
+        sourceDeadline,
+      );
+      // The source deadline belongs only to the live capture adapter. It is a
+      // non-cancelling Promise race, so wrapping pointer/baseline mutations in
+      // it would allow late writes after the run had already reported a
+      // timeout. The adapter must settle capture before any mutation begins.
+      results.push(await operation());
+    } catch (error) {
+      // Do not route isolated-mode failures through broken-source, source
+      // health, candidate observation, or generic quarantine mutations.
+      results.push(buildStage1EvidenceSchemaUpgradeFailureResult({
+        sourceId: source.id,
+        manifest: stage1EvidenceSchemaUpgradeManifest,
+        dryRun: stage1EvidenceSchemaUpgradeDryRun,
+        enqueuePolicy: stage1EvidenceSchemaUpgradeEnqueuePolicy,
+        error,
+      }));
+    }
+  }
+  report.stage1_evidence_schema_upgrade = createStage1EvidenceSchemaUpgradeReport({
+    manifest: stage1EvidenceSchemaUpgradeManifest,
+    dryRun: stage1EvidenceSchemaUpgradeDryRun,
+    results,
+    generatedAt: new Date().toISOString(),
+  });
+  const successful = new Set(["dry_run_complete", "completed"])
+    .has(report.stage1_evidence_schema_upgrade.status);
+  report.status = successful ? "completed" : "blocked";
+  report.execution_status = successful ? "completed" : "blocked";
+  report.stop_reason = successful
+    ? null
+    : "stage1_evidence_schema_upgrade_not_ready";
+  console.log(
+    `STAGE1_EVIDENCE_SCHEMA_UPGRADE mode=${stage1EvidenceSchemaUpgradeDryRun ? "dry_run" : "apply"}` +
+      ` status=${report.stage1_evidence_schema_upgrade.status}` +
+      ` evaluated=${report.stage1_evidence_schema_upgrade.evaluated_source_count}` +
+      ` eligible=${report.stage1_evidence_schema_upgrade.eligible_source_count}` +
+      ` blocked=${report.stage1_evidence_schema_upgrade.blocked_source_count}`,
+  );
+}
+
+async function runStage1EvidenceSchemaUpgradeReviewedApplyMode(report, {
+  browserStateForWorker,
+  restartBrowser,
+  restartCaptureContext,
+}) {
+  const reviewed = stage1EvidenceSchemaUpgradeReviewedApplyAuthority;
+  if (!reviewed || stage1EvidenceSchemaUpgradeDryRun) {
+    throw new Error(
+      "Stage 1 reviewed exact-one apply requires one validated apply plan in apply mode.",
+    );
+  }
+  const checkedPlan = reviewed.checked;
+  const sources = await loadExactStage1EvidenceSchemaUpgradeSources();
+  const source = sources.find((entry) => entry.id === checkedPlan.selected_source_id);
+  if (!source) {
+    throw new Error(
+      `The reviewed exact-one source ${checkedPlan.selected_source_id} is absent from the exact reviewed-nine load.`,
+    );
+  }
+  const selected = checkedPlan.plan.selected;
+  const executionNonce = crypto.randomUUID();
+  const expectedAuditId = stage1EvidenceSchemaUpgradeReviewedApplyAuditRunId(
+    checkedPlan.plan_file_sha256,
+  );
+  const expectedTransactionId =
+    stage1EvidenceSchemaUpgradeReviewedApplyTransactionId({
+      sourceId: source.id,
+      planSha256: checkedPlan.plan_sha256,
+    });
+  const pdfSource = isPdfSource(source);
+  const browserState = browserStateForWorker(0);
+  let operationInterfaces = null;
+  let freshCaptureResult = null;
+  let preAuthorityReceipt = null;
+  let postAuthorityReceipt = null;
+  let preCommitAuthorityReceipt = null;
+  let auditExecutionAuthorized = false;
+  let authorizedAuditStartReceipt = null;
+  let reviewedOperationBinding = null;
+  let preAuditPlanRevalidatedAt = null;
+  let postAuditPlanRevalidated = false;
+
+  const executionReport = await withVisualBaselineLockAsync({
+    archiveRoot,
+    sourceId: source.id,
+    timeoutMs: 5 * 60_000,
+    operation: async () => runStage1EvidenceSchemaUpgradeReviewedApplyExecution({
+      source,
+      manifest: stage1EvidenceSchemaUpgradeManifest,
+      validatedPlan: checkedPlan,
+      executionNonce,
+      now: () => new Date().toISOString(),
+      interfaces: {
+        async assertPreCaptureAuthority(request) {
+          assertStage1EvidenceSchemaUpgradeReviewedApplyAuthorityRequest({
+            request,
+            selected,
+            phase: "pre_capture",
+            captureResult: null,
+          });
+          preAuthorityReceipt =
+            await assertStage1EvidenceSchemaUpgradeReviewedApplyAuthority({
+              source,
+              selected,
+              phase: "pre_capture",
+            });
+          return preAuthorityReceipt;
+        },
+
+        async captureDryRun(request) {
+          const expectedCaptureRequest = {
+            mode: "dry_run",
+            source,
+            manifest: stage1EvidenceSchemaUpgradeManifest,
+            manifest_source: selected.source,
+            selected_source_id: source.id,
+            plan_sha256: checkedPlan.plan_sha256,
+            expected_active_journal_sha256: null,
+            authority: checkedPlan.authority,
+          };
+          if (
+            stableJsonStringify(request)
+              !== stableJsonStringify(expectedCaptureRequest)
+          ) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "reviewed_capture_request_changed",
+              "capture",
+            );
+          }
+          if (!pdfSource && !browserState.context) {
+            await restartBrowser(
+              browserState,
+              "stage1_evidence_schema_upgrade_reviewed_apply_initial",
+            );
+          } else if (!pdfSource && browserState.captureContextUsed) {
+            await restartCaptureContext(
+              browserState,
+              "stage1_evidence_schema_upgrade_reviewed_apply_source_boundary",
+            );
+          }
+          if (!pdfSource) browserState.captureContextUsed = true;
+          const sourceDeadline = pdfSource
+            ? null
+            : createSourcePhaseDeadline(
+                sourceTimeoutMs,
+                `source hard timeout after ${sourceTimeoutMs}ms`,
+              );
+          operationInterfaces = stage1EvidenceSchemaUpgradeOperationInterfaces({
+            source,
+            context: browserState.context,
+            browserMeta: browserState.browserMeta,
+            report,
+            networkProxy: browserState.networkProxy,
+            sourceDeadline,
+          });
+          const captureResult = await runStage1EvidenceSchemaUpgradeSource({
+            source,
+            manifest: stage1EvidenceSchemaUpgradeManifest,
+            dryRun: true,
+            enqueuePolicy: stage1EvidenceSchemaUpgradeEnqueuePolicy,
+            interfaces: operationInterfaces,
+          });
+          freshCaptureResult = captureResult;
+          return captureResult;
+        },
+
+        async assertPostCaptureAuthority(request) {
+          const phase = request?.phase;
+          if (!new Set(["post_capture", "pre_commit"]).has(phase)) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "reviewed_authority_phase_changed",
+              cleanText(phase) || "post_capture",
+            );
+          }
+          assertStage1EvidenceSchemaUpgradeReviewedApplyAuthorityRequest({
+            request,
+            selected,
+            phase,
+            captureResult: freshCaptureResult,
+          });
+          if (
+            phase === "pre_commit"
+            && (!auditExecutionAuthorized || !postAuditPlanRevalidated)
+          ) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "reviewed_pre_commit_authority_out_of_sequence",
+              phase,
+            );
+          }
+          const currentSources = await loadExactStage1EvidenceSchemaUpgradeSources();
+          const currentSource = currentSources.find((entry) => entry.id === source.id);
+          if (!currentSource) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "selected_source_missing_during_authority_recheck",
+              phase,
+            );
+          }
+          const currentAuthorityReceipt =
+            await assertStage1EvidenceSchemaUpgradeReviewedApplyAuthority({
+              source: currentSource,
+              selected,
+              phase,
+            });
+          if (
+            !preAuthorityReceipt
+            || stableJsonStringify(currentAuthorityReceipt)
+              !== stableJsonStringify(preAuthorityReceipt)
+            || (
+              phase === "pre_commit"
+              && (
+                !postAuthorityReceipt
+                || stableJsonStringify(currentAuthorityReceipt)
+                  !== stableJsonStringify(postAuthorityReceipt)
+              )
+            )
+          ) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              phase === "pre_commit"
+                ? "reviewed_authority_changed_before_commit"
+                : "reviewed_authority_changed_during_capture",
+              phase,
+            );
+          }
+          if (phase === "post_capture") {
+            postAuthorityReceipt = currentAuthorityReceipt;
+          } else {
+            preCommitAuthorityReceipt = currentAuthorityReceipt;
+            if (!authorizedAuditStartReceipt) {
+              throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+                "reviewed_audit_start_receipt_missing_before_commit",
+                phase,
+              );
+            }
+            reviewedOperationBinding =
+              buildStage1EvidenceSchemaUpgradeReviewedOperationBinding({
+                sourceId: source.id,
+                transactionId: expectedTransactionId,
+                reviewedApplyPlanFileSha256: checkedPlan.plan_file_sha256,
+                reviewedApplyPlanSha256: checkedPlan.plan_sha256,
+                auditRunId: expectedAuditId,
+                executionNonce,
+                reviewedReportAttemptId: checkedPlan.report_binding.attempt_id,
+                freshCaptureSha256:
+                  authorizedAuditStartReceipt.fresh_capture_evidence_sha256,
+                freshCaptureResultSha256:
+                  authorizedAuditStartReceipt.fresh_capture_result_sha256,
+                freshCaptureValidationSha256:
+                  authorizedAuditStartReceipt.fresh_capture_validation_sha256,
+                freshValidationProjectionSha256:
+                  authorizedAuditStartReceipt.fresh_validation_projection_sha256,
+                precommitAuthorityReceiptSha256:
+                  stage1EvidenceSchemaUpgradeReviewedAuthorityReceiptSha256(
+                    currentAuthorityReceipt,
+                  ),
+                precommitSourceAuthority:
+                  currentAuthorityReceipt.source_authority,
+              });
+          }
+          return currentAuthorityReceipt;
+        },
+
+        revalidatePlan(request) {
+          const expectedRevalidationRequest = {
+            validated_plan: checkedPlan,
+            manifest: stage1EvidenceSchemaUpgradeManifest,
+            selected_source_id: source.id,
+            now: request?.now,
+          };
+          if (
+            stableJsonStringify(request)
+              !== stableJsonStringify(expectedRevalidationRequest)
+          ) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "reviewed_plan_revalidation_request_changed",
+              auditExecutionAuthorized ? "pre_commit" : "post_capture",
+            );
+          }
+          const revalidatedPlan = loadStage1EvidenceSchemaUpgradeReviewedApplyAuthority({
+            planFile: reviewed.plan_path,
+            expectedPlanFileSha256: reviewed.expected_plan_file_sha256,
+            reportFile: reviewed.report_path,
+            manifest: stage1EvidenceSchemaUpgradeManifest,
+            now: request.now,
+          }).checked;
+          if (auditExecutionAuthorized) {
+            postAuditPlanRevalidated = true;
+          } else {
+            preAuditPlanRevalidatedAt = request.now;
+          }
+          return revalidatedPlan;
+        },
+
+        async startAudit(input) {
+          const expectedAuditStartRequest = {
+            reviewedApplyPlan: checkedPlan,
+            executionNonce,
+            startedAt: preAuditPlanRevalidatedAt,
+            captureResult: freshCaptureResult,
+            authorityReceipt: postAuthorityReceipt,
+          };
+          if (
+            !freshCaptureResult
+            || !preAuditPlanRevalidatedAt
+            || stableJsonStringify(input)
+              !== stableJsonStringify(expectedAuditStartRequest)
+          ) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "reviewed_audit_start_request_changed",
+              "audit_start",
+            );
+          }
+          const expectedFreshCapture =
+            stage1EvidenceSchemaUpgradeReviewedApplyFreshCaptureEvidence({
+              reviewedApplyPlan: checkedPlan,
+              captureResult: freshCaptureResult,
+            });
+          const receipt = await startStage1EvidenceSchemaUpgradeReviewedApplyAudit({
+            ...input,
+            interfaces: {
+              insertRun: insertStage1EvidenceSchemaUpgradeReviewedApplyAuditRun,
+              readRun: readStage1EvidenceSchemaUpgradeReviewedApplyAuditRun,
+            },
+          });
+          if (
+            receipt.run_id !== expectedAuditId
+            || receipt.requested_execution_nonce !== executionNonce
+            || (
+              receipt.business_execution_authorized
+              && (
+                receipt.authority_receipt_sha256
+                  !== stage1EvidenceSchemaUpgradeReviewedAuthorityReceiptSha256(
+                    postAuthorityReceipt,
+                  )
+                || receipt.fresh_capture_evidence_sha256
+                  !== expectedFreshCapture.fresh_capture_sha256
+                || receipt.fresh_capture_result_sha256
+                  !== expectedFreshCapture.capture_result_sha256
+                || receipt.fresh_capture_validation_sha256
+                  !== expectedFreshCapture.capture_validation_sha256
+                || receipt.fresh_validation_projection_sha256
+                  !== expectedFreshCapture.fresh_validation_projection_sha256
+              )
+            )
+          ) {
+            throw new Error("The dedicated reviewed apply audit start identity changed.");
+          }
+          auditExecutionAuthorized = receipt.business_execution_authorized === true;
+          authorizedAuditStartReceipt = auditExecutionAuthorized ? receipt : null;
+          reviewedOperationBinding = null;
+          postAuditPlanRevalidated = false;
+          const exactAuditRowObserved =
+            receipt.observed_row_sha256 !== null
+            && receipt.active_execution_nonce !== null;
+          if (
+            receipt.business_execution_authorized
+            || receipt.replay
+            || exactAuditRowObserved
+          ) {
+            report.worker_run_id = receipt.run_id;
+          }
+          return receipt;
+        },
+
+        async commitUnchangedUpgrade(request) {
+          if (
+            !auditExecutionAuthorized
+            || !postAuditPlanRevalidated
+            || !preAuthorityReceipt
+            || !postAuthorityReceipt
+            || !preCommitAuthorityReceipt
+            || stableJsonStringify(preCommitAuthorityReceipt)
+              !== stableJsonStringify(preAuthorityReceipt)
+            || stableJsonStringify(preCommitAuthorityReceipt)
+              !== stableJsonStringify(postAuthorityReceipt)
+          ) {
+            throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+              "reviewed_pre_commit_authority_missing",
+              "commit",
+            );
+          }
+          assertStage1EvidenceSchemaUpgradeReviewedApplyCommitRequest({
+            request,
+            source,
+            selected,
+            checkedPlan,
+            expectedAuditId,
+            executionNonce,
+            expectedTransactionId,
+            freshCaptureResult,
+            reviewedOperationBinding,
+          });
+          if (!operationInterfaces) {
+            throw new Error("The reviewed apply commit was requested before fresh validation.");
+          }
+          report.worker_run_id = expectedAuditId;
+          return operationInterfaces.upgradeEvidenceSchema({
+            capture_validation: request.capture_validation,
+            transaction_id: request.transaction_id,
+            operation_binding: request.operation_binding,
+          });
+        },
+
+        finishAudit(input) {
+          return finishStage1EvidenceSchemaUpgradeReviewedApplyAudit({
+            ...input,
+            interfaces: {
+              readRun: readStage1EvidenceSchemaUpgradeReviewedApplyAuditRun,
+              updateRun: updateStage1EvidenceSchemaUpgradeReviewedApplyAuditRun,
+            },
+          });
+        },
+      },
+    }),
+  });
+
+  report.stage1_evidence_schema_upgrade_reviewed_apply = executionReport;
+  const completed = executionReport.status === "selected_completed";
+  const recoveryRequired =
+    executionReport.execution_status === "recovery_required"
+    || executionReport.status === "selected_recovery_required";
+  report.status = completed
+    ? "completed"
+    : recoveryRequired
+      ? "recovery_required"
+      : "blocked";
+  report.execution_status = report.status;
+  report.stop_reason = completed
+    ? null
+    : `stage1_evidence_schema_upgrade_reviewed_apply_${executionReport.status}`;
+  console.log(
+    `STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY status=${executionReport.status}`
+      + ` selected=${executionReport.selected_source_id}`
+      + ` deferred=${executionReport.deferred_source_count}`
+      + ` audit=${executionReport.audit?.state || "unknown"}`,
+  );
+}
+
+function assertStage1EvidenceSchemaUpgradeReviewedApplyAuthorityRequest({
+  request,
+  selected,
+  phase,
+  captureResult,
+}) {
+  const captureBoundPhase = new Set(["post_capture", "pre_commit"]).has(phase);
+  if (
+    !new Set(["pre_capture", "post_capture", "pre_commit"]).has(phase)
+    || (captureBoundPhase && !captureResult)
+  ) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_authority_request_changed",
+      phase,
+    );
+  }
+  const expected = {
+    source_id: selected.source.source_id,
+    manifest_source: selected.source,
+    plan_sha256:
+      stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.plan_sha256,
+    plan_file_sha256:
+      stage1EvidenceSchemaUpgradeReviewedApplyAuthority.checked.plan_file_sha256,
+    expected_active_journal_sha256: null,
+    expected_old_baseline: selected.local_baseline_identity,
+    expected_old_pointer_identity: selected.existing_pointer_identity,
+    expected_authoritative_r2_binding: selected.r2,
+    expected_acquisition: selected.acquisition,
+    expected_activation: selected.activation,
+    expected_finalization: selected.finalization,
+    creates_api_charge: false,
+    mutation_permitted: false,
+    phase,
+    ...(captureBoundPhase
+      ? {
+          capture_result: captureResult,
+          capture_validation: captureResult.capture_validation,
+        }
+      : {}),
+  };
+  if (stableJsonStringify(request) !== stableJsonStringify(expected)) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_authority_request_changed",
+      phase,
+    );
+  }
+}
+
+function assertStage1EvidenceSchemaUpgradeReviewedApplyCommitRequest({
+  request,
+  source,
+  selected,
+  checkedPlan,
+  expectedAuditId,
+  executionNonce,
+  expectedTransactionId,
+  freshCaptureResult,
+  reviewedOperationBinding,
+}) {
+  const expected = {
+    source_id: source.id,
+    source,
+    manifest_source: selected.source,
+    plan_sha256: checkedPlan.plan_sha256,
+    plan_file_sha256: checkedPlan.plan_file_sha256,
+    audit_id: expectedAuditId,
+    execution_nonce: executionNonce,
+    reviewed_report_attempt_id: checkedPlan.report_binding.attempt_id,
+    transaction_id: expectedTransactionId,
+    operation_binding: reviewedOperationBinding,
+    capture_result: freshCaptureResult,
+    capture_validation: freshCaptureResult?.capture_validation,
+    expected_active_journal_sha256: null,
+    expected_old_baseline: selected.local_baseline_identity,
+    expected_old_pointer_identity: selected.existing_pointer_identity,
+    expected_authoritative_r2_binding: selected.r2,
+    authority: checkedPlan.authority,
+    creates_api_charge: false,
+  };
+  if (
+    !freshCaptureResult
+    || !reviewedOperationBinding
+    || stableJsonStringify(request) !== stableJsonStringify(expected)
+  ) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_commit_request_changed",
+      "commit",
+    );
+  }
+}
+
+async function loadExactStage1EvidenceSchemaUpgradeSources() {
+  const loadedSources = await loadSources(STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_IDS.length);
+  assertExactStage1EvidenceSchemaUpgradeSourceIds(
+    loadedSources.map((source) => source.id),
+    "loaded source IDs",
+  );
+  return attachStage1SourceActivationFinalizations(
+    await attachSourceAcquisitions(loadedSources),
+  );
 }
 
 async function maybeWriteNightlyVisualReport(report, reportPath) {
@@ -1386,7 +2542,8 @@ async function maybeRehydrateIncompleteLocalBaseline(source, baseline, report) {
   // cache can be repaired. That exception must never become permission to run
   // a live capture while any review_later workflow still owns the source.
   const quarantineRepairOnly =
-    source.admin_review_status === "review_later";
+    source.admin_review_status === "review_later"
+    && !isStage1PendingBaselineActivationSource(source);
   if (
     !missingLocalBaseline &&
     !quarantineRepairOnly &&
@@ -1546,6 +2703,12 @@ async function maybeRecoverIncompleteBaselineFromIntakeAcquisition({ source, bas
         secretAccessKey: r2SecretAccessKey,
       },
     });
+    prepareAcquisitionCaptureMetadataForProjection({
+      archiveRoot,
+      source,
+      acquisition,
+      capture,
+    });
     const baselineFileHash = cleanText(baseline.file_hash || baseline.image_hash).toLowerCase();
     const baselineTextHash = cleanText(baseline.text_hash).toLowerCase();
     const captureFileHash = cleanText(capture.file_hash).toLowerCase();
@@ -1569,7 +2732,15 @@ async function maybeRecoverIncompleteBaselineFromIntakeAcquisition({ source, bas
     };
     for (const [role, expected] of Object.entries(expectedPaths)) {
       const sealedPath = cleanText(jsonObjectOrEmpty(baseline.capture)[role]).replace(/\\/g, "/");
-      if (sealedPath && sealedPath !== expected) {
+      const compatiblePaths = role === "meta"
+        ? new Set([
+            expected,
+            capture.immutable_intake_meta_path
+              ? toArchiveRelative(capture.immutable_intake_meta_path)
+              : null,
+          ].filter(Boolean))
+        : new Set([expected]);
+      if (sealedPath && !compatiblePaths.has(sealedPath)) {
         throw Object.assign(
           new Error(`The incomplete baseline ${role} path conflicts with deterministic acquisition materialization.`),
           { code: "intake_artifact_incomplete_baseline_path_mismatch" },
@@ -1693,6 +2864,7 @@ function authoritativeR2MissingBaselineError(recovery) {
 }
 
 async function backfillOneR2BaselineUnlocked(source, report) {
+  if (shouldBlockOrdinaryProcessingForStage1UpgradeRecovery(source, report)) return;
   let baseline = readJsonIfExists(baselinePathForSource(source.id));
   const recovery = await maybeRehydrateIncompleteLocalBaseline(source, baseline, report);
   baseline = recovery.baseline;
@@ -1722,8 +2894,10 @@ async function backfillOneR2BaselineUnlocked(source, report) {
         : await syncR2SnapshotPair(source, capture);
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
+    recordR2CleanupDebt(report, source, result.cleanup);
     console.log(`R2 BACKFILL uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
   } catch (error) {
+    recordR2CleanupDebt(report, source, error?.r2Cleanup);
     report.r2_failed += 1;
     const message = `R2 baseline backfill failed: ${errorMessage(error)}`;
     report.errors.push({
@@ -1735,16 +2909,613 @@ async function backfillOneR2BaselineUnlocked(source, report) {
   }
 }
 
-async function processSource(source, context, browserMeta, report) {
+async function processSource(
+  source,
+  context,
+  browserMeta,
+  report,
+  networkProxy = null,
+  sourceDeadline = null,
+) {
   return withVisualBaselineLockAsync({
     archiveRoot,
     sourceId: source.id,
     timeoutMs: 5 * 60_000,
-    operation: () => processSourceUnlocked(source, context, browserMeta, report),
+    operation: () => processSourceUnlocked(
+      source,
+      context,
+      browserMeta,
+      report,
+      networkProxy,
+      sourceDeadline,
+    ),
   });
 }
 
-async function processSourceUnlocked(source, context, browserMeta, report) {
+async function enforceStage1FirstVisualBaselineActivation({ source, capture, report }) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const preflight = evaluateStage1FirstVisualBaselineActivation({
+    acquisition,
+    capture,
+    sourceId: source.id,
+    bindingOnly: true,
+  });
+  if (!preflight.applies) return null;
+  if (!preflight.allowed) {
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: null,
+      evaluation: preflight,
+      report,
+      failureStage: "immutable_binding_preflight",
+    });
+    return { blocked: true, evaluation: preflight };
+  }
+  report.stage1_baseline_activation_binding_verified += 1;
+  if (!r2SnapshotSync) {
+    const r2ConfigurationFailure = failedStage1BaselineActivationEvaluation(
+      preflight,
+      "stage1_baseline_activation_r2_sync_required",
+      "Stage 1 baseline activation requires authoritative R2 snapshot synchronization.",
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: null,
+      evaluation: r2ConfigurationFailure,
+      report,
+      failureStage: "required_r2_configuration",
+    });
+    return { blocked: true, evaluation: r2ConfigurationFailure };
+  }
+
+  let retainedComparisonCapture;
+  try {
+    retainedComparisonCapture = await captureIntakePage(source.url, {
+      timeoutMs,
+      maxPdfBytes,
+    });
+    report.stage1_baseline_activation_comparison_captures += 1;
+  } catch (error) {
+    const comparisonFailure = failedStage1BaselineActivationEvaluation(
+      preflight,
+      "stage1_baseline_activation_intake_comparison_capture_failed",
+      `The free deterministic intake comparison capture failed: ${errorMessage(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: null,
+      evaluation: comparisonFailure,
+      report,
+      failureStage: "deterministic_intake_comparison_capture",
+    });
+    return { blocked: true, evaluation: comparisonFailure };
+  }
+
+  const evaluation = evaluateStage1FirstVisualBaselineActivation({
+    acquisition,
+    capture,
+    retainedComparisonCapture,
+    sourceId: source.id,
+  });
+  if (!evaluation.allowed) {
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation,
+      report,
+      failureStage: "exact_text_and_visual_evidence_verification",
+    });
+    return { blocked: true, evaluation };
+  }
+
+  const { data, error } = await supabase.rpc(
+    "record_stage1_source_baseline_activation",
+    buildStage1BaselineActivationRecordRpcArgs({
+      sourceId: source.id,
+      acquisition,
+      evaluation,
+    }),
+  );
+  if (error) {
+    report.stage1_baseline_activation_server_receipt_failed += 1;
+    const receiptFailure = failedStage1BaselineActivationEvaluation(
+      evaluation,
+      "stage1_baseline_activation_server_receipt_failed",
+      `The service-only activation receipt failed: ${error.message || String(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation: receiptFailure,
+      report,
+      failureStage: "server_activation_receipt",
+    });
+    return { blocked: true, evaluation: receiptFailure };
+  }
+
+  const receipt = stage1BaselineActivationReceipt(data, evaluation);
+  if (!receipt.allowed) {
+    report.stage1_baseline_activation_server_receipt_failed += 1;
+    const receiptFailure = failedStage1BaselineActivationEvaluation(
+      evaluation,
+      receipt.reason,
+      `The service-only activation receipt refused activation${
+        receipt.server_reason ? `: ${receipt.server_reason}` : "."
+      }`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation: receiptFailure,
+      report,
+      failureStage: "server_activation_receipt",
+    });
+    return { blocked: true, evaluation: receiptFailure };
+  }
+
+  try {
+    attachStage1BaselineActivationVerification(capture, receipt.verification);
+  } catch (error) {
+    const metadataFailure = failedStage1BaselineActivationEvaluation(
+      evaluation,
+      "stage1_baseline_activation_capture_metadata_write_failed",
+      `The server receipt succeeded but capture verification metadata could not be persisted: ${errorMessage(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture,
+      evaluation: metadataFailure,
+      report,
+      failureStage: "capture_verification_metadata",
+    });
+    return { blocked: true, evaluation: metadataFailure };
+  }
+
+  report.stage1_baseline_activation_prepared += 1;
+  console.log(`STAGE1_BASELINE_ACTIVATION_PREPARED ${sourceLabel(source)}`);
+  return {
+    blocked: false,
+    evaluation,
+    verification: receipt.verification,
+    prepareReceipt: receipt.receipt,
+    retainedComparisonCapture,
+  };
+}
+
+function attachStage1BaselineActivationVerification(capture, verification) {
+  if (!capture?.meta_path) {
+    throw new Error("Stage 1 baseline activation capture metadata path is missing.");
+  }
+  const metadata = readJsonIfExists(capture.meta_path);
+  if (!metadata) {
+    throw new Error("Stage 1 baseline activation capture metadata is missing or invalid.");
+  }
+  capture.stage1_baseline_activation = verification;
+  atomicWriteJson(capture.meta_path, {
+    ...metadata,
+    stage1_baseline_activation: verification,
+  });
+}
+
+function failedStage1BaselineActivationEvaluation(base, reason, detail) {
+  return {
+    ...base,
+    applies: true,
+    allowed: false,
+    status: "quarantine_required",
+    reason,
+    detail,
+    verification: null,
+  };
+}
+
+async function persistStage1BaselineActivationFailure({
+  source,
+  capture,
+  retainedComparisonCapture,
+  evaluation,
+  report,
+  failureStage,
+  persistenceState = null,
+}) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const rpcArgs = buildStage1BaselineActivationFailureRpcArgs({
+    sourceId: source.id,
+    acquisition,
+    evaluation,
+    capture,
+    retainedComparisonCapture,
+    failureStage,
+    persistenceState,
+  });
+  const { data, error } = await supabase.rpc(
+    "fail_stage1_source_baseline_activation",
+    rpcArgs,
+  );
+  if (error || data === null || data === undefined || data === false) {
+    report.stage1_baseline_activation_quarantine_failed += 1;
+    throw new Error(
+      `Durable Stage 1 baseline activation quarantine failed: ${
+        error?.message || "missing failure receipt"
+      }`,
+    );
+  }
+
+  report.failed += 1;
+  report.stage1_baseline_activation_quarantined += 1;
+  incrementCounterObject(report.stage1_baseline_activation_reasons, evaluation.reason);
+  const quarantineId = typeof data === "object"
+    ? data.quarantine_id || data.id || null
+    : data;
+  report.errors.push({
+    source_id: source.id,
+    source_url: source.url,
+    source_acquisition_id: acquisition.id,
+    source_page_request_id: acquisition.origin_source_page_request_id,
+    quarantine_id: quarantineId,
+    stage: "stage1_baseline_activation",
+    reason_code: evaluation.reason,
+    message: evaluation.detail,
+    evidence: rpcArgs.p_evidence,
+    creates_api_charge: false,
+  });
+  console.log(
+    `STAGE1_BASELINE_ACTIVATION_QUARANTINED reason=${evaluation.reason} ${sourceLabel(source)}`,
+  );
+  return {
+    quarantine_id: quarantineId,
+    receipt: data,
+    rpc_args: rpcArgs,
+  };
+}
+
+function restoreBaselineAfterFailedStage1Activation(source, previousBaseline) {
+  const path = baselinePathForSource(source.id);
+  if (previousBaseline) {
+    atomicWriteJson(path, previousBaseline);
+    localBaselineEvidenceCache.set(
+      source.id,
+      baselineEvidenceStatus(previousBaseline).ok,
+    );
+    return;
+  }
+  rmSync(path, { force: true });
+  localBaselineEvidenceCache.set(source.id, false);
+}
+
+function buildStage1BaselineActivationPersistenceEvidence({
+  source,
+  capture,
+  evaluation,
+  r2Result,
+}) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const baselinePath = baselinePathForSource(source.id);
+  const baseline = readJsonIfExists(baselinePath);
+  const localVerification = jsonObjectOrEmpty(
+    baseline?.summary_metadata?.stage1_baseline_activation,
+  );
+  const captureMetadata = readJsonIfExists(capture.meta_path);
+  const captureVerification = jsonObjectOrEmpty(
+    captureMetadata?.stage1_baseline_activation,
+  );
+  const latestObjectKeys = jsonObjectOrEmpty(r2Result?.latest_object_keys);
+  const latestHashes = jsonObjectOrEmpty(r2Result?.latest_hashes);
+  const latestMetadata = jsonObjectOrEmpty(r2Result?.latest_metadata);
+  const r2Verification = jsonObjectOrEmpty(latestMetadata.stage1_baseline_activation);
+  const persistedLocalText = capture?.text_path && existsSync(capture.text_path)
+    ? readFileSync(capture.text_path, "utf8")
+    : null;
+  const localTextIdentity = stage1BaselineActivationPersistedTextIdentity({
+    persistedText: persistedLocalText,
+    capturedText: capture?.text,
+  });
+  const localRawTextSha256 = localTextIdentity?.text_sha256 || null;
+  const localNormalizedTextSha256 =
+    localTextIdentity?.normalized_text_sha256 || null;
+  const artifactProjectionParity = stage1RetainedArtifactProjectionParity({
+    baseline,
+    captureMetadata,
+    latestObjectKeys,
+    latestHashes,
+    latestMetadata,
+  });
+  if (
+    !baseline
+    || localVerification.guard_sha256 !== evaluation.guard_sha256
+    || captureVerification.guard_sha256 !== evaluation.guard_sha256
+    || r2Verification.guard_sha256 !== evaluation.guard_sha256
+    || localVerification.observed_normalized_text_sha256 !==
+      evaluation.observed_normalized_text_sha256
+    || captureVerification.observed_normalized_text_sha256 !==
+      evaluation.observed_normalized_text_sha256
+    || r2Verification.observed_normalized_text_sha256 !==
+      evaluation.observed_normalized_text_sha256
+    || localVerification.visual_evidence_quotes_verified !== true
+    || captureVerification.visual_evidence_quotes_verified !== true
+    || r2Verification.visual_evidence_quotes_verified !== true
+    || r2Result?.succeeded !== true
+    || !cleanText(r2Result.bucket)
+    || !Object.keys(latestObjectKeys).length
+    || localRawTextSha256 !== baseline.text_hash
+    || !/^[0-9a-f]{64}$/.test(localNormalizedTextSha256 || "")
+    || latestHashes.text_hash !== capture.text_hash
+    || r2Result.latest_captured_at !== capture.captured_at
+    || !artifactProjectionParity.valid
+  ) {
+    throw new Error(
+      `Local baseline, capture metadata, and authoritative R2 bindings are incomplete: ${
+        artifactProjectionParity.valid
+          ? "core_persistence_binding_incomplete"
+          : artifactProjectionParity.reason
+      }.`,
+    );
+  }
+  return {
+    schema_version: "awardping.stage1.baseline-activation-persistence-evidence.v3",
+    persisted_at: new Date().toISOString(),
+    source_id: source.id,
+    acquisition_id: acquisition.id,
+    request_id: acquisition.origin_source_page_request_id,
+    guard_sha256: evaluation.guard_sha256,
+    observed_normalized_text_sha256: evaluation.observed_normalized_text_sha256,
+    local_baseline_written: true,
+    local_baseline: {
+      archive_relative_path: toArchiveRelative(baselinePath),
+      captured_at: baseline.captured_at,
+      kind: baseline.kind,
+      text_hash: baseline.text_hash,
+      normalized_text_sha256: localNormalizedTextSha256,
+      image_hash: baseline.image_hash,
+      file_hash: baseline.file_hash || null,
+      layout_hash: baseline.layout_hash || null,
+      capture_meta_path: baseline.capture?.meta || null,
+      activation_guard_sha256: localVerification.guard_sha256,
+      activation_status: localVerification.status,
+    },
+    r2_sync_succeeded: true,
+    r2: {
+      bucket: r2Result.bucket,
+      latest_captured_at: r2Result.latest_captured_at,
+      latest_object_keys: latestObjectKeys,
+      latest_hashes: latestHashes,
+      activation_guard_sha256: r2Verification.guard_sha256,
+      uploaded_object_count: nonNegativeInt(r2Result.uploaded, 0),
+    },
+    creates_api_charge: false,
+  };
+}
+
+function stage1RetainedArtifactProjectionParity({
+  baseline,
+  captureMetadata,
+  latestObjectKeys,
+  latestHashes,
+  latestMetadata,
+}) {
+  const projections = [
+    baseline?.summary_metadata?.retained_artifact_projection,
+    captureMetadata?.retained_artifact_projection,
+    latestMetadata?.retained_artifact_projection,
+  ].map(jsonObjectOrEmpty);
+  if (projections.some((projection) => (
+    projection.schema !== retainedCaptureArtifactProjectionSchema
+    || !["webpage", "pdf"].includes(projection.kind)
+    || typeof projection.authoritative?.layout_retained !== "boolean"
+    || !Number.isSafeInteger(projection.authoritative?.expansion_state_count)
+    || projection.authoritative.expansion_state_count < 0
+  ))) {
+    return { valid: false, reason: "retained_artifact_projection_missing_or_invalid" };
+  }
+  const signatures = projections.map((projection) => JSON.stringify({
+    schema: projection.schema,
+    kind: projection.kind,
+    localization_status: projection.localization_status,
+    authoritative: projection.authoritative,
+  }));
+  if (new Set(signatures).size !== 1) {
+    return { valid: false, reason: "retained_artifact_projection_disagrees" };
+  }
+
+  const authority = projections[0].authoritative;
+  const layoutRetained = authority.layout_retained;
+  const expectedExpansionCount = authority.expansion_state_count;
+  if (projections[0].kind === "webpage") {
+    const coverages = [
+      baseline?.summary_metadata?.expansion_state_capture_coverage,
+      captureMetadata?.expansion_state_capture_coverage,
+      latestMetadata?.expansion_state_capture_coverage,
+    ];
+    const canonicalCoverages = coverages.map((coverage) => (
+      canonicalExpansionStateCaptureCoverage(coverage, {
+        expectedRetainedStateCount: expectedExpansionCount,
+      })
+    ));
+    if (canonicalCoverages.some((coverage) => !coverage)) {
+      return { valid: false, reason: "expansion_capture_coverage_missing_or_invalid" };
+    }
+    if (
+      !sameExpansionStateCaptureCoverage(canonicalCoverages[0], canonicalCoverages[1])
+      || !sameExpansionStateCaptureCoverage(canonicalCoverages[0], canonicalCoverages[2])
+    ) {
+      return { valid: false, reason: "expansion_capture_coverage_disagrees" };
+    }
+    if (canonicalCoverages[0].complete !== true) {
+      return { valid: false, reason: "expansion_capture_coverage_incomplete" };
+    }
+  }
+  const slots = Object.keys(jsonObjectOrEmpty(latestObjectKeys));
+  const expansionPageCount = slots.filter((slot) => /^expansion_state_[0-9]{2}$/.test(slot)).length;
+  const expansionLayoutCount = slots.filter((slot) => (
+    /^expansion_state_[0-9]{2}_layout$/.test(slot)
+  )).length;
+  const baselineStates = Array.isArray(baseline?.capture?.expansion_states)
+    ? baseline.capture.expansion_states
+    : [];
+  const captureStates = Array.isArray(captureMetadata?.expansion_state_screenshots)
+    ? captureMetadata.expansion_state_screenshots
+    : [];
+  const r2States = Array.isArray(latestMetadata?.expansion_state_screenshots)
+    ? latestMetadata.expansion_state_screenshots
+    : [];
+  if (
+    expansionPageCount !== expectedExpansionCount
+    || expansionLayoutCount !== expectedExpansionCount
+    || baselineStates.length !== expectedExpansionCount
+    || captureStates.length !== expectedExpansionCount
+    || r2States.length !== expectedExpansionCount
+  ) {
+    return { valid: false, reason: "retained_expansion_projection_disagrees" };
+  }
+  for (let index = 0; index < expectedExpansionCount; index += 1) {
+    const expectedStateId = `expansion-state-${String(index + 1).padStart(2, "0")}`;
+    const local = jsonObjectOrEmpty(baselineStates[index]);
+    const raw = jsonObjectOrEmpty(captureStates[index]);
+    const remote = jsonObjectOrEmpty(r2States[index]);
+    if (
+      local.state_id !== expectedStateId
+      || raw.state_id !== expectedStateId
+      || remote.state_id !== expectedStateId
+      || local.image_hash !== raw.image_hash
+      || raw.image_hash !== remote.image_hash
+      || local.layout_hash !== raw.layout_hash
+      || raw.layout_hash !== remote.layout_hash
+    ) {
+      return { valid: false, reason: `retained_expansion_state_${index + 1}_disagrees` };
+    }
+  }
+
+  const baselineLayoutHash = cleanText(baseline?.layout_hash) || null;
+  const rawLayoutHash = cleanText(captureMetadata?.layout_hash) || null;
+  const remoteLayoutHash = cleanText(latestMetadata?.layout_hash) || null;
+  const pointerLayoutHash = cleanText(latestHashes?.layout_hash) || null;
+  const layoutClaims = [
+    baselineLayoutHash,
+    rawLayoutHash,
+    remoteLayoutHash,
+    pointerLayoutHash,
+  ];
+  if (layoutRetained) {
+    if (
+      !slots.includes("layout")
+      || !baseline?.capture?.layout
+      || layoutClaims.some((hash) => !/^[0-9a-f]{64}$/.test(hash || ""))
+      || new Set(layoutClaims).size !== 1
+      || authority.layout_hash !== layoutClaims[0]
+    ) {
+      return { valid: false, reason: "retained_layout_projection_disagrees" };
+    }
+  } else if (
+    slots.includes("layout")
+    || baseline?.capture?.layout
+    || layoutClaims.some(Boolean)
+    || authority.layout_hash !== null
+  ) {
+    return { valid: false, reason: "unavailable_layout_projection_overclaimed" };
+  }
+
+  return {
+    valid: true,
+    reason: "retained_artifact_projection_matches",
+  };
+}
+
+async function finalizeStage1BaselineActivation({
+  source,
+  capture,
+  stage1Activation,
+  persistenceEvidence,
+  report,
+}) {
+  const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
+  const { data, error } = await supabase.rpc(
+    "finalize_stage1_source_baseline_activation",
+    buildStage1BaselineActivationFinalizeRpcArgs({
+      sourceId: source.id,
+      acquisition,
+      evaluation: stage1Activation.evaluation,
+      prepareReceipt: stage1Activation.prepareReceipt,
+      persistenceEvidence,
+    }),
+  );
+  if (error) {
+    report.stage1_baseline_activation_finalization_failed += 1;
+    const finalizationFailure = failedStage1BaselineActivationEvaluation(
+      stage1Activation.evaluation,
+      "stage1_baseline_activation_server_finalization_failed",
+      `The service-only activation finalization failed: ${error.message || String(error)}`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+      evaluation: finalizationFailure,
+      report,
+      failureStage: "server_activation_finalization",
+      persistenceState: persistenceEvidence,
+    });
+    return false;
+  }
+  const finalization = stage1BaselineActivationFinalizationReceipt(data);
+  if (!finalization.allowed) {
+    report.stage1_baseline_activation_finalization_failed += 1;
+    const finalizationFailure = failedStage1BaselineActivationEvaluation(
+      stage1Activation.evaluation,
+      finalization.reason,
+      `The service-only activation finalization refused activation${
+        finalization.server_reason ? `: ${finalization.server_reason}` : "."
+      }`,
+    );
+    await persistStage1BaselineActivationFailure({
+      source,
+      capture,
+      retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+      evaluation: finalizationFailure,
+      report,
+      failureStage: "server_activation_finalization",
+      persistenceState: persistenceEvidence,
+    });
+    return false;
+  }
+  report.stage1_baseline_activation_verified += 1;
+  console.log(`STAGE1_BASELINE_ACTIVATION_FINALIZED ${sourceLabel(source)}`);
+  return true;
+}
+
+async function processSourceUnlocked(
+  source,
+  context,
+  browserMeta,
+  report,
+  networkProxy = null,
+  sourceDeadline = null,
+) {
+  if (stage1EvidenceSchemaUpgrade) {
+    return runStage1EvidenceSchemaUpgradeSource({
+      source,
+      manifest: stage1EvidenceSchemaUpgradeManifest,
+      dryRun: stage1EvidenceSchemaUpgradeDryRun,
+      enqueuePolicy: stage1EvidenceSchemaUpgradeEnqueuePolicy,
+      interfaces: stage1EvidenceSchemaUpgradeOperationInterfaces({
+        source,
+        context,
+        browserMeta,
+        report,
+        networkProxy,
+        sourceDeadline,
+      }),
+    });
+  }
+
+  if (shouldBlockOrdinaryProcessingForStage1UpgradeRecovery(source, report)) return;
+
   if (initialOfficialDocumentMaterialization) {
     await processInitialOfficialDocumentMaterializationOnly(source, report);
     return;
@@ -1761,13 +3532,13 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
       source_title: source.title,
     });
     if (hygiene.action === "review_later") {
-      await markSharedSourceReviewLater(source, hygiene);
+      await markSharedSourceReviewLater(source, hygiene, report);
       return;
     }
 
     const consolidation = classifySourceForConsolidation(source, source.shared_awards || {});
     if (consolidation.action === "review_later") {
-      await markSharedSourceReviewLater(source, consolidation);
+      await markSharedSourceReviewLater(source, consolidation, report);
       return;
     }
   }
@@ -1790,7 +3561,9 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
       report.r2_rehydration_only_completed += 1;
       console.log(`R2_REHYDRATION_ONLY_COMPLETE ${sourceLabel(source)}`);
     } else {
-      console.log(`SOURCE_REVIEW_HOLD no_live_capture ${sourceLabel(source)}`);
+      console.log(
+        `SOURCE_REVIEW_HOLD no_live_capture reason=${recovery.failureReason || "review_later"} ${sourceLabel(source)}`,
+      );
     }
     return;
   }
@@ -1824,7 +3597,19 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     const currentReviewState = await loadSharedSourceReviewState(source.id, report, {
       stage: "exact_source_pre_capture_review_state",
     });
-    if (!currentReviewState || currentReviewState.admin_review_status !== "open") {
+    const exactPendingStage1Activation = currentReviewState
+      ? isStage1PendingBaselineActivationSource({
+          ...source,
+          ...currentReviewState,
+        })
+      : false;
+    if (
+      !currentReviewState
+      || (
+        currentReviewState.admin_review_status !== "open"
+        && !exactPendingStage1Activation
+      )
+    ) {
       console.log(`SOURCE_REVIEW_HOLD no_live_capture ${sourceLabel(source)}`);
       return;
     }
@@ -1840,12 +3625,158 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
   const pdfSource = isPdfSource(source);
-  const capture = pdfSource
-    ? await capturePdfSourceForBaseline(source, baseline, report)
-    : await captureSource(source, context, browserMeta, report, { baseline });
+  const pendingStage1Activation = isStage1PendingBaselineActivationSource(source);
+  let capture;
+  try {
+    capture = pdfSource
+      ? await capturePdfSourceForBaseline(source, baseline, report)
+      : await captureSource(source, context, browserMeta, report, {
+          baseline,
+          suppressDiscovery: pendingStage1Activation,
+          networkProxy,
+          sourceDeadline,
+        });
+  } catch (error) {
+    if (!pendingStage1Activation) throw error;
+    throw Object.assign(
+      new Error(errorMessage(error)),
+      {
+        cause: error,
+        stage1BaselineActivationVisualCaptureFailure: true,
+      },
+    );
+  }
+  materializeRetainedCaptureAuthority(source, capture);
   report.checked += 1;
   if (capture.kind === "pdf") {
     report.pdf_checked += 1;
+  }
+
+  const stage1Activation = pendingStage1Activation
+    ? await enforceStage1FirstVisualBaselineActivation({ source, capture, report })
+    : null;
+  if (stage1Activation?.blocked) return;
+  if (stage1Activation?.verification) {
+    let written = false;
+    try {
+      written = writeBaseline(source, capture, {
+        reason: "stage1_reviewed_baseline_activation",
+        previous_baseline: baseline || null,
+        stage1_baseline_activation: stage1Activation.verification,
+      });
+    } catch (error) {
+      const writeFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_baseline_write_failed",
+        `The exact verified visual baseline write failed: ${errorMessage(error)}`,
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: writeFailure,
+        report,
+        failureStage: "verified_baseline_write",
+      });
+      return;
+    }
+    if (!written) {
+      const writeFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_baseline_write_refused",
+        "The verified visual capture was older than the existing baseline; the old baseline was preserved.",
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: writeFailure,
+        report,
+        failureStage: "verified_baseline_write",
+      });
+      return;
+    }
+    const r2Result = await maybeSyncR2Snapshot(source, capture, report, {
+      reason: "stage1_reviewed_baseline_activation",
+    });
+    if (!r2Result) {
+      restoreBaselineAfterFailedStage1Activation(source, baseline);
+      const r2Failure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_r2_sync_failed",
+        "The verified local baseline was rolled back because required authoritative R2 synchronization failed.",
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: r2Failure,
+        report,
+        failureStage: "required_r2_persistence",
+      });
+      return;
+    }
+    let persistenceEvidence;
+    try {
+      persistenceEvidence = buildStage1BaselineActivationPersistenceEvidence({
+        source,
+        capture,
+        evaluation: stage1Activation.evaluation,
+        r2Result,
+      });
+    } catch (error) {
+      const evidenceFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_persistence_evidence_invalid",
+        `The local/R2 persistence receipt could not be constructed: ${errorMessage(error)}`,
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: evidenceFailure,
+        report,
+        failureStage: "persistence_evidence",
+        persistenceState: {
+          local_baseline_written: true,
+          r2_sync_succeeded: true,
+        },
+      });
+      return;
+    }
+    try {
+      await markSharedSourceVisualCheckSucceeded(source, capture, report, {
+        preserveReviewedUrl: true,
+        preserveReviewedMetadata: true,
+      });
+    } catch (error) {
+      const checkMetadataFailure = failedStage1BaselineActivationEvaluation(
+        stage1Activation.evaluation,
+        "stage1_baseline_activation_source_check_metadata_failed",
+        `The verified source check metadata could not be recorded before activation: ${errorMessage(error)}`,
+      );
+      await persistStage1BaselineActivationFailure({
+        source,
+        capture,
+        retainedComparisonCapture: stage1Activation.retainedComparisonCapture,
+        evaluation: checkMetadataFailure,
+        report,
+        failureStage: "source_check_metadata_before_finalization",
+        persistenceState: persistenceEvidence,
+      });
+      return;
+    }
+    const finalized = await finalizeStage1BaselineActivation({
+      source,
+      capture,
+      stage1Activation,
+      persistenceEvidence,
+      report,
+    });
+    if (!finalized) return;
+    report.baselined += 1;
+    console.log(`BASELINE stage1_reviewed_activation ${sourceLabel(source)}`);
+    return;
   }
 
   const previous = baseline && !baselineRefresh
@@ -1859,16 +3790,21 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     await maybeExtractBaselineFacts(source, capture, report, {
       reason: baseline ? "baseline_refresh" : "initial_baseline",
     });
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: baseline ? "baseline_refresh" : "initial_baseline",
       previous_baseline: baseline || null,
       baseline_facts: capture.baseline_facts || null,
       baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
-    report.baselined += 1;
-    await maybeSyncR2Snapshot(source, capture, report, {
+    if (!written) throw new Error("The captured baseline was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline || null,
       reason: baseline ? "baseline_refresh" : "initial_baseline",
     });
+    report.baselined += 1;
     const initialDocumentResult = !baseline
       ? await maybeEnqueueInitialOfficialDocumentCandidate({ source, capture, report })
       : null;
@@ -1886,18 +3822,30 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
 
-  if (needsCaptureBehaviorRefresh(baseline, capture)) {
+  const hashComparison = compareStableCaptureHashes(baseline, capture, {
+    profile: captureProfile,
+  });
+  if (needsCaptureBehaviorRefresh(baseline, capture) &&
+      captureBehaviorRefreshContentIsUnchanged(baseline, capture)) {
     await maybeExtractBaselineFacts(source, capture, report, {
       reason: "capture_behavior_refresh",
     });
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "capture_behavior_refresh",
       previous_baseline: baseline || null,
       baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
       baseline_facts_metadata: capture.baseline_facts_metadata || null,
     });
+    if (!written) throw new Error("The capture-behavior refresh was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline,
+      reason: "capture_behavior_refresh",
+      unchanged: true,
+    });
     report.capture_behavior_refreshed += 1;
-    await maybeSyncR2Snapshot(source, capture, report, { reason: "capture_behavior_refresh", unchanged: true });
     if (localizationRepair) report.localization_repair_synced += 1;
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(
@@ -1916,7 +3864,6 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
     return;
   }
 
-  const hashComparison = compareStableCaptureHashes(baseline, capture, { profile: captureProfile });
   const screenshotChanged = hashComparison.screenshotChanged;
   const textChanged = hashComparison.textChanged;
   if (hashComparison.mainContentHashChanged) report.main_content_hash_changed += 1;
@@ -1942,15 +3889,23 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
         reason: "baseline_facts_backfill",
       });
       if (capture.baseline_facts) {
-        writeBaseline(source, capture, {
+        const written = writeBaseline(source, capture, {
           reason: "baseline_facts_backfill",
           previous_baseline: baseline || null,
           baseline_facts: capture.baseline_facts,
           baseline_facts_metadata: capture.baseline_facts_metadata || null,
         });
+        if (!written) throw new Error("The baseline-facts backfill was older than the retained baseline.");
+        await requireR2SnapshotForBaseline({
+          source,
+          capture,
+          report,
+          previousBaseline: baseline,
+          reason: "baseline_facts_backfill",
+          unchanged: true,
+        });
         baselineUpdatedForFacts = true;
         report.baseline_facts_backfilled += 1;
-        await maybeSyncR2Snapshot(source, capture, report, { reason: "baseline_facts_backfill", unchanged: true });
       }
     }
     await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "unchanged" });
@@ -2045,6 +4000,1708 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
   );
 }
 
+function stage1EvidenceSchemaUpgradeOperationInterfaces({
+  source,
+  context,
+  browserMeta,
+  report,
+  networkProxy,
+  sourceDeadline,
+}) {
+  const state = {
+    baseline: null,
+    baselineBytes: null,
+    existingCapture: null,
+    existingPrepared: null,
+    previousEvidence: null,
+    r2Pointer: null,
+    r2BindingReceipt: null,
+    preIntake: null,
+    postIntake: null,
+    capture: null,
+    capturePrepared: null,
+    pdfTextRecovery: null,
+    validation: null,
+    candidatePlan: null,
+    candidatePointer: null,
+    activeJournal: null,
+    completedAuthority: null,
+    recoveredCommit: null,
+    recoveryReceipt: null,
+    pendingMutationFailure: null,
+  };
+
+  const commitInterfaces = (prepared = null) =>
+    stage1EvidenceSchemaUpgradeCommitInterfaces({
+      source,
+      report,
+      prepared,
+    });
+
+  return Object.freeze({
+    async preflightActiveJournal({ dry_run: dryRun }) {
+      const activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+      if (!activeJournal) return null;
+      state.activeJournal = activeJournal;
+      if (dryRun) {
+        const mutationCounts = stage1EvidenceSchemaUpgradeMutationCounts();
+        return {
+          status: "dry_run_recovery_required",
+          source_id: source.id,
+          context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+          creates_api_charge: false,
+          mutation_counts: mutationCounts,
+          receipt: {
+            schema_version:
+              "awardping.stage1.evidence-schema-upgrade-active-journal-preflight.v1",
+            source_id: source.id,
+            context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+            operation: "pointer_commit",
+            status: "dry_run_recovery_required",
+            creates_api_charge: false,
+            journal_phase: activeJournal.phase || null,
+            journal_sha256: activeJournal.journal_sha256 || null,
+            mutation_counts: mutationCounts,
+          },
+        };
+      }
+      const recovery = await runStage1EvidenceSchemaUpgradeCommit({
+        sourceId: source.id,
+        transactionId: activeJournal.transaction_id,
+        expectedActiveJournalSha256: activeJournal.journal_sha256,
+        operationBinding: null,
+        interfaces: commitInterfaces(),
+      });
+      state.recoveryReceipt = recovery.receipt;
+      if (recovery.status !== "recovery_required") state.activeJournal = null;
+      if (recovery.status === "upgraded") state.recoveredCommit = recovery;
+      return recovery;
+    },
+
+    async preflightCompletedAuthority({
+      source: requestedSource,
+      manifest_source: manifestSource,
+    }) {
+      const invalid = (reason, evidence = null) => ({
+        decision: "completed_authority_invalid",
+        reason: cleanStage1EvidenceSchemaUpgradeReason(
+          reason || "completed_authority_invalid",
+        ),
+        creates_api_charge: false,
+        evidence,
+        outcome: {
+          would_commit: false,
+          would_queue_visual_candidate: false,
+          would_quarantine: false,
+        },
+      });
+      const accepted = (result) => ({
+        decision: "already_upgraded_verified",
+        reason: result.reason,
+        creates_api_charge: false,
+        evidence: {
+          completed_authority: result.receipt,
+        },
+        outcome: {
+          would_commit: false,
+          would_queue_visual_candidate: false,
+          would_quarantine: false,
+        },
+      });
+      let completedAuthorityCounted = false;
+      const countCompletedAuthorityCheck = (capture) => {
+        if (completedAuthorityCounted) return;
+        completedAuthorityCounted = true;
+        report.checked += 1;
+        if (capture?.kind === "pdf") report.pdf_checked += 1;
+      };
+
+      let baselineBytes = null;
+      let baseline = null;
+      let currentCapture = null;
+      let currentPointer = null;
+      try {
+        if (requestedSource?.id !== source.id || manifestSource?.source_id !== source.id) {
+          return invalid("completed_authority_request_identity_mismatch");
+        }
+        const baselinePath = baselinePathForSource(source.id);
+        if (existsSync(baselinePath)) {
+          baselineBytes = readFileSync(baselinePath);
+          try {
+            baseline = JSON.parse(baselineBytes.toString("utf8"));
+          } catch {
+            baseline = null;
+          }
+        }
+        currentCapture = baseline ? captureFromBaseline(baseline) : null;
+        const localHint = Boolean(
+          baselineBytes?.includes(
+            Buffer.from("stage1_evidence_schema_upgrade", "utf8"),
+          )
+          || baseline?.summary_metadata?.stage1_evidence_schema_upgrade
+          || currentCapture?.stage1_evidence_schema_upgrade,
+        );
+        try {
+          currentPointer = await loadR2SnapshotRecord(source.id);
+        } catch (error) {
+          if (localHint) {
+            countCompletedAuthorityCheck(currentCapture);
+            return invalid("completed_authority_pointer_read_failed", {
+              error: errorMessage(error),
+            });
+          }
+          return null;
+        }
+        const pointerHint = Boolean(
+          currentPointer?.latest_metadata?.stage1_evidence_schema_upgrade,
+        );
+        if (!localHint && !pointerHint) return null;
+
+        countCompletedAuthorityCheck(currentCapture);
+        const activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+        const prepared = currentCapture
+          ? prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+              currentCapture,
+              { legacy: true },
+            )
+          : null;
+        const remoteArtifacts = currentPointer
+          ? await loadStage1EvidenceSchemaUpgradeR2Artifacts(currentPointer)
+          : null;
+        const verifiedR2BindingReceipt = (
+          baseline
+          && currentCapture
+          && prepared
+          && currentPointer
+          && remoteArtifacts
+        )
+          ? verifyStage1EvidenceSchemaUpgradeR2Binding({
+              sourceId: source.id,
+              sourceKind: currentCapture.kind,
+              existingBaseline: baseline,
+              existingCapture: currentCapture,
+              localPreparedArtifacts: prepared,
+              r2Pointer: currentPointer,
+              remoteArtifactsByRole: remoteArtifacts,
+            })
+          : null;
+        const currentSources = await loadExactStage1EvidenceSchemaUpgradeSources();
+        const currentSource = currentSources.find((entry) => entry.id === source.id) || null;
+        const currentSourceHealth = currentSource
+          ? Object.fromEntries(
+              STAGE1_EVIDENCE_SCHEMA_UPGRADE_SOURCE_HEALTH_AUTHORITY_COLUMNS
+                .map((column) => [column, currentSource[column]]),
+            )
+          : null;
+        const provenance = jsonObjectOrEmpty(
+          baseline?.summary_metadata?.stage1_evidence_schema_upgrade,
+        );
+        const auditRunId = cleanText(provenance.worker_run_id);
+        const auditRow = auditRunId
+          ? await readStage1EvidenceSchemaUpgradeReviewedApplyAuditRun({
+              run_id: auditRunId,
+            })
+          : null;
+        const terminalAuditInspection = auditRow
+          ? inspectStage1EvidenceSchemaUpgradeCompletedAuthorityAuditRow({
+              row: auditRow,
+              expectedRunId: auditRunId,
+              expectedSourceId: source.id,
+              expectedManifestSource: manifestSource,
+              expectedManifestSha256:
+                hashText(stableJsonStringify(stage1EvidenceSchemaUpgradeManifest)),
+            })
+          : null;
+        const completionAuthority =
+          terminalAuditInspection?.terminal_completion_authority || null;
+        const transactionId = completionAuthority?.mode === "reviewed_recovery"
+          ? cleanText(completionAuthority?.recovery?.transaction_id)
+          : terminalAuditInspection
+            ? stage1EvidenceSchemaUpgradeReviewedApplyTransactionId({
+                sourceId: source.id,
+                planSha256: terminalAuditInspection.plan_sha256,
+              })
+            : null;
+        const completedPath = transactionId
+          ? stage1EvidenceSchemaUpgradeJournalPaths(source.id, transactionId).completed
+          : null;
+        const completedJournal = completedPath && existsSync(completedPath)
+          ? assertStage1EvidenceSchemaUpgradeJournal(readJsonIfExists(completedPath))
+          : null;
+        const completedJournalArchiveProof = completedJournal
+          ? proveStage1EvidenceSchemaUpgradeArchivedCompletion({
+              journal: completedJournal,
+              expectedJournalSha256: completedJournal.journal_sha256,
+              expectedTransactionId: transactionId,
+              expectedOperationBinding: completedJournal.operation_binding,
+              currentBaselineBytes: baselineBytes,
+              currentPointer,
+            })
+          : null;
+        const result = evaluateStage1EvidenceSchemaUpgradeCompletedAuthority({
+          sourceId: source.id,
+          expectedManifestSha256:
+            hashText(stableJsonStringify(stage1EvidenceSchemaUpgradeManifest)),
+          source: currentSource,
+          activeJournal,
+          currentBaselineBytes: baselineBytes,
+          currentBaseline: baseline,
+          currentCapture,
+          currentPreparedArtifacts: prepared,
+          currentR2Pointer: currentPointer,
+          verifiedR2BindingReceipt,
+          terminalAuditInspection,
+          completedJournal,
+          completedJournalArchiveProof,
+          sourceHealth: currentSourceHealth,
+        });
+        state.completedAuthority = result;
+        if (!result?.applies || !result.accepted) {
+          return invalid(
+            result?.reason || "completed_authority_evidence_invalid",
+            result?.evidence || null,
+          );
+        }
+        const finalActiveJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(
+          source.id,
+        );
+        const finalPointer = await loadR2SnapshotRecord(source.id);
+        const finalSources = await loadExactStage1EvidenceSchemaUpgradeSources();
+        const finalSource = finalSources.find((entry) => entry.id === source.id) || null;
+        const finalBaselinePath = baselinePathForSource(source.id);
+        const finalBaselineBytes = existsSync(finalBaselinePath)
+          ? readFileSync(finalBaselinePath)
+          : null;
+        const finalCompletedJournal = completedPath && existsSync(completedPath)
+          ? readJsonIfExists(completedPath)
+          : null;
+        const finalAuditRow = auditRunId
+          ? await readStage1EvidenceSchemaUpgradeReviewedApplyAuditRun({
+              run_id: auditRunId,
+            })
+          : null;
+        if (
+          finalActiveJournal !== null
+          || !Buffer.isBuffer(finalBaselineBytes)
+          || !Buffer.isBuffer(baselineBytes)
+          || !finalBaselineBytes.equals(baselineBytes)
+          || stableJsonStringify(finalPointer) !== stableJsonStringify(currentPointer)
+          || stableJsonStringify(finalSource) !== stableJsonStringify(currentSource)
+          || stableJsonStringify(finalCompletedJournal)
+            !== stableJsonStringify(completedJournal)
+          || stableJsonStringify(finalAuditRow) !== stableJsonStringify(auditRow)
+        ) {
+          return invalid("completed_authority_changed_during_preflight");
+        }
+        assertStage1EvidenceSchemaUpgradeCompletedAuthorityReceipt(result.receipt);
+        return accepted(result);
+      } catch (error) {
+        return invalid(error?.code || "completed_authority_preflight_invalid", {
+          error: errorMessage(error),
+        });
+      }
+    },
+
+    async captureAndValidate({ dry_run: dryRun }) {
+      try {
+        const activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+        if (activeJournal) {
+          state.activeJournal = activeJournal;
+          if (dryRun) {
+            return stage1EvidenceSchemaUpgradeFailureValidation({
+              sourceId: source.id,
+              reason: "active_upgrade_journal_requires_apply_recovery",
+              detail:
+                "A sealed Stage 1 evidence-schema-upgrade journal is active. Dry-run left it untouched; run reviewed apply mode to reconcile the authoritative pointer before any new capture.",
+              evidence: {
+                journal_phase: activeJournal.phase || null,
+                journal_sha256: activeJournal.journal_sha256 || null,
+              },
+            });
+          }
+          const recovery = await runStage1EvidenceSchemaUpgradeCommit({
+            sourceId: source.id,
+            transactionId: activeJournal.transaction_id,
+            expectedActiveJournalSha256: activeJournal.journal_sha256,
+            operationBinding: null,
+            interfaces: commitInterfaces(),
+          });
+          state.recoveryReceipt = recovery.receipt;
+          if (recovery.status !== "recovery_required") state.activeJournal = null;
+          if (recovery.status === "upgraded") {
+            state.recoveredCommit = recovery;
+            return stage1EvidenceSchemaUpgradeRecoveredValidation(recovery);
+          }
+          if (recovery.status !== "abandoned_old_authority") {
+            const recoveryAccounting = recovery.mutation_accounting
+              || recovery.receipt?.mutation_accounting
+              || null;
+            const recoveryError = Object.assign(
+              new Error(
+                `Stage 1 active-journal recovery remains ambiguous: ${
+                  recovery.receipt?.outcome || recovery.status
+                }.`,
+              ),
+              {
+                code: "upgrade_pointer_commit_recovery_required",
+                stage1EvidenceSchemaUpgradeRecovery: recovery.receipt || null,
+                stage1_mutation_accounting: recoveryAccounting,
+              },
+            );
+            state.pendingMutationFailure = {
+              operation: "pointer_commit",
+              error: recoveryError,
+              mutation_accounting: recoveryAccounting,
+            };
+            return stage1EvidenceSchemaUpgradeFailureValidation({
+              sourceId: source.id,
+              reason: "upgrade_journal_authority_ambiguous",
+              detail:
+                "The sealed upgrade journal could not be reconciled to either the old or candidate authority. No new capture was attempted.",
+              evidence: { recovery: recovery.receipt || null },
+            });
+          }
+        }
+
+        const baselinePath = baselinePathForSource(source.id);
+        if (!existsSync(baselinePath)) {
+          throw Object.assign(
+            new Error("The reviewed source has no local baseline bytes to bind to authoritative R2 evidence."),
+            { code: "existing_baseline_missing" },
+          );
+        }
+        state.baselineBytes = readFileSync(baselinePath);
+        try {
+          state.baseline = JSON.parse(state.baselineBytes.toString("utf8"));
+        } catch {
+          state.baseline = null;
+        }
+        state.existingCapture = captureFromBaseline(state.baseline);
+        if (!state.baseline || !state.existingCapture) {
+          throw Object.assign(
+            new Error("The reviewed local baseline or its retained evidence could not be loaded exactly."),
+            { code: "existing_baseline_evidence_invalid" },
+          );
+        }
+        state.previousEvidence = readBaselineEvidence(state.baseline);
+        if (!state.previousEvidence.ok) {
+          throw Object.assign(
+            new Error(
+              `The reviewed local baseline is missing retained evidence: ${state.previousEvidence.missing.join(", ")}.`,
+            ),
+            { code: "existing_baseline_evidence_incomplete" },
+          );
+        }
+        state.existingPrepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+          state.existingCapture,
+          { legacy: true },
+        );
+        state.r2Pointer = await loadR2SnapshotRecord(source.id);
+        if (state.r2Pointer?.bucket !== r2Bucket) {
+          throw Object.assign(
+            new Error(
+              "The authoritative Stage 1 pointer bucket differs from the configured immutable-evidence bucket.",
+            ),
+            { code: "authoritative_r2_pointer_bucket_mismatch" },
+          );
+        }
+        const remoteArtifacts = await loadStage1EvidenceSchemaUpgradeR2Artifacts(
+          state.r2Pointer,
+        );
+        state.r2BindingReceipt = verifyStage1EvidenceSchemaUpgradeR2Binding({
+          sourceId: source.id,
+          sourceKind: state.existingCapture.kind,
+          existingBaseline: state.baseline,
+          existingCapture: state.existingCapture,
+          localPreparedArtifacts: state.existingPrepared,
+          r2Pointer: state.r2Pointer,
+          remoteArtifactsByRole: remoteArtifacts,
+        });
+
+        const pdfSource = state.existingCapture.kind === "pdf";
+        if (!pdfSource) {
+          state.preIntake = await captureIntakePage(source.url, {
+            timeoutMs,
+            maxPdfBytes,
+          });
+        }
+        const liveCapture = () => (
+          pdfSource
+            ? capturePdfSourceForBaseline(source, state.baseline, report)
+            : captureSource(source, context, browserMeta, report, {
+                baseline: state.baseline,
+                suppressDiscovery: true,
+                networkProxy,
+                sourceDeadline,
+              })
+        );
+        state.capture = sourceDeadline && !pdfSource
+          ? await sourceDeadline.run(liveCapture, {
+              settleAfterTimeout: true,
+              onTimeout: async () => {
+                if (context && typeof context.close === "function") {
+                  await context.close().catch(() => undefined);
+                }
+              },
+            })
+          : await liveCapture();
+        if (sourceDeadline?.expired()) {
+          throw Object.assign(
+            new Error("The live capture deadline expired before Stage 1 mutation boundaries."),
+            { code: "live_capture_deadline_expired" },
+          );
+        }
+        if (pdfSource) {
+          state.capturePrepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+            state.capture,
+          );
+          const sealedIntakeArtifacts = source.id
+            === STAGE1_SCHWARZMAN_PDF_RECOVERY_SOURCE_ID
+            ? loadStage1SchwarzmanPdfSealedIntakeArtifacts({ archiveRoot })
+            : null;
+          state.pdfTextRecovery = evaluateStage1SchwarzmanPdfRecovery({
+            sourceId: source.id,
+            exactSourceId: source.id,
+            sourceKind: state.existingCapture.kind,
+            reviewedFinalUrl: state.baseline.final_url,
+            immutableAcquisition: source.source_acquisition,
+            sourceActivationFinalization: source.source_activation_finalization,
+            existingBaseline: state.baseline,
+            existingBaselineBytes: state.baselineBytes,
+            existingCapture: state.existingCapture,
+            existingPreparedArtifacts: state.existingPrepared,
+            authoritativeExistingR2Binding: state.r2BindingReceipt,
+            prospectiveCapture: state.capture,
+            prospectivePreparedArtifacts: state.capturePrepared,
+            sealedIntakeArtifacts,
+          });
+          if (state.pdfTextRecovery.applies && !state.pdfTextRecovery.accepted) {
+            throw Object.assign(
+              new Error(
+                `The exact source-bound PDF text recovery was refused: ${state.pdfTextRecovery.reason}.`,
+              ),
+              { code: `pdf_text_recovery_${state.pdfTextRecovery.reason}` },
+            );
+          }
+          if (state.pdfTextRecovery.accepted) {
+            applyStage1SchwarzmanPdfRecoveryToCandidate({
+              source,
+              capture: state.capture,
+              recovery: state.pdfTextRecovery,
+            });
+          }
+        }
+        materializeRetainedCaptureAuthority(source, state.capture, {
+          rewriteMatchingBaseline: false,
+        });
+        if (!pdfSource) {
+          state.postIntake = await captureIntakePage(source.url, {
+            timeoutMs,
+            maxPdfBytes,
+          });
+        }
+        state.capturePrepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+          state.capture,
+        );
+        state.validation = evaluateStage1EvidenceSchemaUpgradeCapture({
+          sourceId: source.id,
+          sourceKind: state.existingCapture.kind,
+          immutableAcquisition: state.pdfTextRecovery?.accepted
+            ? {
+                acquisition: source.source_acquisition,
+                identity: state.pdfTextRecovery.immutable_acquisition_identity,
+              }
+            : source.source_acquisition,
+          existingBaseline: state.baseline,
+          existingCapture: state.existingCapture,
+          existingPreparedArtifacts: state.existingPrepared,
+          authoritativeExistingR2Binding: state.r2BindingReceipt,
+          capture: state.capture,
+          capturePreparedArtifacts: state.capturePrepared,
+          preIntake: state.preIntake,
+          postIntake: state.postIntake,
+          pdfTextRecoveryReceipt:
+            state.pdfTextRecovery?.accepted
+              ? state.pdfTextRecovery.evidence
+              : null,
+        });
+        state.validation = {
+          ...state.validation,
+          evidence: {
+            ...jsonObjectOrEmpty(state.validation.evidence),
+            local_baseline_identity:
+              stage1EvidenceSchemaUpgradeLocalBaselineIdentity(state.baselineBytes),
+            existing_pointer_identity:
+              stage1EvidenceSchemaUpgradeExistingPointerIdentity(state.r2Pointer),
+            authoritative_existing_r2_binding: state.r2BindingReceipt,
+            pdf_text_recovery: state.pdfTextRecovery?.evidence || null,
+            prior_recovery: state.recoveryReceipt,
+          },
+        };
+        report.checked += 1;
+        if (pdfSource) report.pdf_checked += 1;
+        return state.validation;
+      } catch (error) {
+        state.validation = stage1EvidenceSchemaUpgradeFailureValidation({
+          sourceId: source.id,
+          reason: cleanStage1EvidenceSchemaUpgradeReason(error?.code || "capture_validation_failed"),
+          detail: errorMessage(error),
+          evidence: {
+            local_baseline_identity:
+              stage1EvidenceSchemaUpgradeLocalBaselineIdentity(state.baselineBytes),
+            existing_pointer_identity:
+              stage1EvidenceSchemaUpgradeExistingPointerIdentity(state.r2Pointer),
+            authoritative_existing_r2_binding: state.r2BindingReceipt,
+            pdf_text_recovery: state.pdfTextRecovery?.evidence || null,
+            pdf_text_recovery_candidate_mutation_failure:
+              error?.stage1_candidate_mutation_evidence || null,
+            prior_recovery: state.recoveryReceipt,
+          },
+        });
+        return state.validation;
+      }
+    },
+
+    async upgradeEvidenceSchema({
+      capture_validation: captureValidation,
+      transaction_id: reviewedTransactionId = null,
+      operation_binding: reviewedOperationBinding = null,
+    }) {
+      if (state.recoveredCommit) return state.recoveredCommit;
+      if (
+        captureValidation?.decision
+          !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE
+        || !state.capture
+        || !state.baseline
+      ) {
+        throw new Error("Stage 1 pointer commit was requested without an exact unchanged validation.");
+      }
+      if (sourceDeadline?.expired()) {
+        throw new Error("Stage 1 pointer commit was refused after the live capture deadline expired.");
+      }
+      const requestedTransactionId = cleanText(reviewedTransactionId);
+      const transactionId = requestedTransactionId
+        || `stage1-${source.id}-${crypto.randomUUID()}`;
+      if (
+        stage1EvidenceSchemaUpgradeReviewedApplyAuthority
+        && (
+          !requestedTransactionId
+          || !/^[a-z0-9-]{16,200}$/u.test(transactionId)
+        )
+      ) {
+        throw new Error(
+          "Stage 1 reviewed apply requires one exact deterministic transaction ID.",
+        );
+      }
+
+      const existingSummary = jsonObjectOrEmpty(state.baseline.summary_metadata);
+      state.capture.baseline_facts = existingSummary.baseline_facts ?? null;
+      state.capture.baseline_facts_metadata = existingSummary.baseline_facts_metadata ?? null;
+      state.capture.monitoring_disposition = existingSummary.monitoring_disposition ?? null;
+      state.capture.stage1_baseline_activation = existingSummary.stage1_baseline_activation ?? null;
+      state.capture.stage1_evidence_schema_upgrade = stage1EvidenceSchemaUpgradeProvenance({
+        source,
+        captureValidation,
+        r2BindingReceipt: state.r2BindingReceipt,
+        recoveryReceipt: state.recoveryReceipt,
+        workerRunId: report.worker_run_id,
+      });
+      materializeRetainedCaptureAuthority(source, state.capture, {
+        rewriteMatchingBaseline: false,
+      });
+      const prepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(state.capture);
+      const candidateBaseline = buildBaselineRecord(source, state.capture, {
+        reason: "stage1_evidence_schema_upgrade",
+        previous_baseline: null,
+        baseline_facts: state.capture.baseline_facts,
+        baseline_facts_metadata: state.capture.baseline_facts_metadata,
+        monitoring_disposition: state.capture.monitoring_disposition,
+        stage1_baseline_activation: state.capture.stage1_baseline_activation,
+        stage1_evidence_schema_upgrade: state.capture.stage1_evidence_schema_upgrade,
+      }, {
+        existingBaseline: state.baseline,
+      });
+      const plan = buildStage1EvidenceSchemaUpgradeR2CandidatePlan(
+        source,
+        state.capture,
+        prepared,
+      );
+      const candidatePointer = buildLatestOnlyVisualSnapshotPointerReplacement({
+        existing: state.r2Pointer,
+        replacement: {
+          latest_captured_at: state.capture.captured_at,
+          latest_object_keys: plan.objectKeys,
+          latest_hashes: plan.hashes,
+          latest_metadata: plan.metadata,
+        },
+        updatedAt: stage1EvidenceSchemaUpgradePointerUpdatedAt(state.r2Pointer),
+      });
+      state.candidatePlan = plan;
+      state.candidatePointer = candidatePointer;
+      const result = await runStage1EvidenceSchemaUpgradeCommit({
+        sourceId: source.id,
+        transactionId,
+        operationBinding: reviewedOperationBinding,
+        expectedActiveJournalSha256: null,
+        expectedOldBaseline:
+          captureValidation?.evidence?.local_baseline_identity,
+        expectedOldPointerIdentity:
+          captureValidation?.evidence?.existing_pointer_identity,
+        candidateBaselineBytes: serializedJsonBytes(candidateBaseline),
+        candidatePointer,
+        candidateArtifacts: plan.artifactsByRole,
+        interfaces: commitInterfaces(prepared),
+      });
+      if (result.status === "abandoned_old_authority") {
+        state.recoveryReceipt = result.receipt || null;
+        state.activeJournal = null;
+        return result;
+      }
+      if (result.status !== "upgraded") {
+        state.recoveryReceipt = result.receipt || null;
+        if (
+          stage1EvidenceSchemaUpgradeReviewedApplyAuthority
+          && requestedTransactionId
+        ) {
+          return result;
+        }
+        throw Object.assign(
+          new Error(`Stage 1 pointer commit requires recovery: ${result.receipt?.outcome || result.status}.`),
+          {
+            code: "upgrade_pointer_commit_recovery_required",
+            stage1EvidenceSchemaUpgradeRecovery: result.receipt,
+            stage1_mutation_accounting:
+              result.mutation_accounting
+              || result.receipt?.mutation_accounting
+              || null,
+          },
+        );
+      }
+      return result;
+    },
+
+    async enqueueVisualReviewCandidate({ capture_validation: captureValidation, enqueue_policy: policy }) {
+      if (
+        captureValidation?.decision
+          !== STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.MATERIAL_DIFFERENCE_CANDIDATE
+        || !state.capture
+        || !state.baseline
+        || !state.previousEvidence?.ok
+      ) {
+        throw stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(
+          new Error("Stage 1 candidate enqueue was requested without exact material evidence."),
+        );
+      }
+      if (sourceDeadline?.expired()) {
+        throw stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(
+          new Error("Stage 1 candidate enqueue was refused after the live capture deadline expired."),
+        );
+      }
+      let diff;
+      let deterministic;
+      try {
+        state.capture.stage1_evidence_schema_upgrade = stage1EvidenceSchemaUpgradeProvenance({
+          source,
+          captureValidation,
+          r2BindingReceipt: state.r2BindingReceipt,
+          recoveryReceipt: state.recoveryReceipt,
+          workerRunId: report.worker_run_id,
+        });
+        materializeRetainedCaptureAuthority(source, state.capture, {
+          rewriteMatchingBaseline: false,
+        });
+        diff = buildDiffSummary(state.previousEvidence.text, state.capture.text, source);
+        deterministic = {
+          classification: "stage1_evidence_schema_upgrade_material_difference",
+          reason: captureValidation.reason || "stage1_evidence_schema_upgrade_material_difference",
+          candidate_change: true,
+          stage1_evidence_schema_upgrade: true,
+        };
+      } catch (error) {
+        throw stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(error);
+      }
+      const candidate = await enqueueVisualReviewCandidate({
+        source,
+        baseline: state.baseline,
+        previous: state.previousEvidence,
+        capture: state.capture,
+        diff,
+        deterministic,
+        report,
+        enqueuePolicy: policy,
+      });
+      let status;
+      let candidateInserted;
+      let observationInserted;
+      try {
+        if (!candidate?.id || candidate.absorbed) {
+          throw new Error("Stage 1 material evidence was not retained as a visual-review candidate.");
+        }
+        status = candidate.existing ? "existing" : "queued";
+        candidateInserted = candidate.candidate_inserted === true;
+        observationInserted = candidate.observation_inserted === true;
+        const retainedCandidateStatus = cleanText(candidate.status).toLowerCase();
+        if (
+          candidate.existing
+          && !new Set([
+            "pending",
+            "submitted",
+            "processing",
+            "succeeded",
+            "published",
+          ]).has(retainedCandidateStatus)
+        ) {
+          throw Object.assign(
+            new Error(
+              `Stage 1 material evidence matched a terminal ${
+                retainedCandidateStatus || "unknown"
+              } visual-review candidate and requires operator quarantine.`,
+            ),
+            { code: "stage1_existing_candidate_not_actionable" },
+          );
+        }
+        if (
+          (status === "queued" && !candidateInserted)
+          || (status === "existing" && candidateInserted)
+        ) {
+          throw new Error(
+            "Stage 1 candidate enqueue returned contradictory insert evidence.",
+          );
+        }
+      } catch (error) {
+        const wrapped = error instanceof Error ? error : new Error(String(error));
+        if (candidate?.stage1_mutation_accounting) {
+          wrapped.stage1_mutation_accounting = candidate.stage1_mutation_accounting;
+        }
+        throw wrapped;
+      }
+      const mutationCounts = stage1EvidenceSchemaUpgradeMutationCounts({
+        database_writes: Number(candidateInserted) + Number(observationInserted),
+        candidate_writes: Number(candidateInserted),
+      });
+      return {
+        status,
+        source_id: source.id,
+        context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+        creates_api_charge: false,
+        mutation_counts: mutationCounts,
+        mutation_accounting: candidate.stage1_mutation_accounting,
+        receipt: {
+          schema_version: "awardping.stage1.evidence-schema-upgrade-candidate-receipt.v1",
+          source_id: source.id,
+          context: visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade,
+          operation: "candidate_enqueue",
+          status,
+          creates_api_charge: false,
+          candidate_id: candidate.id,
+          candidate_signature: candidate.candidate_signature || null,
+          candidate_inserted: candidateInserted,
+          observation_inserted: observationInserted,
+          rejection_ledger_bypassed: true,
+          reconciliation_queued: false,
+          mutation_counts: mutationCounts,
+          mutation_accounting: candidate.stage1_mutation_accounting,
+        },
+      };
+    },
+
+    async quarantineEvidenceFailure({
+      capture_validation: captureValidation,
+      mutation_failure: mutationFailure = null,
+    }) {
+      return persistStage1EvidenceSchemaUpgradeQuarantine({
+        source,
+        state,
+        captureValidation,
+        mutationFailure: mutationFailure || state.pendingMutationFailure,
+      });
+    },
+  });
+}
+
+function stage1EvidenceSchemaUpgradeFailureValidation({
+  sourceId,
+  reason,
+  detail,
+  evidence = null,
+}) {
+  const reasonCode = cleanStage1EvidenceSchemaUpgradeReason(reason);
+  return {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-validation.v1",
+    decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
+    creates_api_charge: false,
+    reason: reasonCode,
+    reasons: [{ code: reasonCode, detail: cleanText(detail) || reasonCode }],
+    evidence: {
+      source_id: sourceId,
+      ...jsonObjectOrEmpty(evidence),
+    },
+    outcome: {
+      would_commit: false,
+      would_queue_visual_candidate: false,
+      would_quarantine: true,
+      creates_api_charge: false,
+    },
+  };
+}
+
+function stage1EvidenceSchemaUpgradeRecoveredValidation(commitResult) {
+  return {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-validation.v1",
+    decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.ELIGIBLE_UNCHANGED_UPGRADE,
+    creates_api_charge: false,
+    reason: "sealed_candidate_authority_recovered",
+    reasons: [{
+      code: "sealed_candidate_authority_recovered",
+      detail:
+        "A previously validated sealed transaction was reconciled to its exact candidate pointer and baseline without a new capture.",
+    }],
+    evidence: { recovered_commit: commitResult.receipt },
+    outcome: {
+      would_commit: true,
+      would_queue_visual_candidate: false,
+      would_quarantine: false,
+      creates_api_charge: false,
+    },
+  };
+}
+
+function cleanStage1EvidenceSchemaUpgradeReason(value) {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 160) || "evidence_schema_upgrade_failed";
+}
+
+function cleanOptionalStage1EvidenceSchemaUpgradeReason(value) {
+  return cleanText(value)
+    ? cleanStage1EvidenceSchemaUpgradeReason(value)
+    : null;
+}
+
+function stage1EvidenceSchemaUpgradeProvenance({
+  source,
+  captureValidation,
+  r2BindingReceipt,
+  recoveryReceipt,
+  workerRunId,
+}) {
+  const validationProjection = {
+    decision: captureValidation?.decision || null,
+    reason: captureValidation?.reason || null,
+    reasons: captureValidation?.reasons || [],
+    evidence: captureValidation?.evidence || null,
+  };
+  return {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-capture-provenance.v1",
+    source_id: source.id,
+    recorded_at: new Date().toISOString(),
+    worker_run_id: cleanText(workerRunId) || null,
+    manifest_sha256: hashText(stableJsonStringify(stage1EvidenceSchemaUpgradeManifest)),
+    validation_sha256: hashText(stableJsonStringify(validationProjection)),
+    validation: validationProjection,
+    existing_r2_binding_receipt: r2BindingReceipt || null,
+    prior_recovery_receipt: recoveryReceipt || null,
+    creates_api_charge: false,
+    public_fact_authority: false,
+  };
+}
+
+function stage1EvidenceSchemaUpgradePointerUpdatedAt(existing) {
+  const existingMs = Date.parse(cleanText(existing?.updated_at));
+  return new Date(Math.max(Date.now(), Number.isFinite(existingMs) ? existingMs + 1 : 0)).toISOString();
+}
+
+function stage1EvidenceSchemaUpgradeMutationCounts(overrides = {}) {
+  return {
+    database_writes: 0,
+    r2_writes: 0,
+    local_baseline_writes: 0,
+    candidate_writes: 0,
+    quarantine_writes: 0,
+    source_state_writes: 0,
+    ...overrides,
+  };
+}
+
+function stage1EvidenceSchemaUpgradeLocalBaselineIdentity(bytes) {
+  if (!(bytes instanceof Uint8Array)) return null;
+  return Object.freeze({
+    sha256: hashBuffer(bytes),
+    byte_length: bytes.byteLength,
+  });
+}
+
+function stage1EvidenceSchemaUpgradeExistingPointerIdentity(pointer) {
+  const identity = visualSnapshotPointerIdentity(pointer ?? null);
+  return Object.freeze({
+    schema_version: identity.schema_version,
+    exists: identity.exists,
+    canonical_sha256: identity.canonical_sha256,
+  });
+}
+
+async function assertStage1EvidenceSchemaUpgradeReviewedApplyAuthority({
+  source,
+  selected,
+  phase,
+}) {
+  const sourceId = cleanText(source?.id);
+  const expected = jsonObjectOrEmpty(selected);
+  const expectedSource = jsonObjectOrEmpty(expected.source);
+  const expectedBaseline = jsonObjectOrEmpty(expected.local_baseline_identity);
+  const expectedPointer = jsonObjectOrEmpty(expected.existing_pointer_identity);
+  const expectedAcquisition = jsonObjectOrEmpty(expected.acquisition);
+  const expectedActivation = jsonObjectOrEmpty(expected.activation);
+  const expectedFinalization = jsonObjectOrEmpty(expected.finalization);
+  const expectedR2 = jsonObjectOrEmpty(expected.r2);
+  if (!sourceId || sourceId !== expectedSource.source_id) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "selected_source_identity_changed",
+      phase,
+    );
+  }
+  const activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+  if (activeJournal) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "active_upgrade_journal_requires_separate_review",
+      phase,
+    );
+  }
+
+  const baselinePath = baselinePathForSource(sourceId);
+  if (!existsSync(baselinePath)) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_local_baseline_missing",
+      phase,
+    );
+  }
+  const baselineBytes = readFileSync(baselinePath);
+  const baselineIdentity = stage1EvidenceSchemaUpgradeLocalBaselineIdentity(
+    baselineBytes,
+  );
+  if (stableJsonStringify(baselineIdentity) !== stableJsonStringify(expectedBaseline)) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_local_baseline_identity_changed",
+      phase,
+    );
+  }
+  let baseline;
+  try {
+    baseline = JSON.parse(baselineBytes.toString("utf8"));
+  } catch {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_local_baseline_json_invalid",
+      phase,
+    );
+  }
+  const existingCapture = captureFromBaseline(baseline);
+  if (!existingCapture) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_local_baseline_capture_invalid",
+      phase,
+    );
+  }
+
+  const pointer = await loadR2SnapshotRecord(sourceId);
+  const pointerIdentity = stage1EvidenceSchemaUpgradeExistingPointerIdentity(pointer);
+  if (stableJsonStringify(pointerIdentity) !== stableJsonStringify(expectedPointer)) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_existing_pointer_identity_changed",
+      phase,
+    );
+  }
+  if (pointer?.bucket !== r2Bucket) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_existing_pointer_bucket_changed",
+      phase,
+    );
+  }
+  const prepared = prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(
+    existingCapture,
+    { legacy: true },
+  );
+  const remoteArtifacts = await loadStage1EvidenceSchemaUpgradeR2Artifacts(pointer);
+  const r2Receipt = verifyStage1EvidenceSchemaUpgradeR2Binding({
+    sourceId,
+    sourceKind: existingCapture.kind,
+    existingBaseline: baseline,
+    existingCapture,
+    localPreparedArtifacts: prepared,
+    r2Pointer: pointer,
+    remoteArtifactsByRole: remoteArtifacts,
+  });
+  if (r2Receipt.receipt_sha256 !== expectedR2.binding_receipt_sha256) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_existing_r2_binding_changed",
+      phase,
+    );
+  }
+
+  if (
+    source.source_acquisition?.id !== expectedAcquisition.source_acquisition_id
+    || source.source_activation_finalization?.source_acquisition_id
+      !== expectedAcquisition.source_acquisition_id
+    || source.source_activation_finalization?.guard_sha256
+      !== expectedActivation.guard_sha256
+    || source.source_activation_finalization?.finalization_receipt_sha256
+      !== expectedFinalization.receipt_sha256
+    || stage1EvidenceSchemaUpgradeFinalizationReceiptSha256(
+      source.source_activation_finalization?.receipt,
+    ) !== source.source_activation_finalization?.finalization_receipt_sha256
+    || comparePreciseRfc3339(
+      source.source_activation_finalization?.finalized_at,
+      source.source_activation_finalization?.receipt?.finalized_at,
+    ) !== 0
+    || comparePreciseRfc3339(
+      source.source_activation_finalization?.finalized_at,
+      source.admin_reviewed_at,
+    ) !== 0
+    || stage1EvidenceSchemaUpgradeCanonicalTimestamp(
+      source.source_activation_finalization?.finalized_at,
+    )
+      !== expectedFinalization.finalized_at
+  ) {
+    throw stage1EvidenceSchemaUpgradeReviewedAuthorityError(
+      "reviewed_source_activation_authority_changed",
+      phase,
+    );
+  }
+
+  return stage1EvidenceSchemaUpgradeReviewedApplyAuthorityReceipt({
+    source,
+    localBaselineIdentity: baselineIdentity,
+    existingPointerIdentity: pointerIdentity,
+    r2BindingReceiptSha256: r2Receipt.receipt_sha256,
+    activeJournalSha256: null,
+  });
+}
+
+function stage1EvidenceSchemaUpgradeReviewedAuthorityError(reason, phase) {
+  return Object.assign(
+    new Error(`Stage 1 reviewed apply authority changed (${reason}) during ${phase}.`),
+    {
+      code: reason,
+      stage1_reviewed_apply_phase: phase,
+      creates_api_charge: false,
+    },
+  );
+}
+
+function stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId = null) {
+  const journalRoot = join(
+    archiveRoot,
+    "sources",
+    sourceId,
+    "stage1-evidence-schema-upgrade-journals",
+  );
+  return {
+    root: journalRoot,
+    active: join(journalRoot, "active.json"),
+    completed: transactionId
+      ? join(journalRoot, "completed", `${transactionId}.json`)
+      : null,
+  };
+}
+
+function loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId) {
+  const path = stage1EvidenceSchemaUpgradeJournalPaths(sourceId).active;
+  if (!existsSync(path)) return null;
+  const journal = readJsonIfExists(path);
+  if (!journal) {
+    throw new Error("The active Stage 1 evidence-schema-upgrade journal is unreadable.");
+  }
+  return assertStage1EvidenceSchemaUpgradeJournal(journal);
+}
+
+function shouldBlockOrdinaryProcessingForStage1UpgradeRecovery(source, report) {
+  let activeJournal;
+  try {
+    activeJournal = loadStage1EvidenceSchemaUpgradeActiveJournal(source.id);
+  } catch (error) {
+    const message =
+      `Ordinary processing was skipped because the active Stage 1 evidence-schema-upgrade journal is unreadable: ${errorMessage(error)}`;
+    report.errors.push({
+      source_id: source.id,
+      source_url: source.url,
+      stage: "stage1_evidence_schema_upgrade_recovery_gate",
+      reason: "active_upgrade_journal_unreadable",
+      message,
+      creates_api_charge: false,
+    });
+    console.log(`STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_REQUIRED ${message} ${sourceLabel(source)}`);
+    return true;
+  }
+  if (!activeJournal) return false;
+  const message =
+    "Ordinary processing was skipped until reviewed Stage 1 apply mode reconciles the active upgrade journal.";
+  report.errors.push({
+    source_id: source.id,
+    source_url: source.url,
+    stage: "stage1_evidence_schema_upgrade_recovery_gate",
+    reason: "active_upgrade_journal_requires_apply_recovery",
+    message,
+    journal_phase: activeJournal.phase || null,
+    journal_sha256: activeJournal.journal_sha256 || null,
+    creates_api_charge: false,
+  });
+  console.log(`STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_REQUIRED ${message} ${sourceLabel(source)}`);
+  return true;
+}
+
+function stage1EvidenceSchemaUpgradeCommitInterfaces({ source, report, prepared = null }) {
+  const preparedByRole = new Map(
+    (prepared?.artifacts || []).map((artifact) => [artifact.name, artifact]),
+  );
+  return {
+    async loadActiveJournal({ source_id: sourceId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 journal source changed.");
+      return loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+    },
+
+    async persistActiveJournalAtomically({
+      source_id: sourceId,
+      transaction_id: transactionId,
+      journal,
+      expected_journal_sha256: expectedJournalSha256,
+    }) {
+      if (sourceId !== source.id || journal?.transaction_id !== transactionId) {
+        throw new Error("Stage 1 journal persistence identity changed.");
+      }
+      const paths = stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId);
+      const current = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+      if (
+        expectedJournalSha256 === null
+          ? current !== null
+          : current?.journal_sha256 !== expectedJournalSha256
+      ) {
+        throw new Error("Stage 1 journal compare-and-swap precondition failed.");
+      }
+      atomicWriteJson(paths.active, journal);
+      return {
+        status: "persisted",
+        journal_sha256: journal.journal_sha256,
+      };
+    },
+
+    async archiveCompletedJournalAtomically({
+      source_id: sourceId,
+      transaction_id: transactionId,
+      journal,
+      expected_journal_sha256: expectedJournalSha256,
+    }) {
+      if (
+        sourceId !== source.id
+        || journal?.transaction_id !== transactionId
+        || journal?.journal_sha256 !== expectedJournalSha256
+      ) {
+        throw new Error("Stage 1 completed journal archive identity changed.");
+      }
+      const paths = stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId);
+      const active = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+      if (active?.journal_sha256 !== expectedJournalSha256) {
+        throw new Error("Stage 1 completed journal is not the exact active journal.");
+      }
+      const archived = paths.completed && existsSync(paths.completed)
+        ? readJsonIfExists(paths.completed)
+        : null;
+      if (archived && archived.journal_sha256 !== expectedJournalSha256) {
+        throw new Error("Stage 1 completed journal archive path contains different evidence.");
+      }
+      if (!archived) atomicWriteJson(paths.completed, journal);
+      const verified = readJsonIfExists(paths.completed);
+      if (verified?.journal_sha256 !== expectedJournalSha256) {
+        throw new Error("Stage 1 completed journal did not read back exactly.");
+      }
+      rmSync(paths.active, { force: true });
+      return {
+        status: "archived",
+        source_id: sourceId,
+        transaction_id: transactionId,
+        journal_sha256: expectedJournalSha256,
+        creates_api_charge: false,
+      };
+    },
+
+    async readArchivedJournal({ source_id: sourceId, transaction_id: transactionId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 archived journal source changed.");
+      const path = stage1EvidenceSchemaUpgradeJournalPaths(sourceId, transactionId).completed;
+      if (!path || !existsSync(path)) return null;
+      const journal = readJsonIfExists(path);
+      if (!journal) throw new Error("The archived Stage 1 journal is unreadable.");
+      return journal;
+    },
+
+    async readBaselineBytes({ source_id: sourceId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 baseline source changed.");
+      const path = baselinePathForSource(sourceId);
+      return existsSync(path) ? readFileSync(path) : null;
+    },
+
+    async writeBaselineBytesAtomically({
+      source_id: sourceId,
+      bytes,
+      expected_sha256: expectedSha256,
+      expected_byte_length: expectedByteLength,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 baseline write source changed.");
+      const value = bytes === null ? null : Buffer.from(bytes);
+      if (
+        value !== null
+        && (
+          value.byteLength !== expectedByteLength
+          || hashBuffer(value) !== expectedSha256
+        )
+      ) {
+        throw new Error("Stage 1 baseline write bytes differ from their journal envelope.");
+      }
+      if (value === null && (expectedSha256 !== null || expectedByteLength !== 0)) {
+        throw new Error("Stage 1 absent baseline envelope is inconsistent.");
+      }
+      atomicWriteBytes(baselinePathForSource(sourceId), value);
+      localBaselineEvidenceCache.set(sourceId, value !== null);
+      return { status: value === null ? "removed" : "written" };
+    },
+
+    async readLatestPointer({ source_id: sourceId }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 pointer read source changed.");
+      return loadR2SnapshotRecord(sourceId);
+    },
+
+    async uploadImmutableCandidateArtifact({
+      source_id: sourceId,
+      bucket,
+      slot,
+      object_key: objectKey,
+      bytes,
+      sha256,
+      byte_length: byteLength,
+      content_type: contentType,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 immutable upload source changed.");
+      if (!cleanText(bucket) || bucket !== r2Bucket) {
+        throw new Error("Stage 1 immutable upload bucket differs from configured R2 authority.");
+      }
+      const artifact = preparedByRole.get(slot);
+      const body = Buffer.from(bytes);
+      if (
+        !artifact
+        || artifact.body.byteLength !== byteLength
+        || artifact.binding?.sha256 !== sha256
+        || artifact.contentType !== contentType
+        || !Buffer.from(artifact.body).equals(body)
+      ) {
+        throw new Error(`Stage 1 immutable upload ${slot} differs from prepared evidence.`);
+      }
+      const uploaded = await uploadStage1EvidenceSchemaUpgradeImmutableObject({
+        client: getR2Client(),
+        bucket,
+        key: objectKey,
+        body,
+        contentType: artifact.contentType,
+      });
+      const status = uploaded.status === "created" ? "uploaded" : "existing_verified";
+      return {
+        status,
+        creates_api_charge: false,
+        immutable: true,
+        bucket,
+        object_key: objectKey,
+        sha256,
+        byte_length: byteLength,
+        content_type: contentType,
+        r2_writes: status === "uploaded" ? 1 : 0,
+      };
+    },
+
+    async compareAndSwapLatestPointer({
+      source_id: sourceId,
+      expected_pointer: expectedPointer,
+      candidate_pointer: candidatePointer,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 pointer CAS source changed.");
+      return advanceVisualSnapshotPointer(supabase, {
+        existing: expectedPointer,
+        snapshot: candidatePointer,
+      });
+    },
+
+    async markSourceHealthSucceeded({
+      source_id: sourceId,
+      candidate_baseline_sha256: expectedBaselineSha256,
+    }) {
+      if (sourceId !== source.id) throw new Error("Stage 1 source-health source changed.");
+      const baselinePath = baselinePathForSource(sourceId);
+      const baselineBytes = existsSync(baselinePath) ? readFileSync(baselinePath) : null;
+      if (!baselineBytes || hashBuffer(baselineBytes) !== expectedBaselineSha256) {
+        throw new Error("Stage 1 source health refused a baseline outside the committed journal.");
+      }
+      let baseline;
+      try {
+        baseline = JSON.parse(baselineBytes.toString("utf8"));
+      } catch {
+        throw new Error("Stage 1 committed baseline bytes are not valid JSON.");
+      }
+      const authoritativeCapture = captureFromBaseline(baseline);
+      if (!authoritativeCapture) {
+        throw new Error("Stage 1 committed baseline evidence could not reconstruct source health.");
+      }
+      const sourceHealthUpdate = await markSharedSourceVisualCheckSucceeded(
+        source,
+        authoritativeCapture,
+        report,
+        {
+          preserveReviewedUrl: true,
+          preserveReviewedMetadata: true,
+          requiredAdminReviewStatus:
+            source.admin_review_status === "review_later" ? "review_later" : "open",
+          requiredSourceAuthority: source,
+        },
+      );
+      const sourceHealthStatus = sourceHealthUpdate === true
+        ? "succeeded"
+        : sourceHealthUpdate?.status;
+      if (!new Set(["succeeded", "already_current"]).has(sourceHealthStatus)) {
+        throw new Error("Stage 1 source health lost its exact reviewed-state guard.");
+      }
+      const sourceHealthWrites = sourceHealthStatus === "already_current" ? 0 : 1;
+      return {
+        status: sourceHealthStatus,
+        source_id: sourceId,
+        context: "stage1_evidence_schema_upgrade",
+        creates_api_charge: false,
+        mutation_counts: stage1EvidenceSchemaUpgradeMutationCounts({
+          database_writes: sourceHealthWrites,
+          source_state_writes: sourceHealthWrites,
+        }),
+      };
+    },
+  };
+}
+
+async function persistStage1EvidenceSchemaUpgradeQuarantine({
+  source,
+  state,
+  captureValidation,
+  mutationFailure = null,
+}) {
+  const mutationOperation = cleanOptionalStage1EvidenceSchemaUpgradeReason(
+    mutationFailure?.operation || "",
+  );
+  const mutationError = mutationFailure?.error;
+  const mutationErrorCode = cleanOptionalStage1EvidenceSchemaUpgradeReason(
+    mutationError?.code || "",
+  );
+  if (mutationFailure && !mutationOperation) {
+    throw new Error("Stage 1 quarantine requires the exact failed mutation operation.");
+  }
+  const reasonCode = cleanStage1EvidenceSchemaUpgradeReason(
+    mutationFailure
+      ? `${mutationOperation}_mutation_failed`
+      : captureValidation?.reason || "evidence_failure",
+  );
+  const journalObservation = stage1EvidenceSchemaUpgradeObservedJournal(source.id, state);
+  const activeJournal = journalObservation.journal;
+  const commitRecovery = activeJournal
+    ? stage1EvidenceSchemaUpgradeRecoveryEvidence({
+        sourceId: source.id,
+        journal: activeJournal,
+        state,
+      })
+    : null;
+  const candidateArtifacts = stage1EvidenceSchemaUpgradeCandidateEvidence({
+    sourceId: source.id,
+    state,
+    journal: activeJournal,
+  });
+  const quarantineValidation = prepareStage1EvidenceSchemaUpgradeQuarantineValidation({
+    validation: captureValidation,
+    candidateArtifacts,
+    commitRecovery,
+    pointerCommitReceipt:
+      mutationOperation === "pointer_commit"
+        ? mutationError?.stage1EvidenceSchemaUpgradeRecovery || null
+        : null,
+    mutationFailure: mutationFailure
+      ? {
+          operation: mutationOperation,
+          error: mutationError,
+          mutation_accounting: mutationFailure.mutation_accounting,
+        }
+      : null,
+    journalReadUnavailable:
+      journalObservation.status === "unavailable" ? journalObservation : null,
+    journalReadAbsent:
+      journalObservation.status === "absent" ? journalObservation : null,
+  });
+  const failureStage = mutationOperation
+    || (activeJournal ? "journal_recovery" : "capture_validation");
+  const detail = mutationFailure
+    ? `Stage 1 ${mutationOperation || "unknown"} mutation failed (${
+        mutationErrorCode || reasonCode
+      }): ${
+        errorMessage(mutationError)
+      }`
+    : cleanText(captureValidation?.reasons?.[0]?.detail)
+      || `Stage 1 evidence-schema upgrade failed (${reasonCode}).`;
+  const candidateMutationAccounting = mutationOperation === "candidate_enqueue"
+    ? jsonObjectOrEmpty(mutationFailure?.mutation_accounting)
+    : {};
+  const candidateAccountingEvidence = jsonObjectOrEmpty(
+    candidateMutationAccounting.evidence,
+  );
+  const candidateSignature = cleanText(candidateAccountingEvidence.candidate_signature);
+  const candidateWritesMayBeUnknown = Array.isArray(
+    candidateMutationAccounting.unknown_write_categories,
+  ) && candidateMutationAccounting.unknown_write_categories.some(
+    (category) => category === "candidate_writes" || category === "database_writes",
+  );
+  const fallbackSafeAction =
+    journalObservation.status === "unavailable" && candidateSignature
+      ? `Keep this source quarantined. Repair access to the durable upgrade journal and reconcile any active or archived transaction, then reconcile the exact visual-review candidate signature ${candidateSignature} and its terminal/observation state before any retry; do not enqueue a duplicate.`
+      : journalObservation.status === "unavailable" && mutationOperation === "candidate_enqueue"
+        ? "Keep this source quarantined. Repair access to the durable upgrade journal and reconcile any active or archived transaction, then determine whether the visual-review candidate or observation write committed before any retry; do not enqueue a duplicate while write outcome is unknown."
+        : journalObservation.status === "unavailable"
+          ? "Keep this source quarantined. Repair access to the durable upgrade journal, obtain and validate its exact fresh state, then verify current pointer, baseline, source-health, and archived transaction state and reconcile any active journal before any new capture or retry."
+    : mutationOperation === "candidate_enqueue" && candidateSignature
+      ? `Keep this source quarantined. Reconcile the exact visual-review candidate signature ${candidateSignature} and its current terminal/observation state before any retry; do not enqueue a duplicate.`
+      : mutationOperation === "candidate_enqueue" && candidateWritesMayBeUnknown
+        ? "Keep this source quarantined. Determine whether the visual-review candidate or observation write committed before any retry; do not enqueue a duplicate while write outcome is unknown."
+    : activeJournal
+      ? "Keep this source quarantined. Reconcile the sealed upgrade journal to exact old or candidate authority before retrying the zero-charge upgrade."
+      : mutationOperation === "pointer_commit" && candidateArtifacts
+        ? "Keep this source quarantined. Verify current pointer, baseline, source-health, and archived transaction/journal state, reconcile the sealed possible writes, and retry only if the pointer commit did not complete."
+      : candidateArtifacts
+        ? "Keep this source quarantined. Verify the sealed candidate pointer and artifacts, then retry the zero-charge upgrade without changing public facts."
+        : "Keep this source quarantined. Repair the stated evidence failure, then rerun the reviewed zero-charge evidence-schema upgrade.";
+  const safeAction = stage1EvidenceSchemaUpgradeQuarantineSafeAction(
+    quarantineValidation,
+    fallbackSafeAction,
+  );
+  const args = buildStage1EvidenceSchemaUpgradeQuarantineRpcArgs({
+    source,
+    acquisition: source.source_acquisition,
+    finalization: source.source_activation_finalization,
+    failureStage,
+    reasonCode,
+    detail,
+    safeAction,
+    validation: quarantineValidation,
+    r2Binding: state.r2BindingReceipt,
+    commitRecovery,
+    candidateArtifacts,
+    r2BindingObserved: state.r2BindingReceipt !== null,
+    journalObserved: activeJournal !== null,
+    candidatePlanObserved: candidateArtifacts !== null,
+  });
+  const invocation = await invokeStage1EvidenceSchemaUpgradeQuarantineRpc(args);
+  const checked = stage1EvidenceSchemaUpgradeQuarantineReceipt(invocation.data, args);
+  if (!checked.allowed) {
+    throw stage1EvidenceSchemaUpgradeQuarantineRpcError({
+      reason: checked.reason,
+      attempts: invocation.attempts,
+      priorErrors: invocation.errors,
+    });
+  }
+  const mutationCounts = stage1EvidenceSchemaUpgradeMutationCounts({
+    database_writes: checked.mutation_counts.database_writes,
+    r2_writes: checked.mutation_counts.r2_writes,
+    local_baseline_writes: checked.mutation_counts.local_baseline_writes,
+    candidate_writes: checked.mutation_counts.candidate_writes,
+    quarantine_writes: checked.mutation_counts.quarantine_writes,
+    source_state_writes: checked.mutation_counts.source_state_writes,
+  });
+  const mutationAccounting = invocation.errors.length
+    ? sealStage1EvidenceSchemaUpgradeMutationAccounting({
+        operation: "quarantine",
+        lowerBoundCounts: mutationCounts,
+        unknownWriteCategories: [
+          "database_writes",
+          "quarantine_writes",
+          "source_state_writes",
+        ],
+        evidence: {
+          source: "idempotent_quarantine_rpc_retry_after_ambiguous_response",
+          ambiguous_attempt_count: invocation.errors.length,
+          final_attempt_count: invocation.attempts,
+        },
+      })
+    : null;
+  const receipt = {
+    schema_version: "awardping.stage1.evidence-schema-upgrade-quarantine-adapter-receipt.v1",
+    source_id: source.id,
+    context: "stage1_evidence_schema_upgrade",
+    operation: "quarantine",
+    status: "quarantined",
+    reason_code: reasonCode,
+    creates_api_charge: false,
+    quarantine_id: checked.quarantine_id,
+    failure_sha256: checked.failure_sha256,
+    evidence_sha256: checked.evidence_sha256,
+    rpc_attempt_count: invocation.attempts,
+    rpc_receipt: checked.receipt,
+    mutation_counts: mutationCounts,
+    ...(mutationAccounting ? { mutation_accounting: mutationAccounting } : {}),
+  };
+  return {
+    status: "quarantined",
+    reason_code: reasonCode,
+    source_id: source.id,
+    context: "stage1_evidence_schema_upgrade",
+    creates_api_charge: false,
+    mutation_counts: mutationCounts,
+    ...(mutationAccounting ? { mutation_accounting: mutationAccounting } : {}),
+    receipt,
+  };
+}
+
+function stage1EvidenceSchemaUpgradeObservedJournal(sourceId, state) {
+  try {
+    const journal = loadStage1EvidenceSchemaUpgradeActiveJournal(sourceId);
+    state.activeJournal = journal;
+    return {
+      status: journal ? "verified" : "absent",
+      journal,
+      error: null,
+    };
+  } catch (error) {
+    state.activeJournal = null;
+    return {
+      status: "unavailable",
+      journal: null,
+      error: {
+        name: cleanText(error?.name) || "Error",
+        code: cleanText(error?.code) || null,
+        message: errorMessage(error),
+      },
+    };
+  }
+}
+
+function stage1EvidenceSchemaUpgradeRecoveryEvidence({ sourceId, journal, state }) {
+  const priorReceipt = state.recoveryReceipt;
+  const priorReceiptMatchesFreshJournal =
+    priorReceipt?.source_id === sourceId
+    && priorReceipt?.context === "stage1_evidence_schema_upgrade"
+    && priorReceipt?.operation === "pointer_commit"
+    && priorReceipt?.status === "recovery_required"
+    && priorReceipt?.journal_archived === false
+    && cleanText(priorReceipt?.journal_sha256)
+      === cleanText(journal.journal_sha256);
+  return {
+    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_RECOVERY_EVIDENCE_SCHEMA,
+    source_id: sourceId,
+    context: "stage1_evidence_schema_upgrade",
+    status: "recovery_required",
+    creates_api_charge: false,
+    journal_sha256: journal.journal_sha256,
+    journal,
+    reason: priorReceiptMatchesFreshJournal
+      ? (cleanText(priorReceipt?.outcome)
+        || "active_upgrade_journal_authority_ambiguous")
+      : "fresh_active_upgrade_journal_requires_reconciliation",
+    safe_action:
+      "Keep the source quarantined and reconcile this exact freshly verified journal before retrying.",
+  };
+}
+
+function stage1EvidenceSchemaUpgradeCandidateEvidence({ sourceId, state, journal }) {
+  const pointerIdentity = journal?.candidate_pointer_identity
+    || (state.candidatePointer
+      ? visualSnapshotPointerIdentity(state.candidatePointer)
+      : null);
+  if (!pointerIdentity) return null;
+  const pointer = jsonObjectOrEmpty(pointerIdentity.projection);
+  const objectKeys = jsonObjectOrEmpty(pointer.latest_object_keys);
+  const bindings = jsonObjectOrEmpty(pointer.latest_metadata?.artifact_bindings);
+  const roles = Object.keys(objectKeys).sort();
+  if (!roles.length || roles.some((role) => !bindings[role])) {
+    throw new Error("Stage 1 quarantine candidate evidence lacks exact pointer artifact bindings.");
+  }
+  const versions = new Set(roles.map((role) => (
+    stage1EvidenceSchemaUpgradeCandidateVersion(objectKeys[role], sourceId)
+  )));
+  if (versions.size !== 1 || versions.has(null)) {
+    throw new Error("Stage 1 quarantine candidate artifacts do not share one immutable generation.");
+  }
+  const [version] = versions;
+  return {
+    schema_version: STAGE1_EVIDENCE_SCHEMA_UPGRADE_CANDIDATE_ARTIFACTS_SCHEMA,
+    source_id: sourceId,
+    kind: pointer.kind,
+    bucket: pointer.bucket,
+    version,
+    captured_at: pointer.latest_captured_at,
+    candidate_pointer_identity: pointerIdentity,
+    journal_sha256: journal?.journal_sha256 || null,
+    artifacts: roles.map((role) => ({
+      role,
+      bucket: pointer.bucket,
+      version,
+      object_key: objectKeys[role],
+      sha256: bindings[role].sha256,
+      byte_length: bindings[role].byte_length,
+      content_type: bindings[role].content_type,
+      hash_mode: bindings[role].hash_mode,
+    })),
+    creates_api_charge: false,
+    public_fact_authority: false,
+  };
+}
+
+function stage1EvidenceSchemaUpgradeCandidateVersion(key, sourceId) {
+  const prefix = `visual-snapshots/sources/${sourceId}/captures/`;
+  const value = cleanText(key);
+  if (!value.startsWith(prefix)) return null;
+  const version = value.slice(prefix.length).split("/", 1)[0];
+  return /^[0-9a-f]{32}$/.test(version) ? version : null;
+}
+
+async function invokeStage1EvidenceSchemaUpgradeQuarantineRpc(args) {
+  const errors = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const { data, error } = await supabase.rpc(
+      "quarantine_stage1_evidence_schema_upgrade_failure",
+      args,
+    );
+    if (!error) return { data, attempts: attempt, errors };
+    errors.push({
+      code: cleanText(error.code) || null,
+      message: errorMessage(error),
+    });
+  }
+  throw stage1EvidenceSchemaUpgradeQuarantineRpcError({
+    reason: "quarantine_rpc_failed_after_idempotent_retry",
+    attempts: 2,
+    priorErrors: errors,
+  });
+}
+
+function stage1EvidenceSchemaUpgradeQuarantineRpcError({ reason, attempts, priorErrors }) {
+  const error = Object.assign(
+    new Error(
+      `Stage 1 evidence-schema-upgrade quarantine persistence failed after ${attempts} attempt(s): ${reason}.`,
+    ),
+    { code: "stage1_evidence_schema_upgrade_quarantine_rpc_failed" },
+  );
+  error.stage1_mutation_accounting = sealStage1EvidenceSchemaUpgradeMutationAccounting({
+    operation: "quarantine",
+    lowerBoundCounts: stage1EvidenceSchemaUpgradeMutationCounts(),
+    unknownWriteCategories: [
+      "database_writes",
+      "quarantine_writes",
+      "source_state_writes",
+    ],
+    evidence: {
+      source: "quarantine_rpc_response_not_verified",
+      attempt_count: attempts,
+      error_count: priorErrors.length,
+    },
+  });
+  return error;
+}
+
 async function processLocalizationRepairSource(source, baseline, capture, report) {
   if (capture.kind === "pdf") {
     report.localization_repair_skipped_pdf += 1;
@@ -2067,12 +5724,22 @@ async function processLocalizationRepairSource(source, baseline, capture, report
     return;
   }
 
-  await maybeSyncR2Snapshot(source, capture, report, { reason: "localization_repair", unchanged: true });
-  writeBaseline(source, capture, {
+  capture.baseline_facts = baseline?.summary_metadata?.baseline_facts || null;
+  capture.baseline_facts_metadata = baseline?.summary_metadata?.baseline_facts_metadata || null;
+  const written = writeBaseline(source, capture, {
     reason: "localization_repair",
     previous_baseline: baseline || null,
     baseline_facts: baseline?.summary_metadata?.baseline_facts || null,
     baseline_facts_metadata: baseline?.summary_metadata?.baseline_facts_metadata || null,
+  });
+  if (!written) throw new Error("The localization repair was older than the retained baseline.");
+  await requireR2SnapshotForBaseline({
+    source,
+    capture,
+    report,
+    previousBaseline: baseline,
+    reason: "localization_repair",
+    unchanged: true,
   });
   report.localization_repair_synced += 1;
   report.unchanged += 1;
@@ -2218,16 +5885,24 @@ async function processExpandableSectionComparison(
   );
   if (!previousSections.size) {
     if (!allowFirstBaseline) return { handled: false, reason: "missing_section_baseline_visible_change_pending" };
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "section_baseline_created",
       previous_baseline: baseline || null,
       baseline_facts: baseline?.summary_metadata?.baseline_facts || capture.baseline_facts || null,
       baseline_facts_metadata:
         baseline?.summary_metadata?.baseline_facts_metadata || capture.baseline_facts_metadata || null,
     });
+    if (!written) throw new Error("The section baseline was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline,
+      reason: "section_baseline_created",
+      unchanged: true,
+    });
     report.section_baseline_created += 1;
     report.unchanged += 1;
-    await maybeRepairMissingR2Snapshot(source, capture, report, { reason: "section_baseline_created" });
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`SECTION_BASELINE created sections=${currentSections.length} ${sourceLabel(source)}`);
     return { handled: true, reason: "section_baseline_created" };
@@ -2607,13 +6282,17 @@ async function finishSafeDeterministicNoise({
         capture.baseline_facts_metadata || baseline?.summary_metadata?.baseline_facts_metadata || null,
       monitoring_disposition: monitoringDisposition,
     });
-    if (baselinePromoted) report.promoted += 1;
     if (baselinePromoted) {
-      await maybeSyncR2Snapshot(source, capture, report, {
+      await requireR2SnapshotForBaseline({
+        source,
+        capture,
+        report,
+        previousBaseline: baseline,
         reason: "deterministic_noise_absorbed",
         noise: textOnly,
         unchanged: textOnly,
       });
+      report.promoted += 1;
     }
   }
 
@@ -2943,8 +6622,21 @@ async function enqueueVisualReviewCandidate({
   diff,
   deterministic,
   report,
+  enqueuePolicy = null,
 }) {
+  const stage1MutationAccounting = enqueuePolicy?.context
+    === visualReviewEnqueueContexts.stage1EvidenceSchemaUpgrade
+    ? {
+        counts: stage1EvidenceSchemaUpgradeMutationCounts(),
+        unknown_write_categories: [],
+        boundary: "before_candidate_enqueue",
+        candidate_signature: null,
+      }
+    : null;
   try {
+    const effectiveEnqueuePolicy = enqueuePolicy
+      ? visualReviewEnqueuePolicy(enqueuePolicy)
+      : visualReviewEnqueuePolicy();
     const monitoringPolicy = currentVisualReviewPolicyIdentity();
     const promptPayload = buildVisualReviewPromptPayload({
       source,
@@ -2970,30 +6662,32 @@ async function enqueueVisualReviewCandidate({
       deterministic,
       behaviorVersion: captureBehaviorVersion,
     });
-    try {
-      const ledger = await findVisualRejectionLedgerMatch(supabase, {
-        sourceId: source?.id,
-        evidenceSignature,
-        policyHash: monitoringPolicy?.hash,
-      });
-      if (ledger.unavailable) {
+    if (!effectiveEnqueuePolicy.bypassRejectionLedger) {
+      try {
+        const ledger = await findVisualRejectionLedgerMatch(supabase, {
+          sourceId: source?.id,
+          evidenceSignature,
+          policyHash: monitoringPolicy?.hash,
+        });
+        if (ledger.unavailable) {
+          report.visual_rejection_ledger_unavailable += 1;
+        } else if (ledger.match) {
+          await touchVisualRejectionLedgerMatch(supabase, ledger.match);
+          report.visual_review_rejected_evidence_absorbed += 1;
+          return {
+            absorbed: true,
+            evidence_signature: evidenceSignature,
+            rejection_reason: ledger.match.rejection_reason || "previously_policy_rejected",
+          };
+        }
+      } catch (ledgerError) {
         report.visual_rejection_ledger_unavailable += 1;
-      } else if (ledger.match) {
-        await touchVisualRejectionLedgerMatch(supabase, ledger.match);
-        report.visual_review_rejected_evidence_absorbed += 1;
-        return {
-          absorbed: true,
-          evidence_signature: evidenceSignature,
-          rejection_reason: ledger.match.rejection_reason || "previously_policy_rejected",
-        };
+        report.errors.push({
+          source_id: source?.id || null,
+          source_url: source?.url || null,
+          message: `Visual rejection ledger lookup failed: ${errorMessage(ledgerError)}`,
+        });
       }
-    } catch (ledgerError) {
-      report.visual_rejection_ledger_unavailable += 1;
-      report.errors.push({
-        source_id: source?.id || null,
-        source_url: source?.url || null,
-        message: `Visual rejection ledger lookup failed: ${errorMessage(ledgerError)}`,
-      });
     }
     const candidateSignature = visualReviewCandidateSignature({
       source,
@@ -3005,6 +6699,9 @@ async function enqueueVisualReviewCandidate({
       deterministic,
       behaviorVersion: captureBehaviorVersion,
     });
+    if (stage1MutationAccounting) {
+      stage1MutationAccounting.candidate_signature = candidateSignature;
+    }
     const promptContext = buildVisualReviewPromptText(promptPayload);
     const row = {
       shared_award_id: source.shared_award_id,
@@ -3040,10 +6737,18 @@ async function enqueueVisualReviewCandidate({
         monitoring_policy: monitoringPolicy,
         monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
         evidence_signature: evidenceSignature,
+        enqueue_context: effectiveEnqueuePolicy.context,
+        rejection_ledger_bypassed: effectiveEnqueuePolicy.bypassRejectionLedger,
+        reconciliation_queued: effectiveEnqueuePolicy.queueReconciliation,
       },
       updated_at: new Date().toISOString(),
     };
 
+    beginStage1CandidateMutationAccounting(
+      stage1MutationAccounting,
+      ["candidate_writes", "database_writes"],
+      "candidate_upsert_response_pending",
+    );
     const { data, error } = await supabase
       .from("shared_award_visual_review_candidates")
       .upsert(row, {
@@ -3054,6 +6759,16 @@ async function enqueueVisualReviewCandidate({
       .maybeSingle();
 
     if (error) throw error;
+    if (stage1MutationAccounting) {
+      if (data?.id) {
+        stage1MutationAccounting.counts.database_writes += 1;
+        stage1MutationAccounting.counts.candidate_writes += 1;
+      }
+      completeStage1CandidateMutationAccounting(
+        stage1MutationAccounting,
+        "candidate_upsert_response_received",
+      );
+    }
 
     let candidate = data || null;
     if (!candidate?.id) {
@@ -3071,27 +6786,55 @@ async function enqueueVisualReviewCandidate({
       candidate = existingCandidate;
     }
 
-    await recordVisualReviewCandidateRunObservation(candidate.id, report);
+    beginStage1CandidateMutationAccounting(
+      stage1MutationAccounting,
+      ["database_writes"],
+      "candidate_observation_response_pending",
+    );
+    const observation = await recordVisualReviewCandidateRunObservation(
+      candidate.id,
+      report,
+    );
+    if (stage1MutationAccounting) {
+      stage1MutationAccounting.counts.database_writes += Number(observation.inserted);
+      completeStage1CandidateMutationAccounting(
+        stage1MutationAccounting,
+        "candidate_observation_response_received",
+      );
+    }
+
+    const sealedStage1MutationAccounting = stage1MutationAccounting
+      ? sealStage1CandidateMutationAccounting(stage1MutationAccounting)
+      : null;
 
     if (data?.id) {
       capture.persist_expansion_state_screenshots = true;
       report.visual_review_candidates_queued += 1;
-      await queueAwardReconciliationFromSource({
-        source,
-        report,
-        reason: "visual_review_candidate",
-        candidateIds: [candidate.id],
-        priority: 80,
-        metadata: {
-          candidate_signature: candidateSignature,
-          deterministic_classification: row.deterministic_classification,
-          monitoring_policy: monitoringPolicy,
-          monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
-          evidence_signature: evidenceSignature,
-          queued_by: "capture-visual-snapshots",
-        },
-      });
-      return candidate;
+      if (effectiveEnqueuePolicy.queueReconciliation) {
+        await queueAwardReconciliationFromSource({
+          source,
+          report,
+          reason: "visual_review_candidate",
+          candidateIds: [candidate.id],
+          priority: 80,
+          metadata: {
+            candidate_signature: candidateSignature,
+            deterministic_classification: row.deterministic_classification,
+            monitoring_policy: monitoringPolicy,
+            monitoring_policy_bundle: currentMonitoringPolicyAuditIdentity(),
+            evidence_signature: evidenceSignature,
+            queued_by: "capture-visual-snapshots",
+          },
+        });
+      }
+      return {
+        ...candidate,
+        candidate_inserted: true,
+        observation_inserted: observation.inserted,
+        ...(sealedStage1MutationAccounting
+          ? { stage1_mutation_accounting: sealedStage1MutationAccounting }
+          : {}),
+      };
     }
 
     report.visual_review_candidates_existing += 1;
@@ -3101,9 +6844,21 @@ async function enqueueVisualReviewCandidate({
       status: candidate.status,
       existing: true,
       duplicate: true,
+      candidate_inserted: false,
+      observation_inserted: observation.inserted,
       candidate_signature: candidateSignature,
+      ...(sealedStage1MutationAccounting
+        ? { stage1_mutation_accounting: sealedStage1MutationAccounting }
+        : {}),
     };
   } catch (error) {
+    if (stage1MutationAccounting) {
+      const wrapped = error instanceof Error ? error : new Error(String(error));
+      wrapped.stage1_mutation_accounting = sealStage1CandidateMutationAccounting(
+        stage1MutationAccounting,
+      );
+      error = wrapped;
+    }
     report.visual_review_candidates_failed += 1;
     const message = `Visual review candidate enqueue failed: ${errorMessage(error)}`;
     report.errors.push({
@@ -3116,15 +6871,63 @@ async function enqueueVisualReviewCandidate({
   }
 }
 
+function beginStage1CandidateMutationAccounting(accounting, categories, boundary) {
+  if (!accounting) return;
+  accounting.unknown_write_categories = [...new Set(categories)].sort();
+  accounting.boundary = boundary;
+}
+
+function stage1EvidenceSchemaUpgradeBeforeCandidateEnqueueError(error) {
+  const wrapped = error instanceof Error ? error : new Error(String(error));
+  if (!wrapped.stage1_mutation_accounting) {
+    wrapped.stage1_mutation_accounting =
+      sealStage1EvidenceSchemaUpgradeMutationAccounting({
+        operation: "candidate_enqueue",
+        lowerBoundCounts: stage1EvidenceSchemaUpgradeMutationCounts(),
+        unknownWriteCategories: [],
+        evidence: {
+          boundary: "before_candidate_enqueue",
+          candidate_signature: null,
+          response_loss_possible: false,
+        },
+      });
+  }
+  return wrapped;
+}
+
+function completeStage1CandidateMutationAccounting(accounting, boundary) {
+  if (!accounting) return;
+  accounting.unknown_write_categories = [];
+  accounting.boundary = boundary;
+}
+
+function sealStage1CandidateMutationAccounting(accounting) {
+  return sealStage1EvidenceSchemaUpgradeMutationAccounting({
+    operation: "candidate_enqueue",
+    lowerBoundCounts: accounting.counts,
+    unknownWriteCategories: accounting.unknown_write_categories,
+    evidence: {
+      boundary: accounting.boundary,
+      candidate_signature: accounting.candidate_signature,
+      response_loss_possible: accounting.unknown_write_categories.length > 0,
+    },
+  });
+}
+
 async function recordVisualReviewCandidateRunObservation(candidateId, report) {
-  if (!candidateId || observedVisualReviewCandidateIds.has(candidateId)) return;
+  if (!candidateId) {
+    return { status: "not_requested", inserted: false };
+  }
+  if (observedVisualReviewCandidateIds.has(candidateId)) {
+    return { status: "already_observed_in_process", inserted: false };
+  }
   if (!report.worker_run_id) {
     report.visual_review_candidate_observation_failures += 1;
     throw new Error(
       "Cannot bind a visual review candidate to this capture because the durable worker run ID is unavailable.",
     );
   }
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("shared_award_visual_review_candidate_run_observations")
     .upsert(
       {
@@ -3135,7 +6938,9 @@ async function recordVisualReviewCandidateRunObservation(candidateId, report) {
         onConflict: "run_id,candidate_id",
         ignoreDuplicates: true,
       },
-    );
+    )
+    .select("candidate_id")
+    .maybeSingle();
   if (error) {
     report.visual_review_candidate_observation_failures += 1;
     throw new Error(
@@ -3144,6 +6949,10 @@ async function recordVisualReviewCandidateRunObservation(candidateId, report) {
   }
   observedVisualReviewCandidateIds.add(candidateId);
   report.visual_review_candidate_observations += 1;
+  return {
+    status: data?.candidate_id ? "inserted" : "existing",
+    inserted: Boolean(data?.candidate_id),
+  };
 }
 
 async function queueAwardReconciliationFromSource({
@@ -3264,7 +7073,17 @@ async function processPdfComparison(source, baseline, previous, capture, report)
         baseline_facts: capture.baseline_facts || null,
         baseline_facts_metadata: capture.baseline_facts_metadata || null,
       });
-      if (baselinePromoted) report.promoted += 1;
+      if (baselinePromoted) {
+        await requireR2SnapshotForBaseline({
+          source,
+          capture,
+          report,
+          previousBaseline: baseline,
+          reason: "pdf_file_hash_changed_text_match_ignored",
+          unchanged: true,
+        });
+        report.promoted += 1;
+      }
     }
     await markSharedSourceVisualCheckSucceeded(source, capture, report);
     console.log(`NOISE pdf_file_hash_changed_text_match_ignored ${sourceLabel(source)}`);
@@ -3330,12 +7149,20 @@ async function processPdfComparison(source, baseline, previous, capture, report)
   report.review_paths.push(toArchiveRelative(reviewPath));
 
   if (promote) {
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "pdf_file_hash_changed",
       previous_baseline_capture: baseline.capture || null,
     });
+    if (!written) throw new Error("The reviewed PDF baseline was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: baseline,
+      reason: "pdf_review_promoted",
+      unchanged: true,
+    });
     report.promoted += 1;
-    await maybeSyncR2Snapshot(source, capture, report, { reason: "pdf_review_promoted", unchanged: true });
   }
   await markSharedSourceVisualCheckSucceeded(source, capture, report);
 
@@ -3401,15 +7228,20 @@ async function processInitialOfficialDocumentMaterializationOnly(source, report)
   report.pdf_checked += 1;
 
   if (!baseline) {
-    writeBaseline(source, capture, {
+    const written = writeBaseline(source, capture, {
       reason: "initial_official_document_first_observation",
       previous_baseline: null,
     });
-    report.baselined += 1;
-    report.initial_official_document_materialization_only_baseline_written += 1;
-    await maybeSyncR2Snapshot(source, capture, report, {
+    if (!written) throw new Error("The sealed first observation was older than the retained baseline.");
+    await requireR2SnapshotForBaseline({
+      source,
+      capture,
+      report,
+      previousBaseline: null,
       reason: "initial_official_document_first_observation",
     });
+    report.baselined += 1;
+    report.initial_official_document_materialization_only_baseline_written += 1;
   } else {
     // A later healthy baseline must never be rolled back to the first-observed
     // bytes merely to reconstruct the event candidate.
@@ -3464,6 +7296,15 @@ async function materializeSealedFirstObservationCapture(source, report) {
         accessKeyId: r2AccessKeyId,
         secretAccessKey: r2SecretAccessKey,
       },
+    });
+    prepareAcquisitionCaptureMetadataForProjection({
+      archiveRoot,
+      source,
+      acquisition,
+      capture,
+    });
+    materializeRetainedCaptureAuthority(source, capture, {
+      rewriteMatchingBaseline: false,
     });
     report.initial_official_document_intake_artifact_materialized += 1;
     if (capture.intake_artifact_local_cache_rehydrated) {
@@ -3566,15 +7407,88 @@ async function capturePdfSource(source) {
   mkdirSync(captureDir, { recursive: true });
 
   const pdfPath = join(captureDir, "document.pdf");
+  const pendingPdfPath = join(captureDir, "pending-document.pdf");
+  const failedPdfPath = join(captureDir, "failed-document.pdf");
+  const failureMetaPath = join(captureDir, "capture-failure.json");
   const textPath = join(captureDir, "text.txt");
   const metaPath = join(captureDir, "meta.json");
   const download = await fetchPdfSource(source.url);
   const fileHash = hashBuffer(download.buffer);
-  const extracted = await extractPdfText(download.buffer);
+  // Retain the exact bounded response before invoking the in-process parser.
+  // It remains explicitly non-baseline evidence until parsing and cleanup pass.
+  writeFileSync(pendingPdfPath, download.buffer);
+  let extracted;
+  try {
+    extracted = await extractPdfText(download.buffer);
+  } catch (error) {
+    let retainedPdfPath = pendingPdfPath;
+    let retentionError = null;
+    try {
+      renameSync(pendingPdfPath, failedPdfPath);
+      retainedPdfPath = failedPdfPath;
+    } catch (renameError) {
+      retentionError = errorMessage(renameError);
+    }
+    const cleanupError = cleanText(error?.pdf_cleanup_error);
+    const failureMetadata = {
+      version: 1,
+      kind: "pdf_capture_failure",
+      status: "failed_not_baseline",
+      failure_stage: "pdf_text_extraction_or_cleanup",
+      captured_at: capturedAt,
+      source: sourceMetadata(source),
+      final_url: download.finalUrl,
+      status_code: download.status,
+      status_text: download.statusText,
+      content_type: download.contentType,
+      file_hash: fileHash,
+      file_bytes: download.buffer.length,
+      failure_code: cleanText(error?.code) || "AWARDPING_PDF_PARSE_FAILED",
+      error_message: errorMessage(error),
+      parser_cleanup_error: cleanupError || null,
+      retention_error: retentionError,
+      retention_policy: {
+        mode: "latest_failed_pdf_captures_per_source",
+        retained_limit: 3,
+      },
+      files: {
+        retained_pdf: toArchiveRelative(retainedPdfPath),
+      },
+    };
+    let manifestError = null;
+    try {
+      writeFileSync(failureMetaPath, JSON.stringify(failureMetadata, null, 2), "utf8");
+    } catch (writeError) {
+      manifestError = errorMessage(writeError);
+    }
+    let pruneError = null;
+    if (!manifestError) {
+      try {
+        pruneFailedPdfCaptureEvidence(sourceDir, { keep: 3 });
+      } catch (errorDuringPrune) {
+        pruneError = errorMessage(errorDuringPrune);
+      }
+    }
+    const failure = new Error(
+      `${errorMessage(error)}` +
+      `${cleanupError ? ` PDF parser cleanup also failed: ${cleanupError}.` : ""} ` +
+      `The bounded PDF was retained in the latest-three failed, non-baseline evidence set at ` +
+      `${toArchiveRelative(retainedPdfPath)} (sha256 ${fileHash}).` +
+      `${retentionError ? ` Failed-evidence rename also failed: ${retentionError}.` : ""}` +
+      `${manifestError ? ` Failure manifest write also failed: ${manifestError}.` : ""}` +
+      `${pruneError ? ` Older failed-evidence pruning also failed: ${pruneError}.` : ""}`,
+      { cause: error },
+    );
+    failure.code = error?.code || "AWARDPING_PDF_PARSE_FAILED";
+    failure.pdf_cleanup_error = cleanupError || null;
+    failure.retained_pdf_path = retainedPdfPath;
+    failure.retained_pdf_sha256 = fileHash;
+    throw failure;
+  }
+  renameSync(pendingPdfPath, pdfPath);
   const text = normalizeVisibleText(extracted.text || "");
   const textHash = hashText(text);
 
-  writeFileSync(pdfPath, download.buffer);
   writeFileSync(textPath, `${text}\n`, "utf8");
 
   const meta = {
@@ -3613,68 +7527,136 @@ async function capturePdfSource(source) {
   };
 }
 
-async function fetchPdfSource(url) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+function pruneFailedPdfCaptureEvidence(sourceDir, { keep = 3 } = {}) {
+  const retainedLimit = Math.max(1, Math.min(10, nonNegativeInt(keep, 3)));
+  const capturesRoot = join(sourceDir, "captures");
+  if (!existsSync(capturesRoot)) return { retained: 0, pruned: 0 };
+  const resolvedRoot = resolve(capturesRoot);
+  const candidates = [];
+  for (const entry of readdirSync(capturesRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidateDir = resolve(capturesRoot, entry.name);
+    if (dirname(candidateDir) !== resolvedRoot) continue;
+    const failurePath = join(candidateDir, "capture-failure.json");
+    const successfulMetaPath = join(candidateDir, "meta.json");
+    if (!existsSync(failurePath) || existsSync(successfulMetaPath)) continue;
+    try {
+      const metadata = JSON.parse(readFileSync(failurePath, "utf8"));
+      if (
+        metadata?.kind !== "pdf_capture_failure" ||
+        metadata?.status !== "failed_not_baseline"
+      ) continue;
+      candidates.push({
+        dir: candidateDir,
+        capturedAt: cleanText(metadata.captured_at) || entry.name,
+      });
+    } catch {
+      // Never delete an unparseable artifact automatically.
+    }
+  }
+  candidates.sort((left, right) => right.capturedAt.localeCompare(left.capturedAt));
+  const removable = candidates.slice(retainedLimit);
+  for (const candidate of removable) {
+    if (dirname(candidate.dir) !== resolvedRoot) {
+      throw new Error("Refused to prune failed PDF evidence outside the source capture directory.");
+    }
+    rmSync(candidate.dir, { recursive: true, force: true });
+  }
+  return {
+    retained: Math.min(candidates.length, retainedLimit),
+    pruned: removable.length,
+  };
+}
 
-  try {
-    const response = await fetch(url, {
-      redirect: "follow",
-      signal: controller.signal,
+async function fetchPdfSource(url) {
+  const download = await fetchPublicHttpBuffer(url, {
+    maxBytes: maxPdfBytes,
+    timeoutMs,
+    maxRedirects: 5,
+    label: "PDF",
+    init: {
       headers: {
         "User-Agent": crawlerUserAgent,
         Accept: "application/pdf,application/octet-stream,text/html;q=0.8,*/*;q=0.5",
       },
-    });
-
-    if (!response.ok) {
-      throw new Error(`PDF download failed with HTTP ${response.status} ${response.statusText}`.trim());
-    }
-
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (contentLength > maxPdfBytes) {
-      throw new Error(`PDF is too large (${contentLength} bytes; limit ${maxPdfBytes} bytes)`);
-    }
-
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > maxPdfBytes) {
-      throw new Error(`PDF is too large (${buffer.length} bytes; limit ${maxPdfBytes} bytes)`);
-    }
-
-    return {
-      buffer,
-      finalUrl: response.url || url,
-      status: response.status,
-      statusText: response.statusText,
-      contentType: response.headers.get("content-type") || null,
-    };
-  } finally {
-    clearTimeout(timeout);
+    },
+  });
+  if (download.status < 200 || download.status >= 300) {
+    throw new Error(
+      `PDF download failed with HTTP ${download.status} ${download.statusText}`.trim(),
+    );
   }
+  return download;
 }
 
 async function extractPdfText(buffer) {
   let parser = null;
+  let primaryError = null;
   try {
     parser = new PDFParse({ data: new Uint8Array(buffer) });
-    const result = await parser.getText();
+    // Parsing no more than the configured first N pages prevents a crafted PDF
+    // from forcing unbounded work. result.total still reports the document's
+    // real page count, so an oversized document fails instead of publishing a
+    // misleading partial baseline.
+    const result = await withTimeout(
+      parser.getText({ first: maxPdfPages }),
+      pdfParseTimeoutMs,
+      `PDF text parsing exceeded ${pdfParseTimeoutMs}ms.`,
+    );
+    if (Number(result.total) > maxPdfPages) {
+      const error = new Error(`PDF has ${result.total} pages; limit ${maxPdfPages} pages.`);
+      error.code = "AWARDPING_PDF_PAGE_LIMIT";
+      throw error;
+    }
     return {
       text: result.text || "",
       pageCount: result.total || null,
       error: null,
     };
   } catch (error) {
-    return {
-      text: "",
-      pageCount: null,
-      error: errorMessage(error),
-    };
+    primaryError = error;
+    if (
+      error?.code === "AWARDPING_SOURCE_TIMEOUT" ||
+      error?.code === "AWARDPING_PDF_PAGE_LIMIT"
+    ) {
+      throw error;
+    }
+    const parseError = new Error(`PDF text parsing failed: ${errorMessage(error)}`, {
+      cause: error,
+    });
+    parseError.code = "AWARDPING_PDF_PARSE_FAILED";
+    primaryError = parseError;
+    throw parseError;
   } finally {
-    await parser?.destroy().catch(() => null);
+    if (parser) {
+      try {
+        await withTimeout(
+          parser.destroy(),
+          5_000,
+          "PDF parser cleanup exceeded 5000ms.",
+        );
+      } catch (cleanupError) {
+        if (!primaryError) throw cleanupError;
+        // Preserve the primary parsing/page-limit failure while retaining a
+        // bounded, reportable indication that parser cleanup also failed.
+        primaryError.pdf_cleanup_error = errorMessage(cleanupError);
+      }
+    }
   }
 }
 
-async function captureSource(source, context, browserMeta, report, { baseline = null } = {}) {
+async function captureSource(
+  source,
+  context,
+  browserMeta,
+  report,
+  {
+    baseline = null,
+    suppressDiscovery = false,
+    networkProxy = null,
+    sourceDeadline = null,
+  } = {},
+) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
   const sourceDir = join(archiveRoot, "sources", source.id);
@@ -3689,11 +7671,18 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
   const sectionsJsonPath = join(captureDir, "sections.json");
   const layoutPath = join(captureDir, "layout.json");
   const metaPath = join(captureDir, "meta.json");
+  const pendingMetaPath = join(captureDir, "meta.pending.json");
+  const captureUrl = normalizePublicHttpUrl(source.url).toString();
+  const networkCheckpoint = networkProxy?.policyCheckpoint?.() ?? null;
   const page = await context.newPage();
+
+  let completedCapture = null;
+  let discoveryCommit = null;
+  let captureFailed = false;
 
   let response = null;
   try {
-    response = await page.goto(source.url, {
+    response = await page.goto(captureUrl, {
       waitUntil: "domcontentloaded",
       timeout: timeoutMs,
     });
@@ -3711,12 +7700,21 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     }
     await page.addStyleTag({ content: stableCaptureCss }).catch(() => null);
     const initialHiddenNoise = await hideNoiseElements(page);
+    // Activate lazy, scroll-triggered accordions before discovering their
+    // collapsed controls. Scrolling does not open expansion state.
+    const initialScrollActivation = await activateScrollTriggeredContent(page, {
+      source,
+      profile: captureProfile,
+    });
+    await hideNoiseElements(page);
+    await waitForPageSettledForSnapshot(page);
     // Capture each collapsed-section state before the whole-page expansion pass.
     // That keeps each candidate independent instead of inheriting panels forced
     // open for the main full-page capture.
     const expansionStateEvidence = await captureExpansionStateEvidence(page, context, captureDir, {
       source,
       profile: captureProfile,
+      sourceDeadline,
     });
     if (report && expansionStateEvidence.error) {
       const message = `Capture geometry expansion-state evidence unavailable: ${expansionStateEvidence.error}`;
@@ -3761,10 +7759,6 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         video.removeAttribute("autoplay");
       }
     }).catch(() => null);
-    const initialScrollActivation = await activateScrollTriggeredContent(page, {
-      source,
-      profile: captureProfile,
-    });
     await waitForPageSettledForSnapshot(page);
 
     let pdfDiscoveryForRegistration = null;
@@ -3797,11 +7791,16 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       report.capture_settle_wait_ms += pageSettle.waited_ms;
     }
 
+    // Fail before discovery walks the final DOM if expansion or lazy loading
+    // produced runaway content. A second snapshot below binds the exact text
+    // and dimensions used by geometry and screenshot capture.
+    await capturePageResourceSnapshot(page, { stateId: "main" });
+
     // Discover links only from the same fully expanded, fully scrolled, settled
     // DOM that is about to be captured. A failed/capped expansion, capped
     // scroll, or unsettled page is an incomplete scan and must never establish
     // the historical seed watermark.
-    if (discoveryMode && discoverPdfSubpages) {
+    if (!suppressDiscovery && discoveryMode && discoverPdfSubpages) {
       const pdfDiscovery = await discoverPdfLinksOnPage(page, source);
       const completeness = pdfDiscoveryCompleteness({
         expanded: finalExpanded,
@@ -3837,20 +7836,15 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         });
       }
     }
-    if (discoveryMode && discoverHtmlSubpages) {
+    if (!suppressDiscovery && discoveryMode && discoverHtmlSubpages) {
       discoveredHtmlLinks = await discoverHtmlSubpageLinksOnPage(page, source);
     }
 
     const pageTitle = await page.title().catch(() => "");
     const finalUrl = page.url();
-    const dimensions = await page.evaluate(() => ({
-      viewport_width: window.innerWidth,
-      viewport_height: window.innerHeight,
-      scroll_width: Math.max(document.documentElement.scrollWidth, document.body?.scrollWidth || 0),
-      scroll_height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0),
-      device_pixel_ratio: window.devicePixelRatio || 1,
-    }));
-    const rawText = await page.evaluate(() => document.body?.innerText || "");
+    const resourceSnapshot = await capturePageResourceSnapshot(page, { stateId: "main" });
+    const dimensions = resourceSnapshot.render.dimensions;
+    const rawText = resourceSnapshot.text.text;
     const stableTextSamples = await extractStableTextBlockSamples(page);
     const textBlocks = buildStableTextBlocks({
       rawText,
@@ -3874,12 +7868,23 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       );
     }
     const textHash = textBlocks.text_hash;
-    const finalTextGeometry = await captureStructuredVisibleTextGeometry(page, {
-      capturedAt,
-      stateId: "main",
-    });
+    // A full screenshot remains useful event-specific evidence when the page
+    // never settles, but its DOM rectangles cannot honestly be called exact.
+    // Bind an explicit empty/unavailable layout to that screenshot so
+    // downstream publication falls back to the full image instead of using
+    // coordinates sampled from a moving render.
+    let finalTextGeometry = pageSettle.stable
+      ? await captureStructuredVisibleTextGeometry(page, {
+          capturedAt,
+          stateId: "main",
+        })
+      : unavailableStructuredVisibleTextGeometry({
+          capturedAt,
+          stateId: "main",
+          dimensions,
+          reason: "page_did_not_settle_before_geometry_capture",
+        });
     const pageBuffer = await page.screenshot({
-      path: pagePath,
       fullPage: true,
       type: "jpeg",
       quality: jpegQuality,
@@ -3889,12 +7894,26 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
     const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry, {
       stateId: "main",
     });
+    assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId: "main" });
+    if (pageSettle.stable) {
+      const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(page, {
+        capturedAt,
+        stateId: "main",
+      });
+      finalTextGeometry = verifyVisualScreenshotLayoutCapture({
+        before: finalTextGeometry,
+        after: afterScreenshotGeometry,
+        screenshot: screenshotBinding,
+        stateId: "main",
+      });
+    }
     const textGeometry = bindVisualTextGeometry(finalTextGeometry, {
       capturedAt,
       imageHash,
       imageRef: toArchiveRelative(pagePath),
       screenshot: screenshotBinding,
     });
+    writeFileSync(pagePath, pageBuffer);
     writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
     const thumbnail = await createThumbnail(context, pageBuffer);
     writeFileSync(thumbPath, thumbnail);
@@ -3919,6 +7938,10 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       report.section_evidence_screenshots_taken += sections.evidence_screenshots_taken || 0;
     }
 
+    const expansionCoverage = expansionStateCaptureCoverage(
+      expansionStateEvidence,
+      { retainedStateCount: expansionStateEvidence.states.length },
+    );
     const meta = {
       version: 1,
       kind: "webpage",
@@ -3967,12 +7990,27 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
         captured_at: capturedAt,
         dimensions,
         page_settle: pageSettle,
+        image_hash: imageHash,
         text_geometry: textGeometry,
       }),
       counter_stability: counterStability,
       expanded_content: expanded,
       expansion_state_candidates: expansionStateEvidence.candidates || 0,
       expansion_state_attempted: expansionStateEvidence.attempted || 0,
+      expansion_state_capture_limit: expansionStateEvidence.capture_limit || 0,
+      expansion_state_capture_complete: expansionStateEvidence.capture_complete === true,
+      expansion_state_capture_status: expansionStateEvidence.capture_status || "unavailable_unknown",
+      expansion_state_raw_candidates: expansionStateEvidence.raw_candidates || 0,
+      expansion_state_raw_candidate_count_exact:
+        expansionStateEvidence.raw_candidate_count_exact === true,
+      expansion_state_candidate_count_exact: expansionStateEvidence.candidate_count_exact === true,
+      expansion_state_duplicate_controls_removed: expansionStateEvidence.duplicate_controls_removed || 0,
+      expansion_state_non_panel_controls_removed: expansionStateEvidence.non_panel_controls_removed || 0,
+      expansion_state_truncated: expansionStateEvidence.truncated === true,
+      expansion_state_truncated_count: expansionStateEvidence.truncated_count || 0,
+      expansion_state_truncated_count_exact: expansionStateEvidence.truncated_count_exact === true,
+      expansion_state_timeout_ms: expansionStateEvidence.capture_timeout_ms || 0,
+      expansion_state_capture_coverage: expansionCoverage,
       expansion_text_in_primary_hash: captureProfileConfig.includeExpansionTextInPrimary,
       expansion_state_screenshots: expansionStateEvidence.states.map((state) => ({
         state_id: state.state_id,
@@ -4011,20 +8049,18 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       },
     };
 
-    writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+    assertCaptureNetworkWithinLimits(networkProxy, networkCheckpoint, {
+      stateId: "main",
+      maxBytes: maxBrowserResponseBytes,
+    });
+    writeFileSync(pendingMetaPath, JSON.stringify(meta, null, 2), "utf8");
 
-    // Discovery becomes durable only after the page has passed capture-quality
-    // validation and its evidence has been written successfully. A transient
-    // CAPTCHA, access-block, or soft-404 page must never establish an empty or
-    // partial historical watermark that turns old links into live alerts later.
-    if (pdfDiscoveryForRegistration) {
-      await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration, expanded, report);
-    }
-    if (discoveryMode && discoverHtmlSubpages) {
-      await maybeRecordDiscoveredHtmlSources(source, discoveredHtmlLinks, expanded, report);
-    }
-
-    return {
+    discoveryCommit = {
+      pdfDiscoveryForRegistration,
+      discoveredHtmlLinks,
+      expanded,
+    };
+    completedCapture = {
       ...meta,
       dir: captureDir,
       page_path: pagePath,
@@ -4053,9 +8089,73 @@ async function captureSource(source, context, browserMeta, report, { baseline = 
       expansion_text_length: textBlocks.expansion_text_length,
       section_text_length: sectionsText.length,
     };
+  } catch (error) {
+    captureFailed = true;
+    throw error;
   } finally {
-    await page.close().catch(() => null);
+    // The context/proxy pair belongs to exactly one source. Shutdown, DNS
+    // settlement, stream destruction, and the final policy snapshot form one
+    // required barrier before baseline, R2, or discovery mutation.
+    try {
+      await finalizeCaptureNetworkBoundary({
+        page,
+        context,
+        networkProxy,
+        checkpoint: networkCheckpoint,
+        stateId: "main",
+        maxBytes: maxBrowserResponseBytes,
+        shutdownTimeoutMs: Math.min(5_000, timeoutMs),
+      });
+    } catch (error) {
+      captureFailed = true;
+      throw error;
+    } finally {
+      if (captureFailed) {
+        // No metadata pointer may survive a failed source boundary. These files
+        // were never published or referenced, so removal is safer than leaving
+        // recoverable-looking evidence behind.
+        try {
+          rmSync(captureDir, { recursive: true, force: true });
+        } catch {
+          // The pending filename still prevents recovery tooling from treating
+          // a cleanup failure as a valid capture.
+        }
+      }
+    }
   }
+
+  try {
+    renameSync(pendingMetaPath, metaPath);
+  } catch (error) {
+    try {
+      rmSync(captureDir, { recursive: true, force: true });
+    } catch {
+      // Preserve the atomic-publication failure as the primary error.
+    }
+    throw error;
+  }
+
+  // Discovery becomes durable only after the page and every proxied resource
+  // have passed capture-quality validation. A failed/capped subresource must
+  // never establish an empty or partial historical watermark.
+  if (discoveryCommit.pdfDiscoveryForRegistration) {
+    await maybeRecordDiscoveredPdfSources(
+      source,
+      discoveryCommit.pdfDiscoveryForRegistration,
+      discoveryCommit.expanded,
+      report,
+    );
+  }
+  if (!suppressDiscovery && discoveryMode && discoverHtmlSubpages) {
+    await maybeRecordDiscoveredHtmlSources(
+      source,
+      discoveryCommit.discoveredHtmlLinks,
+      discoveryCommit.expanded,
+      report,
+    );
+  }
+
+  return completedCapture;
 }
 
 async function expandPageForSnapshot(page, { source = null, profile = captureProfile } = {}) {
@@ -4284,287 +8384,248 @@ async function expandPageForSnapshot(page, { source = null, profile = capturePro
   }
 }
 
-async function captureExpansionStateEvidence(page, context, captureDir, { source = null, profile = captureProfile } = {}) {
+async function captureExpansionStateEvidence(
+  page,
+  context,
+  captureDir,
+  { source = null, profile = captureProfile, sourceDeadline = null } = {},
+) {
   if (maxExpansionStateScreenshots <= 0) {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: null };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: 0,
+      capture_complete: false, capture_status: "skipped_disabled",
+      truncated: false, truncated_count: 0, failures: [], error: null, skipped: true,
+    };
   }
   const configuredRelevanceMode = expansionRelevanceModeForSource(source, profile);
   const relevanceMode = configuredRelevanceMode === "none" && ["stable-daily", "localization-repair"].includes(profile)
     ? "award-content"
     : configuredRelevanceMode;
   if (!captureProfileSettings(profile).allowExpansionScreenshots && relevanceMode === "none") {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: null, skipped: true };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
+      capture_complete: false, capture_status: "skipped_profile",
+      truncated: false, truncated_count: 0, failures: [], error: null, skipped: true,
+    };
   }
   if (relevanceMode === "none") {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: null, skipped: true };
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
+      capture_complete: false, capture_status: "skipped_relevance",
+      truncated: false, truncated_count: 0, failures: [], error: null, skipped: true,
+    };
   }
 
+  let expansionCaptureBudgetMs = 0;
   try {
-    const setup = await page.evaluate(({ maxControls, relevanceMode }) => {
-      function textOf(element) {
-        return (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim();
-      }
+    // Descriptor discovery walks candidate controls and their text. Bound the
+    // unopened page first so a hostile DOM cannot make that scan unbounded.
+    await capturePageResourceSnapshot(page, { stateId: "expansion-discovery" });
+    const setup = await discoverExpansionStateDescriptors(page, {
+      maxControls: maxExpansionStateScreenshots,
+      relevanceMode,
+    });
+    if (sourceDeadline?.expired?.()) {
+      throw new Error("Expansion-state discovery completed after the source deadline expired.");
+    }
+    const descriptors = setup.descriptors || [];
+    const isolationDescriptors = setup.isolation_descriptors || descriptors;
+    const candidateCountLabel = setup.candidate_count_exact === false ? "eligible_at_least" : "eligible";
+    const omittedSummary = setup.truncated_count_exact === false
+      ? "logical_omitted=unknown"
+      : `omitted=${setup.truncated_count || 0}`;
+    const truncationError = setup.truncated === true
+      ? `expansion_state_capture_truncated: ${candidateCountLabel}=${setup.candidates || 0} ` +
+        `capture_limit=${setup.capture_limit || maxExpansionStateScreenshots} ` +
+        `${omittedSummary}. ` +
+        "Exact opened-section localization is unavailable for omitted controls."
+      : null;
 
-      function signalFor(element) {
-        return [
-          element.id,
-          element.className,
-          element.getAttribute("aria-label"),
-          element.getAttribute("aria-controls"),
-          element.getAttribute("data-target"),
-          element.getAttribute("data-bs-target"),
-          element.getAttribute("data-toggle"),
-          element.getAttribute("data-bs-toggle"),
-          element.getAttribute("href"),
-          textOf(element),
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-      }
-
-      function isVisible(element) {
-        if (!(element instanceof HTMLElement)) return false;
-        const rect = element.getBoundingClientRect();
-        const style = window.getComputedStyle(element);
-        return (
-          rect.width > 0 &&
-          rect.height > 0 &&
-          style.display !== "none" &&
-          style.visibility !== "hidden" &&
-          Number(style.opacity || 1) > 0
-        );
-      }
-
-      function controlledTextFor(element) {
-        const values = [];
-        for (const attr of ["aria-controls", "data-target", "data-bs-target", "href"]) {
-          const value = element.getAttribute(attr);
-          if (!value) continue;
-          for (const token of value.split(/\s+/).filter(Boolean)) {
-            const selector = token.startsWith("#")
-              ? token
-              : /^[A-Za-z][\w:-]*$/.test(token)
-                ? `#${CSS.escape(token)}`
-                : null;
-            if (!selector) continue;
-            try {
-              for (const target of document.querySelectorAll(selector)) values.push(textOf(target));
-            } catch {
-              // Ignore malformed third-party selectors.
-            }
-          }
-        }
-        return values.join(" ");
-      }
-
-      function selectorFor(element) {
-        if (element.id) return `#${CSS.escape(element.id)}`;
-        const parts = [];
-        let current = element;
-        while (current && current !== document.documentElement) {
-          const tag = current.tagName.toLowerCase();
-          const siblings = current.parentElement
-            ? [...current.parentElement.children].filter((sibling) => sibling.tagName === current.tagName)
-            : [];
-          const position = siblings.indexOf(current) + 1;
-          parts.unshift(siblings.length > 1 ? `${tag}:nth-of-type(${position})` : tag);
-          current = current.parentElement;
-        }
-        return `html>${parts.join(">")}`;
-      }
-
-      function isExpandableStateControl(element) {
-        if (!(element instanceof HTMLElement)) return false;
-        if (!isVisible(element)) return false;
-        if (element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return false;
-
-        const tag = element.tagName.toLowerCase();
-        const href = element.getAttribute("href") || "";
-        if (tag === "a" && href && !href.startsWith("#") && !href.toLowerCase().startsWith("javascript:")) {
-          return false;
-        }
-
-        const signal = signalFor(element);
-        if (/(menu|nav|navbar|search|login|log in|sign in|subscribe|newsletter|share|print|donate|cart|next|previous|prev|facebook|twitter|linkedin|instagram)/i.test(signal)) {
-          return false;
-        }
-
-        const explicit =
-          tag === "summary" ||
-          element.getAttribute("aria-expanded") !== null ||
-          element.getAttribute("aria-controls") ||
-          element.getAttribute("data-target") ||
-          element.getAttribute("data-bs-target") ||
-          element.getAttribute("data-toggle") ||
-          element.getAttribute("data-bs-toggle") ||
-          element.closest("details, .accordion, [class*='accordion' i], [class*='faq' i], [id*='faq' i], [role='tablist']");
-
-        const contentPattern =
-          relevanceMode === "award-content"
-            ? /\b(faq|questions?|answers?|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|guidelines?|instructions?|documents?|pdf|forms?|materials?|amount|tuition|stipend)\b/i
-            : /\b(faq|questions?|answers?|expand|show|more|details|eligib(?:le|ility)?|requirements?|criteria|nominations?|applications?|process|apply|deadlines?|guidelines?|instructions?|documents?|pdf|forms?|awards?|grants?|materials?|amount|tuition|stipend)\b/i;
-        const contentRelevant = contentPattern.test(`${signal} ${controlledTextFor(element)}`);
-
-        return Boolean(explicit && contentRelevant);
-      }
-
-      const controls = [
-        ...document.querySelectorAll(
-          [
-            "summary",
-            "details > :first-child",
-            "button",
-            "[role='button']",
-            "[role='tab']",
-            "a[href^='#']",
-            "a[data-toggle]",
-            "a[data-bs-toggle]",
-            "button[data-toggle]",
-            "button[data-bs-toggle]",
-            "[onclick]",
-            "[tabindex]",
-            "[class*='accordion' i]",
-            "[class*='toggle' i]",
-            "[class*='elementor-tab-title' i]",
-            "[class*='e-n-accordion-item-title' i]",
-          ].join(", "),
-        ),
-      ]
-        .filter(isExpandableStateControl)
-        .slice(0, maxControls);
-
+    if (setup.isolation_descriptor_set_complete !== true) {
+      const discoveryError =
+        "expansion_state_isolation_unavailable: raw descriptor discovery exceeded its bounded scan; " +
+        "target-only evidence cannot be verified against unknown panels.";
       return {
-        candidates: controls.length,
-        labels: controls.map((control, index) => ({
-          index,
-          tag: control.tagName,
-          selector: selectorFor(control),
-          id: control.id || null,
-          label: textOf(control).slice(0, 120) || control.getAttribute("aria-label") || `Section ${index + 1}`,
-          aria_controls: control.getAttribute("aria-controls") || null,
-          data_target: control.getAttribute("data-target") || control.getAttribute("data-bs-target") || null,
-          href: control.getAttribute("href") || null,
-        })),
-        base_text: document.body?.innerText || "",
+        states: [],
+        ...summarizeExpansionStateCapture(setup, {
+          states: [],
+          failures: [],
+          attempted: 0,
+        }),
+        capture_timeout_ms: 0,
+        failures: [],
+        error: truncationError ? `${truncationError} ${discoveryError}` : discoveryError,
       };
-    }, { maxControls: maxExpansionStateScreenshots, relevanceMode });
+    }
 
     const states = [];
     const failures = [];
     const navigationUrl = cleanText(page.url()) || cleanText(source?.url);
-    for (const candidate of setup.labels || []) {
-      const stateNumber = states.length + 1;
-      const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
-      const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
-      const pagePath = join(captureDir, fileName);
-      const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
-      try {
-        const state = await withIsolatedExpansionStatePage({
-        context,
-        url: navigationUrl,
-        descriptor: candidate,
-        descriptors: setup.labels,
-        timeoutMs,
-        preparePage: async (statePage) => {
-          await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
-          await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
-          if (delayMs > 0) await statePage.waitForTimeout(delayMs);
-          await waitForMeaningfulPageContent(statePage);
-          await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
-          await hideNoiseElements(statePage);
-          await statePage.evaluate(() => {
-            for (const video of document.querySelectorAll("video")) {
-              video.pause?.();
-              video.removeAttribute("autoplay");
-            }
-          }).catch(() => null);
-        },
-        capture: async (statePage, openedIsolation) => {
-          await activateScrollTriggeredContent(statePage, { source, profile });
-          await hideNoiseElements(statePage);
-          await waitForPageSettledForSnapshot(statePage);
-          const isolation = await verifyExpansionStateIsolation(statePage, {
+    expansionCaptureBudgetMs = expansionStateCaptureBudgetMs(descriptors.length, {
+      operationTimeoutMs: Math.min(timeoutMs, 60_000),
+      perStateTimeoutMs: expansionStateTimeoutPerStateMs,
+    });
+    const endExpansionPhase = expansionCaptureBudgetMs > 0 && sourceDeadline
+      ? sourceDeadline.beginPhase({
+          name: "expansion-state-capture",
+          timeoutMs: expansionCaptureBudgetMs,
+          message: `expansion state hard timeout after ${expansionCaptureBudgetMs}ms ` +
+            `for ${descriptors.length} logical states`,
+        })
+      : () => {};
+    try {
+      for (const candidate of descriptors) {
+        const stateNumber = states.length + 1;
+        const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
+        const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
+        const pagePath = join(captureDir, fileName);
+        const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
+        try {
+          const state = await withIsolatedExpansionStatePage({
+            context,
+            url: navigationUrl,
             descriptor: candidate,
-            descriptors: setup.labels,
-          });
-          if (!isolation.verified) {
-            throw new Error(
-              `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
-            );
-          }
-          const stateCapturedAt = new Date().toISOString();
-          const finalStateText = await statePage.evaluate(() => document.body?.innerText || "");
-          const stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
-            capturedAt: stateCapturedAt,
-            stateId,
-          });
-          const pageBuffer = await statePage.screenshot({
-            path: pagePath,
-            fullPage: true,
-            type: "jpeg",
-            quality: jpegQuality,
-            timeout: timeoutMs,
-          });
-          const imageHash = hashBuffer(pageBuffer);
-          const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
-            stateId,
-          });
-          const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
-            capturedAt: stateCapturedAt,
-            imageHash,
-            imageRef: toArchiveRelative(pagePath),
-            screenshot: screenshotBinding,
-          });
-          writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
-
-          const normalizedText = normalizeVisibleText(finalStateText);
-          return {
-            state_id: stateId,
-            index: candidate.index,
-            tag: candidate.tag || null,
-            label: cleanText(candidate.label) || `Section ${stateNumber}`,
-            page: toArchiveRelative(pagePath),
-            page_path: pagePath,
-            image_hash: imageHash,
-            layout: toArchiveRelative(layoutPath),
-            layout_path: layoutPath,
-            layout_hash: textGeometry.geometry_hash,
-            text_geometry: textGeometry,
-            captured_at: stateCapturedAt,
-            page_bytes: pageBuffer.length,
-            text: normalizedText,
-            text_hash: hashText(normalizedText),
-            text_length: normalizedText.length,
-            targets: candidate.aria_controls || candidate.data_target ? 1 : 0,
-            isolation: {
-              ...openedIsolation,
-              ...isolation,
-              fresh_page: true,
+            descriptors: isolationDescriptors,
+            timeoutMs,
+            preparePage: async (statePage) => {
+              await statePage.waitForLoadState("networkidle", { timeout: Math.min(15_000, timeoutMs) }).catch(() => null);
+              await statePage.evaluate(() => document.fonts?.ready).catch(() => null);
+              if (delayMs > 0) await statePage.waitForTimeout(delayMs);
+              await waitForMeaningfulPageContent(statePage);
+              await statePage.addStyleTag({ content: stableCaptureCss }).catch(() => null);
+              await hideNoiseElements(statePage);
+              await activateScrollTriggeredContent(statePage, { source, profile });
+              await hideNoiseElements(statePage);
+              const preparedStateSettle = await waitForPageSettledForSnapshot(statePage);
+              if (!preparedStateSettle.stable) {
+                throw new Error(
+                  `Expansion state page did not settle before control resolution: waited_ms=${preparedStateSettle.waited_ms}.`,
+                );
+              }
+              await statePage.evaluate(() => {
+                for (const video of document.querySelectorAll("video")) {
+                  video.pause?.();
+                  video.removeAttribute("autoplay");
+                }
+              }).catch(() => null);
             },
-          };
-        },
-        });
-        states.push(state);
-      } catch (error) {
-        failures.push({
-          index: candidate.index,
-          label: candidate.label || null,
-          selector: candidate.selector || null,
-          error: errorMessage(error),
-        });
+            capture: async (statePage, openedIsolation) => {
+              await activateScrollTriggeredContent(statePage, { source, profile });
+              await hideNoiseElements(statePage);
+              const captureStateSettle = await waitForPageSettledForSnapshot(statePage);
+              if (!captureStateSettle.stable) {
+                throw new Error(
+                  `Expansion state page did not settle before geometry capture: waited_ms=${captureStateSettle.waited_ms}.`,
+                );
+              }
+              const isolation = await verifyExpansionStateIsolation(statePage, {
+                descriptor: candidate,
+                descriptors: isolationDescriptors,
+              });
+              if (!isolation.verified) {
+                throw new Error(
+                  `Capture geometry expansion state isolation failed for "${candidate.label}": ${isolation.reason}`,
+                );
+              }
+              const stateCapturedAt = new Date().toISOString();
+              const resourceSnapshot = await capturePageResourceSnapshot(statePage, { stateId });
+              const finalStateText = resourceSnapshot.text.text;
+              let stateTextGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+                capturedAt: stateCapturedAt,
+                stateId,
+              });
+              const pageBuffer = await statePage.screenshot({
+                fullPage: true,
+                type: "jpeg",
+                quality: jpegQuality,
+                timeout: timeoutMs,
+              });
+              const imageHash = hashBuffer(pageBuffer);
+              const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, stateTextGeometry, {
+                stateId,
+              });
+              assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId });
+              const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(statePage, {
+                capturedAt: stateCapturedAt,
+                stateId,
+              });
+              stateTextGeometry = verifyVisualScreenshotLayoutCapture({
+                before: stateTextGeometry,
+                after: afterScreenshotGeometry,
+                screenshot: screenshotBinding,
+                stateId,
+              });
+              const textGeometry = bindVisualTextGeometry(stateTextGeometry, {
+                capturedAt: stateCapturedAt,
+                imageHash,
+                imageRef: toArchiveRelative(pagePath),
+                screenshot: screenshotBinding,
+              });
+              writeFileSync(pagePath, pageBuffer);
+              writeFileSync(layoutPath, JSON.stringify(textGeometry, null, 2), "utf8");
+
+              const normalizedText = normalizeVisibleText(finalStateText);
+              return {
+                state_id: stateId,
+                index: candidate.index,
+                tag: candidate.tag || null,
+                label: cleanText(candidate.label) || `Section ${stateNumber}`,
+                page: toArchiveRelative(pagePath),
+                page_path: pagePath,
+                image_hash: imageHash,
+                layout: toArchiveRelative(layoutPath),
+                layout_path: layoutPath,
+                layout_hash: textGeometry.geometry_hash,
+                text_geometry: textGeometry,
+                captured_at: stateCapturedAt,
+                page_bytes: pageBuffer.length,
+                text: normalizedText,
+                text_hash: hashText(normalizedText),
+                text_length: normalizedText.length,
+                targets: candidate.state_kind === "targets"
+                  ? Math.max(1, candidate.state_selectors?.length || 0)
+                  : 0,
+                isolation: {
+                  ...openedIsolation,
+                  ...isolation,
+                  fresh_page: true,
+                },
+              };
+            },
+          });
+          states.push(state);
+        } catch (error) {
+          if (sourceDeadline?.expired?.()) throw error;
+          if (isCaptureResourceLimitError(error)) throw error;
+          failures.push({
+            index: candidate.index,
+            label: candidate.label || null,
+            selector: candidate.selector || null,
+            error: errorMessage(error),
+          });
+        }
       }
+    } finally {
+      endExpansionPhase();
     }
 
     return {
       states,
-      candidates: setup.candidates || 0,
-      attempted: setup.labels?.length || 0,
+      ...summarizeExpansionStateCapture(setup, { states, failures }),
+      capture_timeout_ms: expansionCaptureBudgetMs,
       failures,
-      error: null,
+      error: truncationError,
     };
   } catch (error) {
-    return { states: [], candidates: 0, attempted: 0, failures: [], error: errorMessage(error) };
+    if (sourceDeadline?.expired?.()) throw error;
+    if (isCaptureResourceLimitError(error)) throw error;
+    return {
+      states: [], candidates: 0, attempted: 0, capture_limit: maxExpansionStateScreenshots,
+      capture_complete: false, capture_status: "unavailable_error",
+      truncated: false, truncated_count: 0,
+      capture_timeout_ms: expansionCaptureBudgetMs,
+      failures: [], error: errorMessage(error),
+    };
   }
 }
 
@@ -4843,6 +8904,7 @@ async function extractExpandableSectionsForCapture(
 
     return result;
   } catch (error) {
+    if (isCaptureResourceLimitError(error)) throw error;
     return {
       ...emptySectionExtractionResult(profile, "error"),
       enabled: true,
@@ -4924,6 +8986,7 @@ async function captureSectionEvidenceScreenshots(page, captureDir, sections) {
         y: Math.max(0, Math.floor(top - 16)),
         width: Math.max(120, Math.ceil(right - left + 32)),
         height: Math.max(80, Math.ceil(bottom - top + 32)),
+        device_pixel_ratio: Number(window.devicePixelRatio) || 1,
       };
     }, { index: section.index });
 
@@ -4936,13 +8999,19 @@ async function captureSectionEvidenceScreenshots(page, captureDir, sections) {
       width: Math.min(result.width, 1800),
       height: Math.min(result.height, 2200),
     };
+    const sectionStateId = `section:${section.section_key}`;
     const buffer = await page.screenshot({
-      path,
       clip,
       type: "jpeg",
       quality: jpegQuality,
       timeout: timeoutMs,
     });
+    const screenshotBinding = await screenshotBindingFromBuffer(buffer, {
+      document: { width: clip.width, height: clip.height },
+      device_pixel_ratio: result.device_pixel_ratio,
+    }, { stateId: sectionStateId });
+    assertCapturedScreenshotWithinLimits(buffer, screenshotBinding, { stateId: sectionStateId });
+    writeFileSync(path, buffer);
     evidence.push({
       section_key: section.section_key,
       section_label: section.label,
@@ -5344,6 +9413,35 @@ async function forceScrollRevealElementsVisible(page) {
     }));
 }
 
+async function capturePageResourceSnapshot(page, { stateId = "main" } = {}) {
+  const render = await assertCaptureRenderWithinLimits(page, {
+    stateId,
+    maxWidthCssPx: maxCaptureWidthCssPx,
+    maxHeightCssPx: maxCaptureHeightCssPx,
+    maxRenderPixels: maxCaptureRenderPixels,
+  });
+  const text = await captureBoundedBodyInnerText(page, {
+    stateId,
+    maxChars: maxCaptureTextChars,
+    maxTextNodes: maxCaptureTextNodes,
+    maxElements: maxCaptureDomElements,
+  });
+  return { render, text };
+}
+
+function assertCapturedScreenshotWithinLimits(buffer, screenshot, { stateId = "main" } = {}) {
+  assertCaptureScreenshotBytes(buffer, {
+    stateId,
+    maxBytes: maxCaptureScreenshotBytes,
+  });
+  assertCaptureScreenshotDimensions(screenshot, {
+    stateId,
+    maxWidthCssPx: maxCaptureWidthCssPx,
+    maxHeightCssPx: maxCaptureHeightCssPx,
+    maxRenderPixels: maxCaptureRenderPixels,
+  });
+}
+
 async function captureStructuredVisibleTextGeometry(page, { capturedAt = null, stateId = "main" } = {}) {
   try {
     return await captureVisibleTextGeometry(page, {
@@ -5355,6 +9453,43 @@ async function captureStructuredVisibleTextGeometry(page, { capturedAt = null, s
       cause: error,
     });
   }
+}
+
+function unavailableStructuredVisibleTextGeometry({
+  capturedAt = null,
+  stateId = "main",
+  dimensions = null,
+  reason = "structured_geometry_unavailable",
+} = {}) {
+  const value = jsonObjectOrEmpty(dimensions);
+  return {
+    version: 1,
+    state_id: stateId,
+    captured_at: capturedAt,
+    coordinate_space: "document-css-pixels",
+    availability_status: "unavailable_page_not_settled",
+    unavailable_reason: reason,
+    document: {
+      width: positiveInt(value.scroll_width, viewportWidth),
+      height: positiveInt(value.scroll_height, viewportHeight),
+    },
+    viewport: {
+      width: positiveInt(value.viewport_width, viewportWidth),
+      height: positiveInt(value.viewport_height, viewportHeight),
+    },
+    device_pixel_ratio: nonNegativeNumber(value.device_pixel_ratio, 1) || 1,
+    paint_stack: {
+      contract: "browser-paint-stack-v1",
+      status: "unavailable",
+      unavailable_reason: reason,
+    },
+    capture_verification: {
+      contract: "visual-screenshot-layout-binding-v1",
+      status: "unavailable",
+      unavailable_reason: reason,
+    },
+    nodes: [],
+  };
 }
 async function screenshotBindingFromBuffer(buffer, geometry, { stateId = "main" } = {}) {
   try {
@@ -5380,19 +9515,44 @@ function screenshotBindingFromGeometry(geometry, imageMetadata = {}) {
   const devicePixelRatio = nonNegativeNumber(geometry?.device_pixel_ratio, 1) || 1;
   const cssWidth = nonNegativeNumber(documentSize.width, viewportWidth) || viewportWidth;
   const cssHeight = nonNegativeNumber(documentSize.height, viewportHeight) || viewportHeight;
+  const pixelWidth = positiveInt(
+    imageMetadata.pixel_width,
+    Math.max(1, Math.round(cssWidth * devicePixelRatio)),
+  );
+  const pixelHeight = positiveInt(
+    imageMetadata.pixel_height,
+    Math.max(1, Math.round(cssHeight * devicePixelRatio)),
+  );
+  const scaleX = pixelWidth / cssWidth;
+  const scaleY = pixelHeight / cssHeight;
+  const uniformScaleError = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY, 1e-9);
+  const deviceScaleError = Math.max(
+    Math.abs(scaleX - devicePixelRatio),
+    Math.abs(scaleY - devicePixelRatio),
+  ) / Math.max(devicePixelRatio, 1e-9);
+  const alignmentStatus = uniformScaleError <= 0.01 && deviceScaleError <= 0.01
+    ? "verified"
+    : "unavailable_nonuniform_or_unexpected_scale";
   return {
     css_width: cssWidth,
     css_height: cssHeight,
-    pixel_width: positiveInt(imageMetadata.pixel_width, Math.max(1, Math.round(cssWidth * devicePixelRatio))),
-    pixel_height: positiveInt(imageMetadata.pixel_height, Math.max(1, Math.round(cssHeight * devicePixelRatio))),
+    pixel_width: pixelWidth,
+    pixel_height: pixelHeight,
+    expected_device_pixel_ratio: devicePixelRatio,
+    scale_x: scaleX,
+    scale_y: scaleY,
+    alignment_status: alignmentStatus,
   };
 }
 
 function textGeometryReference(geometry, layoutPath = null) {
   if (!geometry || typeof geometry !== "object") return null;
+  const availabilityStatus = cleanText(geometry.availability_status);
   return {
     version: geometry.version || 1,
-    status: geometry.run_count > 0 ? "ready" : "unavailable_no_visible_text_nodes",
+    status: availabilityStatus ||
+      (geometry.run_count > 0 ? "ready" : "unavailable_no_visible_text_nodes"),
+    unavailable_reason: cleanText(geometry.unavailable_reason) || null,
     geometry_hash: geometry.geometry_hash || null,
     coordinate_space: geometry.coordinate_space || "document-css-pixels",
     node_count: geometry.node_count || 0,
@@ -7122,11 +11282,19 @@ function readablePdfLinkTitle(link, source) {
 async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
   if (!r2SnapshotSync) return;
   const reason = cleanText(options.reason) || "unspecified";
-  const skipNoise = Boolean(options.noise) && !forceR2SnapshotRefresh;
+  const required = options.required === true;
+  const skipNoise = Boolean(options.noise) && !forceR2SnapshotRefresh && !required;
   const skipUnchanged =
     Boolean(options.unchanged) &&
     !forceR2SnapshotRefresh &&
-    !["initial_baseline", "baseline_refresh", "ai_approved_true_change"].includes(reason);
+    !required &&
+    ![
+      "initial_baseline",
+      "baseline_refresh",
+      "ai_approved_true_change",
+      "capture_behavior_refresh",
+      "localization_repair",
+    ].includes(reason);
 
   if (skipNoise) {
     report.r2_uploads_skipped_noise += 1;
@@ -7147,10 +11315,12 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
     report.r2_uploaded += result.uploaded;
     report.r2_rotated += result.rotated;
     report.r2_previous_snapshots_reset += result.previousReset || 0;
+    recordR2CleanupDebt(report, source, result.cleanup);
     existingR2SnapshotSourceIds.add(source.id);
     console.log(`R2 SNAPSHOT uploaded=${result.uploaded} rotated=${result.rotated} ${sourceLabel(source)}`);
-    return true;
+    return { succeeded: true, ...result };
   } catch (error) {
+    recordR2CleanupDebt(report, source, error?.r2Cleanup);
     report.r2_failed += 1;
     const message = `R2 snapshot sync failed: ${errorMessage(error)}`;
     report.errors.push({
@@ -7163,24 +11333,88 @@ async function maybeSyncR2Snapshot(source, capture, report, options = {}) {
   }
 }
 
+function recordR2CleanupDebt(report, source, cleanup) {
+  const failed = nonNegativeInt(cleanup?.failed, 0);
+  if (!failed) return;
+  report.r2_cleanup_failed = nonNegativeInt(report.r2_cleanup_failed, 0) + failed;
+  if (!Array.isArray(report.r2_cleanup_debt)) report.r2_cleanup_debt = [];
+  report.r2_cleanup_debt.push({
+    source_id: source?.id || null,
+    source_url: source?.url || null,
+    failed,
+    failures: Array.isArray(cleanup?.failures) ? cleanup.failures : [],
+  });
+  console.log(`R2 CLEANUP DEBT failed=${failed} ${sourceLabel(source)}`);
+}
+
+async function requireR2SnapshotForBaseline({
+  source,
+  capture,
+  report,
+  previousBaseline,
+  reason,
+  noise = false,
+  unchanged = false,
+}) {
+  const result = await maybeSyncR2Snapshot(source, capture, report, {
+    reason,
+    noise,
+    unchanged,
+    required: true,
+  });
+  if (result?.succeeded === true) return result;
+  restoreBaselineAfterFailedStage1Activation(source, previousBaseline || null);
+  const failureCode = r2SnapshotSync
+    ? "required_r2_baseline_persistence_failed"
+    : "required_r2_baseline_persistence_disabled";
+  throw Object.assign(
+    new Error(
+      `Required authoritative R2 persistence ${r2SnapshotSync ? "failed" : "is disabled"}; the local baseline was rolled back (${reason}).`,
+    ),
+    { code: failureCode },
+  );
+}
+
 async function maybeRepairMissingR2Snapshot(source, capture, report, options = {}) {
   if (!r2SnapshotSync || !r2RepairMissingSnapshots) return false;
-  if (existingR2SnapshotSourceIds.has(source.id)) return false;
+  const snapshotAlreadyExists = existingR2SnapshotSourceIds.has(source.id);
+  // A capture-behavior or operator-directed evidence refresh can intentionally
+  // replace the authoritative latest generation without publishing a change
+  // event. Do not let the existence-only cache defeat --force-r2-snapshot-refresh.
+  if (snapshotAlreadyExists && !forceR2SnapshotRefresh) return false;
 
   const repaired = await maybeSyncR2Snapshot(source, capture, report, {
     ...options,
     unchanged: true,
   });
   if (repaired) {
-    report.r2_repaired_missing += 1;
-    console.log(`R2 REPAIRED missing_snapshot ${sourceLabel(source)}`);
+    if (snapshotAlreadyExists) {
+      report.r2_forced_refreshes += 1;
+      console.log(`R2 REFRESHED authoritative_latest ${sourceLabel(source)}`);
+    } else {
+      report.r2_repaired_missing += 1;
+      console.log(`R2 REPAIRED missing_snapshot ${sourceLabel(source)}`);
+    }
   }
   return repaired;
 }
 
-async function markSharedSourceVisualCheckSucceeded(source, capture, report = null) {
+async function markSharedSourceVisualCheckSucceeded(
+  source,
+  capture,
+  report = null,
+  {
+    preserveReviewedUrl = false,
+    preserveReviewedMetadata = false,
+    requiredAdminReviewStatus = "open",
+    requiredSourceAuthority = null,
+  } = {},
+) {
   const now = new Date().toISOString();
-  const { error } = await supabase
+  const metadataUpdate = preserveReviewedMetadata
+    ? {}
+    : sourcePageMetadataUpdate(source, capture);
+  let mutation = supabase
     .from("shared_award_sources")
     .update({
       last_hash: visualHashForCapture(capture),
@@ -7188,19 +11422,185 @@ async function markSharedSourceVisualCheckSucceeded(source, capture, report = nu
       next_check_at: nextVisualSourceCheckDate(),
       consecutive_failures: 0,
       last_error: null,
-      ...sourcePageMetadataUpdate(source, capture),
+      ...metadataUpdate,
       updated_at: now,
     })
     .eq("id", source.id);
+  mutation = guardAdminReviewMutation(mutation, source, {
+    requiredStatus: requiredAdminReviewStatus,
+  });
+  if (requiredSourceAuthority) {
+    mutation = guardStage1EvidenceSchemaUpgradeSourceAuthorityMutation(
+      mutation,
+      requiredSourceAuthority,
+    );
+  }
+  const { data, error } = await mutation.select("id").maybeSingle();
 
   if (error) throw error;
+  if (requiredSourceAuthority) {
+    const expectedLastHash = visualHashForCapture(capture);
+    const currentSource = await readStage1EvidenceSchemaUpgradeSourceHealth(source.id);
+    if (isStage1EvidenceSchemaUpgradeSourceHealthAlreadyCurrent({
+      currentSource,
+      requiredSourceAuthority,
+      expectedLastHash,
+      minimumCheckedAt: capture?.captured_at,
+    })) {
+      return Object.freeze({
+        status: data ? "succeeded" : "already_current",
+        source_id: source.id,
+        expected_last_hash: expectedLastHash,
+        observed_source_sha256: hashText(stableJsonStringify(currentSource)),
+      });
+    }
+    recordStaleAdminReviewPlan(report, source, "visual_check_succeeded");
+    return false;
+  }
+  if (!data) {
+    recordStaleAdminReviewPlan(report, source, "visual_check_succeeded");
+    return false;
+  }
 
-  await maybeUpdateSafeRedirectUrl(source, capture, now, report);
+  if (!preserveReviewedUrl) {
+    await maybeUpdateSafeRedirectUrl(source, capture, now, report);
+  }
+  return true;
 }
 
-async function markSharedSourceReviewLater(source, hygiene) {
+const stage1EvidenceSchemaUpgradeSourceHealthReadbackColumns = [
+  "id",
+  "shared_award_id",
+  "url",
+  "title",
+  "display_title",
+  "page_description",
+  "page_metadata",
+  "page_metadata_generated_at",
+  "page_metadata_model",
+  "page_type",
+  "source",
+  "reason",
+  "submitted_by_user_id",
+  "admin_review_status",
+  "admin_review_note",
+  "admin_reviewed_at",
+  "admin_reviewed_by",
+  "last_hash",
+  "last_checked_at",
+  "next_check_at",
+  "consecutive_failures",
+  "last_error",
+  "created_at",
+  "updated_at",
+  "shared_awards!inner(id, name, status, official_homepage)",
+].join(", ");
+
+const stage1EvidenceSchemaUpgradeSourceHealthIdentityColumns = Object.freeze([
+  "id",
+  "shared_award_id",
+  "url",
+  "title",
+  "display_title",
+  "page_description",
+  "page_metadata",
+  "page_metadata_generated_at",
+  "page_metadata_model",
+  "page_type",
+  "source",
+  "reason",
+  "submitted_by_user_id",
+  "admin_review_status",
+  "admin_review_note",
+  "admin_reviewed_at",
+  "admin_reviewed_by",
+  "created_at",
+  "shared_awards",
+]);
+
+async function readStage1EvidenceSchemaUpgradeSourceHealth(sourceId) {
+  const { data, error } = await supabase
+    .from("shared_award_sources")
+    .select(stage1EvidenceSchemaUpgradeSourceHealthReadbackColumns)
+    .eq("id", sourceId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(
+      `Stage 1 source-health exact readback failed: ${error.message || String(error)}`,
+    );
+  }
+  return data || null;
+}
+
+function stage1EvidenceSchemaUpgradeSourceHealthIdentityProjection(source) {
+  return Object.fromEntries(
+    stage1EvidenceSchemaUpgradeSourceHealthIdentityColumns
+      .map((column) => [column, source?.[column]]),
+  );
+}
+
+function isStage1EvidenceSchemaUpgradeSourceHealthAlreadyCurrent({
+  currentSource,
+  requiredSourceAuthority,
+  expectedLastHash,
+  minimumCheckedAt,
+}) {
+  if (!currentSource || !requiredSourceAuthority) return false;
+  if (
+    stableJsonStringify(
+      stage1EvidenceSchemaUpgradeSourceHealthIdentityProjection(currentSource),
+    ) !== stableJsonStringify(
+      stage1EvidenceSchemaUpgradeSourceHealthIdentityProjection(requiredSourceAuthority),
+    )
+  ) {
+    return false;
+  }
+  const lastCheckedMs = Date.parse(currentSource.last_checked_at);
+  const nextCheckMs = Date.parse(currentSource.next_check_at);
+  const updatedMs = Date.parse(currentSource.updated_at);
+  const minimumCheckedMs = Date.parse(minimumCheckedAt);
+  const timestampsAreValid = typeof currentSource.last_checked_at === "string"
+    && typeof currentSource.next_check_at === "string"
+    && typeof currentSource.updated_at === "string"
+    && typeof minimumCheckedAt === "string"
+    && Number.isFinite(lastCheckedMs)
+    && Number.isFinite(nextCheckMs)
+    && Number.isFinite(updatedMs)
+    && Number.isFinite(minimumCheckedMs)
+    && updatedMs === lastCheckedMs
+    && lastCheckedMs >= minimumCheckedMs
+    && nextCheckMs > lastCheckedMs;
+  return currentSource.last_hash === expectedLastHash
+    && currentSource.consecutive_failures === 0
+    && currentSource.last_error === null
+    && timestampsAreValid;
+}
+
+function guardStage1EvidenceSchemaUpgradeSourceAuthorityMutation(query, source) {
+  let guarded = query;
+  for (const column of [
+    "updated_at",
+    "shared_award_id",
+    "url",
+    "title",
+    "display_title",
+    "page_type",
+    "source",
+    "reason",
+    "submitted_by_user_id",
+    "created_at",
+  ]) {
+    const value = source?.[column];
+    guarded = value === null || value === undefined
+      ? guarded.is(column, null)
+      : guarded.eq(column, value);
+  }
+  return guarded;
+}
+
+async function markSharedSourceReviewLater(source, hygiene, report = null) {
   const now = new Date().toISOString();
-  const { error } = await supabase
+  let mutation = supabase
     .from("shared_award_sources")
     .update({
       admin_review_status: "review_later",
@@ -7210,9 +11610,16 @@ async function markSharedSourceReviewLater(source, hygiene) {
       updated_at: now,
     })
     .eq("id", source.id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
 
   if (error) throw new Error(`shared_award_sources review_later update failed: ${error.message}`);
+  if (!data) {
+    recordStaleAdminReviewPlan(report, source, "pre_capture_review_later");
+    return false;
+  }
   console.log(`SOURCE_REVIEW_LATER pre_capture reason=${hygiene.reason} ${sourceLabel(source)}`);
+  return true;
 }
 
 async function maybeResolveR2BaselineRecoveryQuarantine(source, recovery, report) {
@@ -7276,7 +11683,7 @@ async function maybeResolveR2BaselineRecoveryQuarantine(source, recovery, report
 async function loadSharedSourceReviewState(sourceId, report, { stage }) {
   const { data, error } = await supabase
     .from("shared_award_sources")
-    .select("id, admin_review_status, admin_reviewed_by")
+    .select("id, admin_review_status, admin_review_note, admin_reviewed_by")
     .eq("id", sourceId)
     .maybeSingle();
   if (error || !data) {
@@ -7352,7 +11759,7 @@ async function markSharedSourceR2RecoveryQuarantined(source, recoveryError, repo
   console.log(`R2_RECOVERY_QUARANTINED id=${quarantineId} ${sourceLabel(source)}`);
 }
 
-async function markSharedSourceVisualCheckFailed(source, message) {
+async function markSharedSourceVisualCheckFailed(source, message, report = null) {
   const now = new Date().toISOString();
   const failures = nonNegativeInt(source.consecutive_failures, 0) + 1;
   const parsedStatus = parseHttpStatusFromMessage(message);
@@ -7394,15 +11801,34 @@ async function markSharedSourceVisualCheckFailed(source, message) {
     );
     update.admin_reviewed_at = now;
     update.admin_reviewed_by = "awardping-worker";
-    console.log(`SOURCE_REVIEW_LATER reason=${finalHygiene.reason} ${sourceLabel(source)}`);
   }
 
-  const { error } = await supabase
+  let mutation = supabase
     .from("shared_award_sources")
     .update(update)
     .eq("id", source.id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
 
   if (error) throw error;
+  if (!data) {
+    recordStaleAdminReviewPlan(report, source, "visual_check_failed");
+    return false;
+  }
+  if (finalHygiene.action === "review_later") {
+    console.log(`SOURCE_REVIEW_LATER reason=${finalHygiene.reason} ${sourceLabel(source)}`);
+  }
+  return true;
+}
+
+function recordStaleAdminReviewPlan(report, source, action) {
+  if (report) {
+    report.stale_admin_review_plans_skipped =
+      nonNegativeInt(report.stale_admin_review_plans_skipped, 0) + 1;
+  }
+  console.log(
+    `SOURCE_ADMIN_REVIEW_PLAN_STALE action=${action} source_id=${source?.id || "unknown"}; no source mutation was applied.`,
+  );
 }
 
 async function maybeUpdateSafeRedirectUrl(source, capture, now, report = null) {
@@ -7506,6 +11932,7 @@ function normalizeRedirectPath(pathname) {
 function sourcePageMetadataUpdate(source, capture) {
   const facts = capture?.baseline_facts ? normalizeBaselineFacts(capture.baseline_facts) : null;
   if (!facts) return {};
+  const protectedStage1Approval = stage1BaselineMonitoringApprovalMetadata(source);
 
   const metadata = capture.baseline_facts_metadata || {};
   const generatedAt = metadata.extracted_at || new Date().toISOString();
@@ -7527,6 +11954,7 @@ function sourcePageMetadataUpdate(source, capture) {
         baseline_facts_rejected: true,
         rejection_reason: sanity.reason,
         quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
+        ...protectedStage1Approval,
       },
       page_metadata_generated_at: generatedAt,
       page_metadata_model: metadata.model || aiModel,
@@ -7568,6 +11996,7 @@ function sourcePageMetadataUpdate(source, capture) {
       page_title: capture.page_title || null,
       baseline_facts: facts,
       baseline_facts_metadata: metadata,
+      ...protectedStage1Approval,
     },
     page_metadata_generated_at: generatedAt,
     page_metadata_model: metadata.model || aiModel,
@@ -7666,30 +12095,50 @@ function distinctiveSourceTokens(value) {
 }
 
 async function syncR2SnapshotPair(source, capture) {
+  materializeRetainedCaptureAuthority(source, capture);
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   const latestFiles = captureR2Files(capture);
-  const latestKeys = await uploadR2CaptureFiles(
+  const latestUpload = await uploadR2CaptureFiles(
     client,
     source.id,
     latestFiles,
-    immutableR2CaptureVersion(capture),
+    capture,
   );
+  const latestKeys = latestUpload.objectKeys;
+  const latestHashes = r2CaptureHashes(capture, latestUpload.artifactBindings);
+  const latestMetadata = r2CaptureMetadata(capture, latestUpload.artifactBindings);
   const history = rotatedVisualSnapshotHistory(existingRecord, latestKeys);
-  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+  const pointer = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
+    latestHashes,
+    latestMetadata,
     previousObjectKeys: history.previous_object_keys,
     previousHashes: history.previous_hashes,
     previousMetadata: history.previous_metadata,
     previousCapturedAt: history.previous_captured_at,
   });
-  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
 
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: Object.keys(history.previous_object_keys).length,
+    bucket: r2Bucket,
+    latest_captured_at: capture.captured_at,
+    latest_object_keys: latestKeys,
+    latest_hashes: latestHashes,
+    latest_metadata: latestMetadata,
+    cleanup: pointer.cleanup,
   };
+}
+
+function stage1BaselineMonitoringApprovalMetadata(source) {
+  const approval = jsonObjectOrEmpty(
+    jsonObjectOrEmpty(source?.page_metadata).stage1_baseline_monitoring_approval,
+  );
+  return Object.keys(approval).length
+    ? { stage1_baseline_monitoring_approval: approval }
+    : {};
 }
 
 async function markSharedSourceInitialDocumentQuarantined(source, capture, reason) {
@@ -7711,65 +12160,75 @@ async function markSharedSourceInitialDocumentQuarantined(source, capture, reaso
 }
 
 async function syncR2LocalizationLatest(source, capture) {
+  materializeRetainedCaptureAuthority(source, capture);
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   const latestFiles = captureR2Files(capture);
-  const latestKeys = await uploadR2CaptureFiles(
+  const latestUpload = await uploadR2CaptureFiles(
     client,
     source.id,
     latestFiles,
-    immutableR2CaptureVersion(capture),
+    capture,
   );
+  const latestKeys = latestUpload.objectKeys;
+  const latestHashes = r2CaptureHashes(capture, latestUpload.artifactBindings);
+  const latestMetadata = r2CaptureMetadata(capture, latestUpload.artifactBindings);
 
   const hadPrevious = Object.keys(jsonObjectOrEmpty(existingRecord?.previous_object_keys)).length > 0;
   const history = refreshedLatestVisualSnapshotHistory(existingRecord, {
     resetPrevious: resetPreviousSnapshot,
   });
 
-  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+  const pointer = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
+    latestHashes,
+    latestMetadata,
     previousObjectKeys: history.previous_object_keys,
     previousHashes: history.previous_hashes,
     previousMetadata: history.previous_metadata,
     previousCapturedAt: history.previous_captured_at,
   });
-  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
-
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: 0,
     previousReset: resetPreviousSnapshot && hadPrevious ? 1 : 0,
+    cleanup: pointer.cleanup,
   };
 }
 
 async function syncR2BackfillLatestOnly(source, capture) {
+  materializeRetainedCaptureAuthority(source, capture);
   const client = getR2Client();
   const existingRecord = await loadR2SnapshotRecord(source.id);
   if (Object.keys(jsonObjectOrEmpty(existingRecord?.latest_object_keys)).length) {
     return { uploaded: 0, rotated: 0, skippedExisting: true };
   }
   const latestFiles = captureR2Files(capture);
-  const latestKeys = await uploadR2CaptureFiles(
+  const latestUpload = await uploadR2CaptureFiles(
     client,
     source.id,
     latestFiles,
-    immutableR2CaptureVersion(capture),
+    capture,
   );
+  const latestKeys = latestUpload.objectKeys;
+  const latestHashes = r2CaptureHashes(capture, latestUpload.artifactBindings);
+  const latestMetadata = r2CaptureMetadata(capture, latestUpload.artifactBindings);
 
-  const staleKeys = await upsertR2SnapshotRecord(source, capture, {
+  const pointer = await upsertR2SnapshotRecord(source, capture, {
     expectedRecord: existingRecord,
     latestKeys,
+    latestHashes,
+    latestMetadata,
     previousObjectKeys: {},
     previousHashes: {},
     previousMetadata: {},
     previousCapturedAt: null,
   });
-  await Promise.all(staleKeys.map((key) => deleteR2Object(client, key)));
-
   return {
     uploaded: Object.keys(latestKeys).length,
     rotated: 0,
+    cleanup: pointer.cleanup,
   };
 }
 
@@ -7821,7 +12280,7 @@ async function loadR2SnapshotRecord(sourceId) {
   const { data, error } = await supabase
     .from("shared_award_source_visual_snapshots")
     .select(
-      "shared_award_source_id, shared_award_id, kind, bucket, source_url, latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
+      "shared_award_source_id, shared_award_id, kind, bucket, source_url, source_title, source_page_type, latest_captured_at, latest_object_keys, latest_hashes, latest_metadata, previous_captured_at, previous_object_keys, previous_hashes, previous_metadata, updated_at",
     )
     .eq("shared_award_source_id", sourceId)
     .maybeSingle();
@@ -7830,30 +12289,114 @@ async function loadR2SnapshotRecord(sourceId) {
   return data || null;
 }
 
-async function uploadR2CaptureFiles(client, sourceId, files, version) {
-  const uploaded = await Promise.all(files.map(async (file) => {
-    const key = `visual-snapshots/sources/${sourceId}/captures/${version}/${file.fileName}`;
+async function loadStage1EvidenceSchemaUpgradeR2Artifacts(pointer) {
+  const objectKeys = jsonObjectOrEmpty(pointer?.latest_object_keys);
+  if (!Object.keys(objectKeys).length) {
+    throw new Error("Stage 1 evidence-schema upgrade requires an existing authoritative R2 latest generation.");
+  }
+  const client = getR2Client();
+  const entries = await Promise.all(Object.entries(objectKeys).map(async ([role, key]) => {
+    const response = await sendR2Command(
+      client,
+      () => new GetObjectCommand({ Bucket: pointer.bucket || r2Bucket, Key: key }),
+      `get ${key}`,
+    );
+    const body = await r2ResponseBodyBuffer(response?.Body);
+    const pointerBindings = jsonObjectOrEmpty(pointer?.latest_metadata?.artifact_bindings);
+    return [role, {
+      key,
+      body,
+      content_type: cleanText(response?.ContentType) || null,
+      byte_length: Number.isSafeInteger(response?.ContentLength)
+        ? response.ContentLength
+        : body.byteLength,
+      ...(Object.hasOwn(pointerBindings, role)
+        ? { binding: pointerBindings[role] }
+        : {}),
+    }];
+  }));
+  return Object.fromEntries(entries);
+}
+
+async function r2ResponseBodyBuffer(body) {
+  if (body && typeof body.transformToByteArray === "function") {
+    return Buffer.from(await body.transformToByteArray());
+  }
+  if (body instanceof Uint8Array || Buffer.isBuffer(body)) return Buffer.from(body);
+  if (body && typeof body[Symbol.asyncIterator] === "function") {
+    const chunks = [];
+    for await (const chunk of body) chunks.push(Buffer.from(chunk));
+    return Buffer.concat(chunks);
+  }
+  throw new Error("R2 object response body is missing or unreadable.");
+}
+
+async function uploadR2CaptureFiles(client, sourceId, files, capture) {
+  const prepared = prepareR2CaptureArtifacts(files, { readFile: readFileSync });
+  const layoutClaimed = Boolean(prepared.artifactBindings.layout);
+  const retainedExpansionStateCount = Object.keys(prepared.artifactBindings)
+    .filter((slot) => /^expansion_state_[0-9]{2}$/.test(slot)).length;
+  assertR2CaptureArtifactSlots(
+    capture?.kind || "webpage",
+    prepared.artifactBindings,
+    {
+      layoutClaimed,
+      expansionStateCount: retainedExpansionStateCount,
+    },
+  );
+  assertR2CaptureArtifactIdentity(capture, prepared, { sourceId });
+  const version = immutableR2CaptureVersion(capture, prepared.artifactBindings);
+  const uploaded = await Promise.all(prepared.artifacts.map(async (artifact) => {
+    const key = `visual-snapshots/sources/${sourceId}/captures/${version}/${artifact.fileName}`;
     await sendR2Command(
       client,
       () => new PutObjectCommand({
         Bucket: r2Bucket,
         Key: key,
-        Body: readFileSync(file.path),
-        ContentType: file.contentType,
+        Body: artifact.body,
+        ContentType: artifact.contentType,
       }),
       `put ${key}`,
     );
-    return [file.name, key];
+    return [artifact.name, key];
   }));
 
-  return Object.fromEntries(uploaded);
+  return {
+    objectKeys: Object.fromEntries(uploaded),
+    artifactBindings: prepared.artifactBindings,
+  };
 }
 
-function immutableR2CaptureVersion(capture) {
+function immutableR2CaptureVersion(capture, artifactBindings) {
   return crypto.createHash("sha256").update(JSON.stringify({
     captured_at: capture?.captured_at || null,
-    hashes: r2CaptureHashes(capture),
+    hashes: r2CaptureHashes(capture, artifactBindings),
+    artifact_bindings: artifactBindings,
   })).digest("hex").slice(0, 32);
+}
+
+function buildStage1EvidenceSchemaUpgradeR2CandidatePlan(source, capture, prepared) {
+  assertR2CaptureArtifactSlots(capture.kind || "webpage", prepared.artifactBindings, {
+    layoutClaimed: Boolean(prepared.artifactBindings.layout),
+    expansionStateCount: Object.keys(prepared.artifactBindings)
+      .filter((slot) => /^expansion_state_[0-9]{2}$/.test(slot)).length,
+  });
+  assertR2CaptureArtifactIdentity(capture, prepared, { sourceId: source.id });
+  const version = immutableR2CaptureVersion(capture, prepared.artifactBindings);
+  const objectKeys = Object.fromEntries(prepared.artifacts.map((artifact) => [
+    artifact.name,
+    `visual-snapshots/sources/${source.id}/captures/${version}/${artifact.fileName}`,
+  ]));
+  return {
+    version,
+    objectKeys,
+    hashes: r2CaptureHashes(capture, prepared.artifactBindings),
+    metadata: r2CaptureMetadata(capture, prepared.artifactBindings),
+    artifactsByRole: Object.fromEntries(prepared.artifacts.map((artifact) => [
+      artifact.name,
+      artifact.body,
+    ])),
+  };
 }
 
 async function deleteR2Object(client, key) {
@@ -7871,6 +12414,48 @@ async function deleteR2Object(client, key) {
   }
 }
 
+async function uploadStage1EvidenceSchemaUpgradeImmutableObject({
+  client,
+  bucket,
+  key,
+  body,
+  contentType,
+}) {
+  const expected = Buffer.from(body);
+  try {
+    await sendR2Command(
+      client,
+      () => new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: expected,
+        ContentType: contentType,
+        IfNoneMatch: "*",
+      }),
+      `put immutable ${key}`,
+    );
+    return { status: "created", byte_length: expected.byteLength };
+  } catch (error) {
+    if (!isR2PreconditionFailed(error)) throw error;
+    const response = await sendR2Command(
+      client,
+      () => new GetObjectCommand({ Bucket: bucket, Key: key }),
+      `verify immutable ${key}`,
+    );
+    const existing = await r2ResponseBodyBuffer(response?.Body);
+    if (!existing.equals(expected)) {
+      throw new Error(`Immutable R2 object already exists with different bytes: ${key}`);
+    }
+    return { status: "already_exact", byte_length: existing.byteLength };
+  }
+}
+
+function isR2PreconditionFailed(error) {
+  const status = Number(error?.$metadata?.httpStatusCode || error?.statusCode || 0);
+  const name = cleanText(error?.name || error?.code).toLowerCase();
+  return status === 412 || name === "preconditionfailed" || name === "precondition_failed";
+}
+
 async function upsertR2SnapshotRecord(source, capture, snapshot) {
   const snapshotRow = {
     shared_award_source_id: source.id,
@@ -7882,68 +12467,473 @@ async function upsertR2SnapshotRecord(source, capture, snapshot) {
     bucket: r2Bucket,
     latest_captured_at: capture.captured_at,
     latest_object_keys: snapshot.latestKeys,
-    latest_hashes: r2CaptureHashes(capture),
-    latest_metadata: r2CaptureMetadata(capture),
+    latest_hashes: snapshot.latestHashes,
+    latest_metadata: snapshot.latestMetadata,
     previous_captured_at: snapshot.previousCapturedAt,
     previous_object_keys: snapshot.previousObjectKeys,
     previous_hashes: snapshot.previousHashes,
     previous_metadata: snapshot.previousMetadata,
     updated_at: new Date().toISOString(),
   };
-  const advanced = await advanceVisualSnapshotPointer(supabase, {
+  return reconcileVisualSnapshotPointerAdvance({
+    advance: () => advanceVisualSnapshotPointer(supabase, {
+      existing: snapshot.expectedRecord,
+      snapshot: snapshotRow,
+    }),
+    reload: () => loadR2SnapshotRecord(source.id),
+    cleanup: (keys) => cleanupCommittedR2SnapshotObjects(getR2Client(), keys),
     existing: snapshot.expectedRecord,
-    snapshot: snapshotRow,
+    proposed: snapshotRow,
+    uploaded: snapshot.latestKeys,
   });
-  if (!advanced) {
-    const current = await loadR2SnapshotRecord(source.id);
-    const orphanKeys = visualSnapshotUploadedKeysToDeleteAfterLostCas({
-      uploaded: snapshot.latestKeys,
-      current,
-    });
-    await Promise.all(orphanKeys.map((key) => deleteR2Object(getR2Client(), key)));
-    throw new Error("Visual snapshot pointer compare-and-set lost to another source writer.");
+}
+
+async function cleanupCommittedR2SnapshotObjects(client, keys) {
+  const uniqueKeys = [...new Set((keys || []).filter((key) => cleanText(key)))];
+  const settled = await Promise.allSettled(
+    uniqueKeys.map((key) => deleteR2Object(client, key)),
+  );
+  const failures = settled.flatMap((result, index) => (
+    result.status === "rejected"
+      ? [{ key: uniqueKeys[index], message: errorMessage(result.reason) }]
+      : []
+  ));
+  return {
+    attempted: uniqueKeys.length,
+    deleted: uniqueKeys.length - failures.length,
+    failed: failures.length,
+    failures,
+  };
+}
+
+function materializeRetainedCaptureAuthority(source, capture, {
+  rewriteMatchingBaseline = true,
+} = {}) {
+  if (!capture || typeof capture !== "object") {
+    throw new Error("A capture is required before retained artifact projection.");
   }
-  return visualSnapshotKeysToDeleteAfterCas({
-    pointerAdvanced: advanced,
-    existing: snapshot.expectedRecord,
-    next: snapshotRow,
+
+  const preProjectionRetainedStates = Array.isArray(capture.expansion_state_screenshots)
+    ? capture.expansion_state_screenshots
+    : [];
+  const preProjectionRetainedStateCount = preProjectionRetainedStates.length;
+  const preProjectionCoverage = capture.kind === "pdf"
+    ? null
+    : legacyExpansionStateCaptureCoverageFromMetadata({
+        ...capture,
+        expansion_state_count: preProjectionRetainedStateCount,
+        expansion_state_screenshots: preProjectionRetainedStates,
+      }, { retainedStateCount: preProjectionRetainedStateCount });
+  if (
+    capture.kind !== "pdf"
+    && hasExpansionStateCaptureCoverageClaim(capture)
+    && !preProjectionCoverage
+  ) {
+    throw new Error(
+      "Capture expansion-state coverage claim is invalid before retained artifact projection.",
+    );
+  }
+
+  const selected = projectRetainedCaptureArtifactsForMaterialization(capture, {
+    exists: existsSync,
+    identityScope: source?.id || null,
   });
+  const projection = selected.manifest;
+  const retainedStates = selected.retainedExpansionStates;
+  const coverageInput = preProjectionCoverage
+    || conservativeExpansionStateCaptureCoverage({
+      retainedStateCount: preProjectionRetainedStateCount,
+      captureLimit: preProjectionRetainedStateCount,
+    });
+  const projectedExpansionCoverage = capture.kind === "pdf"
+    ? null
+    : expansionStateCaptureCoverage(coverageInput, {
+        retainedStateCount: retainedStates.length,
+      });
+  const layoutPath = selected.layoutRetained ? capture.layout_path : null;
+  const layoutHash = selected.layoutRetained
+    ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+    : null;
+  const textGeometry = capture.kind === "pdf"
+    ? null
+    : selected.layoutRetained
+      ? capture.text_geometry
+      : unavailableR2TextGeometryReference(capture);
+  const localization = capture.kind === "pdf"
+    ? captureLocalizationMetadata(capture)
+    : selected.layoutRetained
+      ? captureLocalizationMetadata(capture)
+      : r2CaptureLocalizationMetadata(capture, { layoutRetained: false });
+
+  capture.layout_path = layoutPath;
+  capture.layout_hash = layoutHash;
+  capture.text_geometry = textGeometry;
+  capture.localization = localization;
+  capture.expansion_state_screenshots = retainedStates;
+  capture.expansion_state_count = retainedStates.length;
+  capture.expansion_state_capture_coverage = projectedExpansionCoverage;
+  if (projectedExpansionCoverage) {
+    Object.assign(
+      capture,
+      expansionStateCaptureCoverageLegacyMirrors(projectedExpansionCoverage),
+    );
+  }
+  capture.retained_artifact_projection = projection;
+  if (retainedStates.length) capture.persist_expansion_state_screenshots = true;
+
+  if (capture.meta_path && existsSync(capture.meta_path)) {
+    const metadata = readJsonIfExists(capture.meta_path);
+    if (!metadata || typeof metadata !== "object") {
+      throw new Error("Capture metadata could not be read for retained artifact projection.");
+    }
+    if (cleanText(metadata.captured_at) !== cleanText(capture.captured_at)) {
+      throw new Error("Capture metadata timestamp changed before retained artifact projection.");
+    }
+    if (
+      source?.id
+      && cleanText(metadata.source?.id)
+      && cleanText(metadata.source.id) !== cleanText(source.id)
+    ) {
+      throw new Error("Capture metadata source changed before retained artifact projection.");
+    }
+
+    const metadataStates = Array.isArray(metadata.expansion_state_screenshots)
+      ? metadata.expansion_state_screenshots
+      : [];
+    const metadataByStateId = new Map(
+      metadataStates.map((state) => [cleanText(state?.state_id), state]),
+    );
+    const projectedMetadataStates = retainedStates.map((state, index) => {
+      const existing = jsonObjectOrEmpty(metadataByStateId.get(cleanText(state?.state_id)));
+      return {
+        ...existing,
+        state_id: state.state_id || null,
+        index: Number.isSafeInteger(state.index) ? state.index : index,
+        tag: state.tag || existing.tag || null,
+        label: state.label || null,
+        captured_at: state.captured_at || existing.captured_at || capture.captured_at || null,
+        page: state.page_path ? toArchiveRelative(state.page_path) : state.page || null,
+        image_hash: state.image_hash || null,
+        layout: state.layout_path ? toArchiveRelative(state.layout_path) : state.layout || null,
+        layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+        text_geometry: state.text_geometry
+          ? textGeometryReference(state.text_geometry, state.layout_path || null)
+          : null,
+        text_hash: state.text_hash || null,
+        text_length: Number.isSafeInteger(state.text_length) ? state.text_length : null,
+        page_bytes: Number.isSafeInteger(state.page_bytes) ? state.page_bytes : null,
+        isolation: state.isolation || null,
+      };
+    });
+    const projectedMetadata = {
+      ...metadata,
+      ...(projectedExpansionCoverage
+        ? expansionStateCaptureCoverageLegacyMirrors(projectedExpansionCoverage)
+        : {}),
+      layout_hash: layoutHash,
+      text_geometry: textGeometry
+        ? textGeometryReference(textGeometry, layoutPath)
+        : null,
+      localization,
+      expansion_state_count: projectedMetadataStates.length,
+      expansion_state_screenshots: projectedMetadataStates,
+      expansion_state_capture_coverage: projectedExpansionCoverage,
+      retained_artifact_projection: projection,
+      files: {
+        ...jsonObjectOrEmpty(metadata.files),
+        layout: layoutPath ? toArchiveRelative(layoutPath) : null,
+        expansion_states: projectedMetadataStates.map((state) => ({
+          state_id: state.state_id,
+          label: state.label,
+          page: state.page,
+          layout: state.layout,
+        })),
+      },
+      ...(capture.baseline_facts !== undefined
+        ? { baseline_facts: capture.baseline_facts }
+        : {}),
+      ...(capture.baseline_facts_metadata !== undefined
+        ? { baseline_facts_metadata: capture.baseline_facts_metadata }
+        : {}),
+      ...(capture.monitoring_disposition !== undefined
+        ? { monitoring_disposition: capture.monitoring_disposition }
+        : {}),
+      ...(capture.stage1_baseline_activation !== undefined
+        ? { stage1_baseline_activation: capture.stage1_baseline_activation }
+        : {}),
+      ...(capture.stage1_evidence_schema_upgrade !== undefined
+        ? { stage1_evidence_schema_upgrade: capture.stage1_evidence_schema_upgrade }
+        : {}),
+    };
+    atomicWriteJson(capture.meta_path, projectedMetadata);
+  }
+
+  if (rewriteMatchingBaseline && source?.id) {
+    rewriteMatchingBaselineRetainedProjection(source, capture, projection);
+  }
+  return projection;
+}
+
+function rewriteMatchingBaselineRetainedProjection(source, capture, projection) {
+  const baselinePath = baselinePathForSource(source.id);
+  const baseline = readJsonIfExists(baselinePath);
+  const baselineMeta = cleanText(jsonObjectOrEmpty(baseline?.capture).meta).replace(/\\/g, "/");
+  const captureMeta = capture.meta_path
+    ? cleanText(toArchiveRelative(capture.meta_path)).replace(/\\/g, "/")
+    : "";
+  if (!baselineMatchesRetainedProjectionCapture({
+    sourceId: source.id,
+    baseline,
+    capture,
+    baselineMetaPath: baselineMeta,
+    captureMetaPath: captureMeta,
+  })) return false;
+
+  const projected = {
+    ...baseline,
+    layout_hash: capture.layout_hash || null,
+    text_geometry: projection.authoritative?.layout_retained && capture.text_geometry
+      ? textGeometryReference(capture.text_geometry, capture.layout_path || null)
+      : null,
+    capture: {
+      ...jsonObjectOrEmpty(baseline.capture),
+      layout: capture.layout_path ? toArchiveRelative(capture.layout_path) : null,
+      expansion_states: (capture.expansion_state_screenshots || []).map((state) => ({
+        state_id: state.state_id || null,
+        index: state.index,
+        label: state.label || null,
+        captured_at: state.captured_at || null,
+        image_hash: state.image_hash || null,
+        layout_hash: state.layout_hash || state.text_geometry?.geometry_hash || null,
+        isolation: state.isolation || null,
+        page: state.page_path ? toArchiveRelative(state.page_path) : state.page || null,
+        layout: state.layout_path ? toArchiveRelative(state.layout_path) : state.layout || null,
+      })),
+    },
+    summary_metadata: {
+      ...jsonObjectOrEmpty(baseline.summary_metadata),
+      expansion_state_capture_coverage: capture.expansion_state_capture_coverage || null,
+      retained_artifact_projection: projection,
+    },
+  };
+  atomicWriteJson(baselinePath, projected);
+  localBaselineEvidenceCache.set(source.id, true);
+  return true;
 }
 
 function captureR2Files(capture) {
-  const files = [];
-  const addIfPresent = (name, fileName, path, contentType) => {
-    if (!path || !existsSync(path)) return;
-    files.push({ name, fileName, path, contentType });
-  };
+  return collectR2CaptureArtifactFiles(capture, { exists: existsSync });
+}
 
-  addIfPresent("page", "page.jpg", capture.page_path, "image/jpeg");
-  addIfPresent("thumb", "thumb.jpg", capture.thumb_path, "image/jpeg");
-  addIfPresent("pdf", "document.pdf", capture.pdf_path, "application/pdf");
-  addIfPresent("text", "text.txt", capture.text_path, "text/plain; charset=utf-8");
-  addIfPresent("layout", "layout.json", capture.layout_path, "application/json; charset=utf-8");
-  addIfPresent("meta", "meta.json", capture.meta_path, "application/json; charset=utf-8");
-  if (capture.persist_expansion_state_screenshots) {
-    for (const [index, state] of (capture.expansion_state_screenshots || []).entries()) {
-      addIfPresent(
-        `expansion_state_${String(index + 1).padStart(2, "0")}`,
-        `expansion-state-${String(index + 1).padStart(2, "0")}.jpg`,
-        state.page_path,
-        "image/jpeg",
-      );
-      addIfPresent(
-        `expansion_state_${String(index + 1).padStart(2, "0")}_layout`,
-        `expansion-state-${String(index + 1).padStart(2, "0")}-layout.json`,
-        state.layout_path,
-        "application/json; charset=utf-8",
-      );
-    }
+function stage1EvidenceSchemaUpgradeLegacyCaptureFiles(capture) {
+  if (capture?.kind === "pdf") {
+    return [
+      { name: "pdf", fileName: "document.pdf", path: capture.pdf_path, contentType: "application/pdf" },
+      { name: "text", fileName: "text.txt", path: capture.text_path, contentType: "text/plain; charset=utf-8" },
+      { name: "meta", fileName: "meta.json", path: capture.meta_path, contentType: "application/json; charset=utf-8" },
+    ];
   }
-
+  const files = [
+    { name: "page", fileName: "page.jpg", path: capture?.page_path, contentType: "image/jpeg" },
+    { name: "thumb", fileName: "thumb.jpg", path: capture?.thumb_path, contentType: "image/jpeg" },
+    { name: "text", fileName: "text.txt", path: capture?.text_path, contentType: "text/plain; charset=utf-8" },
+  ];
+  if (capture?.layout_path) {
+    files.push({
+      name: "layout",
+      fileName: "layout.json",
+      path: capture.layout_path,
+      contentType: "application/json; charset=utf-8",
+    });
+  }
+  for (const [index, state] of (capture?.expansion_state_screenshots || []).entries()) {
+    const suffix = String(index + 1).padStart(2, "0");
+    files.push(
+      {
+        name: `expansion_state_${suffix}`,
+        fileName: `expansion-state-${suffix}.jpg`,
+        path: state.page_path,
+        contentType: "image/jpeg",
+      },
+      {
+        name: `expansion_state_${suffix}_layout`,
+        fileName: `expansion-state-${suffix}-layout.json`,
+        path: state.layout_path,
+        contentType: "application/json; charset=utf-8",
+      },
+    );
+  }
+  files.push({
+    name: "meta",
+    fileName: "meta.json",
+    path: capture?.meta_path,
+    contentType: "application/json; charset=utf-8",
+  });
   return files;
 }
 
-function r2CaptureHashes(capture) {
+function prepareStage1EvidenceSchemaUpgradeCaptureArtifacts(capture, { legacy = false } = {}) {
+  if (capture?.source?.id === STAGE1_SCHWARZMAN_PDF_RECOVERY_SOURCE_ID) {
+    assertStage1SchwarzmanPdfRecoveryCandidateNotFenced({
+      archiveRoot,
+      sourceId: capture.source.id,
+      capturedAt: capture.captured_at,
+      candidateDir: capture.dir,
+      textPath: capture.text_path,
+      metadataPath: capture.meta_path,
+    });
+  }
+  const files = legacy
+    ? stage1EvidenceSchemaUpgradeLegacyCaptureFiles(capture)
+    : captureR2Files(capture);
+  if (files.some((file) => !file?.path || !existsSync(file.path))) {
+    throw new Error(
+      `Stage 1 evidence-schema-upgrade ${legacy ? "legacy" : "prospective"} artifact set is incomplete.`,
+    );
+  }
+  return prepareR2CaptureArtifacts(files, { readFile: readFileSync });
+}
+
+function applyStage1SchwarzmanPdfRecoveryToCandidate({
+  source,
+  capture,
+  recovery,
+}) {
+  const receipt = jsonObjectOrEmpty(recovery?.evidence);
+  const recoveryIdentity = jsonObjectOrEmpty(receipt.recovery);
+  const prospectiveIdentity = jsonObjectOrEmpty(receipt.prospective_observation);
+  const authorizedMutation = jsonObjectOrEmpty(
+    receipt.authorized_local_candidate_mutation,
+  );
+  if (
+    source?.id !== STAGE1_SCHWARZMAN_PDF_RECOVERY_SOURCE_ID
+    || recovery?.applies !== true
+    || recovery?.accepted !== true
+    || receipt.status !== "accepted"
+    || receipt.source_id !== source.id
+    || recoveryIdentity.mode
+      !== "replace_new_generation_parser_text_with_exact_sealed_intake_text"
+    || recoveryIdentity.same_pdf_bytes_verified !== true
+    || recoveryIdentity.legacy_and_recovered_text_equal !== false
+    || authorizedMutation.scope !== "new_uncommitted_capture_generation_only"
+    || authorizedMutation.captured_at !== capture?.captured_at
+    || JSON.stringify(authorizedMutation.roles) !== JSON.stringify(["text", "meta"])
+    || authorizedMutation.authoritative !== false
+  ) {
+    throw Object.assign(
+      new Error("The candidate PDF text recovery is not an exact accepted Schwarzman receipt."),
+      { code: "pdf_text_recovery_receipt_not_accepted" },
+    );
+  }
+
+  const recoveredText = String(recovery.recovered_text ?? "");
+  const recoveredTextBytes = Buffer.from(recovery.recovered_text_bytes || []);
+  const recoveredTextHash = hashText(recoveredText);
+  const candidatePreimages =
+    loadStage1SchwarzmanPdfRecoveryCandidatePreimages({
+      archiveRoot,
+      sourceId: source.id,
+      capturedAt: capture.captured_at,
+      candidateDir: capture.dir,
+      textPath: capture.text_path,
+      metadataPath: capture.meta_path,
+    });
+  const currentParserTextBytes = candidatePreimages.text_bytes;
+  const currentParserMetadataBytes = candidatePreimages.metadata_bytes;
+  if (
+    !recoveredText
+    || recoveredTextHash !== recoveryIdentity.recovered_text_sha256
+    || recoveredText.length !== recoveryIdentity.recovered_text_length
+    || hashBuffer(recoveredTextBytes)
+      !== recoveryIdentity.recovered_text_object_sha256
+    || recoveredTextBytes.byteLength
+      !== recoveryIdentity.recovered_text_object_bytes
+    || !recoveredTextBytes.equals(Buffer.from(`${recoveredText}\n`, "utf8"))
+    || prospectiveIdentity.captured_at !== capture.captured_at
+    || prospectiveIdentity.pdf_sha256 !== capture.file_hash
+    || prospectiveIdentity.pdf_bytes !== capture.file_bytes
+    || prospectiveIdentity.parser_text_sha256 !== capture.text_hash
+    || prospectiveIdentity.parser_text_length !== capture.text_length
+    || prospectiveIdentity.parser_text_object_sha256
+      !== hashBuffer(currentParserTextBytes)
+    || prospectiveIdentity.parser_text_object_bytes
+      !== currentParserTextBytes.byteLength
+    || prospectiveIdentity.parser_metadata_object_sha256
+      !== hashBuffer(currentParserMetadataBytes)
+    || prospectiveIdentity.parser_metadata_object_bytes
+      !== currentParserMetadataBytes.byteLength
+  ) {
+    throw Object.assign(
+      new Error("The recovered text bytes or pre-recovery parser identity changed after verification."),
+      { code: "pdf_text_recovery_candidate_identity_changed" },
+    );
+  }
+
+  let metadata = null;
+  try {
+    metadata = JSON.parse(currentParserMetadataBytes.toString("utf8"));
+  } catch {
+    // The exact producer gate already parsed these bytes; any intervening
+    // mutation is a hard failure before the candidate generation is changed.
+  }
+  if (
+    !metadata
+    || metadata.kind !== "pdf"
+    || metadata.source?.id !== source.id
+    || metadata.captured_at !== capture.captured_at
+    || metadata.final_url !== receipt.final_url
+    || metadata.file_hash !== capture.file_hash
+    || metadata.file_bytes !== capture.file_bytes
+    || metadata.text_hash !== capture.text_hash
+    || metadata.text_length !== capture.text_length
+  ) {
+    throw Object.assign(
+      new Error("The candidate metadata changed after the exact recovery proof."),
+      { code: "pdf_text_recovery_candidate_metadata_changed" },
+    );
+  }
+
+  const recoveredMetadata = {
+    ...metadata,
+    text_hash: recoveredTextHash,
+    text_length: recoveredText.length,
+    stage1_pdf_text_recovery: receipt,
+  };
+  const recoveredMetadataBytes = Buffer.from(
+    `${JSON.stringify(recoveredMetadata, null, 2)}\n`,
+    "utf8",
+  );
+  commitStage1SchwarzmanPdfRecoveryCandidateFiles({
+    archiveRoot,
+    sourceId: source.id,
+    capturedAt: capture.captured_at,
+    candidateDir: capture.dir,
+    textPath: capture.text_path,
+    metadataPath: capture.meta_path,
+    nextTextBytes: recoveredTextBytes,
+    nextMetadataBytes: recoveredMetadataBytes,
+    expectedTextPreimageSha256:
+      prospectiveIdentity.parser_text_object_sha256,
+    expectedTextPreimageBytes:
+      prospectiveIdentity.parser_text_object_bytes,
+    expectedMetadataPreimageSha256:
+      prospectiveIdentity.parser_metadata_object_sha256,
+    expectedMetadataPreimageBytes:
+      prospectiveIdentity.parser_metadata_object_bytes,
+  });
+  Object.assign(capture, {
+    text: recoveredText,
+    text_hash: recoveredTextHash,
+    text_length: recoveredText.length,
+    stage1_pdf_text_recovery: receipt,
+  });
+  return receipt;
+}
+
+function r2CaptureHashes(capture, artifactBindings = {}) {
+  const retainedLayoutHash = artifactBindings.layout
+    ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+    : null;
   return {
     image_hash: capture.image_hash || null,
     text_hash: capture.text_hash || null,
@@ -7951,36 +12941,60 @@ function r2CaptureHashes(capture) {
     main_content_hash: capture.main_content_hash || null,
     nav_header_footer_hash: capture.nav_header_footer_hash || null,
     expansion_hash: capture.expansion_hash || null,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
+    layout_hash: retainedLayoutHash,
     file_hash: capture.file_hash || null,
   };
 }
 
-function r2CaptureMetadata(capture) {
+function r2CaptureMetadata(capture, artifactBindings) {
+  const retainedProjection = projectRetainedCaptureArtifacts(capture, {
+    exists: existsSync,
+    artifactBindings,
+  });
+  const layoutRetained = retainedProjection.layoutRetained;
+  const retainedExpansionStates = retainedProjection.retainedExpansionStates;
+  const retainedTextGeometry = layoutRetained
+    ? textGeometryReference(capture.text_geometry, capture.layout_path)
+    : unavailableR2TextGeometryReference(capture);
   return {
+    artifact_bindings_schema: r2CaptureArtifactBindingsSchema,
+    artifact_bindings: artifactBindings,
+    retained_artifact_projection: retainedProjection.manifest,
     capture_profile: capture.capture_profile || null,
     final_url: capture.final_url || null,
     page_title: capture.page_title || null,
     status_code: capture.status_code || null,
     status_text: capture.status_text || null,
     content_type: capture.content_type || null,
+    stage1_baseline_activation: capture.stage1_baseline_activation || null,
+    stage1_evidence_schema_upgrade: capture.stage1_evidence_schema_upgrade || null,
     text_length: capture.text_length || 0,
+    // text_hash is calculated from the semantic UTF-8 text, while the retained
+    // text.txt object intentionally carries one trailing newline. Persist the
+    // raw object length so release recovery can verify the stored bytes and
+    // then apply that single, explicit normalization before checking text_hash.
+    text_object_bytes:
+      artifactBindings?.text?.byte_length || null,
     body_text_length: capture.body_text_length || 0,
     main_content_text_length: capture.main_content_text_length || 0,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || 0,
     expansion_text_length: capture.expansion_text_length || 0,
-    file_bytes: capture.file_bytes || null,
-    page_bytes: capture.page_bytes || null,
-    thumb_bytes: capture.thumb_bytes || null,
+    file_bytes: artifactBindings?.pdf?.byte_length || capture.file_bytes || null,
+    page_bytes: artifactBindings?.page?.byte_length || capture.page_bytes || null,
+    thumb_bytes: artifactBindings?.thumb?.byte_length || capture.thumb_bytes || null,
     dimensions: capture.dimensions || null,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
-    text_geometry: capture.text_geometry
-      ? textGeometryReference(capture.text_geometry, capture.layout_path)
+    layout_hash: layoutRetained
+      ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
       : null,
+    text_geometry: retainedTextGeometry,
     page_count: capture.page_count || null,
-    expansion_state_count: capture.expansion_state_screenshots?.length || 0,
+    expansion_state_capture_coverage:
+      capture.kind === "pdf"
+        ? null
+        : capture.expansion_state_capture_coverage || null,
+    expansion_state_count: retainedExpansionStates.length,
     expansion_state_screenshots:
-      capture.expansion_state_screenshots?.map((state) => ({
+      retainedExpansionStates.map((state, index) => ({
         state_id: state.state_id || null,
         label: state.label,
         image_hash: state.image_hash,
@@ -7990,14 +13004,73 @@ function r2CaptureMetadata(capture) {
           : null,
         text_hash: state.text_hash,
         text_length: state.text_length,
-        page_bytes: state.page_bytes,
+        page_bytes:
+          artifactBindings?.[`expansion_state_${String(index + 1).padStart(2, "0")}`]
+            ?.byte_length || state.page_bytes,
         isolation: state.isolation || null,
-      })) || [],
+      })),
     pdf_text_error: capture.pdf_text_error || null,
     baseline_facts: capture.baseline_facts || null,
     baseline_facts_metadata: capture.baseline_facts_metadata || null,
     monitoring_disposition: capture.monitoring_disposition || null,
-    localization: capture.localization || captureLocalizationMetadata(capture),
+    localization: r2CaptureLocalizationMetadata(capture, { layoutRetained }),
+  };
+}
+
+function unavailableR2TextGeometryReference(capture) {
+  if (capture.kind === "pdf" || !capture.text_geometry) return null;
+  const reference = textGeometryReference(capture.text_geometry, null) || {};
+  const unavailable = unavailableR2Localization(capture);
+  return {
+    ...reference,
+    status: unavailable.status === "unavailable"
+      || unavailable.status.startsWith("unavailable_")
+      ? unavailable.status
+      : "unavailable_retained_geometry_verification",
+    unavailable_reason: unavailable.unavailable_reason,
+    geometry_hash: null,
+    node_count: 0,
+    run_count: 0,
+    screenshot: reference.screenshot
+      ? { ...reference.screenshot, image_hash: null, image_ref: null }
+      : null,
+    file: null,
+  };
+}
+
+function r2CaptureLocalizationMetadata(capture, { layoutRetained = false } = {}) {
+  if (capture.kind === "pdf") return captureLocalizationMetadata(capture);
+  if (layoutRetained) return captureLocalizationMetadata(capture);
+  return {
+    ...captureLocalizationMetadata(capture),
+    ...unavailableR2Localization(capture),
+    exact: false,
+    accounted_for: true,
+    geometry_ready: false,
+    geometry_hash: null,
+    bound_image_hash: null,
+  };
+}
+
+function unavailableR2Localization(capture) {
+  const geometry = jsonObjectOrEmpty(capture.text_geometry);
+  const existing = jsonObjectOrEmpty(capture.localization);
+  const geometryStatus = cleanText(geometry.availability_status);
+  const existingStatus = cleanText(existing.status);
+  const allowedExistingStatus = existingStatus.startsWith("unavailable_")
+    || ["capture_layout_unavailable", "evidence_only_geometry_unavailable"].includes(
+      existingStatus,
+    );
+  return {
+    status: geometryStatus.startsWith("unavailable_")
+      ? geometryStatus
+      : allowedExistingStatus
+        ? existingStatus
+        : "evidence_only_geometry_unavailable",
+    unavailable_reason:
+      cleanText(geometry.unavailable_reason)
+      || cleanText(existing.unavailable_reason)
+      || "Exact screenshot geometry did not pass the retained localization contract.",
   };
 }
 
@@ -8007,28 +13080,30 @@ function captureLocalizationMetadata(capture) {
   const dimensions = jsonObjectOrEmpty(capture.dimensions);
   const textGeometry = jsonObjectOrEmpty(capture.text_geometry);
   const geometryScreenshot = jsonObjectOrEmpty(textGeometry.screenshot);
+  const geometryAvailabilityStatus = cleanText(textGeometry.availability_status);
+  const geometryExplicitlyUnavailable = geometryAvailabilityStatus.startsWith("unavailable_");
   const hasLayoutSample = Boolean(cleanText(pageSettle.after_layout_sample));
   const hasScrollHeight = Boolean(
     nonNegativeNumber(dimensions.scroll_height, 0) ||
       nonNegativeNumber(after.scroll_height, 0),
   );
-  const geometryReady = Boolean(
-    cleanText(textGeometry.geometry_hash) &&
-      cleanText(geometryScreenshot.image_hash) &&
-      nonNegativeNumber(textGeometry.run_count, 0) > 0,
-  );
+  const geometryReady = isR2CaptureGeometryReady(capture);
   const repairAttempted = cleanText(capture.capture_profile) === "localization-repair";
   return {
     status: capture.kind === "pdf"
       ? "not_applicable_pdf"
       : geometryReady
         ? "geometry_ready"
-        : repairAttempted
-          ? "capture_layout_unavailable"
-          : "metadata_missing",
+        : geometryExplicitlyUnavailable
+          ? geometryAvailabilityStatus
+          : repairAttempted
+            ? "capture_layout_unavailable"
+            : "metadata_missing",
     exact: false,
-    accounted_for: capture.kind === "pdf" || geometryReady || repairAttempted,
+    accounted_for:
+      capture.kind === "pdf" || geometryReady || repairAttempted || geometryExplicitlyUnavailable,
     geometry_ready: geometryReady,
+    unavailable_reason: cleanText(textGeometry.unavailable_reason) || null,
     geometry_hash: cleanText(textGeometry.geometry_hash) || null,
     bound_image_hash: cleanText(geometryScreenshot.image_hash) || null,
     semantic_crop_contract: "visual-exact-text-binding-v2",
@@ -8761,10 +13836,13 @@ function copyEvidenceFiles(targetDir, previous, capture) {
   );
 }
 
-function writeBaseline(source, capture, details) {
+function writeBaseline(source, capture, details, options = {}) {
+  const persist = options.persist !== false;
   const baselinePath = baselinePathForSource(source.id);
-  mkdirSync(dirname(baselinePath), { recursive: true });
-  const existingBaseline = readJsonIfExists(baselinePath);
+  if (persist) mkdirSync(dirname(baselinePath), { recursive: true });
+  const existingBaseline = Object.hasOwn(options, "existingBaseline")
+    ? options.existingBaseline
+    : readJsonIfExists(baselinePath);
   const existingCapturedAt = Date.parse(String(existingBaseline?.captured_at || ""));
   const candidateCapturedAt = Date.parse(String(capture?.captured_at || ""));
   if (
@@ -8774,7 +13852,31 @@ function writeBaseline(source, capture, details) {
   ) {
     return false;
   }
+  if (details.baseline_facts !== undefined) {
+    capture.baseline_facts = details.baseline_facts;
+  }
+  if (details.baseline_facts_metadata !== undefined) {
+    capture.baseline_facts_metadata = details.baseline_facts_metadata;
+  }
+  if (details.monitoring_disposition !== undefined) {
+    capture.monitoring_disposition = details.monitoring_disposition;
+  }
+  if (details.stage1_baseline_activation !== undefined) {
+    capture.stage1_baseline_activation = details.stage1_baseline_activation;
+  }
+  const retainedArtifactProjection = materializeRetainedCaptureAuthority(source, capture, {
+    rewriteMatchingBaseline: persist,
+  });
+  if (capture.expansion_state_screenshots?.length) {
+    // Expansion screenshots are part of the baseline used to localize wording
+    // inside accordions. A baseline must never reference files that cleanup
+    // later treats as transient.
+    capture.persist_expansion_state_screenshots = true;
+  }
   const existingSummary = existingBaseline?.summary_metadata || {};
+  const baselineUpdatedAt = options.updatedAt
+    ? new Date(options.updatedAt).toISOString()
+    : new Date().toISOString();
   const baseline = {
     version: 1,
     kind: capture.kind || "webpage",
@@ -8793,8 +13895,10 @@ function writeBaseline(source, capture, details) {
     expansion_hash: capture.expansion_hash || null,
     expandable_sections_hash: capture.expandable_sections_hash || null,
     image_hash: capture.image_hash,
-    layout_hash: capture.layout_hash || capture.text_geometry?.geometry_hash || null,
-    text_geometry: capture.text_geometry
+    layout_hash: retainedArtifactProjection.authoritative?.layout_retained
+      ? capture.layout_hash || capture.text_geometry?.geometry_hash || null
+      : null,
+    text_geometry: retainedArtifactProjection.authoritative?.layout_retained && capture.text_geometry
       ? textGeometryReference(capture.text_geometry, capture.layout_path)
       : null,
     file_hash: capture.file_hash || null,
@@ -8803,7 +13907,7 @@ function writeBaseline(source, capture, details) {
     body_text_length: capture.body_text_length || null,
     main_content_text_length: capture.main_content_text_length || null,
     nav_header_footer_text_length: capture.nav_header_footer_text_length || null,
-    expansion_text_length: capture.expansion_text_length || null,
+    expansion_text_length: capture.expansion_text_length ?? null,
     section_text_length: capture.section_text_length || null,
     expandable_sections: Array.isArray(capture.expandable_sections) ? capture.expandable_sections : [],
     dimensions: capture.dimensions,
@@ -8833,7 +13937,7 @@ function writeBaseline(source, capture, details) {
     },
     summary_metadata: {
       reason: details.reason,
-      updated_at: new Date().toISOString(),
+      updated_at: baselineUpdatedAt,
       ai_provider: aiProvider,
       ai_model: aiModel,
       previous_baseline: details.previous_baseline
@@ -8858,11 +13962,53 @@ function writeBaseline(source, capture, details) {
         existingSummary.baseline_facts_metadata ||
         null,
       monitoring_disposition: details.monitoring_disposition || null,
+      stage1_baseline_activation:
+        details.stage1_baseline_activation
+        || capture.stage1_baseline_activation
+        || existingSummary.stage1_baseline_activation
+        || null,
+      stage1_evidence_schema_upgrade:
+        details.stage1_evidence_schema_upgrade
+        || capture.stage1_evidence_schema_upgrade
+        || null,
+      expansion_state_capture_coverage:
+        capture.kind === "pdf"
+          ? null
+          : capture.expansion_state_capture_coverage || null,
+      retained_artifact_projection: retainedArtifactProjection,
     },
   };
+  if (!persist) return baseline;
   atomicWriteJson(baselinePath, baseline);
   localBaselineEvidenceCache.set(source.id, true);
   return true;
+}
+
+function buildBaselineRecord(source, capture, details, options = {}) {
+  const baseline = writeBaseline(source, capture, details, {
+    ...options,
+    persist: false,
+  });
+  if (!baseline || typeof baseline !== "object") {
+    throw new Error("Stage 1 evidence-schema upgrade candidate baseline is older than the retained baseline.");
+  }
+  return baseline;
+}
+
+function serializedJsonBytes(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function atomicWriteBytes(path, value) {
+  if (value === null) {
+    rmSync(path, { force: true });
+    return;
+  }
+  const bytes = Buffer.from(value);
+  mkdirSync(dirname(path), { recursive: true });
+  const tempPath = `${path}.tmp-${process.pid}-${crypto.randomUUID()}`;
+  writeFileSync(tempPath, bytes);
+  renameSync(tempPath, path);
 }
 
 function readBaselineEvidence(baseline) {
@@ -8882,12 +14028,34 @@ function baselineEvidenceStatus(baseline) {
   const r2LocalizationStatus = String(
     baseline.summary_metadata?.r2_local_rehydration?.localization_status || "",
   ).trim();
+  const retainedProjection = jsonObjectOrEmpty(
+    baseline.summary_metadata?.retained_artifact_projection,
+  );
+  const retainedProjectionAuthority = jsonObjectOrEmpty(retainedProjection.authoritative);
+  const retainedProjectionValid = Boolean(
+    retainedProjection.schema === retainedCaptureArtifactProjectionSchema
+    && retainedProjection.kind === kind
+    && typeof retainedProjectionAuthority.layout_retained === "boolean"
+    && Number.isSafeInteger(retainedProjectionAuthority.expansion_state_count)
+    && retainedProjectionAuthority.expansion_state_count >= 0,
+  );
+  const retainedProjectionMainUnavailable = Boolean(
+    kind === "webpage"
+    && retainedProjectionValid
+    && retainedProjectionAuthority.layout_retained === false
+    && !baseline.layout_hash
+    && !baseline.text_geometry
+    && !capture.layout,
+  );
   const mainGeometryIntentionallyUnavailable =
-    r2LocalizationStatus === "evidence_only_geometry_unavailable";
-  const expansionGeometryIntentionallyIncomplete = new Set([
-    "evidence_only_geometry_unavailable",
-    "evidence_only_expansion_geometry_incomplete",
-  ]).has(r2LocalizationStatus);
+    r2LocalizationStatus === "evidence_only_geometry_unavailable"
+    || retainedProjectionMainUnavailable;
+  const expansionGeometryIntentionallyIncomplete =
+    r2LocalizationStatus === "evidence_only_expansion_geometry_incomplete"
+    || (
+      r2LocalizationStatus === "evidence_only_geometry_unavailable"
+      && !retainedProjectionValid
+    );
   const captureExpansionStates = Array.isArray(capture.expansion_states)
     ? capture.expansion_states
     : [];
@@ -8928,6 +14096,9 @@ function baselineEvidenceStatus(baseline) {
   const meta = paths.metaPath && existsSync(paths.metaPath)
     ? readJsonIfExists(paths.metaPath)
     : null;
+  const capturedLocalizationStatus = String(
+    meta?.localization?.status || baseline.localization?.status || "",
+  ).trim();
   const metadataExpansionStates = Array.isArray(meta?.expansion_state_screenshots)
     ? meta.expansion_state_screenshots
     : [];
@@ -8945,7 +14116,31 @@ function baselineEvidenceStatus(baseline) {
       baseline.summary_metadata.r2_local_rehydration.expected_expansion_states >= 0
       ? baseline.summary_metadata.r2_local_rehydration.expected_expansion_states
       : 0,
+    retainedProjectionValid
+      ? retainedProjectionAuthority.expansion_state_count
+      : 0,
   );
+  if (
+    retainedProjectionMainUnavailable
+    && (
+      meta?.layout_hash
+      || meta?.files?.layout
+      || meta?.text_geometry?.geometry_hash
+      || meta?.text_geometry?.file
+      || meta?.text_geometry?.screenshot?.image_hash
+      || meta?.localization?.geometry_hash
+      || meta?.localization?.bound_image_hash
+      || meta?.localization?.geometry_ready === true
+    )
+  ) {
+    missing.push("retained_projection_layout_conflict");
+  }
+  if (
+    retainedProjectionValid
+    && meta?.retained_artifact_projection?.schema !== retainedCaptureArtifactProjectionSchema
+  ) {
+    missing.push("retained_projection_meta_missing");
+  }
   if (kind !== "pdf" && !expansionGeometryIntentionallyIncomplete) {
     for (let index = 0; index < expectedExpansionStateCount; index += 1) {
       const state = paths.expansionStateScreenshots[index];
@@ -8963,8 +14158,97 @@ function baselineEvidenceStatus(baseline) {
   return {
     ok: true,
     kind,
-    localizationStatus: r2LocalizationStatus || "exact_geometry_available",
+    localizationStatus: r2LocalizationStatus || retainedProjection.localization_status || (
+      capturedLocalizationStatus && capturedLocalizationStatus !== "geometry_ready"
+        ? capturedLocalizationStatus
+        : "exact_geometry_available"
+    ),
     ...paths,
+  };
+}
+
+function readRetainedBaselineLayout(path) {
+  if (!path || !existsSync(path)) return null;
+  const candidate = resolve(path);
+  if (!isPathInside(candidate, archiveRoot)) return null;
+  try {
+    const stats = lstatSync(candidate);
+    if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    const retainedRoot = realpathSync(archiveRoot);
+    const retainedPath = realpathSync(candidate);
+    if (!isPathInside(retainedPath, retainedRoot)) return null;
+    const value = readJsonIfExists(retainedPath);
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hydrateRetainedBaselineGeometry(evidence, meta) {
+  const compactReference = (value) => {
+    const geometry = jsonObjectOrEmpty(value);
+    return Object.keys(geometry).length
+      ? textGeometryReference(geometry, null)
+      : null;
+  };
+  const metadataStates = Array.isArray(meta?.expansion_state_screenshots)
+    ? meta.expansion_state_screenshots
+    : [];
+  const expansionStateScreenshots = (evidence.expansionStateScreenshots || [])
+    .map((retainedState, index) => {
+      const retainedStateId = cleanText(retainedState?.state_id);
+      const metadataState = jsonObjectOrEmpty(
+        metadataStates.find((state) => (
+          retainedStateId && cleanText(state?.state_id) === retainedStateId
+        )) || metadataStates[index],
+      );
+      const retainedLayout = readRetainedBaselineLayout(retainedState?.layout_path);
+      const textLength = Number.isSafeInteger(metadataState.text_length)
+        ? metadataState.text_length
+        : Number.isSafeInteger(retainedState?.text_length)
+          ? retainedState.text_length
+          : null;
+      const pageBytes = Number.isSafeInteger(metadataState.page_bytes)
+        ? metadataState.page_bytes
+        : Number.isSafeInteger(retainedState?.page_bytes)
+          ? retainedState.page_bytes
+          : null;
+      return {
+        ...retainedState,
+        ...metadataState,
+        state_id: cleanText(metadataState.state_id || retainedState?.state_id) || null,
+        index: Number.isSafeInteger(metadataState.index)
+          ? metadataState.index
+          : Number.isSafeInteger(retainedState?.index)
+            ? retainedState.index
+            : index,
+        label: cleanText(metadataState.label || retainedState?.label) || null,
+        captured_at:
+          cleanText(metadataState.captured_at || retainedState?.captured_at) || null,
+        image_hash: cleanText(metadataState.image_hash || retainedState?.image_hash) || null,
+        layout_hash:
+          cleanText(
+            metadataState.layout_hash
+            || retainedState?.layout_hash
+            || retainedLayout?.geometry_hash,
+          ) || null,
+        text_geometry:
+          retainedLayout || compactReference(metadataState.text_geometry),
+        text_hash: cleanText(metadataState.text_hash || retainedState?.text_hash) || null,
+        text_length: textLength,
+        page_bytes: pageBytes,
+        isolation: metadataState.isolation || retainedState?.isolation || null,
+        page_path: retainedState?.page_path || null,
+        layout_path: retainedState?.layout_path || null,
+      };
+    });
+  return {
+    textGeometry:
+      readRetainedBaselineLayout(evidence.layoutPath)
+      || compactReference(meta?.text_geometry),
+    expansionStateScreenshots,
   };
 }
 
@@ -8974,6 +14258,7 @@ function captureFromBaseline(baseline) {
   if (!evidence.ok) return null;
 
   const meta = evidence.meta || {};
+  const retainedGeometry = hydrateRetainedBaselineGeometry(evidence, meta);
   return {
     ...meta,
     kind: evidence.kind,
@@ -8987,7 +14272,8 @@ function captureFromBaseline(baseline) {
     sections_text_path: evidence.sectionsTextPath,
     sections_json_path: evidence.sectionsJsonPath,
     layout_path: evidence.layoutPath,
-    expansion_state_screenshots: evidence.expansionStateScreenshots,
+    text_geometry: retainedGeometry.textGeometry,
+    expansion_state_screenshots: retainedGeometry.expansionStateScreenshots,
     meta_path: evidence.metaPath,
     text: evidence.text,
     captured_at: baseline.captured_at || meta.captured_at || null,
@@ -9330,12 +14616,74 @@ async function attachSourceAcquisitions(sources) {
       throw new Error(describeSupabaseError(error, "load immutable source acquisition provenance"));
     }
     for (const acquisition of data || []) {
-      acquisitionsBySourceId.set(acquisition.shared_award_source_id, acquisition);
+      const existing = acquisitionsBySourceId.get(acquisition.shared_award_source_id);
+      const exactStage1Activation = isStage1BaselineActivationAcquisition(acquisition);
+      const existingExactStage1Activation = isStage1BaselineActivationAcquisition(existing);
+      if (
+        exactStage1Activation
+        && existingExactStage1Activation
+        && existing.id !== acquisition.id
+      ) {
+        throw new Error(
+          `Multiple exact Stage 1 baseline activation acquisitions exist for source ${acquisition.shared_award_source_id}.`,
+        );
+      }
+      if (exactStage1Activation || !existingExactStage1Activation) {
+        acquisitionsBySourceId.set(acquisition.shared_award_source_id, acquisition);
+      }
     }
   }
   return (sources || []).map((source) => ({
     ...source,
     source_acquisition: acquisitionsBySourceId.get(source.id) || null,
+  }));
+}
+
+async function attachStage1SourceActivationFinalizations(sources) {
+  const sourceIds = (sources || []).map((source) => source?.id);
+  assertExactStage1EvidenceSchemaUpgradeSourceIds(
+    sourceIds,
+    "finalization lookup source IDs",
+  );
+  const { data, error } = await supabase.rpc(
+    "get_stage1_source_activation_finalizations",
+    { p_source_ids: sourceIds },
+  );
+  if (error) {
+    throw new Error(describeSupabaseError(
+      error,
+      "load exact Stage 1 activation finalization receipts",
+    ));
+  }
+  const rows = Array.isArray(data) ? data : [];
+  const expectedKeys = [
+    "source_acquisition_id",
+    "shared_award_source_id",
+    "source_page_request_id",
+    "disposition_item_sha256",
+    "prepare_receipt_sha256",
+    "guard_sha256",
+    "observed_normalized_text_sha256",
+    "persistence_evidence",
+    "finalization_receipt_sha256",
+    "receipt",
+    "finalized_at",
+  ].sort();
+  if (
+    rows.length !== sourceIds.length
+    || rows.some((row, index) => (
+      row?.shared_award_source_id !== sourceIds[index]
+      || JSON.stringify(Object.keys(jsonObjectOrEmpty(row)).sort())
+        !== JSON.stringify(expectedKeys)
+    ))
+  ) {
+    throw new Error(
+      "Stage 1 activation finalization getter did not return one exact ordered receipt per reviewed source.",
+    );
+  }
+  return sources.map((source, index) => ({
+    ...source,
+    source_activation_finalization: rows[index],
   }));
 }
 
@@ -9353,11 +14701,21 @@ async function loadSourcesByIds(pageLimit) {
 
 function filterMonitorableSourcesForCapture(sources, { logRejected = true } = {}) {
   if (initialOfficialDocumentMaterialization) return sources;
+  if (stage1EvidenceSchemaUpgrade) return sources;
 
   const accepted = [];
   const rejected = new Map();
 
   for (const source of sources) {
+    if (isExactHeldR2RepairTarget({
+      source,
+      sourceIdFilter,
+      r2SnapshotSync,
+      r2RepairMissingSnapshots,
+    })) {
+      accepted.push(source);
+      continue;
+    }
     const decision = aiReviewEvidenceCapture
       ? sourceQualityDecision(source, { purpose: "discovery" })
       : sourceQualityDecision(source, { purpose: "monitoring" });
@@ -9446,6 +14804,27 @@ function needsCaptureBehaviorRefresh(baseline, capture) {
   if (baselineKind === "pdf" || captureKind === "pdf") return false;
   const baselineVersion = Number(baseline.capture_behavior_version || 0);
   return !Number.isFinite(baselineVersion) || baselineVersion < captureBehaviorVersion;
+}
+
+function captureBehaviorRefreshContentIsUnchanged(baseline, capture) {
+  const requiredHashFields = [
+    "text_hash",
+    "body_text_hash",
+    "main_content_hash",
+    "nav_header_footer_hash",
+    "expansion_hash",
+    "expandable_sections_hash",
+    "image_hash",
+  ];
+  return requiredHashFields.every((field) => {
+    const baselineHash = baseline?.[field];
+    const captureHash = capture?.[field];
+    return (
+      typeof baselineHash === "string" &&
+      /^[0-9a-f]{64}$/.test(baselineHash) &&
+      captureHash === baselineHash
+    );
+  });
 }
 
 function orderSourcesForBaselineCoverage(sources) {
@@ -9598,13 +14977,15 @@ function buildSourcesQuery(sourceIds = []) {
   let query = supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
-    )
-    .eq("shared_awards.status", "active");
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, last_hash, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, updated_at, shared_awards!inner(id, name, status, official_homepage)",
+    );
+  if (!stage1EvidenceSchemaUpgrade) {
+    query = query.eq("shared_awards.status", "active");
+  }
 
   // Exact operator repair is allowed to address one quarantined source. Broad
   // and file-based scans must continue excluding review_later sources.
-  if (!sourceIdFilter) {
+  if (!sourceIdFilter && !stage1EvidenceSchemaUpgrade) {
     query = query.eq("admin_review_status", "open");
   }
 
@@ -9620,7 +15001,10 @@ function buildSourcesQuery(sourceIds = []) {
       .order("created_at", { ascending: true });
   }
 
-  if (!includeNotDue) {
+  // An explicit source repair/check is an operator-scoped command, not a
+  // scheduler dequeue. Do not silently turn it into a zero-row load merely
+  // because that source's normal next_check_at is in the future or null.
+  if (!includeNotDue && !sourceIdFilter && !stage1EvidenceSchemaUpgrade) {
     query = query.lte("next_check_at", new Date().toISOString());
   }
   if (sourceIdFilter) {
@@ -9664,10 +15048,12 @@ async function startWorkerRun(report) {
 async function finishWorkerRun(runId, status, errorMessageValue, report) {
   if (!runId) return;
 
+  const persistedStatus = visualRunTerminalDisposition(report, status).worker_status;
+
   const { error } = await supabase
     .from("local_worker_runs")
     .update({
-      status,
+      status: persistedStatus,
       checked_count: report.checked,
       changed_count: report.ai_true_changes,
       unchanged_count: report.unchanged,
@@ -9682,11 +15068,74 @@ async function finishWorkerRun(runId, status, errorMessageValue, report) {
 
   if (error) {
     if (isMissingMetadataColumnError(error)) {
-      await finishWorkerRunWithoutMetadata(runId, status, errorMessageValue, report);
+      await finishWorkerRunWithoutMetadata(runId, persistedStatus, errorMessageValue, report);
       return;
     }
     console.log(`WORKER RUN LOG FAILED | ${error.message}`);
   }
+}
+
+async function insertStage1EvidenceSchemaUpgradeReviewedApplyAuditRun(row) {
+  const { data, error } = await supabase
+    .from("local_worker_runs")
+    .insert(row)
+    .select(stage1EvidenceSchemaUpgradeReviewedApplyAuditProjection)
+    .maybeSingle();
+  if (error) {
+    throw new Error(describeSupabaseError(
+      error,
+      "insert dedicated Stage 1 reviewed exact-one apply audit",
+    ));
+  }
+  return data ?? null;
+}
+
+async function readStage1EvidenceSchemaUpgradeReviewedApplyAuditRun({ run_id: runId }) {
+  const { data, error } = await supabase
+    .from("local_worker_runs")
+    .select(stage1EvidenceSchemaUpgradeReviewedApplyAuditProjection)
+    .eq("id", runId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(describeSupabaseError(
+      error,
+      "read dedicated Stage 1 reviewed exact-one apply audit",
+    ));
+  }
+  return data ?? null;
+}
+
+async function updateStage1EvidenceSchemaUpgradeReviewedApplyAuditRun({
+  guard,
+  patch,
+}) {
+  const { data, error } = await supabase
+    .from("local_worker_runs")
+    .update(patch)
+    .eq("id", guard.id)
+    .eq("worker_name", guard.worker_name)
+    .eq("status", guard.status)
+    .contains("metadata", {
+      audit_mode: STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_AUDIT_MODE,
+      phase: "running",
+      execution_nonce: guard.execution_nonce,
+      metadata_sha256: guard.running_metadata_sha256,
+      binding: {
+        plan: {
+          file_sha256: guard.plan_file_sha256,
+          self_sha256: guard.plan_sha256,
+        },
+      },
+    })
+    .select(stage1EvidenceSchemaUpgradeReviewedApplyAuditProjection)
+    .maybeSingle();
+  if (error) {
+    throw new Error(describeSupabaseError(
+      error,
+      "finish dedicated Stage 1 reviewed exact-one apply audit",
+    ));
+  }
+  return data ?? null;
 }
 
 async function maybeUpdateBaselineCoverageProgress(runId, report, sources) {
@@ -9733,7 +15182,7 @@ function buildAuthoritativeSourceInventoryQuery() {
   return supabase
     .from("shared_award_sources")
     .select(
-      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
+      "id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, admin_review_note, admin_reviewed_at, admin_reviewed_by, last_checked_at, next_check_at, consecutive_failures, last_error, created_at, shared_awards!inner(id, name, status, official_homepage)",
     )
     .eq("shared_awards.status", "active")
     .eq("admin_review_status", "open")
@@ -9985,6 +15434,7 @@ function visualWorkerMetadata(report) {
       safe_redirect_url_updates: report.safe_redirect_url_updates,
       safe_redirect_url_update_skipped: report.safe_redirect_url_update_skipped,
       safe_redirect_url_update_failed: report.safe_redirect_url_update_failed,
+      stale_admin_review_plans_skipped: report.stale_admin_review_plans_skipped,
       pdf_checked: report.pdf_checked,
       pdf_unchanged: report.pdf_unchanged,
       pdf_changed: report.pdf_changed,
@@ -10035,8 +15485,11 @@ function visualWorkerMetadata(report) {
       r2_rotated: report.r2_rotated,
       r2_previous_snapshots_reset: report.r2_previous_snapshots_reset,
       r2_failed: report.r2_failed,
+      r2_cleanup_failed: report.r2_cleanup_failed,
+      r2_cleanup_debt: report.r2_cleanup_debt,
       r2_skipped_existing: report.r2_skipped_existing,
       r2_repaired_missing: report.r2_repaired_missing,
+      r2_forced_refreshes: report.r2_forced_refreshes,
       r2_known_existing: report.r2_known_existing,
       r2_known_missing: report.r2_known_missing,
       r2_rehydrate_local_cache: report.r2_rehydrate_local_cache,
@@ -10063,6 +15516,20 @@ function visualWorkerMetadata(report) {
       baseline_facts_failed: report.baseline_facts_failed,
       baseline_facts_skipped: report.baseline_facts_skipped,
       baseline_facts_backfilled: report.baseline_facts_backfilled,
+      stage1_baseline_activation_binding_verified:
+        report.stage1_baseline_activation_binding_verified,
+      stage1_baseline_activation_comparison_captures:
+        report.stage1_baseline_activation_comparison_captures,
+      stage1_baseline_activation_prepared: report.stage1_baseline_activation_prepared,
+      stage1_baseline_activation_verified: report.stage1_baseline_activation_verified,
+      stage1_baseline_activation_quarantined: report.stage1_baseline_activation_quarantined,
+      stage1_baseline_activation_quarantine_failed:
+        report.stage1_baseline_activation_quarantine_failed,
+      stage1_baseline_activation_server_receipt_failed:
+        report.stage1_baseline_activation_server_receipt_failed,
+      stage1_baseline_activation_finalization_failed:
+        report.stage1_baseline_activation_finalization_failed,
+      stage1_baseline_activation_reasons: report.stage1_baseline_activation_reasons,
       visual_interpreted: report.visual_interpreted,
       visual_review_mode: report.visual_review_mode,
       visual_review_candidates_queued: report.visual_review_candidates_queued,
@@ -10233,6 +15700,7 @@ function parseHttpStatusFromMessage(message) {
 
 function failureTypeFromMessage(message, statusCode) {
   const lower = String(message || "").toLowerCase();
+  if (lower.includes("capture_resource_limit")) return "capture_resource_limit";
   if (statusCode === 404 || lower.includes("http 404")) return "http_404";
   if (lower.includes("security_challenge") || lower.includes("robot challenge")) return "security_challenge";
   if (lower.includes("soft_404") || lower.includes("page not found")) return "soft_404";
@@ -10264,21 +15732,26 @@ async function fetchProbe(url, method) {
   }
 
   try {
-    const response = await fetch(url, {
+    const fetched = await fetchPublicHttpResponse(url, {
       method,
-      redirect: "follow",
       signal: controller.signal,
       headers,
+    }, {
+      maxRedirects: 5,
     });
-
-    return {
-      status_code: response.status || null,
-      status_text: response.statusText || null,
-      final_url: response.url || url,
-      content_type: response.headers.get("content-type") || null,
-      content_length: numericHeader(response.headers.get("content-length")),
-      probe_error: null,
-    };
+    try {
+      return {
+        status_code: fetched.response.status || null,
+        status_text: fetched.response.statusText || null,
+        final_url: fetched.url.toString(),
+        content_type: fetched.response.headers.get("content-type") || null,
+        content_length: numericHeader(fetched.response.headers.get("content-length")),
+        probe_error: null,
+      };
+    } finally {
+      await fetched.response.body?.cancel().catch(() => null);
+      await fetched.close().catch(() => null);
+    }
   } finally {
     clearTimeout(timeout);
   }
@@ -10350,7 +15823,9 @@ async function launchBrowser() {
       "--disable-background-networking",
       "--disable-background-timer-throttling",
       "--disable-renderer-backgrounding",
+      "--disable-quic",
       "--disable-features=Translate,AutofillServerCommunication,MediaRouter",
+      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
       "--mute-audio",
     ],
   };
@@ -10380,13 +15855,17 @@ async function launchBrowser() {
   }
 }
 
-async function createBrowserContext(browser) {
+async function createBrowserContext(browser, networkProxy = null) {
   const context = await browser.newContext({
+    proxy: networkProxy
+      ? { server: networkProxy.url, bypass: "<-loopback>" }
+      : undefined,
     viewport: { width: viewportWidth, height: viewportHeight },
     userAgent: crawlerUserAgent,
     locale: "en-US",
     colorScheme: "light",
-    ignoreHTTPSErrors: true,
+    ignoreHTTPSErrors: false,
+    serviceWorkers: "block",
     deviceScaleFactor: 1,
     extraHTTPHeaders: {
       "Accept-Language": "en-US,en;q=0.9",
@@ -10408,15 +15887,53 @@ async function createBrowserContext(browser) {
   });
 
   await context.route("**/*", async (route) => {
-    const url = route.request().url().toLowerCase();
+    const rawUrl = route.request().url();
+    const url = rawUrl.toLowerCase();
     if (/(doubleclick|googlesyndication|google-analytics|googletagmanager|adservice|adsystem|facebook\.net|hotjar|intercom|drift|crisp|optimizely|segment\.io)/i.test(url)) {
       await route.abort().catch(() => null);
       return;
     }
+    let protocol = "";
+    try {
+      protocol = new URL(rawUrl).protocol;
+    } catch {
+      await route.abort().catch(() => null);
+      return;
+    }
+    if (!["http:", "https:", "data:", "blob:"].includes(protocol)) {
+      await route.abort().catch(() => null);
+      return;
+    }
+    // Every HTTP(S) request continues through the source-scoped pinned proxy so
+    // private literals, private DNS answers, and unsafe redirect targets are
+    // recorded against this capture instead of disappearing as aborted noise.
+    // Chromium fails the request if that proxy becomes unavailable.
     await route.continue().catch(() => null);
   });
 
+  context.on("page", (page) => {
+    page.on("requestfailed", (request) => {
+      const errorText = request.failure()?.errorText || "";
+      if (!isBrowserTransportSecurityFailure(errorText)) return;
+      networkProxy?.recordBrowserPolicyViolation?.({
+        kind: "browser_transport_security_refusal",
+        reason: "browser_transport_security_refusal",
+        url: request.url(),
+      });
+    });
+  });
+
   return context;
+}
+
+function isBrowserTransportSecurityFailure(errorText) {
+  const normalized = String(errorText || "").toUpperCase();
+  return [
+    "ERR_CERT_",
+    "ERR_SSL_",
+    "ERR_TLS_",
+    "ERR_INSECURE_RESPONSE",
+  ].some((fragment) => normalized.includes(fragment));
 }
 
 function findInstalledBrowserExecutable() {
@@ -12415,11 +17932,7 @@ function aiRequirementOptions() {
     r2SnapshotSync,
     r2RepairMissingSnapshots,
     r2BackfillBaselines,
-    sourceQualityMode:
-      args["source-quality-mode"] ||
-      args["source-quality-ai-mode"] ||
-      env.AWARDPING_SOURCE_QUALITY_MODE ||
-      env.AWARDPING_SOURCE_QUALITY_AI_MODE,
+    sourceQualityMode,
   };
 }
 
@@ -12704,6 +18217,57 @@ function loadSourceIdsFilter(value) {
   }
 }
 
+function loadStage1EvidenceSchemaUpgradeManifest(value) {
+  if (!value) {
+    throw new Error(
+      "Stage 1 evidence-schema upgrade requires --source-ids-file with the exact reviewed-nine manifest.",
+    );
+  }
+  const path = isAbsolute(value) ? value : resolve(root, value);
+  if (!existsSync(path)) {
+    throw new Error(`Stage 1 evidence-schema-upgrade manifest does not exist: ${path}`);
+  }
+  return validateStage1EvidenceSchemaUpgradeManifest(readFileSync(path, "utf8"));
+}
+
+function loadStage1EvidenceSchemaUpgradeReviewedApplyAuthority({
+  planFile,
+  expectedPlanFileSha256,
+  reportFile,
+  manifest,
+  now,
+}) {
+  const planPath = resolveRequiredStage1ReviewedFile(
+    planFile,
+    "reviewed exact-one apply plan",
+  );
+  const reportPath = resolveRequiredStage1ReviewedFile(
+    reportFile,
+    "reviewed dry-run report",
+  );
+  const checked = validateStage1EvidenceSchemaUpgradeReviewedApplyPlan({
+    planBytes: readFileSync(planPath),
+    expectedPlanFileSha256: cleanText(expectedPlanFileSha256),
+    reportBytes: readFileSync(reportPath),
+    manifest,
+    now,
+  });
+  return Object.freeze({
+    checked,
+    plan_path: planPath,
+    report_path: reportPath,
+    expected_plan_file_sha256: checked.plan_file_sha256,
+  });
+}
+
+function resolveRequiredStage1ReviewedFile(value, label) {
+  const text = cleanText(value);
+  if (!text) throw new Error(`Stage 1 ${label} path is required.`);
+  const path = isAbsolute(text) ? text : resolve(root, text);
+  if (!existsSync(path)) throw new Error(`Stage 1 ${label} does not exist: ${path}`);
+  return path;
+}
+
 function parseArgs(values) {
   const parsed = {};
   for (let index = 0; index < values.length; index += 1) {
@@ -12762,6 +18326,15 @@ function boolArg(value, fallback) {
   if (["true", "1", "yes", "y"].includes(normalized)) return true;
   if (["false", "0", "no", "n"].includes(normalized)) return false;
   return fallback;
+}
+
+function strictBoolArg(value, fallback, label) {
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const normalized = String(value).trim().toLowerCase();
+  if (["true", "1", "yes", "y"].includes(normalized)) return true;
+  if (["false", "0", "no", "n"].includes(normalized)) return false;
+  throw new Error(`${label} must be true or false.`);
 }
 
 function listArg(value, fallback = []) {
@@ -12829,7 +18402,156 @@ function errorMessage(error) {
 }
 
 function isSourceTimeoutError(error) {
-  return error?.code === "AWARDPING_SOURCE_TIMEOUT";
+  return errorChainHasCode(error, "AWARDPING_SOURCE_TIMEOUT");
+}
+
+function captureVisualSnapshotsHelp() {
+  return [
+    "AwardPing visual snapshot worker",
+    "",
+    "Usage:",
+    "  node scripts/capture-visual-snapshots.mjs [options]",
+    "",
+    "Safety:",
+    "  --help                     Print this text and exit without loading runtime configuration or starting a run.",
+    "  --source-id=<uuid>         Restrict the run to one exact source.",
+    "  --source-ids-file=<path>   Restrict the run to an allowlisted source-ID file.",
+    "  --stage1-evidence-schema-upgrade=true",
+    "                             Use the isolated reviewed-nine evidence upgrade path.",
+    "  --stage1-evidence-schema-upgrade-dry-run=true",
+    "                             Capture and validate fully, but make zero remote or baseline mutations.",
+    "  --stage1-evidence-schema-upgrade-dry-run=false",
+    "                             Apply only one separately reviewed source; never runs the sequential exact-nine apply path.",
+    "  --stage1-evidence-schema-upgrade-reviewed-apply-plan-file=<path>",
+    "  --stage1-evidence-schema-upgrade-reviewed-apply-plan-sha256=<64hex>",
+    "  --stage1-evidence-schema-upgrade-reviewed-dry-run-report-file=<path>",
+    "                             Required together for apply; bind the exact reviewed report, plan bytes, selected source, baseline, pointer, and eight deferred sources.",
+    "  --all=true                 Required: evaluate the indivisible reviewed-nine set regardless of schedule.",
+    "  --capture-profile=baseline-rich",
+    "  --section-extraction-profile=baseline-rich",
+    "  --max-expansion-state-screenshots=24",
+    "                             Required: retain the full reviewed capture/evidence profile.",
+    "  --source-quality-mode=deterministic",
+    "  --web-concurrency=1        Required: use deterministic sequential capture.",
+    "  --gemini-api-max-calls=0   Disable paid Gemini calls for the run.",
+    "  --visual-review-mode=none  Disable visual-review interpretation.",
+    "  --r2-snapshot-sync=true    Require immutable R2 snapshot synchronization.",
+    "",
+    "Stage 1 dry-run requires the exact reviewed-nine manifest; apply retains that parent authority but executes only the plan-selected exact source.",
+    "Churchill and Luce remain quarantined. Deferred reviewed sources are never captured or mutated by exact-one apply.",
+    "This command performs work unless --help is supplied. Use a reviewed launcher or an exact source allowlist.",
+  ].join("\n");
+}
+
+function createSourcePhaseDeadline(milliseconds, message) {
+  const baseTimeoutMs = Math.max(1, Number(milliseconds) || 1);
+  let baseRemainingMs = baseTimeoutMs;
+  let timer = null;
+  let armedAt = 0;
+  let activePhase = null;
+  let rejectTimeout = null;
+  let timedOut = false;
+  let settled = false;
+
+  const timeoutPromise = new Promise((_, reject) => {
+    rejectTimeout = reject;
+  });
+
+  const clearTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    armedAt = 0;
+  };
+
+  const arm = (durationMs, timeoutMessage, phaseName) => {
+    clearTimer();
+    const boundedDurationMs = Math.max(1, Math.floor(Number(durationMs) || 1));
+    armedAt = Date.now();
+    timer = setTimeout(() => {
+      timedOut = true;
+      const error = new Error(timeoutMessage);
+      error.code = "AWARDPING_SOURCE_TIMEOUT";
+      error.timeout_phase = phaseName;
+      error.timeout_ms = boundedDurationMs;
+      rejectTimeout(error);
+    }, boundedDurationMs);
+  };
+
+  const consumeBaseTime = () => {
+    if (activePhase || !armedAt) return;
+    baseRemainingMs = Math.max(0, baseRemainingMs - (Date.now() - armedAt));
+  };
+
+  return {
+    async run(operation, {
+      onTimeout = null,
+      settleAfterTimeout = false,
+    } = {}) {
+      if (typeof operation !== "function") {
+        throw new Error("Source deadline requires an operation callback.");
+      }
+      arm(baseRemainingMs, message, "source");
+      const guarded = Promise.resolve()
+        .then(operation)
+        .catch((error) => {
+          if (timedOut) return null;
+          throw error;
+        })
+        .finally(() => {
+          settled = true;
+          clearTimer();
+        });
+      try {
+        return await Promise.race([guarded, timeoutPromise]);
+      } catch (error) {
+        if (timedOut && settleAfterTimeout) {
+          if (typeof onTimeout === "function") {
+            try {
+              await onTimeout(error);
+            } catch {
+              // Preserve the authoritative timeout while still awaiting the
+              // now-aborted capture task below.
+            }
+          }
+          await guarded.catch(() => null);
+        }
+        throw error;
+      }
+    },
+
+    beginPhase({ name, timeoutMs: phaseTimeoutMs, message: phaseMessage }) {
+      if (settled || timedOut || activePhase || !(Number(phaseTimeoutMs) > 0)) return () => {};
+      consumeBaseTime();
+      if (baseRemainingMs <= 0) {
+        arm(1, message, "source");
+        return () => {};
+      }
+      const phase = { name: String(name || "phase") };
+      activePhase = phase;
+      arm(phaseTimeoutMs, phaseMessage, phase.name);
+      let ended = false;
+      return () => {
+        if (ended) return;
+        ended = true;
+        if (activePhase !== phase) return;
+        clearTimer();
+        activePhase = null;
+        if (!settled && !timedOut) arm(baseRemainingMs, message, "source");
+      };
+    },
+
+    expired() {
+      return timedOut;
+    },
+  };
+}
+
+function isCaptureNetworkBoundaryError(error) {
+  return [
+    "AWARDPING_PROXY_SETTLE_TIMEOUT",
+    "AWARDPING_CAPTURE_CONTEXT_SHUTDOWN",
+    "AWARDPING_CAPTURE_PROXY_SHUTDOWN",
+  ].some((code) => errorChainHasCode(error, code));
 }
 
 function isBrowserClosedError(error) {

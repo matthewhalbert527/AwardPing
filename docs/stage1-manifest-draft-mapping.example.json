@@ -1,0 +1,473 @@
+{
+  "schema_version": "awardping.stage1.human-review-root.v1",
+  "policy_version": "stage1-publication-v1",
+  "review": {
+    "reviewed_by": "operator@example.edu",
+    "reviewed_at": "2026-07-17T18:15:00.000Z",
+    "reason": "Human review of the exact Marshall role, source, fact, and candidate choices for the 2027 cycle.",
+    "selection_method": "explicit_human_review",
+    "auto_accept_ranked_candidates": false,
+    "materialize_candidates": false
+  },
+  "cohorts": [
+    {
+      "cohort_key": "marshall",
+      "canonical_award": {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "search_key": "marshall scholarship",
+        "name": "Marshall Scholarship",
+        "official_homepage": "https://www.marshallscholarship.org/"
+      },
+      "public_facts": {
+        "overview": "Exact human-reviewed public overview placeholder."
+      },
+      "field_choices": [
+        {
+          "field_name": "overview",
+          "composition_method": "direct_exact",
+          "candidate_ids": [
+            "50000000-0000-4000-8000-000000000001"
+          ],
+          "candidate_evidence": [
+            {
+              "candidate_id": "50000000-0000-4000-8000-000000000001",
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "evidence_quote": "Exact human-reviewed public overview placeholder.",
+              "evidence_location": "main content",
+              "capture_text_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "capture_text_object_key": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt"
+            }
+          ]
+        }
+      ],
+      "roles": [
+        {
+          "source_role": "identity_home",
+          "manifest_status": "present",
+          "official": true,
+          "supporting_text": "The exact official Marshall homepage identifies the program and supplies the reviewed overview candidate.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": [
+            "50000000-0000-4000-8000-000000000001"
+          ]
+        },
+        {
+          "source_role": "eligibility",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: the operator found no separately publishable eligibility fact in this example bundle.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        },
+        {
+          "source_role": "application_materials",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: no application-materials candidate is selected in this minimal example.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        },
+        {
+          "source_role": "dates_cycle",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: no cycle-date candidate is selected in this minimal example.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        },
+        {
+          "source_role": "funding",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: no funding candidate is selected in this minimal example.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        },
+        {
+          "source_role": "faq",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: no FAQ candidate is selected in this minimal example.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        },
+        {
+          "source_role": "selection_interviews",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: no interview candidate is selected in this minimal example.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        },
+        {
+          "source_role": "current_documents",
+          "manifest_status": "not_published",
+          "official": true,
+          "supporting_text": "Placeholder only: no current document candidate is selected in this minimal example.",
+          "cycle": "2027",
+          "sources": [
+            {
+              "source_id": "33333333-3333-4333-8333-333333333333",
+              "source_url": "https://www.marshallscholarship.org/",
+              "official_identity": {
+                "host": "www.marshallscholarship.org",
+                "classification": "canonical_program_host",
+                "evidence_url": "https://www.marshallscholarship.org/",
+                "reviewed_reason": "This is the exact configured canonical program homepage."
+              },
+              "last_checked_at": "2026-07-17T18:00:00.000Z",
+              "snapshot": {
+                "captured_at": "2026-07-01T18:00:00.000Z",
+                "object_keys": {
+                  "page": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/page.jpg",
+                  "thumb": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/thumb.jpg",
+                  "text": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/text.txt",
+                  "meta": "visual-snapshots/sources/33333333-3333-4333-8333-333333333333/captures/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/meta.json"
+                },
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                },
+                "metadata": {
+                  "page_bytes": 1024,
+                  "text_object_bytes": 513,
+                  "text_length": 512
+                }
+              },
+              "r2": {
+                "verified_at": "2026-07-01T18:05:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              },
+              "local": {
+                "verified_at": "2026-07-01T18:06:00.000Z",
+                "hashes": {
+                  "image_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "text_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                }
+              }
+            }
+          ],
+          "fact_candidate_ids": []
+        }
+      ]
+    }
+  ]
+}

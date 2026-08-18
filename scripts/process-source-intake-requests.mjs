@@ -16,6 +16,7 @@ import {
   normalizeSourceIntakeUrl,
   parseJsonObject,
   persistSourceIntakeFactCandidates,
+  sourceIntakeCaptureDisposition,
   sourceLikeFromIntake,
   sourceQualityForIntakeSource,
   shouldCreateNewAwardFromIntake,
@@ -54,16 +55,39 @@ import {
   POST_RETENTION_CAPTURE_PERSISTENCE_UNVERIFIED_REASON,
   persistPostRetentionCaptureFailure,
   requiresFirstObservationArtifactRetention,
-  retainFirstObservationIntakePdfArtifact,
+  retainFirstObservationIntakeArtifact,
   resumeFirstObservationIntakeArtifactRetention,
   serializableRetainedCaptureMetadata,
   validateRetainedIntakeArtifactManifest,
 } from "./lib/intake-artifact-retention.mjs";
 import {
+  buildSourceIntakeProviderInputBinding,
+  buildSourceIntakeProviderResultBinding,
+  isSourceIntakeProviderBindingError,
+  validateSourceIntakeProviderInputBinding,
+  validateSourceIntakeProviderReplayBinding,
+} from "./lib/source-intake-provider-binding.mjs";
+import {
   INITIAL_OFFICIAL_DOCUMENT_SCOPE,
   initialOfficialDocumentPublicationDecision,
 } from "./lib/initial-official-document.mjs";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import {
+  isApprovedLowCoverageSourceActivation,
+  isLowCoverageSourceBackfillRequest,
+  requiresManualBackfillSourceActivation,
+  validateApprovedBackfillActivationReplay,
+  SOURCE_BACKFILL_APPROVAL_CLAIM_REASON,
+  SOURCE_BACKFILL_APPROVAL_PREFLIGHT_FAILURE_REASON,
+  SOURCE_BACKFILL_APPROVAL_REQUEST_REASON,
+  SOURCE_BACKFILL_MANUAL_STATUS_REASON,
+} from "./lib/source-backfill-intake.mjs";
+import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
+import { sourceMonitoringRestoreMarker } from "./lib/source-quality.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+  destroySupabaseServiceTransport,
+} from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -195,6 +219,7 @@ const report = {
   stale_capture_requests_requeued: 0,
   stale_reconcile_claims_requeued: 0,
   stale_free_reconciliation_claims_requeued: 0,
+  stale_backfill_activation_claims_requeued: 0,
   stale_matching_requests_failed_closed: 0,
   needs_manual_review: 0,
   matched_existing_awards: 0,
@@ -205,6 +230,9 @@ const report = {
   source_acquisitions_baseline_only: 0,
   source_acquisitions_manual_review: 0,
   live_first_capture_preflight_manual_review: 0,
+  live_first_capture_server_downgrade_quarantined: 0,
+  live_first_capture_server_downgrade_review_state_preserved: 0,
+  stale_admin_review_plans_skipped: 0,
   initial_document_materialization_attempted: 0,
   initial_document_materialization_subprocess_started: 0,
   initial_document_materialization_candidate_existing: 0,
@@ -222,6 +250,9 @@ const report = {
   reconciliation_only_retries_loaded: 0,
   reconciliation_only_retries_completed: 0,
   reconciliation_only_retries_failed: 0,
+  backfill_activation_approvals_loaded: 0,
+  backfill_activation_approvals_completed: 0,
+  backfill_activation_approvals_failed: 0,
   fact_candidates_inserted: 0,
   awards_queued_for_reconciliation: 0,
   rejected: 0,
@@ -274,13 +305,17 @@ try {
     throw error;
   }
 } finally {
-  clearTimeout(hardBudgetTimer);
-  report.finished_at = new Date().toISOString();
-  writeReport();
-  const workerStatus = reportStatusSucceeded(report.status) ? "succeeded" : "failed";
-  await syncWorkerRun(workerStatus, workerStatus === "succeeded" ? null : reportFailureMessage());
-  if (workerStatus === "failed") process.exitCode = 1;
-  console.log(`SOURCE_INTAKE_REPORT ${reportPath}`);
+  try {
+    clearTimeout(hardBudgetTimer);
+    report.finished_at = new Date().toISOString();
+    writeReport();
+    const workerStatus = reportStatusSucceeded(report.status) ? "succeeded" : "failed";
+    await syncWorkerRun(workerStatus, workerStatus === "succeeded" ? null : reportFailureMessage());
+    if (workerStatus === "failed") process.exitCode = 1;
+    console.log(`SOURCE_INTAKE_REPORT ${reportPath}`);
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }
 
 async function capturePendingRequests() {
@@ -330,29 +365,47 @@ async function processRequestedReconciliationRetries() {
     .from("source_page_requests")
     .select("*")
     .eq("status", "ai_review_succeeded")
-    .eq("status_reason", "manual_reconciliation_retry_requested")
+    .in("status_reason", [
+      "manual_reconciliation_retry_requested",
+      SOURCE_BACKFILL_APPROVAL_REQUEST_REASON,
+    ])
     .is("worker_run_id", null)
     .order("updated_at", { ascending: true })
     .limit(limit);
   if (error) throw new Error(`Load reconciliation-only source intake retries failed: ${error.message}`);
-  report.reconciliation_only_retries_loaded += (data || []).length;
+  const requestedRows = data || [];
+  report.reconciliation_only_retries_loaded += requestedRows.filter(
+    (row) => row.status_reason === "manual_reconciliation_retry_requested",
+  ).length;
+  report.backfill_activation_approvals_loaded += requestedRows.filter(
+    (row) => row.status_reason === SOURCE_BACKFILL_APPROVAL_REQUEST_REASON,
+  ).length;
 
-  for (const requested of data || []) {
+  for (const requested of requestedRows) {
     if (!hasTimeBudget("reconciliation_only_retry")) break;
+    const backfillApproval = requested.status_reason === SOURCE_BACKFILL_APPROVAL_REQUEST_REASON;
+    const requestedReason = requested.status_reason;
+    const claimReason = backfillApproval
+      ? SOURCE_BACKFILL_APPROVAL_CLAIM_REASON
+      : "manual_reconciliation_retry_claimed_no_charge";
     let claimed = null;
     try {
       const capture = captureFromRow(requested);
-      const retainedArtifact = validateRetainedIntakeArtifactManifest(capture.retained_artifact, {
-        requestId: requested.id,
-        fileHash: capture.capture_file_hash,
-        finalUrl: capture.canonical_url || capture.final_url,
-        requireR2Verified: true,
-      });
       const storedReview = objectValue(requested.ai_review);
       if (cleanNullable(storedReview.status) !== "accepted") {
         throw new Error("Reconciliation-only retry requires a stored accepted AI review.");
       }
-      if (!retainedArtifact.r2_verified_at) {
+      const replayBinding = validateSourceIntakeProviderReplayBinding({
+        request: requested,
+        capture,
+        deterministicReview: objectValue(requested.deterministic_review),
+        storedReview,
+        rawResult: storedReview.raw,
+      });
+      const replayCapture = backfillApproval
+        ? validateApprovedBackfillActivationReplay(requested, capture, storedReview)
+        : replayBinding.capture;
+      if (!backfillApproval && !replayCapture.retained_artifact?.r2_verified_at) {
         throw new Error("Reconciliation-only retry requires completed immutable R2 retention.");
       }
       const now = new Date().toISOString();
@@ -360,14 +413,14 @@ async function processRequestedReconciliationRetries() {
         .from("source_page_requests")
         .update({
           worker_run_id: workerRunId,
-          status_reason: "manual_reconciliation_retry_claimed_no_charge",
+          status_reason: claimReason,
           failed_at: null,
           error: null,
           updated_at: now,
         })
         .eq("id", requested.id)
         .eq("status", "ai_review_succeeded")
-        .eq("status_reason", "manual_reconciliation_retry_requested")
+        .eq("status_reason", requestedReason)
         .is("worker_run_id", null);
       claimQuery = withObservedUpdatedAt(claimQuery, requested.updated_at);
       const claimResult = await claimQuery.select("*").maybeSingle();
@@ -379,45 +432,65 @@ async function processRequestedReconciliationRetries() {
 
       await finalizeReviewedRequest(
         claimed,
-        { ...capture, retained_artifact: retainedArtifact },
+        replayCapture,
         objectValue(claimed.deterministic_review),
         Object.keys(objectValue(storedReview.raw)).length ? storedReview.raw : storedReview,
+        { providerResultMode: "replay" },
       );
-      report.reconciliation_only_retries_completed += 1;
+      if (backfillApproval) report.backfill_activation_approvals_completed += 1;
+      else report.reconciliation_only_retries_completed += 1;
       report.requests.push({
         id: claimed.id,
         submitted_url: claimed.submitted_url || claimed.homepage_url,
-        status: "reconciliation_retry_completed",
-        reason: "stored_capture_and_ai_review_replayed_no_charge",
+        status: backfillApproval
+          ? "backfill_source_activation_completed"
+          : "reconciliation_retry_completed",
+        reason: backfillApproval
+          ? "operator_approved_baseline_only_source_registered_from_stored_review"
+          : "stored_capture_and_ai_review_replayed_no_charge",
         creates_api_charge: false,
+        refetched_page: false,
+        reran_ai_review: false,
       });
     } catch (retryError) {
-      report.reconciliation_only_retries_failed += 1;
+      if (backfillApproval) report.backfill_activation_approvals_failed += 1;
+      else report.reconciliation_only_retries_failed += 1;
       report.needs_manual_review += 1;
       report.errors.push({
         request_id: requested.id,
-        stage: "reconciliation_only_retry",
+        stage: backfillApproval ? "backfill_source_activation" : "reconciliation_only_retry",
         message: errorMessage(retryError),
-        solution:
-          "Repair the verified retained-artifact manifest or atomic registration dependency, then request the same reconciliation-only retry. Do not recapture the URL or rerun Gemini.",
+        solution: backfillApproval
+          ? "Repair the stored capture/review binding or atomic source-registration dependency, then replay this already approved activation. Do not fetch the URL or rerun Gemini."
+          : "Repair the verified retained-artifact manifest or atomic registration dependency, then request the same reconciliation-only retry. Do not recapture the URL or rerun Gemini.",
         creates_api_charge: false,
       });
       if (claimed?.id) {
-        await failOwnedReconciliation(claimed.id, errorMessage(retryError));
+        if (backfillApproval) {
+          await failOwnedBackfillActivation(claimed.id, errorMessage(retryError));
+        } else {
+          await failOwnedReconciliation(claimed.id, errorMessage(retryError));
+        }
       } else if (apply) {
+        const failureReason = backfillApproval
+          ? SOURCE_BACKFILL_APPROVAL_PREFLIGHT_FAILURE_REASON
+          : "reconciliation_retry_preflight_failed_no_charge";
+        const safeAction = backfillApproval
+          ? "Repair stored evidence or source registration, then replay the approved activation without refetching or rerunning AI."
+          : "Repair retained evidence, then retry reconciliation only.";
         let failPreclaim = supabase
           .from("source_page_requests")
           .update({
             status: "needs_manual_review",
-            status_reason: "reconciliation_retry_preflight_failed_no_charge",
+            status_reason: failureReason,
             worker_run_id: null,
             failed_at: new Date().toISOString(),
-            error: `${errorMessage(retryError)} Safe action: repair retained evidence, then retry reconciliation only.`.slice(0, 1000),
+            error: `${errorMessage(retryError)} Safe action: ${safeAction}`.slice(0, 1000),
             updated_at: new Date().toISOString(),
           })
           .eq("id", requested.id)
           .eq("status", "ai_review_succeeded")
-          .eq("status_reason", "manual_reconciliation_retry_requested")
+          .eq("status_reason", requestedReason)
           .is("worker_run_id", null);
         failPreclaim = withObservedUpdatedAt(failPreclaim, requested.updated_at);
         const { error: failError } = await failPreclaim.select("id").maybeSingle();
@@ -437,7 +510,7 @@ async function recoverStaleInFlightRequests() {
   const cutoff = new Date(Date.now() - staleInFlightMs).toISOString();
   const { data, error } = await supabase
     .from("source_page_requests")
-    .select("id,status,status_reason,updated_at,acquisition_kind,notification_mode,onboarding_batch_id,capture_metadata")
+    .select("id,status,status_reason,updated_at,acquisition_kind,notification_mode,onboarding_batch_id,matched_shared_award_id,ai_review,capture_metadata")
     .in("status", ["validating", "capturing", "ai_review_succeeded", "matching"])
     .lt("updated_at", cutoff)
     .order("updated_at", { ascending: true })
@@ -450,13 +523,25 @@ async function recoverStaleInFlightRequests() {
     const reconcileClaim = row.status === "ai_review_succeeded";
     const freeReconciliationClaim =
       reconcileClaim && row.status_reason === "manual_reconciliation_retry_claimed_no_charge";
+    const approvedBackfillActivation = isApprovedLowCoverageSourceActivation(row);
+    const backfillActivationClaim =
+      reconcileClaim && row.status_reason === SOURCE_BACKFILL_APPROVAL_CLAIM_REASON;
     const protectedCapture = isProtectedLiveFirstCaptureRow(row) && row.status === "capturing";
     const retainedCapturePersisted = protectedCapture && hasProvenRetainedCaptureMetadata(row);
     const stagedCapturePersisted = protectedCapture
       && !retainedCapturePersisted
       && hasProvenStagedCaptureMetadata(row);
     const now = new Date().toISOString();
-    const patch = matching
+    const patch = matching && approvedBackfillActivation
+      ? {
+          status: "needs_manual_review",
+          status_reason: SOURCE_BACKFILL_APPROVAL_PREFLIGHT_FAILURE_REASON,
+          worker_run_id: null,
+          failed_at: now,
+          error: "Approved baseline-only source activation stopped during atomic registration. Inspect the partial state, then replay the stored capture and review without fetching the page or rerunning AI.",
+          updated_at: now,
+        }
+      : matching
       ? {
           status: "needs_manual_review",
           status_reason: "stale_matching_failed_closed_operator_retry_required",
@@ -490,6 +575,15 @@ async function recoverStaleInFlightRequests() {
         ? {
             status: "ai_review_succeeded",
             status_reason: "manual_reconciliation_retry_requested",
+            worker_run_id: null,
+            failed_at: null,
+            error: null,
+            updated_at: now,
+          }
+      : backfillActivationClaim
+        ? {
+            status: "ai_review_succeeded",
+            status_reason: SOURCE_BACKFILL_APPROVAL_REQUEST_REASON,
             worker_run_id: null,
             failed_at: null,
             error: null,
@@ -560,6 +654,8 @@ async function recoverStaleInFlightRequests() {
           creates_api_charge: false,
         });
       }
+    } else if (backfillActivationClaim) {
+      report.stale_backfill_activation_claims_requeued += 1;
     } else if (freeReconciliationClaim) {
       report.stale_free_reconciliation_claims_requeued += 1;
     } else if (reconcileClaim) {
@@ -834,7 +930,7 @@ async function processCaptureStage(row) {
       geminiApiMode !== "none" &&
       requiresFirstObservationArtifactRetention(row, capture);
     const retainedArtifact = artifactRetentionRequired
-      ? capture.retained_artifact || await retainFirstObservationIntakePdfArtifact({
+      ? capture.retained_artifact || await retainFirstObservationIntakeArtifact({
           request: row,
           capture,
           archiveRoot,
@@ -869,14 +965,16 @@ async function processCaptureStage(row) {
       });
     }
 
-    if (deterministicReview.status === "rejected") {
+    const captureDisposition = sourceIntakeCaptureDisposition(deterministicReview, geminiApiMode);
+
+    if (captureDisposition.status === "rejected") {
       report.deterministic_rejected += 1;
       report.rejected += 1;
       summary.status = "rejected";
       if (apply) {
         await requireOwnedRequestUpdate(row.id, "capturing", {
           status: "rejected",
-          status_reason: deterministicReview.reason,
+          status_reason: captureDisposition.status_reason,
           worker_run_id: null,
           processed_at: new Date().toISOString(),
         });
@@ -884,14 +982,17 @@ async function processCaptureStage(row) {
       return true;
     }
 
-    if (deterministicReview.status === "needs_manual_review") {
+    if (
+      captureDisposition.status === "needs_manual_review"
+      && captureDisposition.status_reason !== "gemini_review_disabled"
+    ) {
       report.deterministic_manual_review += 1;
       report.needs_manual_review += 1;
       summary.status = "needs_manual_review";
       if (apply) {
         await requireOwnedRequestUpdate(row.id, "capturing", {
           status: "needs_manual_review",
-          status_reason: deterministicReview.reason,
+          status_reason: captureDisposition.status_reason,
           worker_run_id: null,
           processed_at: new Date().toISOString(),
         });
@@ -899,13 +1000,13 @@ async function processCaptureStage(row) {
       return true;
     }
 
-    if (geminiApiMode === "none") {
+    if (captureDisposition.status === "needs_manual_review") {
       report.needs_manual_review += 1;
       summary.status = "needs_manual_review";
       if (apply) {
         await requireOwnedRequestUpdate(row.id, "capturing", {
           status: "needs_manual_review",
-          status_reason: "gemini_review_disabled",
+          status_reason: captureDisposition.status_reason,
           worker_run_id: null,
           processed_at: new Date().toISOString(),
         });
@@ -914,11 +1015,11 @@ async function processCaptureStage(row) {
     }
 
     report.ai_review_pending += 1;
-    summary.status = "ai_review_pending";
+    summary.status = captureDisposition.status;
     if (apply) {
       await requireOwnedRequestUpdate(row.id, "capturing", {
-        status: "ai_review_pending",
-        status_reason: "ready_for_gemini_batch_review",
+        status: captureDisposition.status,
+        status_reason: captureDisposition.status_reason,
         worker_run_id: null,
       });
     }
@@ -1086,17 +1187,23 @@ async function submitAiReviewChunk(rows) {
   const claimToken = randomUUID();
   const claimedAt = new Date().toISOString();
   const displayName = `awardping-source-intake-${timestampForPath(claimedAt)}-${claimToken.slice(0, 8)}-${model.replace(/[^a-z0-9._-]+/gi, "-")}`;
-  const claimedRows = await claimSourceIntakeSubmissionRows(rows, {
+  const { claimedRows, failedClosed: providerBindingFailures } = await claimSourceIntakeSubmissionRows(rows, {
     claimToken,
     claimedAt,
     displayName,
   });
-  if (!claimedRows.length) return 0;
+  if (!claimedRows.length) return providerBindingFailures;
 
   const requests = claimedRows.map((row) => {
     const capture = captureFromRow(row);
     const deterministicReview = objectValue(row.deterministic_review);
-    return buildGeminiIntakeRequest(row, capture, deterministicReview, model);
+    return buildGeminiIntakeRequest(
+      row,
+      capture,
+      deterministicReview,
+      model,
+      objectValue(row.ai_review).provider_input_binding,
+    );
   });
   if (!apply) {
     report.batches.push({
@@ -1107,7 +1214,7 @@ async function submitAiReviewChunk(rows) {
       display_name: displayName,
       mode: "dry_run",
     });
-    return claimedRows.length;
+    return claimedRows.length + providerBindingFailures;
   }
 
   const estimatedCostUsd = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
@@ -1117,7 +1224,9 @@ async function submitAiReviewChunk(rows) {
   const workFingerprint = paidReviewWorkFingerprint(
     "new-page-review",
     model,
-    claimedRows.map((row) => row.id),
+    claimedRows.map((row) => (
+      `${row.id}:${cleanNullable(objectValue(objectValue(row.ai_review).provider_input_binding).digest_sha256) || "unbound"}`
+    )),
   );
   let spendReservation;
   try {
@@ -1333,14 +1442,44 @@ async function submitAiReviewChunk(rows) {
     estimated_cost_usd: estimatedCostUsd,
     spend_reservation_id: spendReservation.reservation_id,
   });
-  return completedRequests;
+  return completedRequests + providerBindingFailures;
 }
 
 async function claimSourceIntakeSubmissionRows(rows, { claimToken, claimedAt, displayName }) {
-  if (!apply) return rows;
-  const claimedRows = [];
+  const preparedRows = [];
+  let failedClosed = 0;
   for (const row of rows) {
-    const { data, error } = await supabase
+    try {
+      const capture = captureFromRow(row);
+      const deterministicReview = objectValue(row.deterministic_review);
+      const providerEnvelope = buildGeminiIntakeRequest(
+        row,
+        capture,
+        deterministicReview,
+        model,
+      );
+      const providerInputBinding = buildSourceIntakeProviderInputBinding({
+        request: row,
+        capture,
+        deterministicReview,
+        providerEnvelope,
+        model,
+      });
+      preparedRows.push({
+        ...row,
+        ai_review: {
+          ...objectValue(row.ai_review),
+          provider_input_binding: providerInputBinding,
+        },
+      });
+    } catch (error) {
+      failedClosed += await failPendingProviderInputBinding(row, error);
+    }
+  }
+  if (!apply) return { claimedRows: preparedRows, failedClosed };
+  const claimedRows = [];
+  for (const row of preparedRows) {
+    let query = supabase
       .from("source_page_requests")
       .update({
         status: "needs_manual_review",
@@ -1355,14 +1494,60 @@ async function claimSourceIntakeSubmissionRows(rows, { claimToken, claimedAt, di
         updated_at: claimedAt,
       })
       .eq("id", row.id)
-      .eq("status", "ai_review_pending")
-      .select("*")
-      .maybeSingle();
+      .eq("status", "ai_review_pending");
+    // The binding was derived from the row version loaded above. Do not claim
+    // a same-status row whose capture or retained-artifact metadata changed in
+    // the meantime, because that would submit a digest for stale evidence.
+    query = withObservedUpdatedAt(query, row.updated_at);
+    const { data, error } = await query.select("*").maybeSingle();
     if (error) throw new Error(`Claim source intake request ${row.id} for Batch submission failed: ${error.message}`);
     if (data) claimedRows.push(data);
     else report.submission_claim_conflicts += 1;
   }
-  return claimedRows;
+  return { claimedRows, failedClosed };
+}
+
+async function failPendingProviderInputBinding(row, cause) {
+  const message = errorMessage(cause);
+  const statusReason = cleanNullable(cause?.code)
+    || "source_intake_provider_input_binding_failed_closed";
+  const recordFailure = () => {
+    report.failed += 1;
+    report.needs_manual_review += 1;
+    report.errors.push({
+      request_id: row.id,
+      stage: "source_intake_provider_input_binding",
+      reason_code: statusReason,
+      message,
+      solution:
+        "Repair the request-bound retained capture and rerun only the paid-review submission. Do not accept a result or synthesize a historical binding.",
+    });
+  };
+  if (!apply) {
+    recordFailure();
+    return 1;
+  }
+  let query = supabase
+    .from("source_page_requests")
+    .update({
+      status: "needs_manual_review",
+      status_reason: statusReason,
+      worker_run_id: null,
+      failed_at: new Date().toISOString(),
+      error: message.slice(0, 1000),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", row.id)
+    .eq("status", "ai_review_pending");
+  query = withObservedUpdatedAt(query, row.updated_at);
+  const { data, error } = await query.select("id").maybeSingle();
+  if (error) throw new Error(`Fail source intake provider binding ${row.id} closed failed: ${error.message}`);
+  if (!data) {
+    report.submission_claim_conflicts += 1;
+    return 0;
+  }
+  recordFailure();
+  return 1;
 }
 
 async function markSourceIntakeClaimsCreateStarted({
@@ -2009,13 +2194,23 @@ async function pollSubmittedBatch(batchName, batchRows) {
     const capture = captureFromRow(claimedRow);
     const deterministicReview = objectValue(claimedRow.deterministic_review);
     try {
-      await finalizeReviewedRequest(claimedRow, capture, deterministicReview, parsed);
+      await finalizeReviewedRequest(
+        claimedRow,
+        capture,
+        deterministicReview,
+        parsed,
+        { providerResultMode: "provider_result" },
+      );
       report.ai_review_succeeded += 1;
       batchReport.reconciled += 1;
       report.stage_counts.reconcile.completed += 1;
     } catch (error) {
       const message = errorMessage(error);
-      const failedClosed = await failOwnedReconciliation(claimedRow.id, message).catch((persistenceError) => {
+      const failedClosed = await failOwnedReconciliation(claimedRow.id, message, {
+        statusReason: isSourceIntakeProviderBindingError(error)
+          ? cleanNullable(error?.code) || "source_intake_provider_result_binding_failed_closed"
+          : null,
+      }).catch((persistenceError) => {
         report.errors.push({
           request_id: claimedRow.id,
           batch_name: batchName,
@@ -2068,6 +2263,17 @@ async function settleSourceIntakeBatchSpend(
   if (reservation.status === "settled") {
     return { settled: true, already_settled: true, reservation_id: reservation.id };
   }
+  const rowModels = unique(rows.map((row) => cleanNullable(objectValue(row.ai_review).model)));
+  const reservationModel = cleanNullable(reservation.model);
+  if (
+    !reservationModel
+    || rowModels.length !== 1
+    || rowModels[0] !== reservationModel
+  ) {
+    throw new Error(
+      `Source intake Batch ${batchName} model binding does not match its immutable spend reservation.`,
+    );
+  }
   const attemptTokens = unique(rows.map((row) =>
     cleanNullable(objectValue(row.ai_review).gemini_spend_attempt_token)
   ));
@@ -2089,7 +2295,7 @@ async function settleSourceIntakeBatchSpend(
     report.provider_batch_bindings_recovered += 1;
   }
   const settlement = terminalGeminiSettlement({
-    model,
+    model: reservationModel,
     usage,
     reservation,
     responseCount: terminalAccounting.responseCount,
@@ -2159,13 +2365,13 @@ async function claimSubmittedResponse(row, batchName) {
   return data || null;
 }
 
-async function failOwnedReconciliation(id, message) {
+async function failOwnedReconciliation(id, message, { statusReason = null } = {}) {
   if (!apply) return { id };
   const { data, error } = await supabase
     .from("source_page_requests")
     .update({
       status: "needs_manual_review",
-      status_reason: "matching_failed_closed_operator_retry_required",
+      status_reason: statusReason || "matching_failed_closed_operator_retry_required",
       worker_run_id: null,
       failed_at: new Date().toISOString(),
       error: message.slice(0, 1000),
@@ -2177,6 +2383,28 @@ async function failOwnedReconciliation(id, message) {
     .select("id")
     .maybeSingle();
   if (error) throw new Error(`Fail owned source intake reconciliation ${id} closed failed: ${error.message}`);
+  return data || null;
+}
+
+async function failOwnedBackfillActivation(id, message) {
+  if (!apply) return { id };
+  const now = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("source_page_requests")
+    .update({
+      status: "needs_manual_review",
+      status_reason: SOURCE_BACKFILL_APPROVAL_PREFLIGHT_FAILURE_REASON,
+      worker_run_id: null,
+      failed_at: now,
+      error: `${message} Safe action: repair stored evidence or atomic source registration, then replay this approved activation without a page fetch or AI review.`.slice(0, 1000),
+      updated_at: now,
+    })
+    .eq("id", id)
+    .in("status", ["ai_review_succeeded", "matching"])
+    .eq("worker_run_id", workerRunId)
+    .select("id")
+    .maybeSingle();
+  if (error) throw new Error(`Fail owned backfill source activation ${id} closed failed: ${error.message}`);
   return data || null;
 }
 
@@ -2239,15 +2467,57 @@ async function failExpiredSubmittedBatch(batchName, rows, reason) {
   return affected;
 }
 
-async function finalizeReviewedRequest(row, capture, deterministicReview, rawResult) {
+async function finalizeReviewedRequest(
+  row,
+  capture,
+  deterministicReview,
+  rawResult,
+  { providerResultMode } = {},
+) {
   const normalizedReview = normalizeGeminiIntakeResult(rawResult);
   const validation = validateIntakeAiDecision(normalizedReview);
   const now = new Date().toISOString();
+  const storedAiReview = objectValue(row.ai_review);
+  let providerInputBinding;
+  let providerResultBinding;
+  if (providerResultMode === "provider_result") {
+    providerInputBinding = validateSourceIntakeProviderInputBinding(
+      storedAiReview.provider_input_binding,
+      { request: row, capture, deterministicReview },
+    );
+    providerResultBinding = buildSourceIntakeProviderResultBinding({
+      request: row,
+      capture,
+      deterministicReview,
+      inputBinding: providerInputBinding,
+      rawResult,
+      batchName: storedAiReview.gemini_batch_name,
+      batchRequestKey: storedAiReview.gemini_batch_request_key,
+      model: storedAiReview.model,
+      acceptedAt: now,
+    });
+  } else if (providerResultMode === "replay") {
+    const replayBinding = validateSourceIntakeProviderReplayBinding({
+      request: row,
+      capture,
+      deterministicReview,
+      storedReview: storedAiReview,
+      rawResult,
+    });
+    providerInputBinding = replayBinding.inputBinding;
+    providerResultBinding = replayBinding.resultBinding;
+  } else {
+    const error = new Error("Source-intake reconciliation requires an explicit provider-result binding mode.");
+    error.code = "source_intake_provider_result_mode_missing";
+    throw error;
+  }
   const aiReview = {
-    ...(objectValue(row.ai_review)),
+    ...storedAiReview,
     ...normalizedReview,
     raw: rawResult,
     completed_at: now,
+    provider_input_binding: providerInputBinding,
+    provider_result_binding: providerResultBinding,
   };
 
   if (!validation.accepted) {
@@ -2308,6 +2578,43 @@ async function finalizeReviewedRequest(row, capture, deterministicReview, rawRes
         worker_run_id: null,
         ai_review: aiReview,
         processed_at: now,
+      });
+    }
+    return;
+  }
+
+  // Low-coverage discovery is paid review input, not an attestation. Keep the
+  // accepted AI/deterministic evidence on the durable request, but require an
+  // operator to activate the source. Its onboarding marker also guarantees
+  // that any later approved acquisition remains baseline-only.
+  if (
+    requiresManualBackfillSourceActivation(row)
+    || (isLowCoverageSourceBackfillRequest(row) && !isApprovedLowCoverageSourceActivation(row))
+  ) {
+    report.needs_manual_review += 1;
+    if (apply) {
+      await requireOwnedRequestUpdate(row.id, "matching", {
+        status: "needs_manual_review",
+        status_reason: SOURCE_BACKFILL_MANUAL_STATUS_REASON,
+        worker_run_id: null,
+        matched_shared_award_id: awardResult.award.id,
+        created_shared_award_id: null,
+        created_source_ids: null,
+        ai_review: {
+          ...aiReview,
+          manual_source_activation: {
+            required: true,
+            source_registered: false,
+            official_homepage_changed: false,
+            notification_after_approval: "baseline_only",
+            reviewed_source_url: sourceLike.url,
+            reviewed_source_quality: sourceQuality,
+            policy_version: objectValue(row.ai_review).backfill_discovery_evidence?.policy_version || null,
+            decided_at: now,
+          },
+        },
+        processed_at: now,
+        error: null,
       });
     }
     return;
@@ -2377,21 +2684,20 @@ async function finalizeReviewedRequest(row, capture, deterministicReview, rawRes
   ) {
     const dispositionReason = cleanNullable(sourceWrite.acquisition.reason)
       || "source_acquisition_requires_manual_review";
+    let sourceQuarantine = {
+      quarantined: false,
+      preserved: false,
+      reason: "dry_run",
+    };
     if (apply) {
       const quarantineMessage =
         `Unexpected server downgrade blocked first-capture publication (${dispositionReason}). ` +
         "The source remains review_later until its retained intake evidence is repaired.";
-      const { error: sourceQuarantineError } = await supabase
-        .from("shared_award_sources")
-        .update({
-          admin_review_status: "review_later",
-          last_error: quarantineMessage,
-          updated_at: now,
-        })
-        .eq("id", source.id);
-      if (sourceQuarantineError) {
-        throw new Error(`Quarantine downgraded live source failed: ${sourceQuarantineError.message}`);
-      }
+      sourceQuarantine = await quarantineDowngradedLiveSource({
+        source,
+        quarantineMessage,
+        reviewedAt: now,
+      });
     }
     await finalizeLiveFirstCaptureManualReview({
       row,
@@ -2400,6 +2706,8 @@ async function finalizeReviewedRequest(row, capture, deterministicReview, rawRes
       now,
       dispositionReason,
       source,
+      sourceInserted: sourceWrite.inserted,
+      sourceQuarantine,
       phase: "server_downgrade",
     });
     return;
@@ -2468,12 +2776,16 @@ async function finalizeLiveFirstCaptureManualReview({
   now,
   dispositionReason,
   source = null,
+  sourceInserted = false,
+  sourceQuarantine = null,
   phase,
 }) {
   const reason = cleanNullable(dispositionReason) || "live_first_capture_requires_manual_review";
-  const sourceDisposition = source?.id
-    ? "The newly inserted source was quarantined as review_later."
-    : "No source was registered from this request.";
+  const sourceDisposition = liveFirstCaptureSourceDisposition({
+    source,
+    sourceInserted,
+    sourceQuarantine,
+  });
   const message =
     `The requested live first-capture notification failed safe evidence or provenance validation ` +
     `(${reason}). ${sourceDisposition} Repair the retained request evidence before retrying; ` +
@@ -2484,6 +2796,9 @@ async function finalizeLiveFirstCaptureManualReview({
     source_id: source?.id || null,
     stage: `live_first_capture_${phase}`,
     message,
+    source_quarantined: sourceQuarantine?.quarantined === true,
+    source_review_state_preserved: sourceQuarantine?.preserved === true,
+    source_review_disposition_reason: cleanNullable(sourceQuarantine?.reason),
     solution:
       "Inspect the captured final URL, PDF hash, exact evidence quote, parent source, and worker/request provenance. Retry the retained evidence after repair; request another paid review only if the retained intake bytes themselves are invalid.",
   });
@@ -2798,10 +3113,27 @@ async function recordSourceIntakeMaterializationQuarantine({
 async function resolveAwardForRequest(row, capture, deterministicReview, review) {
   if (row.matched_shared_award_id) {
     const award = await loadAward(row.matched_shared_award_id);
-    if (award) {
+    if (award?.status === "active") {
       report.matched_existing_awards += 1;
       return { award, created: false, reason: "manual_matched_award" };
     }
+    if (isApprovedLowCoverageSourceActivation(row)) {
+      throw new Error(
+        `Approved low-coverage activation is bound to missing or inactive award ${row.matched_shared_award_id}; automatic rematching or award creation is forbidden.`,
+      );
+    }
+  }
+  if (isLowCoverageSourceBackfillRequest(row)) {
+    if (isApprovedLowCoverageSourceActivation(row)) {
+      throw new Error(
+        "Approved low-coverage activation has no matched award; automatic rematching or award creation is forbidden.",
+      );
+    }
+    return {
+      award: null,
+      created: false,
+      reason: "low_coverage_backfill_matched_award_missing_or_inactive",
+    };
   }
 
   const awards = await loadExistingAwards();
@@ -2968,17 +3300,94 @@ async function registerAcceptedSource(awardId, sourceLike, row, {
   if (inserted && !registration.acquisition_id) {
     throw new Error("A newly inserted source registration did not create immutable acquisition provenance.");
   }
+  const registeredSource = await loadRegisteredSharedSourceReviewState(registration.source_id);
+  if (
+    registeredSource.shared_award_id !== awardId
+    || registeredSource.url !== sourceLike.url
+  ) {
+    throw new Error("Registered source identity no longer matches the accepted intake source.");
+  }
 
   return {
-    source: {
-      id: registration.source_id,
-      shared_award_id: awardId,
-      url: sourceLike.url,
-      title: sourceLike.title,
-    },
+    source: registeredSource,
     inserted,
     acquisition,
   };
+}
+
+async function loadRegisteredSharedSourceReviewState(sourceId) {
+  const { data, error } = await supabase
+    .from("shared_award_sources")
+    .select(
+      "id,shared_award_id,url,title,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by",
+    )
+    .eq("id", sourceId)
+    .maybeSingle();
+  if (error) {
+    throw new Error(`Load registered source review state failed: ${error.message}`);
+  }
+  if (!data) throw new Error("Registered source review state was not found.");
+  return data;
+}
+
+async function quarantineDowngradedLiveSource({ source, quarantineMessage, reviewedAt }) {
+  if (
+    source.admin_review_status !== "open"
+    || String(source.admin_review_note || "").includes(sourceMonitoringRestoreMarker)
+  ) {
+    report.live_first_capture_server_downgrade_review_state_preserved += 1;
+    return {
+      quarantined: false,
+      preserved: true,
+      reason: String(source.admin_review_note || "").includes(sourceMonitoringRestoreMarker)
+        ? "operator_monitoring_restore_preserved"
+        : `source_review_state_${source.admin_review_status || "unknown"}_preserved`,
+    };
+  }
+
+  let mutation = supabase
+    .from("shared_award_sources")
+    .update({
+      admin_review_status: "review_later",
+      admin_review_note: quarantineMessage,
+      admin_reviewed_at: reviewedAt,
+      admin_reviewed_by: "awardping-source-intake",
+      last_error: quarantineMessage,
+      updated_at: reviewedAt,
+    })
+    .eq("id", source.id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
+  if (error) {
+    throw new Error(`Quarantine downgraded live source failed: ${error.message}`);
+  }
+  if (!data) {
+    report.live_first_capture_server_downgrade_review_state_preserved += 1;
+    report.stale_admin_review_plans_skipped += 1;
+    return {
+      quarantined: false,
+      preserved: true,
+      reason: "stale_admin_review_plan_preserved",
+    };
+  }
+
+  report.live_first_capture_server_downgrade_quarantined += 1;
+  return {
+    quarantined: true,
+    preserved: false,
+    reason: "server_downgrade_quarantined",
+  };
+}
+
+function liveFirstCaptureSourceDisposition({ source, sourceInserted, sourceQuarantine }) {
+  if (!source?.id) return "No source was registered from this request.";
+  if (sourceQuarantine?.quarantined === true) {
+    return `${sourceInserted ? "The newly inserted source" : "The existing source"} was quarantined as review_later.`;
+  }
+  if (sourceQuarantine?.preserved === true) {
+    return "The source's current operator/workflow review state was preserved; no automated quarantine was applied.";
+  }
+  return "Dry run only: no source review state was changed.";
 }
 
 async function markBatchRowsFailed(batchName, message) {
@@ -3060,6 +3469,7 @@ function workerMetadata() {
       stale_capture_requests_requeued: report.stale_capture_requests_requeued,
       stale_reconcile_claims_requeued: report.stale_reconcile_claims_requeued,
       stale_free_reconciliation_claims_requeued: report.stale_free_reconciliation_claims_requeued,
+      stale_backfill_activation_claims_requeued: report.stale_backfill_activation_claims_requeued,
       stale_matching_requests_failed_closed: report.stale_matching_requests_failed_closed,
       needs_manual_review: report.needs_manual_review,
       matched_existing_awards: report.matched_existing_awards,
@@ -3070,6 +3480,11 @@ function workerMetadata() {
       source_acquisitions_baseline_only: report.source_acquisitions_baseline_only,
       source_acquisitions_manual_review: report.source_acquisitions_manual_review,
       live_first_capture_preflight_manual_review: report.live_first_capture_preflight_manual_review,
+      live_first_capture_server_downgrade_quarantined:
+        report.live_first_capture_server_downgrade_quarantined,
+      live_first_capture_server_downgrade_review_state_preserved:
+        report.live_first_capture_server_downgrade_review_state_preserved,
+      stale_admin_review_plans_skipped: report.stale_admin_review_plans_skipped,
       initial_document_materialization_attempted: report.initial_document_materialization_attempted,
       initial_document_materialization_subprocess_started:
         report.initial_document_materialization_subprocess_started,
@@ -3078,6 +3493,9 @@ function workerMetadata() {
       initial_document_materialization_succeeded: report.initial_document_materialization_succeeded,
       initial_document_materialization_failed: report.initial_document_materialization_failed,
       source_acquisitions_skipped_preexisting: report.source_acquisitions_skipped_preexisting,
+      backfill_activation_approvals_loaded: report.backfill_activation_approvals_loaded,
+      backfill_activation_approvals_completed: report.backfill_activation_approvals_completed,
+      backfill_activation_approvals_failed: report.backfill_activation_approvals_failed,
       fact_candidates_inserted: report.fact_candidates_inserted,
       awards_queued_for_reconciliation: report.awards_queued_for_reconciliation,
       failed: report.failed,
@@ -3327,6 +3745,9 @@ async function finishHardBudgetStop() {
     syncWorkerRun(workerStatus, workerError),
     new Promise((resolvePromise) => setTimeout(resolvePromise, 1_000)),
   ]).catch(() => {});
+  await destroySupabaseServiceTransport(
+    new Error("Source intake reached its explicit hard deadline."),
+  ).catch(() => {});
   process.exit(workerStatus === "succeeded" ? 0 : 1);
 }
 

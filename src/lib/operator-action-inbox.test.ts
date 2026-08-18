@@ -10,6 +10,7 @@ import {
   buildOperatorActionInbox,
   formatOperatorActionAge,
   operatorActionInboxSummary,
+  type OperatorRegressionAuditFailureInput,
   type OperatorVisualReviewFailureInput,
 } from "@/lib/operator-action-inbox";
 import type { MonitoringFeedbackPromotionCluster } from "@/lib/monitoring-feedback-promotion";
@@ -55,6 +56,29 @@ function visualFailure(
     estimatedCostUsd: 0.0012,
     workerMetadata: { failure_retry_count: 0 },
     updatedAt: "2026-07-15T16:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function regressionAuditFailure(
+  overrides: Partial<OperatorRegressionAuditFailureInput> = {},
+): OperatorRegressionAuditFailureInput {
+  return {
+    failureKind: "operational",
+    awardId: "award-1",
+    awardName: "Marshall Scholarship",
+    awardSlug: "marshall-scholarship",
+    officialHomepage: "https://www.marshallscholarship.org/",
+    lastAttemptedAt: "2026-07-15T17:55:00.000Z",
+    lastSucceededAt: "2026-07-14T18:00:00.000Z",
+    consecutiveFailures: 2,
+    nextRetryAt: "2026-07-15T18:10:00.000Z",
+    operationalError: "Load sources failed: gateway timeout",
+    lastAuditError: null,
+    lastAuditId: "audit-1",
+    lastObservationKey: "observation-key-1",
+    createdAt: "2026-07-14T18:00:00.000Z",
+    updatedAt: "2026-07-15T17:55:00.000Z",
     ...overrides,
   };
 }
@@ -162,6 +186,285 @@ function promotionCluster(
 }
 
 describe("operator action inbox", () => {
+  it("shows each durable regression-audit failure with exact retry and evidence details", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure()],
+      downstreamLanes: [downstreamLane({
+        claimable: false,
+        nextRetryAt: "2026-07-15T18:15:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      id: "regression-audit:award-1",
+      sourceKind: "regression_audit",
+      severity: "medium",
+      state: "auto_retrying",
+      title: "Marshall Scholarship: regression page audit failed",
+      failureReason: "Load sources failed: gateway timeout",
+      owner: { label: "Worker operations" },
+      publicImpact: {
+        level: "protected",
+        label: "Last-known-good facts protected",
+      },
+      retry: {
+        automatic: true,
+        label: "Yes — isolated scheduled retry",
+      },
+      charge: {
+        level: "none",
+        label: "$0 — no API charge",
+      },
+      recommendedAction: {
+        label: "Let the scheduled retry run",
+        href: "/dashboard/admin/issues?tab=operations",
+      },
+      policy: {
+        id: "regression-audit-observation",
+        version: "regression-audit-observation-v1",
+      },
+      award: {
+        id: "award-1",
+        slug: "marshall-scholarship",
+        name: "Marshall Scholarship",
+      },
+    });
+    expect(item.evidence).toEqual(expect.arrayContaining([
+      { label: "Failure kind", value: "operational" },
+      { label: "Operational error", value: "Load sources failed: gateway timeout" },
+      { label: "Consecutive failures", value: "2" },
+      { label: "Next retry", value: "2026-07-15T18:10:00.000Z" },
+      { label: "Last audit ID", value: "audit-1" },
+      { label: "Last observation key", value: "observation-key-1" },
+    ]));
+  });
+
+  it("shows a durable blocking audit outcome immediately without waiting for quarantine sync", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure({
+        failureKind: "blocking_audit",
+        consecutiveFailures: 0,
+        operationalError: null,
+        lastAuditError: "regression_page_audit_blocked:failed:error:deadline_conflict",
+        lastAttemptedAt: "2026-07-15T17:58:00.000Z",
+        lastSucceededAt: "2026-07-15T17:58:00.000Z",
+        nextRetryAt: "2026-07-15T17:58:00.000Z",
+      })],
+      downstreamLanes: [downstreamLane()],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      id: "regression-audit:award-1",
+      sourceKind: "regression_audit",
+      severity: "high",
+      state: "needs_operator",
+      title: "Marshall Scholarship: regression page audit blocked publication",
+      failureReason: "regression_page_audit_blocked:failed:error:deadline_conflict",
+      owner: { label: "Public page review" },
+      publicImpact: {
+        level: "blocked",
+        label: "Further publication blocked",
+      },
+      retry: {
+        automatic: true,
+        label: "Yes — verifies automatically after repair",
+      },
+      charge: { level: "none" },
+      recommendedAction: {
+        label: "Repair the cited regression finding",
+        href: "/dashboard/admin/issues?tab=inbox",
+      },
+    });
+    expect(item.evidence).toEqual(expect.arrayContaining([
+      { label: "Failure kind", value: "blocking_audit" },
+      {
+        label: "Last audit outcome error",
+        value: "regression_page_audit_blocked:failed:error:deadline_conflict",
+      },
+      { label: "Last audit ID", value: "audit-1" },
+      { label: "Last observation key", value: "observation-key-1" },
+    ]));
+  });
+
+  it("keeps the blocking finding primary when its next verification also fails operationally", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure({
+        failureKind: "operational_and_blocking",
+        lastAuditError: "regression_page_audit_blocked:failed:critical:sibling_source",
+      })],
+      downstreamLanes: [downstreamLane()],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      severity: "high",
+      state: "needs_operator",
+      title: "Marshall Scholarship: blocking regression remains and verification failed",
+      owner: { label: "Public page review" },
+      publicImpact: { level: "blocked" },
+      recommendedAction: { label: "Repair the cited regression finding" },
+    });
+    expect(item.failureReason).toContain("Load sources failed: gateway timeout");
+    expect(item.failureReason).toContain("sibling_source");
+  });
+
+  it("asks for operator repair when a regression audit keeps failing even though retry remains automatic", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure({
+        consecutiveFailures: 3,
+        nextRetryAt: "2026-07-15T19:00:00.000Z",
+      })],
+      downstreamLanes: [downstreamLane({
+        claimable: false,
+        leaseOwner: "page-audit-worker-1",
+        leaseExpiresAt: "2026-07-15T18:10:00.000Z",
+        lastStatus: "claimed",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      severity: "high",
+      state: "needs_operator",
+      retry: { automatic: true },
+      recommendedAction: {
+        label: "Inspect this award before relying on another retry",
+      },
+    });
+  });
+
+  it("does not promise a retry when the authoritative page-audit lane is missing", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure()],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      sourceKind: "regression_audit",
+      state: "needs_operator",
+      publicImpact: { level: "unknown" },
+      retry: {
+        automatic: false,
+        label: "Unknown — page-audit lane unavailable",
+      },
+      recommendedAction: {
+        label: "Restore page-audit lane status",
+        href: "/dashboard/admin/issues?tab=operations",
+      },
+    });
+  });
+
+  it.each([
+    {
+      label: "disabled",
+      lane: downstreamLane({ enabled: false, claimable: false }),
+      retryLabel: "No — page-audit lane is disabled",
+      actionLabel: "Enable the page-audit lane",
+    },
+    {
+      label: "expired",
+      lane: downstreamLane({
+        claimable: false,
+        leaseOwner: "page-audit-worker-1",
+        leaseExpiresAt: "2026-07-15T17:55:00.000Z",
+        leaseExpired: true,
+        lastStatus: "claimed",
+      }),
+      retryLabel: "No — page-audit lease expired",
+      actionLabel: "Recover the expired page-audit lease",
+    },
+    {
+      label: "overdue and unclaimed",
+      lane: downstreamLane({
+        oldestItemAt: "2026-07-15T16:00:00.000Z",
+        slaBreached: true,
+      }),
+      retryLabel: "No — page-audit work is overdue and unclaimed",
+      actionLabel: "Start the overdue page-audit lane",
+    },
+  ])("does not promise retry when the page-audit lane is $label", ({
+    lane,
+    retryLabel,
+    actionLabel,
+  }) => {
+    const items = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure()],
+      downstreamLanes: [lane],
+      now,
+    });
+    const item = items.find((candidate) => candidate.sourceKind === "regression_audit");
+
+    expect(item).toMatchObject({
+      state: "needs_operator",
+      publicImpact: { level: "unknown" },
+      retry: { automatic: false, label: retryLabel },
+      recommendedAction: { label: actionLabel },
+    });
+  });
+
+  it("allows an active page-audit lease to own the automatic retry", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure()],
+      downstreamLanes: [downstreamLane({
+        claimable: false,
+        leaseOwner: "page-audit-worker-1",
+        leaseExpiresAt: "2026-07-15T18:10:00.000Z",
+        lastStatus: "claimed",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      state: "auto_retrying",
+      retry: { automatic: true },
+      publicImpact: { level: "protected" },
+    });
+    expect(item.evidence).toContainEqual({
+      label: "Lane lease owner",
+      value: "page-audit-worker-1",
+    });
+  });
+
+  it.each([
+    ["missing expiry", { leaseExpiresAt: null, lastStatus: "claimed" }],
+    ["invalid expiry", { leaseExpiresAt: "not-a-date", lastStatus: "claimed" }],
+    ["non-claimed status", {
+      leaseExpiresAt: "2026-07-15T18:10:00.000Z",
+      lastStatus: "failed",
+    }],
+  ])("fails closed for a page-audit lease with $label", (_label, leaseOverrides) => {
+    const items = buildOperatorActionInbox({
+      issues: [],
+      regressionAuditFailures: [regressionAuditFailure()],
+      downstreamLanes: [downstreamLane({
+        claimable: false,
+        leaseOwner: "page-audit-worker-1",
+        ...leaseOverrides,
+      })],
+      now,
+    });
+    const item = items.find((candidate) => candidate.sourceKind === "regression_audit");
+
+    expect(item).toMatchObject({
+      state: "needs_operator",
+      publicImpact: { level: "unknown" },
+      retry: {
+        automatic: false,
+        label: "Unknown — no scheduler or active owner",
+      },
+      recommendedAction: { label: "Restore the page-audit scheduler" },
+    });
+  });
+
   it("collapses the exact quarantine backlog into one grouped action", () => {
     const items = buildOperatorActionInbox({
       issues: [],
@@ -899,6 +1202,51 @@ describe("operator action inbox", () => {
     });
   });
 
+  it("separates rendered action groups from verified underlying case totals", () => {
+    expect(operatorActionInboxSummary([], [
+      {
+        key: "visual_review",
+        label: "visual-review failure cases",
+        renderedTotal: 500,
+        exactTotal: 900,
+      },
+      {
+        key: "digest_delivery",
+        label: "public-update delivery failure cases",
+        renderedTotal: 12,
+        exactTotal: 12,
+      },
+    ])).toMatchObject({
+      total: 0,
+      renderedCaseRows: 512,
+      exactUnderlyingCases: 912,
+      caseSources: [
+        { key: "visual_review", omittedTotal: 400 },
+        { key: "digest_delivery", omittedTotal: 0 },
+      ],
+    });
+  });
+
+  it("refuses to infer a case total that is missing or below rendered rows", () => {
+    const summary = operatorActionInboxSummary([], [
+      {
+        key: "visual_review",
+        label: "visual-review failure cases",
+        renderedTotal: 500,
+        exactTotal: 499,
+      },
+      {
+        key: "digest_delivery",
+        label: "public-update delivery failure cases",
+        renderedTotal: 12,
+        exactTotal: null,
+      },
+    ]);
+
+    expect(summary.exactUnderlyingCases).toBeNull();
+    expect(summary.caseSources.every((source) => source.exactTotal === null)).toBe(true);
+  });
+
   it("keeps rollback-required promotion work high severity without a failed gate artifact", () => {
     const [item] = buildOperatorActionInbox({
       issues: [],
@@ -1249,6 +1597,56 @@ describe("independent downstream lane actions", () => {
     });
     expect(item.evidence).toContainEqual({ label: "Timeout", value: "600s" });
     expect(item.evidence).toContainEqual({ label: "Consecutive failures", value: "2" });
+  });
+
+  it("explains the manual-quarantine timeout and its zero-charge isolated repair", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        laneKey: "manual_quarantine",
+        label: "Manual quarantine",
+        paid: false,
+        consecutiveFailures: 1,
+        lastError: "lane_child_failure:database_statement_timeout",
+        lastFailedAt: "2026-07-15T17:20:00.000Z",
+        nextRetryAt: "2026-07-15T18:15:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      failureReason: "The durable quarantine registry refresh exceeded its database statement timeout.",
+      charge: { level: "none" },
+      retry: { automatic: true },
+      recommendedAction: {
+        detail: expect.stringMatching(/bounded manual-quarantine sync migration/i),
+      },
+    });
+  });
+
+  it("explains a generic quarantine sync failure without rendering persisted free text", () => {
+    const [item] = buildOperatorActionInbox({
+      issues: [],
+      downstreamLanes: [downstreamLane({
+        laneKey: "manual_quarantine",
+        label: "Manual quarantine",
+        paid: false,
+        consecutiveFailures: 1,
+        lastError: "lane_child_failure:registry_sync_failed",
+        lastFailedAt: "2026-07-15T17:20:00.000Z",
+        nextRetryAt: "2026-07-15T18:15:00.000Z",
+      })],
+      now,
+    });
+
+    expect(item).toMatchObject({
+      failureReason: "The durable quarantine registry refresh failed before it returned a verified state.",
+      charge: { level: "none" },
+      retry: { automatic: true },
+      recommendedAction: {
+        detail: expect.stringMatching(/retained lane log and database health/i),
+      },
+    });
   });
 
   it("does not call a past-due unclaimed retry automatic", () => {

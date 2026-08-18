@@ -132,7 +132,12 @@ describe("durable public digest outbox", () => {
     expect(erasure).not.toContain("if cardinality(v_subscriber_ids) = 0 then return 0");
     expect(erasure).not.toContain("payload_hash = null");
     expect(migration).toContain("on delete set null");
-    expect(privacyDelete).toContain('admin.rpc("erase_public_update_subscriber"');
+    expect(privacyDelete).toContain(
+      'admin.rpc("erase_personal_data_for_privacy_request"',
+    );
+    expect(privacyDelete).not.toContain(
+      'admin.rpc("erase_public_update_subscriber"',
+    );
     expect(privacyDelete).not.toContain('.from("public_update_subscribers")');
   });
 

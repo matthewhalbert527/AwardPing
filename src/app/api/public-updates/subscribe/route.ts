@@ -1,9 +1,14 @@
-import { NextResponse } from "next/server";
+import { after, NextResponse } from "next/server";
 import { z } from "zod";
-import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
-import { sendPublicUpdateConfirmationEmail } from "@/lib/email";
+import {
+  hasPublicUpdateDeliveryConfig,
+  hasSupabaseAdminConfig,
+} from "@/lib/config";
 import { ensurePublicFormRateLimit } from "@/lib/public-form-rate-limit";
-import { createOrRefreshPublicUpdateSubscription } from "@/lib/public-updates";
+import {
+  createOrRefreshPublicUpdateSubscription,
+  drainPublicUpdateConfirmationOutbox,
+} from "@/lib/public-updates";
 
 export const runtime = "nodejs";
 
@@ -12,6 +17,9 @@ const subscribeSchema = z.object({
   privacyConsent: z.literal(true),
   website: z.string().optional(),
 });
+const genericSubscriptionMessage =
+  "Request received. If confirmation is needed, check your email; links expire after 24 hours, and if nothing arrives you can try again.";
+const nonEnumeratingResponseFloorMs = 250;
 
 export async function POST(request: Request) {
   const parsed = subscribeSchema.safeParse(await request.json().catch(() => null));
@@ -29,6 +37,13 @@ export async function POST(request: Request) {
   if (!hasSupabaseAdminConfig()) {
     return NextResponse.json(
       { ok: false, error: "Public updates are not configured yet." },
+      { status: 503 },
+    );
+  }
+
+  if (!hasPublicUpdateDeliveryConfig()) {
+    return NextResponse.json(
+      { ok: false, error: "Public-update email delivery is not configured yet." },
       { status: 503 },
     );
   }
@@ -58,17 +73,36 @@ export async function POST(request: Request) {
     );
   }
 
-  const result = await createOrRefreshPublicUpdateSubscription(parsed.data.email);
-  if (result.shouldSendConfirmation && result.confirmationToken) {
-    const confirmUrl = `${appConfig.url}/api/public-updates/confirm?token=${encodeURIComponent(result.confirmationToken)}`;
-    await sendPublicUpdateConfirmationEmail({
-      to: result.email,
-      confirmUrl,
-    });
+  const responseFloor = new Promise<void>((resolve) =>
+    setTimeout(resolve, nonEnumeratingResponseFloorMs),
+  );
+  let outboxId: string | null = null;
+  try {
+    const result = await createOrRefreshPublicUpdateSubscription(
+      parsed.data.email,
+    );
+    outboxId = result.outboxId;
+  } catch (error) {
+    // Keep valid-address responses independent of subscriber existence and
+    // persistence outcome. The caller can safely retry the idempotent request.
+    console.error("Public-update confirmation enqueue failed", error);
   }
 
-  return NextResponse.json({
-    ok: true,
-    message: "Check your email to confirm daily AwardPing updates.",
+  after(async () => {
+    try {
+      await drainPublicUpdateConfirmationOutbox({ outboxId });
+    } catch (error) {
+      console.error("Public-update confirmation outbox drain failed", error);
+    }
   });
+  await responseFloor;
+
+  return subscriptionRequestResponse();
+}
+
+function subscriptionRequestResponse() {
+  return NextResponse.json(
+    { ok: true, message: genericSubscriptionMessage },
+    { status: 202 },
+  );
 }

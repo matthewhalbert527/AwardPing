@@ -163,6 +163,182 @@ export function visualChangeSemanticManifest(changeDetails = null) {
   };
 }
 
+export function visualTextGeometryLayoutFingerprint(value) {
+  return sha256Stable(canonicalVisualTextGeometryLayout(value));
+}
+
+function canonicalVisualTextGeometryLayout(value) {
+  const geometry = objectValue(value);
+  return {
+    version: finiteNumber(geometry.version) ?? 1,
+    state_id: cleanNullable(geometry.state_id),
+    coordinate_space: "document-css-pixels",
+    document: sizeValue(geometry.document),
+    viewport: sizeValue(geometry.viewport),
+    scroll: {
+      x: nonNegativeNumber(objectValue(geometry.scroll).x),
+      y: nonNegativeNumber(objectValue(geometry.scroll).y),
+    },
+    device_pixel_ratio: positiveNumber(geometry.device_pixel_ratio) || 1,
+    paint_stack: objectValue(geometry.paint_stack),
+    nodes: normalizeGeometryNodes(geometry.nodes),
+  };
+}
+
+function measuredVisualScreenshotAlignment(geometry, screenshot) {
+  const source = objectValue(geometry);
+  const screenshotValue = objectValue(screenshot);
+  const documentSize = sizeValue(source.document);
+  const devicePixelRatio = positiveNumber(source.device_pixel_ratio) || 1;
+  const cssWidth = positiveNumber(screenshotValue.css_width) || documentSize.width;
+  const cssHeight = positiveNumber(screenshotValue.css_height) || documentSize.height;
+  const measuredPixelWidth = positiveNumber(screenshotValue.pixel_width);
+  const measuredPixelHeight = positiveNumber(screenshotValue.pixel_height);
+  const pixelWidth = measuredPixelWidth || Math.round(cssWidth * devicePixelRatio);
+  const pixelHeight = measuredPixelHeight || Math.round(cssHeight * devicePixelRatio);
+  const scaleX = pixelWidth / Math.max(cssWidth, 1e-9);
+  const scaleY = pixelHeight / Math.max(cssHeight, 1e-9);
+  const uniformScaleError = Math.abs(scaleX - scaleY) / Math.max(scaleX, scaleY, 1e-9);
+  const deviceScaleError = Math.max(
+    Math.abs(scaleX - devicePixelRatio),
+    Math.abs(scaleY - devicePixelRatio),
+  ) / Math.max(devicePixelRatio, 1e-9);
+  return {
+    cssWidth,
+    cssHeight,
+    pixelWidth,
+    pixelHeight,
+    devicePixelRatio,
+    scaleX,
+    scaleY,
+    uniformScaleError,
+    deviceScaleError,
+    status: !measuredPixelWidth || !measuredPixelHeight
+      ? "unavailable_screenshot_dimensions_missing"
+      : uniformScaleError <= 0.01 && deviceScaleError <= 0.01
+        ? "verified"
+        : "unavailable_nonuniform_or_unexpected_scale",
+  };
+}
+
+export function verifyVisualScreenshotLayoutCapture({
+  before,
+  after,
+  screenshot,
+  stateId = "main",
+} = {}) {
+  const beforeValue = objectValue(before);
+  const afterValue = objectValue(after);
+  const screenshotValue = objectValue(screenshot);
+  const beforeFingerprint = visualTextGeometryLayoutFingerprint(beforeValue);
+  const afterFingerprint = visualTextGeometryLayoutFingerprint(afterValue);
+  const beforePaintStatus = cleanText(objectValue(beforeValue.paint_stack).status);
+  const afterPaintStatus = cleanText(objectValue(afterValue.paint_stack).status);
+  const screenshotAlignment = cleanText(screenshotValue.alignment_status);
+  let availabilityStatus = null;
+  let unavailableReason = null;
+
+  if (beforePaintStatus !== "verified" || afterPaintStatus !== "verified") {
+    availabilityStatus = "unavailable_paint_stack_verification";
+    unavailableReason = "Browser paint-stack verification was unavailable before or after the screenshot.";
+  } else if (beforeFingerprint !== afterFingerprint) {
+    availabilityStatus = "unavailable_layout_changed_during_screenshot";
+    unavailableReason = "Text-node geometry, viewport, scroll, or paint evidence changed while the screenshot was taken.";
+  } else if (screenshotAlignment !== "verified") {
+    availabilityStatus = "unavailable_screenshot_geometry_mismatch";
+    unavailableReason = "The screenshot pixel dimensions do not uniformly match its CSS geometry and device-pixel ratio.";
+  }
+
+  const captureVerification = {
+    contract: "visual-screenshot-layout-binding-v1",
+    status: availabilityStatus ? "unavailable" : "verified",
+    state_id: cleanText(stateId) || "main",
+    before_fingerprint: beforeFingerprint,
+    after_fingerprint: afterFingerprint,
+    screenshot_alignment: screenshotAlignment || "unavailable",
+    ...(unavailableReason ? { unavailable_reason: unavailableReason } : {}),
+  };
+  if (availabilityStatus) {
+    return {
+      ...beforeValue,
+      availability_status: availabilityStatus,
+      unavailable_reason: unavailableReason,
+      capture_verification: captureVerification,
+      nodes: [],
+    };
+  }
+  return {
+    ...beforeValue,
+    capture_verification: captureVerification,
+  };
+}
+
+export function recomputeRestoredVisualScreenshotLayoutCapture({
+  geometry,
+  screenshot = null,
+  stateId = null,
+} = {}) {
+  const source = objectValue(geometry);
+  const prior = objectValue(source.capture_verification);
+  const measured = measuredVisualScreenshotAlignment(source, screenshot || source.screenshot);
+  // The capture verifier fingerprints raw version-1 browser geometry before
+  // binding it to image bytes. Reconstruct that exact input shape so restored
+  // proof must match the retained geometry rather than merely repeat claims.
+  const fingerprint = visualTextGeometryLayoutFingerprint({ ...source, version: 1 });
+  const proofMatchesGeometry =
+    prior.contract === "visual-screenshot-layout-binding-v1" &&
+    prior.status === "verified" &&
+    cleanText(prior.before_fingerprint) === fingerprint &&
+    cleanText(prior.after_fingerprint) === fingerprint;
+  const paintVerified =
+    objectValue(source.paint_stack).contract === "browser-paint-stack-v1" &&
+    objectValue(source.paint_stack).status === "verified";
+  let availabilityStatus = null;
+  let unavailableReason = null;
+
+  if (cleanText(source.availability_status).startsWith("unavailable_")) {
+    availabilityStatus = cleanText(source.availability_status);
+    unavailableReason = cleanText(source.unavailable_reason) ||
+      "The retained capture was already unavailable for exact localization.";
+  } else if (!paintVerified) {
+    availabilityStatus = "unavailable_paint_stack_verification";
+    unavailableReason = "Restored geometry lacks verified browser paint-stack evidence.";
+  } else if (!proofMatchesGeometry) {
+    availabilityStatus = "unavailable_restored_capture_verification";
+    unavailableReason = "Restored before/after capture proof does not match the retained text geometry.";
+  } else if (measured.status !== "verified") {
+    availabilityStatus = "unavailable_screenshot_geometry_mismatch";
+    unavailableReason = "Restored screenshot dimensions do not uniformly match CSS geometry and device-pixel ratio.";
+  }
+
+  const captureVerification = {
+    contract: "visual-screenshot-layout-binding-v1",
+    status: availabilityStatus ? "unavailable" : "verified",
+    state_id: cleanText(stateId || source.state_id) || "main",
+    before_fingerprint: fingerprint,
+    after_fingerprint: fingerprint,
+    screenshot_alignment: measured.status,
+    restored_proof_recomputed: true,
+    ...(unavailableReason ? { unavailable_reason: unavailableReason } : {}),
+  };
+  if (availabilityStatus) {
+    return {
+      ...source,
+      availability_status: availabilityStatus,
+      unavailable_reason: unavailableReason,
+      capture_verification: captureVerification,
+      nodes: [],
+    };
+  }
+  const available = { ...source };
+  delete available.availability_status;
+  delete available.unavailable_reason;
+  return {
+    ...available,
+    capture_verification: captureVerification,
+  };
+}
+
 export function bindVisualTextGeometry(geometry, {
   capturedAt = null,
   imageHash,
@@ -170,26 +346,44 @@ export function bindVisualTextGeometry(geometry, {
   screenshot = null,
 } = {}) {
   const source = objectValue(geometry);
-  const documentSize = sizeValue(source.document);
-  const viewport = sizeValue(source.viewport);
-  const devicePixelRatio = positiveNumber(source.device_pixel_ratio) || 1;
+  const canonicalLayout = canonicalVisualTextGeometryLayout(source);
+  const documentSize = canonicalLayout.document;
+  const viewport = canonicalLayout.viewport;
   const screenshotValue = objectValue(screenshot);
-  const cssWidth = positiveNumber(screenshotValue.css_width) || documentSize.width;
-  const cssHeight = positiveNumber(screenshotValue.css_height) || documentSize.height;
-  const pixelWidth = positiveNumber(screenshotValue.pixel_width) || Math.round(cssWidth * devicePixelRatio);
-  const pixelHeight = positiveNumber(screenshotValue.pixel_height) || Math.round(cssHeight * devicePixelRatio);
-  const nodes = normalizeGeometryNodes(source.nodes);
+  const measured = measuredVisualScreenshotAlignment(source, screenshotValue);
+  const {
+    cssWidth,
+    cssHeight,
+    pixelWidth,
+    pixelHeight,
+    devicePixelRatio,
+    scaleX,
+    scaleY,
+  } = measured;
+  // Alignment is an observed property of the CSS and image dimensions. A
+  // stored or caller-supplied verdict is evidence input, never authority.
+  const alignmentStatus = measured.status;
+  const nodes = canonicalLayout.nodes;
+  const availabilityStatus = cleanNullable(source.availability_status);
+  const unavailableReason = cleanNullable(source.unavailable_reason);
+  const paintStack = canonicalLayout.paint_stack;
+  const captureVerification = objectValue(source.capture_verification);
   const bound = {
     version: VISUAL_EVENT_LOCALIZATION_ALGORITHM_VERSION,
-    state_id: cleanNullable(source.state_id),
-    coordinate_space: "document-css-pixels",
+    state_id: canonicalLayout.state_id,
+    coordinate_space: canonicalLayout.coordinate_space,
     captured_at: cleanNullable(capturedAt || source.captured_at),
     document: documentSize,
     viewport,
+    scroll: canonicalLayout.scroll,
     device_pixel_ratio: devicePixelRatio,
     node_count: nodes.length,
     run_count: nodes.reduce((count, node) => count + node.runs.length, 0),
     nodes,
+    ...(availabilityStatus ? { availability_status: availabilityStatus } : {}),
+    ...(unavailableReason ? { unavailable_reason: unavailableReason } : {}),
+    ...(Object.keys(paintStack).length ? { paint_stack: paintStack } : {}),
+    ...(Object.keys(captureVerification).length ? { capture_verification: captureVerification } : {}),
     screenshot: {
       image_hash: cleanNullable(imageHash),
       image_ref: imageRef || null,
@@ -197,6 +391,10 @@ export function bindVisualTextGeometry(geometry, {
       css_height: cssHeight,
       pixel_width: pixelWidth,
       pixel_height: pixelHeight,
+      expected_device_pixel_ratio: devicePixelRatio,
+      scale_x: scaleX,
+      scale_y: scaleY,
+      alignment_status: alignmentStatus,
     },
   };
   return {
@@ -446,12 +644,12 @@ export function localizeVisualEventSide({
     });
   }
 
-  const bindingFailure = [...(mainResult ? [mainResult] : []), ...expansionResults]
-    .find((result) => result.status === "unavailable_geometry_binding");
+  const geometryFailure = [...(mainResult ? [mainResult] : []), ...expansionResults]
+    .find((result) => ["unavailable_geometry_binding", "unavailable_geometry"].includes(result.status));
   return localizationResult({
     side: normalizedSide,
-    status: bindingFailure ? bindingFailure.status : "unavailable_exact_text_not_found",
-    reason: bindingFailure?.reason || "The exact wording was not found in any retained screenshot state.",
+    status: geometryFailure ? geometryFailure.status : "unavailable_exact_text_not_found",
+    reason: geometryFailure?.reason || "The exact wording was not found in any retained screenshot state.",
   });
 }
 
@@ -483,6 +681,37 @@ function localizeInState(state, phrases, padding) {
     return {
       status: "unavailable_geometry_binding",
       reason: `Screenshot geometry is not bound to this image: ${binding.reason}.`,
+      state_id: state.state_id,
+    };
+  }
+  if (cleanText(state.geometry.availability_status).startsWith("unavailable_")) {
+    return {
+      status: "unavailable_geometry",
+      reason: cleanText(state.geometry.unavailable_reason) ||
+        "The screenshot was retained without exact searchable geometry.",
+      state_id: state.state_id,
+    };
+  }
+  const paintStack = objectValue(state.geometry.paint_stack);
+  if (
+    paintStack.contract !== "browser-paint-stack-v1" ||
+    paintStack.status !== "verified"
+  ) {
+    return {
+      status: "unavailable_geometry",
+      reason: "The screenshot wording lacks verified browser paint-stack evidence.",
+      state_id: state.state_id,
+    };
+  }
+  const captureVerification = objectValue(state.geometry.capture_verification);
+  if (
+    captureVerification.contract !== "visual-screenshot-layout-binding-v1" ||
+    captureVerification.status !== "verified" ||
+    cleanText(objectValue(state.geometry.screenshot).alignment_status) !== "verified"
+  ) {
+    return {
+      status: "unavailable_geometry",
+      reason: "The screenshot geometry was not stable and uniformly scaled across image capture.",
       state_id: state.state_id,
     };
   }
@@ -935,13 +1164,17 @@ function rectValue(value) {
   const width = positiveNumber(rect.width) || positiveNumber(right !== null && x !== null ? right - x : null);
   const height = positiveNumber(rect.height) || positiveNumber(bottom !== null && y !== null ? bottom - y : null);
   if (x === null || y === null || !width || !height) return null;
+  const roundedX = roundCoordinate(x);
+  const roundedY = roundCoordinate(y);
+  const roundedWidth = roundCoordinate(width);
+  const roundedHeight = roundCoordinate(height);
   return {
-    x: roundCoordinate(x),
-    y: roundCoordinate(y),
-    width: roundCoordinate(width),
-    height: roundCoordinate(height),
-    right: roundCoordinate(x + width),
-    bottom: roundCoordinate(y + height),
+    x: roundedX,
+    y: roundedY,
+    width: roundedWidth,
+    height: roundedHeight,
+    right: roundCoordinate(roundedX + roundedWidth),
+    bottom: roundCoordinate(roundedY + roundedHeight),
   };
 }
 

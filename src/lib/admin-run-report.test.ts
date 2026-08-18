@@ -22,6 +22,11 @@ function workerRun(
           discovery_mode: true,
           discovery_intent: "live_recurring",
           discovery_onboarding_batch_id: null,
+          discover_pdf_subpages: true,
+          discover_html_subpages: false,
+          visual_review_mode: "batch",
+          interpret_visual_changes: true,
+          r2_snapshot_sync: true,
           ...((metadata.options as Record<string, unknown> | undefined) || {}),
         },
       }
@@ -297,6 +302,7 @@ describe("admin run report", () => {
       {
         id: `shard-${shardIndex}`,
         worker_name: `local-visual-snapshot-worker-shard-${shardIndex + 1}-of-3`,
+        status: shardIndex === 0 ? "failed" : "succeeded",
         checked_count: shardIndex === 0 ? 98 : 100,
         failed_count: shardIndex === 0 ? 2 : 0,
         started_at: `2026-07-14T23:00:0${shardIndex}.000Z`,
@@ -312,6 +318,7 @@ describe("admin run report", () => {
         },
         run_health: {
           status: shardIndex === 0 ? "degraded" : "healthy",
+          execution_status: "succeeded",
           incident_count: shardIndex === 0 ? 2 : 0,
         },
         baseline_coverage: { start: { loaded_sources: 100 } },

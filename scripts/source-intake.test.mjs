@@ -151,6 +151,46 @@ describe("source intake worker helpers", () => {
     expect(fetchCalls).toBe(1);
   });
 
+  it("preserves a validated redirect target trailing slash", async () => {
+    const requests = [];
+    const result = await captureIntakePage("https://example.edu/fellowship", {
+      lookupImpl: publicLookup,
+      fetchImpl: async (url) => {
+        requests.push(String(url));
+        if (String(url) === "https://example.edu/fellowship") {
+          return new Response(null, {
+            status: 301,
+            headers: { location: "/fellowship/" },
+          });
+        }
+        return new Response(
+          "<html><head><title>Example Fellowship</title></head><body>Scholarship application</body></html>",
+          { status: 200, headers: { "content-type": "text/html" } },
+        );
+      },
+    });
+
+    expect(requests).toEqual([
+      "https://example.edu/fellowship",
+      "https://example.edu/fellowship/",
+    ]);
+    expect(result.final_url).toBe("https://example.edu/fellowship/");
+    expect(result.status_code).toBe(200);
+  });
+
+  it("detects a normalized redirect cycle before exhausting the hop limit", async () => {
+    let fetchCalls = 0;
+    await expect(captureIntakePage("https://example.edu/fellowship", {
+      lookupImpl: publicLookup,
+      fetchImpl: async (url) => {
+        fetchCalls += 1;
+        const location = String(url).endsWith("/") ? "/fellowship" : "/fellowship/";
+        return new Response(null, { status: 301, headers: { location } });
+      },
+    })).rejects.toThrow(/redirect loop/);
+    expect(fetchCalls).toBe(2);
+  });
+
   it("normalizes Gemini intake output and builds baseline facts", () => {
     const normalized = normalizeGeminiIntakeResult(acceptedReview);
     expect(normalized.status).toBe("accepted");

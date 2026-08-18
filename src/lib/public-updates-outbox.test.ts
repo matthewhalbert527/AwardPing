@@ -16,9 +16,15 @@ vi.mock("@/lib/config", () => ({
   hasSupabaseAdminConfig: () => true,
 }));
 vi.mock("@/lib/personal-data", () => ({
-  decryptPersonalData: () => "reader@example.org",
   encryptedEmailFields: vi.fn(),
   personalDataLookupHash: () => "recipient-hash",
+  readPersonalData: () => ({
+    status: "available",
+    value: "reader@example.org",
+    format: "ap:v2",
+    keyId: "test",
+    reason: null,
+  }),
 }));
 vi.mock("@/lib/email", () => ({
   PublicDigestDeliveryError: class PublicDigestDeliveryError extends Error {
@@ -57,7 +63,7 @@ const claim = {
   id: "10000000-0000-4000-8000-000000000001",
   lease_token: "20000000-0000-4000-8000-000000000001",
   recipient_hash: "recipient-hash",
-  recipient_encrypted: "encrypted-recipient",
+  recipient_encrypted: "ap:v2:test:iv:tag:ciphertext",
   rendered_payload: {
     schemaVersion: "public-digest-render-v1",
     from: "AwardPing <updates@example.org>",
@@ -120,6 +126,39 @@ describe("public digest outbox drain", () => {
 
     expect(mocks.send).not.toHaveBeenCalled();
     expect(result.releaseBlocked).toBe(1);
+    expect(result.sent).toBe(0);
+  });
+
+  it("terminalizes a legacy claim before authorization or provider contact", async () => {
+    const legacyClaim = {
+      ...claim,
+      recipient_encrypted: "ap:v1:iv:tag:ciphertext",
+    };
+    mocks.rpc.mockImplementation(async (name: string, args: unknown) => {
+      mocks.calls.push(name);
+      if (name === "claim_public_digest_outbox") {
+        return { data: [legacyClaim], error: null };
+      }
+      if (name === "fail_public_digest_send") {
+        expect(args).toMatchObject({
+          p_outbox_id: claim.id,
+          p_lease_token: claim.lease_token,
+          p_ambiguous: false,
+          p_retryable: false,
+        });
+        return { data: "terminal_failed", error: null };
+      }
+      throw new Error(`Unexpected RPC ${name}`);
+    });
+
+    const result = await drainPublicDigestOutbox({ workerId: "test-worker" });
+
+    expect(mocks.calls).toEqual([
+      "claim_public_digest_outbox",
+      "fail_public_digest_send",
+    ]);
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(result.terminalFailed).toBe(1);
     expect(result.sent).toBe(0);
   });
 

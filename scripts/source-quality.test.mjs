@@ -92,6 +92,99 @@ describe("worker source quality gate", () => {
     ).toBe(false);
   });
 
+  it("lets a later explicit operator restore an AI-unclear source for monitoring only", () => {
+    const restored = source({
+      url: "https://www.marshallscholarship.org/apply/faqs/",
+      page_type: "faq",
+      page_metadata: {
+        kind: "source_page_outline",
+        generated_at: "2026-07-08T02:10:45.237Z",
+        ai_review_coverage_backfill: { at: "2026-07-10T21:13:19.463Z" },
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+          confidence: "high",
+          quality_flags: [],
+        },
+      },
+      admin_review_status: "open",
+      admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+      admin_reviewed_by: "codex-stage1-marshall-review",
+      admin_review_note:
+        "Restored by explicit Stage 1 Marshall source review after checking the official FAQ.",
+    });
+
+    expect(sourceQualityDecision(restored, { purpose: "monitoring" })).toMatchObject({
+      allowed: true,
+      reason: "operator_review_restored_ai_unclear_monitoring_only",
+    });
+    expect(sourceQualityDecision(restored, { purpose: "facts" })).toMatchObject({
+      allowed: false,
+      reason: "ai_review_reviewed_unclear_needs_manual_review_cycle_relevance_unclear",
+    });
+    expect(sourceQualityDecision(restored, { purpose: "public" }).allowed).toBe(false);
+
+    const adminRestore = {
+      ...restored,
+      admin_review_note:
+        "monitoring_restore_v1: Explicitly restored by a site admin for monitoring only.",
+      admin_reviewed_by: "operator@example.edu",
+    };
+    expect(sourceQualityDecision(adminRestore, { purpose: "monitoring" }).allowed).toBe(true);
+    expect(
+      sourceQualityDecision(
+        { ...adminRestore, admin_review_note: null },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+  });
+
+  it("keeps stale, automated, and hard-rejected operator-looking restores blocked", () => {
+    const base = source({
+      page_metadata: {
+        kind: "source_page_outline",
+        generated_at: "2026-07-08T02:10:45.237Z",
+        ai_review_coverage_backfill: { at: "2026-07-10T21:13:19.463Z" },
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+          confidence: "high",
+        },
+      },
+      admin_review_status: "open",
+      admin_reviewed_at: "2026-08-10T14:57:25.644Z",
+      admin_reviewed_by: "operator@example.edu",
+    });
+
+    expect(
+      sourceQualityDecision(
+        { ...base, admin_reviewed_at: "2026-07-09T00:00:00.000Z" },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+    expect(
+      sourceQualityDecision(
+        { ...base, admin_reviewed_by: "open-source-ai-coverage-backfill" },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+    expect(
+      sourceQualityDecision(
+        {
+          ...base,
+          page_metadata: {
+            ...base.page_metadata,
+            baseline_facts: {
+              ...base.page_metadata.baseline_facts,
+              quality_flags: ["sibling-program"],
+            },
+          },
+        },
+        { purpose: "monitoring" },
+      ).allowed,
+    ).toBe(false);
+  });
+
   it("allows legitimate current application/deadline metadata", () => {
     expect(
       isMonitorableAwardSource(
@@ -123,6 +216,91 @@ describe("worker source quality gate", () => {
     expect(sourceQualityDecision(missingRelevance, { purpose: "monitoring" }).reason).toBe(
       "ai_review_reviewed_invalid_or_incomplete_missing_award_relevance",
     );
+  });
+
+  it("honors an exact Stage 1 monitoring-only approval without granting fact authority", () => {
+    const requestId = "62a291a2-e64d-5788-a876-f2dca551a021";
+    const approved = source({
+      page_metadata: {
+        kind: "source_page_outline",
+        baseline_facts: {
+          award_relevance: "primary",
+          cycle_relevance: "unclear",
+        },
+        stage1_baseline_monitoring_approval: {
+          decision: "monitoring_only",
+          decision_item_sha256: "b".repeat(64),
+          evidence_packet_sha256: "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f",
+          exact_evidence_verified: true,
+          fact_candidate_authority: false,
+          notification_mode: "baseline_only",
+          policy_version: "stage1-baseline-source-disposition-v1",
+          public_fact_authority: false,
+          reviewed_roles: ["funding"],
+          schema_version: "awardping.stage1.baseline-monitoring-approval.v1",
+          shared_award_source_id: "source-1",
+          source_page_request_id: requestId,
+        },
+      },
+    });
+
+    expect(sourceQualityDecision(approved, { purpose: "monitoring" })).toMatchObject({
+      allowed: true,
+      reason: "stage1_baseline_monitoring_only",
+    });
+    expect(sourceQualityDecision(approved, { purpose: "facts" }).reason)
+      .toBe("stage1_baseline_monitoring_only_no_fact_authority");
+    expect(sourceQualityDecision(approved, { purpose: "public" }).reason)
+      .toBe("stage1_baseline_monitoring_only_no_fact_authority");
+    expect(sourceQualityDecision(approved, { purpose: "discovery" }).reason)
+      .toBe("stage1_baseline_monitoring_only_no_discovery_authority");
+  });
+
+  it("rejects a forged or broadened Stage 1 monitoring approval", () => {
+    const approved = source({
+      page_metadata: {
+        baseline_facts: { award_relevance: "primary", cycle_relevance: "unclear" },
+        stage1_baseline_monitoring_approval: {
+          decision: "monitoring_only",
+          decision_item_sha256: "b".repeat(64),
+          evidence_packet_sha256: "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f",
+          exact_evidence_verified: true,
+          fact_candidate_authority: true,
+          notification_mode: "baseline_only",
+          policy_version: "stage1-baseline-source-disposition-v1",
+          public_fact_authority: false,
+          reviewed_roles: ["funding"],
+          schema_version: "awardping.stage1.baseline-monitoring-approval.v1",
+          shared_award_source_id: "source-1",
+          source_page_request_id: "62a291a2-e64d-5788-a876-f2dca551a021",
+        },
+      },
+    });
+
+    expect(sourceQualityDecision(approved, { purpose: "monitoring" }).reason)
+      .toBe("stage1_baseline_monitoring_approval_invalid");
+  });
+
+  it("keeps monitoring-only authority narrow even when the ordinary AI review is usable", () => {
+    const approved = source();
+    approved.page_metadata.stage1_baseline_monitoring_approval = {
+      decision: "monitoring_only",
+      decision_item_sha256: "b".repeat(64),
+      evidence_packet_sha256: "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f",
+      exact_evidence_verified: true,
+      fact_candidate_authority: false,
+      notification_mode: "baseline_only",
+      policy_version: "stage1-baseline-source-disposition-v1",
+      public_fact_authority: false,
+      reviewed_roles: ["funding"],
+      schema_version: "awardping.stage1.baseline-monitoring-approval.v1",
+      shared_award_source_id: "source-1",
+      source_page_request_id: "62a291a2-e64d-5788-a876-f2dca551a021",
+    };
+
+    expect(sourceQualityDecision(approved, { purpose: "monitoring" }).allowed).toBe(true);
+    expect(sourceQualityDecision(approved, { purpose: "facts" }).allowed).toBe(false);
+    expect(sourceQualityDecision(approved, { purpose: "public" }).allowed).toBe(false);
   });
 
   it("rejects known bad discovery URL shapes before insertion", () => {

@@ -33,6 +33,11 @@ For local development, `npx supabase start` applies the migrations and prints th
 4. Configure the site URL and auth redirect URLs to include:
    - `http://localhost:3000/auth/confirm`
    - `https://your-domain.com/auth/confirm`
+5. Configure the Supabase **Reset password** email template to send the token
+   hash through AwardPing's server callback. Copy
+   `supabase/templates/recovery.html` into the hosted Auth template; the default
+   Supabase template does not establish the server-side recovery session used
+   by `/reset-password`.
 
 ## Award Discovery Setup
 
@@ -80,7 +85,7 @@ Before inviting real advisors:
 
 1. Run `npm run verify`.
 2. Apply every migration in `supabase/migrations`, including `0008_shared_award_history.sql`.
-3. Set hosted Supabase auth URLs to your production domain plus `http://localhost:3000/auth/confirm`.
+3. Set hosted Supabase auth URLs to your production domain plus `http://localhost:3000/auth/confirm`, set the minimum password length to 12, and install `supabase/templates/recovery.html` as the hosted Reset password template.
 4. Configure Vercel environment variables for Supabase, Resend, Tavily, Gemini or OpenAI, `CRON_SECRET`, and `NEXT_PUBLIC_APP_URL`.
 5. Verify Resend sender/domain status before relying on invite, alert, or digest email.
 6. Run `npm run launch:check -- --env .env.production.local --production`.

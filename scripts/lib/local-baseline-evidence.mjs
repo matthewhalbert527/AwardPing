@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   readFileSync,
@@ -16,6 +17,15 @@ import {
   atomicWriteJson,
   withVisualBaselineLockAsync,
 } from "./visual-baseline-lock.mjs";
+import { retainedCaptureArtifactProjectionSchema } from "./r2-capture-artifact-bindings.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  conservativeExpansionStateCaptureCoverage,
+  hasExpansionStateCaptureCoverageClaim,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
+import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
 
 export const LOCAL_BASELINE_EVIDENCE_REPAIR_REASON =
   "repaired_dangling_baseline_pointer";
@@ -31,6 +41,7 @@ const capturePathFields = [
   "expansion_text",
   "sections_text",
   "sections_json",
+  "layout",
   "meta",
 ];
 const requiredEvidenceFields = {
@@ -175,6 +186,7 @@ export function inspectLocalBaselineEvidence({
       capture: currentCapture,
       meta: objectValue(currentMetaRead.value),
       label: "current",
+      expectedBaseline: currentBaseline,
     });
     if (!currentMetaValidation.ok) {
       return refusal(id, currentMetaValidation.reason, {
@@ -244,6 +256,7 @@ export function inspectLocalBaselineEvidence({
     capture: previousCapture,
     meta: previousMeta,
     label: "previous",
+    expectedBaseline: currentBaseline.summary_metadata?.previous_baseline,
   });
   if (!metaValidation.ok) {
     return refusal(id, metaValidation.reason, {
@@ -257,6 +270,8 @@ export function inspectLocalBaselineEvidence({
     danglingCapture: currentCapture.stored,
     previousCapture: previousCapture.stored,
     previousMeta,
+    previousExpansionStateCaptureCoverage:
+      metaValidation.expansion_state_capture_coverage,
     kind: previousKind.kind,
     now,
   });
@@ -279,6 +294,7 @@ export function buildRepairedBaseline({
   danglingCapture,
   previousCapture,
   previousMeta,
+  previousExpansionStateCaptureCoverage = null,
   kind,
   now,
 }) {
@@ -306,6 +322,10 @@ export function buildRepairedBaseline({
     expansion_hash: nullable(previousMeta.expansion_hash),
     expandable_sections_hash: nullable(previousMeta.expandable_sections_hash),
     image_hash: nullable(previousMeta.image_hash),
+    layout_hash: previousCapture.layout ? nullable(previousMeta.layout_hash) : null,
+    text_geometry: previousCapture.layout
+      ? objectOrNull(previousMeta.text_geometry)
+      : null,
     file_hash: nullable(previousMeta.file_hash),
     file_bytes: nullable(previousMeta.file_bytes),
     text_length: nonNegativeNumberOrNull(previousMeta.text_length),
@@ -327,8 +347,22 @@ export function buildRepairedBaseline({
       ai_model: nullable(currentSummary.ai_model),
       previous_baseline: null,
       previous_baseline_capture: null,
-      baseline_facts: currentSummary.baseline_facts ?? null,
-      baseline_facts_metadata: currentSummary.baseline_facts_metadata ?? null,
+      baseline_facts: objectOrNull(previousMeta.baseline_facts),
+      baseline_facts_metadata: objectOrNull(previousMeta.baseline_facts_metadata),
+      monitoring_disposition: objectOrNull(previousMeta.monitoring_disposition),
+      stage1_baseline_activation: objectOrNull(previousMeta.stage1_baseline_activation),
+      expansion_state_capture_coverage:
+        kind === "webpage"
+          ? previousExpansionStateCaptureCoverage
+            ?? legacyExpansionStateCaptureCoverageFromMetadata(previousMeta, {
+                retainedStateCount: Array.isArray(previousCapture.expansion_states)
+                  ? previousCapture.expansion_states.length
+                  : 0,
+              })
+          : null,
+      retained_artifact_projection:
+        objectOrNull(previousMeta.retained_artifact_projection)
+        ?? null,
       local_evidence_repair: {
         reason: LOCAL_BASELINE_EVIDENCE_REPAIR_REASON,
         repaired_at: now,
@@ -403,6 +437,55 @@ function validateCaptureDescriptor({
   const missingRequired = requiredEvidenceFields[kind].filter(
     (field) => !resolved[field] || !isRegularFile(resolved[field]),
   );
+  if (kind === "webpage" && value.layout && (!resolved.layout || !isRegularFile(resolved.layout))) {
+    missingRequired.push("layout");
+  }
+
+  const expansionStatesDeclared = value.expansion_states != null;
+  const expansionStates = expansionStatesDeclared ? value.expansion_states : [];
+  if (!Array.isArray(expansionStates)) {
+    return invalid(`${label}_capture_expansion_states_invalid`);
+  }
+  if (expansionStatesDeclared) {
+    stored.expansion_states = [];
+    resolved.expansion_states = [];
+  }
+  for (const [index, stateValue] of expansionStates.entries()) {
+    const state = objectValue(stateValue);
+    const suffix = String(index + 1).padStart(2, "0");
+    if (state.state_id !== `expansion-state-${suffix}` || !state.page || !state.layout) {
+      return invalid(`${label}_capture_expansion_state_invalid`, suffix);
+    }
+    const storedState = { ...state };
+    const resolvedState = { ...state };
+    for (const field of ["page", "layout"]) {
+      const validated = validateStoredPath({
+        archiveRoot,
+        sourceDir,
+        storedPath: state[field],
+      });
+      if (!validated.ok) {
+        return invalid(`${label}_${validated.reason}`, `expansion_state_${suffix}_${field}`);
+      }
+      if (!pathIsWithin(resolved.dir, validated.resolved)) {
+        return invalid(`${label}_capture_file_outside_capture_dir`, `expansion_state_${suffix}_${field}`);
+      }
+      const containment = realPathContainment(resolved.dir, validated.resolved);
+      if (!containment.ok) {
+        return invalid(
+          `${label}_capture_file_symlink_outside_capture_dir`,
+          `expansion_state_${suffix}_${field}`,
+        );
+      }
+      storedState[field] = validated.stored;
+      resolvedState[field] = validated.resolved;
+      if (!isRegularFile(validated.resolved)) {
+        missingRequired.push(`expansion_state_${suffix}_${field}`);
+      }
+    }
+    stored.expansion_states.push(storedState);
+    resolved.expansion_states.push(resolvedState);
+  }
   if (requireCompleteEvidence && missingRequired.length) {
     return {
       ...invalid(`${label}_evidence_incomplete`),
@@ -417,6 +500,7 @@ function validateCaptureDescriptor({
   return {
     ok: true,
     kind,
+    declared: value,
     resolved,
     stored,
     missing_required: missingRequired,
@@ -431,7 +515,9 @@ function validateEvidenceMeta({
   capture,
   meta,
   label,
+  expectedBaseline = null,
 }) {
+  let expansionStateCaptureCoverage = null;
   if (meta.source?.id !== sourceId) {
     return invalid(`${label}_meta_source_id_mismatch`);
   }
@@ -448,6 +534,14 @@ function validateEvidenceMeta({
   if (kind === "webpage" && !meta.image_hash) {
     return invalid(`${label}_meta_image_hash_missing`);
   }
+
+  const expectedIdentity = validateExpectedBaselineIdentity({
+    expectedBaseline,
+    capture,
+    meta,
+    label,
+  });
+  if (!expectedIdentity.ok) return expectedIdentity;
 
   if (meta.files != null && !isObject(meta.files)) {
     return invalid(`${label}_meta_files_invalid`);
@@ -486,7 +580,475 @@ function validateEvidenceMeta({
     }
   }
 
+  if (!capture.missing_required.length) {
+    const coreBytesValidation = validateCoreCaptureBytes({
+      capture,
+      kind,
+      meta,
+      metaFiles,
+      label,
+    });
+    if (!coreBytesValidation.ok) return coreBytesValidation;
+  }
+
+  if (kind === "webpage") {
+    const captureLayout = capture.stored.layout || null;
+    const metadataLayout = typeof metaFiles.layout === "string" ? metaFiles.layout : null;
+    if (captureLayout !== metadataLayout) {
+      return invalid(`${label}_meta_file_mismatch`, "layout");
+    }
+    const captureStates = Array.isArray(capture.stored.expansion_states)
+      ? capture.stored.expansion_states
+      : [];
+    const resolvedCaptureStates = Array.isArray(capture.resolved.expansion_states)
+      ? capture.resolved.expansion_states
+      : [];
+    const metadataFileStates = Array.isArray(metaFiles.expansion_states)
+      ? metaFiles.expansion_states
+      : [];
+    const metadataStates = Array.isArray(meta.expansion_state_screenshots)
+      ? meta.expansion_state_screenshots
+      : [];
+    if (
+      !Number.isSafeInteger(meta.expansion_state_count)
+      || meta.expansion_state_count < 0
+    ) {
+      return invalid(`${label}_meta_expansion_state_count_invalid`);
+    }
+    const declaredCount = meta.expansion_state_count;
+    if (
+      captureStates.length !== metadataFileStates.length
+      || captureStates.length !== metadataStates.length
+      || captureStates.length !== declaredCount
+    ) {
+      return invalid(`${label}_meta_expansion_state_count_mismatch`);
+    }
+    const coverageClaimed = hasExpansionStateCaptureCoverageClaim(meta);
+    const coverage = legacyExpansionStateCaptureCoverageFromMetadata(meta, {
+      retainedStateCount: declaredCount,
+    });
+    if (!coverage && coverageClaimed) {
+      return invalid(`${label}_meta_expansion_state_coverage_invalid`);
+    }
+    expansionStateCaptureCoverage = coverage
+      ?? conservativeExpansionStateCaptureCoverage({
+        retainedStateCount: declaredCount,
+      });
+    const expectedSummary = expectedBaseline?.summary_metadata;
+    const expectedCoverageClaimed = Boolean(
+      expectedSummary
+      && typeof expectedSummary === "object"
+      && Object.hasOwn(expectedSummary, "expansion_state_capture_coverage"),
+    );
+    const expectedCoverageValue = expectedSummary?.expansion_state_capture_coverage;
+    if (expectedCoverageClaimed) {
+      const expectedCoverage = canonicalExpansionStateCaptureCoverage(
+        expectedCoverageValue,
+        { expectedRetainedStateCount: declaredCount },
+      );
+      if (
+        !expectedCoverage
+        || !sameExpansionStateCaptureCoverage(
+          expectedCoverage,
+          expansionStateCaptureCoverage,
+          {
+          expectedRetainedStateCount: declaredCount,
+          },
+        )
+      ) {
+        return invalid(`${label}_meta_expansion_state_coverage_mismatch`);
+      }
+    }
+    for (const [index, captureState] of captureStates.entries()) {
+      const resolvedCaptureState = objectValue(resolvedCaptureStates[index]);
+      const fileState = objectValue(metadataFileStates[index]);
+      const metadataState = objectValue(metadataStates[index]);
+      const suffix = String(index + 1).padStart(2, "0");
+      if (
+        fileState.state_id !== captureState.state_id
+        || metadataState.state_id !== captureState.state_id
+        || fileState.page !== captureState.page
+        || metadataState.page !== captureState.page
+        || fileState.layout !== captureState.layout
+        || metadataState.layout !== captureState.layout
+      ) {
+        return invalid(`${label}_meta_expansion_state_mismatch`, String(index + 1));
+      }
+      const imageHash = lowerSha256OrNull(captureState.image_hash);
+      const layoutHash = lowerSha256OrNull(captureState.layout_hash);
+      const metadataImageHash = lowerSha256OrNull(metadataState.image_hash);
+      const metadataLayoutHash = lowerSha256OrNull(metadataState.layout_hash);
+      const metadataTextHash = lowerSha256OrNull(metadataState.text_hash);
+      if (
+        !imageHash
+        || !layoutHash
+        || metadataImageHash !== imageHash
+        || metadataLayoutHash !== layoutHash
+        || !metadataTextHash
+        || !Number.isSafeInteger(metadataState.text_length)
+        || metadataState.text_length < 0
+      ) {
+        return invalid(`${label}_meta_expansion_state_hash_mismatch`, suffix);
+      }
+      if (
+        !validInstant(captureState.captured_at)
+        || !validInstant(metadataState.captured_at)
+        || captureState.captured_at !== metadataState.captured_at
+      ) {
+        return invalid(`${label}_meta_expansion_state_captured_at_mismatch`, suffix);
+      }
+
+      let pageBytes;
+      try {
+        pageBytes = readFileSync(resolvedCaptureState.page);
+      } catch (error) {
+        return invalid(`${label}_meta_expansion_page_read_failed`, errorMessage(error));
+      }
+      if (sha256Bytes(pageBytes) !== imageHash) {
+        return invalid(`${label}_meta_expansion_page_hash_mismatch`, suffix);
+      }
+      if (
+        !Number.isSafeInteger(metadataState.page_bytes)
+        || metadataState.page_bytes !== pageBytes.length
+      ) {
+        return invalid(`${label}_meta_expansion_page_bytes_mismatch`, suffix);
+      }
+
+      const layoutRead = readJson(resolvedCaptureState.layout);
+      if (!layoutRead.ok) {
+        return invalid(`${label}_meta_expansion_layout_json_invalid`, suffix);
+      }
+      const layout = objectValue(layoutRead.value);
+      const layoutBinding = verifyVisualTextGeometryBinding(layout, imageHash);
+      if (!layoutBinding.valid) {
+        return invalid(
+          `${label}_meta_expansion_layout_binding_invalid`,
+          `${suffix}:${layoutBinding.reason}`,
+        );
+      }
+      if (
+        layout.state_id !== captureState.state_id
+        || layout.geometry_hash !== layoutHash
+        || layout.screenshot?.image_hash !== imageHash
+        || layout.captured_at !== captureState.captured_at
+        || metadataState.text_geometry?.geometry_hash !== layoutHash
+        || metadataState.text_geometry?.screenshot?.image_hash !== imageHash
+        || metadataState.text_geometry?.file !== captureState.layout
+        || metadataState.text_geometry?.screenshot?.image_ref !== captureState.page
+      ) {
+        return invalid(`${label}_meta_expansion_geometry_identity_mismatch`, suffix);
+      }
+    }
+
+    const layoutClaimed = Boolean(
+      meta.layout_hash
+      || meta.text_geometry?.geometry_hash
+      || meta.text_geometry?.file
+      || meta.text_geometry?.screenshot?.image_hash
+      || meta.localization?.geometry_hash
+      || meta.localization?.bound_image_hash
+      || meta.localization?.geometry_ready === true
+    );
+    if (!captureLayout && layoutClaimed) {
+      return invalid(`${label}_meta_layout_claim_without_artifact`);
+    }
+    if (captureLayout && !layoutClaimed) {
+      return invalid(`${label}_meta_layout_binding_missing`);
+    }
+    if (captureLayout && !capture.missing_required.length) {
+      const mainLayoutValidation = validateMainWebLayoutEvidence({
+        capture,
+        meta,
+        metaFiles,
+        label,
+      });
+      if (!mainLayoutValidation.ok) return mainLayoutValidation;
+    }
+
+  }
+
+  const projectionValidation = validateRetainedArtifactProjection({
+    capture,
+    kind,
+    meta,
+    label,
+  });
+  if (!projectionValidation.ok) return projectionValidation;
+
+  return {
+    ok: true,
+    expansion_state_capture_coverage: expansionStateCaptureCoverage,
+  };
+}
+
+function validateRetainedArtifactProjection({ capture, kind, meta, label }) {
+  if (meta.retained_artifact_projection == null) return { ok: true };
+
+  const projection = objectValue(meta.retained_artifact_projection);
+  const authority = objectValue(projection.authoritative);
+  const layoutRetained = kind === "webpage" && Boolean(capture.stored.layout);
+  const expectedLayoutHash = layoutRetained
+    ? lowerSha256OrNull(meta.layout_hash)
+    : null;
+  const expectedExpansionStateCount = kind === "webpage"
+    ? (Array.isArray(capture.stored.expansion_states)
+        ? capture.stored.expansion_states.length
+        : 0)
+    : 0;
+  const expectedLocalizationStatus = kind === "pdf"
+    ? "not_applicable_pdf"
+    : layoutRetained
+      ? "exact_geometry_available"
+      : "evidence_only_geometry_unavailable";
+
+  if (
+    !objectHasKeys(projection)
+    || projection.schema !== retainedCaptureArtifactProjectionSchema
+    || projection.kind !== kind
+    || projection.localization_status !== expectedLocalizationStatus
+    || authority.layout_retained !== layoutRetained
+    || (layoutRetained
+      ? authority.layout_hash !== expectedLayoutHash
+      : authority.layout_hash !== null)
+    || !Number.isSafeInteger(authority.expansion_state_count)
+    || authority.expansion_state_count < 0
+    || authority.expansion_state_count !== expectedExpansionStateCount
+  ) {
+    return invalid(`${label}_meta_retained_projection_mismatch`);
+  }
+
   return { ok: true };
+}
+
+function validateExpectedBaselineIdentity({ expectedBaseline, capture, meta, label }) {
+  const expected = objectValue(expectedBaseline);
+  if (!objectHasKeys(expected)) return { ok: true };
+
+  if (expected.source?.id && expected.source.id !== meta.source?.id) {
+    return invalid(`${label}_meta_generation_source_mismatch`);
+  }
+  if (expected.captured_at && expected.captured_at !== meta.captured_at) {
+    return invalid(`${label}_meta_generation_captured_at_mismatch`);
+  }
+
+  const expectedCapture = objectValue(expected.capture);
+  for (const field of ["dir", "page", "pdf", "text", "layout", "meta"]) {
+    if (
+      expectedCapture[field] != null
+      && expectedCapture[field] !== capture.stored[field]
+    ) {
+      return invalid(`${label}_meta_generation_capture_mismatch`, field);
+    }
+  }
+
+  for (const field of ["text_hash", "image_hash", "file_hash", "layout_hash"]) {
+    if (expected[field] != null && expected[field] !== meta[field]) {
+      return invalid(`${label}_meta_generation_hash_mismatch`, field);
+    }
+  }
+  for (const field of ["text_length", "file_bytes", "page_bytes", "thumb_bytes"]) {
+    if (expected[field] != null && expected[field] !== meta[field]) {
+      return invalid(`${label}_meta_generation_length_mismatch`, field);
+    }
+  }
+  const expectedGeometryHash = expected.text_geometry?.geometry_hash;
+  if (
+    expectedGeometryHash != null
+    && expectedGeometryHash !== meta.text_geometry?.geometry_hash
+  ) {
+    return invalid(`${label}_meta_generation_hash_mismatch`, "text_geometry.geometry_hash");
+  }
+  return { ok: true };
+}
+
+function validateCoreCaptureBytes({ capture, kind, meta, metaFiles, label }) {
+  const requiredPaths = kind === "pdf"
+    ? ["pdf", "text"]
+    : ["page", "thumb", "text"];
+  for (const field of requiredPaths) {
+    if (metaFiles[field] !== capture.stored[field]) {
+      return invalid(`${label}_meta_file_mismatch`, field);
+    }
+  }
+
+  let textBytes;
+  try {
+    textBytes = readFileSync(capture.resolved.text);
+  } catch (error) {
+    return invalid(`${label}_meta_text_read_failed`, errorMessage(error));
+  }
+  const decodedText = decodeWriterFramedText(textBytes);
+  if (!decodedText.ok) {
+    return invalid(`${label}_meta_${decodedText.reason}`);
+  }
+  const textHash = lowerSha256OrNull(meta.text_hash);
+  if (!textHash) return invalid(`${label}_meta_text_hash_invalid`);
+  if (sha256Bytes(Buffer.from(decodedText.text, "utf8")) !== textHash) {
+    return invalid(`${label}_meta_text_hash_mismatch`);
+  }
+  if (!Number.isSafeInteger(meta.text_length) || meta.text_length !== decodedText.text.length) {
+    return invalid(`${label}_meta_text_length_mismatch`);
+  }
+
+  if (kind === "pdf") {
+    let pdfBytes;
+    try {
+      pdfBytes = readFileSync(capture.resolved.pdf);
+    } catch (error) {
+      return invalid(`${label}_meta_pdf_read_failed`, errorMessage(error));
+    }
+    const fileHash = lowerSha256OrNull(meta.file_hash);
+    if (!fileHash) return invalid(`${label}_meta_file_hash_invalid`);
+    if (sha256Bytes(pdfBytes) !== fileHash) {
+      return invalid(`${label}_meta_pdf_hash_mismatch`);
+    }
+    if (!Number.isSafeInteger(meta.file_bytes) || meta.file_bytes !== pdfBytes.length) {
+      return invalid(`${label}_meta_pdf_bytes_mismatch`);
+    }
+    return { ok: true };
+  }
+
+  let pageBytes;
+  try {
+    pageBytes = readFileSync(capture.resolved.page);
+  } catch (error) {
+    return invalid(`${label}_meta_page_read_failed`, errorMessage(error));
+  }
+  const imageHash = lowerSha256OrNull(meta.image_hash);
+  if (!imageHash) return invalid(`${label}_meta_image_hash_invalid`);
+  if (sha256Bytes(pageBytes) !== imageHash) {
+    return invalid(`${label}_meta_page_hash_mismatch`);
+  }
+  if (!Number.isSafeInteger(meta.page_bytes) || meta.page_bytes !== pageBytes.length) {
+    return invalid(`${label}_meta_page_bytes_mismatch`);
+  }
+
+  let thumbBytes;
+  try {
+    thumbBytes = readFileSync(capture.resolved.thumb);
+  } catch (error) {
+    return invalid(`${label}_meta_thumb_read_failed`, errorMessage(error));
+  }
+  if (!Number.isSafeInteger(meta.thumb_bytes) || meta.thumb_bytes !== thumbBytes.length) {
+    return invalid(`${label}_meta_thumb_bytes_mismatch`);
+  }
+  return { ok: true };
+}
+
+function decodeWriterFramedText(bytes) {
+  let raw;
+  try {
+    raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return { ok: false, reason: "text_utf8_invalid" };
+  }
+  const text = raw.endsWith("\r\n")
+    ? raw.slice(0, -2)
+    : raw.endsWith("\n")
+      ? raw.slice(0, -1)
+      : null;
+  if (text === null || text.endsWith("\n") || text.endsWith("\r")) {
+    return { ok: false, reason: "text_writer_framing_invalid" };
+  }
+  return { ok: true, text };
+}
+
+function validateMainWebLayoutEvidence({ capture, meta, metaFiles, label }) {
+  const imageHash = lowerSha256OrNull(meta.image_hash);
+  if (!imageHash) return invalid(`${label}_meta_image_hash_invalid`);
+
+  const declared = objectValue(capture.declared);
+  for (const [field, expected] of [
+    ["image_hash", imageHash],
+    ["layout_hash", meta.layout_hash],
+    ["captured_at", meta.captured_at],
+  ]) {
+    if (declared[field] != null && declared[field] !== expected) {
+      return invalid(`${label}_capture_${field}_mismatch`);
+    }
+  }
+
+  const layoutRead = readJson(capture.resolved.layout);
+  if (!layoutRead.ok) {
+    return invalid(`${label}_meta_layout_json_invalid`, layoutRead.error);
+  }
+  const layout = objectValue(layoutRead.value);
+  const binding = verifyVisualTextGeometryBinding(layout, imageHash);
+  if (!binding.valid) {
+    return invalid(`${label}_meta_layout_binding_invalid`, binding.reason);
+  }
+
+  const layoutHash = lowerSha256OrNull(layout.geometry_hash);
+  const metadataLayoutHash = lowerSha256OrNull(meta.layout_hash);
+  const geometry = objectValue(meta.text_geometry);
+  const localization = objectValue(meta.localization);
+  if (
+    !layoutHash
+    || metadataLayoutHash !== layoutHash
+    || lowerSha256OrNull(geometry.geometry_hash) !== layoutHash
+    || lowerSha256OrNull(localization.geometry_hash) !== layoutHash
+  ) {
+    return invalid(`${label}_meta_layout_geometry_identity_mismatch`);
+  }
+  if (
+    layout.state_id !== "main"
+    || layout.captured_at !== meta.captured_at
+    || localization.captured_at !== meta.captured_at
+  ) {
+    return invalid(`${label}_meta_layout_captured_at_mismatch`);
+  }
+  if (
+    metaFiles.page !== capture.stored.page
+    || geometry.file !== capture.stored.layout
+    || geometry.screenshot?.image_ref !== capture.stored.page
+    || layout.screenshot?.image_ref !== capture.stored.page
+  ) {
+    return invalid(`${label}_meta_layout_path_identity_mismatch`);
+  }
+  if (
+    lowerSha256OrNull(layout.screenshot?.image_hash) !== imageHash
+    || lowerSha256OrNull(geometry.screenshot?.image_hash) !== imageHash
+    || lowerSha256OrNull(localization.bound_image_hash) !== imageHash
+  ) {
+    return invalid(`${label}_meta_layout_image_identity_mismatch`);
+  }
+  if (
+    localization.geometry_ready !== true
+    || localization.accounted_for !== true
+  ) {
+    return invalid(`${label}_meta_layout_localization_not_ready`);
+  }
+  if (!sameGeometryReference(geometry, layout)) {
+    return invalid(`${label}_meta_layout_reference_mismatch`);
+  }
+  return { ok: true };
+}
+
+function sameGeometryReference(reference, layout) {
+  return reference.version === layout.version
+    && reference.coordinate_space === layout.coordinate_space
+    && reference.node_count === layout.node_count
+    && reference.run_count === layout.run_count
+    && sameJson(reference.document, layout.document)
+    && sameJson(reference.viewport, layout.viewport)
+    && sameJson(reference.screenshot, layout.screenshot);
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function sha256Bytes(value) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function lowerSha256OrNull(value) {
+  const text = String(value || "").trim();
+  return /^[0-9a-f]{64}$/.test(text) ? text : null;
+}
+
+function validInstant(value) {
+  return typeof value === "string" && value.length > 0 && Number.isFinite(Date.parse(value));
 }
 
 function validateStoredPath({ archiveRoot, sourceDir, storedPath }) {

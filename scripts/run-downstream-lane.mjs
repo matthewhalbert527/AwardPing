@@ -5,7 +5,11 @@ import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
-import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
+import { parseLaneFailureReceipt } from "./lib/lane-failure-receipt.mjs";
+import {
+  closeSupabaseServiceTransport,
+  createSupabaseServiceClient,
+} from "./supabase-service-client.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 
@@ -58,7 +62,7 @@ export const downstreamLaneDefinitions = Object.freeze({
   },
   manual_quarantine: {
     script: "scripts/sync-manual-quarantine-registry.mjs",
-    args: [],
+    args: ["--apply=true"],
   },
   nightly_report: {
     script: "scripts/report-visual-nightly.mjs",
@@ -120,10 +124,26 @@ export function laneExecutionFailureReason({ result, heartbeatError = null, time
   if (result?.timedOut) return `lane_timed_out_after_${positiveInt(timeBudgetMs, 1)}ms`;
   if (result?.aborted) return `lane_aborted:${cleanText(result.error) || "execution_aborted"}`;
   if (cleanText(result?.error)) return `lane_child_error:${cleanText(result.error)}`;
+  if (cleanText(result?.failureReceipt?.failure_code)) {
+    return `lane_child_failure:${cleanText(result.failureReceipt.failure_code)}`;
+  }
   if (Number.isInteger(result?.exitCode) && result.exitCode !== 0) {
     return `child_exit_code_${result.exitCode}`;
   }
   return null;
+}
+
+export function bindLaneFailureReceipt(laneKey, receipt) {
+  if (!receipt) return { receipt: null, error: null };
+  const expectedLane = normalizeDownstreamLaneKey(laneKey);
+  const reportedLane = normalizeDownstreamLaneKey(receipt.lane_key);
+  if (!expectedLane || reportedLane !== expectedLane) {
+    return {
+      receipt: null,
+      error: `failure_receipt_lane_mismatch:${reportedLane || "missing"}`,
+    };
+  }
+  return { receipt, error: null };
 }
 
 async function main() {
@@ -218,8 +238,12 @@ async function main() {
     clearInterval(heartbeat);
   }
   await Promise.allSettled([...heartbeatInFlight]);
+  const receiptBinding = bindLaneFailureReceipt(laneKey, result.failureReceipt);
+  result.failureReceipt = receiptBinding.receipt;
+  if (!result.error && receiptBinding.error) result.error = receiptBinding.error;
 
-  const succeeded = result.exitCode === 0 && !result.timedOut && !result.aborted && !heartbeatError;
+  const succeeded = result.exitCode === 0 && !result.timedOut && !result.aborted &&
+    !heartbeatError && !result.failureReceipt;
   const status = result.timedOut
     ? "timed_out"
     : heartbeatError
@@ -249,6 +273,7 @@ async function main() {
         command: [command.command, ...command.args],
         status,
         exit_code: result.exitCode,
+        child_failure: result.failureReceipt,
       },
       error: failureReason,
     }),
@@ -266,7 +291,7 @@ function runChild({ command, args }, timeBudgetMs, { signal } = {}) {
     const child = spawn(command, args, {
       cwd: root,
       env: process.env,
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       detached: process.platform !== "win32",
     });
@@ -274,6 +299,12 @@ function runChild({ command, args }, timeBudgetMs, { signal } = {}) {
     let aborted = false;
     let error = null;
     let forceTimer = null;
+    let stderrTail = "";
+    child.stdout?.pipe(process.stdout, { end: false });
+    child.stderr?.pipe(process.stderr, { end: false });
+    child.stderr?.on("data", (chunk) => {
+      stderrTail = appendBoundedTail(stderrTail, chunk, 32_768);
+    });
     const terminate = (terminationSignal = "SIGTERM") => {
       terminateChildTree(child, terminationSignal);
       if (!forceTimer) {
@@ -309,6 +340,7 @@ function runChild({ command, args }, timeBudgetMs, { signal } = {}) {
         timedOut,
         aborted,
         error,
+        failureReceipt: parseLaneFailureReceipt(stderrTail),
       });
     });
 
@@ -316,6 +348,10 @@ function runChild({ command, args }, timeBudgetMs, { signal } = {}) {
       signal?.removeEventListener("abort", abortHandler);
     }
   });
+}
+
+function appendBoundedTail(current, chunk, maxLength) {
+  return `${current}${String(chunk)}`.slice(-maxLength);
 }
 
 function terminateChildTree(child, signal) {
@@ -386,5 +422,9 @@ function cleanText(value) {
 }
 
 if (Boolean(process.argv[1]) && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  await main();
+  try {
+    await main();
+  } finally {
+    await closeSupabaseServiceTransport();
+  }
 }

@@ -52,10 +52,6 @@ export function normalizePublicUpdateEmail(value: string) {
   return value.trim().toLowerCase();
 }
 
-export function createPublicUpdateToken() {
-  return crypto.randomBytes(32).toString("base64url");
-}
-
 export function hashToken(token: string) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
@@ -68,11 +64,22 @@ export function createPublicUnsubscribeToken(
   subscriber: PublicUnsubscribeTokenSubscriber,
   secret: string,
 ) {
-  const key = secret || fallbackTokenSecret;
+  const key = tokenSigningKey(secret);
   const payload = `${subscriber.id}:${subscriber.created_at}:unsubscribe`;
   const signature = crypto.createHmac("sha256", key).update(payload).digest("base64url");
 
   return `${subscriber.id}.${signature}`;
+}
+
+function tokenSigningKey(secret: string) {
+  const material = secret.trim();
+  if (
+    process.env.NODE_ENV === "production" &&
+    (material.length < 24 || material === fallbackTokenSecret)
+  ) {
+    throw new Error("A strong production public-update token secret is required.");
+  }
+  return material || fallbackTokenSecret;
 }
 
 export function buildPublicDigestChanges(

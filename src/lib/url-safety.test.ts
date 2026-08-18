@@ -24,6 +24,7 @@ describe("url safety", () => {
   it("rejects link-local and reserved address ranges", () => {
     expect(isPrivateIp("100.64.0.1")).toBe(true);
     expect(isPrivateIp("169.254.169.254")).toBe(true);
+    expect(isPrivateIp("168.63.129.16")).toBe(true);
     expect(isPrivateIp("192.0.2.10")).toBe(true);
     expect(isPrivateIp("198.51.100.10")).toBe(true);
     expect(isPrivateIp("203.0.113.10")).toBe(true);
@@ -50,6 +51,7 @@ describe("url safety", () => {
     expect(isPrivateIp("3fff:1000::1")).toBe(false);
     expect(isPrivateIp("64:ff9b::808:808")).toBe(false); // public 8.8.8.8
     expect(isPrivateIp("64:ff9b::c0a8:101")).toBe(true); // private 192.168.1.1
+    expect(isPrivateIp("64:ff9b:1::808:808")).toBe(true); // RFC 8215 local-use translation
   });
 
   it("applies special IPv6 range checks to normalized URL literals", () => {
@@ -59,5 +61,6 @@ describe("url safety", () => {
     expect(normalizeHttpUrl("https://[3fff:0fff::1]/").ok).toBe(false);
     expect(normalizeHttpUrl("https://[64:ff9b::808:808]/").ok).toBe(true);
     expect(normalizeHttpUrl("https://[64:ff9b::192.168.1.1]/").ok).toBe(false);
+    expect(normalizeHttpUrl("https://[64:ff9b:1::808:808]/").ok).toBe(false);
   });
 });

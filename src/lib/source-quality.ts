@@ -9,6 +9,10 @@ import {
 
 export { sourceBaselineFacts } from "@/lib/source-ai-review-status";
 
+export const sourceMonitoringRestoreMarker = "monitoring_restore_v1";
+export const sourceMonitoringRestoreDecisionReason =
+  "operator_review_restored_ai_unclear_monitoring_only";
+
 export type SourceQualityPurpose =
   | "public"
   | "facts"
@@ -18,6 +22,7 @@ export type SourceQualityPurpose =
   | "debug";
 
 export type SourceQualitySource = {
+  id?: string | null;
   url?: string | null;
   title?: string | null;
   display_title?: string | null;
@@ -29,6 +34,10 @@ export type SourceQualitySource = {
   source?: string | null;
   reason?: string | null;
   submitted_by_user_id?: string | null;
+  admin_review_status?: string | null;
+  admin_review_note?: string | null;
+  admin_reviewed_at?: string | null;
+  admin_reviewed_by?: string | null;
 };
 
 export type SourceQualityDecision = {
@@ -55,6 +64,30 @@ const rejectedQualityFlags = new Set([
 ]);
 const spamUploadTitle =
   /\b(viagra|levitra|cialis|pharma|casino|xanax|tramadol|pills|essay writing|payday)\b/i;
+const STAGE1_BASELINE_EVIDENCE_PACKET_SHA256 =
+  "8a1c1d9aa8ccbdf1dcdbb7b2f4b83ac19c99dd9557a8949dff5f63dd22d1026f";
+const STAGE1_BASELINE_APPROVED_REQUEST_IDS = new Set([
+  "62a291a2-e64d-5788-a876-f2dca551a021",
+  "cc190ad2-8240-5b8c-b5ac-a73180094d24",
+  "2bd3018c-d1b6-5d39-85ed-ea278e9d3702",
+  "e01d9d33-47de-5ba9-b83c-d6e7c69a4c7f",
+  "27ad713b-0332-59e6-b28b-44b9ff631bc1",
+  "fd02cb92-8ab6-553f-8e31-752802ac4641",
+  "a97507bf-295a-5a81-99e5-4516f96c9612",
+  "2cd2f427-753f-5de7-ab0b-616502b287b7",
+  "cf731f52-f02d-581e-bf52-c698f53d87d8",
+  "4952d327-4fa5-53a0-8247-dd029f7f2c2c",
+]);
+const STAGE1_SOURCE_ROLES = new Set([
+  "identity_home",
+  "eligibility",
+  "application_materials",
+  "dates_cycle",
+  "funding",
+  "faq",
+  "selection_interviews",
+  "current_documents",
+]);
 
 export function sourceQualityDecision(
   source: SourceQualitySource | null | undefined,
@@ -98,9 +131,26 @@ export function sourceQualityDecision(
     .join(" ");
   if (isSpamUploadHtmlSource(source.url, titleSignal)) return reject("url_spam_upload_html");
 
+  const stage1Approval = stage1BaselineMonitoringApprovalStatus(source, metadata);
+  if (stage1Approval === "invalid") {
+    return reject("stage1_baseline_monitoring_approval_invalid");
+  }
+  if (stage1Approval === "valid") {
+    if (purpose === "monitoring") return allow("stage1_baseline_monitoring_only");
+    if (purpose === "public" || purpose === "facts") {
+      return reject("stage1_baseline_monitoring_only_no_fact_authority");
+    }
+    if (purpose === "discovery") {
+      return reject("stage1_baseline_monitoring_only_no_discovery_authority");
+    }
+  }
+
   if (purpose === "public" || purpose === "facts" || purpose === "monitoring") {
     const review = explainSourceAiReviewStatus(source);
     if (purpose === "monitoring" && !review.canBeMonitored) {
+      if (hasLaterExplicitOperatorMonitoringRestore(source, metadata, review)) {
+        return allow(sourceMonitoringRestoreDecisionReason);
+      }
       return reject(`ai_review_${review.status}_${review.reason}`);
     }
     if ((purpose === "public" || purpose === "facts") && !review.canContributePublicFacts) {
@@ -134,6 +184,91 @@ export function sourceQualityDecision(
   }
 
   return allow();
+}
+
+function hasLaterExplicitOperatorMonitoringRestore(
+  source: SourceQualitySource,
+  metadata: Record<string, unknown>,
+  review: ReturnType<typeof explainSourceAiReviewStatus>,
+) {
+  if (
+    source.admin_review_status !== "open" ||
+    review.status !== "reviewed_unclear_needs_manual_review"
+  ) {
+    return false;
+  }
+
+  const actor = cleanText(source.admin_reviewed_by);
+  const note = cleanText(source.admin_review_note);
+  const actorIsAuthenticatedAdmin =
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(actor) &&
+    note.includes(sourceMonitoringRestoreMarker);
+  const actorIsRecordedStage1Operator =
+    /^codex-stage1-[a-z0-9-]+$/.test(cleanKey(actor)) &&
+    /\b(?:explicit|approved|restored)\b/i.test(note);
+  if (!actorIsAuthenticatedAdmin && !actorIsRecordedStage1Operator) return false;
+
+  const operatorReviewedAt = timestampMs(source.admin_reviewed_at);
+  if (operatorReviewedAt === null) return false;
+
+  const baselineFactsMetadata = objectValue(metadata.baseline_facts_metadata);
+  const coverageBackfill = objectValue(metadata.ai_review_coverage_backfill);
+  const aiReviewTimestamps = [
+    source.page_metadata_generated_at,
+    metadata.generated_at,
+    baselineFactsMetadata.extracted_at,
+    coverageBackfill.at,
+  ]
+    .map(timestampMs)
+    .filter((value): value is number => value !== null);
+  if (!aiReviewTimestamps.length) return false;
+
+  return operatorReviewedAt > Math.max(...aiReviewTimestamps);
+}
+
+function stage1BaselineMonitoringApprovalStatus(
+  source: SourceQualitySource,
+  metadata: Record<string, unknown>,
+) {
+  if (!("stage1_baseline_monitoring_approval" in metadata)) return "absent";
+  const approval = objectValue(metadata.stage1_baseline_monitoring_approval);
+  const exactKeys = [
+    "decision",
+    "decision_item_sha256",
+    "evidence_packet_sha256",
+    "exact_evidence_verified",
+    "fact_candidate_authority",
+    "notification_mode",
+    "policy_version",
+    "public_fact_authority",
+    "reviewed_roles",
+    "schema_version",
+    "shared_award_source_id",
+    "source_page_request_id",
+  ];
+  const actualKeys = Object.keys(approval).sort();
+  const reviewedRoles = Array.isArray(approval.reviewed_roles)
+    ? approval.reviewed_roles
+    : [];
+  return (
+    actualKeys.length === exactKeys.length &&
+    actualKeys.every((key, index) => key === exactKeys[index]) &&
+    approval.schema_version === "awardping.stage1.baseline-monitoring-approval.v1" &&
+    approval.policy_version === "stage1-baseline-source-disposition-v1" &&
+    approval.decision === "monitoring_only" &&
+    approval.shared_award_source_id === source.id &&
+    STAGE1_BASELINE_APPROVED_REQUEST_IDS.has(String(approval.source_page_request_id || "")) &&
+    approval.evidence_packet_sha256 === STAGE1_BASELINE_EVIDENCE_PACKET_SHA256 &&
+    /^[0-9a-f]{64}$/.test(String(approval.decision_item_sha256 || "")) &&
+    approval.exact_evidence_verified === true &&
+    approval.notification_mode === "baseline_only" &&
+    approval.public_fact_authority === false &&
+    approval.fact_candidate_authority === false &&
+    reviewedRoles.length > 0 &&
+    new Set(reviewedRoles).size === reviewedRoles.length &&
+    reviewedRoles.every((role) => typeof role === "string" && STAGE1_SOURCE_ROLES.has(role)) &&
+    [...reviewedRoles].sort().every((role, index) => role === reviewedRoles[index])
+  ) ? "valid" : "invalid";
 }
 
 export function isPublicAwardSource(source: SourceQualitySource | null | undefined) {
@@ -191,6 +326,15 @@ function stringArray(value: unknown) {
   if (Array.isArray(value)) return value.map((item) => String(item || ""));
   if (typeof value === "string") return value.split(/[,;|]/);
   return [];
+}
+
+function cleanText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function timestampMs(value: unknown) {
+  const parsed = Date.parse(cleanText(value));
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function cleanKey(value: unknown) {

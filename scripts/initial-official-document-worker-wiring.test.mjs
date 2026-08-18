@@ -94,15 +94,23 @@ describe("initial official document worker wiring", () => {
     const capture = functionBody(worker, "async function captureSource");
     const validation = capture.indexOf("const invalidCapture = classifyInvalidPageCapture");
     const rejection = capture.indexOf("if (invalidCapture)");
-    const evidenceWrite = capture.indexOf("writeFileSync(metaPath");
+    const evidenceWrite = capture.indexOf("writeFileSync(pendingMetaPath");
+    const boundary = capture.indexOf("await finalizeCaptureNetworkBoundary({");
+    const metadataPromotion = capture.indexOf("renameSync(pendingMetaPath, metaPath)");
+    const finalNetworkValidation = capture.indexOf(
+      "await finalizeCaptureNetworkBoundary({",
+    );
     const durableRegistration = capture.indexOf(
-      "await maybeRecordDiscoveredPdfSources(source, pdfDiscoveryForRegistration, expanded, report)",
+      "await maybeRecordDiscoveredPdfSources(",
     );
 
     expect(validation).toBeGreaterThan(-1);
     expect(rejection).toBeGreaterThan(validation);
     expect(evidenceWrite).toBeGreaterThan(rejection);
-    expect(durableRegistration).toBeGreaterThan(evidenceWrite);
+    expect(boundary).toBeGreaterThan(evidenceWrite);
+    expect(finalNetworkValidation).toBe(boundary);
+    expect(metadataPromotion).toBeGreaterThan(finalNetworkValidation);
+    expect(durableRegistration).toBeGreaterThan(metadataPromotion);
     expect(capture.slice(rejection, durableRegistration)).toContain("throw new Error");
   });
 

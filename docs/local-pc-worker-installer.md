@@ -29,8 +29,21 @@
 Run the installer directly from this repo on the crawler PC:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1" -AcceptInteractiveTaskLogon
 ```
+
+The installer registers new tasks with the current Windows user's interactive
+token. That mode cannot run after the operator signs out. A fresh install must
+therefore use `-AcceptInteractiveTaskLogon` only after the operator explicitly
+accepts responsibility for keeping that Windows account logged in across the 6
+PM scan and downstream windows.
+
+The acceptance is recorded without credentials in
+`worker-operational-mode.json`. It is an honest operational limitation, not a
+claim of logged-off unattended service. An existing installation whose eleven
+tasks all use an approved least-privilege logged-off principal does not require
+this acceptance. The installer preserves those existing principals during an
+update.
 
 Then:
 
@@ -77,14 +90,17 @@ Deploy a reviewed revision in this order:
 4. From that same still-clean revision, run:
 
    ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1" -UpdateOnly -AppUrl "https://awardping.vercel.app"
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\installer\windows\Install-AwardPingWorker.ps1" -UpdateOnly -AppUrl "https://awardping.vercel.app" -AcceptInteractiveTaskLogon
    ```
 
    Update mode builds and validates a complete staged app and npm dependency
    tree before it pauses anything. It preserves the existing R2 credentials
    with the rest of `.env.worker.local`, validates that the retained R2
    configuration is still complete, and never prompts for or replaces those
-   secrets. It then pauses only AwardPing tasks and
+   secrets. It removes obsolete persistent discovery/onboarding, visual-review,
+   localization-repair, snapshot-reset, and forced-R2-refresh mode keys without
+   printing their former values. Those modes are run-scoped command-line choices,
+   not durable worker defaults. It then pauses only AwardPing tasks and
    worker processes whose command lines target this exact install root, copies
    local environment/report state, and switches complete app directories. A
    workspace catch-up running from this repository is outside that process
@@ -106,6 +122,11 @@ Deploy a reviewed revision in this order:
    app is complete enough to run. The installer also refuses to overwrite a
    fixed AwardPing task owned by another install root or a custom Task Scheduler
    path, and leaves unrelated Startup-folder launchers untouched.
+
+   The acceptance flag is required only when the installed task set still uses
+   interactive logon and no valid operational-mode acceptance has already been
+   recorded. It does not change task principals or make them capable of running
+   while logged off.
 5. Compare repository and installed hashes for both policy JSON files, the lane
    wrapper/runner, and the policy, suppression, visual-review, capture, immutable-evidence,
    evidence-coverage/backfill, quarantine-sync, and baseline worker scripts.
@@ -113,6 +134,8 @@ Deploy a reviewed revision in this order:
    `scripts/run-downstream-lane.mjs`,
    `scripts/lib/gemini-spend-ledger.mjs`,
    `scripts/lib/r2-baseline-rehydration.mjs`,
+   `scripts/lib/award-fact-reconciliation.mjs`,
+   `scripts/lib/source-backfill-intake.mjs`,
    `scripts/sync-manual-quarantine-registry.mjs`, and the native `sharp` crop
    package. Confirm the three visual shard tasks still run daily at 6 PM and all
    eight downstream lane tasks repeat every 15 minutes with different stagger
@@ -123,10 +146,24 @@ Deploy a reviewed revision in this order:
    Lane` runs the deterministic public-page evaluator and does not submit a
    Gemini request.
 
+The installer protects `.env.worker.local` from inherited ACL entries and
+allows access only to the installing operator, `SYSTEM`, local Administrators,
+and the exact principals retained by AwardPing's scheduled tasks. Runtime
+validation fails closed if an unrelated group or orphaned SID can read or modify
+the worker credentials.
+
 ## Permanent Worker Work
 
 The permanent worker schedule contains the three 6 PM capture shards and these
 eight downstream tasks. There is no monolithic downstream pipeline.
+
+Every 6 PM shard passes one explicit, fail-closed run contract: all sources,
+`live_recurring` discovery with no onboarding batch, PDF-link discovery on,
+HTML-link discovery off, Batch visual review on, localization/snapshot repair
+off, and immutable R2 snapshot sync on. Command-line values outrank the local
+environment file, so a stale onboarding or repair setting cannot silently change
+the scheduled job. The capture process validates the same contract before doing
+work and exits nonzero if any required setting is missing or contradictory.
 
 | Windows task | What it does | Direct AI/API cost |
 | --- | --- | --- |
@@ -145,6 +182,13 @@ busy, times out, or fails, Windows can still start every other lane. The new-pag
 lane processes up to 25 queued requests and polls at most five existing batches
 within its own budget. Failed intake requests wait for an operator-selected
 retry instead of cycling forever.
+
+The reconciliation lane never treats an API row cap as a complete candidate
+set. For each award it obtains an exact count, reads every row in deterministic
+`created_at`/ID pages twice, and records the verified count and revision hash in
+the run report. A changed count/content revision or a total above the configured
+safe maximum fails that queue item for operator quarantine; no partial set is
+ranked or published.
 
 Lane logs are retained only under the installed worker's `logs` directory.
 Per-run logs expire after 14 days and are also capped at the newest 2,000 files;
@@ -323,6 +367,12 @@ Or run this in PowerShell:
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\AwardPingWorker\Run-AwardPingVisualSnapshots.ps1" -All -Limit 50000
 ```
+
+The wrapper above uses the normal live-discovery/canonical-review settings even
+for an immediate manual run. For an intentional repair, historical-onboarding,
+targeted, or no-review run, invoke `scripts/capture-visual-snapshots.mjs` with
+`--run-trigger=manual` or `--run-trigger=maintenance` and the desired explicit
+options. The worker rejects those modes when `--run-trigger=scheduled` is used.
 
 Logs are written to:
 

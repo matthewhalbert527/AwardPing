@@ -8,6 +8,12 @@ const read = (path) => readFileSync(resolve(root, path), "utf8");
 const installer = read("installer/windows/Install-AwardPingWorker.ps1");
 const launchCheck = read("scripts/check-private-beta.mjs");
 const releaseProducer = read("scripts/record-stage1-signed-release-evidence.mjs");
+const maintenanceScripts = [
+  "scripts/audit-shared-source-coverage.mjs",
+  "scripts/backfill-low-coverage-award-sources.mjs",
+  "scripts/post-crawl-cleanup-report.mjs",
+  "scripts/report-broken-sources.mjs",
+];
 
 describe("Supabase new-key-only compatibility", () => {
   it("routes every privileged Node script through the secret-safe service client", () => {
@@ -45,6 +51,18 @@ describe("Supabase new-key-only compatibility", () => {
     );
   });
 
+  it("validates worker sb_secret keys without a browser-like PowerShell request", () => {
+    const validationFunction = installer.slice(
+      installer.indexOf("function Test-SupabaseSecretKeyAccess"),
+      installer.indexOf("function Read-SupabaseSecretKey"),
+    );
+
+    expect(validationFunction).toContain("[System.Net.Http.HttpClient]::new()");
+    expect(validationFunction).toContain("TryAddWithoutValidation($header.Key, $header.Value)");
+    expect(validationFunction).not.toContain("Invoke-RestMethod");
+    expect(validationFunction).not.toMatch(/Authorization|Bearer/i);
+  });
+
   it("requires an sb_secret for fresh and update-only worker installs", () => {
     expect(installer).toContain("function Update-WorkerSupabaseSecretKeyForMigration");
     expect(installer).toContain(
@@ -69,6 +87,24 @@ describe("Supabase new-key-only compatibility", () => {
     expect(releaseProducer).toContain(
       'requireKeyPrefix(supabaseAnonKey, "sb_publishable_", "SUPABASE_ANON_KEY")',
     );
+  });
+
+  it("makes maintenance scripts fail closed instead of revealing legacy CLI keys", () => {
+    for (const path of maintenanceScripts) {
+      const script = read(path);
+      expect(script).toContain("Automatic Supabase CLI key fallback is disabled");
+      expect(script).toContain('startsWith("sb_secret_")');
+      expect(script).not.toContain('key.name === "service_role"');
+      expect(script).not.toContain('"projects", "api-keys"');
+    }
+  });
+
+  it("binds destructive cleanup reporting to the project in the configured URL", () => {
+    const cleanup = read("scripts/post-crawl-cleanup-report.mjs");
+    expect(cleanup).toContain("projectRefFromSupabaseUrl(supabaseUrl)");
+    expect(cleanup).toContain("requestedProjectRef !== projectRef");
+    expect(cleanup).toContain("refusing to run against an ambiguous target");
+    expect(cleanup).not.toContain("readLinkedProjectRef");
   });
 });
 

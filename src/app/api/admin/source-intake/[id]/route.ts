@@ -6,11 +6,22 @@ import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
 import type { Database } from "@/lib/database.types";
 import {
   FREE_RECONCILIATION_FAILURE_REASON,
+  SOURCE_BACKFILL_APPROVAL_PREFLIGHT_FAILURE_REASON,
+  SourceIntakeOperatorValidationError,
+  isApprovedBackfillSourceActivationRetry,
+  sourceIntakeAiReviewRetryPatch,
+  sourceIntakeBackfillApprovalPatch,
+  sourceIntakeBackfillActivationRetryPatch,
   sourceIntakeActionAllowedWithContext,
   sourceIntakeProtectedRecovery,
   sourceIntakeReconciliationRetryEligibility,
   sourceIntakeReconciliationRetryPatch,
+  type SourceIntakeOperatorActionContext,
 } from "@/lib/source-intake-operator-actions";
+import {
+  SourceIntakeProviderBindingValidationError,
+  verifySourceIntakeProviderBindingForAdminApproval,
+} from "@/lib/source-intake-provider-binding.server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
@@ -21,6 +32,7 @@ const actionSchema = z.object({
     "retry_reconciliation",
     "reject",
     "attach_to_award",
+    "approve_backfill_source",
     "approve_as_new_award",
     "rerun_capture",
     "rerun_ai_review",
@@ -39,8 +51,8 @@ export async function PATCH(request: Request, context: RouteContext) {
   const originError = validateSameOriginAdminMutation(request);
   if (originError) return originError;
 
-  const setup = await validateAdminRequest();
-  if (setup) return setup;
+  const access = await validateAdminRequest();
+  if (!access.ok) return access.response;
 
   const { id } = await context.params;
   const parsed = actionSchema.safeParse(await request.json().catch(() => null));
@@ -53,11 +65,15 @@ export async function PATCH(request: Request, context: RouteContext) {
 
   const { data: current, error: currentError } = await admin
     .from("source_page_requests")
-    .select("id,status,status_reason,ai_review,capture_metadata,acquisition_kind,notification_mode,onboarding_batch_id,updated_at")
+    .select("id,award_name,homepage_url,notes,intake_type,submitted_url,normalized_url,status,status_reason,ai_review,deterministic_review,capture_metadata,acquisition_kind,notification_mode,onboarding_batch_id,matched_shared_award_id,updated_at")
     .eq("id", id)
     .maybeSingle();
   if (currentError) {
-    return NextResponse.json({ ok: false, error: currentError.message }, { status: 500 });
+    reportPrivateSourceIntakeError("load", currentError);
+    return NextResponse.json(
+      { ok: false, error: "The source-intake request could not be loaded." },
+      { status: 500 },
+    );
   }
   if (!current) {
     return NextResponse.json({ ok: false, error: "Source intake request not found." }, { status: 404 });
@@ -70,6 +86,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     acquisitionKind: current.acquisition_kind,
     notificationMode: current.notification_mode,
     onboardingBatchId: current.onboarding_batch_id,
+    matchedSharedAwardId: current.matched_shared_award_id,
   };
   const protectedRecovery = sourceIntakeProtectedRecovery(current.status, actionContext);
   if (
@@ -88,8 +105,54 @@ export async function PATCH(request: Request, context: RouteContext) {
     );
   }
 
+  if (parsed.data.action === "approve_backfill_source") {
+    try {
+      verifySourceIntakeProviderBindingForAdminApproval({
+        request: current,
+        deterministicReview: current.deterministic_review,
+        captureMetadata: current.capture_metadata,
+        aiReview: current.ai_review,
+        requireBackfillEvidence: true,
+      });
+    } catch (bindingError) {
+      if (bindingError instanceof SourceIntakeProviderBindingValidationError) {
+        return NextResponse.json(
+          { ok: false, error: bindingError.message },
+          { status: bindingError.status },
+        );
+      }
+      reportPrivateSourceIntakeError("provider_binding_verification", bindingError);
+      return NextResponse.json(
+        { ok: false, error: "The source-intake evidence binding could not be verified." },
+        { status: 500 },
+      );
+    }
+  }
+
   const reason = parsed.data.reason || manualReason(parsed.data.action);
-  const patch = patchForAction(parsed.data, reason, now);
+  let patch: ReturnType<typeof patchForAction>;
+  try {
+    patch = patchForAction(
+      parsed.data,
+      reason,
+      now,
+      current.status,
+      actionContext,
+      String(access.user.email || "").trim().toLowerCase(),
+    );
+  } catch (error) {
+    if (error instanceof SourceIntakeOperatorValidationError) {
+      return NextResponse.json(
+        { ok: false, error: error.message },
+        { status: error.status },
+      );
+    }
+    reportPrivateSourceIntakeError("build_action_patch", error);
+    return NextResponse.json(
+      { ok: false, error: "The source-intake action could not be applied." },
+      { status: 500 },
+    );
+  }
   if (!patch.ok) {
     return NextResponse.json({ ok: false, error: patch.error }, { status: 400 });
   }
@@ -104,7 +167,11 @@ export async function PATCH(request: Request, context: RouteContext) {
     .maybeSingle();
 
   if (error) {
-    return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+    reportPrivateSourceIntakeError("update", error);
+    return NextResponse.json(
+      { ok: false, error: "The source-intake request could not be updated." },
+      { status: 500 },
+    );
   }
   if (!data) {
     return NextResponse.json(
@@ -155,8 +222,20 @@ function protectedActionDisclosure(
     };
   }
   if (action === "retry_reconciliation") {
+    if (statusReason === SOURCE_BACKFILL_APPROVAL_PREFLIGHT_FAILURE_REASON) {
+      return {
+        message: "Approved baseline-only activation replay queued. AwardPing will reuse the exact R2 capture and stored review; it will not fetch the page, rerun AI, or create a charge.",
+        retry: { api_charge: "none", creates_api_charge: false, refetches_page: false, runs_ai_review: false },
+      };
+    }
     return {
       message: "Free reconciliation retry queued. AwardPing will reuse the stored accepted AI result and retained capture; it will not refetch the page or rerun AI.",
+      retry: { api_charge: "none", creates_api_charge: false, refetches_page: false, runs_ai_review: false },
+    };
+  }
+  if (action === "approve_backfill_source") {
+    return {
+      message: "Source activation approved. AwardPing will reuse the completed review, add the source as baseline-only, and will not fetch the page, rerun AI, publish a first-observation update, or change the award homepage.",
       retry: { api_charge: "none", creates_api_charge: false, refetches_page: false, runs_ai_review: false },
     };
   }
@@ -173,6 +252,9 @@ function patchForAction(
   data: z.infer<typeof actionSchema>,
   reason: string,
   now: string,
+  currentStatus: string,
+  actionContext: SourceIntakeOperatorActionContext,
+  approvedBy: string,
 ):
   | { ok: true; value: SourcePageRequestUpdate }
   | { ok: false; error: string } {
@@ -193,7 +275,9 @@ function patchForAction(
   if (data.action === "retry_reconciliation") {
     return {
       ok: true,
-      value: sourceIntakeReconciliationRetryPatch(now),
+      value: isApprovedBackfillSourceActivationRetry(currentStatus, actionContext)
+        ? sourceIntakeBackfillActivationRetryPatch(now)
+        : sourceIntakeReconciliationRetryPatch(now),
     };
   }
 
@@ -212,6 +296,23 @@ function patchForAction(
         processed_at: null,
         updated_at: now,
       },
+    };
+  }
+
+  if (data.action === "approve_backfill_source") {
+    if (!data.sharedAwardId) {
+      return { ok: false, error: "Choose the award that should receive this source." };
+    }
+    return {
+      ok: true,
+      value: sourceIntakeBackfillApprovalPatch({
+        status: currentStatus,
+        context: actionContext,
+        sharedAwardId: data.sharedAwardId,
+        reason,
+        approvedBy,
+        updatedAt: now,
+      }),
     };
   }
 
@@ -257,15 +358,7 @@ function patchForAction(
   if (data.action === "rerun_ai_review") {
     return {
       ok: true,
-      value: {
-        status: "ai_review_pending",
-        status_reason: reason,
-        ai_review: {},
-        error: null,
-        failed_at: null,
-        processed_at: null,
-        updated_at: now,
-      },
+      value: sourceIntakeAiReviewRetryPatch(currentStatus, actionContext, now, reason),
     };
   }
 
@@ -287,6 +380,7 @@ function manualReason(action: string) {
   if (action === "retry_reconciliation") return "manual_reconciliation_retry_requested";
   if (action === "reject") return "manual_reject_requested";
   if (action === "attach_to_award") return "manual_attach_to_existing_award_requested";
+  if (action === "approve_backfill_source") return "manual_backfill_source_approved";
   if (action === "approve_as_new_award") return "manual_approve_as_new_award_requested";
   if (action === "rerun_capture") return "manual_rerun_capture_requested";
   if (action === "rerun_ai_review") return "manual_rerun_ai_review_requested";
@@ -295,17 +389,33 @@ function manualReason(action: string) {
 
 async function validateAdminRequest() {
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
-    return NextResponse.json({ ok: false, error: "Admin source intake is not configured." }, { status: 503 });
+    return {
+      ok: false as const,
+      response: NextResponse.json({ ok: false, error: "Admin source intake is not configured." }, { status: 503 }),
+    };
   }
 
   const user = await getCurrentUser();
   if (!user) {
-    return NextResponse.json({ ok: false, error: "Log in first." }, { status: 401 });
+    return {
+      ok: false as const,
+      response: NextResponse.json({ ok: false, error: "Log in first." }, { status: 401 }),
+    };
   }
 
   if (!isSiteAdminEmail(user.email)) {
-    return NextResponse.json({ ok: false, error: "Only site admins can update source intake." }, { status: 403 });
+    return {
+      ok: false as const,
+      response: NextResponse.json({ ok: false, error: "Only site admins can update source intake." }, { status: 403 }),
+    };
   }
 
-  return null;
+  return { ok: true as const, user };
+}
+
+function reportPrivateSourceIntakeError(stage: string, error: unknown) {
+  console.error("[source-intake-admin] action failed", {
+    stage,
+    message: error instanceof Error ? error.message : String(error),
+  });
 }

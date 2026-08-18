@@ -33,4 +33,13 @@ export function visualChangeSemanticManifest(changeDetails?: unknown): {
   };
 };
 
+export function visualTextGeometryLayoutFingerprint(value: unknown): string;
+
+export function verifyVisualScreenshotLayoutCapture(input?: {
+  before?: unknown;
+  after?: unknown;
+  screenshot?: unknown;
+  stateId?: string;
+}): Record<string, unknown>;
+
 export function sha256VisualSemanticValue(value: unknown): string;

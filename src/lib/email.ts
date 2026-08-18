@@ -37,7 +37,21 @@ export type DailyDigestEmail = {
 export type PublicUpdateConfirmationEmail = {
   to: string;
   confirmUrl: string;
+  idempotencyKey: string;
 };
+
+export type RenderedPublicUpdateConfirmationEmail = {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+};
+
+export type FrozenPublicUpdateConfirmationEmail =
+  RenderedPublicUpdateConfirmationEmail & {
+    idempotencyKey: string;
+  };
 
 export type PublicDailyDigestRenderInput = {
   changes: PublicDigestChange[];
@@ -72,6 +86,7 @@ export type ContactFormEmail = {
   name: string;
   email: string;
   message: string;
+  idempotencyKey?: string;
 };
 
 export async function sendChangeAlertEmail(input: ChangeAlertEmail) {
@@ -183,18 +198,11 @@ export async function sendDailyDigestEmail(input: DailyDigestEmail) {
   });
 }
 
-export async function sendPublicUpdateConfirmationEmail(input: PublicUpdateConfirmationEmail) {
-  if (!appConfig.resendApiKey) {
-    logSkippedEmail("public update confirmation", {
-      to: input.to,
-      confirmUrl: "[redacted]",
-    });
-    return { skipped: true };
-  }
-
-  resend ??= new Resend(appConfig.resendApiKey);
-
-  return resend.emails.send({
+export function renderPublicUpdateConfirmationEmail(input: {
+  to: string;
+  confirmUrl: string;
+}): RenderedPublicUpdateConfirmationEmail {
+  return {
     from: appConfig.alertFromEmail,
     to: input.to,
     subject: "Confirm your AwardPing daily updates",
@@ -207,6 +215,37 @@ export async function sendPublicUpdateConfirmationEmail(input: PublicUpdateConfi
       </div>
     `,
     text: `Confirm your daily AwardPing updates\n\n${input.confirmUrl}\n\nIf you did not request this, you can ignore this email.`,
+  };
+}
+
+export async function sendFrozenPublicUpdateConfirmationEmail(
+  input: FrozenPublicUpdateConfirmationEmail,
+) {
+  if (!appConfig.resendApiKey) {
+    logSkippedEmail("public update confirmation", { to: input.to });
+    return { skipped: true };
+  }
+
+  resend ??= new Resend(appConfig.resendApiKey);
+
+  return resend.emails.send(
+    {
+      from: input.from,
+      to: input.to,
+      subject: input.subject,
+      html: input.html,
+      text: input.text,
+    },
+    { idempotencyKey: input.idempotencyKey },
+  );
+}
+
+export async function sendPublicUpdateConfirmationEmail(
+  input: PublicUpdateConfirmationEmail,
+) {
+  return sendFrozenPublicUpdateConfirmationEmail({
+    ...renderPublicUpdateConfirmationEmail(input),
+    idempotencyKey: input.idempotencyKey,
   });
 }
 
@@ -316,7 +355,7 @@ export async function sendContactFormEmail(input: ContactFormEmail) {
 
   resend ??= new Resend(appConfig.resendApiKey);
 
-  return resend.emails.send({
+  const message = {
     from: appConfig.alertFromEmail,
     to: input.to,
     replyTo: input.email,
@@ -331,7 +370,10 @@ export async function sendContactFormEmail(input: ContactFormEmail) {
       </div>
     `,
     text: `AwardPing contact form\n\nName: ${input.name}\nEmail: ${input.email}\n\n${input.message}`,
-  });
+  };
+  return input.idempotencyKey
+    ? resend.emails.send(message, { idempotencyKey: input.idempotencyKey })
+    : resend.emails.send(message);
 }
 
 function escapeHtml(value: string) {

@@ -16,6 +16,10 @@ import {
   stage1ExternalReleasePreflightName,
   stage1ExternalReleaseRecorderName,
 } from "./lib/stage1-release-evidence-signing.mjs";
+import {
+  buildStage1ReleaseOperatorReport,
+  writeStage1ReleaseOperatorReport,
+} from "./lib/stage1-release-operator-report.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
@@ -56,6 +60,7 @@ const measurement = await produceMeasurement({
   target,
   supabase,
   supabaseAnonKey,
+  serviceRoleKey,
   args,
 });
 const completedAt = new Date().toISOString();
@@ -91,6 +96,21 @@ if (
 }
 
 if (args.apply !== true) {
+  const operatorReport = buildStage1ReleaseOperatorReport({
+    kind,
+    measurement,
+    target,
+    evidenceHash,
+    signedPayloadHash,
+    startedAt,
+    completedAt,
+    validUntil,
+    apply: false,
+  });
+  const operatorReportPath = writeStage1ReleaseOperatorReport({
+    root,
+    report: operatorReport,
+  });
   console.log(JSON.stringify({
     apply: false,
     kind,
@@ -102,7 +122,9 @@ if (args.apply !== true) {
     evidence_hash: evidenceHash,
     signed_payload_hash: signedPayloadHash,
     recorder: stage1ExternalReleaseRecorderName(kind),
-    note: "Producer-owned measurement and DB preflight completed. No signing secret was read and no artifact was retained.",
+    operator_report_path: operatorReportPath,
+    diagnostics: operatorReport.diagnostics,
+    note: "Producer-owned measurement and DB preflight completed. No signing secret was read and no signed release artifact was retained; the redacted local operator report was written at operator_report_path.",
   }, null, 2));
   process.exit(0);
 }
@@ -125,6 +147,22 @@ const { data: artifact, error: recordError } = await supabase.rpc(
   },
 );
 if (recordError) throw new Error(`Signed artifact import failed: ${recordError.message}`);
+const operatorReport = buildStage1ReleaseOperatorReport({
+  kind,
+  measurement,
+  target,
+  evidenceHash,
+  signedPayloadHash,
+  startedAt,
+  completedAt,
+  validUntil,
+  apply: true,
+  artifact,
+});
+const operatorReportPath = writeStage1ReleaseOperatorReport({
+  root,
+  report: operatorReport,
+});
 console.log(JSON.stringify({
   apply: true,
   artifact_id: artifact?.id || null,
@@ -133,6 +171,8 @@ console.log(JSON.stringify({
   target_config_hash: artifact?.target_config_hash || target.targetConfigHash,
   evidence_hash: artifact?.evidence_hash || evidenceHash,
   valid_until: artifact?.valid_until || validUntil,
+  operator_report_path: operatorReportPath,
+  diagnostics: operatorReport.diagnostics,
 }, null, 2));
 
 async function produceMeasurement({
@@ -141,12 +181,14 @@ async function produceMeasurement({
   target: normalizedTarget,
   supabase: client,
   supabaseAnonKey: anonKey,
+  serviceRoleKey: serviceKey,
   args: values,
 }) {
   if (requestedKind === "hosted_runtime_identity") {
     return measureStage1HostedRuntimeIdentity({
       target: rawTarget,
       supabaseAnonKey: anonKey,
+      supabaseServiceRoleKey: serviceKey,
     });
   }
   if (requestedKind === "non_cohort_leak_crawl") {
@@ -159,6 +201,7 @@ async function produceMeasurement({
       target: rawTarget,
       manifest,
       supabaseAnonKey: anonKey,
+      supabaseServiceRoleKey: serviceKey,
       concurrency: integer(values.concurrency, 6, 1, 16),
     });
   }
@@ -166,6 +209,7 @@ async function produceMeasurement({
     const runtime = await measureStage1HostedRuntimeIdentity({
       target: rawTarget,
       supabaseAnonKey: anonKey,
+      supabaseServiceRoleKey: serviceKey,
     });
     const manifest = await requiredRpc(
       client,
@@ -209,6 +253,7 @@ async function produceMeasurement({
       executeProductionRollback: values["execute-production-rollback"] === true,
       deploymentController: vercelDeploymentController(normalizedTarget),
       supabaseAnonKey: anonKey,
+      supabaseServiceRoleKey: serviceKey,
       pollAttempts: integer(values["poll-attempts"], 60, 1, 120),
       pollIntervalMs: integer(values["poll-interval-ms"], 3_000, 0, 30_000),
     });

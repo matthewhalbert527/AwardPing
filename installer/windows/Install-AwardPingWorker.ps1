@@ -2,10 +2,13 @@ param(
   [string]$InstallRoot = "$env:LOCALAPPDATA\AwardPingWorker",
   [string]$SupabaseUrl = "https://zploenljxkqzyxcmbyec.supabase.co",
   [string]$AppUrl = "https://awardping.vercel.app",
-  [switch]$UpdateOnly
+  [switch]$UpdateOnly,
+  [switch]$AcceptInteractiveTaskLogon
 )
 
 $ErrorActionPreference = "Stop"
+
+Add-Type -AssemblyName System.Net.Http
 
 function Write-Step {
   param([string]$Message)
@@ -71,24 +74,6 @@ function Read-YesNo {
   }
 }
 
-function Get-WebErrorBody {
-  param($ErrorRecord)
-
-  $response = $ErrorRecord.Exception.Response
-  if (-not $response) {
-    return $ErrorRecord.Exception.Message
-  }
-
-  try {
-    $stream = $response.GetResponseStream()
-    if (-not $stream) { return $ErrorRecord.Exception.Message }
-    $reader = New-Object System.IO.StreamReader($stream)
-    return $reader.ReadToEnd()
-  } catch {
-    return $ErrorRecord.Exception.Message
-  }
-}
-
 function Test-SupabaseSecretKey {
   param([string]$Key)
   return $Key.Trim().StartsWith("sb_secret_")
@@ -131,14 +116,27 @@ function Test-SupabaseSecretKeyAccess {
   $endpoint = "${baseUrl}/rest/v1/shared_awards?select=id&limit=1"
   $headers = New-SupabaseKeyHeaders $SupabaseSecretKey
 
+  $client = [System.Net.Http.HttpClient]::new()
+  $request = $null
+  $response = $null
+
   try {
-    Invoke-RestMethod -Method Get -Uri $endpoint -Headers $headers -ErrorAction Stop | Out-Null
-    return @{ Ok = $true; Message = "Supabase sb_secret key validated using apikey only." }
-  } catch {
-    $body = Get-WebErrorBody $_
-    $status = $null
-    if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
-      $status = [int]$_.Exception.Response.StatusCode
+    # PowerShell's web cmdlets send a browser-identifying user agent on Windows.
+    # Supabase intentionally rejects sb_secret keys from browser-like clients,
+    # so validate with a raw server-side request that sends only `apikey`.
+    $request = [System.Net.Http.HttpRequestMessage]::new(
+      [System.Net.Http.HttpMethod]::Get,
+      $endpoint
+    )
+    foreach ($header in $headers.GetEnumerator()) {
+      [void]$request.Headers.TryAddWithoutValidation($header.Key, $header.Value)
+    }
+    $response = $client.SendAsync($request).GetAwaiter().GetResult()
+    $status = [int]$response.StatusCode
+    $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+
+    if ($response.IsSuccessStatusCode) {
+      return @{ Ok = $true; Message = "Supabase sb_secret key validated using apikey only." }
     }
 
     if ($body -match "Invalid API key" -or $status -eq 401) {
@@ -159,6 +157,15 @@ function Test-SupabaseSecretKeyAccess {
       Ok = $false
       Message = "Could not validate the Supabase key against $endpoint. Status: $status. Response: $body"
     }
+  } catch {
+    return @{
+      Ok = $false
+      Message = "Could not validate the Supabase key against $endpoint. Network error: $($_.Exception.Message)"
+    }
+  } finally {
+    if ($response) { $response.Dispose() }
+    if ($request) { $request.Dispose() }
+    $client.Dispose()
   }
 }
 
@@ -257,6 +264,109 @@ function Get-AwardPingManagedTaskNames {
     "AwardPing Manual Quarantine Lane",
     "AwardPing Nightly Report Lane"
   )
+}
+
+function Get-AwardPingInteractiveTaskNames {
+  param([string]$InstallRoot)
+
+  $managedTaskNames = @(Get-AwardPingManagedTaskNames)
+  return @(
+    Get-ScheduledTask -ErrorAction Stop |
+      Where-Object {
+        [string]$_.TaskName -in $managedTaskNames -and
+        (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot) -and
+        [string]$_.Principal.LogonType -in @("Interactive", "InteractiveToken")
+      } |
+      ForEach-Object { [string]$_.TaskName }
+  )
+}
+
+function Test-AwardPingInteractiveLogonAcceptance {
+  param([string]$InstallRoot)
+
+  $path = Join-Path $InstallRoot "worker-operational-mode.json"
+  if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+    return $false
+  }
+
+  try {
+    if ((Get-AwardPingWorkerEnvAclProblems -Path $path -TaskSnapshots @()).Count -gt 0) {
+      return $false
+    }
+    $acceptance = Get-Content -LiteralPath $path -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    [DateTimeOffset]$acceptedAt = [DateTimeOffset]::MinValue
+    return (
+      [string]$acceptance.schema_version -eq "awardping-worker-operational-mode-v1" -and
+      [string]$acceptance.operational_mode -eq "interactive_logon_required" -and
+      -not [string]::IsNullOrWhiteSpace([string]$acceptance.accepted_by) -and
+      [DateTimeOffset]::TryParse([string]$acceptance.accepted_at, [ref]$acceptedAt)
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Write-AwardPingInteractiveLogonAcceptance {
+  param(
+    [string]$InstallRoot,
+    [string]$SourceRevision
+  )
+
+  $path = Join-Path $InstallRoot "worker-operational-mode.json"
+  $acceptance = [ordered]@{
+    schema_version = "awardping-worker-operational-mode-v1"
+    operational_mode = "interactive_logon_required"
+    accepted_at = [DateTimeOffset]::UtcNow.ToString("o")
+    accepted_by = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    source_revision = $SourceRevision
+    limitation = "All interactive AwardPing tasks can run only while this Windows operator is logged in. This is not logged-off unattended operation."
+  }
+  $acceptance |
+    ConvertTo-Json -Depth 3 |
+    Set-Content -LiteralPath $path -Encoding UTF8 -ErrorAction Stop
+  Set-AwardPingWorkerEnvFileAcl -Path $path -TaskSnapshots @()
+}
+
+function Assert-AwardPingInteractiveTaskLogonAccepted {
+  param(
+    [string]$InstallRoot,
+    [bool]$UpdateOnly,
+    [bool]$Accepted,
+    [string]$SourceRevision
+  )
+
+  $managedTaskNames = @(Get-AwardPingManagedTaskNames)
+  $installedManagedTaskNames = @(
+    Get-ScheduledTask -ErrorAction Stop |
+      Where-Object {
+        [string]$_.TaskName -in $managedTaskNames -and
+        (Test-AwardPingTaskTargetsInstallRoot -Task $_ -InstallRoot $InstallRoot)
+      } |
+      ForEach-Object { [string]$_.TaskName }
+  )
+  $interactiveTaskNames = @(Get-AwardPingInteractiveTaskNames -InstallRoot $InstallRoot)
+  $missingManagedTaskNames = @(
+    $managedTaskNames | Where-Object { [string]$_ -notin $installedManagedTaskNames }
+  )
+  $interactiveModeRequired = (
+    -not $UpdateOnly -or
+    $interactiveTaskNames.Count -gt 0 -or
+    $missingManagedTaskNames.Count -gt 0
+  )
+
+  if (-not $interactiveModeRequired) {
+    return
+  }
+  if ($Accepted) {
+    Write-AwardPingInteractiveLogonAcceptance `
+      -InstallRoot $InstallRoot `
+      -SourceRevision $SourceRevision
+  }
+  if (-not (Test-AwardPingInteractiveLogonAcceptance -InstallRoot $InstallRoot)) {
+    throw "AwardPing's current Scheduled Task mode requires a Windows operator to remain logged in. Re-run with -AcceptInteractiveTaskLogon only after explicitly accepting and documenting that Stage 1 operational limitation, or configure all eleven tasks with an approved least-privilege logged-off principal first."
+  }
+
+  Write-Host "Accepted operational mode: AwardPing tasks require this Windows operator to remain logged in. Logged-off unattended execution is not configured." -ForegroundColor Yellow
 }
 
 function Get-AwardPingTaskSnapshotKey {
@@ -438,6 +548,160 @@ function Read-WorkerEnvValues {
     }
   }
   return $values
+}
+
+function ConvertTo-AwardPingSecurityIdentifier {
+  param([string]$Identity)
+
+  $Identity = ([string]$Identity).Trim()
+  if ([string]::IsNullOrWhiteSpace($Identity)) {
+    return $null
+  }
+  try {
+    if ($Identity -match "^S-\d-(?:\d+-){1,14}\d+$") {
+      return [System.Security.Principal.SecurityIdentifier]::new($Identity)
+    }
+    return [System.Security.Principal.NTAccount]::new($Identity).Translate(
+      [System.Security.Principal.SecurityIdentifier]
+    )
+  } catch {
+    return $null
+  }
+}
+
+function Get-AwardPingWorkerEnvAllowedSecurityIdentifiers {
+  param([object[]]$TaskSnapshots)
+
+  $allowed = [ordered]@{}
+  foreach ($sid in @(
+    [System.Security.Principal.WindowsIdentity]::GetCurrent().User,
+    [System.Security.Principal.SecurityIdentifier]::new("S-1-5-18"),
+    [System.Security.Principal.SecurityIdentifier]::new("S-1-5-32-544")
+  )) {
+    $allowed[$sid.Value] = [pscustomobject]@{
+      Sid = $sid
+      Rights = [System.Security.AccessControl.FileSystemRights]::FullControl
+    }
+  }
+
+  foreach ($snapshot in @($TaskSnapshots)) {
+    try {
+      [xml]$document = $snapshot.Xml
+      $namespace = [System.Xml.XmlNamespaceManager]::new($document.NameTable)
+      $namespace.AddNamespace("task", $document.DocumentElement.NamespaceURI)
+      foreach ($node in @($document.SelectNodes("/task:Task/task:Principals/task:Principal/task:UserId", $namespace))) {
+        $sid = ConvertTo-AwardPingSecurityIdentifier -Identity ([string]$node.InnerText)
+        if (-not $sid) {
+          throw "could not resolve task principal '$([string]$node.InnerText)'"
+        }
+        if (-not $allowed.Contains($sid.Value)) {
+          $allowed[$sid.Value] = [pscustomobject]@{
+            Sid = $sid
+            Rights = [System.Security.AccessControl.FileSystemRights]::ReadAndExecute
+          }
+        }
+      }
+    } catch {
+      throw "Could not determine the permitted worker environment readers for $($snapshot.TaskPath)$($snapshot.TaskName): $($_.Exception.Message)"
+    }
+  }
+
+  return @($allowed.Values)
+}
+
+function Get-AwardPingWorkerEnvAclProblems {
+  param(
+    [string]$Path,
+    [object[]]$TaskSnapshots
+  )
+
+  $problems = @()
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return @("worker environment file is missing: $Path")
+  }
+
+  try {
+    $allowedEntries = @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)
+    $allowed = @{}
+    foreach ($entry in $allowedEntries) {
+      $allowed[$entry.Sid.Value] = $entry
+    }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if (-not $acl.AreAccessRulesProtected) {
+      $problems += "worker environment ACL still inherits permissions: $Path"
+    }
+    $rules = @($acl.GetAccessRules(
+      $true,
+      $true,
+      [System.Security.Principal.SecurityIdentifier]
+    ))
+    foreach ($rule in $rules) {
+      if (
+        $rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+        -not $allowed.ContainsKey($rule.IdentityReference.Value)
+      ) {
+        $problems += "worker environment ACL grants access to unapproved SID $($rule.IdentityReference.Value): $Path"
+      }
+    }
+    foreach ($entry in $allowedEntries) {
+      $requiredRights = [System.Security.AccessControl.FileSystemRights]$entry.Rights
+      $matchingAllowRules = @($rules | Where-Object {
+          $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+          $_.IdentityReference.Value -eq $entry.Sid.Value
+        })
+      $hasRequiredRights = $false
+      foreach ($rule in $matchingAllowRules) {
+        if (($rule.FileSystemRights -band $requiredRights) -eq $requiredRights) {
+          $hasRequiredRights = $true
+          break
+        }
+      }
+      if (-not $hasRequiredRights) {
+        $problems += "worker environment ACL is missing required access for SID $($entry.Sid.Value): $Path"
+      }
+    }
+  } catch {
+    $problems += "could not validate worker environment ACL: $Path ($($_.Exception.Message))"
+  }
+
+  return $problems
+}
+
+function Set-AwardPingWorkerEnvFileAcl {
+  param(
+    [string]$Path,
+    [object[]]$TaskSnapshots
+  )
+
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "Cannot secure a missing worker environment file: $Path"
+  }
+
+  $allowedEntries = @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)
+  $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+  $acl.SetAccessRuleProtection($true, $false)
+  $existingRules = @($acl.GetAccessRules(
+    $true,
+    $true,
+    [System.Security.Principal.SecurityIdentifier]
+  ))
+  foreach ($sid in @($existingRules.IdentityReference | Select-Object -Unique)) {
+    $acl.PurgeAccessRules($sid)
+  }
+  foreach ($entry in $allowedEntries) {
+    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+      $entry.Sid,
+      [System.Security.AccessControl.FileSystemRights]$entry.Rights,
+      [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+  }
+  Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+
+  $problems = @(Get-AwardPingWorkerEnvAclProblems -Path $Path -TaskSnapshots $TaskSnapshots)
+  if ($problems.Count -gt 0) {
+    throw "Worker environment ACL hardening did not validate: $($problems -join ' | ')"
+  }
 }
 
 function Get-AwardPingSourceRevision {
@@ -923,16 +1187,47 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\lib\gemini-batch-support.mjs"),
       (Join-Path $AppDir "scripts\lib\paid-visual-review-policy.mjs"),
       (Join-Path $AppDir "scripts\lib\r2-baseline-rehydration.mjs"),
+      (Join-Path $AppDir "scripts\lib\legacy-r2-retained-projection-provenance.mjs"),
+      (Join-Path $AppDir "scripts\lib\r2-capture-artifact-bindings.mjs"),
+      (Join-Path $AppDir "scripts\lib\local-baseline-evidence.mjs"),
       (Join-Path $AppDir "scripts\lib\intake-artifact-retention.mjs"),
+      (Join-Path $AppDir "scripts\lib\source-intake-provider-binding.mjs"),
       (Join-Path $AppDir "scripts\lib\initial-official-document.mjs"),
       (Join-Path $AppDir "scripts\lib\initial-document-recovery.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-baseline-activation-guard.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-baseline-source-disposition.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-validation.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-apply-plan.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-apply-audit.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-completed-authority.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-apply-execution.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-source-authority.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-plan.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-execution.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-worker.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-runtime.mjs"),
+      (Join-Path $AppDir "scripts\stage1-evidence-schema-upgrade-reviewed-recovery.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-beinecke-faq-legacy-geometry.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-pre-1fc005c-legacy-geometry.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-legacy-empty-expansion.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-transaction.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-commit.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-mutation-accounting.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-r2-binding.mjs"),
+      (Join-Path $AppDir "scripts\lib\stage1-evidence-schema-upgrade-quarantine.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-snapshot-latest-only-reconciliation.mjs"),
       (Join-Path $AppDir "scripts\capture-visual-snapshots.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-capture-run-report.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-nightly-run-contract.mjs"),
+      (Join-Path $AppDir "scripts\lib\expansion-state-descriptor-canonicalization.mjs"),
       (Join-Path $AppDir "scripts\lib\expansion-state-isolation.mjs"),
       (Join-Path $AppDir "scripts\lib\visible-text-geometry.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-event-localization.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-snapshot-history.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-snapshot-pointer-reconciliation.mjs"),
+      (Join-Path $AppDir "scripts\lib\visual-baseline-retained-projection-identity.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-review-queue.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-baseline-promotion.mjs"),
       (Join-Path $AppDir "scripts\report-visual-nightly.mjs"),
@@ -944,6 +1239,7 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\lib\award-monitoring-policy.mjs"),
       (Join-Path $AppDir "scripts\lib\change-event-suppression.mjs"),
       (Join-Path $AppDir "scripts\lib\change-event-sweep-state.mjs"),
+      (Join-Path $AppDir "scripts\lib\admin-review-state-guard.mjs"),
       (Join-Path $AppDir "scripts\lib\source-quality.mjs"),
       (Join-Path $AppDir "scripts\lib\source-ai-review-status.mjs"),
       (Join-Path $AppDir "src\lib\change-event-suppression.ts"),
@@ -954,6 +1250,8 @@ function Get-AwardPingInstalledRuntimeProblems {
       (Join-Path $AppDir "scripts\supabase-service-client.mjs"),
       (Join-Path $AppDir "scripts\backfill-baseline-facts.mjs"),
       (Join-Path $AppDir "scripts\process-source-intake-requests.mjs"),
+      (Join-Path $AppDir "scripts\lib\award-fact-reconciliation.mjs"),
+      (Join-Path $AppDir "scripts\lib\source-backfill-intake.mjs"),
       (Join-Path $AppDir "scripts\lib\source-intake.mjs"),
       (Join-Path $AppDir "scripts\process-visual-review-batch.mjs"),
       (Join-Path $AppDir "scripts\lib\visual-change-publication.mjs"),
@@ -1003,6 +1301,9 @@ function Get-AwardPingInstalledRuntimeProblems {
 
   $workerEnvPath = Join-Path $AppDir ".env.worker.local"
   if (Test-Path -LiteralPath $workerEnvPath -PathType Leaf) {
+    $problems += @(Get-AwardPingWorkerEnvAclProblems `
+      -Path $workerEnvPath `
+      -TaskSnapshots $TaskSnapshots)
     $workerEnv = Read-WorkerEnvValues -Path $workerEnvPath
     if (-not (Test-SupabaseSecretKey ([string]$workerEnv["SUPABASE_SERVICE_ROLE_KEY"]))) {
       $problems += "invalid SUPABASE_SERVICE_ROLE_KEY; the production worker requires an sb_secret key and cannot resume with a legacy JWT"
@@ -1043,6 +1344,14 @@ function Get-AwardPingInstalledRuntimeProblems {
     }
   }
 
+  $interactiveTaskNames = @(Get-AwardPingInteractiveTaskNames -InstallRoot $InstallRoot)
+  if (
+    $interactiveTaskNames.Count -gt 0 -and
+    -not (Test-AwardPingInteractiveLogonAcceptance -InstallRoot $InstallRoot)
+  ) {
+    $problems += "interactive Scheduled Tasks lack a documented logged-in-operator acceptance: $($interactiveTaskNames -join ', ')"
+  }
+
   if ($RequireManagedRuntime) {
     $problems += @(Get-AwardPingManagedTaskScheduleProblems -InstallRoot $InstallRoot)
     $hashPairs = @()
@@ -1064,16 +1373,47 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\gemini-batch-support.mjs",
         "scripts\lib\paid-visual-review-policy.mjs",
         "scripts\lib\r2-baseline-rehydration.mjs",
+        "scripts\lib\legacy-r2-retained-projection-provenance.mjs",
+        "scripts\lib\r2-capture-artifact-bindings.mjs",
+        "scripts\lib\local-baseline-evidence.mjs",
         "scripts\lib\intake-artifact-retention.mjs",
+        "scripts\lib\source-intake-provider-binding.mjs",
         "scripts\lib\initial-official-document.mjs",
         "scripts\lib\initial-document-recovery.mjs",
+        "scripts\lib\stage1-baseline-activation-guard.mjs",
+        "scripts\lib\stage1-baseline-source-disposition.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-validation.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-apply-plan.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-apply-audit.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-completed-authority.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-apply-execution.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-source-authority.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-plan.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-execution.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-worker.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-reviewed-recovery-runtime.mjs",
+        "scripts\stage1-evidence-schema-upgrade-reviewed-recovery.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-beinecke-faq-legacy-geometry.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-pre-1fc005c-legacy-geometry.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-legacy-empty-expansion.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-transaction.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-commit.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-mutation-accounting.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-r2-binding.mjs",
+        "scripts\lib\stage1-evidence-schema-upgrade-quarantine.mjs",
+        "scripts\lib\visual-snapshot-latest-only-reconciliation.mjs",
         "scripts\capture-visual-snapshots.mjs",
         "scripts\lib\visual-capture-run-report.mjs",
         "scripts\lib\visual-nightly-run-contract.mjs",
+        "scripts\lib\expansion-state-descriptor-canonicalization.mjs",
         "scripts\lib\expansion-state-isolation.mjs",
         "scripts\lib\visible-text-geometry.mjs",
         "scripts\lib\visual-event-localization.mjs",
         "scripts\lib\visual-snapshot-history.mjs",
+        "scripts\lib\visual-snapshot-pointer-reconciliation.mjs",
+        "scripts\lib\visual-baseline-retained-projection-identity.mjs",
         "scripts\lib\visual-review-queue.mjs",
         "scripts\lib\visual-baseline-promotion.mjs",
         "scripts\report-visual-nightly.mjs",
@@ -1085,6 +1425,7 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\lib\award-monitoring-policy.mjs",
         "scripts\lib\change-event-suppression.mjs",
         "scripts\lib\change-event-sweep-state.mjs",
+        "scripts\lib\admin-review-state-guard.mjs",
         "scripts\lib\source-quality.mjs",
         "scripts\lib\source-ai-review-status.mjs",
         "src\lib\change-event-suppression.ts",
@@ -1095,6 +1436,8 @@ function Get-AwardPingInstalledRuntimeProblems {
         "scripts\supabase-service-client.mjs",
         "scripts\backfill-baseline-facts.mjs",
         "scripts\process-source-intake-requests.mjs",
+        "scripts\lib\award-fact-reconciliation.mjs",
+        "scripts\lib\source-backfill-intake.mjs",
         "scripts\lib\source-intake.mjs",
         "scripts\process-visual-review-batch.mjs",
         "scripts\lib\visual-change-publication.mjs",
@@ -1628,6 +1971,7 @@ R2_SECRET_ACCESS_KEY=$R2SecretAccessKey
 "@
 
   Set-Content -Path $Path -Value $content -Encoding UTF8
+  Set-AwardPingWorkerEnvFileAcl -Path $Path -TaskSnapshots @()
 }
 
 function Update-ExistingEnvFileDefaults {
@@ -1670,6 +2014,27 @@ function Update-ExistingEnvFileDefaults {
     "(?m)^AWARDPING_GEMINI_API_DAILY_COST_CAP_USD=.*(?:\r?\n)?",
     ""
   )
+
+  # These legacy run-mode settings can silently turn a recurring scan into a
+  # historical/repair run. Scheduled launchers now declare the complete
+  # contract on the command line; ad hoc modes remain available as explicit
+  # command-line options.
+  $legacyRunModeKeys = @(
+    "AWARDPING_DISCOVERY_ONBOARDING_BATCH_ID",
+    "AWARDPING_DISCOVERY_INTENT",
+    "AWARDPING_VISUAL_REVIEW_MODE",
+    "AWARDPING_INTERPRET_VISUAL_CHANGES",
+    "AWARDPING_LOCALIZATION_REPAIR",
+    "AWARDPING_FORCE_R2_SNAPSHOT_REFRESH",
+    "AWARDPING_RESET_PREVIOUS_SNAPSHOT"
+  )
+  foreach ($key in $legacyRunModeKeys) {
+    $content = [regex]::Replace(
+      $content,
+      "(?m)^$([regex]::Escape($key))=.*(?:\r?\n)?",
+      ""
+    )
+  }
 
   foreach ($key in $updates.Keys) {
     $value = $updates[$key]
@@ -1857,13 +2222,22 @@ if (-not (Test-Path -LiteralPath `$workerScript)) {
   [string]`$ShardIndex,
   "--run-trigger",
   `$RunTrigger,
-  "--extract-baseline-info=false"
+  "--extract-baseline-info=false",
+  "--localization-repair=false",
+  "--reset-previous-snapshot=false",
+  "--force-r2-snapshot-refresh=false",
+  "--visual-review-mode=batch",
+  "--interpret-visual-changes=true",
+  "--r2-snapshot-sync=true",
+  "--max-expansion-state-screenshots=24",
+  "--expansion-state-timeout-per-state-ms=60000"
 )
 if (`$All) { `$workerArgs += "--all=true" }
 # The permanent capture path is the authoritative live discovery surface.
 # It queues newly linked PDFs for the separately capped new-page review lane.
 `$workerArgs += "--discovery-mode=true"
 `$workerArgs += "--discovery-intent=live_recurring"
+`$workerArgs += "--discovery-onboarding-batch-id="
 `$workerArgs += "--discover-pdf-subpages=true"
 `$workerArgs += "--discover-html-subpages=false"
 `$workerArgs += "--max-html-subpage-discoveries=0"
@@ -2441,7 +2815,7 @@ $sourceRevision = Get-AwardPingSourceRevision -SourceRoot $sourceRoot
 if ($UpdateOnly) {
   Write-Host "AwardPing Local PC Worker Code Update" -ForegroundColor Green
   Write-Host "This updates the crawler under: $InstallRoot"
-  Write-Host "Existing keys in .env.worker.local will be kept, except a legacy Supabase JWT must be replaced with a validated sb_secret key."
+  Write-Host "Existing secrets in .env.worker.local will be kept. A legacy Supabase JWT must be replaced with a validated sb_secret key, and obsolete persistent run-mode overrides are removed so scheduled scans cannot inherit repair or onboarding state."
 } else {
   Write-Host "AwardPing Local PC Worker Installer" -ForegroundColor Green
   Write-Host "This installs the crawler under: $InstallRoot"
@@ -2461,6 +2835,11 @@ if ($UpdateOnly -and -not (Test-Path $envPath)) {
 New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
+Assert-AwardPingInteractiveTaskLogonAccepted `
+  -InstallRoot $InstallRoot `
+  -UpdateOnly ([bool]$UpdateOnly) `
+  -Accepted ([bool]$AcceptInteractiveTaskLogon) `
+  -SourceRevision $sourceRevision
 Ensure-Node
 Assert-AwardPingManagedTaskRegistrationScope -InstallRoot $InstallRoot
 $taskSnapshots = @()
@@ -2496,6 +2875,7 @@ try {
     $taskSnapshots = @(Get-AwardPingTaskSnapshotsForUpdate -InstallRoot $InstallRoot)
     $taskSnapshotCaptured = $true
     Suspend-AwardPingTasksForUpdate -Snapshots $taskSnapshots -InstallRoot $InstallRoot
+    Set-AwardPingWorkerEnvFileAcl -Path $envPath -TaskSnapshots $taskSnapshots
     $startupLauncherSnapshot = Suspend-AwardPingStartupLauncherForUpdate `
       -InstallRoot $InstallRoot `
       -UpdateToken $updateToken
@@ -2511,6 +2891,9 @@ try {
     Update-WorkerSupabaseSecretKeyForMigration `
       -Path (Join-Path $stagingAppDir ".env.worker.local") `
       -SupabaseUrl $SupabaseUrl
+    Set-AwardPingWorkerEnvFileAcl `
+      -Path (Join-Path $stagingAppDir ".env.worker.local") `
+      -TaskSnapshots $taskSnapshots
     Switch-ToStagedAwardPingApp `
       -CurrentAppDir $appDir `
       -StagingAppDir $stagingAppDir `
@@ -2559,6 +2942,9 @@ try {
     $finalizationSnapshots = @(Get-AwardPingTaskSnapshotsForFinalization `
       -InitialSnapshots @() `
       -InstallRoot $InstallRoot)
+    Set-AwardPingWorkerEnvFileAcl `
+      -Path $envPath `
+      -TaskSnapshots $finalizationSnapshots
     $runtimeProblems = @(Get-AwardPingInstalledRuntimeProblems `
       -InstallRoot $InstallRoot `
       -AppDir $appDir `

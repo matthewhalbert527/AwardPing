@@ -82,9 +82,25 @@ describe("new official document source-intake wiring", () => {
     expect(capture.indexOf("const pageSettle = await waitForPageSettledForSnapshot")).toBeLessThan(
       capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage"),
     );
-    expect(capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage")).toBeLessThan(
-      capture.indexOf("const finalTextGeometry = await captureStructuredVisibleTextGeometry"),
+    const discoveryIndex = capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage");
+    const geometryIndex = capture.indexOf("let finalTextGeometry = pageSettle.stable");
+    const screenshotIndex = capture.indexOf("const pageBuffer = await page.screenshot");
+    const evidenceWriteIndex = capture.indexOf("writeFileSync(pendingMetaPath");
+    const boundaryIndex = capture.indexOf("await finalizeCaptureNetworkBoundary({");
+    const metadataPromotionIndex = capture.indexOf("renameSync(pendingMetaPath, metaPath)");
+    const finalNetworkValidationIndex = capture.indexOf(
+      "await finalizeCaptureNetworkBoundary({",
     );
+    const durableRegistrationIndex = capture.indexOf(
+      "await maybeRecordDiscoveredPdfSources(",
+    );
+    expect(discoveryIndex).toBeLessThan(geometryIndex);
+    expect(geometryIndex).toBeLessThan(screenshotIndex);
+    expect(screenshotIndex).toBeLessThan(evidenceWriteIndex);
+    expect(evidenceWriteIndex).toBeLessThan(boundaryIndex);
+    expect(boundaryIndex).toBe(finalNetworkValidationIndex);
+    expect(finalNetworkValidationIndex).toBeLessThan(metadataPromotionIndex);
+    expect(metadataPromotionIndex).toBeLessThan(durableRegistrationIndex);
     expect(completeness).toContain('"final_expansion_failed"');
     expect(completeness).toContain('"expandable_control_cap_hit"');
     expect(completeness).toContain('"scroll_activation_failed"');
@@ -101,6 +117,10 @@ describe("new official document source-intake wiring", () => {
 
   it("creates an immutable acquisition only after a genuinely new accepted source insert", () => {
     const acceptedSourceWrite = functionBody(intakeWorker, "async function registerAcceptedSource");
+    const sourceReviewLoad = functionBody(
+      intakeWorker,
+      "async function loadRegisteredSharedSourceReviewState",
+    );
 
     expect(acceptedSourceWrite).toContain("buildSourceAcquisitionProposal");
     expect(acceptedSourceWrite).toContain('.rpc("register_shared_award_source_from_intake"');
@@ -108,12 +128,24 @@ describe("new official document source-intake wiring", () => {
     expect(acceptedSourceWrite).toContain("p_acquisition: acquisitionProposal.row");
     expect(acceptedSourceWrite).toContain("source_inserted");
     expect(acceptedSourceWrite).toContain("effective_notification_mode");
+    expect(acceptedSourceWrite).toContain("loadRegisteredSharedSourceReviewState");
     expect(acceptedSourceWrite).not.toContain('.from("shared_award_sources")');
     expect(acceptedSourceWrite).not.toContain('.from("shared_award_source_acquisitions")');
+    expect(sourceReviewLoad).toContain(
+      '"id,shared_award_id,url,title,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by"',
+    );
   });
 
   it("fails a known live first-capture evidence gap before registration and quarantines an unexpected server downgrade", () => {
     const finalize = functionBody(intakeWorker, "async function finalizeReviewedRequest");
+    const quarantine = functionBody(
+      intakeWorker,
+      "async function quarantineDowngradedLiveSource",
+    );
+    const sourceDisposition = functionBody(
+      intakeWorker,
+      "function liveFirstCaptureSourceDisposition",
+    );
     const manualReview = functionBody(
       intakeWorker,
       "async function finalizeLiveFirstCaptureManualReview",
@@ -128,9 +160,18 @@ describe("new official document source-intake wiring", () => {
     expect(finalize).toMatch(
       /liveFirstCaptureRequested\s+&& sourceWrite\.acquisition\?\.create\s+&& sourceWrite\.acquisition\.notification_mode === "manual_review"/,
     );
-    expect(finalize).toContain('admin_review_status: "review_later"');
+    expect(finalize).toContain("quarantineDowngradedLiveSource");
+    expect(quarantine).toContain('source.admin_review_status !== "open"');
+    expect(quarantine).toContain("sourceMonitoringRestoreMarker");
+    expect(quarantine).toContain("guardAdminReviewMutation(mutation, source)");
+    expect(quarantine).toContain('.select("id").maybeSingle()');
+    expect(quarantine).toContain('admin_review_status: "review_later"');
+    expect(quarantine).toContain('admin_reviewed_by: "awardping-source-intake"');
+    expect(quarantine).toContain('reason: "stale_admin_review_plan_preserved"');
     expect(manualReview).toContain('status: "needs_manual_review"');
-    expect(manualReview).toContain("No source was registered from this request.");
+    expect(sourceDisposition).toContain("No source was registered from this request.");
+    expect(sourceDisposition).toContain("no automated quarantine was applied");
+    expect(manualReview).toContain("source_review_state_preserved");
     expect(manualReview).toContain("do not absorb this document as a healthy baseline");
   });
 
@@ -156,12 +197,13 @@ describe("new official document source-intake wiring", () => {
   it("persists deterministic access failures as operator-visible manual review", () => {
     const captureStage = functionBody(intakeWorker, "async function processCaptureStage");
     const manualReviewBranch = captureStage.slice(
-      captureStage.indexOf('deterministicReview.status === "needs_manual_review"'),
-      captureStage.indexOf('if (geminiApiMode === "none")'),
+      captureStage.indexOf('captureDisposition.status === "needs_manual_review"'),
+      captureStage.indexOf('if (captureDisposition.status === "needs_manual_review")',
+        captureStage.indexOf('captureDisposition.status === "needs_manual_review"') + 1),
     );
 
     expect(manualReviewBranch).toContain('status: "needs_manual_review"');
-    expect(manualReviewBranch).toContain("status_reason: deterministicReview.reason");
+    expect(manualReviewBranch).toContain("status_reason: captureDisposition.status_reason");
     expect(manualReviewBranch).toContain("processed_at: new Date().toISOString()");
     expect(manualReviewBranch).toContain("report.needs_manual_review += 1");
   });

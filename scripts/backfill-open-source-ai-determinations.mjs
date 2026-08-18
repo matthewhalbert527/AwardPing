@@ -18,6 +18,7 @@ import {
   applyAscendingAwardKeyset,
   awardCursorAfterPage,
 } from "./lib/award-keyset-pagination.mjs";
+import { guardAdminReviewMutation } from "./lib/admin-review-state-guard.mjs";
 import { readGeminiBillingBlock } from "./lib/gemini-spend-guard.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -64,6 +65,8 @@ const outputCsv = boolArg(args.csv, false);
 const reconcile = boolArg(args.reconcile, true);
 const reconcileLimit = positiveInt(args["reconcile-limit"], 500);
 const forceAi = boolArg(args["force-ai"], true);
+const sourceCoverageSelect =
+  "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,last_checked_at,last_error,created_at";
 const LEGACY_PAID_SUBMISSION_RETIRED = true;
 const paidSubmissionRequested =
   apply && maxBatchRequests > 0 && geminiApiMode !== "none";
@@ -109,6 +112,7 @@ const report = {
   total_open_sources_scanned: 0,
   total_sources_scanned: 0,
   complete_accepted: 0,
+  monitoring_restored: 0,
   complete_rejected: 0,
   unreviewed: 0,
   incomplete: 0,
@@ -128,6 +132,7 @@ const report = {
   queued_for_ai_review: 0,
   submitted_to_gemini_batch: 0,
   moved_to_review_later: 0,
+  stale_admin_review_plans_skipped: 0,
   marked_needs_manual_review: 0,
   awards_queued_for_reconciliation: 0,
   award_reconciliation_queue_existing: 0,
@@ -252,9 +257,7 @@ async function loadSources() {
   for (;;) {
     let query = supabase
       .from("shared_award_sources")
-      .select(
-        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,last_checked_at,last_error,created_at",
-      )
+      .select(sourceCoverageSelect)
       .order("created_at", { ascending: true })
       .order("id", { ascending: true })
       .limit(1000);
@@ -317,6 +320,7 @@ function applyCategoryCounters(rows) {
   report.category_counts = categoryCounts;
   report.planned_action_counts = countBy(rows, (row) => row.planned_action);
   report.complete_accepted = categoryCounts.complete_accepted || 0;
+  report.monitoring_restored = categoryCounts.monitoring_restored || 0;
   report.complete_rejected = categoryCounts.complete_rejected || 0;
   report.unreviewed = categoryCounts.unreviewed || 0;
   report.incomplete = categoryCounts.incomplete_review || 0;
@@ -337,10 +341,15 @@ function applyCategoryCounters(rows) {
 async function moveSourceToReviewLater(row) {
   const source = await loadSourceById(row.source_id);
   if (!source) return;
+  const currentRow = buildSourceAiCoverageRow(source);
+  if (currentRow.planned_action !== "move_to_review_later") {
+    report.stale_admin_review_plans_skipped += 1;
+    return;
+  }
   const now = new Date().toISOString();
   const metadata = objectValue(source.page_metadata);
-  const note = truncate(`AI coverage backfill moved source out of open: ${row.category}; ${row.action_reason || row.rejection_reason || row.source_quality_reason || "not eligible"}.`, 1000);
-  const { error } = await supabase
+  const note = truncate(`AI coverage backfill moved source out of open: ${currentRow.category}; ${currentRow.action_reason || currentRow.rejection_reason || currentRow.source_quality_reason || "not eligible"}.`, 1000);
+  let mutation = supabase
     .from("shared_award_sources")
     .update({
       admin_review_status: "review_later",
@@ -352,27 +361,37 @@ async function moveSourceToReviewLater(row) {
         ai_review_coverage_backfill: {
           at: now,
           action: "move_to_review_later",
-          category: row.category,
+          category: currentRow.category,
           previous_admin_review_status: source.admin_review_status || null,
-          reason: row.action_reason || row.rejection_reason || row.source_quality_reason || null,
+          reason: currentRow.action_reason || currentRow.rejection_reason || currentRow.source_quality_reason || null,
         },
       },
       updated_at: now,
     })
-    .eq("id", row.source_id)
-    .eq("admin_review_status", "open");
+    .eq("id", row.source_id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
   if (error) throw new Error(`Move source ${row.source_id} to review_later failed: ${error.message}`);
+  if (!data) {
+    report.stale_admin_review_plans_skipped += 1;
+    return;
+  }
   report.moved_to_review_later += 1;
-  if (row.category === "unclear" || row.category === "needs_manual_review") report.marked_needs_manual_review += 1;
-  await queueAward(row, `source_rejected_${row.category}`);
+  if (currentRow.category === "unclear" || currentRow.category === "needs_manual_review") report.marked_needs_manual_review += 1;
+  await queueAward(currentRow, `source_rejected_${currentRow.category}`);
 }
 
 async function markSourceQueuedForAiReview(row) {
   const source = await loadSourceById(row.source_id);
   if (!source) return;
+  const currentRow = buildSourceAiCoverageRow(source);
+  if (currentRow.planned_action !== "queue_ai_review") {
+    report.stale_admin_review_plans_skipped += 1;
+    return;
+  }
   const now = new Date().toISOString();
   const metadata = objectValue(source.page_metadata);
-  const { error } = await supabase
+  let mutation = supabase
     .from("shared_award_sources")
     .update({
       page_metadata: {
@@ -380,22 +399,27 @@ async function markSourceQueuedForAiReview(row) {
         ai_review_coverage_backfill: {
           at: now,
           action: "queue_ai_review",
-          category: row.category,
-          reason: row.action_reason || row.rejection_reason || null,
+          category: currentRow.category,
+          reason: currentRow.action_reason || currentRow.rejection_reason || null,
         },
       },
       updated_at: now,
     })
-    .eq("id", row.source_id)
-    .eq("admin_review_status", "open");
+    .eq("id", row.source_id);
+  mutation = guardAdminReviewMutation(mutation, source);
+  const { data, error } = await mutation.select("id").maybeSingle();
   if (error) throw new Error(`Mark source ${row.source_id} queued for AI review failed: ${error.message}`);
-  await queueAward(row, `source_review_queued_${row.category}`);
+  if (!data) {
+    report.stale_admin_review_plans_skipped += 1;
+    return;
+  }
+  await queueAward(currentRow, `source_review_queued_${currentRow.category}`);
 }
 
 async function loadSourceById(sourceId) {
   const { data, error } = await supabase
     .from("shared_award_sources")
-    .select("id,shared_award_id,admin_review_status,page_metadata")
+    .select(sourceCoverageSelect)
     .eq("id", sourceId)
     .maybeSingle();
   if (error) throw new Error(`Load source ${sourceId} failed: ${error.message}`);
@@ -597,6 +621,7 @@ function workerMetadata() {
     counters: {
       total_open_sources_scanned: report.total_open_sources_scanned,
       complete_accepted: report.complete_accepted,
+      monitoring_restored: report.monitoring_restored,
       complete_rejected: report.complete_rejected,
       unreviewed: report.unreviewed,
       incomplete: report.incomplete,
@@ -608,6 +633,7 @@ function workerMetadata() {
       queued_for_ai_review: report.queued_for_ai_review,
       submitted_to_gemini_batch: report.submitted_to_gemini_batch,
       moved_to_review_later: report.moved_to_review_later,
+      stale_admin_review_plans_skipped: report.stale_admin_review_plans_skipped,
       awards_queued_for_reconciliation: report.awards_queued_for_reconciliation,
       awards_reconciled: report.awards_reconciled,
       public_pages_blocked: report.public_pages_blocked,
@@ -652,8 +678,9 @@ function printHuman() {
   console.log(`Status: ${report.status}`);
   console.log(`Completion: ${report.completion_passed ? "PASS" : "FAIL"}`);
   console.log(`Scanned: open=${report.total_open_sources_scanned} total=${report.total_sources_scanned}`);
-  console.log(`Accepted complete=${report.complete_accepted} queued_ai=${report.queued_for_ai_review} queued_capture=${report.queued_for_capture}`);
+  console.log(`Accepted complete=${report.complete_accepted} monitoring_restored=${report.monitoring_restored} queued_ai=${report.queued_for_ai_review} queued_capture=${report.queued_for_capture}`);
   console.log(`Moved review_later=${report.moved_to_review_later} awards_queued=${report.awards_queued_for_reconciliation}`);
+  if (report.stale_admin_review_plans_skipped) console.log(`Skipped stale admin-review plans=${report.stale_admin_review_plans_skipped}`);
   console.log(`Gemini batch submitted=${report.submitted_to_gemini_batch} billing_blocked=${report.billing_blocked}`);
   if (report.blocking_reason) console.log(`Blocking reason: ${report.blocking_reason}`);
   console.log("Category counts:");

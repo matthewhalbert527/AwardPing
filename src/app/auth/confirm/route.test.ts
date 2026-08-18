@@ -35,6 +35,34 @@ describe("auth confirmation callback", () => {
       token_hash: "token-1",
       type: "signup",
     });
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  it("binds recovery verification to the reset page and preserves a safe nested next path", async () => {
+    const response = await confirmRequest(
+      "/reset-password?next=%2Fupdates%3Faward%3Dmarshall%23recent",
+      "recovery",
+    );
+
+    expect(response.headers.get("location")).toBe(
+      "https://awardping.test/reset-password?next=%2Fupdates%3Faward%3Dmarshall%23recent",
+    );
+    expect(mocks.verifyOtp).toHaveBeenCalledWith({
+      token_hash: "token-1",
+      type: "recovery",
+    });
+  });
+
+  it.each([
+    "/updates",
+    "/reset-password?next=https%3A%2F%2Fattacker.example%2Fphish",
+    "/reset-password?next=%2F%252f%252fattacker.example%2Fphish",
+  ])("never lets a recovery link bypass the reset page: %s", async (next) => {
+    const response = await confirmRequest(next, "recovery");
+
+    expect(response.headers.get("location")).toBe(
+      "https://awardping.test/reset-password",
+    );
   });
 
   it.each([
@@ -66,6 +94,20 @@ describe("auth confirmation callback", () => {
     expect(response.headers.get("location")).toBe(
       "https://awardping.test/login?confirmation=invalid",
     );
+  });
+
+  it("sends an invalid recovery token to an honest recovery error", async () => {
+    mocks.verifyOtp.mockResolvedValue({
+      data: { user: null, session: null },
+      error: { message: "Token has expired" },
+    });
+
+    const response = await confirmRequest("/reset-password", "recovery");
+
+    expect(response.headers.get("location")).toBe(
+      "https://awardping.test/login?recovery=invalid",
+    );
+    expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
   it("rejects unsupported OTP types without calling Supabase", async () => {

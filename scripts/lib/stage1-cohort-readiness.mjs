@@ -2,9 +2,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
 
-export const STAGE1_READINESS_SCHEMA_VERSION = "stage1-cohort-readiness-v1";
+import { verifyVisualTextGeometryBinding } from "./visual-event-localization.mjs";
+import {
+  canonicalExpansionStateCaptureCoverage,
+  legacyExpansionStateCaptureCoverageFromMetadata,
+  sameExpansionStateCaptureCoverage,
+} from "./expansion-state-descriptor-canonicalization.mjs";
+
+export const STAGE1_READINESS_SCHEMA_VERSION = "stage1-cohort-readiness-v2";
 export const STAGE1_POLICY_VERSION = "stage1-publication-v1";
 export const STAGE1_FRESHNESS_MS = 24 * 60 * 60 * 1_000;
+export const STAGE1_FUTURE_CLOCK_TOLERANCE_MS = 5 * 60 * 1_000;
+export const STAGE1_REMOTE_EFFECTIVE_BLOCKER =
+  "remote_effective_publication_gate_closed";
 
 export const REQUIRED_SOURCE_ROLES = Object.freeze([
   "identity_home",
@@ -40,7 +50,14 @@ export const PUBLISHED_FACT_FIELDS = Object.freeze([
 export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(1, "rhodes_us", "Rhodes Scholarship (United States)", "rhodes scholarship", "https://www.rhodeshouse.ox.ac.uk/scholarships/the-rhodes-scholarship/", [
     "rhodes scholarships",
-  ]),
+  ], {
+    identityRules: [{
+      rule_key: "exclude_rhodes_non_us_constituencies",
+      url_pattern: "(?:^|[/_.-])(?:australia|bermuda|canada|china|east[-_]?africa|germany|hong[-_]?kong|india|israel|jamaica|caribbean|kenya|malaysia|new[-_]?zealand|pakistan|saudi[-_]?arabia|singapore|southern[-_]?africa|syria|jordan|lebanon|palestine|united[-_]?arab[-_]?emirates|west[-_]?africa|zambia|zimbabwe|england|scotland|wales|united[-_]?kingdom)(?:[/_.-]|$)",
+      title_pattern: "(?:rhodes|information for candidates|candidate guidance|constituency).{0,100}(?:^|[^A-Za-z0-9_])(?:australia|australian|bermuda|bermudian|canada|canadian|china|chinese|east africa|germany|german|hong kong|india|indian|israel|israeli|jamaica|caribbean|kenya|kenyan|malaysia|malaysian|new zealand|pakistan|pakistani|saudi arabia|singapore|singaporean|southern africa|syria|syrian|jordan|jordanian|lebanon|lebanese|palestine|palestinian|united arab emirates|emirati|west africa|zambia|zambian|zimbabwe|zimbabwean|england|scotland|wales|united kingdom|british)(?:$|[^A-Za-z0-9_])|(?:^|[^A-Za-z0-9_])(?:australia|australian|bermuda|bermudian|canada|canadian|china|chinese|east africa|germany|german|hong kong|india|indian|israel|israeli|jamaica|caribbean|kenya|kenyan|malaysia|malaysian|new zealand|pakistan|pakistani|saudi arabia|singapore|singaporean|southern africa|syria|syrian|jordan|jordanian|lebanon|lebanese|palestine|palestinian|united arab emirates|emirati|west africa|zambia|zambian|zimbabwe|zimbabwean|england|scotland|wales|united kingdom|british)(?:$|[^A-Za-z0-9_]).{0,100}(?:rhodes|information for candidates|candidate guidance|constituency)",
+      reason: "A country- or constituency-specific Rhodes source outside the United States cannot supply Rhodes (US) facts or updates.",
+    }],
+  }),
   cohort(2, "marshall", "Marshall Scholarship", "marshall scholarship", "https://www.marshallscholarship.org/", [], {
     identityRules: [{
       rule_key: "exclude_marshall_sherfield",
@@ -68,7 +85,18 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(7, "knight_hennessy", "Knight-Hennessy Scholars", "knight-hennessy scholars", "https://knight-hennessy.stanford.edu/", [
     "knight-hennessy scholars program",
   ]),
-  cohort(8, "yenching", "Yenching Academy", "yenching academy scholars", "https://yenchingacademy.pku.edu.cn/", []),
+  cohort(8, "yenching", "Yenching Academy", "yenching academy scholars", "https://yenchingacademy.pku.edu.cn/", [], {
+    preferredPaths: {
+      identity_home: ["/"],
+      eligibility: ["/ADMISSIONS.htm"],
+      application_materials: ["/ADMISSIONS.htm"],
+      dates_cycle: ["/ADMISSIONS.htm"],
+      funding: ["/ADMISSIONS.htm"],
+      faq: ["/ADMISSIONS/Frequently_Asked_Questions.htm"],
+      selection_interviews: ["/ADMISSIONS/Frequently_Asked_Questions.htm"],
+      current_documents: ["/ADMISSIONS.htm"],
+    },
+  }),
   cohort(9, "luce", "Luce Scholars Program", "luce scholars program", "https://lucescholars.org/", [
     "henry luce foundation - scholars program for professional development in asia",
   ]),
@@ -80,7 +108,24 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(13, "beinecke", "Beinecke Scholarship", "beinecke scholarship", "https://beineckescholarship.org/", []),
   cohort(14, "gilman", "Benjamin A. Gilman International Scholarship", "gilman international scholarship", "https://www.gilmanscholarship.org/", [
     "gilman scholarship",
-  ]),
+  ], {
+    identityRules: [{
+      rule_key: "exclude_gilman_mccain",
+      url_pattern: "gilman[-_]?mccain|gilmanmccain|/program/gilman-mccain-scholarships(?:/|$)",
+      title_pattern: "gilman[- ]?mccain|gilmanmccain",
+      reason: "Gilman-McCain is a distinct scholarship and cannot supply Benjamin A. Gilman International Scholarship facts or updates.",
+    }],
+    preferredPaths: {
+      identity_home: ["/"],
+      eligibility: ["/applicants/eligibility/"],
+      application_materials: ["/applicants/application-overview/"],
+      dates_cycle: ["/applicants/deadlines-and-timeline/"],
+      funding: ["/applicants/selection-criteria/"],
+      faq: ["/applicants/applicants-faq-2/"],
+      selection_interviews: ["/applicants/selection-criteria/"],
+      current_documents: ["/wp-content/uploads/2025/01/Application-PDF-Version.pdf"],
+    },
+  }),
   cohort(15, "boren", "Boren Scholarships and Fellowships", "boren awards", "https://www.borenawards.org/", [
     "boren awards for international study",
     "boren scholarship/fellowship urgd/grad",
@@ -94,10 +139,42 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(17, "nsf_grfp", "NSF Graduate Research Fellowship Program", "nsf graduate research fellowship program", "https://www.nsfgrfp.org/", [
     "national science foundation graduate research fellowship",
   ]),
-  cohort(18, "hertz", "Hertz Fellowship", "hertz foundation graduate fellowship", "https://www.hertzfoundation.org/the-fellowship/", []),
+  cohort(18, "hertz", "Hertz Fellowship", "hertz foundation graduate fellowship", "https://www.hertzfoundation.org/hertz-fellowship/", [], {
+    preferredPaths: {
+      identity_home: ["/hertz-fellowship/"],
+      eligibility: ["/hertz-fellowship/who-can-apply/"],
+      application_materials: ["/hertz-fellowship/apply/"],
+      dates_cycle: ["/hertz-fellowship/apply/"],
+      funding: ["/hertz-fellowship/fellowship-benefits/"],
+      faq: ["/hertz-fellowship/application-help/faq/"],
+      selection_interviews: ["/hertz-fellowship/apply/"],
+      current_documents: ["/hertz-fellowship/apply/"],
+    },
+  }),
   cohort(19, "ndseg", "National Defense Science and Engineering Graduate Fellowship", "national defense science and engineering graduate fellowship", "https://ndseg.org/", [
     "department of war national defense science and engineering grad fellowships",
-  ]),
+  ], {
+    delegatedAuthorities: [{
+      host: "ndseg.sysplus.com",
+      classification: "official_contractor_host",
+      evidenceUrl: "https://ndseg.org/apply-link",
+      reviewedReason: "The canonical NDSEG program host explicitly delegates the current application to SysPlus.",
+    }],
+    preferredPaths: {
+      eligibility: ["/NDSEG/About/Eligibility.aspx"],
+      application_materials: [
+        "/NDSEG/Applicants/Application-Evaluation-Award",
+        "/NDSEG/Applicants/Application-Evaluation-Award.aspx",
+      ],
+      funding: ["/NDSEG/About/"],
+      faq: ["/NDSEG/FAQ/Application", "/NDSEG/FAQ/Application.aspx"],
+      selection_interviews: [
+        "/NDSEG/Applicants/Application-Evaluation-Award",
+        "/NDSEG/Applicants/Application-Evaluation-Award.aspx",
+      ],
+      current_documents: ["/NDSEG/"],
+    },
+  }),
   cohort(20, "smart", "SMART Scholarship-for-Service Program", "smart scholarship for service program", "https://www.smartscholarship.org/smart", [
     "smart scholarship program",
     "u.s. department of defense (dod) - science, mathematics & research for transformation (smart) - scholarship for service program",
@@ -114,7 +191,18 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
     "soros fellowship for new americans",
     "soros fellowships for new americans",
   ]),
-  cohort(24, "samvid", "Samvid Scholars", "samvid scholars program", "https://samvidscholars.org/", []),
+  cohort(24, "samvid", "Samvid Scholars", "samvid scholars program", "https://samvidscholars.org/", [], {
+    preferredPaths: {
+      identity_home: ["/"],
+      eligibility: ["/how-to-apply/"],
+      application_materials: ["/how-to-apply/"],
+      dates_cycle: ["/how-to-apply/"],
+      funding: ["/"],
+      faq: ["/how-to-apply/"],
+      selection_interviews: ["/how-to-apply/"],
+      current_documents: ["/how-to-apply/"],
+    },
+  }),
   cohort(25, "gaither", "James C. Gaither Junior Fellows Program", "james c. gaither junior fellows program", "https://carnegieendowment.org/james-c-gaither-junior-fellows-program", [
     "carnegie junior fellowship",
   ]),
@@ -153,6 +241,18 @@ const ROLE_SIGNALS = Object.freeze({
     pageTypes: ["pdf"],
     patterns: [/\.pdf(?:$|[?#])/i, /rules/i, /guide/i, /handbook/i, /instruction/i, /document/i, /statement/i],
   },
+});
+
+const STAGE1_SOURCE_ID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const STAGE1_IMMUTABLE_GENERATION_PATTERN = /^[0-9a-f]{32}$/;
+const STAGE1_SNAPSHOT_FIXED_FILES = Object.freeze({
+  page: "page.jpg",
+  thumb: "thumb.jpg",
+  pdf: "document.pdf",
+  text: "text.txt",
+  layout: "layout.json",
+  meta: "meta.json",
 });
 
 export function validateExactStage1Definition(definition = STAGE1_COHORT_DEFINITION) {
@@ -228,7 +328,12 @@ export function rankOfficialSourceCandidates({
   return sources
     .map((source) => {
       const disposition = sourceIdentityDisposition(source, identityRules);
-      if (disposition.excluded || !isOfficialProgramUrl(source.url, definition.officialHomepage)) return null;
+      const authority = stage1ManifestSourceAuthority({
+        sourceUrl: source.url,
+        role,
+        cohort: definition,
+      });
+      if (disposition.excluded || !authority) return null;
       const snapshot = visualSnapshots instanceof Map
         ? visualSnapshots.get(source.id)
         : visualSnapshots?.[source.id];
@@ -241,7 +346,9 @@ export function rankOfficialSourceCandidates({
       ].filter(Boolean).join(" ");
       const pathname = normalizedPathname(source.url);
       let score = 100;
-      const reasons = ["official_program_domain"];
+      const reasons = [authority.classification === "canonical_program_host"
+        ? "official_program_domain"
+        : "official_delegated_contractor"];
 
       if (sameNormalizedUrl(source.url, definition.officialHomepage)) {
         score += role === "identity_home" ? 180 : 25;
@@ -273,7 +380,7 @@ export function rankOfficialSourceCandidates({
       } else {
         score += 15;
       }
-      if (isFresh(source.last_checked_at, now)) {
+      if (isStage1LiveSourceCheckCurrent(source.last_checked_at, now)) {
         score += 30;
         reasons.push("fresh_source_check");
       }
@@ -318,6 +425,17 @@ export function inspectLocalVisualEvidence({ archiveRoot, source, snapshot }) {
     artifact_paths_safe: false,
     artifact_count: 0,
     missing_artifacts: [],
+    artifact_hashes_match: false,
+    recomputed_artifact_hashes: {},
+    mismatched_artifact_hash_fields: [],
+    artifact_integrity_failures: [],
+    metadata_bindings_match: false,
+    text_object_bindings_match: false,
+    layout_binding_required: false,
+    layout_bindings_match: null,
+    immutable_r2_binding_valid: false,
+    immutable_r2_binding_errors: [],
+    expansion_state_bindings_match: null,
     exact_available: false,
   };
   if (!existsSync(baselinePath)) return result;
@@ -359,6 +477,36 @@ export function inspectLocalVisualEvidence({ archiveRoot, source, snapshot }) {
     if (!existsSync(artifactPath)) result.missing_artifacts.push({ role, reason: "file_missing" });
   }
 
+  const immutableR2Binding = inspectStage1ImmutableR2CaptureBinding(snapshot);
+  result.immutable_r2_binding_valid = immutableR2Binding.valid;
+  result.immutable_r2_binding_errors = immutableR2Binding.errors;
+  const artifactIntegrity = inspectLocalArtifactHashes({
+    archiveRoot,
+    baseline,
+    snapshotHashes,
+    snapshotMetadata: objectValue(snapshot?.latest_metadata),
+    snapshotKind: snapshot?.kind,
+    source,
+    snapshotCapturedAt: snapshot?.latest_captured_at,
+    immutableR2Binding,
+  });
+  result.artifact_hashes_match = artifactIntegrity.match;
+  result.recomputed_artifact_hashes = artifactIntegrity.recomputedHashes;
+  result.mismatched_artifact_hash_fields = artifactIntegrity.mismatchedHashFields;
+  result.artifact_integrity_failures = artifactIntegrity.failures;
+  result.metadata_bindings_match = artifactIntegrity.metadataBindingsMatch;
+  result.text_object_bindings_match = artifactIntegrity.textObjectBindingsMatch;
+  result.layout_binding_required = artifactIntegrity.layoutBindingRequired;
+  result.layout_bindings_match = artifactIntegrity.layoutBindingsMatch;
+  result.expansion_state_bindings_match = artifactIntegrity.expansionStateBindingsMatch;
+  for (const missingArtifact of artifactIntegrity.missingArtifacts) {
+    if (!result.missing_artifacts.some((entry) =>
+      entry.role === missingArtifact.role && entry.reason === missingArtifact.reason)) {
+      result.missing_artifacts.push(missingArtifact);
+    }
+  }
+  if (!artifactIntegrity.pathsSafe) result.artifact_paths_safe = false;
+
   result.exact_available = Boolean(
     snapshot
     && result.baseline_readable
@@ -366,9 +514,884 @@ export function inspectLocalVisualEvidence({ archiveRoot, source, snapshot }) {
     && result.capture_timestamp_matches
     && result.snapshot_hashes_match
     && result.artifact_paths_safe
-    && result.missing_artifacts.length === 0,
+    && result.missing_artifacts.length === 0
+    && result.artifact_hashes_match,
   );
   return result;
+}
+
+function inspectLocalArtifactHashes({
+  archiveRoot,
+  baseline,
+  snapshotHashes,
+  snapshotMetadata,
+  snapshotKind,
+  source,
+  snapshotCapturedAt,
+  immutableR2Binding,
+}) {
+  const kind = String(baseline?.kind || "").trim().toLowerCase();
+  const capture = objectValue(baseline?.capture);
+  const failures = [];
+  const missingArtifacts = [];
+  const recomputedHashes = {};
+  const mismatchedHashFields = [];
+  const readBuffers = new Map();
+  let metadataBindingsMatch = false;
+  let textObjectBindingsMatch = false;
+  const layoutBindingRequired = kind === "webpage" && immutableR2Binding.layout_claimed;
+  let layoutBindingsMatch = layoutBindingRequired ? false : null;
+  let expansionStateBindingsMatch = kind === "webpage" ? false : null;
+  let pathsSafe = true;
+
+  if (!new Set(["webpage", "pdf"]).has(kind)) {
+    return {
+      match: false,
+      pathsSafe,
+      recomputedHashes,
+      mismatchedHashFields,
+      missingArtifacts,
+      metadataBindingsMatch,
+      textObjectBindingsMatch,
+      layoutBindingRequired,
+      layoutBindingsMatch,
+      expansionStateBindingsMatch,
+      failures: [{ reason: "baseline_kind_missing_or_unsupported", kind: kind || null }],
+    };
+  }
+  if (!immutableR2Binding.valid) {
+    failures.push({
+      reason: "immutable_r2_capture_binding_invalid",
+      errors: immutableR2Binding.errors,
+    });
+  }
+  if (immutableR2Binding.source_id !== source?.id) {
+    failures.push({ reason: "immutable_r2_source_binding_mismatch" });
+  }
+  if (source?.url && !sameNormalizedUrl(immutableR2Binding.source_url, source.url)) {
+    failures.push({ reason: "immutable_r2_source_url_binding_mismatch" });
+  }
+  if (String(snapshotKind || "").trim().toLowerCase() !== kind) {
+    failures.push({ reason: "baseline_snapshot_kind_mismatch", kind, snapshot_kind: snapshotKind || null });
+  }
+
+  const specifications = kind === "pdf"
+    ? [
+        { hashField: "file_hash", artifactRole: "pdf", hashKind: "bytes", required: true },
+        { hashField: "text_hash", artifactRole: "text", hashKind: "capture_text", required: true },
+        { hashField: "image_hash", artifactRole: "pdf", hashKind: "bytes", required: false },
+      ]
+    : [
+        { hashField: "image_hash", artifactRole: "page", hashKind: "bytes", required: true },
+        { hashField: "text_hash", artifactRole: "text", hashKind: "capture_text", required: true },
+      ];
+
+  const readArtifact = (artifactRole, hashField = null, referencedPath = undefined) => {
+    const relativePath = referencedPath === undefined ? capture[artifactRole] : referencedPath;
+    const failureIdentity = {
+      ...(hashField ? { hash_field: hashField } : {}),
+      artifact_role: artifactRole,
+    };
+    if (typeof relativePath !== "string" || !relativePath.trim()) {
+      pathsSafe = false;
+      failures.push({
+        ...failureIdentity,
+        reason: "artifact_path_missing",
+      });
+      missingArtifacts.push({ role: artifactRole, reason: "capture_path_missing" });
+      return null;
+    }
+
+    const artifactPath = resolve(archiveRoot, relativePath);
+    if (!pathInside(artifactPath, archiveRoot)) {
+      pathsSafe = false;
+      failures.push({
+        ...failureIdentity,
+        reason: "artifact_path_outside_archive",
+      });
+      return null;
+    }
+    if (!existsSync(artifactPath)) {
+      failures.push({
+        ...failureIdentity,
+        reason: "artifact_file_missing",
+      });
+      missingArtifacts.push({ role: artifactRole, reason: "file_missing" });
+      return null;
+    }
+
+    let bytes = readBuffers.get(artifactPath);
+    if (!bytes) {
+      try {
+        bytes = readFileSync(artifactPath);
+        readBuffers.set(artifactPath, bytes);
+      } catch {
+        failures.push({
+          ...failureIdentity,
+          reason: "artifact_file_unreadable",
+        });
+        missingArtifacts.push({ role: artifactRole, reason: "file_unreadable" });
+        return null;
+      }
+    }
+    return { bytes, relativePath };
+  };
+
+  const requiredCoreRoles = kind === "webpage"
+    ? ["page", "thumb", "text", "meta"]
+    : ["pdf", "text", "meta"];
+  const coreHashFields = kind === "webpage"
+    ? { page: "image_hash", text: "text_hash" }
+    : { pdf: "file_hash", text: "text_hash" };
+  const coreArtifacts = new Map(requiredCoreRoles.map((role) => [
+    role,
+    readArtifact(role, coreHashFields[role] || null),
+  ]));
+  const verifyRawArtifactBinding = (slot, artifact) => {
+    if (!artifact) return;
+    const binding = objectValue(immutableR2Binding.artifact_bindings?.[slot]);
+    const actualHash = sha256(artifact.bytes);
+    if (
+      !sameSha256(actualHash, binding.sha256)
+      || artifact.bytes.length !== positiveIntegerOrNull(binding.byte_length)
+    ) {
+      failures.push({
+        artifact_role: slot,
+        reason: "artifact_raw_binding_mismatch",
+        expected_sha256: binding.sha256 || null,
+        actual_sha256: actualHash,
+        expected_bytes: positiveIntegerOrNull(binding.byte_length),
+        actual_bytes: artifact.bytes.length,
+      });
+    }
+  };
+  for (const [slot, artifact] of coreArtifacts) {
+    // Rehydration intentionally rewrites metadata/layout references to safe
+    // local paths. Binary screenshots/documents and text stay byte-identical;
+    // the rewritten JSON is verified semantically below and remotely by the
+    // signed R2 recovery drill.
+    if (slot !== "meta") verifyRawArtifactBinding(slot, artifact);
+  }
+  const rawLengthBindings = kind === "webpage"
+    ? [["page", "page_bytes"], ["thumb", "thumb_bytes"]]
+    : [["pdf", "file_bytes"]];
+  for (const [role, field] of rawLengthBindings) {
+    const artifact = coreArtifacts.get(role);
+    const expectedBytes = positiveIntegerOrNull(snapshotMetadata[field]);
+    if (expectedBytes === null) {
+      failures.push({ artifact_role: role, reason: `snapshot_${field}_missing_or_malformed` });
+    } else if (artifact && artifact.bytes.length !== expectedBytes) {
+      failures.push({
+        artifact_role: role,
+        reason: "artifact_byte_length_mismatch",
+        field,
+        expected_bytes: expectedBytes,
+        actual_bytes: artifact.bytes.length,
+      });
+    }
+  }
+
+  for (const specification of specifications) {
+    const baselineHash = baseline?.[specification.hashField];
+    const snapshotHash = snapshotHashes[specification.hashField];
+    const claimPresent = Boolean(baselineHash || snapshotHash);
+    if (!specification.required && !claimPresent) continue;
+
+    if (!isSha256(baselineHash) || !isSha256(snapshotHash)) {
+      failures.push({
+        hash_field: specification.hashField,
+        artifact_role: specification.artifactRole,
+        reason: "claimed_hash_missing_or_malformed",
+      });
+      continue;
+    }
+    if (!sameSha256(baselineHash, snapshotHash)) {
+      failures.push({
+        hash_field: specification.hashField,
+        artifact_role: specification.artifactRole,
+        reason: "baseline_snapshot_hash_mismatch",
+      });
+      mismatchedHashFields.push(specification.hashField);
+      continue;
+    }
+
+    const artifact = coreArtifacts.get(specification.artifactRole);
+    if (!artifact) continue;
+
+    let actualHash;
+    try {
+      if (specification.hashKind === "capture_text") {
+        const textArtifact = inspectCaptureTextArtifact(artifact.bytes);
+        actualHash = textArtifact.hash;
+        const expectedObjectBytes = positiveIntegerOrNull(snapshotMetadata.text_object_bytes);
+        const expectedSemanticLength = nonNegativeIntegerOrNull(snapshotMetadata.text_length);
+        if (expectedObjectBytes === null) {
+          failures.push({
+            hash_field: specification.hashField,
+            artifact_role: specification.artifactRole,
+            reason: "text_object_bytes_missing_or_malformed",
+          });
+        } else if (textArtifact.objectBytes !== expectedObjectBytes) {
+          failures.push({
+            hash_field: specification.hashField,
+            artifact_role: specification.artifactRole,
+            reason: "text_object_byte_length_mismatch",
+            expected_bytes: expectedObjectBytes,
+            actual_bytes: textArtifact.objectBytes,
+          });
+        }
+        if (expectedSemanticLength === null) {
+          failures.push({
+            hash_field: specification.hashField,
+            artifact_role: specification.artifactRole,
+            reason: "text_semantic_length_missing_or_malformed",
+          });
+        } else if (textArtifact.semanticLength !== expectedSemanticLength) {
+          failures.push({
+            hash_field: specification.hashField,
+            artifact_role: specification.artifactRole,
+            reason: "text_semantic_length_mismatch",
+            expected_length: expectedSemanticLength,
+            actual_length: textArtifact.semanticLength,
+          });
+        }
+        textObjectBindingsMatch = Boolean(
+          expectedObjectBytes !== null
+          && textArtifact.objectBytes === expectedObjectBytes
+          && expectedSemanticLength !== null
+          && textArtifact.semanticLength === expectedSemanticLength
+        );
+      } else {
+        actualHash = sha256(artifact.bytes);
+      }
+    } catch {
+      failures.push({
+        hash_field: specification.hashField,
+        artifact_role: specification.artifactRole,
+        reason: "artifact_text_utf8_invalid",
+      });
+      continue;
+    }
+    recomputedHashes[specification.hashField] = actualHash;
+    if (!sameSha256(actualHash, snapshotHash)) {
+      failures.push({
+        hash_field: specification.hashField,
+        artifact_role: specification.artifactRole,
+        reason: "artifact_hash_mismatch",
+      });
+      mismatchedHashFields.push(specification.hashField);
+    }
+  }
+
+  const metadataFailureStart = failures.length;
+  const metadataArtifact = coreArtifacts.get("meta");
+  const metadata = metadataArtifact
+    ? parseLocalJsonArtifact(metadataArtifact.bytes, "meta", failures)
+    : null;
+  if (metadata) {
+    if (metadata.source?.id !== source?.id) {
+      failures.push({ artifact_role: "meta", reason: "meta_source_id_mismatch" });
+    }
+    if (
+      source?.shared_award_id
+      && metadata.source?.shared_award_id !== source.shared_award_id
+    ) {
+      failures.push({ artifact_role: "meta", reason: "meta_shared_award_id_mismatch" });
+    }
+    if (source?.url && !sameNormalizedUrl(metadata.source?.url, source.url)) {
+      failures.push({ artifact_role: "meta", reason: "meta_source_url_mismatch" });
+    }
+    if (String(metadata.kind || "").trim().toLowerCase() !== kind) {
+      failures.push({ artifact_role: "meta", reason: "meta_kind_mismatch" });
+    }
+    if (
+      !sameInstant(metadata.captured_at, baseline.captured_at)
+      || !sameInstant(metadata.captured_at, snapshotCapturedAt)
+    ) {
+      failures.push({ artifact_role: "meta", reason: "meta_captured_at_mismatch" });
+    }
+
+    if (kind === "webpage") {
+      const retainedStateCount = immutableR2Binding.expansion_states.length;
+      const coverageOptions = { expectedRetainedStateCount: retainedStateCount };
+      const localCoverage = legacyExpansionStateCaptureCoverageFromMetadata(metadata, {
+        retainedStateCount,
+      });
+      const pointerCoverage = canonicalExpansionStateCaptureCoverage(
+        snapshotMetadata.expansion_state_capture_coverage,
+        coverageOptions,
+      );
+      const baselineCoverageValue = baseline?.summary_metadata
+        ?.expansion_state_capture_coverage;
+      const baselineCoverage = baselineCoverageValue == null
+        ? localCoverage
+        : canonicalExpansionStateCaptureCoverage(
+            baselineCoverageValue,
+            coverageOptions,
+          );
+      if (!localCoverage || !pointerCoverage || !baselineCoverage) {
+        failures.push({
+          artifact_role: "meta",
+          reason: "expansion_capture_coverage_missing_or_invalid",
+        });
+      } else if (
+        !sameExpansionStateCaptureCoverage(localCoverage, pointerCoverage, coverageOptions)
+        || !sameExpansionStateCaptureCoverage(localCoverage, baselineCoverage, coverageOptions)
+      ) {
+        failures.push({
+          artifact_role: "meta",
+          reason: "expansion_capture_coverage_binding_mismatch",
+        });
+      } else if (localCoverage.complete !== true) {
+        failures.push({
+          artifact_role: "meta",
+          reason: "expansion_capture_coverage_incomplete",
+        });
+      }
+    }
+
+    for (const specification of specifications) {
+      const baselineHash = baseline?.[specification.hashField];
+      const snapshotHash = snapshotHashes[specification.hashField];
+      if (!specification.required && !baselineHash && !snapshotHash) continue;
+      if (!isSha256(metadata[specification.hashField])) {
+        failures.push({
+          hash_field: specification.hashField,
+          artifact_role: "meta",
+          reason: "meta_core_hash_missing_or_malformed",
+        });
+      } else if (
+        !sameSha256(metadata[specification.hashField], baselineHash)
+        || !sameSha256(metadata[specification.hashField], snapshotHash)
+      ) {
+        failures.push({
+          hash_field: specification.hashField,
+          artifact_role: "meta",
+          reason: "meta_core_hash_mismatch",
+        });
+      }
+    }
+    const snapshotTextLength = nonNegativeIntegerOrNull(snapshotMetadata.text_length);
+    if (
+      snapshotTextLength === null
+      || nonNegativeIntegerOrNull(metadata.text_length) !== snapshotTextLength
+    ) {
+      failures.push({ artifact_role: "meta", reason: "meta_text_length_binding_mismatch" });
+      textObjectBindingsMatch = false;
+    }
+    for (const [, field] of rawLengthBindings) {
+      const expectedBytes = positiveIntegerOrNull(snapshotMetadata[field]);
+      if (
+        expectedBytes === null
+        || positiveIntegerOrNull(metadata[field]) !== expectedBytes
+      ) {
+        failures.push({ artifact_role: "meta", reason: `meta_${field}_binding_mismatch` });
+      }
+    }
+
+    if (layoutBindingRequired) {
+      const expectedLayoutHash = snapshotHashes.layout_hash;
+      const expectedImageHash = snapshotHashes.image_hash;
+      const metadataGeometry = objectValue(metadata.text_geometry);
+      const metadataLocalization = objectValue(metadata.localization);
+      if (
+        !sameSha256(metadata.layout_hash, expectedLayoutHash)
+        || !sameSha256(metadataGeometry.geometry_hash, expectedLayoutHash)
+        || !sameSha256(metadataLocalization.geometry_hash, expectedLayoutHash)
+      ) {
+        failures.push({
+          hash_field: "layout_hash",
+          artifact_role: "meta",
+          reason: "meta_layout_hash_binding_mismatch",
+        });
+      }
+      if (
+        !sameSha256(metadataGeometry.screenshot?.image_hash, expectedImageHash)
+        || !sameSha256(metadataLocalization.bound_image_hash, expectedImageHash)
+      ) {
+        failures.push({
+          hash_field: "image_hash",
+          artifact_role: "meta",
+          reason: "meta_layout_image_hash_binding_mismatch",
+        });
+      }
+      if (
+        !sameArtifactReference(metadataGeometry.file, capture.layout)
+        || !sameArtifactReference(metadataGeometry.screenshot?.image_ref, capture.page)
+      ) {
+        failures.push({ artifact_role: "meta", reason: "meta_layout_artifact_identity_mismatch" });
+      }
+      if (!sameInstant(metadataLocalization.captured_at, snapshotCapturedAt)) {
+        failures.push({ artifact_role: "meta", reason: "meta_localization_captured_at_mismatch" });
+      }
+      if (metadataLocalization.semantic_crop_contract !== "visual-exact-text-binding-v2") {
+        failures.push({ artifact_role: "meta", reason: "meta_localization_contract_mismatch" });
+      }
+    } else if (kind === "webpage") {
+      const localLayoutClaimed = Boolean(
+        baseline.layout_hash
+        || baseline.text_geometry?.geometry_hash
+        || baseline.text_geometry?.file
+        || baseline.text_geometry?.screenshot?.image_hash
+        || baseline.text_geometry?.screenshot?.image_ref
+        || capture.layout
+        || metadata.layout_hash
+        || metadata.text_geometry?.geometry_hash
+        || metadata.text_geometry?.file
+        || metadata.text_geometry?.screenshot?.image_hash
+        || metadata.text_geometry?.screenshot?.image_ref
+        || metadata.files?.layout
+        || metadata.localization?.geometry_hash
+        || metadata.localization?.bound_image_hash
+        || metadata.localization?.geometry_ready === true
+      );
+      if (localLayoutClaimed) {
+        failures.push({ artifact_role: "layout", reason: "local_layout_claim_conflicts_with_r2_unavailable" });
+      }
+      const localUnavailable = objectValue(metadata.localization);
+      if (!stage1PointerLayoutExplicitlyUnavailable(metadata)) {
+        failures.push({ artifact_role: "meta", reason: "meta_layout_unavailable_status_mismatch" });
+      }
+      if (
+        localUnavailable.captured_at
+        && !sameInstant(localUnavailable.captured_at, snapshotCapturedAt)
+      ) {
+        failures.push({ artifact_role: "meta", reason: "meta_layout_unavailable_contract_mismatch" });
+      }
+    }
+  }
+  if (layoutBindingRequired) {
+    const layoutFailureStart = failures.length;
+    const expectedLayoutHash = snapshotHashes.layout_hash;
+    if (!isSha256(expectedLayoutHash) || !isSha256(baseline.layout_hash)) {
+      failures.push({
+        hash_field: "layout_hash",
+        artifact_role: "layout",
+        reason: "claimed_hash_missing_or_malformed",
+      });
+    } else if (!sameSha256(expectedLayoutHash, baseline.layout_hash)) {
+      failures.push({
+        hash_field: "layout_hash",
+        artifact_role: "layout",
+        reason: "baseline_snapshot_hash_mismatch",
+      });
+      mismatchedHashFields.push("layout_hash");
+    }
+
+    const layoutArtifact = readArtifact("layout", "layout_hash");
+    const layout = layoutArtifact
+      ? parseLocalJsonArtifact(layoutArtifact.bytes, "layout", failures)
+      : null;
+    if (layout) {
+      if (!sameSha256(layout.geometry_hash, expectedLayoutHash)) {
+        failures.push({
+          hash_field: "layout_hash",
+          artifact_role: "layout",
+          reason: "layout_geometry_hash_mismatch",
+        });
+        mismatchedHashFields.push("layout_hash");
+      }
+      const expectedImageHash = String(snapshotHashes.image_hash || "").toLowerCase();
+      const geometryVerification = verifyVisualTextGeometryBinding(layout, expectedImageHash);
+      if (!geometryVerification.valid) {
+        failures.push({
+          hash_field: "layout_hash",
+          artifact_role: "layout",
+          reason: "layout_geometry_binding_invalid",
+          detail: geometryVerification.reason,
+        });
+      }
+      if (!sameSha256(layout.screenshot?.image_hash, expectedImageHash)) {
+        failures.push({
+          hash_field: "image_hash",
+          artifact_role: "layout",
+          reason: "layout_bound_image_hash_mismatch",
+        });
+      }
+      if (!sameArtifactReference(layout.screenshot?.image_ref, capture.page)) {
+        failures.push({
+          artifact_role: "layout",
+          reason: "layout_bound_image_identity_mismatch",
+        });
+      }
+      if (layout.state_id !== "main") {
+        failures.push({ artifact_role: "layout", reason: "layout_state_identity_mismatch" });
+      }
+      if (
+        !sameInstant(layout.captured_at, baseline.captured_at)
+        || !sameInstant(layout.captured_at, snapshotCapturedAt)
+      ) {
+        failures.push({ artifact_role: "layout", reason: "layout_captured_at_mismatch" });
+      }
+
+      if (metadata) {
+        const metadataGeometry = objectValue(metadata.text_geometry);
+        const expectedMetadataGeometry = {
+          version: layout.version || 1,
+          status: String(layout.availability_status || "").trim()
+            || (Number(layout.run_count || 0) > 0 ? "ready" : "unavailable_no_visible_text_nodes"),
+          unavailable_reason: String(layout.unavailable_reason || "").trim() || null,
+          geometry_hash: layout.geometry_hash || null,
+          coordinate_space: layout.coordinate_space || "document-css-pixels",
+          node_count: layout.node_count || 0,
+          run_count: layout.run_count || 0,
+          document: layout.document || null,
+          viewport: layout.viewport || null,
+          screenshot: layout.screenshot || null,
+          file: capture.layout,
+        };
+        if (!deepEqual(metadataGeometry, expectedMetadataGeometry)) {
+          failures.push({ artifact_role: "meta", reason: "meta_layout_reference_mismatch" });
+        }
+
+        const metadataLocalization = objectValue(metadata.localization);
+        const availabilityStatus = String(layout.availability_status || "").trim();
+        const explicitlyUnavailable = availabilityStatus.startsWith("unavailable_");
+        const geometryReady = Boolean(
+          isSha256(layout.geometry_hash)
+          && isSha256(layout.screenshot?.image_hash)
+          && Number(layout.run_count || 0) > 0
+        );
+        const repairAttempted = String(metadata.capture_profile || "").trim() === "localization-repair";
+        const expectedLocalizationStatus = geometryReady
+          ? "geometry_ready"
+          : explicitlyUnavailable
+            ? availabilityStatus
+            : repairAttempted
+              ? "capture_layout_unavailable"
+              : "metadata_missing";
+        if (
+          metadataLocalization.status !== expectedLocalizationStatus
+          || metadataLocalization.exact !== false
+          || metadataLocalization.accounted_for !== Boolean(
+            geometryReady || repairAttempted || explicitlyUnavailable
+          )
+          || metadataLocalization.geometry_ready !== geometryReady
+          || (String(metadataLocalization.unavailable_reason || "").trim() || null)
+            !== (String(layout.unavailable_reason || "").trim() || null)
+        ) {
+          failures.push({ artifact_role: "meta", reason: "meta_localization_state_mismatch" });
+        }
+      }
+
+      if (geometryVerification.valid && sameSha256(layout.geometry_hash, expectedLayoutHash)) {
+        recomputedHashes.layout_hash = String(layout.geometry_hash).toLowerCase();
+      }
+    }
+    layoutBindingsMatch = Boolean(layout) && failures.length === layoutFailureStart;
+  }
+
+  if (kind === "webpage") {
+    const expansionFailureStart = failures.length;
+    const remoteStates = immutableR2Binding.expansion_states;
+    const baselineStates = Array.isArray(capture.expansion_states) ? capture.expansion_states : [];
+    const metadataStates = Array.isArray(metadata?.expansion_state_screenshots)
+      ? metadata.expansion_state_screenshots
+      : [];
+    const metadataFileStates = Array.isArray(metadata?.files?.expansion_states)
+      ? metadata.files.expansion_states
+      : [];
+    if (
+      !Array.isArray(capture.expansion_states)
+      || !Array.isArray(metadata?.expansion_state_screenshots)
+      || !Array.isArray(metadata?.files?.expansion_states)
+    ) {
+      failures.push({
+        artifact_role: "expansion_states",
+        reason: "local_expansion_state_registry_missing_or_invalid",
+      });
+    }
+    if (
+      baselineStates.length !== remoteStates.length
+      || metadataStates.length !== remoteStates.length
+      || metadataFileStates.length !== remoteStates.length
+    ) {
+      failures.push({
+        artifact_role: "expansion_states",
+        reason: "local_expansion_state_count_mismatch",
+        expected_count: remoteStates.length,
+        baseline_count: baselineStates.length,
+        metadata_count: metadataStates.length,
+        metadata_file_count: metadataFileStates.length,
+      });
+    }
+
+    for (const [index, remote] of remoteStates.entries()) {
+      const baselineState = objectValue(baselineStates[index]);
+      const metadataState = objectValue(metadataStates[index]);
+      const metadataFileState = objectValue(metadataFileStates[index]);
+      const rolePrefix = `expansion_state_${remote.suffix}`;
+      if (
+        baselineState.state_id !== remote.state_id
+        || metadataState.state_id !== remote.state_id
+        || metadataFileState.state_id !== remote.state_id
+      ) {
+        failures.push({ artifact_role: rolePrefix, reason: "expansion_state_identity_mismatch" });
+      }
+      if (
+        !sameSha256(baselineState.image_hash, remote.image_hash)
+        || !sameSha256(metadataState.image_hash, remote.image_hash)
+      ) {
+        failures.push({
+          hash_field: "image_hash",
+          artifact_role: rolePrefix,
+          reason: "expansion_state_image_hash_binding_mismatch",
+        });
+      }
+      if (
+        !sameSha256(baselineState.layout_hash, remote.layout_hash)
+        || !sameSha256(metadataState.layout_hash, remote.layout_hash)
+        || !sameSha256(metadataState.text_geometry?.geometry_hash, remote.layout_hash)
+      ) {
+        failures.push({
+          hash_field: "layout_hash",
+          artifact_role: rolePrefix,
+          reason: "expansion_state_layout_hash_binding_mismatch",
+        });
+      }
+      if (
+        !sameArtifactReference(metadataState.page, baselineState.page)
+        || !sameArtifactReference(metadataState.layout, baselineState.layout)
+        || !sameArtifactReference(metadataFileState.page, baselineState.page)
+        || !sameArtifactReference(metadataFileState.layout, baselineState.layout)
+      ) {
+        failures.push({ artifact_role: rolePrefix, reason: "expansion_state_artifact_identity_mismatch" });
+      }
+      if (
+        !sameSha256(metadataState.text_hash, remote.metadata.text_hash)
+        || nonNegativeIntegerOrNull(metadataState.text_length)
+          !== nonNegativeIntegerOrNull(remote.metadata.text_length)
+        || positiveIntegerOrNull(metadataState.page_bytes) !== remote.page_bytes
+        || metadataState.label !== remote.metadata.label
+        || metadataFileState.label !== remote.metadata.label
+        || !deepEqual(objectValue(metadataState.isolation), objectValue(remote.metadata.isolation))
+        || !deepEqual(objectValue(baselineState.isolation), objectValue(remote.metadata.isolation))
+      ) {
+        failures.push({ artifact_role: rolePrefix, reason: "expansion_state_metadata_binding_mismatch" });
+      }
+
+      const pageArtifact = readArtifact(
+        `${rolePrefix}_page`,
+        "image_hash",
+        baselineState.page,
+      );
+      const layoutArtifact = readArtifact(
+        `${rolePrefix}_layout`,
+        "layout_hash",
+        baselineState.layout,
+      );
+      verifyRawArtifactBinding(rolePrefix, pageArtifact);
+      if (pageArtifact) {
+        const actualImageHash = sha256(pageArtifact.bytes);
+        recomputedHashes[`${rolePrefix}_image_hash`] = actualImageHash;
+        if (!sameSha256(actualImageHash, remote.image_hash)) {
+          failures.push({
+            hash_field: "image_hash",
+            artifact_role: rolePrefix,
+            reason: "expansion_state_image_artifact_hash_mismatch",
+          });
+        }
+        if (pageArtifact.bytes.length !== remote.page_bytes) {
+          failures.push({
+            artifact_role: rolePrefix,
+            reason: "expansion_state_page_byte_length_mismatch",
+          });
+        }
+      }
+      const layout = layoutArtifact
+        ? parseLocalJsonArtifact(layoutArtifact.bytes, `${rolePrefix}_layout`, failures)
+        : null;
+      if (layout) {
+        const verification = verifyVisualTextGeometryBinding(layout, remote.image_hash);
+        if (!verification.valid) {
+          failures.push({
+            hash_field: "layout_hash",
+            artifact_role: rolePrefix,
+            reason: "expansion_state_layout_binding_invalid",
+            detail: verification.reason,
+          });
+        }
+        if (!sameSha256(layout.geometry_hash, remote.layout_hash)) {
+          failures.push({
+            hash_field: "layout_hash",
+            artifact_role: rolePrefix,
+            reason: "expansion_state_layout_geometry_hash_mismatch",
+          });
+        }
+        if (!sameSha256(layout.screenshot?.image_hash, remote.image_hash)) {
+          failures.push({
+            hash_field: "image_hash",
+            artifact_role: rolePrefix,
+            reason: "expansion_state_layout_image_hash_mismatch",
+          });
+        }
+        if (!sameArtifactReference(layout.screenshot?.image_ref, baselineState.page)) {
+          failures.push({
+            artifact_role: rolePrefix,
+            reason: "expansion_state_layout_image_identity_mismatch",
+          });
+        }
+        if (layout.state_id !== remote.state_id) {
+          failures.push({ artifact_role: rolePrefix, reason: "expansion_state_layout_state_mismatch" });
+        }
+        if (!sameInstant(layout.captured_at, baselineState.captured_at)) {
+          failures.push({ artifact_role: rolePrefix, reason: "expansion_state_captured_at_mismatch" });
+        }
+        const expectedGeometryReference = {
+          version: layout.version || 1,
+          status: String(layout.availability_status || "").trim()
+            || (Number(layout.run_count || 0) > 0 ? "ready" : "unavailable_no_visible_text_nodes"),
+          unavailable_reason: String(layout.unavailable_reason || "").trim() || null,
+          geometry_hash: layout.geometry_hash || null,
+          coordinate_space: layout.coordinate_space || "document-css-pixels",
+          node_count: layout.node_count || 0,
+          run_count: layout.run_count || 0,
+          document: layout.document || null,
+          viewport: layout.viewport || null,
+          screenshot: layout.screenshot || null,
+          file: baselineState.layout,
+        };
+        if (!deepEqual(objectValue(metadataState.text_geometry), expectedGeometryReference)) {
+          failures.push({ artifact_role: rolePrefix, reason: "expansion_state_geometry_reference_mismatch" });
+        }
+        if (verification.valid && sameSha256(layout.geometry_hash, remote.layout_hash)) {
+          recomputedHashes[`${rolePrefix}_layout_hash`] = String(layout.geometry_hash).toLowerCase();
+        }
+      }
+    }
+    const pointerExpansionFailure = immutableR2Binding.errors.some((error) =>
+      error.startsWith("expansion_")
+      || (
+        immutableR2Binding.expansion_states.length > 0
+        && new Set(["object_keys_mixed_generations", "object_keys_alias_slots"]).has(error)
+      ));
+    expansionStateBindingsMatch = failures.length === expansionFailureStart
+      && !pointerExpansionFailure;
+  }
+
+  if (layoutBindingRequired) {
+    const pointerLayoutFailure = immutableR2Binding.errors.some((error) =>
+      error.startsWith("layout_")
+      || error.endsWith(":layout")
+      || new Set(["object_keys_mixed_generations", "object_keys_alias_slots"]).has(error));
+    const localLayoutFailure = failures.some((failure) =>
+      failure.artifact_role === "layout"
+      || (
+        failure.artifact_role === "meta"
+        && /^(?:meta_layout|meta_localization)/.test(String(failure.reason || ""))
+      ));
+    layoutBindingsMatch = Boolean(recomputedHashes.layout_hash)
+      && !pointerLayoutFailure
+      && !localLayoutFailure;
+  }
+
+  metadataBindingsMatch = Boolean(metadata) && !failures
+    .slice(metadataFailureStart)
+    .some((failure) => failure.artifact_role === "meta");
+
+  const expectedHashFieldCount = specifications.filter((specification) =>
+    specification.required || baseline?.[specification.hashField] || snapshotHashes[specification.hashField]).length
+    + (layoutBindingRequired ? 1 : 0)
+    + immutableR2Binding.expansion_states.length * 2;
+  return {
+    match: failures.length === 0 && Object.keys(recomputedHashes).length === expectedHashFieldCount,
+    pathsSafe,
+    recomputedHashes,
+    mismatchedHashFields: [...new Set(mismatchedHashFields)],
+    missingArtifacts,
+    metadataBindingsMatch,
+    textObjectBindingsMatch,
+    layoutBindingRequired,
+    layoutBindingsMatch,
+    expansionStateBindingsMatch,
+    failures,
+  };
+}
+
+function inspectCaptureTextArtifact(bytes) {
+  const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  // The capture writer hashes semantic UTF-8 text, then stores that text with
+  // one terminal LF. R2 recovery also accepts a legacy CRLF framing sequence.
+  // Strip exactly one such sequence: extra newlines or any other byte edit
+  // remain semantic content and therefore change text_hash.
+  const content = decoded.endsWith("\r\n")
+    ? decoded.slice(0, -2)
+    : decoded.endsWith("\n")
+      ? decoded.slice(0, -1)
+      : decoded;
+  return {
+    hash: sha256(Buffer.from(content, "utf8")),
+    objectBytes: bytes.length,
+    semanticLength: content.length,
+  };
+}
+
+function positiveIntegerOrNull(value) {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function nonNegativeIntegerOrNull(value) {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function strictJsonPositiveIntegerOrNull(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function strictJsonNonNegativeIntegerOrNull(value) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function parseLocalJsonArtifact(bytes, artifactRole, failures) {
+  let value;
+  try {
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    value = JSON.parse(decoded);
+  } catch {
+    failures.push({ artifact_role: artifactRole, reason: `${artifactRole}_json_invalid` });
+    return null;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    failures.push({ artifact_role: artifactRole, reason: `${artifactRole}_object_invalid` });
+    return null;
+  }
+  return value;
+}
+
+function sameArtifactReference(left, right) {
+  const normalize = (value) => String(value || "")
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/^\.\//, "");
+  const leftValue = normalize(left);
+  const rightValue = normalize(right);
+  return Boolean(leftValue && rightValue && leftValue === rightValue);
+}
+
+function isSha256(value) {
+  return /^[a-f0-9]{64}$/i.test(String(value || ""));
+}
+
+function sameSha256(left, right) {
+  return isSha256(left)
+    && isSha256(right)
+    && String(left).toLowerCase() === String(right).toLowerCase();
+}
+
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export function buildStage1ReadinessReport({
@@ -409,6 +1432,26 @@ export function buildStage1ReadinessReport({
   const ledgerByCohort = groupBy(factLedger, (row) => row.cohort_key);
 
   const globalBlockers = [];
+  const requiredQueryErrors = Array.isArray(queryInventory?.errors)
+    ? queryInventory.errors
+      .filter((entry) => entry && typeof entry === "object")
+      .map((entry) => ({
+        query: String(entry.query || "unknown_query"),
+        code: String(entry.code || "query_failed"),
+        message: truncateText(entry.message || "Required readiness evidence could not be loaded.", 1_000),
+      }))
+    : [];
+  if (requiredQueryErrors.length) {
+    globalBlockers.push(blocker(
+      "required_stage1_query_failed",
+      "critical",
+      "One or more required Stage 1 evidence queries failed or could not prove an exact stable result; readiness must remain blocked.",
+      {
+        failed_query_count: requiredQueryErrors.length,
+        failed_queries: requiredQueryErrors,
+      },
+    ));
+  }
   if (registryMode !== "remote_service_snapshot") {
     globalBlockers.push(blocker(
       "stage1_registry_not_available_remotely",
@@ -462,14 +1505,18 @@ export function buildStage1ReadinessReport({
         admin_review_status: source.admin_review_status || null,
         last_checked_at: source.last_checked_at || null,
         source_check_age_hours: ageHours(source.last_checked_at, now),
-        fresh_within_24h: isFresh(source.last_checked_at, now),
+        fresh_within_24h: isStage1LiveSourceCheckCurrent(source.last_checked_at, now),
         consecutive_failures: source.consecutive_failures || 0,
         last_error: source.last_error || null,
         identity_exclusion: identity,
-        official_program_domain: isOfficialProgramUrl(source.url, definition.officialHomepage),
+        official_program_domain: Boolean(officialSourceAuthority(source.url, definition)),
+        official_source_authority: officialSourceAuthority(source.url, definition),
         visual_evidence: {
           latest_captured_at: snapshot?.latest_captured_at || null,
-          fresh_within_24h: isFresh(snapshot?.latest_captured_at, now),
+          verification_epoch_valid: isStage1DurableVerificationTimestampValid(
+            snapshot?.latest_captured_at,
+            now,
+          ),
           r2,
           local,
         },
@@ -532,6 +1579,7 @@ export function buildStage1ReadinessReport({
       const binding = inspectManifestBinding({
         manifest,
         role,
+        definition,
         now,
         sourceReportById,
         candidateById,
@@ -541,7 +1589,7 @@ export function buildStage1ReadinessReport({
         blockers.push(blocker(
           "source_role_not_verified",
           "critical",
-          `Required source role ${role} does not have fresh, exact, immutable evidence.`,
+          `Required source role ${role} does not have exact immutable evidence and a current live source check.`,
           { role, reasons: binding.reasons, best_candidate_url: ranked[0]?.url || null },
         ));
       }
@@ -565,7 +1613,14 @@ export function buildStage1ReadinessReport({
     const latestReconciliation = canonical
       ? latestBy(reconciliationByAward.get(canonical.id) || [], "created_at")
       : null;
-    const latestAudit = canonical ? latestBy(auditsByAward.get(canonical.id) || [], "created_at") : null;
+    const latestAudit = canonical
+      ? latestBy(
+          (auditsByAward.get(canonical.id) || []).filter(
+            (audit) => audit.audit_kind === "deterministic",
+          ),
+          "created_at",
+        )
+      : null;
     const publicFacts = nonEmptyPublishedFacts(canonical?.public_facts);
     const reconciliationReport = inspectReconciliation({
       reconciliation: latestReconciliation,
@@ -574,11 +1629,11 @@ export function buildStage1ReadinessReport({
       sourceById,
       candidateById,
     });
-    if (!reconciliationReport.fresh_success) {
+    if (!reconciliationReport.verified_success) {
       blockers.push(blocker(
         "canonical_reconciliation_not_fresh_success",
         "critical",
-        "The latest canonical reconciliation is absent, failed, incomplete, or older than 24 hours.",
+        "The latest canonical reconciliation is absent, failed, incomplete, or dated in the future.",
         { status: latestReconciliation?.status || null, completed_at: latestReconciliation?.completed_at || null },
       ));
     }
@@ -592,11 +1647,11 @@ export function buildStage1ReadinessReport({
     }
 
     const auditReport = inspectPageAudit({ audit: latestAudit, publicFacts, now });
-    if (!auditReport.fresh_pass) {
+    if (!auditReport.verified_pass) {
       blockers.push(blocker(
         "canonical_page_audit_not_fresh_pass",
         "critical",
-        "The latest canonical page audit is absent, not passed, or older than 24 hours.",
+        "The latest canonical page audit is absent, not passed, or dated in the future.",
         { status: latestAudit?.audit_status || null, created_at: latestAudit?.created_at || null },
       ));
     }
@@ -675,7 +1730,7 @@ export function buildStage1ReadinessReport({
 
     if (registryMode === "remote_service_snapshot" && remote?.effectively_verified !== true) {
       blockers.push(blocker(
-        "remote_effective_publication_gate_closed",
+        STAGE1_REMOTE_EFFECTIVE_BLOCKER,
         "critical",
         "The authoritative remote publication decision is closed.",
         { effective_reason: remote?.effective_reason || "cohort_missing_from_snapshot" },
@@ -746,6 +1801,8 @@ export function buildStage1ReadinessReport({
       fact_publication_ledger: ledgerReport,
       quarantine: quarantineReport,
       blockers: uniqueBlockers,
+      ready_for_reviewed_promotion:
+        isStage1ReviewedPromotionReady(uniqueBlockers),
       ready_for_verified_beta_promotion: uniqueBlockers.length === 0 && remote?.effectively_verified === true,
     };
     cohortReport.next_actions = nextActionsForCohort(cohortReport);
@@ -757,6 +1814,14 @@ export function buildStage1ReadinessReport({
     ...globalBlockers.map((entry) => nextActionForBlocker(null, entry, null)),
     ...cohortReports.flatMap((cohort) => cohort.next_actions),
   ].filter(Boolean);
+  const promotionCounts = effectiveStage1PromotionCounts({
+    cohortReports,
+    globalBlockers,
+  });
+  const reviewedPromotionCounts = reviewedStage1PromotionCounts({
+    cohortReports,
+    globalBlockers,
+  });
 
   return {
     schema_version: STAGE1_READINESS_SCHEMA_VERSION,
@@ -767,7 +1832,7 @@ export function buildStage1ReadinessReport({
       captures: 0,
       r2_object_requests: 0,
       r2_availability_basis: "immutable_database_object_pointers_only; no paid/object HEAD probes",
-      local_availability_basis: "baseline identity, timestamp, hash metadata, safe paths, and file existence",
+      local_availability_basis: "immutable same-generation R2 bindings plus complete per-kind local slots, baseline/meta identity, capture timestamp, raw/semantic lengths, recomputed main and expansion image hashes, and screenshot-layout geometry bindings",
     },
     registry: {
       mode: registryMode,
@@ -782,8 +1847,8 @@ export function buildStage1ReadinessReport({
     query_inventory: queryInventory,
     summary: {
       exact_cohort_count: cohortReports.length,
-      ready_for_verified_beta_count: cohortReports.filter((cohort) => cohort.ready_for_verified_beta_promotion).length,
-      blocked_count: cohortReports.filter((cohort) => !cohort.ready_for_verified_beta_promotion).length,
+      ...reviewedPromotionCounts,
+      ...promotionCounts,
       total_blockers: allBlockers.length,
       blockers_by_code: countBy(allBlockers, (entry) => entry.code),
       total_sources: cohortReports.reduce((sum, cohort) => sum + cohort.sources.length, 0),
@@ -807,6 +1872,51 @@ export function buildStage1ReadinessReport({
   };
 }
 
+export function effectiveStage1PromotionCounts({ cohortReports, globalBlockers }) {
+  const reports = Array.isArray(cohortReports) ? cohortReports : [];
+  const blockers = Array.isArray(globalBlockers) ? globalBlockers : [];
+  const cohortLevelReadyCount = reports.filter(
+    (cohort) => cohort?.ready_for_verified_beta_promotion === true,
+  ).length;
+  const globalReleaseGateClear = blockers.length === 0;
+  const readyCount = globalReleaseGateClear ? cohortLevelReadyCount : 0;
+  return {
+    cohort_level_ready_count: cohortLevelReadyCount,
+    global_release_gate_clear: globalReleaseGateClear,
+    overall_ready_for_verified_beta:
+      globalReleaseGateClear
+      && reports.length === STAGE1_COHORT_DEFINITION.length
+      && cohortLevelReadyCount === reports.length,
+    ready_for_verified_beta_count: readyCount,
+    blocked_count: reports.length - readyCount,
+  };
+}
+
+export function isStage1ReviewedPromotionReady(blockers) {
+  const entries = Array.isArray(blockers) ? blockers : [];
+  return entries.every((entry) => entry?.code === STAGE1_REMOTE_EFFECTIVE_BLOCKER);
+}
+
+export function reviewedStage1PromotionCounts({ cohortReports, globalBlockers }) {
+  const reports = Array.isArray(cohortReports) ? cohortReports : [];
+  const blockers = Array.isArray(globalBlockers) ? globalBlockers : [];
+  const cohortReadyCount = reports.filter(
+    (cohort) => cohort?.ready_for_reviewed_promotion === true,
+  ).length;
+  const globalGateClear = blockers.length === 0;
+  const readyCount = globalGateClear ? cohortReadyCount : 0;
+  return {
+    cohort_level_pre_promotion_ready_count: cohortReadyCount,
+    global_pre_promotion_gate_clear: globalGateClear,
+    overall_ready_for_reviewed_promotion:
+      globalGateClear
+      && reports.length === STAGE1_COHORT_DEFINITION.length
+      && cohortReadyCount === reports.length,
+    ready_for_reviewed_promotion_count: readyCount,
+    pre_promotion_blocked_count: reports.length - readyCount,
+  };
+}
+
 function cohort(launchRank, cohortKey, canonicalName, canonicalSearchKey, officialHomepage, aliasSearchKeys, options = {}) {
   return Object.freeze({
     launchRank,
@@ -817,6 +1927,7 @@ function cohort(launchRank, cohortKey, canonicalName, canonicalSearchKey, offici
     aliasSearchKeys: Object.freeze(aliasSearchKeys),
     identityRules: Object.freeze(options.identityRules || []),
     preferredPaths: Object.freeze(options.preferredPaths || {}),
+    delegatedAuthorities: Object.freeze(options.delegatedAuthorities || []),
   });
 }
 
@@ -830,16 +1941,56 @@ function compilePostgresPattern(value, invalidRules, ruleKey) {
   }
 }
 
-function isOfficialProgramUrl(candidate, officialHomepage) {
+function officialSourceAuthority(candidate, definition) {
   try {
-    const candidateHost = stripWww(new URL(candidate).hostname);
-    const officialHost = stripWww(new URL(officialHomepage).hostname);
-    return candidateHost === officialHost
-      || candidateHost.endsWith(`.${officialHost}`)
-      || officialHost.endsWith(`.${candidateHost}`);
+    const candidateUrl = String(candidate || "");
+    const officialUrl = String(definition.officialHomepage || "");
+    if (!candidateUrl.startsWith("https://") || !officialUrl.startsWith("https://")) {
+      return null;
+    }
+    const parsedCandidate = new URL(candidateUrl);
+    const parsedOfficial = new URL(officialUrl);
+    if (
+      parsedCandidate.protocol !== "https:"
+      || parsedOfficial.protocol !== "https:"
+      || parsedCandidate.username
+      || parsedCandidate.password
+      || parsedOfficial.username
+      || parsedOfficial.password
+    ) {
+      return null;
+    }
+    const candidateHost = parsedCandidate.hostname.toLowerCase();
+    const officialHost = parsedOfficial.hostname.toLowerCase();
+    if (candidateHost === officialHost) {
+      return {
+        host: candidateHost,
+        classification: "canonical_program_host",
+        evidence_url: definition.officialHomepage,
+      };
+    }
+    const delegated = (definition.delegatedAuthorities || []).find(
+      (entry) => String(entry.host).toLowerCase() === candidateHost,
+    );
+    return delegated ? {
+      host: candidateHost,
+      classification: delegated.classification,
+      evidence_url: delegated.evidenceUrl,
+      reviewed_reason: delegated.reviewedReason,
+    } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function stage1ManifestSourceAuthority({ sourceUrl, role, cohort }) {
+  if (!cohort || !REQUIRED_SOURCE_ROLES.includes(role)) return null;
+  const authority = officialSourceAuthority(sourceUrl, cohort);
+  if (!authority) return null;
+  if (role === "identity_home" && sourceUrl !== cohort.officialHomepage) {
+    return null;
+  }
+  return authority;
 }
 
 function canonicalIdentityReport(definition, actual, remoteRegistry) {
@@ -890,14 +2041,325 @@ function canonicalIdentityReport(definition, actual, remoteRegistry) {
   };
 }
 
+export function inspectStage1ImmutableR2CaptureBinding(snapshot) {
+  const errors = [];
+  const addError = (code) => {
+    if (!errors.includes(code)) errors.push(code);
+  };
+  const sourceId = String(snapshot?.shared_award_source_id || "").trim().toLowerCase();
+  const sourceUrl = String(snapshot?.source_url || "").trim();
+  const kind = String(snapshot?.kind || "").trim().toLowerCase();
+  const objectKeys = objectValue(snapshot?.latest_object_keys);
+  const hashes = objectValue(snapshot?.latest_hashes);
+  const metadata = objectValue(snapshot?.latest_metadata);
+  const artifactBindings = objectValue(metadata.artifact_bindings);
+  const slots = new Set();
+  const seenKeys = new Set();
+  let generation = null;
+
+  if (!STAGE1_SOURCE_ID_PATTERN.test(sourceId)) addError("source_id_missing_or_invalid");
+  if (!isHttpUrl(sourceUrl)) addError("source_url_missing_or_invalid");
+  if (!new Set(["webpage", "pdf"]).has(kind)) addError("kind_missing_or_invalid");
+  if (!String(snapshot?.bucket || "").trim()) addError("bucket_missing");
+  if (!sameInstant(snapshot?.latest_captured_at, snapshot?.latest_captured_at)) {
+    addError("captured_at_missing_or_invalid");
+  }
+  if (!isPlainObject(snapshot?.latest_object_keys) || !Object.keys(objectKeys).length) {
+    addError("object_keys_missing_or_invalid");
+  }
+  if (!isPlainObject(snapshot?.latest_hashes)) addError("hashes_missing_or_invalid");
+  if (!isPlainObject(snapshot?.latest_metadata)) addError("metadata_missing_or_invalid");
+
+  for (const [slot, rawKey] of Object.entries(objectKeys)) {
+    const expectedFile = stage1SnapshotSlotFileName(slot);
+    if (!expectedFile) {
+      addError(`object_key_unknown_slot:${slot}`);
+      continue;
+    }
+    if (typeof rawKey !== "string" || !rawKey.trim()) {
+      addError(`object_key_missing:${slot}`);
+      continue;
+    }
+    const key = rawKey.trim();
+    if (
+      key.includes("\\")
+      || key.includes("..")
+      || key.includes("/latest/")
+      || key.includes("/previous/")
+      || /[\u0000-\u001f]/.test(key)
+    ) {
+      addError(`object_key_unsafe_or_mutable:${slot}`);
+      continue;
+    }
+    if (seenKeys.has(key)) addError("object_keys_alias_slots");
+    seenKeys.add(key);
+    const match = /^visual-snapshots\/sources\/([^/]+)\/captures\/([^/]+)\/([^/]+)$/.exec(key);
+    if (!match) {
+      addError(`object_key_generation_path_invalid:${slot}`);
+      continue;
+    }
+    if (match[1].toLowerCase() !== sourceId) addError(`object_key_wrong_source:${slot}`);
+    if (!STAGE1_IMMUTABLE_GENERATION_PATTERN.test(match[2])) {
+      addError(`object_key_generation_invalid:${slot}`);
+    }
+    if (match[3] !== expectedFile) addError(`object_key_filename_invalid:${slot}`);
+    if (generation && generation !== match[2]) addError("object_keys_mixed_generations");
+    generation ||= match[2];
+    slots.add(slot);
+  }
+
+  if (
+    metadata.artifact_bindings_schema
+      !== "awardping.r2.capture-artifact-bindings.v1"
+  ) {
+    addError("artifact_bindings_schema_missing_or_invalid");
+  }
+  if (!isPlainObject(metadata.artifact_bindings)) {
+    addError("artifact_bindings_missing_or_invalid");
+  }
+  const bindingSlots = Object.keys(artifactBindings).sort();
+  const objectKeySlots = [...slots].sort();
+  if (!deepEqual(bindingSlots, objectKeySlots)) {
+    addError("artifact_binding_slots_do_not_match_object_keys");
+  }
+  for (const slot of objectKeySlots) {
+    const rawBinding = artifactBindings[slot];
+    const binding = objectValue(rawBinding);
+    const expectedContentType = stage1SnapshotSlotContentType(slot);
+    if (
+      !isPlainObject(rawBinding)
+      || !deepEqual(
+        Object.keys(binding).sort(),
+        ["byte_length", "content_type", "hash_mode", "sha256"],
+      )
+      || !isLowerSha256(binding.sha256)
+      || strictJsonPositiveIntegerOrNull(binding.byte_length) === null
+      || binding.content_type !== expectedContentType
+      || binding.hash_mode !== "raw_sha256"
+    ) {
+      addError(`artifact_binding_missing_or_invalid:${slot}`);
+    }
+  }
+
+  const hasPage = slots.has("page");
+  const hasPdf = slots.has("pdf");
+  if (hasPage === hasPdf) addError("object_keys_core_kind_ambiguous");
+  if (kind === "webpage" && !hasPage) addError("object_keys_kind_mismatch");
+  if (kind === "pdf" && !hasPdf) addError("object_keys_kind_mismatch");
+  const requiredSlots = kind === "webpage"
+    ? ["page", "thumb", "text", "meta"]
+    : kind === "pdf"
+      ? ["pdf", "text", "meta"]
+      : [];
+  for (const slot of requiredSlots) {
+    if (!slots.has(slot)) addError(`object_key_core_slot_missing:${slot}`);
+  }
+  if (kind === "pdf") {
+    for (const slot of slots) {
+      if (["page", "thumb", "layout"].includes(slot) || slot.startsWith("expansion_state_")) {
+        addError(`pdf_forbidden_slot:${slot}`);
+      }
+    }
+  }
+
+  const requiredHashFields = kind === "pdf"
+    ? ["file_hash", "text_hash"]
+    : kind === "webpage"
+      ? ["image_hash", "text_hash"]
+      : [];
+  for (const field of requiredHashFields) {
+    if (!isLowerSha256(hashes[field])) addError(`core_hash_missing_or_invalid:${field}`);
+  }
+  for (const [field, positive] of kind === "pdf"
+    ? [["file_bytes", true], ["text_object_bytes", true], ["text_length", false]]
+    : [["page_bytes", true], ["thumb_bytes", true], ["text_object_bytes", true], ["text_length", false]]) {
+    const valid = positive
+      ? strictJsonPositiveIntegerOrNull(metadata[field]) !== null
+      : strictJsonNonNegativeIntegerOrNull(metadata[field]) !== null;
+    if (!valid) addError(`metadata_length_missing_or_invalid:${field}`);
+  }
+
+  const layoutHashClaims = kind === "webpage" ? [
+    ["hashes", hashes.layout_hash],
+    ["metadata", metadata.layout_hash],
+    ["text_geometry", metadata.text_geometry?.geometry_hash],
+    ["localization", metadata.localization?.geometry_hash],
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim()) : [];
+  const layoutClaimed = kind === "webpage" && (slots.has("layout") || layoutHashClaims.length > 0);
+  const layoutExplicitlyUnavailable = kind === "webpage"
+    && stage1PointerLayoutExplicitlyUnavailable(metadata);
+  let authoritativeLayoutHash = null;
+  if (kind === "webpage" && layoutClaimed) {
+    if (!slots.has("layout")) addError("layout_object_key_missing");
+    for (const [claim, value] of layoutHashClaims) {
+      if (!isLowerSha256(value)) addError(`layout_hash_missing_or_invalid:${claim}`);
+    }
+    for (const claim of ["hashes", "metadata", "text_geometry", "localization"]) {
+      if (!layoutHashClaims.some(([name]) => name === claim)) {
+        addError(`layout_hash_binding_missing:${claim}`);
+      }
+    }
+    const validLayoutHashes = layoutHashClaims
+      .map(([, value]) => String(value || "").trim())
+      .filter(isLowerSha256);
+    if (new Set(validLayoutHashes).size > 1) addError("layout_hash_bindings_disagree");
+    authoritativeLayoutHash = validLayoutHashes[0] || null;
+    if (!sameSha256(metadata.text_geometry?.screenshot?.image_hash, hashes.image_hash)) {
+      addError("layout_metadata_image_hash_mismatch");
+    }
+    if (!sameSha256(metadata.localization?.bound_image_hash, hashes.image_hash)) {
+      addError("layout_localization_image_hash_mismatch");
+    }
+    if (metadata.localization?.semantic_crop_contract !== "visual-exact-text-binding-v2") {
+      addError("layout_localization_contract_mismatch");
+    }
+    if (
+      metadata.localization?.status !== "geometry_ready"
+      || metadata.localization?.geometry_ready !== true
+      || metadata.localization?.accounted_for !== true
+      || String(metadata.localization?.unavailable_reason || "").trim()
+    ) {
+      addError("layout_localization_state_mismatch");
+    }
+  } else if (kind === "webpage" && !layoutExplicitlyUnavailable) {
+    addError("layout_missing_without_explicit_unavailable_status");
+  }
+
+  const expansionPageIndexes = [...slots]
+    .map((slot) => /^expansion_state_(\d{2})$/.exec(slot)?.[1] || null)
+    .filter(Boolean)
+    .toSorted();
+  const expansionLayoutIndexes = [...slots]
+    .map((slot) => /^expansion_state_(\d{2})_layout$/.exec(slot)?.[1] || null)
+    .filter(Boolean)
+    .toSorted();
+  for (const suffix of new Set([...expansionPageIndexes, ...expansionLayoutIndexes])) {
+    if (!expansionPageIndexes.includes(suffix)) addError(`expansion_page_key_missing:${suffix}`);
+    if (!expansionLayoutIndexes.includes(suffix)) addError(`expansion_layout_key_missing:${suffix}`);
+  }
+  for (const [index, suffix] of expansionPageIndexes.entries()) {
+    if (suffix !== String(index + 1).padStart(2, "0")) addError("expansion_key_indexes_not_contiguous");
+  }
+  const expansionMetadata = Array.isArray(metadata.expansion_state_screenshots)
+    ? metadata.expansion_state_screenshots
+    : [];
+  if (kind === "webpage" && !Array.isArray(metadata.expansion_state_screenshots)) {
+    addError("expansion_state_metadata_missing_or_invalid");
+  }
+  const declaredExpansionCount = strictJsonNonNegativeIntegerOrNull(
+    metadata.expansion_state_count,
+  );
+  if (kind === "webpage" && declaredExpansionCount === null) {
+    addError("expansion_state_count_missing_or_invalid");
+  }
+  if (
+    kind === "webpage"
+    && (declaredExpansionCount !== expansionPageIndexes.length
+      || expansionMetadata.length !== expansionPageIndexes.length)
+  ) {
+    addError("expansion_state_count_mismatch");
+  }
+  const expansionCoverage = kind === "webpage"
+    ? canonicalExpansionStateCaptureCoverage(
+        metadata.expansion_state_capture_coverage,
+        { expectedRetainedStateCount: expansionPageIndexes.length },
+      )
+    : null;
+  if (kind === "webpage" && !expansionCoverage) {
+    addError("expansion_capture_coverage_missing_or_invalid");
+  } else if (kind === "webpage" && expansionCoverage.complete !== true) {
+    addError("expansion_capture_coverage_incomplete");
+  } else if (kind === "pdf" && metadata.expansion_state_capture_coverage != null) {
+    addError("pdf_expansion_capture_coverage_forbidden");
+  }
+  const expansionStates = expansionPageIndexes.map((suffix, arrayIndex) => {
+    const state = objectValue(expansionMetadata[arrayIndex]);
+    const expectedStateId = `expansion-state-${suffix}`;
+    if (state.state_id !== expectedStateId) addError(`expansion_state_id_mismatch:${suffix}`);
+    if (!isLowerSha256(state.image_hash)) addError(`expansion_image_hash_invalid:${suffix}`);
+    if (!isLowerSha256(state.layout_hash)) addError(`expansion_layout_hash_invalid:${suffix}`);
+    if (!isLowerSha256(state.text_hash)) addError(`expansion_text_hash_invalid:${suffix}`);
+    if (strictJsonPositiveIntegerOrNull(state.page_bytes) === null) {
+      addError(`expansion_page_bytes_invalid:${suffix}`);
+    }
+    if (strictJsonNonNegativeIntegerOrNull(state.text_length) === null) {
+      addError(`expansion_text_length_invalid:${suffix}`);
+    }
+    if (!sameSha256(state.text_geometry?.geometry_hash, state.layout_hash)) {
+      addError(`expansion_geometry_hash_mismatch:${suffix}`);
+    }
+    if (!sameSha256(state.text_geometry?.screenshot?.image_hash, state.image_hash)) {
+      addError(`expansion_geometry_image_hash_mismatch:${suffix}`);
+    }
+    return {
+      suffix,
+      state_id: state.state_id || expectedStateId,
+      image_hash: state.image_hash || null,
+      layout_hash: state.layout_hash || null,
+      page_bytes: strictJsonPositiveIntegerOrNull(state.page_bytes),
+      metadata: state,
+    };
+  });
+
+  const rawProjection = metadata.retained_artifact_projection;
+  const projection = objectValue(rawProjection);
+  const projectionAuthority = objectValue(projection.authoritative);
+  const projectionExpectedLayoutRetained = kind === "webpage" && layoutClaimed;
+  const projectionExpectedLayoutHash = projectionExpectedLayoutRetained
+    ? authoritativeLayoutHash
+    : null;
+  const projectionExpectedExpansionCount = kind === "webpage"
+    ? expansionPageIndexes.length
+    : 0;
+  const projectionExpectedLocalizationStatus = kind === "pdf"
+    ? "not_applicable_pdf"
+    : projectionExpectedLayoutRetained
+      ? "exact_geometry_available"
+      : "evidence_only_geometry_unavailable";
+  if (
+    !isPlainObject(rawProjection)
+    || projection.schema !== "awardping.capture-retained-artifact-projection.v1"
+    || projection.kind !== kind
+    || projection.localization_status !== projectionExpectedLocalizationStatus
+    || !isPlainObject(projection.authoritative)
+    || projectionAuthority.layout_retained !== projectionExpectedLayoutRetained
+    || projectionAuthority.expansion_state_count !== projectionExpectedExpansionCount
+    || (projectionExpectedLayoutHash
+      ? !sameSha256(projectionAuthority.layout_hash, projectionExpectedLayoutHash)
+      : projectionAuthority.layout_hash !== null)
+  ) {
+    addError("retained_artifact_projection_missing_or_invalid");
+  }
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    source_id: sourceId || null,
+    source_url: sourceUrl || null,
+    kind: kind || null,
+    generation,
+    object_keys: objectKeys,
+    hashes,
+    metadata,
+    artifact_bindings: artifactBindings,
+    layout_claimed: layoutClaimed,
+    layout_explicitly_unavailable: layoutExplicitlyUnavailable,
+    layout_hash: authoritativeLayoutHash,
+    expansion_states: expansionStates,
+    expansion_state_capture_coverage: expansionCoverage,
+    retained_artifact_projection: isPlainObject(rawProjection) ? rawProjection : null,
+  };
+}
+
 function inspectR2Pointer(snapshot) {
   const objectKeys = objectValue(snapshot?.latest_object_keys);
   const hashes = objectValue(snapshot?.latest_hashes);
   const keyValues = Object.values(objectKeys).filter((value) => typeof value === "string" && value.trim());
   const hashValues = Object.values(hashes).filter((value) => typeof value === "string" && value.trim());
-  const pointerAvailable = Boolean(snapshot?.latest_captured_at && keyValues.length && hashValues.length);
+  const immutableBinding = inspectStage1ImmutableR2CaptureBinding(snapshot);
+  const pointerAvailable = immutableBinding.valid;
   return {
-    availability: pointerAvailable ? "immutable_pointer_present_unprobed" : "missing",
+    availability: pointerAvailable ? "immutable_pointer_present_unprobed" : "missing_or_invalid",
     evidence_level: "database_pointer_only_no_r2_object_request",
     bucket_present: Boolean(snapshot?.bucket),
     object_key_count: keyValues.length,
@@ -905,20 +2367,119 @@ function inspectR2Pointer(snapshot) {
     object_keys: objectKeys,
     hashes,
     pointer_available: pointerAvailable,
+    immutable_binding_errors: immutableBinding.errors,
+    immutable_generation: immutableBinding.generation,
   };
 }
 
-function inspectManifestBinding({ manifest, role, now, sourceReportById, candidateById, memberIds }) {
+function stage1SnapshotSlotFileName(slot) {
+  if (STAGE1_SNAPSHOT_FIXED_FILES[slot]) return STAGE1_SNAPSHOT_FIXED_FILES[slot];
+  const page = /^expansion_state_(\d{2})$/.exec(slot);
+  if (page) return `expansion-state-${page[1]}.jpg`;
+  const layout = /^expansion_state_(\d{2})_layout$/.exec(slot);
+  if (layout) return `expansion-state-${layout[1]}-layout.json`;
+  return null;
+}
+
+function stage1SnapshotSlotContentType(slot) {
+  if (slot === "page" || slot === "thumb" || /^expansion_state_\d{2}$/.test(slot)) {
+    return "image/jpeg";
+  }
+  if (slot === "pdf") return "application/pdf";
+  if (slot === "text") return "text/plain; charset=utf-8";
+  if (slot === "meta" || slot === "layout" || /^expansion_state_\d{2}_layout$/.test(slot)) {
+    return "application/json; charset=utf-8";
+  }
+  return null;
+}
+
+function stage1LayoutExplicitlyUnavailable(value) {
+  const localization = objectValue(value);
+  const status = String(localization.status || "").trim();
+  return Boolean(
+    stage1UnavailableLocalizationStatus(status)
+    && localization.exact === false
+    && localization.accounted_for === true
+    && localization.geometry_ready === false
+    && String(localization.unavailable_reason || "").trim()
+    && !localization.geometry_hash
+    && !localization.bound_image_hash
+  );
+}
+
+function stage1PointerLayoutExplicitlyUnavailable(metadataValue) {
+  const metadata = objectValue(metadataValue);
+  const textGeometryValue = metadata.text_geometry;
+  const textGeometry = objectValue(textGeometryValue);
+  const textGeometryAbsent = textGeometryValue === null || textGeometryValue === undefined;
+  const textGeometryStatus = String(textGeometry.status || "").trim();
+  const availabilityStatus = String(textGeometry.availability_status || "").trim();
+  const nodeCount = textGeometry.node_count;
+  const runCount = textGeometry.run_count;
+  const textGeometryUnavailable = isPlainObject(textGeometryValue)
+    && stage1UnavailableLocalizationStatus(textGeometryStatus)
+    && (!availabilityStatus || stage1UnavailableLocalizationStatus(availabilityStatus))
+    && String(textGeometry.unavailable_reason || "").trim()
+    && !String(textGeometry.geometry_hash || "").trim()
+    && !String(textGeometry.file || "").trim()
+    && (nodeCount === undefined || nodeCount === null || nodeCount === 0)
+    && (runCount === undefined || runCount === null || runCount === 0)
+    && !String(textGeometry.screenshot?.image_hash || "").trim()
+    && !String(textGeometry.screenshot?.image_ref || "").trim();
+  return stage1LayoutExplicitlyUnavailable(metadata.localization)
+    && !String(metadata.layout_hash || "").trim()
+    && !String(metadata.files?.layout || "").trim()
+    && (textGeometryAbsent || textGeometryUnavailable);
+}
+
+function stage1UnavailableLocalizationStatus(status) {
+  return status === "unavailable"
+    || status.startsWith("unavailable_")
+    || status === "capture_layout_unavailable"
+    || status === "evidence_only_geometry_unavailable";
+}
+
+function isLowerSha256(value) {
+  return /^[a-f0-9]{64}$/.test(String(value || ""));
+}
+
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isHttpUrl(value) {
+  try {
+    return new Set(["http:", "https:"]).has(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
+function inspectManifestBinding({
+  manifest,
+  role,
+  definition,
+  now,
+  sourceReportById,
+  candidateById,
+  memberIds,
+}) {
   const reasons = [];
   if (!manifest) return { valid: false, reasons: ["manifest_missing"] };
   if (manifest.source_role !== role) reasons.push("manifest_role_mismatch");
   if (!["present", "combined", "not_published"].includes(manifest.manifest_status)) reasons.push("manifest_status_missing");
-  if (!isFresh(manifest.checked_at, now)) reasons.push("manifest_check_not_fresh");
+  if (!isStage1DurableVerificationTimestampValid(manifest.checked_at, now)) {
+    reasons.push("manifest_check_missing_or_future");
+  }
   if (manifest.policy_version !== STAGE1_POLICY_VERSION) reasons.push("policy_version_mismatch");
   const evidence = objectValue(manifest.evidence);
   if (evidence.official !== true && evidence.official !== "true") reasons.push("official_attestation_missing");
-  if (!isFresh(evidence.r2_verified_at, now)) reasons.push("r2_verification_not_fresh");
-  if (!isFresh(evidence.local_verified_at, now)) reasons.push("local_verification_not_fresh");
+  if (!isStage1DurableVerificationTimestampValid(evidence.r2_verified_at, now)) {
+    reasons.push("r2_verification_missing_or_future");
+  }
+  if (!isStage1DurableVerificationTimestampValid(evidence.local_verified_at, now)) {
+    reasons.push("local_verification_missing_or_future");
+  }
   if (evidence.policy_version !== manifest.policy_version) reasons.push("evidence_policy_mismatch");
   if (!String(evidence.supporting_text || "").trim()) reasons.push("supporting_text_missing");
 
@@ -931,12 +2492,39 @@ function inspectManifestBinding({ manifest, role, now, sourceReportById, candida
       reasons.push(`source_not_in_cohort:${sourceId}`);
       continue;
     }
+    const requiredAuthority = stage1ManifestSourceAuthority({
+      sourceUrl: source.url,
+      role,
+      cohort: definition,
+    });
+    if (!requiredAuthority) {
+      reasons.push(role === "identity_home"
+        ? `identity_home_not_exact_canonical:${sourceId}`
+        : `source_authority_unreviewed:${sourceId}`);
+    } else {
+      const reportedAuthority = objectValue(source.official_source_authority);
+      const boundAuthority = objectValue(binding.official_identity);
+      for (const [field, expected] of Object.entries({
+        host: requiredAuthority.host,
+        classification: requiredAuthority.classification,
+        evidence_url: requiredAuthority.evidence_url,
+      })) {
+        if (reportedAuthority[field] !== expected) {
+          reasons.push(`source_authority_report_mismatch:${sourceId}`);
+        }
+        if (boundAuthority[field] !== expected) {
+          reasons.push(`source_authority_binding_mismatch:${sourceId}`);
+        }
+      }
+    }
     if (!memberIds.has(source.shared_award_id)) reasons.push(`source_member_mismatch:${sourceId}`);
     if (source.admin_review_status !== "open") reasons.push(`source_not_open:${sourceId}`);
     if (!source.fresh_within_24h) reasons.push(`source_check_stale:${sourceId}`);
     if (source.last_error) reasons.push(`source_error:${sourceId}`);
     if (source.identity_exclusion.excluded) reasons.push(`source_identity_excluded:${sourceId}`);
-    if (!source.visual_evidence.fresh_within_24h) reasons.push(`snapshot_stale:${sourceId}`);
+    if (!source.visual_evidence.verification_epoch_valid) {
+      reasons.push(`snapshot_timestamp_missing_or_future:${sourceId}`);
+    }
     if (!source.visual_evidence.r2.pointer_available) reasons.push(`r2_pointer_missing:${sourceId}`);
     if (!source.visual_evidence.local.exact_available) reasons.push(`local_exact_evidence_missing:${sourceId}`);
     if (binding.source_url !== source.url) reasons.push(`source_url_binding_mismatch:${sourceId}`);
@@ -977,9 +2565,9 @@ function inspectReconciliation({ reconciliation, now, memberIds, sourceById, can
     const candidate = candidateById.get(id);
     return candidate?.shared_award_source_id && !(sourceIds || []).includes(candidate.shared_award_source_id);
   });
-  const freshSuccess = Boolean(
+  const verifiedSuccess = Boolean(
     reconciliation?.status === "succeeded"
-    && isFresh(reconciliation.completed_at, now),
+    && isStage1DurableVerificationTimestampValid(reconciliation.completed_at, now),
   );
   const exactArrays = Boolean(
     sourceIds
@@ -990,7 +2578,7 @@ function inspectReconciliation({ reconciliation, now, memberIds, sourceById, can
   );
   return {
     latest: reconciliation ? sanitizeReconciliation(reconciliation) : null,
-    fresh_success: freshSuccess,
+    verified_success: verifiedSuccess,
     age_hours: ageHours(reconciliation?.completed_at, now),
     exact_identity_arrays: exactArrays,
     bindings: {
@@ -1012,7 +2600,10 @@ function inspectPageAudit({ audit, publicFacts, now }) {
     .map(([field]) => field);
   return {
     latest: audit ? sanitizeAudit(audit) : null,
-    fresh_pass: Boolean(audit?.audit_status === "passed" && isFresh(audit.created_at, now)),
+    verified_pass: Boolean(
+      audit?.audit_status === "passed"
+      && isStage1DurableVerificationTimestampValid(audit.created_at, now),
+    ),
     age_hours: ageHours(audit?.created_at, now),
     public_snapshot_exact: Object.keys(publicFacts).length > 0 && mismatchedFields.length === 0,
     compared_fields: Object.keys(publicFacts),
@@ -1173,6 +2764,14 @@ export function nextActionForBlocker(cohort, entry, sourceRoles) {
   if (entry.code === "stage1_registry_not_available_remotely" || entry.code === "remote_stage1_snapshot_invalid") {
     return { ...base, priority: 1, action_type: "validate_and_deploy_registry", summary: "Validate the reviewed Stage 1 migration, then deploy it through the normal migration workflow; do not promote any award.", mutates_remote_state: true };
   }
+  if (entry.code === "required_stage1_query_failed") {
+    return {
+      ...base,
+      priority: 1,
+      action_type: "restore_readiness_evidence",
+      summary: "Repair the listed read-only evidence query, require an exact stable result, then rerun readiness. Do not promote from partial or stale evidence.",
+    };
+  }
   if (entry.code === "source_role_not_verified" || entry.code === "official_source_candidate_missing") {
     const role = entry.evidence?.role;
     const candidates = sourceRoles?.find((row) => row.source_role === role)?.official_candidate_urls || [];
@@ -1208,7 +2807,7 @@ export function nextActionForBlocker(cohort, entry, sourceRoles) {
   if (entry.code === "actionable_quarantine_open") {
     return { ...base, priority: 7, action_type: "resolve_quarantine", summary: "Work the durable quarantine cases by reason and owner; resolve only after evidence proves the underlying failure is gone.", mutates_remote_state: true };
   }
-  if (entry.code === "remote_effective_publication_gate_closed") {
+  if (entry.code === STAGE1_REMOTE_EFFECTIVE_BLOCKER) {
     return { ...base, priority: 9, action_type: "hold_publication", summary: "Keep the award unpublished until all earlier evidence actions pass and the authoritative RPC returns verified.", mutates_remote_state: false };
   }
   return { ...base, priority: 8, action_type: "manual_review", summary: entry.message };
@@ -1433,9 +3032,16 @@ function latestBy(rows, field) {
   return [...rows].sort((left, right) => timestamp(right[field]) - timestamp(left[field]) || String(right.id).localeCompare(String(left.id)))[0] || null;
 }
 
-function isFresh(value, now) {
+export function isStage1DurableVerificationTimestampValid(value, now) {
   const time = timestamp(value);
-  return time > 0 && time <= now.getTime() + 5 * 60 * 1_000 && time >= now.getTime() - STAGE1_FRESHNESS_MS;
+  return time > 0 && time <= now.getTime() + STAGE1_FUTURE_CLOCK_TOLERANCE_MS;
+}
+
+export function isStage1LiveSourceCheckCurrent(value, now) {
+  const time = timestamp(value);
+  return time > 0
+    && time <= now.getTime() + STAGE1_FUTURE_CLOCK_TOLERANCE_MS
+    && time >= now.getTime() - STAGE1_FRESHNESS_MS;
 }
 
 function ageHours(value, now) {
@@ -1456,11 +3062,7 @@ function sameInstant(left, right) {
 }
 
 function snapshotPointerAvailable(snapshot) {
-  return Boolean(
-    snapshot?.latest_captured_at
-    && Object.keys(objectValue(snapshot.latest_object_keys)).length
-    && Object.values(objectValue(snapshot.latest_hashes)).some(Boolean),
-  );
+  return inspectStage1ImmutableR2CaptureBinding(snapshot).valid;
 }
 
 function sameNormalizedUrl(left, right) {
@@ -1468,7 +3070,6 @@ function sameNormalizedUrl(left, right) {
     const normalize = (value) => {
       const url = new URL(value);
       url.hash = "";
-      url.search = "";
       url.hostname = stripWww(url.hostname);
       url.pathname = normalizedPath(url.pathname);
       return url.toString().replace(/\/$/, "");

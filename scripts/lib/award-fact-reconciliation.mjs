@@ -351,16 +351,29 @@ export function planMissingFactCandidateMaterialization(
     if (!ownerMatches) sourceOwnerMismatches.push(candidate);
     return ownerMatches;
   });
+  const currentSourceCandidates = buildFactCandidatesFromSources(award, sources);
+  const currentSourceCandidateKeys = new Set(
+    currentSourceCandidates.map(factCandidateMaterializationKey),
+  );
   const usableLoadedCandidates = ownerMatchedCandidates.filter(
-    (candidate) => !["rejected", "superseded"].includes(candidate.candidate_status),
+    // Rejection is a terminal evidence-quality decision. Superseded is only
+    // the neutral result of losing the current deterministic field ranking,
+    // so it remains eligible only while its exact value and evidence are still
+    // present in the source's current baseline facts.
+    (candidate) =>
+      candidate.candidate_status !== "rejected" &&
+      (
+        candidate.candidate_status !== "superseded" ||
+        currentSourceCandidateKeys.has(factCandidateMaterializationKey(candidate))
+      ),
   );
   const loadedCandidateKeys = new Set(
-    // Rejected and superseded rows are not reconsidered, but their stable
-    // identity still prevents the same permanently invalid source fact from
-    // being regenerated on every reconciliation pass.
+    // Every retained row, including a rejected one, owns its stable identity.
+    // That prevents duplicate materialization without treating a valid
+    // non-winning (superseded) row as permanently invalid.
     ownerMatchedCandidates.map(factCandidateMaterializationKey),
   );
-  const generatedCandidates = buildFactCandidatesFromSources(award, sources)
+  const generatedCandidates = currentSourceCandidates
     .filter((candidate) => !loadedCandidateKeys.has(
       factCandidateMaterializationKey(candidate),
     ));
@@ -370,6 +383,118 @@ export function planMissingFactCandidateMaterialization(
     generatedCandidates,
     sourceOwnerMismatches,
   };
+}
+
+export function buildCandidateDispositionEntries(reconciliation, conflictFields) {
+  const conflicts = conflictFields instanceof Set
+    ? conflictFields
+    : new Set(conflictFields || []);
+  const dispositions = new Map();
+
+  for (const selection of Object.values(reconciliation?.selected || {})) {
+    if (!selection?.candidate?.id) continue;
+    dispositions.set(selection.candidate.id, {
+      candidate: selection.candidate,
+      candidate_status: conflicts.has(selection.candidate.field_name)
+        ? "conflicted"
+        : "selected",
+      selected_reason: selection.reason,
+      rejection_reason: null,
+    });
+  }
+
+  for (const rejection of reconciliation?.rejected || []) {
+    if (!rejection?.candidate?.id) continue;
+    dispositions.set(rejection.candidate.id, {
+      candidate: rejection.candidate,
+      candidate_status: "rejected",
+      rejection_reason: rejection.reason,
+      selected_reason: null,
+    });
+  }
+
+  for (const candidate of reconciliation?.candidates || []) {
+    if (!candidate?.id || dispositions.has(candidate.id)) continue;
+    // This candidate passed validation but another valid candidate won the
+    // field ranking. Preserve its exact evidence as superseded, not rejected,
+    // and leave both reason columns clear because the current schema has no
+    // neutral disposition-reason column.
+    dispositions.set(candidate.id, {
+      candidate,
+      candidate_status: "superseded",
+      selected_reason: null,
+      rejection_reason: null,
+    });
+  }
+
+  return [...dispositions.values()];
+}
+
+export function buildAtomicCandidateChanges({
+  preparedGeneratedCandidates,
+  reconciliation,
+  conflictFields,
+}) {
+  const dispositions = buildCandidateDispositionEntries(
+    reconciliation,
+    conflictFields,
+  );
+  const dispositionById = new Map(
+    dispositions.map((disposition) => [disposition.candidate.id, disposition]),
+  );
+  const generatedIds = new Set(
+    preparedGeneratedCandidates.map((prepared) => prepared.row.id),
+  );
+  const generatedCandidateRows = preparedGeneratedCandidates.map((prepared) => {
+    const disposition = dispositionById.get(prepared.row.id);
+    if (!disposition) {
+      throw new Error(
+        `Generated fact candidate ${prepared.row.id} has no reconciliation disposition.`,
+      );
+    }
+    return {
+      ...prepared.row,
+      candidate_status: disposition.candidate_status,
+      selected_reason: disposition.selected_reason,
+      rejection_reason: disposition.rejection_reason,
+    };
+  });
+  const candidateStatusUpdates = dispositions
+    .filter((disposition) => !generatedIds.has(disposition.candidate.id))
+    .map((disposition) => {
+      if (!disposition.candidate.updated_at) {
+        throw new Error(
+          `Existing fact candidate ${disposition.candidate.id} is missing its CAS version.`,
+        );
+      }
+      const dispositionChanged =
+        disposition.candidate.candidate_status !== disposition.candidate_status ||
+        (disposition.candidate.selected_reason ?? null) !==
+          (disposition.selected_reason ?? null) ||
+        (disposition.candidate.rejection_reason ?? null) !==
+          (disposition.rejection_reason ?? null);
+      if (
+        disposition.candidate.candidate_status === "rejected" &&
+        dispositionChanged
+      ) {
+        throw new Error(
+          `Rejected fact candidate ${disposition.candidate.id} is terminal and its material state cannot change.`,
+        );
+      }
+      // Every existing contributor is sent to the atomic RPC, including a
+      // true no-op. The update's row count then acts as a complete CAS barrier
+      // over the reconciliation snapshot while the lifecycle trigger keeps an
+      // unchanged row's database-managed updated_at version stable.
+      return {
+        id: disposition.candidate.id,
+        expected_status: disposition.candidate.candidate_status,
+        expected_updated_at: disposition.candidate.updated_at,
+        candidate_status: disposition.candidate_status,
+        selected_reason: disposition.selected_reason,
+        rejection_reason: disposition.rejection_reason,
+      };
+    });
+  return { generatedCandidateRows, candidateStatusUpdates };
 }
 
 export function buildAwardSummaryFromFacts(award, facts) {

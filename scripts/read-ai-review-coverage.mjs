@@ -124,7 +124,7 @@ async function loadSources() {
     let query = supabase
       .from("shared_award_sources")
       .select(
-        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,last_checked_at,last_error,created_at",
+        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,last_checked_at,last_error,created_at",
       )
       .order("created_at", { ascending: true })
       .order("id", { ascending: true })

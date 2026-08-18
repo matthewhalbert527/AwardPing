@@ -8,6 +8,7 @@ import {
   type SourceAiReviewSource,
 } from "@/lib/source-ai-review-status";
 import {
+  sourceMonitoringRestoreDecisionReason,
   sourceQualityDecision,
   type SourceQualitySource,
 } from "@/lib/source-quality";
@@ -40,6 +41,7 @@ type PageAuditLite = {
 
 export const aiCoverageCategories = [
   "complete_accepted",
+  "monitoring_restored",
   "complete_rejected",
   "unreviewed",
   "incomplete_review",
@@ -253,6 +255,9 @@ export function summarizeAiReviewCoverageFromWorkerRuns(workerRuns: LocalWorkerR
   const completeAccepted = numberValue(sourceSummary.open_category_counts
     ? objectValue(sourceSummary.open_category_counts).complete_accepted
     : counts.complete_accepted);
+  const monitoringRestored = numberValue(sourceSummary.open_category_counts
+    ? objectValue(sourceSummary.open_category_counts).monitoring_restored
+    : counts.monitoring_restored);
   const completeRejected = numberValue(counts.complete_rejected ?? sourceSummary.sources_with_baseline_facts_rejected);
   const openCategoryCounts = reportOpenCategoryCounts(sourceSummary, counts);
   const categoryCounts = reportCategoryCounts(sourceSummary, counts, openCategoryCounts);
@@ -280,7 +285,9 @@ export function summarizeAiReviewCoverageFromWorkerRuns(workerRuns: LocalWorkerR
     open_sources_with_review_failed_status: numberValue(sourceSummary.open_sources_with_review_failed_status ?? counts.review_failed),
     open_sources_with_incomplete_or_invalid_metadata: numberValue(sourceSummary.open_sources_with_incomplete_or_invalid_metadata ?? counts.incomplete_review),
     fact_eligible_sources: numberValue(sourceSummary.fact_eligible_sources ?? completeAccepted),
-    monitor_eligible_sources: numberValue(sourceSummary.monitor_eligible_sources ?? completeAccepted),
+    monitor_eligible_sources: numberValue(
+      sourceSummary.monitor_eligible_sources ?? completeAccepted + monitoringRestored,
+    ),
     public_eligible_sources: numberValue(sourceSummary.public_eligible_sources ?? completeAccepted),
     active_awards: activeAwards,
     awards_with_no_public_facts: numberValue(sourceSummary.awards_with_no_public_facts),
@@ -289,9 +296,9 @@ export function summarizeAiReviewCoverageFromWorkerRuns(workerRuns: LocalWorkerR
     awards_with_unresolved_source_fact_conflicts: numberValue(sourceSummary.awards_with_unresolved_source_fact_conflicts),
     critical_page_audit_failures: numberValue(sourceSummary.critical_page_audit_failures),
     percent_complete_all_sources: numberValue(sourceSummary.percent_complete_all_sources) ||
-      percent(completeAccepted + completeRejected, totalSources),
+      percent(completeAccepted + completeRejected + monitoringRestored, totalSources),
     percent_complete_open_sources: numberValue(sourceSummary.percent_complete_open_sources) ||
-      percent(completeAccepted + completeRejected, openSources),
+      percent(completeAccepted + completeRejected + monitoringRestored, openSources),
     percent_complete_public_award_pages: numberValue(sourceSummary.percent_complete_public_award_pages) ||
       percent(awardsWithPublicFacts, activeAwards),
     status_counts: normalizeNumberRecord(statusCounts),
@@ -330,7 +337,9 @@ export function buildSourceAiCoverageRow(source: AiCoverageSource, award: AiCove
     ai_status: explanation.status,
     ai_complete: explanation.complete,
     needs_ai_review: explanation.needsAiReview || aiReviewCategories.has(category),
-    needs_manual_review: explanation.needsManualReview || category === "unclear" || category === "needs_manual_review",
+    needs_manual_review: category === "monitoring_restored"
+      ? false
+      : explanation.needsManualReview || category === "unclear" || category === "needs_manual_review",
     fact_eligible: factDecision.allowed,
     public_eligible: publicDecision.allowed,
     monitor_eligible: monitorDecision.allowed,
@@ -373,6 +382,11 @@ export function categorizeSourceAiCoverage({
   const status = explanation.status;
   const qualityCategory = qualityDecisionCategory(source, monitorDecision, explanation);
 
+  if (
+    isOpen &&
+    monitorDecision.allowed &&
+    monitorDecision.reason === sourceMonitoringRestoreDecisionReason
+  ) return "monitoring_restored";
   if (isOpen && qualityCategory) return qualityCategory;
   if (status === "unreviewed") return needsCaptureBaseline(source, explanation) ? "needs_capture_baseline" : "unreviewed";
   if (status === "review_failed") return "review_failed";
@@ -398,6 +412,7 @@ export function categorizeSourceAiCoverage({
 
 export function actionForAiCoverageCategory(category: AiCoverageCategory) {
   if (category === "complete_accepted") return { action: "leave_open", reason: "source_has_complete_clear_ai_review" };
+  if (category === "monitoring_restored") return { action: "leave_open", reason: "operator_monitoring_restore_preserved" };
   if (autoReviewLaterCategories.has(category)) return { action: "move_to_review_later", reason: category };
   if (aiReviewCategories.has(category)) return { action: "queue_ai_review", reason: category };
   return { action: "needs_manual_review", reason: category || "unknown" };
@@ -644,7 +659,7 @@ async function loadAiCoverageSources(admin: AdminClient, loadErrors: string[], m
     const { data, error } = await admin
       .from("shared_award_sources")
       .select(
-        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,last_checked_at,last_error,created_at",
+        "id,shared_award_id,url,title,display_title,page_description,page_metadata,page_metadata_generated_at,page_metadata_model,page_type,source,reason,submitted_by_user_id,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,last_checked_at,last_error,created_at",
       )
       .range(from, from + pageSize - 1);
     if (error) {
@@ -666,6 +681,7 @@ function reportOpenCategoryCounts(
   if (Object.keys(fromSummary).length > 0) return fromSummary;
   return normalizeNumberRecord({
     complete_accepted: counts.complete_accepted,
+    monitoring_restored: counts.monitoring_restored,
     complete_rejected: counts.complete_rejected,
     unreviewed: counts.unreviewed,
     incomplete_review: counts.incomplete_review,

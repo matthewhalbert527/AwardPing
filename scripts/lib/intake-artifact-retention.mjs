@@ -22,6 +22,12 @@ const uuidPattern =
 const sha256Pattern = /^[0-9a-f]{64}$/i;
 const namespace = "source-intake-first-observation";
 const schemaVersion = 1;
+export const acquisitionDerivedCaptureMetadataSchema =
+  "awardping.acquisition-derived-capture-metadata.v1";
+export const acquisitionDerivedCaptureMetadataFilename = "capture-meta.json";
+// Schema v1 named the primary retained object `pdf`. Keep that role and file
+// name stable for existing acquisitions; document_kind/content type describe
+// non-PDF intake responses without invalidating old manifests.
 const artifactFiles = {
   pdf: { name: "document.pdf", contentType: "application/pdf" },
   text: { name: "text.txt", contentType: "text/plain; charset=utf-8" },
@@ -49,21 +55,25 @@ export function intakeArtifactFailureSolution(code) {
   if (/local_(conflict|unsafe)/.test(String(code || ""))) {
     return "Preserve the conflicting local path for audit, compare it with the sealed R2 object, then relocate only the invalid cache entry and retry. Never overwrite sealed evidence in place.";
   }
-  return "Keep this item in manual quarantine, verify the request-bound R2 PDF/text/metadata and their hashes, then retry the same zero-charge materialization. Do not substitute the document currently served by the URL.";
+  return "Keep this item in manual quarantine, verify the request-bound R2 document/text/metadata and their hashes, then retry the same zero-charge materialization. Do not substitute the response currently served by the URL.";
 }
 
 export function requiresFirstObservationArtifactRetention(request, capture) {
-  if (cleanText(request?.acquisition_kind) !== "live_discovery") return false;
-  if (cleanText(request?.notification_mode) !== "first_capture_candidate") return false;
-  if (cleanText(request?.onboarding_batch_id)) return false;
-  const contentType = cleanText(capture?.content_type);
-  const finalUrl = cleanText(capture?.canonical_url || capture?.final_url);
-  return /pdf/i.test(contentType) || /\.pdf(?:$|[?#])/i.test(finalUrl);
+  // Every response that can proceed to a paid new-page review must be retained.
+  // This predicate is evaluated only after deterministic intake accepts the
+  // capture and paid review is enabled, so broadening it here does not retain
+  // deterministic rejects or create provider work by itself.
+  return Boolean(
+    cleanText(request?.id)
+    && cleanText(capture?.capture_file_hash)
+    && cleanText(capture?.content_type)
+    && cleanText(capture?.canonical_url || capture?.final_url),
+  );
 }
 
 /**
  * Builds the request metadata that binds a reviewed capture to its immutable
- * retained artifact without serializing the PDF bytes into Postgres.
+ * retained artifact without serializing the response bytes into Postgres.
  */
 export function serializableRetainedCaptureMetadata(capture, retainedArtifact) {
   const source = objectValue(capture);
@@ -122,7 +132,7 @@ export async function persistPostRetentionCaptureFailure({
  * Retains the exact bytes reviewed by new-page intake. The returned object is
  * safe to serialize: it contains only immutable keys, hashes, and lengths.
  */
-export async function retainFirstObservationIntakePdfArtifact({
+export async function retainFirstObservationIntakeArtifact({
   request,
   capture,
   archiveRoot,
@@ -133,32 +143,50 @@ export async function retainFirstObservationIntakePdfArtifact({
 } = {}) {
   if (!requiresFirstObservationArtifactRetention(request, capture)) return null;
   const requestId = requireUuid(request?.id, "request_id");
+  const pdfDocument = isPdfRetainedCapture(capture);
+  const integrityError = (suffix) => pdfDocument ? `intake_pdf_${suffix}` : `intake_artifact_${suffix}`;
+  const artifactLabel = pdfDocument ? "PDF" : "source response";
   const bytes = capture?.artifact_bytes;
   if (!Buffer.isBuffer(bytes)) {
     refuse(
-      "intake_pdf_bytes_unavailable",
-      "The source-intake capture did not expose its exact PDF bytes for retention.",
+      integrityError("bytes_unavailable"),
+      `The source-intake capture did not expose its exact ${artifactLabel} bytes for retention.`,
     );
   }
   const fileHash = sha256(bytes);
   const capturedHash = cleanText(capture?.capture_file_hash).toLowerCase();
   if (!sameHash(fileHash, capturedHash)) {
     refuse(
-      "intake_pdf_hash_mismatch",
-      "The exposed PDF bytes do not match the source-intake capture hash.",
+      integrityError("hash_mismatch"),
+      `The exposed ${artifactLabel} bytes do not match the source-intake capture hash.`,
     );
   }
   if (Number(capture?.byte_length) !== bytes.length) {
     refuse(
-      "intake_pdf_length_mismatch",
-      "The exposed PDF bytes do not match the source-intake capture length.",
+      integrityError("length_mismatch"),
+      `The exposed ${artifactLabel} bytes do not match the source-intake capture length.`,
     );
   }
   const capturedAt = canonicalTimestamp(capture?.captured_at, "captured_at");
-  const finalUrl = requireAbsoluteHttpUrl(capture?.canonical_url || capture?.final_url, "final_url");
+  const responseFinalUrl = requireAbsoluteHttpUrl(
+    capture?.final_url || capture?.canonical_url,
+    "response final_url",
+  );
+  // Keep final_url as the historical canonical/source binding while also
+  // preserving the exact response URL for HTML pages that declare a canonical.
+  const finalUrl = requireAbsoluteHttpUrl(capture?.canonical_url || responseFinalUrl, "canonical final_url");
   const text = canonicalCapturedText(capture?.text);
   const textBytes = Buffer.from(`${text}\n`, "utf8");
   const textHash = sha256(Buffer.from(text, "utf8"));
+  const documentContentType = retainedDocumentContentType(
+    capture?.content_type,
+    pdfDocument ? "application/pdf" : "application/octet-stream",
+  );
+  const documentKind = retainedDocumentKind(documentContentType, finalUrl);
+  const manifestArtifactFiles = {
+    ...artifactFiles,
+    pdf: { ...artifactFiles.pdf, contentType: documentContentType },
+  };
   const prefix = artifactPrefix(requestId, fileHash);
   const captureMetadata = {
     schema_version: schemaVersion,
@@ -166,7 +194,10 @@ export async function retainFirstObservationIntakePdfArtifact({
     request_id: requestId,
     captured_at: capturedAt,
     final_url: finalUrl,
-    content_type: cleanText(capture?.content_type) || "application/pdf",
+    response_final_url: responseFinalUrl,
+    canonical_url: finalUrl,
+    content_type: documentContentType,
+    document_kind: documentKind,
     status_code: positiveInteger(capture?.status_code) || null,
     page_title: cleanNullable(capture?.title),
     page_count: positiveInteger(capture?.page_count) || null,
@@ -191,10 +222,10 @@ export async function retainFirstObservationIntakePdfArtifact({
     Object.entries(payloads).map(([role, body]) => [
       role,
       {
-        key: `${prefix}/${artifactFiles[role].name}`,
+        key: `${prefix}/${manifestArtifactFiles[role].name}`,
         sha256: sha256(body),
         byte_length: body.length,
-        content_type: artifactFiles[role].contentType,
+        content_type: manifestArtifactFiles[role].contentType,
       },
     ]),
   );
@@ -209,9 +240,13 @@ export async function retainFirstObservationIntakePdfArtifact({
     request_id: requestId,
     captured_at: capturedAt,
     final_url: finalUrl,
+    response_final_url: responseFinalUrl,
+    canonical_url: finalUrl,
     prefix,
     file_hash: fileHash,
     file_bytes: bytes.length,
+    document_kind: documentKind,
+    document_content_type: documentContentType,
     text_hash: textHash,
     text_length: text.length,
     artifacts,
@@ -237,7 +272,7 @@ export async function retainFirstObservationIntakePdfArtifact({
   if (!bucket || !storeId || !r2Client) {
     const error = new IntakeArtifactRetentionError(
       "intake_r2_configuration_missing",
-      "R2 is required before a live first-capture PDF can proceed to paid review.",
+      `R2 is required before this retained ${artifactLabel} can proceed to paid review.`,
     );
     error.details = {
       staged_manifest: stagedManifest,
@@ -285,6 +320,11 @@ export async function retainFirstObservationIntakePdfArtifact({
     ...stagedManifest,
     r2_verified_at: new Date().toISOString(),
   };
+}
+
+/** Backward-compatible entry point for existing PDF acquisition callers. */
+export async function retainFirstObservationIntakePdfArtifact(options = {}) {
+  return retainFirstObservationIntakeArtifact(options);
 }
 
 /** Completes a failed R2 upload from the already hash-verified local cache. */
@@ -480,6 +520,141 @@ export async function materializeFirstObservationCaptureFromAcquisition({
 }
 
 /**
+ * Gives the ordinary visual baseline/candidate pipeline a mutable metadata
+ * artifact without ever repurposing the acquisition-derived immutable
+ * `meta.json`. Repeated materialization reuses the same derived file only
+ * after proving that its immutable source/hash/timestamp bindings still match.
+ */
+export function prepareAcquisitionCaptureMetadataForProjection({
+  archiveRoot,
+  source,
+  acquisition,
+  capture,
+  publishDerivedMetadata = publishDerivedCaptureMetadataAtomic,
+} = {}) {
+  const identity = validateAcquisitionArtifactBinding({ source, acquisition });
+  const root = requireArchiveRoot(archiveRoot);
+  const captureDir = resolve(cleanText(capture?.dir));
+  const expectedCaptureDir = resolve(
+    root,
+    "sources",
+    identity.sourceId,
+    "captures",
+    timestampForPath(identity.manifest.captured_at),
+  );
+  if (!cleanText(capture?.dir) || captureDir !== expectedCaptureDir) {
+    refuse(
+      "intake_derived_capture_metadata_path_mismatch",
+      "The acquisition capture directory is not the deterministic source/timestamp path.",
+    );
+  }
+
+  const immutableMetaPath = join(captureDir, "meta.json");
+  const derivedMetaPath = join(captureDir, acquisitionDerivedCaptureMetadataFilename);
+  assertSafeLocalArtifactPath(immutableMetaPath, root);
+  assertSafeLocalArtifactPath(derivedMetaPath, root);
+  if (!existsSync(immutableMetaPath) || lstatSync(immutableMetaPath).isSymbolicLink()) {
+    refuse(
+      "intake_derived_capture_metadata_source_missing",
+      "The immutable acquisition-derived capture metadata is missing or unsafe.",
+    );
+  }
+
+  const immutableMetaBytes = readFileSync(immutableMetaPath);
+  const immutableMetadata = parseJson(
+    immutableMetaBytes,
+    "intake_derived_capture_metadata_source_invalid",
+  );
+  assertAcquisitionDerivedCaptureIdentity({
+    metadata: immutableMetadata,
+    capture,
+    identity,
+    root,
+    immutableMetaPath,
+    derivedMetaPath,
+    requireDerivedBinding: false,
+  });
+
+  const immutableMetaRelative = archiveRelative(root, immutableMetaPath);
+  const derivedMetaRelative = archiveRelative(root, derivedMetaPath);
+  const immutableMetaSha256 = sha256(immutableMetaBytes);
+  const seedMetadata = {
+    ...immutableMetadata,
+    acquisition_derived_capture_metadata: {
+      schema: acquisitionDerivedCaptureMetadataSchema,
+      immutable_meta: immutableMetaRelative,
+      immutable_meta_sha256: immutableMetaSha256,
+    },
+    files: {
+      ...objectValue(immutableMetadata.files),
+      meta: derivedMetaRelative,
+    },
+  };
+
+  const derivedExisted = existsSync(derivedMetaPath);
+  if (!derivedExisted) {
+    try {
+      publishDerivedMetadata({
+        path: derivedMetaPath,
+        body: canonicalJsonBytes(seedMetadata),
+        archiveRoot: root,
+      });
+    } catch (error) {
+      // The production publisher exposes the destination only after the full
+      // temporary file is durable, so an error cannot expose partial bytes.
+      // Do not delete the destination here: another source-locked process may
+      // have won the same deterministic publication race.
+      const failure = new IntakeArtifactRetentionError(
+        "intake_derived_capture_metadata_write_failed",
+        `Derived capture metadata could not be published atomically: ${cleanText(error?.message || error)}`,
+      );
+      failure.cause = error;
+      throw failure;
+    }
+  }
+
+  let derivedMetadata;
+  try {
+    if (lstatSync(derivedMetaPath).isSymbolicLink()) {
+      refuse(
+        "intake_local_unsafe_path",
+        "The derived capture metadata path is a symbolic link or junction.",
+      );
+    }
+    derivedMetadata = parseJson(
+      readFileSync(derivedMetaPath),
+      "intake_derived_capture_metadata_invalid",
+    );
+  } catch (error) {
+    if (error instanceof IntakeArtifactRetentionError) throw error;
+    refuse(
+      "intake_derived_capture_metadata_invalid",
+      `Derived capture metadata could not be read: ${cleanText(error?.message || error)}`,
+    );
+  }
+  assertAcquisitionDerivedCaptureIdentity({
+    metadata: derivedMetadata,
+    capture,
+    identity,
+    root,
+    immutableMetaPath,
+    derivedMetaPath,
+    immutableMetaSha256,
+    requireDerivedBinding: true,
+  });
+
+  // Do not redirect callers until the complete derived artifact has been
+  // published, read back, and identity-checked.
+  capture.immutable_intake_meta_path = immutableMetaPath;
+  capture.meta_path = derivedMetaPath;
+  capture.files = {
+    ...objectValue(capture.files),
+    meta: derivedMetaRelative,
+  };
+  return capture;
+}
+
+/**
  * Recreates the exact candidate-local PDF/text/meta paths from acquisition R2
  * when the rotating visual-snapshot pointer no longer retains generation A.
  */
@@ -509,6 +684,21 @@ export async function restoreInitialOfficialDocumentCandidateArtifactsFromAcquis
       client,
       sendCommand,
     });
+    const candidateMetaPath = cleanText(
+      objectValue(objectValue(candidate?.new_snapshot_ref).local_paths).meta?.archive_relative,
+    ).replace(/\\/g, "/");
+    const derivedMetaPath = archiveRelative(
+      requireArchiveRoot(archiveRoot),
+      join(capture.dir, acquisitionDerivedCaptureMetadataFilename),
+    );
+    if (candidateMetaPath === derivedMetaPath) {
+      prepareAcquisitionCaptureMetadataForProjection({
+        archiveRoot,
+        source,
+        acquisition,
+        capture,
+      });
+    }
     validateCaptureAgainstCandidate(capture, candidate, archiveRoot);
     return {
       restored: true,
@@ -544,11 +734,22 @@ export function validateRetainedIntakeArtifactManifest(value, {
   const actualRequestId = requireUuid(manifest.request_id, "artifact request_id");
   const actualFileHash = requireSha256(manifest.file_hash, "artifact file_hash");
   const actualFinalUrl = requireAbsoluteHttpUrl(manifest.final_url, "artifact final_url");
+  const actualResponseFinalUrl = requireAbsoluteHttpUrl(
+    manifest.response_final_url || actualFinalUrl,
+    "artifact response_final_url",
+  );
+  const actualCanonicalUrl = requireAbsoluteHttpUrl(
+    manifest.canonical_url || actualFinalUrl,
+    "artifact canonical_url",
+  );
+  if (actualCanonicalUrl !== actualFinalUrl) {
+    refuse("intake_artifact_canonical_url_binding_mismatch", "The retained canonical URL differs from its source binding URL.");
+  }
   if (requestId && actualRequestId !== cleanText(requestId)) {
     refuse("intake_artifact_request_binding_mismatch", "The retained artifact belongs to another source-intake request.");
   }
   if (fileHash && !sameHash(actualFileHash, fileHash)) {
-    refuse("intake_artifact_file_binding_mismatch", "The retained artifact PDF hash differs from the sealed acquisition.");
+    refuse("intake_artifact_file_binding_mismatch", "The retained document hash differs from the sealed acquisition.");
   }
   if (finalUrl && actualFinalUrl !== requireAbsoluteHttpUrl(finalUrl, "sealed final_url")) {
     refuse("intake_artifact_url_binding_mismatch", "The retained artifact final URL differs from the sealed acquisition.");
@@ -558,7 +759,22 @@ export function validateRetainedIntakeArtifactManifest(value, {
     refuse("intake_artifact_prefix_invalid", "The retained artifact prefix is not request/hash bound.");
   }
   const artifacts = objectValue(manifest.artifacts);
-  for (const [role, definition] of Object.entries(artifactFiles)) {
+  const documentContentType = manifest.document_content_type
+    ? retainedDocumentContentType(manifest.document_content_type)
+    : "application/pdf";
+  const documentKind = manifest.document_kind
+    ? retainedDocumentKindValue(manifest.document_kind)
+    : manifest.document_content_type
+      ? retainedDocumentKind(documentContentType, actualFinalUrl)
+      : "pdf";
+  if (documentKind !== retainedDocumentKind(documentContentType, actualFinalUrl)) {
+    refuse("intake_artifact_document_kind_invalid", "The retained document kind does not match its content type and URL.");
+  }
+  const manifestArtifactFiles = {
+    ...artifactFiles,
+    pdf: { ...artifactFiles.pdf, contentType: documentContentType },
+  };
+  for (const [role, definition] of Object.entries(manifestArtifactFiles)) {
     const artifact = objectValue(artifacts[role]);
     const expectedKey = `${expectedPrefix}/${definition.name}`;
     if (cleanText(artifact.key) !== expectedKey) {
@@ -573,7 +789,10 @@ export function validateRetainedIntakeArtifactManifest(value, {
     }
   }
   if (!sameHash(artifacts.pdf.sha256, actualFileHash)) {
-    refuse("intake_artifact_pdf_hash_invalid", "The retained PDF object hash does not equal the sealed capture hash.");
+    refuse(
+      documentKind === "pdf" ? "intake_artifact_pdf_hash_invalid" : "intake_artifact_document_hash_invalid",
+      `The retained ${documentKind === "pdf" ? "PDF" : "document"} object hash does not equal the sealed capture hash.`,
+    );
   }
   if (requireR2Verified && !canonicalTimestampOrNull(manifest.r2_verified_at)) {
     refuse("intake_artifact_r2_verification_missing", "The retained artifact has no completed R2 verification timestamp.");
@@ -600,7 +819,10 @@ export function validateRetainedIntakeArtifactManifest(value, {
   const fileBytes = Number(manifest.file_bytes);
   const textLength = Number(manifest.text_length);
   if (!Number.isSafeInteger(fileBytes) || fileBytes < 1 || fileBytes !== Number(artifacts.pdf.byte_length)) {
-    refuse("intake_artifact_pdf_length_invalid", "The retained PDF length binding is invalid.");
+    refuse(
+      documentKind === "pdf" ? "intake_artifact_pdf_length_invalid" : "intake_artifact_document_length_invalid",
+      `The retained ${documentKind === "pdf" ? "PDF" : "document"} length binding is invalid.`,
+    );
   }
   if (!Number.isSafeInteger(textLength) || textLength < 0) {
     refuse("intake_artifact_text_length_invalid", "The retained text length binding is invalid.");
@@ -610,10 +832,14 @@ export function validateRetainedIntakeArtifactManifest(value, {
     request_id: actualRequestId,
     file_hash: actualFileHash,
     final_url: actualFinalUrl,
+    response_final_url: actualResponseFinalUrl,
+    canonical_url: actualCanonicalUrl,
     captured_at: capturedAt,
     file_bytes: fileBytes,
     text_length: textLength,
     text_hash: requireSha256(manifest.text_hash, "artifact text_hash"),
+    document_kind: documentKind,
+    document_content_type: documentContentType,
     r2_bucket: manifestBucket,
     r2_store_id: manifestStoreId,
     artifacts,
@@ -763,11 +989,22 @@ function inspectLocalArtifacts(localDir, manifest) {
 
 function parseLoadedArtifact(local, manifest) {
   const metadata = parseJson(local.values.capture_metadata.body, "intake_capture_metadata_invalid");
+  const metadataContentType = retainedDocumentContentType(
+    metadata.content_type,
+    manifest.document_kind === "pdf" ? "application/pdf" : "application/octet-stream",
+  );
+  const metadataDocumentKind = metadata.document_kind
+    ? retainedDocumentKindValue(metadata.document_kind)
+    : "pdf";
   if (
     metadata.namespace !== namespace ||
     metadata.request_id !== manifest.request_id ||
     metadata.captured_at !== manifest.captured_at ||
     metadata.final_url !== manifest.final_url ||
+    requireAbsoluteHttpUrl(metadata.response_final_url || metadata.final_url, "capture response_final_url") !== manifest.response_final_url ||
+    requireAbsoluteHttpUrl(metadata.canonical_url || metadata.final_url, "capture canonical_url") !== manifest.canonical_url ||
+    metadataContentType !== manifest.document_content_type ||
+    metadataDocumentKind !== manifest.document_kind ||
     !sameHash(metadata.file_hash, manifest.file_hash) ||
     Number(metadata.file_bytes) !== manifest.file_bytes ||
     !sameHash(metadata.text_hash, manifest.text_hash) ||
@@ -963,6 +1200,101 @@ function writeImmutableVerified(path, body, { code, label, archiveRoot }) {
   }
 }
 
+function publishDerivedCaptureMetadataAtomic({ path, body, archiveRoot }) {
+  const expected = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  assertSafeLocalArtifactPath(path, archiveRoot);
+  mkdirSync(dirname(path), { recursive: true });
+  assertSafeLocalArtifactPath(path, archiveRoot);
+  const staged = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(staged, expected, { flag: "wx" });
+    try {
+      linkSync(staged, path);
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      // A concurrent writer won the deterministic name. The caller reads and
+      // validates that complete artifact against the immutable binding.
+      return;
+    }
+    const current = readFileSync(path);
+    if (current.length !== expected.length || !sameHash(sha256(current), sha256(expected))) {
+      throw new Error("the published bytes did not match the complete staged metadata");
+    }
+  } finally {
+    rmSync(staged, { force: true });
+  }
+}
+
+function assertAcquisitionDerivedCaptureIdentity({
+  metadata,
+  capture,
+  identity,
+  root,
+  immutableMetaPath,
+  derivedMetaPath,
+  immutableMetaSha256 = null,
+  requireDerivedBinding,
+}) {
+  const sourceMetadata = objectValue(metadata.source);
+  const retained = objectValue(metadata.retained_intake_artifact);
+  const files = objectValue(metadata.files);
+  const expectedMetaPath = requireDerivedBinding ? derivedMetaPath : immutableMetaPath;
+  const expectedMetaRelative = archiveRelative(root, expectedMetaPath);
+  const expectedPdfRelative = archiveRelative(root, capture?.pdf_path);
+  const expectedTextRelative = archiveRelative(root, capture?.text_path);
+  if (
+    sourceMetadata.id !== identity.sourceId
+    || sourceMetadata.shared_award_id !== identity.awardId
+    || sourceMetadata.source_acquisition_id !== identity.acquisitionId
+    || sourceMetadata.source_page_request_id !== identity.requestId
+    || sourceMetadata.url !== identity.finalUrl
+    || metadata.captured_at !== identity.manifest.captured_at
+    || metadata.final_url !== identity.finalUrl
+    || !sameHash(metadata.file_hash, identity.manifest.file_hash)
+    || !sameHash(metadata.image_hash, identity.manifest.file_hash)
+    || !sameHash(metadata.text_hash, identity.manifest.text_hash)
+    || Number(metadata.file_bytes) !== identity.manifest.file_bytes
+    || Number(metadata.text_length) !== identity.manifest.text_length
+    || retained.schema_version !== schemaVersion
+    || retained.namespace !== namespace
+    || retained.request_id !== identity.requestId
+    || retained.acquisition_id !== identity.acquisitionId
+    || retained.prefix !== identity.manifest.prefix
+    || !sameHash(
+      retained.capture_metadata_sha256,
+      identity.manifest.artifacts.capture_metadata.sha256,
+    )
+    || files.pdf !== expectedPdfRelative
+    || files.text !== expectedTextRelative
+    || files.meta !== expectedMetaRelative
+    || capture?.captured_at !== identity.manifest.captured_at
+    || capture?.final_url !== identity.finalUrl
+    || !sameHash(capture?.file_hash, identity.manifest.file_hash)
+    || !sameHash(capture?.image_hash, identity.manifest.file_hash)
+    || !sameHash(capture?.text_hash, identity.manifest.text_hash)
+    || Number(capture?.file_bytes) !== identity.manifest.file_bytes
+    || Number(capture?.text_length) !== identity.manifest.text_length
+  ) {
+    refuse(
+      "intake_derived_capture_metadata_binding_mismatch",
+      "Derived capture metadata does not preserve the sealed source, hash, path, and timestamp bindings.",
+    );
+  }
+
+  if (!requireDerivedBinding) return;
+  const binding = objectValue(metadata.acquisition_derived_capture_metadata);
+  if (
+    binding.schema !== acquisitionDerivedCaptureMetadataSchema
+    || binding.immutable_meta !== archiveRelative(root, immutableMetaPath)
+    || !sameHash(binding.immutable_meta_sha256, immutableMetaSha256)
+  ) {
+    refuse(
+      "intake_derived_capture_metadata_provenance_mismatch",
+      "Derived capture metadata is not bound to the exact immutable acquisition metadata bytes.",
+    );
+  }
+}
+
 function intakeCacheDirectory(archiveRoot, requestId, fileHash) {
   const directory = resolve(
     archiveRoot,
@@ -1125,6 +1457,43 @@ function cleanNullable(value) {
 
 function cleanText(value) {
   return String(value ?? "").trim();
+}
+
+function retainedDocumentContentType(value, fallback = "application/octet-stream") {
+  const text = cleanText(value) || fallback;
+  const mediaType = text.split(";", 1)[0].trim();
+  if (
+    text.length > 255
+    || /[\r\n]/.test(text)
+    || /[^\x20-\x7e]/.test(text)
+    || !/^[A-Za-z0-9!#$%&'*+.^_`|~-]+\/[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(mediaType)
+  ) {
+    refuse("intake_artifact_content_type_invalid", "The retained document content type is invalid.");
+  }
+  return text.toLowerCase();
+}
+
+function retainedDocumentKind(contentType, finalUrl) {
+  const type = cleanText(contentType).toLowerCase();
+  if (type.includes("pdf") || /\.pdf(?:$|[?#])/i.test(cleanText(finalUrl))) return "pdf";
+  if (type === "text/html" || type.startsWith("text/html;") || type === "application/xhtml+xml") return "html";
+  if (type.startsWith("text/")) return "text";
+  return "binary";
+}
+
+function retainedDocumentKindValue(value) {
+  const kind = cleanText(value).toLowerCase();
+  if (!new Set(["pdf", "html", "text", "binary"]).has(kind)) {
+    refuse("intake_artifact_document_kind_invalid", "The retained document kind is invalid.");
+  }
+  return kind;
+}
+
+function isPdfRetainedCapture(capture) {
+  return retainedDocumentKind(
+    cleanText(capture?.content_type) || "application/octet-stream",
+    capture?.canonical_url || capture?.final_url,
+  ) === "pdf";
 }
 
 function errorText(error) {

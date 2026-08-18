@@ -10,6 +10,8 @@ import type {
 import { sourceIntakeTypes } from "@/lib/source-intake";
 import {
   FREE_RECONCILIATION_FAILURE_REASON,
+  isApprovedBackfillSourceActivationRetry,
+  isManualBackfillSourceActivationRequest,
   isSourceIntakeReconciliationOnlyRecovery,
   sourceIntakeActionAllowedWithContext,
   sourceIntakeProtectedRecovery,
@@ -134,10 +136,18 @@ export function AdminSourceIntakePanel({
               add accepted sources, and queue reconciliation.
             </p>
           </div>
-          {message && <span className="badge bg-[var(--brand-pink-soft)]">{message}</span>}
+          {message && (
+            <span
+              className="badge bg-[var(--brand-pink-soft)]"
+              role="status"
+            >
+              {message}
+            </span>
+          )}
         </div>
         <div className="mt-5 grid gap-4">
           <textarea
+            aria-label="Official source URLs"
             className="input min-h-40 font-mono text-sm"
             placeholder="https://example.edu/scholarship"
             value={urls}
@@ -237,8 +247,22 @@ function SourceIntakeRow({
     acquisitionKind: request.acquisition_kind,
     notificationMode: request.notification_mode,
     onboardingBatchId: request.onboarding_batch_id,
+    matchedSharedAwardId: request.matched_shared_award_id,
   };
   const canAttach = sourceIntakeActionAllowedWithContext("attach_to_award", request.status, actionContext);
+  const canApproveBackfill = sourceIntakeActionAllowedWithContext(
+    "approve_backfill_source",
+    request.status,
+    actionContext,
+  );
+  const manualBackfillActivation = isManualBackfillSourceActivationRequest(
+    request.status,
+    actionContext,
+  );
+  const approvedBackfillRetry = isApprovedBackfillSourceActivationRetry(
+    request.status,
+    actionContext,
+  );
   const canRetry = sourceIntakeActionAllowedWithContext("retry", request.status, actionContext);
   const canRerunAi = sourceIntakeActionAllowedWithContext("rerun_ai_review", request.status, actionContext);
   const canReject = sourceIntakeActionAllowedWithContext("reject", request.status, actionContext);
@@ -281,9 +305,18 @@ function SourceIntakeRow({
             <p className={`mt-3 text-sm font-bold ${protectedRecovery.mode !== "manual_only" ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
               {protectedRecovery.protected
                 ? protectedRecovery.explanation
+                : approvedBackfillRetry
+                  ? reconciliationRetry.explanation
                 : ordinaryMatchingRetry
                   ? "Retry this ordinary source from capture. The page may be fetched again and its AI review may create a charge."
                   : reconciliationRetry.explanation}
+            </p>
+          )}
+          {manualBackfillActivation && (
+            <p className={`mt-3 text-sm font-bold ${canApproveBackfill ? "text-[var(--brand-green)]" : "text-[var(--brand-burgundy)]"}`}>
+              {canApproveBackfill
+                ? "The paid page review is complete and cryptographically bound to this retained capture. Choose the matching award once to activate this source as baseline-only for $0. This will not fetch the page again, rerun AI, publish a first-observation update, or change the award homepage."
+                : "This historical provider result is not cryptographically bound to the retained capture, so $0 approval is blocked. Use Rerun AI to create a new bound review from the saved capture; the page will not be fetched again, but the review may create a charge."}
             </p>
           )}
         </div>
@@ -292,10 +325,10 @@ function SourceIntakeRow({
             <select
               className="input"
               value={selectedAwardId}
-              disabled={actionBusy || !canAttach}
+              disabled={actionBusy || (!canAttach && !canApproveBackfill)}
               onChange={(event) => setSelectedAwardId(event.target.value)}
             >
-              <option value="">Attach to award...</option>
+              <option value="">{canApproveBackfill ? "Activate for award..." : "Attach to award..."}</option>
               {awardOptions.map((award) => (
                 <option key={award.id} value={award.id}>
                   {award.name}
@@ -304,7 +337,7 @@ function SourceIntakeRow({
             </select>
           )}
           <div className="flex flex-wrap gap-2">
-            {!restrictedRecovery && (
+            {!restrictedRecovery && canAttach && (
               <button
                 className="button-secondary"
                 disabled={actionBusy || !canAttach || !selectedAwardId}
@@ -312,6 +345,16 @@ function SourceIntakeRow({
                 onClick={() => onAction(request.id, "attach_to_award", selectedAwardId)}
               >
                 Attach
+              </button>
+            )}
+            {canApproveBackfill && (
+              <button
+                className="button-primary"
+                disabled={actionBusy || !selectedAwardId}
+                type="button"
+                onClick={() => onAction(request.id, "approve_backfill_source", selectedAwardId)}
+              >
+                Approve baseline-only source - $0
               </button>
             )}
             {protectedRecovery.mode === "retry_capture_may_charge" && canRetry && (
@@ -341,17 +384,19 @@ function SourceIntakeRow({
                 type="button"
                 onClick={() => onAction(request.id, "retry_reconciliation")}
               >
-                Replay retained result - $0
+                {approvedBackfillRetry
+                  ? "Retry approved baseline-only activation - $0"
+                  : "Replay retained result - $0"}
               </button>
             )}
-            {!restrictedRecovery && (
+            {!restrictedRecovery && (canRetry || canRerunAi) && (
               <>
-                <button className="button-secondary" disabled={actionBusy || !canRetry} type="button" onClick={() => onAction(request.id, "retry")}>
+                {canRetry && <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "retry")}>
                   Retry
-                </button>
-                <button className="button-secondary" disabled={actionBusy || !canRerunAi} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
+                </button>}
+                {canRerunAi && <button className="button-secondary" disabled={actionBusy} type="button" onClick={() => onAction(request.id, "rerun_ai_review")}>
                   Rerun AI
-                </button>
+                </button>}
               </>
             )}
             <button className="button-secondary" disabled={actionBusy || !canReject} type="button" onClick={() => onAction(request.id, "reject")}>

@@ -24,7 +24,11 @@ export async function getOnboardingStatus(user: UserLike): Promise<OnboardingSta
     getOfficeContext(user),
   ]);
 
-  const needsProfile = !profile?.full_name?.trim() || !profile?.organization?.trim();
+  const needsProfile = Boolean(
+    profile?.personal_data_reentry_required ||
+      !profile?.full_name?.trim() ||
+      !profile?.organization?.trim(),
+  );
   const needsOffice = !officeContext || isPlaceholderOfficeName(officeContext.current.officeName);
 
   return {

@@ -59,6 +59,21 @@ type SourceSnapshotResponse = {
 
 type SnapshotVersion = "latest" | "previous";
 
+const dialogFocusableSelector = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled]):not([type='hidden'])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function dialogFocusableElements(dialog: HTMLElement) {
+  return Array.from(dialog.querySelectorAll<HTMLElement>(dialogFocusableSelector)).filter(
+    (element) => !element.hidden && element.getAttribute("aria-hidden") !== "true" && element.tabIndex >= 0,
+  );
+}
+
 export function SourceSnapshotViewerButton({
   changeEventId,
   changeDetectedAt,
@@ -83,16 +98,52 @@ export function SourceSnapshotViewerButton({
   const [error, setError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<SourceSnapshotResponse | null>(null);
   const [activeVersion, setActiveVersion] = useState<SnapshotVersion>("latest");
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
 
+    const focusReturnTarget = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : triggerRef.current;
+    closeButtonRef.current?.focus();
+
     function onKeyDown(event: globalThis.KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = dialogFocusableElements(dialog);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !dialog.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      focusReturnTarget?.focus();
+    };
   }, [open]);
 
   const activeSnapshot = snapshot?.[activeVersion] || null;
@@ -162,6 +213,7 @@ export function SourceSnapshotViewerButton({
     <>
       <button
         className="button-secondary source-snapshot-trigger px-3 py-2 text-sm"
+        ref={triggerRef}
         type="button"
         onClick={openViewer}
       >
@@ -179,7 +231,9 @@ export function SourceSnapshotViewerButton({
             aria-label={`${sourceTitle} snapshot`}
             aria-modal="true"
             className="source-snapshot-dialog"
+            ref={dialogRef}
             role="dialog"
+            tabIndex={-1}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="source-snapshot-header">
@@ -208,6 +262,7 @@ export function SourceSnapshotViewerButton({
               <button
                 aria-label="Close snapshot viewer"
                 className="source-snapshot-close"
+                ref={closeButtonRef}
                 type="button"
                 onClick={() => setOpen(false)}
               >

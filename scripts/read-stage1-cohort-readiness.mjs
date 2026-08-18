@@ -3,14 +3,22 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  STAGE1_COHORT_DEFINITION,
   allStage1SearchKeys,
   buildStage1ReadinessReport,
 } from "./lib/stage1-cohort-readiness.mjs";
+import {
+  fetchExactRows,
+  fetchExactStableChunkedRows,
+  fetchExactStableRows,
+} from "./lib/stage1-readiness-query.mjs";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
+if (args.help) {
+  printHelp();
+  process.exit(0);
+}
 const envChoice = String(args.env || defaultEnvFile());
 const envPath = resolve(root, envChoice);
 const env = {
@@ -89,7 +97,7 @@ if (!supabaseUrl || !serviceRoleKey) {
     const rows = await fetchChunked({
       values: allStage1SearchKeys(),
       chunkSize: 15,
-      run: (chunk) => fetchPaged(
+      run: (chunk) => fetchPagedChunk(
         () => supabase
           .from("shared_awards")
           .select("id,search_key,name,slug,official_homepage,public_facts,public_facts_generated_at,public_facts_model,status,confidence,last_structure_scan_at,structure_scan_error,updated_at", { count: "exact" })
@@ -108,7 +116,7 @@ if (!supabaseUrl || !serviceRoleKey) {
       const extras = await fetchChunked({
         values: missingRemoteIds,
         chunkSize: 40,
-        run: (chunk) => fetchPaged(
+        run: (chunk) => fetchPagedChunk(
           () => supabase
             .from("shared_awards")
             .select("id,search_key,name,slug,official_homepage,public_facts,public_facts_generated_at,public_facts_model,status,confidence,last_structure_scan_at,structure_scan_error,updated_at", { count: "exact" })
@@ -127,7 +135,7 @@ if (!supabaseUrl || !serviceRoleKey) {
     sources = await readOrEmpty("shared_award_sources", () => fetchChunked({
       values: awardIds,
       chunkSize: 40,
-      run: (chunk) => fetchPaged(
+      run: (chunk) => fetchPagedChunk(
         () => supabase
           .from("shared_award_sources")
           .select("id,shared_award_id,url,title,display_title,page_description,page_type,confidence,reason,source,admin_review_status,admin_review_note,admin_reviewed_at,admin_reviewed_by,last_hash,last_checked_at,next_check_at,consecutive_failures,last_error,created_at,updated_at", { count: "exact" })
@@ -141,7 +149,7 @@ if (!supabaseUrl || !serviceRoleKey) {
       readOrEmpty("shared_award_source_visual_snapshots", () => fetchChunked({
         values: awardIds,
         chunkSize: 40,
-        run: (chunk) => fetchPaged(
+        run: (chunk) => fetchPagedChunk(
           () => supabase
             .from("shared_award_source_visual_snapshots")
             .select("shared_award_source_id,shared_award_id,source_url,source_title,source_page_type,kind,bucket,latest_captured_at,latest_object_keys,latest_hashes,latest_metadata,previous_captured_at,previous_object_keys,previous_hashes,previous_metadata,created_at,updated_at", { count: "exact" })
@@ -153,7 +161,7 @@ if (!supabaseUrl || !serviceRoleKey) {
       readOrEmpty("shared_award_fact_candidates", () => fetchChunked({
         values: awardIds,
         chunkSize: 40,
-        run: (chunk) => fetchPaged(
+        run: (chunk) => fetchPagedChunk(
           () => supabase
             .from("shared_award_fact_candidates")
             .select("id,shared_award_id,shared_award_source_id,source_url,source_title,source_role,source_quality_decision,field_name,raw_value,normalized_value,evidence_quote,evidence_location,extracted_at,model,confidence,candidate_status,rejection_reason,selected_reason,metadata,created_at,updated_at", { count: "exact" })
@@ -165,7 +173,7 @@ if (!supabaseUrl || !serviceRoleKey) {
       readOrEmpty("shared_award_reconciliation_queue", () => fetchChunked({
         values: awardIds,
         chunkSize: 40,
-        run: (chunk) => fetchPaged(
+        run: (chunk) => fetchPagedChunk(
           () => supabase
             .from("shared_award_reconciliation_queue")
             .select("id,shared_award_id,reason,source_ids,candidate_ids,status,priority,created_at,started_at,completed_at,error,metadata", { count: "exact" })
@@ -176,46 +184,43 @@ if (!supabaseUrl || !serviceRoleKey) {
         ),
       })),
       readOrEmpty("shared_award_page_audits", async () => {
-        const canonicalIds = STAGE1_COHORT_DEFINITION
-          .map((entry) => awards.find((award) => award.search_key === entry.canonicalSearchKey)?.id)
-          .filter(Boolean);
-        const latestRows = (await mapWithConcurrency(canonicalIds, 6, async (awardId) => {
-          const { data, error } = await supabase
-            .from("shared_award_page_audits")
-            .select("id,shared_award_id,audit_kind,audit_status,severity,findings,suggested_fixes,field_conflicts,source_rejections,selected_fact_summary,public_page_snapshot,model,gemini_batch_name,gemini_batch_request_key,created_at,resolved_at,resolved_by,resolution_note")
-            .eq("shared_award_id", awardId)
-            .order("created_at", { ascending: false })
-            .order("id", { ascending: false })
-            .limit(1);
-          if (error) {
-            const queryError = new Error(`latest shared_award_page_audits: ${safeError(error)}`);
-            queryError.code = error.code;
-            throw queryError;
-          }
-          return data?.[0] || null;
-        })).filter(Boolean);
+        const deterministicRows = await fetchChunked({
+          values: awardIds,
+          chunkSize: 15,
+          run: (chunk) => fetchPagedChunk(
+            () => supabase
+              .from("shared_award_page_audits")
+              .select("id,shared_award_id,audit_kind,audit_status,severity,findings,suggested_fixes,field_conflicts,source_rejections,selected_fact_summary,public_page_snapshot,model,gemini_batch_name,gemini_batch_request_key,created_at,resolved_at,resolved_by,resolution_note", { count: "exact" })
+              .in("shared_award_id", chunk)
+              .eq("audit_kind", "deterministic")
+              .order("shared_award_id", { ascending: true })
+              .order("created_at", { ascending: false })
+              .order("id", { ascending: false }),
+            "deterministic shared_award_page_audits",
+          ),
+        });
         const unresolvedRows = await fetchChunked({
           values: awardIds,
           chunkSize: 15,
-          run: (chunk) => fetchPaged(
+          run: (chunk) => fetchPagedChunk(
             () => supabase
               .from("shared_award_page_audits")
-              .select("id,shared_award_id,audit_kind,audit_status,severity,findings,suggested_fixes,field_conflicts,source_rejections,selected_fact_summary,public_page_snapshot,model,gemini_batch_name,gemini_batch_request_key,created_at,resolved_at,resolved_by,resolution_note")
+              .select("id,shared_award_id,audit_kind,audit_status,severity,findings,suggested_fixes,field_conflicts,source_rejections,selected_fact_summary,public_page_snapshot,model,gemini_batch_name,gemini_batch_request_key,created_at,resolved_at,resolved_by,resolution_note", { count: "exact" })
               .in("shared_award_id", chunk)
               .is("resolved_at", null)
               .or("audit_status.in.(failed,needs_review),severity.eq.critical")
+              .order("shared_award_id", { ascending: true })
               .order("created_at", { ascending: false })
               .order("id", { ascending: false }),
             "unresolved shared_award_page_audits",
-            { exactCount: false },
           ),
         });
-        return dedupeRows([...latestRows, ...unresolvedRows]);
+        return dedupeRows([...deterministicRows, ...unresolvedRows]);
       }),
       readOrEmpty("manual_quarantine_registry_by_award", () => fetchChunked({
         values: awardIds,
         chunkSize: 40,
-        run: (chunk) => fetchPaged(
+        run: (chunk) => fetchPagedChunk(
           () => supabase
             .from("manual_quarantine_registry")
             .select("id,quarantine_key,case_key,classification,category,status,requires_action,terminal,terminal_failure_count,severity,public_impact,owner,retry_mode,retry_charge,title,reason_code,reason,recommended_action,shared_award_id,shared_award_source_id,visual_review_candidate_id,primary_source_table,primary_source_record_id,evidence_record_count,evidence_hash,policy_id,policy_version,policy_hash,first_observed_at,last_observed_at,quarantined_at,resolved_at,resolved_by,resolution_note,created_at,updated_at", { count: "exact" })
@@ -228,8 +233,8 @@ if (!supabaseUrl || !serviceRoleKey) {
 
     const sourceOnlyQuarantines = await readOrEmpty("manual_quarantine_registry_by_source", () => fetchChunked({
       values: sources.map((source) => source.id),
-      chunkSize: 30,
-      run: (chunk) => fetchPaged(
+      chunkSize: 100,
+      run: (chunk) => fetchPagedChunk(
         () => supabase
           .from("manual_quarantine_registry")
           .select("id,quarantine_key,case_key,classification,category,status,requires_action,terminal,terminal_failure_count,severity,public_impact,owner,retry_mode,retry_charge,title,reason_code,reason,recommended_action,shared_award_id,shared_award_source_id,visual_review_candidate_id,primary_source_table,primary_source_record_id,evidence_record_count,evidence_hash,policy_id,policy_version,policy_hash,first_observed_at,last_observed_at,quarantined_at,resolved_at,resolved_by,resolution_note,created_at,updated_at", { count: "exact" })
@@ -287,6 +292,8 @@ writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 console.log(`Stage 1 readiness report: ${outputPath}`);
 console.log(`Registry source: ${report.registry.mode}`);
 console.log(`Exact cohort: ${report.summary.exact_cohort_count}/25`);
+console.log("Verification policy: immutable evidence stays valid while exact identities match; live sources and the signed R2 public gate must stay current.");
+console.log(`Reviewed-promotion ready: ${report.summary.ready_for_reviewed_promotion_count}/25`);
 console.log(`Verified-beta ready: ${report.summary.ready_for_verified_beta_count}/25`);
 console.log(`Blocked: ${report.summary.blocked_count}/25`);
 console.log(`Open actionable quarantine: ${report.summary.actionable_quarantine_open}`);
@@ -300,7 +307,11 @@ if (failOnBlockers && (report.summary.blocked_count > 0 || report.global_blocker
 async function readOrEmpty(label, operation) {
   try {
     const rows = await operation();
-    queryInventory.queries[label] = { rows: rows.length, exact_uncapped: true };
+    queryInventory.queries[label] = {
+      rows: rows.length,
+      exact_uncapped: true,
+      stable_revision_verified: true,
+    };
     return rows;
   } catch (error) {
     queryInventory.errors.push({ query: label, code: error?.code || "query_failed", message: safeError(error) });
@@ -309,48 +320,15 @@ async function readOrEmpty(label, operation) {
 }
 
 async function fetchChunked({ values, chunkSize, run }) {
-  const unique = [...new Set(values.filter(Boolean))];
-  const rows = [];
-  for (let index = 0; index < unique.length; index += chunkSize) {
-    rows.push(...await run(unique.slice(index, index + chunkSize)));
-  }
-  return dedupeRows(rows);
+  return fetchExactStableChunkedRows({ values, chunkSize, run });
 }
 
-async function fetchPaged(buildQuery, label, { exactCount = true } = {}) {
-  const pageSize = 1_000;
-  const rows = [];
-  let expectedCount = null;
-  for (let start = 0; ; start += pageSize) {
-    const { data, error, count } = await buildQuery().range(start, start + pageSize - 1);
-    if (error) {
-      const queryError = new Error(`${label}: ${safeError(error)}`);
-      queryError.code = error.code;
-      throw queryError;
-    }
-    if (exactCount && expectedCount == null && Number.isInteger(count)) expectedCount = count;
-    rows.push(...(data || []));
-    if (!data || data.length < pageSize) break;
-    if (start >= 100_000) throw new Error(`${label}: safety pagination ceiling exceeded.`);
-  }
-  if (exactCount && expectedCount != null && rows.length !== expectedCount) {
-    throw new Error(`${label}: exact count ${expectedCount} differs from fetched rows ${rows.length}.`);
-  }
-  return rows;
+async function fetchPaged(buildQuery, label) {
+  return fetchExactStableRows(buildQuery, label);
 }
 
-async function mapWithConcurrency(values, concurrency, operation) {
-  const output = new Array(values.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-    while (cursor < values.length) {
-      const index = cursor;
-      cursor += 1;
-      output[index] = await operation(values[index], index);
-    }
-  });
-  await Promise.all(workers);
-  return output;
+async function fetchPagedChunk(buildQuery, label) {
+  return fetchExactRows(buildQuery, label);
 }
 
 function dedupeRows(rows) {
@@ -364,24 +342,58 @@ function defaultEnvFile() {
 
 function parseArgs(values) {
   const parsed = {};
+  const allowed = new Set([
+    "archive-dir",
+    "env",
+    "fail-on-blockers",
+    "help",
+    "output",
+  ]);
   for (let index = 0; index < values.length; index += 1) {
     const value = values[index];
-    if (!value.startsWith("--")) continue;
+    if (!value.startsWith("--")) {
+      throw new Error(`Unexpected positional argument: ${value}`);
+    }
     const raw = value.slice(2);
     if (raw.includes("=")) {
       const [key, ...rest] = raw.split("=");
+      if (!allowed.has(key)) throw new Error(`Unknown option --${key}.`);
+      if (key === "help") throw new Error("--help does not accept a value.");
       parsed[key] = rest.join("=");
+      continue;
+    }
+    if (!allowed.has(raw)) throw new Error(`Unknown option --${raw}.`);
+    if (raw === "help") {
+      parsed.help = true;
       continue;
     }
     const next = values[index + 1];
     if (next && !next.startsWith("--")) {
       parsed[raw] = next;
       index += 1;
-    } else {
+    } else if (raw === "fail-on-blockers") {
       parsed[raw] = true;
+    } else {
+      throw new Error(`--${raw} requires a value.`);
     }
   }
   return parsed;
+}
+
+function printHelp() {
+  console.log(`Usage:
+  npm run stage1:readiness -- [options]
+
+Options:
+  --env=<path>                Environment file (default: .env.worker.local, then .env.local)
+  --archive-dir=<path>        Local visual-evidence archive root
+  --output=<path>             Local JSON report path
+  --fail-on-blockers=<bool>   Exit nonzero when the report has release blockers
+  --help                      Show this message without loading credentials or remote data
+
+Safety:
+  This command performs read-only evidence queries and writes one local report.
+  It never mutates the database, captures pages, reads R2 objects, or calls paid providers.`);
 }
 
 function loadEnvFile(path) {
