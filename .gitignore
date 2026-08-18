@@ -64,3 +64,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Local agent/editor config (launch profiles, tool permissions)
+/.claude/
