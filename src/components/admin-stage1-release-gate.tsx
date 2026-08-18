@@ -39,7 +39,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
       </header>
 
       {summary.unknownReasons.length > 0 && (
-        <div className="flex gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950" role="alert">
+        <div className="flex gap-3 rounded-2xl border border-[var(--warning)] bg-[var(--warning-tint)] p-4 text-sm text-[var(--text)]" role="alert">
           <CircleHelp className="mt-0.5 shrink-0" size={18} aria-hidden="true" />
           <p>
             <strong>Release evidence is incomplete.</strong> {summary.unknownReasons[0]}
@@ -291,17 +291,17 @@ function GateStatePill({ state }: { state: ReleaseGateState }) {
 
 function StatusPill({ label, status }: { label: string; status: ReleaseCheckState }) {
   const className = status === "pass"
-    ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+    ? "border-[var(--success)] bg-[var(--success-tint)] text-[var(--text)]"
     : status === "hold"
-      ? "border-rose-300 bg-rose-50 text-rose-950"
-      : "border-amber-300 bg-amber-50 text-amber-950";
+      ? "border-[var(--danger)] bg-[var(--danger-tint)] text-[var(--text)]"
+      : "border-[var(--warning)] bg-[var(--warning-tint)] text-[var(--text)]";
   return <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-bold ${className}`}>{label}</span>;
 }
 
 function CheckIcon({ status }: { status: ReleaseCheckState }) {
-  if (status === "pass") return <CheckCircle2 className="mt-0.5 shrink-0 text-emerald-700" size={16} aria-hidden="true" />;
-  if (status === "hold") return <ShieldAlert className="mt-0.5 shrink-0 text-rose-700" size={16} aria-hidden="true" />;
-  return <AlertTriangle className="mt-0.5 shrink-0 text-amber-700" size={16} aria-hidden="true" />;
+  if (status === "pass") return <CheckCircle2 className="mt-0.5 shrink-0 text-[var(--success)]" size={16} aria-hidden="true" />;
+  if (status === "hold") return <ShieldAlert className="mt-0.5 shrink-0 text-[var(--danger)]" size={16} aria-hidden="true" />;
+  return <AlertTriangle className="mt-0.5 shrink-0 text-[var(--warning)]" size={16} aria-hidden="true" />;
 }
 
 function statusLabel(status: ReleaseCheckState) {

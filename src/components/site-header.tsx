@@ -40,9 +40,14 @@ export async function SiteHeader() {
                 />
               </>
             ) : (
-              <Link href="/contact" className="button-primary">
-                Request beta access
-              </Link>
+              <>
+                <Link href="/login" className="button-secondary">
+                  Log in
+                </Link>
+                <Link href="/contact" className="button-primary">
+                  Request beta access
+                </Link>
+              </>
             )}
           </div>
         </div>

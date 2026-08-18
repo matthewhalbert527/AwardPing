@@ -13,43 +13,43 @@
   color-scheme: light;
 
   /* -- Layer 1: palette ---------------------------------------------------- */
-  --p-accent: #99202f;
-  --p-accent-strong: #7c1927;
-  --p-accent-deep: #55111c;
-  --p-accent-bright: #bf3446;
-  --p-accent-tint: #fbeef0;
+  --p-accent: #1c4e80;
+  --p-accent-strong: #163e66;
+  --p-accent-deep: #0f2b47;
+  --p-accent-bright: #2f6ba8;
+  --p-accent-tint: #eef3f8;
   --p-accent-contrast: #ffffff;
 
   --p-neutral-0: #ffffff;
-  --p-neutral-25: #fcfcfb;
-  --p-neutral-50: #f7f6f4;
-  --p-neutral-100: #efeeeb;
-  --p-neutral-200: #e2e0dc;
-  --p-neutral-300: #cbc8c2;
-  --p-neutral-400: #9d9993;
-  --p-neutral-500: #6f6b66;
-  --p-neutral-600: #55524e;
-  --p-neutral-700: #3d3a37;
-  --p-neutral-800: #272522;
-  --p-neutral-900: #17150f;
-  --p-neutral-950: #0d0c08;
+  --p-neutral-25: #fcfcfc;
+  --p-neutral-50: #f7f7f7;
+  --p-neutral-100: #f0f0f0;
+  --p-neutral-200: #e3e3e3;
+  --p-neutral-300: #c9c9c9;
+  --p-neutral-400: #9a9a9a;
+  --p-neutral-500: #6e6e6e;
+  --p-neutral-600: #545454;
+  --p-neutral-700: #3a3a3a;
+  --p-neutral-800: #242424;
+  --p-neutral-900: #121212;
+  --p-neutral-950: #080808;
 
   --p-success: #1f6b4f;
-  --p-success-tint: #ecf5f0;
-  --p-warning: #8a5b12;
-  --p-warning-tint: #fdf3e2;
-  --p-info: #1d5183;
+  --p-success-tint: #eef4f1;
+  --p-warning: #7d5a1b;
+  --p-warning-tint: #f6f2ea;
+  --p-info: #1c4e80;
   --p-info-tint: #eef3f8;
-  --p-danger: #a32334;
-  --p-danger-tint: #fceef0;
+  --p-danger: #9b2430;
+  --p-danger-tint: #f8eeef;
 
-  --p-shadow-rgb: 40, 32, 26;
+  --p-shadow-rgb: 0, 0, 0;
 
   /* -- Layer 2: semantic --------------------------------------------------- */
-  --surface-page: var(--p-neutral-50);
+  --surface-page: var(--p-neutral-0);
   --surface: var(--p-neutral-0);
   --surface-raised: var(--p-neutral-0);
-  --surface-sunken: var(--p-neutral-100);
+  --surface-sunken: var(--p-neutral-50);
   --surface-subtle: var(--p-neutral-25);
   --surface-inset: var(--p-neutral-50);
   --surface-veil: rgba(255, 255, 255, 0.86);
@@ -90,20 +90,20 @@
   --radius-lg: 1rem;
   --radius-xl: 1.375rem;
   --radius-pill: 999px;
-  --radius-button: 0.55rem;
-  --radius-panel: 0.75rem;
+  --radius-button: 0.3rem;
+  --radius-panel: 0.3rem;
 
-  --shadow-xs: 0 1px 2px rgba(var(--p-shadow-rgb), 0.06);
-  --shadow-sm: 0 1px 2px rgba(var(--p-shadow-rgb), 0.05), 0 2px 6px rgba(var(--p-shadow-rgb), 0.05);
-  --shadow-md: 0 2px 4px rgba(var(--p-shadow-rgb), 0.05), 0 8px 20px rgba(var(--p-shadow-rgb), 0.07);
-  --shadow-lg: 0 4px 10px rgba(var(--p-shadow-rgb), 0.06), 0 18px 44px rgba(var(--p-shadow-rgb), 0.09);
-  --shadow-xl: 0 8px 20px rgba(var(--p-shadow-rgb), 0.08), 0 32px 72px rgba(var(--p-shadow-rgb), 0.12);
+  --shadow-xs: none;
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: 0 1px 2px rgba(var(--p-shadow-rgb), 0.05), 0 8px 24px rgba(var(--p-shadow-rgb), 0.06);
+  --shadow-xl: 0 2px 6px rgba(var(--p-shadow-rgb), 0.06), 0 20px 48px rgba(var(--p-shadow-rgb), 0.1);
   --shadow-focus: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
 
   --font-display: var(--font-geist-sans), "Segoe UI", Arial, sans-serif;
   --tracking-display: -0.02em;
   --tracking-label: 0.08em;
-  --weight-display: 750;
+  --weight-display: 700;
   --weight-strong: 700;
 
   --app-shell-width: 90rem;
@@ -148,49 +148,49 @@
   :root:not([data-theme="light"]) {
     color-scheme: dark;
 
-    --p-accent: #e2637a;
-    --p-accent-strong: #f08298;
-    --p-accent-deep: #b83b53;
-    --p-accent-bright: #f7a3b3;
-    --p-accent-tint: #2a141a;
-    --p-accent-contrast: #1a0d11;
+    --p-accent: #6ea8dc;
+    --p-accent-strong: #8fbfe8;
+    --p-accent-deep: #3f79ad;
+    --p-accent-bright: #a8d0f0;
+    --p-accent-tint: #11202e;
+    --p-accent-contrast: #06121e;
     --p-shadow-rgb: 0, 0, 0;
 
-    --p-success: #5fc79b;
-    --p-success-tint: #12241d;
+    --p-success: #6cc39c;
+    --p-success-tint: #16211c;
     --p-warning: #e0b055;
-    --p-warning-tint: #2a2114;
-    --p-info: #74b0e8;
-    --p-info-tint: #131f2b;
+    --p-warning-tint: #262117;
+    --p-info: #6ea8dc;
+    --p-info-tint: #11202e;
     --p-danger: #f0808f;
-    --p-danger-tint: #2b1418;
+    --p-danger-tint: #271819;
 
-    --surface-page: #0d1015;
-    --surface: #161a21;
-    --surface-raised: #1c212a;
-    --surface-sunken: #10141a;
-    --surface-subtle: #1a1f27;
-    --surface-inset: #12161c;
-    --surface-veil: rgba(22, 26, 33, 0.88);
+    --surface-page: #0c0c0c;
+    --surface: #161616;
+    --surface-raised: #1e1e1e;
+    --surface-sunken: #101010;
+    --surface-subtle: #1a1a1a;
+    --surface-inset: #121212;
+    --surface-veil: rgba(18, 18, 18, 0.88);
     --surface-scrim: rgba(0, 0, 0, 0.68);
 
-    --text: #eef1f5;
-    --text-secondary: #a9b2c0;
-    --text-tertiary: #8b95a5;
-    --text-inverse: #0d1015;
+    --text: #f0f0f0;
+    --text-secondary: #adadad;
+    --text-tertiary: #8c8c8c;
+    --text-inverse: #0c0c0c;
 
-    --border-subtle: #222833;
-    --border: #2c333f;
-    --border-strong: #3d4552;
+    --border-subtle: #232323;
+    --border: #2e2e2e;
+    --border-strong: #454545;
 
     --accent-quiet: color-mix(in srgb, var(--accent) 16%, var(--surface));
     --accent-text: var(--p-accent-strong);
 
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 6px rgba(0, 0, 0, 0.32);
-    --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.4), 0 8px 20px rgba(0, 0, 0, 0.42);
-    --shadow-lg: 0 4px 10px rgba(0, 0, 0, 0.42), 0 18px 44px rgba(0, 0, 0, 0.5);
-    --shadow-xl: 0 8px 20px rgba(0, 0, 0, 0.46), 0 32px 72px rgba(0, 0, 0, 0.6);
+    --shadow-xs: none;
+    --shadow-sm: none;
+    --shadow-md: none;
+    --shadow-lg: 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px rgba(0, 0, 0, 0.45);
+    --shadow-xl: 0 2px 6px rgba(0, 0, 0, 0.55), 0 20px 48px rgba(0, 0, 0, 0.6);
 
     --brand-on-dark: color-mix(in srgb, var(--accent) 70%, #ffffff);
   }
@@ -2756,7 +2756,7 @@ a {
 }
 
 .home-journey-band {
-  background: var(--surface);
+  background: var(--surface-sunken);
 }
 
 .home-journey-card,
@@ -3096,7 +3096,7 @@ a {
 }
 
 .public-award-shell {
-  background: var(--surface-page);
+  background: var(--surface-sunken);
 }
 
 .public-award-console-wrap {

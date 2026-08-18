@@ -71,7 +71,7 @@ export default async function DashboardLayout({
       <main className="dashboard-content">
         {profile?.personal_data_reentry_required && (
           <div
-            className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950"
+            className="mb-4 rounded-[var(--radius-panel)] border border-[var(--warning)] bg-[var(--warning-tint)] p-4 text-sm text-[var(--text)]"
             role="status"
           >
             <p className="font-bold">

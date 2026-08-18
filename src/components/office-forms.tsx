@@ -81,7 +81,7 @@ export function ProfileSettingsForm({
             : "Your profile"}
       </h2>
       {reentryRequired && (
-        <div className="mt-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
+        <div className="mt-3 rounded-2xl border border-[var(--warning)] bg-[var(--warning-tint)] p-4 text-sm text-[var(--text)]">
           <p className="font-bold">
             {legacyRecoveryAvailable
               ? "Your previous profile values were recovered."
@@ -401,8 +401,8 @@ export function ReissueInviteButton({ inviteId }: { inviteId: string }) {
   }
 
   return (
-    <div className="mt-3 rounded-xl border border-amber-300 bg-amber-50 p-3">
-      <p className="text-sm font-bold text-amber-950">
+    <div className="mt-3 rounded-xl border border-[var(--warning)] bg-[var(--warning-tint)] p-3">
+      <p className="text-sm font-bold text-[var(--text)]">
         This pending invitation used an older short code. Its old link was retired for security.
       </p>
       <button
