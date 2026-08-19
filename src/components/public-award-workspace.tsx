@@ -195,6 +195,7 @@ export function PublicAwardWorkspace({
       <main className="public-award-console-main">
         <header className="public-award-console-header">
           <div>
+            <p className="public-award-kicker">Nationally competitive award</p>
             <h1>{data.award.name}</h1>
             <div className="public-award-meta-line">
               <span>{data.sources.length} source pages</span>
@@ -328,22 +329,42 @@ function PanelButton({
   );
 }
 
+const KEY_FACT_LABELS = new Set(["Deadline", "Opening date", "Award amount"]);
+
 function OverviewPanel({
   factRows,
 }: {
   factRows: FactRow[];
 }) {
+  const keyFacts = factRows.filter((fact) => KEY_FACT_LABELS.has(fact.label));
+  const detailRows = factRows.filter((fact) => !KEY_FACT_LABELS.has(fact.label));
+
   return (
     <div className="public-award-panel-stack">
+      {keyFacts.length > 0 && (
+        <dl className="public-award-key-facts">
+          {keyFacts.map((fact) => (
+            <div className="public-award-key-fact" key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>
+                <FactValueDisplay className="public-award-fact-list" value={fact.value} />
+              </dd>
+            </div>
+          ))}
+        </dl>
+      )}
+
       <div className="public-award-section-heading">
         <h2>Overview</h2>
       </div>
 
-      <div className="public-award-fact-table public-award-fact-table-compact">
-        {factRows.map((fact) => (
-          <FactLine fact={fact} key={fact.label} />
-        ))}
-      </div>
+      {detailRows.length > 0 && (
+        <div className="public-award-fact-table public-award-fact-table-compact">
+          {detailRows.map((fact) => (
+            <FactLine fact={fact} key={fact.label} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
