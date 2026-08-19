@@ -1357,7 +1357,8 @@ function Get-AwardPingInstalledRuntimeProblems {
     $hashPairs = @()
     if (-not [string]::IsNullOrWhiteSpace($InstallerSourceDirectory)) {
       foreach ($fileName in @(
-        "Run-AwardPingDownstreamLane.ps1"
+        "Run-AwardPingDownstreamLane.ps1",
+        "Launch-Hidden.vbs"
       )) {
         $hashPairs += [pscustomobject]@{
           Source = Join-Path $InstallerSourceDirectory $fileName
@@ -1763,6 +1764,7 @@ function Get-AwardPingManagedRootRuntimeNames {
     "Uninstall-AwardPingWorker.ps1",
     "Run-AwardPingVisualSnapshots.ps1",
     "Run-AwardPingDownstreamLane.ps1",
+    "Launch-Hidden.vbs",
     "Show-AwardPingVisualStatus.ps1",
     "Show-AwardPingGeminiUsage.ps1",
     "3-RUN-VISUAL-SNAPSHOT-CHECK-NOW.bat",
@@ -2726,7 +2728,8 @@ function Register-VisualSnapshotTask {
 
   for ($shardIndex = 0; $shardIndex -lt 3; $shardIndex += 1) {
     $taskName = "AwardPing Visual Snapshot Worker Shard $($shardIndex + 1)"
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000 -WebConcurrency 3 -ShardCount 3 -ShardIndex $shardIndex -RunTrigger scheduled"
+    $hiddenLauncher = Join-Path $InstallRoot "Launch-Hidden.vbs"
+    $action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "//B //Nologo `"$hiddenLauncher`" powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$visualRunScript`" -All -Limit 50000 -WebConcurrency 3 -ShardCount 3 -ShardIndex $shardIndex -RunTrigger scheduled"
     $trigger = New-ScheduledTaskTrigger -Daily -At 6pm
     $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 23)
     $settings.DisallowStartIfOnBatteries = $false
@@ -2771,9 +2774,10 @@ function Register-DownstreamLaneTasks {
       $startAt = $startAt.AddMinutes(15)
     }
 
+    $hiddenLauncher = Join-Path $InstallRoot "Launch-Hidden.vbs"
     $action = New-ScheduledTaskAction `
-      -Execute "powershell.exe" `
-      -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Lane $($lane.Key) -TimeoutMinutes $($lane.TimeoutMinutes)"
+      -Execute "wscript.exe" `
+      -Argument "//B //Nologo `"$hiddenLauncher`" powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$targetScript`" -InstallRoot `"$InstallRoot`" -Lane $($lane.Key) -TimeoutMinutes $($lane.TimeoutMinutes)"
     $trigger = New-ScheduledTaskTrigger `
       -Once `
       -At $startAt `
