@@ -212,8 +212,19 @@ body {
 }
 
 ::selection {
-  background: var(--brand-pink);
-  color: var(--on-brand);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
 }
 
 a {
@@ -3308,6 +3319,11 @@ a {
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--foreground);
+}
+
+.public-award-empty,
+.award-search-empty {
+  border-style: dashed;
 }
 
 .public-award-empty {

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Menu, X } from "lucide-react";
 
 const NAV_LINKS = [
@@ -18,10 +18,11 @@ function isActivePath(pathname: string, href: string) {
 export function SiteHeaderNav() {
   const pathname = usePathname() || "/";
   const [menuOpen, setMenuOpen] = useState(false);
-
-  useEffect(() => {
+  const [lastPathname, setLastPathname] = useState(pathname);
+  if (lastPathname !== pathname) {
+    setLastPathname(pathname);
     setMenuOpen(false);
-  }, [pathname]);
+  }
 
   return (
     <>
