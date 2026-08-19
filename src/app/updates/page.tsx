@@ -7,7 +7,7 @@ import { SiteHeader } from "@/components/site-header";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { canonicalAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseAdminConfig } from "@/lib/config";
-import { getLiveUpdateItems } from "@/lib/live-updates";
+import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
 
 export const dynamic = "force-dynamic";
 
@@ -91,8 +91,12 @@ export default async function UpdatesPage({ searchParams }: Props) {
           </div>
 
           <div className="public-live-feed-list">
-            {updates.map((update) => {
-              const awardHref = canonicalAwardPath(update.awardSlug, update.awardName, update.awardId);
+            {groupUpdatesByDay(updates).map((group) => (
+              <section className="public-live-day" key={group.key}>
+                <h3 className="public-live-day-label">{group.label}</h3>
+                <div className="public-live-day-list">
+                  {group.items.map((update) => {
+                    const awardHref = canonicalAwardPath(update.awardSlug, update.awardName, update.awardId);
               return (
                 <article className="public-live-update-row" key={update.id}>
                   <div className="public-live-update-time">
@@ -124,9 +128,12 @@ export default async function UpdatesPage({ searchParams }: Props) {
                   >
                     <ExternalLink size={16} aria-hidden="true" />
                   </a>
-                </article>
-              );
-            })}
+                    </article>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
 
             {updates.length === 0 && (
               <div className="public-live-feed-empty">
@@ -139,6 +146,33 @@ export default async function UpdatesPage({ searchParams }: Props) {
       <SiteFooter />
     </div>
   );
+}
+
+function groupUpdatesByDay(updates: LiveUpdateItem[]) {
+  const dayFormatter = new Intl.DateTimeFormat("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "America/Chicago",
+  });
+  const keyFor = (value: string) =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(value));
+  const todayKey = keyFor(new Date().toISOString());
+  const yesterdayKey = keyFor(new Date(Date.now() - 86_400_000).toISOString());
+
+  const groups: Array<{ key: string; label: string; items: LiveUpdateItem[] }> = [];
+  for (const update of updates) {
+    const key = keyFor(update.detectedAt);
+    const current = groups[groups.length - 1];
+    if (current && current.key === key) {
+      current.items.push(update);
+      continue;
+    }
+    const label =
+      key === todayKey ? "Today" : key === yesterdayKey ? "Yesterday" : dayFormatter.format(new Date(update.detectedAt));
+    groups.push({ key, label, items: [update] });
+  }
+  return groups;
 }
 
 function updatesStatusMessage(params: { confirmed?: string; unsubscribed?: string }) {
