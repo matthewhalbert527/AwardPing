@@ -3610,6 +3610,21 @@ a {
   padding-bottom: 1.6rem;
 }
 
+.page-kicker {
+  margin-bottom: 0.55rem;
+  color: var(--accent-text);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+.display-title {
+  font-family: var(--font-serif-display);
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
 .public-award-kicker {
   margin-bottom: 0.55rem;
   color: var(--accent-text);

@@ -112,7 +112,7 @@ export default function SecurityPage() {
                 <ShieldCheck size={15} aria-hidden="true" />
                 Security and network access
               </span>
-              <h1 className="mt-5 text-4xl font-bold leading-[1.1] tracking-[-0.02em] md:text-[3rem]">
+              <h1 className="display-title mt-5 text-4xl leading-[1.06] md:text-[3rem]">
                 University IT review details for AwardPing.
               </h1>
               <p className="mt-5 max-w-2xl text-lg leading-8 text-[var(--muted)]">

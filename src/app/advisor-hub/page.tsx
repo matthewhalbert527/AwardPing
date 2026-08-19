@@ -63,7 +63,7 @@ export default async function AdvisorHubPage() {
               <ClipboardCheck size={15} aria-hidden="true" />
               Advisor Hub
             </span>
-            <h1 className="mt-4 text-4xl font-bold leading-[1.1] tracking-[-0.02em] md:text-[3rem]">
+            <h1 className="display-title mt-4 text-4xl leading-[1.06] md:text-[3rem]">
               A shared early-warning desk for fellowship advising.
             </h1>
             <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">

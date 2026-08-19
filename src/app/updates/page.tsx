@@ -46,7 +46,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
               <Rss size={15} aria-hidden="true" />
               Live update feed
             </span>
-            <h1 className="mt-5 max-w-[16ch] text-4xl font-bold leading-[1.08] tracking-[-0.02em] md:text-[3.1rem]">
+            <h1 className="display-title mt-5 max-w-[18ch] text-4xl leading-[1.06] md:text-[3.1rem]">
               Plain-English award changes as they are found.
             </h1>
             <p className="mt-5 max-w-[56ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
@@ -81,7 +81,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
         <section className="public-live-feed" aria-label="Live award updates">
           <div className="public-live-feed-heading">
             <div>
-              <p className="dashboard-label">Chronological feed</p>
+              <p className="page-kicker">Chronological feed</p>
               <h2>Latest source-page changes</h2>
             </div>
             <Link className="button-secondary" href="/award-directory" prefetch={false}>

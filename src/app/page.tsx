@@ -58,7 +58,7 @@ export default async function Home() {
               <Bell size={15} aria-hidden="true" />
               National fellowship monitoring
             </span>
-            <h1 className="mt-5 max-w-[13ch] text-4xl font-bold leading-[1.08] tracking-[-0.02em] md:text-[3.4rem]">
+            <h1 className="display-title mt-5 max-w-[15ch] text-4xl leading-[1.06] md:text-[3.5rem]">
               The early-warning system for nationally competitive fellowships.
             </h1>
             <p className="mt-5 max-w-[46ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
@@ -99,8 +99,8 @@ export default async function Home() {
 
         <section className="mx-auto max-w-6xl px-5 py-14">
           <div className="mb-6 max-w-2xl">
-            <p className="dashboard-label">Why it matters</p>
-            <h2 className="mt-2 max-w-[24ch] text-3xl font-bold leading-[1.15] tracking-[-0.02em] md:text-[2.5rem]">
+            <p className="page-kicker">Why it matters</p>
+            <h2 className="display-title mt-2 max-w-[26ch] text-3xl leading-[1.12] md:text-[2.4rem]">
               Award updates are usually small, buried, and easy to miss.
             </h2>
           </div>

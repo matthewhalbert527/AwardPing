@@ -20,7 +20,7 @@ export default function ContactPage() {
               <Mail size={15} aria-hidden="true" />
               Contact
             </span>
-            <h1 className="mt-5 text-5xl font-bold leading-tight">
+            <h1 className="display-title mt-5 text-5xl leading-[1.08]">
               Send AwardPing a message.
             </h1>
             <p className="mt-5 text-lg leading-8 text-[var(--muted)]">

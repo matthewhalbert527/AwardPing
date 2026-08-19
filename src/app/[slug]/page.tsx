@@ -94,7 +94,7 @@ function AwardUnderVerification() {
       <main className="mx-auto max-w-3xl px-5 py-20">
         <section className="card rounded-3xl p-8 md:p-10">
           <span className="badge">Protected beta record</span>
-          <h1 className="mt-5 text-4xl font-bold">Under verification</h1>
+          <h1 className="display-title mt-5 text-4xl">Under verification</h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
             AwardPing is checking this award&apos;s official pages, current cycle,
             evidence, and monitoring health. Application facts stay hidden until
@@ -129,7 +129,7 @@ async function SeoLandingPageContent({
         <section className="mx-auto grid max-w-6xl gap-10 px-5 py-16 lg:grid-cols-[0.95fr_1.05fr]">
           <div>
             <span className="badge">AwardPing</span>
-            <h1 className="mt-5 text-5xl font-bold leading-tight">
+            <h1 className="display-title mt-5 text-5xl leading-[1.08]">
               {page.h1}
             </h1>
             <p className="mt-5 text-lg leading-8 text-[var(--muted)]">

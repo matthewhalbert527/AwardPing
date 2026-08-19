@@ -45,7 +45,7 @@ export default async function LoginPage({ searchParams }: Props) {
       <SiteHeader />
       <main className="mx-auto flex max-w-md flex-col px-5 py-16">
         <div className="card rounded-3xl p-6">
-          <h1 className="text-3xl font-bold">Log in</h1>
+          <h1 className="display-title text-3xl">Log in</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
             Open your AwardPing dashboard.
           </p>

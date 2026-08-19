@@ -16,7 +16,7 @@ export default function ForgotPasswordPage() {
       <SiteHeader />
       <main className="mx-auto flex max-w-md flex-col px-5 py-16">
         <div className="card rounded-3xl p-6">
-          <h1 className="text-3xl font-bold">Reset your password</h1>
+          <h1 className="display-title text-3xl">Reset your password</h1>
           <p className="mt-2 text-sm text-[var(--muted)]">
             Enter the email for your invited AwardPing account. We will send a
             one-time link if that account exists.

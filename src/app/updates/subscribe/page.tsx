@@ -28,14 +28,14 @@ export default async function UpdatesSubscribePage({ searchParams }: Props) {
               <BellRing size={15} aria-hidden="true" />
               Daily updates
             </span>
-            <h1 className="mt-4 text-4xl font-bold leading-[1.1] tracking-[-0.02em] md:text-[2.8rem]">
+            <h1 className="display-title mt-4 text-4xl leading-[1.06] md:text-[2.8rem]">
               Useful award updates by email.
             </h1>
             <p className="mt-3 text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
               Get a daily email only when AwardPing detects useful changes on
               public nationally competitive award source pages. Quiet days stay quiet.
             </p>
-            <div className="mt-4 grid gap-2 text-sm font-bold text-[#30384a]">
+            <div className="mt-4 grid gap-2 text-sm font-bold text-[var(--text-secondary)]">
               {[
                 "Double opt-in confirmation before mail starts",
                 "Official source-page changes, not product marketing",
