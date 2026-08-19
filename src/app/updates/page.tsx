@@ -91,8 +91,8 @@ export default async function UpdatesPage({ searchParams }: Props) {
           </div>
 
           <div className="public-live-feed-list">
-            {groupUpdatesByDay(updates).map((group) => (
-              <section className="public-live-day" key={group.key}>
+            {groupUpdatesByDay(updates).map((group, groupIndex) => (
+              <section className="public-live-day" key={`${group.key}-${groupIndex}`}>
                 <h3 className="public-live-day-label">{group.label}</h3>
                 <div className="public-live-day-list">
                   {group.items.map((update) => {
@@ -161,7 +161,10 @@ function groupUpdatesByDay(updates: LiveUpdateItem[]) {
   const yesterdayKey = keyFor(new Date(Date.now() - 86_400_000).toISOString());
 
   const groups: Array<{ key: string; label: string; items: LiveUpdateItem[] }> = [];
-  for (const update of updates) {
+  const ordered = [...updates].sort(
+    (a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt),
+  );
+  for (const update of ordered) {
     const key = keyFor(update.detectedAt);
     const current = groups[groups.length - 1];
     if (current && current.key === key) {

@@ -2,6 +2,7 @@ import Link from "next/link";
 import { LayoutDashboard } from "lucide-react";
 import { getCurrentUser, getUserProfile, isSiteAdminEmail } from "@/lib/auth";
 import { BrandLogo } from "@/components/brand-logo";
+import { SiteHeaderNav } from "@/components/site-header-nav";
 import { ProfileMenu } from "@/components/profile-menu";
 import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
@@ -20,11 +21,7 @@ export async function SiteHeader() {
             <BrandLogo />
           </Link>
 
-          <nav className="site-header-nav" aria-label="Primary navigation">
-            <Link href="/updates">Live Updates</Link>
-            <Link href="/award-directory" prefetch={false}>Award Directory</Link>
-            <Link href="/advisor-hub">Advisor Hub</Link>
-          </nav>
+          <SiteHeaderNav />
 
           <div className="app-header-actions">
             {user ? (
