@@ -87,6 +87,20 @@ describe("Stage 1 reviewed candidate import", () => {
       .not.toBe(plan.source_bindings[0].local_verified_at);
   });
 
+  it("binds the award timestamp verbatim from the database and source timestamps verbatim from the bundle", () => {
+    const fixture = validFixture();
+    fixture.database.awards[0].updated_at = "2026-07-17T18:30:00.676122+00:00";
+    const plan = buildStage1CandidateImportPlan({ ...fixture, now: NOW });
+
+    // Award fence compares by exact timestamptz equality: raw database string.
+    expect(plan.import_binding.award.updated_at).toBe("2026-07-17T18:30:00.676122+00:00");
+    // Source entries must equal the bundle's attested strings (jsonb equality in the RPC).
+    expect(plan.import_binding.source_bindings[0].source_updated_at)
+      .toBe(fixture.bundle.sources[0].source_updated_at);
+    expect(plan.import_binding.source_bindings[0].captured_at)
+      .toBe(fixture.bundle.sources[0].captured_at);
+  });
+
   it("exposes only the explicit one-cohort/source query scope", () => {
     const { bundle } = validFixture();
     expect(stage1CandidateImportScope(bundle, NOW)).toEqual({

@@ -233,10 +233,15 @@ export function buildStage1CandidateImportPlan({
       shared_award_id: lowerUuid(source.shared_award_id),
       source_url: source.url,
       source_title: source.display_title || source.title || null,
-      source_updated_at: canonicalTimestamp(source.updated_at),
-      last_checked_at: canonicalTimestamp(source.last_checked_at),
-      snapshot_updated_at: canonicalTimestamp(snapshot.updated_at),
-      captured_at: canonicalTimestamp(snapshot.latest_captured_at),
+      // The RPC requires binding source entries to equal the bundle's entries
+      // verbatim (jsonb equality), and separately compares these strings to the
+      // database rows by timestamptz instant. The bundle's attested strings are
+      // therefore authoritative here; sameInstant() above already proved they
+      // match the database rows.
+      source_updated_at: reviewedSource.source_updated_at,
+      last_checked_at: reviewedSource.last_checked_at,
+      snapshot_updated_at: reviewedSource.snapshot_updated_at,
+      captured_at: reviewedSource.captured_at,
       capture_text_sha256: reviewedSource.capture_text_sha256,
       capture_text_object_key: reviewedSource.capture_text_object_key,
       official_identity: reviewedSource.official_identity,
@@ -350,7 +355,7 @@ export function buildStage1CandidateImportPlan({
     review_bundle: normalized,
     award: {
       id: lowerUuid(award.id),
-      updated_at: canonicalTimestamp(award.updated_at),
+      updated_at: exactDatabaseTimestamp(award.updated_at, "award updated_at"),
     },
     source_bindings: sourceBindings,
     candidates: candidateRows,
@@ -804,6 +809,17 @@ function validTimestamp(value) {
 function canonicalTimestamp(value) {
   if (!validTimestamp(value)) fail("database timestamp is invalid.");
   return new Date(value).toISOString();
+}
+
+// The atomic RPC compares binding timestamps to database rows with exact
+// timestamptz equality. Postgres keeps microseconds; Date#toISOString truncates
+// to milliseconds, which made the award-identity fence unsatisfiable for rows
+// with nonzero sub-millisecond digits. Bindings therefore carry the database's
+// own serialization, validated but never reserialized.
+function exactDatabaseTimestamp(value, label) {
+  const text = cleanText(value);
+  if (!validTimestamp(text)) fail(`${label} database timestamp is invalid.`);
+  return text;
 }
 
 function isFresh(value, now) {
