@@ -165,21 +165,41 @@ export function AwardDiscoveryWorkspace({
   }
 
   function renderBrowseControls(position: "top" | "bottom") {
-    return (
-      <div
-        className={
-          position === "top"
-            ? "min-w-0 max-w-full"
-            : "mt-5 min-w-0 max-w-full border-t border-[var(--line)] pt-5"
-        }
-      >
-        <div className="flex min-w-0 max-w-full flex-col gap-4 md:flex-row md:items-end md:justify-between">
-          <div className="min-w-0">
-            <p className={`${position === "top" ? "mt-1" : ""} text-sm font-semibold text-[var(--muted)]`}>
-              Showing {letterAwards.length ? visibleStart + 1 : 0}-{visibleEnd} of{" "}
-              {letterAwards.length} awards under {activeLetter}.
-            </p>
+    if (position === "top") {
+      return (
+        <div className="min-w-0 max-w-full">
+          <div className="award-alpha-nav" aria-label="Alphabetical award pages">
+            {alphabet.map((letter) => {
+              const enabled = availableLetters.has(letter);
+              return (
+                <button
+                  className={`award-alpha-letter ${activeLetter === letter ? "award-alpha-letter-active" : ""}`}
+                  disabled={!enabled}
+                  key={letter}
+                  type="button"
+                  aria-pressed={activeLetter === letter}
+                  onClick={() => selectLetter(letter)}
+                >
+                  {letter}
+                </button>
+              );
+            })}
           </div>
+          <p className="mt-3 text-sm font-medium text-[var(--text-tertiary)]">
+            Showing {letterAwards.length ? visibleStart + 1 : 0}-{visibleEnd} of{" "}
+            {letterAwards.length} awards under {activeLetter}.
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="mt-2 min-w-0 max-w-full border-t border-[var(--border-subtle)] pt-4">
+        <div className="flex min-w-0 max-w-full flex-col gap-4 md:flex-row md:items-end md:justify-between">
+          <p className="text-sm font-medium text-[var(--text-tertiary)]">
+            Showing {letterAwards.length ? visibleStart + 1 : 0}-{visibleEnd} of{" "}
+            {letterAwards.length} awards under {activeLetter}.
+          </p>
 
           <div className="flex min-w-0 flex-wrap items-end gap-2">
             <label className="grid gap-1 text-sm font-bold text-[var(--muted)]">
@@ -221,61 +241,25 @@ export function AwardDiscoveryWorkspace({
             </button>
           </div>
         </div>
-
-        <div className="award-alpha-nav mt-4" aria-label="Alphabetical award pages">
-          {alphabet.map((letter) => {
-            const enabled = availableLetters.has(letter);
-            return (
-              <button
-                className={`rounded-full border text-sm font-bold transition ${
-                  activeLetter === letter
-                    ? "border-[var(--brand)] bg-[var(--brand-blue-soft)] text-[var(--brand)]"
-                    : "border-[var(--line)] bg-[var(--surface)] text-[var(--muted)] hover:border-[var(--brand)] hover:text-[var(--brand)]"
-                } disabled:cursor-not-allowed disabled:opacity-35`}
-                disabled={!enabled}
-                key={letter}
-                type="button"
-                aria-pressed={activeLetter === letter}
-                onClick={() => selectLetter(letter)}
-              >
-                {letter}
-              </button>
-            );
-          })}
-        </div>
       </div>
     );
   }
 
   return (
     <div className="grid gap-5">
-      <section className="update-filter-panel">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <p className="dashboard-label">Award directory</p>
-            <p className="mt-2 max-w-3xl text-sm font-semibold leading-6 text-[var(--muted)]">
-              Search the shared award directory first. Browse alphabetically only when you need to explore.
-            </p>
-          </div>
-          <div className="update-feed-stats">
-            <span>{awards.length.toLocaleString()} shown</span>
-            <span>{sharedAwards.length.toLocaleString()} total</span>
-            <span>{availableLetters.size} browse letters</span>
-          </div>
-        </div>
-
+      <section className="award-directory-controls">
         <div
-          className="relative mt-4"
+          className="relative"
           onBlur={(event) => {
             if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) {
               setSearchOpen(false);
             }
           }}
         >
-          <label className="dashboard-label" htmlFor="award-directory-search">
+          <label className="sr-only" htmlFor="award-directory-search">
             Search awards
           </label>
-          <div className="award-search-control mt-2">
+          <div className="award-search-control">
             <Search
               className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]"
               size={17}
@@ -432,13 +416,10 @@ export function AwardDiscoveryWorkspace({
         </div>
 
         {!browseHiddenBySearch && (
-          <div className="mt-4 flex flex-col gap-3 border-t border-[var(--line)] pt-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="dashboard-label">Alphabetical browse</p>
-              <p className="mt-1 text-sm font-semibold text-[var(--muted)]">
-                Use the A-Z list when search is not the fastest path.
-              </p>
-            </div>
+          <div className="mt-5 flex flex-col gap-3 border-t border-[var(--border-subtle)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm font-medium text-[var(--text-tertiary)]">
+              {awards.length.toLocaleString()} of {sharedAwards.length.toLocaleString()} monitored awards match.
+            </p>
             <button
               className="button-secondary"
               type="button"
@@ -463,28 +444,31 @@ export function AwardDiscoveryWorkspace({
                 key={award.id}
               >
                 <Link className="award-row-summary block" href={awardHref(award)}>
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <span className="inline-flex min-w-0 items-center gap-2 font-bold">
-                      <span>{award.name}</span>
-                      <ChevronRight size={17} aria-hidden="true" />
-                    </span>
-                    <span className="text-xs font-bold text-[var(--muted)]">
-                      {sourceStatusText(award)}
-                    </span>
-                  </div>
-                  {compactAwardBlurb(award.summary, award.name) && (
-                    <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
-                      {compactAwardBlurb(award.summary, award.name)}
-                    </p>
-                  )}
-                  <div className="award-directory-row-meta">
-                    {award.deadline && <span>Deadline: {award.deadline}</span>}
-                    {award.academicLevels.slice(0, 2).map((level) => (
-                      <span key={level}>{level}</span>
-                    ))}
-                    {award.citizenship.slice(0, 1).map((citizenship) => (
-                      <span key={citizenship}>{citizenship}</span>
-                    ))}
+                  <div className="award-row-grid">
+                    <div className="min-w-0">
+                      <span className="inline-flex min-w-0 items-center gap-2 font-bold">
+                        <span>{award.name}</span>
+                        <ChevronRight size={17} aria-hidden="true" />
+                      </span>
+                      {compactAwardBlurb(award.summary, award.name) && (
+                        <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
+                          {compactAwardBlurb(award.summary, award.name)}
+                        </p>
+                      )}
+                      <div className="award-directory-row-meta">
+                        <span>{sourceStatusText(award)}</span>
+                        {award.academicLevels.slice(0, 2).map((level) => (
+                          <span key={level}>{level}</span>
+                        ))}
+                        {award.citizenship.slice(0, 1).map((citizenship) => (
+                          <span key={citizenship}>{citizenship}</span>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="award-row-deadline">
+                      <span>Deadline</span>
+                      <strong>{award.deadline || "Pending"}</strong>
+                    </div>
                   </div>
                 </Link>
                 {isAuthenticated && (
