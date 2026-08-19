@@ -29,7 +29,7 @@ export const metadata: Metadata = {
     "Monitor nationally competitive award pages for deadline, eligibility, application, and PDF updates.",
   icons: {
     icon: [
-      { url: "/favicon.ico", sizes: "any" },
+      { url: "/awardping-mark.svg", type: "image/svg+xml" },
       { url: "/awardping-icon.png", type: "image/png", sizes: "512x512" },
     ],
     apple: [{ url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" }],

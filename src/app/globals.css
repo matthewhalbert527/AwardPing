@@ -231,24 +231,33 @@ a {
 .brand-logo {
   display: inline-flex;
   align-items: center;
+  gap: 0.55rem;
   min-width: 0;
-  width: clamp(11.4rem, 18vw, 14.6rem);
-  height: clamp(2.8rem, 4.6vw, 3.7rem);
+  color: var(--text);
   line-height: 1;
 }
 
-.brand-logo picture {
-  display: contents;
+.brand-logo-mark {
+  width: 1.7rem;
+  height: 1.7rem;
+  flex: 0 0 auto;
 }
 
-.brand-logo-image {
-  display: block;
-  width: 100%;
-  max-width: 100%;
-  height: 100%;
-  flex: 0 0 auto;
-  object-fit: contain;
-  object-position: left center;
+.brand-logo-wordmark {
+  color: var(--text);
+  font-size: 1.32rem;
+  font-weight: 700;
+  letter-spacing: -0.022em;
+  white-space: nowrap;
+}
+
+.brand-logo-wordmark-accent {
+  color: var(--accent);
+}
+
+.brand-logo-mark-only .brand-logo-mark {
+  width: 1.9rem;
+  height: 1.9rem;
 }
 
 .app-header {
@@ -281,9 +290,13 @@ a {
   justify-self: start;
 }
 
-.app-header-brand .brand-logo {
-  width: clamp(10.25rem, 14vw, 12.8rem);
-  height: clamp(2.55rem, 3.8vw, 3.2rem);
+.app-header-brand .brand-logo .brand-logo-mark {
+  width: 1.65rem;
+  height: 1.65rem;
+}
+
+.app-header-brand .brand-logo-wordmark {
+  font-size: 1.26rem;
 }
 
 .app-header-actions {
@@ -316,9 +329,8 @@ a {
 }
 
 @media (max-width: 520px) {
-  .brand-logo {
-    width: 9.1rem;
-    height: 2.35rem;
+  .brand-logo-wordmark {
+    font-size: 1.15rem;
   }
 }
 
@@ -731,10 +743,8 @@ a {
   justify-self: start;
 }
 
-.dashboard-brand-link .brand-logo {
-  width: clamp(10.25rem, 14vw, 12.8rem);
-  max-width: min(100%, 12.8rem);
-  height: clamp(2.55rem, 3.8vw, 3.2rem);
+.dashboard-brand-link .brand-logo-wordmark {
+  font-size: 1.2rem;
 }
 
 .dashboard-header-nav-wrap {
