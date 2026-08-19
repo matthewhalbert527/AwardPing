@@ -11,7 +11,7 @@
 // call; a fact whose quote cannot be recovered verbatim is dropped and logged.
 // Facts never ship from this script - it emits drafts, verdicts, and an
 // exception queue for human review.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 
 const args = Object.fromEntries(
@@ -235,6 +235,26 @@ for (const [key, award] of Object.entries(manifest)) {
   }
 }
 
+
+function appendUsageLedger(kind, model, usage, estCostUsd) {
+  try {
+    const archiveRoot = env.AWARDPING_VISUAL_SNAPSHOT_DIR || "D:\AwardPingVisualSnapshots";
+    const dir = resolve(archiveRoot, "usage");
+    mkdirSync(dir, { recursive: true });
+    const now = new Date().toISOString();
+    const record = {
+      used_at: now, date: now.slice(0, 10), month: now.slice(0, 7),
+      provider: "gemini", kind, model, api_mode: "standard",
+      usage: { prompt_tokens: usage.in, candidates_tokens: usage.out },
+      estimated_cost_usd: estCostUsd,
+    };
+    appendFileSync(resolve(dir, `gemini-usage-${record.month}.jsonl`), `${JSON.stringify(record)}\n`, "utf8");
+  } catch (err) {
+    console.error("usage ledger append failed:", String(err).slice(0, 120));
+  }
+}
+
 const cost = (usageTotal.in * 0.75 + usageTotal.out * 3.75) / 1e6;
+appendUsageLedger("editorial_pipeline", model, usageTotal, cost);
 writeFileSync(join(outdir, "_summary.json"), JSON.stringify({ model, usage: usageTotal, est_cost_usd: cost, summary }, null, 1));
 console.log(`PIPELINE_DONE calls=${usageTotal.calls} tokens_in=${usageTotal.in} tokens_out=${usageTotal.out} est_cost=$${cost.toFixed(3)}`);

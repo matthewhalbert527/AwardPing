@@ -11,7 +11,7 @@
 // generateContent calls (one per critic lens) per invocation. No database or
 // R2 access. Intended for operator runs and the editorial regression suite;
 // production-scale runs should prefer the batch API per worker policy.
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
 const args = Object.fromEntries(
@@ -121,6 +121,25 @@ async function critic(lens, instruction) {
   return { lens, ...JSON.parse(text), usage: { in: usage.promptTokenCount, out: usage.candidatesTokenCount } };
 }
 
+
+function appendUsageLedger(kind, model, usage, estCostUsd) {
+  try {
+    const archiveRoot = env.AWARDPING_VISUAL_SNAPSHOT_DIR || "D:\AwardPingVisualSnapshots";
+    const dir = resolve(archiveRoot, "usage");
+    mkdirSync(dir, { recursive: true });
+    const now = new Date().toISOString();
+    const record = {
+      used_at: now, date: now.slice(0, 10), month: now.slice(0, 7),
+      provider: "gemini", kind, model, api_mode: "standard",
+      usage: { prompt_tokens: usage.in, candidates_tokens: usage.out },
+      estimated_cost_usd: estCostUsd,
+    };
+    appendFileSync(resolve(dir, `gemini-usage-${record.month}.jsonl`), `${JSON.stringify(record)}\n`, "utf8");
+  } catch (err) {
+    console.error("usage ledger append failed:", String(err).slice(0, 120));
+  }
+}
+
 const results = [];
 for (const [lens, instruction] of LENSES) {
   process.stderr.write(`critic: ${lens}...\n`);
@@ -143,6 +162,7 @@ const tokens = results.reduce(
 );
 
 writeFileSync(outputPath, JSON.stringify({ model, draft: draftPath, results, failures }, null, 1));
+appendUsageLedger("editorial_critics", model, tokens, (tokens.in * 0.75 + tokens.out * 3.75) / 1e6);
 console.log(`model=${model} tokens_in=${tokens.in} tokens_out=${tokens.out}`);
 console.log(`failures=${failures.length} -> ${outputPath}`);
 for (const f of failures) {
