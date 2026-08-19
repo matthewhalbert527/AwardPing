@@ -1,4 +1,5 @@
 import { ImageResponse } from "next/og";
+import { readFile } from "node:fs/promises";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
 
@@ -6,6 +7,10 @@ export const runtime = "nodejs";
 export const alt = "AwardPing award record";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
+
+const serifFont = readFile(new URL("../source-serif-4-semibold.ttf", import.meta.url));
+const sansFont = readFile(new URL("../geist-sans-600.ttf", import.meta.url));
+const sansFontBold = readFile(new URL("../geist-sans-700.ttf", import.meta.url));
 
 const INK = "#17150f";
 const ACCENT = "#1c4e80";
@@ -23,9 +28,10 @@ export default async function AwardOpenGraphImage({
     ? await getPublicAwardPageBySlug(slug).catch(() => null)
     : null;
 
-  const name = award?.award.name ?? "Nationally competitive award";
+  const name = award?.award.name ?? "The early-warning system for nationally competitive fellowships.";
+  const kicker = award ? "Nationally competitive award" : "Nationally competitive award monitoring";
   const deadline = award?.facts.deadline ?? null;
-  const sourceCount = award?.sources.length ?? null;
+  const sourceCount = award ? award.sources.length : null;
 
   return new ImageResponse(
     (
@@ -38,7 +44,7 @@ export default async function AwardOpenGraphImage({
           justifyContent: "space-between",
           background: PAPER,
           padding: 72,
-          fontFamily: "Georgia, serif",
+          fontFamily: '"Source Serif 4", Georgia, serif',
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
@@ -47,7 +53,7 @@ export default async function AwardOpenGraphImage({
             <circle cx="14" cy="14" opacity="0.45" r="7" stroke={INK} strokeWidth="1.8" />
             <circle cx="14" cy="14" fill={ACCENT} r="2.6" />
           </svg>
-          <div style={{ display: "flex", fontFamily: "Arial, sans-serif", fontSize: 34, fontWeight: 700, letterSpacing: -1 }}>
+          <div style={{ display: "flex", fontFamily: '"Geist", Arial, sans-serif', fontSize: 34, fontWeight: 700, letterSpacing: -1 }}>
             <span style={{ color: INK }}>Award</span>
             <span style={{ color: ACCENT }}>Ping</span>
           </div>
@@ -57,14 +63,14 @@ export default async function AwardOpenGraphImage({
           <div
             style={{
               color: ACCENT,
-              fontFamily: "Arial, sans-serif",
+              fontFamily: '"Geist", Arial, sans-serif',
               fontSize: 20,
               fontWeight: 600,
               letterSpacing: 4,
               textTransform: "uppercase",
             }}
           >
-            Nationally competitive award
+            {kicker}
           </div>
           <div style={{ color: INK, fontSize: 66, fontWeight: 600, lineHeight: 1.08 }}>{name}</div>
         </div>
@@ -76,7 +82,7 @@ export default async function AwardOpenGraphImage({
             gap: 56,
             borderTop: `2px solid ${HAIRLINE}`,
             paddingTop: 30,
-            fontFamily: "Arial, sans-serif",
+            fontFamily: '"Geist", Arial, sans-serif',
           }}
         >
           {deadline && (
@@ -101,6 +107,28 @@ export default async function AwardOpenGraphImage({
         </div>
       </div>
     ),
-    size,
+    {
+      ...size,
+      fonts: [
+        {
+          name: "Source Serif 4",
+          data: await serifFont,
+          weight: 600,
+          style: "normal",
+        },
+        {
+          name: "Geist",
+          data: await sansFont,
+          weight: 600,
+          style: "normal",
+        },
+        {
+          name: "Geist",
+          data: await sansFontBold,
+          weight: 700,
+          style: "normal",
+        },
+      ],
+    },
   );
 }
