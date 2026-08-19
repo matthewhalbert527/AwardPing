@@ -43,6 +43,22 @@ Seeded 2026-08-19 from the Rhodes review session (policy examples marked
 8. **Prefer omission over padding.** A short correct field beats a filled
    one. Empty is an acceptable state for any field except `overview`.
 
+### Additional rulings `[cohort-2026-08-19]`
+
+- **Mission language is promotional** even when quoted: "deepen understanding
+  between China and the rest of the world" fails Rule 2. State what the
+  program is; let the sources carry the mission.
+- **Degree-background quotes are eligibility, not disciplines.** "Bachelor's
+  degree in any field" describes who may apply; `disciplines` is reserved for
+  the program's fields of study.
+- **Never add years the quote does not state.** "December and January" may not
+  become "December 2026 - January 2027" by cycle inference; publish the quoted
+  wording or omit. (Rule 6 requires years when the SOURCE gives them, not year
+  invention.)
+- **Value scope follows the quote, not the sheet.** A value may not borrow
+  specifics (institution names, locations) from other facts' quotes; each
+  value stands on its own evidence.
+
 ## Field contracts
 
 | Field | Job (applicant question) | Format | Notes |
