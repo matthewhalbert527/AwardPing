@@ -3100,117 +3100,125 @@ a {
 }
 
 .public-award-shell {
-  background: var(--surface-sunken);
+  background: var(--surface-page);
 }
 
 .public-award-console-wrap {
   width: min(100%, var(--award-page-template-width));
   margin: 0 auto;
-  padding: 1rem;
+  padding: clamp(1.1rem, 3vw, 2rem) clamp(1rem, 2.5vw, 1.5rem) 3.5rem;
 }
 
 .public-award-console {
   display: grid;
-  grid-template-columns: minmax(17rem, 19rem) minmax(0, 1fr);
-  min-height: calc(100vh - 2rem);
-  min-height: calc(100dvh - 2rem);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-  box-shadow: var(--shadow-sm);
+  grid-template-columns: minmax(15.5rem, 17.5rem) minmax(0, 1fr);
+  gap: clamp(1.5rem, 3.5vw, 2.75rem);
+  align-items: start;
 }
 
 .public-award-console-collapsed {
-  grid-template-columns: 4.4rem minmax(0, 1fr);
+  grid-template-columns: 3.4rem minmax(0, 1fr);
 }
 
 .public-award-sidebar {
-  align-self: stretch;
+  position: sticky;
+  top: 5.4rem;
   display: grid;
   align-content: start;
-  gap: 0.62rem;
-  border-right: 1px solid var(--border);
-  background: var(--surface-sunken);
-  padding: 1.25rem;
+  gap: 1.1rem;
+  min-width: 0;
+  max-height: calc(100vh - 6.5rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.35rem;
+  scrollbar-width: thin;
 }
 
 .public-award-sidebar-header {
   display: flex;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.55rem;
 }
 
 .public-award-sidebar-header p,
 .public-award-sidebar-card span {
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-  letter-spacing: 0;
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
 }
 
 .public-award-sidebar-header span {
   display: block;
-  margin-top: 0.12rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  line-height: 1.25;
+  margin-top: 0.22rem;
+  color: var(--text-tertiary);
+  font-size: 0.74rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
 }
 
 .public-award-sidebar-header strong {
   display: block;
   margin-top: 0.2rem;
   overflow: hidden;
-  color: var(--foreground);
-  font-size: 1rem;
+  color: var(--text);
+  font-size: 0.95rem;
   font-weight: 700;
-  line-height: 1.22;
+  line-height: 1.25;
   text-overflow: ellipsis;
 }
 
 .public-award-sidebar-toggle {
   display: inline-flex;
-  width: 2.1rem;
-  height: 2.1rem;
+  width: 1.9rem;
+  height: 1.9rem;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   border: 1px solid var(--border);
-  border-radius: 0.45rem;
+  border-radius: var(--radius-xs);
   background: var(--surface);
-  color: var(--foreground);
+  color: var(--text-secondary);
+  transition: border-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+
+.public-award-sidebar-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .public-award-sidebar-page-card {
   display: flex;
-  min-height: 3.6rem;
+  min-height: 3.4rem;
   align-items: center;
-  gap: 0.8rem;
-  border: 1px solid var(--border);
+  gap: 0.7rem;
+  border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
-  background: var(--surface);
+  background: var(--surface-sunken);
   padding: 0.7rem 0.85rem;
 }
 
 .public-award-sidebar-page-card svg {
   flex: 0 0 auto;
-  color: var(--muted);
+  color: var(--text-tertiary);
 }
 
 .public-award-sidebar-page-card strong {
-  font-size: 1.1rem;
-  line-height: 1.15;
+  font-size: 0.95rem;
+  font-weight: 700;
+  line-height: 1.2;
 }
 
 .public-award-nav-group {
   display: grid;
-  gap: 0.72rem;
-  border-top: 1px solid var(--border);
-  padding-top: 1rem;
+  gap: 0.55rem;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.9rem;
 }
 
 .public-award-nav-group summary {
@@ -3218,12 +3226,11 @@ a {
   cursor: pointer;
   list-style: none;
   align-items: center;
-  gap: 0.5rem;
-  color: var(--foreground);
-  font-size: 1.08rem;
+  gap: 0.45rem;
+  min-height: 1.75rem;
+  color: var(--text);
+  font-size: 0.95rem;
   font-weight: 700;
-  letter-spacing: 0;
-  min-height: 2rem;
 }
 
 .public-award-nav-group summary::-webkit-details-marker {
@@ -3240,7 +3247,7 @@ a {
 
 .public-award-nav-list {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.4rem;
   margin: 0;
   padding-left: 0;
   position: relative;
@@ -3252,40 +3259,48 @@ a {
 
 .public-award-nav-section {
   display: grid;
-  gap: 0.34rem;
+  gap: 0.3rem;
   min-width: 0;
-  border-top: 1px solid var(--border);
-  padding-top: 0.55rem;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.85rem;
+}
+
+.public-award-nav-section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .public-award-nav-heading {
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0;
+  margin-bottom: 0.2rem;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
   line-height: 1.2;
   text-transform: uppercase;
 }
 
 .public-award-source-group {
   display: grid;
-  gap: 0.22rem;
+  gap: 0.25rem;
 }
 
 .public-award-source-group > summary {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 0.35rem;
-  min-height: 1.82rem;
+  min-height: 1.75rem;
   align-items: center;
-  border-radius: 0.45rem;
-  color: var(--muted);
+  border-radius: var(--radius-xs);
+  color: var(--text-tertiary);
   cursor: pointer;
-  font-size: 0.76rem;
-  font-weight: 700;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
   list-style: none;
-  padding: 0.28rem 0.36rem;
+  padding: 0.26rem 0.4rem;
   text-transform: uppercase;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .public-award-source-group > summary::-webkit-details-marker {
@@ -3293,14 +3308,15 @@ a {
 }
 
 .public-award-source-group > summary:hover {
-  background: color-mix(in srgb, var(--brand-blue-soft) 38%, var(--surface));
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
 }
 
 .public-award-source-group-label {
-  display: grid;
-  gap: 0.08rem;
+  display: flex;
   min-width: 0;
-  line-height: 1.05;
+  align-items: baseline;
+  gap: 0.4rem;
 }
 
 .public-award-source-group-label > span,
@@ -3311,9 +3327,10 @@ a {
 }
 
 .public-award-source-group-label > small {
-  color: color-mix(in srgb, var(--muted) 82%, var(--surface));
-  font-size: 0.64rem;
-  font-weight: 640;
+  color: var(--text-tertiary);
+  font-size: 0.66rem;
+  font-weight: 500;
+  letter-spacing: 0;
   text-transform: none;
 }
 
@@ -3327,8 +3344,8 @@ a {
 
 .public-award-source-sublist {
   display: grid;
-  gap: 0.24rem;
-  padding-left: 0.24rem;
+  gap: 0.22rem;
+  min-width: 0;
 }
 
 .public-award-source-flat-list {
@@ -3336,100 +3353,126 @@ a {
 }
 
 .public-award-source-overflow-note {
-  border-radius: 0.38rem;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-  padding: 0.26rem 0.52rem 0.34rem 1.25rem;
+  margin-top: 0.15rem;
+  color: var(--text-tertiary);
+  font-size: 0.74rem;
+  font-weight: 500;
+  padding: 0.1rem 0.55rem;
 }
 
 .public-award-nav-button {
-  position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.5rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   width: 100%;
-  min-width: 0;
+  min-height: 2.15rem;
   align-items: center;
-  border: 1px solid transparent;
-  border-radius: 0.42rem;
-  color: var(--foreground);
-  padding: 0.46rem 0.55rem;
+  gap: 0.55rem;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  padding: 0.4rem 0.55rem;
   text-align: left;
-  text-decoration: none;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
 
 .public-award-nav-button-source {
-  padding-left: 0.55rem;
+  min-height: 2rem;
 }
 
 .public-award-nav-button::before {
-  display: none;
+  content: none;
 }
 
-.public-award-nav-button:hover,
-.public-award-nav-button-active {
-  background: color-mix(in srgb, var(--brand-blue-soft) 52%, var(--surface));
+.public-award-nav-button:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
 }
 
 .public-award-nav-button-active {
-  border-color: color-mix(in srgb, var(--brand) 24%, var(--surface));
-  color: var(--foreground);
+  background: var(--accent-tint);
+  color: var(--accent-text);
+}
+
+.public-award-nav-button-active:hover {
+  background: var(--accent-tint);
+  color: var(--accent-text);
 }
 
 .public-award-nav-button-updated:not(.public-award-nav-button-active) {
-  border-color: color-mix(in srgb, var(--brand-pink) 28%, var(--surface));
-  background: color-mix(in srgb, var(--brand-pink-soft) 42%, var(--surface));
+  color: var(--text);
 }
 
 .public-award-nav-button-source.public-award-nav-button-updated::before {
-  display: none;
+  content: none;
 }
 
 .public-award-nav-marker {
-  display: none;
+  width: 0.4rem;
+  height: 0.4rem;
+  flex: 0 0 auto;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  transition: background var(--dur) var(--ease);
+}
+
+.public-award-nav-button-updated .public-award-nav-marker {
+  background: var(--accent);
+}
+
+.public-award-nav-button-active .public-award-nav-marker {
+  background: var(--accent);
 }
 
 .public-award-nav-text {
   display: grid;
   min-width: 0;
-  gap: 0.08rem;
+  gap: 0.1rem;
 }
 
 .public-award-nav-text strong {
-  font-size: 0.86rem;
+  overflow: hidden;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-award-nav-button-active .public-award-nav-text strong {
   font-weight: 700;
-  line-height: 1.16;
-  overflow-wrap: anywhere;
-  white-space: normal;
 }
 
 .public-award-nav-text small {
-  color: var(--muted);
+  overflow: hidden;
+  color: var(--text-tertiary);
   font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1.1;
-  white-space: normal;
+  font-weight: 500;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .public-award-nav-tags {
   display: inline-flex;
-  min-width: 0;
-  flex-wrap: wrap;
-  gap: 0.22rem;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.3rem;
 }
 
 .public-award-nav-tags > span {
   display: inline-flex;
   align-items: center;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  color: var(--brand-dark);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface);
+  color: var(--text-tertiary);
   font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  line-height: 1;
-  padding: 0.16rem 0.34rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.3rem;
   text-transform: uppercase;
 }
 
@@ -3437,40 +3480,40 @@ a {
   display: inline-flex;
   min-width: 1.3rem;
   height: 1.3rem;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  border-radius: 999px;
-  background: var(--brand-pink);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
   color: var(--accent-contrast);
   font-size: 0.68rem;
   font-weight: 700;
-  line-height: 1;
-  padding: 0 0.34rem;
-  box-shadow: 0 0 0 2px var(--brand-pink-soft);
+  padding: 0 0.32rem;
 }
 
 .public-award-sidebar-card {
   display: grid;
-  gap: 0.38rem;
-  border: 1px solid var(--border);
-  border-radius: 0.55rem;
-  background: var(--surface-sunken);
-  padding: 0.95rem;
+  gap: 0.3rem;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.9rem;
 }
 
 .public-award-sidebar-card strong {
-  color: var(--foreground);
-  font-size: 1.25rem;
-  font-weight: 700;
-  line-height: 1.1;
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.35;
 }
 
 .public-award-sidebar-last-checked {
-  margin-top: 0.12rem;
+  color: var(--text-tertiary);
+  font-size: 0.74rem;
+  font-weight: 500;
 }
 
 .public-award-console-collapsed .public-award-sidebar {
-  padding: 0.62rem 0.48rem;
+  justify-items: center;
+  padding-right: 0;
 }
 
 .public-award-console-collapsed .public-award-sidebar-header p,
@@ -3494,22 +3537,20 @@ a {
 }
 
 .public-award-console-collapsed .public-award-nav-button {
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding-inline: 0.3rem;
+  grid-template-columns: auto;
+  justify-content: center;
+  justify-items: center;
 }
 
 .public-award-console-collapsed .public-award-nav-text strong {
-  font-size: 0.68rem;
-  white-space: normal;
+  display: none;
 }
 
 .public-award-console-main {
   display: grid;
-  align-content: start;
-  gap: 1rem;
+  gap: 1.2rem;
   min-width: 0;
-  background: var(--surface);
-  padding: 1.5rem;
+  align-content: start;
 }
 
 .public-award-console-breadcrumb {
@@ -3517,83 +3558,90 @@ a {
   min-width: 0;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.45rem;
-  color: var(--muted);
-  font-size: 0.86rem;
-  font-weight: 600;
+  gap: 0.4rem;
+  color: var(--text-tertiary);
+  font-size: 0.78rem;
+  font-weight: 500;
 }
 
 .public-award-console-breadcrumb a {
-  color: var(--brand-dark);
+  color: var(--text-secondary);
+  font-weight: 600;
+  transition: color var(--dur) var(--ease);
+}
+
+.public-award-console-breadcrumb a:hover {
+  color: var(--accent-text);
 }
 
 .public-award-console-breadcrumb strong {
-  color: var(--foreground);
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .public-award-console-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
+  gap: 1.25rem;
   align-items: start;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1.2rem;
 }
 
 .public-award-console-header h1 {
-  margin-top: 0.35rem;
-  color: var(--foreground);
-  font-size: clamp(1.34rem, 1.85vw, 1.72rem);
-  font-weight: 700;
-  line-height: 1.16;
+  color: var(--text);
+  font-size: clamp(1.55rem, 3vw, 2.1rem);
+  font-weight: var(--weight-display);
+  letter-spacing: var(--tracking-display);
+  line-height: 1.12;
 }
 
 .public-award-meta-line {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
-  gap: 0.35rem 0.85rem;
-  margin-top: 0.42rem;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 640;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.45rem;
+  color: var(--text-tertiary);
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 
 .public-award-console-header p {
-  max-width: 64rem;
-  margin-top: 0.55rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+  max-width: 62ch;
+  margin-top: 0.6rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
   font-weight: 500;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 
 .public-award-console-actions {
-  display: grid;
-  min-width: 13.5rem;
-  align-content: start;
-  justify-items: stretch;
-  gap: 0.55rem;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
 }
 
 .public-award-console-actions .button-primary,
 .public-award-console-actions .button-secondary {
-  width: 100%;
   min-height: 2.35rem;
-  border-radius: 0.35rem;
-  padding: 0.48rem 0.82rem;
-  box-shadow: none;
+  padding: 0.45rem 0.85rem;
 }
 
 .public-award-console-panel {
+  display: grid;
+  gap: 1rem;
   min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: 0.45rem;
-  background: var(--surface);
-  padding: 0.95rem;
-  box-shadow: 0 14px 34px rgba(var(--p-shadow-rgb), 0.05);
 }
 
 .public-award-panel-stack {
   display: grid;
-  gap: 0.78rem;
+  gap: 1rem;
   min-width: 0;
 }
 
@@ -3607,9 +3655,11 @@ a {
 .public-award-source-table {
   display: grid;
   min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 0.4rem;
+  border-radius: var(--radius-sm);
   background: var(--surface);
+  box-shadow: var(--shadow-xs);
 }
 
 .public-award-fact-table-compact {
@@ -3621,8 +3671,8 @@ a {
   grid-template-columns: minmax(8.5rem, 11rem) minmax(0, 1fr);
   gap: 0.9rem;
   min-width: 0;
-  border-bottom: 1px solid var(--border);
-  padding: 0.68rem 0.78rem;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.72rem 0.85rem;
 }
 
 .public-award-fact-line:last-child {
@@ -3633,9 +3683,10 @@ a {
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 700;
+  color: var(--text-tertiary);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
 }
 
@@ -3652,7 +3703,8 @@ a {
   justify-content: space-between;
   gap: 1rem;
   border-bottom: 1px solid var(--border);
-  padding: 0.72rem 0.78rem;
+  background: var(--surface-subtle);
+  padding: 0.7rem 0.85rem;
 }
 
 .public-award-table-heading h3,
@@ -3674,8 +3726,8 @@ a {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1rem;
   min-width: 0;
-  border-bottom: 1px solid var(--border);
-  padding: 0.72rem 0.78rem;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 0.75rem 0.85rem;
 }
 
 .public-award-source-line:last-child,
@@ -3684,15 +3736,16 @@ a {
 }
 
 .public-award-source-line-updated {
-  background: color-mix(in srgb, var(--brand-pink-soft) 46%, var(--surface));
-  box-shadow: inset 3px 0 0 var(--brand-pink);
+  background: color-mix(in srgb, var(--accent-tint) 55%, var(--surface));
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .public-award-source-line span,
 .public-award-change-line time {
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 700;
+  color: var(--text-tertiary);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: var(--tracking-label);
   text-transform: uppercase;
 }
 
@@ -3718,7 +3771,7 @@ a {
 }
 
 .public-award-source-line-button:hover {
-  color: var(--brand-dark);
+  color: var(--accent-text);
   text-decoration: underline;
 }
 
@@ -3734,17 +3787,20 @@ a {
 
 .public-award-source-line strong {
   align-self: start;
-  border-radius: 999px;
-  background: var(--surface-warm);
-  color: var(--foreground);
-  font-size: 0.74rem;
-  font-weight: 700;
-  padding: 0.32rem 0.52rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: var(--surface-sunken);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.26rem 0.45rem;
   white-space: nowrap;
 }
 
 .public-award-source-line-updated strong {
-  background: var(--brand-pink-soft);
+  border-color: var(--accent-border);
+  background: var(--accent-tint);
+  color: var(--accent-text);
 }
 
 .public-award-change-line {
@@ -3968,17 +4024,22 @@ a {
 
 @media (max-width: 720px) {
   .public-award-console-wrap {
-    padding: 0.6rem;
+    padding: 0.85rem 0.85rem 2.5rem;
   }
 
   .public-award-console,
   .public-award-console-collapsed {
     grid-template-columns: 1fr;
+    gap: 1.25rem;
   }
 
   .public-award-sidebar {
-    border-right: 0;
+    position: static;
+    max-height: none;
+    overflow: visible;
     border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 1.1rem;
   }
 
   .public-award-sidebar-toggle {
@@ -3998,11 +4059,11 @@ a {
 
   .public-award-console-collapsed .public-award-nav-button,
   .public-award-nav-button {
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
   }
 
   .public-award-console-main {
-    padding: 0.85rem;
+    gap: 1rem;
   }
 
   .public-award-console-header {
