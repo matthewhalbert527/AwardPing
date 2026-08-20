@@ -2755,6 +2755,16 @@ function Register-DownstreamLaneTasks {
   $targetScript = Join-Path $InstallRoot "Run-AwardPingDownstreamLane.ps1"
   Copy-Item -LiteralPath $sourceScript -Destination $targetScript -Force -ErrorAction Stop
 
+  # The finalization gate hash-compares the installed Launch-Hidden.vbs against
+  # this repo copy, and every task action points at it, but nothing refreshed it
+  # during install/update — any byte drift (for example line-ending
+  # normalization of the checkout) made updates fail closed forever.
+  $sourceLauncher = Join-Path $PSScriptRoot "Launch-Hidden.vbs"
+  if (-not (Test-Path -LiteralPath $sourceLauncher -PathType Leaf)) {
+    throw "Hidden launcher is missing: $sourceLauncher"
+  }
+  Copy-Item -LiteralPath $sourceLauncher -Destination (Join-Path $InstallRoot "Launch-Hidden.vbs") -Force -ErrorAction Stop
+
   $laneDefinitions = @(
     [pscustomobject]@{ Key = "new_page_review"; TaskName = "AwardPing New Page Review Lane"; StaggerMinutes = 0; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Processes queued new-page source intake and its paid Gemini Batch review independently. Database policy fixes this lane at `$5/day." },
     [pscustomobject]@{ Key = "changed_page_review"; TaskName = "AwardPing Changed Page Review Lane"; StaggerMinutes = 2; TimeoutMinutes = 10; ExecutionTimeLimitMinutes = 12; Description = "Processes queued changed-page visual candidates and their paid Gemini Batch review independently. Database policy fixes this lane at `$5/day." },
