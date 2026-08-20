@@ -1,4 +1,6 @@
-export const MAX_EXPANSION_STATE_SCREENSHOTS = 24;
+// Stage 1 coverage policy requires zero expansion-state truncation, so this
+// ceiling must accommodate the largest real accordion page (Rhodes FAQs: 30).
+export const MAX_EXPANSION_STATE_SCREENSHOTS = 40;
 export const MAX_RAW_EXPANSION_STATE_DESCRIPTORS = 512;
 export const expansionStateCaptureCoverageSchema =
   "awardping.expansion-state-capture-coverage.v1";
@@ -49,6 +51,94 @@ export function expansionStateCaptureBudgetMs(attempted, {
   const overhead = boundedTimeoutMs(operationTimeoutMs, MAX_EXPANSION_STATE_TIMEOUT_PER_STATE_MS);
   const perState = boundedTimeoutMs(perStateTimeoutMs, MAX_EXPANSION_STATE_TIMEOUT_PER_STATE_MS);
   return overhead + (logicalStates * perState);
+}
+
+/**
+ * JS mirror of private.stage1_expansion_capture_coverage_valid (migration
+ * 20260814173236): Stage 1 evidence bindings require a verified_complete,
+ * untruncated expansion-state coverage verdict on webpage pointer metadata
+ * (and no coverage object at all on PDFs). Sealing evidence against a capture
+ * that fails this can never reconcile, so import-side fences must call this
+ * before accepting a capture binding.
+ */
+export function stage1ExpansionCaptureCoverageValid(kind, metadata) {
+  if (!isPlainObject(metadata)) return false;
+  const coverage = metadata.expansion_state_capture_coverage;
+  if (kind === "pdf") return coverage === null || coverage === undefined;
+  if (kind !== "webpage" || !isPlainObject(coverage)) return false;
+  if (
+    coverage.schema !== expansionStateCaptureCoverageSchema
+    || typeof coverage.status !== "string"
+    || !expansionStateCaptureStatuses.has(coverage.status)
+  ) {
+    return false;
+  }
+
+  const countFields = [
+    "attempted_count",
+    "capture_limit",
+    "failure_count",
+    "logical_candidate_count",
+    "raw_candidate_count",
+    "retained_state_count",
+    "truncated_count",
+  ];
+  if (countFields.some((field) => !safeCount(coverage[field]))) return false;
+  const booleanFields = [
+    "complete",
+    "logical_candidate_count_exact",
+    "raw_candidate_count_exact",
+    "truncated",
+    "truncated_count_exact",
+  ];
+  if (booleanFields.some((field) => typeof coverage[field] !== "boolean")) return false;
+
+  const authoritativeCount =
+    metadata.retained_artifact_projection?.authoritative?.expansion_state_count;
+  if (
+    coverage.raw_candidate_count < coverage.logical_candidate_count
+    || coverage.attempted_count > coverage.logical_candidate_count
+    || coverage.attempted_count > coverage.capture_limit
+    || coverage.retained_state_count > coverage.attempted_count
+    || coverage.failure_count > coverage.attempted_count
+    || !safeCount(metadata.expansion_state_count)
+    || metadata.expansion_state_count !== coverage.retained_state_count
+    || !safeCount(authoritativeCount)
+    || authoritativeCount !== coverage.retained_state_count
+    || (
+      coverage.logical_candidate_count_exact
+      && coverage.truncated_count_exact
+      && coverage.truncated_count
+        !== Math.max(0, coverage.logical_candidate_count - coverage.attempted_count)
+    )
+    || (
+      coverage.logical_candidate_count_exact
+      && coverage.logical_candidate_count > coverage.attempted_count
+      && !coverage.truncated
+    )
+    || coverage.complete !== (coverage.status === "verified_complete")
+  ) {
+    return false;
+  }
+
+  return coverage.complete
+    && coverage.raw_candidate_count_exact
+    && coverage.logical_candidate_count_exact
+    && !coverage.truncated
+    && coverage.truncated_count === 0
+    && coverage.truncated_count_exact
+    && coverage.attempted_count === coverage.logical_candidate_count
+    && coverage.retained_state_count === coverage.attempted_count
+    && coverage.failure_count === 0;
+}
+
+function safeCount(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    && value <= Number.MAX_SAFE_INTEGER;
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function logicalPanelKey(descriptor) {

@@ -389,6 +389,9 @@ function validFixture() {
           page_bytes: 100,
           text_object_bytes: Buffer.byteLength(rawText, "utf8"),
           text_length: SEMANTIC_TEXT.length,
+          expansion_state_count: 0,
+          expansion_state_capture_coverage: verifiedCompleteCoverage(),
+          retained_artifact_projection: { authoritative: { expansion_state_count: 0 } },
         },
         updated_at: "2026-07-17T18:35:00.000Z",
       }],
@@ -413,4 +416,23 @@ function evidenceLocation() {
 
 function sha(value) {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function verifiedCompleteCoverage() {
+  return {
+    schema: "awardping.expansion-state-capture-coverage.v1",
+    status: "verified_complete",
+    complete: true,
+    truncated: false,
+    capture_limit: 8,
+    failure_count: 0,
+    attempted_count: 0,
+    truncated_count: 0,
+    raw_candidate_count: 0,
+    retained_state_count: 0,
+    truncated_count_exact: true,
+    logical_candidate_count: 0,
+    raw_candidate_count_exact: true,
+    logical_candidate_count_exact: true,
+  };
 }

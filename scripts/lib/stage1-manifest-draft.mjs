@@ -589,9 +589,16 @@ function validatePageAudit({
     ? latest.selected_fact_summary
     : {};
   const publicSnapshot = omitKeys(snapshot, AUDIT_PROOF_KEYS);
+  // The commit RPC's audit contract stores the field->candidate map alongside
+  // the root binding and four stage1_reviewed_* projection hashes; strip the
+  // whole projection before comparing the field map.
   const fieldSummary = omitKeys(summary, [
     "stage1_review_root_schema_version",
     "stage1_review_root_sha256",
+    "stage1_reviewed_public_facts_sha256",
+    "stage1_reviewed_summary_sha256",
+    "stage1_reviewed_confidence_sha256",
+    "stage1_reviewed_evidence_rows_sha256",
   ]);
   const expectedFieldSummary = Object.fromEntries(reviewedCohort.field_choices.map(
     (choice) => [choice.field_name, choice.candidate_ids],
@@ -603,8 +610,9 @@ function validatePageAudit({
     || new Set(["error", "critical"]).has(latest.severity)
     || latest.model !== "explicit-human-reviewed-stage1-reconciliation"
     || !isFresh(latest.created_at, asOf)
-    || snapshot.stage1_review_root_schema_version !== STAGE1_HUMAN_REVIEW_ROOT_SCHEMA_VERSION
-    || snapshot.stage1_review_root_sha256 !== reviewRootSha256
+    // The commit RPC binds the review root inside selected_fact_summary (checked
+    // below) and enriches public_page_snapshot only with the reconciliation
+    // signature — the snapshot itself never carries the root keys.
     || !SHA256_PATTERN.test(cleanText(snapshot.reconciliation_audit_signature))
     || summary.stage1_review_root_schema_version !== STAGE1_HUMAN_REVIEW_ROOT_SCHEMA_VERSION
     || summary.stage1_review_root_sha256 !== reviewRootSha256

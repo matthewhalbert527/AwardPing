@@ -494,7 +494,9 @@ const maxExpansionStateScreenshots = boundedInt(
   args["max-expansion-state-screenshots"] || env.AWARDPING_MAX_EXPANSION_STATE_SCREENSHOTS,
   defaultMaxExpansionStateScreenshots,
   0,
-  24,
+  // Stage 1 coverage policy requires zero expansion-state truncation, so the
+  // ceiling must accommodate the largest real accordion page (Rhodes FAQs: 30).
+  40,
 );
 const keepRejectedEvidence = boolArg(
   args["keep-rejected-evidence"] ?? env.AWARDPING_KEEP_REJECTED_EVIDENCE,

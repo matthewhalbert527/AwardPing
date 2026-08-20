@@ -11,6 +11,7 @@ import {
   stage1HumanReviewRootSha256,
   validateStage1ImmutableCaptureBinding,
 } from "./stage1-human-review-root.mjs";
+import { stage1ExpansionCaptureCoverageValid } from "./expansion-state-descriptor-canonicalization.mjs";
 
 export const REVIEWED_RECONCILIATION_SCHEMA_VERSION =
   STAGE1_HUMAN_REVIEW_ROOT_SCHEMA_VERSION;
@@ -153,6 +154,11 @@ export function buildReviewedStage1ReconciliationPlan({
       hashes: snapshot.latest_hashes,
       metadata: snapshot.latest_metadata,
     });
+    // Mirror of the commit RPC's expansion-coverage requirement so a
+    // coverage-invalid pointer fails here instead of inside the RPC.
+    if (!stage1ExpansionCaptureCoverageValid(snapshot.kind, snapshot.latest_metadata)) {
+      fail(`source ${sourceId} or its immutable snapshot is not currently selectable`);
+    }
     if (
       !memberIds.has(lowerUuid(source.shared_award_id))
       || source.admin_review_status !== "open"
@@ -182,10 +188,13 @@ export function buildReviewedStage1ReconciliationPlan({
       source_id: sourceId,
       shared_award_id: lowerUuid(source.shared_award_id),
       source_url: source.url,
-      source_updated_at: canonicalTimestamp(source.updated_at),
-      last_checked_at: canonicalTimestamp(source.last_checked_at),
-      snapshot_updated_at: canonicalTimestamp(snapshot.updated_at),
-      captured_at: canonicalTimestamp(snapshot.latest_captured_at),
+      // Raw DB strings: the commit RPC parses these with stage1_safe_timestamptz
+      // and compares them against live timestamptz columns, which can carry
+      // microseconds; toISOString truncates to milliseconds and breaks the CAS.
+      source_updated_at: source.updated_at,
+      last_checked_at: source.last_checked_at,
+      snapshot_updated_at: snapshot.updated_at,
+      captured_at: snapshot.latest_captured_at,
       bucket: snapshot.bucket,
       kind: snapshot.kind,
       object_keys: stableValue(snapshot.latest_object_keys),
@@ -291,14 +300,14 @@ export function buildReviewedStage1ReconciliationPlan({
       source_id: sourceId,
       field_name: candidate.field_name,
       candidate_status: candidate.candidate_status,
-      updated_at: canonicalTimestamp(candidate.updated_at),
+      updated_at: candidate.updated_at,
       normalized_value: stableValue(candidate.normalized_value),
       evidence_quote: candidate.evidence_quote,
       evidence_location: candidate.evidence_location,
       immutable_evidence: immutableEvidence,
       candidate_import: candidateImportBinding,
       intake_value_sha256: intakeValueSha256,
-      extracted_at: candidate.extracted_at ? canonicalTimestamp(candidate.extracted_at) : null,
+      extracted_at: candidate.extracted_at ?? null,
       model: candidate.model ?? null,
       source_relevance: candidate.source_role,
       reviewed_stage1_source_role: role.source_role,
@@ -322,7 +331,8 @@ export function buildReviewedStage1ReconciliationPlan({
     review: normalized.review,
     award: {
       id: lowerUuid(award.id),
-      updated_at: canonicalTimestamp(award.updated_at),
+      // Raw DB string for the same reason as the source bindings above.
+      updated_at: award.updated_at,
       current_public_facts: stableValue(award.public_facts),
       current_public_facts_sha256: sha256Canonical(award.public_facts),
       replacement_public_facts: normalized.public_facts,
@@ -363,7 +373,9 @@ export function buildReviewedStage1ReconciliationPlan({
   const confirmationSha256 = sha256Canonical(confirmationPayload);
   const evidenceRows = normalized.field_choices.map((choice) => {
     const bindings = choice.candidate_ids.map((id) => candidateById.get(id));
-    const candidateIds = uniqueSorted(bindings.map((candidate) => lowerUuid(candidate.id)));
+    // The commit RPC requires evidence-row candidate_ids to equal the reviewed
+    // choice's candidate_ids exactly, composition order included — not sorted.
+    const candidateIds = choice.candidate_ids.map((id) => lowerUuid(id));
     const sourceIds = uniqueSorted(bindings.map((candidate) =>
       lowerUuid(candidate.shared_award_source_id)));
     const candidateEvidence = Object.fromEntries(candidateIds.map((id) => {

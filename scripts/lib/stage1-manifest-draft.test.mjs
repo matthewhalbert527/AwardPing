@@ -492,8 +492,8 @@ describe("Stage 1 manifest-draft builder", () => {
       ...structuredClone(superseded.database.page_audits[0]),
       id: "99999999-9999-4999-8999-999999999999",
       created_at: "2026-07-17T18:59:00.000Z",
-      public_page_snapshot: {
-        ...structuredClone(superseded.database.page_audits[0].public_page_snapshot),
+      selected_fact_summary: {
+        ...structuredClone(superseded.database.page_audits[0].selected_fact_summary),
         stage1_review_root_sha256: "d".repeat(64),
       },
     });

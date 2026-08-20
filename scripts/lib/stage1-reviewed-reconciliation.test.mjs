@@ -419,11 +419,7 @@ function validFixture() {
         latest_captured_at: "2026-07-17T19:40:00.000Z",
         latest_object_keys: snapshotObjectKeys(),
         latest_hashes: { image_hash: HASH, text_hash: "b".repeat(64) },
-        latest_metadata: {
-          page_bytes: 1200,
-          text_object_bytes: 240,
-          text_length: 239,
-        },
+        latest_metadata: snapshotMetadata(),
         updated_at: "2026-07-17T19:41:00.000Z",
       }],
       fact_candidates: [{
@@ -500,11 +496,7 @@ function reviewedRoles() {
         captured_at: "2026-07-17T19:40:00.000Z",
         object_keys: snapshotObjectKeys(),
         hashes: { image_hash: HASH, text_hash: "b".repeat(64) },
-        metadata: {
-          page_bytes: 1200,
-          text_object_bytes: 240,
-          text_length: 239,
-        },
+        metadata: snapshotMetadata(),
       },
       r2: {
         verified_at: "2026-07-17T19:46:00.000Z",
@@ -689,5 +681,35 @@ function pendingQueue(plan) {
       reviewed_contributor_source_ids: [SOURCE_ID],
       reviewed_candidate_ids: [CANDIDATE_ID],
     },
+  };
+}
+
+function snapshotMetadata() {
+  return {
+    page_bytes: 1200,
+    text_object_bytes: 240,
+    text_length: 239,
+    expansion_state_count: 0,
+    expansion_state_capture_coverage: verifiedCompleteCoverage(),
+    retained_artifact_projection: { authoritative: { expansion_state_count: 0 } },
+  };
+}
+
+function verifiedCompleteCoverage() {
+  return {
+    schema: "awardping.expansion-state-capture-coverage.v1",
+    status: "verified_complete",
+    complete: true,
+    truncated: false,
+    capture_limit: 8,
+    failure_count: 0,
+    attempted_count: 0,
+    truncated_count: 0,
+    raw_candidate_count: 0,
+    retained_state_count: 0,
+    truncated_count_exact: true,
+    logical_candidate_count: 0,
+    raw_candidate_count_exact: true,
+    logical_candidate_count_exact: true,
   };
 }

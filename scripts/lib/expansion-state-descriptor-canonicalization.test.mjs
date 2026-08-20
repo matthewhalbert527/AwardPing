@@ -8,16 +8,17 @@ import {
   expansionStateCaptureBudgetMs,
   legacyExpansionStateCaptureCoverageFromMetadata,
   MAX_EXPANSION_STATE_SCREENSHOTS,
+  stage1ExpansionCaptureCoverageValid,
   summarizeExpansionStateCapture,
 } from "./expansion-state-descriptor-canonicalization.mjs";
 
 describe("expansion state descriptor canonicalization", () => {
-  it("grants expansion time only for discovered logical states and remains capped at 24", () => {
+  it("grants expansion time only for discovered logical states and remains capped at the ceiling", () => {
     expect(expansionStateCaptureBudgetMs(0)).toBe(0);
     expect(expansionStateCaptureBudgetMs(1)).toBe(120_000);
     expect(expansionStateCaptureBudgetMs(20)).toBe(1_260_000);
     expect(expansionStateCaptureBudgetMs(24)).toBe(1_500_000);
-    expect(expansionStateCaptureBudgetMs(200)).toBe(1_500_000);
+    expect(expansionStateCaptureBudgetMs(200)).toBe(2_460_000);
     expect(expansionStateCaptureBudgetMs(3, {
       operationTimeoutMs: 10_000,
       perStateTimeoutMs: 5_000,
@@ -73,7 +74,7 @@ describe("expansion state descriptor canonicalization", () => {
       candidates: 16,
       duplicate_controls_removed: 16,
       non_panel_controls_removed: 1,
-      capture_limit: 24,
+      capture_limit: MAX_EXPANSION_STATE_SCREENSHOTS,
       descriptor_set_complete: true,
       truncated: false,
       truncated_count: 0,
@@ -85,7 +86,7 @@ describe("expansion state descriptor canonicalization", () => {
       descriptor.aria_controls)).toBe(true);
   });
 
-  it("caps logical panels at 24 and never calls an incomplete raw scan complete", () => {
+  it("caps logical panels at the ceiling and never calls an incomplete raw scan complete", () => {
     const descriptor = (index) => ({
       selector: `#control-${index}`,
       logical_state_key: `logical-panel-${index}`,
@@ -93,19 +94,22 @@ describe("expansion state descriptor canonicalization", () => {
       logical_panel_valid: true,
     });
     const complete = canonicalizeExpansionStateDescriptors({
-      descriptors: Array.from({ length: 25 }, (_, index) => descriptor(index)),
+      descriptors: Array.from(
+        { length: MAX_EXPANSION_STATE_SCREENSHOTS + 1 },
+        (_, index) => descriptor(index),
+      ),
       raw_descriptor_set_complete: true,
     }, { maxControls: 100 });
     expect(complete).toMatchObject({
-      candidates: 25,
-      capture_limit: 24,
+      candidates: MAX_EXPANSION_STATE_SCREENSHOTS + 1,
+      capture_limit: MAX_EXPANSION_STATE_SCREENSHOTS,
       descriptor_set_complete: false,
       truncated: true,
       truncated_count: 1,
       truncated_count_exact: true,
     });
-    expect(complete.descriptors).toHaveLength(24);
-    expect(complete.isolation_descriptors).toHaveLength(25);
+    expect(complete.descriptors).toHaveLength(MAX_EXPANSION_STATE_SCREENSHOTS);
+    expect(complete.isolation_descriptors).toHaveLength(MAX_EXPANSION_STATE_SCREENSHOTS + 1);
     expect(complete.isolation_descriptor_set_complete).toBe(true);
 
     const incomplete = canonicalizeExpansionStateDescriptors({
@@ -304,6 +308,56 @@ describe("expansion state descriptor canonicalization", () => {
       expansion_state_capture_status: "incomplete_state_count",
       expansion_state_attempted: 2,
     });
+  });
+
+  it("mirrors the SQL Stage 1 coverage fence: only verified_complete untruncated webpage coverage passes", () => {
+    const complete = (overrides = {}) => ({
+      schema: "awardping.expansion-state-capture-coverage.v1",
+      status: "verified_complete",
+      complete: true,
+      truncated: false,
+      capture_limit: 36,
+      failure_count: 0,
+      attempted_count: 30,
+      truncated_count: 0,
+      raw_candidate_count: 30,
+      retained_state_count: 30,
+      truncated_count_exact: true,
+      logical_candidate_count: 30,
+      raw_candidate_count_exact: true,
+      logical_candidate_count_exact: true,
+      ...overrides,
+    });
+    const metadata = (coverage, retained = 30) => ({
+      page_bytes: 100,
+      text_object_bytes: 10,
+      text_length: 9,
+      expansion_state_count: retained,
+      expansion_state_capture_coverage: coverage,
+      retained_artifact_projection: { authoritative: { expansion_state_count: retained } },
+    });
+
+    expect(stage1ExpansionCaptureCoverageValid("webpage", metadata(complete()))).toBe(true);
+
+    // The exact shape the 2026-08-19 Rhodes FAQs capture recorded (8 of 30
+    // states) — the case the import fence must reject at seal time.
+    expect(stage1ExpansionCaptureCoverageValid("webpage", metadata(complete({
+      status: "incomplete_truncated",
+      complete: false,
+      truncated: true,
+      capture_limit: 8,
+      attempted_count: 8,
+      truncated_count: 22,
+      retained_state_count: 8,
+    }), 8))).toBe(false);
+
+    expect(stage1ExpansionCaptureCoverageValid("webpage", metadata(null))).toBe(false);
+    expect(stage1ExpansionCaptureCoverageValid("webpage", metadata(undefined))).toBe(false);
+    expect(stage1ExpansionCaptureCoverageValid("webpage", metadata(complete({ failure_count: 1 })))).toBe(false);
+    expect(stage1ExpansionCaptureCoverageValid("webpage", metadata(complete(), 29))).toBe(false);
+    expect(stage1ExpansionCaptureCoverageValid("pdf", { file_bytes: 1 })).toBe(true);
+    expect(stage1ExpansionCaptureCoverageValid("pdf", { expansion_state_capture_coverage: null })).toBe(true);
+    expect(stage1ExpansionCaptureCoverageValid("pdf", metadata(complete()))).toBe(false);
   });
 
   it("validates legacy scalars conservatively and never promotes them from retained count", () => {

@@ -10,6 +10,7 @@ import {
   normalizeStage1OfficialIdentity,
   validateStage1ImmutableCaptureBinding,
 } from "./stage1-human-review-root.mjs";
+import { stage1ExpansionCaptureCoverageValid } from "./expansion-state-descriptor-canonicalization.mjs";
 
 export const STAGE1_CANDIDATE_IMPORT_SCHEMA_VERSION =
   "awardping.stage1.reviewed-candidate-import.v1";
@@ -218,6 +219,9 @@ export function buildStage1CandidateImportPlan({
       || !sameInstant(snapshot.latest_captured_at, reviewedSource.captured_at)
       || immutableCapture.hashes.text_hash !== reviewedSource.capture_text_sha256
       || immutableCapture.object_keys.text !== reviewedSource.capture_text_object_key
+      // Sealing evidence against a coverage-invalid capture can never pass the
+      // reconcile RPC's binding fence, so fail the import at seal time instead.
+      || !stage1ExpansionCaptureCoverageValid(snapshot.kind, snapshot.latest_metadata)
       || !local
       || local.capture_text_sha256 !== reviewedSource.capture_text_sha256
       || local.capture_text_object_key !== reviewedSource.capture_text_object_key
