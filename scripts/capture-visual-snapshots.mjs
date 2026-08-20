@@ -3834,7 +3834,8 @@ async function processSourceUnlocked(
       reason: "capture_behavior_refresh",
       previous_baseline: baseline || null,
       baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
-      baseline_facts_metadata: capture.baseline_facts_metadata || null,
+      baseline_facts_metadata:
+        capture.baseline_facts_metadata || baseline.summary_metadata?.baseline_facts_metadata || null,
     });
     if (!written) throw new Error("The capture-behavior refresh was older than the retained baseline.");
     await requireR2SnapshotForBaseline({
