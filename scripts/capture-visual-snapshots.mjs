@@ -1894,7 +1894,8 @@ async function processSourceUnlocked(source, context, browserMeta, report) {
       reason: "capture_behavior_refresh",
       previous_baseline: baseline || null,
       baseline_facts: capture.baseline_facts || baseline.summary_metadata?.baseline_facts || null,
-      baseline_facts_metadata: capture.baseline_facts_metadata || null,
+      baseline_facts_metadata:
+        capture.baseline_facts_metadata || baseline.summary_metadata?.baseline_facts_metadata || null,
     });
     report.capture_behavior_refreshed += 1;
     await maybeSyncR2Snapshot(source, capture, report, { reason: "capture_behavior_refresh", unchanged: true });
