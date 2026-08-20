@@ -426,6 +426,10 @@ function buildRoleManifest({
     }
     candidateBindings[candidateId] = {
       source_id: candidateSourceId,
+      // The deployed set_stage1_award_manifest_entry RPC reads these two exact
+      // key names; the descriptive aliases below them are kept for readers.
+      candidate_source_role: candidate.source_role ?? null,
+      source_role: role.source_role,
       intake_source_relevance: candidate.source_role ?? null,
       reviewed_stage1_source_role: role.source_role,
       field_name: candidate.field_name,
