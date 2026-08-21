@@ -296,9 +296,9 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <span className="badge">Admin</span>
           <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            1 keeps the 25-award beta release closed until every proof passes. 3 repairs current failures. 4 verifies
-            global feedback rules. 5 keeps unresolved work visible. 6 protects recoverable evidence. 7 shows every
-            independent lane and the two fixed daily budgets.
+            Everything that gates the 25-award beta in one place: the release stays closed until every proof
+            passes, and each tab holds one kind of work — repairs, rule promotions, quarantined cases,
+            evidence recovery, and lane budgets.
           </p>
           <p className="admin-page-timestamp">Refreshed {formatDate(renderedAt.toISOString())}.</p>
         </div>
@@ -306,10 +306,6 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <Link className="button-secondary" href="/dashboard/admin/source-intake">
             <Plus size={16} aria-hidden="true" />
             Add a source
-          </Link>
-          <Link className="button-secondary" href="/dashboard/admin/issues?tab=updates">
-            <ScrollText size={16} aria-hidden="true" />
-            Review updates
           </Link>
         </div>
       </div>
@@ -321,7 +317,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues"
         >
           <Rocket size={15} aria-hidden="true" />
-          1. Beta Release Gate
+          Release gate
         </Link>
         <Link
           aria-current={activeTab === "inbox" ? "page" : undefined}
@@ -329,7 +325,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues?tab=inbox"
         >
           <Inbox size={15} aria-hidden="true" />
-          3. Action Inbox
+          Action inbox
         </Link>
         <Link
           aria-current={activeTab === "promotions" ? "page" : undefined}
@@ -337,7 +333,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues?tab=promotions"
         >
           <ShieldCheck size={15} aria-hidden="true" />
-          4. Verified Promotions
+          Promotions
         </Link>
         <Link
           aria-current={activeTab === "quarantine" ? "page" : undefined}
@@ -345,7 +341,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues?tab=quarantine"
         >
           <Archive size={15} aria-hidden="true" />
-          5. Manual Quarantine
+          Quarantine
         </Link>
         <Link
           aria-current={activeTab === "recovery" ? "page" : undefined}
@@ -353,7 +349,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues?tab=recovery"
         >
           <CloudDownload size={15} aria-hidden="true" />
-          6. Evidence Recovery
+          Evidence recovery
         </Link>
         <Link
           aria-current={activeTab === "operations" ? "page" : undefined}
@@ -361,7 +357,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues?tab=operations"
         >
           <Gauge size={15} aria-hidden="true" />
-          7. Lanes &amp; Spending
+          Lanes &amp; spending
         </Link>
       </nav>
 
@@ -371,6 +367,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           className={`admin-subtab ${activeTab === "updates" ? "admin-subtab-active" : ""}`}
           href="/dashboard/admin/issues?tab=updates"
         >
+          <ScrollText size={15} aria-hidden="true" />
           Update review
         </Link>
         <Link
