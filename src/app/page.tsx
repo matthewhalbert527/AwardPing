@@ -67,7 +67,7 @@ export default async function Home() {
             </p>
             <div className="mt-7 flex flex-col gap-3 sm:flex-row">
               <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
-                {user ? signedInLandingLabel() : "Request beta access"}
+                {user ? signedInLandingLabel() : "Get in touch"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/updates">

@@ -191,8 +191,8 @@ describe("PublicAwardWorkspace", () => {
     expect(headerHtml).not.toContain("1 recent updates");
     expect(headerHtml).not.toContain("high confidence");
     expect(headerHtml).toContain("Official homepage");
-    expect(headerHtml).toContain("Request beta access");
-    expect(headerHtml.indexOf("Official homepage")).toBeLessThan(headerHtml.indexOf("Request beta access"));
+    expect(headerHtml).toContain("Get in touch");
+    expect(headerHtml.indexOf("Official homepage")).toBeLessThan(headerHtml.indexOf("Get in touch"));
     expect(mainHtml).not.toContain("public-award-overview-strip");
     expect(mainHtml).not.toContain("Last checked");
     expect(mainHtml).toContain("Overview");

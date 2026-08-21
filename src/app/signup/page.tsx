@@ -27,7 +27,7 @@ export default async function SignupPage() {
         <div className="card rounded-3xl p-6">
           <h1 className="display-title text-3xl">AwardPing is invitation-only</h1>
           <p className="mt-3 leading-7 text-[var(--muted)]">
-            New beta accounts can only be created from a valid office invitation.
+            New accounts can only be created from a valid office invitation.
             Open the private invitation link your office sent you to continue.
           </p>
           <p className="mt-5 text-sm text-[var(--muted)]">

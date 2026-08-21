@@ -18,9 +18,9 @@ export async function PricingSection() {
     <div className="card max-w-3xl rounded-3xl p-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold">Invitation-only beta</h2>
+          <h2 className="text-2xl font-bold">Free for advising offices</h2>
           <p className="mt-2 text-[var(--muted)]">
-            Beta access is free for invited advising offices while Stage 1 is verified.
+            AwardPing is free for advising offices while the first 25 awards complete verification.
           </p>
         </div>
         <p className="text-4xl font-bold">$0</p>
@@ -35,7 +35,7 @@ export async function PricingSection() {
       </ul>
       <div className="mt-7 flex flex-col gap-3 sm:flex-row">
         <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
-          {user ? signedInLandingLabel() : "Request beta access"}
+          {user ? signedInLandingLabel() : "Get in touch"}
         </Link>
         <Link className="button-secondary" href="/award-directory" prefetch={false}>
           Find exact pages

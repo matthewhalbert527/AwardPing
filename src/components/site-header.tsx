@@ -42,7 +42,7 @@ export async function SiteHeader() {
                   Log in
                 </Link>
                 <Link href="/contact" className="button-primary">
-                  Request beta access
+                  Get in touch
                 </Link>
               </>
             )}
