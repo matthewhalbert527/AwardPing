@@ -176,6 +176,11 @@ const operatorRestorableStatuses = new Set([
   "reviewed_rejected_generic_listing",
   "reviewed_invalid_or_incomplete",
   "unreviewed",
+  // Accepted verdicts whose cycle-relevance or confidence no longer clears
+  // monitoring are the same stale-machine-verdict class: a later explicit
+  // human review may restore monitoring only (never fact authority).
+  "reviewed_accepted_primary",
+  "reviewed_accepted_supporting",
 ]);
 
 function hasLaterExplicitOperatorMonitoringRestore(source, metadata, review) {
