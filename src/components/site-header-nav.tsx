@@ -3,12 +3,17 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { Menu, X } from "lucide-react";
+import { Inbox, Menu, SearchCheck, X } from "lucide-react";
 
 const NAV_LINKS = [
-  { href: "/updates", label: "Live Updates" },
-  { href: "/award-directory", label: "Award Directory", prefetch: false },
-  { href: "/advisor-hub", label: "Advisor Hub" },
+  { href: "/updates", label: "Updates", icon: Inbox, section: "updates" },
+  {
+    href: "/award-directory",
+    label: "Award Directory",
+    icon: SearchCheck,
+    section: "database",
+    prefetch: false,
+  },
 ] as const;
 
 function isActivePath(pathname: string, href: string) {
@@ -26,17 +31,23 @@ export function SiteHeaderNav() {
 
   return (
     <>
-      <nav className="site-header-nav" aria-label="Primary navigation">
-        {NAV_LINKS.map((link) => (
-          <Link
-            aria-current={isActivePath(pathname, link.href) ? "page" : undefined}
-            href={link.href}
-            key={link.href}
-            prefetch={"prefetch" in link ? link.prefetch : undefined}
-          >
-            {link.label}
-          </Link>
-        ))}
+      <nav className="dashboard-nav site-header-nav" aria-label="Primary navigation">
+        {NAV_LINKS.map((link) => {
+          const Icon = link.icon;
+          const active = isActivePath(pathname, link.href);
+          return (
+            <Link
+              aria-current={active ? "page" : undefined}
+              className={`dashboard-nav-link dashboard-nav-link-${link.section} ${active ? "dashboard-nav-link-active" : ""}`}
+              href={link.href}
+              key={link.href}
+              prefetch={"prefetch" in link ? link.prefetch : undefined}
+            >
+              <Icon size={16} aria-hidden="true" />
+              {link.label}
+            </Link>
+          );
+        })}
       </nav>
 
       <button

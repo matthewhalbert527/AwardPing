@@ -38,7 +38,6 @@ const whyItMatters = [
 const journeys = [
   { label: "Live Update Feed", href: "/updates", text: "Chronological plain-English changes." },
   { label: "Award Directory", href: "/award-directory", text: "Search and filter public award records." },
-  { label: "Advisor Hub", href: "/advisor-hub", text: "Workflows for fellowship offices." },
   { label: "Daily Digest", href: "/updates/subscribe", text: "Quiet email updates when useful changes appear." },
 ];
 
