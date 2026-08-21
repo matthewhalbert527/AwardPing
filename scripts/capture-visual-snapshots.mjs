@@ -3526,7 +3526,18 @@ async function processSourceUnlocked(
   // Exact R2 repair may deliberately load an already-held source. Preserve the
   // workflow/operator that owns that hold; hygiene may classify open sources,
   // but it must not rewrite an existing review_later record before repair.
-  if (source.admin_review_status === "open") {
+  // An explicit later human review owns the source outright: automated URL/
+  // title triage must not re-hold a page an authenticated owner or recorded
+  // Stage 1 operator has restored (same actor rules as the monitoring-restore
+  // mechanism in scripts/lib/source-quality.mjs).
+  const reviewActor = cleanText(source.admin_reviewed_by);
+  const reviewNote = cleanText(source.admin_review_note);
+  const humanReviewOwnsSource =
+    (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(reviewActor)
+      && /monitoring_restore_v1|owner-reviewed/i.test(reviewNote))
+    || (/^codex-stage1-[a-z0-9-]+$/.test(reviewActor)
+      && /\b(?:explicit|approved|restored)\b/i.test(reviewNote));
+  if (source.admin_review_status === "open" && !humanReviewOwnsSource) {
     const hygiene = shouldRejectDiscoveredSource({
       ...source,
       award_name: source.shared_awards?.name || "",
