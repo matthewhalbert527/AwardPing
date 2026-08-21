@@ -9,9 +9,9 @@ function read(relativePath) {
   return readFileSync(new URL(relativePath, root), "utf8");
 }
 
-describe("private-beta initial official-document migration gate", () => {
+describe("launch initial official-document migration gate", () => {
   it("requires the exact migration and its critical tables and RPCs", () => {
-    const launchCheck = read("scripts/check-private-beta.mjs");
+    const launchCheck = read("scripts/check-launch-readiness.mjs");
 
     expect(launchCheck).toContain(
       "20260716150000_initial_official_document_events.sql",
@@ -65,9 +65,9 @@ describe("private-beta initial official-document migration gate", () => {
     const result = spawnSync(
       process.execPath,
       [
-        fileURLToPath(new URL("scripts/check-private-beta.mjs", root)),
+        fileURLToPath(new URL("scripts/check-launch-readiness.mjs", root)),
         "--env",
-        ".missing-private-beta-gate-test-env",
+        ".missing-launch-gate-test-env",
       ],
       {
         cwd: fileURLToPath(root),
@@ -109,7 +109,7 @@ describe("private-beta initial official-document migration gate", () => {
   });
 
   it("requires every migration in filename order and explicitly names the new migration", () => {
-    const runbook = read("docs/private-beta-launch.md");
+    const runbook = read("docs/stage1-launch.md");
 
     expect(runbook).toContain("run **every** `.sql` file currently present");
     expect(runbook).toContain("in filename order");

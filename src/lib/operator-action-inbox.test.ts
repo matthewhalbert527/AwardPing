@@ -1348,7 +1348,7 @@ describe("independent downstream lane actions", () => {
     expect(item).toMatchObject({
       sourceKind: "invite_security_reissue",
       state: "needs_operator",
-      title: "Fellowships Office: resend a secure beta invitation",
+      title: "Fellowships Office: resend a secure invitation",
       publicImpact: { level: "blocked", label: "Invited advisor cannot join yet" },
       retry: { automatic: false },
       charge: { level: "may_charge" },

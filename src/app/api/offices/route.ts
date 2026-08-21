@@ -16,7 +16,7 @@ export async function POST() {
 
   return NextResponse.json(
     {
-      error: "Self-service office creation is disabled during the invite-only beta.",
+      error: "Self-service office creation is disabled. Offices are created by invitation.",
     },
     { status: 403 },
   );

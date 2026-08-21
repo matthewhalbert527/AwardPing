@@ -28,7 +28,7 @@ describe("invite-only office creation boundary", () => {
 
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({
-      error: "Self-service office creation is disabled during the invite-only beta.",
+      error: "Self-service office creation is disabled. Offices are created by invitation.",
     });
   });
 });

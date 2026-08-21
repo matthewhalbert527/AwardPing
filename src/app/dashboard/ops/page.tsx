@@ -29,7 +29,7 @@ export default async function OpsPage() {
       <div>
         <div className="mb-8">
           <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+          <h1 className="mt-4 text-4xl font-black">Operations health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available only to AwardPing site administrators.
@@ -45,7 +45,7 @@ export default async function OpsPage() {
       <div>
         <div className="mb-8">
           <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+          <h1 className="mt-4 text-4xl font-black">Operations health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           This view is available to office owners and admins.
@@ -59,7 +59,7 @@ export default async function OpsPage() {
       <div>
         <div className="mb-8">
           <span className="badge">Ops</span>
-          <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+          <h1 className="mt-4 text-4xl font-black">Operations health</h1>
         </div>
         <div className="card rounded-3xl p-6 text-[var(--muted)]">
           Operational data is unavailable because trusted server access is not configured.
@@ -220,7 +220,7 @@ export default async function OpsPage() {
     <div>
       <div className="mb-8">
         <span className="badge">Ops</span>
-        <h1 className="mt-4 text-4xl font-black">Private beta health</h1>
+        <h1 className="mt-4 text-4xl font-black">Operations health</h1>
         <p className="mt-2 text-[var(--muted)]">
           Review the shared visual worker, independent downstream lanes, source failures, and alert delivery.
         </p>

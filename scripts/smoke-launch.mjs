@@ -39,7 +39,7 @@ for (const check of checks) {
 const failures = checks.filter((check) => check.status === "FAIL");
 console.log("");
 console.log(
-  `Private beta smoke test against ${baseUrl}: ${failures.length} failure${
+  `Launch smoke test against ${baseUrl}: ${failures.length} failure${
     failures.length === 1 ? "" : "s"
   }.`,
 );

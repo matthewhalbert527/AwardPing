@@ -41,7 +41,7 @@ export async function SiteHeader() {
               </>
             ) : (
               <Link href="/contact" className="button-primary">
-                Request beta access
+                Request an invitation
               </Link>
             )}
           </div>

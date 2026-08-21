@@ -10,7 +10,7 @@ const discoveryRoute = readFileSync(
   "utf8",
 );
 const launchCheck = readFileSync(
-  new URL("./check-private-beta.mjs", import.meta.url),
+  new URL("./check-launch-readiness.mjs", import.meta.url),
   "utf8",
 );
 const summaryBackfill = readFileSync(

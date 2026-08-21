@@ -93,7 +93,7 @@ function AwardUnderVerification() {
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-5 py-20">
         <section className="card rounded-3xl p-8 md:p-10">
-          <span className="badge">Protected beta record</span>
+          <span className="badge">Protected record</span>
           <h1 className="mt-5 text-4xl font-black">Under verification</h1>
           <p className="mt-4 max-w-2xl text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
             AwardPing is checking this award&apos;s official pages, current cycle,
@@ -137,7 +137,7 @@ async function SeoLandingPageContent({
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
               <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
-                {user ? signedInLandingLabel() : "Request beta access"}
+                {user ? signedInLandingLabel() : "Request an invitation"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/award-directory" prefetch={false}>

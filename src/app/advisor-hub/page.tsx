@@ -73,7 +73,7 @@ export default async function AdvisorHubPage() {
             </p>
             <div className="mt-6 flex flex-col gap-3 sm:flex-row">
               <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
-                {user ? signedInLandingLabel() : "Request beta access"}
+                {user ? signedInLandingLabel() : "Request an invitation"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/award-directory" prefetch={false}>

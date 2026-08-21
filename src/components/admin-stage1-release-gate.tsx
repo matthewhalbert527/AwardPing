@@ -25,7 +25,7 @@ export function AdminStage1ReleaseGate({ summary }: AdminStage1ReleaseGateProps)
             </span>
           </div>
           <h2 className="mt-3 text-2xl font-black" id="stage1-release-gate-title">
-            Stage 1 Beta Release Gate
+            Stage 1 Release Gate
           </h2>
           <p className="mt-1 text-sm text-[var(--muted)]">
             Release stays closed unless all 25 awards and every shared safety check have current, matching evidence.

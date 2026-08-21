@@ -220,7 +220,7 @@ describe("change event visual evidence route", () => {
     expect(mocks.createR2SignedReadUrl).not.toHaveBeenCalled();
   });
 
-  it("does not expose an event from an award outside the verified beta", async () => {
+  it("does not expose an event from an award outside the released cohort", async () => {
     mocks.getCurrentUser.mockResolvedValue(null);
     mocks.isSiteAdminEmail.mockReturnValue(false);
     mocks.getStage1PublicationEntryForAward.mockResolvedValue(null);

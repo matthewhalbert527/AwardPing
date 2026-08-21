@@ -96,9 +96,9 @@ describe("R2 baseline-recovery quarantine migration", () => {
   });
 
   it("is required by launch checks, typed for workers, and documented in migration order", () => {
-    const launchCheck = read("scripts/check-private-beta.mjs");
+    const launchCheck = read("scripts/check-launch-readiness.mjs");
     const databaseTypes = read("src/lib/database.types.ts");
-    const runbook = read("docs/private-beta-launch.md");
+    const runbook = read("docs/stage1-launch.md");
     const policy = read("docs/award-monitoring-policy.md");
 
     expect(launchCheck).toContain(migrationName);

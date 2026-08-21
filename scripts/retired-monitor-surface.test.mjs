@@ -11,8 +11,8 @@ describe("retired user-level monitor checker", () => {
   it("does not expose or smoke-test the retired cron route", () => {
     expect(existsSync(new URL("src/app/api/cron/check-monitors/route.ts", root))).toBe(false);
 
-    const launchCheck = read("scripts/check-private-beta.mjs");
-    const smoke = read("scripts/smoke-private-beta.mjs");
+    const launchCheck = read("scripts/check-launch-readiness.mjs");
+    const smoke = read("scripts/smoke-launch.mjs");
 
     expect(launchCheck).not.toContain("/api/cron/check-monitors");
     expect(smoke).not.toContain("/api/cron/check-monitors");
@@ -38,7 +38,7 @@ describe("retired user-level monitor checker", () => {
 
   it("documents the local worker as the monitoring authority", () => {
     const readme = read("README.md");
-    const launchRunbook = read("docs/private-beta-launch.md");
+    const launchRunbook = read("docs/stage1-launch.md");
 
     expect(readme).not.toContain("monitor and digest cron routes");
     expect(readme).toContain("local 6 PM visual-capture shards");

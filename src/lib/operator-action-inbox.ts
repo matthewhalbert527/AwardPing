@@ -247,11 +247,11 @@ function inviteSecurityReissueToAction(
     severityLabel: severityLabel("medium"),
     state: "needs_operator",
     stateLabel: stateLabel("needs_operator"),
-    title: `${reissue.officeName}: resend a secure beta invitation`,
+    title: `${reissue.officeName}: resend a secure invitation`,
     context: `Invite ${reissue.emailHash.slice(0, 10)}\u2026`,
     failureReason: replacementReady
       ? reissue.lastError || "A strong replacement exists, but confirmed email delivery has not completed."
-      : "AwardPing retired an older short invitation code during the beta security upgrade. The original link no longer works and must not fail silently.",
+      : "AwardPing retired an older short invitation code during an invitation security upgrade. The original link no longer works and must not fail silently.",
     occurredAt: reissue.replacementPreparedAt || reissue.rotatedAt,
     ageLabel: formatOperatorActionAge(reissue.replacementPreparedAt || reissue.rotatedAt, now),
     owner: {
@@ -261,7 +261,7 @@ function inviteSecurityReissueToAction(
     publicImpact: {
       level: "blocked",
       label: "Invited advisor cannot join yet",
-      detail: "Public award data is unaffected, but this advisor's invite-only beta access is blocked until a replacement is delivered.",
+      detail: "Public award data is unaffected, but this advisor's invited access is blocked until a replacement is delivered.",
     },
     retry: {
       automatic: false,
@@ -288,7 +288,7 @@ function inviteSecurityReissueToAction(
       ["Last delivery error", reissue.lastError],
     ]),
     policy: {
-      id: "invite-only-beta-security-reissue",
+      id: "invite-security-reissue",
       version: "v1",
       hash: null,
       description: "Legacy low-entropy invitation codes are retired with durable, auditable replacement delivery instead of silent invalidation.",

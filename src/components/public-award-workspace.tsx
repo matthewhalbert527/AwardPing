@@ -209,7 +209,7 @@ export function PublicAwardWorkspace({
               </a>
             )}
             <Link className="button-primary" href="/contact">
-              Request beta access
+              Request an invitation
               <ArrowRight size={16} aria-hidden="true" />
             </Link>
           </div>

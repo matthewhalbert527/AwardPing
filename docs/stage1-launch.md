@@ -1,4 +1,4 @@
-# Stage 1 Invitation-Only Beta Runbook
+# Stage 1 Invitation-Only Launch Runbook
 
 This runbook releases exactly the 25-award Stage 1 cohort. It does not publish
 the legacy catalog, accept open signup, or bypass the database release gate.
@@ -176,7 +176,7 @@ and consume the release acceptance record. Promotion is atomic and binds the
 exact gate-state hash and release epoch. Never update publication-state tables
 directly.
 
-## 7. Smoke-test the invitation-only beta
+## 7. Smoke-test the invitation-only launch
 
 ```bash
 npm run launch:smoke -- --url https://awardping.com

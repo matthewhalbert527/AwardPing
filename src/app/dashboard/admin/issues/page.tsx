@@ -257,7 +257,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           <span className="badge">Admin</span>
           <h1 className="admin-page-title">Admin workflows</h1>
           <p className="admin-page-copy">
-            1 keeps the 25-award beta release closed until every proof passes. 3 repairs current failures. 4 verifies
+            1 keeps the 25-award Stage 1 release closed until every proof passes. 3 repairs current failures. 4 verifies
             global feedback rules. 5 keeps unresolved work visible. 6 protects recoverable evidence. 7 shows every
             independent lane and the two fixed daily budgets.
           </p>
@@ -282,7 +282,7 @@ export default async function AdminActionInboxPage({ searchParams }: Props) {
           href="/dashboard/admin/issues"
         >
           <Rocket size={15} aria-hidden="true" />
-          1. Beta Release Gate
+          1. Release Gate
         </Link>
         <Link
           aria-current={activeTab === "inbox" ? "page" : undefined}

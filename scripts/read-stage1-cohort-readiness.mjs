@@ -287,7 +287,7 @@ writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 console.log(`Stage 1 readiness report: ${outputPath}`);
 console.log(`Registry source: ${report.registry.mode}`);
 console.log(`Exact cohort: ${report.summary.exact_cohort_count}/25`);
-console.log(`Verified-beta ready: ${report.summary.ready_for_verified_beta_count}/25`);
+console.log(`Ready for release: ${report.summary.ready_for_verified_beta_count}/25`);
 console.log(`Blocked: ${report.summary.blocked_count}/25`);
 console.log(`Open actionable quarantine: ${report.summary.actionable_quarantine_open}`);
 console.log(`Safe next actions: ${report.safe_next_action_plan.action_count}`);

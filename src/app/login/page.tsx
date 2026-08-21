@@ -56,7 +56,7 @@ export default async function LoginPage({ searchParams }: Props) {
           <p className="mt-5 text-sm text-[var(--muted)]">
             New accounts require a secure office invitation.{" "}
             <Link className="font-bold text-[var(--brand)]" href="/contact">
-              Request beta access
+              Request an invitation
             </Link>
           </p>
         </div>

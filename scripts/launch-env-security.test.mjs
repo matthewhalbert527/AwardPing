@@ -2,11 +2,11 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const launchCheck = readFileSync(
-  new URL("./check-private-beta.mjs", import.meta.url),
+  new URL("./check-launch-readiness.mjs", import.meta.url),
   "utf8",
 );
 
-describe("private beta environment security gate", () => {
+describe("launch environment security gate", () => {
   it("requires a strong, independent personal-data encryption key", () => {
     expect(launchCheck).toContain(
       '["APP_DATA_ENCRYPTION_KEY", "personal-data encryption"]',

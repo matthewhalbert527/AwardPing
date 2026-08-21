@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const installer = read("installer/windows/Install-AwardPingWorker.ps1");
-const launchCheck = read("scripts/check-private-beta.mjs");
+const launchCheck = read("scripts/check-launch-readiness.mjs");
 const releaseProducer = read("scripts/record-stage1-signed-release-evidence.mjs");
 
 describe("Supabase new-key-only compatibility", () => {

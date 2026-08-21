@@ -101,7 +101,7 @@ describe("invite-only signup route", () => {
   it("reserves, creates, atomically completes, and signs in an invited account", async () => {
     const response = await signupRequest({
       inviteToken: "A1B2C3D4E5",
-      password: "a secure beta password",
+      password: "a secure invitation password",
     });
 
     expect(response.status).toBe(201);
@@ -111,7 +111,7 @@ describe("invite-only signup route", () => {
     });
     expect(mocks.createUser).toHaveBeenCalledWith({
       email: "advisor@example.edu",
-      password: "a secure beta password",
+      password: "a secure invitation password",
       email_confirm: true,
       user_metadata: {
         awardping_invite_id: "11111111-1111-4111-8111-111111111111",
@@ -126,7 +126,7 @@ describe("invite-only signup route", () => {
     });
     expect(mocks.signInWithPassword).toHaveBeenCalledWith({
       email: "advisor@example.edu",
-      password: "a secure beta password",
+      password: "a secure invitation password",
     });
     expect(mocks.deleteUser).not.toHaveBeenCalled();
   });
@@ -364,7 +364,7 @@ describe("invite-only signup route", () => {
 function validBody() {
   return {
     inviteToken: "A1B2C3D4E5",
-    password: "a secure beta password",
+    password: "a secure invitation password",
   };
 }
 

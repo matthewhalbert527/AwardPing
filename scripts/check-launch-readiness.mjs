@@ -33,7 +33,7 @@ const warnings = results.filter((result) => result.status === "WARN");
 
 console.log("");
 console.log(
-  `Private beta readiness: ${failures.length} blocker${
+  `Launch readiness: ${failures.length} blocker${
     failures.length === 1 ? "" : "s"
   }, ${warnings.length} warning${warnings.length === 1 ? "" : "s"}.`,
 );
@@ -179,7 +179,7 @@ function checkProductionEnv() {
   }
 
   if (!production) {
-    warn("Run with --production against production env values before inviting beta users.");
+    warn("Run with --production against production env values before inviting users.");
     return;
   }
 
@@ -608,15 +608,15 @@ function checkRedirects() {
   const billing = readIfExists("src/app/dashboard/billing/page.tsx");
 
   if (/redirect\(["']\/contact["']\)/.test(pricing)) {
-    pass("/pricing redirects to /contact for the invitation-only beta.");
+    pass("/pricing redirects to /contact for the invitation-only launch.");
   } else {
-    fail("/pricing should redirect to /contact for the invitation-only beta.");
+    fail("/pricing should redirect to /contact for the invitation-only launch.");
   }
 
   if (/redirect\(["']\/updates["']\)/.test(billing)) {
     pass("/dashboard/billing redirects to /updates.");
   } else {
-    fail("/dashboard/billing should redirect to /updates for the consolidated free beta.");
+    fail("/dashboard/billing should redirect to /updates for the consolidated free service.");
   }
 }
 
