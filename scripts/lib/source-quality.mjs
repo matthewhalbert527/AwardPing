@@ -162,10 +162,26 @@ export function sourceQualityDecision(source, { purpose }) {
   return allow();
 }
 
+// Statuses an authenticated operator may restore for monitoring only: the
+// unclear class, plus stale machine verdicts (rejections, invalid metadata,
+// never-reviewed) on sources a human review has explicitly bound since — the
+// restore never grants fact authority, and a fresh capture re-enters the paid
+// AI review lanes to replace the stale verdict.
+const operatorRestorableStatuses = new Set([
+  "reviewed_unclear_needs_manual_review",
+  "reviewed_rejected_unrelated",
+  "reviewed_rejected_sibling_program",
+  "reviewed_rejected_archived_or_past",
+  "reviewed_rejected_not_program_page",
+  "reviewed_rejected_generic_listing",
+  "reviewed_invalid_or_incomplete",
+  "unreviewed",
+]);
+
 function hasLaterExplicitOperatorMonitoringRestore(source, metadata, review) {
   if (
     source?.admin_review_status !== "open" ||
-    review?.status !== "reviewed_unclear_needs_manual_review"
+    !operatorRestorableStatuses.has(review?.status)
   ) {
     return false;
   }
