@@ -8487,7 +8487,16 @@ async function captureExpansionStateEvidence(
         })
       : () => {};
     try {
+      // Fresh-page state navigations burst against the origin. Honor
+      // --delay-ms between states and back off hard after an HTTP 429 so a
+      // throttling host (e.g. gilmanscholarship.org) does not shed the
+      // remaining states. No pacing unless the operator opted in.
+      let statePacingWaitMs = 0;
       for (const candidate of descriptors) {
+        if (statePacingWaitMs > 0) {
+          await new Promise((resolvePacing) => setTimeout(resolvePacing, statePacingWaitMs));
+        }
+        statePacingWaitMs = delayMs;
         const stateNumber = states.length + 1;
         const stateId = `expansion-state-${String(stateNumber).padStart(2, "0")}`;
         const fileName = `expansion-state-${String(stateNumber).padStart(2, "0")}.jpg`;
@@ -8610,6 +8619,9 @@ async function captureExpansionStateEvidence(
         } catch (error) {
           if (sourceDeadline?.expired?.()) throw error;
           if (isCaptureResourceLimitError(error)) throw error;
+          if (/HTTP 429\b/.test(errorMessage(error))) {
+            statePacingWaitMs = Math.max(delayMs, 30_000);
+          }
           failures.push({
             index: candidate.index,
             label: candidate.label || null,
