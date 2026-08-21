@@ -12370,8 +12370,12 @@ async function uploadR2CaptureFiles(client, sourceId, files, capture) {
 }
 
 function immutableR2CaptureVersion(capture, artifactBindings) {
+  // Content-addressed only: a re-capture of byte-identical content must reuse
+  // the same immutable generation, or every forced freshness capture rotates
+  // the object keys and invalidates all evidence sealed against them (the
+  // daily revalidation churn observed 2026-08-20/21). captured_at still lives
+  // in the pointer row; it must not distinguish identical evidence.
   return crypto.createHash("sha256").update(JSON.stringify({
-    captured_at: capture?.captured_at || null,
     hashes: r2CaptureHashes(capture, artifactBindings),
     artifact_bindings: artifactBindings,
   })).digest("hex").slice(0, 32);
