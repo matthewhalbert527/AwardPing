@@ -561,8 +561,8 @@ function removeRetainedProjectionEvidence(value, generationName = "latest") {
   );
 }
 
-function seedLatestAsImmutable(value, objectStore) {
-  const version = legacyR2CaptureVersion({
+function seedLatestAsImmutable(value, objectStore, versionOverride = null) {
+  const version = versionOverride || legacyR2CaptureVersion({
     capturedAt: value.row.latest_captured_at,
     hashes: value.row.latest_hashes,
   });
@@ -866,6 +866,45 @@ describe("legacy R2 snapshot pointer inspection", () => {
       source: expansionPdf.source,
       objectStore: fakeObjectStore(expansionPdf.objects),
     })).rejects.toMatchObject({ code: "generation_kind_ambiguous" });
+  });
+
+  it("accepts a content-addressed generation whose version predates no timestamp binding", async () => {
+    // The uploader derives a generation from {hashes, artifact_bindings} so an
+    // unchanged re-capture reuses it; that version can never reproduce the
+    // legacy {captured_at, hashes} formula and must not fail closed.
+    const value = fixture();
+    const objectStore = fakeObjectStore(value.objects);
+    const contentAddressedVersion = "b7".repeat(16);
+    expect(contentAddressedVersion).not.toBe(legacyR2CaptureVersion({
+      capturedAt: value.row.latest_captured_at,
+      hashes: value.row.latest_hashes,
+    }));
+    seedLatestAsImmutable(value, objectStore, contentAddressedVersion);
+    expect(value.row.latest_metadata.artifact_bindings_schema)
+      .toBe("awardping.r2.capture-artifact-bindings.v1");
+
+    const inspected = await inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore,
+    });
+
+    expect(inspected.item.generations.latest.state).toBe("already_immutable");
+    expect(Object.values(inspected.item.next_object_keys.latest)
+      .every((key) => key.includes(`/captures/${contentAddressedVersion}/`))).toBe(true);
+  });
+
+  it("still fails closed when a pre-content-addressing generation breaks its timestamp binding", async () => {
+    const value = fixture();
+    const objectStore = fakeObjectStore(value.objects);
+    seedLatestAsImmutable(value, objectStore, "c3".repeat(16));
+    delete value.row.latest_metadata.artifact_bindings_schema;
+
+    await expect(inspectLegacyR2SnapshotPointer({
+      row: value.row,
+      source: value.source,
+      objectStore,
+    })).rejects.toMatchObject({ code: "immutable_generation_version_mismatch" });
   });
 
   it("repairs an already-immutable v6 PDF pointer metadata-only with exact v7 projection provenance", async () => {

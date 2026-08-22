@@ -203,8 +203,20 @@ export async function inspectLegacyR2SnapshotPointer({
       continue;
     }
     validateGenerationPointerIdentity({ snapshot, generation });
+    // The uploader became content-addressed: a generation is now derived from
+    // {hashes, artifact_bindings} rather than {captured_at, hashes}, so an
+    // unchanged re-capture reuses its generation and evidence sealed against
+    // those object keys survives a routine freshness capture. Such generations
+    // record the artifact-bindings schema in their immutable metadata, and the
+    // legacy timestamp-bound formula cannot reproduce their version -- applying
+    // it would fail every modern pointer closed and re-quarantine live sources.
+    const generationMetadata = jsonObject(generation.metadata);
+    const contentAddressedGeneration =
+      typeof generationMetadata.artifact_bindings_schema === "string"
+      && generationMetadata.artifact_bindings_schema.length > 0;
     if (
       manifest.state === "immutable"
+      && !contentAddressedGeneration
       && manifest.version !== legacyR2CaptureVersion({
         capturedAt: generation.capturedAt,
         hashes: generation.hashes,
