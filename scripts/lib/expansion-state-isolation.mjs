@@ -961,14 +961,59 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     };
   };
 
-  const exactElementorBinding = (element, binding) => {
-    if (!(element instanceof HTMLElement) || binding.panels.length !== 1) return false;
-    if (!element.matches(".elementor-tab-title[role='button'][aria-controls]")) return false;
-    const panel = binding.panels[0];
-    const panelId = element.getAttribute("aria-controls") || "";
-    const item = element.closest(".elementor-accordion-item");
-    return Boolean(panelId) && panel.id === panelId && panel.classList.contains("elementor-tab-content") &&
-      item instanceof HTMLElement && panel.closest(".elementor-accordion-item") === item;
+  // Accordion families whose exact DOM contract we can verify end to end: the
+  // control, its single bound panel, the per-item wrapper, and the exclusive
+  // container. For these we run a deterministic close-peers -> close-target ->
+  // open-target transition instead of the generic heuristics, which cannot
+  // prove a transition for a panel the page opens by default.
+  const exactAccordionFamilies = [
+    {
+      family: "elementor",
+      controlSelector: ".elementor-tab-title[role='button'][aria-controls]",
+      itemSelector: ".elementor-accordion-item",
+      containerSelector: ".elementor-accordion",
+      // Elementor controls carry aria-expanded, so a peer in another widget can
+      // be closed and that close can be verified from its own ARIA state.
+      peerScope: "document",
+      panelValid: (element, panel, item) => {
+        const panelId = element.getAttribute("aria-controls") || "";
+        return Boolean(panelId) && panel.id === panelId &&
+          panel.classList.contains("elementor-tab-content") &&
+          panel.closest(".elementor-accordion-item") === item;
+      },
+    },
+    {
+      // WPBakery/Visual Composer accordions carry no ARIA at all: the open
+      // state is the panel wrapper's vc_active class plus a displayed body.
+      // The heading anchor's href points at the wrapper, so the bound panel
+      // must be the body -- the wrapper also holds the always-visible heading.
+      family: "vc_tta",
+      controlSelector: ".vc_tta-panel-heading a[href^='#']",
+      itemSelector: ".vc_tta-panel",
+      containerSelector: ".vc_tta",
+      // Only same-container exclusivity is observable without ARIA, so peers
+      // are discovered within the target's own accordion. Controls outside it
+      // are still handled through the caller's descriptor set, exactly as
+      // before this family existed.
+      peerScope: "container",
+      panelValid: (element, panel, item) =>
+        panel.classList.contains("vc_tta-panel-body") &&
+        panel.closest(".vc_tta-panel") === item &&
+        element.closest(".vc_tta-panel") === item,
+    },
+  ];
+
+  const exactAccordionBinding = (element, binding) => {
+    if (!(element instanceof HTMLElement) || binding.panels.length !== 1) return null;
+    for (const spec of exactAccordionFamilies) {
+      if (!element.matches(spec.controlSelector)) continue;
+      const item = element.closest(spec.itemSelector);
+      if (!(item instanceof HTMLElement)) continue;
+      if (!(element.closest(spec.containerSelector) instanceof HTMLElement)) continue;
+      if (!spec.panelValid(element, binding.panels[0], item)) continue;
+      return spec;
+    }
+    return null;
   };
 
   const closeNonTargetBinding = async (item) => {
@@ -1060,13 +1105,15 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     }
   }
 
-  const targetUsesExactElementorBinding = exactElementorBinding(target, targetBinding);
-  if (targetUsesExactElementorBinding) {
-    for (const element of document.querySelectorAll(
-      ".elementor-tab-title[role='button'][aria-controls]",
-    )) {
+  const targetExactAccordion = exactAccordionBinding(target, targetBinding);
+  if (targetExactAccordion) {
+    const peerRoot = targetExactAccordion.peerScope === "container"
+      ? (target.closest(targetExactAccordion.containerSelector) || document)
+      : document;
+    for (const element of peerRoot.querySelectorAll(targetExactAccordion.controlSelector)) {
       const binding = stateBindingFor(element);
-      if (!binding || !binding.logicalPanelValid || !exactElementorBinding(element, binding)) continue;
+      if (!binding || !binding.logicalPanelValid) continue;
+      if (exactAccordionBinding(element, binding) !== targetExactAccordion) continue;
       const logicalKey = logicalBindingKey(binding);
       if (!logicalKey || resolvedByLogicalKey.has(logicalKey)) continue;
       resolvedByLogicalKey.set(logicalKey, {
@@ -1082,7 +1129,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     }
   }
   const targetExplicitExclusiveGroupKey = explicitExclusiveGroupKey(target, targetBinding);
-  if (!targetUsesExactElementorBinding && targetExplicitExclusiveGroupKey) {
+  if (!targetExactAccordion && targetExplicitExclusiveGroupKey) {
     const exclusiveControlSelector = [
       "summary",
       "button",
@@ -1121,12 +1168,12 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
   let transitionRequired = false;
   let transitionVerified = true;
   if (openTarget) {
-    if (targetUsesExactElementorBinding) {
-      const targetAccordion = target.closest(".elementor-accordion");
+    if (targetExactAccordion) {
+      const targetAccordion = target.closest(targetExactAccordion.containerSelector);
       const sameAccordionOpen = [];
       for (const item of resolved) {
         if (item.logicalKey === targetLogicalKey || !isOpen(item)) continue;
-        if (item.element.closest(".elementor-accordion") === targetAccordion) {
+        if (item.element.closest(targetExactAccordion.containerSelector) === targetAccordion) {
           sameAccordionOpen.push(item);
           continue;
         }
@@ -1332,7 +1379,8 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     target_state_key: targetBinding.key,
     bound_content_transition_required: transitionRequired,
     bound_content_transition_verified: transitionVerified,
-    exact_elementor_binding: targetUsesExactElementorBinding,
+    exact_elementor_binding: targetExactAccordion?.family === "elementor",
+    exact_accordion_family: targetExactAccordion ? targetExactAccordion.family : null,
     other_open_selectors: otherOpen,
     fresh_page: true,
   };

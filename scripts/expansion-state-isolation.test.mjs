@@ -324,6 +324,116 @@ describe("expansion state isolation", () => {
     }
   }, 30_000);
 
+  browserIt("isolates an ARIA-less WPBakery panel whose slide outlasts the default settle budget", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(wpBakeryAccordionFixture())}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 24,
+        relevanceMode: "award-content",
+      });
+      await discoveryPage.close();
+      // The permanently open browser-help group is not an expansion state: it
+      // can never be toggled, so it must not become a candidate.
+      expect(setup.descriptors).toHaveLength(4);
+      expect(setup.descriptors.some((descriptor) =>
+        /Having issues/i.test(descriptor.label || ""))).toBe(false);
+
+      const slowPanel = setup.descriptors.find((descriptor) => /ESSAY/i.test(descriptor.label || ""));
+      expect(slowPanel).toBeTruthy();
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: slowPanel,
+        descriptors: setup.descriptors,
+        timeoutMs: 20_000,
+        capture: async (page, opened) => ({
+          opened,
+          verification: await verifyExpansionStateIsolation(page, {
+            descriptor: slowPanel,
+            descriptors: setup.descriptors,
+          }),
+          openPanels: await page.locator(".vc_tta-panel.vc_active")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          text: geometryText(await captureVisibleTextGeometry(page, {
+            stateId: "gilman-vc-tta-essays",
+          })),
+        }),
+      });
+
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        exact_accordion_family: "vc_tta",
+        exact_elementor_binding: false,
+        bound_content_transition_required: true,
+        bound_content_transition_verified: true,
+        other_open_selectors: [],
+      });
+      expect(captured.verification).toMatchObject({ verified: true });
+      expect(captured.openPanels).toEqual(expect.arrayContaining(["vc-essay"]));
+      expect(captured.openPanels).not.toContain("vc-elig");
+      expect(captured.text).toContain("Two essays are required");
+      expect(captured.text).not.toContain("Applicants must be enrolled at an accredited institution");
+      expect(context.pages()).toHaveLength(0);
+    } finally {
+      await discoveryPage.close().catch(() => null);
+      await context.close();
+      await browser.close();
+    }
+  }, 60_000);
+
+  browserIt("keeps WPBakery peer panels out of a captured state", async () => {
+    const browser = await chromium.launch({ executablePath: chromePath, headless: true });
+    const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
+    const url = `data:text/html;charset=utf-8,${encodeURIComponent(wpBakeryAccordionFixture())}`;
+    const discoveryPage = await context.newPage();
+    try {
+      await discoveryPage.goto(url);
+      const setup = await discoverExpansionStateDescriptors(discoveryPage, {
+        maxControls: 24,
+        relevanceMode: "award-content",
+      });
+      await discoveryPage.close();
+      const target = setup.descriptors.find((descriptor) => /ELIGIBILITY/i.test(descriptor.label || ""));
+      expect(target).toBeTruthy();
+      const captured = await withIsolatedExpansionStatePage({
+        context,
+        url,
+        descriptor: target,
+        descriptors: setup.descriptors,
+        timeoutMs: 20_000,
+        capture: async (page, opened) => ({
+          opened,
+          openPanels: await page.locator(".vc_tta-panel.vc_active")
+            .evaluateAll((elements) => elements.map((element) => element.id)),
+          text: geometryText(await captureVisibleTextGeometry(page, {
+            stateId: "gilman-vc-tta-eligibility",
+          })),
+        }),
+      });
+
+      expect(captured.opened).toMatchObject({
+        verified: true,
+        reason: "target_only_verified",
+        exact_accordion_family: "vc_tta",
+        bound_content_transition_verified: true,
+        other_open_selectors: [],
+      });
+      expect(captured.openPanels).toEqual(expect.arrayContaining(["vc-elig"]));
+      expect(captured.openPanels).not.toContain("vc-essay");
+      expect(captured.text).toContain("Applicants must be enrolled at an accredited institution");
+      expect(captured.text).not.toContain("Two essays are required");
+    } finally {
+      await discoveryPage.close().catch(() => null);
+      await context.close();
+      await browser.close();
+    }
+  }, 60_000);
+
   browserIt("deduplicates native details aliases and keeps the opened wording in geometry", async () => {
     const browser = await chromium.launch({ executablePath: chromePath, headless: true });
     const context = await browser.newContext({ viewport: { width: 900, height: 700 } });
@@ -2145,6 +2255,90 @@ function rawTextDetailsFixture() {
 <html>
   <body>
     <main><details><summary>Read more</summary>Applicants must be enrolled full time and satisfy eligibility requirements.</details></main>
+  </body>
+</html>`;
+}
+
+// Mirrors the Gilman applicants FAQ: a WPBakery/Visual Composer accordion with
+// no ARIA anywhere, heading anchors whose href points at the PANEL WRAPPER (not
+// the body), one panel the page opens by default, animated heights, and a
+// separate single-panel group that is permanently open and cannot be closed.
+function wpBakeryAccordionFixture() {
+  const panels = [
+    { id: "vc-elig", label: "ELIGIBILITY", body: "Applicants must be enrolled at an accredited institution to qualify." },
+    { id: "vc-appl", label: "APPLICATION", body: "The online application opens in the spring for the following cycle." },
+    { id: "vc-essay", label: "ESSAY REQUIREMENTS", body: "Two essays are required and each is reviewed by the selection panel." },
+    { id: "vc-award", label: "AWARD PROCESS & RECIPIENT INFO", body: "Award notifications are sent by the program office." },
+  ];
+  const group = panels.map((panel) => `
+    <div class="vc_tta-panel" id="${panel.id}">
+      <div class="vc_tta-panel-heading"><h4 class="vc_tta-panel-title"><a href="#${panel.id}">${panel.label}</a></h4></div>
+      <div class="vc_tta-panel-body" style="display:none;height:0;overflow:hidden">${panel.body}</div>
+    </div>`).join("");
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font: 16px sans-serif; margin: 24px; }
+      .vc_tta-panel-heading { cursor: pointer; padding: 8px; background: #eee; }
+      .vc_tta-panel-body { box-sizing: border-box; padding: 12px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="vc_tta vc_tta-accordion vc_tta-o-all-clickable">${group}</div>
+      <div class="vc_tta vc_tta-accordion">
+        <div class="vc_tta-panel vc_active" id="vc-notice">
+          <div class="vc_tta-panel-heading"><h4 class="vc_tta-panel-title"><a href="#vc-notice">Having issues with the website?</a></h4></div>
+          <div class="vc_tta-panel-body" style="display:block;height:auto;overflow:visible">Please update to the latest version of your preferred browser ( i.e Chrome, Safari, Edge etc.)</div>
+        </div>
+      </div>
+    </main>
+    <script>
+      const bodyOf = (panel) => panel.querySelector('.vc_tta-panel-body');
+      const close = (panel) => {
+        if (panel.slideTimer) { clearInterval(panel.slideTimer); panel.slideTimer = null; }
+        panel.classList.remove('vc_active');
+        const body = bodyOf(panel);
+        body.style.display = 'none';
+        body.style.height = '0px';
+        body.style.overflow = 'hidden';
+      };
+      for (const anchor of document.querySelectorAll('.vc_tta-panel-heading a[href^="#"]')) {
+        const panel = anchor.closest('.vc_tta-panel');
+        // The lone notice group has no toggle behaviour at all: it stays open.
+        if (panel.id === 'vc-notice') {
+          anchor.addEventListener('click', (event) => event.preventDefault());
+          continue;
+        }
+        anchor.addEventListener('click', (event) => {
+          event.preventDefault();
+          if (panel.classList.contains('vc_active')) { close(panel); return; }
+          for (const peer of panel.closest('.vc_tta').querySelectorAll('.vc_tta-panel')) close(peer);
+          panel.classList.add('vc_active');
+          const body = bodyOf(panel);
+          body.style.display = 'block';
+          body.style.height = '2px';
+          body.style.overflow = 'hidden';
+          // A tall panel slides CONTINUOUSLY for well over the two second
+          // default settle budget, exactly like the 4000-6900px Gilman FAQ
+          // panels: there is no stable window to sample until it lands.
+          const startedAt = performance.now();
+          panel.slideTimer = setInterval(() => {
+            const elapsed = performance.now() - startedAt;
+            if (elapsed >= 2600) {
+              clearInterval(panel.slideTimer);
+              panel.slideTimer = null;
+              body.style.height = 'auto';
+              body.style.overflow = 'visible';
+              return;
+            }
+            body.style.height = (2 + elapsed * 0.06) + 'px';
+          }, 30);
+        });
+      }
+    </script>
   </body>
 </html>`;
 }
