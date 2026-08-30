@@ -1223,14 +1223,36 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
       if (isOpen({ element: target, binding: targetBinding })) {
         const beforeClose = boundContentSnapshot(targetBinding, target);
         await click(target, targetBinding);
-        const closed = await waitForBindingState({
+        let closed = await waitForBindingState({
           element: target,
           binding: targetBinding,
           expectedOpen: false,
           previousSignature: beforeClose.signature,
         });
         if (!closed.verified) {
-          return { verified: false, reason: "target_could_not_close_for_transition" };
+          // A configured-active section in an exclusive accordion ignores
+          // self-clicks (WPBakery collapsible off), but opening any closed
+          // peer still closes it. Prove the transition by cycling through a
+          // peer, exactly as the ARIA-tab path does; every proof below - the
+          // target must then open with a signature change and every sibling
+          // must end closed - still runs unchanged.
+          const cyclePeer = resolved.find((item) =>
+            item.logicalKey !== targetLogicalKey &&
+            item.element.closest(targetExactAccordion.containerSelector) === targetAccordion &&
+            !isOpen(item));
+          if (!cyclePeer) {
+            return { verified: false, reason: "target_could_not_close_for_transition" };
+          }
+          await click(cyclePeer.element, cyclePeer.binding);
+          closed = await waitForBindingState({
+            element: target,
+            binding: targetBinding,
+            expectedOpen: false,
+            previousSignature: beforeClose.signature,
+          });
+          if (!closed.verified) {
+            return { verified: false, reason: "target_could_not_close_for_transition" };
+          }
         }
       }
 
