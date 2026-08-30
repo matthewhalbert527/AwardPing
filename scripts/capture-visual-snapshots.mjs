@@ -8521,7 +8521,7 @@ async function captureExpansionStateEvidence(
               const preparedStateSettle = await waitForPageSettledForSnapshot(statePage);
               if (!preparedStateSettle.stable) {
                 throw new Error(
-                  `Expansion state page did not settle before control resolution: waited_ms=${preparedStateSettle.waited_ms}.`,
+                  `Expansion state page did not settle before control resolution: waited_ms=${preparedStateSettle.waited_ms} change_count=${preparedStateSettle.change_count} text_churn=${preparedStateSettle.before?.text_hash !== preparedStateSettle.after?.text_hash} layout_churn=${preparedStateSettle.before?.layout_hash !== preparedStateSettle.after?.layout_hash} counts=${preparedStateSettle.before?.visible_element_count}->${preparedStateSettle.after?.visible_element_count} scroll=${preparedStateSettle.before?.scroll_height}->${preparedStateSettle.after?.scroll_height} len=${preparedStateSettle.before?.text_length}->${preparedStateSettle.after?.text_length}.`,
                 );
               }
               await statePage.evaluate(() => {
