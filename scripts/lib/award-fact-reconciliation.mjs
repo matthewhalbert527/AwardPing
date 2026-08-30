@@ -838,20 +838,90 @@ function canonicalCycleStatus(value, context = {}) {
   return "unknown";
 }
 
-function groupSelectionsByNormalizedValue(field, selections) {
+export function groupSelectionsByNormalizedValue(field, selections) {
   const groups = new Map();
   for (const selection of selections) {
     const key = normalizedConflictKey(field, selection.value);
     groups.set(key, [...(groups.get(key) || []), selection]);
   }
+  if (field === "deadline" || field === "opening_date") {
+    mergeCompatibleDateGroups(groups);
+  }
+  if (field === "cycle_status" && groups.size > 1 && groups.has("unknown")) {
+    // "unknown" records that a source made no cycle assertion; the absence of
+    // an assertion cannot conflict with an assertion.
+    groups.delete("unknown");
+  }
   return [...groups.values()];
 }
 
-function normalizedConflictKey(field, value) {
+// Calendar-aware conflict keys for deadline-like fields. The previous key ran
+// new Date() over the whole normalized string, so any time-of-day or timezone
+// tail ("October 6, 2026, 1:00 pm Pacific Time") failed to parse and fell back
+// to a string key that could never match its plain-date siblings -- every
+// cohort holding a precise and a terse copy of the SAME deadline raised a
+// critical incompatible_values conflict. Each value now reduces to what the
+// calendar actually pins down -- an exact day, a month+day with the year
+// unstated, or a recurring nth-weekday rule -- and grouping merges only
+// provably-equal calendars, leaving genuinely different dates in conflict.
+const conflictWeekdayNames = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+const conflictMonthNames = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+const conflictOrdinalRanks = { first: 1, "1st": 1, second: 2, "2nd": 2, third: 3, "3rd": 3, fourth: 4, "4th": 4, last: -1 };
+
+export function conflictDateKey(normalizedValue) {
+  // The value is already lowercased with every non-alphanumeric run collapsed
+  // to single spaces, so plain space-delimited patterns are exact here (no
+  // escape classes -- their backslashes have been mangled in transit before).
+  const text = ` ${normalizedValue} `;
+  const nth = text.match(new RegExp(
+    ` (${Object.keys(conflictOrdinalRanks).join("|")}) (${conflictWeekdayNames.join("|")}) (?:in|of) (${conflictMonthNames.join("|")}) `,
+  ));
+  if (nth) return `nth:${conflictOrdinalRanks[nth[1]]}:${nth[2]}:${nth[3]}`;
+  const monthFirst = text.match(new RegExp(` (${conflictMonthNames.join("|")}) ([0-9]{1,2})(?: ([0-9]{4}))? `));
+  const dayFirst = monthFirst ? null : text.match(new RegExp(` ([0-9]{1,2}) (${conflictMonthNames.join("|")})(?: ([0-9]{4}))? `));
+  const match = monthFirst || dayFirst;
+  if (!match) return null;
+  const month = conflictMonthNames.indexOf(monthFirst ? match[1] : match[2]) + 1;
+  const day = Number.parseInt(monthFirst ? match[2] : match[1], 10);
+  if (!(day >= 1 && day <= 31)) return null;
+  const md = `${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return match[3] ? `date:${match[3]}-${md}` : `md:${md}`;
+}
+
+function dateSatisfiesNthRule(dateKey, nthKey) {
+  const [year, month, day] = dateKey.slice(5).split("-").map((part) => Number.parseInt(part, 10));
+  const [, rank, weekday, monthName] = nthKey.split(":");
+  if (conflictMonthNames[month - 1] !== monthName) return false;
+  const date = new Date(year, month - 1, day);
+  if (conflictWeekdayNames[date.getDay()] !== weekday) return false;
+  if (rank === "-1") return new Date(year, month - 1, day + 7).getMonth() !== date.getMonth();
+  return Math.ceil(day / 7) === Number.parseInt(rank, 10);
+}
+
+function mergeCompatibleDateGroups(groups) {
+  const dateKeys = () => [...groups.keys()].filter((key) => typeof key === "string" && key.startsWith("date:"));
+  for (const key of [...groups.keys()]) {
+    if (typeof key !== "string") continue;
+    let target = null;
+    if (key.startsWith("md:")) {
+      const exact = dateKeys().filter((dateKey) => dateKey.slice(-5) === key.slice(3));
+      if (exact.length === 1) target = exact[0];
+    } else if (key.startsWith("nth:")) {
+      const satisfying = dateKeys().filter((dateKey) => dateSatisfiesNthRule(dateKey, key));
+      if (satisfying.length === 1) target = satisfying[0];
+    }
+    if (target && target !== key && groups.has(key)) {
+      groups.set(target, [...(groups.get(target) || []), ...(groups.get(key) || [])]);
+      groups.delete(key);
+    }
+  }
+}
+
+export function normalizedConflictKey(field, value) {
   const values = arrayField(value).map((item) => item.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()).filter(Boolean);
   if (field === "deadline" || field === "opening_date") {
-    const parsed = values.map((item) => parseDateLike(item)?.toISOString().slice(0, 10)).find(Boolean);
-    if (parsed) return parsed;
+    const calendar = values.map((item) => conflictDateKey(item)).find(Boolean);
+    if (calendar) return calendar;
   }
   if (listFields.has(field)) return values.sort().join("|");
   return values.join(" ");

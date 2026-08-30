@@ -230,3 +230,91 @@ describe("award fact reconciliation", () => {
     )).toBe(true);
   });
 });
+
+describe("calendar-aware conflict grouping", () => {
+  const groupSource = (i: number) =>
+    source({
+      id: `g${i}`,
+      url: `https://www.acls.org/competitions/luce-acls-dissertation-fellowships-in-american-art/p${i}`,
+      title: "Luce/ACLS Dissertation Fellowships in American Art",
+      page_metadata: {
+        baseline_facts: {
+          status: "succeeded",
+          display_title: "Luce/ACLS Dissertation Fellowships in American Art",
+          award_name_seen: true,
+          award_relevance: "primary",
+          cycle_relevance: "evergreen",
+          confidence: "high",
+          evidence_quotes: ["Luce/ACLS Dissertation Fellowships in American Art"],
+          quality_flags: [],
+        },
+      },
+    });
+
+  const conflictFor = (field: string, rawValues: string[]) => {
+    const sources = rawValues.map((_, i) => groupSource(i));
+    const candidates = rawValues.map((raw_value, i) => ({
+      id: `c${i}`,
+      field_name: field,
+      raw_value,
+      shared_award_source_id: `g${i}`,
+      evidence_quote: `evidence ${i}`,
+      confidence: "high",
+    }));
+    const reconciliation = reconcileAwardFacts(award, sources, candidates, {
+      now: "2026-08-29T00:00:00.000Z",
+      generatedAt: "2026-08-29T00:00:00.000Z",
+    });
+    expect(reconciliation.rejected).toEqual([]);
+    return reconciliation.conflicts.some((conflict) => conflict.field_name === field);
+  };
+
+  it("does not conflict the same deadline stated at different precision", () => {
+    // knight_hennessy production values, 2026-08-21 regression audit 3a8a98ff
+    expect(conflictFor("deadline", [
+      "October 6, 2026, 1:00 pm Pacific Time",
+      "October 6, 2026",
+      "October 6, 2026, at 1 pm, Pacific Time",
+    ])).toBe(false);
+  });
+
+  it("merges a year-less month-day into its only matching exact date", () => {
+    // rhodes_us production values, audit 09b8d1d8
+    expect(conflictFor("deadline", [
+      "October 7, 11:59 PM U.S. Eastern Time",
+      "October 7, 2026",
+      "Wednesday, October 7",
+    ])).toBe(false);
+  });
+
+  it("keeps a year-less month-day ambiguous across two years in conflict", () => {
+    expect(conflictFor("deadline", ["October 7", "October 7, 2025", "October 7, 2026"])).toBe(true);
+  });
+
+  it("resolves a recurring nth-weekday rule against its matching absolute date", () => {
+    // truman: the first Tuesday in February 2027 is February 2
+    expect(conflictFor("deadline", ["The first Tuesday in February", "February 2, 2027"])).toBe(false);
+    expect(conflictFor("deadline", ["The first Tuesday in February", "February 3, 2027"])).toBe(true);
+  });
+
+  it("groups recurring rules stated with and without a time prefix", () => {
+    // smart production values, audit 63089a94
+    expect(conflictFor("deadline", [
+      "5:00 p.m. EST on the first Friday in December",
+      "first Friday in December",
+      "First Friday in December",
+    ])).toBe(false);
+  });
+
+  it("still fails genuinely different deadlines", () => {
+    expect(conflictFor("deadline", ["May 1", "March 27, 2026"])).toBe(true); // beinecke
+    expect(conflictFor("deadline", ["November 15", "November 17"])).toBe(true); // ndseg
+    expect(conflictFor("deadline", ["November 3, 2025 at 6:00 pm Pacific", "late October 2026"])).toBe(true); // hertz
+  });
+
+  it("does not let an unstated cycle conflict with an asserted one", () => {
+    expect(conflictFor("cycle_status", ["unknown", "deadline_passed"])).toBe(false);
+    expect(conflictFor("cycle_status", ["upcoming", "deadline_passed"])).toBe(true);
+    expect(conflictFor("cycle_status", ["unknown", "upcoming", "deadline_passed"])).toBe(true);
+  });
+});
