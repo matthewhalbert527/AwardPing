@@ -312,6 +312,17 @@ describe("calendar-aware conflict grouping", () => {
     expect(conflictFor("deadline", ["November 3, 2025 at 6:00 pm Pacific", "late October 2026"])).toBe(true); // hertz
   });
 
+  it("treats a month-only statement as compatible with its one matching date", () => {
+    // rhodes_us opening_date: "early July" restates "July 1, 2026" at month
+    // granularity; it cannot contradict a date inside that month.
+    expect(conflictFor("opening_date", ["early July", "July 1, 2026"])).toBe(false);
+    expect(conflictFor("deadline", ["late October 2026", "October 15, 2026"])).toBe(false);
+    // hertz: a month+year statement still conflicts with a date in another year
+    expect(conflictFor("deadline", ["late October 2026", "November 3, 2025"])).toBe(true);
+    // ambiguity guard: two dates in the month keep the month-only value in conflict
+    expect(conflictFor("deadline", ["early July", "July 1, 2026", "July 15, 2026"])).toBe(true);
+  });
+
   it("does not let an unstated cycle conflict with an asserted one", () => {
     expect(conflictFor("cycle_status", ["unknown", "deadline_passed"])).toBe(false);
     expect(conflictFor("cycle_status", ["upcoming", "deadline_passed"])).toBe(true);

@@ -776,7 +776,15 @@ function conflictDateKey(normalizedValue: string): string | null {
   const monthFirst = text.match(new RegExp(` (${conflictMonthNames.join("|")}) ([0-9]{1,2})(?: ([0-9]{4}))? `));
   const dayFirst = monthFirst ? null : text.match(new RegExp(` ([0-9]{1,2}) (${conflictMonthNames.join("|")})(?: ([0-9]{4}))? `));
   const match = monthFirst || dayFirst;
-  if (!match) return null;
+  if (!match) {
+    // A month stated without a day ("early July", "late October 2026") cannot
+    // contradict any date inside that month; key it at month granularity so
+    // grouping can merge it into the one date it is compatible with.
+    const monthOnly = text.match(new RegExp(` (${conflictMonthNames.join("|")})(?: ([0-9]{4}))? `));
+    if (!monthOnly) return null;
+    const onlyMonth = String(conflictMonthNames.indexOf(monthOnly[1]) + 1).padStart(2, "0");
+    return monthOnly[2] ? `my:${monthOnly[2]}-${onlyMonth}` : `m:${onlyMonth}`;
+  }
   const month = conflictMonthNames.indexOf((monthFirst ? match[1] : match[2]) as string) + 1;
   const day = Number.parseInt((monthFirst ? match[2] : match[1]) as string, 10);
   if (!(day >= 1 && day <= 31)) return null;
@@ -801,6 +809,12 @@ function mergeCompatibleDateGroups(groups: Map<string, FactSelection[]>) {
     if (key.startsWith("md:")) {
       const exact = dateKeys().filter((dateKey) => dateKey.slice(-5) === key.slice(3));
       if (exact.length === 1) target = exact[0];
+    } else if (key.startsWith("m:")) {
+      const sameMonth = dateKeys().filter((dateKey) => dateKey.slice(10, 12) === key.slice(2));
+      if (sameMonth.length === 1) target = sameMonth[0];
+    } else if (key.startsWith("my:")) {
+      const sameMonthYear = dateKeys().filter((dateKey) => dateKey.slice(5, 12) === key.slice(3));
+      if (sameMonthYear.length === 1) target = sameMonthYear[0];
     } else if (key.startsWith("nth:")) {
       const satisfying = dateKeys().filter((dateKey) => dateSatisfiesNthRule(dateKey, key));
       if (satisfying.length === 1) target = satisfying[0];
