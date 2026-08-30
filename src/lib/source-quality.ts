@@ -241,7 +241,12 @@ function hasLaterExplicitOperatorMonitoringRestore(
   ]
     .map(timestampMs)
     .filter((value): value is number => value !== null);
-  if (!aiReviewTimestamps.length) return false;
+  if (!aiReviewTimestamps.length) {
+    // A source the machine NEVER reviewed has no verdict for the anchor to
+    // protect; requiring one made never-reviewed sources permanently
+    // un-restorable. The explicit marker and actor rules above still apply.
+    return review?.status === "unreviewed";
+  }
 
   return operatorReviewedAt > Math.max(...aiReviewTimestamps);
 }
