@@ -914,7 +914,26 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     })),
   });
 
-  const click = async (element) => {
+  // jQuery-animated accordions (WPBakery slideUp/slideDown and kin) ignore the
+  // capture CSS that freezes CSS transitions, so a click landing mid-animation
+  // gets queued or swallowed and the binding never reaches the expected state
+  // inside the verification window. Wait for the bound panels to stop moving
+  // before acting; the proof requirements themselves are unchanged.
+  const waitForBindingQuiescence = async (binding, maxMs = 2_000) => {
+    if (!binding?.panels?.length) return;
+    const startedAt = Date.now();
+    let last = binding.panels.map((panel) => Math.round(panel.getBoundingClientRect().height)).join("|");
+    let stableSince = Date.now();
+    while (Date.now() - startedAt < maxMs) {
+      await delay(80);
+      const current = binding.panels.map((panel) => Math.round(panel.getBoundingClientRect().height)).join("|");
+      if (current !== last) { last = current; stableSince = Date.now(); }
+      else if (Date.now() - stableSince >= 240) return;
+    }
+  };
+
+  const click = async (element, binding = null) => {
+    if (binding) await waitForBindingQuiescence(binding);
     element.scrollIntoView({ block: "center", inline: "nearest" });
     await delay(50);
     element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
@@ -1028,7 +1047,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
         snapshot: beforeClose,
       };
     }
-    await click(item.element);
+    await click(item.element, item.binding);
     const closed = await waitForBindingState({
       element: item.element,
       binding: item.binding,
@@ -1178,7 +1197,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
           continue;
         }
         const beforeClose = boundContentSnapshot(item.binding, item.element);
-        await click(item.element);
+        await click(item.element, item.binding);
         const closed = await waitForBindingState({
           element: item.element,
           binding: item.binding,
@@ -1203,7 +1222,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
 
       if (isOpen({ element: target, binding: targetBinding })) {
         const beforeClose = boundContentSnapshot(targetBinding, target);
-        await click(target);
+        await click(target, targetBinding);
         const closed = await waitForBindingState({
           element: target,
           binding: targetBinding,
@@ -1217,7 +1236,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
 
       const beforeTarget = boundContentSnapshot(targetBinding, target);
       transitionRequired = true;
-      await click(target);
+      await click(target, targetBinding);
       const opened = await waitForBindingState({
         element: target,
         binding: targetBinding,
@@ -1320,7 +1339,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
       const beforeTarget = boundContentSnapshot(targetBinding, target);
       const expandedBefore = target.getAttribute("aria-expanded");
       const targetOpenBeforeActivation = isOpen({ element: target, binding: targetBinding });
-      if (!targetOpenBeforeActivation) await click(target);
+      if (!targetOpenBeforeActivation) await click(target, targetBinding);
       const opened = targetOpenBeforeActivation
         ? { verified: true, snapshot: boundContentSnapshot(targetBinding, target) }
         : await waitForBindingState({

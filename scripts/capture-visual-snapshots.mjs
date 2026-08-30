@@ -9841,6 +9841,13 @@ async function pageSettleSnapshot(page) {
 
       for (const element of body ? body.querySelectorAll("*") : []) {
         if (!(element instanceof HTMLElement)) continue;
+        // Perpetual-motion tickers (jquery.marquee and kin) animate position
+        // from JS every frame, so no amount of waiting ever yields a stable
+        // layout while they run. They are deliberately NOT hidden (their text
+        // is real page content and stays in the text signal and the sealed
+        // extraction); they are only excluded from the LAYOUT sample so the
+        // settle check measures what can actually settle.
+        if (element.closest("[class*='marquee' i], [class*='ticker' i]")) continue;
         const rect = element.getBoundingClientRect();
         const style = window.getComputedStyle(element);
         const opacity = Number(style.opacity || 1);
