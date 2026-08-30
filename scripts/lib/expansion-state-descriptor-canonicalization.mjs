@@ -93,6 +93,28 @@ export function stage1ExpansionCaptureCoverageValid(kind, metadata) {
   ];
   if (booleanFields.some((field) => typeof coverage[field] !== "boolean")) return false;
 
+  // Provably-inert candidates (option C, 2026-08-30): optional for backward
+  // compatibility - absent means zero. When present, inertness must be earned
+  // per capture with sealed per-candidate proof: the control responded on
+  // every attempt (>= 2) yet the bound content never became visible; and a
+  // page where ANY candidate opened may not declare inert candidates at all.
+  const inertCount = coverage.inert_count === undefined ? 0 : coverage.inert_count;
+  if (coverage.inert_count !== undefined && !safeCount(coverage.inert_count)) return false;
+  if (inertCount > 0) {
+    if (coverage.retained_state_count !== 0) return false;
+    const entries = coverage.inert_candidates;
+    if (!Array.isArray(entries) || entries.length !== inertCount) return false;
+    for (const entry of entries) {
+      if (!isPlainObject(entry)) return false;
+      if (typeof entry.selector !== "string" || !entry.selector) return false;
+      if (typeof entry.attempts !== "number" || !Number.isInteger(entry.attempts) || entry.attempts < 2) return false;
+      if (entry.control_responded !== true) return false;
+      if (entry.content_never_visible !== true) return false;
+    }
+  } else if (coverage.inert_candidates !== undefined) {
+    if (!Array.isArray(coverage.inert_candidates) || coverage.inert_candidates.length !== 0) return false;
+  }
+
   const authoritativeCount =
     metadata.retained_artifact_projection?.authoritative?.expansion_state_count;
   if (
@@ -128,7 +150,7 @@ export function stage1ExpansionCaptureCoverageValid(kind, metadata) {
     && coverage.truncated_count === 0
     && coverage.truncated_count_exact
     && coverage.attempted_count === coverage.logical_candidate_count
-    && coverage.retained_state_count === coverage.attempted_count
+    && coverage.retained_state_count + inertCount === coverage.attempted_count
     && coverage.failure_count === 0;
 }
 
@@ -241,10 +263,12 @@ export function summarizeExpansionStateCapture(setup, {
   states = [],
   failures = [],
   attempted = null,
+  inert = [],
 } = {}) {
   const descriptors = Array.isArray(setup?.descriptors) ? setup.descriptors : [];
   const retainedStates = Array.isArray(states) ? states : [];
   const retainedFailures = Array.isArray(failures) ? failures : [];
+  const inertEntries = Array.isArray(inert) ? inert : [];
   const candidates = Number.isSafeInteger(setup?.candidates) ? Math.max(0, setup.candidates) : 0;
   const attemptedCount = Number.isSafeInteger(attempted)
     ? Math.max(0, attempted)
@@ -252,7 +276,8 @@ export function summarizeExpansionStateCapture(setup, {
   const complete = setup?.descriptor_set_complete === true &&
     setup?.candidate_count_exact === true &&
     attemptedCount === candidates &&
-    retainedStates.length === attemptedCount &&
+    retainedStates.length + inertEntries.length === attemptedCount &&
+    (inertEntries.length === 0 || retainedStates.length === 0) &&
     retainedFailures.length === 0;
   const status = complete
     ? "verified_complete"
@@ -287,6 +312,8 @@ export function summarizeExpansionStateCapture(setup, {
       ? Math.max(0, setup.truncated_count)
       : 0,
     truncated_count_exact: setup?.truncated_count_exact === true,
+    inert_count: inertEntries.length,
+    ...(inertEntries.length ? { inert_candidates: inertEntries.map((entry) => ({ ...entry })) } : {}),
   };
 }
 
@@ -311,6 +338,13 @@ export function expansionStateCaptureCoverage(captureLike, {
   const failureCount = Array.isArray(value.failures)
     ? value.failures.length
     : nonNegativeInteger(value.failure_count);
+  // Provably-inert candidates (docs/stage1-inert-expansion-candidates.md,
+  // option C): the control responded on every attempt but the bound content
+  // never became visible, so the page truthfully has no such expansion state.
+  const inertCandidates = Array.isArray(value.inert_candidates) ? value.inert_candidates : [];
+  const inertCount = inertCandidates.length
+    ? inertCandidates.length
+    : nonNegativeInteger(value.inert_count);
   const retainedCount = retainedStateCount === null
     ? Array.isArray(value.states)
       ? value.states.length
@@ -332,7 +366,8 @@ export function expansionStateCaptureCoverage(captureLike, {
     && truncatedCount === 0
     && truncatedCountExact
     && attemptedCount === logicalCandidateCount
-    && retainedCount === attemptedCount
+    && retainedCount + inertCount === attemptedCount
+    && (inertCount === 0 || retainedCount === 0)
     && failureCount === 0,
   );
   const status = complete
@@ -361,6 +396,10 @@ export function expansionStateCaptureCoverage(captureLike, {
     truncated_count: truncatedCount,
     truncated_count_exact: truncatedCountExact,
     failure_count: failureCount,
+    inert_count: inertCount,
+    ...(inertCount > 0
+      ? { inert_candidates: Object.freeze(inertCandidates.map((entry) => Object.freeze({ ...entry }))) }
+      : {}),
   });
 }
 
@@ -431,6 +470,17 @@ export function canonicalExpansionStateCaptureCoverage(value, {
   ) {
     return null;
   }
+  const canonicalInertCount = value.inert_count === undefined ? 0 : value.inert_count;
+  if (value.inert_count !== undefined
+    && (!Number.isSafeInteger(value.inert_count) || value.inert_count < 0)) return null;
+  if (canonicalInertCount > 0) {
+    if (value.retained_state_count !== 0) return null;
+    if (!Array.isArray(value.inert_candidates)
+      || value.inert_candidates.length !== canonicalInertCount) return null;
+  } else if (value.inert_candidates !== undefined
+    && (!Array.isArray(value.inert_candidates) || value.inert_candidates.length !== 0)) {
+    return null;
+  }
   if (value.complete !== (value.status === "verified_complete")) return null;
   if (
     value.complete
@@ -441,7 +491,7 @@ export function canonicalExpansionStateCaptureCoverage(value, {
       || value.truncated_count !== 0
       || !value.truncated_count_exact
       || value.attempted_count !== value.logical_candidate_count
-      || value.retained_state_count !== value.attempted_count
+      || value.retained_state_count + canonicalInertCount !== value.attempted_count
       || value.failure_count !== 0
     )
   ) {
@@ -463,6 +513,10 @@ export function canonicalExpansionStateCaptureCoverage(value, {
     truncated_count: value.truncated_count,
     truncated_count_exact: value.truncated_count_exact,
     failure_count: value.failure_count,
+    ...(value.inert_count !== undefined ? { inert_count: value.inert_count } : {}),
+    ...(canonicalInertCount > 0
+      ? { inert_candidates: value.inert_candidates.map((entry) => ({ ...entry })) }
+      : {}),
   };
 }
 

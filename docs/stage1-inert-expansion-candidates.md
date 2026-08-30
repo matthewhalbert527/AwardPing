@@ -1,6 +1,6 @@
 # Decision memo: provably inert expansion candidates
 
-Status: **open — needs Matthew's ruling.** Written 2026-08-22 from live evidence.
+Status: **adopted — option C implemented 2026-08-30** under the owner directive to complete all 25 cohorts ("continue until all 25 pages are complete and 100% ready", 2026-08-30). Guardrails implemented exactly as specified below; see migration 20260830223000 and the engine/validator changes in the same commit. Originally written 2026-08-22 from live evidence.
 Blocks: the `truman` cohort, and any future award whose official page ships a
 broken accordion.
 

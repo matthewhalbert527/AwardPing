@@ -8473,6 +8473,7 @@ async function captureExpansionStateEvidence(
 
     const states = [];
     const failures = [];
+    const inertCandidates = [];
     const navigationUrl = cleanText(page.url()) || cleanText(source?.url);
     expansionCaptureBudgetMs = expansionStateCaptureBudgetMs(descriptors.length, {
       operationTimeoutMs: Math.min(timeoutMs, 60_000),
@@ -8503,7 +8504,12 @@ async function captureExpansionStateEvidence(
         const pagePath = join(captureDir, fileName);
         const layoutPath = join(captureDir, `expansion-state-${String(stateNumber).padStart(2, "0")}-layout.json`);
         try {
-          const state = await withIsolatedExpansionStatePage({
+          // A state page can load with its accordion JS throttled or not yet
+          // engaged (worst right after the heavy base capture), so the first
+          // interaction proves nothing even though the page is genuinely
+          // healthy. One bounded retry after a pause; every proof requirement
+          // is re-run from scratch on the fresh attempt.
+          const runIsolatedState = () => withIsolatedExpansionStatePage({
             context,
             url: navigationUrl,
             descriptor: candidate,
@@ -8615,6 +8621,45 @@ async function captureExpansionStateEvidence(
               };
             },
           });
+          let state;
+          const inertSignature = (error) =>
+            /bound_content_did_not_transition control_claims_open=true/.test(errorMessage(error));
+          try {
+            state = await runIsolatedState();
+          } catch (firstError) {
+            const retryable = /bound_content_did_not_transition|target_could_not_close_for_transition/.test(errorMessage(firstError));
+            if (!retryable) throw firstError;
+            // A throttled or unsettled page earns the long backoff; a control
+            // that responded while its content stayed hidden only needs a
+            // short pause to prove the behavior persists on a fresh page.
+            const throttled = /429|did not settle/.test(errorMessage(firstError));
+            const retryWaitMs = throttled ? 15_000 : 2_000;
+            statePacingWaitMs = Math.max(statePacingWaitMs, retryWaitMs);
+            await new Promise((resolveRetry) => setTimeout(resolveRetry, retryWaitMs));
+            try {
+              state = await runIsolatedState();
+            } catch (secondError) {
+              // Provably inert (docs/stage1-inert-expansion-candidates.md,
+              // option C): on both fresh-page attempts the control claimed the
+              // open state while its bound content never became visible - the
+              // page demonstrably has nothing to reveal behind this control.
+              // A control that did not respond stays a failure.
+              if (inertSignature(firstError) && inertSignature(secondError)) {
+                inertCandidates.push({
+                  selector: candidate.selector,
+                  label: candidate.label || null,
+                  attempts: 2,
+                  control_responded: true,
+                  content_never_visible: true,
+                });
+                console.log(
+                  `EXPANSION_STATE_INERT attempts=2 ${candidate.selector} ${sourceLabel(source)}`,
+                );
+                continue;
+              }
+              throw secondError;
+            }
+          }
           states.push(state);
         } catch (error) {
           if (sourceDeadline?.expired?.()) throw error;
@@ -8636,9 +8681,10 @@ async function captureExpansionStateEvidence(
 
     return {
       states,
-      ...summarizeExpansionStateCapture(setup, { states, failures }),
+      ...summarizeExpansionStateCapture(setup, { states, failures, inert: inertCandidates }),
       capture_timeout_ms: expansionCaptureBudgetMs,
       failures,
+      inert_candidates: inertCandidates,
       error: truncationError,
     };
   } catch (error) {

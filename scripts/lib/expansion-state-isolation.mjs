@@ -1423,6 +1423,11 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     exact_elementor_binding: targetExactAccordion?.family === "elementor",
     exact_accordion_family: targetExactAccordion ? targetExactAccordion.family : null,
     other_open_selectors: otherOpen,
+    // The provably-inert proof signal (docs/stage1-inert-expansion-candidates
+    // option C): a control that claims the open state while its bound content
+    // never became visible responded to the interaction - the page simply has
+    // nothing to reveal. A control that never responds must stay a failure.
+    control_claims_open: target.getAttribute("aria-expanded") === "true",
     fresh_page: true,
   };
 }
@@ -1450,7 +1455,7 @@ export async function withIsolatedExpansionStatePage({
     if (typeof preparePage === "function") await preparePage(page);
     const opened = await openExpansionStateControl(page, { descriptor, descriptors });
     if (!opened.verified) {
-      throw new Error(`Expansion state isolation failed for ${descriptor.selector}: ${opened.reason}`);
+      throw new Error(`Expansion state isolation failed for ${descriptor.selector}: ${opened.reason} control_claims_open=${opened.control_claims_open === true}`);
     }
     return await capture(page, opened);
   } finally {
