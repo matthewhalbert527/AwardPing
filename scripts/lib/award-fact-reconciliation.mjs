@@ -847,12 +847,57 @@ export function groupSelectionsByNormalizedValue(field, selections) {
   if (field === "deadline" || field === "opening_date") {
     mergeCompatibleDateGroups(groups);
   }
+  if (listFields.has(field)) {
+    mergeSubsumedListGroups(groups);
+  }
   if (field === "cycle_status" && groups.size > 1 && groups.has("unknown")) {
     // "unknown" records that a source made no cycle assertion; the absence of
     // an assertion cannot conflict with an assertion.
     groups.delete("unknown");
   }
   return [...groups.values()];
+}
+
+// A terser list is not in conflict with a fuller statement of the same
+// package: when every element of the smaller list is covered by some element
+// of the larger one -- its folded token bag (lowercased, punctuation
+// collapsed, one trailing plural "s" stripped per token) a subset of that
+// element's -- the smaller group merges into the larger. Order-free bags make
+// "Health and book allowances" cover under "$1,000 Book and Health Allowance";
+// a list with any element the larger one does not cover stays in conflict.
+function foldedTokenBag(element) {
+  const tokens = element.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(" ")
+    .filter(Boolean)
+    .map((token) => (token.length > 3 && token.endsWith("s") ? token.slice(0, -1) : token));
+  return new Set(tokens);
+}
+
+function listGroupSubsumed(smallElements, largeElements) {
+  const largeBags = largeElements.map(foldedTokenBag);
+  return smallElements.length > 0 && smallElements.every((element) => {
+    const bag = foldedTokenBag(element);
+    return bag.size > 0 && largeBags.some((largeBag) => [...bag].every((token) => largeBag.has(token)));
+  });
+}
+
+function mergeSubsumedListGroups(groups) {
+  if (groups.size < 2) return;
+  const entries = [...groups.entries()].map(([key, selections]) => ({
+    key,
+    selections,
+    elements: arrayField(selections[0]?.value).map((item) => String(item)),
+  }));
+  for (const small of entries) {
+    if (!groups.has(small.key)) continue;
+    const host = entries.find((large) => large.key !== small.key
+      && groups.has(large.key)
+      && large.elements.length >= small.elements.length
+      && listGroupSubsumed(small.elements, large.elements));
+    if (host) {
+      groups.set(host.key, [...groups.get(host.key), ...groups.get(small.key)]);
+      groups.delete(small.key);
+    }
+  }
 }
 
 // Calendar-aware conflict keys for deadline-like fields. The previous key ran

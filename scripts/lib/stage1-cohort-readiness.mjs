@@ -139,7 +139,7 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(17, "nsf_grfp", "NSF Graduate Research Fellowship Program", "nsf graduate research fellowship program", "https://www.nsfgrfp.org/", [
     "national science foundation graduate research fellowship",
   ]),
-  cohort(18, "hertz", "Hertz Fellowship", "hertz foundation graduate fellowship", "https://www.hertzfoundation.org/hertz-fellowship/", [], {
+  cohort(18, "hertz", "Hertz Fellowship", "hertz foundation graduate fellowship", "https://www.hertzfoundation.org/hertz-fellowship", [], {
     preferredPaths: {
       identity_home: ["/hertz-fellowship/"],
       eligibility: ["/hertz-fellowship/who-can-apply/"],
@@ -187,7 +187,7 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
     "ernest f. hollings undergraduate scholarship (noaa)",
     "hollings scholarship",
   ]),
-  cohort(23, "soros", "Paul & Daisy Soros Fellowships for New Americans", "paul & daisy soros fellowships for new americans", "https://www.pdsoros.org/", [
+  cohort(23, "soros", "Paul & Daisy Soros Fellowships for New Americans", "paul & daisy soros fellowships for new americans", "https://pdsoros.org/", [
     "soros fellowship for new americans",
     "soros fellowships for new americans",
   ]),

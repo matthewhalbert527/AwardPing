@@ -803,7 +803,12 @@ function requireTimestamp(value, label) {
   if (!/^\d{4}-\d{2}-\d{2}T.+Z$/.test(text) || !Number.isFinite(Date.parse(text))) {
     fail(`${label} must be an ISO timestamp ending in Z.`);
   }
-  return new Date(text).toISOString();
+  // Validated but never reserialized — the same contract as
+  // exactDatabaseTimestamp below. Source bindings flow through here into the
+  // RPC's exact timestamptz comparison, and Date#toISOString truncates the
+  // microsecond digits Postgres keeps, which made the source fence
+  // unsatisfiable for rows last written by direct SQL.
+  return text;
 }
 
 function validTimestamp(value) {

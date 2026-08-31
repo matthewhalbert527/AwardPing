@@ -146,6 +146,21 @@ export async function discoverExpansionStateDescriptors(page, {
           .test(signal);
     }
 
+    // Like expandableControlSurface, but for a control's DECLARED target:
+    // Bootstrap 3 collapse stamps aria-expanded on the panel itself when it
+    // opens, so a bare aria-expanded is state mirroring there, never a
+    // control surface.
+    function declaredTargetPanelSurface(element) {
+      if (!(element instanceof HTMLElement)) return false;
+      const tag = element.tagName.toLowerCase();
+      const role = (element.getAttribute("role") || "").toLowerCase();
+      const signal = classText(element);
+      return ["button", "summary"].includes(tag) || ["button", "tab"].includes(role) ||
+        element.hasAttribute("aria-controls") ||
+        /accordion[^\s]*(?:toggle|title|button|header)|(?:toggle|title|button|header)[^\s]*accordion|elementor-tab-title|e-n-accordion-item-title/i
+          .test(signal);
+    }
+
     function logicalStateKeyFor(panelSelectors) {
       const selectors = [...new Set(panelSelectors.filter(Boolean))].sort();
       return selectors.length ? `logical-panels:${JSON.stringify(selectors)}` : "";
@@ -318,8 +333,12 @@ export async function discoverExpansionStateDescriptors(page, {
           key: `targets:${stateSelectors.join("|")}`,
           state_selectors: stateSelectors,
           panel_selectors: panelSelectors,
+          // A DECLARED target may carry aria-expanded as pure state mirroring
+          // (Bootstrap 3 collapse stamps it on the panel when opened), so a
+          // bare aria-expanded never invalidates a declared-target panel; the
+          // control-surface signals that do are unchanged.
           logical_state_key: logicalStateKeyFor(panelSelectors),
-          logical_panel_valid: panels.every((panel) => !expandableControlSurface(panel)),
+          logical_panel_valid: panels.every((panel) => !declaredTargetPanelSurface(panel)),
           structural_fingerprint: structuralFingerprintFor(
             "targets",
             element,
@@ -612,6 +631,19 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
         .test(classText(element));
   };
 
+  // Declared-target variant: Bootstrap 3 collapse stamps aria-expanded on the
+  // open panel itself, so a bare aria-expanded on a control's declared target
+  // is state mirroring, never a control surface.
+  const declaredTargetPanelSurface = (element) => {
+    if (!(element instanceof HTMLElement)) return false;
+    const tag = element.tagName.toLowerCase();
+    const role = (element.getAttribute("role") || "").toLowerCase();
+    return ["button", "summary"].includes(tag) || ["button", "tab"].includes(role) ||
+      element.hasAttribute("aria-controls") ||
+      /accordion[^\s]*(?:toggle|title|button|header)|(?:toggle|title|button|header)[^\s]*accordion|elementor-tab-title|e-n-accordion-item-title/i
+        .test(classText(element));
+  };
+
   const logicalBindingKey = (binding) => {
     const selectors = [...new Set((binding?.panels || []).map(selectorFor))].sort();
     return selectors.length ? `logical-panels:${JSON.stringify(selectors)}` : "";
@@ -801,7 +833,7 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
         key: `targets:${targetSelectors.join("|")}`,
         stateElements: targets.map((entry) => entry.element),
         panels: [...new Set(panels)],
-        logicalPanelValid: panels.every((panel) => !expandableControlSurface(panel)),
+        logicalPanelValid: panels.every((panel) => !declaredTargetPanelSurface(panel)),
         structuralFingerprint: structuralFingerprintFor(
           "targets",
           element,
@@ -838,6 +870,16 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
     const exactStateMatch = Boolean(value.state_key) && binding.key === value.state_key;
     const structuralMatch = Boolean(value.structural_fingerprint) &&
       binding.structuralFingerprint === value.structural_fingerprint;
+    // Stable-identity recovery: SPA frameworks (ServiceNow) re-render with
+    // drifting DOM shapes between loads, so the content-derived state key and
+    // structural fingerprint both fail while the control's own identity — its
+    // aria-controls id plus its label — is byte-exact. Binding validity was
+    // already required above and the isolation still proves the panel actually
+    // transitions after binding, so an exact aria-controls + label pair may
+    // stand in for the drifted fingerprints.
+    const stableIdentityMatch = Boolean(value.aria_controls) &&
+      element.getAttribute("aria-controls") === value.aria_controls &&
+      Boolean(value.label) && controlLabel(element) === value.label;
     const expectedLogicalKey = typeof value.logical_state_key === "string"
       ? value.logical_state_key
       : "";
@@ -845,13 +887,15 @@ async function evaluateExpansionStateIsolation({ targetDescriptor, allDescriptor
       expectedLogicalKey &&
       logicalBindingKey(binding) !== expectedLogicalKey &&
       !exactStateMatch &&
-      !structuralMatch
+      !structuralMatch &&
+      !stableIdentityMatch
     ) return false;
-    if ((value.state_key || value.structural_fingerprint) && !exactStateMatch && !structuralMatch) return false;
+    if ((value.state_key || value.structural_fingerprint) && !exactStateMatch && !structuralMatch && !stableIdentityMatch) return false;
 
     if (mode === "structural") return structuralMatch;
     if (mode === "semantic") {
-      return exactStateMatch || structuralMatch || !value.label || controlLabel(element) === value.label;
+      return exactStateMatch || structuralMatch || stableIdentityMatch ||
+        !value.label || controlLabel(element) === value.label;
     }
 
     if (value.id && element.id !== value.id) return false;
@@ -1469,7 +1513,17 @@ export async function withIsolatedExpansionStatePage({
     if (typeof preparePage === "function") await preparePage(page);
     const opened = await openExpansionStateControl(page, { descriptor, descriptors });
     if (!opened.verified) {
-      throw new Error(`Expansion state isolation failed for ${descriptor.selector}: ${opened.reason} control_claims_open=${opened.control_claims_open === true}`);
+      // Name what the settled page actually was when resolution fails — a SPA
+      // that re-routed or a hidden region reads identically to a missing
+      // control without this.
+      const pageState = await page.evaluate(() => ({
+        url: location.href.slice(0, 120),
+        title: (document.title || "").slice(0, 80),
+        aria_controls: [...document.querySelectorAll("[aria-controls]")]
+          .map((el) => el.getAttribute("aria-controls")).slice(0, 12),
+        text_length: (document.body?.innerText || "").length,
+      })).catch(() => null);
+      throw new Error(`Expansion state isolation failed for ${descriptor.selector}: ${opened.reason} control_claims_open=${opened.control_claims_open === true} page_state=${JSON.stringify(pageState)}`);
     }
     return await capture(page, opened);
   } finally {
