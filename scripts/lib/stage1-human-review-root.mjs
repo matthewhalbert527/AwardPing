@@ -805,7 +805,12 @@ function requireTimestamp(value, label) {
   if (!/^\d{4}-\d{2}-\d{2}T.+Z$/.test(text) || !Number.isFinite(parsed)) {
     fail(`${label} must be an ISO timestamp ending in Z.`);
   }
-  return new Date(parsed).toISOString();
+  // Validated but never reserialized: the reviewed-commit RPC compares the
+  // root's timestamp strings to rows by exact timestamptz instant, and
+  // Date#toISOString truncates the microsecond digits Postgres keeps — rows
+  // last written by direct SQL made the commit fence unsatisfiable (the same
+  // class fixed in the candidate-import and reconciliation-plan builders).
+  return text;
 }
 
 function isFresh(value, now) {

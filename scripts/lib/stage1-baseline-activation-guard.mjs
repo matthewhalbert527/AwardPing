@@ -154,7 +154,18 @@ export function normalizeStage1BaselineActivationText(value) {
 }
 
 export function normalizeStage1BaselineEvidenceWords(value) {
+  // Word boundaries are inserted at lowercase-to-uppercase transitions BEFORE
+  // case folding: the two extraction paths (intake HTML-to-text and browser
+  // visual text) disagree about whitespace at block boundaries, so the same
+  // page yields "Time.EligibilityAn applicant" on one side and
+  // "Time.\nEligibility\nAn applicant" on the other. Splitting case-fused
+  // tokens applies identically to the quote and to both texts, so a quote
+  // whose words are genuinely absent still fails; only tokenization of the
+  // same words stops mattering. (The churchill activation deadlocked on
+  // exactly this: sealed quote 2 fused on the visual side, and the live
+  // comparison text fuses quote 1 the other way.)
   return String(value ?? "")
+    .replace(/(\p{Ll})(\p{Lu})/gu, "$1 $2")
     .normalize("NFKC")
     .toLocaleLowerCase("en-US")
     .replace(/[^\p{L}\p{N}]+/gu, " ")

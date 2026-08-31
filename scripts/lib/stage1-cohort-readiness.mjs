@@ -100,7 +100,7 @@ export const STAGE1_COHORT_DEFINITION = Object.freeze([
   cohort(9, "luce", "Luce Scholars Program", "luce scholars program", "https://lucescholars.org/", [
     "henry luce foundation - scholars program for professional development in asia",
   ]),
-  cohort(10, "truman", "Harry S. Truman Scholarship", "truman scholarship", "https://www.truman.gov/", []),
+  cohort(10, "truman", "Harry S. Truman Scholarship", "truman scholarship", "https://www.truman.gov/apply", []),
   cohort(11, "goldwater", "Barry Goldwater Scholarship", "goldwater scholarship", "https://goldwaterscholarship.gov/", []),
   cohort(12, "udall_undergraduate", "Udall Undergraduate Scholarship", "udall scholarship", "https://www.udall.gov/OurPrograms/Scholarship/Scholarship.aspx", [
     "morris k. udall and stewart l. udall scholarship",

@@ -3758,9 +3758,15 @@ async function processSourceUnlocked(
       return;
     }
     try {
+      // A source in first-visual-baseline activation is necessarily still
+      // review_later; the default 'open' CAS guard silently matches zero rows
+      // here, the health fields never land, and the finalize RPC then fails
+      // closed on the missing held-source health write — every ordinary
+      // activation died there.
       await markSharedSourceVisualCheckSucceeded(source, capture, report, {
         preserveReviewedUrl: true,
         preserveReviewedMetadata: true,
+        requiredAdminReviewStatus: "review_later",
       });
     } catch (error) {
       const checkMetadataFailure = failedStage1BaselineActivationEvaluation(

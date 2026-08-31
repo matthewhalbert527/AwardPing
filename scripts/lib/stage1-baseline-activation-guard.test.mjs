@@ -137,8 +137,17 @@ describe("Stage 1 first-visual-baseline activation guard", () => {
       .toBe("Award eligibility");
     expect(stage1BaselineActivationTextSha256("A\n B"))
       .toBe(stage1BaselineActivationTextSha256("A   B\n"));
+    // Case-fused block boundaries split identically on both sides of the
+    // quote comparison, so extraction-path whitespace disagreements stop
+    // mattering while genuinely different words still fail.
     expect(normalizeStage1BaselineEvidenceWords("Time.EligibilityAn $15,000-award"))
-      .toBe("time eligibilityan 15 000 award");
+      .toBe("time eligibility an 15 000 award");
+    expect(normalizeStage1BaselineEvidenceWords("Time.\nEligibility\nAn $15,000-award"))
+      .toBe("time eligibility an 15 000 award");
+    expect(normalizeStage1BaselineEvidenceWords("Eastern Time.EligibilityAn applicant"))
+      .toBe(normalizeStage1BaselineEvidenceWords("Eastern Time.\nEligibility\nAn applicant"));
+    expect(normalizeStage1BaselineEvidenceWords("Time.IneligibilityAn applicant"))
+      .not.toBe(normalizeStage1BaselineEvidenceWords("Time.\nEligibility\nAn applicant"));
   });
 
   it.each([

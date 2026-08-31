@@ -175,8 +175,11 @@ export function buildReviewedStage1ReconciliationPlan({
       || !validTimestamp(source.updated_at)
       || !validTimestamp(snapshot.updated_at)
       || source.url !== mappedSource.source_url
-      || canonicalTimestamp(source.last_checked_at) !== mappedSource.last_checked_at
-      || canonicalTimestamp(snapshot.latest_captured_at) !== mappedSource.snapshot.captured_at
+      // Instant comparison, not canonical-string: rows written by direct SQL
+      // carry microseconds that toISOString-canonicalization truncates, so the
+      // string forms legitimately differ while the instants are identical.
+      || Date.parse(source.last_checked_at) !== Date.parse(mappedSource.last_checked_at)
+      || Date.parse(snapshot.latest_captured_at) !== Date.parse(mappedSource.snapshot.captured_at)
       || snapshot.kind !== mappedSource.snapshot.kind
       || !deepEqual(immutableCapture.object_keys, mappedSource.snapshot.object_keys)
       || !deepEqual(immutableCapture.hashes, mappedSource.snapshot.hashes)
