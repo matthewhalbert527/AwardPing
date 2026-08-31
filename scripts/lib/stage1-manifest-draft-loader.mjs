@@ -158,6 +158,13 @@ async function loadPersistedReviewRoot(supabase, rootSha256) {
     p_root_sha256: rootSha256,
   });
   if (result.error) {
+    // The RPC recomputes the root's canonical-JSON sha server side; a large
+    // root (hertz's is ~670KB canonical) takes longer than the PostgREST
+    // statement timeout even though the work is healthy. Re-run the same
+    // deterministic call through the SQL CLI with a raised local timeout.
+    if (/statement timeout/i.test(String(result.error.message)) || result.error.code === "57014") {
+      return await loadPersistedReviewRootDirectSql(rootSha256);
+    }
     throw readError(
       "persisted Stage 1 human-review root",
       result.error.message,
@@ -165,6 +172,47 @@ async function loadPersistedReviewRoot(supabase, rootSha256) {
     );
   }
   return result.data ?? null;
+}
+
+async function loadPersistedReviewRootDirectSql(rootSha256) {
+  const { execFileSync } = await import("node:child_process");
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  if (!/^[0-9a-f]{64}$/.test(String(rootSha256))) {
+    throw readError("persisted Stage 1 human-review root", "invalid root sha for direct read");
+  }
+  const dir = mkdtempSync(join(tmpdir(), "stage1-root-"));
+  const sqlPath = join(dir, "get-root.sql");
+  writeFileSync(sqlPath, [
+    "begin;",
+    "set local statement_timeout = '300s';",
+    `select public.get_stage1_human_review_root('${rootSha256}') as root_payload;`,
+    "commit;",
+  ].join("\n"));
+  let out;
+  try {
+    out = execFileSync("supabase", ["db", "query", "--linked", "-f", sqlPath, "--output-format", "json"],
+      { encoding: "utf8", stdio: "pipe", shell: true, maxBuffer: 256 * 1024 * 1024 });
+  } catch (error) {
+    throw readError("persisted Stage 1 human-review root",
+      `direct SQL fallback failed: ${String(error.stderr || error.message).slice(-300)}`);
+  }
+  const start = out.indexOf("{");
+  const boundary = out.match(/<([0-9a-f]{32})>/)?.[1];
+  let text = out.slice(start);
+  if (boundary) text = text.replaceAll(`<${boundary}>`, "").replaceAll(`</${boundary}>`, "");
+  let parsed;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    throw readError("persisted Stage 1 human-review root", "direct SQL fallback output was unparseable");
+  }
+  const payload = parsed?.rows?.[0]?.root_payload;
+  if (payload === undefined) {
+    throw readError("persisted Stage 1 human-review root", "direct SQL fallback returned no payload row");
+  }
+  return payload ?? null;
 }
 
 export async function stableRows(buildQuery, label, identityFor, {
