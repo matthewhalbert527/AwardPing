@@ -1822,6 +1822,10 @@ end;
 $function$
 ;
 
+alter table public.stage1_publication_release_state
+  alter column cohort_identity_version
+  set default 'stage1-national-25-v3';
+
 -- The pending release row now names v3; any prior acceptance is void and the
 -- activation ceremony must run against the v3 gate.
 update public.stage1_publication_release_state release_state
