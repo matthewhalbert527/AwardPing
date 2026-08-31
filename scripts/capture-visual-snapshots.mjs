@@ -7892,29 +7892,41 @@ async function captureSource(
     // Bind an explicit empty/unavailable layout to that screenshot so
     // downstream publication falls back to the full image instead of using
     // coordinates sampled from a moving render.
-    let finalTextGeometry = pageSettle.stable
-      ? await captureStructuredVisibleTextGeometry(page, {
-          capturedAt,
-          stateId: "main",
-        })
-      : unavailableStructuredVisibleTextGeometry({
-          capturedAt,
-          stateId: "main",
-          dimensions,
-          reason: "page_did_not_settle_before_geometry_capture",
-        });
-    const pageBuffer = await page.screenshot({
-      fullPage: true,
-      type: "jpeg",
-      quality: jpegQuality,
-      timeout: timeoutMs,
-    });
-    const imageHash = hashBuffer(pageBuffer);
-    const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry, {
-      stateId: "main",
-    });
-    assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId: "main" });
-    if (pageSettle.stable) {
+    // A single full-page screenshot can span an animation tick (carousels,
+    // sliding panels), which makes the before/after geometry disagree even on
+    // a page that holds still between ticks. Re-attempt the whole
+    // sample/screenshot/sample sequence a few times; every attempt re-verifies
+    // from scratch, and the last attempt's unavailable status stands if the
+    // page never holds still.
+    let finalTextGeometry;
+    let pageBuffer;
+    let imageHash;
+    let screenshotBinding;
+    const maxMainScreenshotAttempts = 3;
+    for (let attempt = 1; attempt <= maxMainScreenshotAttempts; attempt += 1) {
+      finalTextGeometry = pageSettle.stable
+        ? await captureStructuredVisibleTextGeometry(page, {
+            capturedAt,
+            stateId: "main",
+          })
+        : unavailableStructuredVisibleTextGeometry({
+            capturedAt,
+            stateId: "main",
+            dimensions,
+            reason: "page_did_not_settle_before_geometry_capture",
+          });
+      pageBuffer = await page.screenshot({
+        fullPage: true,
+        type: "jpeg",
+        quality: jpegQuality,
+        timeout: timeoutMs,
+      });
+      imageHash = hashBuffer(pageBuffer);
+      screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry, {
+        stateId: "main",
+      });
+      assertCapturedScreenshotWithinLimits(pageBuffer, screenshotBinding, { stateId: "main" });
+      if (!pageSettle.stable) break;
       const afterScreenshotGeometry = await captureStructuredVisibleTextGeometry(page, {
         capturedAt,
         stateId: "main",
@@ -7925,6 +7937,9 @@ async function captureSource(
         screenshot: screenshotBinding,
         stateId: "main",
       });
+      if (finalTextGeometry.availability_status !== "unavailable_layout_changed_during_screenshot") {
+        break;
+      }
     }
     const textGeometry = bindVisualTextGeometry(finalTextGeometry, {
       capturedAt,

@@ -137,16 +137,29 @@ const signature = signStage1ReleaseEvidencePayload({
   payloadHash: signedPayloadHash,
   secret: signingSecret,
 });
-const { data: artifact, error: recordError } = await supabase.rpc(
-  stage1ExternalReleaseRecorderName(kind),
-  {
-    ...preflightArgs,
-    p_expected_evidence_hash: evidenceHash,
-    p_expected_signed_payload_hash: signedPayloadHash,
-    p_signature: signature,
-  },
-);
-if (recordError) throw new Error(`Signed artifact import failed: ${recordError.message}`);
+const recorderName = stage1ExternalReleaseRecorderName(kind);
+const recorderArgs = {
+  ...preflightArgs,
+  p_expected_evidence_hash: evidenceHash,
+  p_expected_signed_payload_hash: signedPayloadHash,
+  p_signature: signature,
+};
+let artifact;
+{
+  const { data, error: recordError } = await supabase.rpc(recorderName, recorderArgs);
+  if (!recordError) {
+    artifact = data;
+  } else if (/statement timeout/i.test(String(recordError.message)) || recordError.code === "57014") {
+    // The recorder revalidates the full R2 manifest binding inside the DB,
+    // which can outlive the PostgREST statement timeout exactly like the
+    // manifest fetch itself. The canceled statement rolled back, so re-running
+    // the identical deterministic call through the SQL CLI records at most one
+    // artifact.
+    artifact = await requiredRpcDirectSql(recorderName, "signed artifact import", recorderArgs);
+  } else {
+    throw new Error(`Signed artifact import failed: ${recordError.message}`);
+  }
+}
 const operatorReport = buildStage1ReleaseOperatorReport({
   kind,
   measurement,
@@ -348,9 +361,68 @@ function runVercel(cliPath, token, target, commandArgs) {
 
 async function requiredRpc(client, name, label) {
   const { data, error } = await client.rpc(name);
-  if (error) throw new Error(`${label} lookup failed: ${error.message}`);
+  if (error) {
+    // The DB-owned manifests enumerate every published R2 object and can
+    // legitimately outlive the PostgREST statement timeout at fleet scale.
+    // Re-run the same deterministic zero-argument RPC through the SQL CLI
+    // with a raised local timeout - the identical escape the manifest-draft
+    // loader and candidate import use for this masked-timeout class.
+    if (/statement timeout/i.test(String(error.message)) || error.code === "57014") {
+      return await requiredRpcDirectSql(name, label);
+    }
+    throw new Error(`${label} lookup failed: ${error.message}`);
+  }
   if (data === null || data === undefined) throw new Error(`${label} is missing.`);
   return data;
+}
+
+async function requiredRpcDirectSql(name, label, argValues = null) {
+  const { execFileSync } = await import("node:child_process");
+  const { writeFileSync, mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+  const { randomBytes } = await import("node:crypto");
+  if (!/^[a-z0-9_]+$/.test(name)) throw new Error(`${label} lookup rejected an unexpected RPC name.`);
+  const argsSql = Object.entries(argValues || {}).map(([key, value]) => {
+    if (!/^[a-z0-9_]+$/.test(key)) {
+      throw new Error(`${label} lookup rejected an unexpected RPC argument name: ${key}.`);
+    }
+    const isJson = typeof value === "object" && value !== null;
+    const serialized = isJson ? JSON.stringify(value) : String(value);
+    let tag;
+    do {
+      tag = `q${randomBytes(8).toString("hex")}`;
+    } while (serialized.includes(`$${tag}$`));
+    return `${key} => $${tag}$${serialized}$${tag}$${isJson ? "::jsonb" : ""}`;
+  }).join(",\n  ");
+  const dir = mkdtempSync(join(tmpdir(), "stage1-rpc-"));
+  const sqlPath = join(dir, "rpc.sql");
+  writeFileSync(sqlPath, [
+    "begin;",
+    "set local statement_timeout = '600s';",
+    `select public.${name}(${argsSql}) as payload;`,
+    "commit;",
+  ].join("\n"));
+  let out;
+  try {
+    out = execFileSync("supabase", ["db", "query", "--linked", "-f", sqlPath, "--output-format", "json"],
+      { cwd: root, encoding: "utf8", stdio: "pipe", shell: true, maxBuffer: 512 * 1024 * 1024 });
+  } catch (error) {
+    throw new Error(`${label} direct SQL fallback failed: ${String(error.stderr || error.message).slice(-300)}`);
+  }
+  const start = out.indexOf("{");
+  const boundary = out.match(/<([0-9a-f]{32})>/)?.[1];
+  let text = out.slice(start);
+  if (boundary) text = text.replaceAll(`<${boundary}>`, "").replaceAll(`</${boundary}>`, "");
+  let parsed;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    throw new Error(`${label} direct SQL fallback output was unparseable.`);
+  }
+  const payload = parsed?.rows?.[0]?.payload;
+  if (payload === null || payload === undefined) throw new Error(`${label} is missing.`);
+  return payload;
 }
 
 function validityMilliseconds(artifactKind) {

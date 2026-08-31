@@ -767,34 +767,39 @@ function validateR2Manifest(value, target) {
   const manifestSourceSetsValid = [...manifestSourceGroups.values()]
     .every(manifestSourceObjectSetValid);
   const publishedEventReferenceGraphValid = publishedEventReferenceGraphIsValid(objects);
-  if (
-    manifest.schema_version !== "awardping.stage1.r2-verification-manifest.v4" ||
-    manifest.artifact_bindings_schema
-      !== "awardping.r2.capture-artifact-bindings.v1" ||
-    manifest.reference_schema !== "awardping.r2.canonical-object-references.v1" ||
-    embeddedTarget.targetConfigHash !== target.targetConfigHash ||
-    manifest.unexpected_bucket_count !== 0 ||
-    manifest.malformed_object_count !== 0 ||
-    manifest.manifest_binding_error_count !== 0 ||
-    manifest.reference_binding_error_count !== 0 ||
-    manifest.inconsistent_alias_count !== 0 ||
-    manifest.unclassified_reference_count !== 0 ||
-    manifest.duplicate_object_key_count !== 0 ||
-    manifest.visual_object_count !== objects.length ||
-    manifest.published_event_object_count !== publishedEventObjectCount ||
-    manifest.visual_reference_count !== visualReferenceCount ||
-    manifest.published_event_reference_count !== publishedEventReferenceCount ||
-    manifest.manifest_source_object_count !== manifestSourceObjectCount ||
-    manifest.manifest_source_reference_count !== manifestSourceReferenceCount ||
-    manifest.alias_reference_count !== aliasReferenceCount ||
-    manifest.aliased_object_count !== aliasedObjectCount ||
-    uniqueObjectKeys.size !== objects.length ||
-    uniqueReferenceIdentities.size !== referenceIdentities.length ||
-    !graphHashesValid ||
-    !manifestSourceSetsValid ||
-    !publishedEventReferenceGraphValid
-  ) {
-    throw new Error("The DB-owned R2 verification manifest is incomplete or target-mismatched.");
+  // Named invariants so a failure states WHICH one broke instead of the
+  // undifferentiated "incomplete or target-mismatched".
+  const manifestInvariants = {
+    schema_version: manifest.schema_version === "awardping.stage1.r2-verification-manifest.v4",
+    artifact_bindings_schema: manifest.artifact_bindings_schema === "awardping.r2.capture-artifact-bindings.v1",
+    reference_schema: manifest.reference_schema === "awardping.r2.canonical-object-references.v1",
+    target_config_hash: embeddedTarget.targetConfigHash === target.targetConfigHash,
+    unexpected_bucket_count: manifest.unexpected_bucket_count === 0,
+    malformed_object_count: manifest.malformed_object_count === 0,
+    manifest_binding_error_count: manifest.manifest_binding_error_count === 0,
+    reference_binding_error_count: manifest.reference_binding_error_count === 0,
+    inconsistent_alias_count: manifest.inconsistent_alias_count === 0,
+    unclassified_reference_count: manifest.unclassified_reference_count === 0,
+    duplicate_object_key_count: manifest.duplicate_object_key_count === 0,
+    visual_object_count: manifest.visual_object_count === objects.length,
+    published_event_object_count: manifest.published_event_object_count === publishedEventObjectCount,
+    visual_reference_count: manifest.visual_reference_count === visualReferenceCount,
+    published_event_reference_count: manifest.published_event_reference_count === publishedEventReferenceCount,
+    manifest_source_object_count: manifest.manifest_source_object_count === manifestSourceObjectCount,
+    manifest_source_reference_count: manifest.manifest_source_reference_count === manifestSourceReferenceCount,
+    alias_reference_count: manifest.alias_reference_count === aliasReferenceCount,
+    aliased_object_count: manifest.aliased_object_count === aliasedObjectCount,
+    unique_object_keys: uniqueObjectKeys.size === objects.length,
+    unique_reference_identities: uniqueReferenceIdentities.size === referenceIdentities.length,
+    graph_hashes: graphHashesValid,
+    manifest_source_sets: manifestSourceSetsValid,
+    published_event_reference_graph: publishedEventReferenceGraphValid,
+  };
+  const failedInvariants = Object.entries(manifestInvariants)
+    .filter(([, ok]) => ok !== true)
+    .map(([name]) => name);
+  if (failedInvariants.length) {
+    throw new Error(`The DB-owned R2 verification manifest is incomplete or target-mismatched: ${failedInvariants.join(", ")}.`);
   }
   return {
     objects,
