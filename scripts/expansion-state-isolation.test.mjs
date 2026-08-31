@@ -243,11 +243,14 @@ describe("expansion state isolation", () => {
         relevanceMode: "award-content",
       });
 
+      // The page's one fragment scroll-link to visible content is excluded at
+      // discovery (navigation, not an expansion control) instead of surviving
+      // to the non-panel removal pass: one fewer raw candidate, zero removals.
       expect(setup).toMatchObject({
-        raw_candidates: 41,
+        raw_candidates: 40,
         candidates: 20,
         duplicate_controls_removed: 20,
-        non_panel_controls_removed: 1,
+        non_panel_controls_removed: 0,
         capture_limit: 24,
         descriptor_set_complete: true,
         truncated: false,

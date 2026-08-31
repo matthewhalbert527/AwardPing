@@ -232,11 +232,25 @@ export async function discoverExpansionStateDescriptors(page, {
     }
 
     function targetEntryLooksStateful(element, entry) {
+      // Carousel navigation (Bootstrap data-bs-slide/-to) cycles slides inside
+      // an always-visible region; it is never an expansion control.
+      if (element.hasAttribute("data-bs-slide-to") || element.hasAttribute("data-slide-to") ||
+          element.hasAttribute("data-bs-slide") || element.hasAttribute("data-slide")) {
+        return false;
+      }
       const role = (element.getAttribute("role") || "").toLowerCase();
       const toggle = (element.getAttribute("data-toggle") || element.getAttribute("data-bs-toggle") || "")
         .toLowerCase();
       if (entry.attr === "aria-controls" && element.getAttribute("aria-expanded") !== null) return true;
       if (role === "tab" || ["accordion", "collapse", "tab"].includes(toggle)) return true;
+      // A fragment link with no expansion semantics of its own whose target is
+      // already visible and holds no unique collapsed drawer is in-page
+      // navigation (a scroll target), never an expansion control.
+      if (entry.attr === "href" && element.getAttribute("aria-expanded") === null &&
+          !element.hasAttribute("aria-controls") && visiblePanel(entry.element) &&
+          !uniqueCollapsedDescendant(entry.element, element)) {
+        return false;
+      }
       return targetLooksStateful(element, entry.element);
     }
 
