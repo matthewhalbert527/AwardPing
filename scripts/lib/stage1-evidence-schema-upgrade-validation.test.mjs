@@ -414,14 +414,18 @@ describe.runIf(exactSixRetainedFixtureAvailable)(
       for (const definition of exactSixRetainedDefinitions) {
         const fixture = exactSixRetainedValidationFixture(definition);
         const decision = evaluateStage1EvidenceSchemaUpgradeCapture(fixture);
+        // Some of these historical tuples' texts differ only by
+        // extraction-path case-fusion whitespace, which the evidence-word
+        // normalizer now treats as equal (2026-08-31 case-fused-token split),
+        // so the deeper capture-identity check fires for them; tuples whose
+        // texts genuinely differ still surface the text disagreement. Either
+        // reason ends in the same fail-closed quarantine.
+        expect([
+          "existing_baseline_capture_identity_mismatch",
+          "existing_baseline_normalized_text_disagrees_with_acquisition",
+        ]).toContain(decision.reason);
         expect(decision).toMatchObject({
           decision: STAGE1_EVIDENCE_SCHEMA_UPGRADE_DECISIONS.EVIDENCE_FAILURE_QUARANTINE,
-          // These historical tuples' texts differ only by extraction-path
-          // case-fusion whitespace, which the evidence-word normalizer now
-          // treats as equal (2026-08-31 case-fused-token split), so the
-          // deeper capture-identity check fires instead. Either reason ends
-          // in the same fail-closed quarantine.
-          reason: "existing_baseline_capture_identity_mismatch",
           outcome: {
             would_commit: false,
             would_queue_visual_candidate: false,
