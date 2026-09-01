@@ -94,3 +94,44 @@ the safe fallback and can be reversed later once C exists.
 Nothing has been changed in the fence or the validator. This memo exists because
 the alternative was to weaken an evidence rule without your review, and Truman is
 the only cohort it currently blocks.
+
+---
+
+## Addendum 2026-09-01: mixed pages exist and need your ruling
+
+Live evidence, first observed on the 2026-08-31 nightly sweep:
+
+- `https://amafoundation.org/physicians-of-tomorrow`: 21 expansion candidates;
+  **15 open and captured normally, 6 are provably dead** (each responded on
+  both fresh-page attempts while its bound content never became visible -
+  WordPress accordion buttons wired to nothing).
+- `https://www.simonsfoundation.org/grant/simons-graduate-fellowships-in-ecology-and-evolution/?tab=faq`:
+  same shape.
+
+The capture engine was emitting mixed claims (retained > 0 plus an inert list
+with proof), which guardrail 4 forbids and the validator + SQL fence correctly
+reject - the mismatch surfaced as an opaque "coverage claim is invalid" crash.
+The engine now conforms (commit on redesign/ui-overhaul): on a page where any
+candidate opened, inert classifications are withdrawn post-run and recorded as
+ordinary failures naming guardrail 4.
+
+Consequence of the strict rule: a page with even one dead control among working
+accordions can never reach `verified_complete`, so both sources above are held
+`review_later` and their awards lose those sources from monitoring. Options:
+
+**D. Keep guardrail 4 strict** (current state). Cost: mixed pages are
+permanently unmonitorable; the dead-control pattern is common enough that this
+list will grow.
+
+**E. Extend inertness to per-candidate on mixed pages**, keeping every other
+guardrail (earned per capture with two-attempt proof, never configured,
+responded-but-hidden only). The claim's arithmetic already supports it
+(attempted = retained + inert + failures); the validator's
+`retained_state_count !== 0` rejection and the matching SQL-fence clause are
+the only two changes. The original rationale for guardrail 4 was
+distinguishing "the accordion system is broken" from "we failed to drive it" -
+on a mixed page, 15 captured states prove the driver works, which arguably
+makes per-candidate inertness *stronger* evidence there than on all-dead pages.
+
+Recommendation: E, for the same reason C was right - it states the truth about
+the page. Your call, as before; nothing changes until you rule.
