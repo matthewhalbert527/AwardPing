@@ -79,9 +79,9 @@ Update the Windows worker from a reviewed repository revision with
 installed app. The complete install and update runbook is in
 `docs/local-pc-worker-installer.md`.
 
-## Private Beta Launch
+## Stage 1 Public Launch
 
-Before inviting real advisors:
+Stage 1 (25 national award cohorts) is launching publicly. Before launch:
 
 1. Run `npm run verify`.
 2. Apply every migration in `supabase/migrations`, including `0008_shared_award_history.sql`.
@@ -94,11 +94,11 @@ Before inviting real advisors:
 9. Run `npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000` from the local crawler computer.
 10. Use `/dashboard/ops` as an owner/admin to confirm local worker runs, shared-source health, downstream lane health, digest runs, and failed deliveries after launch.
 
-The full launch runbook is in `docs/private-beta-launch.md`.
+The original pre-launch runbook is preserved in `docs/private-beta-launch.md`.
 
 ## Free Service Copy
 
-AwardPing is free during the private beta. User-facing calls to action should say `Sign up for free`, and billing or pricing routes should continue redirecting into signup or the dashboard.
+AwardPing is free. User-facing calls to action should say `Sign up for free`, and billing or pricing routes should continue redirecting into signup or the dashboard.
 
 ## Verification
 
