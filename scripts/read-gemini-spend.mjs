@@ -8,7 +8,7 @@
 // Read-only: one SELECT against the lane ledger, local file reads, no writes.
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createClient } from "@supabase/supabase-js";
+import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).filter((a) => a.startsWith("--")).map((a) => {
@@ -56,7 +56,7 @@ if (existsSync(jsonlPath)) {
 const url = env.NEXT_PUBLIC_SUPABASE_URL;
 const key = env.SUPABASE_SERVICE_ROLE_KEY;
 if (url && key) {
-  const supabase = createClient(url, key);
+  const supabase = createSupabaseServiceClient(url, key);
   const { data, error } = await supabase
     .from("gemini_spend_events")
     .select("budget_date, lane_key, spent_delta_micro_usd")
