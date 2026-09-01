@@ -3139,7 +3139,10 @@ async function recordVisualReviewCandidateRunObservation(candidateId, report) {
   if (error) {
     report.visual_review_candidate_observation_failures += 1;
     throw new Error(
-      `Visual review candidate run observation failed: ${error.message || String(error)}`,
+      `Visual review candidate run observation failed: ${describeSupabaseError(
+        error,
+        "record visual review candidate run observations",
+      )}`,
     );
   }
   observedVisualReviewCandidateIds.add(candidateId);
@@ -12447,8 +12450,27 @@ function modelForProvider(provider) {
   return null;
 }
 
+function supabaseErrorMessageText(error) {
+  if (typeof error?.message === "string" && error.message.trim()) {
+    return error.message;
+  }
+  if (error instanceof Error) {
+    return String(error);
+  }
+  if (error && typeof error === "object") {
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") {
+        return serialized;
+      }
+    } catch {}
+    return "Supabase returned an error object with no message.";
+  }
+  return String(error);
+}
+
 function describeSupabaseError(error, action) {
-  const message = error?.message || String(error);
+  const message = supabaseErrorMessageText(error);
   const details = error?.details ? ` ${error.details}` : "";
   const hint = error?.hint ? ` ${error.hint}` : "";
   const code = error?.code ? ` (${error.code})` : "";
