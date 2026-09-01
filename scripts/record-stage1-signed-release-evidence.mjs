@@ -289,7 +289,9 @@ function productionR2Client(targetValue) {
 }
 
 function vercelDeploymentController(targetValue) {
-  const token = required(process.env.VERCEL_TOKEN, "VERCEL_TOKEN");
+  // With no VERCEL_TOKEN the CLI's own authenticated session is used; recent
+  // CLI versions keep the token in the OS credential store rather than a file.
+  const token = text(process.env.VERCEL_TOKEN) || null;
   const cliPath = text(process.env.VERCEL_CLI_PATH) || "vercel";
   const projectPath = resolve(root, ".vercel", "project.json");
   return {
@@ -332,12 +334,17 @@ function runVercel(cliPath, token, target, commandArgs) {
     "--cwd",
     root,
   ];
+  // Windows cannot spawn .cmd shims without a shell; a VERCEL_CLI_PATH that
+  // names the CLI's JS entry runs under the current Node executable instead.
+  const viaNode = /\.(mjs|cjs|js)$/i.test(cliPath);
+  const spawnPath = viaNode ? process.execPath : cliPath;
+  const spawnArgs = viaNode ? [cliPath, ...cliArgs] : cliArgs;
   return new Promise((resolvePromise, rejectPromise) => {
-    const child = spawn(cliPath, cliArgs, {
+    const child = spawn(spawnPath, spawnArgs, {
       cwd: root,
       shell: false,
       windowsHide: true,
-      env: { ...process.env, VERCEL_TOKEN: token },
+      env: token ? { ...process.env, VERCEL_TOKEN: token } : { ...process.env },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
