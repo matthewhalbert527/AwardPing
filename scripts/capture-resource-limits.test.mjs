@@ -334,7 +334,7 @@ describe("visual capture resource limits", () => {
       .toBeLessThan(workerSource.indexOf("const sourceDeadline = createSourcePhaseDeadline("));
     expect(workerSource).toContain("await sourceDeadline.run(() => processSource(");
     const fullPageScreenshotCalls = [...workerSource.matchAll(
-      /const pageBuffer = await (?:page|statePage)\.screenshot\(\{([\s\S]*?)\n\s*\}\);/g,
+      /(?:const )?pageBuffer = await (?:page|statePage)\.screenshot\(\{([\s\S]*?)\n\s*\}\);/g,
     )];
     expect(fullPageScreenshotCalls).toHaveLength(2);
     for (const call of fullPageScreenshotCalls) {

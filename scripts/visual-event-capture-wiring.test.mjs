@@ -25,10 +25,10 @@ describe("visual event capture wiring", () => {
     const scroll = body.indexOf("const scrollActivation = await activateScrollTriggeredContent", finalExpansion);
     const noise = body.indexOf("const finalHiddenNoise = await hideNoiseElements", scroll);
     const settle = body.indexOf("const pageSettle = await waitForPageSettledForSnapshot", noise);
-    const stableGate = body.indexOf("let finalTextGeometry = pageSettle.stable", settle);
+    const stableGate = body.indexOf("finalTextGeometry = pageSettle.stable", settle);
     const guardedGeometry = body.indexOf("await captureStructuredVisibleTextGeometry(page", stableGate);
     const unavailableFallback = body.indexOf("unavailableStructuredVisibleTextGeometry({", stableGate);
-    const screenshot = body.indexOf("const pageBuffer = await page.screenshot", unavailableFallback);
+    const screenshot = body.indexOf("pageBuffer = await page.screenshot", unavailableFallback);
 
     expect(finalExpansion).toBeGreaterThan(-1);
     expect(scroll).toBeGreaterThan(finalExpansion);
@@ -45,9 +45,9 @@ describe("visual event capture wiring", () => {
   it("keeps the main full screenshot but marks exact geometry unavailable when settle fails", () => {
     const body = functionBody(captureSource, "captureSource", "expandPageForSnapshot");
     const mainSettle = body.indexOf("const pageSettle = await waitForPageSettledForSnapshot(page)");
-    const mainGuard = body.indexOf("let finalTextGeometry = pageSettle.stable", mainSettle);
+    const mainGuard = body.indexOf("finalTextGeometry = pageSettle.stable", mainSettle);
     const unavailable = body.indexOf("unavailableStructuredVisibleTextGeometry({", mainGuard);
-    const screenshot = body.indexOf("const pageBuffer = await page.screenshot", unavailable);
+    const screenshot = body.indexOf("pageBuffer = await page.screenshot", unavailable);
     const binding = body.indexOf("bindVisualTextGeometry(finalTextGeometry", screenshot);
     const openedBody = functionBody(captureSource, "captureExpansionStateEvidence", "emptySectionExtractionResult");
 
@@ -73,7 +73,7 @@ describe("visual event capture wiring", () => {
     const body = functionBody(captureSource, "captureSource", "expandPageForSnapshot");
     expect(body).toContain("bindVisualTextGeometry(finalTextGeometry");
     expect(body).toContain("imageHash");
-    expect(body).toContain("const screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry");
+    expect(body).toContain("screenshotBinding = await screenshotBindingFromBuffer(pageBuffer, finalTextGeometry");
     expect(body).toContain("screenshot: screenshotBinding");
     expect(body).toContain("writeFileSync(layoutPath, JSON.stringify(textGeometry");
     expect(body).toContain("layout_hash: textGeometry.geometry_hash");
@@ -116,7 +116,7 @@ describe("visual event capture wiring", () => {
   it("captures every accordion candidate on a freshly navigated, target-only page", () => {
     const body = functionBody(captureSource, "captureExpansionStateEvidence", "emptySectionExtractionResult");
     const discovery = body.indexOf("await discoverExpansionStateDescriptors(page");
-    const isolated = body.indexOf("await withIsolatedExpansionStatePage");
+    const isolated = body.indexOf("const runIsolatedState = () => withIsolatedExpansionStatePage({");
     const prepareScroll = body.indexOf("await activateScrollTriggeredContent(statePage", isolated);
     const captureCallback = body.indexOf("capture: async (statePage, openedIsolation)", prepareScroll);
     const verify = body.indexOf("await verifyExpansionStateIsolation", isolated);
@@ -128,10 +128,11 @@ describe("visual event capture wiring", () => {
     expect(body).toContain("descriptors: isolationDescriptors");
     expect(body).toContain("setup.isolation_descriptor_set_complete !== true");
     expect(body).toContain("capture: async (statePage, openedIsolation)");
+    expect(body).toContain("state = await runIsolatedState();");
     expect(body).toContain("fresh_page: true");
     expect(body).toContain("const failures = []");
     expect(body).toContain("failures.push({");
-    expect(body).toContain("summarizeExpansionStateCapture(setup, { states, failures })");
+    expect(body).toContain("summarizeExpansionStateCapture(setup, { states, failures, inert: inertCandidates })");
     expect(body).not.toContain("page.evaluate(({ maxControls");
     expect(body).not.toContain("restoreExpansionState();");
     expect(discovery).toBeGreaterThan(-1);
@@ -147,7 +148,7 @@ describe("visual event capture wiring", () => {
 
     expect(body).toContain("setup.truncated === true");
     expect(body).toContain("expansion_state_capture_truncated:");
-    expect(body).toContain("summarizeExpansionStateCapture(setup, { states, failures })");
+    expect(body).toContain("summarizeExpansionStateCapture(setup, { states, failures, inert: inertCandidates })");
     expect(expansionCanonicalizationSource).toContain(": descriptors.length");
     expect(expansionCanonicalizationSource).toContain("attempted: attemptedCount");
     expect(expansionCanonicalizationSource).toContain("truncated_count:");

@@ -38,14 +38,14 @@ describe("Hertz and NDSEG reviewed canonical-authority migration", () => {
 
   it("changes Hertz identity while preserving canonical NDSEG at ndseg.org", () => {
     for (const source of [migration, readiness, seeds, identity]) {
-      expect(source).toContain("https://www.hertzfoundation.org/hertz-fellowship/");
+      expect(source).toContain("https://www.hertzfoundation.org/hertz-fellowship");
       expect(source).toContain("https://ndseg.org/");
     }
     expect(readiness).toContain('host: "ndseg.sysplus.com"');
     expect(readiness).toContain('classification: "official_contractor_host"');
     expect(readiness).toContain('evidenceUrl: "https://ndseg.org/apply-link"');
     expect(identity).not.toContain("https://ndseg.sysplus.com/NDSEG/");
-    expect(identity).toContain('stage1CohortIdentityVersion = "stage1-national-25-v2"');
+    expect(identity).toContain('stage1CohortIdentityVersion = "stage1-national-25-v3"');
     expect(migration).toContain(
       "6e7dd7ee1372671cbfb22b17b862d867145a93c7dc0b73d49afc11f504ee6c8f",
     );

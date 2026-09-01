@@ -83,8 +83,8 @@ describe("new official document source-intake wiring", () => {
       capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage"),
     );
     const discoveryIndex = capture.indexOf("const pdfDiscovery = await discoverPdfLinksOnPage");
-    const geometryIndex = capture.indexOf("let finalTextGeometry = pageSettle.stable");
-    const screenshotIndex = capture.indexOf("const pageBuffer = await page.screenshot");
+    const geometryIndex = capture.indexOf("finalTextGeometry = pageSettle.stable");
+    const screenshotIndex = capture.indexOf("pageBuffer = await page.screenshot");
     const evidenceWriteIndex = capture.indexOf("writeFileSync(pendingMetaPath");
     const boundaryIndex = capture.indexOf("await finalizeCaptureNetworkBoundary({");
     const metadataPromotionIndex = capture.indexOf("renameSync(pendingMetaPath, metaPath)");

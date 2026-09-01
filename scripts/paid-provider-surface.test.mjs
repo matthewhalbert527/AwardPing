@@ -76,6 +76,8 @@ describe("paid provider surface", () => {
       "scripts/process-page-audit-batch.mjs",
       "scripts/process-source-intake-requests.mjs",
       "scripts/process-visual-review-batch.mjs",
+      "scripts/run-award-fact-pipeline.mjs",
+      "scripts/run-fact-editorial-critics.mjs",
     ]);
   });
 
