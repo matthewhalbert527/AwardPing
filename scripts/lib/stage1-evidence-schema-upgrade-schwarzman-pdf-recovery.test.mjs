@@ -126,7 +126,8 @@ describe("Stage 1 Schwarzman PDF sealed-text recovery", () => {
       "utf8",
     );
     const body = worker.match(
-      /function applyStage1SchwarzmanPdfRecoveryToCandidate[\s\S]+?\n\}\n\nfunction r2CaptureHashes/u,
+      // \r?\n so the anchor survives checkouts that materialize CRLF.
+      /function applyStage1SchwarzmanPdfRecoveryToCandidate[\s\S]+?\r?\n\}\r?\n\r?\nfunction r2CaptureHashes/u,
     )?.[0] || "";
     expect(body).toContain("loadStage1SchwarzmanPdfRecoveryCandidatePreimages");
     expect(body).toContain("commitStage1SchwarzmanPdfRecoveryCandidateFiles");
