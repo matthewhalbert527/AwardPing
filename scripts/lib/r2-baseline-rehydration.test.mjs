@@ -164,7 +164,7 @@ describe("exact R2 local-baseline rehydration", () => {
       'SOURCE_REVIEW_HOLD no_live_capture reason=${recovery.failureReason || "review_later"}',
     );
     const existingHoldProtection = processBody.indexOf(
-      'if (source.admin_review_status === "open")',
+      'if (source.admin_review_status === "open" && !humanReviewOwnsSource)',
     );
     const hygieneMutation = processBody.indexOf("await markSharedSourceReviewLater");
     const recoveryCall = processBody.indexOf("await maybeRehydrateIncompleteLocalBaseline");

@@ -152,7 +152,7 @@ describe("Stage 1 cohort readiness preflight", () => {
         cohortKey: "hertz",
         oldHomepage: "https://www.hertzfoundation.org/the-fellowship/",
         sources: [
-          source("hertz-home", "https://www.hertzfoundation.org/hertz-fellowship/", "Hertz Fellowship", "homepage"),
+          source("hertz-home", "https://www.hertzfoundation.org/hertz-fellowship", "Hertz Fellowship", "homepage"),
           source("hertz-old", "https://www.hertzfoundation.org/the-fellowship/", "Prior Hertz Fellowship", "homepage"),
           source("hertz-eligibility", "https://www.hertzfoundation.org/hertz-fellowship/who-can-apply/", "Who Can Apply", "eligibility"),
           source("hertz-apply", "https://www.hertzfoundation.org/hertz-fellowship/apply/", "Apply", "application"),
@@ -160,7 +160,7 @@ describe("Stage 1 cohort readiness preflight", () => {
           source("hertz-faq", "https://www.hertzfoundation.org/hertz-fellowship/application-help/faq/", "FAQ", "faq"),
         ],
         expected: {
-          identity_home: "https://www.hertzfoundation.org/hertz-fellowship/",
+          identity_home: "https://www.hertzfoundation.org/hertz-fellowship",
           eligibility: "https://www.hertzfoundation.org/hertz-fellowship/who-can-apply/",
           application_materials: "https://www.hertzfoundation.org/hertz-fellowship/apply/",
           dates_cycle: "https://www.hertzfoundation.org/hertz-fellowship/apply/",
