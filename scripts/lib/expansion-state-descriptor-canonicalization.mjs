@@ -93,15 +93,16 @@ export function stage1ExpansionCaptureCoverageValid(kind, metadata) {
   ];
   if (booleanFields.some((field) => typeof coverage[field] !== "boolean")) return false;
 
-  // Provably-inert candidates (option C, 2026-08-30): optional for backward
-  // compatibility - absent means zero. When present, inertness must be earned
-  // per capture with sealed per-candidate proof: the control responded on
-  // every attempt (>= 2) yet the bound content never became visible; and a
-  // page where ANY candidate opened may not declare inert candidates at all.
+  // Provably-inert candidates (option C, 2026-08-30; extended to mixed pages
+  // by option E, 2026-09-01 - see docs/stage1-inert-expansion-candidates.md):
+  // optional for backward compatibility - absent means zero. When present,
+  // inertness must be earned per capture with sealed per-candidate proof: the
+  // control responded on every attempt (>= 2) yet the bound content never
+  // became visible. Retained states and inert candidates may coexist; the
+  // acceptance arithmetic below requires retained + inert = attempted.
   const inertCount = coverage.inert_count === undefined ? 0 : coverage.inert_count;
   if (coverage.inert_count !== undefined && !safeCount(coverage.inert_count)) return false;
   if (inertCount > 0) {
-    if (coverage.retained_state_count !== 0) return false;
     const entries = coverage.inert_candidates;
     if (!Array.isArray(entries) || entries.length !== inertCount) return false;
     for (const entry of entries) {
@@ -273,11 +274,14 @@ export function summarizeExpansionStateCapture(setup, {
   const attemptedCount = Number.isSafeInteger(attempted)
     ? Math.max(0, attempted)
     : descriptors.length;
+  // Option E (docs/stage1-inert-expansion-candidates.md addendum, adopted
+  // 2026-09-01): inertness is per candidate, so mixed pages - real open
+  // states alongside provably-dead controls - complete when every attempted
+  // candidate is either retained or proven inert.
   const complete = setup?.descriptor_set_complete === true &&
     setup?.candidate_count_exact === true &&
     attemptedCount === candidates &&
     retainedStates.length + inertEntries.length === attemptedCount &&
-    (inertEntries.length === 0 || retainedStates.length === 0) &&
     retainedFailures.length === 0;
   const status = complete
     ? "verified_complete"

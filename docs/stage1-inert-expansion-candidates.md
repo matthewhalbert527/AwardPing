@@ -135,3 +135,14 @@ makes per-candidate inertness *stronger* evidence there than on all-dead pages.
 
 Recommendation: E, for the same reason C was right - it states the truth about
 the page. Your call, as before; nothing changes until you rule.
+
+**RULED 2026-09-01: option E adopted** (owner instruction in session, "ok do these").
+Implemented on redesign/ui-overhaul: the per-candidate rule now holds in
+`summarizeExpansionStateCapture`, `stage1ExpansionCaptureCoverageValid`, and the SQL
+fence (migration `20260901160000_per_candidate_inert_expansion_states.sql`, applied to
+production 2026-09-01); the engine's guardrail-4 withdrawal was reverted; contract tests
+in `scripts/lib/per-candidate-inert-expansion.test.mjs`. Sequencing: the DB fence is
+live now (a harmless superset), but the worker's own validator ships with the next
+worker deploy - frozen until the release soak completes - so the two held sources
+(AMA physicians-of-tomorrow, Simons ?tab=faq) stay `review_later` until that deploy,
+then reopen.

@@ -8705,27 +8705,11 @@ async function captureExpansionStateEvidence(
       endExpansionPhase();
     }
 
-    // Guardrail 4 of the adopted inert-candidate decision
-    // (docs/stage1-inert-expansion-candidates.md): a page where ANY candidate
-    // opened may not declare inert candidates at all - normal rules apply to
-    // every control on it. Candidate order must not decide the outcome, so the
-    // withdrawal happens after the whole pool ran.
-    if (states.length > 0 && inertCandidates.length > 0) {
-      for (const withdrawn of inertCandidates.splice(0)) {
-        failures.push({
-          index: null,
-          label: withdrawn.label || null,
-          selector: withdrawn.selector || null,
-          error:
-            "bound_content_did_not_transition control_claims_open=true "
-            + "(inert claim withdrawn: other candidates opened on this page; "
-            + "decision-memo guardrail 4)",
-        });
-        console.log(
-          `EXPANSION_STATE_INERT_WITHDRAWN ${withdrawn.selector} ${sourceLabel(source)}`,
-        );
-      }
-    }
+    // Option E (docs/stage1-inert-expansion-candidates.md addendum, adopted
+    // 2026-09-01): inertness is per candidate, so provably-dead controls stay
+    // inert even when other candidates on the page opened - the captured
+    // states prove the driver works, which strengthens the per-candidate
+    // inertness evidence rather than invalidating it.
 
     return {
       states,
