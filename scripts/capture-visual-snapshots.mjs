@@ -684,7 +684,9 @@ const maxCaptureHeightCssPx = boundedInt(
 );
 const maxCaptureRenderPixels = boundedInt(
   args["max-capture-render-pixels"] || env.AWARDPING_MAX_CAPTURE_RENDER_PIXELS,
-  80_000_000,
+  // The same wide-tab pages the 13k width ceiling admits render ~96-99M total
+  // pixels in expansion discovery (Simons Foundation, observed 2026-09-01).
+  110_000_000,
   10_000_000,
   500_000_000,
 );
