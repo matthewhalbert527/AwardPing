@@ -83,7 +83,7 @@ const conditionalSourceShapePattern =
   // and Schwarzman register/?id= pages, admission-events, information-sessions
   // - observed 2026-09-01); the applicant-signal override below still lets a
   // real deadline or eligibility change through on any of these shapes.
-  /\b(?:profile|profiles|recipients?|awardees?|testimonial|news|press release|events? calendar|information sessions?|webinars?)\b|\/(?:profile|profiles|recipients?|awardees?|news|press|events?|calendar|register|registration|information-sessions?|admission-events|webinars?)(?:[/?#]|$)/i;
+  /\b(?:profile|profiles|recipients?|awardees?|testimonial|news|press release|events? calendar|information sessions?|webinars?)\b|\/(?:profile|profiles|recipients?|awardees?|news|press|events?|calendar|register|registration|information-sessions?|admission-events|webinars?)(?:[/?#]|\s|$)/i;
 const noiseSummaryPatterns = [
   { reason: "file_size_or_loading_time_noise", pattern: /\b(?:file size|pdf file size|loading time|load time|hash only|metadata only)\b/i },
   { reason: "security_question_or_access_noise", policyId: "source_access_error", pattern: /\b(?:security question|access denied|login required|authentication required|captcha|forbidden)\b/i },
