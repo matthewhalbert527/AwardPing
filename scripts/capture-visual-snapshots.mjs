@@ -669,7 +669,10 @@ const maxCaptureDomElements = boundedInt(
 );
 const maxCaptureWidthCssPx = boundedInt(
   args["max-capture-width-css-px"] || env.AWARDPING_MAX_CAPTURE_WIDTH_CSS_PX,
-  8_000,
+  // Legitimate award pages render ~11.3k CSS px wide during expansion
+  // discovery (Simons Foundation grant tabs, USDA guidance tables, observed
+  // 2026-09-01); 8k rejected them every night. The runaway guard remains.
+  13_000,
   2_000,
   50_000,
 );
