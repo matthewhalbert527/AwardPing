@@ -1,0 +1,14 @@
+# Environmental-EOL pin for the vitest suites (Windows checkouts).
+#
+# core.autocrlf=true materializes committed-LF files as CRLF in the working
+# tree. The test suites read the trees below as raw bytes and assert exact
+# LF-anchored content (source-surface greps, migration-section parsers) or
+# byte-exact fixture identity, so a CRLF working copy fails ~40 test files
+# environmentally. Scope is limited to the paths the tests actually read.
+scripts/*.mjs text eol=lf
+scripts/lib/*.mjs text eol=lf
+scripts/lib/fixtures/** -text
+supabase/migrations/*.sql text eol=lf
+scripts/sql/*.sql text eol=lf
+src/**/*.ts text eol=lf
+src/**/*.tsx text eol=lf
