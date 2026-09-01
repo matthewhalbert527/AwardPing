@@ -678,16 +678,14 @@ function Set-AwardPingWorkerEnvFileAcl {
   }
 
   $allowedEntries = @(Get-AwardPingWorkerEnvAllowedSecurityIdentifiers -TaskSnapshots $TaskSnapshots)
-  $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+  # A fresh FileSecurity with only its access sections modified writes only the
+  # DACL. Round-tripping Get-Acl through Set-Acl also rewrites the owner
+  # section, which demands SeSecurityPrivilege when a previous elevated install
+  # left the file owned by Administrators - and update-only runs must not
+  # require elevation for a DACL-identical result. The validation pass below
+  # re-reads the final ACL either way.
+  $acl = [System.Security.AccessControl.FileSecurity]::new()
   $acl.SetAccessRuleProtection($true, $false)
-  $existingRules = @($acl.GetAccessRules(
-    $true,
-    $true,
-    [System.Security.Principal.SecurityIdentifier]
-  ))
-  foreach ($sid in @($existingRules.IdentityReference | Select-Object -Unique)) {
-    $acl.PurgeAccessRules($sid)
-  }
   foreach ($entry in $allowedEntries) {
     $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
       $entry.Sid,
@@ -696,7 +694,7 @@ function Set-AwardPingWorkerEnvFileAcl {
     )
     [void]$acl.AddAccessRule($rule)
   }
-  Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+  [System.IO.File]::SetAccessControl($Path, $acl)
 
   $problems = @(Get-AwardPingWorkerEnvAclProblems -Path $Path -TaskSnapshots $TaskSnapshots)
   if ($problems.Count -gt 0) {
