@@ -121,6 +121,9 @@ export async function loadStage1ManifestDraftDatabase({
         .order("id", { ascending: true }),
       "Stage 1 cohort page-audit history",
       (row) => `page-audit:${row.id}`,
+      // Audit rows carry full public-page snapshots; a 1000-row page of them
+      // can outlive the statement timeout on long-history cohorts (rhodes).
+      { pageSize: 50 },
     ),
   ]);
 
