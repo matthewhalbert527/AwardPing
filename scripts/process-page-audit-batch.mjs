@@ -139,18 +139,31 @@ try {
 }
 
 async function pollExistingBatches() {
-  const { data, error } = await supabase
-    .from("shared_award_page_audits")
-    .select("gemini_batch_name")
-    .eq("audit_kind", "gemini_batch")
-    .is("ai_result", null)
-    .not("gemini_batch_name", "is", null)
-    .limit(10_000);
-  if (error) {
-    if (isMissingTableError(error)) return;
-    throw new Error(`Load submitted page audit batches failed: ${error.message}`);
+  // Page explicitly with a stable order: an unordered `.limit(10_000)` is
+  // silently truncated to PostgREST's max-rows (1000), and an arbitrary first
+  // page can starve pending batches once the matching population crosses the
+  // cap (the changed-page review poller failed exactly this way 2026-09-01).
+  const pollRows = [];
+  const pollPageSize = 1000;
+  for (let pageStart = 0; ; pageStart += pollPageSize) {
+    const { data, error } = await supabase
+      .from("shared_award_page_audits")
+      .select("gemini_batch_name")
+      .eq("audit_kind", "gemini_batch")
+      .is("ai_result", null)
+      .not("gemini_batch_name", "is", null)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .range(pageStart, pageStart + pollPageSize - 1);
+    if (error) {
+      if (isMissingTableError(error)) return;
+      throw new Error(`Load submitted page audit batches failed: ${error.message}`);
+    }
+    const page = data || [];
+    pollRows.push(...page);
+    if (page.length < pollPageSize) break;
   }
-  for (const batchName of unique((data || []).map((row) => row.gemini_batch_name))) {
+  for (const batchName of unique(pollRows.map((row) => row.gemini_batch_name))) {
     const job = await fetchGeminiJson(`https://generativelanguage.googleapis.com/v1beta/${batchName}`, {
       method: "GET",
       kind: "page_audit_batch_poll",

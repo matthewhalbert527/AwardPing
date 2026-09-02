@@ -351,24 +351,45 @@ async function pollExistingBatches() {
       );
     }
   }
-  let pollQuery = supabase
-    .from("shared_award_visual_review_candidates")
-    .select("gemini_batch_name,model,status,rejection_reason,candidate_scope");
-  pollQuery = applyPaidLaneCandidateScopeFilter(pollQuery);
-  const { data, error } = await pollQuery
-    .in(
-      "status",
-      recoverMissingBatchResponses
-        ? ["submitted", "processing", "failed"]
-        : ["submitted", "processing"],
-    )
-    .not("gemini_batch_name", "is", null)
-    .limit(10_000);
-  if (error) throw new Error(`Load submitted visual review batches failed: ${error.message}`);
+  // Failed rows are only pollable when their batch response went missing, so
+  // filter them server-side. A single unordered `.limit(10_000)` is silently
+  // truncated to PostgREST's max-rows (1000); once the historical failed
+  // population crossed that window the arbitrary first page could contain
+  // zero submitted rows and polling starved while completed Gemini batches
+  // sat unharvested (observed 2026-09-01/02: 900+ submitted rows stuck for
+  // 24h+). Page each status set explicitly with a stable order instead.
+  const pollRows = [];
+  const pollPageSize = 1000;
+  const pollStatusFilters = recoverMissingBatchResponses
+    ? [
+      { statuses: ["submitted", "processing"], missingBatchOnly: false },
+      { statuses: ["failed"], missingBatchOnly: true },
+    ]
+    : [{ statuses: ["submitted", "processing"], missingBatchOnly: false }];
+  for (const statusFilter of pollStatusFilters) {
+    for (let pageStart = 0; ; pageStart += pollPageSize) {
+      let pollQuery = supabase
+        .from("shared_award_visual_review_candidates")
+        .select("gemini_batch_name,model,status,rejection_reason,candidate_scope");
+      pollQuery = applyPaidLaneCandidateScopeFilter(pollQuery);
+      pollQuery = pollQuery
+        .in("status", statusFilter.statuses)
+        .not("gemini_batch_name", "is", null);
+      if (statusFilter.missingBatchOnly) {
+        pollQuery = pollQuery.eq("rejection_reason", "missing_batch_response");
+      }
+      const { data, error } = await pollQuery
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(pageStart, pageStart + pollPageSize - 1);
+      if (error) throw new Error(`Load submitted visual review batches failed: ${error.message}`);
+      const page = data || [];
+      pollRows.push(...page);
+      if (page.length < pollPageSize) break;
+    }
+  }
 
-  const batchNames = unique((data || [])
-    .filter((row) => row.status !== "failed" || row.rejection_reason === "missing_batch_response")
-    .map((row) => row.gemini_batch_name));
+  const batchNames = unique(pollRows.map((row) => row.gemini_batch_name));
   for (const batchName of batchNames) {
     const batchReport = {
       name: batchName,
