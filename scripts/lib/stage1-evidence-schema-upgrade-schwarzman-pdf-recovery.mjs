@@ -45,6 +45,12 @@ const localCapturePrefix = `sources/${sourceId}/captures/${legacyLocalGeneration
 const r2CapturePrefix =
   `visual-snapshots/sources/${sourceId}/captures/${legacyR2Generation}/`;
 
+// The omitted passage is fixed by the byte-pinned sealed-intake and legacy
+// texts; this list is its TOKENIZATION under the live
+// normalizeStage1BaselineEvidenceWords, which since bc30cba splits case-fused
+// tokens at lowercase-to-uppercase transitions ("YouTube" -> "you", "tube").
+// Re-derive these tokens (and both normalized word counts) if that normalizer
+// version changes again; the underlying pinned text bytes never change.
 const omittedWords = Object.freeze([
   "or",
   "that",
@@ -62,7 +68,8 @@ const omittedWords = Object.freeze([
   "your",
   "video",
   "on",
-  "youtube",
+  "you",
+  "tube",
   "or",
 ]);
 
@@ -102,15 +109,23 @@ const exactContract = deepFreeze({
     semantic_text_length: 22281,
     normalized_text_sha256:
       "9b50d2748660349bd5d4148453a0f2753cb668ebdf6a3e72d7aed43f43f53aaa",
-    normalized_word_count: 3487,
+    normalized_word_count: 3491,
+  },
+  // The source's baseline.json is a LIVE pointer file: the nightly
+  // baseline-refresh lane legitimately rewrites it on unchanged-content
+  // refreshes, so whole-file byte identity is not a stable property of that
+  // file. The stable-subfield contract below pins everything the retired
+  // byte-pin materially protected while allowing the pointer to advance to a
+  // newer capture generation of the same unchanged content.
+  baseline_pointer: {
+    minimum_captured_at: legacyCaptureTimestamp,
+    stage1_baseline_activation_canonical_sha256:
+      "cadc02e99b7003c7b1517745f90b5c4ca85b59c51bc98016f469a3e4221928d8",
   },
   legacy: {
     captured_at: legacyCaptureTimestamp,
     local_generation: legacyLocalGeneration,
     local_prefix: localCapturePrefix,
-    baseline_json_sha256:
-      "ce937e39f469cf861c1de130c8b36c3793d7ffd62e9e03bd397574b678a02d09",
-    baseline_json_bytes: 5647,
     metadata_sha256:
       "28df8d2d771e27ee035e661ef8f3f224835eb239a630d94cfd5bf99eb4f4ae0a",
     metadata_bytes: 4520,
@@ -122,7 +137,7 @@ const exactContract = deepFreeze({
     semantic_text_length: 22184,
     normalized_text_sha256:
       "0061de3cda4d1f8bba01263f15d7f46e1a347c32a97801305b225fdc5f1239ea",
-    normalized_word_count: 3469,
+    normalized_word_count: 3472,
     r2_generation: legacyR2Generation,
     r2_prefix: r2CapturePrefix,
     r2_binding_receipt_sha256:
@@ -135,7 +150,7 @@ const exactContract = deepFreeze({
   omission: {
     omitted_words: omittedWords,
     omitted_words_sha256:
-      "75d151077abe07d673a36530da9d563aea4631a5a1de00eaf417155fdb492af6",
+      "e38bbb90be36023d3d61be49a1a1138e65411003dd154ef1cc42dedf5ad53b20",
   },
 });
 
@@ -549,7 +564,7 @@ export function evaluateStage1PdfParserOmissionRecovery(input = {}, contract = {
     assert(omission.legacy_word_count === contract.legacy.normalized_word_count, "legacy_word_count_not_allowlisted");
     assert(sameJson(omission.omitted_words, contract.omission.omitted_words), "omitted_words_not_allowlisted");
     assert(sha256Json(omission.omitted_words) === contract.omission.omitted_words_sha256, "omitted_words_digest_not_allowlisted");
-    assert(omission.omitted_word_count === 18, "omitted_word_count_not_allowlisted");
+    assert(omission.omitted_word_count === 19, "omitted_word_count_not_allowlisted");
     assertQuotes(existing.text, review.evidence_quotes, "legacy");
     assertQuotes(sealed.semanticText, review.evidence_quotes, "sealed");
 
@@ -627,7 +642,7 @@ export function evaluateStage1PdfParserOmissionRecovery(input = {}, contract = {
         recovered_text_object_bytes: contract.sealed_intake.text_object_bytes,
       },
       limitations: [
-        "legacy_pdf_parser_omitted_18_sealed_intake_words",
+        "legacy_pdf_parser_omitted_19_sealed_intake_word_tokens",
         "legacy_and_recovered_semantic_text_are_not_treated_as_equal",
         "repair_authority_is_limited_to_the_exact_sealed_intake_text_and_same_pdf_bytes",
       ],
@@ -720,7 +735,7 @@ export function evaluateStage1SchwarzmanPdfRecoveryReceipt(input = {}) {
     assert(omissionReceipt.legacy_is_exact_subsequence === true, "recovery_receipt_subsequence_proof_missing");
     assert(omissionReceipt.sealed_word_count === exactContract.sealed_intake.normalized_word_count, "recovery_receipt_sealed_word_count_not_allowlisted");
     assert(omissionReceipt.legacy_word_count === exactContract.legacy.normalized_word_count, "recovery_receipt_legacy_word_count_not_allowlisted");
-    assert(omissionReceipt.omitted_word_count === 18, "recovery_receipt_omission_count_not_allowlisted");
+    assert(omissionReceipt.omitted_word_count === 19, "recovery_receipt_omission_count_not_allowlisted");
     assert(sameJson(omissionReceipt.omitted_words, omittedWords), "recovery_receipt_omitted_words_not_allowlisted");
     assert(omissionReceipt.omitted_words_sha256 === exactContract.omission.omitted_words_sha256, "recovery_receipt_omitted_words_digest_not_allowlisted");
     assert(sameJson(recoveryReceipt, {
@@ -733,7 +748,7 @@ export function evaluateStage1SchwarzmanPdfRecoveryReceipt(input = {}) {
       recovered_text_object_bytes: exactContract.sealed_intake.text_object_bytes,
     }), "recovery_receipt_recovered_identity_not_allowlisted");
     assert(sameJson(receipt.limitations, [
-      "legacy_pdf_parser_omitted_18_sealed_intake_words",
+      "legacy_pdf_parser_omitted_19_sealed_intake_word_tokens",
       "legacy_and_recovered_semantic_text_are_not_treated_as_equal",
       "repair_authority_is_limited_to_the_exact_sealed_intake_text_and_same_pdf_bytes",
     ]), "recovery_receipt_limitations_not_allowlisted");
@@ -760,7 +775,22 @@ export function evaluateStage1SchwarzmanPdfRecoveryReceipt(input = {}) {
     assert(sameJson(sealed.reviewed_roles_exact, ["current_documents"]), "recovery_sealed_roles_not_allowlisted");
 
     assert(existing.kind === "pdf" && existing.source?.id === sourceId, "recovery_legacy_source_not_allowlisted");
-    assert(existing.captured_at === legacyCaptureTimestamp, "recovery_legacy_timestamp_not_allowlisted");
+    // The existing record at this gate is derived from the live baseline
+    // pointer, which the nightly refresh lane advances across
+    // unchanged-content generations. Its content identity stays fully pinned
+    // below (URL, exact PDF bytes, exact legacy semantic and normalized
+    // text), so only the generation timestamp may move forward from the
+    // legacy authority - never back, and never inexactly.
+    const existingCapturedAtMs = Date.parse(String(existing.captured_at ?? ""));
+    assert(
+      Number.isFinite(existingCapturedAtMs)
+        && new Date(existingCapturedAtMs).toISOString() === existing.captured_at,
+      "recovery_legacy_timestamp_invalid",
+    );
+    assert(
+      existingCapturedAtMs >= Date.parse(legacyCaptureTimestamp),
+      "recovery_legacy_timestamp_regressed",
+    );
     assert(existing.final_url === finalUrl, "recovery_legacy_url_not_allowlisted");
     assert(existing.file_hash === fileHash && existing.file_bytes === exactContract.file_bytes, "recovery_legacy_pdf_not_allowlisted");
     assert(existing.text_hash === exactContract.legacy.semantic_text_sha256, "recovery_legacy_text_not_allowlisted");
@@ -897,17 +927,7 @@ function assertAcquisition({ acquisition, disposition, guard, review, finalizati
 }
 
 function assertLegacyBaseline({ baseline, baselineBytes, activation, existing, artifacts, contract }) {
-  assertBufferIdentity(baselineBytes, contract.legacy.baseline_json_sha256, contract.legacy.baseline_json_bytes, "baseline_json");
-  assert(baseline.kind === "pdf", "legacy_baseline_kind_not_allowlisted");
-  assert(baseline.source?.id === contract.source_id, "legacy_baseline_source_not_allowlisted");
-  assert(baseline.captured_at === contract.legacy.captured_at, "legacy_baseline_timestamp_not_allowlisted");
-  assert(baseline.final_url === contract.final_url, "legacy_baseline_url_not_allowlisted");
-  assert(baseline.file_hash === contract.file_sha256 && baseline.file_bytes === contract.file_bytes, "legacy_baseline_pdf_not_allowlisted");
-  assert(baseline.text_hash === contract.legacy.semantic_text_sha256, "legacy_baseline_text_not_allowlisted");
-  assert(baseline.text_length === contract.legacy.semantic_text_length, "legacy_baseline_text_length_not_allowlisted");
-  assert(baseline.capture?.pdf === `${contract.legacy.local_prefix}document.pdf`, "legacy_baseline_pdf_path_not_allowlisted");
-  assert(baseline.capture?.text === `${contract.legacy.local_prefix}text.txt`, "legacy_baseline_text_path_not_allowlisted");
-  assert(baseline.capture?.meta === `${contract.legacy.local_prefix}meta.json`, "legacy_baseline_meta_path_not_allowlisted");
+  assertLiveBaselinePointer({ baseline, baselineBytes, activation, contract });
   assert(existing.kind === "pdf" && existing.source?.id === contract.source_id, "legacy_capture_source_not_allowlisted");
   assert(existing.captured_at === contract.legacy.captured_at, "legacy_capture_timestamp_not_allowlisted");
   assert(existing.final_url === contract.final_url, "legacy_capture_url_not_allowlisted");
@@ -925,6 +945,70 @@ function assertLegacyBaseline({ baseline, baselineBytes, activation, existing, a
   assertBufferIdentity(artifacts.text, contract.legacy.text_object_sha256, contract.legacy.text_object_bytes, "legacy_text");
   assertBufferIdentity(artifacts.meta, contract.legacy.metadata_sha256, contract.legacy.metadata_bytes, "legacy_meta");
   assertWriterText(artifacts.text, existing.text, "legacy_text");
+}
+
+/**
+ * baseline.json is a LIVE pointer file the nightly baseline-refresh lane
+ * legitimately rewrites on unchanged-content refreshes, so this deliberately
+ * does not pin whole-file bytes. It instead binds the exact bytes the caller
+ * read to the record being asserted, then pins every stable subfield the
+ * retired byte-pin materially protected: source identity, final URL, exact
+ * PDF and semantic-text identities, and the complete unchanged
+ * stage1_baseline_activation block (field-by-field for clear reasons, plus a
+ * canonical whole-block digest so no activation field can drift silently).
+ * The one tolerance is pointer advancement: captured_at may move forward and
+ * the capture paths may follow it, but only to a generation directory of this
+ * exact source that is self-consistent with the pointer's own captured_at.
+ */
+function assertLiveBaselinePointer({ baseline, baselineBytes, activation, contract }) {
+  const body = Buffer.from(baselineBytes || []);
+  assert(body.byteLength > 0, "baseline_json_bytes_missing");
+  let parsed = null;
+  try {
+    parsed = JSON.parse(body.toString("utf8"));
+  } catch {
+    parsed = null;
+  }
+  assert(parsed && typeof parsed === "object" && !Array.isArray(parsed), "baseline_json_bytes_invalid");
+  assert(sameJson(parsed, baseline), "baseline_json_bytes_record_mismatch");
+  assert(baseline.kind === "pdf", "baseline_pointer_kind_not_allowlisted");
+  assert(baseline.source?.id === contract.source_id, "baseline_pointer_source_not_allowlisted");
+  const capturedAt = typeof baseline.captured_at === "string" ? baseline.captured_at : "";
+  const capturedAtMs = Date.parse(capturedAt);
+  assert(
+    Number.isFinite(capturedAtMs)
+      && new Date(capturedAtMs).toISOString() === capturedAt,
+    "baseline_pointer_timestamp_invalid",
+  );
+  assert(
+    capturedAtMs >= Date.parse(contract.baseline_pointer.minimum_captured_at),
+    "baseline_pointer_timestamp_regressed",
+  );
+  assert(baseline.final_url === contract.final_url, "baseline_pointer_url_not_allowlisted");
+  assert(baseline.file_hash === contract.file_sha256 && baseline.file_bytes === contract.file_bytes, "baseline_pointer_pdf_not_allowlisted");
+  assert(baseline.text_hash === contract.legacy.semantic_text_sha256, "baseline_pointer_text_not_allowlisted");
+  assert(baseline.text_length === contract.legacy.semantic_text_length, "baseline_pointer_text_length_not_allowlisted");
+  const pointerPrefix =
+    `sources/${contract.source_id}/captures/${captureTimestampDirectory(capturedAt)}/`;
+  assert(baseline.capture?.dir === pointerPrefix.slice(0, -1), "baseline_pointer_capture_dir_not_allowlisted");
+  assert(baseline.capture?.pdf === `${pointerPrefix}document.pdf`, "baseline_pointer_pdf_path_not_allowlisted");
+  assert(baseline.capture?.text === `${pointerPrefix}text.txt`, "baseline_pointer_text_path_not_allowlisted");
+  assert(baseline.capture?.meta === `${pointerPrefix}meta.json`, "baseline_pointer_meta_path_not_allowlisted");
+  assert(activation.shared_award_source_id === contract.source_id, "legacy_activation_source_not_allowlisted");
+  assert(activation.source_acquisition_id === contract.acquisition_id, "legacy_activation_acquisition_not_allowlisted");
+  assert(activation.source_page_request_id === contract.request_id, "legacy_activation_request_not_allowlisted");
+  assert(activation.guard_sha256 === contract.activation_guard_sha256, "legacy_activation_guard_not_allowlisted");
+  assert(activation.expected_normalized_text_sha256 === contract.sealed_intake.normalized_text_sha256, "legacy_activation_expected_text_not_allowlisted");
+  assert(activation.observed_normalized_text_sha256 === contract.sealed_intake.normalized_text_sha256, "legacy_activation_observed_text_not_allowlisted");
+  assert(activation.capture_file_sha256 === contract.file_sha256, "legacy_activation_file_not_allowlisted");
+  assert(activation.retained_text_artifact?.key === `source-intake-first-observation/v1/requests/${contract.request_id}/sha256/${contract.file_sha256}/text.txt`, "legacy_activation_text_key_not_allowlisted");
+  assert(activation.retained_text_artifact?.sha256 === contract.sealed_intake.text_object_sha256, "legacy_activation_text_object_not_allowlisted");
+  assert(activation.retained_text_artifact?.bytes === contract.sealed_intake.text_object_bytes, "legacy_activation_text_bytes_not_allowlisted");
+  assert(
+    sha256(Buffer.from(canonicalJson(activation), "utf8"))
+      === contract.baseline_pointer.stage1_baseline_activation_canonical_sha256,
+    "legacy_activation_block_not_allowlisted",
+  );
 }
 
 function assertR2Authority(receipt, contract) {

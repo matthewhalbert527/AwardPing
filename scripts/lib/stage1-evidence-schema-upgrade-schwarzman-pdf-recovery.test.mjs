@@ -36,7 +36,20 @@ const sourceId = STAGE1_SCHWARZMAN_PDF_RECOVERY_SOURCE_ID;
 const sourceRoot = `${archiveRoot}/sources/${sourceId}`;
 const baselineGeneration = `${sourceRoot}/captures/2026-08-03T18-52-07-825Z`;
 const retainedCanaryGeneration = `${sourceRoot}/captures/2026-08-15T04-22-34-967Z`;
-const localFixtureAvailable = [
+// baseline.json is a LIVE pointer the nightly refresh lane advances across
+// unchanged-content generations, so the generation it currently names is
+// derived from the pointer itself rather than hardcoded.
+const pointerGeneration = (() => {
+  try {
+    const dir = JSON.parse(
+      readFileSync(`${sourceRoot}/baseline.json`, "utf8"),
+    )?.capture?.dir;
+    return typeof dir === "string" && dir ? `${archiveRoot}/${dir}` : null;
+  } catch {
+    return null;
+  }
+})();
+const localFixtureAvailable = Boolean(pointerGeneration) && [
   `${sourceRoot}/baseline.json`,
   `${baselineGeneration}/document.pdf`,
   `${baselineGeneration}/text.txt`,
@@ -44,6 +57,9 @@ const localFixtureAvailable = [
   `${retainedCanaryGeneration}/document.pdf`,
   `${retainedCanaryGeneration}/text.txt`,
   `${retainedCanaryGeneration}/meta.json`,
+  `${pointerGeneration}/document.pdf`,
+  `${pointerGeneration}/text.txt`,
+  `${pointerGeneration}/meta.json`,
   `${archiveRoot}/intake-artifacts/requests/cf731f52-f02d-581e-bf52-c698f53d87d8/sha256/fac3353cf079c7acfe7eaa7d8da685eba8275181d500373a149f2fdeff429263/capture.json`,
 ].every(existsSync);
 
@@ -70,10 +86,20 @@ describe("Stage 1 Schwarzman PDF sealed-text recovery", () => {
         semantic_text_sha256:
           "9b50d2748660349bd5d4148453a0f2753cb668ebdf6a3e72d7aed43f43f53aaa",
       },
+      baseline_pointer: {
+        minimum_captured_at: "2026-08-03T18:52:07.825Z",
+        stage1_baseline_activation_canonical_sha256:
+          "cadc02e99b7003c7b1517745f90b5c4ca85b59c51bc98016f469a3e4221928d8",
+      },
     });
     expect(contract.legacy.semantic_text_sha256)
       .not.toBe(contract.sealed_intake.semantic_text_sha256);
-    expect(contract.omission.omitted_words).toHaveLength(18);
+    expect(contract.omission.omitted_words).toHaveLength(19);
+    // baseline.json is a live pointer the nightly refresh lane rewrites on
+    // unchanged-content refreshes; the retired whole-file byte-pin must not
+    // come back.
+    expect(contract.legacy.baseline_json_sha256).toBeUndefined();
+    expect(contract.legacy.baseline_json_bytes).toBeUndefined();
   });
 
   it("proves only strict ordered omissions and rejects substitutions or reordering", () => {
@@ -396,9 +422,9 @@ describe.runIf(localFixtureAvailable)("retained Schwarzman recovery evidence", (
         status: "accepted",
         parser_omission: {
           legacy_is_exact_subsequence: true,
-          sealed_word_count: 3487,
-          legacy_word_count: 3469,
-          omitted_word_count: 18,
+          sealed_word_count: 3491,
+          legacy_word_count: 3472,
+          omitted_word_count: 19,
         },
         recovery: {
           same_pdf_bytes_verified: true,
@@ -417,10 +443,13 @@ describe.runIf(localFixtureAvailable)("retained Schwarzman recovery evidence", (
           "9b50d2748660349bd5d4148453a0f2753cb668ebdf6a3e72d7aed43f43f53aaa",
       },
     });
+    // "YouTube" tokenizes as "you", "tube" under the live evidence-words
+    // normalizer (case-fused tokens split since bc30cba); the omitted
+    // passage itself is fixed by the byte-pinned sealed and legacy texts.
     expect(result.evidence.parser_omission.omitted_words).toEqual([
       "or", "that", "we", "are", "no", "longer", "accepting", "videos",
       "shared", "via", "google", "drive", "save", "your", "video", "on",
-      "youtube", "or",
+      "you", "tube", "or",
     ]);
     expect(result.recovered_text_bytes.byteLength).toBe(22398);
   });
@@ -437,7 +466,34 @@ describe.runIf(localFixtureAvailable)("retained Schwarzman recovery evidence", (
     }, "finalization_receipt_not_allowlisted"],
     ["altered baseline bytes", (fixture) => {
       fixture.existingBaselineBytes[0] ^= 1;
-    }, "baseline_json_sha256_not_allowlisted"],
+    }, "baseline_json_bytes_invalid"],
+    ["baseline record diverging from its exact bytes", (fixture) => {
+      fixture.existingBaseline.text_length += 1;
+    }, "baseline_json_bytes_record_mismatch"],
+    ["pointer regressed before the legacy authority", (fixture) => {
+      rewriteLivePointer(fixture, (baseline) => {
+        baseline.captured_at = "2026-08-01T00:00:00.000Z";
+      });
+    }, "baseline_pointer_timestamp_regressed"],
+    ["pointer capture path leaving this source", (fixture) => {
+      rewriteLivePointer(fixture, (baseline) => {
+        baseline.capture.pdf = baseline.capture.pdf.replace(
+          sourceId,
+          "11111111-1111-4111-8111-111111111111",
+        );
+      });
+    }, "baseline_pointer_pdf_path_not_allowlisted"],
+    ["drifted pointer text identity", (fixture) => {
+      rewriteLivePointer(fixture, (baseline) => {
+        baseline.text_hash = "0".repeat(64);
+      });
+    }, "baseline_pointer_text_not_allowlisted"],
+    ["tampered activation authority claim", (fixture) => {
+      rewriteLivePointer(fixture, (baseline) => {
+        baseline.summary_metadata.stage1_baseline_activation
+          .authority.public_facts = true;
+      });
+    }, "legacy_activation_block_not_allowlisted"],
     ["sibling R2 generation", (fixture) => {
       fixture.authoritativeExistingR2Binding.pointer_identity.immutable_generation = "0".repeat(32);
     }, "r2_binding_receipt_invalid"],
@@ -597,13 +653,16 @@ describe.runIf(localFixtureAvailable)("retained Schwarzman recovery evidence", (
         identity: recovery.immutable_acquisition_identity,
       },
       existingBaseline: fixture.existingBaseline,
+      // The ordinary validator binds the existing capture to the generation
+      // the live pointer currently names (which may be a newer
+      // unchanged-content refresh of the byte-pinned legacy authority).
       existingCapture: captureRecord({
-        directory: baselineGeneration,
-        metadata: readJson(`${baselineGeneration}/meta.json`),
-        text: readFileSync(`${baselineGeneration}/text.txt`, "utf8"),
+        directory: pointerGeneration,
+        metadata: readJson(`${pointerGeneration}/meta.json`),
+        text: readFileSync(`${pointerGeneration}/text.txt`, "utf8"),
         baseline: fixture.existingBaseline,
       }),
-      existingPreparedArtifacts: preparedPdfArtifacts(baselineGeneration),
+      existingPreparedArtifacts: preparedPdfArtifacts(pointerGeneration),
       authoritativeExistingR2Binding: fixture.authoritativeExistingR2Binding,
       capture: prospectiveCapture,
       capturePreparedArtifacts: preparedPdfArtifacts(retainedCanaryGeneration, {
@@ -710,6 +769,17 @@ function retainedFixture() {
     sealedIntakeArtifacts:
       loadStage1SchwarzmanPdfSealedIntakeArtifacts({ archiveRoot }),
   };
+}
+
+// Mutates the parsed live-pointer record and re-serializes the fixture bytes
+// so the bytes<->record binding holds and the mutated subfield itself is what
+// the contract refuses.
+function rewriteLivePointer(fixture, mutate) {
+  mutate(fixture.existingBaseline);
+  fixture.existingBaselineBytes = Buffer.from(
+    `${JSON.stringify(fixture.existingBaseline, null, 2)}\n`,
+    "utf8",
+  );
 }
 
 function readAcquisition() {
