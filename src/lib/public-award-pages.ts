@@ -216,11 +216,19 @@ async function loadPublicAwardPageData(
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
     .filter(isPublicAwardSource);
-  const reviewedHomepageSource = officialSources.find((source) =>
-    source.id === publication.officialHomepageSourceId &&
-    source.url === publication.registry.official_homepage &&
-    publication.officialHomepageUrl === publication.registry.official_homepage
-  );
+  // Find the reviewed homepage BEFORE the canonical-URL dedupe: alias awards
+  // routinely carry duplicate rows for the same homepage URL, and the dedupe
+  // keeps an arbitrary winner, so an id-exact match against the deduped list
+  // can miss the pinned source depending on query order.
+  const reviewedHomepageSource = ((sources || []) as SharedSourceRow[])
+    .filter((source) => publication.allowedSourceIdSet.has(source.id))
+    .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
+    .filter(isPublicAwardSource)
+    .find((source) =>
+      source.id === publication.officialHomepageSourceId &&
+      source.url === publication.registry.official_homepage &&
+      publication.officialHomepageUrl === publication.registry.official_homepage
+    );
   if (!reviewedHomepageSource) return null;
   const officialChanges = eligibleEvents.map((entry) => entry.event);
   const facts = publicAwardFactsFromAward({
