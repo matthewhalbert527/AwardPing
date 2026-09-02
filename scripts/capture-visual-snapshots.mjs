@@ -3032,7 +3032,7 @@ async function enforceStage1FirstVisualBaselineActivation({ source, capture, rep
     const receiptFailure = failedStage1BaselineActivationEvaluation(
       evaluation,
       "stage1_baseline_activation_server_receipt_failed",
-      `The service-only activation receipt failed: ${error.message || String(error)}`,
+      `The service-only activation receipt failed: ${errorMessage(error)}`,
     );
     await persistStage1BaselineActivationFailure({
       source,
@@ -3457,7 +3457,7 @@ async function finalizeStage1BaselineActivation({
     const finalizationFailure = failedStage1BaselineActivationEvaluation(
       stage1Activation.evaluation,
       "stage1_baseline_activation_server_finalization_failed",
-      `The service-only activation finalization failed: ${error.message || String(error)}`,
+      `The service-only activation finalization failed: ${errorMessage(error)}`,
     );
     await persistStage1BaselineActivationFailure({
       source,
@@ -11639,7 +11639,7 @@ async function readStage1EvidenceSchemaUpgradeSourceHealth(sourceId) {
     .maybeSingle();
   if (error) {
     throw new Error(
-      `Stage 1 source-health exact readback failed: ${error.message || String(error)}`,
+      describeSupabaseError(error, "read back Stage 1 source health"),
     );
   }
   return data || null;

@@ -235,6 +235,29 @@ describe("visual capture run reporting", () => {
     expect(classifyVisualCaptureFailure({ message }).code).toBe(expectedCode);
   });
 
+  it("keeps a retained-incomplete PDF discovery scan as a warning that retries next scan", () => {
+    const retained = classifyVisualCaptureFailure({
+      message:
+        "PDF discovery scan was retained as incomplete and did not advance the historical seed: scroll_activation_failed",
+    });
+    expect(retained.code).toBe("pdf_discovery_scan_incomplete");
+    expect(retained.severity).toBe("warning");
+    expect(retained.retry_mode).toBe("automatic_next_scan");
+
+    const unseeded = classifyVisualCaptureFailure({
+      message: "PDF discovery DOM scan failed and was left unseeded: page.evaluate: timeout",
+    });
+    expect(unseeded.code).toBe("pdf_discovery_scan_incomplete");
+    expect(unseeded.severity).toBe("warning");
+
+    // The generic timeout term in the reason suffix must not reroute the
+    // retained-scan message to the transient-network policy, and a real PDF
+    // parse failure must stay critical.
+    expect(classifyVisualCaptureFailure({
+      message: "PDF text parsing failed: Invalid PDF structure.",
+    }).severity).toBe("critical");
+  });
+
   it("emits guarded repair actions for network, resource, and PDF limits", () => {
     const summary = buildVisualRunReportSummary({
       status: "succeeded",

@@ -283,6 +283,20 @@ const FAILURE_POLICIES = [
     ],
   },
   {
+    code: "pdf_discovery_scan_incomplete",
+    group: "evidence_integrity",
+    label: "PDF discovery scan retained as incomplete",
+    severity: "warning",
+    retry_mode: "automatic_next_scan",
+    repair_code: "rescan_pdf_discovery_next_run",
+    solution:
+      "No action needed: an incomplete or failed discovery scan is deliberately retained without advancing the historical seed watermark, page evidence is unaffected, and the next scheduled scan retries discovery from the prior seed. Investigate only if the same source stays incomplete across many runs.",
+    matches: [
+      "pdf discovery scan was retained as incomplete",
+      "pdf discovery dom scan failed and was left unseeded",
+    ],
+  },
+  {
     code: "capture_render_or_unsupported",
     group: "capture_runtime",
     label: "Page could not be rendered",
@@ -366,6 +380,7 @@ export function classifyVisualCaptureFailure(error) {
       "capture_resource_limit",
       "pdf_size_or_page_limit",
       "pdf_parse_or_cleanup_failure",
+      "pdf_discovery_scan_incomplete",
       "localization_evidence_unavailable",
     ].includes(candidate.code))
     .find((candidate) => candidate.matches.some((pattern) => lower.includes(pattern)));
