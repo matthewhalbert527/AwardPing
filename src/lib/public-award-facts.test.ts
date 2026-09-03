@@ -269,6 +269,26 @@ describe("public award facts", () => {
     expect(facts.applicationMaterials).toHaveLength(12);
   });
 
+  it("keeps reviewed important dates verbatim, including items without a month or year", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {
+        deadline: "October 1, 2026 at 11:59PM PT",
+        important_dates: [
+          "Advisor certification deadline: March 4, 2027",
+          "Interviews: late fall",
+          "Applicant notification via email: May 2027",
+        ],
+      },
+    });
+
+    expect(facts.importantDates).toEqual([
+      "Advisor certification deadline: March 4, 2027",
+      "Interviews: late fall",
+      "Applicant notification via email: May 2027",
+    ]);
+  });
+
   it("preserves multiple award amounts as separate public fact items", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
@@ -280,25 +300,27 @@ describe("public award facts", () => {
     expect(facts.awardAmount).toEqual(["Full tuition", "Living stipend"]);
   });
 
-  it("requires context for every important date", () => {
+  it("renders reviewed important dates exactly as reviewed", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
       publicFacts: {
         deadline: "March 15, 2027",
         opening_date: "September 15, 2026",
         important_dates: [
-          "March 15, 2027",
-          "February 1, 2027",
-          "December 15, 2026",
-          "September 15, 2026",
+          "Application deadline: March 15, 2027",
+          "Semifinalist notification: February 1, 2027",
+          "Applications open: September 15, 2026",
           "Awards announced by: May 1",
           "Headshot photo due: June 1",
         ],
       },
     });
 
+    // The review supplies the context (the editorial policy requires it), so
+    // nothing is relabelled, re-ordered, dropped or truncated on the page.
     expect(facts.importantDates).toEqual([
       "Application deadline: March 15, 2027",
+      "Semifinalist notification: February 1, 2027",
       "Applications open: September 15, 2026",
       "Awards announced by: May 1",
       "Headshot photo due: June 1",

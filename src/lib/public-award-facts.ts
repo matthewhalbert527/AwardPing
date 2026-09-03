@@ -95,7 +95,12 @@ export function publicAwardFactsFromAward(input: {
     cleanString(structured.opening_date) ||
     cleanString(factMap.get("opening date")) ||
     firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date)));
-  const importantDates = normalizeImportantDateItems(rawImportantDates, { deadline, openingDate });
+  // Reviewed important dates already carry their context (the editorial policy
+  // requires it); the legacy normaliser would drop reviewed items that lack a
+  // month or a season-plus-year and cap the list at ten.
+  const importantDates = reviewed
+    ? rawImportantDates.flatMap(splitFactItems)
+    : normalizeImportantDateItems(rawImportantDates, { deadline, openingDate });
 
   return {
     overview:
