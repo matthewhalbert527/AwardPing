@@ -5,12 +5,14 @@ import {
   batchInputModeForRequests,
   estimateGeminiCostUsd,
   extractGeminiBatchInlineResponses,
+  extractGeminiFinishReason,
   geminiBatchExactMappingComplete,
   geminiBatchInlineResponseMap,
   geminiBatchUsageAccounting,
   geminiBatchJsonlRequest,
   geminiBatchOutputFileNames,
   geminiInlineError,
+  geminiPricePerMillion,
   mergeBatchJobRecord,
   latestRequestKeysByBatchJob,
   normalizeGeminiPricingMode,
@@ -28,6 +30,30 @@ describe("Gemini batch support helpers", () => {
     expect(normalizeGeminiPricingMode("standard", { endpoint: "batchGenerateContent" })).toBe("batch");
     expect(estimateGeminiCostUsd("gemini-2.5-flash", usage, "standard")).toBe(2.8);
     expect(estimateGeminiCostUsd("gemini-2.5-flash", usage, "batch")).toBe(1.4);
+  });
+
+  it("prices gemini-3.7-flash at the published strong-tier rates with thinking billed as output", () => {
+    expect(geminiPricePerMillion("gemini-3.7-flash", "batch")).toEqual({ input: 0.375, output: 1.875 });
+    expect(geminiPricePerMillion("gemini-3.7-flash", "standard")).toEqual({ input: 0.75, output: 3.75 });
+    expect(geminiPricePerMillion("models/gemini-3.6-flash", "batch")).toEqual({ input: 0.375, output: 1.875 });
+    expect(geminiPricePerMillion("gemini-3.8-flash", "standard")).toEqual({ input: 0.75, output: 3.75 });
+    // Existing branches stay intact.
+    expect(geminiPricePerMillion("gemini-3.1-flash-lite", "batch")).toEqual({ input: 0.125, output: 0.75 });
+    expect(geminiPricePerMillion("gemini-3.1-flash", "standard")).toEqual({ input: 0.5, output: 3 });
+    expect(geminiPricePerMillion("gemini-2.5-flash-lite", "batch")).toEqual({ input: 0.05, output: 0.2 });
+
+    const usage = { prompt_tokens: 1_000_000, candidates_tokens: 500_000, thoughts_tokens: 500_000 };
+    expect(estimateGeminiCostUsd("gemini-3.7-flash", usage, "batch")).toBe(2.25);
+    expect(estimateGeminiCostUsd("gemini-3.7-flash", usage, "standard")).toBe(4.5);
+  });
+
+  it("reads the provider finish reason without changing the text extractor contract", () => {
+    expect(extractGeminiFinishReason({
+      candidates: [{ finishReason: "MAX_TOKENS", content: { parts: [{ text: "{" }] } }],
+    })).toBe("MAX_TOKENS");
+    expect(extractGeminiFinishReason({ candidates: [{ finish_reason: "STOP" }] })).toBe("STOP");
+    expect(extractGeminiFinishReason({ candidates: [] })).toBeNull();
+    expect(extractGeminiFinishReason(null)).toBeNull();
   });
 
   it("tracks unfinished batch request keys without duplicating restarted jobs", () => {

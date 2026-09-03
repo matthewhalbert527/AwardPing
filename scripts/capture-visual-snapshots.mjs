@@ -154,6 +154,11 @@ import {
   stage1BaselineActivationReceipt,
 } from "./lib/stage1-baseline-activation-guard.mjs";
 import {
+  emptyStage1ManifestSources,
+  isStage1ManifestSource,
+  loadStage1ManifestSources,
+} from "./lib/stage1-manifest-sources.mjs";
+import {
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_FILE_ARG,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_APPLY_PLAN_SHA256_ARG,
   STAGE1_EVIDENCE_SCHEMA_UPGRADE_REVIEWED_DRY_RUN_REPORT_FILE_ARG,
@@ -793,6 +798,14 @@ const aiProvider = aiRequired
 const aiModel = modelForProvider(aiProvider);
 let supabase = null;
 let r2Client = null;
+// Stage 1 manifest membership, loaded once per run. Manifest sources decide
+// what the live award pages show, so automated review_later holds must never
+// take them out of monitoring (see automatedHoldExempt).
+let stage1ManifestSources = emptyStage1ManifestSources();
+// Captures whose baseline facts were extracted by THIS run. writeBaseline may
+// copy a stored baseline's facts onto the capture; those carried-forward facts
+// must never re-apply an old verdict as a fresh review_later hold.
+const freshBaselineFactsByCapture = new WeakMap();
 const hostLastFetchAt = new Map();
 const hostWaitQueues = new Map();
 let existingR2SnapshotSourceIds = new Set();
@@ -1692,6 +1705,24 @@ async function runOnce() {
       );
       return;
     }
+
+    // The manifest only withholds automated holds; a transient load error
+    // must not cost a whole nightly shard. Degrade to "no exemptions" and
+    // record it in the report so the morning sweep can see it happened.
+    try {
+      stage1ManifestSources = await loadStage1ManifestSources(supabase);
+    } catch (error) {
+      stage1ManifestSources = emptyStage1ManifestSources();
+      report.stage1_manifest_load_error = errorMessage(error);
+      console.error(`STAGE1_MANIFEST load failed; running without hold exemptions: ${errorMessage(error)}`);
+    }
+    report.stage1_manifest = {
+      available: stage1ManifestSources.available,
+      source_count: stage1ManifestSources.sourceIds.size,
+    };
+    console.log(
+      `STAGE1_MANIFEST available=${stage1ManifestSources.available} sources=${stage1ManifestSources.sourceIds.size}`,
+    );
 
     if (stage1EvidenceSchemaUpgrade) {
       if (stage1EvidenceSchemaUpgradeDryRun) {
@@ -3550,14 +3581,22 @@ async function processSourceUnlocked(
       source_title: source.title,
     });
     if (hygiene.action === "review_later") {
-      await markSharedSourceReviewLater(source, hygiene, report);
-      return;
+      if (automatedHoldExempt(source)) {
+        logStage1ManifestSourceKeptOpen("pre_capture_hygiene", hygiene.reason, source);
+      } else {
+        await markSharedSourceReviewLater(source, hygiene, report);
+        return;
+      }
     }
 
     const consolidation = classifySourceForConsolidation(source, source.shared_awards || {});
     if (consolidation.action === "review_later") {
-      await markSharedSourceReviewLater(source, consolidation, report);
-      return;
+      if (automatedHoldExempt(source)) {
+        logStage1ManifestSourceKeptOpen("pre_capture_consolidation", consolidation.reason, source);
+      } else {
+        await markSharedSourceReviewLater(source, consolidation, report);
+        return;
+      }
     }
   }
 
@@ -11906,7 +11945,10 @@ async function markSharedSourceVisualCheckFailed(source, message, report = null)
     updated_at: now,
   };
 
-  if (finalHygiene.action === "review_later") {
+  // Failure details (last_error, consecutive_failures) are always recorded;
+  // only the automated hold itself is withheld for Stage 1 manifest sources.
+  const holdExempt = finalHygiene.action === "review_later" && automatedHoldExempt(source);
+  if (finalHygiene.action === "review_later" && !holdExempt) {
     update.admin_review_status = "review_later";
     update.admin_review_note = truncate(
       `Auto-cleaned by visual worker (${finalHygiene.reason}): ${finalHygiene.note || message}`,
@@ -11928,7 +11970,9 @@ async function markSharedSourceVisualCheckFailed(source, message, report = null)
     recordStaleAdminReviewPlan(report, source, "visual_check_failed");
     return false;
   }
-  if (finalHygiene.action === "review_later") {
+  if (holdExempt) {
+    logStage1ManifestSourceKeptOpen("visual_check_failed", finalHygiene.reason, source);
+  } else if (finalHygiene.action === "review_later") {
     console.log(`SOURCE_REVIEW_LATER reason=${finalHygiene.reason} ${sourceLabel(source)}`);
   }
   return true;
@@ -12043,14 +12087,29 @@ function normalizeRedirectPath(pathname) {
 }
 
 function sourcePageMetadataUpdate(source, capture) {
-  const facts = capture?.baseline_facts ? normalizeBaselineFacts(capture.baseline_facts) : null;
-  if (!facts) return {};
+  const normalizedFacts = capture?.baseline_facts ? normalizeBaselineFacts(capture.baseline_facts) : null;
+  if (!normalizedFacts) return {};
   const protectedStage1Approval = stage1BaselineMonitoringApprovalMetadata(source);
+  // An operator correction is a human verdict on the stored facts. It survives
+  // every metadata rebuild and outranks the model's rejection verdict.
+  const preservedOperatorCorrection = baselineFactsOperatorCorrectionMetadata(source);
+  const facts = applyBaselineFactsOperatorCorrection(source, normalizedFacts);
+  const freshExtraction = captureCarriesFreshBaselineFacts(capture);
 
   const metadata = capture.baseline_facts_metadata || {};
   const generatedAt = metadata.extracted_at || new Date().toISOString();
   const sanity = baselineFactsMatchSource(source, capture, facts);
-  if (!sanity.ok) {
+  // The operator's verdict outranks the model only on the field the operator
+  // corrected (award_relevance / cycle_relevance ...). Any other rejection -
+  // unrelated page, spam, source mismatch, failed extraction - still applies.
+  const operatorVerdict = hasBaselineFactsOperatorCorrection(source)
+    && operatorCorrectionCoversRejection(source, sanity.reason);
+  if (!sanity.ok && operatorVerdict) {
+    console.log(
+      `BASELINE_FACTS operator_correction_overrides_rejection reason=${sanity.reason} ${sourceLabel(source)}`,
+    );
+  }
+  if (!sanity.ok && !operatorVerdict) {
     const update = {
       display_title: cleanNullable(capture.page_title) || cleanNullable(source.title) || null,
       page_description: null,
@@ -12068,19 +12127,30 @@ function sourcePageMetadataUpdate(source, capture) {
         rejection_reason: sanity.reason,
         quality_flags: [...new Set([...(facts.quality_flags || []), "source-mismatch"])],
         ...protectedStage1Approval,
+        ...preservedOperatorCorrection,
       },
       page_metadata_generated_at: generatedAt,
       page_metadata_model: metadata.model || aiModel,
     };
 
     if (shouldReviewLaterForBaselineFactsRejection(facts, sanity.reason)) {
-      update.admin_review_status = "review_later";
-      update.admin_review_note = truncate(
-        `Auto-cleaned by baseline facts (${sanity.reason}): Gemini classified this page as award_relevance=${facts.award_relevance}, cycle_relevance=${facts.cycle_relevance}.`,
-        1000,
-      );
-      update.admin_reviewed_at = generatedAt;
-      update.admin_reviewed_by = "awardping-visual-snapshot-worker";
+      if (!freshExtraction) {
+        // Facts carried forward from the stored baseline: the rejection markers
+        // above are rewritten as before, but a stale verdict is not a new hold.
+        console.log(
+          `SOURCE_HOLD_SKIPPED stale_baseline_facts_verdict reason=${sanity.reason} ${sourceLabel(source)}`,
+        );
+      } else if (automatedHoldExempt(source)) {
+        logStage1ManifestSourceKeptOpen("baseline_facts_rejection", sanity.reason, source);
+      } else {
+        update.admin_review_status = "review_later";
+        update.admin_review_note = truncate(
+          `Auto-cleaned by baseline facts (${sanity.reason}): Gemini classified this page as award_relevance=${facts.award_relevance}, cycle_relevance=${facts.cycle_relevance}.`,
+          1000,
+        );
+        update.admin_reviewed_at = generatedAt;
+        update.admin_reviewed_by = "awardping-visual-snapshot-worker";
+      }
     }
 
     return update;
@@ -12110,6 +12180,7 @@ function sourcePageMetadataUpdate(source, capture) {
       baseline_facts: facts,
       baseline_facts_metadata: metadata,
       ...protectedStage1Approval,
+      ...preservedOperatorCorrection,
     },
     page_metadata_generated_at: generatedAt,
     page_metadata_model: metadata.model || aiModel,
@@ -12252,6 +12323,66 @@ function stage1BaselineMonitoringApprovalMetadata(source) {
   return Object.keys(approval).length
     ? { stage1_baseline_monitoring_approval: approval }
     : {};
+}
+
+// Operators record human verdicts on baseline facts in
+// page_metadata.baseline_facts_operator_correction (field, previous_value,
+// reason, corrected_at, corrected_by, cleared_markers, removed_backfill_marker,
+// removed_review_status, review_status_cleared_at,
+// stale_failure_markers_cleared_at). The block is carried across every
+// metadata rebuild exactly like the Stage 1 approval.
+function baselineFactsOperatorCorrectionMetadata(source) {
+  const correction = jsonObjectOrEmpty(
+    jsonObjectOrEmpty(source?.page_metadata).baseline_facts_operator_correction,
+  );
+  return Object.keys(correction).length
+    ? { baseline_facts_operator_correction: correction }
+    : {};
+}
+
+function hasBaselineFactsOperatorCorrection(source) {
+  return Object.keys(baselineFactsOperatorCorrectionMetadata(source)).length > 0;
+}
+
+// A rejection is covered by the operator's correction only when it concerns
+// the corrected field itself (e.g. field "cycle_relevance" covers
+// "cycle_relevance_unclear"); everything else keeps the model's verdict.
+function operatorCorrectionCoversRejection(source, rejectionReason) {
+  const correction = baselineFactsOperatorCorrectionMetadata(source).baseline_facts_operator_correction;
+  const field = cleanText(correction?.field);
+  const reason = cleanText(rejectionReason);
+  return Boolean(field) && reason.startsWith(`${field}_`);
+}
+
+// The corrected value lives in the stored page_metadata.baseline_facts[field];
+// re-apply it so a rebuild from capture facts cannot revert the operator's edit.
+function applyBaselineFactsOperatorCorrection(source, facts) {
+  const correction = baselineFactsOperatorCorrectionMetadata(source).baseline_facts_operator_correction;
+  const field = cleanText(correction?.field);
+  const storedFacts = jsonObjectOrEmpty(jsonObjectOrEmpty(source?.page_metadata).baseline_facts);
+  if (!field || !Object.hasOwn(storedFacts, field)) return facts;
+  return { ...facts, [field]: storedFacts[field] };
+}
+
+// True only when maybeExtractBaselineFacts attached facts to this capture in
+// the current run. Facts copied from a stored baseline by writeBaseline
+// (capture_behavior_refresh, localization_repair, section_baseline_created,
+// deterministic_noise_absorbed, intake exact recovery) are not fresh.
+function captureCarriesFreshBaselineFacts(capture) {
+  return Boolean(capture?.baseline_facts)
+    && freshBaselineFactsByCapture.get(capture) === capture.baseline_facts;
+}
+
+// Single predicate for every AUTOMATED admin_review_status -> review_later
+// write. Human-owned holds and reviews are untouched by this exemption.
+function automatedHoldExempt(source) {
+  return isStage1ManifestSource(stage1ManifestSources, source?.id);
+}
+
+function logStage1ManifestSourceKeptOpen(site, reason, source) {
+  console.log(
+    `SOURCE_HOLD_SKIPPED stage1 manifest source kept open site=${site} reason=${reason || "unspecified"} ${sourceLabel(source)}`,
+  );
 }
 
 async function markSharedSourceInitialDocumentQuarantined(source, capture, reason) {
@@ -16376,6 +16507,7 @@ function ensureGeminiApiCallAvailable(report, kind) {
 function attachBaselineFactsToCapture(capture, value, metadata = {}) {
   const facts = normalizeBaselineFacts(value);
   capture.baseline_facts = facts;
+  freshBaselineFactsByCapture.set(capture, facts);
   capture.baseline_facts_metadata = {
     status: "succeeded",
     reason: metadata.reason || null,

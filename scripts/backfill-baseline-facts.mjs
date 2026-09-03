@@ -39,6 +39,7 @@ import {
   geminiBatchOutputFileNames,
   geminiInlineError,
   geminiInlineResponsePayload,
+  geminiPricePerMillion,
   mergeBatchJobRecord,
   latestRequestKeysByBatchJob,
   parseGeminiModelJsonObject,
@@ -50,13 +51,27 @@ import {
   sourceQualityDecision,
 } from "./lib/source-quality.mjs";
 import {
+  BASELINE_FACTS_STRONG_MODEL_FALLBACK,
+  BASELINE_FACTS_STRONG_MODEL_MAX_BATCH_REQUESTS,
+  baselineFactsBatchModel,
+  baselineFactsEscalationDecision,
+  baselineFactsGenerationConfig,
+  baselineFactsMaxOutputTokensForModel,
+  baselineFactsModelForSource,
   baselineFactsRejectionDisposition,
   baselineReviewPreflightDecision,
+  estimateBaselineFactsBatchCostUsd,
+  partitionBaselineFactsEntriesByModel,
 } from "./lib/baseline-facts-candidates.mjs";
 import {
+  GEMINI_STRONG_WORKER_MODEL,
   geminiWorkerModel,
   normalizeGeminiBatchMode,
 } from "./lib/gemini-worker-policy.mjs";
+import {
+  emptyStage1ManifestSources,
+  loadStage1ManifestSources,
+} from "./lib/stage1-manifest-sources.mjs";
 import { enqueueAwardReconciliation } from "./lib/award-fact-reconciliation.mjs";
 import { checkSupabaseHealth } from "./lib/supabase-health.mjs";
 import { atomicWriteJson } from "./lib/visual-baseline-lock.mjs";
@@ -136,6 +151,12 @@ const geminiBatchMaxRequests = positiveInt(
   args["gemini-batch-max-requests"] || env.AWARDPING_GEMINI_BATCH_MAX_REQUESTS,
   25,
 );
+// Strong-model tier (Stage 1 manifest sources + escalations). The worker
+// policy export is the source of truth; the lib default only covers an
+// emptied policy value so the tier never resolves to "".
+const geminiApiStrongModel = cleanText(GEMINI_STRONG_WORKER_MODEL) || BASELINE_FACTS_STRONG_MODEL_FALLBACK;
+const geminiStrongBatchMaxRequests = Math.min(geminiBatchMaxRequests, BASELINE_FACTS_STRONG_MODEL_MAX_BATCH_REQUESTS);
+let stage1Manifest = emptyStage1ManifestSources();
 const geminiBatchParallelJobs = positiveInt(
   args["gemini-batch-parallel-jobs"] || env.AWARDPING_GEMINI_BATCH_PARALLEL_JOBS,
   4,
@@ -217,6 +238,14 @@ async function runOnce() {
     status: "running",
     ai_provider: aiProvider,
     ai_model: aiProvider === "gemini" ? geminiApiModel : geminiCliModel,
+    ai_strong_model: useGeminiBatchApi ? geminiApiStrongModel : null,
+    model_tiers: {
+      fleet_model: geminiApiModel,
+      strong_model: geminiApiStrongModel,
+      strong_batch_max_requests: geminiStrongBatchMaxRequests,
+      stage1_manifest_available: false,
+      stage1_manifest_source_count: 0,
+    },
     env_path: envPath,
     options: {
       limit,
@@ -262,6 +291,8 @@ async function runOnce() {
     stale_admin_review_plans_skipped: 0,
     skip_reasons: {},
     failed: 0,
+    escalated: 0,
+    escalations: [],
     stop_reason: null,
     active_work_deferred_batches: 0,
     billing_blocked: false,
@@ -316,6 +347,14 @@ async function runOnce() {
     }
 
     runId = await startWorkerRun(report);
+    if (useGeminiBatchApi) {
+      stage1Manifest = await loadStage1ManifestSources(supabase);
+      report.model_tiers.stage1_manifest_available = stage1Manifest.available;
+      report.model_tiers.stage1_manifest_source_count = stage1Manifest.sourceIds.size;
+      console.log(
+        `BASELINE_FACTS_MODEL_TIERS fleet=${geminiApiModel} strong=${geminiApiStrongModel} stage1_manifest=${stage1Manifest.available ? stage1Manifest.sourceIds.size : "unavailable"} strong_batch_max=${geminiStrongBatchMaxRequests}`,
+      );
+    }
     const sourceRecords = await loadBaselineReviewSources();
     report.loaded_source_records = sourceRecords?.size || 0;
     const targets = loadBaselineTargets(sourceRecords);
@@ -708,15 +747,23 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
     console.log(`BASELINE_FACTS_BATCH processing jobs=${activeJobs.length} no_submission_slots=true`);
     return;
   }
-  let chunk = [];
-  let chunkBytes = geminiBatchEnvelopeBytes([]);
+  // One Gemini Batch job targets one model (it is part of the URL), so open
+  // chunks are kept per model and every queued chunk is single-model.
+  const openChunksByModel = new Map();
   const pendingChunks = [];
+  const emptyChunkBytes = geminiBatchEnvelopeBytes([]);
+  const openChunkFor = (model) => {
+    if (!openChunksByModel.has(model)) openChunksByModel.set(model, { chunk: [], chunkBytes: emptyChunkBytes });
+    return openChunksByModel.get(model);
+  };
+  const openChunkEntries = () => [...openChunksByModel.values()].flatMap((open) => open.chunk);
 
-  const queueChunk = () => {
-    if (!chunk.length) return;
-    pendingChunks.push(chunk);
-    chunk = [];
-    chunkBytes = geminiBatchEnvelopeBytes([]);
+  const queueChunk = (model) => {
+    const open = openChunkFor(model);
+    if (!open.chunk.length) return;
+    pendingChunks.push(open.chunk);
+    open.chunk = [];
+    open.chunkBytes = emptyChunkBytes;
   };
 
   for (const target of targets) {
@@ -728,7 +775,7 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
       console.log("BASELINE_FACTS gemini_api_request_cap_reached");
       break;
     }
-    if (geminiApiSubmittedCapReached(report, pendingGeminiBatchRequestCount(pendingChunks, chunk))) {
+    if (geminiApiSubmittedCapReached(report, pendingGeminiBatchRequestCount(pendingChunks, openChunkEntries()))) {
       report.stop_reason = "gemini_api_submitted_request_cap_reached";
       console.log("BASELINE_FACTS gemini_api_submitted_request_cap_reached");
       break;
@@ -768,7 +815,15 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
     }
 
     report.eligible_candidates += 1;
-    const batchEntry = geminiBatchEntryForBaselineFacts(source, capture);
+    const tier = baselineFactsModelForSource({
+      source,
+      manifest: stage1Manifest,
+      fleetModel: geminiApiModel,
+      strongModel: geminiApiStrongModel,
+    });
+    const model = tier.model;
+    const batchMaxRequests = baselineBatchMaxRequestsForModel(model);
+    const batchEntry = geminiBatchEntryForBaselineFacts(source, capture, { model });
     const batchEntryBytes = Buffer.byteLength(JSON.stringify(batchEntry), "utf8") + 2;
     if (batchEntryBytes > geminiBatchMaxInlineBytes * 4) {
       report.failed += 1;
@@ -778,11 +833,12 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
       continue;
     }
 
+    const open = openChunkFor(model);
     if (
-      chunk.length > 0 &&
-      (chunk.length >= geminiBatchMaxRequests || chunkBytes + batchEntryBytes > geminiBatchMaxInlineBytes)
+      open.chunk.length > 0 &&
+      (open.chunk.length >= batchMaxRequests || open.chunkBytes + batchEntryBytes > geminiBatchMaxInlineBytes)
     ) {
-      queueChunk();
+      queueChunk(model);
 
       if (pendingChunks.length >= availableJobSlots) break;
 
@@ -795,15 +851,17 @@ async function processGeminiApiBatchTargets(targets, report, runId) {
     }
 
     report.checked += 1;
-    chunk.push({ target, baseline, capture, source, batchEntry });
-    chunkBytes += batchEntryBytes;
-    if (chunk.length >= geminiBatchMaxRequests || chunkBytes >= geminiBatchMaxInlineBytes) {
-      queueChunk();
+    open.chunk.push({ target, baseline, capture, source, batchEntry, model, model_tier: tier.tier, model_reason: tier.reason });
+    open.chunkBytes += batchEntryBytes;
+    if (open.chunk.length >= batchMaxRequests || open.chunkBytes >= geminiBatchMaxInlineBytes) {
+      queueChunk(model);
     }
     await maybeUpdateWorkerRun(runId, report);
   }
 
-  if (chunk.length && pendingChunks.length < availableJobSlots) queueChunk();
+  for (const model of openChunksByModel.keys()) {
+    if (openChunkFor(model).chunk.length && pendingChunks.length < availableJobSlots) queueChunk(model);
+  }
   if (pendingChunks.length && !report.billing_blocked) {
     await processGeminiApiBatchChunkGroup(pendingChunks, report, runId, { waitForCompletion: false });
     if (report.gemini_usage.batch_submitted_requests > 0) {
@@ -1151,6 +1209,7 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
     }
 
     report.checked += entries.length;
+    const jobModel = baselineFactsBatchModel(entries, job.model || geminiApiModel);
     let reconciliationResult;
     try {
       const preparedResponses = await prepareGeminiApiBatchResponses({
@@ -1161,7 +1220,7 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
       if (job.spend_reservation_id) {
         await settleBaselineGeminiBatchSpend({
           reservationId: job.spend_reservation_id,
-          model: job.model || geminiApiModel,
+          model: jobModel,
           usage: preparedResponses.usage,
           responseCount: preparedResponses.responseCount,
           usageResponseCount: preparedResponses.usageResponseCount,
@@ -1177,6 +1236,7 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
         report,
         runId,
         preparedResponses,
+        model: jobModel,
       });
     } catch (error) {
       const message = errorMessage(error);
@@ -1199,11 +1259,19 @@ async function reconcileUnfinishedGeminiBatchJobs(state, targets, report, runId)
       output_ref: geminiBatchOutputRef(completed),
       reconciled_at: new Date().toISOString(),
       reconciliation_status: reconciliationResult.failed > 0 ? "completed_with_item_failures" : "completed",
-      reconciliation_result: reconciliationResult,
+      reconciliation_result: reconciliationSummary(reconciliationResult),
       error: null,
     });
     saveGeminiBatchState(nextState);
-    console.log(`BASELINE_FACTS_BATCH existing_reconciled job=${job.batch_name} requests=${entries.length}`);
+    console.log(
+      `BASELINE_FACTS_BATCH existing_reconciled job=${job.batch_name} model=${jobModel} requests=${entries.length} escalated=${reconciliationResult.escalated || 0}`,
+    );
+    if (reconciliationResult.escalations?.length) {
+      // The escalation batch persists its own job records straight to disk;
+      // reload so the in-memory state does not clobber them on the next save.
+      await escalateBaselineFactsEntries(reconciliationResult.escalations, report, runId, { parentBatchName: job.batch_name });
+      nextState = loadGeminiBatchState();
+    }
     await maybeUpdateWorkerRun(runId, report);
   }
 
@@ -1215,6 +1283,8 @@ function entriesForBatchStateJob(job, targetsBySourceId, allowedKeys = null) {
   const entries = [];
   const contexts = Array.isArray(job.request_contexts) ? job.request_contexts : [];
   const keys = Array.isArray(job.request_keys) ? job.request_keys : [];
+  // Jobs written before model tiering carry no model; they were fleet batches.
+  const jobModel = cleanText(job.model) || geminiApiModel;
   for (const key of keys) {
     if (allowedKeys && !allowedKeys.has(key)) continue;
     const context = contexts.find((item) => item?.source_id === key) || {};
@@ -1224,12 +1294,20 @@ function entriesForBatchStateJob(job, targetsBySourceId, allowedKeys = null) {
     const capture = captureFromBaseline(baseline);
     const source = target.source || sourceFromBaseline(baseline);
     if (!baseline || !capture || !source) continue;
+    const model = cleanText(context.model) || jobModel;
+    const escalation =
+      context.escalation && typeof context.escalation === "object" && context.escalation.escalated_from_model
+        ? context.escalation
+        : null;
     entries.push({
       target,
       baseline,
       capture,
       source,
-      batchEntry: geminiBatchEntryForBaselineFacts(source, capture),
+      model,
+      model_tier: cleanText(context.model_tier) || (model === geminiApiStrongModel ? "strong" : "fleet"),
+      escalation,
+      batchEntry: geminiBatchEntryForBaselineFacts(source, capture, { model }),
     });
   }
   return entries;
@@ -1254,29 +1332,41 @@ function isGeminiBatchSucceeded(state) {
 
 async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompletion = true } = {}) {
   const attemptToken = randomUUID();
+  // One batch = one model. Fail closed on a mixed chunk instead of silently
+  // sending Stage 1 work to the fleet model (or vice versa).
+  const model = baselineFactsBatchModel(entries, geminiApiModel);
+  const isEscalationBatch = entries.some((entry) => entry.escalation?.escalated_from_model);
   const displayName = `awardping-baseline-facts-${timestampForPath(new Date().toISOString())}-${attemptToken.slice(0, 8)}`;
   const requests = entries.map((entry) => entry.batchEntry);
   const inputMode = batchInputModeForRequests(requests, {
     inlineThreshold: geminiBatchInlineRequestThreshold,
     maxInlineBytes: geminiBatchMaxInlineBytes,
   });
-  const estimatedCostUsd = estimateGeminiMaximumBatchRequestsCostUsd(geminiApiModel, requests, {
-    maxOutputTokensPerRequest: baselineFactsMaxOutputTokens,
+  const maxOutputTokens = baselineMaxOutputTokensForModel(model);
+  const estimatedCostUsd = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
+    maxOutputTokensPerRequest: maxOutputTokens,
   });
-  const workFingerprint = baselineFactsWorkFingerprint(entries);
+  const batchRateEstimate = logEstimatedBaselineBatchCost({ model, entries, displayName });
+  const workFingerprint = baselineFactsWorkFingerprint(entries, model);
   const reservationKey = `${workFingerprint}:attempt:${attemptToken}`;
   const requestContexts = entries.map((entry) => ({
     source_id: entry.source.id,
     shared_award_id: entry.source.shared_award_id || null,
     baseline_path: entry.target.baselinePath,
     source_url: entry.source.url,
+    model,
+    model_tier: entry.model_tier || (model === geminiApiStrongModel ? "strong" : "fleet"),
+    escalation: entry.escalation || null,
   }));
   upsertGeminiBatchStateJob({
     batch_name: null,
     display_name: displayName,
     request_keys: entries.map((entry) => entry.source.id),
     request_contexts: requestContexts,
-    model: geminiApiModel,
+    model,
+    max_output_tokens: maxOutputTokens,
+    escalation_batch: isEscalationBatch,
+    batch_rate_cost_estimate: batchRateEstimate,
     status: "reservation_pending",
     reservation_attempt_token: attemptToken,
     spend_work_fingerprint: workFingerprint,
@@ -1297,11 +1387,13 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
       workerSource: "backfill-baseline-facts",
       workerRunId: null,
       requestCount: entries.length,
-      model: geminiApiModel,
+      model,
       metadata: {
         source_ids: entries.map((entry) => entry.source.id),
         work_fingerprint: workFingerprint,
         input_mode: inputMode,
+        model_tier: model === geminiApiStrongModel ? "strong" : "fleet",
+        escalation_batch: isEscalationBatch,
         reservation_basis: "text_utf8_and_image_tile_upper_bound_standard_rates_max_output",
       },
     });
@@ -1343,7 +1435,7 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
         display_name: displayName,
         request_keys: entries.map((entry) => entry.source.id),
         request_contexts: requestContexts,
-        model: activeReservation.model || geminiApiModel,
+        model: activeReservation.model || model,
         status: providerBound
           ? "submitted"
           : manualRecovery
@@ -1389,7 +1481,7 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     display_name: displayName,
     request_keys: entries.map((entry) => entry.source.id),
     request_contexts: requestContexts,
-    model: geminiApiModel,
+    model,
     status: "reserved_pre_create",
     reserved_at: new Date().toISOString(),
     request_count: entries.length,
@@ -1413,7 +1505,7 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
       status: "create_started",
       create_started_at: new Date().toISOString(),
     });
-    created = await createGeminiBatchJob({ requests, displayName, mode: inputMode });
+    created = await createGeminiBatchJob({ requests, displayName, mode: inputMode, model });
   } catch (error) {
     if (!error?.possibleExternalBatchCreated) {
       await releaseGeminiSpendReservation({
@@ -1460,7 +1552,7 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
       batch_name: batchName,
       display_name: displayName,
       request_keys: entries.map((entry) => entry.source.id),
-      model: geminiApiModel,
+      model,
       status: "manual_recovery",
       submitted_at: new Date().toISOString(),
       request_count: entries.length,
@@ -1477,13 +1569,16 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     display_name: displayName,
     request_keys: entries.map((entry) => entry.source.id),
     request_contexts: requestContexts,
-    model: geminiApiModel,
+    model,
+    max_output_tokens: maxOutputTokens,
+    escalation_batch: isEscalationBatch,
     status: "submitted",
     submitted_at: new Date().toISOString(),
     completed_at: null,
     output_ref: null,
     request_count: entries.length,
     estimated_cost_usd: estimatedCostUsd,
+    batch_rate_cost_estimate: batchRateEstimate,
     input_mode: inputMode,
     spend_reservation_id: spendReservation.reservation_id,
     reservation_attempt_token: attemptToken,
@@ -1495,8 +1590,13 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     displayName,
     inputMode,
     estimatedCostUsd,
+    model,
+    batchRateEstimate,
   });
-  console.log(`BASELINE_FACTS_BATCH submitted job=${batchName} requests=${entries.length} mode=${inputMode}`);
+  if (isEscalationBatch) markEscalationRecords(report, entries, { status: "submitted", batch_job_name: batchName });
+  console.log(
+    `BASELINE_FACTS_BATCH submitted job=${batchName} model=${model} requests=${entries.length} mode=${inputMode}${isEscalationBatch ? " escalation=true" : ""}`,
+  );
   await maybeUpdateWorkerRun(runId, report);
   if (!waitForCompletion) return;
 
@@ -1524,9 +1624,10 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
       report.errors.push({ source_id: entry.source.id, source_url: entry.source.url, message });
     }
     console.log(`BASELINE_FACTS_BATCH failed job=${batchName} requests=${entries.length} message=${truncate(message, 500)}`);
+    if (isEscalationBatch) markEscalationRecords(report, entries, { status: "failed", outcome: message });
     await settleBaselineGeminiBatchSpend({
       reservationId: spendReservation.reservation_id,
-      model: geminiApiModel,
+      model,
       terminalState: state,
       providerBatchName: batchName,
     });
@@ -1550,7 +1651,7 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     });
     await settleBaselineGeminiBatchSpend({
       reservationId: spendReservation.reservation_id,
-      model: geminiApiModel,
+      model,
       usage: preparedResponses.usage,
       responseCount: preparedResponses.responseCount,
       usageResponseCount: preparedResponses.usageResponseCount,
@@ -1565,6 +1666,7 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
       report,
       runId,
       preparedResponses,
+      model,
     });
   } catch (error) {
     const message = errorMessage(error);
@@ -1586,12 +1688,18 @@ async function processGeminiApiBatchChunk(entries, report, runId, { waitForCompl
     output_ref: geminiBatchOutputRef(completed),
     reconciled_at: new Date().toISOString(),
     reconciliation_status: reconciliationResult.failed > 0 ? "completed_with_item_failures" : "completed",
-    reconciliation_result: reconciliationResult,
+    reconciliation_result: reconciliationSummary(reconciliationResult),
     error: null,
   });
+  // Escalation pass: fleet-model outcomes that are unusable or merely unclear
+  // on important sources get one strong-model retry before any reject/hold
+  // write happens. Strong-model batches never escalate (see the decision).
+  await escalateBaselineFactsEntries(reconciliationResult.escalations, report, runId, { parentBatchName: batchName });
 }
 
-function baselineFactsWorkFingerprint(entries) {
+function baselineFactsWorkFingerprint(entries, model = geminiApiModel) {
+  const batchModel = cleanText(model);
+  if (!batchModel) throw new Error("Baseline facts work fingerprint requires a model.");
   const identity = entries.map((entry) => ({
     source_id: entry.source.id,
     captured_at: entry.baseline.captured_at || null,
@@ -1600,11 +1708,116 @@ function baselineFactsWorkFingerprint(entries) {
     file_hash: entry.baseline.file_hash || null,
   }));
   const digest = createHash("sha256").update(JSON.stringify({
-    model: geminiApiModel,
-    max_output_tokens: baselineFactsMaxOutputTokens,
+    model: batchModel,
+    max_output_tokens: baselineMaxOutputTokensForModel(batchModel),
     requests: identity,
   })).digest("hex");
   return `baseline-facts:${digest}`;
+}
+
+/**
+ * Submit the strong-model retry for escalated entries and wait for it with the
+ * same poll/reconcile machinery as any other batch. In dry-run nothing is
+ * submitted or written; the report already lists what would have escalated.
+ */
+async function escalateBaselineFactsEntries(escalations, report, runId, { parentBatchName = null } = {}) {
+  const pending = Array.isArray(escalations) ? escalations.filter((item) => item?.entry) : [];
+  if (!pending.length) return;
+  if (!applyUpdates) {
+    console.log(
+      `BASELINE_FACTS_ESCALATION dry_run would_escalate=${pending.length} parent=${parentBatchName || "none"} model=${geminiApiStrongModel}`,
+    );
+    return;
+  }
+  if (report.billing_blocked) {
+    for (const item of pending) markEscalationRecord(item.record, { status: "blocked", outcome: "billing_blocked" });
+    console.log(`BASELINE_FACTS_ESCALATION blocked parent=${parentBatchName || "none"} requests=${pending.length}`);
+    return;
+  }
+  const entries = pending.map(({ entry, decision }) => ({
+    ...entry,
+    model: geminiApiStrongModel,
+    model_tier: "strong",
+    model_reason: "escalation",
+    escalation: {
+      escalated_from_model: entry.model || geminiApiModel,
+      escalation_reason: decision.reason,
+      escalated_from_batch: parentBatchName,
+    },
+    batchEntry: geminiBatchEntryForBaselineFacts(entry.source, entry.capture, { model: geminiApiStrongModel }),
+  }));
+  // Every escalation targets the strong model; partitioning keeps the
+  // one-batch-one-model invariant explicit and caps each job at the strong
+  // batch size.
+  const chunks = [];
+  for (const group of partitionBaselineFactsEntriesByModel(entries)) {
+    for (let index = 0; index < group.entries.length; index += geminiStrongBatchMaxRequests) {
+      chunks.push(group.entries.slice(index, index + geminiStrongBatchMaxRequests));
+    }
+  }
+  console.log(
+    `BASELINE_FACTS_ESCALATION submitting parent=${parentBatchName || "none"} model=${geminiApiStrongModel} requests=${entries.length} jobs=${chunks.length}`,
+  );
+  await processGeminiApiBatchChunkGroup(chunks, report, runId, { waitForCompletion: true });
+  for (const item of pending) {
+    if (item.record?.status === "pending") {
+      markEscalationRecord(item.record, { status: "not_submitted", outcome: report.stop_reason || "batch_not_created" });
+    }
+  }
+}
+
+function markEscalationRecords(report, entries, patch) {
+  for (const entry of entries) {
+    if (!entry?.escalation?.escalated_from_model) continue;
+    let record = [...(report.escalations || [])]
+      .reverse()
+      .find((item) => item.source_id === entry.source.id && item.to_model === (entry.model || geminiApiStrongModel));
+    if (!record) {
+      // Escalation job reconciled on a later run: surface it in this run's report.
+      record = {
+        source_id: entry.source.id,
+        source_url: entry.source.url || null,
+        award_name: entry.source.shared_awards?.name || null,
+        from_model: entry.escalation.escalated_from_model,
+        to_model: entry.model || geminiApiStrongModel,
+        reason: entry.escalation.escalation_reason || null,
+        parent_batch_job_name: entry.escalation.escalated_from_batch || null,
+        status: "submitted",
+        queued_at: null,
+      };
+      report.escalations.push(record);
+    }
+    markEscalationRecord(record, patch);
+  }
+}
+
+function markEscalationRecord(record, patch) {
+  if (!record || typeof record !== "object") return;
+  Object.assign(record, patch, { updated_at: new Date().toISOString() });
+}
+
+function queueBaselineFactsEscalation({ result, report, entry, decision, batchName, model, fleetReason }) {
+  const record = {
+    source_id: entry.source.id,
+    source_url: entry.source.url || null,
+    award_name: entry.source.shared_awards?.name || null,
+    from_model: model,
+    to_model: geminiApiStrongModel,
+    trigger: decision.trigger,
+    basis: decision.basis,
+    reason: decision.reason,
+    fleet_outcome: fleetReason,
+    parent_batch_job_name: batchName,
+    status: applyUpdates ? "pending" : "would_escalate",
+    queued_at: new Date().toISOString(),
+  };
+  report.escalated += 1;
+  report.escalations.push(record);
+  result.escalated += 1;
+  result.escalations.push({ entry, decision, record });
+  console.log(
+    `BASELINE_FACTS escalation_${record.status} reason=${decision.reason} from=${model} to=${geminiApiStrongModel} fleet_outcome=${fleetReason} ${sourceLabel(entry.source)}`,
+  );
 }
 
 async function prepareGeminiApiBatchResponses({ batchName, completed, entries }) {
@@ -1653,6 +1866,7 @@ async function applyGeminiApiBatchResponses({
   report,
   runId,
   preparedResponses = null,
+  model = null,
 }) {
   const prepared = preparedResponses || await prepareGeminiApiBatchResponses({
     batchName,
@@ -1661,17 +1875,33 @@ async function applyGeminiApiBatchResponses({
   });
   if (prepared.mappingError) throw new Error(prepared.mappingError);
   const { responseByKey } = prepared;
+  const batchModel = baselineFactsBatchModel(entries, model || geminiApiModel);
 
   const result = {
     processed: entries.length,
+    model: batchModel,
     extracted: 0,
     applied: 0,
     failed: 0,
+    escalated: 0,
+    escalations: [],
     usage: prepared.usage,
   };
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index];
+    const entryModel = cleanText(entry.model) || batchModel;
     const inlineResponse = responseByKey.responses.get(entry.source.id) || null;
+    const escalationDecision = (outcome, reason, facts) =>
+      baselineFactsEscalationDecision({
+        outcome,
+        reason,
+        facts,
+        source: entry.source,
+        manifest: stage1Manifest,
+        model: entryModel,
+        strongModel: geminiApiStrongModel,
+        escalation: entry.escalation || null,
+      });
     try {
       if (!inlineResponse) {
         throw new Error(`Gemini batch response missing matching metadata key for source ${entry.source.id}.`);
@@ -1687,10 +1917,35 @@ async function applyGeminiApiBatchResponses({
       if (!response) throw new Error("Gemini batch response did not include a generateContent response.");
 
       const usage = normalizeGeminiUsage(extractGeminiUsageMetadata(inlineResponse));
+      const finishReason = geminiFinishReason(response);
       const rawText = extractGeminiText(response);
       const parsed = parseGeminiModelJsonObject(rawText);
       if (!parsed) {
-        throw new Error(`Gemini batch returned invalid JSON: ${truncate(rawText, 500) || "empty response"}`);
+        const decision = escalationDecision("invalid_json", null, null);
+        if (decision.escalate) {
+          queueBaselineFactsEscalation({
+            result,
+            report,
+            entry,
+            decision,
+            batchName,
+            model: entryModel,
+            fleetReason: `invalid_json:${finishReason || "unknown_finish_reason"}`,
+          });
+          continue;
+        }
+        const error = new Error(
+          `Gemini batch returned invalid JSON (model=${entryModel} finish_reason=${finishReason || "unknown"} candidates_tokens=${usage.candidates_tokens} thoughts_tokens=${usage.thoughts_tokens} total_tokens=${usage.total_tokens}): ${truncate(rawText, 500) || "empty response"}`,
+        );
+        error.reportDetails = {
+          model: entryModel,
+          finish_reason: finishReason,
+          usage,
+          outcome: `invalid_json:${finishReason || "unknown_finish_reason"}`,
+          escalation: decision.reason,
+          ...(entry.escalation ? { escalated_from_model: entry.escalation.escalated_from_model, escalation_reason: entry.escalation.escalation_reason } : {}),
+        };
+        throw error;
       }
 
       const facts = normalizeBaselineFacts(parsed);
@@ -1698,14 +1953,22 @@ async function applyGeminiApiBatchResponses({
         status: "succeeded",
         reason: "baseline_facts_backfill",
         provider: "gemini",
-        model: geminiApiModel,
+        model: entryModel,
+        model_tier: entryModel === geminiApiStrongModel ? "strong" : "fleet",
         api_mode: "batch",
         batch_job_name: batchName,
         batch_request_key: entry.source.id,
         extracted_at: new Date().toISOString(),
         snapshot_hash: entry.capture.image_hash || entry.capture.file_hash || null,
+        ...(entry.escalation
+          ? {
+              escalated_from_model: entry.escalation.escalated_from_model,
+              escalation_reason: entry.escalation.escalation_reason,
+              escalated_from_batch: entry.escalation.escalated_from_batch || null,
+            }
+          : {}),
       };
-      const sanity = baselineFactsMatchSource(entry.source, entry.capture, facts);
+      const sanity = baselineFactsMatchSource(entry.source, entry.capture, facts, entryModel);
 
       recordGeminiApiUsage(
         report,
@@ -1713,7 +1976,7 @@ async function applyGeminiApiBatchResponses({
         entry.capture,
         {
           provider: "gemini",
-          model: geminiApiModel,
+          model: entryModel,
           usage,
           raw_text: rawText,
           result: facts,
@@ -1725,10 +1988,33 @@ async function applyGeminiApiBatchResponses({
       );
 
       if (!sanity.ok) {
+        // Escalate first: only a strong-model (or non-escalatable) verdict may
+        // reach the reject/hold write below.
+        const decision = escalationDecision("rejected", sanity.reason, facts);
+        if (decision.escalate) {
+          queueBaselineFactsEscalation({
+            result,
+            report,
+            entry,
+            decision,
+            batchName,
+            model: entryModel,
+            fleetReason: sanity.reason,
+          });
+          continue;
+        }
         if (applyUpdates) {
           await rejectFactsInSupabaseSource(entry.source, facts, metadata, entry.capture, sanity.reason, report);
         }
-        throw new Error(`Baseline facts rejected: ${sanity.reason}`);
+        const error = new Error(`Baseline facts rejected: ${sanity.reason}`);
+        error.reportDetails = {
+          model: entryModel,
+          finish_reason: finishReason,
+          outcome: `rejected:${sanity.reason}`,
+          escalation: decision.reason,
+          ...(entry.escalation ? { escalated_from_model: entry.escalation.escalated_from_model, escalation_reason: entry.escalation.escalation_reason } : {}),
+        };
+        throw error;
       }
 
       if (applyUpdates) {
@@ -1736,6 +2022,9 @@ async function applyGeminiApiBatchResponses({
         await applyFactsToSupabaseSource(entry.source, facts, metadata, entry.capture, report);
         report.applied += 1;
         result.applied += 1;
+      }
+      if (entry.escalation) {
+        markEscalationRecords(report, [entry], { status: "settled", outcome: "accepted" });
       }
       report.extracted += 1;
       result.extracted += 1;
@@ -1745,17 +2034,33 @@ async function applyGeminiApiBatchResponses({
         source_title: entry.source.title || null,
         source_url: entry.source.url || null,
         confidence: facts.confidence,
+        model: entryModel,
+        ...(entry.escalation
+          ? { escalated_from_model: entry.escalation.escalated_from_model, escalation_reason: entry.escalation.escalation_reason }
+          : {}),
       });
-      console.log(`BASELINE_FACTS extracted confidence=${facts.confidence} ${sourceLabel(entry.source)}`);
+      console.log(
+        `BASELINE_FACTS extracted confidence=${facts.confidence} model=${entryModel}${entry.escalation ? ` escalated_from=${entry.escalation.escalated_from_model}` : ""} ${sourceLabel(entry.source)}`,
+      );
     } catch (error) {
       report.failed += 1;
       result.failed += 1;
       report.gemini_usage.batch_failures += 1;
       const message = errorMessage(error);
+      const details = error?.reportDetails && typeof error.reportDetails === "object" ? error.reportDetails : {};
+      if (entry.escalation) {
+        markEscalationRecords(report, [entry], {
+          status: "settled",
+          outcome: details.outcome || `failed:${truncate(message, 200)}`,
+        });
+      }
       report.errors.push({
         source_id: entry.source.id,
         source_url: entry.source.url,
+        batch_job_name: batchName,
+        model: entryModel,
         message,
+        ...details,
       });
       console.log(`BASELINE_FACTS failed ${truncate(message, 800)} ${sourceLabel(entry.source)}`);
     }
@@ -1765,9 +2070,9 @@ async function applyGeminiApiBatchResponses({
   return result;
 }
 
-function geminiBatchEntryForBaselineFacts(source, capture) {
+function geminiBatchEntryForBaselineFacts(source, capture, { model = geminiApiModel } = {}) {
   return {
-    request: geminiApiBaselineFactsRequest(source, capture, "baseline_facts_backfill"),
+    request: geminiApiBaselineFactsRequest(source, capture, "baseline_facts_backfill", { model }),
     metadata: {
       key: source.id,
       shared_award_id: source.shared_award_id || null,
@@ -1776,7 +2081,9 @@ function geminiBatchEntryForBaselineFacts(source, capture) {
   };
 }
 
-function geminiApiBaselineFactsRequest(source, capture, reason) {
+function geminiApiBaselineFactsRequest(source, capture, reason, { model = geminiApiModel } = {}) {
+  const requestModel = cleanText(model);
+  if (!requestModel) throw new Error("Baseline facts request requires a model.");
   const initialPrompt = geminiCliBaselineFactsPrompt(source, capture, reason);
   const includeImage = shouldAttachBaselineFactsImage({ capture, promptText: initialPrompt });
   const prompt = geminiCliBaselineFactsPrompt(source, capture, reason, {
@@ -1799,12 +2106,11 @@ function geminiApiBaselineFactsRequest(source, capture, reason) {
         ],
       },
     ],
-    generationConfig: {
-      temperature: 0.1,
-      maxOutputTokens: baselineFactsMaxOutputTokens,
-      thinkingConfig: { thinkingBudget: 0 },
-      responseMimeType: "application/json",
-    },
+    generationConfig: baselineFactsGenerationConfig({
+      model: requestModel,
+      strongModel: geminiApiStrongModel,
+      fleetMaxOutputTokens: baselineFactsMaxOutputTokens,
+    }),
   };
 }
 
@@ -1820,9 +2126,12 @@ function geminiBatchEnvelopeBytes(requests) {
   );
 }
 
-async function createGeminiBatchJob({ requests, displayName, mode }) {
+async function createGeminiBatchJob({ requests, displayName, mode, model }) {
+  // The model is part of the batch URL, so it must come from the batch itself.
+  const batchModel = cleanText(model);
+  if (!batchModel) throw new Error(`Gemini batch ${displayName} has no model; refusing to create it.`);
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-    geminiApiModel,
+    batchModel,
   )}:batchGenerateContent`;
   if (mode === "jsonl_file") {
     const fileName = await uploadGeminiJsonlRequests({ requests, displayName });
@@ -2213,6 +2522,44 @@ function pendingGeminiBatchRequestCount(pendingChunks, chunk) {
   return pendingChunks.reduce((sum, entries) => sum + entries.length, 0) + chunk.length;
 }
 
+function baselineBatchMaxRequestsForModel(model) {
+  return cleanText(model) === geminiApiStrongModel ? geminiStrongBatchMaxRequests : geminiBatchMaxRequests;
+}
+
+function baselineMaxOutputTokensForModel(model) {
+  return baselineFactsMaxOutputTokensForModel({
+    model,
+    strongModel: geminiApiStrongModel,
+    fleetMaxOutputTokens: baselineFactsMaxOutputTokens,
+  });
+}
+
+function geminiFinishReason(response) {
+  return cleanNullable(response?.candidates?.[0]?.finishReason || response?.candidates?.[0]?.finish_reason);
+}
+
+function reconciliationSummary(result) {
+  if (!result || typeof result !== "object") return result;
+  const { escalations, ...summary } = result;
+  return { ...summary, escalated: Array.isArray(escalations) ? escalations.length : nonNegativeInt(summary.escalated, 0) };
+}
+
+function logEstimatedBaselineBatchCost({ model, entries, displayName }) {
+  const maxOutputTokens = baselineMaxOutputTokensForModel(model);
+  const rates = geminiPricePerMillion(model, "batch");
+  const usage = estimateGeminiBatchEntriesUsage(entries, model);
+  const estimate = estimateBaselineFactsBatchCostUsd({
+    promptTokens: usage.prompt_tokens,
+    requestCount: entries.length,
+    maxOutputTokens,
+    rates,
+  });
+  console.log(
+    `BASELINE_FACTS_BATCH cost_estimate job=${displayName} model=${model} requests=${entries.length} prompt_tokens~${estimate.prompt_tokens} max_output_tokens=${maxOutputTokens} batch_rate_usd_per_m=${rates.input}/${rates.output} input_usd=${estimate.input_usd} output_usd_max=${estimate.output_usd_max} total_usd_max=${estimate.total_usd_max}`,
+  );
+  return { ...estimate, model, pricing_mode: "batch", rates };
+}
+
 function isRetryableGeminiApiFailure(httpStatus, body) {
   const parsed = parseJsonObject(body) || {};
   const message = cleanNullable(jsonObjectOrEmpty(parsed.error).message) || body;
@@ -2306,6 +2653,12 @@ async function rejectFactsInSupabaseSource(source, facts, metadata, capture, rea
       baseline_facts_review_status: disposition.status,
       rejection_reason: reason,
       quality_flags: [...new Set(qualityFlags)],
+      ...(metadata.escalated_from_model
+        ? {
+            escalated_from_model: metadata.escalated_from_model,
+            escalation_reason: metadata.escalation_reason || null,
+          }
+        : {}),
     },
     page_metadata_generated_at: metadata.extracted_at,
     page_metadata_model: metadata.model,
@@ -2450,7 +2803,7 @@ function normalizeBaselineFacts(value) {
   };
 }
 
-function baselineFactsMatchSource(source, capture, facts) {
+function baselineFactsMatchSource(source, capture, facts, model = geminiApiModel) {
   if (cleanSlug(facts.status) === "failed") return { ok: false, reason: "facts_status_failed" };
 
   const awardRelevance = normalizeAwardRelevance(facts.award_relevance);
@@ -2474,7 +2827,7 @@ function baselineFactsMatchSource(source, capture, facts) {
       ...source,
       page_metadata: { baseline_facts: facts },
       page_metadata_generated_at: new Date().toISOString(),
-      page_metadata_model: geminiApiModel,
+      page_metadata_model: cleanText(model) || geminiApiModel,
     },
     { purpose: "monitoring" },
   );
@@ -2698,7 +3051,8 @@ function recordGeminiApiUsage(report, source, capture, analysis) {
 }
 
 function recordGeminiApiBatchSubmission(report, entries, batch) {
-  const estimatedUsage = estimateGeminiBatchEntriesUsage(entries);
+  const model = cleanText(batch.model) || geminiApiModel;
+  const estimatedUsage = estimateGeminiBatchEntriesUsage(entries, model);
   const estimatedCostUsd = roundUsd(nonNegativeNumber(batch.estimatedCostUsd, 0));
   report.gemini_usage.batch_jobs += 1;
   report.gemini_usage.batch_requests += entries.length;
@@ -2713,7 +3067,9 @@ function recordGeminiApiBatchSubmission(report, entries, batch) {
     `${JSON.stringify({
       provider: "gemini",
       kind: "baseline_facts_batch_submission",
-      model: geminiApiModel,
+      model,
+      model_tier: model === geminiApiStrongModel ? "strong" : "fleet",
+      escalation_batch: entries.some((entry) => entry.escalation?.escalated_from_model),
       api_mode: "batch",
       pricing_mode: "batch",
       batch_job_name: batch.batchName,
@@ -2723,6 +3079,7 @@ function recordGeminiApiBatchSubmission(report, entries, batch) {
       request_keys: entries.map((entry) => entry.source.id),
       usage: estimatedUsage,
       estimated_cost_usd: estimatedCostUsd,
+      batch_rate_cost_estimate: batch.batchRateEstimate || null,
       used_at: usedAt,
       date: usedAt.slice(0, 10),
       month: usedAt.slice(0, 7),
@@ -2732,12 +3089,12 @@ function recordGeminiApiBatchSubmission(report, entries, batch) {
   );
 }
 
-function estimateGeminiBatchEntriesUsage(entries) {
+function estimateGeminiBatchEntriesUsage(entries, model = geminiApiModel) {
   const promptTokens = entries.reduce(
     (sum, entry) => sum + estimateTextTokens(JSON.stringify(entry.batchEntry?.request || {})),
     0,
   );
-  const candidatesTokens = entries.length * baselineFactsMaxOutputTokens;
+  const candidatesTokens = entries.length * baselineMaxOutputTokensForModel(model);
   return {
     prompt_tokens: promptTokens,
     candidates_tokens: candidatesTokens,
@@ -2845,6 +3202,9 @@ function workerMetadata(report) {
     },
     gemini_usage: report.gemini_usage,
     gemini_cli_usage: report.gemini_cli_usage,
+    model_tiers: report.model_tiers,
+    escalated: report.escalated,
+    escalations: (report.escalations || []).slice(-20),
     saved_sources: report.saved_sources.slice(-20),
     errors: report.errors.slice(-20),
     stop_reason: report.stop_reason,

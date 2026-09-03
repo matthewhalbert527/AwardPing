@@ -59,6 +59,7 @@ import {
 import { withVisualBaselineLockAsync } from "./lib/visual-baseline-lock.mjs";
 import {
   extractGeminiBatchInlineResponses,
+  extractGeminiFinishReason,
   extractGeminiUsageMetadata,
   geminiBatchExactMappingComplete,
   geminiBatchUsageAccounting,
@@ -82,7 +83,20 @@ import {
   submitGeminiSpendReservation,
   terminalGeminiSettlement,
 } from "./lib/gemini-spend-ledger.mjs";
-import { geminiWorkerModel } from "./lib/gemini-worker-policy.mjs";
+import {
+  buildEscalationRequeue,
+  geminiWorkerModel,
+  partitionVisualReviewCandidatesByModel,
+  visualReviewClaimedModel,
+  visualReviewGenerationConfigForModel,
+  visualReviewInvalidJsonEscalationDecision,
+  visualReviewMaxOutputTokensForModel,
+  visualReviewMaxRequestsPerBatchForModel,
+} from "./lib/gemini-worker-policy.mjs";
+import {
+  emptyStage1ManifestSources,
+  loadStage1ManifestSources,
+} from "./lib/stage1-manifest-sources.mjs";
 import {
   paidVisualRetryAuthorizationPrecheck,
   paidVisualProviderRequestFingerprint,
@@ -160,7 +174,10 @@ const reportPath = args["report"]
 const jsonlDir = args["jsonl-dir"]
   ? resolve(root, String(args["jsonl-dir"]))
   : join(reportDir, "visual-review-batch-jsonl");
-const model = geminiWorkerModel();
+// The review model is chosen per candidate at submission (fleet default or the
+// strong tier for Stage 1 manifest sources and escalated retries); see
+// partitionVisualReviewCandidatesByModel. Loaded once per run below.
+let stage1Manifest = emptyStage1ManifestSources();
 const paidLane = cleanNullable(args["paid-lane"]);
 const monitoringPolicy = currentVisualReviewPolicyIdentity();
 const monitoringPolicyBundle = currentMonitoringPolicyAuditIdentity();
@@ -244,6 +261,10 @@ const report = {
     publication_claim_stale_minutes: publicationClaimStaleMinutes,
     paid_lane: paidLane,
   },
+  stage1_manifest: {
+    available: false,
+    source_count: 0,
+  },
   pending_visual_reviews: 0,
   submitted_jobs: 0,
   submitted_candidates: 0,
@@ -260,6 +281,7 @@ const report = {
   rejection_ledger_unavailable: 0,
   recovered_missing_batch_responses: 0,
   retried_failed_candidates: 0,
+  escalated_to_strong_model: 0,
   paid_retry_approvals_required: 0,
   paid_retry_request_drift_invalidated: 0,
   paid_retry_submission_authorization_failed: 0,
@@ -314,6 +336,12 @@ const report = {
 writeReport();
 
 try {
+  stage1Manifest = await loadStage1ManifestSources(supabase);
+  report.stage1_manifest = {
+    available: stage1Manifest.available,
+    source_count: stage1Manifest.sourceIds.size,
+  };
+
   if (poll && !submitOnly) {
     await pollExistingBatches();
   }
@@ -842,8 +870,15 @@ async function submitPendingCandidates() {
 
   const byPaidLane = partitionPaidVisualReviewCandidates(eligible);
   for (const [laneKey, laneCandidates] of byPaidLane) {
-    for (const chunk of chunks(laneCandidates, maxRequestsPerBatch)) {
-      await submitCandidateChunk(model, chunk, laneKey);
+    // One provider batch carries one model: the fleet tier and the strong
+    // tier (Stage 1 manifest sources, escalated retries) are reserved,
+    // submitted, and settled separately.
+    const byModel = partitionVisualReviewCandidatesByModel(laneCandidates, stage1Manifest);
+    for (const [chunkModel, modelCandidates] of byModel) {
+      const chunkSize = visualReviewMaxRequestsPerBatchForModel(chunkModel, maxRequestsPerBatch);
+      for (const chunk of chunks(modelCandidates, chunkSize)) {
+        await submitCandidateChunk(chunkModel, chunk, laneKey);
+      }
     }
   }
 }
@@ -1381,6 +1416,9 @@ async function submitCandidateChunk(model, candidates, laneKey) {
   if (candidates.some((candidate) => paidReviewLaneForCandidate(candidate) !== laneKey)) {
     throw new Error(`A paid visual-review batch cannot mix ${laneKey} with another lane.`);
   }
+  // Resolve the tier's output cap up front so an unknown model fails closed
+  // before any row is claimed.
+  const maxOutputTokensPerRequest = visualReviewMaxOutputTokensForModel(model);
   const claimToken = crypto.randomUUID();
   const claimedAt = new Date().toISOString();
   const displayName = `awardping-${workKind}-${timestampForPath(claimedAt)}-${claimToken.slice(0, 8)}-${model.replace(/[^a-z0-9._-]+/gi, "-")}`;
@@ -1396,6 +1434,9 @@ async function submitCandidateChunk(model, candidates, laneKey) {
           submission_claimed_by: "process-visual-review-batch",
           batch_display_name: displayName,
           gemini_spend_lane: laneKey,
+          // Binds the lane's chosen model to the claim; the provider request,
+          // fingerprint, reservation, and persisted model column read it.
+          review_model: model,
         }),
         updated_at: claimedAt,
       })
@@ -1469,7 +1510,7 @@ async function submitCandidateChunk(model, candidates, laneKey) {
     requestByCandidateId.get(candidate.id));
   const mode = requests.length > inlineThreshold ? "jsonl_file" : "inline";
   const estimated = estimateGeminiMaximumBatchRequestsCostUsd(model, requests, {
-    maxOutputTokensPerRequest: 900,
+    maxOutputTokensPerRequest,
   });
   const reservationKey = `${workKind}:${claimToken}`;
   const workFingerprint = paidReviewWorkFingerprint(
@@ -2014,18 +2055,60 @@ async function reconcileCompletedBatch(batchName, job, batchReport) {
       }
 
       usage = normalizeGeminiUsage(extractUsageMetadata(responseItem));
-      const rawText = extractGeminiText(geminiInlineResponsePayload(responseItem));
+      const responsePayload = geminiInlineResponsePayload(responseItem);
+      const rawText = extractGeminiText(responsePayload);
+      const finishReason = extractGeminiFinishReason(responsePayload);
       try {
-        result = normalizeVisualBatchResult(rawText, {
-          candidate,
-          source: sourcesById.get(candidate.shared_award_source_id),
-        });
+        result = {
+          ...normalizeVisualBatchResult(rawText, {
+            candidate,
+            source: sourcesById.get(candidate.shared_award_source_id),
+          }),
+          finish_reason: finishReason,
+        };
       } catch (error) {
+        // A fleet verdict that did not parse gets one retry on the strong
+        // model before it fails; the row is still submitted/processing so
+        // this pending transition is outside the paid-retry approval guard.
+        const escalation = visualReviewInvalidJsonEscalationDecision(candidate);
+        if (escalation.escalate) {
+          const requeue = buildEscalationRequeue(candidate, {
+            usage,
+            rawText,
+            parseError: errorMessage(error),
+            finishReason,
+            model: candidate.model,
+            batchName,
+            now: new Date().toISOString(),
+          });
+          let requeued = false;
+          try {
+            await markCandidate(candidate.id, requeue);
+            requeued = true;
+          } catch (requeueError) {
+            // One row that cannot be requeued must never stall the whole
+            // batch reconcile: fall through to the plain failure write.
+            console.error(
+              `VISUAL_REVIEW_ESCALATION_REQUEUE_FAILED candidate=${candidate.id} batch=${batchName} error=${errorMessage(requeueError)}`,
+            );
+          }
+          if (requeued) {
+            report.escalated_to_strong_model += 1;
+            batchReport.escalated = (batchReport.escalated || 0) + 1;
+            console.log(
+              `VISUAL_REVIEW_ESCALATED candidate=${candidate.id} from_model=${candidate.model || "unknown"} finish_reason=${finishReason || "unknown"} batch=${batchName} reason=invalid_ai_json`,
+            );
+            continue;
+          }
+        }
         await markCandidate(candidate.id, {
           status: "failed",
           ai_result: {
             raw_text: rawText,
             parse_error: errorMessage(error),
+            finish_reason: finishReason,
+            usage,
+            escalation_declined: escalation.reason,
           },
           rejection_reason: `invalid_ai_json: ${errorMessage(error)}`,
           actual_usage: usage,
@@ -3306,6 +3389,11 @@ async function markCandidateSucceededDryRun({ candidate, result, usage }) {
 }
 
 function geminiBatchRequestForCandidate(candidate) {
+  // The claim bound the model; the generation config (output cap + thinking)
+  // comes from the same policy the spend estimate uses so they cannot drift.
+  const generationConfig = visualReviewGenerationConfigForModel(
+    visualReviewClaimedModel(candidate),
+  );
   const promptPayload = refreshVisualReviewPromptPayloadPolicy(candidate.prompt_payload || {});
   const promptText = buildVisualReviewPromptText(promptPayload);
   const parts = [{ text: promptText }];
@@ -3354,9 +3442,7 @@ function geminiBatchRequestForCandidate(candidate) {
         },
       ],
       generationConfig: {
-        temperature: 0.1,
-        maxOutputTokens: 900,
-        thinkingConfig: { thinkingBudget: 0 },
+        ...generationConfig,
         responseMimeType: "application/json",
         responseSchema: visualReviewResponseSchema,
       },

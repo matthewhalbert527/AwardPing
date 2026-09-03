@@ -11,6 +11,14 @@ export function geminiPricePerMillion(model, pricingMode = "standard") {
   const discounted = mode === "batch" || mode === "flex";
 
   if (name.includes("3.1-flash-lite")) return discounted ? { input: 0.125, output: 0.75 } : { input: 0.25, output: 1.5 };
+  // gemini-3.6/3.7/3.8-flash (not -lite): Google list price valid through
+  // 2026-12-31. Thinking tokens bill as output.
+  if (
+    !name.includes("flash-lite")
+    && (name.includes("3.6-flash") || name.includes("3.7-flash") || name.includes("3.8-flash"))
+  ) {
+    return discounted ? { input: 0.375, output: 1.875 } : { input: 0.75, output: 3.75 };
+  }
   if (name.includes("3-flash") || name.includes("3.1-flash")) return discounted ? { input: 0.25, output: 1.5 } : { input: 0.5, output: 3 };
   if (name.includes("2.5-flash-lite")) return discounted ? { input: 0.05, output: 0.2 } : { input: 0.1, output: 0.4 };
   if (name.includes("2.5-flash")) return discounted ? { input: 0.15, output: 1.25 } : { input: 0.3, output: 2.5 };
@@ -168,6 +176,17 @@ export function parseGeminiModelJsonObject(text) {
   }
 
   return null;
+}
+
+/**
+ * The provider's finish reason for the first candidate of a generateContent
+ * payload (e.g. STOP, MAX_TOKENS, SAFETY), or null when absent. Sibling of the
+ * text extractors so truncation can be recorded without changing their shape.
+ */
+export function extractGeminiFinishReason(data) {
+  const candidates = Array.isArray(data?.candidates) ? data.candidates : [];
+  const first = objectValue(candidates[0]);
+  return cleanText(first.finishReason || first.finish_reason) || null;
 }
 
 export function extractGeminiUsageMetadata(responseItem) {
