@@ -197,7 +197,11 @@ async function loadPublicAwardPageData(
       .from("shared_award_sources")
       .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, last_checked_at")
       .in("shared_award_id", publication.memberAwardIds)
-      .eq("admin_review_status", "open")
+      // Not filtered to admin_review_status 'open' here: the pinned reviewed
+      // homepage must be found even when the nightly worker auto-holds it
+      // (review_later after a capture failure or a stale stored verdict),
+      // otherwise the page falls back to "Under verification". The listed
+      // sources below are still restricted to open rows.
       .order("page_type", { ascending: true })
       .order("created_at", { ascending: true }),
     loadEligiblePublicChangeEvents({
@@ -213,6 +217,7 @@ async function loadPublicAwardPageData(
   const sources = sourcesResult.data || [];
 
   const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[])
+    .filter((source) => source.admin_review_status === "open")
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
     .filter(isPublicAwardSource);
