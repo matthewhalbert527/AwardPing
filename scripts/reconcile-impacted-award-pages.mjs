@@ -277,10 +277,16 @@ async function processQueueRow(queueRow) {
     if (stage1Scope.cohortKey) {
       report.stage1_automatic_reconciliations_quarantined += 1;
       if (apply && queueRow.id) {
+        // 'skipped', not 'failed': declining to auto-reconcile a human-reviewed
+        // cohort is a deliberate outcome, not a failure. The quarantine sync
+        // keys terminal public-page quarantines on status = 'failed', so a
+        // failed outcome opened (and every 15 minutes re-opened) an actionable
+        // quarantine per Stage 1 award each night. The error text still carries
+        // the re-verification signal; the RPC treats both statuses alike.
         await finishOwnedQueue(
           queueRow,
           startedAt,
-          "failed",
+          "skipped",
           `stage1_explicit_review_required:${stage1Scope.cohortKey}`,
         );
       }
