@@ -1,14 +1,19 @@
 import { ImageResponse } from "next/og";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 
 export const runtime = "nodejs";
 export const alt = "AwardPing - Nationally Competitive Award Monitor";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 
-const serifFont = readFile(new URL("./source-serif-4-semibold.ttf", import.meta.url));
-const sansFont = readFile(new URL("./geist-sans-600.ttf", import.meta.url));
-const sansFontBold = readFile(new URL("./geist-sans-700.ttf", import.meta.url));
+// Load fonts lazily and via a realm-independent string path: a module-scope
+// readFile(new URL(...)) rejects under the bundled runtime (cross-realm URL
+// fails Node's argument check) and the unhandled rejection at module
+// evaluation killed every request on routes sharing this chunk.
+const fontPath = (relative: string) =>
+  fileURLToPath(new URL(relative, import.meta.url).href);
+const loadFont = (relative: string) => readFile(fontPath(relative));
 
 const INK = "#17150f";
 const ACCENT = "#1c4e80";
@@ -83,19 +88,19 @@ export default async function OpenGraphImage() {
       fonts: [
         {
           name: "Source Serif 4",
-          data: await serifFont,
+          data: await loadFont("./source-serif-4-semibold.ttf"),
           weight: 600,
           style: "normal",
         },
         {
           name: "Geist",
-          data: await sansFont,
+          data: await loadFont("./geist-sans-600.ttf"),
           weight: 600,
           style: "normal",
         },
         {
           name: "Geist",
-          data: await sansFontBold,
+          data: await loadFont("./geist-sans-700.ttf"),
           weight: 700,
           style: "normal",
         },
