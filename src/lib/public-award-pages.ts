@@ -220,10 +220,15 @@ async function loadPublicAwardPageData(
   // routinely carry duplicate rows for the same homepage URL, and the dedupe
   // keeps an arbitrary winner, so an id-exact match against the deduped list
   // can miss the pinned source depending on query order.
+  // The pinned homepage id IS the explicit human review (the cohort's identity
+  // home, bound by the reviewed chain with panel-verified facts), so the AI
+  // public-authority gate is not re-applied to it: several reviewed homepages
+  // carry an immutable monitoring-only baseline activation that the gate
+  // rejects, which rendered verified cohorts as placeholders after launch.
+  // Every other listed source still passes isPublicAwardSource above.
   const reviewedHomepageSource = ((sources || []) as SharedSourceRow[])
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
-    .filter(isPublicAwardSource)
     .find((source) =>
       source.id === publication.officialHomepageSourceId &&
       source.url === publication.registry.official_homepage &&
