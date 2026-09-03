@@ -22,9 +22,12 @@ describe("stage1 explicit-review outcomes are not quarantines", () => {
     expect(migration).toContain(`${exclusion} as reconciliation_requires_action`);
   });
 
-  it("replaces the live function rather than editing the base migration", () => {
-    expect(migration).toContain("CREATE OR REPLACE FUNCTION public.sync_manual_quarantine_registry()");
-    expect(migration).not.toMatch(/insert into public\.manual_quarantine_registry\s*\(\s*quarantine_key/i);
+  it("replaces the live function rather than editing the base migration or writing rows", () => {
+    expect(migration.split("CREATE OR REPLACE FUNCTION public.sync_manual_quarantine_registry()").length - 1).toBe(1);
+    // No top-level sync call and no operator DML outside the function body.
+    // Top-level statements start at column 0; the function body is indented.
+    expect(migration).not.toMatch(/^select public\.sync_manual_quarantine_registry\(\);/m);
+    expect(migration).not.toMatch(/^(update|delete from|insert into) public\.manual_quarantine_registry/m);
   });
 
   it("keeps the worker's prefix so the exclusion and the lane agree", () => {
