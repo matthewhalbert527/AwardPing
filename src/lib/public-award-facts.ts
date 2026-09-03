@@ -41,6 +41,12 @@ export function publicAwardFactsFromAward(input: {
   sources?: PublicAwardFactSource[];
 }): PublicAwardFacts {
   const structured = objectValue(input.publicFacts);
+  // Structured public facts are the reviewed publication (Stage 1: the
+  // human-reviewed fact ledger). They render verbatim in the field the review
+  // assigned them: no keyword inference, no regex re-categorisation, no
+  // truncation, nothing dropped. The heuristics below exist only for the
+  // legacy summary-derived path, where no reviewed facts exist.
+  const reviewed = Object.keys(structured).length > 0;
   const summaryParts = awardBaselineSummaryParts(input.summary);
   const factMap = new Map(
     (summaryParts?.facts || []).map((fact) => [normalizeLabel(fact.label), fact.value]),
@@ -50,29 +56,32 @@ export function publicAwardFactsFromAward(input: {
   // the reconciliation worker first so sibling pages cannot contaminate facts.
   const sourceFacts: Array<Record<string, unknown>> = [];
 
-  const eligibility = arrayField(structured.eligibility).length
-    ? arrayField(structured.eligibility)
+  const field = (value: unknown) => (reviewed ? reviewedArrayField(value) : arrayField(value));
+  const eligibility = field(structured.eligibility).length
+    ? field(structured.eligibility)
     : splitFact(factMap.get("eligibility") || null, sourceFacts.flatMap((facts) => arrayField(facts.eligibility)));
-  const requirements = arrayField(structured.requirements).length
-    ? arrayField(structured.requirements)
+  const requirements = field(structured.requirements).length
+    ? field(structured.requirements)
     : splitFact(factMap.get("requirements") || null, sourceFacts.flatMap((facts) => arrayField(facts.requirements)));
-  const applicationMaterials = arrayField(structured.application_materials).length
-    ? arrayField(structured.application_materials)
+  const applicationMaterials = field(structured.application_materials).length
+    ? field(structured.application_materials)
     : splitFact(
         factMap.get("application materials") || null,
         sourceFacts.flatMap((facts) => arrayField(facts.application_materials)),
       );
-  const normalizedFacts = normalizeRequirementFacts(requirements, applicationMaterials);
-  const documents = arrayField(structured.documents).length
-    ? arrayField(structured.documents)
+  const normalizedFacts = reviewed
+    ? { requirements, applicationMaterials }
+    : normalizeRequirementFacts(requirements, applicationMaterials);
+  const documents = field(structured.documents).length
+    ? field(structured.documents)
     : splitFact(factMap.get("documents") || null, sourceFacts.flatMap((facts) => arrayField(facts.documents)));
-  const rawImportantDates = arrayField(structured.important_dates).length
-    ? arrayField(structured.important_dates)
+  const rawImportantDates = field(structured.important_dates).length
+    ? field(structured.important_dates)
     : splitFact(
         factMap.get("important dates") || null,
         sourceFacts.flatMap((facts) => arrayField(facts.important_dates)),
       );
-  const structuredAwardAmounts = arrayField(structured.award_amounts).flatMap(splitFactItems);
+  const structuredAwardAmounts = field(structured.award_amounts).flatMap(splitFactItems);
   const fallbackAwardAmounts = splitFact(
     factMap.get("award amount") || null,
     sourceFacts.flatMap((facts) => arrayField(facts.award_amounts)),
@@ -97,27 +106,27 @@ export function publicAwardFactsFromAward(input: {
       null,
     deadline,
     openingDate,
-    awardAmount: compactFact(structuredAwardAmounts.length ? structuredAwardAmounts : fallbackAwardAmounts),
+    awardAmount: reviewed
+      ? listFact(structuredAwardAmounts)
+      : compactFact(structuredAwardAmounts.length ? structuredAwardAmounts : fallbackAwardAmounts),
     eligibility,
     requirements: normalizedFacts.requirements,
     applicationMaterials: normalizedFacts.applicationMaterials,
-    howToApply: arrayField(structured.how_to_apply).length
-      ? arrayField(structured.how_to_apply)
+    howToApply: field(structured.how_to_apply).length
+      ? field(structured.how_to_apply)
       : splitFact(factMap.get("how to apply") || null, sourceFacts.flatMap((facts) => arrayField(facts.how_to_apply))),
     importantDates,
     documents,
-    contacts: arrayField(structured.contacts).length
-      ? arrayField(structured.contacts)
+    contacts: field(structured.contacts).length
+      ? field(structured.contacts)
       : splitFact(factMap.get("contacts") || null, sourceFacts.flatMap((facts) => arrayField(facts.contacts))),
-    academicLevels: arrayField(structured.academic_levels).length
-      ? arrayField(structured.academic_levels)
-      : inferAcademicLevels([...eligibility, ...normalizedFacts.requirements]),
-    disciplines: arrayField(structured.disciplines).length
-      ? arrayField(structured.disciplines)
-      : inferDisciplines([...eligibility, ...normalizedFacts.requirements, ...documents]),
-    citizenship: arrayField(structured.citizenship).length
-      ? arrayField(structured.citizenship)
-      : inferCitizenship([...eligibility, ...normalizedFacts.requirements]),
+    // Audience fields are never inferred from other fields' wording: a Gilman
+    // requirement about "international insurance coverage including health"
+    // once surfaced as "Discipline: Health". Absent from the review = absent
+    // from the page.
+    academicLevels: field(structured.academic_levels),
+    disciplines: field(structured.disciplines),
+    citizenship: field(structured.citizenship),
     confidence:
       cleanString(structured.confidence) ||
       cleanString(factMap.get("baseline detail confidence")),
@@ -258,37 +267,24 @@ function arrayField(value: unknown) {
   return uniqueShort(value.map(cleanString).filter(Boolean));
 }
 
-function inferAcademicLevels(values: string[]) {
-  const text = values
-    .join(" ")
-    .toLowerCase()
-    .replace(/\bundergraduate transcripts?\b/g, "")
-    .replace(/\bbachelor'?s? transcripts?\b/g, "");
-  const levels: string[] = [];
-  if (/\b(first-year|freshman|sophomore|junior|senior|undergraduate|bachelor)/.test(text)) levels.push("Undergraduate");
-  if (/\bgraduate|master|doctoral|phd|ph\.d|postdoctoral|postdoc/.test(text)) levels.push("Graduate");
-  if (/\bpostdoctoral|postdoc/.test(text)) levels.push("Postdoctoral");
-  return levels;
+// Reviewed values: exact-duplicate removal only. No 180-character truncation
+// and no ten-item cap - every reviewed item reaches the page intact.
+function reviewedArrayField(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value.map(cleanString).filter(Boolean)) {
+    if (seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
 }
 
-function inferDisciplines(values: string[]) {
-  const text = values.join(" ").toLowerCase();
-  const disciplines: string[] = [];
-  if (/\b(ecology|evolution|biology|life sciences?)\b/.test(text)) disciplines.push("Life sciences");
-  if (/\b(stem|science|engineering|mathematics|technology|computer|biology|chemistry|physics)\b/.test(text)) disciplines.push("STEM");
-  if (/\bpublic service|policy|government|international affairs|foreign service|leadership\b/.test(text)) disciplines.push("Public service");
-  if (/\bhumanities|arts|literature|history|language|social science\b/.test(text)) disciplines.push("Humanities / social sciences");
-  if (/\bhealth|medicine|medical|nursing|clinical\b/.test(text)) disciplines.push("Health");
-  return disciplines;
-}
-
-function inferCitizenship(values: string[]) {
-  const text = values.join(" ").toLowerCase();
-  const citizenship: string[] = [];
-  if (/\bu\.?s\.?\s+(citizen|national)|united states citizen/.test(text)) citizenship.push("U.S. citizens");
-  if (/\bpermanent resident|green card/.test(text)) citizenship.push("Permanent residents");
-  if (/\binternational students?|non-u\.?s\.?|foreign nationals?/.test(text)) citizenship.push("International applicants");
-  return citizenship;
+function listFact(values: string[]) {
+  const clean = values.map(cleanString).filter(Boolean);
+  if (clean.length === 0) return null;
+  return clean.length === 1 ? clean[0] : clean;
 }
 
 function firstValue(values: Array<string | null | undefined>) {

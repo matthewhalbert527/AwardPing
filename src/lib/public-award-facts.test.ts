@@ -110,7 +110,7 @@ describe("public award facts", () => {
     expect(facts.applicationMaterials).toEqual([]);
   });
 
-  it("does not infer an undergraduate audience from transcript requirements", () => {
+  it("never infers academic level, discipline or citizenship from other fields' wording", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
       publicFacts: {
@@ -129,11 +129,15 @@ describe("public award facts", () => {
       ],
     });
 
-    expect(facts.academicLevels).toEqual(["Graduate"]);
-    expect(facts.disciplines).toEqual(["Life sciences"]);
+    // Reviewed facts carry these fields explicitly when the review found them;
+    // keyword inference once turned a Gilman insurance requirement mentioning
+    // "health" into "Discipline: Health".
+    expect(facts.academicLevels).toEqual([]);
+    expect(facts.disciplines).toEqual([]);
+    expect(facts.citizenship).toEqual([]);
   });
 
-  it("moves submitted documents out of requirements and into application materials", () => {
+  it("renders reviewed requirements and application materials verbatim in their reviewed fields", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
       publicFacts: {
@@ -190,8 +194,10 @@ describe("public award facts", () => {
       ],
     });
 
-    expect(facts.requirements).toEqual([]);
-    expect(facts.applicationMaterials).toEqual([
+    // The review assigned each item to a field; the page honours that
+    // assignment instead of re-sorting (and, for unmatched items, dropping)
+    // reviewed facts through regex heuristics.
+    expect(facts.requirements).toEqual([
       "Online application submission.",
       "Three references required.",
       "College transcripts (unofficial accepted).",
@@ -202,10 +208,13 @@ describe("public award facts", () => {
       "Upload the supporting statement as a PDF document.",
       "Contact Information.",
       "Career Interests.",
+      "College Information.",
+      "Three references.",
     ]);
+    expect(facts.applicationMaterials).toEqual(["College transcripts"]);
   });
 
-  it("only keeps true award conditions in the requirements field", () => {
+  it("keeps every reviewed requirement, including items the legacy heuristic classed as selection philosophy", () => {
     const facts = publicAwardFactsFromAward({
       summary: null,
       publicFacts: {
@@ -237,10 +246,27 @@ describe("public award facts", () => {
     });
 
     expect(facts.requirements).toEqual([
+      "Academic performance",
+      "Relevance of work to solid waste management science",
+      "Potential for success",
       "Recipients must submit a final report at the end of the award year.",
       "Awardees may not hold another major fellowship concurrently.",
       "Students must maintain full-time enrollment throughout the award period.",
     ]);
+  });
+
+  it("does not truncate or cap reviewed values", () => {
+    const long = `Applicants must ${"demonstrate sustained commitment to public service ".repeat(6)}across their undergraduate years.`;
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {
+        eligibility: [long],
+        application_materials: Array.from({ length: 12 }, (_, index) => `Document ${index + 1}`),
+      },
+    });
+
+    expect(facts.eligibility).toEqual([long.replace(/\s+/g, " ").trim()]);
+    expect(facts.applicationMaterials).toHaveLength(12);
   });
 
   it("preserves multiple award amounts as separate public fact items", () => {

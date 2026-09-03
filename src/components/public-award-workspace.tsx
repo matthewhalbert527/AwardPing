@@ -524,7 +524,9 @@ function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
     { label: "Discipline", value: compactList(facts.disciplines) },
     { label: "Citizenship", value: compactList(facts.citizenship) },
     { label: "Eligibility", value: compactList(facts.eligibility) },
-    { label: "Award conditions", value: compactList(facts.requirements) },
+    // The editorial policy defines `requirements` as "what must be true of my
+    // application" (self-checkable conditions), so the row carries that name.
+    { label: "Requirements", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
     { label: "How to apply", value: compactList(facts.howToApply) },
     { label: "Important dates", value: compactList(facts.importantDates) },
@@ -536,7 +538,8 @@ function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
 }
 
 function compactList(values: string[]) {
-  const clean = values.flatMap(splitFactItems).slice(0, 6);
+  // Every reviewed item renders; the review, not a display cap, bounds the list.
+  const clean = values.flatMap(splitFactItems);
   if (clean.length === 0) return null;
   return clean.length === 1 ? clean[0] : clean;
 }
