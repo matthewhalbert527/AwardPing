@@ -19,6 +19,8 @@ const eslintConfig = defineConfig([
     "visual-snapshots/**",
     "visual-snapshot-archive/**",
     "next-env.d.ts",
+    // Local agent config and nested worktrees (gitignored; never source).
+    ".claude/**",
   ]),
 ]);
 
