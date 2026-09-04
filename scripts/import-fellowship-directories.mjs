@@ -983,17 +983,19 @@ function canonicalSourceUrlKey(value) {
       .replace(/\/index\.(html?|php|aspx?)$/i, "/")
       .replace(/\/+$/g, "")
       .toLowerCase();
+    // Entries arrive decoded: encode each kept pair into one unambiguous
+    // string and use it for both ordering and serialization, so a value
+    // containing "&" or "=" never collides with separate parameters and the
+    // same parameters in another order never yield a different key.
     const searchParams = [...url.searchParams.entries()]
       .filter(([key, val]) => {
         const lowerKey = key.toLowerCase();
         if (!val || lowerKey.startsWith("utm_")) return false;
         return !["fbclid", "gclid", "msclkid", "mc_cid", "mc_eid", "share", "replytocom"].includes(lowerKey);
       })
-      .map(([key, val]) => [key.toLowerCase(), val.toLowerCase()])
-      .sort(([left], [right]) => left.localeCompare(right));
-    const search = searchParams.length
-      ? `?${searchParams.map(([key, val]) => `${key}=${val}`).join("&")}`
-      : "";
+      .map(([key, val]) => `${encodeURIComponent(key.toLowerCase())}=${encodeURIComponent(val.toLowerCase())}`)
+      .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+    const search = searchParams.length ? `?${searchParams.join("&")}` : "";
     return `${host}${pathname || "/"}${search}`;
   } catch {
     return String(value || "").trim().toLowerCase().replace(/\/+$/g, "");

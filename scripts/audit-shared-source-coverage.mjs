@@ -311,10 +311,14 @@ function canonicalSearchParams(searchParams) {
     kept.push([key, value.toLowerCase()]);
   }
 
-  kept.sort(([leftKey, leftValue], [rightKey, rightValue]) =>
-    `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`),
-  );
-  return kept.length ? `?${kept.map(([key, value]) => `${key}=${value}`).join("&")}` : "";
+  // Entries arrive decoded: encode each kept pair into one unambiguous string
+  // and use it for both ordering and serialization, so a value containing
+  // "&" or "=" never collides with separate parameters and the same
+  // parameters in another order never yield a different key.
+  const pairs = kept
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  return pairs.length ? `?${pairs.join("&")}` : "";
 }
 
 function buildHomepageRepairs(awards, sourcesByAward, retiredSources = []) {
