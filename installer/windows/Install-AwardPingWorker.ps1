@@ -2214,38 +2214,129 @@ if (`$RunTrigger -eq "scheduled" -and (
 `$LockPath = Join-Path `$InstallRoot `$LockName
 New-Item -ItemType Directory -Force -Path `$LogDir | Out-Null
 
-function Test-VisualLockActive {
+function Test-LegacyMarkerlessVisualLockActive {
   param([string]`$Path)
 
-  if (-not (Test-Path `$Path)) {
+  # The actually deployed prior wrapper wrote a markerless "pid=..."
+  # lock with a plain Set-Content and held no file handle at all - it
+  # cannot participate in the byte-lock protocol below. This is a
+  # narrow, one-time preflight solely for that transition: a genuinely
+  # live legacy-launched process is detected here and conservatively
+  # skipped; anything else (no file, unreadable, new-protocol content,
+  # or stale legacy content) falls through to the new protocol.
+  try {
+    `$raw = Get-Content -LiteralPath `$Path -Raw -ErrorAction Stop
+  } catch [System.Management.Automation.ItemNotFoundException] {
+    return `$false
+  } catch {
     return `$false
   }
-
-  try {
-    `$raw = Get-Content -Path `$Path -Raw -ErrorAction Stop
-    `$match = [regex]::Match(`$raw, "pid=(\d+)")
-    if (`$match.Success) {
-      `$workerPid = [int]`$match.Groups[1].Value
-      `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
-      if (`$process -and (
-        `$process.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
-        `$process.CommandLine -like "*source:visual-snapshots*"
-      )) {
-        return `$true
-      }
-    }
-  } catch {
-    Write-Host "Could not inspect visual worker lock; treating it as stale."
+  # Get-Content -Raw returns `$null (not an empty string) for a
+  # zero-byte file - verified empirically - and passing `$null into a
+  # static [regex]::Match call throws ArgumentNullException, unlike the
+  # -match operator, which tolerates it. A zero-byte file is never
+  # active legacy content regardless.
+  if ([string]::IsNullOrEmpty(`$raw)) {
+    return `$false
   }
-
-  Write-Host "Removing stale AwardPing visual worker lock."
-  Remove-Item -Path `$Path -Force -ErrorAction SilentlyContinue
-  return `$false
+  # A NUL sentinel byte at offset 0 is written ONLY by the new protocol's
+  # claim below (see the sentinel-prefixed write). The deployed 25dc124
+  # legacy writer never emits it. Any NUL-prefixed record therefore
+  # belongs to the new protocol's write space - genuine, corrupt, or
+  # partial - and must NEVER enter legacy pid= parsing below. Excluding
+  # on the sentinel byte alone, rather than also requiring a well-formed
+  # "protocol=N" marker to follow, closes a gap where a version this
+  # preflight does not recognize, or a truncated in-progress write, could
+  # otherwise fall through to the pid= scan and be misread as legacy if
+  # it happens to contain a "pid=" substring naming a live, matching
+  # process (reproduced empirically).
+  if (`$raw[0] -eq [char]0) {
+    return `$false
+  }
+  # Anchored to the exact start of the content, matching ONLY the real
+  # deployed 25dc124 format, which begins with "pid=" and nothing else.
+  # An unanchored search could match "pid=" appearing anywhere in
+  # garbage-prefixed or otherwise corrupted text and misread it as a
+  # genuine legacy record (reproduced empirically).
+  `$match = [regex]::Match(`$raw, "^pid=(\d+)\b")
+  if (-not `$match.Success) {
+    return `$false
+  }
+  `$workerPid = 0
+  if (-not [int]::TryParse(`$match.Groups[1].Value, [ref]`$workerPid)) {
+    return `$false
+  }
+  # This launcher's own PID can never be evidence of a SEPARATE legacy
+  # owner: it is trivially alive and trivially satisfies the command-line
+  # check below, because this process IS that command line. Accepting it
+  # would make a launch skip itself whenever a stale record happens to
+  # name a PID the OS has since reused for this very process. Reject it
+  # outright so such a record is reclaimed through the byte-lock path,
+  # which resolves ownership by actual contention rather than content.
+  if (`$workerPid -eq `$PID) {
+    return `$false
+  }
+  `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
+  return [bool](`$process -and (
+    `$process.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+    `$process.CommandLine -like "*source:visual-snapshots*"
+  ))
 }
 
-if (Test-VisualLockActive -Path `$LockPath) {
-  Write-Host "AwardPing visual snapshot worker is already running. Skipping this launch."
-  exit 0
+function Test-VisualLockOwnedByAwardPing {
+  param([string]`$Content)
+
+  # DIAGNOSTIC ONLY: this can never be used to justify skipping a
+  # launch. Content sitting in the file is not bound to whoever
+  # currently holds the byte-range lock - a non-cooperating holder
+  # could leave genuinely stale, well-formed, live-PID-matching
+  # metadata behind without ever touching it (verified empirically).
+  # Anchored to the start of the content, so a match can only occur for
+  # genuinely well-formed new-protocol metadata, never a coincidental
+  # substring elsewhere.
+  if (`$Content -notmatch "^protocol=2\b") {
+    return `$false
+  }
+  `$match = [regex]::Match(`$Content, "pid=(\d+)")
+  if (-not `$match.Success) {
+    return `$false
+  }
+  `$workerPid = 0
+  if (-not [int]::TryParse(`$match.Groups[1].Value, [ref]`$workerPid)) {
+    # Malformed or out-of-range PID metadata is not evidence of a live
+    # AwardPing owner; treat it as unowned rather than throwing.
+    return `$false
+  }
+  `$process = Get-CimInstance Win32_Process -Filter "ProcessId = `$workerPid" -ErrorAction SilentlyContinue
+  return [bool](`$process -and (
+    `$process.CommandLine -like "*Run-AwardPingVisualSnapshots.ps1*" -or
+    `$process.CommandLine -like "*source:visual-snapshots*"
+  ))
+}
+
+function Read-VisualLockMetadataFromHandle {
+  param([System.IO.FileStream]`$Stream)
+
+  # Byte 0 is a pure lock sentinel (the sole ownership primitive); real
+  # metadata always starts at offset 1, so reading it from the SAME
+  # already-open handle never collides with a lock another handle holds
+  # on byte 0 - and ties the metadata to the exact identity that failed
+  # to acquire that lock, closing the split-identity gap a separate
+  # pathname reopen could not.
+  for (`$attempt = 0; `$attempt -lt 5; `$attempt++) {
+    `$Stream.Seek(1, [System.IO.SeekOrigin]::Begin) | Out-Null
+    `$buffer = New-Object byte[] 4096
+    `$bytesRead = `$Stream.Read(`$buffer, 0, `$buffer.Length)
+    `$content = [System.Text.Encoding]::ASCII.GetString(`$buffer, 0, `$bytesRead)
+    if (`$content.Trim().Length -gt 0) {
+      return `$content
+    }
+    # The current holder claimed the lock but has not yet flushed its
+    # metadata (FileStream.Write only fills an in-process buffer) - not
+    # evidence either way; retry briefly on the SAME handle.
+    Start-Sleep -Milliseconds 20
+  }
+  return ""
 }
 
 `$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -2300,38 +2391,182 @@ if (`$All) { `$workerArgs += "--all=true" }
 `$workerArgs += "--max-discoveries-per-domain=100"
 
 Write-Host "Running AwardPing visual snapshot worker (`$ShardLabel). Log: `$logPath"
-Set-Content -Path `$LockPath -Value "pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath" -Encoding ASCII
-`$exitCode = 1
-Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All" -Encoding UTF8
+if (Test-LegacyMarkerlessVisualLockActive -Path `$LockPath) {
+  Write-Host "AwardPing visual snapshot worker is already running (legacy lock). Skipping this launch."
+  exit 0
+}
+`$lockContent = "protocol=2 pid=`$PID started=`$(Get-Date -Format o) mode=`$mode shard_count=`$ShardCount shard_index=`$ShardIndex log=`$logPath"
+`$lockStream = `$null
 try {
-  `$attempt = 0
-  do {
-    `$attempt += 1
-    if (`$attempt -gt 1) {
-      `$waitSeconds = [Math]::Min(60, 10 * `$attempt)
-      Add-Content -Path `$logPath -Value "VISUAL_WORKER_RESTART attempt=`$attempt max_restarts=`$MaxRestarts wait_seconds=`$waitSeconds started=`$(Get-Date -Format o)" -Encoding UTF8
-      Start-Sleep -Seconds `$waitSeconds
-    }
-
-    `$previousErrorActionPreference = `$ErrorActionPreference
-    `$ErrorActionPreference = "Continue"
-    try {
-      & `$nodePath @workerArgs 2>&1 | ForEach-Object {
-        `$line = [string]`$_
-        Write-Host `$line
-        Add-Content -Path `$logPath -Value `$line -Encoding UTF8
-      }
-    } finally {
-      `$ErrorActionPreference = `$previousErrorActionPreference
-    }
-    `$exitCode = `$LASTEXITCODE
-    Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT attempt=`$attempt exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
-  } while (`$exitCode -ne 0 -and `$attempt -le `$MaxRestarts)
-} catch {
-  Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$_.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
+  # Every cooperating contender can always open this same file - the
+  # open itself is deliberately non-exclusive, so an unrelated holder
+  # using an incompatible share mode fails HERE, and per design must
+  # never be upgraded to a claim by separately reading a stale PID from
+  # the file's content afterward; it is Ambiguous.
+  `$lockStream = [System.IO.FileStream]::new(`$LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)
+} catch [System.IO.DirectoryNotFoundException] {
   throw
+} catch [System.IO.IOException] {
+  throw [System.IO.IOException]::new("Cannot verify whether the AwardPing visual worker lock at '`$LockPath' is available; failing closed instead of assuming it is safe to claim. `$(`$_.Exception.Message)")
+}
+
+try {
+  # The sole ownership primitive: exactly one handle can hold this byte
+  # at a time, regardless of how many cooperating handles have the file
+  # itself open. No post-error Test-Path recheck: classification is the
+  # native error code alone.
+  `$lockStream.Lock(0, 1)
+} catch [System.IO.IOException] {
+  # Best-effort cleanup throughout: Dispose() could itself fail for an
+  # unrelated reason, which must never replace (and hide) the more
+  # informative failure this branch is already reporting.
+  `$lockFailure = `$_
+  `$nativeErrorCode = `$lockFailure.Exception.HResult -band 0xFFFF
+  if (`$nativeErrorCode -ne 33) {
+    try { `$lockStream.Dispose() } catch {}
+    throw `$lockFailure
+  }
+  # Someone genuinely, physically holds byte 0 right now (a lock
+  # cannot outlive its owning handle) - but content sitting in the
+  # file, even read from this same handle, is not bound to that
+  # holder's identity: a non-cooperating process could leave
+  # genuinely stale, well-formed, live-PID-matching metadata behind
+  # without ever touching it (reproduced empirically). No content-based
+  # signal - PID, command line, or otherwise - is ever treated as
+  # sufficient proof of who holds the lock, so every collision fails
+  # closed here; it is never silently classified as a benign,
+  # gracefully skippable "already running." Operationally this trades a
+  # noisier failure on an ordinary double-trigger for the guarantee
+  # that this launch never wrongly assumes someone else is safely
+  # handling the work. Retained only for a more informative message.
+  # The diagnostic read is strictly decorative: it enriches the message
+  # below and nothing else. Its own Seek/Read can genuinely fail (the
+  # metadata region may itself be separately byte-range locked - verified
+  # empirically), which previously threw straight out of this branch,
+  # skipping the single Dispose() call entirely AND replacing the
+  # fail-closed collision error with a far less informative I/O error.
+  # Disposal now happens in a real finally, and the collision error is
+  # always what propagates - diagnostics merely degrade.
+  `$currentMetadata = "<unavailable>"
+  `$diagnosticNote = "diagnostic metadata could not be read"
+  try {
+    `$currentMetadata = Read-VisualLockMetadataFromHandle -Stream `$lockStream
+    `$diagnosticNote = if (Test-VisualLockOwnedByAwardPing -Content `$currentMetadata) {
+      "the recorded metadata parses as a live, matching AwardPing worker, but content alone cannot prove it holds this lock"
+    } else {
+      "the recorded metadata does not verify as a live, matching AwardPing worker"
+    }
+  } catch {
+    `$diagnosticNote = "the recorded metadata could not be read (`$(`$_.Exception.Message))"
+  } finally {
+    try { `$lockStream.Dispose() } catch {}
+  }
+  throw [System.IO.IOException]::new("Cannot verify who holds the AwardPing visual worker lock at '`$LockPath'; failing closed instead of assuming it is safe to skip or claim (`$diagnosticNote). Recorded metadata: `$currentMetadata")
+}
+
+try {
+  # The lock is acquired: this launch now exclusively owns it. Any
+  # failure writing its own metadata from here is this launch's own
+  # problem, never contention with anyone else - release and rethrow
+  # the real failure instead of self-inspecting or self-skipping.
+  # Catches every exception type, not just IOException (verified
+  # empirically that a closed-handle write raises ObjectDisposedException,
+  # which is not an IOException at all).
+  `$lockStream.SetLength(0)
+  `$sentinelAndContent = [byte[]]@(0) + [System.Text.Encoding]::ASCII.GetBytes(`$lockContent)
+  `$lockStream.Write(`$sentinelAndContent, 0, `$sentinelAndContent.Length)
+  `$lockStream.Flush()
+} catch {
+  # Capture the real failure before attempting cleanup: Dispose()
+  # tries to flush any still-buffered write as part of closing the
+  # handle, so if the underlying I/O problem is still present it can
+  # ALSO throw - verified empirically - which would otherwise replace
+  # (and hide) the original, more informative failure. Cleanup is
+  # best-effort; the original failure is always what propagates.
+  `$writeFailure = `$_
+  try { `$lockStream.Unlock(0, 1) } catch {}
+  try { `$lockStream.Dispose() } catch {}
+  throw `$writeFailure
+}
+`$exitCode = 1
+`$primaryFailure = `$null
+`$unlockFailure = `$null
+`$disposeFailure = `$null
+try {
+  try {
+    Set-Content -Path `$logPath -Value "VISUAL_WORKER_START pid=`$PID mode=`$mode trigger=`$RunTrigger shard_count=`$ShardCount shard_index=`$ShardIndex started=`$(Get-Date -Format o) limit=`$Limit all=`$All" -Encoding UTF8
+    `$attempt = 0
+    do {
+      `$attempt += 1
+      if (`$attempt -gt 1) {
+        `$waitSeconds = [Math]::Min(60, 10 * `$attempt)
+        Add-Content -Path `$logPath -Value "VISUAL_WORKER_RESTART attempt=`$attempt max_restarts=`$MaxRestarts wait_seconds=`$waitSeconds started=`$(Get-Date -Format o)" -Encoding UTF8
+        Start-Sleep -Seconds `$waitSeconds
+      }
+
+      `$previousErrorActionPreference = `$ErrorActionPreference
+      `$ErrorActionPreference = "Continue"
+      try {
+        & `$nodePath @workerArgs 2>&1 | ForEach-Object {
+          `$line = [string]`$_
+          Write-Host `$line
+          Add-Content -Path `$logPath -Value `$line -Encoding UTF8
+        }
+      } finally {
+        `$ErrorActionPreference = `$previousErrorActionPreference
+      }
+      `$exitCode = `$LASTEXITCODE
+      Add-Content -Path `$logPath -Value "VISUAL_WORKER_EXIT attempt=`$attempt exit_code=`$exitCode finished=`$(Get-Date -Format o)" -Encoding UTF8
+    } while (`$exitCode -ne 0 -and `$attempt -le `$MaxRestarts)
+  } catch {
+    # Capture the real failure FIRST, before attempting anything else.
+    # Under `$ErrorActionPreference = "Stop", a failure in the
+    # error-report logging below (a share-denied, full, or otherwise
+    # unavailable log) is itself a terminating error - if it were allowed
+    # to happen before this assignment, it would leave this catch without
+    # `$primaryFailure ever being set, masking the real worker failure
+    # with a far less informative logging error (reproduced empirically).
+    `$primaryFailure = `$_
+    try {
+      Add-Content -Path `$logPath -Value "VISUAL_WORKER_WRAPPER_ERROR message=`$(`$primaryFailure.Exception.Message) finished=`$(Get-Date -Format o)" -Encoding UTF8
+    } catch {
+      # Best-effort: this logging attempt can never replace
+      # `$primaryFailure or escape this catch.
+    }
+  }
 } finally {
-  Remove-Item -Path `$LockPath -Force -ErrorAction SilentlyContinue
+  # This finally always runs, regardless of whether the try/catch above
+  # fully handled its own error, so lock release is never skipped by a
+  # failure in the catch's own logging. Releasing the byte-range lock and
+  # releasing the handle are two independent obligations, attempted
+  # independently: neither is ever allowed to throw OUT of this finally -
+  # doing so would replace whatever exception, if any, is already in
+  # flight (verified empirically) - so each is captured into its own
+  # variable instead and reported afterward. The lock file itself is
+  # deliberately left in place with its last-written content (a
+  # persistent advisory lock, not delete-on-close): no pathname-based
+  # removal follows, so a replacement that appeared after release can
+  # never be touched by this launch.
+  if (`$lockStream) {
+    try { `$lockStream.Unlock(0, 1) } catch { `$unlockFailure = `$_ }
+    try { `$lockStream.Dispose() } catch { `$disposeFailure = `$_ }
+  }
+}
+
+# A genuine failure from the work above always outranks any cleanup
+# failure: it is the informative one, and it is what the caller needs.
+if (`$primaryFailure) {
+  throw `$primaryFailure
+}
+# There was no primary failure, so a cleanup failure is this launch's only
+# failure - and it is a real one (a byte-range lock that never released, or
+# a handle that never closed). Report it deliberately rather than exiting
+# as though the run had succeeded cleanly.
+if (`$unlockFailure) {
+  throw `$unlockFailure
+}
+if (`$disposeFailure) {
+  throw `$disposeFailure
 }
 exit `$exitCode
 "@
@@ -2393,7 +2628,37 @@ function Read-JsonIfExists {
     `$cmd -like "*capture-visual-snapshots.mjs*"
   )
 }
-`$lockText = if (Test-Path `$LockPath) { Get-Content -Path `$LockPath -Raw -ErrorAction SilentlyContinue } else { "" }
+# Status inspection must never be able to affect a real claimant: it
+# never attempts to acquire the byte-range lock (Lock(0,1)) at all, so
+# it can never become a transient, unrelated byte-0 holder colliding
+# with a genuine launch at exactly the wrong moment. "Running" comes
+# solely from the independent CIM process scan above; the lock file's
+# content, when present, is only ever read (a plain, non-locking open)
+# and reported as historical - it is never asserted to be a proven,
+# currently active lock, since there is no safe way for this script to
+# prove that without itself becoming a participant in the protocol.
+`$lockText = ""
+if (Test-Path -LiteralPath `$LockPath) {
+  `$statusProbe = `$null
+  try {
+    `$statusProbe = [System.IO.FileStream]::new(`$LockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    `$statusProbe.Seek(1, [System.IO.SeekOrigin]::Begin) | Out-Null
+    `$statusBuffer = New-Object byte[] 4096
+    `$statusBytesRead = `$statusProbe.Read(`$statusBuffer, 0, `$statusBuffer.Length)
+    `$lockText = [System.Text.Encoding]::ASCII.GetString(`$statusBuffer, 0, `$statusBytesRead)
+  } catch {
+    # Unreadable for some other reason - leave lockText at its unknown
+    # default rather than guessing.
+  } finally {
+    # A Seek/Read failure after a successful open jumped straight to the
+    # catch above, skipping Dispose() and leaving the handle open until
+    # GC finalization - reproducible with a genuine competing byte-range
+    # lock over the metadata region. Disposal is now attempted wherever
+    # the read fails. This probe still never calls Lock/Unlock at all, so
+    # it can never become a transient byte-0 owner or perturb a claimant.
+    if (`$statusProbe) { try { `$statusProbe.Dispose() } catch {} }
+  }
+}
 `$latestLog = Get-ChildItem -Path `$LogDir -Filter "awardping-visual*.log" -ErrorAction SilentlyContinue |
   Sort-Object LastWriteTime -Descending |
   Select-Object -First 1
@@ -2420,7 +2685,7 @@ if (`$running) {
   Write-Host "Process IDs: `$((`$running | Select-Object -ExpandProperty ProcessId) -join ', ')"
 }
 if (`$lockText) {
-  Write-Host "Lock: `$(`$lockText.Trim())"
+  Write-Host "Last recorded lock metadata: `$(`$lockText.Trim())"
 }
 Write-Host ""
 

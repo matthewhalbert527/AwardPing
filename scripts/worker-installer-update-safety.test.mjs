@@ -7,7 +7,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -251,8 +251,8 @@ describe("Windows worker update safety", () => {
     expect(retirementIndex).toBeGreaterThan(registrationIndex);
   });
 
-  const windowsIt = (name, test) =>
-    (process.platform === "win32" ? it : it.skip)(name, test, 20_000);
+  const windowsIt = (name, test, timeout = 20_000) =>
+    (process.platform === "win32" ? it : it.skip)(name, test, timeout);
 
   // Copy-AppFiles is the only place the installer copies the checked-out
   // repository into a staged or installed app tree. The repository-root
@@ -513,6 +513,1735 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).not.toContain("\\Other\\|");
     expect(result.stdout).not.toContain("Concurrent Custom Audit");
   });
+
+  it("claims the generated visual worker lock with a single-pass byte-range lock, tying contention and metadata evidence to one file handle", () => {
+    const launcher = extractPowerShellFunction(installer, "Write-LauncherScripts", "Install-Dependencies");
+
+    // The persistent-lock design (a single broad write-exclusive open as
+    // the sole signal) is gone: it let a foreign holder's mere conflict
+    // with our own open be answered by a SEPARATELY read, stale content
+    // probe. There is no more retry loop, no more Retry/Stale state, and
+    // no more removal step.
+    expect(launcher).not.toContain("function Get-VisualLockContentionStatus");
+    expect(launcher).not.toContain("`$maxClaimAttempts");
+    expect(launcher).not.toContain("`$claimAttempt");
+    expect(launcher).not.toMatch(/while \(`\$true\)/);
+    expect(launcher).not.toContain('"Retry"');
+    expect(launcher).not.toContain('"Stale"');
+
+    const claimIndex = launcher.indexOf("[System.IO.FileMode]::OpenOrCreate");
+    const invokeIndex = launcher.indexOf("& `$nodePath @workerArgs");
+    expect(claimIndex).toBeGreaterThan(0);
+    expect(invokeIndex).toBeGreaterThan(claimIndex);
+
+    // The open is deliberately broad (ReadWrite/ReadWrite) and compatible
+    // with every cooperating participant - it is not itself the ownership
+    // primitive, so a genuine conflict there (an unrelated, incompatible
+    // holder) must never be answered by a separately read stale PID.
+    expect(launcher).toContain("[System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite");
+    const openCatchStart = launcher.indexOf("catch [System.IO.IOException] {", claimIndex);
+    const openCatchEnd = launcher.indexOf("}", launcher.indexOf("failing closed instead of assuming it is safe to claim", openCatchStart));
+    expect(openCatchStart).toBeGreaterThan(claimIndex);
+    const openCatchBody = launcher.slice(openCatchStart, openCatchEnd);
+    expect(openCatchBody).not.toContain("Get-Content");
+    expect(openCatchBody).not.toContain("ActiveOwner");
+
+    // The byte-range lock is the sole ownership primitive: exactly one
+    // sentinel byte, contention code 33 alone (no 32/80/183 - those were
+    // CreateNew/exclusive-open-specific and cannot occur for a Lock call),
+    // no post-error Test-Path recheck.
+    const lockCallIndex = launcher.indexOf("`$lockStream.Lock(0, 1)");
+    expect(lockCallIndex).toBeGreaterThan(claimIndex);
+    const lockCatchStart = launcher.indexOf("catch [System.IO.IOException] {", lockCallIndex);
+    expect(lockCatchStart).toBeGreaterThan(lockCallIndex);
+    const lockCatchEnd = launcher.indexOf("Recorded metadata:", lockCatchStart);
+    const lockCatchBody = launcher.slice(lockCatchStart, lockCatchEnd);
+    expect(lockCatchBody).toContain("-ne 33");
+    expect(lockCatchBody).not.toMatch(/\(Test-Path[^)]*\)/);
+    expect(lockCatchBody).not.toContain("32");
+    expect(lockCatchBody).not.toContain("80");
+    expect(lockCatchBody).not.toContain("183");
+
+    // Metadata on lock failure is read via Read-VisualLockMetadataFromHandle
+    // against the SAME already-open $lockStream - never a fresh pathname
+    // reopen - purely for a richer diagnostic message. It is never treated
+    // as sufficient proof of ownership: there is no "already running, skip"
+    // path here at all - a same-handle content read cannot prove who
+    // currently holds the byte-range lock (an unrelated holder could leave
+    // genuinely stale, well-formed, live-PID-matching metadata behind
+    // without ever touching it), so every genuine collision fails closed.
+    expect(lockCatchBody).toContain("Read-VisualLockMetadataFromHandle -Stream `$lockStream");
+    expect(lockCatchBody).toContain("Test-VisualLockOwnedByAwardPing -Content `$currentMetadata");
+    // No actual code path here ever reports a benign skip - a comment may
+    // legitimately discuss that removed behavior in prose, but there must
+    // be no real Write-Host call announcing it, and no "exit 0" statement.
+    expect(lockCatchBody).not.toMatch(/Write-Host "AwardPing visual snapshot worker is already running/);
+    expect(lockCatchBody).not.toContain("exit 0");
+    expect(lockCatchBody).toContain("try { `$lockStream.Dispose() } catch {}");
+    expect(lockCatchBody).toContain("Cannot verify who holds the AwardPing visual worker lock");
+
+    // The diagnostic read can genuinely fail (its metadata region may be
+    // separately byte-range locked). Disposal therefore happens in a real
+    // finally - not as a statement the read can jump past - and the read's
+    // own failure only degrades the note, never replacing the fail-closed
+    // collision error, which is thrown unconditionally afterwards.
+    const diagnosticTryIndex = lockCatchBody.indexOf("try {", lockCatchBody.indexOf("-ne 33"));
+    const diagnosticReadIndex = lockCatchBody.indexOf("Read-VisualLockMetadataFromHandle -Stream `$lockStream");
+    const diagnosticFinallyIndex = lockCatchBody.indexOf("} finally {", diagnosticReadIndex);
+    const diagnosticDisposeIndex = lockCatchBody.indexOf("try { `$lockStream.Dispose() } catch {}", diagnosticFinallyIndex);
+    expect(diagnosticTryIndex).toBeGreaterThan(0);
+    expect(diagnosticReadIndex).toBeGreaterThan(diagnosticTryIndex);
+    expect(diagnosticFinallyIndex).toBeGreaterThan(diagnosticReadIndex);
+    expect(diagnosticDisposeIndex).toBeGreaterThan(diagnosticFinallyIndex);
+    // The throw is outside that try/finally, so it always runs.
+    const failClosedThrowIndex = lockCatchBody.indexOf("throw [System.IO.IOException]::new(\"Cannot verify who holds");
+    expect(failClosedThrowIndex).toBeGreaterThan(diagnosticDisposeIndex);
+
+    // Content is written starting at offset 1 (byte 0 is a pure lock
+    // sentinel, never data) in a SEPARATE try from the lock acquisition;
+    // any failure disposes and rethrows the REAL failure - untyped catch,
+    // and best-effort cleanup so Dispose() itself failing (it can, if the
+    // same underlying I/O problem is still present) never replaces the
+    // original, more informative error.
+    const setLengthIndex = launcher.indexOf("`$lockStream.SetLength(0)", lockCatchStart);
+    const writeIndex = launcher.indexOf("`$lockStream.Write(`$sentinelAndContent", setLengthIndex);
+    const flushIndex = launcher.indexOf("`$lockStream.Flush()", writeIndex);
+    expect(setLengthIndex).toBeGreaterThan(lockCatchStart);
+    expect(writeIndex).toBeGreaterThan(setLengthIndex);
+    expect(flushIndex).toBeGreaterThan(writeIndex);
+    const writeCatchStart = launcher.indexOf("} catch {", flushIndex);
+    const writeCatchEnd = launcher.indexOf("}", launcher.indexOf("throw `$writeFailure", writeCatchStart));
+    const writeCatchBody = launcher.slice(writeCatchStart, writeCatchEnd);
+    expect(writeCatchBody).toContain("`$writeFailure = `$_");
+    expect(writeCatchBody).toContain("try { `$lockStream.Unlock(0, 1) } catch {}");
+    expect(writeCatchBody).toContain("try { `$lockStream.Dispose() } catch {}");
+    expect(writeCatchBody).toContain("throw `$writeFailure");
+    expect(writeCatchBody).not.toContain("[System.IO.IOException]");
+    expect(writeCatchBody).not.toContain("already running");
+
+    // Identity-bound cleanup: the release still Unlocks and Disposes the
+    // same handle, never a separate pathname-based removal.
+    const cleanupIndex = launcher.indexOf("`$lockStream.Unlock(0, 1)", invokeIndex);
+    expect(cleanupIndex).toBeGreaterThan(invokeIndex);
+  });
+
+  it("releases the owner's lock and handle in a real finally that can never mask a primary failure or the catch's own logging failure", () => {
+    const launcher = extractPowerShellFunction(installer, "Write-LauncherScripts", "Install-Dependencies");
+    const invokeIndex = launcher.indexOf("& `$nodePath @workerArgs");
+    const exitCodeStatementIndex = launcher.indexOf("exit `$exitCode");
+    expect(invokeIndex).toBeGreaterThan(0);
+    expect(exitCodeStatementIndex).toBeGreaterThan(invokeIndex);
+    const releaseSequence = launcher.slice(invokeIndex, exitCodeStatementIndex);
+
+    // $primaryFailure is captured as the FIRST statement in the catch -
+    // before any other statement, including the error-report logging.
+    // Under $ErrorActionPreference = "Stop", a failure in that logging
+    // (share-denied, full, or otherwise unavailable log) is itself a
+    // terminating error; capturing $_ first means it is never lost even
+    // if the logging attempt right after it fails.
+    const catchStart = releaseSequence.indexOf("} catch {");
+    const catchBodyEnd = releaseSequence.indexOf("} finally {", catchStart);
+    expect(catchStart).toBeGreaterThan(0);
+    expect(catchBodyEnd).toBeGreaterThan(catchStart);
+    const catchBody = releaseSequence.slice(catchStart, catchBodyEnd);
+    const firstStatement = catchBody
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && line !== "} catch {" && !line.startsWith("#"));
+    expect(firstStatement).toBe("`$primaryFailure = `$_");
+
+    // The error-report logging itself is best-effort: wrapped in its own
+    // try/catch so it can never escape the outer catch and replace
+    // $primaryFailure or skip the finally below.
+    const loggingTryIndex = catchBody.indexOf("try {", catchBody.indexOf("`$primaryFailure = `$_"));
+    const loggingAddContentIndex = catchBody.indexOf("Add-Content -Path `$logPath -Value \"VISUAL_WORKER_WRAPPER_ERROR");
+    const loggingCatchIndex = catchBody.indexOf("} catch {", loggingAddContentIndex);
+    expect(loggingTryIndex).toBeGreaterThan(0);
+    expect(loggingAddContentIndex).toBeGreaterThan(loggingTryIndex);
+    expect(loggingCatchIndex).toBeGreaterThan(loggingAddContentIndex);
+
+    // Lock release lives in a REAL finally now, so it always runs - even
+    // if the catch's own best-effort logging still somehow failed to
+    // protect itself. Unlock and Dispose remain separate, independently
+    // guarded attempts: sharing one unguarded finally meant an Unlock
+    // failure threw straight out of it - replacing any exception already
+    // in flight - and skipped Dispose() entirely, leaking the handle.
+    const finallyBody = releaseSequence.slice(catchBodyEnd, releaseSequence.indexOf("\n\n# A genuine failure"));
+    expect(finallyBody).toContain("try { `$lockStream.Unlock(0, 1) } catch { `$unlockFailure = `$_ }");
+    expect(finallyBody).toContain("try { `$lockStream.Dispose() } catch { `$disposeFailure = `$_ }");
+    // Neither cleanup attempt can throw OUT of this finally - each is
+    // fully captured, never left to propagate on its own.
+    expect(finallyBody).not.toMatch(/`\$lockStream\.Unlock\(0, 1\)\r?\n/);
+
+    const primaryThrowIndex = releaseSequence.indexOf("throw `$primaryFailure");
+    const unlockThrowIndex = releaseSequence.indexOf("throw `$unlockFailure");
+    const disposeThrowIndex = releaseSequence.indexOf("throw `$disposeFailure");
+    // All three throws happen AFTER the finally completes, and the
+    // primary failure outranks both cleanup failures.
+    expect(primaryThrowIndex).toBeGreaterThan(catchBodyEnd);
+    expect(unlockThrowIndex).toBeGreaterThan(primaryThrowIndex);
+    expect(disposeThrowIndex).toBeGreaterThan(unlockThrowIndex);
+
+    // A cleanup failure with no primary failure is still reported, never
+    // silently swallowed into a clean exit.
+    expect(releaseSequence).not.toContain("Remove-Item");
+  });
+
+  it("requires the protocol marker for ownership, anchored parsing, and fixes the exact PowerShell exception types for missing-path compatibility", () => {
+    const launcher = extractPowerShellFunction(installer, "Write-LauncherScripts", "Install-Dependencies");
+
+    // Test-VisualLockOwnedByAwardPing is diagnostic-only (never gates a
+    // skip) but still anchored to the START of the content, so it cannot
+    // be tripped by the substring appearing elsewhere in unrelated text.
+    expect(launcher).toContain('`$Content -notmatch "^protocol=2\\b"');
+    expect(launcher).toContain('`$lockContent = "protocol=2 pid=`$PID');
+
+    // The legacy check reads the file from byte 0. A NUL sentinel byte
+    // there is written ONLY by the new protocol's claim - genuine,
+    // corrupt, or partial - and must NEVER enter legacy pid= parsing:
+    // requiring a well-formed "protocol=N" marker to follow the sentinel
+    // (rather than excluding on the sentinel alone) would let corrupt or
+    // partial new-protocol content that doesn't match fall through to the
+    // legacy scan and be misread as legacy (reproduced empirically).
+    const legacyFnStart = launcher.indexOf("function Test-LegacyMarkerlessVisualLockActive");
+    const legacyFnEnd = launcher.indexOf("function Test-VisualLockOwnedByAwardPing");
+    const legacyFnBody = launcher.slice(legacyFnStart, legacyFnEnd);
+    expect(legacyFnBody).toContain("if (`$raw[0] -eq [char]0) {");
+    expect(legacyFnBody).not.toMatch(/`\$raw\[0\] -eq \[char\]0 -and/);
+    // The legacy pid= match itself is anchored to the exact start of the
+    // content, matching only the real deployed 25dc124 shape - an
+    // unanchored search could match "pid=" appearing anywhere in
+    // garbage-prefixed or otherwise corrupted text and misread it as a
+    // genuine legacy record (reproduced empirically).
+    expect(legacyFnBody).toContain('`$match = [regex]::Match(`$raw, "^pid=(\\d+)\\b")');
+    expect(legacyFnBody).not.toContain('[regex]::Match(`$raw, "pid=(\\d+)")');
+
+    // The current launcher's own PID is never legacy-ownership evidence:
+    // it is trivially live and trivially matches the command-line check,
+    // so a stale record naming a PID the OS reused for this very process
+    // would otherwise make the launch skip itself.
+    expect(legacyFnBody).toContain("if (`$workerPid -eq `$PID) {");
+    const selfPidIndex = legacyFnBody.indexOf("`$workerPid -eq `$PID");
+    const cimQueryIndex = legacyFnBody.indexOf("Get-CimInstance Win32_Process");
+    expect(selfPidIndex).toBeGreaterThan(0);
+    expect(selfPidIndex).toBeLessThan(cimQueryIndex);
+
+    // Get-Content raises System.Management.Automation.ItemNotFoundException
+    // for a missing path (verified empirically, HResult 0x80131501, native
+    // 5377) - not System.IO.FileNotFoundException - so the legacy
+    // preflight's catch must use the real type, or a missing/vanished path
+    // escapes uncaught instead of being treated as "not legacy-active."
+    expect(legacyFnBody).toContain("catch [System.Management.Automation.ItemNotFoundException]");
+    expect(legacyFnBody).not.toContain("System.IO.FileNotFoundException");
+    // Get-Content -Raw returns $null (not "") for a zero-byte file -
+    // verified empirically - and a static [regex]::Match call throws on a
+    // null input, unlike the -match operator; the null/empty case must be
+    // guarded before any [regex]::Match call.
+    // The same guard also has to precede the sentinel check, which indexes
+    // $raw[0] - that too would throw on a null/empty value.
+    const nullGuardIndex = legacyFnBody.indexOf("[string]::IsNullOrEmpty(`$raw)");
+    const sentinelCheckIndex = legacyFnBody.indexOf("`$raw[0] -eq [char]0");
+    const regexMatchIndex = legacyFnBody.indexOf("[regex]::Match(`$raw");
+    expect(nullGuardIndex).toBeGreaterThan(0);
+    expect(sentinelCheckIndex).toBeGreaterThan(0);
+    expect(nullGuardIndex).toBeLessThan(sentinelCheckIndex);
+    expect(nullGuardIndex).toBeLessThan(regexMatchIndex);
+    expect(sentinelCheckIndex).toBeLessThan(regexMatchIndex);
+  });
+
+  function visualStatusScriptSourceText() {
+    const start = installer.indexOf('`$LockPath = Join-Path `$InstallRoot "visual-worker.lock"');
+    const end = installer.indexOf("`$latestLog = Get-ChildItem", start);
+    expect(start, "status script lock probe").toBeGreaterThan(0);
+    expect(end, "end of status script lock probe").toBeGreaterThan(start);
+    return installer.slice(start, end);
+  }
+
+  it("never attempts to acquire the byte-range lock from the status script, and labels recorded metadata honestly rather than as a proven current lock", () => {
+    const probeSource = visualStatusScriptSourceText();
+    // Status inspection must be non-interfering: it never calls Lock() at
+    // all, so it can never itself become a transient, unrelated byte-0
+    // holder colliding with a genuine claimant. Reads via a plain,
+    // non-locking open instead.
+    expect(probeSource).not.toContain(".Lock(");
+    expect(probeSource).not.toContain(".Unlock(");
+    expect(probeSource).not.toContain("`$lockHeld");
+    expect(probeSource).toContain("[System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite");
+    // Reads from offset 1 (never byte 0, the sentinel).
+    expect(probeSource).toContain("`$statusProbe.Seek(1, [System.IO.SeekOrigin]::Begin)");
+    // A Seek/Read failure after a successful open used to jump straight to
+    // the catch, skipping Dispose() and leaking the handle until GC. The
+    // probe handle is disposed in a real finally, guarded for the case
+    // where the open itself is what failed.
+    const probeOpenIndex = probeSource.indexOf("`$statusProbe = [System.IO.FileStream]::new(");
+    const probeFinallyIndex = probeSource.indexOf("} finally {", probeOpenIndex);
+    const probeDisposeIndex = probeSource.indexOf("`$statusProbe.Dispose()", probeFinallyIndex);
+    expect(probeOpenIndex).toBeGreaterThan(0);
+    expect(probeFinallyIndex).toBeGreaterThan(probeOpenIndex);
+    expect(probeDisposeIndex).toBeGreaterThan(probeFinallyIndex);
+    expect(probeSource).toContain("if (`$statusProbe) { try { `$statusProbe.Dispose() } catch {} }");
+    // Initialized to $null before the try so the finally can tell "never
+    // opened" from "opened then failed".
+    const probeNullInitIndex = probeSource.indexOf("`$statusProbe = `$null");
+    expect(probeNullInitIndex).toBeGreaterThan(0);
+    expect(probeNullInitIndex).toBeLessThan(probeOpenIndex);
+    // "Running" comes solely from the independent CIM process scan, never
+    // from anything derived from the lock file.
+    expect(probeSource).toContain("`$running = Get-CimInstance Win32_Process");
+
+    const installer_ = extractPowerShellFunction(installer, "Write-LauncherScripts", "Install-Dependencies");
+    const labelStart = installer_.indexOf('if (`$lockText) {');
+    const labelEnd = installer_.indexOf("Write-Host \"\"", labelStart);
+    expect(labelStart).toBeGreaterThan(0);
+    const labelBody = installer_.slice(labelStart, labelEnd);
+    // Never asserts a proven "Lock:" label - only ever presents recorded
+    // metadata as historical, since the status script has no safe way to
+    // prove it reflects a currently held lock without itself becoming a
+    // protocol participant.
+    expect(labelBody).toContain('Write-Host "Last recorded lock metadata: `$(`$lockText.Trim())"');
+    expect(labelBody).not.toMatch(/Write-Host "Lock: /);
+  });
+
+  // Generates the real visual wrapper AND status script via the extracted
+  // Write-LauncherScripts into a disposable install root, then extracts
+  // the lock-helper functions, claim statements, the status script's
+  // byte-lock probe, and the COMPLETE production owner section (the real
+  // "$exitCode = 1; try { ... } catch { ... } finally { ... }" that
+  // follows the claim) for direct execution against real, disposable temp
+  // lock paths. Never reaches worker, node, Task Scheduler, or a real
+  // installer entrypoint.
+  function visualLockSnippets(installRoot) {
+    const launcherFunctions = extractPowerShellFunction(installer, "Write-LauncherScripts", "Install-Dependencies");
+    const generateResult = runPowerShell(
+      [launcherFunctions, `Write-LauncherScripts -InstallRoot '${installRoot.replace(/'/g, "''")}'`].join("\n"),
+    );
+    if (generateResult.status !== 0) {
+      throw new Error(`Write-LauncherScripts failed: ${generateResult.stderr}`);
+    }
+    const visualRunContent = readFileSync(join(installRoot, "Run-AwardPingVisualSnapshots.ps1"), "utf8");
+    const statusScriptContent = readFileSync(join(installRoot, "Show-AwardPingVisualStatus.ps1"), "utf8");
+
+    function slice(startAnchor, endAnchor, inclusive = false) {
+      const start = visualRunContent.indexOf(startAnchor);
+      const end = visualRunContent.indexOf(endAnchor, start);
+      if (start < 0 || end < 0) {
+        throw new Error(`Could not locate "${startAnchor}" .. "${endAnchor}" in the generated wrapper.`);
+      }
+      return visualRunContent.slice(start, inclusive ? end + endAnchor.length : end);
+    }
+
+    const functionsStart = visualRunContent.indexOf("function Test-LegacyMarkerlessVisualLockActive {");
+    const functionsEnd = visualRunContent.indexOf("\n$stamp = Get-Date", functionsStart);
+    if (functionsStart < 0 || functionsEnd < 0) {
+      throw new Error("Could not locate the visual lock helper functions in the generated wrapper.");
+    }
+
+    const exitCodeStatementIndex = visualRunContent.indexOf("exit $exitCode");
+    const ownerSectionStart = visualRunContent.indexOf("$exitCode = 1");
+    const ownerSectionEnd = exitCodeStatementIndex + "exit $exitCode".length;
+    if (ownerSectionStart < 0 || exitCodeStatementIndex < ownerSectionStart) {
+      throw new Error("Could not locate the complete production owner section.");
+    }
+    const realOwnerSection = visualRunContent.slice(ownerSectionStart, ownerSectionEnd);
+    const workerInvocationAnchor = "& $nodePath @workerArgs 2>&1 | ForEach-Object {";
+    const workerInvocationStart = realOwnerSection.indexOf(workerInvocationAnchor);
+    if (workerInvocationStart < 0) {
+      throw new Error("Could not locate the worker invocation to stub in the owner section.");
+    }
+    const workerInvocationOpenBrace = workerInvocationStart + workerInvocationAnchor.length - 1;
+    const workerInvocationBody = extractBalancedBlockBody(realOwnerSection, workerInvocationOpenBrace);
+    const workerInvocationEnd = workerInvocationOpenBrace + 1 + workerInvocationBody.length + 1;
+    // The ONLY transformation: replace the real node invocation with a
+    // caller-supplied stand-in statement - every other statement in the
+    // real try/catch/do-while/release sequence runs unmodified and for
+    // real. A harmless stub exercises the success path; a throwing stub
+    // produces a genuine primary failure inside the real production
+    // control flow, which is how cleanup-vs-primary precedence is proved
+    // behaviorally rather than by reading the generated text.
+    function ownerSectionWithStub(stubStatement) {
+      return (
+        realOwnerSection.slice(0, workerInvocationStart) +
+        stubStatement +
+        realOwnerSection.slice(workerInvocationEnd)
+      );
+    }
+    const ownerSectionWithStubbedWorker = ownerSectionWithStub(
+      '$global:LASTEXITCODE = 0; Write-Host "STUBBED_WORKER_INVOCATION"',
+    );
+
+    const statusProbeStart = statusScriptContent.indexOf('$lockText = ""');
+    const statusProbeEnd = statusScriptContent.indexOf("$latestLog = Get-ChildItem");
+    if (statusProbeStart < 0 || statusProbeEnd < 0) {
+      throw new Error("Could not locate the status script's byte-lock probe.");
+    }
+
+    return {
+      // Test-LegacyMarkerlessVisualLockActive / Test-VisualLockOwnedByAwardPing
+      // / Read-VisualLockMetadataFromHandle.
+      functions: visualRunContent.slice(functionsStart, functionsEnd),
+      // The Write-Host announcement through the whole claim (open, lock,
+      // classify-or-claim, write), stopping before the worker-owning try.
+      claim: slice('Write-Host "Running AwardPing visual snapshot worker (', "$exitCode = 1"),
+      // The real production owner section, worker invocation safely
+      // stubbed, everything else executed unmodified (including the real
+      // independent Unlock/Dispose release sequence).
+      ownerSectionWithStubbedWorker,
+      // Same, with a caller-chosen stand-in for the worker invocation.
+      ownerSectionWithStub,
+      // The status script's real, non-locking metadata read (plain
+      // Read-access open, Seek+Read from offset 1 - never Lock/Unlock).
+      statusProbe: statusScriptContent.slice(statusProbeStart, statusProbeEnd),
+    };
+  }
+
+  function extractBalancedBlockBody(text, openBraceIndex) {
+    if (text[openBraceIndex] !== "{") {
+      throw new Error(`Expected '{' at index ${openBraceIndex}, found ${JSON.stringify(text[openBraceIndex])}`);
+    }
+    let depth = 0;
+    for (let i = openBraceIndex; i < text.length; i++) {
+      if (text[i] === "{") depth++;
+      else if (text[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          return text.slice(openBraceIndex + 1, i);
+        }
+      }
+    }
+    throw new Error("Unbalanced braces");
+  }
+
+  function runVisualLockSimulation(directory, lines, fileName) {
+    const scriptPath = join(directory, fileName || `visual-lock-${Math.random().toString(36).slice(2)}.ps1`);
+    writeFileSync(scriptPath, lines.join("\n"), "utf8");
+    return spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+      encoding: "utf8",
+    });
+  }
+
+  function runVisualLockSimulationAsync(directory, lines, fileName) {
+    const scriptPath = join(directory, fileName || `visual-lock-${Math.random().toString(36).slice(2)}.ps1`);
+    writeFileSync(scriptPath, lines.join("\n"), "utf8");
+    return new Promise((resolvePromise) => {
+      const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+        encoding: "utf8",
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      child.on("close", (status) => resolvePromise({ status, stdout, stderr }));
+    });
+  }
+
+  function baseScenarioLines(lockPath, functions) {
+    return [
+      "$ErrorActionPreference = 'Stop'",
+      `$LockPath = '${lockPath.replace(/'/g, "''")}'`,
+      "$ShardLabel = 'shard-1-of-3'",
+      "$mode = 'snapshots'",
+      "$ShardCount = 3",
+      "$ShardIndex = 0",
+      functions,
+    ];
+  }
+
+  // Behavioral proof that a handle was really released. An exclusive open
+  // (FileShare.None) can only succeed when NO other handle on the path is
+  // still open, so running this in the SAME still-live process that just
+  // executed the production cleanup distinguishes a real Dispose() from a
+  // leaked handle - something no assertion over the generated text could.
+  // (Process exit would close handles regardless, which is exactly why this
+  // check must run before the script under test terminates.)
+  const EXCLUSIVE_OPEN_PROOF = [
+    "try {",
+    "  $exclusive = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)",
+    "  'EXCLUSIVE_OPEN_OK=true'",
+    "  $exclusive.Dispose()",
+    "} catch {",
+    "  'EXCLUSIVE_OPEN_FAILED=' + $_.Exception.Message",
+    "}",
+  ];
+
+  // The exact on-disk shape the production claim writes: a NUL sentinel byte
+  // at offset 0, then the versioned metadata from offset 1. Seeding test
+  // content any other way is not faithful to the real format and silently
+  // exercises different parsing.
+  function faithfulLockContentLine(metadata) {
+    return `Set-Content -LiteralPath $LockPath -Value ([char]0 + "${metadata}") -Encoding ASCII`;
+  }
+
+  windowsIt(
+    "runs the complete real production owner control flow - claim, log init, worker loop, and the real finally/Unlock/Dispose - with only the node invocation stubbed",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim, ownerSectionWithStubbedWorker } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        const logPath = join(directory, "worker.log");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          `$logPath = '${logPath.replace(/'/g, "''")}'`,
+          "$RunTrigger = 'manual'",
+          "$MaxRestarts = 3",
+          "$Limit = 50000",
+          "$All = $false",
+          claim,
+          "'CLAIMED_BEFORE_OWNER_SECTION=' + (Test-Path -LiteralPath $LockPath)",
+          ownerSectionWithStubbedWorker,
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("CLAIMED_BEFORE_OWNER_SECTION=True");
+        expect(result.stdout).toContain("STUBBED_WORKER_INVOCATION");
+        expect(readFileSync(logPath, "utf8")).toContain("VISUAL_WORKER_START");
+        expect(readFileSync(logPath, "utf8")).toContain("VISUAL_WORKER_EXIT attempt=1 exit_code=0");
+        // The real finally really Unlocked and Disposed the real handle:
+        // the lock persists (this design leaves the file, never deletes
+        // it) and is no longer held - a fresh claim against it must
+        // succeed cleanly.
+        expect(existsSync(lockPath)).toBe(true);
+        const reclaim = runVisualLockSimulation(directory, [
+          ...baseScenarioLines(lockPath, functions),
+          "try {",
+          claim,
+          "  'RECLAIMED_AFTER_REAL_DISPOSE=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ]);
+        expect(reclaim.status).toBe(0);
+        expect(reclaim.stdout).toContain("RECLAIMED_AFTER_REAL_DISPOSE=true");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "disposes the contender's handle and still reports the fail-closed collision error when the collision diagnostic read itself fails",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          // A genuine holder of byte 0, so the contender's Lock(0, 1)
+          // really does fail with native 33.
+          "$genuineHolder = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)",
+          "$genuineHolder.Lock(0, 1)",
+          // Behavioral fault injection: shadow the real diagnostic reader
+          // with one that genuinely throws - exactly what happens when the
+          // metadata region is itself separately byte-range locked (that
+          // real failure is reproduced in its own case below). Defined
+          // AFTER the extracted production functions, so this definition is
+          // the one the production collision branch actually calls.
+          "function Read-VisualLockMetadataFromHandle { param([System.IO.FileStream]$Stream) throw [System.IO.IOException]::new('INJECTED_DIAGNOSTIC_READ_FAILURE') }",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+          // Release the genuine holder, so only a LEAKED contender handle
+          // could still keep the exclusive open below from succeeding.
+          "$genuineHolder.Unlock(0, 1)",
+          "$genuineHolder.Dispose()",
+          ...EXCLUSIVE_OPEN_PROOF,
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        // The fail-closed collision error is what propagates ...
+        expect(result.stdout).toContain("Cannot verify who holds the AwardPing visual worker lock");
+        expect(result.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+        // ... never replaced by the diagnostic read's own failure ...
+        expect(result.stdout).not.toContain("PROPAGATED=INJECTED_DIAGNOSTIC_READ_FAILURE");
+        // ... which is still surfaced, but only as a degraded note.
+        expect(result.stdout).toContain("INJECTED_DIAGNOSTIC_READ_FAILURE");
+        // Behavioral proof the finally ran: an exclusive open can only
+        // succeed if the contender's handle was really disposed.
+        expect(result.stdout).toContain("EXCLUSIVE_OPEN_OK=true");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "preserves the original worker failure and still disposes the handle when the owner's Unlock genuinely fails",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim, ownerSectionWithStub } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        const logPath = join(directory, "worker.log");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          `$logPath = '${logPath.replace(/'/g, "''")}'`,
+          "$RunTrigger = 'manual'",
+          "$MaxRestarts = 3",
+          "$Limit = 50000",
+          "$All = $false",
+          claim,
+          // Behavioral fault injection with a real .NET/OS failure rather
+          // than a mock: consuming the unlock here makes the production
+          // Unlock(0, 1) below throw "The segment is already unlocked."
+          "$lockStream.Unlock(0, 1)",
+          "'PRE_CONSUMED_UNLOCK=true'",
+          "try {",
+          // A genuine primary failure inside the real production control
+          // flow, raised where the worker invocation would run.
+          ownerSectionWithStub('throw [System.IO.IOException]::new("SIMULATED_PRIMARY_WORKER_FAILURE")'),
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+          ...EXCLUSIVE_OPEN_PROOF,
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("PRE_CONSUMED_UNLOCK=true");
+        // The real, informative worker failure is what propagates ...
+        expect(result.stdout).toContain("PROPAGATED=SIMULATED_PRIMARY_WORKER_FAILURE");
+        // ... and the Unlock failure never replaces it.
+        expect(result.stdout).not.toContain('PROPAGATED=Exception calling "Unlock"');
+        // Dispose still ran even though Unlock threw first.
+        expect(result.stdout).toContain("EXCLUSIVE_OPEN_OK=true");
+        // The primary failure was still logged before propagating.
+        expect(readFileSync(logPath, "utf8")).toContain("VISUAL_WORKER_WRAPPER_ERROR");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "reports a cleanup failure deliberately when the worker itself succeeded, and still disposes the handle",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim, ownerSectionWithStubbedWorker } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        const logPath = join(directory, "worker.log");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          `$logPath = '${logPath.replace(/'/g, "''")}'`,
+          "$RunTrigger = 'manual'",
+          "$MaxRestarts = 3",
+          "$Limit = 50000",
+          "$All = $false",
+          claim,
+          "$lockStream.Unlock(0, 1)",
+          "try {",
+          ownerSectionWithStubbedWorker,
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+          ...EXCLUSIVE_OPEN_PROOF,
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        // The work itself completed normally ...
+        expect(result.stdout).toContain("STUBBED_WORKER_INVOCATION");
+        expect(readFileSync(logPath, "utf8")).toContain("VISUAL_WORKER_EXIT attempt=1 exit_code=0");
+        // ... so the cleanup failure is this launch's ONLY failure, and it
+        // is deliberately reported rather than swallowed into a clean exit
+        // that would hide an unreleased lock or handle.
+        expect(result.stdout).toContain("PROPAGATED=");
+        expect(result.stdout).toContain("already unlocked");
+        // Dispose still ran despite the Unlock failure being the reported
+        // one.
+        expect(result.stdout).toContain("EXCLUSIVE_OPEN_OK=true");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "preserves the original worker failure and still releases the lock when the catch's own error-report logging genuinely fails",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim, ownerSectionWithStub } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        const logPath = join(directory, "worker.log");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          `$logPath = '${logPath.replace(/'/g, "''")}'`,
+          "$RunTrigger = 'manual'",
+          "$MaxRestarts = 3",
+          "$Limit = 50000",
+          "$All = $false",
+          claim,
+          "try {",
+          // A genuine primary failure inside the real production control
+          // flow, raised where the worker invocation would run. The stub
+          // ALSO opens a genuine, real share-denying handle on the same
+          // log path the catch's own error-report logging writes to -
+          // opened here (not by the harness beforehand), so the FIRST
+          // "VISUAL_WORKER_START" write inside the try still succeeds and
+          // only the catch's later "VISUAL_WORKER_WRAPPER_ERROR" append
+          // collides with it, exactly as the reviewer's repro requires.
+          // Real .NET/OS behavior, not a mock: FileAccess.Read/
+          // FileShare.Read is incompatible with the Write access
+          // Add-Content needs, so its append genuinely throws.
+          ownerSectionWithStub(
+            '$logDenier = [System.IO.FileStream]::new($logPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read); ' +
+              'throw [System.IO.IOException]::new("SENTINEL_PRIMARY_FAILURE")',
+          ),
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+          // Release the log-path denier from the SAME still-live process,
+          // before checking whether the lock handle was released.
+          "if ($logDenier) { $logDenier.Dispose() }",
+          ...EXCLUSIVE_OPEN_PROOF,
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        // The original, informative sentinel failure is what propagates ...
+        expect(result.stdout).toContain("PROPAGATED=SENTINEL_PRIMARY_FAILURE");
+        // ... never replaced by the catch's own logging/sharing failure,
+        // which - under $ErrorActionPreference = "Stop" and without
+        // capturing $_ first - would otherwise leave the catch before
+        // $primaryFailure is ever assigned.
+        expect(result.stdout).not.toContain("PROPAGATED=The process cannot access");
+        // The byte-range lock is still released despite that logging
+        // failure - proved behaviorally: an exclusive reopen from this
+        // same still-live process can only succeed if it really was.
+        expect(result.stdout).toContain("EXCLUSIVE_OPEN_OK=true");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "disposes the status probe's handle when its read genuinely fails, and never contends for byte 0",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { statusProbe } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const lines = [
+          "$ErrorActionPreference = 'Stop'",
+          `$LockPath = '${lockPath.replace(/'/g, "''")}'`,
+          "Set-Content -LiteralPath $LockPath -Value ([char]0 + 'protocol=2 pid=1234 started=now') -Encoding ASCII",
+          // A genuine competing byte-range lock over the metadata region
+          // (offset 1 onwards, NOT byte 0) makes the probe's own Read()
+          // fail for real, after its open has already succeeded - the exact
+          // path that previously skipped Dispose() entirely. Windows
+          // enforces byte-range locks against other handles regardless of
+          // share mode, so this is a real I/O failure, not a simulated one.
+          "$blocker = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)",
+          "$blocker.Lock(1, 4096)",
+          statusProbe,
+          "'LOCKTEXT_LENGTH=' + $lockText.Length",
+          // Drop the blocker so only a LEAKED probe handle could keep the
+          // exclusive open below from succeeding.
+          "$blocker.Unlock(1, 4096)",
+          "$blocker.Dispose()",
+          ...EXCLUSIVE_OPEN_PROOF,
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        // The probe swallows the read failure and reports nothing rather
+        // than guessing ...
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("LOCKTEXT_LENGTH=0");
+        // ... and its handle is still released.
+        expect(result.stdout).toContain("EXCLUSIVE_OPEN_OK=true");
+        // Byte 0 is never touched by the probe at all, so it can never
+        // become a transient owner racing a genuine claimant.
+        expect(statusProbe).not.toContain(".Lock(");
+        expect(statusProbe).not.toContain(".Unlock(");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "does not falsely confirm ActiveOwner when a readable unrelated holder's mere open-level conflict coincides with stale metadata naming a live, matching PID",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          // Stale content naming THIS script's own real, live PID, written
+          // in the production-faithful on-disk shape (NUL sentinel byte,
+          // then metadata at offset 1) - exactly the reused/current-PID
+          // collision that metadata alone cannot resolve safely.
+          faithfulLockContentLine("protocol=2 pid=$PID started=stale"),
+          // A foreign, unrelated holder whose access conflicts with our
+          // own open (FileAccess.Read/FileShare.Read denies the Write
+          // component of our ReadWrite request) but has nothing to do
+          // with the AwardPing protocol.
+          "$foreignHolder = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "} finally {",
+          "  $foreignHolder.Dispose()",
+          "}",
+        ];
+        // Named so this process's own PID would genuinely match via CIM,
+        // if content were ever (wrongly) trusted without tying it to the
+        // actual conflicting handle's identity.
+        const result = runVisualLockSimulation(directory, lines, "Run-AwardPingVisualSnapshots.ps1");
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("PROPAGATED=");
+        expect(result.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("AwardPing visual snapshot worker is already running. Skipping this launch.");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "does not falsely confirm ActiveOwner when a foreign process holds byte 0 itself with content that does not verify",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          // A foreign process, cooperating enough to open with the same
+          // broad ReadWrite/ReadWrite sharing (so our own open succeeds)
+          // but genuinely locking byte 0 itself with content that has no
+          // AwardPing protocol marker at all.
+          "$foreign = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)",
+          "$foreign.Lock(0, 1)",
+          "$foreignBytes = [System.Text.Encoding]::ASCII.GetBytes([char]0 + 'not-awardping-at-all')",
+          "$foreign.Write($foreignBytes, 0, $foreignBytes.Length)",
+          "$foreign.Flush()",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "} finally {",
+          "  $foreign.Unlock(0, 1)",
+          "  $foreign.Dispose()",
+          "}",
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("PROPAGATED=");
+        expect(result.stdout).toContain("not-awardping-at-all");
+        expect(result.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("AwardPing visual snapshot worker is already running. Skipping this launch.");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "reclaims a stale, unlocked lock written in the real on-disk sentinel format whose recorded PID has been reused by the current live launcher, instead of self-skipping it as a legacy owner",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          // A genuinely stale, UNLOCKED leftover written exactly the way
+          // the production claim writes it - NUL sentinel at byte 0, then
+          // "protocol=2 ..." from offset 1 - naming this launch's own
+          // current PID, i.e. a PID the OS reused for this very process.
+          //
+          // The legacy preflight reads this file from byte 0, so it must
+          // recognize the sentinel format for what it is. Anchoring the
+          // marker check at offset 0 cannot match sentinel-prefixed
+          // content, which would drop through to the legacy pid= scan,
+          // find this process's own live, command-line-matching PID, and
+          // make the launch skip ITSELF as a "legacy lock" before ever
+          // reaching the byte-lock path. Nothing holds byte 0 here, so the
+          // only correct outcome is a clean claim.
+          faithfulLockContentLine(
+            "protocol=2 pid=$PID started=2020-01-01T00:00:00Z mode=snapshots shard_count=3 shard_index=0 log=C:\\logs\\old.log",
+          ),
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ];
+        // Named so this process genuinely satisfies the command-line half
+        // of the legacy liveness check, exactly as a real launcher would.
+        const result = runVisualLockSimulation(directory, lines, "Run-AwardPingVisualSnapshots.ps1");
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("(legacy lock)");
+        expect(result.stdout).not.toContain("Skipping this launch.");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "never accepts the current launcher's own PID as evidence of a separate legacy owner, even for markerless legacy content",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          // Genuinely markerless legacy content (no sentinel, no protocol
+          // marker) that names this launcher's own PID. A live PID plus a
+          // matching command line is trivially true of the checking
+          // process itself, so it can never distinguish a real separate
+          // legacy owner from a stale record whose PID got reused here.
+          "Set-Content -LiteralPath $LockPath -Value \"pid=$PID started=2020-01-01T00:00:00Z mode=snapshots shard_count=3 shard_index=0 log=C:\\logs\\legacy.log\" -Encoding ASCII",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ];
+        const result = runVisualLockSimulation(directory, lines, "Run-AwardPingVisualSnapshots.ps1");
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("(legacy lock)");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "conservatively prevents a duplicate against a genuine, separate, actually-deployed-style legacy process, while a stale legacy leftover is reclaimed by the new protocol",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        mkdirSync(join(directory, "install"), { recursive: true });
+        const { functions, claim } = visualLockSnippets(join(directory, "install"));
+        const lockPath = join(directory, "shard.lock");
+
+        // A GENUINE, SEPARATE process reproducing parent 25dc124's actual
+        // deployed behavior exactly: a plain Set-Content lock, no file
+        // handle held at all, staying alive for a real duration (not the
+        // same process that then checks it, and not the contender naming
+        // its own PID - a genuinely independent legacy lifecycle).
+        const legacyOwnerLines = [
+          "$ErrorActionPreference = 'Stop'",
+          `$LockPath = '${lockPath.replace(/'/g, "''")}'`,
+          // The log= field itself contains the substring "protocol=" (a
+          // real risk on a system whose install/log directory name
+          // happens to contain that text) - the legacy check's anchored
+          // parsing must still recognize this as legacy content, never
+          // mistake it for new-protocol content.
+          "Set-Content -Path $LockPath -Value \"pid=$PID started=$(Get-Date -Format o) mode=snapshots shard_count=3 shard_index=0 log=C:\\install\\protocol=2-test\\legacy.log\" -Encoding ASCII",
+          "Start-Sleep -Milliseconds 2500",
+          "Remove-Item -Path $LockPath -Force -ErrorAction SilentlyContinue",
+          "'LEGACY_OWNER_DONE=true'",
+        ];
+        const legacyOwnerPromise = runVisualLockSimulationAsync(directory, legacyOwnerLines, "Run-AwardPingVisualSnapshots.ps1");
+        await new Promise((r) => setTimeout(r, 700));
+
+        const contenderLines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'contender.log'",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ];
+        const contenderResult = runVisualLockSimulation(directory, contenderLines);
+        const legacyOwnerResult = await legacyOwnerPromise;
+
+        expect(legacyOwnerResult.status, `stdout=${legacyOwnerResult.stdout}`).toBe(0);
+        expect(legacyOwnerResult.stdout).toContain("LEGACY_OWNER_DONE=true");
+        expect(contenderResult.status, `stdout=${contenderResult.stdout}\nstderr=${contenderResult.stderr}`).toBe(0);
+        expect(contenderResult.stdout).toContain("AwardPing visual snapshot worker is already running (legacy lock). Skipping this launch.");
+        expect(contenderResult.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(contenderResult.stdout).not.toContain("PROPAGATED=");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  windowsIt(
+    "reclaims stale legacy content via the new protocol",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        // Stale legacy content naming a PID that is not live - falls
+        // through to the new protocol, which claims it directly.
+        writeFileSync(lockPath, "pid=999999 started=legacy-stale", "utf8");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+        expect(result.status, `stdout=${result.stdout}`).toBe(0);
+        expect(result.stdout).toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("legacy lock");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "classifies every lock-content shape correctly against a genuinely separate live legacy process: anchored log= paths, the real sentinel format, corrupt/partial sentinels, garbage-prefixed pid=, self-PID, and stale PIDs",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      let legacyPid = "";
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        // A genuinely SEPARATE, live process whose command line matches the
+        // legacy liveness check - never this test's own process, so a
+        // "legacy is active" verdict can only come from real, independent
+        // evidence rather than from the checker trivially matching itself.
+        const legacyOwnerScript = join(directory, "Run-AwardPingVisualSnapshots.ps1");
+        writeFileSync(legacyOwnerScript, "Start-Sleep -Seconds 30\n", "utf8");
+        const spawned = spawnSync(
+          "powershell.exe",
+          ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+            `(Start-Process powershell.exe -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','${legacyOwnerScript}' -PassThru -WindowStyle Hidden).Id`],
+          { encoding: "utf8" },
+        );
+        legacyPid = spawned.stdout.trim();
+        expect(legacyPid, `spawn stdout=${spawned.stdout} stderr=${spawned.stderr}`).toMatch(/^\d+$/);
+
+        // Each case writes real content to a real file and asks the real
+        // extracted production function for its verdict.
+        const cases = [
+          {
+            label: "LEGACY_WITH_PROTOCOL_IN_LOG_PATH",
+            // Markerless legacy content whose OWN log= field contains the
+            // substring "protocol=". An unanchored marker check would treat
+            // this as new-protocol content and skip the legacy check
+            // entirely, permitting a duplicate against a live legacy run.
+            write: `Set-Content -LiteralPath $LockPath -Value "pid=${legacyPid} started=legacy mode=snapshots shard_count=3 shard_index=0 log=C:\\install\\protocol=2-test\\worker.log" -Encoding ASCII`,
+            expected: "True",
+          },
+          {
+            label: "REAL_SENTINEL_NEW_PROTOCOL_CONTENT",
+            // The genuine on-disk new-protocol shape - NUL sentinel at byte
+            // 0, marker at offset 1 - naming that same live, matching PID.
+            // It must be recognized as new-protocol content and left to the
+            // byte-lock path, never scanned for a legacy pid=.
+            write: `Set-Content -LiteralPath $LockPath -Value ([char]0 + "protocol=2 pid=${legacyPid} started=now mode=snapshots shard_count=3 shard_index=0 log=C:\\logs\\x.log") -Encoding ASCII`,
+            expected: "False",
+          },
+          {
+            label: "CORRUPT_SENTINEL",
+            // NUL-prefixed (so it belongs to the new protocol's write
+            // space), but the content after it is garbled and matches no
+            // recognized "protocol=N" marker at all - and yet still
+            // contains a pid= substring naming the live, matching process.
+            // It must never enter legacy parsing regardless.
+            write: `Set-Content -LiteralPath $LockPath -Value ([char]0 + "garbled-not-a-real-marker pid=${legacyPid}") -Encoding ASCII`,
+            expected: "False",
+          },
+          {
+            label: "PARTIAL_SENTINEL",
+            // NUL-prefixed, as if a write was interrupted mid-flush - only
+            // "prot" made it to disk before the live, matching pid=.
+            write: `Set-Content -LiteralPath $LockPath -Value ([char]0 + "prot pid=${legacyPid}") -Encoding ASCII`,
+            expected: "False",
+          },
+          {
+            label: "GARBAGE_PREFIX_WITH_PID",
+            // No sentinel at all, but "pid=" does not begin the content -
+            // an unanchored legacy scan would still find and misuse it.
+            write: `Set-Content -LiteralPath $LockPath -Value "XYZ garbage pid=${legacyPid} started=now" -Encoding ASCII`,
+            expected: "False",
+          },
+          {
+            label: "EXACT_MARKERLESS_LEGACY",
+            // The real, exact deployed 25dc124 shape, with nothing else
+            // preceding "pid=" - must still be recognized as legacy.
+            write: `Set-Content -LiteralPath $LockPath -Value "pid=${legacyPid} started=now mode=snapshots shard_count=3 shard_index=0 log=C:\\logs\\legacy.log" -Encoding ASCII`,
+            expected: "True",
+          },
+          {
+            label: "SELF_PID_IS_NEVER_LEGACY_EVIDENCE",
+            write: "Set-Content -LiteralPath $LockPath -Value \"pid=$PID started=legacy mode=snapshots\" -Encoding ASCII",
+            expected: "False",
+          },
+          {
+            label: "STALE_DEAD_PID",
+            write: "Set-Content -LiteralPath $LockPath -Value \"pid=999999 started=2020-01-01T00:00:00Z mode=snapshots\" -Encoding ASCII",
+            expected: "False",
+          },
+        ];
+
+        const lines = [
+          "$ErrorActionPreference = 'Stop'",
+          `$LockPath = '${lockPath.replace(/'/g, "''")}'`,
+          functions,
+        ];
+        for (const testCase of cases) {
+          lines.push(testCase.write);
+          lines.push(`'${testCase.label}=' + (Test-LegacyMarkerlessVisualLockActive -Path $LockPath)`);
+        }
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        for (const testCase of cases) {
+          expect(result.stdout, `case ${testCase.label}`).toContain(`${testCase.label}=${testCase.expected}`);
+        }
+      } finally {
+        if (/^\d+$/.test(legacyPid)) {
+          spawnSync("powershell.exe", ["-NoProfile", "-Command", `Stop-Process -Id ${legacyPid} -Force -ErrorAction SilentlyContinue`], { encoding: "utf8" });
+        }
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "does not crash the legacy preflight on partial or corrupt lock content",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+
+        const cases = [
+          "not a lock at all, just garbage bytes \x00\x01\x02",
+          "pid=",
+          "pid=notanumber started=corrupt",
+          "protocol=",
+          "protocol=notanumber pid=1 started=corrupt",
+        ];
+        for (const content of cases) {
+          const lockPath = join(directory, `shard-${Math.random().toString(36).slice(2)}.lock`);
+          writeFileSync(lockPath, content, "utf8");
+          const lines = [
+            ...baseScenarioLines(lockPath, functions),
+            "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+            "try {",
+            claim,
+            "  'CLAIMED_SUCCESSFULLY=true'",
+            "} catch {",
+            "  'PROPAGATED=' + $_.Exception.Message",
+            "}",
+          ];
+          const result = runVisualLockSimulation(directory, lines);
+          expect(result.status, `content=${JSON.stringify(content)} stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+          // Whatever the classification, it must not crash with an
+          // uncaught parser exception - either it claims (partial/corrupt
+          // legacy content that never matches the legacy check falls
+          // through and is reclaimed) or it fails closed cleanly, never a
+          // PowerShell parse/argument exception escaping unexpectedly.
+          expect(result.stderr).not.toContain("ArgumentNullException");
+          expect(result.stderr).not.toContain("Cannot convert value");
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "does not crash on an empty (zero-byte) lock file during the legacy preflight check",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        // Get-Content -Raw returns $null (not "") for a zero-byte file -
+        // exactly what a crashed prior claim (truncated but never
+        // finished writing) could leave behind.
+        writeFileSync(lockPath, "", "utf8");
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          "try {",
+          claim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("PROPAGATED=");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "disposes the exact acquired handle and rethrows the real failure - never a secondary Dispose failure - when writing its own just-claimed lock content fails",
+    () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        // A safe, deterministic, real (not mocked) way to force the
+        // owner's OWN post-lock Write/Flush to fail: a separate handle
+        // locks the metadata byte range (offset 1 onward) the owner is
+        // about to write into, before it writes - entirely within one
+        // process, no multi-process timing. Because Dispose() itself
+        // tries to flush any still-buffered write, it can ALSO fail here
+        // (verified empirically) while the same external lock persists -
+        // this specifically exercises that the ORIGINAL Flush failure,
+        // not a secondary Dispose failure, is what propagates.
+        const claimWithByteLock = claim.replace(
+          "$sentinelAndContent = [byte[]]@(0) + [System.Text.Encoding]::ASCII.GetBytes($lockContent)",
+          [
+            "$__testLocker = [System.IO.FileStream]::new($LockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)",
+            "$__testLocker.Lock(1, 4096)",
+            "$sentinelAndContent = [byte[]]@(0) + [System.Text.Encoding]::ASCII.GetBytes($lockContent)",
+          ].join("\n"),
+        );
+        expect(claimWithByteLock).not.toBe(claim);
+
+        const lines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+          "try {",
+          claimWithByteLock,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "} finally {",
+          "  if ($__testLocker) { $__testLocker.Unlock(1, 4096); $__testLocker.Dispose() }",
+          "}",
+        ];
+        const result = runVisualLockSimulation(directory, lines);
+
+        expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain("PROPAGATED=");
+        expect(result.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(result.stdout).not.toContain("AwardPing visual snapshot worker is already running. Skipping this launch.");
+        // The real, original failure (Flush) propagates - never a
+        // secondary Dispose-during-cleanup failure masking it, and never
+        // reclassified into the generic "cannot verify ownership" wording.
+        expect(result.stdout.toLowerCase()).toContain("flush");
+        expect(result.stdout).not.toContain("Cannot verify whether the AwardPing visual worker lock");
+        // The handle itself must not be leaked: a subsequent, independent
+        // claim attempt against the same path must succeed cleanly.
+        const reclaim = runVisualLockSimulation(directory, [
+          ...baseScenarioLines(lockPath, functions),
+          "try {",
+          claim,
+          "  'RECLAIMED=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ]);
+        expect(reclaim.status, `stdout=${reclaim.stdout}`).toBe(0);
+        expect(reclaim.stdout).toContain("RECLAIMED=true");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
+
+  windowsIt(
+    "reads recorded lock metadata honestly (present before, during, and after a real claim) without ever asserting a proven current lock",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim, statusProbe } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        function runStatusProbe() {
+          return runVisualLockSimulation(directory, [
+            `$LockPath = '${lockPath.replace(/'/g, "''")}'`,
+            statusProbe,
+            "'TEXT=' + $lockText",
+          ]);
+        }
+
+        const beforeClaim = runStatusProbe();
+        expect(beforeClaim.status, `stdout=${beforeClaim.stdout}`).toBe(0);
+        expect(beforeClaim.stdout).toContain("TEXT=");
+        expect(beforeClaim.stdout).not.toMatch(/TEXT=protocol=2/);
+
+        const ownerLines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'owner.log'",
+          claim,
+          "Start-Sleep -Milliseconds 1500",
+          "if ($lockStream) { $lockStream.Unlock(0,1); $lockStream.Dispose() }",
+          "'OWNER_RELEASED=true'",
+        ];
+        const ownerPromise = runVisualLockSimulationAsync(directory, ownerLines);
+        await new Promise((r) => setTimeout(r, 700));
+
+        const whileHeld = runStatusProbe();
+        expect(whileHeld.status, `stdout=${whileHeld.stdout}`).toBe(0);
+        expect(whileHeld.stdout).toMatch(/TEXT=protocol=2 pid=\d+/);
+
+        const ownerResult = await ownerPromise;
+        expect(ownerResult.status).toBe(0);
+        expect(ownerResult.stdout).toContain("OWNER_RELEASED=true");
+
+        const afterRelease = runStatusProbe();
+        expect(afterRelease.status, `stdout=${afterRelease.stdout}`).toBe(0);
+        // The metadata is still readable (never deleted) - the status
+        // script has no basis to distinguish this from the held case, and
+        // correctly never claims to.
+        expect(afterRelease.stdout).toMatch(/TEXT=protocol=2 pid=\d+/);
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  windowsIt(
+    "status inspection never contends on byte 0 or perturbs a real claimant, even when run repeatedly while the claim is in flight",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim, statusProbe } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+
+        const ownerLines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'owner.log'",
+          claim,
+          "Start-Sleep -Milliseconds 1500",
+          "if ($lockStream) { $lockStream.Unlock(0,1); $lockStream.Dispose() }",
+          "'OWNER_RELEASED=true'",
+        ];
+        const ownerPromise = runVisualLockSimulationAsync(directory, ownerLines, "Run-AwardPingVisualSnapshots.ps1");
+        await new Promise((r) => setTimeout(r, 300));
+
+        // Hammer the status probe repeatedly WHILE the real claimant holds
+        // the lock - none of these may ever fail, and none may cause the
+        // real claimant to fail or falsely skip.
+        const statusResults = [];
+        for (let i = 0; i < 10; i++) {
+          statusResults.push(
+            runVisualLockSimulation(directory, [
+              `$LockPath = '${lockPath.replace(/'/g, "''")}'`,
+              statusProbe,
+              "'TEXT=' + $lockText",
+            ]),
+          );
+        }
+        const ownerResult = await ownerPromise;
+
+        statusResults.forEach((r, i) => {
+          expect(r.status, `status probe ${i}: stdout=${r.stdout}\nstderr=${r.stderr}`).toBe(0);
+        });
+        expect(ownerResult.status, `stdout=${ownerResult.stdout}\nstderr=${ownerResult.stderr}`).toBe(0);
+        expect(ownerResult.stdout).toContain("OWNER_RELEASED=true");
+        expect(ownerResult.stdout).not.toContain("PROPAGATED=");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  windowsIt(
+    "proves genuine byte-lock contention with an explicit collision marker from the contender's own attempt, fails closed against a real active owner rather than a silent skip, then reclaims after a real, confirmed release",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        mkdirSync(installRoot, { recursive: true });
+        const { functions, claim } = visualLockSnippets(installRoot);
+        const lockPath = join(directory, "shard.lock");
+        const ownerClaimedSignal = join(directory, "owner-claimed.signal");
+
+        // The contender is instrumented (a safe, additive transformation:
+        // one line inside the real Lock(0,1) catch, changing nothing about
+        // control flow) to record - as ground truth from the actual
+        // production code path, independent of any timing assumption -
+        // that it genuinely observed lock contention. Printed immediately,
+        // since the Ambiguous failure throws from directly inside this
+        // same catch block - a single pass, so any statement following
+        // the try/catch never runs.
+        const instrumentedClaim = claim.replace(
+          "} catch [System.IO.IOException] {\n  # Best-effort cleanup throughout",
+          "} catch [System.IO.IOException] {\n  Write-Host 'OBSERVED_LOCK_CONTENTION=True'\n  # Best-effort cleanup throughout",
+        );
+        expect(instrumentedClaim).not.toBe(claim);
+
+        // The contender is PRE-STARTED and polls a tight loop for the
+        // owner's claim signal, so its own PowerShell interpreter startup
+        // latency happens entirely before the race window rather than
+        // eating into a short hold duration.
+        const contenderLines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'contender.log'",
+          `while (-not (Test-Path -LiteralPath '${ownerClaimedSignal.replace(/'/g, "''")}')) { Start-Sleep -Milliseconds 2 }`,
+          "try {",
+          instrumentedClaim,
+          "  'CLAIMED_SUCCESSFULLY=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ];
+        const contenderPromise = runVisualLockSimulationAsync(directory, contenderLines);
+        await new Promise((r) => setTimeout(r, 800));
+
+        // Named so this process's own real command line matches the
+        // broad substring check - the contender's Test-VisualLockOwnedByAwardPing
+        // verification depends on the OWNER's actual process, not the
+        // contender's.
+        const ownerLines = [
+          ...baseScenarioLines(lockPath, functions),
+          "$logPath = Join-Path (Split-Path -Parent $LockPath) 'owner.log'",
+          claim,
+          `Set-Content -LiteralPath '${ownerClaimedSignal.replace(/'/g, "''")}' -Value 'claimed' -Encoding ASCII`,
+          "Start-Sleep -Milliseconds 1500",
+          "if ($lockStream) { $lockStream.Unlock(0,1); $lockStream.Dispose() }",
+          "'OWNER_RELEASED=true'",
+        ];
+        const ownerResult = await runVisualLockSimulationAsync(directory, ownerLines, "Run-AwardPingVisualSnapshots.ps1");
+        const contenderResult = await contenderPromise;
+
+        expect(ownerResult.status, `stdout=${ownerResult.stdout}\nstderr=${ownerResult.stderr}`).toBe(0);
+        expect(ownerResult.stdout).toContain("OWNER_RELEASED=true");
+        expect(contenderResult.status, `stdout=${contenderResult.stdout}\nstderr=${contenderResult.stderr}`).toBe(0);
+        // The contender genuinely contended (explicit marker, not
+        // inferred from timing) against a real, live, verified-matching
+        // owner - and still fails closed rather than skipping silently:
+        // content-based verification is never sufficient proof of who
+        // holds the byte-range lock, even when the owner is completely
+        // genuine.
+        expect(contenderResult.stdout).toContain("OBSERVED_LOCK_CONTENTION=True");
+        expect(contenderResult.stdout).toContain("PROPAGATED=");
+        expect(contenderResult.stdout).toContain("Cannot verify who holds the AwardPing visual worker lock");
+        expect(contenderResult.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+        expect(contenderResult.stdout).not.toContain("AwardPing visual snapshot worker is already running. Skipping this launch.");
+
+        // After the owner's real, confirmed release (awaited above), a
+        // fresh, independent claim attempt against the same path must
+        // succeed cleanly.
+        const reclaimResult = runVisualLockSimulation(directory, [
+          ...baseScenarioLines(lockPath, functions),
+          "try {",
+          claim,
+          "  'RECLAIMED_AFTER_RELEASE=true'",
+          "} catch {",
+          "  'PROPAGATED=' + $_.Exception.Message",
+          "}",
+        ]);
+        expect(reclaimResult.status, `stdout=${reclaimResult.stdout}`).toBe(0);
+        expect(reclaimResult.stdout).toContain("RECLAIMED_AFTER_RELEASE=true");
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  windowsIt(
+    "resolves a genuinely stale lock among many parallel contenders with exactly one claimant and every loser failing closed (never a silent skip), stressed across repeated rounds",
+    async () => {
+      const ROUNDS = 3;
+      const CONTENDER_COUNT = 12;
+
+      async function runRound(roundIndex) {
+        const directory = mkdtempSync(join(tmpdir(), `awardping-visual-lock-r${roundIndex}-`));
+        try {
+          const lockPath = join(directory, "shard.lock");
+          writeFileSync(lockPath, "pid=999999 started=2020-01-01T00:00:00Z stale=true", "utf8");
+          const signalPath = join(directory, "start.signal");
+
+          const promises = [];
+          for (let i = 0; i < CONTENDER_COUNT; i++) {
+            const contenderDir = join(directory, `contender-${i}`);
+            mkdirSync(contenderDir, { recursive: true });
+            const installRoot = join(contenderDir, "install");
+            mkdirSync(installRoot, { recursive: true });
+            const { functions, claim } = visualLockSnippets(installRoot);
+            const lines = [
+              ...baseScenarioLines(lockPath, functions),
+              `$logPath = Join-Path (Split-Path -Parent $LockPath) 'c${i}.log'`,
+              `while (-not (Test-Path -LiteralPath '${signalPath.replace(/'/g, "''")}')) { Start-Sleep -Milliseconds 5 }`,
+              "try {",
+              claim,
+              "  'CLAIMED_SUCCESSFULLY=true'",
+              "  Start-Sleep -Milliseconds 800",
+              "  if ($lockStream) { $lockStream.Unlock(0,1); $lockStream.Dispose() }",
+              "} catch {",
+              "  'PROPAGATED=' + $_.Exception.Message",
+              "}",
+            ];
+            promises.push(runVisualLockSimulationAsync(contenderDir, lines, "Run-AwardPingVisualSnapshots.ps1"));
+          }
+
+          await new Promise((r) => setTimeout(r, 1500));
+          writeFileSync(signalPath, "go", "utf8");
+
+          const results = await Promise.all(promises);
+          const claimedCount = results.filter((r) => r.stdout.includes("CLAIMED_SUCCESSFULLY=true")).length;
+          // Any "Skipping this launch." at all counts as a silent skip -
+          // the byte-lock message and the legacy-preflight message alike.
+          // Once one contender has claimed and written the real sentinel
+          // format, a legacy misclassification of that content would show
+          // up here as a bogus legacy skip.
+          const skippedCount = results.filter((r) => r.stdout.includes("Skipping this launch.")).length;
+          const legacySkippedCount = results.filter((r) => r.stdout.includes("(legacy lock)")).length;
+          const propagatedCount = results.filter((r) => r.stdout.includes("PROPAGATED=")).length;
+          const nonzeroCount = results.filter((r) => r.status !== 0).length;
+
+          const fullDiagnostics = results
+            .map((r, i) => `--- contender ${i} (status=${r.status}) ---\nSTDOUT:\n${r.stdout}\nSTDERR:\n${r.stderr}`)
+            .join("\n");
+          const summary = `round ${roundIndex}: claimed=${claimedCount} skipped=${skippedCount} legacySkipped=${legacySkippedCount} propagated=${propagatedCount} nonzero=${nonzeroCount}\n${fullDiagnostics}`;
+
+          // Operational tradeoff, deliberate and explicit: content-based
+          // verification can never prove who holds the byte-range lock,
+          // so every losing contender here fails closed (Ambiguous)
+          // rather than gracefully skipping - even though the winner is a
+          // completely genuine, cooperating AwardPing launch. Exactly one
+          // claimant, zero silent skips, zero unexpected PowerShell-level
+          // crashes (the script's own try/catch converts the Ambiguous
+          // throw into "PROPAGATED=", so nonzero here would indicate a
+          // genuinely unexpected failure, not the expected fail-closed
+          // outcome).
+          expect(nonzeroCount, summary).toBe(0);
+          expect(claimedCount, summary).toBe(1);
+          expect(propagatedCount, summary).toBe(CONTENDER_COUNT - 1);
+          expect(skippedCount, summary).toBe(0);
+          expect(legacySkippedCount, summary).toBe(0);
+          expect(existsSync(lockPath), summary).toBe(true);
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      }
+
+      for (let round = 0; round < ROUNDS; round++) {
+        await runRound(round);
+      }
+    },
+    180_000,
+  );
+
+  windowsIt(
+    "exits the real generated top-level wrapper process itself with a nonzero code on a genuine external byte-lock collision",
+    async () => {
+      // Every other collision test pastes extracted snippets into a
+      // harness script wrapped in its OWN try/catch, which proves the
+      // production logic throws but never proves that an uncaught
+      // exception actually propagates all the way out of the real,
+      // complete, unmodified top-level Run-AwardPingVisualSnapshots.ps1 as
+      // written to disk - a nonzero powershell.exe -File exit code, not
+      // merely a harness-caught throw.
+      const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+      try {
+        const installRoot = join(directory, "install");
+        // The generated script requires node.exe on PATH and a worker
+        // script under app\scripts - neither is reached here, since the
+        // lock collision happens before either is used, but the
+        // preflight checks for both run first and must not themselves
+        // throw first and mask the scenario under test.
+        mkdirSync(join(installRoot, "app", "scripts"), { recursive: true });
+        writeFileSync(join(installRoot, "app", "scripts", "capture-visual-snapshots.mjs"), "// placeholder\n", "utf8");
+        visualLockSnippets(installRoot); // writes the real generated scripts
+        const realScriptPath = join(installRoot, "Run-AwardPingVisualSnapshots.ps1");
+        // Default $ShardCount = 1 -> this exact lock file name.
+        const lockPath = join(installRoot, "visual-worker.lock");
+
+        // A genuinely external holder: a SEPARATE powershell.exe process,
+        // not a handle opened by this same test process.
+        const holderScriptPath = join(directory, "holder.ps1");
+        writeFileSync(
+          holderScriptPath,
+          [
+            "$ErrorActionPreference = 'Stop'",
+            `$p = '${lockPath.replace(/'/g, "''")}'`,
+            "$s = [System.IO.FileStream]::new($p, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)",
+            "$s.Lock(0, 1)",
+            "Start-Sleep -Seconds 8",
+            "$s.Unlock(0, 1)",
+            "$s.Dispose()",
+          ].join("\n"),
+          "utf8",
+        );
+        const holder = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", holderScriptPath], {
+          encoding: "utf8",
+        });
+        try {
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, 1500));
+
+          // The real, complete, unmodified top-level script - invoked
+          // exactly as it would be by the scheduler, not pasted into a
+          // harness.
+          const topLevelResult = spawnSync(
+            "powershell.exe",
+            ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", realScriptPath],
+            { encoding: "utf8" },
+          );
+
+          expect(
+            topLevelResult.status,
+            `stdout=${topLevelResult.stdout}\nstderr=${topLevelResult.stderr}`,
+          ).not.toBe(0);
+          expect(topLevelResult.stdout + topLevelResult.stderr).toContain(
+            "Cannot verify who holds the AwardPing visual worker lock",
+          );
+        } finally {
+          // Wait for the holder to actually exit (and release its OS
+          // handle) before the outer cleanup tries to remove the
+          // directory - killing it does not by itself guarantee the
+          // handle is gone yet.
+          await new Promise((resolvePromise) => {
+            holder.once("exit", () => resolvePromise());
+            holder.kill();
+          });
+        }
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
+
+  // Both propagation paths the reviewer requires, run through the FULL
+  // production preflight-plus-acquisition flow (not an isolated snippet
+  // that bypasses it), so a regression that only shows up once
+  // classification is folded in is not missed.
+  function assertAcquisitionFailurePropagates(lockPathSetup) {
+    const directory = mkdtempSync(join(tmpdir(), "awardping-visual-lock-"));
+    try {
+      const installRoot = join(directory, "install");
+      mkdirSync(installRoot, { recursive: true });
+      const { functions, claim } = visualLockSnippets(installRoot);
+      const lockPath = lockPathSetup(directory);
+      const lines = [
+        ...baseScenarioLines(lockPath, functions),
+        "$logPath = Join-Path (Split-Path -Parent $LockPath) 'first.log'",
+        "try {",
+        claim,
+        "  'CLAIMED_SUCCESSFULLY=true'",
+        "} catch {",
+        "  'PROPAGATED=' + $_.Exception.Message",
+        "}",
+      ];
+      const result = runVisualLockSimulation(directory, lines);
+
+      expect(result.status, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+      expect(result.stdout).toContain("PROPAGATED=");
+      expect(result.stdout).not.toContain("CLAIMED_SUCCESSFULLY=true");
+      expect(result.stdout).not.toContain("AwardPing visual snapshot worker is already running. Skipping this launch.");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  windowsIt(
+    "propagates an IOException whose native code is not a recognized contention code, instead of a benign skip",
+    () => {
+      // A missing parent directory makes the initial open throw
+      // DirectoryNotFoundException (an IOException) with native code 3
+      // (ERROR_PATH_NOT_FOUND), which is caught by its own typed clause
+      // and rethrown directly - it must never be classified as
+      // contention or Ambiguous.
+      assertAcquisitionFailurePropagates((directory) =>
+        join(directory, "missing-parent-directory", "shard.lock"),
+      );
+    },
+  );
+
+  windowsIt(
+    "propagates the full production behavior for a directory sitting at the lock path, instead of a benign skip",
+    () => {
+      // A directory at the lock path fails the initial open with an
+      // access-denied failure that is not an IOException, so no typed
+      // catch intercepts it at all - verified here through the complete
+      // claim, not an isolated acquisition-only snippet.
+      assertAcquisitionFailurePropagates((directory) => {
+        const lockPath = join(directory, "shard-as-directory.lock");
+        mkdirSync(lockPath, { recursive: true });
+        return lockPath;
+      });
+    },
+  );
 
   windowsIt("keeps the principal but replaces a legacy trigger with the canonical trigger", () => {
     const restoreXmlFunction = extractPowerShellFunction(
