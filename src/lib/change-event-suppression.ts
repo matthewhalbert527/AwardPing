@@ -103,7 +103,13 @@ const applicantSignalPattern =
   /\b(?:application deadline|deadline|due date|opening date|applications?(?: period| cycle| status)? (?:is |are |has |have |will )?(?:now )?(?:open|opened|close|closed|closing|due)|closing date|award amount|funding|stipend|tuition|eligib(?:ility|le)|application requirements?|award conditions?|letters? of recommendation|transcript|essay|nomination|application materials?|required documents?|how to apply|apply by|submit by|application portal|application instructions?|citizenship|gpa|interview)\b/i;
 
 const alwaysBadSourcePattern =
-  /\b(?:jobs?|careers?|employment|search results?|payment|bursar|1098t|security question|access denied|login|sign in)\b|\/(?:jobs?|careers?|employment|search|results|listing|list|directory|database|payment|payments|bursar|1098t|login|signin|sign-in)(?:[/?#]|$)/i;
+  // Unconditional suppression class - no applicant-signal override. The
+  // pattern runs against sourceText, which joins source_url to title and
+  // page_type with spaces, so a URL ending exactly at a bad segment is
+  // followed by a space, never end-of-string: whitespace must terminate path
+  // segments alongside [/?#] and $ (same contract as
+  // conditionalSourceShapePattern below - see a929456).
+  /\b(?:jobs?|careers?|employment|search results?|payment|bursar|1098t|security question|access denied|login|sign in)\b|\/(?:jobs?|careers?|employment|search|results|listing|list|directory|database|payment|payments|bursar|1098t|login|signin|sign-in)(?:[/?#]|\s|$)/i;
 
 const conditionalSourceShapePattern =
   // Event-registration portals rotate their listings nightly (Knight-Hennessy
