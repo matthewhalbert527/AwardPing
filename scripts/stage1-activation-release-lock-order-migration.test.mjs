@@ -36,11 +36,19 @@ function blockUnder(lines, indent, key) {
   return lines.slice(start, end).filter((line) => line !== "");
 }
 
+// Every nonblank line at exactly `indent` must be a mapping key, with or
+// without an inline value; anything else is rejected rather than skipped, so
+// an inline entry such as `tags: ["*"]` or `repository_dispatch: {}` still
+// surfaces as a key for the exact-key assertions.
 function keysAt(lines, indent) {
   const prefix = " ".repeat(indent);
   return lines
-    .filter((line) => line.startsWith(prefix) && !line.startsWith(`${prefix} `) && line.endsWith(":"))
-    .map((line) => line.slice(prefix.length, -1));
+    .filter((line) => line.startsWith(prefix) && !line.startsWith(`${prefix} `))
+    .map((line) => {
+      const entry = line.slice(prefix.length).match(/^([A-Za-z_][\w-]*):(?: \S.*)?$/);
+      expect(entry, `mapping entry at indent ${indent}: ${line}`).not.toBeNull();
+      return entry[1];
+    });
 }
 
 function quotedListAt(lines, indent) {
