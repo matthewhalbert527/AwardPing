@@ -198,8 +198,8 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("Overview");
     expect(mainHtml).toContain("Deadline");
     expect(mainHtml).toContain("Eligibility");
-    expect(mainHtml).toContain("Award conditions");
-    expect(mainHtml).not.toContain("Requirements");
+    expect(mainHtml).toContain("Requirements");
+    expect(mainHtml).not.toContain("Award conditions");
     expect(mainHtml).toContain("Academic level");
     expect(mainHtml).toContain('<ul class="public-award-fact-list">');
     expect(mainHtml).toContain("<li>$1,000</li>");
