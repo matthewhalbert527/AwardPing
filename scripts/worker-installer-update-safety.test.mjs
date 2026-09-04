@@ -254,6 +254,119 @@ describe("Windows worker update safety", () => {
   const windowsIt = (name, test) =>
     (process.platform === "win32" ? it : it.skip)(name, test, 20_000);
 
+  // Copy-AppFiles is the only place the installer copies the checked-out
+  // repository into a staged or installed app tree. The repository-root
+  // .claude directory holds local agent configuration and nested worktree
+  // copies of the whole repository, so both copy paths (robocopy /XD and the
+  // PowerShell fallback) must leave it behind.
+  const copyAppFilesFunction = () =>
+    extractPowerShellFunction(installer, "Copy-AppFiles", "Copy-AwardPingMutableAppState");
+
+  function quotedNames(text) {
+    return [...text.matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+  }
+
+  function textBetween(text, start, end) {
+    const from = text.indexOf(start);
+    expect(from, `missing "${start}"`).toBeGreaterThanOrEqual(0);
+    const to = text.indexOf(end, from + start.length);
+    expect(to, `missing "${end}" after "${start}"`).toBeGreaterThan(from);
+    return text.slice(from + start.length, to);
+  }
+
+  it("excludes the repository-root .claude directory from both Copy-AppFiles copy paths", () => {
+    const copyAppFiles = copyAppFilesFunction();
+    const fallbackStart = copyAppFiles.indexOf("Get-ChildItem -Path $SourceRoot");
+    expect(fallbackStart).toBeGreaterThan(0);
+    const robocopySection = copyAppFiles.slice(0, fallbackStart);
+    const fallbackSection = copyAppFiles.slice(fallbackStart);
+
+    const robocopyExcludedDirectories = quotedNames(
+      textBetween(robocopySection, '"/XD",', '"/XF",'),
+    );
+    const fallbackExcludedDirectories = quotedNames(
+      textBetween(fallbackSection, "$_.Name -notin @(", ")"),
+    );
+
+    expect(robocopyExcludedDirectories).toContain(".claude");
+    expect(fallbackExcludedDirectories).toContain(".claude");
+    // The two copy paths must exclude exactly the same directory names.
+    expect([...fallbackExcludedDirectories].sort()).toEqual(
+      [...robocopyExcludedDirectories].sort(),
+    );
+  });
+
+  // Exercises only the extracted Copy-AppFiles against a disposable temp
+  // directory created here: never a real install root, never Task Scheduler.
+  // The multi-line try/finally needs -File; stdin -Command mode drops it.
+  function runCopyAppFilesSimulation({ forceFallback }) {
+    const directory = mkdtempSync(join(tmpdir(), "awardping-copy-appfiles-"));
+    const simulation = [
+      "$ErrorActionPreference = 'Stop'",
+      "function Write-Step { param([string]$Message) }",
+      forceFallback
+        ? "function Get-CommandPath { param([string]$Command); return $null }"
+        : extractPowerShellFunction(installer, "Get-CommandPath", "Ensure-Node"),
+      copyAppFilesFunction(),
+      `$root = Join-Path '${directory.replace(/'/g, "''")}' 'fixture'`,
+      "$source = Join-Path $root 'source'",
+      "$target = Join-Path $root 'app'",
+      "try {",
+      "  New-Item -ItemType Directory -Path (Join-Path $source 'src/lib'), (Join-Path $source '.claude/worktrees/example') -Force | Out-Null",
+      "  Set-Content -LiteralPath (Join-Path $source 'package.json') -Value '{\"name\":\"fixture\"}'",
+      "  Set-Content -LiteralPath (Join-Path $source 'src/lib/nested.txt') -Value 'ordinary app file'",
+      "  Set-Content -LiteralPath (Join-Path $source '.claude/settings.local.json') -Value '{\"permissions\":{}}'",
+      "  Set-Content -LiteralPath (Join-Path $source '.claude/worktrees/example/marker.txt') -Value 'nested worktree copy'",
+      "  Copy-AppFiles -SourceRoot $source -AppDir $target",
+      "  'USED_ROBOCOPY=' + [bool](Get-CommandPath 'robocopy.exe')",
+      "  'NESTED=' + (Test-Path -LiteralPath (Join-Path $target 'src/lib/nested.txt'))",
+      "  'PACKAGE=' + (Test-Path -LiteralPath (Join-Path $target 'package.json'))",
+      "  'CLAUDE_DIR=' + (Test-Path -LiteralPath (Join-Path $target '.claude'))",
+      "  'CLAUDE_SENTINEL=' + (Test-Path -LiteralPath (Join-Path $target '.claude/settings.local.json'))",
+      "} finally {",
+      "  Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue",
+      "}",
+    ].join("\n");
+    const scriptPath = join(directory, "copy-appfiles.ps1");
+    writeFileSync(scriptPath, simulation, "utf8");
+    try {
+      return spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+        { encoding: "utf8" },
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  windowsIt("copies nested app files but not the root .claude directory through the PowerShell fallback", () => {
+    const result = runCopyAppFilesSimulation({ forceFallback: true });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("USED_ROBOCOPY=False");
+    expect(result.stdout).toContain("NESTED=True");
+    expect(result.stdout).toContain("PACKAGE=True");
+    expect(result.stdout).toContain("CLAUDE_DIR=False");
+    expect(result.stdout).toContain("CLAUDE_SENTINEL=False");
+  });
+
+  const robocopyAvailable =
+    process.platform === "win32" &&
+    existsSync(join(process.env.SystemRoot || "C:/Windows", "System32", "robocopy.exe"));
+  (robocopyAvailable ? it : it.skip)(
+    "copies nested app files but not the root .claude directory through robocopy",
+    () => {
+      const result = runCopyAppFilesSimulation({ forceFallback: false });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("USED_ROBOCOPY=True");
+      expect(result.stdout).toContain("NESTED=True");
+      expect(result.stdout).toContain("PACKAGE=True");
+      expect(result.stdout).toContain("CLAUDE_DIR=False");
+      expect(result.stdout).toContain("CLAUDE_SENTINEL=False");
+    },
+    20_000,
+  );
+
   windowsIt("keeps the principal but replaces a legacy trigger with the canonical trigger", () => {
     const restoreXmlFunction = extractPowerShellFunction(
       installer,

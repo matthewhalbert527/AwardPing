@@ -1666,7 +1666,7 @@ function Copy-AppFiles {
       $SourceRoot,
       $AppDir,
       "/E",
-      "/XD", "node_modules", ".next", ".git", ".vercel", "dist", "reports", "tmp",
+      "/XD", "node_modules", ".next", ".git", ".vercel", ".claude", "dist", "reports", "tmp",
       "AwardPingVisualSnapshots", "visual-snapshots", "visual-snapshot-archive",
       "/XF", ".env*", "*.tsbuildinfo", ".DS_Store",
       "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS"
@@ -1684,6 +1684,7 @@ function Copy-AppFiles {
       ".next",
       ".git",
       ".vercel",
+      ".claude",
       "dist",
       "reports",
       "tmp",
