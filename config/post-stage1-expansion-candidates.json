@@ -1,0 +1,11 @@
+{
+  "schema": "post-stage1-expansion-candidates-v1",
+  "candidates": [
+    {
+      "candidateId": "mitchell",
+      "awardName": "Mitchell Scholarship",
+      "slug": "mitchell-scholarship",
+      "status": "provisional"
+    }
+  ]
+}
