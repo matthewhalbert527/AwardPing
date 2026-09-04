@@ -1474,6 +1474,57 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).not.toContain("UNEXPECTED_SUCCESS");
   });
 
+  windowsIt("labels a worker source nested in an unrelated repository from its manifest, never the enclosing HEAD", () => {
+    const gitPath = spawnSync("where.exe", ["git.exe"], { encoding: "utf8" })
+      .stdout.split(/\r?\n/)
+      .map((value) => value.trim())
+      .find(Boolean);
+    expect(gitPath).toBeTruthy();
+    const quotedGitPath = String(gitPath).replace(/'/g, "''");
+    const functions = [
+      `$script:gitPath = '${quotedGitPath}'`,
+      "function Get-CommandPath { param([string]$Command) return $script:gitPath }",
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingSourceRevision",
+        "Complete-AwardPingStartupLauncherUpdate",
+      ),
+    ].join("\n");
+    // A clean outer repository whose ignored child holds an extracted worker
+    // package. The child has no .git of its own, so only its packaged manifest
+    // may label it; the outer HEAD belongs to an unrelated repository.
+    const simulation = [
+      functions,
+      "$outer = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-nested-revision-' + [guid]::NewGuid().ToString('N'))",
+      "$child = Join-Path $outer 'worker-package'",
+      "New-Item -ItemType Directory -Path $child -Force | Out-Null",
+      "& $script:gitPath -C $outer init --quiet",
+      "& $script:gitPath -C $outer config user.email 'worker-test@awardping.local'",
+      "& $script:gitPath -C $outer config user.name 'AwardPing Test'",
+      "Set-Content -LiteralPath (Join-Path $outer '.gitignore') -Value 'worker-package/'",
+      "Set-Content -LiteralPath (Join-Path $outer 'README.md') -Value 'unrelated outer repository'",
+      "& $script:gitPath -C $outer add .gitignore README.md; & $script:gitPath -C $outer commit --quiet -m outer",
+      "$outerHead = ((& $script:gitPath -C $outer rev-parse HEAD) | Select-Object -First 1).Trim()",
+      "Set-Content -LiteralPath (Join-Path $child 'worker.mjs') -Value 'packaged worker'",
+      "$manifest = Join-Path $child '.awardping-worker-revision'",
+      "Set-Content -LiteralPath $manifest -Value ('a' * 40)",
+      "$withManifest = Get-AwardPingSourceRevision -SourceRoot $child",
+      "Remove-Item -LiteralPath $manifest -Force",
+      "try { $leaked = Get-AwardPingSourceRevision -SourceRoot $child; 'UNEXPECTED_SUCCESS=' + $leaked } catch { 'BLOCKED=' + $_.Exception.Message }",
+      "'OUTER=' + $outerHead",
+      "'WITH_MANIFEST=' + $withManifest",
+      "Remove-Item -LiteralPath $outer -Recurse -Force",
+    ].join("\n");
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    const outerHead = result.stdout.match(/OUTER=([0-9a-f]{40})/)?.[1];
+    expect(outerHead).toBeTruthy();
+    expect(result.stdout).toContain(`WITH_MANIFEST=${"a".repeat(40)}`);
+    expect(result.stdout).not.toContain(`WITH_MANIFEST=${outerHead}`);
+    expect(result.stdout).toContain("BLOCKED=Could not determine the exact source git commit");
+    expect(result.stdout).not.toContain("UNEXPECTED_SUCCESS");
+  });
+
   it("documents the complete update command instead of manual app-file copying", () => {
     expect(installerDocs).toContain("Install-AwardPingWorker.ps1\" -UpdateOnly");
     expect(installerDocs).toContain("apply and verify its Supabase migrations");

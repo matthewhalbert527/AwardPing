@@ -708,12 +708,19 @@ function Get-AwardPingSourceRevision {
   $git = Get-CommandPath "git.exe"
   if (-not $git) { $git = Get-CommandPath "git" }
   if ($git) {
+    $normalizedSourceRoot = [System.IO.Path]::GetFullPath($SourceRoot).TrimEnd("\", "/").Replace("/", "\")
     foreach ($gitRoot in @($SourceRoot, (Split-Path -Parent $SourceRoot))) {
       if ([string]::IsNullOrWhiteSpace($gitRoot)) { continue }
       $repositoryOutput = @(& $git -C $gitRoot rev-parse --show-toplevel 2>$null)
       $repositoryExitCode = $LASTEXITCODE
       $repositoryRoot = ($repositoryOutput | Select-Object -First 1)
       if ($repositoryExitCode -ne 0 -or [string]::IsNullOrWhiteSpace([string]$repositoryRoot)) { continue }
+      # Accept git provenance only from a repository rooted exactly at the
+      # worker source. An enclosing repository (for example an unrelated clone
+      # whose ignored directory holds an extracted package) must not label it;
+      # such a source falls through to its packaged revision manifest.
+      $normalizedRepositoryRoot = [System.IO.Path]::GetFullPath(([string]$repositoryRoot).Trim()).TrimEnd("\", "/").Replace("/", "\")
+      if (-not [string]::Equals($normalizedRepositoryRoot, $normalizedSourceRoot, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
       $dirtyPaths = @(& $git -C ([string]$repositoryRoot) status --porcelain --untracked-files=all 2>$null)
       if ($LASTEXITCODE -ne 0) {
         throw "Could not verify that the AwardPing source repository is clean: $repositoryRoot"
