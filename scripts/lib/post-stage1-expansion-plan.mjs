@@ -34,6 +34,12 @@
 // rejected rather than invoked, and inherited properties are invisible: a
 // required field supplied only via the prototype chain reads as missing.
 //
+// Candidates are distinct all the way down. candidateId, normalized
+// awardName and slug are each unique across the allowlist, and no
+// canonical-equivalent URL - seed/discovery link, homepage, or monitorable
+// source - may belong to two candidates. Within a single candidate the same
+// URL may legitimately fill several roles.
+//
 // A rejected value is never executed to describe it. Error messages quote
 // primitives exactly (a primitive cannot carry user code) and collapse
 // everything else to a fixed type-only phrase, so no toJSON, toString,
@@ -476,6 +482,7 @@ function validateConfig(config) {
 
   const seenCandidateIds = new Set();
   const seenAwardNameKeys = new Set();
+  const seenSlugs = new Set();
   const candidates = [];
 
   for (let index = 0; index < candidatesRaw.length; index += 1) {
@@ -508,6 +515,20 @@ function validateConfig(config) {
       fail(`config.candidates has a duplicate awardName (normalized key "${nameKey}").`);
     }
     seenAwardNameKeys.add(nameKey);
+
+    // candidateId and normalized awardName were already unique; the slug was
+    // not. A slug is a public-facing identity, so two candidates sharing one
+    // is the same defect as two sharing an id - it just surfaces later, in
+    // whatever consumes the slug. Checked after the safe scalar snapshot and
+    // canonical-identifier validation above, so the comparison is between two
+    // inert, already-canonical strings. Absent slugs stay absent: null is not
+    // an identity and several candidates may legitimately have none.
+    if (slug !== null) {
+      if (seenSlugs.has(slug)) {
+        fail(`config.candidates has a duplicate slug "${slug}".`);
+      }
+      seenSlugs.add(slug);
+    }
 
     candidates.push({ candidateId, awardName, awardNameKey: nameKey, status, slug });
   }
@@ -778,6 +799,49 @@ function validateOverrideSources(candidate, override, joinedSeed) {
   return homepageSources[0];
 }
 
+// No canonical-equivalent URL may identify two different candidates. Within
+// ONE candidate the same URL legitimately fills several roles at once - a
+// candidate whose single official source IS its homepage is the normal shape,
+// and a seed link may also appear among its sources - so identities are
+// collapsed per candidate first and only then compared across candidates.
+//
+// Equivalence is the planner's existing safety semantics rather than raw
+// string equality, so the two candidates cannot be separated by spelling: a
+// trailing DNS dot, a percent-encoded unreserved character or an appended
+// query all resolve to the same identity here, exactly as they do for the
+// Stage 1 collision checks (which this leaves entirely intact - it is an
+// additional constraint, not a replacement).
+//
+// Runs over the SORTED plans so the candidate named as the first claimant is
+// the lower candidateId regardless of the order the config happened to list
+// them in.
+function rejectCrossCandidateUrlReuse(plans) {
+  const claimedBy = new Map();
+  for (const plan of plans) {
+    const label = `candidate "${plan.candidateId}"`;
+    const identities = new Set();
+    // Every candidate-related URL role: the joined seed/discovery link
+    // (whether or not it was excluded from monitoring), the resolved
+    // homepage, and every monitorable source.
+    identities.add(safetyUrlKey(plan.seed.starterUrl, `${label} seed starterUrl`));
+    identities.add(safetyUrlKey(plan.homepage.url, `${label} homepage`));
+    for (const source of plan.monitorableSources) {
+      identities.add(safetyUrlKey(source.url, `${label} monitorable source`));
+    }
+
+    for (const identity of identities) {
+      const owner = claimedBy.get(identity);
+      if (owner !== undefined && owner !== plan.candidateId) {
+        fail(
+          `URL identity "${identity}" is claimed by both candidate "${owner}" and candidate "${plan.candidateId}"; ` +
+          `one URL cannot identify two candidates.`,
+        );
+      }
+      claimedBy.set(identity, plan.candidateId);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Plan hash
 // ---------------------------------------------------------------------------
@@ -913,6 +977,8 @@ export function buildPostStage1ExpansionPlan(input) {
   });
 
   plans.sort((left, right) => (left.candidateId < right.candidateId ? -1 : left.candidateId > right.candidateId ? 1 : 0));
+
+  rejectCrossCandidateUrlReuse(plans);
 
   return {
     version: POST_STAGE1_EXPANSION_PLAN_VERSION,

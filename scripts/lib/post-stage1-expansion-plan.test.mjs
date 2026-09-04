@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { awardSeeds } from "../../src/lib/award-seeds.ts";
 import { awardSourceOverrides } from "../../src/lib/award-source-overrides.ts";
 import { isTrackableOfficialSourceUrl } from "../../src/lib/source-url-policy.ts";
+import { normalizeSharedAwardKey } from "../../src/lib/shared-awards-core.ts";
 import { stage1CohortIdentity } from "../../src/lib/stage1-cohort-identity.ts";
 import { STAGE1_COHORT_DEFINITION } from "./stage1-cohort-readiness.mjs";
 import {
@@ -39,6 +40,12 @@ function realStage1Identity() {
       officialHomepage: cohort.officialHomepage,
     };
   });
+}
+
+function planFor(result, candidateId) {
+  const plan = result.plans.find((candidate) => candidate.candidateId === candidateId);
+  if (!plan) throw new Error(`No plan for ${candidateId}`);
+  return plan;
 }
 
 function buildProductionPlan() {
@@ -111,14 +118,15 @@ function samplePlan(overrides = {}) {
 }
 
 describe("post-Stage1 expansion plan", () => {
-  it("builds exactly one provisional Mitchell plan from real production data: 12 monitorable sources, one homepage, ASU discovery URL excluded", () => {
+  it("builds the provisional Mitchell plan from real production data: 12 monitorable sources, one homepage, ASU discovery URL excluded", () => {
     const result = buildProductionPlan();
 
     expect(result.version).toBe(POST_STAGE1_EXPANSION_PLAN_VERSION);
-    expect(result.totals.candidates).toBe(1);
-    expect(result.plans).toHaveLength(1);
 
-    const plan = result.plans[0];
+    // Addressed by candidateId rather than by position: adding a second
+    // candidate must not be able to silently re-point this test at a
+    // different award.
+    const plan = planFor(result, "mitchell");
     expect(plan.candidateId).toBe("mitchell");
     expect(plan.awardName).toBe("Mitchell Scholarship");
     expect(plan.slug).toBe("mitchell-scholarship");
@@ -154,6 +162,425 @@ describe("post-Stage1 expansion plan", () => {
     expect(plan.planHash).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  it("builds the provisional Tillman plan from real production data: one monitorable official source, ASU discovery URL excluded", () => {
+    const result = buildProductionPlan();
+    const plan = planFor(result, "tillman");
+
+    expect(plan.awardName).toBe("Tillman Scholars Program");
+    expect(plan.normalizedAwardKey).toBe("tillman scholars program");
+    expect(plan.slug).toBe("tillman-scholars-program");
+    expect(plan.status).toBe("provisional");
+
+    // Exact seed join, at the catalog position the evidence records.
+    expect(plan.seed.seedIndex).toBe(166);
+    expect(plan.seed.name).toBe("Tillman Scholars Program");
+    expect(plan.seed.starterUrl).toBe("https://onsa.asu.edu/scholarship/tillman-scholars-program");
+
+    // The seed link is an institutional discovery URL: recorded as excluded
+    // evidence, never carried into the monitorable set.
+    expect(plan.excludedDiscoveryUrls).toEqual(["https://onsa.asu.edu/scholarship/tillman-scholars-program"]);
+    expect(plan.monitorableSources.some((source) => source.url === plan.seed.starterUrl)).toBe(false);
+    expect(plan.monitorableSources.every((source) => !source.url.includes("onsa.asu.edu"))).toBe(true);
+
+    // Exactly one monitorable official source, which is also the homepage.
+    expect(plan.monitorableSources).toHaveLength(1);
+    expect(plan.monitorableSources[0].url).toBe("https://pattillmanfoundation.org/apply-to-be-a-scholar/");
+    expect(plan.monitorableSources[0].pageType).toBe("homepage");
+    expect(plan.monitorableSources[0].confidence).toBe(0.92);
+    expect(plan.monitorableSources.filter((source) => source.pageType === "homepage")).toHaveLength(1);
+    expect(plan.homepage.url).toBe("https://pattillmanfoundation.org/apply-to-be-a-scholar/");
+    expect(new URL(plan.monitorableSources[0].url).protocol).toBe("https:");
+
+    // One official homepage is EVIDENCE, not proof of anything current.
+    // Every lifecycle gate stays exactly as unresolved as Mitchell's.
+    expect(plan.lifecycle).toEqual({
+      currentCycleAuthority: "unresolved",
+      humanSourceReview: "unresolved",
+      remoteIdentityCollisionCheck: "unresolved",
+      monitoringReadiness: false,
+      publicationEligibility: false,
+    });
+    expect(plan.planHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("leaves the nearby Pat Tillman Foundation seed unjoined and quarantined pending human identity review", () => {
+    // The catalog also holds "Pat Tillman Foundation - Tillman Military
+    // Scholarship for Military Service Members, Veterans, and Spouses".
+    //
+    // Whether that is the same program under a fuller name, a sibling award
+    // of the same foundation, or something else entirely is an OPEN QUESTION
+    // that only a human reviewing the two identities can answer. A different
+    // normalized name is not evidence of a different award - it is only
+    // evidence that the two spellings differ.
+    //
+    // So this test does not claim the two are distinct. It pins the
+    // conservative behaviour: the exact-name join reaches exactly one seed
+    // and one override declaration, the nearby seed is neither aliased nor
+    // ingested, and it therefore stays quarantined - visible in the catalog,
+    // absent from this plan - until someone decides what it is.
+    const nearby = awardSeeds.filter(
+      (seed) => /tillman/i.test(seed.name) && seed.name !== "Tillman Scholars Program",
+    );
+    expect(nearby.length).toBeGreaterThan(0);
+
+    // The allowlisted name resolves to exactly one seed and one override.
+    expect(awardSeeds.filter((seed) => normalizeSharedAwardKey(seed.name) === "tillman scholars program")).toHaveLength(1);
+    expect(
+      awardSourceOverrides.filter((override) => normalizeSharedAwardKey(override.awardName) === "tillman scholars program"),
+    ).toHaveLength(1);
+
+    // Nothing about the nearby seed is aliased into the candidate: it is not
+    // the joined seed, and none of its evidence appears in the plan.
+    const plan = planFor(buildProductionPlan(), "tillman");
+    for (const seed of nearby) {
+      expect(plan.seed.name).not.toBe(seed.name);
+      expect(plan.seed.starterUrl).not.toBe(seed.starterUrl);
+      expect(plan.monitorableSources.some((source) => source.url === seed.starterUrl)).toBe(false);
+      expect(plan.excludedDiscoveryUrls).not.toContain(seed.starterUrl);
+    }
+
+    // And the plan makes no claim that could be read as having settled the
+    // question: every identity/lifecycle gate is still open.
+    expect(plan.lifecycle.remoteIdentityCollisionCheck).toBe("unresolved");
+    expect(plan.lifecycle.humanSourceReview).toBe("unresolved");
+    expect(plan.lifecycle.currentCycleAuthority).toBe("unresolved");
+    expect(plan.lifecycle.monitoringReadiness).toBe(false);
+    expect(plan.lifecycle.publicationEligibility).toBe(false);
+
+    // Ingesting it would require an allowlist entry naming it, which does not
+    // exist - and adding one is a human decision, not an automatic alias.
+    const config = loadRealConfig();
+    for (const seed of nearby) {
+      expect(config.candidates.some((candidate) => candidate.awardName === seed.name)).toBe(false);
+    }
+  });
+
+  it("keeps the two candidates isolated: each plan is identical alone or alongside the other", () => {
+    const stage1Identity = realStage1Identity();
+    const mitchell = { candidateId: "mitchell", awardName: "Mitchell Scholarship", slug: "mitchell-scholarship", status: "provisional" };
+    const tillman = { candidateId: "tillman", awardName: "Tillman Scholars Program", slug: "tillman-scholars-program", status: "provisional" };
+    const build = (candidates) =>
+      buildPostStage1ExpansionPlan({
+        config: { schema: POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA, candidates },
+        seeds: awardSeeds,
+        overrides: awardSourceOverrides,
+        stage1Identity,
+      });
+
+    const mitchellAlone = build([mitchell]).plans[0];
+    const tillmanAlone = build([tillman]).plans[0];
+    const together = build([mitchell, tillman]);
+
+    // Neither candidate's plan - or hash - depends on the other's presence.
+    expect(planFor(together, "mitchell")).toEqual(mitchellAlone);
+    expect(planFor(together, "tillman")).toEqual(tillmanAlone);
+    expect(planFor(together, "mitchell").planHash).toBe(mitchellAlone.planHash);
+    expect(planFor(together, "tillman").planHash).toBe(tillmanAlone.planHash);
+
+    // Two genuinely different awards hash differently.
+    expect(mitchellAlone.planHash).not.toBe(tillmanAlone.planHash);
+
+    // Neither borrows the other's evidence.
+    const mitchellUrls = new Set(planFor(together, "mitchell").monitorableSources.map((source) => source.url));
+    const tillmanUrls = new Set(planFor(together, "tillman").monitorableSources.map((source) => source.url));
+    for (const url of tillmanUrls) expect(mitchellUrls.has(url)).toBe(false);
+    expect(planFor(together, "mitchell").seed.starterUrl).not.toBe(planFor(together, "tillman").seed.starterUrl);
+  });
+
+  it("orders the two production candidates deterministically regardless of config order", () => {
+    const stage1Identity = realStage1Identity();
+    const mitchell = { candidateId: "mitchell", awardName: "Mitchell Scholarship", slug: "mitchell-scholarship", status: "provisional" };
+    const tillman = { candidateId: "tillman", awardName: "Tillman Scholars Program", slug: "tillman-scholars-program", status: "provisional" };
+    const build = (candidates) =>
+      buildPostStage1ExpansionPlan({
+        config: { schema: POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA, candidates },
+        seeds: awardSeeds,
+        overrides: awardSourceOverrides,
+        stage1Identity,
+      });
+
+    const forward = build([mitchell, tillman]);
+    const backward = build([tillman, mitchell]);
+
+    expect(forward.totals.candidates).toBe(2);
+    expect(forward.plans.map((plan) => plan.candidateId)).toEqual(["mitchell", "tillman"]);
+    expect(backward.plans.map((plan) => plan.candidateId)).toEqual(["mitchell", "tillman"]);
+    expect(backward).toEqual(forward);
+
+    // The shipped config is one of those orders, and repeated builds of it
+    // are byte-identical.
+    const production = buildProductionPlan();
+    expect(production.plans.map((plan) => plan.candidateId)).toEqual(["mitchell", "tillman"]);
+    expect(buildProductionPlan()).toEqual(production);
+  });
+
+  it("ships exactly the two reviewed provisional candidates in the real config", () => {
+    const config = loadRealConfig();
+    expect(config.schema).toBe(POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA);
+    expect(config.candidates).toHaveLength(2);
+    expect(config.candidates.map((candidate) => candidate.candidateId).sort()).toEqual(["mitchell", "tillman"]);
+    // Every allowlisted candidate is provisional; nothing has been promoted.
+    for (const candidate of config.candidates) {
+      expect(candidate.status, candidate.candidateId).toBe("provisional");
+    }
+  });
+
+  describe("candidates must be distinct from each other", () => {
+    const twoCandidateInput = (patch = {}) => ({
+      config: {
+        schema: POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA,
+        candidates: patch.candidates ?? [
+          { candidateId: "alpha", awardName: "Alpha Award", slug: "alpha-award", status: "provisional" },
+          { candidateId: "beta", awardName: "Beta Award", slug: "beta-award", status: "provisional" },
+        ],
+      },
+      seeds: patch.seeds ?? [
+        { name: "Alpha Award", starterUrl: "https://alpha.example.org/seed" },
+        { name: "Beta Award", starterUrl: "https://beta.example.org/seed" },
+      ],
+      overrides: patch.overrides ?? [
+        { awardName: "Alpha Award", sources: [{ url: "https://alpha.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+        { awardName: "Beta Award", sources: [{ url: "https://beta.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+      ],
+      stage1Identity: patch.stage1Identity ?? realStage1Identity(),
+    });
+
+    it("accepts the distinct baseline the collision cases are built from", () => {
+      const result = buildPostStage1ExpansionPlan(twoCandidateInput());
+      expect(result.plans.map((plan) => plan.candidateId)).toEqual(["alpha", "beta"]);
+    });
+
+    it("rejects two candidates claiming the same slug", () => {
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            candidates: [
+              { candidateId: "alpha", awardName: "Alpha Award", slug: "shared-slug", status: "provisional" },
+              { candidateId: "beta", awardName: "Beta Award", slug: "shared-slug", status: "provisional" },
+            ],
+          }),
+        ),
+      ).toThrow(/config\.candidates has a duplicate slug "shared-slug"/);
+
+      // Order-independent: whichever entry comes second is the one caught.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            candidates: [
+              { candidateId: "beta", awardName: "Beta Award", slug: "shared-slug", status: "provisional" },
+              { candidateId: "alpha", awardName: "Alpha Award", slug: "shared-slug", status: "provisional" },
+            ],
+          }),
+        ),
+      ).toThrow(/config\.candidates has a duplicate slug "shared-slug"/);
+
+      // An absent slug is not an identity, so several candidates may omit it.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            candidates: [
+              { candidateId: "alpha", awardName: "Alpha Award", status: "provisional" },
+              { candidateId: "beta", awardName: "Beta Award", status: "provisional" },
+            ],
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    it("rejects two candidates sharing one program URL, in any role and any equivalent spelling", () => {
+      const shared = "https://shared-program.example.org/apply";
+      const equivalents = [
+        ["identical", shared],
+        ["trailing DNS dot", "https://shared-program.example.org./apply"],
+        ["percent-encoded unreserved character", "https://shared-program.example.org/%61pply"],
+        ["appended query", "https://shared-program.example.org/apply?ref=x"],
+        ["uppercase host", "https://SHARED-PROGRAM.EXAMPLE.ORG/apply"],
+      ];
+      for (const [label, betaSpelling] of equivalents) {
+        expect(() =>
+          buildPostStage1ExpansionPlan(
+            twoCandidateInput({
+              overrides: [
+                { awardName: "Alpha Award", sources: [{ url: shared, title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+                { awardName: "Beta Award", sources: [{ url: betaSpelling, title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+              ],
+            }),
+          ),
+          label,
+        ).toThrow(/URL identity ".*" is claimed by both candidate "alpha" and candidate "beta"/);
+      }
+
+      // A non-homepage role counts exactly the same: beta claiming alpha's
+      // homepage as a mere "other" source is still two candidates on one URL.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            overrides: [
+              { awardName: "Alpha Award", sources: [{ url: "https://alpha.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+              { awardName: "Beta Award", sources: [
+                { url: "https://beta.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" },
+                { url: "https://alpha.example.org/", title: "Alpha's homepage", pageType: "other", confidence: 0.5, reason: "x" },
+              ] },
+            ],
+          }),
+        ),
+      ).toThrow(/URL identity "alpha\.example\.org\/" is claimed by both candidate "alpha" and candidate "beta"/);
+
+      // The seed/discovery link is a candidate-related URL too.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            seeds: [
+              { name: "Alpha Award", starterUrl: "https://shared-seed.example.org/listing" },
+              { name: "Beta Award", starterUrl: "https://shared-seed.example.org/listing" },
+            ],
+          }),
+        ),
+      ).toThrow(/URL identity "shared-seed\.example\.org\/listing" is claimed by both candidate "alpha" and candidate "beta"/);
+
+      // One candidate's seed reappearing as ANOTHER candidate's source is the
+      // same collision seen from the other side.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            overrides: [
+              { awardName: "Alpha Award", sources: [{ url: "https://alpha.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+              { awardName: "Beta Award", sources: [
+                { url: "https://beta.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" },
+                { url: "https://alpha.example.org/seed", title: "Alpha's seed", pageType: "other", confidence: 0.5, reason: "x" },
+              ] },
+            ],
+          }),
+        ),
+      ).toThrow(/URL identity "alpha\.example\.org\/seed" is claimed by both candidate "alpha" and candidate "beta"/);
+    });
+
+    it("still allows one candidate to use the same URL in several of its own roles", () => {
+      // The real Tillman shape: the single official source IS the homepage.
+      const production = planFor(buildProductionPlan(), "tillman");
+      expect(production.homepage.url).toBe(production.monitorableSources[0].url);
+
+      // And a seed link that also appears among that same candidate's own
+      // sources is not a cross-candidate collision either.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            overrides: [
+              { awardName: "Alpha Award", sources: [{ url: "https://alpha.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+              { awardName: "Beta Award", sources: [
+                { url: "https://beta.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" },
+                { url: "https://beta.example.org/seed", title: "Beta's own seed", pageType: "other", confidence: 0.5, reason: "x" },
+              ] },
+            ],
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    it("preserves the Stage 1 URL collision checks alongside the new cross-candidate rule", () => {
+      // Cross-candidate uniqueness is an ADDITIONAL constraint: a candidate
+      // colliding with a frozen Stage 1 homepage is still rejected by the
+      // Stage 1 rule, with its own distinct message.
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            overrides: [
+              { awardName: "Alpha Award", sources: [{ url: "https://www.truman.gov/apply", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+              { awardName: "Beta Award", sources: [{ url: "https://beta.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+            ],
+          }),
+        ),
+      ).toThrow(/overlaps a frozen Stage 1 homepage/);
+    });
+
+    it("keeps the scalar, accessor, Proxy and TOCTOU boundaries intact for the peer-uniqueness fields", () => {
+      const statefulAccessor = (firstRead, laterReads) => {
+        let reads = 0;
+        return {
+          get() {
+            reads += 1;
+            return reads === 1 ? firstRead : laterReads;
+          },
+          configurable: true,
+          enumerable: true,
+        };
+      };
+
+      // A slug accessor that shows a unique value while being checked and a
+      // colliding one afterwards is rejected as an accessor, before either
+      // value is trusted.
+      const accessorCandidate = { candidateId: "beta", awardName: "Beta Award", status: "provisional" };
+      Object.defineProperty(accessorCandidate, "slug", statefulAccessor("beta-award", "alpha-award"));
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            candidates: [
+              { candidateId: "alpha", awardName: "Alpha Award", slug: "alpha-award", status: "provisional" },
+              accessorCandidate,
+            ],
+          }),
+        ),
+      ).toThrow(/config\.candidates\[1\]\.slug must be a plain data property, not an accessor/);
+
+      // A proxied slug is rejected without any trap being consulted.
+      const trapCalls = [];
+      const proxiedSlug = new Proxy({}, {
+        get(target, prop, receiver) {
+          trapCalls.push(typeof prop === "symbol" ? prop.toString() : prop);
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            candidates: [
+              { candidateId: "alpha", awardName: "Alpha Award", slug: "alpha-award", status: "provisional" },
+              { candidateId: "beta", awardName: "Beta Award", slug: proxiedSlug, status: "provisional" },
+            ],
+          }),
+        ),
+      ).toThrow(/slug must be a canonical identifier/);
+      expect(trapCalls).toEqual([]);
+
+      // A proxied source url is likewise rejected before the cross-candidate
+      // comparison can be fed a value that changes underneath it.
+      const urlTrapCalls = [];
+      const proxiedUrl = new Proxy({}, {
+        get(target, prop, receiver) {
+          urlTrapCalls.push(typeof prop === "symbol" ? prop.toString() : prop);
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      expect(() =>
+        buildPostStage1ExpansionPlan(
+          twoCandidateInput({
+            overrides: [
+              { awardName: "Alpha Award", sources: [{ url: "https://alpha.example.org/", title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+              { awardName: "Beta Award", sources: [{ url: proxiedUrl, title: "H", pageType: "homepage", confidence: 0.9, reason: "x" }] },
+            ],
+          }),
+        ),
+      ).toThrow(/must be a non-empty string/);
+      expect(urlTrapCalls).toEqual([]);
+
+      // A proxied candidates array cannot hide a colliding second candidate
+      // behind a lying length.
+      const colliding = [
+        { candidateId: "alpha", awardName: "Alpha Award", slug: "shared-slug", status: "provisional" },
+        { candidateId: "beta", awardName: "Beta Award", slug: "shared-slug", status: "provisional" },
+      ];
+      const lyingLength = new Proxy(colliding, {
+        get(target, prop, receiver) {
+          if (prop === "length") return 1;
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      expect(() => buildPostStage1ExpansionPlan(twoCandidateInput({ candidates: lyingLength }))).toThrow(
+        /config\.candidates must not be a Proxy/,
+      );
+    });
+  });
+
   it("runs the production build with fetch and other side-effect APIs poisoned", () => {
     const poison = (label) => () => {
       throw new Error(`post-stage1 expansion plan attempted ${label}`);
@@ -178,8 +605,9 @@ describe("post-Stage1 expansion plan", () => {
 
     try {
       const result = buildProductionPlan();
-      expect(result.totals.candidates).toBe(1);
-      expect(result.plans[0].monitorableSources).toHaveLength(12);
+      expect(result.totals.candidates).toBe(2);
+      expect(planFor(result, "mitchell").monitorableSources).toHaveLength(12);
+      expect(planFor(result, "tillman").monitorableSources).toHaveLength(1);
     } finally {
       vi.unstubAllGlobals();
     }

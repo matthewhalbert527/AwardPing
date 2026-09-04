@@ -6,6 +6,12 @@
       "awardName": "Mitchell Scholarship",
       "slug": "mitchell-scholarship",
       "status": "provisional"
+    },
+    {
+      "candidateId": "tillman",
+      "awardName": "Tillman Scholars Program",
+      "slug": "tillman-scholars-program",
+      "status": "provisional"
     }
   ]
 }
