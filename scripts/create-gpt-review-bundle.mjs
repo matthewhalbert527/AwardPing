@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createSupabaseServiceClient } from "./supabase-service-client.mjs";
 
@@ -20,6 +20,10 @@ const bundleStamp = new Date().toISOString().replace(/[:.]/g, "-");
 const bundleName = cleanPathSegment(args.name || `awardping-full-review-${bundleStamp}`);
 const outputRoot = resolve(root, String(args.output || "review-bundles"));
 const bundleDir = resolve(outputRoot, bundleName);
+// The bundle directory is recursively deleted before it is rebuilt, so the
+// sanitized name must resolve to a strict descendant of outputRoot: "", ".",
+// and ".." would otherwise target the output directory or the repository root.
+assertBundleDirBelowOutputRoot(outputRoot, bundleDir, bundleName);
 const zipPath = `${bundleDir}.zip`;
 const envPath = resolve(root, String(args.env || ".env.local"));
 const env = { ...loadEnvFile(envPath), ...process.env };
@@ -624,6 +628,28 @@ function cleanPathSegment(value) {
     .replace(/[^a-zA-Z0-9._-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 120);
+}
+
+// cleanPathSegment keeps "." and "..", and punctuation-only names become "".
+// Require the resolved bundle directory to be a strict descendant of the
+// output root before it is used as a recursive-delete target. A name such as
+// "..safe" is a real descendant and stays allowed.
+function assertBundleDirBelowOutputRoot(outputRoot, bundleDir, bundleName) {
+  const relativePath = relative(outputRoot, bundleDir);
+  if (
+    !bundleName ||
+    bundleName === "." ||
+    bundleName === ".." ||
+    !relativePath ||
+    isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${sep}`)
+  ) {
+    throw new Error(
+      `Refusing bundle name ${JSON.stringify(bundleName)}: the bundle directory must be a strict descendant of ${outputRoot}.`,
+    );
+  }
+  return relativePath;
 }
 
 function normalizeSlashes(value) {
