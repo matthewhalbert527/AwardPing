@@ -713,6 +713,39 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).toContain("MIGRATED=False FRESH=True");
   });
 
+  windowsIt("carries the retired visual snapshot worker's enabled state into newly created shards", () => {
+    const finalizationFunctions = [
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingManagedTaskNames",
+        "Get-AwardPingTaskSnapshotKey",
+      ),
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingTaskSnapshotKey",
+        "Assert-AwardPingManagedTaskRegistrationScope",
+      ),
+      extractPowerShellFunction(
+        installer,
+        "Get-AwardPingTaskSnapshotsForFinalization",
+        "Get-InstalledAwardPingWorkerProcesses",
+      ),
+    ].join("\n");
+    const simulation = [
+      finalizationFunctions,
+      "function Test-AwardPingTaskTargetsInstallRoot { $true }",
+      "function Get-ScheduledTask { [pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker Shard 1'; TaskPath='\\' } }",
+      "function Export-ScheduledTask { '<Task />' }",
+      "$legacy = [pscustomobject]@{ TaskName='AwardPing Visual Snapshot Worker'; TaskPath='\\'; WasEnabled=$false; RestoreAfterUpdate=$false }",
+      "$migrated = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @($legacy) -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing Visual Snapshot Worker Shard 1' })[0]",
+      "$fresh = @(Get-AwardPingTaskSnapshotsForFinalization -InitialSnapshots @() -InstallRoot 'C:\\AwardPingWorker' | Where-Object { $_.TaskName -eq 'AwardPing Visual Snapshot Worker Shard 1' })[0]",
+      "'MIGRATED=' + $migrated.WasEnabled + ' FRESH=' + $fresh.WasEnabled",
+    ].join("\n");
+    const result = runPowerShell(simulation);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("MIGRATED=False FRESH=True");
+  });
+
   windowsIt("restores the exact old app and root wrappers after a post-switch failure", () => {
     const rollbackFunctions = [
       extractPowerShellFunction(installer, "Switch-ToStagedAwardPingApp", "Get-AwardPingManagedRootRuntimeNames"),

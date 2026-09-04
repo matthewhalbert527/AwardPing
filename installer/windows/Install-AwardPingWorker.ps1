@@ -828,6 +828,16 @@ function Get-AwardPingTaskSnapshotsForFinalization {
   } else {
     $true
   }
+  $retiredVisualSnapshot = @(
+    $InitialSnapshots |
+      Where-Object { [string]$_.TaskName -eq "AwardPing Visual Snapshot Worker" } |
+      Select-Object -First 1
+  )
+  $newVisualShardWasEnabled = if ($retiredVisualSnapshot.Count -gt 0) {
+    [bool]$retiredVisualSnapshot[0].WasEnabled
+  } else {
+    $true
+  }
   $initialKeys = @{}
   foreach ($snapshot in $InitialSnapshots) {
     $key = Get-AwardPingTaskSnapshotKey -TaskName $snapshot.TaskName -TaskPath $snapshot.TaskPath
@@ -849,6 +859,8 @@ function Get-AwardPingTaskSnapshotsForFinalization {
     $taskXml = [string](Export-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -ErrorAction Stop)
     $wasEnabled = if ([string]$task.TaskName -like "AwardPing * Lane") {
       $newLaneWasEnabled
+    } elseif ([string]$task.TaskName -like "AwardPing Visual Snapshot Worker Shard *") {
+      $newVisualShardWasEnabled
     } else {
       $true
     }
