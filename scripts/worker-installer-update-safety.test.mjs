@@ -299,25 +299,38 @@ describe("Windows worker update safety", () => {
   // Exercises only the extracted Copy-AppFiles against a disposable temp
   // directory created here: never a real install root, never Task Scheduler.
   // The multi-line try/finally needs -File; stdin -Command mode drops it.
-  function runCopyAppFilesSimulation({ forceFallback }) {
+  // `shadowRobocopy` resolves Get-CommandPath to the real system Robocopy path
+  // while defining a PowerShell function named `robocopy` that records and
+  // throws, so a bare `& robocopy` would hit the shadow and only the resolved
+  // executable path copies anything.
+  function runCopyAppFilesSimulation({ forceFallback, shadowRobocopy = false }) {
     const directory = mkdtempSync(join(tmpdir(), "awardping-copy-appfiles-"));
     const simulation = [
       "$ErrorActionPreference = 'Stop'",
       "function Write-Step { param([string]$Message) }",
+      "$script:shadowInvoked = $false",
       forceFallback
         ? "function Get-CommandPath { param([string]$Command); return $null }"
-        : extractPowerShellFunction(installer, "Get-CommandPath", "Ensure-Node"),
+        : shadowRobocopy
+          ? "function Get-CommandPath { param([string]$Command); return [System.IO.Path]::Combine($env:SystemRoot, 'System32', 'robocopy.exe') }"
+          : extractPowerShellFunction(installer, "Get-CommandPath", "Ensure-Node"),
+      shadowRobocopy
+        ? "function robocopy { $script:shadowInvoked = $true; throw 'shadow robocopy command was invoked' }"
+        : "",
       copyAppFilesFunction(),
       `$root = Join-Path '${directory.replace(/'/g, "''")}' 'fixture'`,
       "$source = Join-Path $root 'source'",
       "$target = Join-Path $root 'app'",
+      "$copyError = ''",
       "try {",
       "  New-Item -ItemType Directory -Path (Join-Path $source 'src/lib'), (Join-Path $source '.claude/worktrees/example') -Force | Out-Null",
       "  Set-Content -LiteralPath (Join-Path $source 'package.json') -Value '{\"name\":\"fixture\"}'",
       "  Set-Content -LiteralPath (Join-Path $source 'src/lib/nested.txt') -Value 'ordinary app file'",
       "  Set-Content -LiteralPath (Join-Path $source '.claude/settings.local.json') -Value '{\"permissions\":{}}'",
       "  Set-Content -LiteralPath (Join-Path $source '.claude/worktrees/example/marker.txt') -Value 'nested worktree copy'",
-      "  Copy-AppFiles -SourceRoot $source -AppDir $target",
+      "  try { Copy-AppFiles -SourceRoot $source -AppDir $target } catch { $copyError = $_.Exception.Message }",
+      "  'COPY_ERROR=' + $copyError",
+      "  'SHADOW_INVOKED=' + $script:shadowInvoked",
       "  'USED_ROBOCOPY=' + [bool](Get-CommandPath 'robocopy.exe')",
       "  'NESTED=' + (Test-Path -LiteralPath (Join-Path $target 'src/lib/nested.txt'))",
       "  'PACKAGE=' + (Test-Path -LiteralPath (Join-Path $target 'package.json'))",
@@ -340,9 +353,21 @@ describe("Windows worker update safety", () => {
     }
   }
 
+  it("invokes the resolved Robocopy executable path rather than a bare command name", () => {
+    const copyAppFiles = copyAppFilesFunction();
+    const robocopySection = copyAppFiles.slice(
+      0,
+      copyAppFiles.indexOf("Get-ChildItem -Path $SourceRoot"),
+    );
+    expect(robocopySection).toContain('$robocopy = Get-CommandPath "robocopy.exe"');
+    expect(robocopySection).toContain("& $robocopy @args");
+    expect(robocopySection).not.toMatch(/&\s+robocopy\b/);
+  });
+
   windowsIt("copies nested app files but not the root .claude directory through the PowerShell fallback", () => {
     const result = runCopyAppFilesSimulation({ forceFallback: true });
     expect(result.status).toBe(0);
+    expect(result.stdout).toContain("COPY_ERROR=\r\n");
     expect(result.stdout).toContain("USED_ROBOCOPY=False");
     expect(result.stdout).toContain("NESTED=True");
     expect(result.stdout).toContain("PACKAGE=True");
@@ -358,11 +383,27 @@ describe("Windows worker update safety", () => {
     () => {
       const result = runCopyAppFilesSimulation({ forceFallback: false });
       expect(result.status).toBe(0);
+      expect(result.stdout).toContain("COPY_ERROR=\r\n");
       expect(result.stdout).toContain("USED_ROBOCOPY=True");
       expect(result.stdout).toContain("NESTED=True");
       expect(result.stdout).toContain("PACKAGE=True");
       expect(result.stdout).toContain("CLAUDE_DIR=False");
       expect(result.stdout).toContain("CLAUDE_SENTINEL=False");
+    },
+    20_000,
+  );
+
+  (robocopyAvailable ? it : it.skip)(
+    "copies through the resolved Robocopy path even when a robocopy command is shadowed",
+    () => {
+      const result = runCopyAppFilesSimulation({ forceFallback: false, shadowRobocopy: true });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("COPY_ERROR=\r\n");
+      expect(result.stdout).toContain("SHADOW_INVOKED=False");
+      expect(result.stdout).toContain("USED_ROBOCOPY=True");
+      expect(result.stdout).toContain("NESTED=True");
+      expect(result.stdout).toContain("PACKAGE=True");
+      expect(result.stdout).toContain("CLAUDE_DIR=False");
     },
     20_000,
   );

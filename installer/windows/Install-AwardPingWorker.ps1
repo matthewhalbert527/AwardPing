@@ -1671,7 +1671,7 @@ function Copy-AppFiles {
       "/XF", ".env*", "*.tsbuildinfo", ".DS_Store",
       "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS"
     )
-    & robocopy @args | Out-Null
+    & $robocopy @args | Out-Null
     if ($LASTEXITCODE -ge 8) {
       throw "File copy failed with robocopy exit code $LASTEXITCODE."
     }
