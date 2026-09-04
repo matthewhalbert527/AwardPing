@@ -14,7 +14,7 @@ const defaultEnvPath = existsSync(resolve(root, ".env.worker.local"))
     ? ".env.local"
     : "";
 const envPath = args.env ? String(args.env) : defaultEnvPath;
-const childEnvArgs = envPath ? ["--env", envPath] : [];
+const childEnvArgs = envPath ? [`--env=${envPath}`] : [];
 const env = {
   ...(envPath ? loadEnvFile(resolve(root, envPath)) : {}),
   ...process.env,
