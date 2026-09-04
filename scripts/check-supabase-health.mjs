@@ -15,23 +15,22 @@ const env = {
 const supabaseUrl = env.NEXT_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (!supabaseUrl || !serviceRoleKey) {
-  console.log(
-    JSON.stringify({
+const health = !supabaseUrl || !serviceRoleKey
+  ? {
       ok: false,
       reason: "missing_supabase_config",
       message: "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.",
-    }),
-  );
-} else {
-  const supabase = createSupabaseServiceClient(supabaseUrl, serviceRoleKey);
-  const health = await checkSupabaseHealth(supabase, {
-    table: stringArg(args.table, "shared_awards"),
-    timeoutMs: positiveInt(args["timeout-ms"], 15_000),
-  });
+    }
+  : await checkSupabaseHealth(createSupabaseServiceClient(supabaseUrl, serviceRoleKey), {
+      table: stringArg(args.table, "shared_awards"),
+      timeoutMs: positiveInt(args["timeout-ms"], 15_000),
+    });
 
-  console.log(JSON.stringify(health, null, 2));
-}
+console.log(JSON.stringify(health, null, 2));
+// A caller (maintenance blockOnFailure, catchup) judges only the child exit
+// code, never health.ok, so an unhealthy result must exit nonzero or database
+// unavailability is silently treated as healthy and heavier work continues.
+process.exitCode = health.ok === true ? 0 : 1;
 
 function parseArgs(values) {
   const parsed = {};
