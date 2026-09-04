@@ -468,10 +468,16 @@ function canonicalSearchParams(searchParams) {
     kept.push([key, value.toLowerCase()]);
   }
 
-  kept.sort(([leftKey, leftValue], [rightKey, rightValue]) =>
-    `${leftKey}=${leftValue}`.localeCompare(`${rightKey}=${rightValue}`),
-  );
-  return kept.length ? `?${kept.map(([key, value]) => `${key}=${value}`).join("&")}` : "";
+  // Entries arrive decoded, so re-encode each kept key and value into one
+  // unambiguous pair string and use it for both ordering and serialization.
+  // Sorting or joining the raw decoded text instead lets a value containing
+  // "&" or "=" collide with separate parameters (a distinct source is then
+  // removed as a duplicate) and lets the same parameters in another order
+  // produce a different key. Code-unit comparison keeps unequal pairs apart.
+  const pairs = kept
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  return pairs.length ? `?${pairs.join("&")}` : "";
 }
 
 function hasGenericSearchQuery(url, lowerSignal) {

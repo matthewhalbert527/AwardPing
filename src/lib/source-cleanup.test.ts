@@ -97,6 +97,34 @@ describe("post-crawl source cleanup classification", () => {
     expect(actionFor(rows, "remove")?.reason).toBe("duplicate_source");
   });
 
+  it("keeps an encoded delimiter value distinct from separate query parameters", () => {
+    // One parameter whose value is "x&b=y" versus two parameters. The canonical
+    // key must stay injective, or the lower-scored distinct source is removed
+    // as a duplicate. Plain reordering still canonicalizes to the same key.
+    const encoded = "https://example.edu/award?a=x%26b%3Dy";
+    const separate = "https://example.edu/award?a=x&b=y";
+    expect(canonicalSourceUrlKey(encoded)).not.toBe(canonicalSourceUrlKey(separate));
+    expect(canonicalSourceUrlKey("https://example.edu/award?b=y&a=x")).toBe(
+      canonicalSourceUrlKey(separate),
+    );
+    // Query-order normalization must survive delimiter-bearing pairs too: the
+    // decoded tuples ["a", "x=b"] and ["a=x", "b"] both read "a=x=b", so sorting
+    // on that ambiguous text left the reversed multiset with a different key.
+    expect(canonicalSourceUrlKey("https://example.edu/award?a=x%3Db&a%3Dx=b")).toBe(
+      canonicalSourceUrlKey("https://example.edu/award?a%3Dx=b&a=x%3Db"),
+    );
+
+    const rows = [
+      source({ id: "encoded", url: encoded, confidence: 0.9 }),
+      source({ id: "separate", url: separate, confidence: 0.3 }),
+    ];
+    for (const id of ["encoded", "separate"]) {
+      const row = actionFor(rows, id);
+      expect(row?.reason, id).not.toBe("duplicate_source");
+      expect(row?.action, id).not.toBe(cleanupActions.safeToRemove);
+    }
+  });
+
   it("marks broad root agency homepages for replacement unless an award page remains", () => {
     const broadRoot = source({ id: "root", url: "https://www.nih.gov/", title: "National Institutes of Health" });
     const specific = source({
