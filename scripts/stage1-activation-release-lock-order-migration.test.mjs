@@ -20,6 +20,36 @@ const workflow = readFileSync(
   new URL("../.github/workflows/supabase-migration-smoke.yml", import.meta.url),
   "utf8",
 );
+const workflowLines = workflow.replace(/\r\n?/g, "\n").split("\n");
+
+// Line-level readers for the workflow's trigger block. Blocks are isolated by
+// indentation, keys are read at one exact indent, and every heading must
+// occur exactly once, so a duplicated key fails instead of being overwritten.
+function blockUnder(lines, indent, key) {
+  const heading = `${" ".repeat(indent)}${key}:`;
+  expect(lines.filter((line) => line === heading), heading).toHaveLength(1);
+  const start = lines.indexOf(heading) + 1;
+  let end = start;
+  while (end < lines.length && (lines[end] === "" || lines[end].startsWith(`${" ".repeat(indent)} `))) {
+    end += 1;
+  }
+  return lines.slice(start, end).filter((line) => line !== "");
+}
+
+function keysAt(lines, indent) {
+  const prefix = " ".repeat(indent);
+  return lines
+    .filter((line) => line.startsWith(prefix) && !line.startsWith(`${prefix} `) && line.endsWith(":"))
+    .map((line) => line.slice(prefix.length, -1));
+}
+
+function quotedListAt(lines, indent) {
+  const prefix = `${" ".repeat(indent)}- "`;
+  for (const line of lines) {
+    expect(line.startsWith(prefix) && line.endsWith('"'), `quoted list item: ${line}`).toBe(true);
+  }
+  return lines.map((line) => line.slice(prefix.length, -1));
+}
 
 describe("Stage 1 activation release-lock order migration", () => {
   it("is parseable PostgreSQL and changes no tables or application rows", async () => {
@@ -105,5 +135,29 @@ describe("Stage 1 activation release-lock order migration", () => {
     expect(workflow).toContain(
       "--file=supabase/tests/stage1_activation_release_lock_order_smoke.sql",
     );
+  });
+
+  it("runs on pushes to redesign/ui-overhaul with the pull_request path filters", () => {
+    const on = blockUnder(workflowLines, 0, "on");
+    expect(keysAt(on, 2)).toEqual(["push", "pull_request", "workflow_dispatch"]);
+    expect(blockUnder(on, 2, "workflow_dispatch")).toEqual([]);
+
+    const push = blockUnder(on, 2, "push");
+    const pullRequest = blockUnder(on, 2, "pull_request");
+    expect(keysAt(push, 4)).toEqual(["branches", "paths"]);
+    expect(keysAt(pullRequest, 4)).toEqual(["paths"]);
+    expect(quotedListAt(blockUnder(push, 4, "branches"), 6)).toEqual(["redesign/ui-overhaul"]);
+
+    const pushPaths = quotedListAt(blockUnder(push, 4, "paths"), 6);
+    expect(pushPaths).toEqual(quotedListAt(blockUnder(pullRequest, 4, "paths"), 6));
+    expect(pushPaths).toEqual([
+      ".github/workflows/supabase-migration-smoke.yml",
+      "package.json",
+      "package-lock.json",
+      "scripts/**",
+      "supabase/config.toml",
+      "supabase/migrations/**",
+      "supabase/tests/**",
+    ]);
   });
 });
