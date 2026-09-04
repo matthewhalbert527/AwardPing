@@ -450,6 +450,70 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).toContain("CLAUDE_SENTINEL=False");
   });
 
+  it("generates an uninstaller that unregisters only owned allowlisted tasks by exact name and path", () => {
+    const writer = extractPowerShellFunction(installer, "Write-UninstallScript", "Write-LauncherScripts");
+    expect(writer).toContain("$installRoot = Split-Path -Parent $PSCommandPath");
+    expect(writer).toContain("Get-ScheduledTask -ErrorAction Stop");
+    expect(writer).toContain("[string]$_.TaskName -in $taskNames");
+    expect(writer).toContain("Test-UninstallTaskTargetsInstallRoot -Task $_ -InstallRoot $installRoot");
+    expect(writer).toContain("Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath");
+    expect(writer).not.toMatch(/Unregister-ScheduledTask -TaskName `?\$taskName\b/);
+  });
+
+  // Generates the uninstaller into a disposable install root with the extracted
+  // Write-UninstallScript, then runs the generated script in a PowerShell
+  // process whose Get-ScheduledTask and Unregister-ScheduledTask are shadow
+  // functions. No real scheduled task is ever read or removed.
+  function runUninstallScriptSimulation() {
+    const directory = mkdtempSync(join(tmpdir(), "awardping-uninstall-script-"));
+    const simulation = [
+      "$ErrorActionPreference = 'Stop'",
+      extractPowerShellFunction(installer, "Write-UninstallScript", "Write-LauncherScripts"),
+      `$root = Join-Path '${directory.replace(/'/g, "''")}' 'install'`,
+      "[void][System.IO.Directory]::CreateDirectory($root)",
+      "Write-UninstallScript -InstallRoot $root",
+      "$generated = Join-Path $root 'Uninstall-AwardPingWorker.ps1'",
+      "'GENERATED=' + (Test-Path -LiteralPath $generated)",
+      "$global:uninstallRemoved = @()",
+      "function Get-ScheduledTask {",
+      "  param($TaskName, $TaskPath, $ErrorAction)",
+      "  $owned = '-NoProfile -File \"' + $root + '\\Run-AwardPingVisualSnapshots.ps1\"'",
+      "  $foreign = '-NoProfile -File \"D:\\OtherAwardPing\\Run-AwardPingVisualSnapshots.ps1\"'",
+      "  @(",
+      "    [pscustomobject]@{ TaskName='AwardPing Local Source Worker'; TaskPath='\\'; Actions=@([pscustomobject]@{ Execute='powershell.exe'; Arguments=$owned }) },",
+      "    [pscustomobject]@{ TaskName='AwardPing Local Source Worker'; TaskPath='\\Other\\'; Actions=@([pscustomobject]@{ Execute='powershell.exe'; Arguments=$foreign }) },",
+      "    [pscustomobject]@{ TaskName='AwardPing Concurrent Custom Audit'; TaskPath='\\'; Actions=@([pscustomobject]@{ Execute='powershell.exe'; Arguments=$owned }) },",
+      "    [pscustomobject]@{ TaskName='AwardPing Nightly Report Lane'; TaskPath='\\AwardPing\\'; Actions=@([pscustomobject]@{ Execute='powershell.exe'; Arguments=$owned }) }",
+      "  )",
+      "}",
+      "function Unregister-ScheduledTask { param($TaskName, $TaskPath, $Confirm, $ErrorAction); $global:uninstallRemoved += ([string]$TaskPath + '|' + [string]$TaskName) }",
+      "& $generated",
+      "'REMOVED=' + ($global:uninstallRemoved -join ';')",
+    ].join("\n");
+    const scriptPath = join(directory, "uninstall-simulation.ps1");
+    writeFileSync(scriptPath, simulation, "utf8");
+    try {
+      return spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+        { encoding: "utf8" },
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  windowsIt("generated uninstaller removes only its own allowlisted tasks by exact name and path", () => {
+    const result = runUninstallScriptSimulation();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("GENERATED=True");
+    expect(result.stdout).toContain(
+      "REMOVED=\\|AwardPing Local Source Worker;\\AwardPing\\|AwardPing Nightly Report Lane\r\n",
+    );
+    expect(result.stdout).not.toContain("\\Other\\|");
+    expect(result.stdout).not.toContain("Concurrent Custom Audit");
+  });
+
   windowsIt("keeps the principal but replaces a legacy trigger with the canonical trigger", () => {
     const restoreXmlFunction = extractPowerShellFunction(
       installer,

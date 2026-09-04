@@ -2089,9 +2089,14 @@ function Write-UninstallScript {
   param([string]$InstallRoot)
 
   $scriptPath = Join-Path $InstallRoot "Uninstall-AwardPingWorker.ps1"
-  $content = @"
-`$ErrorActionPreference = "Stop"
-`$taskNames = @(
+  # The generated script derives its install root from its own location at
+  # run time and removes only the allowlisted tasks whose actions target that
+  # root, by exact TaskName and TaskPath, so a stale copy cannot remove a
+  # same-named task that now belongs to another installation.
+  $content = @'
+$ErrorActionPreference = "Stop"
+$installRoot = Split-Path -Parent $PSCommandPath
+$taskNames = @(
   "AwardPing Local Source Worker",
   "AwardPing Local Worker Auto Update",
   "AwardPing Visual Snapshot Worker",
@@ -2115,13 +2120,42 @@ function Write-UninstallScript {
   "AwardPing Startup Supervisor"
 )
 
-foreach (`$taskName in `$taskNames) {
-  Unregister-ScheduledTask -TaskName `$taskName -Confirm:`$false -ErrorAction SilentlyContinue
+function Test-UninstallTaskTargetsInstallRoot {
+  param(
+    [object]$Task,
+    [string]$InstallRoot
+  )
+
+  if (-not $Task -or [string]$Task.TaskName -notlike "AwardPing*") {
+    return $false
+  }
+
+  $normalizedRoot = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\", "/").Replace("/", "\")
+  $rootPrefix = "$normalizedRoot\"
+  foreach ($action in @($Task.Actions)) {
+    $command = ("{0} {1}" -f [string]$action.Execute, [string]$action.Arguments).Replace("/", "\")
+    if ($command.IndexOf($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+      return $true
+    }
+  }
+
+  return $false
+}
+
+$ownedTasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object {
+    [string]$_.TaskName -in $taskNames -and
+    (Test-UninstallTaskTargetsInstallRoot -Task $_ -InstallRoot $installRoot)
+})
+
+foreach ($task in $ownedTasks) {
+  $taskPath = if ([string]::IsNullOrWhiteSpace([string]$task.TaskPath)) { "\" } else { [string]$task.TaskPath }
+  Unregister-ScheduledTask -TaskName $task.TaskName -TaskPath $taskPath -Confirm:$false -ErrorAction Stop
+  Write-Host "Removed scheduled task: $taskPath$($task.TaskName)"
 }
 
 Write-Host "Scheduled tasks removed. Delete this folder if you also want to remove logs and env files:"
-Write-Host "$InstallRoot"
-"@
+Write-Host $installRoot
+'@
 
   Set-Content -Path $scriptPath -Value $content -Encoding UTF8
 }
