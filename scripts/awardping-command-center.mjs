@@ -154,8 +154,7 @@ function atomicTaskArgs(task) {
   return [
     ...(run.args || []),
     ...(run.applyArg ? [`--apply=${apply}`] : []),
-    "--env",
-    envPath,
+    `--env=${envPath}`,
   ];
 }
 
