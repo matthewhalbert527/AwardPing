@@ -32,10 +32,25 @@ import {
 } from "./stage1-evidence-schema-upgrade-schwarzman-pdf-recovery.mjs";
 
 const archiveRoot = "D:/AwardPingVisualSnapshots";
+// The retained report inputs live under the gitignored repository-root
+// reports/ directory, so resolve them from this module rather than from
+// process.cwd() and gate the retained-evidence suite on them as well.
+const baselineDispositionReportUrl = new URL(
+  "../../reports/stage1-baseline-source-disposition-preview-2026-08-03T18-18-26-939Z.json",
+  import.meta.url,
+);
+const visualSnapshotRunReportUrl = new URL(
+  "../../reports/visual-snapshot-run-2026-08-15T04-16-04-313Z-shard-1-ded87320.json",
+  import.meta.url,
+);
 const sourceId = STAGE1_SCHWARZMAN_PDF_RECOVERY_SOURCE_ID;
 const sourceRoot = `${archiveRoot}/sources/${sourceId}`;
 const baselineGeneration = `${sourceRoot}/captures/2026-08-03T18-52-07-825Z`;
 const retainedCanaryGeneration = `${sourceRoot}/captures/2026-08-15T04-22-34-967Z`;
+// loadStage1SchwarzmanPdfSealedIntakeArtifacts reads all three sealed-intake
+// files under this exact prefix, so the gate must require every one of them.
+const sealedIntakeArtifactDir =
+  `${archiveRoot}/intake-artifacts/requests/cf731f52-f02d-581e-bf52-c698f53d87d8/sha256/fac3353cf079c7acfe7eaa7d8da685eba8275181d500373a149f2fdeff429263`;
 // baseline.json is a LIVE pointer the nightly refresh lane advances across
 // unchanged-content generations, so the generation it currently names is
 // derived from the pointer itself rather than hardcoded.
@@ -60,7 +75,11 @@ const localFixtureAvailable = Boolean(pointerGeneration) && [
   `${pointerGeneration}/document.pdf`,
   `${pointerGeneration}/text.txt`,
   `${pointerGeneration}/meta.json`,
-  `${archiveRoot}/intake-artifacts/requests/cf731f52-f02d-581e-bf52-c698f53d87d8/sha256/fac3353cf079c7acfe7eaa7d8da685eba8275181d500373a149f2fdeff429263/capture.json`,
+  `${sealedIntakeArtifactDir}/capture.json`,
+  `${sealedIntakeArtifactDir}/document.pdf`,
+  `${sealedIntakeArtifactDir}/text.txt`,
+  baselineDispositionReportUrl,
+  visualSnapshotRunReportUrl,
 ].every(existsSync);
 
 describe("Stage 1 Schwarzman PDF sealed-text recovery", () => {
@@ -783,9 +802,7 @@ function rewriteLivePointer(fixture, mutate) {
 }
 
 function readAcquisition() {
-  const report = readJson(
-    "reports/stage1-baseline-source-disposition-preview-2026-08-03T18-18-26-939Z.json",
-  );
+  const report = readJson(baselineDispositionReportUrl);
   return report.confirmation_payload.decisions
     .find((decision) =>
       decision.acquisition_payload?.shared_award_source_id === sourceId)
@@ -793,9 +810,7 @@ function readAcquisition() {
 }
 
 function readR2Receipt() {
-  const report = readJson(
-    "reports/visual-snapshot-run-2026-08-15T04-16-04-313Z-shard-1-ded87320.json",
-  );
+  const report = readJson(visualSnapshotRunReportUrl);
   return report.stage1_evidence_schema_upgrade.results
     .find((result) => result.source_id === sourceId)
     .capture_validation.evidence.authoritative_existing_r2_binding;
