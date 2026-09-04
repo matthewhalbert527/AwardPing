@@ -1,6 +1,17 @@
 name: Supabase migration smoke
 
 on:
+  push:
+    branches:
+      - "redesign/ui-overhaul"
+    paths:
+      - ".github/workflows/supabase-migration-smoke.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "scripts/**"
+      - "supabase/config.toml"
+      - "supabase/migrations/**"
+      - "supabase/tests/**"
   pull_request:
     paths:
       - ".github/workflows/supabase-migration-smoke.yml"
