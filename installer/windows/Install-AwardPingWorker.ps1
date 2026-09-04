@@ -1678,7 +1678,7 @@ function Copy-AppFiles {
     return
   }
 
-  Get-ChildItem -Path $SourceRoot -Force | Where-Object {
+  Get-ChildItem -LiteralPath $SourceRoot -Force | Where-Object {
     $_.Name -notin @(
       "node_modules",
       ".next",
@@ -1696,7 +1696,7 @@ function Copy-AppFiles {
     $_.Name -notlike "*.tsbuildinfo" -and
     $_.Name -ne ".DS_Store"
   } | ForEach-Object {
-    Copy-Item -Path $_.FullName -Destination $AppDir -Recurse -Force
+    Copy-Item -LiteralPath $_.FullName -Destination $AppDir -Recurse -Force
   }
 }
 

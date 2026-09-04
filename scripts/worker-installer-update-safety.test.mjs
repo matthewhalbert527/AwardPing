@@ -274,10 +274,29 @@ describe("Windows worker update safety", () => {
     return text.slice(from + start.length, to);
   }
 
+  // The PowerShell fallback begins at its literal-path directory listing. A
+  // legal source root or file name may contain [ ] wildcard characters, so
+  // the fallback must read and copy through -LiteralPath, never -Path.
+  const FALLBACK_LISTING = "Get-ChildItem -LiteralPath $SourceRoot";
+
+  function fallbackStartOf(copyAppFiles) {
+    const start = copyAppFiles.indexOf(FALLBACK_LISTING);
+    expect(start, `fallback anchor ${FALLBACK_LISTING}`).toBeGreaterThan(0);
+    return start;
+  }
+
+  it("lists and copies fallback sources through -LiteralPath only", () => {
+    const copyAppFiles = copyAppFilesFunction();
+    const fallbackSection = copyAppFiles.slice(fallbackStartOf(copyAppFiles));
+    expect(fallbackSection).toContain(`${FALLBACK_LISTING} -Force`);
+    expect(fallbackSection).toContain("Copy-Item -LiteralPath $_.FullName -Destination $AppDir -Recurse -Force");
+    expect(fallbackSection).not.toMatch(/Get-ChildItem\s+-Path\b/);
+    expect(fallbackSection).not.toMatch(/Copy-Item\s+-Path\b/);
+  });
+
   it("excludes the repository-root .claude directory from both Copy-AppFiles copy paths", () => {
     const copyAppFiles = copyAppFilesFunction();
-    const fallbackStart = copyAppFiles.indexOf("Get-ChildItem -Path $SourceRoot");
-    expect(fallbackStart).toBeGreaterThan(0);
+    const fallbackStart = fallbackStartOf(copyAppFiles);
     const robocopySection = copyAppFiles.slice(0, fallbackStart);
     const fallbackSection = copyAppFiles.slice(fallbackStart);
 
@@ -303,7 +322,14 @@ describe("Windows worker update safety", () => {
   // while defining a PowerShell function named `robocopy` that records and
   // throws, so a bare `& robocopy` would hit the shadow and only the resolved
   // executable path copies anything.
-  function runCopyAppFilesSimulation({ forceFallback, shadowRobocopy = false }) {
+  // `bracketFixture` names the source directory and one top-level file with
+  // [ ] characters, which -Path would read as wildcards. Fixture paths are
+  // created through literal-safe .NET APIs so only Copy-AppFiles is exercised.
+  function runCopyAppFilesSimulation({
+    forceFallback,
+    shadowRobocopy = false,
+    bracketFixture = false,
+  }) {
     const directory = mkdtempSync(join(tmpdir(), "awardping-copy-appfiles-"));
     const simulation = [
       "$ErrorActionPreference = 'Stop'",
@@ -319,21 +345,28 @@ describe("Windows worker update safety", () => {
         : "",
       copyAppFilesFunction(),
       `$root = Join-Path '${directory.replace(/'/g, "''")}' 'fixture'`,
-      "$source = Join-Path $root 'source'",
+      bracketFixture
+        ? "$source = Join-Path $root 'source [beta]'"
+        : "$source = Join-Path $root 'source'",
       "$target = Join-Path $root 'app'",
       "$copyError = ''",
       "try {",
-      "  New-Item -ItemType Directory -Path (Join-Path $source 'src/lib'), (Join-Path $source '.claude/worktrees/example') -Force | Out-Null",
-      "  Set-Content -LiteralPath (Join-Path $source 'package.json') -Value '{\"name\":\"fixture\"}'",
-      "  Set-Content -LiteralPath (Join-Path $source 'src/lib/nested.txt') -Value 'ordinary app file'",
-      "  Set-Content -LiteralPath (Join-Path $source '.claude/settings.local.json') -Value '{\"permissions\":{}}'",
-      "  Set-Content -LiteralPath (Join-Path $source '.claude/worktrees/example/marker.txt') -Value 'nested worktree copy'",
+      "  [void][System.IO.Directory]::CreateDirectory((Join-Path $source 'src/lib'))",
+      "  [void][System.IO.Directory]::CreateDirectory((Join-Path $source '.claude/worktrees/example'))",
+      "  [System.IO.File]::WriteAllText((Join-Path $source 'package.json'), '{\"name\":\"fixture\"}')",
+      "  [System.IO.File]::WriteAllText((Join-Path $source 'src/lib/nested.txt'), 'ordinary app file')",
+      "  [System.IO.File]::WriteAllText((Join-Path $source '.claude/settings.local.json'), '{\"permissions\":{}}')",
+      "  [System.IO.File]::WriteAllText((Join-Path $source '.claude/worktrees/example/marker.txt'), 'nested worktree copy')",
+      bracketFixture
+        ? "  [System.IO.File]::WriteAllText((Join-Path $source 'notes [draft].txt'), 'bracketed top-level file')"
+        : "",
       "  try { Copy-AppFiles -SourceRoot $source -AppDir $target } catch { $copyError = $_.Exception.Message }",
       "  'COPY_ERROR=' + $copyError",
       "  'SHADOW_INVOKED=' + $script:shadowInvoked",
       "  'USED_ROBOCOPY=' + [bool](Get-CommandPath 'robocopy.exe')",
       "  'NESTED=' + (Test-Path -LiteralPath (Join-Path $target 'src/lib/nested.txt'))",
       "  'PACKAGE=' + (Test-Path -LiteralPath (Join-Path $target 'package.json'))",
+      "  'BRACKET_FILE=' + (Test-Path -LiteralPath (Join-Path $target 'notes [draft].txt'))",
       "  'CLAUDE_DIR=' + (Test-Path -LiteralPath (Join-Path $target '.claude'))",
       "  'CLAUDE_SENTINEL=' + (Test-Path -LiteralPath (Join-Path $target '.claude/settings.local.json'))",
       "} finally {",
@@ -355,10 +388,7 @@ describe("Windows worker update safety", () => {
 
   it("invokes the resolved Robocopy executable path rather than a bare command name", () => {
     const copyAppFiles = copyAppFilesFunction();
-    const robocopySection = copyAppFiles.slice(
-      0,
-      copyAppFiles.indexOf("Get-ChildItem -Path $SourceRoot"),
-    );
+    const robocopySection = copyAppFiles.slice(0, fallbackStartOf(copyAppFiles));
     expect(robocopySection).toContain('$robocopy = Get-CommandPath "robocopy.exe"');
     expect(robocopySection).toContain("& $robocopy @args");
     expect(robocopySection).not.toMatch(/&\s+robocopy\b/);
@@ -407,6 +437,18 @@ describe("Windows worker update safety", () => {
     },
     20_000,
   );
+
+  windowsIt("copies a bracketed source root and bracketed file literally through the PowerShell fallback", () => {
+    const result = runCopyAppFilesSimulation({ forceFallback: true, bracketFixture: true });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("COPY_ERROR=\r\n");
+    expect(result.stdout).toContain("USED_ROBOCOPY=False");
+    expect(result.stdout).toContain("NESTED=True");
+    expect(result.stdout).toContain("PACKAGE=True");
+    expect(result.stdout).toContain("BRACKET_FILE=True");
+    expect(result.stdout).toContain("CLAUDE_DIR=False");
+    expect(result.stdout).toContain("CLAUDE_SENTINEL=False");
+  });
 
   windowsIt("keeps the principal but replaces a legacy trigger with the canonical trigger", () => {
     const restoreXmlFunction = extractPowerShellFunction(
