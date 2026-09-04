@@ -110,7 +110,10 @@ const sourceQualitySafety = cleanChoice(args["source-quality-safety"], ["safe", 
 const sourceQualityCleanupTitles = boolArg(args["source-quality-cleanup-titles"], true);
 const aggregateLimit = stringArg(args["aggregate-limit"], "all");
 const aggregateForce = boolArg(args["aggregate-force"], true);
-const reconcileLimit = stringArg(args["reconcile-limit"] || args["aggregate-limit"], "all");
+const reconcileLimit = positiveInt(
+  args["reconcile-limit"] || args["aggregate-limit"],
+  250,
+);
 const reconcileIncludeWarnings = boolArg(args["reconcile-include-warnings"], true);
 const pageAuditLimit = positiveInt(args["page-audit-limit"], 250);
 const pageAuditMaxRequestsPerBatch = positiveInt(args["page-audit-max-requests-per-batch"], 100);
@@ -688,5 +691,6 @@ Useful options:
   --visual-shards=3
   --source-quality-hours=10
   --source-quality-max-awards=90
+  --reconcile-limit=250
 `);
 }
