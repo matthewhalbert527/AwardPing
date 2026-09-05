@@ -27,12 +27,15 @@
 //     not a Proxy.
 //   - a plain array: an ordinary Array whose prototype is exactly
 //     Array.prototype or null, dense (every index in [0, length) is an own
-//     property), and not a Proxy.
+//     property), whose own keys are exactly `length` plus the canonical
+//     indices 0..length-1 (no symbol keys, no extra names such as toJSON,
+//     no noncanonical spellings such as "01"), and not a Proxy.
 //   - a primitive: string, finite number, or (for optional fields) absent.
 //
-// Every field of every object must be an OWN DATA property. Accessors are
-// rejected rather than invoked, and inherited properties are invisible: a
-// required field supplied only via the prototype chain reads as missing.
+// Every accessed field or index must be an OWN, ENUMERABLE DATA property.
+// Accessors are rejected rather than invoked, inherited properties are
+// invisible (a required field supplied only via the prototype chain reads
+// as missing), and a hidden field is rejected because JSON would omit it.
 //
 // Candidates are distinct all the way down. candidateId, normalized
 // awardName and slug are each unique across the allowlist, and no
@@ -54,7 +57,6 @@
 // two-candidate array reporting length 1, both reproduced against a previous
 // revision). No legitimate caller of an offline, pure planner needs one.
 import { createHash } from "node:crypto";
-import { types as nodeTypes } from "node:util";
 
 import {
   canonicalSourceUrlKey,
@@ -62,6 +64,7 @@ import {
   isTrackableOfficialSourceUrl,
 } from "../../src/lib/source-url-policy.ts";
 import { normalizeSharedAwardKey } from "../../src/lib/shared-awards-core.ts";
+import { createPlainDataInputBoundary, describeValue } from "./plain-data-input-boundary.mjs";
 
 export const POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA = "post-stage1-expansion-candidates-v1";
 export const POST_STAGE1_EXPANSION_PLAN_VERSION = "post-stage1-expansion-plan-v2";
@@ -149,50 +152,35 @@ function fail(message) {
   throw new Error(`post-stage1 expansion plan: ${message}`);
 }
 
-// Describes a REJECTED value for an error message without ever executing it.
+// The structural input boundary is shared with the identity-collision
+// dossier module through plain-data-input-boundary.mjs; see that module's
+// header for the exact accepted-input contract. This module supplies only
+// `fail`, so every message keeps this module's prefix while the text after
+// it is produced once, for both consumers.
 //
-// Formatting a rejected value is the one place validation hands control back
-// to the caller: JSON.stringify looks up `toJSON`, template interpolation and
-// String() reach for Symbol.toPrimitive/valueOf/toString, and
-// Object.prototype.toString reads Symbol.toStringTag - each of which runs
-// caller code on a value this module has just decided it does not trust.
-// Against a previous revision a Proxy scalar had its get("toJSON") trap
-// invoked, and a plain object with an own toJSON GETTER had that getter read,
-// at every scalar validator (canonical identifiers, config schema and status,
-// confidence, URLs).
+// Everything reachable from `input` crosses that boundary because a
+// caller-supplied object is not a value: it is code. Reading `record.field`
+// twice can yield two different answers, so a field validated on the first
+// read and USED on a later one is a read/read TOCTOU. Two such holes were
+// reproduced against an earlier revision of this module:
 //
-// Classification here uses only trap-free operations - `typeof`, a null
-// comparison, and util.types.isProxy - and the Proxy check runs before any
-// other inspection. Primitives still produce a useful, exact description
-// because a primitive cannot carry user code; everything else collapses to a
-// fixed type-only phrase and is never touched again.
-function describeValue(value) {
-  if (value === null) return "null";
-
-  const valueType = typeof value;
-  if (valueType === "string") {
-    // Safe: JSON.stringify only consults toJSON for Objects, and a primitive
-    // string is not one.
-    return JSON.stringify(value);
-  }
-  if (valueType === "number" || valueType === "boolean" || valueType === "undefined" || valueType === "bigint") {
-    return String(value);
-  }
-  if (valueType === "symbol") return "a symbol";
-  if (valueType === "function") return "a function";
-
-  // Object-like from here on: never inspected further, never coerced.
-  if (nodeTypes.isProxy(value)) return "a Proxy";
-  if (Array.isArray(value)) return "an array";
-  return "an object";
-}
-
-function requireNonEmptyString(value, label) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    fail(`${label} must be a non-empty string.`);
-  }
-  return value;
-}
+//   - a stateful accessor inherited by one stage1Identity row returned decoy
+//     identity values while the overlap Sets were being built, then the real
+//     frozen values when the content digest re-read them. The digest matched,
+//     the Sets were poisoned, and a Boren candidate was admitted.
+//   - a candidate `status` getter returned "provisional" while being
+//     validated and "ready" when the plan was assembled.
+//
+// So every externally supplied field is read EXACTLY ONCE, through its own
+// property descriptor (which never invokes an accessor), into an inert plain
+// value; validation and output both read that snapshot.
+const {
+  requirePlainDataRecord,
+  snapshotOwnField,
+  snapshotDenseArray,
+  snapshotStringArray,
+  requireNonEmptyString,
+} = createPlainDataInputBoundary(fail);
 
 // Fails closed on anything but an already-canonical identifier: wrong type,
 // empty, surrounding whitespace, or any character (including uppercase)
@@ -205,111 +193,6 @@ function requireCanonicalIdentifier(value, pattern, label) {
     fail(`${label} must be a canonical identifier matching ${pattern}; got ${describeValue(value)}.`);
   }
   return value;
-}
-
-// Rejects a Proxy before anything else touches the value. Every structural
-// question this module asks - length, own-property descriptors, prototype -
-// is trappable, so a Proxy can report one shape while yielding another. This
-// runs FIRST, ahead of any reflective or read operation, because by the time
-// a trap has answered once the answer can no longer be trusted.
-function requireNotProxy(value, label) {
-  if (value !== null && (typeof value === "object" || typeof value === "function") && nodeTypes.isProxy(value)) {
-    fail(`${label} must not be a Proxy; its traps could report a different shape than it yields.`);
-  }
-  return value;
-}
-
-function requirePlainObject(value, label) {
-  requireNotProxy(value, label);
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    fail(`${label} must be an object.`);
-  }
-  return value;
-}
-
-function requireArray(value, label) {
-  requireNotProxy(value, label);
-  if (!Array.isArray(value)) fail(`${label} must be an array.`);
-  return value;
-}
-
-// ---------------------------------------------------------------------------
-// Input snapshotting
-// ---------------------------------------------------------------------------
-//
-// Everything below exists because a caller-supplied object is not a value: it
-// is code. Reading `record.field` twice can yield two different answers, so a
-// field validated on the first read and USED on a later one is a read/read
-// TOCTOU. Two such holes were reproduced against the previous revision:
-//
-//   - a stateful accessor inherited by one stage1Identity row returned decoy
-//     identity values while the overlap Sets were being built, then the real
-//     frozen values when the content digest re-read them. The digest matched,
-//     the Sets were poisoned, and a Boren candidate was admitted.
-//   - a candidate `status` getter returned "provisional" while being
-//     validated and "ready" when the plan was assembled.
-//
-// The fix is structural rather than another check: every externally supplied
-// field is read EXACTLY ONCE, through its own property descriptor (which
-// never invokes an accessor), into an inert plain value. Validation and
-// output then both read that snapshot, so there is no second read for an
-// accessor to answer differently. Accessors and non-plain prototypes are
-// rejected outright rather than snapshotted, since a caller with a legitimate
-// reason to hand this module a getter does not exist.
-
-// Rejects anything but a plain record: no accessors can be inherited, because
-// there is nothing to inherit from but Object.prototype (or nothing at all).
-function requirePlainDataRecord(value, label) {
-  requirePlainObject(value, label);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    fail(`${label} must be a plain object; its prototype is neither Object.prototype nor null, so an inherited accessor could answer for its fields.`);
-  }
-  return value;
-}
-
-// Reads one field exactly once, from an own DATA descriptor. Returns undefined
-// for an absent field (callers decide whether that is fatal); throws for an
-// accessor, which can never be read a second time safely.
-function snapshotOwnField(record, key, label) {
-  const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  if (descriptor === undefined) return undefined;
-  if (!("value" in descriptor)) {
-    fail(`${label}.${key} must be a plain data property, not an accessor.`);
-  }
-  return descriptor.value;
-}
-
-// Snapshots an array element-by-element through own data descriptors. Every
-// index in [0, length) must be an own data property: a hole resolves through
-// the prototype chain (so an inherited numeric index invisibly supplies an
-// element the caller never wrote), and an own accessor could answer
-// differently on a later read.
-function snapshotDenseArray(value, label) {
-  const array = requireArray(value, label);
-  const prototype = Object.getPrototypeOf(array);
-  if (prototype !== Array.prototype && prototype !== null) {
-    fail(`${label} must be a plain array; its prototype is neither Array.prototype nor null.`);
-  }
-  const elements = [];
-  for (let index = 0; index < array.length; index += 1) {
-    if (!Object.hasOwn(array, index)) {
-      fail(`${label}[${index}] is a hole; ${label} must be a dense array with no inherited or missing indices.`);
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(array, index);
-    if (!("value" in descriptor)) {
-      fail(`${label}[${index}] must be a plain data property, not an accessor.`);
-    }
-    elements.push(descriptor.value);
-  }
-  return elements;
-}
-
-// Snapshots a dense array of strings into a fresh array of primitives, which
-// is inert by construction.
-function snapshotStringArray(value, label) {
-  const elements = snapshotDenseArray(value, label);
-  return elements.map((element, index) => requireNonEmptyString(element, `${label}[${index}]`));
 }
 
 function requireAbsoluteHttpsUrl(value, label) {

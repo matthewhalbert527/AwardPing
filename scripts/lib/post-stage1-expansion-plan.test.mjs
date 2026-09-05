@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -323,6 +324,26 @@ describe("post-Stage1 expansion plan", () => {
     for (const candidate of config.candidates) {
       expect(candidate.status, candidate.candidateId).toBe("provisional");
     }
+  });
+
+  it("pins the production result byte-for-byte: both plan hashes and the whole-result digest", () => {
+    // Captured from the frozen parent of the input-boundary consolidation
+    // (c73283577b18b585ff49f7cbd1f5372febcb1dcb), so sharing the boundary is
+    // provably a no-op for valid production input. Any change to a value
+    // here is a behavioural change that has to be explained on its own
+    // merits, never re-pinned in passing.
+    const result = buildProductionPlan();
+    expect(result.version).toBe(POST_STAGE1_EXPANSION_PLAN_VERSION);
+    expect(result.totals).toEqual({ candidates: 2 });
+    expect(result.plans.map((plan) => [plan.candidateId, plan.status])).toEqual([
+      ["mitchell", "provisional"],
+      ["tillman", "provisional"],
+    ]);
+    expect(planFor(result, "mitchell").planHash).toBe("c64098d958e6ab8bdbda82764ab8c2890c76e343d328e5e0d4e0fac670c1f3b1");
+    expect(planFor(result, "tillman").planHash).toBe("53d845215b34d21a90afaa0c0b92324e4edc8bb35d0cf62b5694055f8c58e44b");
+    expect(createHash("sha256").update(JSON.stringify(result), "utf8").digest("hex")).toBe(
+      "aaa0dbc04f95fd1a3ada8d08b2f6c48fa4c2b83a85e1d685f8f41a9679d5f18e",
+    );
   });
 
   describe("candidates must be distinct from each other", () => {
@@ -1685,6 +1706,208 @@ describe("post-Stage1 expansion plan", () => {
     // Unproxied equivalents of the same shapes are still accepted, so this is
     // a rejection of Proxies specifically and not of the structures.
     expect(() => buildPostStage1ExpansionPlan(baseInput())).not.toThrow();
+  });
+
+  describe("exact plain-data shape at every input layer", () => {
+    // The structural boundary is shared with the identity-collision dossier
+    // (plain-data-input-boundary.mjs). These regressions pin the two rules
+    // the planner's former private copy lacked - an array may own nothing
+    // but its length and canonical indices, and every accessed field or
+    // index must be enumerable - at every array and record layer of the
+    // input graph. Nothing valid changes (the production result is pinned
+    // byte-for-byte above); a hostile graph that used to slip through now
+    // fails closed on its specific defect, with no hook of its own run.
+    const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hidden = (object, key) =>
+      Object.defineProperty(object, key, { ...Object.getOwnPropertyDescriptor(object, key), enumerable: false });
+    const configWith = (candidates) => ({ schema: POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA, candidates });
+    const aliasRowIndex = realStage1Identity().findIndex((row) => row.aliasSearchKeys.length > 0);
+    const hookRecorder = (calls, key) => ({
+      value: () => {
+        calls.push(key);
+        return [];
+      },
+      configurable: true,
+      writable: true,
+    });
+
+    // Each array layer, rebuilt from a fresh valid copy so the installed
+    // defect is the only difference from an accepted input.
+    const arrayLayers = [
+      ["config.candidates", (make) => baseInput({ config: configWith(make([...VALID_CONFIG.candidates])) })],
+      ["seeds", (make) => baseInput({ seeds: make([...SYNTHETIC_SEEDS]) })],
+      ["overrides", (make) => baseInput({ overrides: make([...SYNTHETIC_OVERRIDES]) })],
+      [
+        "overrides[0].sources",
+        (make) => baseInput({ overrides: [{ ...SYNTHETIC_OVERRIDES[0], sources: make([...SYNTHETIC_OVERRIDES[0].sources]) }] }),
+      ],
+      ["stage1Identity", (make) => baseInput({ stage1Identity: make(realStage1Identity()) })],
+      [
+        `stage1Identity[${aliasRowIndex}].aliasSearchKeys`,
+        (make) =>
+          baseInput({
+            stage1Identity: realStage1Identity().map((row, index) =>
+              index === aliasRowIndex ? { ...row, aliasSearchKeys: make([...row.aliasSearchKeys]) } : row,
+            ),
+          }),
+      ],
+    ];
+
+    const unexpected = (label, key) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "${key}"`);
+    const symbolKeyed = (label) => new RegExp(`${escapeRegExp(label)} must not carry symbol-keyed own properties`);
+    const arrayDefects = [
+      ["an extra own name", (array) => Object.assign(array, { smuggled: "unhashed" }), (label) => unexpected(label, "smuggled")],
+      ["an own toJSON", (array, calls) => Object.defineProperty(array, "toJSON", hookRecorder(calls, "toJSON")), (label) => unexpected(label, "toJSON")],
+      ["an own map", (array, calls) => Object.defineProperty(array, "map", hookRecorder(calls, "map")), (label) => unexpected(label, "map")],
+      ["an own sort", (array, calls) => Object.defineProperty(array, "sort", hookRecorder(calls, "sort")), (label) => unexpected(label, "sort")],
+      [
+        "an own Symbol.iterator",
+        (array, calls) =>
+          Object.defineProperty(array, Symbol.iterator, {
+            value: function* iterate() {
+              calls.push("iterator");
+            },
+            configurable: true,
+            writable: true,
+          }),
+        symbolKeyed,
+      ],
+      ["a symbol-keyed own property", (array) => Object.assign(array, { [Symbol("hidden")]: "unhashed" }), symbolKeyed],
+      ['a noncanonical index name "01"', (array) => Object.assign(array, { "01": "unhashed" }), (label) => unexpected(label, "01")],
+      [
+        "an extra accessor",
+        (array, calls) =>
+          Object.defineProperty(array, "shadow", {
+            get() {
+              calls.push("shadow");
+              return "unhashed";
+            },
+            configurable: true,
+          }),
+        (label) => unexpected(label, "shadow"),
+      ],
+      ["a hidden index", (array) => hidden(array, 0), (label) => new RegExp(`${escapeRegExp(label)}\\[0\\] must be an enumerable own property`)],
+    ];
+
+    it("accepts the valid baselines the hostile cases are built from, frozen and JSON round-tripped included", () => {
+      expect(() => buildPostStage1ExpansionPlan(baseInput())).not.toThrow();
+      expect(aliasRowIndex).toBeGreaterThanOrEqual(0);
+      for (const [label, build] of arrayLayers) {
+        expect(() => buildPostStage1ExpansionPlan(build((array) => array)), label).not.toThrow();
+        expect(() => buildPostStage1ExpansionPlan(build((array) => Object.freeze([...array]))), `${label} (frozen)`).not.toThrow();
+        expect(() => buildPostStage1ExpansionPlan(build((array) => JSON.parse(JSON.stringify(array)))), `${label} (JSON)`).not.toThrow();
+      }
+    });
+
+    it("rejects every hostile array shape at every array layer, running none of its hooks", () => {
+      for (const [label, build] of arrayLayers) {
+        for (const [defectLabel, install, pattern] of arrayDefects) {
+          const calls = [];
+          const input = build((array) => {
+            install(array, calls);
+            return array;
+          });
+          const where = `${label} with ${defectLabel}`;
+          expect(() => buildPostStage1ExpansionPlan(input), where).toThrow(pattern(label));
+          expect(calls, where).toEqual([]);
+        }
+        const subclassed = build((array) => {
+          class Hooked extends Array {
+            map() {
+              throw new Error("subclass map ran");
+            }
+            sort() {
+              throw new Error("subclass sort ran");
+            }
+          }
+          return Hooked.from(array);
+        });
+        expect(() => buildPostStage1ExpansionPlan(subclassed), `${label} as an Array subclass`).toThrow(
+          new RegExp(`${escapeRegExp(label)} must be a plain array; its prototype is neither Array\\.prototype nor null`),
+        );
+      }
+    });
+
+    const recordLayers = [
+      ["input.seeds", () => hidden({ ...baseInput() }, "seeds")],
+      ["config.schema", () => baseInput({ config: hidden({ ...VALID_CONFIG }, "schema") })],
+      ["config.candidates[0].status", () => baseInput({ config: configWith([hidden({ ...VALID_CONFIG.candidates[0] }, "status")]) })],
+      ["config.candidates[0].slug", () => baseInput({ config: configWith([hidden({ ...VALID_CONFIG.candidates[0] }, "slug")]) })],
+      ["seeds[0].name", () => baseInput({ seeds: [hidden({ ...SYNTHETIC_SEEDS[0] }, "name")] })],
+      ["overrides[0].awardName", () => baseInput({ overrides: [hidden({ ...SYNTHETIC_OVERRIDES[0] }, "awardName")] })],
+      [
+        "overrides[0].sources[0].confidence",
+        () =>
+          baseInput({
+            overrides: [
+              {
+                ...SYNTHETIC_OVERRIDES[0],
+                sources: [hidden({ ...SYNTHETIC_OVERRIDES[0].sources[0] }, "confidence"), SYNTHETIC_OVERRIDES[0].sources[1]],
+              },
+            ],
+          }),
+      ],
+      [
+        "stage1Identity[0].officialHomepage",
+        () =>
+          baseInput({
+            stage1Identity: realStage1Identity().map((row, index) => (index === 0 ? hidden({ ...row }, "officialHomepage") : row)),
+          }),
+      ],
+    ];
+
+    it("rejects a hidden field at every record layer, reading nothing to decide", () => {
+      for (const [label, build] of recordLayers) {
+        expect(() => buildPostStage1ExpansionPlan(build()), label).toThrow(
+          new RegExp(`${escapeRegExp(label)} must be an enumerable own property; JSON omits a hidden field`),
+        );
+      }
+      // Deciding on the descriptor means the hidden VALUE is never touched.
+      const calls = [];
+      const hostile = {};
+      for (const key of ["toJSON", "toString", "valueOf"]) {
+        Object.defineProperty(hostile, key, {
+          get() {
+            calls.push(key);
+            return () => "<x>";
+          },
+          configurable: true,
+        });
+      }
+      const seed = { starterUrl: SYNTHETIC_SEEDS[0].starterUrl };
+      Object.defineProperty(seed, "name", { value: hostile, enumerable: false, configurable: true, writable: true });
+      expect(() => buildPostStage1ExpansionPlan(baseInput({ seeds: [seed] }))).toThrow(/seeds\[0\]\.name must be an enumerable own property/);
+      expect(calls).toEqual([]);
+    });
+
+    it("describes a rejected non-string awardName inertly, like every other scalar site", () => {
+      // requireNonEmptyString is the shared one now, so its message carries
+      // the inert description too - by type for objects, exactly for
+      // primitives - and nothing on the value is consulted to produce it.
+      const calls = [];
+      const hostile = {};
+      for (const key of ["toJSON", "toString", "valueOf"]) {
+        Object.defineProperty(hostile, key, {
+          get() {
+            calls.push(key);
+            return () => "<x>";
+          },
+          configurable: true,
+        });
+      }
+      const reject = (awardName) => {
+        try {
+          buildPostStage1ExpansionPlan(baseInput({ config: configWith([{ ...VALID_CONFIG.candidates[0], awardName }]) }));
+        } catch (error) {
+          return error.message;
+        }
+        throw new Error("expected a rejection");
+      };
+      expect(reject(hostile)).toMatch(/config\.candidates\[0\]\.awardName must be a non-empty string; got an object\.$/);
+      expect(reject("")).toMatch(/awardName must be a non-empty string; got ""\.$/);
+      expect(reject(42)).toMatch(/awardName must be a non-empty string; got 42\.$/);
+      expect(calls).toEqual([]);
+    });
   });
 
   describe("rejected values are never executed to describe them", () => {

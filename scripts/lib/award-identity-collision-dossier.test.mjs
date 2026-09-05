@@ -637,6 +637,9 @@ describe("award identity collision dossier", () => {
           },
         });
       const accessorCalls = [];
+      // Own hooks installed by the cases below. Every one of them must be
+      // refused on its NAME, so none may ever run - in either module.
+      const hookCalls = [];
       const withAccessorName = (seed) => {
         const copy = { starterUrl: seed.starterUrl };
         Object.defineProperty(copy, "name", {
@@ -670,6 +673,122 @@ describe("award identity collision dossier", () => {
           },
           /seeds\[0\] is a hole/,
         ],
+        // The rules below were once this module's alone; the shared boundary
+        // carries them to the planner, so they belong here now.
+        [
+          "extra own name on the seeds array",
+          () => Object.assign([...awardSeeds], { smuggled: "unhashed" }),
+          /seeds carries an unexpected own property "smuggled"/,
+        ],
+        [
+          "own toJSON on the seeds array",
+          () =>
+            Object.defineProperty([...awardSeeds], "toJSON", {
+              value: () => {
+                hookCalls.push("toJSON");
+                return [];
+              },
+              configurable: true,
+              writable: true,
+            }),
+          /seeds carries an unexpected own property "toJSON"/,
+        ],
+        [
+          "own map and sort on the seeds array",
+          () =>
+            Object.defineProperties([...awardSeeds], {
+              map: {
+                value: () => {
+                  hookCalls.push("map");
+                  return [];
+                },
+                configurable: true,
+                writable: true,
+              },
+              sort: {
+                value: () => {
+                  hookCalls.push("sort");
+                  return [];
+                },
+                configurable: true,
+                writable: true,
+              },
+            }),
+          /seeds carries an unexpected own property "(map|sort)"/,
+        ],
+        [
+          "own Symbol.iterator on the seeds array",
+          () =>
+            Object.defineProperty([...awardSeeds], Symbol.iterator, {
+              value: function* iterate() {
+                hookCalls.push("iterator");
+              },
+              configurable: true,
+              writable: true,
+            }),
+          /seeds must not carry symbol-keyed own properties/,
+        ],
+        [
+          "symbol-keyed own property on the seeds array",
+          () => Object.assign([...awardSeeds], { [Symbol("hidden")]: "unhashed" }),
+          /seeds must not carry symbol-keyed own properties/,
+        ],
+        [
+          'noncanonical index name "01" on the seeds array',
+          () => Object.assign([...awardSeeds], { "01": "unhashed" }),
+          /seeds carries an unexpected own property "01"/,
+        ],
+        [
+          "extra accessor on the seeds array",
+          () =>
+            Object.defineProperty([...awardSeeds], "shadow", {
+              get() {
+                hookCalls.push("shadow");
+                return "unhashed";
+              },
+              configurable: true,
+            }),
+          /seeds carries an unexpected own property "shadow"/,
+        ],
+        [
+          "hidden (non-enumerable) seed index",
+          () => {
+            const copy = [...awardSeeds];
+            Object.defineProperty(copy, 0, { ...Object.getOwnPropertyDescriptor(copy, 0), enumerable: false });
+            return copy;
+          },
+          /seeds\[0\] must be an enumerable own property/,
+        ],
+        [
+          "hidden (non-enumerable) seed field",
+          () =>
+            replaceFirst(
+              Object.defineProperty({ ...awardSeeds[0] }, "name", {
+                value: awardSeeds[0].name,
+                enumerable: false,
+                configurable: true,
+                writable: true,
+              }),
+            ),
+          /seeds\[0\]\.name must be an enumerable own property/,
+        ],
+        [
+          "Array subclass with overridden hooks as the seeds array",
+          () => {
+            class Hooked extends Array {
+              map() {
+                hookCalls.push("subclass.map");
+                return [];
+              }
+              sort() {
+                hookCalls.push("subclass.sort");
+                return this;
+              }
+            }
+            return Hooked.from(awardSeeds);
+          },
+          /seeds must be a plain array; its prototype is neither Array\.prototype nor null/,
+        ],
       ];
 
       for (const [label, makeSeeds, pattern] of cases) {
@@ -685,53 +804,47 @@ describe("award identity collision dossier", () => {
       // ran in either module, for any case.
       expect(trapCalls).toEqual([]);
       expect(accessorCalls).toEqual([]);
+      expect(hookCalls).toEqual([]);
     });
 
-    it("keeps the duplicated-boundary tradeoff explicit", () => {
-      // The boundary in this module mirrors the module-private one in
-      // post-stage1-expansion-plan.mjs. It is duplicated rather than shared
-      // because extracting it would mean rewriting the internals of a
-      // separately approved file inside this correction, which is out of
-      // scope here. The parity test above is the mitigation for the shapes
-      // both copies reject; where this copy is now STRICTER, the next test
-      // says so explicitly rather than letting the difference pass unnoticed.
-      // Consolidation belongs in its own refactor commit.
-      const dossierSource = readFileSync(resolve(import.meta.dirname, "award-identity-collision-dossier.mjs"), "utf8");
-      const plannerSource = readFileSync(resolve(import.meta.dirname, "post-stage1-expansion-plan.mjs"), "utf8");
-      for (const helper of ["requireNotProxy", "requirePlainDataRecord", "snapshotOwnField", "snapshotDenseArray"]) {
-        expect(dossierSource, `${helper} in dossier`).toContain(`function ${helper}(`);
-        expect(plannerSource, `${helper} in planner`).toContain(`function ${helper}(`);
+    it("shares one input boundary with the approved planner, with no private copy left in either", () => {
+      // The boundary used to be duplicated, module-private, in both files,
+      // with the parity test above as the only thing keeping the copies
+      // aligned - and they did drift, in this module's favour, twice. It now
+      // lives once in plain-data-input-boundary.mjs and each consumer keeps
+      // only its own failure prefix. Both facts are pinned at the source
+      // level so a private copy cannot quietly reappear.
+      const read = (name) => readFileSync(resolve(import.meta.dirname, name), "utf8");
+      const dossierSource = read("award-identity-collision-dossier.mjs");
+      const plannerSource = read("post-stage1-expansion-plan.mjs");
+      const sharedSource = read("plain-data-input-boundary.mjs");
+
+      const importLine = /from "\.\/plain-data-input-boundary\.mjs"/;
+      expect(dossierSource).toMatch(importLine);
+      expect(plannerSource).toMatch(importLine);
+      for (const helper of [
+        "describeValue",
+        "requireNotProxy",
+        "requirePlainObject",
+        "requireArray",
+        "requirePlainDataRecord",
+        "snapshotOwnField",
+        "snapshotDenseArray",
+        "snapshotStringArray",
+        "requireNonEmptyString",
+      ]) {
+        expect(sharedSource, `${helper} in the shared module`).toContain(`function ${helper}(`);
+        expect(dossierSource, `private ${helper} in the dossier`).not.toContain(`function ${helper}(`);
+        expect(plannerSource, `private ${helper} in the planner`).not.toContain(`function ${helper}(`);
       }
+      // Each consumer still owns its prefix, and the shared module knows
+      // neither of them.
+      expect(dossierSource).toContain("function fail(");
+      expect(plannerSource).toContain("function fail(");
+      expect(sharedSource).not.toMatch(/award identity collision dossier|post-stage1 expansion plan/);
       // The planner is not modified by this module in any direction.
       expect(plannerSource).not.toMatch(/award-identity-collision-dossier/);
     });
-
-    it("records the one place this module's boundary is stricter than the planner's copy", () => {
-      // The exact-array-shape rule (an array may own only its length and its
-      // canonical indices) was added here in answer to a review finding
-      // against THIS module. The planner's duplicated copy does not carry it
-      // yet, and the planner is deliberately not modified by this commit.
-      //
-      // That divergence is recorded rather than hidden. When the
-      // consolidation refactor carries the rule across, this expectation
-      // flips and the case belongs in the parity test above.
-      const dossierSource = readFileSync(resolve(import.meta.dirname, "award-identity-collision-dossier.mjs"), "utf8");
-      const plannerSource = readFileSync(resolve(import.meta.dirname, "post-stage1-expansion-plan.mjs"), "utf8");
-      expect(dossierSource).toMatch(/a dense array may own only/);
-      expect(plannerSource).not.toMatch(/a dense array may own only/);
-
-      // And it is a real behavioural difference on this side, not just prose.
-      const hostileSeeds = [{ name: "probe one", starterUrl: "https://probe.example.org/1" }];
-      hostileSeeds.smuggled = "unhashed";
-      expect(() =>
-        buildAwardIdentityCollisionDossier({
-          probe: { probeId: "probe", lexicalTerms: ["probe"] },
-          seeds: hostileSeeds,
-          overrides: [],
-        }),
-      ).toThrow(/seeds carries an unexpected own property "smuggled"/);
-    });
-
   });
 
   describe("record ordering is an unambiguous semantic tuple", () => {

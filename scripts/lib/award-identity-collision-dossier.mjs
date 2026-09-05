@@ -55,23 +55,25 @@
 //
 // Plain objects (prototype exactly Object.prototype or null), plain dense
 // arrays (prototype exactly Array.prototype or null, every index an own
-// property), and primitives. Every field must be an OWN DATA property:
-// accessors are rejected rather than invoked, inherited properties are
-// invisible, and Proxies are rejected before any other inspection. A
-// rejected value is never executed to describe it.
+// property, own keys exactly `length` plus the canonical indices), and
+// primitives. Every accessed field or index must be an OWN, ENUMERABLE DATA
+// property: accessors are rejected rather than invoked, inherited properties
+// are invisible, hidden fields are rejected because JSON would omit them, and
+// Proxies are rejected before any other inspection. A rejected value is never
+// executed to describe it.
 //
-// NOTE ON DUPLICATION: the input boundary below mirrors the one in
-// post-stage1-expansion-plan.mjs, where it is module-private. It is repeated
-// rather than shared because extracting it would mean rewriting the
-// internals of a separately approved file in this commit. The parity test in
-// this module's suite drives the same adversarial inputs through both
-// modules and requires both to reject, so the two copies cannot drift
-// silently; consolidating them into one shared boundary module belongs in
-// its own refactor commit.
+// NOTE ON THE INPUT BOUNDARY: the structural boundary - Proxy-first
+// rejection, plain prototypes only, own enumerable data descriptors read
+// exactly once, dense arrays with an exact own-key set, inert diagnostics -
+// is shared with post-stage1-expansion-plan.mjs through
+// plain-data-input-boundary.mjs. This module keeps only its own failure
+// prefix; every message after the prefix is produced by the shared
+// implementation, and the parity test in this module's suite drives the same
+// adversarial inputs through both consumers so they cannot drift.
 import { createHash } from "node:crypto";
-import { types as nodeTypes } from "node:util";
 
 import { canonicalSourceUrlKey, isInstitutionalDiscoveryUrl } from "../../src/lib/source-url-policy.ts";
+import { createPlainDataInputBoundary, describeValue } from "./plain-data-input-boundary.mjs";
 
 export const AWARD_IDENTITY_COLLISION_DOSSIER_VERSION = "award-identity-collision-dossier-v1";
 
@@ -112,157 +114,21 @@ function fail(message) {
 }
 
 // --------------------------------------------------------------------------
-// Inert description of a rejected value (never executes it)
+// Input boundary (shared)
 // --------------------------------------------------------------------------
-function describeValue(value) {
-  if (value === null) return "null";
-  const valueType = typeof value;
-  if (valueType === "string") return JSON.stringify(value);
-  if (valueType === "number" || valueType === "boolean" || valueType === "undefined" || valueType === "bigint") {
-    return String(value);
-  }
-  if (valueType === "symbol") return "a symbol";
-  if (valueType === "function") return "a function";
-  if (nodeTypes.isProxy(value)) return "a Proxy";
-  if (Array.isArray(value)) return "an array";
-  return "an object";
-}
-
-// --------------------------------------------------------------------------
-// Input boundary
-// --------------------------------------------------------------------------
-function requireNotProxy(value, label) {
-  if (value !== null && (typeof value === "object" || typeof value === "function") && nodeTypes.isProxy(value)) {
-    fail(`${label} must not be a Proxy; its traps could report a different shape than it yields.`);
-  }
-  return value;
-}
-
-function requirePlainObject(value, label) {
-  requireNotProxy(value, label);
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    fail(`${label} must be an object.`);
-  }
-  return value;
-}
-
-function requireArray(value, label) {
-  requireNotProxy(value, label);
-  if (!Array.isArray(value)) fail(`${label} must be an array.`);
-  return value;
-}
-
-function requirePlainDataRecord(value, label) {
-  requirePlainObject(value, label);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) {
-    fail(`${label} must be a plain object; its prototype is neither Object.prototype nor null, so an inherited accessor could answer for its fields.`);
-  }
-  return value;
-}
-
-function snapshotOwnField(record, key, label) {
-  const descriptor = Object.getOwnPropertyDescriptor(record, key);
-  if (descriptor === undefined) return undefined;
-  if (!("value" in descriptor)) {
-    fail(`${label}.${key} must be a plain data property, not an accessor.`);
-  }
-  // Enumerability is part of the shape, not a detail. JSON.stringify skips a
-  // non-enumerable object property, so a hidden field is read and hashed here
-  // while vanishing from every export of the same graph. Reproduced on the
-  // real dossier: hiding an override record's pageType recomputed the stored
-  // hash exactly while the exported JSON dropped the field and re-hashed
-  // differently, and hiding a root collection produced an export that no
-  // longer validates at all - 26 of 26 hidden-field cases were accepted, 23
-  // of them exporting something the digest never bound.
-  //
-  // Decided on the descriptor, so the value is still never read to reach it.
-  if (!descriptor.enumerable) {
-    fail(
-      `${label}.${key} must be an enumerable own property; JSON omits a hidden field, so it would be ` +
-        `hashed here and missing from any export of the same graph.`,
-    );
-  }
-  return descriptor.value;
-}
-
-function snapshotDenseArray(value, label) {
-  const array = requireArray(value, label);
-  const prototype = Object.getPrototypeOf(array);
-  if (prototype !== Array.prototype && prototype !== null) {
-    fail(`${label} must be a plain array; its prototype is neither Array.prototype nor null.`);
-  }
-  // length is taken from its descriptor rather than by property access, so
-  // nothing on the array can answer for it.
-  const lengthDescriptor = Object.getOwnPropertyDescriptor(array, "length");
-  if (lengthDescriptor === undefined || !("value" in lengthDescriptor) || !Number.isInteger(lengthDescriptor.value)) {
-    fail(`${label} must have a plain integer length.`);
-  }
-  const length = lengthDescriptor.value;
-
-  // Validating only the indexed slots is not enough. An own toJSON, map,
-  // sort or Symbol.iterator - or a stray "01" - is read by nothing below, so
-  // the array is accepted unchanged, yet it travels with the graph: a later
-  // JSON.stringify of that same array exports something the digest never
-  // saw. Reproduced on the real dossier, where an own urlLinks.toJSON
-  // returning [] left the recomputed digest equal to the stored hash while
-  // the exported JSON showed no URL collision at all.
-  //
-  // So the own key set must be exactly `length` plus the canonical decimal
-  // names of 0..length-1. Only key NAMES are read here; no value and no
-  // accessor is touched, so nothing on the array can execute.
-  if (Object.getOwnPropertySymbols(array).length > 0) {
-    fail(`${label} must not carry symbol-keyed own properties; only its length and canonical indices may be own.`);
-  }
-  const allowedKeys = length === 0 ? "its length" : `its length and the canonical indices 0..${length - 1}`;
-  for (const key of Object.getOwnPropertyNames(array)) {
-    if (key === "length") continue;
-    const index = Number(key);
-    // String(index) round-trips only for the canonical spelling, so "01",
-    // "1.0", "+1", " 1", "-0" and "1e0" are rejected as names.
-    if (!Number.isInteger(index) || index < 0 || index >= length || String(index) !== key) {
-      fail(
-        `${label} carries an unexpected own property ${JSON.stringify(key)}; a dense array may own only ` +
-          `${allowedKeys}, so nothing extra can ride along unhashed.`,
-      );
-    }
-  }
-
-  const elements = [];
-  for (let index = 0; index < length; index += 1) {
-    if (!Object.hasOwn(array, index)) {
-      fail(`${label}[${index}] is a hole; ${label} must be a dense array with no inherited or missing indices.`);
-    }
-    const descriptor = Object.getOwnPropertyDescriptor(array, index);
-    if (!("value" in descriptor)) {
-      fail(`${label}[${index}] must be a plain data property, not an accessor.`);
-    }
-    // Arrays are the one place where enumerability does NOT change what JSON
-    // emits: JSON.stringify walks 0..length-1 by index and serializes a
-    // non-enumerable element anyway. So this check is not load-bearing for
-    // export consistency the way the object one above is.
-    //
-    // It is required regardless, so that a single rule covers the whole
-    // module: every own property this module accepts on a caller's graph is
-    // an enumerable own data property, and the only exemption is an array's
-    // `length`, which is non-enumerable on every array and which JSON never
-    // serializes as content. Nothing ordinary is refused by this - array
-    // literals, spreads, .map results and JSON.parse output all produce
-    // enumerable indices, and Object.freeze leaves enumerability alone.
-    if (!descriptor.enumerable) {
-      fail(`${label}[${index}] must be an enumerable own property; a dense array's indices are all enumerable.`);
-    }
-    elements.push(descriptor.value);
-  }
-  return elements;
-}
-
-function requireNonEmptyString(value, label) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    fail(`${label} must be a non-empty string; got ${describeValue(value)}.`);
-  }
-  return value;
-}
+//
+// The structural boundary lives in plain-data-input-boundary.mjs and is
+// shared with post-stage1-expansion-plan.mjs; see that module's header for
+// the exact accepted-input contract. This module supplies only `fail`, so
+// every message keeps this module's prefix while the text after it is
+// produced once, for both consumers.
+const {
+  requirePlainDataRecord,
+  snapshotOwnField,
+  snapshotDenseArray,
+  snapshotStringArray,
+  requireNonEmptyString,
+} = createPlainDataInputBoundary(fail);
 
 // --------------------------------------------------------------------------
 // Probe / catalog validation
@@ -743,15 +609,6 @@ function requireCountField(value, label) {
   return value;
 }
 
-function snapshotStringList(value, label) {
-  const elements = snapshotDenseArray(value, label);
-  const list = [];
-  for (let index = 0; index < elements.length; index += 1) {
-    list.push(requireNonEmptyString(elements[index], `${label}[${index}]`));
-  }
-  return list;
-}
-
 function snapshotShapeList(value, label, snapshotOne) {
   const rows = snapshotDenseArray(value, label);
   const list = [];
@@ -801,8 +658,8 @@ function snapshotExactNameLink(value, label) {
   return {
     evidenceClass: requireNonEmptyString(snapshotOwnField(group, "evidenceClass", label), `${label}.evidenceClass`),
     nameKey: requireNonEmptyString(snapshotOwnField(group, "nameKey", label), `${label}.nameKey`),
-    recordIds: snapshotStringList(snapshotOwnField(group, "recordIds", label), `${label}.recordIds`),
-    recordKinds: snapshotStringList(snapshotOwnField(group, "recordKinds", label), `${label}.recordKinds`),
+    recordIds: snapshotStringArray(snapshotOwnField(group, "recordIds", label), `${label}.recordIds`),
+    recordKinds: snapshotStringArray(snapshotOwnField(group, "recordKinds", label), `${label}.recordKinds`),
     relationship: requireNonEmptyString(snapshotOwnField(group, "relationship", label), `${label}.relationship`),
   };
 }
@@ -812,8 +669,8 @@ function snapshotUrlLink(value, label) {
   return {
     evidenceClass: requireNonEmptyString(snapshotOwnField(group, "evidenceClass", label), `${label}.evidenceClass`),
     urlKey: requireNonEmptyString(snapshotOwnField(group, "urlKey", label), `${label}.urlKey`),
-    recordIds: snapshotStringList(snapshotOwnField(group, "recordIds", label), `${label}.recordIds`),
-    distinctNameKeys: snapshotStringList(
+    recordIds: snapshotStringArray(snapshotOwnField(group, "recordIds", label), `${label}.recordIds`),
+    distinctNameKeys: snapshotStringArray(
       snapshotOwnField(group, "distinctNameKeys", label),
       `${label}.distinctNameKeys`,
     ),
@@ -866,7 +723,7 @@ export function computeDossierHash(dossier) {
     // Sorted on a list this function owns. Probe term order is how the caller
     // happened to write the query, not evidence, so it must not move the
     // digest - and the sort must not be the caller's.
-    lexicalTerms: snapshotStringList(
+    lexicalTerms: snapshotStringArray(
       snapshotOwnField(source, "lexicalTerms", "dossier"),
       "dossier.lexicalTerms",
     ).sort(compareStrings),
