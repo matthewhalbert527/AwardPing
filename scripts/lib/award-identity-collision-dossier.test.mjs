@@ -6,7 +6,7 @@ import { awardSeeds } from "../../src/lib/award-seeds.ts";
 import { awardSourceOverrides } from "../../src/lib/award-source-overrides.ts";
 import { stage1CohortIdentity } from "../../src/lib/stage1-cohort-identity.ts";
 import { STAGE1_COHORT_DEFINITION } from "./stage1-cohort-readiness.mjs";
-import { buildPostStage1ExpansionPlan } from "./post-stage1-expansion-plan.mjs";
+import { buildPostStage1ExpansionPlan, stage1IdentityContentDigest } from "./post-stage1-expansion-plan.mjs";
 import {
   AWARD_IDENTITY_COLLISION_DOSSIER_VERSION,
   IDENTITY_RELATIONSHIP_UNRESOLVED,
@@ -1976,5 +1976,278 @@ describe("an accepted graph exports exactly what the digest bound", () => {
     const unhashed = clone(base);
     delete unhashed.dossierHash;
     expect(computeDossierHash(unhashed)).toBe(base.dossierHash);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boxed primitives: a prototype check cannot see an internal slot.
+// ---------------------------------------------------------------------------
+describe("laundered boxed primitives are refused at every shared-boundary layer", () => {
+  const WRAPPERS = [
+    ["Boolean", () => new Boolean(false)],
+    ["Number", () => new Number(0)],
+    ["empty String", () => new String("")],
+    ["indexed String", () => new String("ab")],
+    ["BigInt", () => Object(1n)],
+    ["Symbol", () => Object(Symbol("s"))],
+  ];
+  const PROTOTYPES = [
+    ["Object.prototype", Object.prototype],
+    ["null", null],
+  ];
+  const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const boxed = (prefix, label) =>
+    new RegExp(
+      `^${escapeRegExp(prefix)}${escapeRegExp(label)} must be a plain object, not a boxed primitive; a Boolean, Number, String, BigInt or Symbol wrapper keeps its primitive in an internal slot`,
+    );
+  const DOSSIER = "award identity collision dossier: ";
+  const PLANNER = "post-stage1 expansion plan: ";
+  // Laundered: the wrapper's prototype reset to an allowed one, the record's
+  // own fields copied on, and own coercion accessors that must never be read
+  // - the slot is decided before any key is consulted.
+  const launder = (make, proto, fields, calls) => {
+    const wrapper = Object.assign(Object.setPrototypeOf(make(), proto), fields);
+    for (const key of ["toJSON", "toString", "valueOf"]) {
+      Object.defineProperty(wrapper, key, {
+        get() {
+          calls.push(key);
+          return () => "<x>";
+        },
+        configurable: true,
+      });
+    }
+    Object.defineProperty(wrapper, Symbol.toPrimitive, {
+      get() {
+        calls.push("Symbol.toPrimitive");
+        return () => "<x>";
+      },
+      configurable: true,
+    });
+    Object.defineProperty(wrapper, Symbol.toStringTag, {
+      get() {
+        calls.push("Symbol.toStringTag");
+        return "Plain";
+      },
+      configurable: true,
+    });
+    return wrapper;
+  };
+  const exportOf = (value) => {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return `THROWS ${error.constructor.name}`;
+    }
+  };
+
+  it("pins the reported reproduction: the dossier's own fields, a different export, now refused", () => {
+    const base = buildRangelDossier();
+    const wrapped = Object.assign(Object.setPrototypeOf(new Boolean(false), Object.prototype), clone(base));
+    // Its own enumerable data is exactly the dossier's - which is why the
+    // digest used to recompute the stored hash for it - while its export is
+    // not the dossier at all.
+    expect(Object.fromEntries(Object.entries(wrapped))).toEqual(clone(base));
+    expect(JSON.stringify(wrapped)).toBe("false");
+    expect(() => computeDossierHash(wrapped)).toThrow(boxed(DOSSIER, "dossier"));
+
+    // The proven export behaviour of each kind, so the diagnostic's claim
+    // stays honest: only a Symbol wrapper serializes its fields normally.
+    const facts = [
+      ["Boolean", Object.prototype, "false"],
+      ["Boolean", null, "false"],
+      ["Number", Object.prototype, "null"],
+      ["Number", null, "THROWS TypeError"],
+      ["BigInt", Object.prototype, "THROWS TypeError"],
+      ["BigInt", null, "THROWS TypeError"],
+      ["empty String", Object.prototype, '"[object String]"'],
+      ["empty String", null, "THROWS TypeError"],
+    ];
+    for (const [kind, proto, expected] of facts) {
+      const make = WRAPPERS.find(([name]) => name === kind)[1];
+      const laundered = Object.assign(Object.setPrototypeOf(make(), proto), clone(base));
+      expect(exportOf(laundered), `${kind} on ${proto === null ? "null" : "Object.prototype"}`).toBe(expected);
+    }
+    const symbolWrapped = Object.assign(Object.setPrototypeOf(Object(Symbol("s")), Object.prototype), clone(base));
+    expect(JSON.parse(JSON.stringify(symbolWrapped))).toEqual(clone(base));
+    expect(() => computeDossierHash(symbolWrapped)).toThrow(boxed(DOSSIER, "dossier"));
+  });
+
+  it("refuses every wrapper kind on both prototypes at all seven dossier-hash layers (84), and at the seed record (12)", () => {
+    const base = buildRangelDossier();
+    const seedIndex = base.records.findIndex((record) => record.recordKind === "seed");
+    const overrideIndex = base.records.findIndex((record) => record.recordKind === "override_source");
+    expect(seedIndex).toBeGreaterThanOrEqual(0);
+    expect(overrideIndex).toBeGreaterThanOrEqual(0);
+    const layers = [
+      ["dossier", []],
+      ["dossier.totals", ["totals"]],
+      ["dossier.eligibility", ["eligibility"]],
+      [`dossier.records[${overrideIndex}]`, ["records", overrideIndex]],
+      ["dossier.exactNameLinks[0]", ["exactNameLinks", 0]],
+      ["dossier.urlLinks[0]", ["urlLinks", 0]],
+      ["dossier.lexicalNearbyOnly[0]", ["lexicalNearbyOnly", 0]],
+    ];
+    const calls = [];
+    let checked = 0;
+    const run = (label, path) => {
+      for (const [kind, make] of WRAPPERS) {
+        for (const [protoName, proto] of PROTOTYPES) {
+          const tampered = replaceAt(clone(base), path, (value) => launder(make, proto, value, calls));
+          expect(() => computeDossierHash(tampered), `${label} as ${kind} on ${protoName}`).toThrow(boxed(DOSSIER, label));
+          checked += 1;
+        }
+      }
+    };
+    for (const [label, path] of layers) run(label, path);
+    expect(checked).toBe(84);
+    run(`dossier.records[${seedIndex}]`, ["records", seedIndex]);
+    expect(checked).toBe(96);
+    expect(calls).toEqual([]);
+    // Nothing plain changed: the stored hash still reproduces from a clone.
+    expect(computeDossierHash(clone(base))).toBe("b2277dd78e4b9156a224bf0082b0000548f1dd7eb4a344c1323190444757a252");
+  });
+
+  it("orders the diagnostics: prototype for an unlaundered wrapper, the slot before any consumer key check, Proxy before both", () => {
+    const base = buildRangelDossier();
+    // An unlaundered wrapper keeps the existing prototype diagnostic.
+    const unlaundered = Object.assign(new Boolean(false), clone(base));
+    expect(() => computeDossierHash(unlaundered)).toThrow(
+      /^award identity collision dossier: dossier must be a plain object; its prototype is neither Object\.prototype nor null/,
+    );
+    // An indexed String wrapper owns intrinsic "0", "1" and length keys,
+    // which the dossier's exact-field check used to be the only thing
+    // refusing. The slot is now reported first.
+    const indexed = Object.assign(Object.setPrototypeOf(new String("ab"), Object.prototype), clone(base));
+    expect(() => computeDossierHash(indexed)).toThrow(boxed(DOSSIER, "dossier"));
+    // A laundered record carrying a real field accessor and an unknown key:
+    // still the slot, still nothing read.
+    const calls = [];
+    const record = replaceAt(clone(base), ["records", 0], (value) => {
+      const wrapper = launder(() => new Number(0), null, value, calls);
+      Object.defineProperty(wrapper, "name", {
+        get() {
+          calls.push("name");
+          return "x";
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      wrapper.smuggled = "unhashed";
+      return wrapper;
+    });
+    expect(() => computeDossierHash(record)).toThrow(boxed(DOSSIER, "dossier.records[0]"));
+    expect(calls).toEqual([]);
+    // Proxy first, live or revoked, no trap, no raw TypeError.
+    const traps = [];
+    const live = countingProxy(Object.assign(Object.setPrototypeOf(new Boolean(false), Object.prototype), clone(base)), traps);
+    expect(() => computeDossierHash(live)).toThrow(/^award identity collision dossier: dossier must not be a Proxy/);
+    const { proxy, revoke } = Proxy.revocable(Object.assign(Object.setPrototypeOf(Object(1n), null), clone(base)), {});
+    revoke();
+    let caught;
+    try {
+      computeDossierHash(proxy);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect(caught.message).toMatch(/^award identity collision dossier: dossier must not be a Proxy/);
+    expect(traps).toEqual([]);
+  });
+
+  it("refuses laundered records on every dossier builder input layer (60), and accepts every ordinary equivalent", () => {
+    const fixture = () => ({
+      probe: { probeId: "rangel", lexicalTerms: ["rangel"] },
+      seeds: [{ name: "Rangel Thing", starterUrl: "https://rangelprogram.org/" }],
+      overrides: [{ awardName: "Rangel Thing", sources: [{ url: "https://rangelprogram.org/", pageType: "homepage" }] }],
+    });
+    const plainHash = buildAwardIdentityCollisionDossier(fixture()).dossierHash;
+    const layers = [
+      ["input", []],
+      ["probe", ["probe"]],
+      ["seeds[0]", ["seeds", 0]],
+      ["overrides[0]", ["overrides", 0]],
+      ["overrides[0].sources[0]", ["overrides", 0, "sources", 0]],
+    ];
+    const calls = [];
+    let checked = 0;
+    for (const [label, path] of layers) {
+      for (const [kind, make] of WRAPPERS) {
+        for (const [protoName, proto] of PROTOTYPES) {
+          const input = replaceAt(fixture(), path, (value) => launder(make, proto, value, calls));
+          expect(() => buildAwardIdentityCollisionDossier(input), `${label} as ${kind} on ${protoName}`).toThrow(boxed(DOSSIER, label));
+          checked += 1;
+        }
+      }
+    }
+    expect(checked).toBe(60);
+    expect(calls).toEqual([]);
+
+    const nullProto = (value) =>
+      Array.isArray(value)
+        ? value.map(nullProto)
+        : value !== null && typeof value === "object"
+          ? Object.assign(Object.create(null), Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, nullProto(inner)])))
+          : value;
+    const deepFreeze = (value) => {
+      if (Array.isArray(value)) value.forEach(deepFreeze);
+      else if (value !== null && typeof value === "object") Object.values(value).forEach(deepFreeze);
+      return Object.freeze(value);
+    };
+    expect(buildAwardIdentityCollisionDossier(deepFreeze(fixture())).dossierHash).toBe(plainHash);
+    expect(buildAwardIdentityCollisionDossier(JSON.parse(JSON.stringify(fixture()))).dossierHash).toBe(plainHash);
+    expect(buildAwardIdentityCollisionDossier({ ...fixture() }).dossierHash).toBe(plainHash);
+    expect(buildAwardIdentityCollisionDossier(nullProto(fixture())).dossierHash).toBe(plainHash);
+  });
+
+  it("refuses laundered records on every planner builder input layer through the same boundary (84), with the pinned plan intact", () => {
+    const slugByKey = new Map(stage1CohortIdentity.map((row) => [row[1], row[4]]));
+    const stage1Identity = () =>
+      STAGE1_COHORT_DEFINITION.map((cohort) => ({
+        cohortKey: cohort.cohortKey,
+        canonicalName: cohort.canonicalName,
+        canonicalSearchKey: cohort.canonicalSearchKey,
+        aliasSearchKeys: [...cohort.aliasSearchKeys],
+        canonicalSlug: slugByKey.get(cohort.cohortKey),
+        officialHomepage: cohort.officialHomepage,
+      }));
+    // Fresh arrays at every layer, so a replaced element never touches the
+    // imported catalogs.
+    const fixture = () => ({
+      config: {
+        schema: "post-stage1-expansion-candidates-v1",
+        candidates: [{ candidateId: "mitchell", awardName: "Mitchell Scholarship", slug: "mitchell-scholarship", status: "provisional" }],
+      },
+      seeds: [...awardSeeds],
+      overrides: awardSourceOverrides.map((override) => ({ ...override, sources: [...override.sources] })),
+      stage1Identity: stage1Identity(),
+    });
+    const plain = buildPostStage1ExpansionPlan(fixture());
+    expect(plain.plans.map((plan) => plan.planHash)).toEqual(["c64098d958e6ab8bdbda82764ab8c2890c76e343d328e5e0d4e0fac670c1f3b1"]);
+    expect(stage1IdentityContentDigest(stage1Identity())).toBe("a6493d81606bd408d6291ef8dc193866168f155de10ee268ccca0efc6d387363");
+    expect(STAGE1_COHORT_DEFINITION).toHaveLength(25);
+
+    const layers = [
+      ["input", []],
+      ["config", ["config"]],
+      ["config.candidates[0]", ["config", "candidates", 0]],
+      ["seeds[0]", ["seeds", 0]],
+      ["overrides[0]", ["overrides", 0]],
+      ["overrides[0].sources[0]", ["overrides", 0, "sources", 0]],
+      ["stage1Identity[0]", ["stage1Identity", 0]],
+    ];
+    const calls = [];
+    let checked = 0;
+    for (const [label, path] of layers) {
+      for (const [kind, make] of WRAPPERS) {
+        for (const [protoName, proto] of PROTOTYPES) {
+          const input = replaceAt(fixture(), path, (value) => launder(make, proto, value, calls));
+          expect(() => buildPostStage1ExpansionPlan(input), `${label} as ${kind} on ${protoName}`).toThrow(boxed(PLANNER, label));
+          checked += 1;
+        }
+      }
+    }
+    expect(checked).toBe(84);
+    expect(calls).toEqual([]);
   });
 });

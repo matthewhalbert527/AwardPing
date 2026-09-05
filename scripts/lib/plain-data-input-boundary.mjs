@@ -11,7 +11,9 @@
 // ACCEPTED INPUT TYPES (exact - everything else fails closed)
 //
 //   - a plain object: prototype exactly Object.prototype or null. Not a class
-//     instance, not an exotic object, not a Proxy.
+//     instance, not an exotic object, not a Proxy, and not a boxed primitive -
+//     a Boolean, Number, String, BigInt or Symbol wrapper is refused even
+//     after its prototype has been reset to Object.prototype or null.
 //   - a plain array: prototype exactly Array.prototype or null, dense, whose
 //     own keys are EXACTLY `length` plus the canonical decimal names of
 //     0..length-1. Not a subclass, not a Proxy, no symbol keys, no extra
@@ -30,6 +32,22 @@
 // Proxies - live or revoked - are rejected before any other inspection, with
 // util.types.isProxy, which reads an internal slot and reaches no trap. By
 // the time a trap has answered once the answer can no longer be trusted.
+//
+// Boxed primitives are rejected too, with util.types.isBoxedPrimitive, which
+// likewise reads an internal slot and reaches nothing. A prototype check
+// cannot see that slot: a wrapper reset onto Object.prototype or null passes
+// it and, for the kinds that own no properties, a consumer's exact-field
+// check as well - yet JSON.stringify still consults the slot. Reproduced on
+// a real dossier whose fields had been copied onto a wrapper: a Boolean
+// wrapper exported as false on either prototype; a Number wrapper exported
+// as null on Object.prototype and threw on null; a BigInt wrapper threw on
+// either. A String wrapper exported "[object String]" on Object.prototype
+// and threw on null, and also carries intrinsic own length/index keys that a
+// consumer's exact-field check already refused. A Symbol wrapper's fields
+// serialize normally, so refusing it enforces the declared plain-record
+// contract rather than a demonstrated export divergence. All five kinds are
+// refused consistently, after the prototype check, so an unlaundered wrapper
+// keeps its prototype diagnostic and a laundered one is named for its slot.
 //
 // A rejected value is never executed to describe it: describeValue quotes
 // primitives exactly (a primitive cannot carry user code) and collapses
@@ -52,7 +70,8 @@
 // produced here, once, for every consumer - so two consumers cannot drift.
 //
 // Pure: no env, filesystem, network, clock, randomness, or I/O of any kind.
-// node:util's types.isProxy only inspects a value's kind.
+// node:util's types.isProxy and types.isBoxedPrimitive only inspect a value's
+// kind.
 import { types as nodeTypes } from "node:util";
 
 // Describes a REJECTED value for an error message without ever executing it.
@@ -125,6 +144,18 @@ export function createPlainDataInputBoundary(fail) {
     if (prototype !== Object.prototype && prototype !== null) {
       reject(
         `${label} must be a plain object; its prototype is neither Object.prototype nor null, so an inherited accessor could answer for its fields.`,
+      );
+    }
+    // Only now, with the prototype allowed: a wrapper that kept its own
+    // prototype was already named above, and one laundered onto an allowed
+    // prototype is named here for the slot the prototype check cannot see.
+    // Decided before any own key is consulted, so a consumer's field checks
+    // and accessors never come into it.
+    if (nodeTypes.isBoxedPrimitive(value)) {
+      reject(
+        `${label} must be a plain object, not a boxed primitive; a Boolean, Number, String, BigInt or Symbol ` +
+          `wrapper keeps its primitive in an internal slot, which JSON.stringify may serialize in place of its ` +
+          `fields or refuse outright.`,
       );
     }
     return value;

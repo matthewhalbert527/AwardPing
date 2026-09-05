@@ -143,6 +143,7 @@ describe("the factory", () => {
       (b) => b.requirePlainObject([], "L"),
       (b) => b.requireArray({}, "L"),
       (b) => b.requirePlainDataRecord(new Date(0), "L"),
+      (b) => b.requirePlainDataRecord(Object.setPrototypeOf(new Boolean(false), Object.prototype), "L"),
       (b) => b.snapshotOwnField(new Proxy({ k: 1 }, {}), "k", "L"),
       (b) => b.snapshotOwnField(Object.defineProperty({}, "k", { get: () => 1, enumerable: true, configurable: true }), "k", "L"),
       (b) => b.snapshotOwnField(Object.defineProperty({}, "k", { value: 1, enumerable: false, configurable: true }), "k", "L"),
@@ -494,5 +495,141 @@ describe("the module itself", () => {
     expect(source).not.toMatch(/\bMath\.random\s*\(/);
     expect(source).not.toMatch(/\bsetTimeout\s*\(/);
     expect(source).not.toMatch(/createHash/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boxed primitives: a prototype check cannot see an internal slot.
+// ---------------------------------------------------------------------------
+describe("requirePlainDataRecord refuses boxed primitives, laundered or not", () => {
+  const WRAPPERS = [
+    ["Boolean", () => new Boolean(false)],
+    ["Number", () => new Number(0)],
+    ["empty String", () => new String("")],
+    ["indexed String", () => new String("ab")],
+    ["BigInt", () => Object(1n)],
+    ["Symbol", () => Object(Symbol("s"))],
+  ];
+  const BOXED =
+    /^boundary under test: L must be a plain object, not a boxed primitive; a Boolean, Number, String, BigInt or Symbol wrapper keeps its primitive in an internal slot, which JSON\.stringify may serialize in place of its fields or refuse outright\.$/;
+  // Own coercion hooks and a real field accessor, all as ACCESSORS, so merely
+  // looking for one is observable. The slot must be decided before any of
+  // them is consulted.
+  const withHooks = (object, calls) => {
+    for (const key of ["toJSON", "toString", "valueOf"]) {
+      Object.defineProperty(object, key, {
+        get() {
+          calls.push(key);
+          return () => "<x>";
+        },
+        configurable: true,
+      });
+    }
+    Object.defineProperty(object, Symbol.toPrimitive, {
+      get() {
+        calls.push("Symbol.toPrimitive");
+        return () => "<x>";
+      },
+      configurable: true,
+    });
+    Object.defineProperty(object, Symbol.toStringTag, {
+      get() {
+        calls.push("Symbol.toStringTag");
+        return "Plain";
+      },
+      configurable: true,
+    });
+    Object.defineProperty(object, "field", {
+      get() {
+        calls.push("field");
+        return "v";
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    return object;
+  };
+
+  it("rejects every wrapper kind on both allowed prototypes, reading nothing", () => {
+    const calls = [];
+    let checked = 0;
+    for (const [kind, make] of WRAPPERS) {
+      for (const proto of [Object.prototype, null]) {
+        const laundered = withHooks(Object.setPrototypeOf(make(), proto), calls);
+        const where = `${kind} on ${proto === null ? "null" : "Object.prototype"}`;
+        expect(messageOf(() => boundary.requirePlainDataRecord(laundered, "L")), where).toMatch(BOXED);
+        checked += 1;
+      }
+    }
+    expect(checked).toBe(12);
+    expect(calls).toEqual([]);
+  });
+
+  it("keeps the prototype diagnostic for an unlaundered wrapper and names the slot only once the prototype is allowed", () => {
+    for (const [kind, make] of WRAPPERS) {
+      expect(messageOf(() => boundary.requirePlainDataRecord(make(), "L")), kind).toMatch(
+        /^boundary under test: L must be a plain object; its prototype is neither Object\.prototype nor null/,
+      );
+    }
+    // An indexed String wrapper also owns intrinsic "0", "1" and length keys.
+    // The slot is reported, so no consumer key check is reached to describe
+    // those keys instead.
+    const indexed = Object.setPrototypeOf(new String("ab"), Object.prototype);
+    expect(Object.getOwnPropertyNames(indexed)).toEqual(["0", "1", "length"]);
+    expect(messageOf(() => boundary.requirePlainDataRecord(indexed, "L"))).toMatch(BOXED);
+    const empty = Object.setPrototypeOf(new String(""), null);
+    expect(Object.getOwnPropertyNames(empty)).toEqual(["length"]);
+    expect(messageOf(() => boundary.requirePlainDataRecord(empty, "L"))).toMatch(BOXED);
+  });
+
+  it("still refuses a Proxy around a wrapper as a Proxy, live or revoked, with no trap", () => {
+    const traps = [];
+    const laundered = () => Object.setPrototypeOf(new Boolean(false), Object.prototype);
+    expect(() => boundary.requirePlainDataRecord(countingProxy(laundered(), traps), "L")).toThrow(
+      /^boundary under test: L must not be a Proxy/,
+    );
+    const { proxy, revoke } = Proxy.revocable(laundered(), {});
+    revoke();
+    let caught;
+    try {
+      boundary.requirePlainDataRecord(proxy, "L");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect(caught.message).toMatch(/^boundary under test: L must not be a Proxy/);
+    expect(traps).toEqual([]);
+  });
+
+  it("keeps the consumer prefix and never proceeds when the consumer's fail returns", () => {
+    const other = createPlainDataInputBoundary((message) => {
+      throw new Error(`other consumer: ${message}`);
+    });
+    const laundered = () => Object.setPrototypeOf(new Number(0), null);
+    expect(messageOf(() => other.requirePlainDataRecord(laundered(), "L"))).toMatch(
+      /^other consumer: L must be a plain object, not a boxed primitive; /,
+    );
+    const lenient = createPlainDataInputBoundary(() => {});
+    expect(() => lenient.requirePlainDataRecord(laundered(), "L")).toThrow(
+      /^plain-data input boundary: fail callback returned instead of throwing: L must be a plain object, not a boxed primitive/,
+    );
+  });
+
+  it("refuses nothing ordinary and leaves arrays and primitive leaves alone", () => {
+    for (const value of [
+      { a: 1 },
+      Object.freeze({ a: 1 }),
+      JSON.parse('{"a":1}'),
+      { ...{ a: 1 } },
+      Object.assign(Object.create(null), { a: 1 }),
+    ]) {
+      expect(boundary.requirePlainDataRecord(value, "L")).toBe(value);
+    }
+    expect(() => boundary.requirePlainDataRecord([1], "L")).toThrow(/^boundary under test: L must be an object\./);
+    expect(boundary.snapshotDenseArray([1, "a"], "L")).toEqual([1, "a"]);
+    expect(boundary.snapshotStringArray(["a", "b"], "L")).toEqual(["a", "b"]);
+    expect(boundary.requireNonEmptyString("ok", "L")).toBe("ok");
+    expect(boundary.snapshotOwnField({ k: 1 }, "k", "L")).toBe(1);
   });
 });
