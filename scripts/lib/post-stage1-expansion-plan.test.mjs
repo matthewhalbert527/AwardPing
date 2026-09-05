@@ -2810,3 +2810,410 @@ describe("computePlanHash treats its argument as untrusted input", () => {
     expect(computePlanHash(Object.assign(Object.create(null), clone(plan)))).toBe(plan.planHash);
   });
 });
+
+// ---------------------------------------------------------------------------
+// stage1IdentityContentDigest is exported, so its rows are untrusted input.
+// ---------------------------------------------------------------------------
+describe("stage1IdentityContentDigest treats its rows as untrusted input", () => {
+  const FROZEN = "a6493d81606bd408d6291ef8dc193866168f155de10ee268ccca0efc6d387363";
+  const PREFIX = "post-stage1 expansion plan: ";
+  const FIELDS = ["cohortKey", "canonicalName", "canonicalSearchKey", "aliasSearchKeys", "canonicalSlug", "officialHomepage"];
+  const messageOf = (run) => {
+    try {
+      run();
+    } catch (error) {
+      return error.message;
+    }
+    throw new Error("expected a rejection");
+  };
+  // Records EVERY trap by name, so "zero traps" is a measurement.
+  const countingProxy = (target, calls) =>
+    new Proxy(
+      target,
+      new Proxy(
+        {},
+        {
+          get:
+            (_handler, trap) =>
+            (...args) => {
+              calls.push(`trap:${String(trap)}`);
+              return Reflect[trap](...args);
+            },
+        },
+      ),
+    );
+  const hidden = (object, key) =>
+    Object.defineProperty(object, key, { ...Object.getOwnPropertyDescriptor(object, key), enumerable: false });
+  // Own coercion hooks as ACCESSORS, so merely looking for one is observable.
+  const accessorHooks = (object, calls) => {
+    for (const key of ["toJSON", "toString", "valueOf"]) {
+      Object.defineProperty(object, key, {
+        get() {
+          calls.push(key);
+          return () => "<x>";
+        },
+        configurable: true,
+      });
+    }
+    Object.defineProperty(object, Symbol.toPrimitive, {
+      get() {
+        calls.push("Symbol.toPrimitive");
+        return () => "<x>";
+      },
+      configurable: true,
+    });
+    Object.defineProperty(object, Symbol.toStringTag, {
+      get() {
+        calls.push("Symbol.toStringTag");
+        return "Plain";
+      },
+      configurable: true,
+    });
+    return object;
+  };
+  // The regeneration snippet's exact shape: whole cohort definition entries
+  // plus the slug, carrying launchRank, identityRules, preferredPaths and
+  // delegatedAuthorities alongside the six projected fields.
+  const snippetRows = () => {
+    const slugByKey = new Map(stage1CohortIdentity.map((row) => [row[1], row[4]]));
+    return STAGE1_COHORT_DEFINITION.map((cohort) => ({ ...cohort, canonicalSlug: slugByKey.get(cohort.cohortKey) }));
+  };
+  // A fresh real cohort with row `index` replaced by make(row).
+  const withRow = (index, make) => {
+    const rows = realStage1Identity();
+    rows[index] = make(rows[index]);
+    return rows;
+  };
+
+  it("pins the frozen digest from every valid shape and keeps row and alias order immaterial", () => {
+    const real = realStage1Identity();
+    expect(real).toHaveLength(25);
+    expect(stage1IdentityContentDigest(real)).toBe(FROZEN);
+    expect(stage1IdentityContentDigest([...real].reverse())).toBe(FROZEN);
+    expect(stage1IdentityContentDigest(real.map((row) => ({ ...row, aliasSearchKeys: [...row.aliasSearchKeys].reverse() })))).toBe(FROZEN);
+
+    const snippet = snippetRows();
+    expect(Object.keys(snippet[0])).toEqual(
+      expect.arrayContaining(["launchRank", "identityRules", "preferredPaths", "delegatedAuthorities"]),
+    );
+    expect(stage1IdentityContentDigest(snippet)).toBe(FROZEN);
+
+    const deepFreeze = (value) => {
+      if (Array.isArray(value)) value.forEach(deepFreeze);
+      else if (value !== null && typeof value === "object") Object.values(value).forEach(deepFreeze);
+      return Object.freeze(value);
+    };
+    expect(stage1IdentityContentDigest(deepFreeze(realStage1Identity()))).toBe(FROZEN);
+    expect(stage1IdentityContentDigest(JSON.parse(JSON.stringify(real)))).toBe(FROZEN);
+    const nullProto = (value) =>
+      Array.isArray(value)
+        ? value.map(nullProto)
+        : value !== null && typeof value === "object"
+          ? Object.assign(Object.create(null), Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, nullProto(inner)])))
+          : value;
+    expect(stage1IdentityContentDigest(nullProto(real))).toBe(FROZEN);
+    expect(stage1IdentityContentDigest(Object.setPrototypeOf([...real], null))).toBe(FROZEN);
+
+    // Absent aliases mean none, identically to an explicit empty array.
+    const withoutAliases = realStage1Identity().map((row) => {
+      const copy = { ...row };
+      if (copy.aliasSearchKeys.length === 0) delete copy.aliasSearchKeys;
+      return copy;
+    });
+    expect(withoutAliases.some((row) => !Object.hasOwn(row, "aliasSearchKeys"))).toBe(true);
+    expect(stage1IdentityContentDigest(withoutAliases)).toBe(FROZEN);
+
+    // The planner's internal path still anchors on the same constant.
+    expect(planFor(buildProductionPlan(), "mitchell").planHash).toBe("c64098d958e6ab8bdbda82764ab8c2890c76e343d328e5e0d4e0fac670c1f3b1");
+
+    // Inputs are never mutated: reversed alias order and row order survive.
+    const input = realStage1Identity().map((row) => ({ ...row, aliasSearchKeys: [...row.aliasSearchKeys].reverse() })).reverse();
+    const before = JSON.stringify(input);
+    expect(stage1IdentityContentDigest(input)).toBe(FROZEN);
+    expect(JSON.stringify(input)).toBe(before);
+  });
+
+  it("refuses a hostile outer array before reading any row, with no trap or hook", () => {
+    const real = realStage1Identity();
+    const traps = [];
+    expect(messageOf(() => stage1IdentityContentDigest(countingProxy([...real], traps)))).toBe(
+      `${PREFIX}rows must not be a Proxy; its traps could report a different shape than it yields.`,
+    );
+    const { proxy, revoke } = Proxy.revocable([...real], {});
+    revoke();
+    let caught;
+    try {
+      stage1IdentityContentDigest(proxy);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect(caught.message).toMatch(/^post-stage1 expansion plan: rows must not be a Proxy/);
+    expect(traps).toEqual([]);
+
+    const hooks = [];
+    class Hooked extends Array {
+      map() {
+        hooks.push("subclass.map");
+        return [];
+      }
+      sort() {
+        hooks.push("subclass.sort");
+        return this;
+      }
+    }
+    expect(() => stage1IdentityContentDigest(Hooked.from(real))).toThrow(
+      /^post-stage1 expansion plan: rows must be a plain array; its prototype is neither Array\.prototype nor null/,
+    );
+    const cases = [
+      ["own map", (a) => Object.defineProperty(a, "map", { value: () => { hooks.push("own map"); return []; }, configurable: true, writable: true }), /rows carries an unexpected own property "map"/],
+      ["own sort", (a) => Object.defineProperty(a, "sort", { value: () => { hooks.push("own sort"); return a; }, configurable: true, writable: true }), /rows carries an unexpected own property "sort"/],
+      ["own toJSON", (a) => Object.defineProperty(a, "toJSON", { value: () => { hooks.push("toJSON"); return []; }, configurable: true, writable: true }), /rows carries an unexpected own property "toJSON"/],
+      ["extra name", (a) => { a.smuggled = "x"; }, /rows carries an unexpected own property "smuggled"/],
+      ["symbol key", (a) => { a[Symbol("s")] = "x"; }, /rows must not carry symbol-keyed own properties/],
+      ['noncanonical "01"', (a) => { a["01"] = "x"; }, /rows carries an unexpected own property "01"/],
+      ["hidden index", (a) => hidden(a, 0), /rows\[0\] must be an enumerable own property/],
+      ["hole", (a) => { delete a[0]; }, /rows\[0\] is a hole/],
+      ["indexed accessor", (a) => Object.defineProperty(a, 0, { get() { hooks.push("index0"); return real[0]; }, enumerable: true, configurable: true }), /rows\[0\] must be a plain data property, not an accessor/],
+    ];
+    for (const [label, install, pattern] of cases) {
+      const copy = [...real];
+      install(copy);
+      expect(() => stage1IdentityContentDigest(copy), label).toThrow(pattern);
+    }
+    expect(() => stage1IdentityContentDigest({ ...real, length: real.length })).toThrow(/^post-stage1 expansion plan: rows must be an array\./);
+    expect(hooks).toEqual([]);
+  });
+
+  it("refuses every hostile row shape and every hostile projected field, reading each field exactly once", () => {
+    const real = realStage1Identity();
+    const calls = [];
+    // Proxy record, live and revoked; exotic prototype; laundered wrappers.
+    expect(() => stage1IdentityContentDigest(withRow(0, (row) => countingProxy(row, calls)))).toThrow(
+      /^post-stage1 expansion plan: rows\[0\] must not be a Proxy/,
+    );
+    const { proxy, revoke } = Proxy.revocable({ ...real[0] }, {});
+    revoke();
+    let caught;
+    try {
+      stage1IdentityContentDigest(withRow(0, () => proxy));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect(caught.message).toMatch(/^post-stage1 expansion plan: rows\[0\] must not be a Proxy/);
+    expect(() => stage1IdentityContentDigest(withRow(3, (row) => Object.assign(Object.create({ canonicalName: "inherited" }), row)))).toThrow(
+      /^post-stage1 expansion plan: rows\[3\] must be a plain object; its prototype is neither Object\.prototype nor null/,
+    );
+    const wrappers = [
+      ["Boolean", () => new Boolean(false)],
+      ["Number", () => new Number(0)],
+      ["empty String", () => new String("")],
+      ["indexed String", () => new String("ab")],
+      ["BigInt", () => Object(1n)],
+      ["Symbol", () => Object(Symbol("s"))],
+    ];
+    let boxed = 0;
+    for (const [kind, make] of wrappers) {
+      for (const proto of [Object.prototype, null]) {
+        const rows = withRow(7, (row) => accessorHooks(Object.assign(Object.setPrototypeOf(make(), proto), row), calls));
+        expect(() => stage1IdentityContentDigest(rows), `${kind} on ${proto === null ? "null" : "Object.prototype"}`).toThrow(
+          /^post-stage1 expansion plan: rows\[7\] must be a plain object, not a boxed primitive; /,
+        );
+        boxed += 1;
+      }
+    }
+    expect(boxed).toBe(12);
+    expect(calls).toEqual([]);
+
+    // Every projected field: missing (aliases excepted - absent is legitimate
+    // and pinned above), hidden, accessor, object/coercion leaf, wrong type.
+    const missing = {
+      cohortKey: /^post-stage1 expansion plan: rows\[0\]\.cohortKey must be a canonical identifier matching .*; got undefined\./,
+      canonicalName: /rows\[0\]\.canonicalName must be a non-empty string; got undefined\./,
+      canonicalSearchKey: /rows\[0\]\.canonicalSearchKey must be a non-empty string; got undefined\./,
+      canonicalSlug: /rows\[0\]\.canonicalSlug must be a canonical identifier matching .*; got undefined\./,
+      officialHomepage: /rows\[0\]\.officialHomepage must be a non-empty string; got undefined\./,
+    };
+    for (const field of FIELDS) {
+      if (field !== "aliasSearchKeys") {
+        expect(
+          () =>
+            stage1IdentityContentDigest(
+              withRow(0, (row) => {
+                const copy = { ...row };
+                delete copy[field];
+                return copy;
+              }),
+            ),
+          `${field} missing`,
+        ).toThrow(missing[field]);
+      }
+      expect(() => stage1IdentityContentDigest(withRow(0, (row) => hidden({ ...row }, field))), `${field} hidden`).toThrow(
+        new RegExp(`rows\\[0\\]\\.${field} must be an enumerable own property`),
+      );
+      const accessorCalls = [];
+      expect(
+        () =>
+          stage1IdentityContentDigest(
+            withRow(0, (row) => {
+              const copy = { ...row };
+              const value = copy[field];
+              Object.defineProperty(copy, field, {
+                get() {
+                  accessorCalls.push(field);
+                  return value;
+                },
+                enumerable: true,
+                configurable: true,
+              });
+              return copy;
+            }),
+          ),
+        `${field} accessor`,
+      ).toThrow(new RegExp(`rows\\[0\\]\\.${field} must be a plain data property, not an accessor`));
+      expect(accessorCalls, `${field} accessor`).toEqual([]);
+      const leaf = accessorHooks({}, calls);
+      expect(() => stage1IdentityContentDigest(withRow(0, (row) => ({ ...row, [field]: leaf }))), `${field} object leaf`).toThrow(
+        field === "aliasSearchKeys" ? /rows\[0\]\.aliasSearchKeys must be an array\./ : new RegExp(`rows\\[0\\]\\.${field} must .*; got an object\\.`),
+      );
+    }
+    expect(calls).toEqual([]);
+    const wrongTypes = [
+      ["cohortKey", 7, /rows\[0\]\.cohortKey must be a canonical identifier matching .*; got 7\./],
+      ["cohortKey", "Boren", /rows\[0\]\.cohortKey must be a canonical identifier matching .*; got "Boren"\./],
+      ["canonicalName", "", /rows\[0\]\.canonicalName must be a non-empty string; got ""\./],
+      ["canonicalSearchKey", 1n, /rows\[0\]\.canonicalSearchKey must be a non-empty string; got 1\./],
+      ["canonicalSlug", "Not A Slug", /rows\[0\]\.canonicalSlug must be a canonical identifier matching .*; got "Not A Slug"\./],
+      ["officialHomepage", "http://insecure.example.org/", /rows\[0\]\.officialHomepage must be an absolute HTTPS URL; got "http:\/\/insecure\.example\.org\/"\./],
+      ["officialHomepage", true, /rows\[0\]\.officialHomepage must be a non-empty string; got true\./],
+    ];
+    for (const [field, value, pattern] of wrongTypes) {
+      expect(() => stage1IdentityContentDigest(withRow(0, (row) => ({ ...row, [field]: value }))), `${field} = ${String(value)}`).toThrow(pattern);
+    }
+
+    // Each projected field's descriptor is read exactly once per row, and
+    // nothing else on the row is read at all.
+    const spy = vi.spyOn(Object, "getOwnPropertyDescriptor");
+    try {
+      const rows = realStage1Identity();
+      const target = rows[0];
+      expect(stage1IdentityContentDigest(rows)).toBe(FROZEN);
+      const readsOnTarget = spy.mock.calls.filter(([object]) => object === target).map(([, key]) => key);
+      expect([...readsOnTarget].sort()).toEqual([...FIELDS].sort());
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("snapshots aliases fresh: absent means none, null is refused, hostile arrays and elements are refused with no hook", () => {
+    const withAliases = (make) => {
+      const rows = realStage1Identity();
+      const index = rows.findIndex((row) => row.aliasSearchKeys.length > 1);
+      rows[index] = { ...rows[index], aliasSearchKeys: make(rows[index].aliasSearchKeys) };
+      return [rows, index];
+    };
+    const hooks = [];
+    const [nullRows, nullIndex] = withAliases(() => null);
+    expect(() => stage1IdentityContentDigest(nullRows)).toThrow(
+      new RegExp(`^post-stage1 expansion plan: rows\\[${nullIndex}\\]\\.aliasSearchKeys must be an array\\.`),
+    );
+    const [proxyRows, proxyIndex] = withAliases((aliases) => countingProxy([...aliases], hooks));
+    expect(() => stage1IdentityContentDigest(proxyRows)).toThrow(new RegExp(`rows\\[${proxyIndex}\\]\\.aliasSearchKeys must not be a Proxy`));
+    const [revokedRows] = withAliases((aliases) => {
+      const { proxy, revoke } = Proxy.revocable([...aliases], {});
+      revoke();
+      return proxy;
+    });
+    let caught;
+    try {
+      stage1IdentityContentDigest(revokedRows);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(TypeError);
+    expect(caught.message).toMatch(/aliasSearchKeys must not be a Proxy/);
+    class Hooked extends Array {
+      sort() {
+        hooks.push("subclass.sort");
+        return this;
+      }
+    }
+    const [subclassRows] = withAliases((aliases) => Hooked.from(aliases));
+    expect(() => stage1IdentityContentDigest(subclassRows)).toThrow(/aliasSearchKeys must be a plain array/);
+    const arrayDefects = [
+      ["hole", (a) => { delete a[0]; }, /aliasSearchKeys\[0\] is a hole/],
+      ["extra name", (a) => { a.smuggled = "x"; }, /aliasSearchKeys carries an unexpected own property "smuggled"/],
+      ["own sort", (a) => Object.defineProperty(a, "sort", { value: () => { hooks.push("own sort"); return a; }, configurable: true, writable: true }), /aliasSearchKeys carries an unexpected own property "sort"/],
+      ["own toJSON", (a) => Object.defineProperty(a, "toJSON", { value: () => { hooks.push("toJSON"); return []; }, configurable: true, writable: true }), /aliasSearchKeys carries an unexpected own property "toJSON"/],
+      ["symbol key", (a) => { a[Symbol("s")] = "x"; }, /aliasSearchKeys must not carry symbol-keyed own properties/],
+      ["indexed accessor", (a) => Object.defineProperty(a, 0, { get() { hooks.push("index0"); return "x"; }, enumerable: true, configurable: true }), /aliasSearchKeys\[0\] must be a plain data property, not an accessor/],
+      ["hidden index", (a) => hidden(a, 0), /aliasSearchKeys\[0\] must be an enumerable own property/],
+    ];
+    for (const [label, install, pattern] of arrayDefects) {
+      const [rows] = withAliases((aliases) => {
+        const copy = [...aliases];
+        install(copy);
+        return copy;
+      });
+      expect(() => stage1IdentityContentDigest(rows), label).toThrow(pattern);
+    }
+    const [objectElement] = withAliases((aliases) => [accessorHooks({}, hooks), ...aliases.slice(1)]);
+    expect(() => stage1IdentityContentDigest(objectElement)).toThrow(/aliasSearchKeys\[0\] must be a non-empty string; got an object\./);
+    const [numberElement] = withAliases((aliases) => [7, ...aliases.slice(1)]);
+    expect(() => stage1IdentityContentDigest(numberElement)).toThrow(/aliasSearchKeys\[0\] must be a non-empty string; got 7\./);
+    const [emptyElement] = withAliases((aliases) => ["", ...aliases.slice(1)]);
+    expect(() => stage1IdentityContentDigest(emptyElement)).toThrow(/aliasSearchKeys\[0\] must be a non-empty string; got ""\./);
+    expect(hooks).toEqual([]);
+
+    // Sorting happens only on fresh copies: one sort per row plus one for
+    // the payloads, none of them on a caller array, and no map at all.
+    const input = realStage1Identity();
+    const callerArrays = new Set([input, ...input.map((row) => row.aliasSearchKeys)]);
+    const sort = vi.spyOn(Array.prototype, "sort");
+    const map = vi.spyOn(Array.prototype, "map");
+    try {
+      expect(stage1IdentityContentDigest(input)).toBe(FROZEN);
+      expect(sort.mock.calls.length).toBe(input.length + 1);
+      expect(sort.mock.contexts.every((context) => !callerArrays.has(context))).toBe(true);
+      expect(map.mock.calls.length).toBe(0);
+    } finally {
+      sort.mockRestore();
+      map.mockRestore();
+    }
+  });
+
+  it("ignores every unknown row field without reading it, and binds every projected one", () => {
+    const calls = [];
+    const decorated = realStage1Identity().map((row) => {
+      const copy = { ...row, launchRank: 3, identityRules: ["x"], preferredPaths: { a: 1 }, delegatedAuthorities: [] };
+      accessorHooks(copy, calls);
+      Object.defineProperty(copy, "launchRankAccessor", {
+        get() {
+          calls.push("launchRankAccessor");
+          return 1;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      return copy;
+    });
+    expect(stage1IdentityContentDigest(decorated)).toBe(FROZEN);
+    expect(calls).toEqual([]);
+
+    const mutations = [
+      ["cohortKey", "boren_x"],
+      ["canonicalName", "Renamed"],
+      ["canonicalSearchKey", "renamed"],
+      ["aliasSearchKeys", ["added-alias"]],
+      ["canonicalSlug", "renamed-slug"],
+      ["officialHomepage", "https://elsewhere.example.org/"],
+    ];
+    for (const [field, value] of mutations) {
+      expect(stage1IdentityContentDigest(withRow(0, (row) => ({ ...row, [field]: value }))), field).not.toBe(FROZEN);
+    }
+  });
+});

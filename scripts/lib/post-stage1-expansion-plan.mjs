@@ -114,19 +114,73 @@ const FROZEN_STAGE1_IDENTITY_DIGEST = "a6493d81606bd408d6291ef8dc193866168f155de
 // Canonical, injective representation of one Stage 1 identity row. JSON
 // encoding keeps field boundaries unambiguous, so no field value can be
 // crafted to imitate a different field split.
-function stage1IdentityRowPayload(row) {
-  return JSON.stringify([
-    row.cohortKey,
-    row.canonicalName,
-    row.canonicalSearchKey,
-    [...(row.aliasSearchKeys ?? [])].sort(),
-    row.canonicalSlug,
-    row.officialHomepage,
-  ]);
+//
+// The row is caller input. stage1IdentityContentDigest is exported - the
+// regeneration snippet above hands it raw cohort definitions - so each of
+// the six projected fields is read exactly once through an own enumerable
+// data descriptor and held to the same shape snapshotStage1Rows enforces:
+// canonical cohortKey and slug identifiers, a non-empty name and search key,
+// an absolute HTTPS homepage, and aliases that are either absent (meaning
+// none) or a plain dense array of non-empty strings, snapshotted fresh and
+// sorted on the copy. Every other field on the row - the definition entries
+// also carry launchRank, identityRules, preferredPaths and
+// delegatedAuthorities - is ignored without ever being read, accessors
+// included: this digest hashes a six-field projection and exports nothing,
+// so an exact-field rule here would only break the snippet. Nothing
+// caller-owned is iterated, sorted or serialized. The payload shape, key
+// order and digest are unchanged for every valid row, and the frozen
+// constant above still reproduces from the real cohort.
+//
+// Against the previous revision, on the exported path: an own canonicalName
+// getter ran; an object leaf with toJSON kept the digest; a live Proxy rows
+// array executed 28 traps and a revoked one escaped as a raw TypeError; an
+// Array subclass whose own map returned the real rows hid a tampered row
+// under the frozen digest; alias objects had their toString run by the
+// default sort; hidden, inherited, missing and laundered-wrapper rows were
+// admitted; and an explicit null alias list was read as none. The planner's
+// own caller was never exposed - it passes rows snapshotStage1Rows has
+// already validated - so this is the exported contract, not a policy change.
+function stage1IdentityRowPayload(row, label) {
+  requirePlainDataRecord(row, label);
+  const cohortKey = requireCanonicalIdentifier(
+    snapshotOwnField(row, "cohortKey", label),
+    IDENTIFIER_PATTERN,
+    `${label}.cohortKey`,
+  );
+  const canonicalName = requireNonEmptyString(snapshotOwnField(row, "canonicalName", label), `${label}.canonicalName`);
+  const canonicalSearchKey = requireNonEmptyString(
+    snapshotOwnField(row, "canonicalSearchKey", label),
+    `${label}.canonicalSearchKey`,
+  );
+  // Absent means no aliases. Anything else - null included - must be a plain
+  // dense array of non-empty strings, exactly as snapshotStage1Rows reads it.
+  const rawAliases = snapshotOwnField(row, "aliasSearchKeys", label);
+  const aliasSearchKeys = rawAliases === undefined ? [] : snapshotStringArray(rawAliases, `${label}.aliasSearchKeys`);
+  const canonicalSlug = requireCanonicalIdentifier(
+    snapshotOwnField(row, "canonicalSlug", label),
+    SLUG_PATTERN,
+    `${label}.canonicalSlug`,
+  );
+  const officialHomepage = requireAbsoluteHttpsUrl(
+    snapshotOwnField(row, "officialHomepage", label),
+    `${label}.officialHomepage`,
+  );
+  // Sorted on the fresh copy, so alias order is never material.
+  aliasSearchKeys.sort();
+  return JSON.stringify([cohortKey, canonicalName, canonicalSearchKey, aliasSearchKeys, canonicalSlug, officialHomepage]);
 }
 
 export function stage1IdentityContentDigest(rows) {
-  const payloads = rows.map(stage1IdentityRowPayload).sort();
+  // The outer array crosses the same boundary: Proxy first, a plain dense
+  // array with an exact own-key set, then iterated from the returned
+  // snapshot rather than through any method of the caller's.
+  const snapshot = snapshotDenseArray(rows, "rows");
+  const payloads = [];
+  for (let index = 0; index < snapshot.length; index += 1) {
+    payloads.push(stage1IdentityRowPayload(snapshot[index], `rows[${index}]`));
+  }
+  // Row order is never material either; sorted on the fresh payload array.
+  payloads.sort();
   return createHash("sha256").update(payloads.join("\n"), "utf8").digest("hex");
 }
 
