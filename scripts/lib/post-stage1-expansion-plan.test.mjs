@@ -2168,3 +2168,645 @@ describe("post-Stage1 expansion plan", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// computePlanHash is exported, so its argument is untrusted input too.
+// ---------------------------------------------------------------------------
+describe("computePlanHash treats its argument as untrusted input", () => {
+  const PLAN_PREFIX = "post-stage1 expansion plan: ";
+  // A structural clone of a builder plan: plain, unfrozen, enumerable, with
+  // planHash kept as the string the builder stored.
+  const clone = (value) => JSON.parse(JSON.stringify(value));
+  const productionPlan = () => buildProductionPlan().plans[0];
+
+  const hidden = (object, key) =>
+    Object.defineProperty(object, key, { ...Object.getOwnPropertyDescriptor(object, key), enumerable: false });
+
+  function replaceAt(root, path, make) {
+    if (path.length === 0) return make(root);
+    let parent = root;
+    for (let index = 0; index < path.length - 1; index += 1) parent = parent[path[index]];
+    const key = path[path.length - 1];
+    parent[key] = make(parent[key]);
+    return root;
+  }
+
+  // Records EVERY trap by name, so "zero traps" is a measurement.
+  const countingProxy = (target, calls) =>
+    new Proxy(
+      target,
+      new Proxy(
+        {},
+        {
+          get:
+            (_handler, trap) =>
+            (...args) => {
+              calls.push(`trap:${String(trap)}`);
+              return Reflect[trap](...args);
+            },
+        },
+      ),
+    );
+
+  const hookRecorder = (calls, key, result) => ({
+    value: () => {
+      calls.push(key);
+      return result;
+    },
+    configurable: true,
+    writable: true,
+  });
+
+  const messageOf = (run) => {
+    try {
+      run();
+    } catch (error) {
+      return error.message;
+    }
+    throw new Error("expected a rejection");
+  };
+
+  it("reproduces and closes the reported defect classes, running none of the hooks", () => {
+    const plan = productionPlan();
+
+    // 1. A changed source title hidden behind an own map returning originals.
+    {
+      const hooks = [];
+      const p = clone(plan);
+      p.monitorableSources[1].title = "Tampered Title";
+      Object.defineProperty(p.monitorableSources, "map", {
+        value: (fn) => {
+          hooks.push("map");
+          return plan.monitorableSources.map(fn);
+        },
+        configurable: true,
+        writable: true,
+      });
+      expect(() => computePlanHash(p)).toThrow(/plan\.monitorableSources carries an unexpected own property "map"/);
+      expect(hooks).toEqual([]);
+    }
+
+    // 2. An object-valued lifecycle flag whose toJSON returns false.
+    {
+      const hooks = [];
+      const p = clone(plan);
+      p.lifecycle.publicationEligibility = {
+        toJSON() {
+          hooks.push("toJSON");
+          return false;
+        },
+      };
+      expect(() => computePlanHash(p)).toThrow(/plan\.lifecycle\.publicationEligibility must be a boolean; got an object\./);
+      expect(hooks).toEqual([]);
+    }
+
+    // 3. candidateId and an excludedDiscoveryUrls element masquerading as
+    //    the strings they imitate.
+    {
+      const hooks = [];
+      const p = clone(plan);
+      p.candidateId = {
+        toJSON() {
+          hooks.push("toJSON");
+          return plan.candidateId;
+        },
+      };
+      expect(() => computePlanHash(p)).toThrow(/plan\.candidateId must be a non-empty string; got an object\./);
+      const q = clone(plan);
+      q.excludedDiscoveryUrls = plan.excludedDiscoveryUrls.map((url) => ({
+        toJSON() {
+          hooks.push("toJSON");
+          return url;
+        },
+      }));
+      expect(q.excludedDiscoveryUrls.length).toBeGreaterThan(0);
+      expect(() => computePlanHash(q)).toThrow(/plan\.excludedDiscoveryUrls\[0\] must be a non-empty string; got an object\./);
+      expect(hooks).toEqual([]);
+    }
+
+    // 4. A live Proxy plan reaches no trap; a revoked one is refused as a
+    //    Proxy rather than escaping as a raw TypeError.
+    {
+      const traps = [];
+      const live = countingProxy(clone(plan), traps);
+      expect(messageOf(() => computePlanHash(live))).toBe(
+        `${PLAN_PREFIX}plan must not be a Proxy; its traps could report a different shape than it yields.`,
+      );
+      expect(traps).toEqual([]);
+      const { proxy, revoke } = Proxy.revocable(clone(plan), {});
+      revoke();
+      let caught;
+      try {
+        computePlanHash(proxy);
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(TypeError);
+      expect(caught.message).toMatch(/^post-stage1 expansion plan: plan must not be a Proxy/);
+    }
+
+    // 5a. A hidden slug: previously the same hash while JSON dropped it.
+    {
+      const p = clone(plan);
+      hidden(p, "slug");
+      expect("slug" in JSON.parse(JSON.stringify(p))).toBe(false);
+      expect(() => computePlanHash(p)).toThrow(/plan\.slug must be an enumerable own property/);
+    }
+    // 5b. An extra unknown root field.
+    {
+      const p = clone(plan);
+      p.smuggled = "unhashed";
+      expect(() => computePlanHash(p)).toThrow(/plan carries an unrecognized own field "smuggled"/);
+    }
+    // 5c. An own toJSON on the source array: previously exported 0 sources
+    //     under the unchanged hash.
+    {
+      const hooks = [];
+      const p = clone(plan);
+      Object.defineProperty(p.monitorableSources, "toJSON", hookRecorder(hooks, "toJSON", []));
+      expect(() => computePlanHash(p)).toThrow(/plan\.monitorableSources carries an unexpected own property "toJSON"/);
+      expect(hooks).toEqual([]);
+    }
+    // 5d. An Array subclass whose map runs.
+    {
+      const hooks = [];
+      class Hooked extends Array {
+        map(...args) {
+          hooks.push("subclass.map");
+          return super.map(...args);
+        }
+      }
+      const p = clone(plan);
+      p.monitorableSources = Hooked.from(plan.monitorableSources);
+      expect(() => computePlanHash(p)).toThrow(
+        /plan\.monitorableSources must be a plain array; its prototype is neither Array\.prototype nor null/,
+      );
+      expect(hooks).toEqual([]);
+    }
+    // 5e. A getter leaf.
+    {
+      const hooks = [];
+      const p = clone(plan);
+      Object.defineProperty(p.homepage, "confidence", {
+        get() {
+          hooks.push("get");
+          return 0.95;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      expect(() => computePlanHash(p)).toThrow(/plan\.homepage\.confidence must be a plain data property, not an accessor/);
+      expect(hooks).toEqual([]);
+    }
+    // 5f. Default-sort toString hooks on excludedDiscoveryUrls elements.
+    {
+      const hooks = [];
+      const p = clone(plan);
+      p.excludedDiscoveryUrls = ["https://b.example.org/", "https://a.example.org/"].map((url) => ({
+        toString() {
+          hooks.push("toString");
+          return url;
+        },
+        toJSON: () => url,
+      }));
+      expect(() => computePlanHash(p)).toThrow(/plan\.excludedDiscoveryUrls\[0\] must be a non-empty string; got an object\./);
+      expect(hooks).toEqual([]);
+    }
+  });
+
+  const OBJECT_LAYERS = [
+    ["plan", []],
+    ["plan.seed", ["seed"]],
+    ["plan.homepage", ["homepage"]],
+    ["plan.lifecycle", ["lifecycle"]],
+    ["plan.monitorableSources[0]", ["monitorableSources", 0]],
+  ];
+  const ARRAY_LAYERS = [
+    ["plan.excludedDiscoveryUrls", ["excludedDiscoveryUrls"]],
+    ["plan.monitorableSources", ["monitorableSources"]],
+  ];
+  const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+  it("rejects a Proxy - live or revoked - at every layer, with no trap reached", () => {
+    const plan = productionPlan();
+    for (const [label, path] of [...OBJECT_LAYERS, ...ARRAY_LAYERS]) {
+      const liveTraps = [];
+      const live = replaceAt(clone(plan), path, (value) => countingProxy(value, liveTraps));
+      expect(() => computePlanHash(live), `${label} (live)`).toThrow(new RegExp(`${escapeRegExp(label)} must not be a Proxy`));
+      expect(liveTraps, `${label} (live)`).toEqual([]);
+
+      const revokedTraps = [];
+      const revoked = replaceAt(clone(plan), path, (value) => {
+        const { proxy, revoke } = Proxy.revocable(value, {
+          get(target, key, receiver) {
+            revokedTraps.push(`get:${String(key)}`);
+            return Reflect.get(target, key, receiver);
+          },
+        });
+        revoke();
+        return proxy;
+      });
+      expect(() => computePlanHash(revoked), `${label} (revoked)`).toThrow(
+        new RegExp(`^post-stage1 expansion plan: ${escapeRegExp(label)} must not be a Proxy`),
+      );
+      expect(revokedTraps, `${label} (revoked)`).toEqual([]);
+    }
+  });
+
+  it("rejects accessors, exotic prototypes, unknown string keys and symbol keys at every object layer", () => {
+    const plan = productionPlan();
+    for (const [label, path] of OBJECT_LAYERS) {
+      const getterCalls = [];
+      const withGetter = replaceAt(clone(plan), path, (value) => {
+        const key = Object.keys(value)[0];
+        Object.defineProperty(value, key, {
+          get() {
+            getterCalls.push(key);
+            return "hostile";
+          },
+          enumerable: true,
+          configurable: true,
+        });
+        return value;
+      });
+      expect(() => computePlanHash(withGetter), `${label} (accessor)`).toThrow(/must be a plain data property, not an accessor/);
+      expect(getterCalls, `${label} (accessor)`).toEqual([]);
+
+      const protoCalls = [];
+      const withProto = replaceAt(clone(plan), path, (value) =>
+        Object.setPrototypeOf(value, {
+          get status() {
+            protoCalls.push("proto:status");
+            return "ready";
+          },
+          toJSON() {
+            protoCalls.push("proto:toJSON");
+            return {};
+          },
+        }),
+      );
+      expect(() => computePlanHash(withProto), `${label} (exotic prototype)`).toThrow(
+        new RegExp(`${escapeRegExp(label)} must be a plain object; its prototype is neither Object\\.prototype nor null`),
+      );
+      expect(protoCalls, `${label} (exotic prototype)`).toEqual([]);
+
+      const unknown = replaceAt(clone(plan), path, (value) => {
+        value.smuggled = "unhashed";
+        return value;
+      });
+      expect(() => computePlanHash(unknown), `${label} (unknown field)`).toThrow(
+        new RegExp(`${escapeRegExp(label)} carries an unrecognized own field "smuggled"`),
+      );
+
+      const symbolKeyed = replaceAt(clone(plan), path, (value) => {
+        value[Symbol("hidden")] = "unhashed";
+        return value;
+      });
+      expect(() => computePlanHash(symbolKeyed), `${label} (symbol key)`).toThrow(
+        new RegExp(`${escapeRegExp(label)} must not carry symbol-keyed own properties`),
+      );
+
+      const notPlain = replaceAt(clone(plan), path, () => "not an object");
+      expect(() => computePlanHash(notPlain), `${label} (non-object)`).toThrow(
+        new RegExp(`${escapeRegExp(label)} must be an object\\.`),
+      );
+    }
+  });
+
+  it("requires exact dense plain arrays at both array layers, running none of their hooks", () => {
+    const plan = productionPlan();
+    const defects = [
+      ["an extra own name", (array) => Object.assign(array, { smuggled: "x" }), (label) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "smuggled"`)],
+      ["an own toJSON", (array, calls) => Object.defineProperty(array, "toJSON", hookRecorder(calls, "toJSON", [])), (label) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "toJSON"`)],
+      ["an own map", (array, calls) => Object.defineProperty(array, "map", hookRecorder(calls, "map", [])), (label) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "map"`)],
+      ["an own sort", (array, calls) => Object.defineProperty(array, "sort", hookRecorder(calls, "sort", [])), (label) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "sort"`)],
+      [
+        "an own Symbol.iterator",
+        (array, calls) =>
+          Object.defineProperty(array, Symbol.iterator, {
+            value: function* iterate() {
+              calls.push("iterator");
+            },
+            configurable: true,
+            writable: true,
+          }),
+        (label) => new RegExp(`${escapeRegExp(label)} must not carry symbol-keyed own properties`),
+      ],
+      ["a symbol key", (array) => Object.assign(array, { [Symbol("hidden")]: "x" }), (label) => new RegExp(`${escapeRegExp(label)} must not carry symbol-keyed own properties`)],
+      ['a noncanonical index "01"', (array) => Object.assign(array, { "01": "x" }), (label) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "01"`)],
+      [
+        "an extra accessor",
+        (array, calls) =>
+          Object.defineProperty(array, "shadow", {
+            get() {
+              calls.push("shadow");
+              return "x";
+            },
+            configurable: true,
+          }),
+        (label) => new RegExp(`${escapeRegExp(label)} carries an unexpected own property "shadow"`),
+      ],
+      ["a hidden index", (array) => hidden(array, 0), (label) => new RegExp(`${escapeRegExp(label)}\\[0\\] must be an enumerable own property`)],
+      [
+        "a hole",
+        (array) => {
+          delete array[0];
+          return array;
+        },
+        (label) => new RegExp(`${escapeRegExp(label)}\\[0\\] is a hole`),
+      ],
+      [
+        "an indexed accessor",
+        (array, calls) =>
+          Object.defineProperty(array, 0, {
+            get() {
+              calls.push("index0");
+              return "x";
+            },
+            enumerable: true,
+            configurable: true,
+          }),
+        (label) => new RegExp(`${escapeRegExp(label)}\\[0\\] must be a plain data property, not an accessor`),
+      ],
+    ];
+    for (const [label, path] of ARRAY_LAYERS) {
+      expect(replaceAt(clone(plan), path, (array) => array)[path[0]].length, label).toBeGreaterThan(0);
+      for (const [defectLabel, install, pattern] of defects) {
+        const calls = [];
+        const tampered = replaceAt(clone(plan), path, (array) => {
+          install(array, calls);
+          return array;
+        });
+        const where = `${label} with ${defectLabel}`;
+        expect(() => computePlanHash(tampered), where).toThrow(pattern(label));
+        expect(calls, where).toEqual([]);
+      }
+      const subclassed = replaceAt(clone(plan), path, (array) => {
+        class Hooked extends Array {
+          sort() {
+            throw new Error("subclass sort ran");
+          }
+        }
+        return Hooked.from(array);
+      });
+      expect(() => computePlanHash(subclassed), `${label} (subclass)`).toThrow(new RegExp(`${escapeRegExp(label)} must be a plain array`));
+      const notAnArray = replaceAt(clone(plan), path, (array) => ({ ...array, length: array.length }));
+      expect(() => computePlanHash(notAnArray), `${label} (not an array)`).toThrow(new RegExp(`${escapeRegExp(label)} must be an array`));
+    }
+  });
+
+  it("rejects a hidden field on every accepted field of every layer", () => {
+    const plan = productionPlan();
+    const checked = [];
+    for (const [label, path] of OBJECT_LAYERS) {
+      const fields = Object.keys(path.reduce((node, key) => node[key], clone(plan)));
+      expect(fields.length, label).toBeGreaterThan(0);
+      for (const key of fields) {
+        const tampered = replaceAt(clone(plan), path, (value) => {
+          hidden(value, key);
+          return value;
+        });
+        const where = `${label}.${key}`;
+        expect(() => computePlanHash(tampered), where).toThrow(
+          new RegExp(`${escapeRegExp(where)} must be an enumerable own property`),
+        );
+        checked.push(where);
+      }
+    }
+    // 11 root (planHash included) + 3 seed + 3 homepage + 5 lifecycle + 5 source.
+    expect(checked).toHaveLength(27);
+    expect(checked).toContain("plan.planHash");
+    expect(checked).toContain("plan.seed.seedIndex");
+    expect(checked).toContain("plan.monitorableSources[0].canonicalUrlKey");
+  });
+
+  it("rejects representative wrong-type leaves without executing them", () => {
+    const plan = productionPlan();
+    const calls = [];
+    const hostile = {};
+    for (const key of ["toJSON", "toString", "valueOf"]) {
+      Object.defineProperty(hostile, key, {
+        get() {
+          calls.push(key);
+          return () => "<x>";
+        },
+        configurable: true,
+      });
+    }
+    const cases = [
+      ["plan.candidateId", ["candidateId"], 7, /plan\.candidateId must be a non-empty string; got 7\./],
+      ["plan.awardName", ["awardName"], "", /plan\.awardName must be a non-empty string; got ""\./],
+      ["plan.slug (not string or null)", ["slug"], 7, /plan\.slug must be a non-empty string; got 7\./],
+      ["plan.slug (absent)", ["slug"], undefined, /plan\.slug must be a non-empty string; got undefined\./],
+      ["plan.seed.seedIndex negative", ["seed", "seedIndex"], -1, /plan\.seed\.seedIndex must be a non-negative integer; got -1\./],
+      ["plan.seed.seedIndex string", ["seed", "seedIndex"], "3", /plan\.seed\.seedIndex must be a non-negative integer; got "3"\./],
+      ["plan.seed.seedIndex fraction", ["seed", "seedIndex"], 1.5, /plan\.seed\.seedIndex must be a non-negative integer; got 1\.5\./],
+      ["plan.homepage.confidence string", ["homepage", "confidence"], "0.9", /plan\.homepage\.confidence must be a finite number; got "0\.9"\./],
+      ["plan.homepage.confidence NaN", ["homepage", "confidence"], Number.NaN, /plan\.homepage\.confidence must be a finite number; got NaN\./],
+      ["plan.homepage.confidence Infinity", ["homepage", "confidence"], Number.POSITIVE_INFINITY, /plan\.homepage\.confidence must be a finite number; got Infinity\./],
+      ["source pageType number", ["monitorableSources", 0, "pageType"], 1, /plan\.monitorableSources\[0\]\.pageType must be a non-empty string; got 1\./],
+      ["source confidence null", ["monitorableSources", 0, "confidence"], null, /plan\.monitorableSources\[0\]\.confidence must be a finite number; got null\./],
+      ["lifecycle flag string", ["lifecycle", "monitoringReadiness"], "false", /plan\.lifecycle\.monitoringReadiness must be a boolean; got "false"\./],
+      ["lifecycle flag number", ["lifecycle", "publicationEligibility"], 0, /plan\.lifecycle\.publicationEligibility must be a boolean; got 0\./],
+      ["lifecycle string null", ["lifecycle", "currentCycleAuthority"], null, /plan\.lifecycle\.currentCycleAuthority must be a non-empty string; got null\./],
+      ["excluded URL element number", ["excludedDiscoveryUrls", 0], 1, /plan\.excludedDiscoveryUrls\[0\] must be a non-empty string; got 1\./],
+      ["planHash number", ["planHash"], 12345, /plan\.planHash must be null or a string; got 12345\./],
+      ["hostile object leaf", ["seed", "name"], hostile, /plan\.seed\.name must be a non-empty string; got an object\./],
+    ];
+    for (const [label, path, value, pattern] of cases) {
+      const tampered = replaceAt(clone(plan), path, () => value);
+      expect(() => computePlanHash(tampered), label).toThrow(pattern);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("binds every material leaf and excludes exactly seedIndex and planHash", () => {
+    const plan = productionPlan();
+    const mutations = [
+      ["candidateId", ["candidateId"], "someone_else"],
+      ["awardName", ["awardName"], "Renamed"],
+      ["normalizedAwardKey", ["normalizedAwardKey"], "renamed"],
+      ["status", ["status"], "some-other-status"],
+      ["slug string", ["slug"], "different-slug"],
+      ["slug to null", ["slug"], null],
+      ["seed.name", ["seed", "name"], "Renamed Seed"],
+      ["seed.starterUrl", ["seed", "starterUrl"], "https://elsewhere.example.org/"],
+      ["excludedDiscoveryUrls element", ["excludedDiscoveryUrls", 0], "https://elsewhere.example.org/"],
+      ["excludedDiscoveryUrls emptied", ["excludedDiscoveryUrls"], []],
+      ["excludedDiscoveryUrls extended", ["excludedDiscoveryUrls"], [...plan.excludedDiscoveryUrls, "https://another.example.org/"]],
+      ["homepage.url", ["homepage", "url"], "https://elsewhere.example.org/"],
+      ["homepage.title", ["homepage", "title"], "Different Title"],
+      ["homepage.confidence", ["homepage", "confidence"], 0.42],
+      ["source url", ["monitorableSources", 1, "url"], "https://elsewhere.example.org/tampered"],
+      ["source title", ["monitorableSources", 1, "title"], "Tampered Title"],
+      ["source pageType", ["monitorableSources", 1, "pageType"], "eligibility"],
+      ["source confidence", ["monitorableSources", 1, "confidence"], 0.01],
+      ["source canonicalUrlKey", ["monitorableSources", 1, "canonicalUrlKey"], "tampered/key"],
+      ["source removed", ["monitorableSources"], plan.monitorableSources.slice(1)],
+      ["lifecycle.currentCycleAuthority", ["lifecycle", "currentCycleAuthority"], "resolved"],
+      ["lifecycle.humanSourceReview", ["lifecycle", "humanSourceReview"], "resolved"],
+      ["lifecycle.remoteIdentityCollisionCheck", ["lifecycle", "remoteIdentityCollisionCheck"], "resolved"],
+      // A flipped gate is a MATERIAL change that must move the digest - it is
+      // not the hasher's job to refuse or reset it.
+      ["lifecycle.monitoringReadiness", ["lifecycle", "monitoringReadiness"], true],
+      ["lifecycle.publicationEligibility", ["lifecycle", "publicationEligibility"], true],
+    ];
+    for (const [label, path, value] of mutations) {
+      const tampered = replaceAt(clone(plan), path, () => value);
+      expect(computePlanHash(tampered), label).not.toBe(plan.planHash);
+    }
+    // A null slug is bound as null, distinct from any string.
+    const nullSlug = clone(plan);
+    nullSlug.slug = null;
+    const stringSlug = clone(plan);
+    stringSlug.slug = "x";
+    expect(computePlanHash(nullSlug)).not.toBe(computePlanHash(stringSlug));
+
+    // Documented exclusions stay stable.
+    const movedSeed = clone(plan);
+    movedSeed.seed.seedIndex += 500;
+    expect(computePlanHash(movedSeed)).toBe(plan.planHash);
+    const forged = clone(plan);
+    forged.planHash = "0".repeat(64);
+    expect(computePlanHash(forged)).toBe(plan.planHash);
+    const nullHash = clone(plan);
+    nullHash.planHash = null;
+    expect(computePlanHash(nullHash)).toBe(plan.planHash);
+    const absentHash = clone(plan);
+    delete absentHash.planHash;
+    expect(computePlanHash(absentHash)).toBe(plan.planHash);
+  });
+
+  it("accepts builder output, frozen copies, JSON round-trips and null-prototype equivalents with identical hashes", () => {
+    const deepFreeze = (value) => {
+      if (Array.isArray(value)) value.forEach(deepFreeze);
+      else if (value !== null && typeof value === "object") Object.values(value).forEach(deepFreeze);
+      return Object.freeze(value);
+    };
+    const nullProto = (value) =>
+      Array.isArray(value)
+        ? value.map(nullProto)
+        : value !== null && typeof value === "object"
+          ? Object.assign(Object.create(null), Object.fromEntries(Object.entries(value).map(([key, inner]) => [key, nullProto(inner)])))
+          : value;
+    const keyShape = (value) =>
+      Array.isArray(value)
+        ? value.map(keyShape)
+        : value !== null && typeof value === "object"
+          ? Object.fromEntries(Object.keys(value).sort().map((key) => [key, keyShape(value[key])]))
+          : typeof value;
+
+    const result = buildProductionPlan();
+    expect(result.plans).toHaveLength(2);
+    for (const plan of result.plans) {
+      expect(computePlanHash(plan), plan.candidateId).toBe(plan.planHash);
+      expect(computePlanHash(deepFreeze(clone(plan))), `${plan.candidateId} (frozen)`).toBe(plan.planHash);
+      const exported = JSON.parse(JSON.stringify(plan));
+      expect(computePlanHash(exported), `${plan.candidateId} (JSON round trip)`).toBe(plan.planHash);
+      expect(keyShape(exported), `${plan.candidateId} (JSON key shape)`).toEqual(keyShape(plan));
+      expect(computePlanHash(nullProto(clone(plan))), `${plan.candidateId} (null prototype)`).toBe(plan.planHash);
+    }
+    expect(planFor(result, "mitchell").planHash).toBe("c64098d958e6ab8bdbda82764ab8c2890c76e343d328e5e0d4e0fac670c1f3b1");
+    expect(planFor(result, "tillman").planHash).toBe("53d845215b34d21a90afaa0c0b92324e4edc8bb35d0cf62b5694055f8c58e44b");
+  });
+
+  it("serializes only a graph it built itself, sorting only its own fresh copies", () => {
+    const plan = productionPlan();
+    const pristine = clone(plan);
+    const map = vi.spyOn(Array.prototype, "map");
+    const sort = vi.spyOn(Array.prototype, "sort");
+    const forEach = vi.spyOn(Array.prototype, "forEach");
+    try {
+      expect(computePlanHash(pristine)).toBe(plan.planHash);
+      // Exactly the two sorts of the helper's own fresh copies, and no map.
+      expect(sort.mock.calls.length).toBe(2);
+      expect(sort.mock.contexts).toHaveLength(2);
+      expect(sort.mock.contexts.every((context) => context !== pristine.monitorableSources && context !== pristine.excludedDiscoveryUrls)).toBe(true);
+      expect(map.mock.calls.length).toBe(0);
+      expect(forEach.mock.calls.length).toBe(0);
+    } finally {
+      map.mockRestore();
+      sort.mockRestore();
+      forEach.mockRestore();
+    }
+  });
+
+  it("rejects prototype-laundered boxed primitives at every record layer, consulting no slot value and no hook", () => {
+    // A Boolean, Number, String, BigInt or Symbol wrapper whose prototype has
+    // been reset to Object.prototype or null passes a prototype check - and,
+    // for the four kinds that own no properties, an exact-field check too -
+    // yet it keeps its primitive in an internal slot, so JSON.stringify emits
+    // that primitive (or throws) instead of the fields the digest bound. The
+    // reviewer's root reproduction: a Boolean(false) wearing a valid plan
+    // hashed identically to the plan and serialized as "false".
+    const plan = productionPlan();
+    const wrapped = Object.assign(Object.setPrototypeOf(new Boolean(false), Object.prototype), clone(plan));
+    expect(JSON.stringify(wrapped)).toBe("false");
+    expect(() => computePlanHash(wrapped)).toThrow(
+      /^post-stage1 expansion plan: plan must be a plain object, not a boxed primitive; a Boolean, Number, String, BigInt or Symbol wrapper keeps its primitive in an internal slot/,
+    );
+
+    const kinds = [
+      ["Boolean", () => new Boolean(false)],
+      ["Number", () => new Number(0)],
+      ["String (empty, no index)", () => new String("")],
+      ["String (indexed)", () => new String("x")],
+      ["BigInt", () => Object(1n)],
+      ["Symbol", () => Object(Symbol("s"))],
+    ];
+    const boxedMessage = (label) =>
+      new RegExp(`^post-stage1 expansion plan: ${escapeRegExp(label)} must be a plain object, not a boxed primitive; `);
+
+    let checked = 0;
+    for (const [label, path] of OBJECT_LAYERS) {
+      for (const proto of [Object.prototype, null]) {
+        for (const [kind, make] of kinds) {
+          const hooks = [];
+          const tampered = replaceAt(clone(plan), path, (value) => {
+            const laundered = Object.assign(Object.setPrototypeOf(make(), proto), value);
+            // Own coercion hooks as ACCESSORS, so merely looking for one is
+            // observable. The boxed check must fire on the internal slot
+            // alone - before any own field, hook or symbol key is consulted,
+            // which is also why these extra keys are not what gets reported.
+            for (const key of ["toJSON", "toString", "valueOf"]) {
+              Object.defineProperty(laundered, key, {
+                get() {
+                  hooks.push(key);
+                  return () => "<x>";
+                },
+                configurable: true,
+              });
+            }
+            Object.defineProperty(laundered, Symbol.toPrimitive, {
+              get() {
+                hooks.push("Symbol.toPrimitive");
+                return () => "<x>";
+              },
+              configurable: true,
+            });
+            return laundered;
+          });
+          const where = `${label} as a laundered ${kind} on ${proto === null ? "null" : "Object.prototype"}`;
+          expect(() => computePlanHash(tampered), where).toThrow(boxedMessage(label));
+          expect(hooks, where).toEqual([]);
+          checked += 1;
+        }
+      }
+    }
+    // 5 record layers x 2 prototypes x 6 wrapper shapes.
+    expect(checked).toBe(60);
+
+    // Proxy-first still holds ahead of the boxed check: a Proxy around a
+    // laundered wrapper is refused as a Proxy, with no trap reached.
+    const traps = [];
+    const proxied = countingProxy(Object.assign(Object.setPrototypeOf(new Number(0), Object.prototype), clone(plan)), traps);
+    expect(() => computePlanHash(proxied)).toThrow(/^post-stage1 expansion plan: plan must not be a Proxy/);
+    expect(traps).toEqual([]);
+
+    // The guard reads internal slots, not shape: ordinary records, including
+    // null-prototype ones, are untouched and still hash to the stored value.
+    expect(computePlanHash(clone(plan))).toBe(plan.planHash);
+    expect(computePlanHash(Object.assign(Object.create(null), clone(plan)))).toBe(plan.planHash);
+  });
+});

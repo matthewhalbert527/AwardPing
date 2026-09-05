@@ -16,8 +16,8 @@
 // publish path. node:crypto's createHash is used only for a deterministic
 // digest over already-supplied strings (the same technique
 // src/lib/stage1-cohort-identity.ts uses for its own frozen hash), and
-// node:util's types.isProxy only inspects a value's kind - neither performs
-// I/O nor reads an entropy source.
+// node:util's types.isProxy and types.isBoxedPrimitive only inspect a
+// value's kind - none performs I/O or reads an entropy source.
 //
 // ACCEPTED INPUT TYPES (exact - everything else fails closed)
 //
@@ -57,6 +57,7 @@
 // two-candidate array reporting length 1, both reproduced against a previous
 // revision). No legitimate caller of an offline, pure planner needs one.
 import { createHash } from "node:crypto";
+import { types as nodeTypes } from "node:util";
 
 import {
   canonicalSourceUrlKey,
@@ -745,41 +746,242 @@ function rejectCrossCandidateUrlReuse(plans) {
 // sets; both are sorted here by a value intrinsic to their own content
 // (never by input position) so the hash is invariant to how the caller's
 // override.sources array happened to be ordered.
+//
+// THE ARGUMENT IS UNTRUSTED INPUT
+//
+// computePlanHash is exported, so a caller can hand it any graph at all -
+// including one built to make a tampered plan digest as an untampered one.
+// The previous revision read the caller's graph directly and let caller
+// values reach JSON.stringify, and every one of the following was reproduced
+// against it: a changed source title hidden behind an own `map` on
+// monitorableSources that returned the original sources (original hash, hook
+// run); an object-valued lifecycle flag whose toJSON returned false (type
+// masked, hook run); candidateId and excludedDiscoveryUrls elements as
+// objects with toJSON (masked as the strings they imitate); a live Proxy
+// plan (17 traps executed) and a revoked one (raw TypeError outside fail); a
+// hidden slug that hashed unchanged while JSON export dropped it; an extra
+// root field riding along unhashed; an own toJSON on monitorableSources that
+// exported 0 of 12 sources under the unchanged hash; an Array subclass whose
+// map ran; a getter leaf that ran; and default-sort toString hooks that ran.
+//
+// So the plan now crosses the same boundary catalog input does - Proxy first,
+// plain prototypes, own enumerable data descriptors read once, dense arrays
+// with exact own-key sets - plus an exact known-field set at every layer (an
+// unrecognized property is precisely where a toJSON sits and would otherwise
+// ride along unhashed), a boxed-primitive check at every record layer (a
+// Boolean/Number/String/BigInt/Symbol wrapper whose prototype was reset to
+// Object.prototype or null passes the prototype check and, for the four
+// kinds with no own properties, the field check too, yet JSON.stringify
+// serializes its internal slot - reproduced: a Boolean(false) wearing a
+// valid plan hashed identically and exported as "false"), and type-exact
+// leaves. Every value is copied into a
+// fresh, primitive-only material graph built here, with the same key order
+// and the same sorts as before, performed on the fresh copies; nothing
+// caller-owned is ever serialized or iterated by its own methods. Valid
+// hashes are unchanged by this and are pinned in the suite.
+//
+// This is an integrity boundary, not a promotion validator: a lifecycle
+// string or flag is bound whatever its value, so a changed gate changes the
+// digest rather than being reset or refused.
+
+const PLAN_OWN_FIELDS = new Set([
+  "candidateId",
+  "awardName",
+  "normalizedAwardKey",
+  "status",
+  "slug",
+  "seed",
+  "excludedDiscoveryUrls",
+  "homepage",
+  "monitorableSources",
+  "lifecycle",
+  "planHash",
+]);
+const PLAN_SEED_OWN_FIELDS = new Set(["seedIndex", "name", "starterUrl"]);
+const PLAN_HOMEPAGE_OWN_FIELDS = new Set(["url", "title", "confidence"]);
+const PLAN_SOURCE_OWN_FIELDS = new Set(["url", "title", "pageType", "confidence", "canonicalUrlKey"]);
+const PLAN_LIFECYCLE_OWN_FIELDS = new Set([
+  "currentCycleAuthority",
+  "humanSourceReview",
+  "remoteIdentityCollisionCheck",
+  "monitoringReadiness",
+  "publicationEligibility",
+]);
+
+// The record is already known not to be a Proxy, so neither call below can
+// reach a trap. Symbols are reported by count rather than rendered, because
+// rendering one would run Symbol.prototype.toString.
+function requireKnownPlanFields(record, label, known) {
+  if (Object.getOwnPropertySymbols(record).length > 0) {
+    fail(`${label} must not carry symbol-keyed own properties; the plan hash cannot cover them.`);
+  }
+  for (const key of Object.getOwnPropertyNames(record)) {
+    if (!known.has(key)) {
+      fail(
+        `${label} carries an unrecognized own field ${JSON.stringify(key)}; the plan hash must account for the ` +
+          `whole plan, so an unknown property fails closed rather than going unhashed.`,
+      );
+    }
+  }
+  return record;
+}
+
+function snapshotPlanShape(value, label, known) {
+  requirePlainDataRecord(value, label);
+  // A prototype check cannot see an internal slot. A Boolean, Number,
+  // String, BigInt or Symbol wrapper laundered onto Object.prototype or null
+  // is still a wrapper: JSON.stringify writes its [[BooleanData]]/
+  // [[NumberData]]/[[StringData]] (or throws on [[BigIntData]]) instead of
+  // the fields this digest would bind, so the same graph could hash as a
+  // plan and export as `false`. util.types.isBoxedPrimitive reads the slot
+  // and reaches no trap or accessor; the value is already known not to be a
+  // Proxy, and this runs before any own field is consulted.
+  if (nodeTypes.isBoxedPrimitive(value)) {
+    fail(
+      `${label} must be a plain object, not a boxed primitive; a Boolean, Number, String, BigInt or Symbol ` +
+        `wrapper keeps its primitive in an internal slot and would serialize as that primitive rather than as its fields.`,
+    );
+  }
+  return requireKnownPlanFields(value, label, known);
+}
+
+function requireBooleanLeaf(value, label) {
+  if (typeof value !== "boolean") {
+    fail(`${label} must be a boolean; got ${describeValue(value)}.`);
+  }
+  return value;
+}
+
+// Finite only: JSON serializes NaN and both infinities as null, so admitting
+// them would let three different values share one digest.
+function requireFiniteNumberLeaf(value, label) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    fail(`${label} must be a finite number; got ${describeValue(value)}.`);
+  }
+  return value;
+}
+
+function requireNonNegativeIntegerLeaf(value, label) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    fail(`${label} must be a non-negative integer; got ${describeValue(value)}.`);
+  }
+  return value;
+}
+
+// Key insertion order below is the digest's field order; it is part of the
+// serialization and is fixed deliberately.
+function snapshotMaterialSource(value, label) {
+  const source = snapshotPlanShape(value, label, PLAN_SOURCE_OWN_FIELDS);
+  return {
+    url: requireNonEmptyString(snapshotOwnField(source, "url", label), `${label}.url`),
+    title: requireNonEmptyString(snapshotOwnField(source, "title", label), `${label}.title`),
+    pageType: requireNonEmptyString(snapshotOwnField(source, "pageType", label), `${label}.pageType`),
+    confidence: requireFiniteNumberLeaf(snapshotOwnField(source, "confidence", label), `${label}.confidence`),
+    canonicalUrlKey: requireNonEmptyString(
+      snapshotOwnField(source, "canonicalUrlKey", label),
+      `${label}.canonicalUrlKey`,
+    ),
+  };
+}
+
 export function computePlanHash(plan) {
-  const sortedSources = plan.monitorableSources
-    .map((source) => ({
-      url: source.url,
-      title: source.title,
-      pageType: source.pageType,
-      confidence: source.confidence,
-      // Bound explicitly rather than treated as derivable: canonicalUrlKey is
-      // RETURNED material that downstream readers compare on, so a plan whose
-      // returned key differs must not present the same identity hash.
-      canonicalUrlKey: source.canonicalUrlKey,
-    }))
-    .sort((left, right) => (left.url < right.url ? -1 : left.url > right.url ? 1 : 0));
-  const sortedExcludedDiscoveryUrls = [...plan.excludedDiscoveryUrls].sort();
+  const source = snapshotPlanShape(plan, "plan", PLAN_OWN_FIELDS);
+
+  // Checked but not hashed: planHash is the digest's own output, so binding
+  // it would make the value depend on itself. Absent is accepted because the
+  // builder hashes a plan before the field is filled in, and null is its
+  // placeholder for exactly that moment.
+  const presentedHash = snapshotOwnField(source, "planHash", "plan");
+  if (presentedHash !== undefined && presentedHash !== null && typeof presentedHash !== "string") {
+    fail(`plan.planHash must be null or a string; got ${describeValue(presentedHash)}.`);
+  }
+
+  const rawSlug = snapshotOwnField(source, "slug", "plan");
+  const slug = rawSlug === null ? null : requireNonEmptyString(rawSlug, "plan.slug");
+
+  const seed = snapshotPlanShape(snapshotOwnField(source, "seed", "plan"), "plan.seed", PLAN_SEED_OWN_FIELDS);
+  // Validated, then dropped: seedIndex is where the seed sat in the caller's
+  // array, not what the award is.
+  requireNonNegativeIntegerLeaf(snapshotOwnField(seed, "seedIndex", "plan.seed"), "plan.seed.seedIndex");
+
+  const homepage = snapshotPlanShape(
+    snapshotOwnField(source, "homepage", "plan"),
+    "plan.homepage",
+    PLAN_HOMEPAGE_OWN_FIELDS,
+  );
+  const lifecycle = snapshotPlanShape(
+    snapshotOwnField(source, "lifecycle", "plan"),
+    "plan.lifecycle",
+    PLAN_LIFECYCLE_OWN_FIELDS,
+  );
+
+  // Fresh copies, sorted here. The caller's arrays are never iterated or
+  // sorted by their own methods.
+  const sortedExcludedDiscoveryUrls = snapshotStringArray(
+    snapshotOwnField(source, "excludedDiscoveryUrls", "plan"),
+    "plan.excludedDiscoveryUrls",
+  ).sort();
+  const rawSources = snapshotDenseArray(
+    snapshotOwnField(source, "monitorableSources", "plan"),
+    "plan.monitorableSources",
+  );
+  const sortedSources = [];
+  for (let index = 0; index < rawSources.length; index += 1) {
+    sortedSources.push(snapshotMaterialSource(rawSources[index], `plan.monitorableSources[${index}]`));
+  }
+  sortedSources.sort((left, right) => (left.url < right.url ? -1 : left.url > right.url ? 1 : 0));
 
   const material = {
     planVersion: POST_STAGE1_EXPANSION_PLAN_VERSION,
     configSchema: POST_STAGE1_EXPANSION_CANDIDATES_SCHEMA,
-    candidateId: plan.candidateId,
-    awardName: plan.awardName,
-    normalizedAwardKey: plan.normalizedAwardKey,
-    status: plan.status,
-    slug: plan.slug,
-    seed: { name: plan.seed.name, starterUrl: plan.seed.starterUrl },
+    candidateId: requireNonEmptyString(snapshotOwnField(source, "candidateId", "plan"), "plan.candidateId"),
+    awardName: requireNonEmptyString(snapshotOwnField(source, "awardName", "plan"), "plan.awardName"),
+    normalizedAwardKey: requireNonEmptyString(
+      snapshotOwnField(source, "normalizedAwardKey", "plan"),
+      "plan.normalizedAwardKey",
+    ),
+    status: requireNonEmptyString(snapshotOwnField(source, "status", "plan"), "plan.status"),
+    slug,
+    seed: {
+      name: requireNonEmptyString(snapshotOwnField(seed, "name", "plan.seed"), "plan.seed.name"),
+      starterUrl: requireNonEmptyString(snapshotOwnField(seed, "starterUrl", "plan.seed"), "plan.seed.starterUrl"),
+    },
     excludedDiscoveryUrls: sortedExcludedDiscoveryUrls,
-    homepage: { url: plan.homepage.url, title: plan.homepage.title, confidence: plan.homepage.confidence },
+    homepage: {
+      url: requireNonEmptyString(snapshotOwnField(homepage, "url", "plan.homepage"), "plan.homepage.url"),
+      title: requireNonEmptyString(snapshotOwnField(homepage, "title", "plan.homepage"), "plan.homepage.title"),
+      confidence: requireFiniteNumberLeaf(
+        snapshotOwnField(homepage, "confidence", "plan.homepage"),
+        "plan.homepage.confidence",
+      ),
+    },
     monitorableSources: sortedSources,
     lifecycle: {
-      currentCycleAuthority: plan.lifecycle.currentCycleAuthority,
-      humanSourceReview: plan.lifecycle.humanSourceReview,
-      remoteIdentityCollisionCheck: plan.lifecycle.remoteIdentityCollisionCheck,
-      monitoringReadiness: plan.lifecycle.monitoringReadiness,
-      publicationEligibility: plan.lifecycle.publicationEligibility,
+      currentCycleAuthority: requireNonEmptyString(
+        snapshotOwnField(lifecycle, "currentCycleAuthority", "plan.lifecycle"),
+        "plan.lifecycle.currentCycleAuthority",
+      ),
+      humanSourceReview: requireNonEmptyString(
+        snapshotOwnField(lifecycle, "humanSourceReview", "plan.lifecycle"),
+        "plan.lifecycle.humanSourceReview",
+      ),
+      remoteIdentityCollisionCheck: requireNonEmptyString(
+        snapshotOwnField(lifecycle, "remoteIdentityCollisionCheck", "plan.lifecycle"),
+        "plan.lifecycle.remoteIdentityCollisionCheck",
+      ),
+      monitoringReadiness: requireBooleanLeaf(
+        snapshotOwnField(lifecycle, "monitoringReadiness", "plan.lifecycle"),
+        "plan.lifecycle.monitoringReadiness",
+      ),
+      publicationEligibility: requireBooleanLeaf(
+        snapshotOwnField(lifecycle, "publicationEligibility", "plan.lifecycle"),
+        "plan.lifecycle.publicationEligibility",
+      ),
     },
   };
+  // Every leaf above is a string, number, boolean or null, and every
+  // container is one this function built, so JSON.stringify has no caller
+  // object to invoke a replacer hook on.
   return createHash("sha256").update(JSON.stringify(material), "utf8").digest("hex");
 }
 
