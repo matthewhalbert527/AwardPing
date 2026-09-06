@@ -47,6 +47,33 @@ export function markGeminiBillingBlocked({
   return record;
 }
 
+// Shared with the capture worker: a 429 whose provider message names prepaid
+// credits or billing is an account block, not a rate limit, so it must not be
+// retried. A plain quota/rate-limit 429 stays retryable.
+// Only the prepaid-credit / account-billing shape counts. Google's generic
+// quota message ("You exceeded your current quota, please check your plan and
+// billing details") is a rate limit and must stay retryable; matching it here
+// would write the fleet-wide block file on a single transient 429.
+const GEMINI_PREPAID_DEPLETED_MESSAGE = /\b(prepay|prepayment|credits?\s+are\s+depleted)\b/;
+const GEMINI_ACCOUNT_BLOCKED_MESSAGE =
+  /\b(billing\s+(?:is\s+)?(?:blocked|disabled|suspended)|account\s+(?:is\s+)?(?:blocked|suspended))\b/;
+const GEMINI_QUOTA_MESSAGE = /check your plan and billing details|quota exceeded|per minute|per day/;
+
+export function isGeminiBillingBlockedResponse(httpStatus, message) {
+  const clean = String(message || "").toLowerCase();
+  if (Number(httpStatus) !== 429) return false;
+  if (GEMINI_PREPAID_DEPLETED_MESSAGE.test(clean)) return true;
+  if (GEMINI_QUOTA_MESSAGE.test(clean)) return false;
+  return GEMINI_ACCOUNT_BLOCKED_MESSAGE.test(clean);
+}
+
+export function isGeminiBillingBlockedError(error) {
+  if (!error || typeof error !== "object") return false;
+  if (error.geminiBillingBlocked === true) return true;
+  const httpStatus = error.geminiHttpStatus ?? error.httpStatus ?? error.status;
+  return isGeminiBillingBlockedResponse(httpStatus, error.message);
+}
+
 export function readGeminiBillingBlock(archiveRoot) {
   const path = geminiBillingBlockPath(archiveRoot);
   if (!existsSync(path)) return null;
@@ -125,7 +152,7 @@ function readFreshGeminiUsageSummary(archiveRoot, month, monthPath) {
   }
 }
 
-function geminiBillingBlockPath(archiveRoot) {
+export function geminiBillingBlockPath(archiveRoot) {
   return join(archiveRoot, "usage", "gemini-billing-blocked.json");
 }
 

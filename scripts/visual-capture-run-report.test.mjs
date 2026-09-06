@@ -9,8 +9,13 @@ import {
   buildVisualRunReportSummary,
   classifyVisualCaptureFailure,
   isDailyVisualShardReport,
+  isPdfBuffer,
+  isPdfContentType,
+  isPdfPayload,
   monitoringDateForTimestamp,
   monitoringDateForVisualReportFilename,
+  pdfDownloadFallbackReason,
+  pdfDownloadNonPdfContentMessage,
   shouldReplaceLatestNightlyReport,
   visualRunTerminalDisposition,
 } from "./lib/visual-capture-run-report.mjs";
@@ -256,6 +261,99 @@ describe("visual capture run reporting", () => {
     expect(classifyVisualCaptureFailure({
       message: "PDF text parsing failed: Invalid PDF structure.",
     }).severity).toBe("critical");
+  });
+
+  it("treats a non-PDF body behind a PDF URL as an unsupported capture, not a parser failure", () => {
+    const interstitial = classifyVisualCaptureFailure({
+      message: pdfDownloadNonPdfContentMessage("text/html; charset=utf-8"),
+    });
+    expect(interstitial.code).toBe("capture_render_or_unsupported");
+    expect(interstitial.severity).toBe("warning");
+    expect(interstitial.retry_mode).toBe("automatic_next_scan");
+
+    // A failed browser fallback keeps the original message and bucket.
+    expect(classifyVisualCaptureFailure({
+      message:
+        "PDF download returned non-PDF content (text/html) (browser fallback: non-PDF content (text/html))",
+    }).code).toBe("capture_render_or_unsupported");
+    expect(classifyVisualCaptureFailure({
+      message:
+        "PDF download returned non-PDF content (text/html) (browser fallback: apiRequestContext.get: Timeout 60000ms exceeded)",
+    }).code).toBe("capture_render_or_unsupported");
+    expect(classifyVisualCaptureFailure({
+      message: "PDF download failed with HTTP 403 Forbidden (browser fallback: HTTP 403 Forbidden)",
+    }).code).toBe(classifyVisualCaptureFailure({
+      message: "PDF download failed with HTTP 403 Forbidden",
+    }).code);
+    expect(classifyVisualCaptureFailure({
+      message: "PDF download failed with HTTP 403 Forbidden (browser fallback: HTTP 403 Forbidden)",
+    }).severity).toBe("warning");
+  });
+
+  it("recognizes PDF payloads by header before trusting the declared media type", () => {
+    const pdf = Buffer.from("%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj", "latin1");
+    const html = Buffer.from("<!DOCTYPE html><html><body>Checking your browser</body></html>");
+    const preamble = Buffer.concat([Buffer.alloc(200, 0x20), pdf]);
+
+    expect(isPdfBuffer(pdf)).toBe(true);
+    expect(isPdfBuffer(preamble)).toBe(true);
+    expect(isPdfBuffer(html)).toBe(false);
+    expect(isPdfBuffer(Buffer.alloc(0))).toBe(false);
+    expect(isPdfBuffer(null)).toBe(false);
+    expect(isPdfBuffer("%PDF-1.7")).toBe(false);
+
+    expect(isPdfContentType("application/pdf")).toBe(true);
+    expect(isPdfContentType("Application/PDF; charset=binary")).toBe(true);
+    expect(isPdfContentType("application/x-pdf")).toBe(true);
+    expect(isPdfContentType("text/html; charset=utf-8")).toBe(false);
+    expect(isPdfContentType(null)).toBe(false);
+
+    expect(isPdfPayload({ contentType: "application/pdf", buffer: pdf })).toBe(true);
+    expect(isPdfPayload({ contentType: null, buffer: pdf })).toBe(true);
+    // A mislabeled real PDF keeps working; the header is authoritative.
+    expect(isPdfPayload({ contentType: "text/html", buffer: pdf })).toBe(true);
+    // An HTML interstitial is refused even when the header appears later in the body.
+    expect(isPdfPayload({ contentType: "text/html; charset=utf-8", buffer: html })).toBe(false);
+    expect(isPdfPayload({
+      contentType: "text/html",
+      buffer: Buffer.concat([html, Buffer.from("%PDF")]),
+    })).toBe(false);
+    expect(isPdfPayload({ contentType: "application/pdf", buffer: html })).toBe(false);
+    expect(isPdfPayload({ contentType: "application/octet-stream", buffer: preamble })).toBe(true);
+    expect(isPdfPayload({ contentType: "application/pdf", buffer: Buffer.alloc(0) })).toBe(false);
+
+    expect(pdfDownloadNonPdfContentMessage("text/html; charset=utf-8"))
+      .toBe("PDF download returned non-PDF content (text/html; charset=utf-8)");
+    expect(pdfDownloadNonPdfContentMessage(null))
+      .toBe("PDF download returned non-PDF content (unknown content-type)");
+  });
+
+  it("only offers the browser fallback for HTTP 403 or a non-PDF 2xx body", () => {
+    const pdf = Buffer.from("%PDF-1.4\n");
+    const html = Buffer.from("<html>blocked</html>");
+    expect(pdfDownloadFallbackReason({ status: 403, contentType: "text/html", buffer: html }))
+      .toBe("http_403");
+    expect(pdfDownloadFallbackReason({ status: 403, contentType: "application/pdf", buffer: pdf }))
+      .toBe("http_403");
+    expect(pdfDownloadFallbackReason({ status: 200, contentType: "text/html", buffer: html }))
+      .toBe("non_pdf_content");
+    expect(pdfDownloadFallbackReason({ status: 200, contentType: "application/pdf", buffer: html }))
+      .toBe("non_pdf_content");
+    expect(pdfDownloadFallbackReason({ status: 200, contentType: "application/pdf", buffer: pdf }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({ status: 200, contentType: "text/html", buffer: pdf }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({ status: 404, contentType: "text/html", buffer: html }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({ status: 401, contentType: "text/html", buffer: html }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({ status: 429, contentType: "text/html", buffer: html }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({ status: 500, contentType: "text/html", buffer: html }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({ status: 301, contentType: null, buffer: Buffer.alloc(0) }))
+      .toBeNull();
+    expect(pdfDownloadFallbackReason({})).toBeNull();
   });
 
   it("emits guarded repair actions for network, resource, and PDF limits", () => {
