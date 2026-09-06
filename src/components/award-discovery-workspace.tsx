@@ -412,7 +412,9 @@ export function AwardDiscoveryWorkspace({
               }}
             >
               <option value="all">All awards</option>
-              <option value="recent">Recently updated</option>
+              {/* The predicate is "has at least one recorded public update";
+                  the label states that and promises no recency. */}
+              <option value="recent">Has recorded updates</option>
             </select>
           </label>
         </div>
@@ -501,10 +503,15 @@ function searchResultMetaText(award: SharedAwardCard) {
 }
 
 function sourceStatusText(award: SharedAwardCard) {
-  if (award.sourceCount === null) return "Open to view source pages";
+  if (award.sourceCount === null) {
+    // The directory carries each award's recorded public update count but
+    // not its source pages, so the count is stated and the source guidance
+    // stays. A row without a recorded count states nothing about updates.
+    const updates = award.changeCount === null ? null : recordedUpdatesText(award.changeCount);
+    return updates ? `${updates} · Open to view source pages` : "Open to view source pages";
+  }
 
-  const changeCount = award.changeCount ?? award.changes.length;
-  const updates = `${changeCount} recorded update${changeCount === 1 ? "" : "s"}`;
+  const updates = recordedUpdatesText(award.changeCount ?? award.changes.length);
   if (award.sourceCount === 0) return `Source search pending · ${updates}`;
 
   return [
@@ -513,6 +520,10 @@ function sourceStatusText(award: SharedAwardCard) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+function recordedUpdatesText(changeCount: number) {
+  return `${changeCount} recorded update${changeCount === 1 ? "" : "s"}`;
 }
 
 function compactAwardBlurb(summary: string | null, awardName: string) {

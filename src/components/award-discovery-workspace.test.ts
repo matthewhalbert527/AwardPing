@@ -161,3 +161,164 @@ describe("AwardDiscoveryWorkspace", () => {
     }
   });
 });
+
+// Production-shaped directory rows: the directory page supplies a recorded
+// public update count for every award and never a source count.
+function directoryRow(
+  row: Pick<SharedAwardCard, "id" | "name" | "publicPath" | "changeCount">,
+): SharedAwardCard {
+  return {
+    slug: null,
+    officialHomepage: null,
+    summary: null,
+    deadline: null,
+    academicLevels: [],
+    disciplines: [],
+    citizenship: [],
+    lastCheckedAt: null,
+    recentlyUpdated: (row.changeCount ?? 0) > 0,
+    sourceCount: null,
+    sourceIssueCount: null,
+    tracked: false,
+    detailsLoaded: false,
+    sources: [],
+    changes: [],
+    ...row,
+  };
+}
+
+// All three open the letter view on "G", listed alphabetically.
+const gates = directoryRow({
+  id: "9d3a5f4e-2b1c-4d8e-9f0a-1b2c3d4e5f60",
+  name: "Gates Cambridge Scholarship",
+  publicPath: "/gates-cambridge-scholarship",
+  changeCount: 0,
+});
+const gilman = directoryRow({
+  id: "0e4b6a5f-3c2d-4e9f-8a1b-2c3d4e5f6a71",
+  name: "Gilman International Scholarship",
+  publicPath: "/gilman-international-scholarship",
+  changeCount: 1,
+});
+const goldwaterRow = directoryRow({
+  id: goldwater.id,
+  name: goldwater.name,
+  publicPath: goldwater.publicPath,
+  changeCount: 12,
+});
+
+// The component's state slots in declaration order: query, results open,
+// browse open, letter, page size, page index, level, discipline, citizenship,
+// deadline, updates. Only the last one is changed from its default here.
+const UPDATES_FILTER_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "all", "recent"];
+
+function renderRows(rows: SharedAwardCard[], presets: unknown[] = []) {
+  searchState.presets = [...presets];
+  try {
+    const html = renderToStaticMarkup(
+      createElement(AwardDiscoveryWorkspace, {
+        canManage: false,
+        isAuthenticated: false,
+        sharedAwards: rows,
+      }),
+    );
+    if (searchState.presets.length) {
+      throw new Error(`${searchState.presets.length} state preset(s) were not consumed`);
+    }
+    return html;
+  } finally {
+    searchState.presets = [];
+  }
+}
+
+// The first chip of each listed award's meta row, in listing order.
+function statusChips(html: string) {
+  return [...html.matchAll(/<div class="award-directory-row-meta"><span>([^<]*)<\/span>/g)].map(
+    (match) => match[1],
+  );
+}
+
+describe("AwardDiscoveryWorkspace update status", () => {
+  it("states each award's recorded update count beside the source guidance when the source count is unknown", () => {
+    const html = renderRows([gates, gilman, goldwaterRow]);
+
+    expect(browseRowHrefs(html)).toEqual([
+      "/gates-cambridge-scholarship",
+      "/gilman-international-scholarship",
+      "/goldwater-scholarship",
+    ]);
+    expect(statusChips(html)).toEqual([
+      "0 recorded updates · Open to view source pages",
+      "1 recorded update · Open to view source pages",
+      "12 recorded updates · Open to view source pages",
+    ]);
+    // Nothing the directory does not know is claimed.
+    expect(html).not.toContain("source page ·");
+    expect(html).not.toContain("source pages ·");
+    expect(html).not.toContain("Source search pending");
+    expect(html).not.toContain("Recently updated");
+    expect(html).not.toContain("Last checked");
+  });
+
+  it("states nothing about updates for a row that carries no recorded count", () => {
+    const html = renderRows([{ ...gates, changeCount: null }]);
+
+    expect(statusChips(html)).toEqual(["Open to view source pages"]);
+    // No count is stated anywhere in the listing; the filter label is the
+    // only place the phrase appears.
+    expect(html).not.toMatch(/\d recorded update/);
+  });
+
+  it("keeps the wording for rows that do carry a source count", () => {
+    const html = renderRows([
+      { ...gates, sourceCount: 0, changeCount: 0 },
+      { ...gilman, sourceCount: 1, changeCount: 1 },
+      { ...goldwaterRow, sourceCount: 4, changeCount: 2 },
+    ]);
+
+    expect(statusChips(html)).toEqual([
+      "Source search pending · 0 recorded updates",
+      "1 source page · 1 recorded update",
+      "4 source pages · 2 recorded updates",
+    ]);
+    expect(html).not.toContain("Open to view source pages");
+  });
+
+  it("labels the Updates filter by what it does and keeps what it does", () => {
+    const rows = [gates, gilman, goldwaterRow];
+
+    const unfiltered = renderRows(rows);
+    expect(unfiltered).toContain(
+      '<option value="all" selected="">All awards</option><option value="recent">Has recorded updates</option>',
+    );
+    expect(unfiltered).not.toContain("Recently updated");
+    expect(unfiltered).toContain("3 of 3 monitored awards match.");
+
+    const filtered = renderRows(rows, UPDATES_FILTER_PRESETS);
+    expect(filtered).toContain(
+      '<option value="all">All awards</option><option value="recent" selected="">Has recorded updates</option>',
+    );
+    expect(filtered).toContain("2 of 3 monitored awards match.");
+    // Exactly the awards whose chips show a non-zero recorded count remain.
+    expect(browseRowHrefs(filtered)).toEqual([
+      "/gilman-international-scholarship",
+      "/goldwater-scholarship",
+    ]);
+    expect(statusChips(filtered)).toEqual([
+      "1 recorded update · Open to view source pages",
+      "12 recorded updates · Open to view source pages",
+    ]);
+  });
+
+  it("leaves search results without a status line while the source count is unknown", () => {
+    const html = renderRows([gates, gilman, goldwaterRow], ["Scholarship", true]);
+
+    expect(html).toContain("3 matching awards");
+    expect(searchOptionHrefs(html)).toEqual([
+      "/gates-cambridge-scholarship",
+      "/gilman-international-scholarship",
+      "/goldwater-scholarship",
+    ]);
+    expect(html).not.toContain("award-search-option-meta");
+  });
+});
