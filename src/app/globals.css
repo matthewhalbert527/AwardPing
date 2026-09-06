@@ -3344,10 +3344,18 @@ a {
   padding: clamp(1.1rem, 3vw, 2rem) clamp(1rem, 2.5vw, 1.5rem) 3.5rem;
 }
 
+/* Named areas keep the wide layout (sticky outline on the left, header and
+   panel on the right) while the DOM reads header, outline, panel; the
+   one-column layout below stacks those areas in that same order. */
 .public-award-console {
   display: grid;
   grid-template-columns: minmax(15.5rem, 17.5rem) minmax(0, 1fr);
-  gap: clamp(1.5rem, 3.5vw, 2.75rem);
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-areas:
+    "outline header"
+    "outline panel";
+  column-gap: clamp(1.5rem, 3.5vw, 2.75rem);
+  row-gap: 1.2rem;
   align-items: start;
 }
 
@@ -3356,6 +3364,7 @@ a {
 }
 
 .public-award-sidebar {
+  grid-area: outline;
   position: sticky;
   top: 5.4rem;
   display: grid;
@@ -3788,13 +3797,6 @@ a {
   display: none;
 }
 
-.public-award-console-main {
-  display: grid;
-  gap: 1.2rem;
-  min-width: 0;
-  align-content: start;
-}
-
 .public-award-console-breadcrumb {
   display: flex;
   min-width: 0;
@@ -3825,8 +3827,10 @@ a {
 }
 
 .public-award-console-header {
+  grid-area: header;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
   gap: 1.5rem;
   align-items: start;
   border-bottom: 1px solid var(--border);
@@ -3903,9 +3907,22 @@ a {
 }
 
 .public-award-console-panel {
+  grid-area: panel;
   display: grid;
   gap: 1rem;
   min-width: 0;
+  /* Programmatic scrolling stops clear of the sticky site header. */
+  scroll-margin-top: 5.4rem;
+}
+
+.public-award-console-panel:focus {
+  outline: none;
+}
+
+.public-award-console-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 6px;
+  border-radius: var(--radius-panel);
 }
 
 .public-award-key-facts {
@@ -4394,8 +4411,21 @@ a {
 
   .public-award-console,
   .public-award-console-collapsed {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto auto;
+    grid-template-areas:
+      "header"
+      "outline"
+      "panel";
     gap: 1.25rem;
+  }
+
+  /* Room below the sticky app header when it wraps onto two rows at phone
+     widths (the signed-in profile menu row is 3rem), plus the panel's
+     focus-ring offset above it. A deliberately conservative single value. */
+  .public-award-console-panel {
+    --public-award-compact-scroll-margin: 9.25rem;
+    scroll-margin-top: var(--public-award-compact-scroll-margin);
   }
 
   .public-award-sidebar {
@@ -4418,6 +4448,7 @@ a {
   .public-award-console-collapsed .public-award-nav-group summary span,
   .public-award-console-collapsed .public-award-source-group > summary span,
   .public-award-console-collapsed .public-award-nav-text small,
+  .public-award-console-collapsed .public-award-nav-text strong,
   .public-award-console-collapsed .public-award-sidebar-card {
     display: initial;
   }
@@ -4425,10 +4456,6 @@ a {
   .public-award-console-collapsed .public-award-nav-button,
   .public-award-nav-button {
     grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .public-award-console-main {
-    gap: 1rem;
   }
 
   .public-award-key-facts {

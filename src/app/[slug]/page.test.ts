@@ -139,16 +139,20 @@ async function renderSlugPage(searchParams?: Record<string, string | string[] | 
   );
 }
 
+// The award header and the selected panel: everything except the outline.
 function mainMarkup(html: string) {
-  return html.slice(html.indexOf("</aside>"));
+  const asideStart = html.indexOf("<aside ");
+  const asideEnd = html.indexOf("</aside>") + "</aside>".length;
+  expect(asideStart).toBeGreaterThanOrEqual(0);
+  return html.slice(0, asideStart) + html.slice(asideEnd);
 }
 
 function expectSelectedApplyChange(html: string) {
   const main = mainMarkup(html);
   expect(html).toContain("<h1>Example Fellowship</h1>");
   expect(main).toContain("Source update history");
-  expect(main).toContain("<h2>Application Instructions</h2>");
-  expect(main).not.toContain("<h2>Overview</h2>");
+  expect(main).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
+  expect(main).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
   expect(main).not.toContain("The homepage changed.");
   const rows = main.split(
     '<article aria-current="true" class="public-award-change-line" data-highlighted="true">',
@@ -180,6 +184,11 @@ describe("public award page", () => {
     expect(mocks.getPublicAwardPageBySlug).not.toHaveBeenCalled();
     expect(html).toContain('aria-label="Example Fellowship page outline"');
     expect(html).toContain('aria-label="Official sources"');
+    // The route's main is the only main landmark; the award header and H1
+    // come before the outline and the selected panel.
+    expect(html.split("<main")).toHaveLength(2);
+    expect(html.indexOf("<h1>Example Fellowship</h1>")).toBeLessThan(html.indexOf("<aside"));
+    expect(html.indexOf("<aside")).toBeLessThan(html.indexOf('id="public-award-panel"'));
   });
 
   it("keeps the same update context for a signed-in visitor", async () => {
@@ -218,7 +227,7 @@ describe("public award page", () => {
       const main = mainMarkup(html);
 
       expect(html, JSON.stringify(query)).toContain("<h1>Example Fellowship</h1>");
-      expect(main, JSON.stringify(query)).toContain("<h2>Overview</h2>");
+      expect(main, JSON.stringify(query)).toContain('<h2 id="public-award-panel-heading">Overview</h2>');
       expect(main, JSON.stringify(query)).toContain("A fellowship for testing.");
       expect(html, JSON.stringify(query)).not.toContain('data-highlighted="true"');
       expect(html, JSON.stringify(query)).not.toContain("Selected update");
@@ -229,7 +238,7 @@ describe("public award page", () => {
         { changeId: loaderChangeId },
       );
     }
-    expect(mainMarkup(await renderSlugPage())).toContain("<h2>Overview</h2>");
+    expect(mainMarkup(await renderSlugPage())).toContain('<h2 id="public-award-panel-heading">Overview</h2>');
     expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenLastCalledWith("example-fellowship", {
       changeId: undefined,
     });

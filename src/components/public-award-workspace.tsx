@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
@@ -13,6 +13,15 @@ import {
 } from "lucide-react";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
+import {
+  PUBLIC_AWARD_PANEL_HEADING_ID,
+  PUBLIC_AWARD_PANEL_ID,
+  activatePanelSelection,
+  readPanelRevealEnvironment,
+  revealSelectedPanel,
+  shouldRevealPanel,
+  type PanelActivationState,
+} from "@/lib/public-award-panel-focus";
 import { formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
@@ -23,7 +32,7 @@ type PublicAwardWorkspaceProps = {
   initialSourceId?: string | null;
 };
 
-type SelectedPanel =
+export type SelectedPanel =
   | { kind: "overview" }
   | { kind: "changes" }
   | { kind: "source"; sourceId: string };
@@ -43,11 +52,18 @@ export function PublicAwardWorkspace({
 }: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const initialContext = initialPanelForQuery(data, initialSourceId, initialChangeId);
-  const [selected, setSelected] = useState<SelectedPanel>(() => initialContext.panel);
+  // The selection plus the count of visitor activations; the count starts
+  // at zero, so mounting and deep links never run the reveal effect below.
+  const [activation, setActivation] = useState<PanelActivationState<SelectedPanel>>(() => ({
+    selected: initialContext.panel,
+    revealSequence: 0,
+  }));
+  const selected = activation.selected;
   const highlightedChangeId = initialContext.highlightedChangeId;
   const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
     () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
+  const panelRef = useRef<HTMLElement>(null);
   const selectedSource =
     selected.kind === "source"
       ? data.sources.find((source) => source.id === selected.sourceId) || null
@@ -108,27 +124,45 @@ export function PublicAwardWorkspace({
     setReadChangeIds((current) => new Set([...current, ...uniqueIds]));
     postReadChangeIds(uniqueIds);
   };
-  const selectSource = (sourceId: string) => {
-    const source = data.sources.find((candidate) => candidate.id === sourceId);
-    if (!source) return;
-    markChangesRead(
-      data.changes
-        .filter((change) => isChangeForSource(change, source) && isUnreadChange(change, readChangeIds))
-        .map((change) => change.id),
-    );
-    setSelected({ kind: "source", sourceId });
+  // Every outline activation goes through here: it marks what the visitor
+  // is about to see as read and applies the pure activation transition,
+  // whose advancing sequence drives the reveal effect below.
+  const activatePanel = (next: SelectedPanel) => {
+    if (!isKnownPanel(data, next)) return;
+    markChangesRead(changeIdsToMarkRead(data, readChangeIds, next));
+    setActivation((state) => activatePanelSelection(state, next, (panel) => isKnownPanel(data, panel)));
   };
-  const selectChanges = () => {
-    markChangesRead(
-      data.changes
-        .filter((change) => isUnreadChange(change, readChangeIds))
-        .map((change) => change.id),
-    );
-    setSelected({ kind: "changes" });
-  };
+
+  useEffect(() => {
+    if (!shouldRevealPanel(activation.revealSequence)) return;
+    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment());
+  }, [activation.revealSequence]);
 
   return (
     <div className={`public-award-console ${sidebarOpen ? "" : "public-award-console-collapsed"}`}>
+      <header className="public-award-console-header">
+        <div>
+          <p className="public-award-kicker">Nationally competitive award</p>
+          <h1>{data.award.name}</h1>
+          <div className="public-award-meta-line">
+            <span>{data.sources.length} source pages</span>
+          </div>
+          {data.facts.overview && <p>{data.facts.overview}</p>}
+        </div>
+        <div className="public-award-console-actions">
+          {data.officialHomepage && (
+            <a className="button-secondary" href={data.officialHomepage} rel="noreferrer" target="_blank">
+              <ExternalLink size={15} aria-hidden="true" />
+              Official homepage
+            </a>
+          )}
+          <Link className="button-primary" href="/contact">
+            Get in touch
+            <ArrowRight size={16} aria-hidden="true" />
+          </Link>
+        </div>
+      </header>
+
       <aside className="public-award-sidebar" aria-label={`${data.award.name} page outline`}>
         <div className="public-award-sidebar-header">
           <div className="min-w-0">
@@ -155,13 +189,13 @@ export function PublicAwardWorkspace({
             active={selected.kind === "overview"}
             label="Overview"
             meta={countLabel(factRows.length, "field")}
-            onClick={() => setSelected({ kind: "overview" })}
+            onClick={() => activatePanel({ kind: "overview" })}
           />
           <PanelButton
             active={selected.kind === "changes"}
             label="Recent changes"
             meta={countLabel(data.changes.length, "update")}
-            onClick={selectChanges}
+            onClick={() => activatePanel({ kind: "changes" })}
             updateCount={unreadChangeCount}
           />
         </div>
@@ -175,7 +209,7 @@ export function PublicAwardWorkspace({
                   key={source.id}
                   awardName={data.award.name}
                   officialHomepage={data.officialHomepage}
-                  onSelectSource={selectSource}
+                  onSelectSource={(sourceId) => activatePanel({ kind: "source", sourceId })}
                   selected={selected}
                   source={source}
                   sourceUnreadCount={sourceUnreadCounts.get(source.id) || 0}
@@ -191,50 +225,41 @@ export function PublicAwardWorkspace({
         )}
       </aside>
 
-      <main className="public-award-console-main">
-        <header className="public-award-console-header">
-          <div>
-            <p className="public-award-kicker">Nationally competitive award</p>
-            <h1>{data.award.name}</h1>
-            <div className="public-award-meta-line">
-              <span>{data.sources.length} source pages</span>
-            </div>
-            {data.facts.overview && <p>{data.facts.overview}</p>}
-          </div>
-          <div className="public-award-console-actions">
-            {data.officialHomepage && (
-              <a className="button-secondary" href={data.officialHomepage} rel="noreferrer" target="_blank">
-                <ExternalLink size={15} aria-hidden="true" />
-                Official homepage
-              </a>
-            )}
-            <Link className="button-primary" href="/contact">
-              Get in touch
-              <ArrowRight size={16} aria-hidden="true" />
-            </Link>
-          </div>
-        </header>
-
-        <section className="public-award-console-panel">
-          {selected.kind === "overview" && (
-            <OverviewPanel
-              factRows={factRows}
-            />
-          )}
-          {selected.kind === "changes" && (
-            <ChangesPanel changes={data.changes} highlightedChangeId={highlightedChangeId} />
-          )}
-          {selected.kind === "source" && selectedSource && (
-            <SourcePanel
-              awardName={data.award.name}
-              changes={selectedSourceChanges}
-              highlightedChangeId={highlightedChangeId}
-              officialHomepage={data.officialHomepage}
-              source={selectedSource}
-            />
-          )}
-        </section>
-      </main>
+      {/* One stable region for whichever panel is selected: outline buttons
+          control it, and on the one-column layout a visitor's activation
+          moves focus here and scrolls it into view. */}
+      <section
+        className="public-award-console-panel"
+        id={PUBLIC_AWARD_PANEL_ID}
+        role="region"
+        aria-labelledby={PUBLIC_AWARD_PANEL_HEADING_ID}
+        ref={panelRef}
+        tabIndex={-1}
+      >
+        {selected.kind === "overview" && (
+          <OverviewPanel
+            factRows={factRows}
+            headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
+          />
+        )}
+        {selected.kind === "changes" && (
+          <ChangesPanel
+            changes={data.changes}
+            headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
+            highlightedChangeId={highlightedChangeId}
+          />
+        )}
+        {selected.kind === "source" && selectedSource && (
+          <SourcePanel
+            awardName={data.award.name}
+            changes={selectedSourceChanges}
+            headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
+            highlightedChangeId={highlightedChangeId}
+            officialHomepage={data.officialHomepage}
+            source={selectedSource}
+          />
+        )}
+      </section>
     </div>
   );
 }
@@ -267,6 +292,34 @@ function initialPanelForQuery(
     return { panel: { kind: "source", sourceId: changeSource.id }, highlightedChangeId: change.id };
   }
   return { panel: { kind: "changes" }, highlightedChangeId: change.id };
+}
+
+// A panel the outline can show: the overview, recent changes, or a listed
+// source.
+function isKnownPanel(data: Pick<PublicAwardPageData, "sources">, panel: SelectedPanel) {
+  return panel.kind !== "source" || data.sources.some((source) => source.id === panel.sourceId);
+}
+
+// The changes a visitor is about to see when activating a panel: that
+// source's unread changes, every unread change for the recent-changes panel,
+// nothing for the overview or an unknown source.
+export function changeIdsToMarkRead(
+  data: Pick<PublicAwardPageData, "sources" | "changes">,
+  readChangeIds: Set<string>,
+  next: SelectedPanel,
+) {
+  if (next.kind === "overview") return [];
+  const source =
+    next.kind === "source"
+      ? data.sources.find((candidate) => candidate.id === next.sourceId) || null
+      : null;
+  if (next.kind === "source" && !source) return [];
+  return data.changes
+    .filter(
+      (change) =>
+        (source ? isChangeForSource(change, source) : true) && isUnreadChange(change, readChangeIds),
+    )
+    .map((change) => change.id);
 }
 
 function SourceOutlineButton({
@@ -317,6 +370,8 @@ function PanelButton({
 
   return (
     <button
+      aria-controls={PUBLIC_AWARD_PANEL_ID}
+      aria-pressed={active}
       className={`public-award-nav-button public-award-nav-button-${variant} ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
       type="button"
       onClick={onClick}
@@ -350,8 +405,10 @@ const KEY_FACT_LABELS = new Set(["Deadline", "Opening date", "Award amount"]);
 
 function OverviewPanel({
   factRows,
+  headingId,
 }: {
   factRows: FactRow[];
+  headingId?: string;
 }) {
   const keyFacts = factRows.filter((fact) => KEY_FACT_LABELS.has(fact.label));
   const detailRows = factRows.filter((fact) => !KEY_FACT_LABELS.has(fact.label));
@@ -372,7 +429,7 @@ function OverviewPanel({
       )}
 
       <div className="public-award-section-heading">
-        <h2>Overview</h2>
+        <h2 id={headingId}>Overview</h2>
       </div>
 
       {detailRows.length > 0 && (
@@ -389,12 +446,14 @@ function OverviewPanel({
 function SourcePanel({
   awardName,
   changes,
+  headingId,
   highlightedChangeId,
   officialHomepage,
   source,
 }: {
   awardName: string;
   changes: PublicAwardPageData["changes"];
+  headingId?: string;
   highlightedChangeId?: string | null;
   officialHomepage?: string | null;
   source: PublicAwardPageData["sources"][number];
@@ -408,7 +467,7 @@ function SourcePanel({
           {sourceTags(source).map((tag) => (
             <span className="badge" key={tag}>{tag}</span>
           ))}
-          <h2>{displayTitle}</h2>
+          <h2 id={headingId}>{displayTitle}</h2>
         </div>
         <div className="public-award-console-actions">
           <a className="button-primary" href={source.url} rel="noreferrer" target="_blank">
@@ -433,6 +492,7 @@ function SourcePanel({
 function ChangesPanel({
   changes,
   emptyText = "No meaningful updates have been recorded yet.",
+  headingId,
   highlightedChangeId = null,
   showSnapshotPreviews = false,
   sourceIdFallback,
@@ -440,6 +500,7 @@ function ChangesPanel({
 }: {
   changes: PublicAwardPageData["changes"];
   emptyText?: string;
+  headingId?: string;
   highlightedChangeId?: string | null;
   showSnapshotPreviews?: boolean;
   sourceIdFallback?: string | null;
@@ -451,7 +512,7 @@ function ChangesPanel({
   return (
     <div className="public-award-panel-stack">
       <div className="public-award-section-heading">
-        <h2>{title}</h2>
+        <h2 id={headingId}>{title}</h2>
       </div>
       {changes.length > 0 ? (
         <div className="public-award-change-table">

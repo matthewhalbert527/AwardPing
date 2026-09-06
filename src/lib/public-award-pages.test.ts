@@ -248,7 +248,7 @@ describe("public award page deep links", () => {
       createElement(PublicAwardWorkspace, { data: resolution.data, initialChangeId: rejectedId }),
     );
     expect(html).toContain("<h1>Example Fellowship</h1>");
-    expect(html.slice(html.indexOf("</aside>"))).toContain("<h2>Overview</h2>");
+    expect(html.slice(html.indexOf("</aside>"))).toContain('<h2 id="public-award-panel-heading">Overview</h2>');
     expect(html).not.toContain('data-highlighted="true"');
   });
 

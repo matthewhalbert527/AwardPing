@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { PublicAwardWorkspace } from "@/components/public-award-workspace";
+import { readFileSync } from "node:fs";
+import { PublicAwardWorkspace, changeIdsToMarkRead } from "@/components/public-award-workspace";
 
 describe("PublicAwardWorkspace", () => {
   it("renders the award outline sidebar with pluralized counts", () => {
@@ -146,7 +147,7 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+    const sidebarHtml = asideMarkup(html);
 
     expect(sidebarHtml).toContain("Overview");
     expect(sidebarHtml).toContain("Award profile");
@@ -175,7 +176,7 @@ describe("PublicAwardWorkspace", () => {
     expect(sidebarHtml).not.toContain("1 updates");
     expect(sidebarHtml).not.toContain("1 recent updates");
 
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
     const headerHtml = mainHtml.slice(
       mainHtml.indexOf('<header class="public-award-console-header">'),
       mainHtml.indexOf("</header>"),
@@ -255,7 +256,7 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+    const sidebarHtml = asideMarkup(html);
 
     expect(sidebarHtml).toContain("1935-1936 - Vol 66");
     expect(sidebarHtml).not.toContain("Application / 1 update");
@@ -280,8 +281,8 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const sidebarHtml = asideMarkup(html);
+    const mainHtml = mainMarkup(html);
 
     expect(sidebarHtml).toContain("Award profile");
     expect(sidebarHtml).toContain("Sources");
@@ -325,7 +326,7 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+    const sidebarHtml = asideMarkup(html);
 
     expect(sidebarHtml).toContain("Homepage");
     expect(sidebarHtml).toContain("Conflict of Interest Guidelines");
@@ -362,7 +363,7 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+    const sidebarHtml = asideMarkup(html);
 
     expect(sidebarHtml).toContain("Application and Review Process");
     expect(sidebarHtml).toContain("2026 Q&amp;A Office Hour Presentation");
@@ -405,7 +406,7 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = html.slice(0, html.indexOf("</aside>"));
+    const sidebarHtml = asideMarkup(html);
 
     expect(sidebarHtml).toContain("NOFO up to $50M");
     expect(sidebarHtml).toContain("Submission Instructions");
@@ -450,12 +451,12 @@ describe("PublicAwardWorkspace", () => {
         initialSourceId: "source-apply",
       }),
     );
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
 
     expect(mainHtml).toContain("Source update history");
     expect(mainHtml).toContain("Application Instructions");
     expect(mainHtml).toContain("The application instructions changed.");
-    expect(mainHtml).not.toContain("<h2>Overview</h2>");
+    expect(mainHtml).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
   });
 
   it("opens the exact change's source and marks that change when only the change id is known", () => {
@@ -465,13 +466,13 @@ describe("PublicAwardWorkspace", () => {
         initialChangeId: "change-apply",
       }),
     );
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
 
     expect(mainHtml).toContain("Source update history");
-    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
     expect(mainHtml).toContain("The application instructions changed.");
     expect(mainHtml).not.toContain("The homepage changed.");
-    expect(mainHtml).not.toContain("<h2>Overview</h2>");
+    expect(mainHtml).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
     expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
   });
 
@@ -483,10 +484,10 @@ describe("PublicAwardWorkspace", () => {
         initialSourceId: "source-apply",
       }),
     );
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
 
     expect(mainHtml).toContain("Source update history");
-    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
     expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
     expect(html).toContain('aria-label="Example Fellowship page outline"');
     expect(html).toContain('aria-label="Award profile"');
@@ -503,9 +504,9 @@ describe("PublicAwardWorkspace", () => {
         initialSourceId: "source-apply",
       }),
     );
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
 
-    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
     expect(mainHtml).not.toContain("The homepage changed.");
     expect(mainHtml).not.toContain('data-highlighted="true"');
     expect(mainHtml).not.toContain("Selected update");
@@ -519,9 +520,9 @@ describe("PublicAwardWorkspace", () => {
         initialSourceId: "source-gone",
       }),
     );
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
 
-    expect(mainHtml).toContain("<h2>Recent changes</h2>");
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Recent changes</h2>');
     expect(mainHtml).not.toContain("Source update history");
     expect(mainHtml).toContain("The retired page changed.");
     expectSingleHighlightedChange(mainHtml, "The retired page changed.");
@@ -539,9 +540,9 @@ describe("PublicAwardWorkspace", () => {
       const html = renderToStaticMarkup(
         createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), ...query }),
       );
-      const mainHtml = html.slice(html.indexOf("</aside>"));
+      const mainHtml = mainMarkup(html);
 
-      expect(mainHtml, JSON.stringify(query)).toContain("<h2>Overview</h2>");
+      expect(mainHtml, JSON.stringify(query)).toContain('<h2 id="public-award-panel-heading">Overview</h2>');
       expect(mainHtml, JSON.stringify(query)).toContain("A fellowship for testing.");
       expect(html, JSON.stringify(query)).toContain("<h1>Example Fellowship</h1>");
       expect(html, JSON.stringify(query)).not.toContain('data-highlighted="true"');
@@ -562,13 +563,204 @@ describe("PublicAwardWorkspace", () => {
         initialSourceId: "source-apply",
       }),
     );
-    const mainHtml = html.slice(html.indexOf("</aside>"));
+    const mainHtml = mainMarkup(html);
 
-    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
     expect(mainHtml).toContain("The application instructions changed.");
     expect(mainHtml).not.toContain('data-highlighted="true"');
     expect(mainHtml).not.toContain("Selected update");
     expect(html).not.toContain("change-not-on-page");
+  });
+
+  it("reads header and H1 first, then the outline, then the selected panel, with no nested main", () => {
+    for (const props of [
+      {},
+      { initialSourceId: "source-apply" },
+      { initialChangeId: "change-orphan" },
+    ]) {
+      const html = renderToStaticMarkup(
+        createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), ...props }),
+      );
+      const consoleStart = html.indexOf('<div class="public-award-console');
+      const headerStart = html.indexOf('<header class="public-award-console-header">');
+      const headingStart = html.indexOf("<h1>Example Fellowship</h1>");
+      const asideStart = html.indexOf("<aside ");
+      const panelStart = html.indexOf('<section class="public-award-console-panel"');
+
+      expect(consoleStart, JSON.stringify(props)).toBeGreaterThanOrEqual(0);
+      expect(headerStart, JSON.stringify(props)).toBeGreaterThan(consoleStart);
+      expect(headingStart, JSON.stringify(props)).toBeGreaterThan(headerStart);
+      expect(asideStart, JSON.stringify(props)).toBeGreaterThan(html.indexOf("</header>"));
+      expect(panelStart, JSON.stringify(props)).toBeGreaterThan(html.indexOf("</aside>"));
+      expect(html, JSON.stringify(props)).not.toContain("<main");
+      expect(html.split("<header ").length - 1, JSON.stringify(props)).toBe(1);
+      expect(html.split("<aside ").length - 1, JSON.stringify(props)).toBe(1);
+      // Header, aside and panel are direct siblings: the panel closes the console.
+      expect(html.trimEnd().endsWith("</section></div>"), JSON.stringify(props)).toBe(true);
+    }
+  });
+
+  it("marks exactly one outline button as pressed and points every outline button at the stable panel", () => {
+    const cases: Array<{ props: Record<string, string>; pressedLabel: string }> = [
+      { props: {}, pressedLabel: "Overview" },
+      { props: { initialChangeId: "change-orphan" }, pressedLabel: "Recent changes" },
+      { props: { initialSourceId: "source-apply", initialChangeId: "change-apply" }, pressedLabel: "Application Instructions" },
+    ];
+    for (const { props, pressedLabel } of cases) {
+      const html = renderToStaticMarkup(
+        createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), ...props }),
+      );
+      const buttons = outlineButtons(html);
+
+      expect(buttons.length, JSON.stringify(props)).toBe(4);
+      expect(buttons.filter((button) => button.includes('aria-pressed="true"')), JSON.stringify(props)).toHaveLength(1);
+      expect(buttons.filter((button) => button.includes('aria-pressed="false"')), JSON.stringify(props)).toHaveLength(3);
+      expect(buttons.filter((button) => button.includes('aria-controls="public-award-panel"')), JSON.stringify(props)).toHaveLength(4);
+      const pressed = buttons.find((button) => button.includes('aria-pressed="true"')) || "";
+      expect(pressed, JSON.stringify(props)).toContain(`<strong>${pressedLabel}</strong>`);
+      expect(pressed, JSON.stringify(props)).toContain("public-award-nav-button-active");
+      expect(html.split("public-award-nav-button-active").length - 1, JSON.stringify(props)).toBe(1);
+    }
+  });
+
+  it("exposes the selected panel as one stable, focusable region named by its visible heading", () => {
+    const regionOpen =
+      '<section class="public-award-console-panel" id="public-award-panel" role="region" aria-labelledby="public-award-panel-heading" tabindex="-1">';
+    const cases: Array<{ props: Record<string, string>; heading: string }> = [
+      { props: {}, heading: "Overview" },
+      { props: { initialChangeId: "change-orphan" }, heading: "Recent changes" },
+      { props: { initialSourceId: "source-apply" }, heading: "Application Instructions" },
+    ];
+    for (const { props, heading } of cases) {
+      const html = renderToStaticMarkup(
+        createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), ...props }),
+      );
+
+      expect(html.split(regionOpen).length - 1, JSON.stringify(props)).toBe(1);
+      expect(html.split('id="public-award-panel-heading"').length - 1, JSON.stringify(props)).toBe(1);
+      expect(panelMarkup(html), JSON.stringify(props)).toContain(
+        `<h2 id="public-award-panel-heading">${heading}</h2>`,
+      );
+      expect(html.split('id="public-award-panel"').length - 1, JSON.stringify(props)).toBe(1);
+    }
+  });
+
+  it("marks as read exactly what an activation is about to show", () => {
+    const data = makeDeepLinkPageData();
+    const noneRead = new Set<string>();
+
+    expect(changeIdsToMarkRead(data, noneRead, { kind: "overview" })).toEqual([]);
+    expect(changeIdsToMarkRead(data, noneRead, { kind: "changes" })).toEqual([
+      "change-home",
+      "change-apply",
+      "change-orphan",
+    ]);
+    expect(changeIdsToMarkRead(data, noneRead, { kind: "source", sourceId: "source-apply" })).toEqual([
+      "change-apply",
+    ]);
+    expect(changeIdsToMarkRead(data, noneRead, { kind: "source", sourceId: "source-home" })).toEqual([
+      "change-home",
+    ]);
+    expect(changeIdsToMarkRead(data, noneRead, { kind: "source", sourceId: "source-gone" })).toEqual([]);
+    // Already-read changes are never marked again.
+    expect(
+      changeIdsToMarkRead(data, new Set(["change-apply"]), { kind: "source", sourceId: "source-apply" }),
+    ).toEqual([]);
+    expect(changeIdsToMarkRead(data, new Set(["change-home"]), { kind: "changes" })).toEqual([
+      "change-apply",
+      "change-orphan",
+    ]);
+  });
+
+  it("reveals the panel only through the activation sequence, never on mount or deep links", () => {
+    // The handoff cannot run without a DOM; its wiring is pinned here and the
+    // sequence and reveal semantics are covered by the focus helper tests.
+    const source = readFileSync(new URL("./public-award-workspace.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("const [activation, setActivation] = useState<PanelActivationState<SelectedPanel>>(() => ({");
+    expect(source).toContain("    selected: initialContext.panel,\n    revealSequence: 0,\n  }));");
+    expect(source).toContain(
+      "  useEffect(() => {\n    if (!shouldRevealPanel(activation.revealSequence)) return;\n    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment());\n  }, [activation.revealSequence]);",
+    );
+    const activation = source.slice(source.indexOf("const activatePanel = "), source.indexOf("useEffect(() => {"));
+    expect(activation).toContain("markChangesRead(changeIdsToMarkRead(data, readChangeIds, next));");
+    expect(activation).toContain(
+      "setActivation((state) => activatePanelSelection(state, next, (panel) => isKnownPanel(data, panel)));",
+    );
+    expect(source.match(/setActivation\(/g)).toHaveLength(1);
+    expect(source).not.toContain("setSelected");
+    expect(source.match(/revealSelectedPanel\(/g)).toHaveLength(1);
+    expect(source.match(/activatePanel\(\{ kind: /g)).toHaveLength(3);
+  });
+
+  it("keeps the one-column scroll offset above every mobile header contributor and the focus ring", () => {
+    // Derived from the header, profile-menu and focus-ring sources, so a
+    // taller header row or a larger focus extent fails here until the panel
+    // margin grows with it.
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+    const profileMenu = readFileSync(new URL("./profile-menu.tsx", import.meta.url), "utf8");
+    const measure = (source: string, pattern: RegExp) => {
+      const match = source.match(pattern);
+      expect(match, String(pattern)).not.toBeNull();
+      return Number(match![1]);
+    };
+    const narrowHeader = css.slice(css.indexOf("@media (max-width: 760px) {"));
+    const headerPaddingTop = measure(narrowHeader, /\.app-header \{\s*padding: ([\d.]+)rem [\d.]+rem 0;/);
+    const barGap = measure(narrowHeader, /\.app-header-bar \{[^}]*?gap: ([\d.]+)rem;/);
+    const barPadding = measure(narrowHeader, /\.app-header-bar \{[^}]*?padding: ([\d.]+)rem;/);
+    const brandRow = measure(narrowHeader, /\.app-header-brand \.brand-logo \{[^}]*?height: ([\d.]+)rem;/);
+    const buttonRow = measure(css, /\.app-header-actions \.button-secondary \{\s*min-height: ([\d.]+)rem;/);
+    // The signed-in profile menu trigger is a Tailwind h-12 control: 12 × 0.25rem.
+    const profileMenuRow = measure(profileMenu, /className="inline-flex h-(\d+) w-\d+ /) * 0.25;
+    expect(profileMenuRow).toBe(3);
+    const headerBorderPx = measure(css, /\.app-header \{[^}]*?border-bottom: (\d+)px/);
+    const focusWidthPx = measure(css, /\.public-award-console-panel:focus-visible \{\s*outline: (\d+)px/);
+    const focusOffsetPx = measure(css, /\.public-award-console-panel:focus-visible \{[^}]*?outline-offset: (\d+)px/);
+    const requiredRem =
+      headerPaddingTop +
+      barPadding +
+      brandRow +
+      barGap +
+      Math.max(buttonRow, profileMenuRow) +
+      barPadding +
+      (headerBorderPx + focusWidthPx + focusOffsetPx) / 16;
+
+    const compact = css.slice(css.indexOf("@media (max-width: 720px) {", css.indexOf("grid-area: panel;")));
+    const token = compact.match(
+      /\.public-award-console-panel \{\s*--public-award-compact-scroll-margin: ([\d.]+)rem;\s*scroll-margin-top: var\(--public-award-compact-scroll-margin\);/,
+    );
+    expect(token).not.toBeNull();
+    const margin = Number(token![1]);
+    expect(margin).toBeGreaterThanOrEqual(requiredRem);
+    expect(margin).toBeLessThanOrEqual(requiredRem + 1);
+    expect(css.match(/\.public-award-console-panel \{[^}]*scroll-margin-top: ([\d.]+)rem;/)?.[1]).toBe("5.4");
+  });
+  it("keeps compact outline buttons named after a desktop collapse while the compact toggle stays hidden", () => {
+    // A visitor who collapsed the outline on a wide window and then narrows
+    // it keeps the collapsed class, but the toggle is hidden below 720px, so
+    // the compact override must bring the button labels back.
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+    const strongSelector = ".public-award-console-collapsed .public-award-nav-text strong";
+    const desktopHide = css.search(
+      /\.public-award-console-collapsed \.public-award-nav-text strong \{\s*display: none;\s*\}/,
+    );
+    expect(desktopHide).toBeGreaterThan(0);
+
+    const compactStart = css.indexOf("@media (max-width: 720px) {", css.indexOf("grid-area: panel;"));
+    expect(compactStart).toBeGreaterThan(desktopHide);
+    const compactEnd = css.slice(compactStart).search(/\r?\n\}/) + compactStart;
+    const compact = css.slice(compactStart, compactEnd);
+
+    // The strong label belongs to a compact rule whose body restores display,
+    // and that rule comes after the desktop hide, so the cascade restores it.
+    const selectorAt = compact.indexOf(strongSelector);
+    expect(selectorAt).toBeGreaterThan(0);
+    const ruleOpen = compact.indexOf("{", selectorAt);
+    expect(compact.slice(selectorAt, ruleOpen)).not.toContain("}");
+    const body = compact.slice(ruleOpen, compact.indexOf("}", ruleOpen));
+    expect(body).toMatch(/^\{\s*display: initial;\s*$/);
+    // The compact toggle stays hidden, so the restore is the only way back.
+    expect(compact).toMatch(/\.public-award-sidebar-toggle \{\s*display: none;\s*\}/);
   });
 });
 
@@ -724,4 +916,34 @@ function expectSingleHighlightedChange(mainHtml: string, summary: string) {
   expect(row).toContain(summary);
   expect(mainHtml.split("Selected update")).toHaveLength(2);
   expect(mainHtml.split('aria-current="true"')).toHaveLength(2);
+}
+
+// The award outline, wherever it sits in the document.
+function asideMarkup(html: string) {
+  const start = html.indexOf("<aside ");
+  const end = html.indexOf("</aside>") + "</aside>".length;
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return html.slice(start, end);
+}
+
+// Everything except the outline: the award header and the selected panel.
+function mainMarkup(html: string) {
+  const start = html.indexOf("<aside ");
+  const end = html.indexOf("</aside>") + "</aside>".length;
+  expect(start).toBeGreaterThanOrEqual(0);
+  return html.slice(0, start) + html.slice(end);
+}
+
+// The selected-panel region only.
+function panelMarkup(html: string) {
+  const start = html.indexOf('<section class="public-award-console-panel"');
+  expect(start).toBeGreaterThanOrEqual(0);
+  return html.slice(start);
+}
+
+function outlineButtons(html: string) {
+  return [...html.matchAll(/<button [^>]*class="public-award-nav-button [^"]*"[^>]*>[\s\S]*?<\/button>/g)].map(
+    (match) => match[0],
+  );
 }
