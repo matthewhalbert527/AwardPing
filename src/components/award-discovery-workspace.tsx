@@ -63,6 +63,7 @@ export function awardDirectoryHref(award: Pick<SharedAwardCard, "publicPath">) {
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const pageSizeOptions = [30, 50, 100] as const;
+const searchResultLimit = 100;
 
 // `canManage` and `isAuthenticated` stay in the prop contract for the
 // directory page, but neither affects what the directory renders or where
@@ -145,7 +146,9 @@ export function AwardDiscoveryWorkspace({
   );
   const visibleEnd = visibleStart + visibleLetterAwards.length;
 
-  const matches = useMemo(() => {
+  // Every ranked match, computed once over the filtered catalog. The panel
+  // lists the first `searchResultLimit`; the status always counts the whole set.
+  const allMatches = useMemo(() => {
     const filter = query.trim();
     if (!filter) {
       return [];
@@ -155,8 +158,9 @@ export function AwardDiscoveryWorkspace({
       filter,
       alphabeticalAwards,
       (award) => award.summary,
-    ).slice(0, 100);
+    );
   }, [alphabeticalAwards, query]);
+  const matches = useMemo(() => allMatches.slice(0, searchResultLimit), [allMatches]);
   const searchQuery = query.trim();
   const showSearchResults = searchOpen && searchQuery.length > 0;
   const browseHiddenBySearch = showSearchResults;
@@ -289,11 +293,7 @@ export function AwardDiscoveryWorkspace({
           {showSearchResults && (
             <div className="award-search-panel">
               <div className="award-search-panel-header">
-                <p role="status">
-                  {matches.length === 0
-                    ? "No matches"
-                    : `${matches.length} matching award${matches.length === 1 ? "" : "s"}`}
-                </p>
+                <p role="status">{searchStatusText(allMatches.length, matches.length)}</p>
                 <button
                   className="award-search-clear"
                   type="button"
@@ -496,6 +496,14 @@ function sortAwardsAlphabetically(awards: SharedAwardCard[]) {
 function awardInitial(value: string) {
   const initial = value.trim().charAt(0).toUpperCase();
   return /^[A-Z]$/.test(initial) ? initial : "#";
+}
+
+// "Showing 100 of 101 matching awards" only when the list is capped; otherwise
+// the plain count, so an uncapped search reads exactly as before.
+function searchStatusText(total: number, shown: number) {
+  if (total === 0) return "No matches";
+  const awards = `matching award${total === 1 ? "" : "s"}`;
+  return shown < total ? `Showing ${shown} of ${total} ${awards}` : `${total} ${awards}`;
 }
 
 function searchResultMetaText(award: SharedAwardCard) {

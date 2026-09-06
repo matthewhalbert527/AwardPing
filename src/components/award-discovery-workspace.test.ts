@@ -624,12 +624,30 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     expect(browseRowHrefs(beyondLetter)).toEqual([]);
   });
 
-  it("searches the whole catalog rather than the open letter or page, listing at most 100 results", () => {
+  it("searches the whole catalog rather than the open letter or page, listing at most 100 while counting every match", () => {
     const rows = fictionalRows(101);
 
-    const html = renderRows(rows, ["fictional award", true]);
+    const capped = renderRows(rows, ["fictional award", true]);
+    expect(capped).toContain('<p role="status">Showing 100 of 101 matching awards</p>');
+    expect(searchOptionHrefs(capped)).toEqual(fictionalHrefs(1, 100));
+    expect(capped).not.toContain("/fictional-award-101");
 
-    expect(searchOptionHrefs(html)).toHaveLength(100);
-    expect(searchOptionHrefs(html).slice(0, 3)).toEqual(fictionalHrefs(1, 3));
+    // Exactly the cap is not capped, and reads as before.
+    const exact = renderRows(fictionalRows(100), ["fictional award", true]);
+    expect(exact).toContain('<p role="status">100 matching awards</p>');
+    expect(exact).not.toContain("Showing 100 of");
+    expect(searchOptionHrefs(exact)).toEqual(fictionalHrefs(1, 100));
+
+    // Totals are counted after the current filters, not before them.
+    const filteredRows = rows.map((row, index) => ({
+      ...row,
+      academicLevels: [index === 100 ? "Undergraduate" : "Graduate"],
+    }));
+    const graduate = renderRows(filteredRows, ["fictional award", true, true, "A", 30, 0, "Graduate"]);
+    expect(graduate).toContain('<p role="status">100 matching awards</p>');
+    expect(searchOptionHrefs(graduate)).toEqual(fictionalHrefs(1, 100));
+    const undergraduate = renderRows(filteredRows, ["fictional award", true, true, "A", 30, 0, "Undergraduate"]);
+    expect(undergraduate).toContain('<p role="status">1 matching award</p>');
+    expect(searchOptionHrefs(undergraduate)).toEqual(["/fictional-award-101"]);
   });
 });
