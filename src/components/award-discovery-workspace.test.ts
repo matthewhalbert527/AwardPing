@@ -155,11 +155,30 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(anonymous).toContain('<p role="status">No matches</p>');
     expect(anonymous).toContain('<p class="award-search-empty">No matching award yet.</p>');
     expect(anonymous).toContain('placeholder="Goldwater, Fulbright, NSF GRFP..." value="Zebra"/>');
+    expect(anonymous).toContain('<button class="award-search-clear" type="button">');
     expect(searchOptionHrefs(anonymous)).toEqual([]);
     expect(anonymous).not.toContain("award-search-option");
     expectNativeSearchSemantics(anonymous);
     expect(anonymous).not.toContain("aria-expanded");
     expect(browseRowHrefs(anonymous)).toEqual([]);
+  });
+
+  it("returns focus to the search field before clearing, so Clear never drops focus to the document", () => {
+    // There is no DOM in this test environment, so focus movement itself is
+    // checked in a browser. What is pinned here is the contract that makes it
+    // deterministic: the field is focused first, so its synchronous onFocus,
+    // which still sees the old query, is queued before the resets.
+    const source = readFileSync(new URL("./award-discovery-workspace.tsx", import.meta.url), "utf8");
+    const start = source.indexOf('className="award-search-clear"');
+    const handler = source.slice(start, source.indexOf("</button>", start));
+
+    expect(source.match(/useRef<HTMLInputElement>\(null\)/g)).toHaveLength(1);
+    expect(source).toContain("ref={searchInputRef}");
+    expect(handler).toMatch(
+      /onClick=\{\(\) => \{[\s\S]*?searchInputRef\.current\?\.focus\(\);\s*setQuery\(""\);\s*setSearchOpen\(false\);\s*\}\}/,
+    );
+    // Clear is the only place that programmatically focuses anything.
+    expect(source.match(/\.focus\(\)/g)).toHaveLength(1);
   });
 
   it("renders no secondary row action or duplicate award destination in either state", () => {

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   ChevronDown,
   ChevronLeft,
@@ -85,6 +85,7 @@ export function AwardDiscoveryWorkspace({
   const [citizenshipFilter, setCitizenshipFilter] = useState("all");
   const [deadlineFilter, setDeadlineFilter] = useState("all");
   const [recentFilter, setRecentFilter] = useState("all");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const levelOptions = useMemo(
     () => uniqueOptions(sharedAwards.flatMap((award) => award.academicLevels)),
@@ -271,6 +272,7 @@ export function AwardDiscoveryWorkspace({
                 no keyboard-driven selection, so no combobox is claimed. */}
             <input
               id="award-directory-search"
+              ref={searchInputRef}
               className="input input-with-leading-icon award-search-input"
               type="search"
               placeholder="Goldwater, Fulbright, NSF GRFP..."
@@ -296,6 +298,11 @@ export function AwardDiscoveryWorkspace({
                   className="award-search-clear"
                   type="button"
                   onClick={() => {
+                    // Focus first: the field's own onFocus runs synchronously
+                    // with the old query and may queue an open; the resets
+                    // below are queued after it, so the results end closed
+                    // and the blank field is ready for the next search.
+                    searchInputRef.current?.focus();
                     setQuery("");
                     setSearchOpen(false);
                   }}
