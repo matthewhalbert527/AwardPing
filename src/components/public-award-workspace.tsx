@@ -460,6 +460,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
   sourceUnreadCounts?: Map<string, number>;
 }) {
   const [query, setQuery] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const sources = filterAwardSources(data.sources, query, data.officialHomepage);
   return (
     <div className="public-award-panel-stack">
@@ -474,7 +475,7 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
           <label htmlFor="award-source-search">Find a source page</label>
           <div>
             <Search size={17} aria-hidden="true" />
-            <input id="award-source-search" type="search" placeholder="Search by title, type, or address" value={query}
+            <input id="award-source-search" ref={searchInputRef} type="search" placeholder="Search by title, type, or address" value={query}
               onChange={(event) => setQuery(event.target.value)} />
           </div>
           <p role="status">{sources.length} of {countLabel(data.sources.length, "source page")}</p>
@@ -502,7 +503,11 @@ export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChang
       ) : (
         <div>
           <EmptyState text={data.sources.length ? "No source pages match your search." : "No official source pages are available for this award yet."} />
-          {query && <button type="button" className="public-award-context-link" onClick={() => setQuery("")}>Clear search</button>}
+          {query && <button type="button" className="public-award-context-link" onClick={() => {
+            // Keep keyboard users in the search when this recovery button disappears.
+            searchInputRef.current?.focus();
+            setQuery("");
+          }}>Clear search</button>}
         </div>
       )}
     </div>

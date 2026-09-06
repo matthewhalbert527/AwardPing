@@ -848,6 +848,16 @@ describe("focused award sections", () => {
     expect(sources).toHaveLength(3);
   });
 
+  it("wires Clear search to restore input focus before removing the recovery button", () => {
+    // This pins event wiring, not browser focus behavior; the latter is checked
+    // with a keyboard in the local fictional-data preview.
+    const source = readFileSync(new URL("./public-award-workspace.tsx", import.meta.url), "utf8");
+    const panel = source.slice(source.indexOf("export function AwardSourcesPanel("), source.indexOf("function OverviewPanel("));
+    expect(panel).toContain("const searchInputRef = useRef<HTMLInputElement>(null)");
+    expect(panel).toContain('id="award-source-search" ref={searchInputRef} type="search"');
+    expect(panel).toMatch(/onClick=\{\(\) => \{[\s\S]*?searchInputRef\.current\?\.focus\(\);\s*setQuery\(""\);\s*\}\}>Clear search<\/button>/);
+  });
+
   it("puts the reviewed homepage first without dropping or mutating sources", () => {
     const data = makeDeepLinkPageData();
     const sources = [...data.sources].reverse();
