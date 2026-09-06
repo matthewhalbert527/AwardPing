@@ -396,7 +396,7 @@ export function AwardDiscoveryWorkspace({
             >
               <option value="all">Any deadline</option>
               <option value="listed">Deadline listed</option>
-              <option value="missing">Deadline pending</option>
+              <option value="missing">Deadline not listed</option>
             </select>
           </label>
           <label>
@@ -469,7 +469,10 @@ export function AwardDiscoveryWorkspace({
                     </div>
                     <div className="award-row-deadline">
                       <span>Deadline</span>
-                      <strong>{award.deadline || "Pending"}</strong>
+                      {/* A blank value means no deadline is listed here; it says
+                          nothing about whether one is upcoming. Listed values
+                          render verbatim, however old or informal. */}
+                      <strong>{award.deadline || "Not listed"}</strong>
                     </div>
                   </div>
                 </Link>

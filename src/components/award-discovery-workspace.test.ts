@@ -277,13 +277,13 @@ const goldwaterRow = directoryRow({
 // deadline, updates. Only the last one is changed from its default here.
 const UPDATES_FILTER_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "all", "recent"];
 
-function renderRows(rows: SharedAwardCard[], presets: unknown[] = []) {
+function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenticated = false) {
   searchState.presets = [...presets];
   try {
     const html = renderToStaticMarkup(
       createElement(AwardDiscoveryWorkspace, {
-        canManage: false,
-        isAuthenticated: false,
+        canManage: isAuthenticated,
+        isAuthenticated,
         sharedAwards: rows,
       }),
     );
@@ -385,5 +385,91 @@ describe("AwardDiscoveryWorkspace update status", () => {
       "/goldwater-scholarship",
     ]);
     expect(html).not.toContain("award-search-option-meta");
+  });
+});
+
+// Five awards under "G", listed alphabetically: an old date, no deadline, a
+// blank deadline, a current date, and free text.
+const gaither = directoryRow({
+  id: "7007882c-af99-4919-ad2c-2672ffcccfaf",
+  name: "Gaither Junior Fellows Program",
+  publicPath: "/james-c-gaither-junior-fellows-program",
+  changeCount: 0,
+});
+const deadlineRows: SharedAwardCard[] = [
+  { ...gaither, deadline: "January 15, 2019" },
+  { ...gates, deadline: null },
+  { ...gilman, deadline: "" },
+  { ...goldwaterRow, deadline: "January 29, 2026" },
+  {
+    ...directoryRow({
+      id: "1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5b",
+      name: "Graduate Rolling Award",
+      publicPath: "/graduate-rolling-award",
+      changeCount: 0,
+    }),
+    deadline: "Rolling; check the official page",
+  },
+];
+// Same state slots as above; only the deadline filter is changed from its default.
+const DEADLINE_LISTED_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "listed", "all"];
+const DEADLINE_MISSING_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "missing", "all"];
+
+function deadlineCells(html: string) {
+  return [...html.matchAll(/<div class="award-row-deadline"><span>Deadline<\/span><strong>([^<]*)<\/strong><\/div>/g)].map(
+    (match) => match[1],
+  );
+}
+
+describe("AwardDiscoveryWorkspace deadline wording", () => {
+  it("says Not listed for a missing or blank deadline and renders listed deadlines verbatim", () => {
+    const html = renderRows(deadlineRows);
+
+    expect(browseRowHrefs(html)).toEqual([
+      "/james-c-gaither-junior-fellows-program",
+      "/gates-cambridge-scholarship",
+      "/gilman-international-scholarship",
+      "/goldwater-scholarship",
+      "/graduate-rolling-award",
+    ]);
+    expect(deadlineCells(html)).toEqual([
+      "January 15, 2019",
+      "Not listed",
+      "Not listed",
+      "January 29, 2026",
+      "Rolling; check the official page",
+    ]);
+    // Nothing is inferred about timing: no pending, upcoming or closed wording.
+    expect(html).not.toContain("<strong>Pending</strong>");
+    expect(html).not.toContain("Deadline pending");
+    expect(html).not.toMatch(/upcoming|closed|past due|expired/i);
+  });
+
+  it("labels the deadline filter by what the data establishes and keeps its behavior in both auth states", () => {
+    const unfiltered = renderRows(deadlineRows);
+    expect(unfiltered).toContain(
+      '<option value="all" selected="">Any deadline</option><option value="listed">Deadline listed</option><option value="missing">Deadline not listed</option>',
+    );
+    expect(unfiltered).toContain("5 of 5 monitored awards match.");
+
+    const listed = renderRows(deadlineRows, DEADLINE_LISTED_PRESETS);
+    expect(listed).toContain('<option value="listed" selected="">Deadline listed</option>');
+    expect(listed).toContain("3 of 5 monitored awards match.");
+    expect(browseRowHrefs(listed)).toEqual([
+      "/james-c-gaither-junior-fellows-program",
+      "/goldwater-scholarship",
+      "/graduate-rolling-award",
+    ]);
+    expect(deadlineCells(listed)).not.toContain("Not listed");
+
+    const missing = renderRows(deadlineRows, DEADLINE_MISSING_PRESETS);
+    expect(missing).toContain('<option value="missing" selected="">Deadline not listed</option>');
+    expect(missing).toContain("2 of 5 monitored awards match.");
+    expect(browseRowHrefs(missing)).toEqual(["/gates-cambridge-scholarship", "/gilman-international-scholarship"]);
+    expect(deadlineCells(missing)).toEqual(["Not listed", "Not listed"]);
+
+    // Sign-in state changes neither the wording nor the filtering.
+    expect(renderRows(deadlineRows, DEADLINE_MISSING_PRESETS, true)).toBe(missing);
+    expect(renderRows(deadlineRows, DEADLINE_LISTED_PRESETS, true)).toBe(listed);
   });
 });
