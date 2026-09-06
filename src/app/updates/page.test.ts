@@ -92,6 +92,13 @@ function rowTimes(html: string) {
   );
 }
 
+const EMPTY_NOTICE = "No award page changes have been recorded yet.";
+const UNAVAILABLE_NOTICE = "Live updates are unavailable right now. Please check back soon.";
+
+function feedNotices(html: string) {
+  return [...html.matchAll(/<div class="public-live-feed-empty">([^<]*)<\/div>/g)].map((match) => match[1]);
+}
+
 describe("public updates page", () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: FIXED_NOW, toFake: ["Date"] });
@@ -147,8 +154,9 @@ describe("public updates page", () => {
         label: "Example Award",
       },
     ]);
-    // Only the items the gated loader returned are rendered.
+    // Only the items the gated loader returned are rendered, with no notice.
     expect(html.split('class="public-live-update-row"')).toHaveLength(4);
+    expect(feedNotices(html)).toEqual([]);
     // Every internal award link stays on this origin.
     for (const link of awardLinks(html)) {
       expect(new URL(link.href, "https://awardping.example/updates").origin).toBe(
@@ -257,13 +265,43 @@ describe("public updates page", () => {
     );
   });
 
-  it("shows the empty state and never loads updates without admin configuration", async () => {
+  it("shows the empty notice, and no unavailable notice, when nothing has been recorded", async () => {
+    useFeed([]);
+
+    const html = await renderUpdatesPage();
+
+    expect(feedNotices(html)).toEqual([EMPTY_NOTICE]);
+    expect(html).not.toContain(UNAVAILABLE_NOTICE);
+    expect(html).not.toContain('class="public-live-update-row"');
+  });
+
+  it("shows one unavailable notice, and never claims no changes, when the feed fails to load", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.getLiveUpdateItems.mockRejectedValue(new Error("connection refused"));
+
+    const html = await renderUpdatesPage();
+
+    expect(feedNotices(html)).toEqual([UNAVAILABLE_NOTICE]);
+    expect(html).not.toContain(EMPTY_NOTICE);
+    expect(html).not.toContain('class="public-live-update-row"');
+    expect(html).not.toContain("connection refused");
+    expect(html).not.toContain("Supabase");
+    // The rest of the page still works: heading, digest signup, directory link.
+    expect(html).toContain("<h2>Latest source-page changes</h2>");
+    expect(html).toContain('<a class="button-primary" href="/updates/subscribe">');
+    expect(html).toContain('href="/award-directory"');
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
+  });
+
+  it("shows the unavailable notice and never loads updates without configuration", async () => {
     mocks.hasSupabaseAdminConfig.mockReturnValue(false);
 
     const html = await renderUpdatesPage();
 
     expect(mocks.getLiveUpdateItems).not.toHaveBeenCalled();
-    expect(html).toContain("No public changes are ready to show yet.");
+    expect(feedNotices(html)).toEqual([UNAVAILABLE_NOTICE]);
+    expect(html).not.toContain(EMPTY_NOTICE);
     expect(html).not.toContain('class="public-live-update-row"');
   });
 });

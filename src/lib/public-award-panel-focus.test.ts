@@ -67,6 +67,17 @@ describe("revealSelectedPanel", () => {
     expect(calls.map((call) => call.method)).toEqual(["focus", "scrollIntoView"]);
   });
 
+  it("restores focus after a source-list or back control unmounts on desktop", () => {
+    for (const reducedMotion of [false, true]) {
+      const { calls, target } = fakeTarget();
+      revealSelectedPanel(target, { compactLayout: false, reducedMotion }, "panel");
+      expect(calls).toEqual([
+        { method: "focus", options: { preventScroll: true } },
+        { method: "scrollIntoView", options: { block: "start", behavior: reducedMotion ? "auto" : "smooth" } },
+      ]);
+    }
+  });
+
   it("does nothing without a mounted panel", () => {
     expect(revealSelectedPanel(null, { compactLayout: true, reducedMotion: false })).toEqual({
       focused: false,

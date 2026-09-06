@@ -183,7 +183,8 @@ describe("public award page", () => {
     });
     expect(mocks.getPublicAwardPageBySlug).not.toHaveBeenCalled();
     expect(html).toContain('aria-label="Example Fellowship page outline"');
-    expect(html).toContain('aria-label="Official sources"');
+    expect(html).toContain('aria-label="Award sections"');
+    expect(html).toContain('aria-label="Official sources, 2 source pages"');
     // The route's main is the only main landmark; the award header and H1
     // come before the outline and the selected panel.
     expect(html.split("<main")).toHaveLength(2);

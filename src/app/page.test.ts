@@ -25,6 +25,7 @@ vi.mock("@/components/site-header", () => ({
 }));
 
 import Home from "@/app/page";
+import UpdatesPage from "@/app/updates/page";
 
 // Sep 5, 2026, 9:00 AM CDT: the page reads the clock once per render.
 const FIXED_NOW = new Date("2026-09-05T14:00:00.000Z");
@@ -151,6 +152,21 @@ function previewTimes(html: string) {
   );
 }
 
+const EMPTY_NOTICE = "No award page changes have been recorded yet.";
+const UNAVAILABLE_NOTICE = "Live updates are unavailable right now. Please check back soon.";
+
+function previewNotices(html: string) {
+  return [...html.matchAll(/<div class="home-live-terminal-empty">([^<]*)<\/div>/g)].map((match) => match[1]);
+}
+
+function feedNotices(html: string) {
+  return [...html.matchAll(/<div class="public-live-feed-empty">([^<]*)<\/div>/g)].map((match) => match[1]);
+}
+
+async function renderUpdatesPage() {
+  return renderToStaticMarkup(await UpdatesPage({ searchParams: Promise.resolve({}) }));
+}
+
 describe("homepage live update preview", () => {
   beforeEach(() => {
     vi.useFakeTimers({ now: FIXED_NOW, toFake: ["Date"] });
@@ -186,6 +202,8 @@ describe("homepage live update preview", () => {
     expect(html).toContain("<strong>Barry Goldwater Scholarship</strong>");
     expect(html).toContain('aria-label="Live award update preview"');
     expect(html).toContain('<a class="home-live-terminal-footer" href="/updates">');
+    // A loaded preview shows rows and no notice.
+    expect(previewNotices(html)).toEqual([]);
   });
 
   it("renders each detected time semantically from one clock reading, with the full Central time for context", async () => {
@@ -254,13 +272,68 @@ describe("homepage live update preview", () => {
     expect(previewLinks(signedIn)).toEqual(previewLinks(anonymous));
   });
 
-  it("shows the empty preview and never loads updates without admin configuration", async () => {
+  it("shows the empty notice, and no promise of a next scan, when nothing has been recorded", async () => {
+    mocks.getLiveUpdateItems.mockResolvedValue([]);
+
+    const html = await renderHome();
+
+    expect(previewNotices(html)).toEqual([EMPTY_NOTICE]);
+    expect(html).not.toContain(UNAVAILABLE_NOTICE);
+    expect(html).not.toContain("next scan");
+    expect(previewLinks(html)).toEqual([]);
+  });
+
+  it("stays up and shows one unavailable notice when the feed fails to load", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.getLiveUpdateItems.mockRejectedValue(new Error("connection refused"));
+
+    const html = await renderHome();
+
+    expect(previewNotices(html)).toEqual([UNAVAILABLE_NOTICE]);
+    expect(html).not.toContain(EMPTY_NOTICE);
+    expect(html).not.toContain("connection refused");
+    expect(previewLinks(html)).toEqual([]);
+    // The hero and its actions render as usual around the notice.
+    expect(html).toContain('<a class="button-primary" href="/award-directory">Find awards');
+    expect(html).toContain('<a class="button-secondary" href="/updates">View live updates');
+    expect(html).toContain('<a class="home-live-terminal-footer" href="/updates">');
+    expect(consoleError).toHaveBeenCalledTimes(1);
+    consoleError.mockRestore();
+  });
+
+  it("shows the unavailable notice and never loads updates without configuration", async () => {
     mocks.hasSupabaseAdminConfig.mockReturnValue(false);
 
     const html = await renderHome();
 
     expect(mocks.getLiveUpdateItems).not.toHaveBeenCalled();
-    expect(html).toContain("Live update data will appear after the next scan.");
+    expect(previewNotices(html)).toEqual([UNAVAILABLE_NOTICE]);
+    expect(html).not.toContain(EMPTY_NOTICE);
     expect(previewLinks(html)).toEqual([]);
+  });
+
+  it("uses the same feed wording as the live feed page in every state", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    mocks.getLiveUpdateItems.mockResolvedValue([]);
+    const emptyHome = previewNotices(await renderHome());
+    expect(emptyHome).toHaveLength(1);
+    expect(feedNotices(await renderUpdatesPage())).toEqual(emptyHome);
+
+    mocks.getLiveUpdateItems.mockRejectedValue(new Error("connection refused"));
+    const failedHome = previewNotices(await renderHome());
+    expect(failedHome).toHaveLength(1);
+    expect(failedHome).not.toEqual(emptyHome);
+    expect(feedNotices(await renderUpdatesPage())).toEqual(failedHome);
+
+    mocks.hasSupabaseAdminConfig.mockReturnValue(false);
+    expect(previewNotices(await renderHome())).toEqual(failedHome);
+    expect(feedNotices(await renderUpdatesPage())).toEqual(failedHome);
+
+    mocks.hasSupabaseAdminConfig.mockReturnValue(true);
+    mocks.getLiveUpdateItems.mockImplementation(async (_limit: number, now: Date) => loaderResult(feedSeeds, now));
+    expect(previewNotices(await renderHome())).toEqual([]);
+    expect(feedNotices(await renderUpdatesPage())).toEqual([]);
+    consoleError.mockRestore();
   });
 });

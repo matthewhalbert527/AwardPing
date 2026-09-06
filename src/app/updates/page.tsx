@@ -5,9 +5,9 @@ import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
-import { hasSupabaseAdminConfig } from "@/lib/config";
-import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
+import type { LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
+import { loadPublicUpdateFeed, publicUpdateFeedNotice } from "@/lib/public-update-feed";
 import { centralDateKey, formatCentralDate, previousCentralDateKey } from "@/lib/time-zone";
 
 export const dynamic = "force-dynamic";
@@ -27,17 +27,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
   const statusMessage = updatesStatusMessage(params);
   // One clock reading per render: every relative label and day heading agrees.
   const now = new Date();
-  let updateLoadError = "";
-  let updates: Awaited<ReturnType<typeof getLiveUpdateItems>> = [];
-
-  if (hasSupabaseAdminConfig()) {
-    try {
-      updates = await getLiveUpdateItems(80, now);
-    } catch (error) {
-      updateLoadError = error instanceof Error ? error.message : "Live updates could not be loaded.";
-      console.error(updateLoadError);
-    }
-  }
+  const feed = await loadPublicUpdateFeed(80, now);
 
   return (
     <div className="page-shell">
@@ -75,12 +65,6 @@ export default async function UpdatesPage({ searchParams }: Props) {
           </div>
         )}
 
-        {updateLoadError && (
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
-            Live updates could not be loaded from Supabase right now. The feed is temporarily unavailable, not confirmed empty.
-          </div>
-        )}
-
         <section className="public-live-feed" aria-label="Live award updates">
           <div className="public-live-feed-heading">
             <div>
@@ -95,7 +79,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
           </div>
 
           <div className="public-live-feed-list">
-            {groupUpdatesByDay(updates, now).map((group, groupIndex) => (
+            {feed.status === "ready" && groupUpdatesByDay(feed.updates, now).map((group, groupIndex) => (
               <section className="public-live-day" key={`${group.key}-${groupIndex}`}>
                 <h3 className="public-live-day-label">{group.label}</h3>
                 <div className="public-live-day-list">
@@ -150,10 +134,8 @@ export default async function UpdatesPage({ searchParams }: Props) {
               </section>
             ))}
 
-            {updates.length === 0 && (
-              <div className="public-live-feed-empty">
-                No public changes are ready to show yet.
-              </div>
+            {feed.status !== "ready" && (
+              <div className="public-live-feed-empty">{publicUpdateFeedNotice(feed)}</div>
             )}
           </div>
         </section>

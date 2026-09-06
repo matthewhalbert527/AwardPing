@@ -54,9 +54,12 @@ export function shouldRevealPanel(sequence: number) {
 export function revealSelectedPanel(
   target: PanelRevealTarget | null | undefined,
   environment: PanelRevealEnvironment,
+  origin: "outline" | "panel" = "outline",
 ): PanelRevealOutcome {
-  // Wide layouts keep focus on the outline button the visitor pressed.
-  if (!target || !environment.compactLayout) return { focused: false, scrolled: false };
+  // An in-panel control unmounts when its destination opens. Move focus to
+  // the stable region at every width; persistent outline buttons stay put
+  // on desktop, where their destination is already beside them.
+  if (!target || (!environment.compactLayout && origin === "outline")) return { focused: false, scrolled: false };
   // Focus without the browser's own scrolling, then scroll deliberately so
   // the panel's CSS scroll-margin keeps it clear of the sticky site header.
   target.focus({ preventScroll: true });

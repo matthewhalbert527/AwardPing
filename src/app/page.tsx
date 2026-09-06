@@ -10,10 +10,13 @@ import {
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
-import { hasSupabaseAdminConfig } from "@/lib/config";
-import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
 import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
+import {
+  loadPublicUpdateFeed,
+  publicUpdateFeedNotice,
+  type PublicUpdateFeed,
+} from "@/lib/public-update-feed";
 
 export const dynamic = "force-dynamic";
 
@@ -42,12 +45,10 @@ const journeys = [
 ];
 
 export default async function Home() {
-  // One clock reading per render keeps every preview label consistent.
+  // One clock reading per render keeps every preview label consistent. A feed
+  // that cannot load becomes a notice in the preview, never a failed page.
   const now = new Date();
-  const [user, updates] = await Promise.all([
-    getCurrentUser(),
-    hasSupabaseAdminConfig() ? getLiveUpdateItems(8, now) : Promise.resolve([]),
-  ]);
+  const [user, feed] = await Promise.all([getCurrentUser(), loadPublicUpdateFeed(8, now)]);
 
   return (
     <div className="page-shell">
@@ -83,7 +84,7 @@ export default async function Home() {
             </div>
           </div>
 
-          <LiveTerminalPreview updates={updates} />
+          <LiveTerminalPreview feed={feed} />
         </section>
 
         <section className="home-journey-band border-y border-[var(--line)]">
@@ -128,7 +129,7 @@ export default async function Home() {
   );
 }
 
-function LiveTerminalPreview({ updates }: { updates: LiveUpdateItem[] }) {
+function LiveTerminalPreview({ feed }: { feed: PublicUpdateFeed }) {
   return (
     <aside className="home-live-terminal" aria-label="Live award update preview">
       <div className="home-live-terminal-top">
@@ -140,8 +141,8 @@ function LiveTerminalPreview({ updates }: { updates: LiveUpdateItem[] }) {
         <strong>Live Update Feed</strong>
       </div>
       <div className="home-live-terminal-list">
-        {updates.length ? (
-          updates.slice(0, 5).map((update) => (
+        {feed.status === "ready" ? (
+          feed.updates.slice(0, 5).map((update) => (
             <Link
               className="home-live-terminal-row"
               href={liveUpdateAwardHref(update)}
@@ -162,9 +163,7 @@ function LiveTerminalPreview({ updates }: { updates: LiveUpdateItem[] }) {
             </Link>
           ))
         ) : (
-          <div className="home-live-terminal-empty">
-            Live update data will appear after the next scan.
-          </div>
+          <div className="home-live-terminal-empty">{publicUpdateFeedNotice(feed)}</div>
         )}
       </div>
       <Link className="home-live-terminal-footer" href="/updates">

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { formatCentralDateTime } from "@/lib/time-zone";
-import { PublicAwardWorkspace, changeIdsToMarkRead } from "@/components/public-award-workspace";
+import { PublicAwardWorkspace, AwardSourcesPanel, AwardFactsPanel, filterAwardSources, changeIdsToMarkRead } from "@/components/public-award-workspace";
 
 describe("PublicAwardWorkspace", () => {
   it("renders the award outline sidebar with pluralized counts", () => {
@@ -150,32 +150,18 @@ describe("PublicAwardWorkspace", () => {
 
     const sidebarHtml = asideMarkup(html);
 
-    expect(sidebarHtml).toContain("Overview");
-    expect(sidebarHtml).toContain("Award profile");
-    expect(sidebarHtml).toContain("5 fields");
-    expect(sidebarHtml).not.toContain("Key details");
-    expect(sidebarHtml).toContain("Recent changes");
-    expect(sidebarHtml).toContain("1 update");
-    expect(sidebarHtml).toContain("Sources");
-    expect(sidebarHtml).toContain("Homepage");
-    expect(sidebarHtml).toContain("Application portal");
-    expect(sidebarHtml).toContain("Program guide");
-    expect(sidebarHtml).toContain("<span>PDF</span>");
-    expect(sidebarHtml).not.toContain("Application / 1 update");
-    expect(sidebarHtml).not.toContain("PDF guide / 0 updates");
-    expect(sidebarHtml).not.toContain("Award conditions");
-    expect(sidebarHtml).not.toContain("Other source / 0 updates");
-    expect(sidebarHtml).not.toContain("Homepage / 0 updates");
-    expect(sidebarHtml).not.toContain("<span>Overview</span><small>1 source</small>");
-    expect(sidebarHtml).toContain("Checked Jun 26, 2026");
-    expect(sidebarHtml).toContain("public-award-source-flat-list");
-    expect(sidebarHtml).not.toContain("public-award-source-group");
-    expect(sidebarHtml).not.toContain("public-award-sidebar-page-card");
-    expect(sidebarHtml).not.toContain("public-award-sidebar-last-checked");
-    expect(sidebarHtml).not.toContain('<details class="public-award-source-group" open');
-    expect(sidebarHtml).not.toContain("1 sources");
-    expect(sidebarHtml).not.toContain("1 updates");
-    expect(sidebarHtml).not.toContain("1 recent updates");
+    for (const label of ["Overview", "Eligibility", "Dates &amp; deadlines", "How to apply", "Updates", "Official sources"]) {
+      expect(sidebarHtml).toContain(`<strong>${label}</strong>`);
+    }
+    expect(sidebarHtml).toContain('href="/award-directory"');
+    expect(sidebarHtml).toContain("On this award");
+    expect(sidebarHtml).toContain("1 update shown");
+    expect(sidebarHtml).toContain("3 source pages");
+    expect(sidebarHtml).toContain("Last source check Jun 26, 2026");
+    expect(sidebarHtml).not.toContain("Application portal");
+    expect(sidebarHtml).not.toContain("Program guide");
+    expect(sidebarHtml).not.toContain("more tracked pages");
+    expect(outlineButtons(html)).toHaveLength(6);
 
     const mainHtml = mainMarkup(html);
     const headerHtml = mainHtml.slice(
@@ -215,7 +201,7 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).not.toContain("Stable");
   });
 
-  it("keeps oversized source groups compact while preserving updated sources", () => {
+  it("keeps every source reachable in the searchable source panel", () => {
     const noisyUpdatedSource = makeSource({
       id: "source-updated-noise",
       title: "1935-1936 - Vol 66",
@@ -239,7 +225,8 @@ describe("PublicAwardWorkspace", () => {
       ),
     ];
     const html = renderToStaticMarkup(
-      createElement(PublicAwardWorkspace, {
+      createElement(AwardSourcesPanel, {
+        onSelectSource: () => {},
         data: makePageData({
           sources,
           changes: [
@@ -258,18 +245,20 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = asideMarkup(html);
+    const sidebarHtml = html;
 
     expect(sidebarHtml).toContain("1935-1936 - Vol 66");
     expect(sidebarHtml).not.toContain("Application / 1 update");
-    expect(sidebarHtml).toContain("3 more tracked pages");
-    expect(sidebarHtml).not.toContain("Generic filler L");
-    expect(sidebarHtml.match(/public-award-nav-button-source/g) || []).toHaveLength(10);
+    expect(sidebarHtml).not.toContain("more tracked pages");
+    expect(sidebarHtml).toContain("Generic filler L");
+    expect(sidebarHtml.match(/class="public-award-source-choice"/g) || []).toHaveLength(13);
+    expect(sidebarHtml).toContain("13 of 13 source pages");
   });
 
   it("lists the award landing page source even when it is classified as application", () => {
     const html = renderToStaticMarkup(
-      createElement(PublicAwardWorkspace, {
+      createElement(AwardSourcesPanel, {
+        onSelectSource: () => {},
         data: makePageData({
           sources: [
             makeSource({
@@ -283,17 +272,15 @@ describe("PublicAwardWorkspace", () => {
       }),
     );
 
-    const sidebarHtml = asideMarkup(html);
-    const mainHtml = mainMarkup(html);
+    const sidebarHtml = html;
+    const mainHtml = html;
 
-    expect(sidebarHtml).toContain("Award profile");
-    expect(sidebarHtml).toContain("Sources");
+    expect(sidebarHtml).toContain("Official sources");
+    expect(sidebarHtml).toContain("Find a source page");
     expect(sidebarHtml).toContain("Homepage");
-    expect(sidebarHtml).not.toContain("Example Fellowship Application");
     expect(sidebarHtml).not.toContain("Application / 0 updates");
     expect(mainHtml).toContain("1 source page");
-    expect(mainHtml).toContain("Official homepage");
-    expect(mainHtml).not.toContain("Official source");
+    expect(sidebarHtml).toContain("<strong>Homepage</strong>");
   });
 
   it("uses concise source titles within the award context", () => {
@@ -323,21 +310,18 @@ describe("PublicAwardWorkspace", () => {
     data.officialHomepage = "https://awards.acm.org/doctoral-dissertation/nominations";
 
     const html = renderToStaticMarkup(
-      createElement(PublicAwardWorkspace, {
+      createElement(AwardSourcesPanel, {
+        onSelectSource: () => {},
         data,
       }),
     );
 
-    const sidebarHtml = asideMarkup(html);
+    const sidebarHtml = html;
 
     expect(sidebarHtml).toContain("Homepage");
     expect(sidebarHtml).toContain("Conflict of Interest Guidelines");
     expect(sidebarHtml).toContain("Advice for Nominators and Endorsers");
-    expect(sidebarHtml).toContain("<span>PDF</span>");
-    expect(sidebarHtml).not.toContain("ACM Doctoral Dissertation Award Nominations");
-    expect(sidebarHtml).not.toContain("ACM Awards Committee Conflict");
-    expect(sidebarHtml).not.toContain("ACM Awards: Advice");
-    expect(sidebarHtml).not.toContain("[Download]");
+    expect(sidebarHtml).toContain("<span>PDF guide</span>");
   });
 
   it("shortens National Academies Gulf fellowship source titles", () => {
@@ -360,17 +344,16 @@ describe("PublicAwardWorkspace", () => {
     data.award.name = "Gulf Research Program Science Policy Fellowship";
 
     const html = renderToStaticMarkup(
-      createElement(PublicAwardWorkspace, {
+      createElement(AwardSourcesPanel, {
+        onSelectSource: () => {},
         data,
       }),
     );
 
-    const sidebarHtml = asideMarkup(html);
+    const sidebarHtml = html;
 
     expect(sidebarHtml).toContain("Application and Review Process");
     expect(sidebarHtml).toContain("2026 Q&amp;A Office Hour Presentation");
-    expect(sidebarHtml).not.toContain("National Academies Gulf Research Program");
-    expect(sidebarHtml).not.toContain("Applicant Resource");
   });
 
   it("keeps noisy updated source labels compact without clipped ellipses", () => {
@@ -403,12 +386,13 @@ describe("PublicAwardWorkspace", () => {
       "U.S. Department of Energy (DOE) - Oak Ridge Institute for Science & Education (ORISE) - Graduate, Post-Master's & Postdoctoral Fellowships";
 
     const html = renderToStaticMarkup(
-      createElement(PublicAwardWorkspace, {
+      createElement(AwardSourcesPanel, {
+        onSelectSource: () => {},
         data,
       }),
     );
 
-    const sidebarHtml = asideMarkup(html);
+    const sidebarHtml = html;
 
     expect(sidebarHtml).toContain("NOFO up to $50M");
     expect(sidebarHtml).toContain("Submission Instructions");
@@ -492,8 +476,8 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
     expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
     expect(html).toContain('aria-label="Example Fellowship page outline"');
-    expect(html).toContain('aria-label="Award profile"');
-    expect(html).toContain('aria-label="Official sources"');
+    expect(html).toContain('aria-label="Award sections"');
+    expect(html).toContain('aria-label="Official sources, 2 source pages"');
     expect(html).toContain('aria-label="Collapse page outline"');
     expect(html).toContain("<h1>Example Fellowship</h1>");
   });
@@ -524,7 +508,7 @@ describe("PublicAwardWorkspace", () => {
     );
     const mainHtml = mainMarkup(html);
 
-    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Recent changes</h2>');
+    expect(mainHtml).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
     expect(mainHtml).not.toContain("Source update history");
     expect(mainHtml).toContain("The retired page changed.");
     expectSingleHighlightedChange(mainHtml, "The retired page changed.");
@@ -605,8 +589,8 @@ describe("PublicAwardWorkspace", () => {
   it("marks exactly one outline button as pressed and points every outline button at the stable panel", () => {
     const cases: Array<{ props: Record<string, string>; pressedLabel: string }> = [
       { props: {}, pressedLabel: "Overview" },
-      { props: { initialChangeId: "change-orphan" }, pressedLabel: "Recent changes" },
-      { props: { initialSourceId: "source-apply", initialChangeId: "change-apply" }, pressedLabel: "Application Instructions" },
+      { props: { initialChangeId: "change-orphan" }, pressedLabel: "Updates" },
+      { props: { initialSourceId: "source-apply", initialChangeId: "change-apply" }, pressedLabel: "Official sources" },
     ];
     for (const { props, pressedLabel } of cases) {
       const html = renderToStaticMarkup(
@@ -614,10 +598,10 @@ describe("PublicAwardWorkspace", () => {
       );
       const buttons = outlineButtons(html);
 
-      expect(buttons.length, JSON.stringify(props)).toBe(4);
+      expect(buttons.length, JSON.stringify(props)).toBe(6);
       expect(buttons.filter((button) => button.includes('aria-pressed="true"')), JSON.stringify(props)).toHaveLength(1);
-      expect(buttons.filter((button) => button.includes('aria-pressed="false"')), JSON.stringify(props)).toHaveLength(3);
-      expect(buttons.filter((button) => button.includes('aria-controls="public-award-panel"')), JSON.stringify(props)).toHaveLength(4);
+      expect(buttons.filter((button) => button.includes('aria-pressed="false"')), JSON.stringify(props)).toHaveLength(5);
+      expect(buttons.filter((button) => button.includes('aria-controls="public-award-panel"')), JSON.stringify(props)).toHaveLength(6);
       const pressed = buttons.find((button) => button.includes('aria-pressed="true"')) || "";
       expect(pressed, JSON.stringify(props)).toContain(`<strong>${pressedLabel}</strong>`);
       expect(pressed, JSON.stringify(props)).toContain("public-award-nav-button-active");
@@ -630,7 +614,7 @@ describe("PublicAwardWorkspace", () => {
       '<section class="public-award-console-panel" id="public-award-panel" role="region" aria-labelledby="public-award-panel-heading" tabindex="-1">';
     const cases: Array<{ props: Record<string, string>; heading: string }> = [
       { props: {}, heading: "Overview" },
-      { props: { initialChangeId: "change-orphan" }, heading: "Recent changes" },
+      { props: { initialChangeId: "change-orphan" }, heading: "Updates" },
       { props: { initialSourceId: "source-apply" }, heading: "Application Instructions" },
     ];
     for (const { props, heading } of cases) {
@@ -652,6 +636,9 @@ describe("PublicAwardWorkspace", () => {
     const noneRead = new Set<string>();
 
     expect(changeIdsToMarkRead(data, noneRead, { kind: "overview" })).toEqual([]);
+    for (const kind of ["eligibility", "dates", "application", "sources"] as const) {
+      expect(changeIdsToMarkRead(data, noneRead, { kind })).toEqual([]);
+    }
     expect(changeIdsToMarkRead(data, noneRead, { kind: "changes" })).toEqual([
       "change-home",
       "change-apply",
@@ -682,7 +669,7 @@ describe("PublicAwardWorkspace", () => {
     expect(source).toContain("const [activation, setActivation] = useState<PanelActivationState<SelectedPanel>>(() => ({");
     expect(source).toContain("    selected: initialContext.panel,\n    revealSequence: 0,\n  }));");
     expect(source).toContain(
-      "  useEffect(() => {\n    if (!shouldRevealPanel(activation.revealSequence)) return;\n    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment());\n  }, [activation.revealSequence]);",
+      "  useEffect(() => {\n    if (!shouldRevealPanel(activation.revealSequence)) return;\n    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment(), activationOrigin.current);\n  }, [activation.revealSequence]);",
     );
     const activation = source.slice(source.indexOf("const activatePanel = "), source.indexOf("useEffect(() => {"));
     expect(activation).toContain("markChangesRead(changeIdsToMarkRead(data, readChangeIds, next));");
@@ -692,7 +679,6 @@ describe("PublicAwardWorkspace", () => {
     expect(source.match(/setActivation\(/g)).toHaveLength(1);
     expect(source).not.toContain("setSelected");
     expect(source.match(/revealSelectedPanel\(/g)).toHaveLength(1);
-    expect(source.match(/activatePanel\(\{ kind: /g)).toHaveLength(3);
   });
 
   it("keeps the one-column scroll offset above every mobile header contributor and the focus ring", () => {
@@ -742,9 +728,9 @@ describe("PublicAwardWorkspace", () => {
     // it keeps the collapsed class, but the toggle is hidden below 720px, so
     // the compact override must bring the button labels back.
     const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
-    const strongSelector = ".public-award-console-collapsed .public-award-nav-text strong";
+    const textSelector = ".public-award-console-collapsed .public-award-nav-text {";
     const desktopHide = css.search(
-      /\.public-award-console-collapsed \.public-award-nav-text strong \{\s*display: none;\s*\}/,
+      /\.public-award-console-collapsed \.public-award-nav-text \{\s*display: none;\s*\}/,
     );
     expect(desktopHide).toBeGreaterThan(0);
 
@@ -753,14 +739,14 @@ describe("PublicAwardWorkspace", () => {
     const compactEnd = css.slice(compactStart).search(/\r?\n\}/) + compactStart;
     const compact = css.slice(compactStart, compactEnd);
 
-    // The strong label belongs to a compact rule whose body restores display,
+    // The text wrapper belongs to a compact rule whose body restores display,
     // and that rule comes after the desktop hide, so the cascade restores it.
-    const selectorAt = compact.indexOf(strongSelector);
+    const selectorAt = compact.indexOf(textSelector);
     expect(selectorAt).toBeGreaterThan(0);
     const ruleOpen = compact.indexOf("{", selectorAt);
     expect(compact.slice(selectorAt, ruleOpen)).not.toContain("}");
     const body = compact.slice(ruleOpen, compact.indexOf("}", ruleOpen));
-    expect(body).toMatch(/^\{\s*display: initial;\s*$/);
+    expect(body).toMatch(/^\{\s*display: grid;\s*$/);
     // The compact toggle stays hidden, so the restore is the only way back.
     expect(compact).toMatch(/\.public-award-sidebar-toggle \{\s*display: none;\s*\}/);
   });
@@ -799,6 +785,94 @@ describe("PublicAwardWorkspace", () => {
     );
     expect(valid).toContain('<time dateTime="2026-07-04T12:00:00.000Z"');
     expect(valid).not.toMatch(/<time(?![^>]*dateTime=)/);
+  });
+});
+
+describe("focused award sections", () => {
+  it("organizes existing facts without inferring new eligibility or deadlines", () => {
+    const facts = {
+      ...makeDeepLinkPageData().facts,
+      howToApply: ["Apply through the official portal."],
+      requirements: ["An institutional nomination is required."],
+      applicationMaterials: ["Two references."],
+      importantDates: ["Institutional deadlines vary."],
+    };
+    const renderSection = (section: "eligibility" | "dates" | "application") =>
+      renderToStaticMarkup(createElement(AwardFactsPanel, { facts, section, onViewSources: () => {} }));
+    const eligibility = renderSection("eligibility");
+    expect(eligibility).toContain("Graduate students");
+    expect(eligibility).not.toContain("institutional nomination");
+    expect(eligibility).not.toContain("January 29, 2026");
+    const dates = renderSection("dates");
+    expect(dates).toContain("January 29, 2026");
+    expect(dates).toContain("Institutional deadlines vary.");
+    expect(dates).not.toContain("Two references.");
+    const application = renderSection("application");
+    expect(application).toContain("An institutional nomination is required.");
+    expect(application).toContain("Apply through the official portal.");
+    expect(application).toContain("Two references.");
+    expect(application).not.toContain("Graduate students");
+  });
+
+  it("explains missing details and offers sources instead of inventing a value", () => {
+    const html = renderToStaticMarkup(createElement(AwardFactsPanel, {
+      facts: makeDeepLinkPageData().facts, section: "application", onViewSources: () => {},
+    }));
+    expect(html).toContain("These details are not available yet.");
+    expect(html).toContain("View official sources");
+    expect(html).not.toContain("January 29, 2026");
+  });
+
+  it("keeps the same six sections and explains an empty award overview", () => {
+    const data = makeDeepLinkPageData();
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data: { ...data, facts: data.sources[0].facts, sources: [], changes: [], lastCheckedAt: null },
+    }));
+    expect(panelMarkup(html)).toContain("Award details are not available yet.");
+    expect(asideMarkup(html)).toContain("Source check unavailable");
+    expect(asideMarkup(html)).toContain("0 source pages");
+    expect(asideMarkup(html).match(/aria-pressed=/g)).toHaveLength(6);
+    expect(html).not.toContain("January 29, 2026");
+  });
+
+  it("searches all sources by title, type and address and restores them when cleared", () => {
+    const sources = [
+      ...makeDeepLinkPageData().sources,
+      makeSource({ id: "pdf", pageType: "pdf", title: "Program guide", url: "https://example.edu/documents/guide.pdf" }),
+    ];
+    expect(filterAwardSources(sources, "  PDF GUIDE ").map((source) => source.id)).toEqual(["pdf"]);
+    expect(filterAwardSources(sources, "instructions").map((source) => source.id)).toEqual(["source-apply"]);
+    expect(filterAwardSources(sources, "documents").map((source) => source.id)).toEqual(["pdf"]);
+    expect(filterAwardSources(sources, "not-a-source")).toEqual([]);
+    expect(filterAwardSources(sources, " ")).toEqual(sources);
+    expect(sources).toHaveLength(3);
+  });
+
+  it("puts the reviewed homepage first without dropping or mutating sources", () => {
+    const data = makeDeepLinkPageData();
+    const sources = [...data.sources].reverse();
+    const originalIds = sources.map((source) => source.id);
+    const sorted = filterAwardSources(sources, "", data.officialHomepage);
+    expect(sorted.map((source) => source.id)).toEqual(["source-home", "source-apply"]);
+    expect(sources.map((source) => source.id)).toEqual(originalIds);
+    expect(filterAwardSources(sources, "instructions", data.officialHomepage).map((source) => source.id)).toEqual(["source-apply"]);
+  });
+
+  it("describes the bounded update window without claiming lifetime history totals", () => {
+    const data = makeDeepLinkPageData();
+    data.changes = Array.from({ length: 8 }, (_, index) => ({ ...data.changes[0], id: `recent-${index}` }));
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }));
+    expect(asideMarkup(html)).toContain("8 updates shown");
+    expect(asideMarkup(html)).not.toContain("recorded update");
+    const sourceHtml = renderToStaticMarkup(createElement(AwardSourcesPanel, {
+      data, onSelectSource: () => {}, sourceChangeCounts: new Map([["source-home", 8]]),
+    }));
+    expect(sourceHtml).toContain("8 updates shown");
+    expect(sourceHtml).toContain("0 updates shown");
+    expect(sourceHtml).not.toContain("recorded update");
+    const emptySource = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data, initialSourceId: "source-apply" }));
+    expect(emptySource).toContain("No updates for this source are included in this view.");
+    expect(emptySource).not.toContain("No meaningful updates have been recorded");
   });
 });
 

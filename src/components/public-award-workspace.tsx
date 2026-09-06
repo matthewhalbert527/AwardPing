@@ -4,12 +4,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowRight,
+  ArrowLeft,
+  BookOpen,
   CalendarDays,
   ExternalLink,
   FileText,
+  Inbox,
   ListChecks,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
+  Users,
+  type LucideIcon,
 } from "lucide-react";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
@@ -34,6 +40,7 @@ type PublicAwardWorkspaceProps = {
 
 export type SelectedPanel =
   | { kind: "overview" }
+  | { kind: "eligibility" | "dates" | "application" | "sources" }
   | { kind: "changes" }
   | { kind: "source"; sourceId: string };
 
@@ -42,8 +49,6 @@ type PublicAwardChange = PublicAwardPageData["changes"][number];
 type FactValue = string | string[];
 type FactRow = { label: string; value: FactValue; icon?: "calendar" | "checklist" };
 type MaybeFactRow = { label: string; value: FactValue | null; icon?: "calendar" | "checklist" };
-
-const MAX_VISIBLE_SIDEBAR_SOURCES = 10;
 
 export function PublicAwardWorkspace({
   data,
@@ -64,6 +69,7 @@ export function PublicAwardWorkspace({
     () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
   const panelRef = useRef<HTMLElement>(null);
+  const activationOrigin = useRef<"outline" | "panel">("outline");
   const selectedSource =
     selected.kind === "source"
       ? data.sources.find((source) => source.id === selected.sourceId) || null
@@ -103,16 +109,6 @@ export function PublicAwardWorkspace({
     }
     return counts;
   }, [data.changes, data.sources, readChangeIds]);
-  const sourceOutline = useMemo(
-    () =>
-      visibleSourcesForSidebar(
-        data.sources,
-        data.award.name,
-        sourceChangeCounts,
-        sourceUnreadCounts,
-      ),
-    [data.award.name, data.sources, sourceChangeCounts, sourceUnreadCounts],
-  );
   const unreadChangeCount = useMemo(
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
     [data.changes, readChangeIds],
@@ -127,15 +123,16 @@ export function PublicAwardWorkspace({
   // Every outline activation goes through here: it marks what the visitor
   // is about to see as read and applies the pure activation transition,
   // whose advancing sequence drives the reveal effect below.
-  const activatePanel = (next: SelectedPanel) => {
+  const activatePanel = (next: SelectedPanel, origin: "outline" | "panel" = "outline") => {
     if (!isKnownPanel(data, next)) return;
+    activationOrigin.current = origin;
     markChangesRead(changeIdsToMarkRead(data, readChangeIds, next));
     setActivation((state) => activatePanelSelection(state, next, (panel) => isKnownPanel(data, panel)));
   };
 
   useEffect(() => {
     if (!shouldRevealPanel(activation.revealSequence)) return;
-    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment());
+    revealSelectedPanel(panelRef.current, readPanelRevealEnvironment(), activationOrigin.current);
   }, [activation.revealSequence]);
 
   return (
@@ -166,13 +163,19 @@ export function PublicAwardWorkspace({
       </header>
 
       <aside className="public-award-sidebar" aria-label={`${data.award.name} page outline`}>
+        <Link className="public-award-directory-link" href="/award-directory" prefetch={false} aria-label="Award Directory" title="Award Directory">
+          <ArrowLeft size={15} aria-hidden="true" />
+          <span>Award Directory</span>
+        </Link>
         <div className="public-award-sidebar-header">
           <div className="min-w-0">
-            <p>Award outline</p>
-            <span>{data.lastCheckedAt ? `Checked ${formatDate(data.lastCheckedAt)}` : "Check pending"}</span>
+            <p>On this award</p>
+            <span>{data.lastCheckedAt ? `Last source check ${formatDate(data.lastCheckedAt)}` : "Source check unavailable"}</span>
           </div>
           <button
             aria-label={sidebarOpen ? "Collapse page outline" : "Expand page outline"}
+            aria-expanded={sidebarOpen}
+            aria-controls="award-section-navigation"
             className="public-award-sidebar-toggle"
             type="button"
             onClick={() => setSidebarOpen((current) => !current)}
@@ -185,46 +188,51 @@ export function PublicAwardWorkspace({
           </button>
         </div>
 
-        <div className="public-award-nav-section" aria-label="Award profile">
-          <p className="public-award-nav-heading">Award profile</p>
+        <nav className="public-award-nav-section public-award-task-nav" aria-label="Award sections" id="award-section-navigation">
           <PanelButton
             active={selected.kind === "overview"}
             label="Overview"
-            meta={countLabel(factRows.length, "field")}
+            icon={BookOpen}
+            meta="About the award"
             onClick={() => activatePanel({ kind: "overview" })}
           />
           <PanelButton
+            active={selected.kind === "eligibility"}
+            label="Eligibility"
+            icon={Users}
+            meta="Who can apply"
+            onClick={() => activatePanel({ kind: "eligibility" })}
+          />
+          <PanelButton
+            active={selected.kind === "dates"}
+            label="Dates & deadlines"
+            icon={CalendarDays}
+            meta="When to apply"
+            onClick={() => activatePanel({ kind: "dates" })}
+          />
+          <PanelButton
+            active={selected.kind === "application"}
+            label="How to apply"
+            icon={ListChecks}
+            meta="Steps & materials"
+            onClick={() => activatePanel({ kind: "application" })}
+          />
+          <PanelButton
             active={selected.kind === "changes"}
-            label="Recent changes"
-            meta={countLabel(data.changes.length, "update")}
+            label="Updates"
+            icon={Inbox}
+            meta={`${countLabel(data.changes.length, "update")} shown`}
             onClick={() => activatePanel({ kind: "changes" })}
             updateCount={unreadChangeCount}
           />
-        </div>
-
-        {sourceOutline.sources.length > 0 && (
-          <div className="public-award-nav-section" aria-label="Official sources">
-            <p className="public-award-nav-heading">Sources</p>
-            <div className="public-award-source-sublist public-award-source-flat-list">
-              {sourceOutline.visibleSources.map((source) => (
-                <SourceOutlineButton
-                  key={source.id}
-                  awardName={data.award.name}
-                  officialHomepage={data.officialHomepage}
-                  onSelectSource={(sourceId) => activatePanel({ kind: "source", sourceId })}
-                  selected={selected}
-                  source={source}
-                  sourceUnreadCount={sourceUnreadCounts.get(source.id) || 0}
-                />
-              ))}
-              {sourceOutline.hiddenSourceCount > 0 && (
-                <div className="public-award-source-overflow-note">
-                  {countLabel(sourceOutline.hiddenSourceCount, "more tracked page")}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+          <PanelButton
+            active={selected.kind === "sources" || selected.kind === "source"}
+            label="Official sources"
+            icon={FileText}
+            meta={countLabel(data.sources.length, "source page")}
+            onClick={() => activatePanel({ kind: "sources" })}
+          />
+        </nav>
       </aside>
 
       {/* One stable region for whichever panel is selected: outline buttons
@@ -244,6 +252,23 @@ export function PublicAwardWorkspace({
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
           />
         )}
+        {(selected.kind === "eligibility" || selected.kind === "dates" || selected.kind === "application") && (
+          <AwardFactsPanel
+            facts={data.facts}
+            section={selected.kind}
+            headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
+            onViewSources={() => activatePanel({ kind: "sources" }, "panel")}
+          />
+        )}
+        {selected.kind === "sources" && (
+          <AwardSourcesPanel
+            data={data}
+            headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
+            sourceChangeCounts={sourceChangeCounts}
+            sourceUnreadCounts={sourceUnreadCounts}
+            onSelectSource={(sourceId) => activatePanel({ kind: "source", sourceId }, "panel")}
+          />
+        )}
         {selected.kind === "changes" && (
           <ChangesPanel
             changes={data.changes}
@@ -258,6 +283,7 @@ export function PublicAwardWorkspace({
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
             highlightedChangeId={highlightedChangeId}
             officialHomepage={data.officialHomepage}
+            onViewSources={() => activatePanel({ kind: "sources" }, "panel")}
             source={selectedSource}
           />
         )}
@@ -310,7 +336,7 @@ export function changeIdsToMarkRead(
   readChangeIds: Set<string>,
   next: SelectedPanel,
 ) {
-  if (next.kind === "overview") return [];
+  if (next.kind !== "changes" && next.kind !== "source") return [];
   const source =
     next.kind === "source"
       ? data.sources.find((candidate) => candidate.id === next.sourceId) || null
@@ -324,49 +350,20 @@ export function changeIdsToMarkRead(
     .map((change) => change.id);
 }
 
-function SourceOutlineButton({
-  awardName,
-  officialHomepage,
-  onSelectSource,
-  selected,
-  source,
-  sourceUnreadCount,
-}: {
-  awardName: string;
-  officialHomepage?: string | null;
-  onSelectSource: (sourceId: string) => void;
-  selected: SelectedPanel;
-  source: PublicAwardSource;
-  sourceUnreadCount: number;
-}) {
-  return (
-    <PanelButton
-      active={selected.kind === "source" && selected.sourceId === source.id}
-      label={sourceDisplayTitle(source, awardName, officialHomepage)}
-      onClick={() => onSelectSource(source.id)}
-      tags={sourceTags(source)}
-      updateCount={sourceUnreadCount}
-      variant="source"
-    />
-  );
-}
-
 function PanelButton({
   active,
   label,
   meta,
   onClick,
-  tags = [],
+  icon: Icon,
   updateCount = 0,
-  variant = "profile",
 }: {
   active: boolean;
   label: string;
   meta?: string | null;
   onClick: () => void;
-  tags?: string[];
+  icon: LucideIcon;
   updateCount?: number;
-  variant?: "profile" | "source";
 }) {
   const hasUpdate = updateCount > 0;
 
@@ -374,25 +371,16 @@ function PanelButton({
     <button
       aria-controls={PUBLIC_AWARD_PANEL_ID}
       aria-pressed={active}
-      className={`public-award-nav-button public-award-nav-button-${variant} ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
+      aria-label={[label, meta, hasUpdate ? countLabel(updateCount, "unread update") : null].filter(Boolean).join(", ")}
+      title={label}
+      className={`public-award-nav-button public-award-nav-button-profile ${active ? "public-award-nav-button-active" : ""} ${hasUpdate ? "public-award-nav-button-updated" : ""}`}
       type="button"
       onClick={onClick}
     >
-      <span className="public-award-nav-marker" aria-hidden="true" />
+      <Icon className="public-award-nav-icon" size={18} aria-hidden="true" />
       <span className="public-award-nav-text">
         <strong>{label}</strong>
-        {(meta || tags.length > 0) && (
-          <small>
-            {meta}
-            {tags.length > 0 && (
-              <span className="public-award-nav-tags">
-                {tags.map((tag) => (
-                  <span key={tag}>{tag}</span>
-                ))}
-              </span>
-            )}
-          </small>
-        )}
+        {meta && <small>{meta}</small>}
       </span>
       {hasUpdate && (
         <span className="public-award-update-count" aria-label={`${updateCount} unread update${updateCount === 1 ? "" : "s"}`}>
@@ -404,6 +392,122 @@ function PanelButton({
 }
 
 const KEY_FACT_LABELS = new Set(["Deadline", "Opening date", "Award amount"]);
+
+const FACT_SECTIONS = {
+  eligibility: {
+    title: "Eligibility",
+    description: "Who can apply, based on the details available for this award.",
+    labels: ["Eligibility", "Academic level", "Discipline", "Citizenship"],
+  },
+  dates: {
+    title: "Dates & deadlines",
+    description: "Published dates are shown as recorded. Check the official source for the current application cycle.",
+    labels: ["Deadline", "Opening date", "Important dates"],
+  },
+  application: {
+    title: "How to apply",
+    description: "Application steps, required materials, and contacts in one place.",
+    labels: ["How to apply", "Requirements", "Application materials", "Documents", "Contact"],
+  },
+} as const;
+
+export function AwardFactsPanel({ facts, section, headingId, onViewSources }: {
+  facts: PublicAwardPageData["facts"];
+  section: keyof typeof FACT_SECTIONS;
+  headingId?: string;
+  onViewSources: () => void;
+}) {
+  const definition = FACT_SECTIONS[section];
+  const rows = awardFactRows(facts);
+  const sectionRows = definition.labels.flatMap((label) => rows.filter((row) => row.label === label));
+  return (
+    <div className="public-award-panel-stack">
+      <div className="public-award-section-heading">
+        <h2 id={headingId}>{definition.title}</h2>
+        <p className="public-award-section-description">{definition.description}</p>
+      </div>
+      {sectionRows.length > 0 ? (
+        <div className="public-award-fact-table public-award-fact-table-compact">
+          {sectionRows.map((fact) => <FactLine fact={fact} key={fact.label} />)}
+        </div>
+      ) : (
+        <EmptyState text="These details are not available yet. Check the official sources before applying." />
+      )}
+      <button className="public-award-context-link" type="button" onClick={onViewSources}>
+        View official sources <ArrowRight size={15} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+// Search never filters the underlying award data or its publication gates.
+// Every source supplied by the loader remains reachable, with no display cap.
+export function filterAwardSources(sources: PublicAwardSource[], query: string, officialHomepage?: string | null) {
+  const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+  const isHomepage = (source: PublicAwardSource) => Boolean(officialHomepage) && normalizeUrl(source.url) === normalizeUrl(officialHomepage);
+  return sources.filter((source) => {
+    const text = [source.title, source.description, source.url, pageTypeLabel(source.pageType)]
+      .filter(Boolean).join(" ").toLocaleLowerCase();
+    return terms.every((term) => text.includes(term));
+  }).sort((a, b) => Number(isHomepage(b)) - Number(isHomepage(a)));
+}
+
+export function AwardSourcesPanel({ data, headingId, onSelectSource, sourceChangeCounts = new Map(), sourceUnreadCounts = new Map() }: {
+  data: PublicAwardPageData;
+  headingId?: string;
+  onSelectSource: (sourceId: string) => void;
+  sourceChangeCounts?: Map<string, number>;
+  sourceUnreadCounts?: Map<string, number>;
+}) {
+  const [query, setQuery] = useState("");
+  const sources = filterAwardSources(data.sources, query, data.officialHomepage);
+  return (
+    <div className="public-award-panel-stack">
+      <div className="public-award-section-heading">
+        <h2 id={headingId}>Official sources</h2>
+        <p className="public-award-section-description">
+          Original pages behind this award. Choose a page to see the updates available here and open the official source.
+        </p>
+      </div>
+      {data.sources.length > 0 && (
+        <div className="public-award-source-search">
+          <label htmlFor="award-source-search">Find a source page</label>
+          <div>
+            <Search size={17} aria-hidden="true" />
+            <input id="award-source-search" type="search" placeholder="Search by title, type, or address" value={query}
+              onChange={(event) => setQuery(event.target.value)} />
+          </div>
+          <p role="status">{sources.length} of {countLabel(data.sources.length, "source page")}</p>
+        </div>
+      )}
+      {sources.length > 0 ? (
+        <div className="public-award-source-directory">
+          {sources.map((source) => (
+            <button className="public-award-source-choice" type="button" key={source.id}
+              onClick={() => onSelectSource(source.id)} title={source.title}>
+              <FileText size={19} aria-hidden="true" />
+              <span className="public-award-source-choice-text">
+                <strong>{sourceDisplayTitle(source, data.award.name, data.officialHomepage)}</strong>
+                <span className="public-award-source-purpose">
+                  <span>{pageTypeLabel(source.pageType)}</span>
+                  <span>{countLabel(sourceChangeCounts.get(source.id) ?? 0, "update")} shown</span>
+                  {(sourceUnreadCounts.get(source.id) ?? 0) > 0 && <span className="public-award-source-unread">Unread updates</span>}
+                </span>
+                <span className="public-award-source-address">{source.url}</span>
+              </span>
+              <ArrowRight size={17} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div>
+          <EmptyState text={data.sources.length ? "No source pages match your search." : "No official source pages are available for this award yet."} />
+          {query && <button type="button" className="public-award-context-link" onClick={() => setQuery("")}>Clear search</button>}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function OverviewPanel({
   factRows,
@@ -434,6 +538,10 @@ function OverviewPanel({
         <h2 id={headingId}>Overview</h2>
       </div>
 
+      {factRows.length === 0 && (
+        <EmptyState text="Award details are not available yet. Check the official sources before applying." />
+      )}
+
       {detailRows.length > 0 && (
         <div className="public-award-fact-table public-award-fact-table-compact">
           {detailRows.map((fact) => (
@@ -451,6 +559,7 @@ function SourcePanel({
   headingId,
   highlightedChangeId,
   officialHomepage,
+  onViewSources,
   source,
 }: {
   awardName: string;
@@ -458,12 +567,16 @@ function SourcePanel({
   headingId?: string;
   highlightedChangeId?: string | null;
   officialHomepage?: string | null;
+  onViewSources: () => void;
   source: PublicAwardPageData["sources"][number];
 }) {
   const displayTitle = sourceDisplayTitle(source, awardName, officialHomepage);
 
   return (
     <div className="public-award-panel-stack">
+      <button className="public-award-context-link" type="button" onClick={onViewSources}>
+        <ArrowLeft size={15} aria-hidden="true" /> All official sources
+      </button>
       <div className="public-award-source-detail-heading">
         <div>
           {sourceTags(source).map((tag) => (
@@ -481,7 +594,7 @@ function SourcePanel({
 
       <ChangesPanel
         changes={changes}
-        emptyText="No meaningful updates have been recorded for this source yet."
+        emptyText="No updates for this source are included in this view."
         highlightedChangeId={highlightedChangeId}
         showSnapshotPreviews
         sourceIdFallback={source.id}
@@ -493,12 +606,12 @@ function SourcePanel({
 
 function ChangesPanel({
   changes,
-  emptyText = "No meaningful updates have been recorded yet.",
+  emptyText = "No updates are available in this view yet.",
   headingId,
   highlightedChangeId = null,
   showSnapshotPreviews = false,
   sourceIdFallback,
-  title = "Recent changes",
+  title = "Updates",
 }: {
   changes: PublicAwardPageData["changes"];
   emptyText?: string;
@@ -661,160 +774,9 @@ function isFactRow(row: MaybeFactRow): row is FactRow {
   return Array.isArray(row.value) ? row.value.length > 0 : Boolean(row.value);
 }
 
-function visibleSourcesForSidebar(
-  sources: PublicAwardSource[],
-  awardName: string,
-  sourceChangeCounts: Map<string, number>,
-  sourceUnreadCounts: Map<string, number>,
-) {
-  const awardTokens = distinctiveAwardTokens(awardName);
-  const sortedSources = [...sources].sort((a, b) =>
-    sourceOutlineSortKey(a, awardTokens).localeCompare(sourceOutlineSortKey(b, awardTokens)),
-  );
-
-  if (sortedSources.length <= MAX_VISIBLE_SIDEBAR_SOURCES) {
-    return { sources: sortedSources, visibleSources: sortedSources, hiddenSourceCount: 0 };
-  }
-
-  const updatedSources = sortedSources.filter((source) =>
-    hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
-  );
-  const selected = new Map(updatedSources.map((source) => [source.id, source]));
-
-  for (const source of sortedSources) {
-    if (selected.size >= Math.max(MAX_VISIBLE_SIDEBAR_SOURCES, updatedSources.length)) break;
-    selected.set(source.id, source);
-  }
-
-  const visibleSources = [
-    ...updatedSources,
-    ...sortedSources.filter(
-      (source) => selected.has(source.id) && !hasSourceUpdate(source, sourceChangeCounts, sourceUnreadCounts),
-    ),
-  ];
-
-  return {
-    sources: sortedSources,
-    visibleSources,
-    hiddenSourceCount: sortedSources.length - visibleSources.length,
-  };
-}
-
-function searchableSourceText(source: PublicAwardSource) {
-  const facts = source.facts;
-  return [
-    source.title,
-    source.description,
-    source.url,
-    facts.deadline,
-    facts.openingDate,
-    facts.awardAmount,
-    ...facts.academicLevels,
-    ...facts.disciplines,
-    ...facts.citizenship,
-    ...facts.eligibility,
-    ...facts.requirements,
-    ...facts.applicationMaterials,
-    ...facts.howToApply,
-    ...facts.importantDates,
-    ...facts.documents,
-    ...facts.contacts,
-  ]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-}
-
-function hasSourceUpdate(
-  source: PublicAwardSource,
-  sourceChangeCounts: Map<string, number>,
-  sourceUnreadCounts: Map<string, number>,
-) {
-  return (sourceUnreadCounts.get(source.id) || 0) > 0 || (sourceChangeCounts.get(source.id) || 0) > 0;
-}
-
-function sourceOutlineSortKey(source: PublicAwardSource, awardTokens: string[]) {
-  return `${sourceOutlinePriority(source, awardTokens)}:${sourceSortLabel(source)}`;
-}
-
-function sourceOutlinePriority(source: PublicAwardSource, awardTokens: string[]) {
-  const text = searchableSourceText(source);
-  if (source.pageType === "homepage") return 0;
-  if (sourceMatchesAwardTokens(text, awardTokens)) return 1;
-  if (isNoisyOutlineSource(source, text, awardTokens)) return 9;
-  if (/\b(named scholarship|scholarship|fellowship|grant|award|funding)\b/.test(text)) return 2;
-  if (/\b(application guide|how to apply|when to apply|deadline|eligib|requirement|supporting documents)\b/.test(text)) {
-    return 3;
-  }
-  if (source.pageType && source.pageType !== "other") return 4;
-  return 5;
-}
-
-function isNoisyOutlineSource(source: PublicAwardSource, text: string, awardTokens: string[]) {
-  const title = source.title.toLowerCase();
-  const url = safeUrl(source.url);
-  const host = url?.hostname.toLowerCase().replace(/^www\./, "") || "";
-  const path = url?.pathname.toLowerCase() || "";
-
-  if (/^\d{4}-\d{4}\s*-\s*vol\s+\d+\b/.test(title)) return true;
-  if (/\b(charred grains?|administrative and private documents|journal of record|public statistics|sitemap)\b/.test(title)) {
-    return true;
-  }
-  if (host === "portal.sds.ox.ac.uk") {
-    if (/^\/(?:browse|groups|stats|sitemap|gazette|authors)(?:\/|$)/.test(path)) return true;
-    if (/^\/search(?:\/|$)/.test(path)) return true;
-    if (
-      /^\/articles\/(?:figure|online_resource)\//.test(path) &&
-      !sourceMatchesAwardTokens(text, awardTokens) &&
-      !/\b(scholarship|fellowship|grant|award|funding|deadline|eligib)\b/.test(text)
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function sourceMatchesAwardTokens(text: string, awardTokens: string[]) {
-  if (awardTokens.length === 0) return false;
-  const matches = awardTokens.filter((token) => new RegExp(`\\b${escapeRegExp(token)}\\b`, "i").test(text));
-  return matches.length >= Math.min(2, awardTokens.length);
-}
-
-function distinctiveAwardTokens(value: string) {
-  const generic = new Set([
-    "award",
-    "awards",
-    "fellow",
-    "fellowship",
-    "fellowships",
-    "foundation",
-    "graduate",
-    "program",
-    "programme",
-    "scholar",
-    "scholars",
-    "scholarship",
-    "scholarships",
-    "student",
-    "students",
-    "university",
-  ]);
-  return [
-    ...new Set(
-      (value.toLowerCase().match(/[a-z0-9]+/g) || []).filter(
-        (token) => token.length >= 4 && !generic.has(token),
-      ),
-    ),
-  ].slice(0, 8);
-}
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function sourceSortLabel(source: PublicAwardSource) {
-  const pageTypeRank = source.pageType === "homepage" ? "0" : "1";
-  return `${pageTypeRank}:${source.title.toLowerCase()}:${source.url.toLowerCase()}`;
 }
 
 function sourceTags(source: PublicAwardSource) {
@@ -1032,14 +994,6 @@ function toDisplayTitleCase(value: string) {
         .join("");
     })
     .join(" ");
-}
-
-function safeUrl(value: string) {
-  try {
-    return new URL(value);
-  } catch {
-    return null;
-  }
 }
 
 function isChangeForSource(change: PublicAwardChange, source: PublicAwardSource) {
