@@ -1,5 +1,5 @@
+import type { ReactNode } from "react";
 import { AwardDiscoveryWorkspace } from "@/components/award-discovery-workspace";
-import { SetupNotice } from "@/components/setup-notice";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
@@ -40,38 +40,69 @@ type SharedChangeDirectoryRow = Pick<
   | "visual_review_candidate_id"
   | "detected_at"
 >;
+// The directory is shown in one of three truthful states: awards loaded, none
+// published right now, or unavailable (not configured, publication gates
+// closed, or the catalog failed to load). Unavailable never shows a zero count
+// or a search box as if an empty catalog had loaded.
+type DirectoryCatalog =
+  | {
+      status: "ready";
+      awards: ReturnType<typeof mapSharedAwards>;
+      canonicalAwardIdByMember: Map<string, string>;
+    }
+  | { status: "empty" }
+  | { status: "unavailable" };
+
+const DIRECTORY_EMPTY_NOTICE = "No awards are published right now.";
+const DIRECTORY_UNAVAILABLE_NOTICE =
+  "The award directory is unavailable right now. Please check back soon.";
+
 export default async function AwardDirectoryPage() {
+  // Missing configuration short-circuits before any session or office lookup,
+  // exactly as before; the visitor sees the same frame and notice as for any
+  // other unavailable catalog.
   if (!hasSupabaseConfig() || !hasSupabaseAdminConfig()) {
     return (
-      <div className="page-shell">
-        <SiteHeader />
-        <main className="mx-auto max-w-6xl px-5 py-14">
-          <SetupNotice />
-        </main>
-        <SiteFooter />
-      </div>
+      <DirectoryFrame>
+        <DirectoryNotice status="unavailable" />
+      </DirectoryFrame>
     );
   }
 
+  // The session and office lookups are not caught: a configured failure there
+  // still propagates. Only the catalog load degrades to a notice.
   const user = await getCurrentUser();
-  const [officeContext, sharedCatalogBase] = await Promise.all([
+  const [officeContext, catalog] = await Promise.all([
     user ? getOfficeContext(user) : Promise.resolve(null),
-    getSharedCatalog(),
+    loadDirectoryCatalog(),
   ]);
-  const admin = createSupabaseAdminClient();
-  const { data: awards } = officeContext
-    ? await admin
-        .from("awards")
-        .select("shared_award_id")
-        .eq("office_id", officeContext.current.officeId)
-        .eq("status", "active")
-    : { data: [] as OfficeAwardTrackingRow[] };
+  if (catalog.status !== "ready") {
+    return (
+      <DirectoryFrame>
+        <DirectoryNotice status={catalog.status} />
+      </DirectoryFrame>
+    );
+  }
+
   const sharedCatalog = withTrackedSharedAwards(
-    sharedCatalogBase.awards,
-    awards || [],
-    sharedCatalogBase.canonicalAwardIdByMember,
+    catalog.awards,
+    await trackedOfficeAwards(officeContext),
+    catalog.canonicalAwardIdByMember,
   );
 
+  return (
+    <DirectoryFrame>
+      <AwardDiscoveryWorkspace
+        sharedAwards={sharedCatalog}
+        canManage={officeContext ? canManageOffice(officeContext.current.role) : false}
+        isAuthenticated={Boolean(user)}
+      />
+    </DirectoryFrame>
+  );
+}
+
+// Heading, intro, header and footer are the same in every state.
+function DirectoryFrame({ children }: { children: ReactNode }) {
   return (
     <div className="page-shell">
       <SiteHeader />
@@ -81,22 +112,49 @@ export default async function AwardDirectoryPage() {
           <h1 className="display-title text-4xl leading-[1.06] md:text-[2.9rem]">Every monitored award, in one place</h1></div>
           <p className="mt-4 max-w-[58ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
             Search the awards AwardPing already checks. Open any award to see
-            its official source tree and recent update history.
+            its official sources and updates.
           </p>
         </div>
 
-        <AwardDiscoveryWorkspace
-          sharedAwards={sharedCatalog}
-          canManage={officeContext ? canManageOffice(officeContext.current.role) : false}
-          isAuthenticated={Boolean(user)}
-        />
+        {children}
       </main>
       <SiteFooter />
     </div>
   );
 }
 
-async function getSharedCatalog() {
+function DirectoryNotice({ status }: { status: "empty" | "unavailable" }) {
+  return (
+    <p className="card rounded-3xl p-6 text-sm font-semibold text-[var(--text-secondary)]">
+      {status === "empty" ? DIRECTORY_EMPTY_NOTICE : DIRECTORY_UNAVAILABLE_NOTICE}
+    </p>
+  );
+}
+
+// Only the catalog load is caught; a failure becomes the unavailable notice.
+async function loadDirectoryCatalog(): Promise<DirectoryCatalog> {
+  try {
+    return await getSharedCatalog();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "The award directory could not be loaded.");
+    return { status: "unavailable" };
+  }
+}
+
+// The office's active tracking rows, only when there is an office to scope to.
+async function trackedOfficeAwards(
+  officeContext: Awaited<ReturnType<typeof getOfficeContext>>,
+): Promise<OfficeAwardTrackingRow[]> {
+  if (!officeContext) return [];
+  const { data } = await createSupabaseAdminClient()
+    .from("awards")
+    .select("shared_award_id")
+    .eq("office_id", officeContext.current.officeId)
+    .eq("status", "active");
+  return data || [];
+}
+
+async function getSharedCatalog(): Promise<DirectoryCatalog> {
   const admin = createSupabaseAdminClient();
   const publicationIndex = await loadStage1PublicationIndex();
   const canonicalAwardIdByMember = new Map(
@@ -104,9 +162,8 @@ async function getSharedCatalog() {
       ([memberAwardId, entry]) => [memberAwardId, entry.canonicalAwardId],
     ),
   );
-  if (!publicationIndex.available || publicationIndex.verifiedEntries.length === 0) {
-    return { awards: [], canonicalAwardIdByMember };
-  }
+  if (!publicationIndex.available) return { status: "unavailable" };
+  if (publicationIndex.verifiedEntries.length === 0) return { status: "empty" };
 
   const sharedAwards: SharedAwardDirectoryRow[] = publicationIndex.verifiedEntries.map(
     (publication) => ({
@@ -130,6 +187,7 @@ async function getSharedCatalog() {
   }));
 
   return {
+    status: "ready",
     awards: mapSharedAwards(
       sharedAwards,
       groupBySharedAwardId(canonicalChanges),
