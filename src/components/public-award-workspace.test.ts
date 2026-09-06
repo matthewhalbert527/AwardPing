@@ -193,8 +193,9 @@ describe("PublicAwardWorkspace", () => {
     expect(headerHtml).not.toContain("1 recent updates");
     expect(headerHtml).not.toContain("high confidence");
     expect(headerHtml).toContain("Official homepage");
-    expect(headerHtml).toContain("Get in touch");
-    expect(headerHtml.indexOf("Official homepage")).toBeLessThan(headerHtml.indexOf("Get in touch"));
+    expect(headerHtml).toContain('<a class="button-primary" href="/updates">View all updates<svg');
+    expect(headerHtml.indexOf("Official homepage")).toBeLessThan(headerHtml.indexOf("View all updates"));
+    expect(html).not.toContain("Get in touch");
     expect(mainHtml).not.toContain("public-award-overview-strip");
     expect(mainHtml).not.toContain("Last checked");
     expect(mainHtml).toContain("Overview");
@@ -984,3 +985,57 @@ function outlineButtons(html: string) {
     (match) => match[0],
   );
 }
+
+describe("PublicAwardWorkspace header action", () => {
+  // The official homepage link is byte-for-byte what it was; the one public
+  // action follows it.
+  const OFFICIAL_HOMEPAGE_LINK =
+    '<a class="button-secondary" href="https://example.edu/fellowship" rel="noreferrer" target="_blank">';
+  const VIEW_ALL_UPDATES_LINK = '<a class="button-primary" href="/updates">View all updates<svg';
+
+  function headerActions(html: string) {
+    const header = html.slice(
+      html.indexOf('<header class="public-award-console-header">'),
+      html.indexOf("</header>"),
+    );
+    const start = header.indexOf('<div class="public-award-console-actions">');
+    expect(start).toBeGreaterThanOrEqual(0);
+    return header.slice(start);
+  }
+
+  it("offers one public action, View all updates, after the unchanged official homepage link", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData() }),
+    );
+    const actions = headerActions(html);
+
+    expect(actions.startsWith(`<div class="public-award-console-actions">${OFFICIAL_HOMEPAGE_LINK}`)).toBe(true);
+    expect(actions).toContain(`Official homepage</a>${VIEW_ALL_UPDATES_LINK}`);
+    expect(actions).toMatch(/View all updates<svg[^>]*lucide-arrow-right[^>]*>[\s\S]*<\/svg><\/a><\/div>$/);
+    expect(actions.split('class="button-primary"')).toHaveLength(2);
+    expect(actions.split("<a ")).toHaveLength(3);
+    expect(html).not.toContain('href="/contact"');
+    expect(html).not.toContain("Get in touch");
+  });
+
+  it("keeps the single public action when an award has no official homepage", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: { ...makeDeepLinkPageData(), officialHomepage: null },
+      }),
+    );
+    const actions = headerActions(html);
+
+    expect(actions.startsWith(`<div class="public-award-console-actions">${VIEW_ALL_UPDATES_LINK}`)).toBe(true);
+    expect(actions.split("<a ")).toHaveLength(2);
+    expect(actions).not.toContain("Official homepage");
+    expect(html).not.toContain('href="/contact"');
+  });
+
+  it("leaves no contact destination in the workspace source", () => {
+    const source = readFileSync(new URL("./public-award-workspace.tsx", import.meta.url), "utf8");
+    expect(source).not.toContain('"/contact"');
+    expect(source).not.toContain("Get in touch");
+    expect(source.match(/href="\/updates"/g)).toHaveLength(1);
+  });
+});

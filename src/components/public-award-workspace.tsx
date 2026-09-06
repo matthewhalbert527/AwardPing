@@ -156,8 +156,10 @@ export function PublicAwardWorkspace({
               Official homepage
             </a>
           )}
-          <Link className="button-primary" href="/contact">
-            Get in touch
+          {/* One public action for every visitor: the live feed, which also
+              offers the daily digest. Contact stays in the site footer. */}
+          <Link className="button-primary" href="/updates">
+            View all updates
             <ArrowRight size={16} aria-hidden="true" />
           </Link>
         </div>
