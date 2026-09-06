@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -2954,8 +2955,194 @@ describe("Windows worker update safety", () => {
     expect(registration).toContain("This lane never submits pages to Gemini.");
 
     expect(downstream).toContain('$LockPath = Join-Path $InstallRoot "downstream-lane-$Lane.lock"');
-    expect(downstream).toContain("[System.IO.FileMode]::CreateNew");
-    expect(downstream).toContain("[System.IO.FileShare]::None");
+
+    // The lane lock is a persistent advisory file: opened non-exclusively
+    // (OpenOrCreate / ReadWrite / FileShare.ReadWrite, never Delete), owned
+    // through Lock(0, 1) on byte 0, and never created exclusively, deleted,
+    // renamed or replaced by pathname. The pathname-identity design
+    // (CreateNew, immediate Dispose, Test-Path classification, silent
+    // Remove-Item of a "stale" lock) is gone.
+    expect(downstream).toContain("[System.IO.FileMode]::OpenOrCreate");
+    expect(downstream).toContain("[System.IO.FileAccess]::ReadWrite");
+    expect(downstream).toContain("[System.IO.FileShare]::ReadWrite");
+    const downstreamCode = downstream
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(downstreamCode).not.toContain("FileMode]::CreateNew");
+    expect(downstreamCode).not.toContain("FileShare]::None");
+    expect(downstreamCode).not.toMatch(/FileShare\]::[A-Za-z]*Delete/);
+    expect(downstreamCode).not.toContain("FileShare.Delete");
+    expect(downstreamCode).not.toContain("DeleteOnClose");
+    expect(downstream).not.toContain("function Test-LaneLockActive");
+    expect(downstream).not.toContain("Get-Content -LiteralPath $LockPath");
+    expect(downstream).not.toMatch(/Remove-Item[^\n]*\$LockPath/);
+    expect(downstream).not.toMatch(/(Move-Item|Rename-Item|Copy-Item|Set-Content|Out-File|New-Item|Clear-Content)[^\n]*\$LockPath/);
+    expect(downstream).not.toMatch(/Test-Path -LiteralPath \$LockPath/);
+    expect(downstream).not.toContain("lock_contention");
+    expect(downstream).not.toContain('"already_running lane=');
+
+    // One handle, one byte lock, held from acquisition through the metadata
+    // write, run-log initialization, child launch and wait, and work
+    // cleanup; released (Unlock, then Dispose) only in the final finally.
+    const lockOpenIndex = downstream.indexOf("[System.IO.FileMode]::OpenOrCreate");
+    const lockIndex = downstream.indexOf("$lockStream.Lock(0, 1)");
+    const legacyReadIndex = downstream.indexOf(
+      "Read-LaneLockContentFromHandle -Stream $lockStream -Offset 0",
+    );
+    const setLengthIndex = downstream.indexOf("$lockStream.SetLength(0)");
+    const sentinelIndex = downstream.indexOf(
+      "[byte[]]@(0) + [System.Text.Encoding]::ASCII.GetBytes($lockContent)",
+    );
+    const flushIndex = downstream.indexOf("$lockStream.Flush()");
+    const runLogInitIndex = downstream.indexOf("DOWNSTREAM_LANE_START pid=$PID");
+    const launchIndex = downstream.indexOf("$process = Start-Process");
+    const workCleanupIndex = downstream.indexOf("Remove-Item -LiteralPath $stdoutPath");
+    const unlockIndex = downstream.indexOf("$lockStream.Unlock(0, 1)");
+    const disposeIndex = downstream.indexOf("$lockStream.Dispose()");
+    expect(lockOpenIndex).toBeGreaterThan(0);
+    expect(lockIndex).toBeGreaterThan(lockOpenIndex);
+    expect(legacyReadIndex).toBeGreaterThan(lockIndex);
+    expect(setLengthIndex).toBeGreaterThan(legacyReadIndex);
+    expect(sentinelIndex).toBeGreaterThan(setLengthIndex);
+    expect(flushIndex).toBeGreaterThan(sentinelIndex);
+    expect(runLogInitIndex).toBeGreaterThan(flushIndex);
+    expect(launchIndex).toBeGreaterThan(runLogInitIndex);
+    expect(workCleanupIndex).toBeGreaterThan(launchIndex);
+    expect(unlockIndex).toBeGreaterThan(workCleanupIndex);
+    expect(disposeIndex).toBeGreaterThan(unlockIndex);
+    expect(downstream.split("$lockStream.Dispose()").length - 1).toBe(1);
+    expect(downstream.split("$lockStream.Unlock(0, 1)").length - 1).toBe(1);
+    expect(downstream.slice(lockOpenIndex, unlockIndex)).not.toContain("Dispose()");
+    expect(downstream).toContain('$lockContent = "protocol=2 pid=$PID lane=$Lane started=');
+    expect(downstream).toContain("try { $lockStream.Unlock(0, 1) } catch { $unlockFailure = $_ }");
+    expect(downstream).toContain("try { $lockStream.Dispose() } catch { $disposeFailure = $_ }");
+    expect(downstream).toContain("lock_release_failed");
+
+    // Fail closed on every unverifiable state: the open and Lock failures
+    // are classified in typed IOException catches (plus an explicit bare
+    // catch for non-IOException errors such as a directory at the path),
+    // log lock_unavailable with the stage and native detail, and never
+    // exit 0. Native error 33 is not benign. The only lock-related exit 0
+    // is a verified live legacy owner read from the owning handle.
+    const openCatchStart = downstream.indexOf("catch [System.IO.IOException] {", lockOpenIndex);
+    const openCatchEnd = downstream.indexOf("$lockAcquired = $false", openCatchStart);
+    const openCatchBody = downstream.slice(openCatchStart, openCatchEnd);
+    expect(openCatchStart).toBeGreaterThan(lockOpenIndex);
+    expect(openCatchStart).toBeLessThan(lockIndex);
+    expect(openCatchBody).toContain('Write-LaneLockUnavailable -Stage "open" -Exception $_.Exception');
+    expect(openCatchBody).toContain('Write-LaneLockUnavailable -Stage "open" -Exception (Get-LaneRootException $_)');
+    expect(openCatchBody).not.toContain("exit 0");
+    expect(openCatchBody).not.toContain("Test-Path");
+    expect(openCatchBody).not.toContain("Remove-Item");
+    const lockCatchStart = downstream.indexOf("catch [System.IO.IOException] {", lockIndex);
+    const lockCatchEnd = downstream.indexOf("if ($lockAcquired) {", lockCatchStart);
+    const lockCatchBody = downstream.slice(lockCatchStart, lockCatchEnd);
+    expect(lockCatchStart).toBeGreaterThan(lockIndex);
+    expect(lockCatchBody).toContain('Write-LaneLockUnavailable -Stage "lock" -Exception $_.Exception');
+    expect(lockCatchBody).toContain('Write-LaneLockUnavailable -Stage "lock" -Exception (Get-LaneRootException $_)');
+    expect(lockCatchBody).not.toContain("exit 0");
+    expect(lockCatchBody).not.toContain("already_running");
+    expect(lockCatchBody).not.toContain("Test-Path");
+    expect(lockCatchBody).not.toContain("-eq 33");
+    expect(lockCatchBody).not.toContain("-ne 33");
+    expect(lockCatchBody).not.toContain("$exitCode = 0");
+    // The open failure path never rethrows: a missing directory is an
+    // IOException and is routed through the same diagnostic as any other
+    // open failure.
+    expect(downstream.slice(lockOpenIndex, lockIndex)).not.toContain("throw");
+    expect(downstream).not.toContain("catch [System.IO.DirectoryNotFoundException]");
+
+    // Legacy transition: tri-state liveness (only the specific
+    // "no such process" error is dead), a complete retired record, and a
+    // token-exact -File invocation check, all fed the runner's own script
+    // path, install root and log directory.
+    expect(downstream).toContain("already_running_legacy");
+    expect(downstream).toContain("function Get-LaneProcessLiveness");
+    expect(downstream).toContain('catch [Microsoft.PowerShell.Commands.ProcessCommandException] {');
+    expect(downstream).toContain('-like "NoProcessFoundForGivenId,*"');
+    expect(downstream).not.toContain("function Test-LaneProcessAlive");
+    expect(downstream).toContain("function Get-LegacyLaneRecord");
+    expect(downstream).toContain("function Split-LaneCommandLine");
+    expect(downstream).toContain("function Test-LegacyLaneInvocation");
+    expect(downstream).toContain("function Get-LegacyLaneLockOwnerState");
+    expect(downstream).toContain('[regex]::Match($Content, "^pid=(\\d+)\\b")');
+    expect(downstream).toContain('"^pid=(\\d+) lane=(\\S+) started=(\\S+) log=([^\\r\\n]+)\\z"');
+    expect(downstream).toContain("if ($Content[0] -eq [char]0) {");
+    expect(downstream).toContain("$record.ProcessId -eq $CurrentProcessId");
+    expect(downstream).not.toMatch(/IndexOf\("Run-AwardPingDownstreamLane\.ps1"/);
+    expect(downstream).not.toMatch(/-like "\*Run-AwardPingDownstreamLane/);
+    expect(downstream).toContain("-ExpectedScriptPath $PSCommandPath");
+    expect(downstream).toContain("-ExpectedInstallRoot $InstallRoot");
+    expect(downstream).toContain("-ExpectedLogDir $LogDir");
+    // Command-line identity is the one retired scheduled-task grammar:
+    // exactly 14 tokens, powershell.exe only, the configured timeout per
+    // lane, and no doubled-quote or unmatched spelling. No abbreviation,
+    // pwsh, or broad host-switch table remains.
+    expect(downstream).toContain("function Get-LaneCommandLineTokens");
+    expect(downstream).toContain("if ($tokens.Count -ne 14) {");
+    expect(downstream).toContain('new_page_review = "10"');
+    expect(downstream).toContain('manual_quarantine = "4"');
+    expect(downstream).toContain('nightly_report = "4"');
+    expect(downstream).toContain("if (-not $parsed.Valid) {");
+    expect(downstream).toContain("if (-not $simple[$position]) {");
+    expect(downstream).not.toContain('"-nop"');
+    expect(downstream).not.toContain('"-f"');
+    expect(downstream).not.toContain('"pwsh.exe"');
+    expect(downstream).not.toContain("$valuedHostSwitches");
+    // The live PID is bound to the real Windows PowerShell image: command
+    // line and executable come from one Win32_Process row, the canonical
+    // image comes from the trusted system directory, and the record read
+    // runs to verified end of file with a strict bound.
+    expect(downstream).toContain("function Get-LaneProcessIdentity");
+    expect(downstream).toContain('Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction Stop');
+    expect(downstream).toContain("ExecutablePath = $executablePath");
+    expect(downstream).not.toContain("function Get-LaneProcessCommandLine");
+    expect(downstream).toContain("function Get-LaneCanonicalPowerShellPath");
+    expect(downstream).toContain("[System.Environment]::SystemDirectory");
+    expect(downstream).not.toContain("$env:Path");
+    expect(downstream).toContain("-CanonicalHostPath (Get-LaneCanonicalPowerShellPath)");
+    expect(downstream).toContain('"unverifiable:executable_mismatch"');
+    expect(downstream).toContain('"unverifiable:identity_unreadable"');
+    expect(downstream).toContain("$buffer = New-Object byte[] ($MaxBytes + 1)");
+    expect(downstream).toContain("if ($total -gt $MaxBytes) {");
+    expect(downstream).toContain("[System.IO.InvalidDataException]::new(");
+    expect(downstream).not.toContain("New-Object byte[] 4096");
+    expect(downstream).toContain('@(11, $LaneKey),');
+    expect(downstream).toContain('@(13, $configuredTimeouts[$LaneKey])');
+    expect(downstream).toContain("foreach ($position in @(0, 7, 9)) {");
+    expect(downstream).not.toMatch(/GetFileName\(\$hostPath\)/);
+    // The record is bound to the process incarnation, not only the PID:
+    // creation time comes from the same CIM row, the record keeps its
+    // strictly parsed Started time, and a process created after the record
+    // beyond the fixed 5-second allowance is never the writer. The PID
+    // field must be the canonical decimal spelling and the lane key one of
+    // the exact lowercase configured keys (hashtable keys are
+    // case-insensitive, so an explicit case-sensitive guard is required).
+    expect(downstream).toContain("function ConvertTo-LaneDateTimeOffset");
+    expect(downstream).toContain("CreationDate = $creationDate");
+    expect(downstream).toContain("Started = $started");
+    expect(downstream).toContain("$incarnationAllowanceSeconds = 5");
+    expect(downstream).toContain("($identity.CreationDate - $record.Started).TotalSeconds -gt $incarnationAllowanceSeconds");
+    expect(downstream).toContain('"unverifiable:process_newer_than_record"');
+    expect(downstream).toContain("-not ($identity.CreationDate -is [DateTimeOffset])");
+    expect(downstream).toContain("$recordPid.ToString([System.Globalization.CultureInfo]::InvariantCulture)");
+    expect(downstream.split("$exactLaneKeys -ccontains $LaneKey").length - 1).toBe(2);
+    // The stored log directory is compared to the ASCII projection the
+    // retired writer produced (never normalized), the handle read decodes
+    // strict ASCII, and the creation-time converter parses strings only.
+    expect(downstream).toContain("$expectedProjection = [System.Text.Encoding]::ASCII.GetString([System.Text.Encoding]::ASCII.GetBytes($expectedDirectory))");
+    expect(downstream).toContain("$logValue.LastIndexOf([char]92)");
+    expect(downstream).not.toContain("GetDirectoryName($logPath)");
+    expect(downstream).toContain("[System.Text.DecoderFallback]::ExceptionFallback");
+    expect(downstream).toContain("if ($Value -isnot [string]) {");
+    expect(downstream).not.toContain("$text = [string]$Value");
+    const legacyDecision = downstream.slice(legacyReadIndex, setLengthIndex);
+    expect(legacyDecision).toContain('if ($legacyState -eq "legacy_live") {');
+    expect(legacyDecision).toContain("$exitCode = 0");
+    expect(legacyDecision).toContain('elseif ($legacyState -ne "reclaimable") {');
+    expect(legacyDecision).toContain("$exitCode = 1");
+    expect(downstream.split("$exitCode = 0").length - 1).toBe(1);
     expect(downstream).toContain('scripts\\run-downstream-lane.mjs');
     expect(downstream).toContain('"--lane=$Lane"');
     expect(downstream).toContain('"--time-budget-ms=$timeBudgetMs"');
@@ -3087,7 +3274,7 @@ describe("Windows worker update safety", () => {
       extractPowerShellFunction(
         downstream,
         "Write-LaneLog",
-        "Test-LaneLockActive",
+        "Write-LaneLogBestEffort",
       ),
     ].join("\n");
     const simulation = [
@@ -3125,6 +3312,1426 @@ describe("Windows worker update safety", () => {
     expect(result.stdout).toContain("PREVIOUS_EXISTS=True");
     expect(result.stdout).not.toContain("UNEXPECTED_OUTSIDE_DELETE");
   });
+
+  // -------------------------------------------------------------------------
+  // Downstream lane lock behaviour: a persistent advisory file whose byte 0
+  // is held under Lock(0, 1) on one handle for the whole run. Every case
+  // below uses a disposable install root, a stub lane script, and
+  // deterministic file barriers (never sleeps as synchronization). The
+  // mandatory cases run under powershell.exe (the host the scheduled task
+  // uses); host-sensitive locking cases repeat under pwsh when available.
+  // No test relies on a real CIM lookup of an uncontrolled process.
+  // -------------------------------------------------------------------------
+  const LANE_LOCK_LANE = "manual_quarantine";
+  const pwshAvailable =
+    process.platform === "win32" &&
+    spawnSync(
+      "pwsh",
+      ["-NoProfile", "-NonInteractive", "-Command", "$PSVersionTable.PSVersion.Major"],
+      { encoding: "utf8" },
+    ).status === 0;
+  const laneLockHosts = ["powershell.exe", ...(pwshAvailable ? ["pwsh"] : [])];
+
+  const LANE_STUB_IMMEDIATE = [
+    'import { writeFileSync } from "node:fs";',
+    'import { join, resolve } from "node:path";',
+    'const root = resolve(process.cwd(), "..");',
+    'writeFileSync(join(root, `child-${process.pid}.marker`), "started", "utf8");',
+    "process.exitCode = 0;",
+    "",
+  ].join("\n");
+  const LANE_STUB_BARRIER = [
+    'import { existsSync, writeFileSync } from "node:fs";',
+    'import { join, resolve } from "node:path";',
+    'const root = resolve(process.cwd(), "..");',
+    'writeFileSync(join(root, `child-${process.pid}.marker`), "started", "utf8");',
+    'const release = join(root, "child-release.signal");',
+    "const deadline = Date.now() + 120_000;",
+    "while (!existsSync(release) && Date.now() < deadline) {",
+    "  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);",
+    "}",
+    "process.exitCode = existsSync(release) ? 0 : 3;",
+    "",
+  ].join("\n");
+
+  const LANE_STUB_EXIT7 = LANE_STUB_IMMEDIATE.replace("process.exitCode = 0;", "process.exitCode = 7;");
+
+  function createLaneLockRoot(stubSource) {
+    return createLaneLockRootAt(mkdtempSync(join(tmpdir(), "awardping-lane-lock-")), stubSource);
+  }
+
+  function createLaneLockRootAt(installRoot, stubSource, { ownsDirectory = true } = {}) {
+    const appScripts = join(installRoot, "app", "scripts");
+    const logDir = join(installRoot, "logs");
+    mkdirSync(appScripts, { recursive: true });
+    mkdirSync(logDir, { recursive: true });
+    writeFileSync(join(appScripts, "run-downstream-lane.mjs"), stubSource, "utf8");
+    const runLogPattern = new RegExp(
+      `^awardping-downstream-${LANE_LOCK_LANE}-\\d{8}-\\d{6}-\\d{3}-\\d+\\.log$`,
+    );
+    return {
+      installRoot,
+      logDir,
+      lockPath: join(installRoot, `downstream-lane-${LANE_LOCK_LANE}.lock`),
+      summaryLog: join(logDir, `awardping-downstream-${LANE_LOCK_LANE}.log`),
+      childMarkers: () =>
+        readdirSync(installRoot).filter((name) => /^child-\d+\.marker$/.test(name)),
+      runLogs: () => readdirSync(logDir).filter((name) => runLogPattern.test(name)),
+      releaseChild: () =>
+        writeFileSync(join(installRoot, "child-release.signal"), "go", "utf8"),
+      cleanup: () => {
+        if (ownsDirectory) rmSync(installRoot, { recursive: true, force: true });
+      },
+    };
+  }
+
+  function laneLockArgs(installRoot, scriptPath = downstreamPath, lane = LANE_LOCK_LANE) {
+    return [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      scriptPath,
+      "-InstallRoot",
+      installRoot,
+      "-Lane",
+      lane,
+      "-TimeoutMinutes",
+      "2",
+    ];
+  }
+
+  function runLaneLock(host, installRoot, scriptPath = downstreamPath, lane = LANE_LOCK_LANE) {
+    return spawnSync(host, laneLockArgs(installRoot, scriptPath, lane), { encoding: "utf8", timeout: 60_000 });
+  }
+
+  function applyCheckedInsertion(source, { anchorLine, position, block }) {
+    const anchorIndex = source.indexOf(anchorLine);
+    expect(anchorIndex, `anchor ${anchorLine}`).toBeGreaterThan(0);
+    expect(source.indexOf(anchorLine, anchorIndex + 1), `unique anchor ${anchorLine}`).toBe(-1);
+    const eol = source.includes("\r\n") ? "\r\n" : "\n";
+    const blockText = block.map((line) => `${line}${eol}`).join("");
+    const insertAt = position === "before" ? anchorIndex : source.indexOf("\n", anchorIndex) + 1;
+    const result = source.slice(0, insertAt) + blockText + source.slice(insertAt);
+    expect(result.length).toBe(source.length + blockText.length);
+    expect(result.slice(0, insertAt) + result.slice(insertAt + blockText.length)).toBe(source);
+    return result;
+  }
+
+  // Builds a disposable runner copy that is the checked-in runner plus one
+  // or more test-only blocks, each inserted before or after a named unique
+  // line. Every insertion is asserted against the text it was applied to,
+  // so the copy is the production text plus exactly those blocks and the
+  // control flow exercised through it is the real production flow with
+  // only the process lookups, a barrier, or a forced release failure
+  // added.
+  function buildCheckedRunnerCopy(installRoot, insertions) {
+    const copy = (Array.isArray(insertions) ? insertions : [insertions]).reduce(
+      (source, insertion) => applyCheckedInsertion(source, insertion),
+      downstream,
+    );
+    const copyPath = join(installRoot, "Run-AwardPingDownstreamLane.ps1");
+    // Written with a UTF-8 BOM (the checked relationship above is on the
+    // text) so Windows PowerShell 5.1 decodes any Unicode literal in an
+    // inserted block the same way pwsh does.
+    writeFileSync(copyPath, `\uFEFF${copy}`, "utf8");
+    return copyPath;
+  }
+
+  function resetLaneRoot(root) {
+    for (const name of root.childMarkers()) rmSync(join(root.installRoot, name), { force: true });
+    for (const name of root.runLogs()) rmSync(join(root.logDir, name), { force: true });
+    rmSync(root.summaryLog, { force: true });
+  }
+
+  function startBackground(host, args) {
+    const child = spawn(host, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    const exit = new Promise((resolveExit) => {
+      child.on("close", (code) => resolveExit({ code, stdout, stderr }));
+    });
+    return { child, exit };
+  }
+
+  function startLaneLock(host, installRoot, scriptPath = downstreamPath) {
+    return startBackground(host, laneLockArgs(installRoot, scriptPath));
+  }
+
+  const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+  async function waitUntil(predicate, label, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await sleep(100);
+    }
+    throw new Error(`Timed out waiting for ${label}`);
+  }
+
+  function laneSummary(root) {
+    return existsSync(root.summaryLog) ? readFileSync(root.summaryLog, "utf8") : "";
+  }
+
+  function laneLockBytes(root) {
+    return readFileSync(root.lockPath);
+  }
+
+  function laneMetadata(root) {
+    const bytes = laneLockBytes(root);
+    return { sentinel: bytes[0], text: bytes.subarray(1).toString("latin1") };
+  }
+
+  function laneRunPid(root) {
+    const [runLogName] = root.runLogs();
+    const text = readFileSync(join(root.logDir, runLogName), "utf8");
+    return /DOWNSTREAM_LANE_START pid=(\d+)/.exec(text)[1];
+  }
+
+  // A PID that is not a multiple of 4 can never name a live Windows process,
+  // so a "dead" record never reaches a process lookup that could surprise us.
+  const NEVER_A_PID = 999999;
+
+  for (const host of laneLockHosts) {
+    windowsIt(
+      `downstream lane lock: a byte-lock collision fails closed, launches no second child, and leaves the owner's file untouched (${host})`,
+      async () => {
+        const root = createLaneLockRoot(LANE_STUB_BARRIER);
+        const owner = startLaneLock(host, root.installRoot);
+        try {
+          await waitUntil(() => root.childMarkers().length === 1, "the owner's child to start");
+          expect(existsSync(root.lockPath)).toBe(true);
+
+          const second = runLaneLock(host, root.installRoot);
+          expect(second.error).toBeUndefined();
+          expect(second.status).toBe(1);
+          const summary = laneSummary(root);
+          expect(summary).toContain(
+            `lock_unavailable lane=${LANE_LOCK_LANE} stage=lock native_error=33 type=System.IO.IOException`,
+          );
+          expect(summary).not.toContain("already_running");
+          expect(root.childMarkers()).toHaveLength(1);
+          expect(root.runLogs()).toHaveLength(1);
+          expect(existsSync(root.lockPath)).toBe(true);
+
+          root.releaseChild();
+          const result = await owner.exit;
+          expect(result.code).toBe(0);
+          const ownerPid = laneRunPid(root);
+          const metadata = laneMetadata(root);
+          expect(metadata.sentinel).toBe(0);
+          expect(metadata.text.startsWith(`protocol=2 pid=${ownerPid} lane=${LANE_LOCK_LANE} started=`)).toBe(true);
+          expect(laneSummary(root)).toContain(`finished lane=${LANE_LOCK_LANE} exit_code=0`);
+          expect(laneSummary(root)).not.toContain("lock_release_failed");
+        } finally {
+          root.releaseChild();
+          await owner.exit;
+          root.cleanup();
+        }
+      },
+      120_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: deletion, rename and replacement are denied while owned, and release leaves the file in place (${host})`,
+      async () => {
+        const root = createLaneLockRoot(LANE_STUB_BARRIER);
+        const owner = startLaneLock(host, root.installRoot);
+        try {
+          await waitUntil(() => root.childMarkers().length === 1, "the owner's child to start");
+          const lockLiteral = root.lockPath.replace(/'/g, "''");
+          const adversary = spawnSync(
+            host,
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              [
+                `$p = '${lockLiteral}'`,
+                "try { Remove-Item -LiteralPath $p -Force -ErrorAction Stop; 'DELETE_ALLOWED' } catch { 'DELETE_DENIED native=' + ($_.Exception.HResult -band 0xFFFF) }",
+                "try { Rename-Item -LiteralPath $p -NewName 'renamed.lock' -ErrorAction Stop; 'RENAME_ALLOWED' } catch { 'RENAME_DENIED' }",
+                "try { [System.IO.File]::Move($p, $p + '.moved'); 'MOVE_ALLOWED' } catch [System.IO.IOException] { 'MOVE_DENIED native=' + ($_.Exception.HResult -band 0xFFFF) } catch { 'MOVE_DENIED' }",
+                "try { $r = [System.IO.File]::Open($p, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None); $r.Dispose(); 'REPLACE_ALLOWED' } catch [System.IO.IOException] { 'REPLACE_DENIED native=' + ($_.Exception.HResult -band 0xFFFF) } catch { 'REPLACE_DENIED' }",
+                "try { [System.IO.File]::Delete($p); 'IODELETE_ALLOWED' } catch [System.IO.IOException] { 'IODELETE_DENIED native=' + ($_.Exception.HResult -band 0xFFFF) } catch { 'IODELETE_DENIED' }",
+                "'EXISTS=' + (Test-Path -LiteralPath $p)",
+              ].join("; "),
+            ],
+            { encoding: "utf8", timeout: 60_000 },
+          );
+          expect(adversary.status).toBe(0);
+          expect(adversary.stdout).toContain("DELETE_DENIED native=32");
+          expect(adversary.stdout).toContain("RENAME_DENIED");
+          expect(adversary.stdout).toContain("MOVE_DENIED native=32");
+          expect(adversary.stdout).toContain("REPLACE_DENIED native=32");
+          expect(adversary.stdout).toContain("IODELETE_DENIED native=32");
+          expect(adversary.stdout).toContain("EXISTS=True");
+          expect(adversary.stdout).not.toContain("_ALLOWED");
+          expect(existsSync(root.lockPath)).toBe(true);
+          expect(existsSync(`${root.lockPath}.moved`)).toBe(false);
+
+          root.releaseChild();
+          const result = await owner.exit;
+          expect(result.code).toBe(0);
+          expect(existsSync(root.lockPath)).toBe(true);
+          const metadata = laneMetadata(root);
+          expect(metadata.sentinel).toBe(0);
+          expect(metadata.text.startsWith(`protocol=2 pid=${laneRunPid(root)} lane=${LANE_LOCK_LANE}`)).toBe(true);
+        } finally {
+          root.releaseChild();
+          await owner.exit;
+          root.cleanup();
+        }
+      },
+      120_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: an incompatible foreign holder returns lock_unavailable without deleting anything, and the lane recovers once it leaves (${host})`,
+      async () => {
+        const root = createLaneLockRoot(LANE_STUB_IMMEDIATE);
+        writeFileSync(root.lockPath, "stale", "latin1");
+        const holdingMarker = join(root.installRoot, "holder-holding.marker");
+        const holderRelease = join(root.installRoot, "holder-release.signal");
+        const literal = (value) => value.replace(/'/g, "''");
+        const holder = startBackground(host, [
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          [
+            `$h = [System.IO.File]::Open('${literal(root.lockPath)}', [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)`,
+            `Set-Content -LiteralPath '${literal(holdingMarker)}' -Value 'holding'`,
+            `while (-not (Test-Path -LiteralPath '${literal(holderRelease)}')) { Start-Sleep -Milliseconds 100 }`,
+            "$h.Dispose()",
+          ].join("; "),
+        ]);
+        try {
+          await waitUntil(() => existsSync(holdingMarker), "the foreign holder to open the lock");
+
+          const blocked = runLaneLock(host, root.installRoot);
+          expect(blocked.error).toBeUndefined();
+          expect(blocked.status).toBe(1);
+          expect(laneSummary(root)).toContain(
+            `lock_unavailable lane=${LANE_LOCK_LANE} stage=open native_error=32 type=System.IO.IOException`,
+          );
+          expect(laneSummary(root)).not.toContain("already_running");
+          expect(root.childMarkers()).toHaveLength(0);
+          expect(root.runLogs()).toHaveLength(0);
+
+          writeFileSync(holderRelease, "go", "utf8");
+          const holderResult = await holder.exit;
+          expect(holderResult.code).toBe(0);
+          expect(readFileSync(root.lockPath, "latin1")).toBe("stale");
+
+          const recovered = runLaneLock(host, root.installRoot);
+          expect(recovered.status).toBe(0);
+          expect(root.childMarkers()).toHaveLength(1);
+          const metadata = laneMetadata(root);
+          expect(metadata.sentinel).toBe(0);
+          expect(metadata.text.startsWith(`protocol=2 pid=${laneRunPid(root)} lane=${LANE_LOCK_LANE}`)).toBe(true);
+        } finally {
+          writeFileSync(holderRelease, "go", "utf8");
+          await holder.exit;
+          root.cleanup();
+        }
+      },
+      120_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: a directory at the lock path returns lock_unavailable and is left alone (${host})`,
+      () => {
+        const root = createLaneLockRoot(LANE_STUB_IMMEDIATE);
+        try {
+          mkdirSync(root.lockPath);
+          const result = runLaneLock(host, root.installRoot);
+          expect(result.error).toBeUndefined();
+          expect(result.status).toBe(1);
+          expect(laneSummary(root)).toContain(
+            `lock_unavailable lane=${LANE_LOCK_LANE} stage=open native_error=5 type=System.UnauthorizedAccessException`,
+          );
+          expect(root.childMarkers()).toHaveLength(0);
+          expect(root.runLogs()).toHaveLength(0);
+          expect(existsSync(root.lockPath)).toBe(true);
+        } finally {
+          root.cleanup();
+        }
+      },
+      60_000,
+    );
+  }
+
+  windowsIt(
+    "downstream lane lock: stale markerless and stale new-protocol records are reclaimed in place, never deleted",
+    () => {
+      const staleRecords = [
+        ["markerless", Buffer.from(`pid=${NEVER_A_PID} lane=${LANE_LOCK_LANE} started=2026-09-05T00:00:00.0000000Z log=old.log`, "latin1")],
+        ["new-protocol", Buffer.concat([Buffer.from([0]), Buffer.from(`protocol=2 pid=${NEVER_A_PID} lane=${LANE_LOCK_LANE} started=old log=old.log`, "latin1")])],
+        ["malformed", Buffer.from(`garbage pid=${NEVER_A_PID} lane=${LANE_LOCK_LANE}`, "latin1")],
+        ["empty", Buffer.alloc(0)],
+      ];
+      for (const [label, record] of staleRecords) {
+        const root = createLaneLockRoot(LANE_STUB_IMMEDIATE);
+        try {
+          writeFileSync(root.lockPath, record);
+          const result = runLaneLock("powershell.exe", root.installRoot);
+          expect(result.error, label).toBeUndefined();
+          expect(result.status, label).toBe(0);
+          expect(root.childMarkers(), label).toHaveLength(1);
+          expect(existsSync(root.lockPath), label).toBe(true);
+          const metadata = laneMetadata(root);
+          expect(metadata.sentinel, label).toBe(0);
+          expect(metadata.text.startsWith(`protocol=2 pid=${laneRunPid(root)} lane=${LANE_LOCK_LANE} started=`), label).toBe(true);
+          const summary = laneSummary(root);
+          expect(summary, label).toContain(`finished lane=${LANE_LOCK_LANE} exit_code=0`);
+          expect(summary, label).not.toContain("already_running");
+          expect(summary, label).not.toContain("lock_unavailable");
+        } finally {
+          root.cleanup();
+        }
+      }
+    },
+    120_000,
+  );
+
+  for (const host of laneLockHosts) {
+    windowsIt(
+      `downstream lane lock: nothing after the real Dispose touches the released pathname, so a replacement made in the release interval survives (${host})`,
+      async () => {
+        // A test-only barrier is inserted into a checked copy immediately
+        // after the REAL production Dispose. The wrapper is held there with
+        // its handle released, the pathname is replaced with unheld bytes,
+        // and the remaining production control flow then runs to exit.
+        const root = createLaneLockRoot(LANE_STUB_IMMEDIATE);
+        const disposedMarker = join(root.installRoot, "release-interval.marker");
+        const resumeSignal = join(root.installRoot, "release-interval.signal");
+        const literal = (value) => value.replace(/'/g, "''");
+        const copyPath = buildCheckedRunnerCopy(root.installRoot, {
+          anchorLine: "    try { $lockStream.Dispose() } catch { $disposeFailure = $_ }",
+          position: "after",
+          block: [
+            `    Set-Content -LiteralPath '${literal(disposedMarker)}' -Value 'disposed'`,
+            `    while (-not (Test-Path -LiteralPath '${literal(resumeSignal)}')) { Start-Sleep -Milliseconds 50 }`,
+          ],
+        });
+        const owner = startLaneLock(host, root.installRoot, copyPath);
+        try {
+          await waitUntil(() => existsSync(disposedMarker), "the runner to reach the post-Dispose barrier");
+          expect(owner.child.exitCode).toBeNull();
+          expect(root.childMarkers()).toHaveLength(1);
+
+          const movedOriginal = `${root.lockPath}.moved-original`;
+          renameSync(root.lockPath, movedOriginal);
+          const replacement = Buffer.from("REPLACEMENT-9f3c-must-survive-release", "latin1");
+          writeFileSync(root.lockPath, replacement);
+          writeFileSync(resumeSignal, "go", "utf8");
+
+          const result = await owner.exit;
+          expect(result.code).toBe(0);
+          expect(existsSync(root.lockPath)).toBe(true);
+          expect(readFileSync(root.lockPath).equals(replacement)).toBe(true);
+          expect(existsSync(movedOriginal)).toBe(true);
+          const original = readFileSync(movedOriginal);
+          expect(original[0]).toBe(0);
+          expect(
+            original.subarray(1).toString("latin1").startsWith(`protocol=2 pid=${laneRunPid(root)} lane=${LANE_LOCK_LANE}`),
+          ).toBe(true);
+          expect(laneSummary(root)).toContain(`finished lane=${LANE_LOCK_LANE} exit_code=0`);
+          expect(laneSummary(root)).not.toContain("lock_release_failed");
+        } finally {
+          writeFileSync(resumeSignal, "go", "utf8");
+          await owner.exit;
+          root.cleanup();
+        }
+      },
+      120_000,
+    );
+  }
+
+  for (const host of laneLockHosts) {
+    windowsIt(
+      `downstream lane lock: a release failure after an otherwise successful child turns exit 0 into exit 1 with lock_release_failed, a distinctive child failure code is preserved, and Dispose still completes (${host})`,
+      () => {
+        // The REAL final Unlock is made to fail deterministically: a test-only
+        // line inserted immediately before it releases byte 0 through the
+        // same handle, so the production Unlock raises a genuine I/O error
+        // ("segment is already unlocked"). A second test-only line after the
+        // real Dispose records whether the stream is closed and whether
+        // Dispose or Unlock reported a failure. Everything else, including
+        // the exit-code precedence under test, is the production text.
+        for (const [stub, childCode] of [
+          [LANE_STUB_IMMEDIATE, 0],
+          [LANE_STUB_EXIT7, 7],
+        ]) {
+          const root = createLaneLockRoot(stub);
+          try {
+            const evidenceMarker = join(root.installRoot, "dispose-evidence.marker");
+            const literal = (value) => value.replace(/'/g, "''");
+            const copyPath = buildCheckedRunnerCopy(root.installRoot, [
+              {
+                anchorLine: "      try { $lockStream.Unlock(0, 1) } catch { $unlockFailure = $_ }",
+                position: "before",
+                block: ["      $lockStream.Unlock(0, 1)"],
+              },
+              {
+                anchorLine: "    try { $lockStream.Dispose() } catch { $disposeFailure = $_ }",
+                position: "after",
+                block: [
+                  `    Set-Content -LiteralPath '${literal(evidenceMarker)}' -Value ('canWrite=' + $lockStream.CanWrite + ' disposeFailed=' + ($null -ne $disposeFailure) + ' unlockFailed=' + ($null -ne $unlockFailure))`,
+                ],
+              },
+            ]);
+
+            const result = runLaneLock(host, root.installRoot, copyPath);
+            expect(result.error, `child ${childCode}`).toBeUndefined();
+            expect(result.status, `child ${childCode}`).toBe(childCode === 0 ? 1 : childCode);
+            const summary = laneSummary(root);
+            expect(summary, `child ${childCode}`).toContain(`finished lane=${LANE_LOCK_LANE} exit_code=${childCode}`);
+            // Exactly one release record. Its unlock message is the native
+            // text, which on Windows PowerShell 5.1 ends with an embedded
+            // CRLF (the .NET Framework Win32 message), so the record can span
+            // two physical lines; it is matched across that break, and the
+            // dispose_error field that closes the record must be empty.
+            expect(summary.split("lock_release_failed").length - 1, `child ${childCode}`).toBe(1);
+            const releaseRecord = summary.match(
+              new RegExp(
+                `^\\S+ lock_release_failed lane=${LANE_LOCK_LANE} lock=[^\\r\\n]* exit_code=${childCode} unlock_error=(\\S[\\s\\S]*?) dispose_error=([^\\n]*)$`,
+                "m",
+              ),
+            );
+            expect(releaseRecord, `child ${childCode}`).not.toBeNull();
+            expect(releaseRecord[1].trim().length, `child ${childCode}`).toBeGreaterThan(0);
+            expect(releaseRecord[2].replace(/\r$/, ""), `child ${childCode}`).toBe("");
+            expect(root.childMarkers(), `child ${childCode}`).toHaveLength(1);
+            const evidence = readFileSync(evidenceMarker, "utf8");
+            expect(evidence, `child ${childCode}`).toContain("canWrite=False");
+            expect(evidence, `child ${childCode}`).toContain("disposeFailed=False");
+            expect(evidence, `child ${childCode}`).toContain("unlockFailed=True");
+            expect(existsSync(root.lockPath), `child ${childCode}`).toBe(true);
+          } finally {
+            root.cleanup();
+          }
+        }
+      },
+      120_000,
+    );
+  }
+
+  for (const host of laneLockHosts) {
+    windowsIt(
+      `downstream lane lock: the legacy transition is hermetic and token-exact - only the exact retired -File invocation of a live complete record skips, every decoy fails closed, and confirmed dead reclaims (${host})`,
+      () => {
+        // The two process lookups are shadowed in a checked copy of the
+        // runner with explicit controlled data for one expected PID; the
+        // real record parser, bounded handle read, invocation validator,
+        // canonical-image derivation, incarnation check, classifier and
+        // exit paths run unchanged. No case touches a real process or CIM.
+        const root = createLaneLockRoot(LANE_STUB_IMMEDIATE);
+        try {
+          const legacyPid = 4244;
+          const scriptPath = join(root.installRoot, "Run-AwardPingDownstreamLane.ps1");
+          const otherRoot = join(root.installRoot, "other-root");
+          const canonicalHost = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+          const started = "2026-09-05T10:15:30.1234567-05:00";
+          const createdBefore = "2026-09-05T10:15:28.0000000-05:00";
+          const completeRecord = (lane = LANE_LOCK_LANE, pid = legacyPid, logDir = root.logDir, startedAt = started) =>
+            `pid=${pid} lane=${lane} started=${startedAt} log=${join(
+              logDir,
+              `awardping-downstream-${lane}-20260905-101530-123-${pid}.log`,
+            )}`;
+          // A record whose first 4096 bytes are a complete record (the log
+          // path is padded with dot segments that normalize away, so the PID
+          // spelling stays canonical) followed by foreign bytes: only a read
+          // to verified EOF can refuse it.
+          const oversizedRecord = () => {
+            const fileName = `awardping-downstream-${LANE_LOCK_LANE}-20260905-101530-123-${legacyPid}.log`;
+            const head = `pid=${legacyPid} lane=${LANE_LOCK_LANE} started=${started} log=${root.logDir}\\`;
+            const padding = 4096 - Buffer.byteLength(head + fileName, "latin1");
+            const pad = `${padding % 2 === 1 ? "\\" : ""}${".\\".repeat(Math.floor(padding / 2))}`;
+            const prefix = `${head}${pad}${fileName}`;
+            expect(Buffer.byteLength(prefix, "latin1")).toBe(4096);
+            return `${prefix}FOREIGN-TAIL-${"x".repeat(300)}`;
+          };
+          const exactInvocation = `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${scriptPath}" -InstallRoot "${root.installRoot}" -Lane ${LANE_LOCK_LANE} -TimeoutMinutes 4`;
+          const psLiteral = (value) => (value === null ? "$null" : `'${value.replace(/'/g, "''")}'`);
+          const psCreation = (value) =>
+            value === null
+              ? "$null"
+              : `[DateTimeOffset]::ParseExact('${value}', 'o', [System.Globalization.CultureInfo]::InvariantCulture)`;
+          const alive = (label, commandLine, outcome, extra = {}) => ({
+            label,
+            record: completeRecord(),
+            liveness: "alive",
+            commandLine,
+            executable: canonicalHost,
+            creation: createdBefore,
+            identity: "row",
+            lane: LANE_LOCK_LANE,
+            outcome,
+            ...extra,
+          });
+          const mismatch = "unverifiable:command_line_mismatch";
+          const cases = [
+            alive("exact retired invocation", exactInvocation, "legacy_live"),
+            alive("exact retired invocation, canonical host path quoted", exactInvocation.replace("powershell.exe", `"${canonicalHost}"`), "legacy_live"),
+            alive("exact retired invocation, canonical host path bare", exactInvocation.replace("powershell.exe", canonicalHost), "legacy_live"),
+            alive("process created within the allowance after the record", exactInvocation, "legacy_live", { creation: "2026-09-05T10:15:34.9000000-05:00" }),
+            alive("process created long before the record", exactInvocation, "legacy_live", { creation: "2026-09-04T10:15:30.0000000-05:00" }),
+            alive("PID reused by a process created after the record", exactInvocation, "unverifiable:process_newer_than_record", { creation: "2026-09-05T10:15:36.0000000-05:00" }),
+            alive("2020 record paired with a 2026 process", exactInvocation, "unverifiable:process_newer_than_record", { record: completeRecord(LANE_LOCK_LANE, legacyPid, root.logDir, "2020-01-15T08:00:00.0000000-06:00"), creation: "2026-09-05T10:15:28.0000000-05:00" }),
+            alive("missing creation date", exactInvocation, "unverifiable:identity_unreadable", { creation: null }),
+            alive("quoted -Command decoy", `powershell.exe -NoProfile -Command "$null = 'Run-AwardPingDownstreamLane.ps1 -Lane ${LANE_LOCK_LANE} '; Start-Sleep 30"`, mismatch),
+            alive("fake prefix script", exactInvocation.replace("Run-AwardPingDownstreamLane.ps1", "Fake-Run-AwardPingDownstreamLane.ps1"), mismatch),
+            alive(".notes suffix", exactInvocation.replace('Run-AwardPingDownstreamLane.ps1"', 'Run-AwardPingDownstreamLane.ps1.notes"'), mismatch),
+            alive("doubled-quote altered script path", exactInvocation.replace("Run-AwardPingDownstreamLane.ps1", 'Run-Award""PingDownstreamLane.ps1'), mismatch),
+            alive("other install root", exactInvocation.replace(`-InstallRoot "${root.installRoot}"`, `-InstallRoot "${otherRoot}"`), mismatch),
+            alive("other script path", exactInvocation.replace(`-File "${scriptPath}"`, `-File "${join(otherRoot, "Run-AwardPingDownstreamLane.ps1")}"`), mismatch),
+            alive("command lane mismatch", exactInvocation.replace(`-Lane ${LANE_LOCK_LANE}`, "-Lane page_audit"), mismatch),
+            alive("rubbish -WindowStyle value", exactInvocation.replace("-WindowStyle Hidden", "-WindowStyle rubbish"), mismatch),
+            alive("omitted -InstallRoot", exactInvocation.replace(` -InstallRoot "${root.installRoot}"`, ""), mismatch),
+            alive("pwsh host", exactInvocation.replace("powershell.exe", "pwsh.exe"), mismatch),
+            alive("local spoof host path", exactInvocation.replace("powershell.exe", "C:\\Temp\\powershell.exe"), mismatch),
+            alive("UNC spoof host path", exactInvocation.replace("powershell.exe", "\\\\attacker\\share\\powershell.exe"), mismatch),
+            alive("abbreviated host switches", exactInvocation.replace("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass", "-nop -w Hidden -ep Bypass"), mismatch),
+            alive("lowercase switch spellings", exactInvocation.replace("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass", "-noprofile -windowstyle hidden -executionpolicy bypass"), mismatch),
+            alive("quoted lane spelling", exactInvocation.replace(`-Lane ${LANE_LOCK_LANE}`, `-Lane "${LANE_LOCK_LANE}"`), mismatch),
+            alive("quoted timeout spelling", exactInvocation.replace("-TimeoutMinutes 4", '-TimeoutMinutes "4"'), mismatch),
+            alive("reordered switches", exactInvocation.replace(`-File "${scriptPath}" -InstallRoot "${root.installRoot}"`, `-InstallRoot "${root.installRoot}" -File "${scriptPath}"`), mismatch),
+            alive("other lane's timeout", exactInvocation.replace("-TimeoutMinutes 4", "-TimeoutMinutes 10"), mismatch),
+            alive("executable is a local spoof", exactInvocation, "unverifiable:executable_mismatch", { executable: "C:\\Temp\\powershell.exe" }),
+            alive("executable is a UNC spoof", exactInvocation, "unverifiable:executable_mismatch", { executable: "\\\\attacker\\share\\powershell.exe" }),
+            alive("executable is pwsh", exactInvocation, "unverifiable:executable_mismatch", { executable: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" }),
+            alive("executable unreadable", exactInvocation, "unverifiable:identity_unreadable", { executable: "" }),
+            alive("identity row unreadable", exactInvocation, "unverifiable:identity_unreadable", { identity: "null" }),
+            alive("unreadable command line", null, "unverifiable:identity_unreadable"),
+            alive("leading-zero pid record", exactInvocation, "unverifiable:incomplete_record_names_live_process", { record: completeRecord().replace(`pid=${legacyPid} `, `pid=000${legacyPid} `) }),
+            alive("uppercase lane record, argv and runner lane", exactInvocation.replace(`-Lane ${LANE_LOCK_LANE}`, "-Lane MANUAL_QUARANTINE"), "unverifiable:incomplete_record_names_live_process", { record: completeRecord("MANUAL_QUARANTINE"), lane: "MANUAL_QUARANTINE" }),
+            { label: "record lane mismatch", record: completeRecord("page_audit"), liveness: "alive", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "unverifiable:incomplete_record_names_live_process" },
+            { label: "pid-only record", record: `pid=${legacyPid}`, liveness: "alive", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "unverifiable:incomplete_record_names_live_process" },
+            { label: "suffix junk record", record: `${completeRecord()} extra`, liveness: "alive", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "unverifiable:incomplete_record_names_live_process" },
+            { label: "oversized record with a complete-looking 4096-byte prefix", record: oversizedRecord(), liveness: "alive", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "oversized" },
+            { label: "liveness lookup error", record: completeRecord(), liveness: "unverifiable", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "unverifiable:liveness_lookup_failed" },
+            { label: "confirmed dead complete record", record: completeRecord(), liveness: "dead", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "reclaimable" },
+            { label: "confirmed dead leading-zero pid record", record: completeRecord().replace(`pid=${legacyPid} `, `pid=000${legacyPid} `), liveness: "dead", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "reclaimable" },
+            { label: "confirmed dead pid-only record", record: `pid=${legacyPid}`, liveness: "dead", commandLine: exactInvocation, executable: canonicalHost, creation: createdBefore, identity: "row", lane: LANE_LOCK_LANE, outcome: "reclaimable" },
+          ];
+          for (const testCase of cases) {
+            const identityBody =
+              testCase.identity === "null"
+                ? "return $null"
+                : `return @{ CommandLine = ${psLiteral(testCase.commandLine)}; ExecutablePath = ${psLiteral(testCase.executable)}; CreationDate = ${psCreation(testCase.creation)} }`;
+            const copyPath = buildCheckedRunnerCopy(root.installRoot, {
+              anchorLine: "function Get-LegacyLaneLockOwnerState {",
+              position: "before",
+              block: [
+                `function Get-LaneProcessLiveness { param([int]$ProcessId) if ($ProcessId -eq ${legacyPid}) { return ${psLiteral(testCase.liveness)} } return 'dead' }`,
+                `function Get-LaneProcessIdentity { param([int]$ProcessId) if ($ProcessId -eq ${legacyPid}) { ${identityBody} } return $null }`,
+                "",
+              ],
+            });
+            expect(copyPath).toBe(scriptPath);
+            resetLaneRoot(root);
+            writeFileSync(root.lockPath, testCase.record, "latin1");
+
+            const result = runLaneLock(host, root.installRoot, copyPath, testCase.lane);
+            expect(result.error, testCase.label).toBeUndefined();
+            const summary = laneSummary(root);
+            const laneLabel = testCase.lane;
+            if (testCase.outcome === "legacy_live") {
+              expect(result.status, testCase.label).toBe(0);
+              expect(summary, testCase.label).toContain(`already_running_legacy lane=${laneLabel}`);
+              expect(summary, testCase.label).not.toContain("lock_unavailable");
+              expect(root.childMarkers(), testCase.label).toHaveLength(0);
+              expect(root.runLogs(), testCase.label).toHaveLength(0);
+              expect(readFileSync(root.lockPath, "latin1"), testCase.label).toBe(testCase.record);
+            } else if (testCase.outcome === "reclaimable") {
+              expect(result.status, testCase.label).toBe(0);
+              expect(summary, testCase.label).toContain(`finished lane=${laneLabel} exit_code=0`);
+              expect(summary, testCase.label).not.toContain("already_running");
+              expect(summary, testCase.label).not.toContain("lock_unavailable");
+              expect(root.childMarkers(), testCase.label).toHaveLength(1);
+              const metadata = laneMetadata(root);
+              expect(metadata.sentinel, testCase.label).toBe(0);
+              expect(metadata.text.startsWith(`protocol=2 pid=${laneRunPid(root)} lane=${laneLabel}`), testCase.label).toBe(true);
+            } else if (testCase.outcome === "oversized") {
+              expect(result.status, testCase.label).toBe(1);
+              expect(summary, testCase.label).toContain(`lock_unavailable lane=${laneLabel} stage=legacy`);
+              expect(summary, testCase.label).toContain("type=System.IO.InvalidDataException");
+              expect(summary, testCase.label).not.toContain("already_running");
+              expect(root.childMarkers(), testCase.label).toHaveLength(0);
+              expect(root.runLogs(), testCase.label).toHaveLength(0);
+              expect(readFileSync(root.lockPath, "latin1"), testCase.label).toBe(testCase.record);
+            } else {
+              expect(result.status, testCase.label).toBe(1);
+              expect(summary, testCase.label).toContain(`lock_unavailable lane=${laneLabel} stage=legacy`);
+              expect(summary, testCase.label).toContain(`(${testCase.outcome})`);
+              expect(summary, testCase.label).not.toContain("already_running");
+              expect(root.childMarkers(), testCase.label).toHaveLength(0);
+              expect(root.runLogs(), testCase.label).toHaveLength(0);
+              expect(readFileSync(root.lockPath, "latin1"), testCase.label).toBe(testCase.record);
+            }
+          }
+
+          // Unicode install root: the retired writer's ASCII record carries
+          // the '?' projection of the log directory, while the live process's
+          // command line carries the true Unicode paths. The copy is written
+          // with a UTF-8 BOM so Windows PowerShell 5.1 reads the Unicode
+          // literals in the injected stub correctly.
+          const unicodeRoot = createLaneLockRootAt(join(root.installRoot, "José-root"), LANE_STUB_IMMEDIATE, { ownsDirectory: false });
+          const unicodeScript = join(unicodeRoot.installRoot, "Run-AwardPingDownstreamLane.ps1");
+          const projectedLogDir = unicodeRoot.logDir.replace("José", "Jos?");
+          expect(projectedLogDir).not.toBe(unicodeRoot.logDir);
+          const unicodeRecord = `pid=${legacyPid} lane=${LANE_LOCK_LANE} started=${started} log=${projectedLogDir}\\awardping-downstream-${LANE_LOCK_LANE}-20260905-101530-123-${legacyPid}.log`;
+          const unicodeInvocation = `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${unicodeScript}" -InstallRoot "${unicodeRoot.installRoot}" -Lane ${LANE_LOCK_LANE} -TimeoutMinutes 4`;
+          const unicodeCases = [
+            { label: "unicode root, projected record, true unicode argv", record: unicodeRecord, encoding: "latin1", commandLine: unicodeInvocation, outcome: "legacy_live" },
+            { label: "unicode root, projected record, projected argv", record: unicodeRecord, encoding: "latin1", commandLine: unicodeInvocation.replace(/José/g, "Jos?"), outcome: "unverifiable:command_line_mismatch" },
+            { label: "unicode root, projected record, other unicode argv root", record: unicodeRecord, encoding: "latin1", commandLine: unicodeInvocation.replace(/José/g, "Josë"), outcome: "unverifiable:command_line_mismatch" },
+            { label: "unicode root, projected record, other projection width", record: unicodeRecord.replace("Jos?", "Jo??"), encoding: "latin1", commandLine: unicodeInvocation, outcome: "unverifiable:incomplete_record_names_live_process" },
+            { label: "unicode root, non-ASCII record bytes (utf-8)", record: unicodeRecord.replace("Jos?", "José"), encoding: "utf8", commandLine: unicodeInvocation, outcome: "non_ascii" },
+            { label: "unicode root, non-ASCII record bytes (latin1)", record: unicodeRecord.replace("Jos?", "José"), encoding: "latin1", commandLine: unicodeInvocation, outcome: "non_ascii" },
+          ];
+          for (const testCase of unicodeCases) {
+            const copyPath = buildCheckedRunnerCopy(unicodeRoot.installRoot, {
+              anchorLine: "function Get-LegacyLaneLockOwnerState {",
+              position: "before",
+              block: [
+                `function Get-LaneProcessLiveness { param([int]$ProcessId) if ($ProcessId -eq ${legacyPid}) { return 'alive' } return 'dead' }`,
+                `function Get-LaneProcessIdentity { param([int]$ProcessId) if ($ProcessId -eq ${legacyPid}) { return @{ CommandLine = ${psLiteral(testCase.commandLine)}; ExecutablePath = ${psLiteral(canonicalHost)}; CreationDate = ${psCreation(createdBefore)} } } return $null }`,
+                "",
+              ],
+            });
+            expect(copyPath).toBe(unicodeScript);
+            resetLaneRoot(unicodeRoot);
+            writeFileSync(unicodeRoot.lockPath, Buffer.from(testCase.record, testCase.encoding));
+
+            const result = runLaneLock(host, unicodeRoot.installRoot, copyPath);
+            expect(result.error, testCase.label).toBeUndefined();
+            const summary = laneSummary(unicodeRoot);
+            if (testCase.outcome === "legacy_live") {
+              expect(result.status, testCase.label).toBe(0);
+              expect(summary, testCase.label).toContain(`already_running_legacy lane=${LANE_LOCK_LANE}`);
+              expect(summary, testCase.label).not.toContain("lock_unavailable");
+            } else if (testCase.outcome === "non_ascii") {
+              expect(result.status, testCase.label).toBe(1);
+              expect(summary, testCase.label).toContain(`lock_unavailable lane=${LANE_LOCK_LANE} stage=legacy`);
+              expect(summary, testCase.label).toContain("type=System.Text.DecoderFallbackException");
+              expect(summary, testCase.label).not.toContain("already_running");
+            } else {
+              expect(result.status, testCase.label).toBe(1);
+              expect(summary, testCase.label).toContain(`lock_unavailable lane=${LANE_LOCK_LANE} stage=legacy`);
+              expect(summary, testCase.label).toContain(`(${testCase.outcome})`);
+              expect(summary, testCase.label).not.toContain("already_running");
+            }
+            expect(unicodeRoot.childMarkers(), testCase.label).toHaveLength(0);
+            expect(unicodeRoot.runLogs(), testCase.label).toHaveLength(0);
+            expect(readFileSync(unicodeRoot.lockPath).equals(Buffer.from(testCase.record, testCase.encoding)), testCase.label).toBe(true);
+          }
+        } finally {
+          root.cleanup();
+        }
+      },
+      360_000,
+    );
+  }
+
+  function runLanePowerShellFile(host, scriptLines) {
+    // Run from a file rather than "-Command -": in stdin mode PowerShell
+    // executes a multi-line construct only once a blank line follows it and
+    // silently drops an unterminated one at end of input.
+    const scriptRoot = mkdtempSync(join(tmpdir(), "awardping-lane-unit-"));
+    try {
+      const scriptPath = join(scriptRoot, "unit.ps1");
+      // A UTF-8 BOM makes Windows PowerShell 5.1 decode Unicode literals
+      // (for example a Unicode install root) the same way pwsh does.
+      writeFileSync(scriptPath, `\uFEFF${scriptLines.join("\n")}\n`, "utf8");
+      return spawnSync(host, ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+    } finally {
+      rmSync(scriptRoot, { recursive: true, force: true });
+    }
+  }
+
+  const laneClassifierSource = () =>
+    downstream.slice(
+      downstream.indexOf("function Get-LaneNormalizedPath {"),
+      downstream.indexOf("\nfunction Append-OutputFile {"),
+    );
+  const laneTokenizerSource = () =>
+    downstream.slice(
+      downstream.indexOf("function Get-LaneCommandLineTokens {"),
+      downstream.indexOf("\nfunction Get-LegacyLaneRecord {"),
+    );
+  const psQuote = (value) => `'${value.replace(/'/g, "''")}'`;
+  const CANONICAL_HOST_LITERAL = "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+
+  for (const host of laneLockHosts) {
+    windowsIt(
+      `downstream lane lock: the legacy classifier admits only a complete record plus a canonical-image process with the exact retired scheduled-task invocation, never reclaims a live or unverifiable process, and never consults a process for dead-shaped, self, sentinel or malformed records (${host})`,
+      () => {
+        const root = "C:\\AwardPingWorker";
+        const script = `${root}\\Run-AwardPingDownstreamLane.ps1`;
+        const logDir = `${root}\\logs`;
+        const canonical = CANONICAL_HOST_LITERAL;
+        const okRecord = `pid=4244 lane=manual_quarantine started=2026-09-05T10:15:30.1234567-05:00 log=${logDir}\\awardping-downstream-manual_quarantine-20260905-101530-123-4244.log`;
+        const task = `powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${script}" -InstallRoot "${root}" -Lane manual_quarantine -TimeoutMinutes 4`;
+        const ps = psQuote;
+        const lines = [
+          extractPowerShellFunction(downstream, "ConvertTo-LaneDateTimeOffset", "Get-LaneProcessIdentity"),
+          laneClassifierSource(),
+          "$inv = [System.Globalization.CultureInfo]::InvariantCulture",
+          "$script:calls = New-Object System.Collections.ArrayList",
+          "$script:commandLineFor4244 = $null",
+          `$script:executableFor4244 = ${ps(canonical)}`,
+          "$script:identityMode = 'row'",
+          "$script:creationFor4244 = [DateTimeOffset]::ParseExact('2026-09-05T10:15:28.0000000-05:00', 'o', [System.Globalization.CultureInfo]::InvariantCulture)",
+          "$liveness = { param([int]$ProcessId) [void]$script:calls.Add('live:' + $ProcessId); if ($ProcessId -eq 4244) { return 'alive' }; if ($ProcessId -eq 4246) { return 'unverifiable' }; return 'dead' }",
+          "$identity = { param([int]$ProcessId) [void]$script:calls.Add('id:' + $ProcessId); if ($ProcessId -ne 4244) { return $null }; if ($script:identityMode -eq 'null') { return $null }; return @{ CommandLine = $script:commandLineFor4244; ExecutablePath = $script:executableFor4244; CreationDate = $script:creationFor4244 } }",
+          `function Classify([string]$Label, $Content, $CommandLine, [string]$Executable = ${ps(canonical)}, [string]$IdentityMode = 'row', $Creation = 'default', [string]$LaneKey = 'manual_quarantine', [string]$ScriptPath = ${ps(script)}, [string]$Root = ${ps(root)}, [string]$LogDirectory = ${ps(logDir)}) {`,
+          "  $script:calls.Clear()",
+          "  $script:commandLineFor4244 = $CommandLine",
+          "  $script:executableFor4244 = $Executable",
+          "  $script:identityMode = $IdentityMode",
+          "  if ($Creation -is [string] -and $Creation -eq 'default') { $script:creationFor4244 = [DateTimeOffset]::ParseExact('2026-09-05T10:15:28.0000000-05:00', 'o', [System.Globalization.CultureInfo]::InvariantCulture) } elseif ($Creation -is [string] -and $Creation -eq 'null') { $script:creationFor4244 = $null } elseif ($Creation -is [string] -and $Creation -eq 'garbage') { $script:creationFor4244 = 'not a date' } elseif ($Creation -is [DateTime] -or $Creation -is [DateTimeOffset]) { $script:creationFor4244 = ConvertTo-LaneDateTimeOffset -Value $Creation } else { $script:creationFor4244 = [DateTimeOffset]::ParseExact([string]$Creation, 'o', [System.Globalization.CultureInfo]::InvariantCulture) }",
+          `  $state = Get-LegacyLaneLockOwnerState -Content $Content -LaneKey $LaneKey -CurrentProcessId 777 -ExpectedScriptPath $ScriptPath -ExpectedInstallRoot $Root -ExpectedLogDir $LogDirectory -CanonicalHostPath ${ps(canonical)} -GetProcessLiveness $liveness -GetProcessIdentity $identity`,
+          "  $Label + '=' + $state + ' calls=[' + (($script:calls | ForEach-Object { $_ }) -join ',') + ']'",
+          "}",
+          // The exact retired task grammar: bare or one-pair-quoted host,
+          // script and root spellings; normalized path values; everything
+          // else is the exact historical bare spelling and case.
+          `Classify 'LIVE_TASK' ${ps(okRecord)} ${ps(task)}`,
+          `Classify 'LIVE_UNQUOTED' ${ps(okRecord)} ${ps(`powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ${script} -InstallRoot ${root} -Lane manual_quarantine -TimeoutMinutes 4`)}`,
+          `Classify 'LIVE_CANONICAL_HOST_QUOTED' ${ps(okRecord)} ${ps(task.replace("powershell.exe", `"${canonical}"`))}`,
+          `Classify 'LIVE_CANONICAL_HOST_BARE' ${ps(okRecord)} ${ps(task.replace("powershell.exe", canonical))}`,
+          `Classify 'LIVE_PATH_VARIANTS' ${ps(okRecord)} ${ps(`C:\\WINDOWS\\system32\\WindowsPowerShell\\v1.0\\POWERSHELL.EXE -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File C:/AwardPingWorker/Run-AwardPingDownstreamLane.ps1 -InstallRoot C:\\AwardPingWorker\\ -Lane manual_quarantine -TimeoutMinutes 4`)}`,
+          `Classify 'LIVE_EXE_CASE' ${ps(okRecord)} ${ps(task)} 'c:\\windows\\SYSTEM32\\windowspowershell\\v1.0\\POWERSHELL.EXE'`,
+          // Incarnation: the writer exists before it writes; a process created
+          // after the record beyond the 5-second allowance is a reused PID.
+          `Classify 'INCARNATION_BOUNDARY_WITHIN' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' '2026-09-05T10:15:35.1234567-05:00'`,
+          `Classify 'INCARNATION_MUCH_EARLIER' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' '2026-09-01T00:00:00.0000000-05:00'`,
+          `Classify 'INCARNATION_JUST_OVER' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' '2026-09-05T10:15:35.1234568-05:00'`,
+          `Classify 'INCARNATION_PID_REUSE' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' '2026-09-05T10:16:30.0000000-05:00'`,
+          `Classify 'INCARNATION_2020_RECORD' ${ps(okRecord.replace('2026-09-05T10:15:30.1234567-05:00', '2020-01-15T08:00:00.0000000-06:00'))} ${ps(task)} ${ps(canonical)} 'row' '2026-09-05T10:15:28.0000000-05:00'`,
+          `Classify 'INCARNATION_UTC_SAME_INSTANT' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' '2026-09-05T15:15:28.0000000+00:00'`,
+          `Classify 'CREATION_MISSING' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' 'null'`,
+          `Classify 'CREATION_GARBAGE' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'row' 'garbage'`,
+          // Canonical PID spelling and exact lowercase lane keys.
+          `Classify 'REC_LEADING_ZERO_PID' ${ps(okRecord.replace('pid=4244 ', 'pid=0004244 '))} ${ps(task)}`,
+          `Classify 'REC_LEADING_ZERO_PID_DEAD' ${ps(okRecord.replace('pid=4244 ', 'pid=0004200 ').replace('-123-4244.log', '-123-4200.log'))} ${ps(task)}`,
+          `Classify 'UPPERCASE_LANE_EVERYWHERE' ${ps(okRecord.replace(/manual_quarantine/g, 'MANUAL_QUARANTINE'))} ${ps(task.replace('-Lane manual_quarantine', '-Lane MANUAL_QUARANTINE'))} ${ps(canonical)} 'row' 'default' 'MANUAL_QUARANTINE'`,
+          `Classify 'MIXEDCASE_LANE_EVERYWHERE' ${ps(okRecord.replace(/manual_quarantine/g, 'Manual_Quarantine'))} ${ps(task.replace('-Lane manual_quarantine', '-Lane Manual_Quarantine'))} ${ps(canonical)} 'row' 'default' 'Manual_Quarantine'`,
+          // Every decoy reproduced by review, every formerly broad positive,
+          // and every non-historical spelling.
+          `Classify 'CMD_DECOY' ${ps(okRecord)} ${ps(`powershell.exe -NoProfile -Command "$null = 'Run-AwardPingDownstreamLane.ps1 -Lane manual_quarantine '; Start-Sleep 30"`)}`,
+          `Classify 'CMD_DECOY_FILE_WORDS' ${ps(okRecord)} ${ps(`powershell.exe -Command "-File ${script} -InstallRoot ${root} -Lane manual_quarantine"`)}`,
+          `Classify 'ENCODED' ${ps(okRecord)} ${ps(`powershell.exe -NoProfile -EncodedCommand AAAA -File "${script}" -Lane manual_quarantine`)}`,
+          `Classify 'FAKE_PREFIX' ${ps(okRecord)} ${ps(task.replace("Run-AwardPingDownstreamLane.ps1", "Fake-Run-AwardPingDownstreamLane.ps1"))}`,
+          `Classify 'NOTES_SUFFIX' ${ps(okRecord)} ${ps(task.replace('Run-AwardPingDownstreamLane.ps1"', 'Run-AwardPingDownstreamLane.ps1.notes"'))}`,
+          `Classify 'DOUBLED_QUOTE_PATH' ${ps(okRecord)} ${ps(task.replace("Run-AwardPingDownstreamLane.ps1", 'Run-Award""PingDownstreamLane.ps1'))}`,
+          `Classify 'DOUBLED_QUOTE_UNQUOTED_PATH' ${ps(okRecord)} ${ps(task.replace(`-File "${script}"`, `-File ${script.replace("Run-AwardPingDownstreamLane.ps1", 'Run-Award""PingDownstreamLane.ps1')}`))}`,
+          `Classify 'ESCAPED_QUOTE_PATH' ${ps(okRecord)} ${ps(task.replace("Run-AwardPingDownstreamLane.ps1", 'Run-Award\\"PingDownstreamLane.ps1'))}`,
+          `Classify 'UNMATCHED_QUOTE' ${ps(okRecord)} ${ps(task.replace(`-File "${script}"`, `-File "${script}`))}`,
+          `Classify 'OTHER_ROOT' ${ps(okRecord)} ${ps(task.replace(`-InstallRoot "${root}"`, '-InstallRoot "C:\\Other"'))}`,
+          `Classify 'OTHER_SCRIPT_DIR' ${ps(okRecord)} ${ps(task.replace(`-File "${script}"`, '-File "C:\\Other\\Run-AwardPingDownstreamLane.ps1"'))}`,
+          `Classify 'OTHER_LANE' ${ps(okRecord)} ${ps(task.replace("-Lane manual_quarantine", "-Lane page_audit"))}`,
+          `Classify 'UPPERCASE_LANE' ${ps(okRecord)} ${ps(task.replace("-Lane manual_quarantine", "-Lane MANUAL_QUARANTINE"))}`,
+          `Classify 'QUOTED_LANE' ${ps(okRecord)} ${ps(task.replace("-Lane manual_quarantine", '-Lane "manual_quarantine"'))}`,
+          `Classify 'QUOTED_TIMEOUT' ${ps(okRecord)} ${ps(task.replace("-TimeoutMinutes 4", '-TimeoutMinutes "4"'))}`,
+          `Classify 'QUOTED_SWITCH' ${ps(okRecord)} ${ps(task.replace("-NoProfile", '"-NoProfile"'))}`,
+          `Classify 'QUOTED_VALUE' ${ps(okRecord)} ${ps(task.replace("-WindowStyle Hidden", '-WindowStyle "Hidden"'))}`,
+          `Classify 'LOWERCASE_SWITCHES' ${ps(okRecord)} ${ps(task.replace("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass", "-noprofile -windowstyle hidden -executionpolicy bypass"))}`,
+          `Classify 'LOWERCASE_FILE_SWITCH' ${ps(okRecord)} ${ps(task.replace("-File", "-file"))}`,
+          `Classify 'DUP_LANE' ${ps(okRecord)} ${ps(task.replace("-Lane manual_quarantine", "-Lane manual_quarantine -Lane manual_quarantine"))}`,
+          `Classify 'DUP_FILE' ${ps(okRecord)} ${ps(task.replace("-File", `-File "${script}" -File`))}`,
+          `Classify 'LANE_COLON' ${ps(okRecord)} ${ps(task.replace("-Lane manual_quarantine", "-Lane:manual_quarantine"))}`,
+          `Classify 'MISSING_LANE' ${ps(okRecord)} ${ps(task.replace(" -Lane manual_quarantine", ""))}`,
+          `Classify 'EXTRA_ARG' ${ps(okRecord)} ${ps(`${task} -Verbose`)}`,
+          `Classify 'WRONG_TIMEOUT' ${ps(okRecord)} ${ps(task.replace("-TimeoutMinutes 4", "-TimeoutMinutes 5"))}`,
+          `Classify 'OTHER_LANE_TIMEOUT' ${ps(okRecord)} ${ps(task.replace("-TimeoutMinutes 4", "-TimeoutMinutes 10"))}`,
+          `Classify 'PADDED_TIMEOUT' ${ps(okRecord)} ${ps(task.replace("-TimeoutMinutes 4", "-TimeoutMinutes 04"))}`,
+          `Classify 'MISSING_TIMEOUT' ${ps(okRecord)} ${ps(task.replace(" -TimeoutMinutes 4", ""))}`,
+          `Classify 'OTHER_HOST' ${ps(okRecord)} ${ps(`cmd.exe /c ${task}`)}`,
+          `Classify 'PWSH_HOST' ${ps(okRecord)} ${ps(task.replace("powershell.exe", "pwsh.exe"))}`,
+          `Classify 'HOST_RELATIVE' ${ps(okRecord)} ${ps(task.replace("powershell.exe", ".\\powershell.exe"))}`,
+          `Classify 'HOST_LOCAL_SPOOF' ${ps(okRecord)} ${ps(task.replace("powershell.exe", "C:\\Temp\\powershell.exe"))}`,
+          `Classify 'HOST_LOCAL_SPOOF_QUOTED' ${ps(okRecord)} ${ps(task.replace("powershell.exe", '"C:\\Temp\\powershell.exe"'))}`,
+          `Classify 'HOST_UNC_SPOOF' ${ps(okRecord)} ${ps(task.replace("powershell.exe", "\\\\attacker\\share\\powershell.exe"))}`,
+          `Classify 'HOST_SYSWOW64' ${ps(okRecord)} ${ps(task.replace("powershell.exe", "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe"))}`,
+          `Classify 'HOST_OTHER_FILE' ${ps(okRecord)} ${ps(task.replace("powershell.exe", "C:\\Tools\\powershell.exe.bak"))}`,
+          `Classify 'ABBREVIATIONS' ${ps(okRecord)} ${ps(task.replace("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass", "-nop -w Hidden -ep Bypass"))}`,
+          `Classify 'NO_ROOT' ${ps(okRecord)} ${ps(task.replace(` -InstallRoot "${root}"`, ""))}`,
+          `Classify 'MANUAL_SHORTHAND' ${ps(okRecord)} ${ps(`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${script}" -InstallRoot "${root}" -Lane manual_quarantine -TimeoutMinutes 2`)}`,
+          `Classify 'REORDERED_ROOT_FIRST' ${ps(okRecord)} ${ps(`powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -InstallRoot "${root}" -File "${script}" -Lane manual_quarantine -TimeoutMinutes 4`)}`,
+          `Classify 'REORDERED_TAIL' ${ps(okRecord)} ${ps(`powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${script}" -InstallRoot "${root}" -TimeoutMinutes 4 -Lane manual_quarantine`)}`,
+          `Classify 'REORDERED_HOST_SWITCHES' ${ps(okRecord)} ${ps(task.replace("-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass", "-WindowStyle Hidden -NoProfile -ExecutionPolicy Bypass"))}`,
+          `Classify 'RUBBISH_WINDOWSTYLE' ${ps(okRecord)} ${ps(task.replace("-WindowStyle Hidden", "-WindowStyle rubbish"))}`,
+          `Classify 'RUBBISH_POLICY' ${ps(okRecord)} ${ps(task.replace("-ExecutionPolicy Bypass", "-ExecutionPolicy Unrestricted"))}`,
+          `Classify 'MISSING_WINDOWSTYLE_VALUE' ${ps(okRecord)} ${ps(task.replace("-WindowStyle Hidden", "-WindowStyle"))}`,
+          `Classify 'MISSING_POLICY_VALUE' ${ps(okRecord)} ${ps(task.replace("-ExecutionPolicy Bypass", "-ExecutionPolicy"))}`,
+          `Classify 'DUP_NOPROFILE' ${ps(okRecord)} ${ps(task.replace("-NoProfile", "-NoProfile -NoProfile"))}`,
+          `Classify 'UNKNOWN_HOST_SWITCH' ${ps(okRecord)} ${ps(task.replace("-NoProfile", "-NoProfile -NonInteractive"))}`,
+          `Classify 'ROOT_TRAILING_JUNK' ${ps(okRecord)} ${ps(task.replace(`-InstallRoot "${root}"`, `-InstallRoot "${root}x"`))}`,
+          `Classify 'EMPTY_QUOTED_ROOT' ${ps(okRecord)} ${ps(task.replace(`-InstallRoot "${root}"`, '-InstallRoot ""'))}`,
+          // Executable identity from the same CIM row: anything but the canonical image is unverifiable, never legacy_live.
+          `Classify 'EXE_LOCAL_SPOOF' ${ps(okRecord)} ${ps(task)} 'C:\\Temp\\powershell.exe'`,
+          `Classify 'EXE_UNC_SPOOF' ${ps(okRecord)} ${ps(task)} '\\\\attacker\\share\\powershell.exe'`,
+          `Classify 'EXE_SYSWOW64' ${ps(okRecord)} ${ps(task)} 'C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe'`,
+          `Classify 'EXE_PWSH' ${ps(okRecord)} ${ps(task)} 'C:\\Program Files\\PowerShell\\7\\pwsh.exe'`,
+          `Classify 'EXE_RELATIVE' ${ps(okRecord)} ${ps(task)} 'powershell.exe'`,
+          `Classify 'EXE_BLANK' ${ps(okRecord)} ${ps(task)} ''`,
+          `Classify 'EXE_WHITESPACE' ${ps(okRecord)} ${ps(task)} '   '`,
+          `Classify 'ID_NULL' ${ps(okRecord)} ${ps(task)} ${ps(canonical)} 'null'`,
+          `Classify 'ID_BLANK_COMMAND' ${ps(okRecord)} '   '`,
+          `Classify 'CMDLINE_NULL' ${ps(okRecord)} $null`,
+          // Record shape: incomplete or foreign records naming a live process are unverifiable, never legacy_live.
+          `Classify 'REC_PID_ONLY' 'pid=4244' ${ps(task)}`,
+          `Classify 'REC_SUFFIX_JUNK' ${ps(`${okRecord} x`)} ${ps(task)}`,
+          `Classify 'REC_TRAILING_NEWLINE' (${ps(okRecord)} + [char]10) ${ps(task)}`,
+          `Classify 'REC_LANE_MISMATCH' ${ps(okRecord.replace(/manual_quarantine/g, "page_audit"))} ${ps(task)}`,
+          `Classify 'REC_LOG_LANE_MISMATCH' ${ps(okRecord.replace("awardping-downstream-manual_quarantine-", "awardping-downstream-page_audit-"))} ${ps(task)}`,
+          `Classify 'REC_LOG_PID_MISMATCH' ${ps(okRecord.replace("-123-4244.log", "-123-4245.log"))} ${ps(task)}`,
+          `Classify 'REC_LOG_WRONG_DIR' ${ps(okRecord.replace(`log=${logDir}\\`, "log=C:\\Other\\logs\\"))} ${ps(task)}`,
+          `Classify 'REC_LOG_RELATIVE' ${ps(okRecord.replace(`log=${logDir}\\`, "log=logs\\"))} ${ps(task)}`,
+          `Classify 'REC_BAD_TIMESTAMP' ${ps(okRecord.replace("2026-09-05T10:15:30.1234567-05:00", "2026-09-05 10:15:30"))} ${ps(task)}`,
+          `Classify 'REC_SHORT_TIMESTAMP' ${ps(okRecord.replace("2026-09-05T10:15:30.1234567-05:00", "2026-09-05T10:15:30-05:00"))} ${ps(task)}`,
+          `Classify 'REC_LOG_CASE_ONLY' ${ps(okRecord.replace(`log=${logDir}\\`, "log=c:\\awardpingworker\\LOGS\\"))} ${ps(task)}`,
+          // Liveness: dead reclaims regardless of shape; a lookup failure is unverifiable before any identity read.
+          `Classify 'DEAD_COMPLETE' ${ps(okRecord.replace(/4244/g, "4200"))} ${ps(task)}`,
+          `Classify 'DEAD_PID_ONLY' 'pid=4200' ${ps(task)}`,
+          `Classify 'LOOKUP_ERROR' ${ps(okRecord.replace(/4244/g, "4246"))} ${ps(task)}`,
+          // No process is ever consulted for these.
+          "Classify 'SELF' 'pid=777 lane=manual_quarantine started=x log=y' $null",
+          "Classify 'EMPTY' '' $null",
+          "Classify 'NULL' $null $null",
+          "Classify 'SENTINEL' ([string][char]0 + 'protocol=2 pid=4244 lane=manual_quarantine') $null",
+          "Classify 'PREFIXED' 'garbage pid=4244 lane=manual_quarantine' $null",
+          "Classify 'LEADING_SPACE' ' pid=4244 lane=manual_quarantine' $null",
+          "Classify 'HUGE_PID' 'pid=99999999999999 lane=manual_quarantine' $null",
+          "Classify 'ZERO_PID' 'pid=0 lane=manual_quarantine' $null",
+          "Classify 'PID_GLUED' 'pid=4244x lane=manual_quarantine' $null",
+          // Unicode install root: the retired writer persisted the ASCII
+          // projection of the log directory; identity still binds to the
+          // true Unicode script and root in the live command line.
+          "$uRoot = 'C:\\Users\\José\\AwardPingWorker'",
+          "$uScript = $uRoot + '\\Run-AwardPingDownstreamLane.ps1'",
+          "$uLog = $uRoot + '\\logs'",
+          "$uProjected = 'C:\\Users\\Jos?\\AwardPingWorker\\logs'",
+          "$uRecord = 'pid=4244 lane=manual_quarantine started=2026-09-05T10:15:30.1234567-05:00 log=' + $uProjected + '\\awardping-downstream-manual_quarantine-20260905-101530-123-4244.log'",
+          "$uTask = 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File \"' + $uScript + '\" -InstallRoot \"' + $uRoot + '\" -Lane manual_quarantine -TimeoutMinutes 4'",
+          `Classify 'UNICODE_PROJECTED_RECORD' $uRecord $uTask ${ps(canonical)} 'row' 'default' 'manual_quarantine' $uScript $uRoot $uLog`,
+          `Classify 'UNICODE_TRUE_RECORD' ($uRecord.Replace('Jos?', 'José')) $uTask ${ps(canonical)} 'row' 'default' 'manual_quarantine' $uScript $uRoot $uLog`,
+          `Classify 'UNICODE_OTHER_PROJECTION' ($uRecord.Replace('Jos?', 'Jo??')) $uTask ${ps(canonical)} 'row' 'default' 'manual_quarantine' $uScript $uRoot $uLog`,
+          `Classify 'UNICODE_ARGV_PROJECTED' $uRecord ($uTask.Replace('José', 'Jos?')) ${ps(canonical)} 'row' 'default' 'manual_quarantine' $uScript $uRoot $uLog`,
+          `Classify 'UNICODE_ARGV_OTHER_ROOT' $uRecord ($uTask.Replace('José', 'Josë')) ${ps(canonical)} 'row' 'default' 'manual_quarantine' $uScript $uRoot $uLog`,
+          `Classify 'UNICODE_ASCII_RECORD_AGAINST_ASCII_ROOT' ${ps(okRecord)} ${ps(task)}`,
+          // Unspecified-kind creation times pass through the production
+          // converter and take the local offset, exercised at the boundary
+          // against a record started in local time.
+          "$localStarted = ([DateTimeOffset]::new((Get-Date '2026-09-05T10:15:30.1234567'))).ToString('o', $inv)",
+          "$localRecord = 'pid=4244 lane=manual_quarantine started=' + $localStarted + ' log=C:\\AwardPingWorker\\logs\\awardping-downstream-manual_quarantine-20260905-101530-123-4244.log'",
+          `Classify 'INCARNATION_UNSPECIFIED_WITHIN' $localRecord ${ps(task)} ${ps(canonical)} 'row' (Get-Date '2026-09-05T10:15:35.1234567')`,
+          `Classify 'INCARNATION_UNSPECIFIED_JUST_OVER' $localRecord ${ps(task)} ${ps(canonical)} 'row' (Get-Date '2026-09-05T10:15:36')`,
+          // Converter contract: exact local-offset normalization, and no
+          // stringified parsing of numbers, booleans or objects.
+          "'CONVERT_UNSPECIFIED_EXACT=' + (((ConvertTo-LaneDateTimeOffset -Value (Get-Date '2026-09-05T10:15:36')).ToString('o', $inv)) -ceq (([DateTimeOffset]::new((Get-Date '2026-09-05T10:15:36'))).ToString('o', $inv)))",
+          "'CONVERT_UNSPECIFIED_OFFSET_IS_LOCAL=' + ((ConvertTo-LaneDateTimeOffset -Value (Get-Date '2026-09-05T10:15:36')).Offset -eq [System.TimeZoneInfo]::Local.GetUtcOffset((Get-Date '2026-09-05T10:15:36')))",
+          "'CONVERT_UTC=' + (ConvertTo-LaneDateTimeOffset -Value ([DateTime]::SpecifyKind((Get-Date '2026-09-05T15:15:36'), [System.DateTimeKind]::Utc))).ToString('o', $inv)",
+          "'CONVERT_DTO=' + (ConvertTo-LaneDateTimeOffset -Value ([DateTimeOffset]::ParseExact('2026-09-05T10:15:36.0000000+02:00', 'o', $inv))).ToString('o', $inv)",
+          "'CONVERT_STRING=' + (ConvertTo-LaneDateTimeOffset -Value '2026-09-05T10:15:36.0000000-05:00').ToString('o', $inv)",
+          "'CONVERT_DOUBLE=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value ([double]1.5)))",
+          "'CONVERT_DOUBLE_YEARLIKE=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value ([double]2026.09)))",
+          "'CONVERT_INT=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value ([int]2026)))",
+          "'CONVERT_HASHTABLE=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value @{ Year = 2026 }))",
+          "'CONVERT_OBJECT=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value ([pscustomobject]@{ Year = 2026 })))",
+          "'CONVERT_BOOL=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value $true))",
+          "'CONVERT_EMPTY=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value ''))",
+          "'CONVERT_WHITESPACE=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value '   '))",
+          "'CONVERT_GARBAGE=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value 'not a date'))",
+          "'CONVERT_NULL=' + ($null -eq (ConvertTo-LaneDateTimeOffset -Value $null))",
+          // The validator alone.
+          `'UNSUPPORTED_LANE=' + (Test-LegacyLaneInvocation -CommandLine ${ps(task.replace("-Lane manual_quarantine", "-Lane bogus_lane"))} -ExpectedScriptPath ${ps(script)} -ExpectedInstallRoot ${ps(root)} -LaneKey 'bogus_lane' -CanonicalHostPath ${ps(canonical)})`,
+          `'EXACT_VALIDATOR=' + (Test-LegacyLaneInvocation -CommandLine ${ps(task)} -ExpectedScriptPath ${ps(script)} -ExpectedInstallRoot ${ps(root)} -LaneKey 'manual_quarantine' -CanonicalHostPath ${ps(canonical)})`,
+          `'VALIDATOR_NO_CANONICAL=' + (Test-LegacyLaneInvocation -CommandLine ${ps(task)} -ExpectedScriptPath ${ps(script)} -ExpectedInstallRoot ${ps(root)} -LaneKey 'manual_quarantine' -CanonicalHostPath '')`,
+          `'VALIDATOR_UPPERCASE_LANE=' + (Test-LegacyLaneInvocation -CommandLine ${ps(task.replace('-Lane manual_quarantine', '-Lane MANUAL_QUARANTINE'))} -ExpectedScriptPath ${ps(script)} -ExpectedInstallRoot ${ps(root)} -LaneKey 'MANUAL_QUARANTINE' -CanonicalHostPath ${ps(canonical)})`,
+          `'VALIDATOR_MIXEDCASE_LANE=' + (Test-LegacyLaneInvocation -CommandLine ${ps(task.replace('-Lane manual_quarantine', '-Lane Manual_Quarantine'))} -ExpectedScriptPath ${ps(script)} -ExpectedInstallRoot ${ps(root)} -LaneKey 'Manual_Quarantine' -CanonicalHostPath ${ps(canonical)})`,
+          `'RECORD_UPPERCASE_KIND=' + (Get-LegacyLaneRecord -Content ${ps(okRecord.replace(/manual_quarantine/g, 'MANUAL_QUARANTINE'))} -LaneKey 'MANUAL_QUARANTINE' -ExpectedLogDir ${ps(logDir)}).Kind`,
+          `'RECORD_LEADING_ZERO_KIND=' + (Get-LegacyLaneRecord -Content ${ps(okRecord.replace('pid=4244 ', 'pid=0004244 '))} -LaneKey 'manual_quarantine' -ExpectedLogDir ${ps(logDir)}).Kind`,
+          `'RECORD_COMPLETE_STARTED=' + (Get-LegacyLaneRecord -Content ${ps(okRecord)} -LaneKey 'manual_quarantine' -ExpectedLogDir ${ps(logDir)}).Started.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)`,
+          "'END'",
+        ];
+        const result = runLanePowerShellFile(host, lines);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("END");
+        const live = "legacy_live calls=[live:4244,id:4244]";
+        const mismatch = "unverifiable:command_line_mismatch calls=[live:4244,id:4244]";
+        const executable = "unverifiable:executable_mismatch calls=[live:4244,id:4244]";
+        const unreadable = "unverifiable:identity_unreadable calls=[live:4244,id:4244]";
+        const incomplete = "unverifiable:incomplete_record_names_live_process calls=[live:4244]";
+        const expectations = {
+          LIVE_TASK: live,
+          LIVE_UNQUOTED: live,
+          LIVE_CANONICAL_HOST_QUOTED: live,
+          LIVE_CANONICAL_HOST_BARE: live,
+          LIVE_PATH_VARIANTS: live,
+          LIVE_EXE_CASE: live,
+          INCARNATION_BOUNDARY_WITHIN: live,
+          INCARNATION_MUCH_EARLIER: live,
+          INCARNATION_UTC_SAME_INSTANT: live,
+          INCARNATION_JUST_OVER: "unverifiable:process_newer_than_record calls=[live:4244,id:4244]",
+          INCARNATION_PID_REUSE: "unverifiable:process_newer_than_record calls=[live:4244,id:4244]",
+          INCARNATION_2020_RECORD: "unverifiable:process_newer_than_record calls=[live:4244,id:4244]",
+          CREATION_MISSING: unreadable,
+          CREATION_GARBAGE: unreadable,
+          REC_LEADING_ZERO_PID: incomplete,
+          REC_LEADING_ZERO_PID_DEAD: "reclaimable calls=[live:4200]",
+          UPPERCASE_LANE_EVERYWHERE: incomplete,
+          MIXEDCASE_LANE_EVERYWHERE: incomplete,
+          CMD_DECOY: mismatch,
+          CMD_DECOY_FILE_WORDS: mismatch,
+          ENCODED: mismatch,
+          FAKE_PREFIX: mismatch,
+          NOTES_SUFFIX: mismatch,
+          DOUBLED_QUOTE_PATH: mismatch,
+          DOUBLED_QUOTE_UNQUOTED_PATH: mismatch,
+          ESCAPED_QUOTE_PATH: mismatch,
+          UNMATCHED_QUOTE: mismatch,
+          OTHER_ROOT: mismatch,
+          OTHER_SCRIPT_DIR: mismatch,
+          OTHER_LANE: mismatch,
+          UPPERCASE_LANE: mismatch,
+          QUOTED_LANE: mismatch,
+          QUOTED_TIMEOUT: mismatch,
+          QUOTED_SWITCH: mismatch,
+          QUOTED_VALUE: mismatch,
+          LOWERCASE_SWITCHES: mismatch,
+          LOWERCASE_FILE_SWITCH: mismatch,
+          DUP_LANE: mismatch,
+          DUP_FILE: mismatch,
+          LANE_COLON: mismatch,
+          MISSING_LANE: mismatch,
+          EXTRA_ARG: mismatch,
+          WRONG_TIMEOUT: mismatch,
+          OTHER_LANE_TIMEOUT: mismatch,
+          PADDED_TIMEOUT: mismatch,
+          MISSING_TIMEOUT: mismatch,
+          OTHER_HOST: mismatch,
+          PWSH_HOST: mismatch,
+          HOST_RELATIVE: mismatch,
+          HOST_LOCAL_SPOOF: mismatch,
+          HOST_LOCAL_SPOOF_QUOTED: mismatch,
+          HOST_UNC_SPOOF: mismatch,
+          HOST_SYSWOW64: mismatch,
+          HOST_OTHER_FILE: mismatch,
+          ABBREVIATIONS: mismatch,
+          NO_ROOT: mismatch,
+          MANUAL_SHORTHAND: mismatch,
+          REORDERED_ROOT_FIRST: mismatch,
+          REORDERED_TAIL: mismatch,
+          REORDERED_HOST_SWITCHES: mismatch,
+          RUBBISH_WINDOWSTYLE: mismatch,
+          RUBBISH_POLICY: mismatch,
+          MISSING_WINDOWSTYLE_VALUE: mismatch,
+          MISSING_POLICY_VALUE: mismatch,
+          DUP_NOPROFILE: mismatch,
+          UNKNOWN_HOST_SWITCH: mismatch,
+          ROOT_TRAILING_JUNK: mismatch,
+          EMPTY_QUOTED_ROOT: mismatch,
+          EXE_LOCAL_SPOOF: executable,
+          EXE_UNC_SPOOF: executable,
+          EXE_SYSWOW64: executable,
+          EXE_PWSH: executable,
+          EXE_RELATIVE: executable,
+          EXE_BLANK: unreadable,
+          EXE_WHITESPACE: unreadable,
+          ID_NULL: unreadable,
+          ID_BLANK_COMMAND: unreadable,
+          CMDLINE_NULL: unreadable,
+          REC_PID_ONLY: incomplete,
+          REC_SUFFIX_JUNK: incomplete,
+          REC_TRAILING_NEWLINE: incomplete,
+          REC_LANE_MISMATCH: incomplete,
+          REC_LOG_LANE_MISMATCH: incomplete,
+          REC_LOG_PID_MISMATCH: incomplete,
+          REC_LOG_WRONG_DIR: incomplete,
+          REC_LOG_RELATIVE: incomplete,
+          REC_BAD_TIMESTAMP: incomplete,
+          REC_SHORT_TIMESTAMP: incomplete,
+          REC_LOG_CASE_ONLY: live,
+          DEAD_COMPLETE: "reclaimable calls=[live:4200]",
+          DEAD_PID_ONLY: "reclaimable calls=[live:4200]",
+          LOOKUP_ERROR: "unverifiable:liveness_lookup_failed calls=[live:4246]",
+          SELF: "reclaimable calls=[]",
+          EMPTY: "reclaimable calls=[]",
+          NULL: "reclaimable calls=[]",
+          SENTINEL: "reclaimable calls=[]",
+          PREFIXED: "reclaimable calls=[]",
+          LEADING_SPACE: "reclaimable calls=[]",
+          HUGE_PID: "reclaimable calls=[]",
+          ZERO_PID: "reclaimable calls=[]",
+          PID_GLUED: "reclaimable calls=[]",
+          UNICODE_PROJECTED_RECORD: live,
+          UNICODE_TRUE_RECORD: incomplete,
+          UNICODE_OTHER_PROJECTION: incomplete,
+          UNICODE_ARGV_PROJECTED: mismatch,
+          UNICODE_ARGV_OTHER_ROOT: mismatch,
+          UNICODE_ASCII_RECORD_AGAINST_ASCII_ROOT: live,
+          INCARNATION_UNSPECIFIED_WITHIN: live,
+          INCARNATION_UNSPECIFIED_JUST_OVER: "unverifiable:process_newer_than_record calls=[live:4244,id:4244]",
+          CONVERT_UNSPECIFIED_EXACT: "True",
+          CONVERT_UNSPECIFIED_OFFSET_IS_LOCAL: "True",
+          CONVERT_UTC: "2026-09-05T15:15:36.0000000+00:00",
+          CONVERT_DTO: "2026-09-05T10:15:36.0000000+02:00",
+          CONVERT_STRING: "2026-09-05T10:15:36.0000000-05:00",
+          CONVERT_DOUBLE: "True",
+          CONVERT_DOUBLE_YEARLIKE: "True",
+          CONVERT_INT: "True",
+          CONVERT_HASHTABLE: "True",
+          CONVERT_OBJECT: "True",
+          CONVERT_BOOL: "True",
+          CONVERT_EMPTY: "True",
+          CONVERT_WHITESPACE: "True",
+          CONVERT_GARBAGE: "True",
+          CONVERT_NULL: "True",
+          UNSUPPORTED_LANE: "False",
+          EXACT_VALIDATOR: "True",
+          VALIDATOR_NO_CANONICAL: "False",
+          VALIDATOR_UPPERCASE_LANE: "False",
+          VALIDATOR_MIXEDCASE_LANE: "False",
+          RECORD_UPPERCASE_KIND: "pid",
+          RECORD_LEADING_ZERO_KIND: "pid",
+          RECORD_COMPLETE_STARTED: "2026-09-05T10:15:30.1234567-05:00",
+        };
+        for (const [label, expected] of Object.entries(expectations)) {
+          expect(result.stdout, label).toContain(`${label}=${expected}`);
+        }
+        expect(result.stdout.split("=legacy_live").length - 1).toBe(13);
+      },
+      120_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: Get-LaneProcessIdentity reads command line and executable from one Win32_Process row with -ErrorAction Stop and fails closed on every incomplete answer (${host})`,
+      () => {
+        // Only Get-CimInstance is shadowed; the production helper runs
+        // unchanged. No real CIM is consulted.
+        const helper = [
+          extractPowerShellFunction(downstream, "ConvertTo-LaneDateTimeOffset", "Get-LaneProcessIdentity"),
+          extractPowerShellFunction(downstream, "Get-LaneProcessIdentity", "Get-LaneNormalizedPath"),
+        ].join("\n");
+        const lines = [
+          helper,
+          "$script:cimCalls = New-Object System.Collections.ArrayList",
+          "$script:cimMode = 'valid'",
+          "function Get-CimInstance { param([string]$ClassName, [string]$Filter, [string]$ErrorAction)",
+          "  [void]$script:cimCalls.Add('class=' + $ClassName + ' filter=[' + $Filter + '] ea=' + $ErrorAction)",
+          "  if ($script:cimCalls.Count -gt 1) { throw 'second CIM query within one identity read' }",
+          `  $row = [pscustomobject]@{ ProcessId = [uint32]4244; CommandLine = 'powershell.exe -NoProfile -File x.ps1'; ExecutablePath = ${psQuote(CANONICAL_HOST_LITERAL)}; CreationDate = (Get-Date '2026-09-05T10:15:28') }`,
+          "  switch ($script:cimMode) {",
+          "    'valid' { return $row }",
+          "    'norow' { return }",
+          "    'null' { return $null }",
+          "    'multiple' { return @($row, $row) }",
+          "    'wrongpid' { $row.ProcessId = [uint32]4248; return $row }",
+          "    'blankcommand' { $row.CommandLine = '  '; return $row }",
+          "    'nullcommand' { $row.CommandLine = $null; return $row }",
+          "    'blankexecutable' { $row.ExecutablePath = ''; return $row }",
+          "    'nullexecutable' { $row.ExecutablePath = $null; return $row }",
+          "    'nullcreation' { $row.CreationDate = $null; return $row }",
+          "    'blankcreation' { $row.CreationDate = ''; return $row }",
+          "    'garbagecreation' { $row.CreationDate = 'not a date'; return $row }",
+          "    'stringcreation' { $row.CreationDate = '2026-09-05T10:15:28.0000000-05:00'; return $row }",
+          "    'utccreation' { $row.CreationDate = [DateTime]::SpecifyKind((Get-Date '2026-09-05T15:15:28'), [System.DateTimeKind]::Utc); return $row }",
+          "    'doublecreation' { $row.CreationDate = [double]1.5; return $row }",
+          "    'intcreation' { $row.CreationDate = [int]2026; return $row }",
+          "    'objectcreation' { $row.CreationDate = [pscustomobject]@{ Year = 2026 }; return $row }",
+          "    'throws' { throw 'provider failure' }",
+          "  }",
+          "}",
+          "function Probe([string]$Mode) {",
+          "  $script:cimMode = $Mode",
+          "  $script:cimCalls.Clear()",
+          "  $r = Get-LaneProcessIdentity -ProcessId 4244",
+          "  $desc = if ($null -eq $r) { 'NULL' } else { 'cmd=[' + $r.CommandLine + '] exe=[' + $r.ExecutablePath + '] created=[' + $r.CreationDate.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture) + '] type=' + $r.CreationDate.GetType().Name }",
+          "  $Mode + '=' + $desc + ' calls=' + (($script:cimCalls | ForEach-Object { $_ }) -join ';') + ' count=' + $script:cimCalls.Count",
+          "}",
+          "Probe 'valid'",
+          "Probe 'norow'",
+          "Probe 'null'",
+          "Probe 'multiple'",
+          "Probe 'wrongpid'",
+          "Probe 'blankcommand'",
+          "Probe 'nullcommand'",
+          "Probe 'blankexecutable'",
+          "Probe 'nullexecutable'",
+          "Probe 'nullcreation'",
+          "Probe 'blankcreation'",
+          "Probe 'garbagecreation'",
+          "Probe 'stringcreation'",
+          "Probe 'utccreation'",
+          "Probe 'doublecreation'",
+          "Probe 'intcreation'",
+          "Probe 'objectcreation'",
+          "Probe 'throws'",
+          "'EXPECTED_VALID_CREATED=' + ([DateTimeOffset]::new((Get-Date '2026-09-05T10:15:28'))).ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)",
+          "'END'",
+        ];
+        const result = runLanePowerShellFile(host, lines);
+        expect(result.status).toBe(0);
+        const call = "calls=class=Win32_Process filter=[ProcessId = 4244] ea=Stop";
+        const outputLines = result.stdout.split(/\r?\n/);
+        const lineFor = (prefix) => outputLines.find((line) => line.startsWith(prefix));
+        // Exact normalization: an Unspecified-kind DateTime input must come
+        // back as exactly [DateTimeOffset]::new($input) on this host, local
+        // offset included - no any-offset tolerance.
+        const expectedCreated = lineFor("EXPECTED_VALID_CREATED=").slice("EXPECTED_VALID_CREATED=".length).trim();
+        expect(expectedCreated).toMatch(/^2026-09-05T10:15:28\.0000000[+-]\d\d:\d\d$/);
+        const validLine = lineFor("valid=");
+        expect(validLine).toBe(`valid=cmd=[powershell.exe -NoProfile -File x.ps1] exe=[${CANONICAL_HOST_LITERAL}] created=[${expectedCreated}] type=DateTimeOffset ${call} count=1`);
+        expect(lineFor("stringcreation=")).toBe(`stringcreation=cmd=[powershell.exe -NoProfile -File x.ps1] exe=[${CANONICAL_HOST_LITERAL}] created=[2026-09-05T10:15:28.0000000-05:00] type=DateTimeOffset ${call} count=1`);
+        expect(lineFor("utccreation=")).toBe(`utccreation=cmd=[powershell.exe -NoProfile -File x.ps1] exe=[${CANONICAL_HOST_LITERAL}] created=[2026-09-05T15:15:28.0000000+00:00] type=DateTimeOffset ${call} count=1`);
+        // Same-row protection: every outcome comes from exactly one CIM
+        // invocation; a second query would have thrown inside the shadow.
+        for (const mode of ["norow", "null", "multiple", "wrongpid", "blankcommand", "nullcommand", "blankexecutable", "nullexecutable", "nullcreation", "blankcreation", "garbagecreation", "doublecreation", "intcreation", "objectcreation", "throws"]) {
+          expect(lineFor(`${mode}=`), mode).toBe(`${mode}=NULL ${call} count=1`);
+        }
+        expect(result.stdout).toContain("END");
+      },
+      60_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: Get-LaneCanonicalPowerShellPath derives the Windows PowerShell image from the trusted system directory, never from PATH or the inspected process (${host})`,
+      () => {
+        const fn = extractPowerShellFunction(downstream, "Get-LaneCanonicalPowerShellPath", "ConvertTo-LaneDateTimeOffset");
+        expect(fn).not.toMatch(/Get-Command|\$env:|Where\.exe|argv|CommandLine|ExecutablePath/i);
+        expect(fn).toContain("[System.Environment]::SystemDirectory");
+        const result = runLanePowerShellFile(host, [
+          fn,
+          "'CANON=' + (Get-LaneCanonicalPowerShellPath)",
+          "'EXPECTED=' + [System.IO.Path]::GetFullPath((Join-Path ([System.Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'))",
+          "'END'",
+        ]);
+        expect(result.status).toBe(0);
+        const canon = /^CANON=(.*)$/m.exec(result.stdout)[1].trim();
+        const expected = /^EXPECTED=(.*)$/m.exec(result.stdout)[1].trim();
+        expect(canon).toBe(expected);
+        expect(canon.toLowerCase()).toMatch(/^[a-z]:\\.*\\windowspowershell\\v1\.0\\powershell\.exe$/);
+        expect(result.stdout).toContain("END");
+      },
+      60_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: Read-LaneLockContentFromHandle reads to verified end of file through the owning handle and refuses anything past 4096 bytes (${host})`,
+      () => {
+        const fn = extractPowerShellFunction(downstream, "Read-LaneLockContentFromHandle", "Get-LaneProcessLiveness");
+        const lines = [
+          fn,
+          "$root = Join-Path ([System.IO.Path]::GetTempPath()) ('awardping-lane-read-' + [guid]::NewGuid().ToString('N'))",
+          "New-Item -ItemType Directory -Path $root -Force | Out-Null",
+          "function Probe([string]$Label, [int]$Length, [int]$Offset) {",
+          "  $path = Join-Path $root ($Label + '.lock')",
+          "  [System.IO.File]::WriteAllBytes($path, [byte[]](@(65) * $Length))",
+          "  $stream = [System.IO.FileStream]::new($path, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::ReadWrite)",
+          "  try {",
+          "    $stream.Lock(0, 1)",
+          "    try { $content = Read-LaneLockContentFromHandle -Stream $stream -Offset $Offset; $Label + '=' + $content.Length } catch { $Label + '=' + $_.Exception.GetType().FullName }",
+          "  } finally {",
+          "    try { $stream.Unlock(0, 1) } catch {}",
+          "    $stream.Dispose()",
+          "  }",
+          "}",
+          "Probe 'SMALL' 12 1",
+          "Probe 'EXACT' 4096 0",
+          "Probe 'EXACT_OFFSET' 4097 1",
+          "Probe 'OVER' 4097 0",
+          "Probe 'OVER_OFFSET' 4098 1",
+          "Probe 'HUGE' 70000 0",
+          "Remove-Item -LiteralPath $root -Recurse -Force",
+          "'END'",
+        ];
+        const result = runLanePowerShellFile(host, lines);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("SMALL=11");
+        expect(result.stdout).toContain("EXACT=4096");
+        expect(result.stdout).toContain("EXACT_OFFSET=4096");
+        expect(result.stdout).toContain("OVER=System.IO.InvalidDataException");
+        expect(result.stdout).toContain("OVER_OFFSET=System.IO.InvalidDataException");
+        expect(result.stdout).toContain("HUGE=System.IO.InvalidDataException");
+        expect(result.stdout).toContain("END");
+      },
+      60_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: Get-LaneCommandLineTokens follows the Windows PowerShell host's quoting rules and flags every non-installer spelling (${host})`,
+      () => {
+        const show = (label, commandLine) =>
+          `$p = Get-LaneCommandLineTokens -CommandLine ${commandLine}; '${label}=' + ((@($p.Tokens) | ForEach-Object { '<' + $_ + '>' }) -join '') + ' valid=' + $p.Valid + ' simple=' + ((@($p.Simple) | ForEach-Object { [string]$_ }) -join ',')`;
+        const splitShow = (label, commandLine) =>
+          `'${label}=' + ((@(Split-LaneCommandLine -CommandLine ${commandLine}) | ForEach-Object { '<' + $_ + '>' }) -join '')`;
+        const lines = [
+          laneTokenizerSource(),
+          show("T_PLAIN", "'a b c'"),
+          show("T_QUOTED", "'a \"b c\" d'"),
+          show("T_PATHS", "'\"C:\\Program Files\\x.exe\" -File \"C:\\p q\\s.ps1\" -Lane x'"),
+          show("T_ESCAPED_QUOTE", "'a\\\"b c'"),
+          show("T_EVEN_SLASHES", "'\"a\\\\\" b'"),
+          show("T_ODD_SLASHES", "'x\\\\\\\"y z'"),
+          show("T_LITERAL_SLASHES", "'C:\\a\\\\b c'"),
+          show("T_EMPTY_TOKEN", "'a \"\" b'"),
+          show("T_DOUBLED_INNER", "'\"a\"\"b\" c'"),
+          show("T_DOUBLED_THEN_CLOSE", "'\"a\"\"\"'"),
+          show("T_DOUBLED_OUTSIDE", "'a\"\"b c'"),
+          show("T_CLOSE_THEN_BARE", "'\"a\"b c'"),
+          show("T_UNMATCHED", "'\"abc def'"),
+          show("T_TABS_AND_SPACES", "(\"  a`t`tb  \")"),
+          show("T_EMPTY", "''"),
+          show("T_NULL", "$null"),
+          splitShow("S_UNMATCHED", "'\"abc def'"),
+          splitShow("S_PLAIN", "'a \"b c\"'"),
+          "'END'",
+        ];
+        const result = runLanePowerShellFile(host, lines);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("T_PLAIN=<a><b><c> valid=True simple=True,True,True");
+        expect(result.stdout).toContain("T_QUOTED=<a><b c><d> valid=True simple=True,True,True");
+        expect(result.stdout).toContain("T_PATHS=<C:\\Program Files\\x.exe><-File><C:\\p q\\s.ps1><-Lane><x> valid=True simple=True,True,True,True,True");
+        expect(result.stdout).toContain('T_ESCAPED_QUOTE=<a"b><c> valid=True simple=False,True');
+        expect(result.stdout).toContain("T_EVEN_SLASHES=<a\\><b> valid=True simple=True,True");
+        expect(result.stdout).toContain('T_ODD_SLASHES=<x\\"y><z> valid=True simple=False,True');
+        expect(result.stdout).toContain("T_LITERAL_SLASHES=<C:\\a\\\\b><c> valid=True simple=True,True");
+        expect(result.stdout).toContain("T_EMPTY_TOKEN=<a><><b> valid=True simple=True,True,True");
+        expect(result.stdout).toContain('T_DOUBLED_INNER=<a"b c> valid=False simple=False');
+        expect(result.stdout).toContain('T_DOUBLED_THEN_CLOSE=<a"> valid=False simple=False');
+        expect(result.stdout).toContain("T_DOUBLED_OUTSIDE=<ab><c> valid=True simple=False,True");
+        expect(result.stdout).toContain("T_CLOSE_THEN_BARE=<ab><c> valid=True simple=False,True");
+        expect(result.stdout).toContain("T_UNMATCHED=<abc def> valid=False simple=False");
+        expect(result.stdout).toContain("T_TABS_AND_SPACES=<a><b> valid=True simple=True,True");
+        expect(result.stdout).toMatch(/^T_EMPTY= valid=True simple=\r?$/m);
+        expect(result.stdout).toMatch(/^T_NULL= valid=True simple=\r?$/m);
+        expect(result.stdout).toMatch(/^S_UNMATCHED=\r?$/m);
+        expect(result.stdout).toContain("S_PLAIN=<a><b c>");
+        expect(result.stdout).toContain("END");
+      },
+      60_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: real-host argv parity - the tokenizer yields what this host yields, and an altered quoted script path is rejected on this host (${host})`,
+      () => {
+        // A harmless argv-printing child shows how THIS host parses raw
+        // command-line text; the same raw text is fed to the runner's
+        // tokenizer. No production wrapper runs and no CIM is consulted.
+        const scratch = mkdtempSync(join(tmpdir(), "awardping-lane-parity-"));
+        try {
+          const argvScript = join(scratch, "argv.ps1");
+          writeFileSync(argvScript, "$args | ForEach-Object { '<' + $_ + '>' }\n", "utf8");
+          const rawSets = [
+            ["PLAIN", 'plain "quoted arg" tail'],
+            ["DOUBLED_INNER", '"a""b"'],
+            ["ALTERED_NAME", '"Run-Award""PingDownstreamLane.ps1"'],
+            ["ESCAPED_QUOTE", 'x\\"y'],
+            ["EVEN_BACKSLASHES", '"trail\\\\"'],
+            ["SPACE_PATH", '"C:\\p q\\s.ps1"'],
+            ["DOUBLED_OUTSIDE", 'a""b'],
+            ["CLOSE_THEN_BARE", '"a"b'],
+            ["DOUBLED_THEN_CLOSE", '"a"""'],
+            ["EMPTY_QUOTED", '""'],
+            ["UNMATCHED", '"unterminated'],
+          ];
+          const hostTokens = {};
+          for (const [label, raw] of rawSets) {
+            const child = spawnSync(host, [`-NoProfile -ExecutionPolicy Bypass -File "${argvScript}" ${raw}`], {
+              encoding: "utf8",
+              timeout: 60_000,
+              windowsVerbatimArguments: true,
+            });
+            expect(child.status, label).toBe(0);
+            hostTokens[label] = child.stdout.replace(/\r?\n/g, "");
+          }
+          const ours = runLanePowerShellFile(host, [
+            laneTokenizerSource(),
+            ...rawSets.map(
+              ([label, raw]) =>
+                `$p = Get-LaneCommandLineTokens -CommandLine ${psQuote(raw)}; '${label}=' + ((@($p.Tokens) | ForEach-Object { '<' + $_ + '>' }) -join '') + ' valid=' + $p.Valid + ' simple=' + ((@($p.Simple) | ForEach-Object { [string]$_ }) -join ',')`,
+            ),
+            "'END'",
+          ]);
+          expect(ours.status).toBe(0);
+          for (const [label] of rawSets) {
+            expect(ours.stdout, label).toContain(`${label}=${hostTokens[label]} valid=`);
+          }
+          expect(hostTokens.DOUBLED_INNER).toBe('<a"b>');
+          expect(hostTokens.ALTERED_NAME).toBe('<Run-Award"PingDownstreamLane.ps1>');
+          expect(ours.stdout).toContain('DOUBLED_INNER=<a"b> valid=False simple=False');
+          expect(ours.stdout).toContain('ALTERED_NAME=<Run-Award"PingDownstreamLane.ps1> valid=False simple=False');
+          expect(ours.stdout).toContain('ESCAPED_QUOTE=<x"y> valid=True simple=False');
+          expect(ours.stdout).toContain("UNMATCHED=<unterminated> valid=False simple=False");
+
+          // The full altered invocation: the host never yields the expected
+          // script path from it, and the validator rejects it, while the
+          // genuine retired invocation is accepted.
+          const expectedScript = join(scratch, "Run-AwardPingDownstreamLane.ps1");
+          const tail = `-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${join(scratch, 'Run-Award""PingDownstreamLane.ps1')}" -InstallRoot "${scratch}" -Lane manual_quarantine -TimeoutMinutes 4`;
+          const hostView = spawnSync(host, [`-NoProfile -ExecutionPolicy Bypass -File "${argvScript}" ${tail}`], {
+            encoding: "utf8",
+            timeout: 60_000,
+            windowsVerbatimArguments: true,
+          });
+          expect(hostView.status).toBe(0);
+          expect(hostView.stdout.toLowerCase()).not.toContain(`<${expectedScript.toLowerCase()}>`);
+          expect(hostView.stdout).toContain('Run-Award"PingDownstreamLane.ps1');
+          const verdict = runLanePowerShellFile(host, [
+            laneClassifierSource(),
+            `'ALTERED=' + (Test-LegacyLaneInvocation -CommandLine ${psQuote(`powershell.exe ${tail}`)} -ExpectedScriptPath ${psQuote(expectedScript)} -ExpectedInstallRoot ${psQuote(scratch)} -LaneKey 'manual_quarantine' -CanonicalHostPath ${psQuote(CANONICAL_HOST_LITERAL)})`,
+            `'GENUINE=' + (Test-LegacyLaneInvocation -CommandLine ${psQuote(`powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "${expectedScript}" -InstallRoot "${scratch}" -Lane manual_quarantine -TimeoutMinutes 4`)} -ExpectedScriptPath ${psQuote(expectedScript)} -ExpectedInstallRoot ${psQuote(scratch)} -LaneKey 'manual_quarantine' -CanonicalHostPath ${psQuote(CANONICAL_HOST_LITERAL)})`,
+          ]);
+          expect(verdict.status).toBe(0);
+          expect(verdict.stdout).toContain("ALTERED=False");
+          expect(verdict.stdout).toContain("GENUINE=True");
+        } finally {
+          rmSync(scratch, { recursive: true, force: true });
+        }
+      },
+      120_000,
+    );
+
+    windowsIt(
+      `downstream lane lock: Get-LaneProcessLiveness is tri-state - only the specific no-such-process error is dead, every other failure is unverifiable (${host})`,
+      () => {
+        const liveness = extractPowerShellFunction(downstream, "Get-LaneProcessLiveness", "Get-LaneCanonicalPowerShellPath");
+        const lines = [
+          liveness,
+          "'L_DEAD=' + (Get-LaneProcessLiveness -ProcessId 999999)",
+          "'L_SELF=' + (Get-LaneProcessLiveness -ProcessId $PID)",
+          "function Get-Process { throw 'provider failure' }",
+          "'L_PROVIDER_ERROR=' + (Get-LaneProcessLiveness -ProcessId 999999)",
+          "function Get-Process { throw [System.UnauthorizedAccessException]::new('denied') }",
+          "'L_ACCESS_DENIED=' + (Get-LaneProcessLiveness -ProcessId 999999)",
+          "function Get-Process { throw [Microsoft.PowerShell.Commands.ProcessCommandException]::new('other process failure') }",
+          "'L_OTHER_PROCESS_ERROR=' + (Get-LaneProcessLiveness -ProcessId 999999)",
+          "'END'",
+        ];
+        const result = runLanePowerShellFile(host, lines);
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain("L_DEAD=dead");
+        expect(result.stdout).toContain("L_SELF=alive");
+        expect(result.stdout).toContain("L_PROVIDER_ERROR=unverifiable");
+        expect(result.stdout).toContain("L_ACCESS_DENIED=unverifiable");
+        expect(result.stdout).toContain("L_OTHER_PROCESS_ERROR=unverifiable");
+        expect(result.stdout).toContain("END");
+      },
+      60_000,
+    );
+  }
 
   it("seals the installed source revision and live app identity URL", () => {
     expect(installer).toContain("Get-AwardPingSourceRevision -SourceRoot $sourceRoot");
