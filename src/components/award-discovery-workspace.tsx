@@ -267,15 +267,14 @@ export function AwardDiscoveryWorkspace({
               size={17}
               aria-hidden="true"
             />
+            {/* A plain search field: the results below are ordinary links with
+                no keyboard-driven selection, so no combobox is claimed. */}
             <input
               id="award-directory-search"
               className="input input-with-leading-icon award-search-input"
+              type="search"
               placeholder="Goldwater, Fulbright, NSF GRFP..."
               value={query}
-              role="combobox"
-              aria-autocomplete="list"
-              aria-expanded={showSearchResults}
-              aria-controls="award-search-results"
               onFocus={() => setSearchOpen(query.trim().length > 0)}
               onChange={(event) => {
                 const nextQuery = event.target.value;
@@ -288,7 +287,7 @@ export function AwardDiscoveryWorkspace({
           {showSearchResults && (
             <div className="award-search-panel">
               <div className="award-search-panel-header">
-                <p>
+                <p role="status">
                   {matches.length === 0
                     ? "No matches"
                     : `${matches.length} matching award${matches.length === 1 ? "" : "s"}`}
@@ -305,20 +304,12 @@ export function AwardDiscoveryWorkspace({
                   Clear
                 </button>
               </div>
-              <div
-                id="award-search-results"
-                className="award-search-results"
-                role="listbox"
-                aria-label="Matching awards"
-                tabIndex={-1}
-              >
+              <div className="award-search-results">
                 {matches.map((award) => (
                   <Link
                     className="award-search-option"
                     href={awardDirectoryHref(award)}
                     key={award.id}
-                    role="option"
-                    aria-selected={false}
                     onClick={() => setSearchOpen(false)}
                   >
                     <span className="award-search-option-title">{award.name}</span>

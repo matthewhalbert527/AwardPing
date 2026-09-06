@@ -80,9 +80,27 @@ function browseRowHrefs(html: string) {
 }
 
 function searchOptionHrefs(html: string) {
-  return [...html.matchAll(/<a class="award-search-option" role="option" aria-selected="false" href="([^"]*)">/g)].map(
-    (match) => match[1],
+  return [...html.matchAll(/<a class="award-search-option" href="([^"]*)">/g)].map((match) => match[1]);
+}
+
+// The search is a labeled native field whose results are ordinary links: no
+// combobox, listbox, option or selection state is claimed anywhere.
+function expectNativeSearchSemantics(html: string) {
+  expect(html).toContain('<label class="sr-only" for="award-directory-search">Search awards</label>');
+  expect(html).toContain(
+    '<input id="award-directory-search" class="input input-with-leading-icon award-search-input" type="search" placeholder="Goldwater, Fulbright, NSF GRFP..."',
   );
+  for (const claim of [
+    'role="combobox"',
+    'role="listbox"',
+    'role="option"',
+    "aria-selected",
+    "aria-autocomplete",
+    "aria-controls",
+    "aria-activedescendant",
+  ]) {
+    expect(html).not.toContain(claim);
+  }
 }
 
 afterEach(() => {
@@ -108,8 +126,13 @@ describe("AwardDiscoveryWorkspace", () => {
     const anonymous = render(false, { search: "Goldwater" });
     const signedIn = render(true, { search: "Goldwater" });
 
-    expect(anonymous).toContain("1 matching award");
-    expect(anonymous).toContain('aria-expanded="true"');
+    expect(anonymous).toContain('<p role="status">1 matching award</p>');
+    expect(anonymous).toContain(
+      '<div class="award-search-results"><a class="award-search-option" href="/goldwater-scholarship">',
+    );
+    expectNativeSearchSemantics(anonymous);
+    // With results open, the browse disclosure is hidden, so no expanded state remains at all.
+    expect(anonymous).not.toContain("aria-expanded");
     expect(searchOptionHrefs(anonymous)).toEqual(["/goldwater-scholarship"]);
     expect(searchOptionHrefs(signedIn)).toEqual(["/goldwater-scholarship"]);
     expect(signedIn).toBe(anonymous);
@@ -119,7 +142,24 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(browseRowHrefs(anonymous)).toEqual([]);
 
     const broader = render(true, { search: "Scholarship" });
+    expect(broader).toContain('<p role="status">2 matching awards</p>');
     expect(searchOptionHrefs(broader)).toEqual(["/goldwater-scholarship", "/truman-scholarship"]);
+    expectNativeSearchSemantics(broader);
+  });
+
+  it("reports no matches as plain text, keeps the typed query, and claims no selection", () => {
+    const anonymous = render(false, { search: "Zebra" });
+    const signedIn = render(true, { search: "Zebra" });
+
+    expect(signedIn).toBe(anonymous);
+    expect(anonymous).toContain('<p role="status">No matches</p>');
+    expect(anonymous).toContain('<p class="award-search-empty">No matching award yet.</p>');
+    expect(anonymous).toContain('placeholder="Goldwater, Fulbright, NSF GRFP..." value="Zebra"/>');
+    expect(searchOptionHrefs(anonymous)).toEqual([]);
+    expect(anonymous).not.toContain("award-search-option");
+    expectNativeSearchSemantics(anonymous);
+    expect(anonymous).not.toContain("aria-expanded");
+    expect(browseRowHrefs(anonymous)).toEqual([]);
   });
 
   it("renders no secondary row action or duplicate award destination in either state", () => {
@@ -148,12 +188,18 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(source).not.toContain("dashboardAwardPath");
   });
 
-  it("keeps the search combobox and browse controls for both auth states", () => {
+  it("keeps a plain labeled search field and the browse controls for both auth states", () => {
     for (const isAuthenticated of [false, true]) {
       const html = render(isAuthenticated);
 
+      expectNativeSearchSemantics(html);
       expect(html, `authenticated=${isAuthenticated}`).toContain(
-        'id="award-directory-search" class="input input-with-leading-icon award-search-input" placeholder="Goldwater, Fulbright, NSF GRFP..." role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="award-search-results"',
+        '<input id="award-directory-search" class="input input-with-leading-icon award-search-input" type="search" placeholder="Goldwater, Fulbright, NSF GRFP..." value=""/>',
+      );
+      // The only expanded/collapsed state left is the browse disclosure button.
+      expect(html.split("aria-expanded="), `authenticated=${isAuthenticated}`).toHaveLength(2);
+      expect(html, `authenticated=${isAuthenticated}`).toContain(
+        '<button class="button-secondary" type="button" aria-expanded="true">',
       );
       expect(html, `authenticated=${isAuthenticated}`).toContain('aria-label="Alphabetical award pages"');
       expect(html, `authenticated=${isAuthenticated}`).toContain('aria-label="Browse all awards"');
