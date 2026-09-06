@@ -8,6 +8,7 @@ import { pageTypeLabel } from "@/lib/award-discovery-types";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
+import { centralDateKey, formatCentralDate, previousCentralDateKey } from "@/lib/time-zone";
 
 export const dynamic = "force-dynamic";
 
@@ -24,12 +25,14 @@ type Props = {
 export default async function UpdatesPage({ searchParams }: Props) {
   const params = await searchParams;
   const statusMessage = updatesStatusMessage(params);
+  // One clock reading per render: every relative label and day heading agrees.
+  const now = new Date();
   let updateLoadError = "";
   let updates: Awaited<ReturnType<typeof getLiveUpdateItems>> = [];
 
   if (hasSupabaseAdminConfig()) {
     try {
-      updates = await getLiveUpdateItems(80);
+      updates = await getLiveUpdateItems(80, now);
     } catch (error) {
       updateLoadError = error instanceof Error ? error.message : "Live updates could not be loaded.";
       console.error(updateLoadError);
@@ -83,6 +86,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
             <div>
               <p className="page-kicker">Chronological feed</p>
               <h2>Latest source-page changes</h2>
+              <p className="mt-1 text-sm font-medium text-[var(--text-tertiary)]">Dates use Central Time.</p>
             </div>
             <Link className="button-secondary" href="/award-directory" prefetch={false}>
               Award Directory
@@ -91,7 +95,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
           </div>
 
           <div className="public-live-feed-list">
-            {groupUpdatesByDay(updates).map((group, groupIndex) => (
+            {groupUpdatesByDay(updates, now).map((group, groupIndex) => (
               <section className="public-live-day" key={`${group.key}-${groupIndex}`}>
                 <h3 className="public-live-day-label">{group.label}</h3>
                 <div className="public-live-day-list">
@@ -102,7 +106,16 @@ export default async function UpdatesPage({ searchParams }: Props) {
               return (
                 <article className="public-live-update-row" key={update.id}>
                   <div className="public-live-update-time">
-                    <span>{update.detectedLabel}</span>
+                    <span>
+                      {update.detectedDateTime ? (
+                        <time dateTime={update.detectedDateTime} title={update.detectedTitle}>
+                          {update.detectedLabel}
+                          <span className="sr-only"> ({update.detectedTitle})</span>
+                        </time>
+                      ) : (
+                        update.detectedLabel
+                      )}
+                    </span>
                     <strong>{update.changeTypeLabel}</strong>
                   </div>
                   <div className="min-w-0">
@@ -150,31 +163,37 @@ export default async function UpdatesPage({ searchParams }: Props) {
   );
 }
 
-function groupUpdatesByDay(updates: LiveUpdateItem[]) {
-  const dayFormatter = new Intl.DateTimeFormat("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-    timeZone: "America/Chicago",
-  });
-  const keyFor = (value: string) =>
-    new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date(value));
-  const todayKey = keyFor(new Date().toISOString());
-  const yesterdayKey = keyFor(new Date(Date.now() - 86_400_000).toISOString());
+// Groups by Central calendar day using the same clock reading as the row
+// labels. Yesterday is the previous calendar key, not 24 hours earlier, so
+// DST transitions never mislabel a day. Items without a readable timestamp
+// sort last under their own heading.
+function groupUpdatesByDay(updates: LiveUpdateItem[], now: Date) {
+  const todayKey = centralDateKey(now);
+  const yesterdayKey = previousCentralDateKey(todayKey);
+  const detectedTime = (value: string) => {
+    const time = Date.parse(value);
+    return Number.isNaN(time) ? Number.NEGATIVE_INFINITY : time;
+  };
 
   const groups: Array<{ key: string; label: string; items: LiveUpdateItem[] }> = [];
   const ordered = [...updates].sort(
-    (a, b) => Date.parse(b.detectedAt) - Date.parse(a.detectedAt),
+    (a, b) => detectedTime(b.detectedAt) - detectedTime(a.detectedAt),
   );
   for (const update of ordered) {
-    const key = keyFor(update.detectedAt);
+    const key = centralDateKey(update.detectedAt);
     const current = groups[groups.length - 1];
     if (current && current.key === key) {
       current.items.push(update);
       continue;
     }
     const label =
-      key === todayKey ? "Today" : key === yesterdayKey ? "Yesterday" : dayFormatter.format(new Date(update.detectedAt));
+      key === ""
+        ? "Undated"
+        : key === todayKey
+          ? "Today"
+          : key === yesterdayKey
+            ? "Yesterday"
+            : formatCentralDate(update.detectedAt, { month: "long", day: "numeric", year: "numeric" });
     groups.push({ key, label, items: [update] });
   }
   return groups;

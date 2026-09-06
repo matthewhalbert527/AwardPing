@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { LiveUpdateItem } from "@/lib/live-updates";
+import { describeDetectedAt, formatCentralDateTime } from "@/lib/time-zone";
 
 const mocks = vi.hoisted(() => ({
   getLiveUpdateItems: vi.fn(),
@@ -22,12 +23,20 @@ vi.mock("@/components/site-header", () => ({
 
 import UpdatesPage from "@/app/updates/page";
 
+// November 1, 2026, 11:30 PM CST: the evening after the fall-back transition,
+// where subtracting 24 hours from "now" still lands on November 1 in Central.
+const FIXED_NOW = new Date("2026-11-02T05:30:00.000Z");
+
 const SOURCE_ID = "3f1d3a2e-9d3b-4c5e-8a7f-1b2c3d4e5f60";
 const CHANGE_ID = "8c2b1a0f-6e5d-4c3b-9a8f-7e6d5c4b3a21";
 const SECOND_CHANGE_ID = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
 const THIRD_CHANGE_ID = "9e8d7c6b-5a4f-4e3d-2c1b-0a9f8e7d6c5b";
+const FOURTH_CHANGE_ID = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e";
+const FIFTH_CHANGE_ID = "4d5e6f7a-8b9c-4d0e-8f1a-2b3c4d5e6f7a";
 
-function makeUpdate(overrides: Partial<LiveUpdateItem> = {}): LiveUpdateItem {
+type FeedSeed = Omit<LiveUpdateItem, "detectedDateTime" | "detectedLabel" | "detectedTitle">;
+
+function makeSeed(overrides: Partial<FeedSeed> = {}): FeedSeed {
   return {
     id: CHANGE_ID,
     awardId: "63298584-f2f8-41b7-87a8-7892af8b642a",
@@ -39,11 +48,28 @@ function makeUpdate(overrides: Partial<LiveUpdateItem> = {}): LiveUpdateItem {
     sourcePageType: "application",
     summary: "The application deadline moved to January 30.",
     changeDetails: {},
-    detectedAt: "2026-09-05T12:00:00.000Z",
-    detectedLabel: "2h ago",
+    detectedAt: "2026-11-02T04:00:00.000Z",
     changeTypeLabel: "Deadline",
     ...overrides,
   };
+}
+
+// Stands in for the real loader: labels come from the shared helper and the
+// `now` the page hands over, exactly as the production loader computes them.
+function loaderResult(seeds: FeedSeed[], now: Date): LiveUpdateItem[] {
+  return seeds.map((seed) => {
+    const detected = describeDetectedAt(seed.detectedAt, now);
+    return {
+      ...seed,
+      detectedDateTime: detected.dateTime,
+      detectedLabel: detected.compact,
+      detectedTitle: detected.full,
+    };
+  });
+}
+
+function useFeed(seeds: FeedSeed[]) {
+  mocks.getLiveUpdateItems.mockImplementation(async (_limit: number, now: Date) => loaderResult(seeds, now));
 }
 
 async function renderUpdatesPage(searchParams: { confirmed?: string; unsubscribed?: string } = {}) {
@@ -56,17 +82,32 @@ function awardLinks(html: string) {
   );
 }
 
+function dayHeadings(html: string) {
+  return [...html.matchAll(/<h3 class="public-live-day-label">([^<]*)<\/h3>/g)].map((match) => match[1]);
+}
+
+function rowTimes(html: string) {
+  return [...html.matchAll(/<time dateTime="([^"]*)" title="([^"]*)">([^<]*)<span class="sr-only"> \(([^)]*)\)<\/span><\/time>/g)].map(
+    (match) => ({ dateTime: match[1], title: match[2], label: match[3], hidden: match[4] }),
+  );
+}
+
 describe("public updates page", () => {
   beforeEach(() => {
+    vi.useFakeTimers({ now: FIXED_NOW, toFake: ["Date"] });
     mocks.getLiveUpdateItems.mockReset();
     mocks.hasSupabaseAdminConfig.mockReset();
     mocks.hasSupabaseAdminConfig.mockReturnValue(true);
   });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("links every update to its canonical award page with the exact source and change", async () => {
-    mocks.getLiveUpdateItems.mockResolvedValue([
-      makeUpdate(),
-      makeUpdate({
+    useFeed([
+      makeSeed(),
+      makeSeed({
         id: SECOND_CHANGE_ID,
         awardId: "7b1e2d3c-4f5a-4b6c-8d9e-0f1a2b3c4d5e",
         awardName: "Truman Scholarship",
@@ -76,9 +117,9 @@ describe("public updates page", () => {
         sourceUrl: "https://truman.example/eligibility",
         sourcePageType: "eligibility",
         summary: "Eligibility language changed.",
-        detectedAt: "2026-09-05T11:00:00.000Z",
+        detectedAt: "2026-11-02T03:00:00.000Z",
       }),
-      makeUpdate({
+      makeSeed({
         id: THIRD_CHANGE_ID,
         awardId: "12345678-abcd-4ef0-9876-543210fedcba",
         awardName: "Example Award",
@@ -87,14 +128,14 @@ describe("public updates page", () => {
         sourceUrl: "https://example.example/overview",
         sourcePageType: "homepage",
         summary: "The overview changed.",
-        detectedAt: "2026-09-04T11:00:00.000Z",
+        detectedAt: "2026-11-01T02:00:00.000Z",
       }),
     ]);
 
     const html = await renderUpdatesPage();
 
     expect(mocks.getLiveUpdateItems).toHaveBeenCalledTimes(1);
-    expect(mocks.getLiveUpdateItems).toHaveBeenCalledWith(80);
+    expect(mocks.getLiveUpdateItems).toHaveBeenCalledWith(80, expect.any(Date));
     expect(awardLinks(html)).toEqual([
       {
         href: `/goldwater-scholarship?source=${SOURCE_ID}&change=${CHANGE_ID}`,
@@ -116,8 +157,84 @@ describe("public updates page", () => {
     }
   });
 
+  it("labels and groups detected times from one clock reading, in Central calendar days", async () => {
+    useFeed([
+      makeSeed(),
+      makeSeed({ id: SECOND_CHANGE_ID, detectedAt: "2026-11-01T02:00:00.000Z" }),
+      makeSeed({ id: THIRD_CHANGE_ID, detectedAt: "2026-10-20T15:00:00.000Z" }),
+      makeSeed({ id: FOURTH_CHANGE_ID, detectedAt: "2026-08-01T15:00:00.000Z" }),
+      makeSeed({ id: FIFTH_CHANGE_ID, detectedAt: "2025-12-20T15:00:00.000Z" }),
+    ]);
+
+    const html = await renderUpdatesPage();
+
+    const [, now] = mocks.getLiveUpdateItems.mock.calls[0] as [number, Date];
+    expect(now.getTime()).toBe(FIXED_NOW.getTime());
+    expect(dayHeadings(html)).toEqual([
+      "Today",
+      "Yesterday",
+      "October 20, 2026",
+      "August 1, 2026",
+      "December 20, 2025",
+    ]);
+    const times = rowTimes(html);
+    expect(times.map((time) => time.label)).toEqual(["1h ago", "1d ago", "12d ago", "Aug 1", "Dec 20, 2025"]);
+    expect(times.map((time) => time.dateTime)).toEqual([
+      "2026-11-02T04:00:00.000Z",
+      "2026-11-01T02:00:00.000Z",
+      "2026-10-20T15:00:00.000Z",
+      "2026-08-01T15:00:00.000Z",
+      "2025-12-20T15:00:00.000Z",
+    ]);
+    for (const [index, time] of times.entries()) {
+      const full = formatCentralDateTime(time.dateTime);
+      expect(time.title, `row ${index}`).toBe(full);
+      expect(time.hidden, `row ${index}`).toBe(full);
+    }
+    expect(times[0].title).toMatch(/^Nov 1, 2026, 10:00.PM CST$/);
+    expect(times[1].title).toMatch(/^Oct 31, 2026, 9:00.PM CDT$/);
+    // Compact layout is kept: the time sits inside the row's existing span.
+    expect(html).toContain('<div class="public-live-update-time"><span><time dateTime="2026-11-02T04:00:00.000Z"');
+    expect(html).toContain("Dates use Central Time.");
+  });
+
+  it("names yesterday by the Central calendar across the spring-forward transition", async () => {
+    // 00:30 CDT on March 9: subtracting 24 hours would point at March 7.
+    vi.setSystemTime(new Date("2026-03-09T05:30:00.000Z"));
+    useFeed([
+      makeSeed({ detectedAt: "2026-03-09T05:15:00.000Z" }),
+      makeSeed({ id: SECOND_CHANGE_ID, detectedAt: "2026-03-08T20:00:00.000Z" }),
+      makeSeed({ id: THIRD_CHANGE_ID, detectedAt: "2026-03-07T20:00:00.000Z" }),
+    ]);
+
+    const html = await renderUpdatesPage();
+
+    expect(dayHeadings(html)).toEqual(["Today", "Yesterday", "March 7, 2026"]);
+    expect(rowTimes(html).map((time) => time.label)).toEqual(["15m ago", "9h ago", "1d ago"]);
+  });
+
+  it("renders one plain notice under an Undated heading, and no <time>, for an unreadable timestamp", async () => {
+    useFeed([
+      makeSeed(),
+      makeSeed({ id: SECOND_CHANGE_ID, detectedAt: "not-a-date" }),
+      makeSeed({ id: THIRD_CHANGE_ID, detectedAt: "2026-11-01T02:00:00.000Z" }),
+    ]);
+
+    const html = await renderUpdatesPage();
+
+    expect(dayHeadings(html)).toEqual(["Today", "Yesterday", "Undated"]);
+    const rows = html.split('<article class="public-live-update-row">').slice(1);
+    expect(rows).toHaveLength(3);
+    expect(rows[2]).toContain('<div class="public-live-update-time"><span>Date unavailable</span><strong>Deadline</strong></div>');
+    expect(rows[2]).not.toContain("<time");
+    expect(html.split("Date unavailable")).toHaveLength(2);
+    expect(rowTimes(html)).toHaveLength(2);
+    expect(html.split("<time")).toHaveLength(3);
+    expect(html).not.toMatch(/<time(?![^>]*dateTime=)/);
+  });
+
   it("preserves the external official-source link and its accessible label", async () => {
-    mocks.getLiveUpdateItems.mockResolvedValue([makeUpdate()]);
+    useFeed([makeSeed()]);
 
     const html = await renderUpdatesPage();
 
@@ -130,7 +247,7 @@ describe("public updates page", () => {
   });
 
   it("keeps the subscription status messages", async () => {
-    mocks.getLiveUpdateItems.mockResolvedValue([]);
+    useFeed([]);
 
     expect(await renderUpdatesPage({ confirmed: "1" })).toContain(
       "Your daily AwardPing updates are confirmed.",

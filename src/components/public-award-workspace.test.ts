@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
+import { formatCentralDateTime } from "@/lib/time-zone";
 import { PublicAwardWorkspace, changeIdsToMarkRead } from "@/components/public-award-workspace";
 
 describe("PublicAwardWorkspace", () => {
@@ -761,6 +762,42 @@ describe("PublicAwardWorkspace", () => {
     expect(body).toMatch(/^\{\s*display: initial;\s*$/);
     // The compact toggle stays hidden, so the restore is the only way back.
     expect(compact).toMatch(/\.public-award-sidebar-toggle \{\s*display: none;\s*\}/);
+  });
+  it("gives each change row a machine-readable Central timestamp", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), initialSourceId: "source-apply" }),
+    );
+    const full = formatCentralDateTime("2026-07-03T12:00:00.000Z");
+
+    expect(full).toMatch(/^Jul 3, 2026, 7:00.AM CDT$/);
+    expect(panelMarkup(html)).toContain(
+      `<time dateTime="2026-07-03T12:00:00.000Z" title="${full}">Jul 3, 2026<span class="sr-only"> (${full})</span></time>`,
+    );
+    expect(html).not.toContain("<time>");
+  });
+
+  it("renders one plain notice, and no <time>, for a change whose timestamp is not a date", () => {
+    const data = makeDeepLinkPageData();
+    data.changes[1] = { ...data.changes[1], detectedAt: "not-a-date" };
+
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, { data, initialSourceId: "source-apply" }),
+    );
+    const panel = panelMarkup(html);
+
+    expect(panel).toContain(
+      '<article class="public-award-change-line"><span>Date unavailable</span><div><h3>Application Instructions</h3>',
+    );
+    expect(panel.split("Date unavailable")).toHaveLength(2);
+    expect(panel).not.toContain("<time");
+    // A valid change in another render still gets its time element.
+    const valid = panelMarkup(
+      renderToStaticMarkup(
+        createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), initialSourceId: "source-home" }),
+      ),
+    );
+    expect(valid).toContain('<time dateTime="2026-07-04T12:00:00.000Z"');
+    expect(valid).not.toMatch(/<time(?![^>]*dateTime=)/);
   });
 });
 

@@ -22,7 +22,7 @@ import {
   shouldRevealPanel,
   type PanelActivationState,
 } from "@/lib/public-award-panel-focus";
-import { formatCentralDate } from "@/lib/time-zone";
+import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
 import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
@@ -523,7 +523,7 @@ function ChangesPanel({
               data-highlighted={isHighlighted(change) ? "true" : undefined}
               key={change.id}
             >
-              <time>{formatDate(change.detectedAt)}</time>
+              <ChangeTimestamp value={change.detectedAt} />
               <div>
                 {isHighlighted(change) && <span className="badge">Selected update</span>}
                 <h3>{change.sourceTitle}</h3>
@@ -557,6 +557,21 @@ function ChangesPanel({
         <EmptyState text={emptyText} />
       )}
     </div>
+  );
+}
+
+// The visible date stays absolute; the element carries the machine-readable
+// timestamp and the full Central date and time for titles and assistive
+// technology. A value that is not a date renders one plain notice instead
+// of a <time> without a datetime.
+function ChangeTimestamp({ value }: { value: string }) {
+  const stamp = describeTimestamp(value);
+  if (!stamp.dateTime) return <span>{stamp.full}</span>;
+  return (
+    <time dateTime={stamp.dateTime} title={stamp.full}>
+      {formatDate(value)}
+      <span className="sr-only"> ({stamp.full})</span>
+    </time>
   );
 }
 

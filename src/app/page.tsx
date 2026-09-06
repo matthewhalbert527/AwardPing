@@ -42,9 +42,11 @@ const journeys = [
 ];
 
 export default async function Home() {
+  // One clock reading per render keeps every preview label consistent.
+  const now = new Date();
   const [user, updates] = await Promise.all([
     getCurrentUser(),
-    hasSupabaseAdminConfig() ? getLiveUpdateItems(8) : Promise.resolve([]),
+    hasSupabaseAdminConfig() ? getLiveUpdateItems(8, now) : Promise.resolve([]),
   ]);
 
   return (
@@ -141,7 +143,16 @@ function LiveTerminalPreview({ updates }: { updates: LiveUpdateItem[] }) {
               href={liveUpdateAwardHref(update)}
               key={update.id}
             >
-              <span>{update.detectedLabel}</span>
+              <span>
+                {update.detectedDateTime ? (
+                  <time dateTime={update.detectedDateTime} title={update.detectedTitle}>
+                    {update.detectedLabel}
+                    <span className="sr-only"> ({update.detectedTitle})</span>
+                  </time>
+                ) : (
+                  update.detectedLabel
+                )}
+              </span>
               <strong>{update.awardName}</strong>
               <p>{update.summary}</p>
             </Link>

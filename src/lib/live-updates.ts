@@ -6,7 +6,7 @@ import { readableSourceTitle } from "@/lib/display-text";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
-import { formatCentralDate } from "@/lib/time-zone";
+import { describeDetectedAt } from "@/lib/time-zone";
 
 export type LiveUpdateItem = {
   id: string;
@@ -20,11 +20,17 @@ export type LiveUpdateItem = {
   summary: string;
   changeDetails: Json;
   detectedAt: string;
+  /** `detectedAt` when it is a valid timestamp, for a `dateTime` attribute. */
+  detectedDateTime: string | null;
+  /** Compact label relative to the load's `now`, then a Central date. */
   detectedLabel: string;
+  /** Full Central date and time with zone. */
+  detectedTitle: string;
   changeTypeLabel: string;
 };
 
-export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> {
+// `now` is read once per load so every item's label agrees with the others.
+export async function getLiveUpdateItems(limit = 30, now: Date = new Date()): Promise<LiveUpdateItem[]> {
   const admin = createSupabaseAdminClient();
   const publicationIndex = await loadStage1PublicationIndex();
   if (!publicationIndex.available || publicationIndex.verifiedMemberAwardIds.length === 0) {
@@ -38,6 +44,7 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
 
   return eligibleEvents.map(({ event: change, publication }) => {
       const sourceTitle = readableSourceTitle(change.source_title, change.source_url);
+      const detected = describeDetectedAt(change.detected_at, now);
       return {
         id: change.id,
         awardId: publication?.canonicalAwardId || change.shared_award_id,
@@ -50,21 +57,12 @@ export async function getLiveUpdateItems(limit = 30): Promise<LiveUpdateItem[]> 
         summary: displayChangeSummary(change.summary, change.source_url, change.change_details),
         changeDetails: change.change_details,
         detectedAt: change.detected_at,
-        detectedLabel: relativeTimeLabel(change.detected_at),
+        detectedDateTime: detected.dateTime,
+        detectedLabel: detected.compact,
+        detectedTitle: detected.full,
         changeTypeLabel: changeTypeLabel(change.change_details),
       };
     });
-}
-
-export function relativeTimeLabel(value: string) {
-  const date = new Date(value);
-  const diffMs = Date.now() - date.getTime();
-  const diffHours = Math.max(0, Math.round(diffMs / (60 * 60 * 1000)));
-  if (diffHours < 1) return "Just now";
-  if (diffHours < 24) return `${diffHours}h ago`;
-  const diffDays = Math.round(diffHours / 24);
-  if (diffDays <= 14) return `${diffDays}d ago`;
-  return formatCentralDate(date, { month: "short", day: "numeric" });
 }
 
 function changeTypeLabel(value: unknown) {
