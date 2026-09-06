@@ -473,3 +473,163 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(renderRows(deadlineRows, DEADLINE_LISTED_PRESETS, true)).toBe(listed);
   });
 });
+
+// Fictional catalog rows for size boundaries. Zero-padded numbers keep the
+// alphabetical order equal to the numeric order, and every generated name
+// starts with "F" unless a test overrides it.
+function fictionalRow(index: number, overrides: Partial<SharedAwardCard> = {}): SharedAwardCard {
+  const number = String(index).padStart(3, "0");
+  return {
+    ...directoryRow({
+      id: `f1c71000-0000-4000-8000-${number.padStart(12, "0")}`,
+      name: `Fictional Award ${number}`,
+      publicPath: `/fictional-award-${number}`,
+      changeCount: 0,
+    }),
+    ...overrides,
+  };
+}
+
+function fictionalRows(count: number) {
+  return Array.from({ length: count }, (_, index) => fictionalRow(index + 1));
+}
+
+function fictionalHrefs(from: number, to: number) {
+  return Array.from({ length: to - from + 1 }, (_, index) => `/fictional-award-${String(from + index).padStart(3, "0")}`);
+}
+
+// Browse presets in state-slot order: query, results open, browse open,
+// letter, page size, page index, then the academic level filter. Later
+// filters keep their defaults. These preset the derived render only; they do
+// not exercise the click handlers themselves.
+function browsePresets({ letter = "A", pageSize = 30, pageIndex = 0, level = "all" } = {}): unknown[] {
+  return ["", false, true, letter, pageSize, pageIndex, level];
+}
+
+// The "Showing a-b of n awards under X." line renders above and below the list.
+function showingLines(html: string) {
+  return [...html.matchAll(/Showing \d+-\d+ of \d+ awards under [A-Z#]\./g)].map((match) => match[0]);
+}
+
+function pager(html: string) {
+  const previous = html.match(
+    /<button class="button-secondary px-3 py-3" type="button"( disabled="")?><svg[^>]*>[\s\S]*?<\/svg>Previous<\/button>/,
+  );
+  const next = html.match(/<button class="button-secondary px-3 py-3" type="button"( disabled="")?>Next<svg/);
+  if (!previous || !next) throw new Error("pager buttons missing");
+  return { previousDisabled: previous[1] === ' disabled=""', nextDisabled: next[1] === ' disabled=""' };
+}
+
+function alphaButton(html: string, letter: string) {
+  const match = html.match(
+    new RegExp(
+      `<button class="award-alpha-letter ?(award-alpha-letter-active)?"( disabled="")? type="button" aria-pressed="(true|false)">${letter}</button>`,
+    ),
+  );
+  if (!match) throw new Error(`letter button ${letter} missing`);
+  return { active: Boolean(match[1]), disabled: match[2] === ' disabled=""', pressed: match[3] === "true" };
+}
+
+describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
+  it("pages 31 same-letter awards as 30 then 1 at page size 30, with exact links, counts and pager states", () => {
+    const rows = fictionalRows(31);
+
+    const first = renderRows(rows);
+    expect(first).toContain("31 of 31 monitored awards match.");
+    expect(browseRowHrefs(first)).toEqual(fictionalHrefs(1, 30));
+    expect(showingLines(first)).toEqual(["Showing 1-30 of 31 awards under F.", "Showing 1-30 of 31 awards under F."]);
+    expect(pager(first)).toEqual({ previousDisabled: true, nextDisabled: false });
+    expect(alphaButton(first, "F")).toEqual({ active: true, disabled: false, pressed: true });
+    expect(alphaButton(first, "A")).toEqual({ active: false, disabled: true, pressed: false });
+
+    const second = renderRows(rows, browsePresets({ letter: "F", pageIndex: 1 }));
+    expect(browseRowHrefs(second)).toEqual(["/fictional-award-031"]);
+    expect(showingLines(second)).toEqual(["Showing 31-31 of 31 awards under F.", "Showing 31-31 of 31 awards under F."]);
+    expect(pager(second)).toEqual({ previousDisabled: false, nextDisabled: true });
+
+    // A stale page index past the end clamps to the last page, never to nothing.
+    const clamped = renderRows(rows, browsePresets({ letter: "F", pageIndex: 7 }));
+    expect(browseRowHrefs(clamped)).toEqual(["/fictional-award-031"]);
+    expect(pager(clamped)).toEqual({ previousDisabled: false, nextDisabled: true });
+  });
+
+  it("pages 101 same-letter awards as 100 then 1 at page size 100", () => {
+    const rows = fictionalRows(101);
+
+    const first = renderRows(rows, browsePresets({ letter: "F", pageSize: 100 }));
+    expect(first).toContain("101 of 101 monitored awards match.");
+    expect(first).toContain('<option value="100" selected="">100</option>');
+    expect(browseRowHrefs(first)).toEqual(fictionalHrefs(1, 100));
+    expect(showingLines(first)).toEqual(["Showing 1-100 of 101 awards under F.", "Showing 1-100 of 101 awards under F."]);
+    expect(pager(first)).toEqual({ previousDisabled: true, nextDisabled: false });
+
+    const second = renderRows(rows, browsePresets({ letter: "F", pageSize: 100, pageIndex: 1 }));
+    expect(browseRowHrefs(second)).toEqual(["/fictional-award-101"]);
+    expect(showingLines(second)).toEqual(["Showing 101-101 of 101 awards under F.", "Showing 101-101 of 101 awards under F."]);
+    expect(pager(second)).toEqual({ previousDisabled: false, nextDisabled: true });
+  });
+
+  it("falls back to the first remaining letter when a filter removes the selected letter", () => {
+    const rows = [
+      ...fictionalRows(3).map((row) => ({ ...row, academicLevels: ["Graduate"] })),
+      fictionalRow(4, { name: "Mock Fellowship 004", publicPath: "/mock-fellowship-004", academicLevels: ["Undergraduate"] }),
+      fictionalRow(5, { name: "Mock Fellowship 005", publicPath: "/mock-fellowship-005", academicLevels: ["Undergraduate"] }),
+      fictionalRow(6, { name: "Zeta Fictional Prize", publicPath: "/zeta-fictional-prize", academicLevels: ["Undergraduate"] }),
+    ];
+
+    const html = renderRows(rows, browsePresets({ letter: "F", level: "Undergraduate" }));
+
+    expect(html).toContain("3 of 6 monitored awards match.");
+    expect(browseRowHrefs(html)).toEqual(["/mock-fellowship-004", "/mock-fellowship-005"]);
+    expect(showingLines(html)).toEqual(["Showing 1-2 of 2 awards under M.", "Showing 1-2 of 2 awards under M."]);
+    expect(alphaButton(html, "F")).toEqual({ active: false, disabled: true, pressed: false });
+    expect(alphaButton(html, "M")).toEqual({ active: true, disabled: false, pressed: true });
+    expect(alphaButton(html, "Z")).toEqual({ active: false, disabled: false, pressed: false });
+    expect(pager(html)).toEqual({ previousDisabled: true, nextDisabled: true });
+  });
+
+  it("clamps a stale second page to the only remaining page when a filter shrinks the letter", () => {
+    const rows = fictionalRows(35).map((row, index) => ({
+      ...row,
+      academicLevels: [index === 34 ? "Undergraduate" : "Graduate"],
+    }));
+
+    const graduate = renderRows(rows, browsePresets({ letter: "F", pageIndex: 1, level: "Graduate" }));
+    expect(graduate).toContain("34 of 35 monitored awards match.");
+    expect(browseRowHrefs(graduate)).toEqual(fictionalHrefs(31, 34));
+    expect(showingLines(graduate)).toEqual(["Showing 31-34 of 34 awards under F.", "Showing 31-34 of 34 awards under F."]);
+    expect(pager(graduate)).toEqual({ previousDisabled: false, nextDisabled: true });
+
+    const undergraduate = renderRows(rows, browsePresets({ letter: "F", pageIndex: 1, level: "Undergraduate" }));
+    expect(undergraduate).toContain("1 of 35 monitored awards match.");
+    expect(browseRowHrefs(undergraduate)).toEqual(["/fictional-award-035"]);
+    expect(showingLines(undergraduate)).toEqual(["Showing 1-1 of 1 awards under F.", "Showing 1-1 of 1 awards under F."]);
+    expect(pager(undergraduate)).toEqual({ previousDisabled: true, nextDisabled: true });
+  });
+
+  it("lets search reach an award beyond the first page and beyond the open letter, at its canonical link", () => {
+    const rows = [
+      ...fictionalRows(30),
+      fictionalRow(31, { name: "Fictional Award 031 Omega", publicPath: "/fictional-award-031" }),
+      fictionalRow(32, { name: "Zeta Fictional Prize", publicPath: "/zeta-fictional-prize" }),
+    ];
+
+    const beyondPage = renderRows(rows, ["omega", true]);
+    expect(beyondPage).toContain('<p role="status">1 matching award</p>');
+    expect(searchOptionHrefs(beyondPage)).toEqual(["/fictional-award-031"]);
+
+    const beyondLetter = renderRows(rows, ["zeta", true]);
+    expect(searchOptionHrefs(beyondLetter)).toEqual(["/zeta-fictional-prize"]);
+    // The browse list stays hidden while results are open.
+    expect(browseRowHrefs(beyondLetter)).toEqual([]);
+  });
+
+  it("searches the whole catalog rather than the open letter or page, listing at most 100 results", () => {
+    const rows = fictionalRows(101);
+
+    const html = renderRows(rows, ["fictional award", true]);
+
+    expect(searchOptionHrefs(html)).toHaveLength(100);
+    expect(searchOptionHrefs(html).slice(0, 3)).toEqual(fictionalHrefs(1, 3));
+  });
+});
