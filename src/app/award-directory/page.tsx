@@ -80,7 +80,7 @@ export default async function AwardDirectoryPage() {
           <div><p className="page-kicker">Award directory</p>
           <h1 className="display-title text-4xl leading-[1.06] md:text-[2.9rem]">Every monitored award, in one place</h1></div>
           <p className="mt-4 max-w-[58ch] text-base leading-7 text-[var(--text-secondary)] md:text-[1.05rem] md:leading-8">
-            Search the awards AwardPing already checks. Expand any award to see
+            Search the awards AwardPing already checks. Open any award to see
             its official source tree and recent update history.
           </p>
         </div>

@@ -7,12 +7,10 @@ import {
   ChevronLeft,
   ChevronRight,
   ChevronUp,
-  ExternalLink,
   Search,
   X,
 } from "lucide-react";
 import { type AwardPageType } from "@/lib/award-discovery-types";
-import { dashboardAwardPath } from "@/lib/award-slugs";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
 
@@ -57,12 +55,20 @@ export type SharedAwardChange = {
   detectedAt: string;
 };
 
+// The directory has one award destination for every visitor, the canonical
+// public award page; sign-in state never chooses a different path.
+export function awardDirectoryHref(award: Pick<SharedAwardCard, "publicPath">) {
+  return award.publicPath;
+}
+
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const pageSizeOptions = [30, 50, 100] as const;
 
+// `canManage` and `isAuthenticated` stay in the prop contract for the
+// directory page, but neither affects what the directory renders or where
+// an award links.
 export function AwardDiscoveryWorkspace({
   sharedAwards,
-  isAuthenticated,
 }: {
   sharedAwards: SharedAwardCard[];
   canManage: boolean;
@@ -158,10 +164,6 @@ export function AwardDiscoveryWorkspace({
     setSelectedLetter(letter);
     setLetterPageIndex(0);
     setSearchOpen(false);
-  }
-
-  function awardHref(award: SharedAwardCard) {
-    return isAuthenticated ? dashboardAwardPath(award.slug, award.name, award.id) : award.publicPath;
   }
 
   function renderBrowseControls(position: "top" | "bottom") {
@@ -313,7 +315,7 @@ export function AwardDiscoveryWorkspace({
                 {matches.map((award) => (
                   <Link
                     className="award-search-option"
-                    href={awardHref(award)}
+                    href={awardDirectoryHref(award)}
                     key={award.id}
                     role="option"
                     aria-selected={false}
@@ -443,7 +445,7 @@ export function AwardDiscoveryWorkspace({
                 className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
                 key={award.id}
               >
-                <Link className="award-row-summary block" href={awardHref(award)}>
+                <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
                   <div className="award-row-grid">
                     <div className="min-w-0">
                       <span className="inline-flex min-w-0 items-center gap-2 font-bold">
@@ -471,14 +473,6 @@ export function AwardDiscoveryWorkspace({
                     </div>
                   </div>
                 </Link>
-                {isAuthenticated && (
-                  <div className="award-row-actions">
-                    <Link className="button-secondary px-3 py-2 text-sm" href={award.publicPath}>
-                      Public page
-                      <ExternalLink size={14} aria-hidden="true" />
-                    </Link>
-                  </div>
-                )}
               </article>
             ))}
           </div>
