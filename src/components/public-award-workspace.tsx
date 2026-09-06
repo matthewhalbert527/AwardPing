@@ -42,10 +42,9 @@ export function PublicAwardWorkspace({
   initialSourceId,
 }: PublicAwardWorkspaceProps) {
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const initialSelectedSourceId = initialSourceIdForQuery(data, initialSourceId, initialChangeId);
-  const [selected, setSelected] = useState<SelectedPanel>(() =>
-    initialSelectedSourceId ? { kind: "source", sourceId: initialSelectedSourceId } : { kind: "overview" },
-  );
+  const initialContext = initialPanelForQuery(data, initialSourceId, initialChangeId);
+  const [selected, setSelected] = useState<SelectedPanel>(() => initialContext.panel);
+  const highlightedChangeId = initialContext.highlightedChangeId;
   const [readChangeIds, setReadChangeIds] = useState<Set<string>>(
     () => new Set(data.changes.filter((change) => change.unread === false).map((change) => change.id)),
   );
@@ -222,11 +221,14 @@ export function PublicAwardWorkspace({
               factRows={factRows}
             />
           )}
-          {selected.kind === "changes" && <ChangesPanel changes={data.changes} />}
+          {selected.kind === "changes" && (
+            <ChangesPanel changes={data.changes} highlightedChangeId={highlightedChangeId} />
+          )}
           {selected.kind === "source" && selectedSource && (
             <SourcePanel
               awardName={data.award.name}
               changes={selectedSourceChanges}
+              highlightedChangeId={highlightedChangeId}
               officialHomepage={data.officialHomepage}
               source={selectedSource}
             />
@@ -237,19 +239,34 @@ export function PublicAwardWorkspace({
   );
 }
 
-function initialSourceIdForQuery(
+// Resolves the page's query state (`source`, `change`) to the panel that
+// should open first and the change to mark in it. A requested source wins;
+// otherwise a listed change opens its own source, or the award's recent
+// changes when that source is no longer listed. Unknown ids fall back to
+// the overview, so a stale link still lands on the award.
+function initialPanelForQuery(
   data: PublicAwardPageData,
   sourceId?: string | null,
   changeId?: string | null,
-) {
-  if (sourceId && data.sources.some((source) => source.id === sourceId)) {
-    return sourceId;
+): { panel: SelectedPanel; highlightedChangeId: string | null } {
+  const change = changeId
+    ? data.changes.find((candidate) => candidate.id === changeId) || null
+    : null;
+  const requestedSource = sourceId
+    ? data.sources.find((source) => source.id === sourceId) || null
+    : null;
+  if (requestedSource) {
+    return {
+      panel: { kind: "source", sourceId: requestedSource.id },
+      highlightedChangeId: change && isChangeForSource(change, requestedSource) ? change.id : null,
+    };
   }
-
-  if (!changeId) return null;
-  const change = data.changes.find((candidate) => candidate.id === changeId);
-  if (!change?.sourceId) return null;
-  return data.sources.some((source) => source.id === change.sourceId) ? change.sourceId : null;
+  if (!change) return { panel: { kind: "overview" }, highlightedChangeId: null };
+  const changeSource = data.sources.find((source) => isChangeForSource(change, source)) || null;
+  if (changeSource) {
+    return { panel: { kind: "source", sourceId: changeSource.id }, highlightedChangeId: change.id };
+  }
+  return { panel: { kind: "changes" }, highlightedChangeId: change.id };
 }
 
 function SourceOutlineButton({
@@ -372,11 +389,13 @@ function OverviewPanel({
 function SourcePanel({
   awardName,
   changes,
+  highlightedChangeId,
   officialHomepage,
   source,
 }: {
   awardName: string;
   changes: PublicAwardPageData["changes"];
+  highlightedChangeId?: string | null;
   officialHomepage?: string | null;
   source: PublicAwardPageData["sources"][number];
 }) {
@@ -402,6 +421,7 @@ function SourcePanel({
       <ChangesPanel
         changes={changes}
         emptyText="No meaningful updates have been recorded for this source yet."
+        highlightedChangeId={highlightedChangeId}
         showSnapshotPreviews
         sourceIdFallback={source.id}
         title="Source update history"
@@ -413,16 +433,21 @@ function SourcePanel({
 function ChangesPanel({
   changes,
   emptyText = "No meaningful updates have been recorded yet.",
+  highlightedChangeId = null,
   showSnapshotPreviews = false,
   sourceIdFallback,
   title = "Recent changes",
 }: {
   changes: PublicAwardPageData["changes"];
   emptyText?: string;
+  highlightedChangeId?: string | null;
   showSnapshotPreviews?: boolean;
   sourceIdFallback?: string | null;
   title?: string;
 }) {
+  const isHighlighted = (change: PublicAwardChange) =>
+    highlightedChangeId !== null && change.id === highlightedChangeId;
+
   return (
     <div className="public-award-panel-stack">
       <div className="public-award-section-heading">
@@ -431,9 +456,15 @@ function ChangesPanel({
       {changes.length > 0 ? (
         <div className="public-award-change-table">
           {changes.map((change) => (
-            <article className="public-award-change-line" key={change.id}>
+            <article
+              aria-current={isHighlighted(change) ? "true" : undefined}
+              className="public-award-change-line"
+              data-highlighted={isHighlighted(change) ? "true" : undefined}
+              key={change.id}
+            >
               <time>{formatDate(change.detectedAt)}</time>
               <div>
+                {isHighlighted(change) && <span className="badge">Selected update</span>}
                 <h3>{change.sourceTitle}</h3>
                 <p>{change.summary}</p>
                 {showSnapshotPreviews && (

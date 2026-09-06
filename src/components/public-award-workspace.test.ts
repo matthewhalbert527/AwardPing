@@ -457,6 +457,119 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).toContain("The application instructions changed.");
     expect(mainHtml).not.toContain("<h2>Overview</h2>");
   });
+
+  it("opens the exact change's source and marks that change when only the change id is known", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: makeDeepLinkPageData(),
+        initialChangeId: "change-apply",
+      }),
+    );
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(mainHtml).toContain("Source update history");
+    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).toContain("The application instructions changed.");
+    expect(mainHtml).not.toContain("The homepage changed.");
+    expect(mainHtml).not.toContain("<h2>Overview</h2>");
+    expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
+  });
+
+  it("opens the feed's source and change context on first load and keeps the outline labels", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: makeDeepLinkPageData(),
+        initialChangeId: "change-apply",
+        initialSourceId: "source-apply",
+      }),
+    );
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(mainHtml).toContain("Source update history");
+    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expectSingleHighlightedChange(mainHtml, "The application instructions changed.");
+    expect(html).toContain('aria-label="Example Fellowship page outline"');
+    expect(html).toContain('aria-label="Award profile"');
+    expect(html).toContain('aria-label="Official sources"');
+    expect(html).toContain('aria-label="Collapse page outline"');
+    expect(html).toContain("<h1>Example Fellowship</h1>");
+  });
+
+  it("keeps the requested source when the change belongs to another source and marks nothing", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: makeDeepLinkPageData(),
+        initialChangeId: "change-home",
+        initialSourceId: "source-apply",
+      }),
+    );
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).not.toContain("The homepage changed.");
+    expect(mainHtml).not.toContain('data-highlighted="true"');
+    expect(mainHtml).not.toContain("Selected update");
+  });
+
+  it("shows an eligible change in recent changes when its source is no longer listed", () => {
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data: makeDeepLinkPageData(),
+        initialChangeId: "change-orphan",
+        initialSourceId: "source-gone",
+      }),
+    );
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(mainHtml).toContain("<h2>Recent changes</h2>");
+    expect(mainHtml).not.toContain("Source update history");
+    expect(mainHtml).toContain("The retired page changed.");
+    expectSingleHighlightedChange(mainHtml, "The retired page changed.");
+    expect(html).toContain("<h1>Example Fellowship</h1>");
+  });
+
+  it("falls back to the award overview for unknown or stale ids without marking anything", () => {
+    for (const query of [
+      { initialChangeId: "change-unknown", initialSourceId: "source-unknown" },
+      { initialChangeId: "change-unknown" },
+      { initialSourceId: "source-unknown" },
+      { initialChangeId: "", initialSourceId: "" },
+      { initialChangeId: null, initialSourceId: null },
+    ]) {
+      const html = renderToStaticMarkup(
+        createElement(PublicAwardWorkspace, { data: makeDeepLinkPageData(), ...query }),
+      );
+      const mainHtml = html.slice(html.indexOf("</aside>"));
+
+      expect(mainHtml, JSON.stringify(query)).toContain("<h2>Overview</h2>");
+      expect(mainHtml, JSON.stringify(query)).toContain("A fellowship for testing.");
+      expect(html, JSON.stringify(query)).toContain("<h1>Example Fellowship</h1>");
+      expect(html, JSON.stringify(query)).not.toContain('data-highlighted="true"');
+      expect(html, JSON.stringify(query)).not.toContain('aria-current="true"');
+      expect(html, JSON.stringify(query)).not.toContain("Selected update");
+    }
+  });
+
+  it("never marks an id the award loader did not return, such as a stale, suppressed or unverified update", () => {
+    // The award loader fetches a deep-linked update through the public gates
+    // and merges it into data.changes, so an id missing from the data is one
+    // the gates rejected: the requested source still opens, nothing is marked.
+    const data = makeDeepLinkPageData();
+    const html = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, {
+        data,
+        initialChangeId: "change-not-on-page",
+        initialSourceId: "source-apply",
+      }),
+    );
+    const mainHtml = html.slice(html.indexOf("</aside>"));
+
+    expect(mainHtml).toContain("<h2>Application Instructions</h2>");
+    expect(mainHtml).toContain("The application instructions changed.");
+    expect(mainHtml).not.toContain('data-highlighted="true"');
+    expect(mainHtml).not.toContain("Selected update");
+    expect(html).not.toContain("change-not-on-page");
+  });
 });
 
 function makePageData({
@@ -548,4 +661,67 @@ function makeSource({
       confidence: null,
     },
   };
+}
+
+function makeDeepLinkPageData() {
+  return makePageData({
+    sources: [
+      makeSource({
+        id: "source-home",
+        pageType: "application",
+        title: "Homepage",
+        url: "https://example.edu/fellowship",
+      }),
+      makeSource({
+        id: "source-apply",
+        pageType: "application",
+        title: "Application Instructions",
+        url: "https://example.edu/fellowship/apply",
+      }),
+    ],
+    changes: [
+      {
+        id: "change-home",
+        sourceId: "source-home",
+        sourceTitle: "Homepage",
+        sourceUrl: "https://example.edu/fellowship",
+        sourcePageType: "application",
+        summary: "The homepage changed.",
+        changeDetails: {},
+        detectedAt: "2026-07-04T12:00:00.000Z",
+      },
+      {
+        id: "change-apply",
+        sourceId: "source-apply",
+        sourceTitle: "Application Instructions",
+        sourceUrl: "https://example.edu/fellowship/apply",
+        sourcePageType: "application",
+        summary: "The application instructions changed.",
+        changeDetails: {},
+        detectedAt: "2026-07-03T12:00:00.000Z",
+      },
+      {
+        id: "change-orphan",
+        sourceId: "source-gone",
+        sourceTitle: "Retired page",
+        sourceUrl: "https://example.edu/fellowship/retired",
+        sourcePageType: "application",
+        summary: "The retired page changed.",
+        changeDetails: {},
+        detectedAt: "2026-07-02T12:00:00.000Z",
+      },
+    ],
+  });
+}
+
+function expectSingleHighlightedChange(mainHtml: string, summary: string) {
+  const rows = mainHtml.split(
+    '<article aria-current="true" class="public-award-change-line" data-highlighted="true">',
+  );
+  expect(rows).toHaveLength(2);
+  const row = rows[1].slice(0, rows[1].indexOf("</article>"));
+  expect(row).toContain("Selected update");
+  expect(row).toContain(summary);
+  expect(mainHtml.split("Selected update")).toHaveLength(2);
+  expect(mainHtml.split('aria-current="true"')).toHaveLength(2);
 }

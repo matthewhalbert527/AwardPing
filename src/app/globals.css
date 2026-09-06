@@ -4086,6 +4086,11 @@ a {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+.public-award-change-line[data-highlighted="true"] {
+  background: color-mix(in srgb, var(--accent-tint) 55%, var(--surface));
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 .public-award-source-line span,
 .public-award-change-line time {
   color: var(--text-tertiary);

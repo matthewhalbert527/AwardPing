@@ -65,6 +65,12 @@ type LoadEligiblePublicChangeEventsInput = {
   /** Null means that the caller needs the complete, proven result set. */
   limit: number | null;
   memberAwardIds?: string[];
+  /**
+   * Restricts the scan to these event ids (a deep-linked update). Every
+   * other gate still applies unchanged; ids that are not UUIDs are dropped,
+   * and when none remain the result is empty without a query.
+   */
+  eventIds?: string[];
   since?: string;
   pageSize?: number;
   maxScannedRows?: number;
@@ -85,6 +91,7 @@ export async function loadEligiblePublicChangeEvents({
   publicationIndex,
   limit,
   memberAwardIds = publicationIndex.verifiedMemberAwardIds,
+  eventIds,
   since,
   pageSize = 200,
   maxScannedRows = limit === null ? 50_000 : Math.max(5_000, limit * 500),
@@ -108,6 +115,10 @@ export async function loadEligiblePublicChangeEvents({
     throw new Error("Public change-event scan cap must be a positive integer.");
   }
   const sinceValue = since ? normalizedTimestamp(since, "since") : null;
+  const selectedEventIds = eventIds === undefined
+    ? null
+    : [...new Set(eventIds.filter((id) => isUuid(id)))];
+  if (selectedEventIds && !selectedEventIds.length) return [];
   const verifiedMemberIds = new Set(publicationIndex.verifiedMemberAwardIds);
   const selectedMemberIds = [
     ...new Set(memberAwardIds.filter((id) => verifiedMemberIds.has(id))),
@@ -143,6 +154,7 @@ export async function loadEligiblePublicChangeEvents({
       .order("detected_at", { ascending: false })
       .order("id", { ascending: false })
       .limit(requestedPageSize);
+    if (selectedEventIds) query = query.in("id", selectedEventIds);
     if (sinceValue) query = query.gte("detected_at", sinceValue);
     if (cursor) query = query.or(publicChangeEventCursorFilter(cursor));
 
@@ -302,6 +314,17 @@ export function publicChangeEventCursorFilter(cursor: Cursor) {
     `detected_at.lt.${detectedAt}`,
     `and(detected_at.eq.${detectedAt},id.lt.${cursor.id})`,
   ].join(",");
+}
+
+/**
+ * Newest-first ordering with the exact PostgreSQL microsecond semantics the
+ * keyset scan uses (timestamp first, then the UUID as the tie breaker), for
+ * callers that combine gate results without reordering adjacent
+ * microseconds by id. Inputs must carry validated timestamps, as every row
+ * returned by loadEligiblePublicChangeEvents does.
+ */
+export function comparePublicChangeEventsNewestFirst(left: Cursor, right: Cursor) {
+  return compareCursor(right, left);
 }
 
 function assertStrictlyDescendingPage(

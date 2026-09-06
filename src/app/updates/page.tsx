@@ -5,9 +5,9 @@ import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
-import { canonicalAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
+import { liveUpdateAwardHref } from "@/lib/public-award-links";
 
 export const dynamic = "force-dynamic";
 
@@ -96,7 +96,9 @@ export default async function UpdatesPage({ searchParams }: Props) {
                 <h3 className="public-live-day-label">{group.label}</h3>
                 <div className="public-live-day-list">
                   {group.items.map((update) => {
-                    const awardHref = canonicalAwardPath(update.awardSlug, update.awardName, update.awardId);
+                    // The award link carries the exact source and change so the
+                    // award workspace opens on this update, not the overview.
+                    const awardHref = liveUpdateAwardHref(update);
               return (
                 <article className="public-live-update-row" key={update.id}>
                   <div className="public-live-update-time">

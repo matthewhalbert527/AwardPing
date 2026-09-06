@@ -8,7 +8,11 @@ import { displayChangeSummary } from "@/lib/change-summary";
 import type { AwardPageType } from "@/lib/award-discovery-types";
 import type { Database, Json } from "@/lib/database.types";
 import { readableSourceTitle } from "@/lib/display-text";
-import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
+import {
+  comparePublicChangeEventsNewestFirst,
+  loadEligiblePublicChangeEvents,
+  type EligiblePublicChangeEvent,
+} from "@/lib/public-change-events";
 import {
   isPublicAwardSource,
 } from "@/lib/source-quality";
@@ -87,6 +91,16 @@ export type PublicAwardPageData = {
   }>;
 };
 
+export type PublicAwardPageOptions = {
+  userId?: string | null;
+  /**
+   * A deep-linked change id (already validated by the page). When it names
+   * an eligible update of this award that is older than the recent list, the
+   * update is loaded through the same gates and merged into `changes`.
+   */
+  changeId?: string | null;
+};
+
 export type PublicAwardPageResolution =
   | { kind: "published"; data: PublicAwardPageData }
   | { kind: "under_verification" }
@@ -94,7 +108,7 @@ export type PublicAwardPageResolution =
 
 export async function getPublicAwardPageBySlug(
   slug: string,
-  options: { userId?: string | null } = {},
+  options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageData | null> {
   const resolution = await getPublicAwardPageResolutionBySlug(slug, options);
   return resolution.kind === "published" ? resolution.data : null;
@@ -102,7 +116,7 @@ export async function getPublicAwardPageBySlug(
 
 export async function getPublicAwardPageResolutionBySlug(
   slug: string,
-  options: { userId?: string | null } = {},
+  options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageResolution> {
   const normalizedSlug = normalizeAwardSlug(slug);
   if (!normalizedSlug) return { kind: "missing" };
@@ -189,10 +203,25 @@ async function loadPublicAwardPageData(
   publication: Stage1PublicationEntry,
   publicationIndex: Stage1PublicationIndex,
   redirectPath: string | null,
-  options: { userId?: string | null } = {},
+  options: PublicAwardPageOptions = {},
 ): Promise<PublicAwardPageData | null> {
   const admin = createSupabaseAdminClient();
-  const [sourcesResult, eligibleEvents] = await Promise.all([
+  const requestedChangeId = options.changeId || null;
+  // A deep-linked update older than the recent list is fetched by id through
+  // the same publication, release, source, evidence and suppression gates,
+  // restricted to this award's member awards: a stale, suppressed,
+  // unverified, out-of-cohort or wrong-award id yields nothing and the page
+  // simply shows its recent updates.
+  const requestedEventsPromise: Promise<EligiblePublicChangeEvent[]> = requestedChangeId
+    ? loadEligiblePublicChangeEvents({
+        admin,
+        publicationIndex,
+        memberAwardIds: publication.memberAwardIds,
+        limit: 1,
+        eventIds: [requestedChangeId],
+      })
+    : Promise.resolve([]);
+  const [sourcesResult, recentEvents, requestedEvents] = await Promise.all([
     admin
       .from("shared_award_sources")
       .select("id, shared_award_id, url, title, display_title, page_description, page_metadata, page_metadata_generated_at, page_metadata_model, page_type, source, reason, submitted_by_user_id, admin_review_status, last_checked_at")
@@ -210,7 +239,9 @@ async function loadPublicAwardPageData(
       memberAwardIds: publication.memberAwardIds,
       limit: 8,
     }),
+    requestedEventsPromise,
   ]);
+  const eligibleEvents = mergeRequestedPublicChangeEvents(recentEvents, requestedEvents);
   if (sourcesResult.error) {
     throw new Error(`Public award source query failed: ${sourcesResult.error.message}`);
   }
@@ -292,6 +323,31 @@ async function loadPublicAwardPageData(
       unread: unreadChangeIds ? unreadChangeIds.has(change.id) : true,
     })),
   };
+}
+
+// Adds deep-linked events that the gates returned to the recent list without
+// duplicating an event already there. The recent list keeps the gate's
+// proven newest-first order untouched; each new entry is inserted before the
+// first older entry using the gate's exact microsecond-and-UUID comparison,
+// so an older update lands after the recent ones and adjacent microseconds
+// are never reordered by id. Both inputs already passed every gate.
+export function mergeRequestedPublicChangeEvents(
+  recent: EligiblePublicChangeEvent[],
+  requested: EligiblePublicChangeEvent[],
+) {
+  const merged = [...recent];
+  for (const entry of requested) {
+    if (merged.some((existing) => existing.event.id === entry.event.id)) continue;
+    const olderIndex = merged.findIndex(
+      (existing) => comparePublicChangeEventsNewestFirst(entry.event, existing.event) < 0,
+    );
+    if (olderIndex === -1) {
+      merged.push(entry);
+    } else {
+      merged.splice(olderIndex, 0, entry);
+    }
+  }
+  return merged;
 }
 
 function canonicalAwardFromPublication(

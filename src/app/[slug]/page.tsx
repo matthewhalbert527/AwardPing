@@ -16,13 +16,16 @@ import {
   getPublicAwardPageBySlug,
   getPublicAwardPageResolutionBySlug,
 } from "@/lib/public-award-pages";
+import { publicAwardHref, publicAwardQueryId } from "@/lib/public-award-links";
 import { getSeoPage, seoPages } from "@/lib/seo-pages";
 
 export const dynamic = "force-dynamic";
 
 type Props = {
   params: Promise<{ slug: string }>;
-  searchParams?: Promise<{ source?: string; change?: string }>;
+  // A repeated key arrives as an array; publicAwardQueryId keeps only a
+  // single well-formed id.
+  searchParams?: Promise<{ source?: string | string[]; change?: string | string[] }>;
 };
 
 export function generateStaticParams() {
@@ -65,13 +68,19 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function SlugPage({ params, searchParams }: Props) {
   const { slug } = await params;
   const query = searchParams ? await searchParams : {};
+  const context = {
+    sourceId: publicAwardQueryId(query.source),
+    changeId: publicAwardQueryId(query.change),
+  };
   const page = getSeoPage(slug);
   if (page) return <SeoLandingPageContent page={page} />;
 
   if (!hasSupabaseAdminConfig()) notFound();
-  const initialResolution = await getPublicAwardPageResolutionBySlug(slug).catch(
-    () => ({ kind: "missing" as const }),
-  );
+  // The validated change id rides along so an update older than the recent
+  // list is still loaded (through the public gates) and can be selected.
+  const initialResolution = await getPublicAwardPageResolutionBySlug(slug, {
+    changeId: context.changeId,
+  }).catch(() => ({ kind: "missing" as const }));
   if (initialResolution.kind === "under_verification") {
     return <AwardUnderVerification />;
   }
@@ -79,12 +88,21 @@ export default async function SlugPage({ params, searchParams }: Props) {
 
   const user = await getCurrentUser();
   const awardPage = user
-    ? await getPublicAwardPageBySlug(slug, { userId: user.id }).catch(() => null)
+    ? await getPublicAwardPageBySlug(slug, { userId: user.id, changeId: context.changeId }).catch(
+        () => null,
+      )
     : initialResolution.data;
   if (!awardPage) notFound();
-  if (awardPage.redirectPath) redirect(awardPage.redirectPath);
+  // An alias slug keeps its update context through the canonical redirect.
+  if (awardPage.redirectPath) redirect(publicAwardHref(awardPage.redirectPath, context));
 
-  return <PublicAwardPage data={awardPage} initialChangeId={query.change} initialSourceId={query.source} />;
+  return (
+    <PublicAwardPage
+      data={awardPage}
+      initialChangeId={context.changeId}
+      initialSourceId={context.sourceId}
+    />
+  );
 }
 
 function AwardUnderVerification() {

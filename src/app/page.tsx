@@ -10,9 +10,9 @@ import {
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
-import { canonicalAwardPath } from "@/lib/award-slugs";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getLiveUpdateItems, type LiveUpdateItem } from "@/lib/live-updates";
+import { liveUpdateAwardHref } from "@/lib/public-award-links";
 import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 
 export const dynamic = "force-dynamic";
@@ -138,7 +138,7 @@ function LiveTerminalPreview({ updates }: { updates: LiveUpdateItem[] }) {
           updates.slice(0, 5).map((update) => (
             <Link
               className="home-live-terminal-row"
-              href={canonicalAwardPath(update.awardSlug, update.awardName, update.awardId)}
+              href={liveUpdateAwardHref(update)}
               key={update.id}
             >
               <span>{update.detectedLabel}</span>

@@ -17,6 +17,7 @@ vi.mock("@/lib/public-event-visual-evidence", () => ({
 }));
 
 import {
+  comparePublicChangeEventsNewestFirst,
   dedupeEligiblePublicChangeEvents,
   loadEligiblePublicChangeEvents,
   publicChangeEventCursorFilter,
@@ -175,6 +176,108 @@ describe("loadEligiblePublicChangeEvents", () => {
       older.id,
     ]);
   });
+
+  it("fetches a deep-linked event by id through the same member, source, evidence and predicate gates", async () => {
+    const requested = eventRow("2026-07-10T09:00:00.000Z", 9, allowedSourceId);
+    const admin = fakeAdmin([[requested]], [sourceRow()]);
+
+    const result = await loadEligiblePublicChangeEvents({
+      admin: admin.client,
+      publicationIndex: publicationIndex(),
+      limit: 1,
+      memberAwardIds: [memberAwardId],
+      eventIds: [requested.id],
+    });
+
+    expect(result.map((entry) => entry.event.id)).toEqual([requested.id]);
+    expect(admin.changeInFilters).toEqual([
+      { column: "shared_award_id", values: [memberAwardId] },
+      { column: "shared_award_source_id", values: [allowedSourceId] },
+      { column: "id", values: [requested.id] },
+    ]);
+    expect(admin.changePageCalls).toBe(1);
+    expect(mocks.loadPublicEventVisualEvidence).toHaveBeenCalledWith(admin.client, [requested.id]);
+    expect(mocks.isPublicChangeEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns nothing for a deep-linked id the gates reject", async () => {
+    const index = publicationIndex();
+    const load = (
+      admin: ReturnType<typeof fakeAdmin>,
+      overrides: Partial<Parameters<typeof loadEligiblePublicChangeEvents>[0]> = {},
+    ) =>
+      loadEligiblePublicChangeEvents({
+        admin: admin.client,
+        publicationIndex: index,
+        limit: 1,
+        memberAwardIds: [memberAwardId],
+        ...overrides,
+      });
+
+    // Suppressed: the row carries suppressed_at, and the public predicate (the
+    // same one the recent list consults; its suppression rule has its own
+    // tests) returns false for it.
+    const suppressed = {
+      ...eventRow("2026-07-10T09:00:00.000Z", 9, allowedSourceId),
+      suppressed_at: "2026-07-11T00:00:00.000Z",
+      suppression_reason: "duplicate",
+    };
+    mocks.isPublicChangeEvent.mockReturnValueOnce(false);
+    expect(await load(fakeAdmin([[suppressed]], [sourceRow()]), { eventIds: [suppressed.id] })).toEqual([]);
+    expect(mocks.isPublicChangeEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ event: expect.objectContaining({ id: suppressed.id, suppressed_at: suppressed.suppressed_at }) }),
+    );
+
+    // Wrong award: the row belongs to an award outside the publication index.
+    const stranger = {
+      ...eventRow("2026-07-10T09:00:00.000Z", 9, allowedSourceId),
+      shared_award_id: "20000000-0000-4000-8000-000000000009",
+    };
+    expect(await load(fakeAdmin([[stranger]], [sourceRow()]), { eventIds: [stranger.id] })).toEqual([]);
+
+    // Wrong award: the requesting page's member awards do not include the
+    // event's award, so no page query is even issued.
+    const requested = eventRow("2026-07-10T09:00:00.000Z", 9, allowedSourceId);
+    const otherAwardAdmin = fakeAdmin([[requested]], [sourceRow()]);
+    expect(
+      await load(otherAwardAdmin, {
+        memberAwardIds: ["20000000-0000-4000-8000-000000000009"],
+        eventIds: [requested.id],
+      }),
+    ).toEqual([]);
+    expect(otherAwardAdmin.changePageCalls).toBe(0);
+
+    // Out of cohort / unverified: the publication is not effectively verified.
+    const unverified = publicationIndex();
+    unverified.verifiedEntries = [];
+    unverified.verifiedMemberAwardIds = [];
+    unverified.verifiedCanonicalAwardIds = [];
+    const unverifiedAdmin = fakeAdmin([[requested]], [sourceRow()]);
+    expect(
+      await loadEligiblePublicChangeEvents({
+        admin: unverifiedAdmin.client,
+        publicationIndex: unverified,
+        limit: 1,
+        memberAwardIds: [memberAwardId],
+        eventIds: [requested.id],
+      }),
+    ).toEqual([]);
+    expect(unverifiedAdmin.changePageCalls).toBe(0);
+
+    // Disallowed source: the event is on a source outside the reviewed manifest.
+    const foreignSource = eventRow("2026-07-10T09:00:00.000Z", 9, invalidSourceId);
+    expect(await load(fakeAdmin([[foreignSource]], [sourceRow()]), { eventIds: [foreignSource.id] })).toEqual([]);
+
+    // Stale: the id no longer exists.
+    const staleAdmin = fakeAdmin([[]], [sourceRow()]);
+    expect(await load(staleAdmin, { eventIds: [requested.id] })).toEqual([]);
+    expect(staleAdmin.changePageCalls).toBe(1);
+
+    // Malformed ids never reach the database.
+    const malformedAdmin = fakeAdmin([[requested]], [sourceRow()]);
+    expect(await load(malformedAdmin, { eventIds: ["not-a-uuid", "", "40000000-0000-4000-8000-00000000000g"] })).toEqual([]);
+    expect(malformedAdmin.changePageCalls).toBe(0);
+  });
 });
 
 describe("publicChangeEventCursorFilter", () => {
@@ -205,6 +308,40 @@ describe("publicChangeEventCursorFilter", () => {
         id: "id),or(secret.eq.true",
       }),
     ).toThrow("invalid event id");
+  });
+});
+
+describe("comparePublicChangeEventsNewestFirst", () => {
+  it("orders adjacent PostgreSQL microseconds before falling back to the UUID", () => {
+    const newerSmallerId = { id: "40000000-0000-4000-8000-000000000001", detected_at: "2026-07-16T18:00:00.123456Z" };
+    const olderLargerId = { id: "40000000-0000-4000-8000-000000000009", detected_at: "2026-07-16T18:00:00.123455Z" };
+
+    expect(comparePublicChangeEventsNewestFirst(newerSmallerId, olderLargerId)).toBeLessThan(0);
+    expect(comparePublicChangeEventsNewestFirst(olderLargerId, newerSmallerId)).toBeGreaterThan(0);
+    expect([olderLargerId, newerSmallerId].sort(comparePublicChangeEventsNewestFirst)).toEqual([
+      newerSmallerId,
+      olderLargerId,
+    ]);
+  });
+
+  it("breaks exact timestamp ties by UUID, newest id first, and treats offsets exactly", () => {
+    const smaller = { id: "40000000-0000-4000-8000-000000000001", detected_at: "2026-07-16T18:00:00.123456Z" };
+    const larger = { id: "40000000-0000-4000-8000-000000000009", detected_at: "2026-07-16T18:00:00.123456Z" };
+    const sameInstantOffset = { id: "40000000-0000-4000-8000-000000000005", detected_at: "2026-07-16T13:00:00.123456-05:00" };
+
+    expect(comparePublicChangeEventsNewestFirst(larger, smaller)).toBeLessThan(0);
+    expect(comparePublicChangeEventsNewestFirst(smaller, smaller)).toBe(0);
+    expect(comparePublicChangeEventsNewestFirst(sameInstantOffset, larger)).toBeGreaterThan(0);
+    expect(comparePublicChangeEventsNewestFirst(sameInstantOffset, smaller)).toBeLessThan(0);
+  });
+
+  it("rejects an invalid timestamp instead of guessing an order", () => {
+    expect(() =>
+      comparePublicChangeEventsNewestFirst(
+        { id: "40000000-0000-4000-8000-000000000001", detected_at: "2026-07-16 18:00:00" },
+        { id: "40000000-0000-4000-8000-000000000002", detected_at: "2026-07-16T18:00:00.000Z" },
+      ),
+    ).toThrow("timestamp is invalid");
   });
 });
 
