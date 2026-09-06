@@ -11,6 +11,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
+import { PUBLIC_DIGEST_LABEL } from "@/lib/public-digest-copy";
 import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 import {
   loadPublicUpdateFeed,
@@ -41,7 +42,7 @@ const whyItMatters = [
 const journeys = [
   { label: "Live Update Feed", href: "/updates", text: "Chronological plain-English changes." },
   { label: "Award Directory", href: "/award-directory", text: "Search and filter public award records." },
-  { label: "Daily Digest", href: "/updates/subscribe", text: "Quiet email updates when useful changes appear." },
+  { label: PUBLIC_DIGEST_LABEL, href: "/updates/subscribe", text: "Quiet email updates when useful changes appear." },
 ];
 
 export default async function Home() {

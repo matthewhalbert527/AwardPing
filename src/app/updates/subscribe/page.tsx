@@ -3,20 +3,21 @@ import { BellRing, CheckCircle2 } from "lucide-react";
 import { PublicUpdatesForm } from "@/components/public-updates-form";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
+import { PUBLIC_DIGEST_DESCRIPTION, PUBLIC_DIGEST_LABEL, publicDigestStatusMessage, type PublicDigestStatusParams } from "@/lib/public-digest-copy";
 
 export const metadata: Metadata = {
-  title: "Subscribe to Award Updates | AwardPing",
+  title: "Daily digest | AwardPing",
   description:
     "Subscribe to public daily AwardPing emails when useful nationally competitive award-page updates are detected.",
 };
 
 type Props = {
-  searchParams: Promise<{ confirmed?: string; unsubscribed?: string }>;
+  searchParams: Promise<PublicDigestStatusParams>;
 };
 
 export default async function UpdatesSubscribePage({ searchParams }: Props) {
   const params = await searchParams;
-  const statusMessage = updatesStatusMessage(params);
+  const statusMessage = publicDigestStatusMessage(params);
 
   return (
     <div className="page-shell">
@@ -26,20 +27,19 @@ export default async function UpdatesSubscribePage({ searchParams }: Props) {
           <div>
             <span className="badge">
               <BellRing size={15} aria-hidden="true" />
-              Daily updates
+              {PUBLIC_DIGEST_LABEL}
             </span>
             <h1 className="display-title mt-4 text-4xl leading-[1.06] md:text-[2.8rem]">
               Useful award updates by email.
             </h1>
             <p className="mt-3 text-base leading-7 text-[var(--muted)] md:text-lg md:leading-8">
-              Get a daily email only when AwardPing detects useful changes on
-              public nationally competitive award source pages. Quiet days stay quiet.
+              {PUBLIC_DIGEST_DESCRIPTION}
             </p>
             <div className="mt-4 grid gap-2 text-sm font-bold text-[var(--text-secondary)]">
               {[
-                "Double opt-in confirmation before mail starts",
-                "Official source-page changes, not product marketing",
-                "Unsubscribe link in every public digest",
+                "Confirm your email before the digest starts",
+                "Changes from official award pages",
+                "Unsubscribe link in every digest",
               ].map((item) => (
                 <p className="flex items-center gap-2" key={item}>
                   <CheckCircle2 className="text-[var(--brand)]" size={18} aria-hidden="true" />
@@ -51,7 +51,7 @@ export default async function UpdatesSubscribePage({ searchParams }: Props) {
 
           <div>
             {statusMessage && (
-              <div className="mb-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
+              <div role="status" className="mb-4 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
                 {statusMessage}
               </div>
             )}
@@ -62,15 +62,4 @@ export default async function UpdatesSubscribePage({ searchParams }: Props) {
       <SiteFooter />
     </div>
   );
-}
-
-function updatesStatusMessage(params: { confirmed?: string; unsubscribed?: string }) {
-  if (params.confirmed === "1") return "Your daily AwardPing updates are confirmed.";
-  if (params.confirmed === "invalid") return "That confirmation link is no longer valid.";
-  if (params.unsubscribed === "1") return "You have been unsubscribed from public daily updates.";
-  if (params.unsubscribed === "retry") {
-    return "A daily update is already being sent. Please use the unsubscribe link again in a few minutes.";
-  }
-  if (params.unsubscribed === "invalid") return "That unsubscribe link is no longer valid.";
-  return "";
 }

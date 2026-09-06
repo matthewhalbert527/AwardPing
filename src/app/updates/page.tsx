@@ -8,6 +8,7 @@ import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { LiveUpdateItem } from "@/lib/live-updates";
 import { liveUpdateAwardHref } from "@/lib/public-award-links";
 import { loadPublicUpdateFeed, publicUpdateFeedNotice } from "@/lib/public-update-feed";
+import { PUBLIC_DIGEST_DESCRIPTION, PUBLIC_DIGEST_LABEL, publicDigestStatusMessage, type PublicDigestStatusParams } from "@/lib/public-digest-copy";
 import { centralDateKey, formatCentralDate, previousCentralDateKey } from "@/lib/time-zone";
 
 export const dynamic = "force-dynamic";
@@ -19,12 +20,12 @@ export const metadata: Metadata = {
 };
 
 type Props = {
-  searchParams: Promise<{ confirmed?: string; unsubscribed?: string }>;
+  searchParams: Promise<PublicDigestStatusParams>;
 };
 
 export default async function UpdatesPage({ searchParams }: Props) {
   const params = await searchParams;
-  const statusMessage = updatesStatusMessage(params);
+  const statusMessage = publicDigestStatusMessage(params);
   // One clock reading per render: every relative label and day heading agrees.
   const now = new Date();
   const feed = await loadPublicUpdateFeed(80, now);
@@ -50,8 +51,8 @@ export default async function UpdatesPage({ searchParams }: Props) {
           </div>
           <div className="public-updates-cta">
             <BellRing size={22} aria-hidden="true" />
-            <h2>Daily email digest</h2>
-            <p>Get a quiet daily email only when useful public updates are detected.</p>
+            <h2>{PUBLIC_DIGEST_LABEL}</h2>
+            <p>{PUBLIC_DIGEST_DESCRIPTION}</p>
             <Link className="button-primary" href="/updates/subscribe">
               Subscribe
               <ArrowRight size={16} aria-hidden="true" />
@@ -60,7 +61,7 @@ export default async function UpdatesPage({ searchParams }: Props) {
         </section>
 
         {statusMessage && (
-          <div className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
+          <div role="status" className="mt-5 rounded-2xl border border-[var(--line)] bg-[var(--surface)] p-4 text-sm font-semibold text-[var(--brand-dark)] shadow-[var(--shadow-md)]">
             {statusMessage}
           </div>
         )}
@@ -179,15 +180,4 @@ function groupUpdatesByDay(updates: LiveUpdateItem[], now: Date) {
     groups.push({ key, label, items: [update] });
   }
   return groups;
-}
-
-function updatesStatusMessage(params: { confirmed?: string; unsubscribed?: string }) {
-  if (params.confirmed === "1") return "Your daily AwardPing updates are confirmed.";
-  if (params.confirmed === "invalid") return "That confirmation link is no longer valid.";
-  if (params.unsubscribed === "1") return "You have been unsubscribed from public daily updates.";
-  if (params.unsubscribed === "retry") {
-    return "A daily update is already being sent. Please use the unsubscribe link again in a few minutes.";
-  }
-  if (params.unsubscribed === "invalid") return "That unsubscribe link is no longer valid.";
-  return "";
 }

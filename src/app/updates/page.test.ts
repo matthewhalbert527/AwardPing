@@ -258,7 +258,7 @@ describe("public updates page", () => {
     useFeed([]);
 
     expect(await renderUpdatesPage({ confirmed: "1" })).toContain(
-      "Your daily AwardPing updates are confirmed.",
+      "Your AwardPing daily digest is confirmed.",
     );
     expect(await renderUpdatesPage({ unsubscribed: "invalid" })).toContain(
       "That unsubscribe link is no longer valid.",
