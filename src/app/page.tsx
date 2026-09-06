@@ -68,8 +68,12 @@ export default async function Home() {
               plain-English updates.
             </p>
             <div className="mt-7 flex flex-col gap-3 sm:flex-row">
-              <Link className="button-primary" href={user ? signedInLandingPath() : "/contact"}>
-                {user ? signedInLandingLabel() : "Get in touch"}
+              <Link
+                className="button-primary"
+                href={user ? signedInLandingPath() : "/award-directory"}
+                prefetch={user ? undefined : false}
+              >
+                {user ? signedInLandingLabel() : "Find awards"}
                 <ArrowRight size={17} aria-hidden="true" />
               </Link>
               <Link className="button-secondary" href="/updates">

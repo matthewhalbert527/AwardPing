@@ -232,13 +232,25 @@ describe("homepage live update preview", () => {
     expect(html).not.toMatch(/<time(?![^>]*dateTime=)/);
   });
 
-  it("keeps the anonymous and signed-in calls to action", async () => {
+  it("sends anonymous visitors to the award directory and signed-in visitors to their updates", async () => {
     const anonymous = await renderHome();
-    expect(anonymous).toContain('<a class="button-primary" href="/contact">Get in touch');
+    const hero = anonymous.slice(0, anonymous.indexOf('aria-label="Live award update preview"'));
+    expect(hero).toContain('<a class="button-primary" href="/award-directory">Find awards');
+    expect(hero).toContain('<a class="button-secondary" href="/updates">View live updates');
+    expect(anonymous).not.toContain("Get in touch");
+    expect(hero).not.toContain('href="/contact"');
+    // Contact stays reachable from the footer.
+    expect(anonymous).toContain('<a href="/contact">Contact</a>');
 
     mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
     const signedIn = await renderHome();
     expect(signedIn).toContain('<a class="button-primary" href="/updates">Updates');
+    expect(signedIn).toContain('<a class="button-secondary" href="/updates">View live updates');
+    // The hero no longer offers the directory to a signed-in visitor; the
+    // footer's own directory link is unchanged.
+    const signedInHero = signedIn.slice(0, signedIn.indexOf('aria-label="Live award update preview"'));
+    expect(signedInHero).not.toContain("Find awards");
+    expect(signedIn).toContain('<a href="/award-directory">Find awards</a>');
     expect(previewLinks(signedIn)).toEqual(previewLinks(anonymous));
   });
 

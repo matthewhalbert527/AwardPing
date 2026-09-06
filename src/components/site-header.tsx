@@ -41,8 +41,10 @@ export async function SiteHeader() {
                 <Link href="/login" className="button-secondary">
                   Log in
                 </Link>
-                <Link href="/contact" className="button-primary">
-                  Get in touch
+                {/* The directory is the visitor's first stop; it is a heavy dynamic
+                    route, so it is not prefetched, matching its other links. */}
+                <Link href="/award-directory" className="button-primary" prefetch={false}>
+                  Find awards
                 </Link>
               </>
             )}
