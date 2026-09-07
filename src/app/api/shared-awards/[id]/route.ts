@@ -35,6 +35,12 @@ export async function GET(_request: Request, { params }: Props) {
 
   const { id } = await params;
   const publicationIndex = await loadStage1PublicationIndex();
+  if (!publicationIndex.available) {
+    return NextResponse.json(
+      { error: "Shared award directory is unavailable right now." },
+      { status: 503 },
+    );
+  }
   const publication = publicationIndex.entryByMemberAwardId.get(id) || null;
   if (!publication?.effectivelyVerified) {
     return NextResponse.json({ error: "Shared award was not found." }, { status: 404 });
