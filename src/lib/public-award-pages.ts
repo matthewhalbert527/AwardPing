@@ -104,6 +104,7 @@ export type PublicAwardPageOptions = {
 export type PublicAwardPageResolution =
   | { kind: "published"; data: PublicAwardPageData }
   | { kind: "under_verification" }
+  | { kind: "unavailable" }
   | { kind: "missing" };
 
 export async function getPublicAwardPageBySlug(
@@ -122,7 +123,7 @@ export async function getPublicAwardPageResolutionBySlug(
   if (!normalizedSlug) return { kind: "missing" };
 
   const publicationIndex = await loadStage1PublicationIndex();
-  if (!publicationIndex.available) return { kind: "missing" };
+  if (!publicationIndex.available) return { kind: "unavailable" };
 
   const admin = createSupabaseAdminClient();
   let publication = publicationIndex.entries.find(

@@ -4,7 +4,6 @@ import type { PublicAwardPageData } from "@/lib/public-award-pages";
 
 const mocks = vi.hoisted(() => ({
   getCurrentUser: vi.fn(),
-  getPublicAwardPageBySlug: vi.fn(),
   getPublicAwardPageResolutionBySlug: vi.fn(),
   hasSupabaseAdminConfig: vi.fn(),
   notFound: vi.fn(),
@@ -15,7 +14,6 @@ vi.mock("@/lib/auth", () => ({
   getCurrentUser: mocks.getCurrentUser,
 }));
 vi.mock("@/lib/public-award-pages", () => ({
-  getPublicAwardPageBySlug: mocks.getPublicAwardPageBySlug,
   getPublicAwardPageResolutionBySlug: mocks.getPublicAwardPageResolutionBySlug,
 }));
 // The config module imports "server-only", which cannot load under vitest,
@@ -38,7 +36,7 @@ vi.mock("next/navigation", () => ({
   },
 }));
 
-import SlugPage from "@/app/[slug]/page";
+import SlugPage, { generateMetadata } from "@/app/[slug]/page";
 
 const SOURCE_HOME = "3f1d3a2e-9d3b-4c5e-8a7f-1b2c3d4e5f60";
 const SOURCE_APPLY = "5d7c9b1a-3e2f-4a6b-9c8d-7e6f5a4b3c2d";
@@ -181,7 +179,7 @@ describe("public award page", () => {
     expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledWith("example-fellowship", {
       changeId: CHANGE_APPLY,
     });
-    expect(mocks.getPublicAwardPageBySlug).not.toHaveBeenCalled();
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenCalledTimes(1);
     expect(html).toContain('aria-label="Example Fellowship page outline"');
     expect(html).toContain('aria-label="Award sections"');
     expect(html).toContain('aria-label="Official sources, 2 source pages"');
@@ -194,15 +192,120 @@ describe("public award page", () => {
 
   it("keeps the same update context for a signed-in visitor", async () => {
     mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
-    mocks.getPublicAwardPageBySlug.mockResolvedValue(makeAwardPage());
 
     const html = await renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY });
 
     expectSelectedApplyChange(html);
-    expect(mocks.getPublicAwardPageBySlug).toHaveBeenCalledWith("example-fellowship", {
+    expect(mocks.getPublicAwardPageResolutionBySlug).toHaveBeenLastCalledWith("example-fellowship", {
       userId: "user-1",
       changeId: CHANGE_APPLY,
     });
+  });
+
+  it.each(["unavailable", "thrown"])("shows a retry notice, not a 404, for an %s initial load", async (failure) => {
+    if (failure === "thrown") {
+      mocks.getPublicAwardPageResolutionBySlug.mockRejectedValue(new Error("Private database diagnostic"));
+    } else {
+      mocks.getPublicAwardPageResolutionBySlug.mockResolvedValue({ kind: "unavailable" });
+    }
+
+    const html = await renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY });
+
+    expect(html).toContain("Award details are unavailable right now. Please try again.");
+    expect(html).toContain('<meta name="robots" content="noindex, nofollow"/>');
+    expect(html).toContain(`href="/example-fellowship?source=${SOURCE_APPLY}&amp;change=${CHANGE_APPLY}"`);
+    expect(html).toContain("Try again</a>");
+    expect(html).not.toContain("Private database diagnostic");
+    expect(html).not.toContain("Under verification");
+    expect(html).not.toContain("public-award-console");
+    expect(mocks.notFound).not.toHaveBeenCalled();
+    expect(mocks.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it("drops malformed and repeated query context from the retry link", async () => {
+    mocks.getPublicAwardPageResolutionBySlug.mockResolvedValue({ kind: "unavailable" });
+
+    const html = await renderSlugPage({ source: "//evil.example", change: [CHANGE_APPLY] });
+
+    expect(html).toContain('href="/example-fellowship"');
+    expect(html).not.toContain("evil.example");
+    expect(html).not.toContain("?source=");
+    expect(html).not.toContain("?change=");
+  });
+
+  it("shows unavailable configuration without looking up or exposing award data", async () => {
+    mocks.hasSupabaseAdminConfig.mockReturnValue(false);
+
+    const html = await renderSlugPage();
+
+    expect(html).toContain("Award details are unavailable right now. Please try again.");
+    expect(html).toContain('<meta name="robots" content="noindex, nofollow"/>');
+    expect(mocks.notFound).not.toHaveBeenCalled();
+    expect(mocks.getPublicAwardPageResolutionBySlug).not.toHaveBeenCalled();
+  });
+
+  it.each(["unavailable", "thrown"])("does not use the first load as stale fallback when a signed-in second load is %s", async (failure) => {
+    mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
+    mocks.getPublicAwardPageResolutionBySlug.mockResolvedValueOnce({ kind: "published", data: makeAwardPage() });
+    if (failure === "thrown") {
+      mocks.getPublicAwardPageResolutionBySlug.mockRejectedValueOnce(new Error("Private signed-in diagnostic"));
+    } else {
+      mocks.getPublicAwardPageResolutionBySlug.mockResolvedValueOnce({ kind: "unavailable" });
+    }
+
+    const html = await renderSlugPage({ source: SOURCE_APPLY, change: CHANGE_APPLY });
+
+    expect(html).toContain("Award details are unavailable right now. Please try again.");
+    expect(html).toContain(`href="/example-fellowship?source=${SOURCE_APPLY}&amp;change=${CHANGE_APPLY}"`);
+    expect(html).not.toContain("A fellowship for testing.");
+    expect(html).not.toContain("Private signed-in diagnostic");
+    expect(html).not.toContain("public-award-console");
+    expect(mocks.notFound).not.toHaveBeenCalled();
+  });
+
+  it.each(["under_verification", "missing"])("preserves the %s gate when the signed-in second load changes", async (kind) => {
+    mocks.getCurrentUser.mockResolvedValue({ id: "user-1", email: "person@example.edu" });
+    mocks.getPublicAwardPageResolutionBySlug
+      .mockResolvedValueOnce({ kind: "published", data: makeAwardPage() })
+      .mockResolvedValueOnce({ kind });
+
+    if (kind === "missing") {
+      await expect(renderSlugPage()).rejects.toThrow("NOT_FOUND");
+    } else {
+      const html = await renderSlugPage();
+      expect(html).toContain("Under verification");
+      expect(html).not.toContain("public-award-console");
+      expect(html).not.toContain("unavailable right now");
+    }
+  });
+
+  it.each(["unavailable", "thrown"])("uses generic non-indexable metadata for an %s load", async (failure) => {
+    if (failure === "thrown") {
+      mocks.getPublicAwardPageResolutionBySlug.mockRejectedValue(new Error("Private metadata diagnostic"));
+    } else {
+      mocks.getPublicAwardPageResolutionBySlug.mockResolvedValue({ kind: "unavailable" });
+    }
+
+    const metadata = await generateMetadata({ params: Promise.resolve({ slug: "example-fellowship" }) });
+
+    expect(metadata).toEqual({
+      title: "Award details unavailable",
+      robots: { index: false, follow: false },
+    });
+  });
+
+  it("keeps an unavailable body non-indexable even when its separate metadata load succeeded", async () => {
+    mocks.getPublicAwardPageResolutionBySlug
+      .mockResolvedValueOnce({ kind: "published", data: makeAwardPage() })
+      .mockResolvedValueOnce({ kind: "unavailable" });
+
+    const metadata = await generateMetadata({ params: Promise.resolve({ slug: "example-fellowship" }) });
+    const html = await renderSlugPage();
+
+    expect(metadata.title).toBe("Example Fellowship");
+    expect(html).toContain('<meta name="robots" content="noindex, nofollow"/>');
+    expect(html).toContain("Award details are unavailable right now. Please try again.");
+    expect(mocks.notFound).not.toHaveBeenCalled();
   });
 
   it("opens the change's own source when only the change id is linked", async () => {

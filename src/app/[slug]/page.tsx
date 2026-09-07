@@ -13,13 +13,18 @@ import { getCurrentUser } from "@/lib/auth";
 import { appConfig, hasSupabaseAdminConfig } from "@/lib/config";
 import { signedInLandingLabel, signedInLandingPath } from "@/lib/navigation";
 import {
-  getPublicAwardPageBySlug,
   getPublicAwardPageResolutionBySlug,
+  type PublicAwardPageData,
 } from "@/lib/public-award-pages";
 import { publicAwardHref, publicAwardQueryId } from "@/lib/public-award-links";
 import { getSeoPage, seoPages } from "@/lib/seo-pages";
 
 export const dynamic = "force-dynamic";
+
+const AWARD_UNAVAILABLE_METADATA: Metadata = {
+  title: "Award details unavailable",
+  robots: { index: false, follow: false },
+};
 
 type Props = {
   params: Promise<{ slug: string }>;
@@ -42,10 +47,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     };
   }
 
-  if (!hasSupabaseAdminConfig()) return {};
+  if (!hasSupabaseAdminConfig()) return AWARD_UNAVAILABLE_METADATA;
   const resolution = await getPublicAwardPageResolutionBySlug(slug).catch(
-    () => ({ kind: "missing" as const }),
+    () => ({ kind: "unavailable" as const }),
   );
+  if (resolution.kind === "unavailable") return AWARD_UNAVAILABLE_METADATA;
   if (resolution.kind === "under_verification") {
     return {
       title: "Award under verification",
@@ -75,24 +81,33 @@ export default async function SlugPage({ params, searchParams }: Props) {
   const page = getSeoPage(slug);
   if (page) return <SeoLandingPageContent page={page} />;
 
-  if (!hasSupabaseAdminConfig()) notFound();
+  const retryHref = publicAwardHref(`/${slug}`, context);
+  if (!hasSupabaseAdminConfig()) return <AwardUnavailable retryHref={retryHref} />;
   // The validated change id rides along so an update older than the recent
   // list is still loaded (through the public gates) and can be selected.
   const initialResolution = await getPublicAwardPageResolutionBySlug(slug, {
     changeId: context.changeId,
-  }).catch(() => ({ kind: "missing" as const }));
+  }).catch(() => ({ kind: "unavailable" as const }));
+  if (initialResolution.kind === "unavailable") {
+    return <AwardUnavailable retryHref={retryHref} />;
+  }
   if (initialResolution.kind === "under_verification") {
     return <AwardUnderVerification />;
   }
   if (initialResolution.kind !== "published") notFound();
 
   const user = await getCurrentUser();
-  const awardPage = user
-    ? await getPublicAwardPageBySlug(slug, { userId: user.id, changeId: context.changeId }).catch(
-        () => null,
+  const resolution = user
+    ? await getPublicAwardPageResolutionBySlug(slug, { userId: user.id, changeId: context.changeId }).catch(
+        () => ({ kind: "unavailable" as const }),
       )
-    : initialResolution.data;
-  if (!awardPage) notFound();
+    : initialResolution;
+  // A second load must pass the same current gates; never fall back to the
+  // earlier public data if availability or verification changed meanwhile.
+  if (resolution.kind === "unavailable") return <AwardUnavailable retryHref={retryHref} />;
+  if (resolution.kind === "under_verification") return <AwardUnderVerification />;
+  if (resolution.kind !== "published") notFound();
+  const awardPage = resolution.data;
   // An alias slug keeps its update context through the canonical redirect.
   if (awardPage.redirectPath) redirect(publicAwardHref(awardPage.redirectPath, context));
 
@@ -102,6 +117,34 @@ export default async function SlugPage({ params, searchParams }: Props) {
       initialChangeId={context.changeId}
       initialSourceId={context.sourceId}
     />
+  );
+}
+
+function AwardUnavailable({ retryHref }: { retryHref: string }) {
+  return (
+    <div className="page-shell">
+      {/* Metadata and page data load independently. Keep this unavailable
+          response non-indexable even if the metadata lookup succeeded. */}
+      <meta name="robots" content="noindex, nofollow" />
+      <SiteHeader />
+      <main className="mx-auto max-w-3xl px-5 py-20">
+        <section className="card rounded-3xl p-8 md:p-10" aria-labelledby="award-unavailable-heading">
+          <h1 id="award-unavailable-heading" className="display-title text-4xl">Award details unavailable</h1>
+          <p className="mt-4 text-base leading-7 text-[var(--text-secondary)]" role="status">
+            Award details are unavailable right now. Please try again.
+          </p>
+          <div className="mt-7 flex flex-col gap-3 sm:flex-row">
+            {/* A full navigation retries the server load, rather than reusing
+                this failed page from the client router cache. */}
+            <a className="button-primary" href={retryHref}>Try again</a>
+            <Link className="button-secondary" href="/award-directory" prefetch={false}>
+              Award Directory
+            </Link>
+          </div>
+        </section>
+      </main>
+      <SiteFooter />
+    </div>
   );
 }
 
@@ -187,7 +230,7 @@ function PublicAwardPage({
   initialChangeId,
   initialSourceId,
 }: {
-  data: Awaited<ReturnType<typeof getPublicAwardPageBySlug>>;
+  data: PublicAwardPageData;
   initialChangeId?: string;
   initialSourceId?: string;
 }) {

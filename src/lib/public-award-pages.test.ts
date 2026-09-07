@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   loadStage1PublicationIndex: vi.fn(),
   unreadSharedChangeIdsForUser: vi.fn(),
   sourceRows: [] as unknown[],
+  queriedTables: [] as string[],
+  sourceQueryError: null as { message: string } | null,
 }));
 
 // Only the loader is replaced; the exact newest-first comparator the merge
@@ -35,10 +37,11 @@ vi.mock("@/lib/source-url-policy", async (importOriginal) => ({
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
     from(table: string) {
+      mocks.queriedTables.push(table);
       if (table !== "shared_award_sources") throw new Error(`Unexpected table ${table}`);
       const builder: Record<string, unknown> = {
         then(resolve: (value: unknown) => unknown) {
-          return Promise.resolve({ data: mocks.sourceRows, error: null }).then(resolve);
+          return Promise.resolve({ data: mocks.sourceRows, error: mocks.sourceQueryError }).then(resolve);
         },
       };
       for (const method of ["select", "in", "order"]) builder[method] = () => builder;
@@ -168,6 +171,8 @@ describe("public award page deep links", () => {
     mocks.loadStage1PublicationIndex.mockReset();
     mocks.unreadSharedChangeIdsForUser.mockReset();
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex());
+    mocks.queriedTables = [];
+    mocks.sourceQueryError = null;
     mocks.sourceRows = [
       sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
       sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
@@ -178,6 +183,45 @@ describe("public award page deep links", () => {
         return input.eventIds.includes(NINTH_CHANGE_ID) ? [ninthEvent] : [];
       },
     );
+  });
+
+  it.each([false, true])("distinguishes an unavailable index from a missing award (retained entry: %s)", async (retainedEntry) => {
+    const index = publicationIndex();
+    mocks.loadStage1PublicationIndex.mockResolvedValue({
+      ...index,
+      available: false,
+      unavailableReason: "Private registry diagnostic",
+      entries: retainedEntry ? index.entries : [],
+    });
+
+    expect(await getPublicAwardPageResolutionBySlug("example-fellowship")).toEqual({ kind: "unavailable" });
+    expect(mocks.queriedTables).toEqual([]);
+    expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
+  });
+
+  it("keeps an empty slug missing without loading the publication index", async () => {
+    expect(await getPublicAwardPageResolutionBySlug("")).toEqual({ kind: "missing" });
+    expect(mocks.loadStage1PublicationIndex).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unverified award out of public data loading", async () => {
+    mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex({ ...publication(), effectivelyVerified: false }));
+
+    expect(await getPublicAwardPageResolutionBySlug("example-fellowship")).toEqual({ kind: "under_verification" });
+    expect(mocks.queriedTables).toEqual([]);
+    expect(mocks.loadEligiblePublicChangeEvents).not.toHaveBeenCalled();
+  });
+
+  it("keeps a missing reviewed homepage under verification", async () => {
+    mocks.sourceRows = [];
+
+    expect(await getPublicAwardPageResolutionBySlug("example-fellowship")).toEqual({ kind: "under_verification" });
+  });
+
+  it("propagates source-query failures for the route's unavailable handling", async () => {
+    mocks.sourceQueryError = { message: "Private source query diagnostic" };
+
+    await expect(getPublicAwardPageResolutionBySlug("example-fellowship")).rejects.toThrow("Public award source query failed");
   });
 
   it("loads a deep-linked ninth event through the gates, merges it after the recent eight, and the workspace selects it", async () => {
