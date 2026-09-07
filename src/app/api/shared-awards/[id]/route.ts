@@ -165,23 +165,39 @@ function latestChangesForSource<
   Source extends { id: string; url: string },
   Change extends { shared_award_source_id?: string | null; source_url: string },
 >(source: Source, changes: Change[]) {
-  const sourceUrlKey = normalizeUrlKey(source.url);
-  return changes.filter((change) => {
-    if (change.shared_award_source_id && change.shared_award_source_id === source.id) {
-      return true;
-    }
-
-    return normalizeUrlKey(change.source_url) === sourceUrlKey;
-  });
+  return changes.filter((change) => isChangeForSource(change, source));
 }
 
-function normalizeUrlKey(value: string | null | undefined) {
+// The same attribution policy the public award workspace applies, so both
+// surfaces agree on which official document an update belongs to.
+function isChangeForSource(
+  change: { shared_award_source_id?: string | null; source_url: string },
+  source: { id: string; url: string },
+) {
+  // A retained source ID is authoritative: a change recorded against another
+  // source must never be re-attached through its URL. The fallback below is
+  // only for legacy changes that carry no ID at all.
+  if (change.shared_award_source_id) {
+    return change.shared_award_source_id === source.id;
+  }
+  return sourceUrlsMatch(change.source_url, source.url);
+}
+
+function sourceUrlsMatch(left: string | null | undefined, right: string | null | undefined) {
+  const leftKey = sourceDocumentUrlKey(left);
+  return leftKey !== null && leftKey === sourceDocumentUrlKey(right);
+}
+
+function sourceDocumentUrlKey(value: string | null | undefined) {
   try {
-    const url = new URL(String(value || ""));
+    const url = new URL(value || "");
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    // Unlike source-discovery deduplication, attribution must preserve the
+    // document address: paths, query names/values, and query order may matter.
+    // A fragment points within the same document, so it alone is ignored.
     url.hash = "";
-    url.search = "";
-    return url.toString().replace(/\/+$/g, "").toLowerCase();
+    return url.toString();
   } catch {
-    return String(value || "").trim().replace(/[?#].*$/, "").replace(/\/+$/g, "").toLowerCase();
+    return null;
   }
 }
