@@ -494,3 +494,126 @@ describe("shared award source listing keeps every eligible source ID", () => {
     expect(await response.json()).toEqual({ error: "Shared award was not found." });
   });
 });
+
+// A driver message carrying schema and connection detail. No response may
+// echo any of it.
+const DIAGNOSTIC = 'relation "private.stage1_award_registry" does not exist (host=db.internal password=hunter2)';
+const officeId = "60000000-0000-4000-8000-000000000006";
+
+describe("shared award detail query failures stay generic", () => {
+  // Each PostgREST builder resolves per table, so a failure can be attributed
+  // to exactly one of the three queries instead of one shared stub. A table
+  // left out of the map resolves to an empty success.
+  type QueryResult = { data: unknown; error: { message: string } | null };
+  function useAdminResults(results: Record<string, QueryResult | undefined>) {
+    mocks.createSupabaseAdminClient.mockReturnValue({
+      from(table: string) {
+        const builder: Record<string, unknown> = {
+          then: (resolve: (value: unknown) => unknown) =>
+            Promise.resolve(results[table] ?? { data: [], error: null }).then(resolve),
+        };
+        for (const method of ["select", "in", "eq", "order"]) builder[method] = () => builder;
+        return builder;
+      },
+    });
+  }
+
+  function signIn() {
+    mocks.getCurrentUser.mockResolvedValue({ id: "70000000-0000-4000-8000-000000000007" });
+    mocks.getOfficeContext.mockResolvedValue({ current: { officeId, role: "owner" } });
+  }
+
+  const homepageRows = {
+    data: [{ id: sourceId, url: homepage, title: "Official page", page_type: "homepage" }],
+    error: null,
+  };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    policy.isTrackable = policy.real;
+    mocks.isPublicAwardSource.mockReturnValue(true);
+    mocks.isStage1SourceIdentityExcluded.mockReturnValue(false);
+    mocks.hasSupabaseConfig.mockReturnValue(true);
+    mocks.hasSupabaseAdminConfig.mockReturnValue(true);
+    mocks.getCurrentUser.mockResolvedValue(null);
+    mocks.getOfficeContext.mockResolvedValue(null);
+    mocks.loadStage1PublicationIndex.mockResolvedValue({
+      available: true,
+      entryByMemberAwardId: new Map([[awardId, verifiedPublication()]]),
+    });
+    mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
+  });
+
+  it.each([
+    {
+      label: "the source query",
+      signedIn: false,
+      results: {
+        shared_award_sources: { data: null, error: { message: DIAGNOSTIC } },
+      },
+    },
+    {
+      label: "the office award query",
+      signedIn: true,
+      results: {
+        shared_award_sources: homepageRows,
+        awards: { data: null, error: { message: DIAGNOSTIC } },
+      },
+    },
+    {
+      label: "the office source query",
+      signedIn: true,
+      results: {
+        shared_award_sources: homepageRows,
+        awards: { data: [], error: null },
+        award_sources: { data: null, error: { message: DIAGNOSTIC } },
+      },
+    },
+  ])("reports only a generic 500 when $label fails", async ({ signedIn, results }) => {
+    if (signedIn) signIn();
+    useAdminResults(results);
+
+    const response = await requestAward();
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Shared award details are unavailable right now." });
+    // No diagnostic, no partial award data.
+    expect(JSON.stringify(body)).not.toContain("hunter2");
+    expect(JSON.stringify(body)).not.toContain("stage1_award_registry");
+    expect(JSON.stringify(body)).not.toContain("db.internal");
+    expect(Object.keys(body)).toEqual(["error"]);
+    expect(body).not.toHaveProperty("award");
+  });
+
+  it("returns only the generic error when every query fails", async () => {
+    signIn();
+    useAdminResults({
+      shared_award_sources: { data: null, error: { message: DIAGNOSTIC } },
+      awards: { data: null, error: { message: "second diagnostic" } },
+      award_sources: { data: null, error: { message: "third diagnostic" } },
+    });
+
+    const response = await requestAward();
+    const body = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(body).toEqual({ error: "Shared award details are unavailable right now." });
+    expect(JSON.stringify(body)).not.toContain("diagnostic");
+  });
+
+  it("still answers 200 through the same per-table chain when no query fails", async () => {
+    signIn();
+    useAdminResults({
+      shared_award_sources: homepageRows,
+      awards: { data: [], error: null },
+      award_sources: { data: [], error: null },
+    });
+
+    const response = await requestAward();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      award: { id: awardId, sourceCount: 1, changeCount: 0, detailsLoaded: true },
+    });
+  });
+});

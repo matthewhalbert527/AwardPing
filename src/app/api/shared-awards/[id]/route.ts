@@ -84,9 +84,15 @@ export async function GET(_request: Request, { params }: Props) {
       : Promise.resolve({ data: [], error: null }),
   ]);
 
+  // Failure precedence is unchanged, but the caller only ever sees one stable
+  // message: driver text carries schema, query and connection detail that must
+  // not reach a public response.
   const error = sourcesError || officeAwardsError || officeSourcesError;
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: "Shared award details are unavailable right now." },
+      { status: 500 },
+    );
   }
 
   const activeOfficeAwardIds = new Set(
