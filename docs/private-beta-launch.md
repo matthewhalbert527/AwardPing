@@ -1,5 +1,7 @@
 # Stage 1 Invitation-Only Beta Runbook
 
+**Historical reference, not a current production execution checklist.** Preserve the requirements below, but do not execute their operational examples without a separately reviewed and authorized plan for the actual target. The current frozen chain does not bootstrap normally: only the guarded [test-only fixture-assisted replay](stage1-fixture-migration-smoke.md) has passed in a disposable GitHub database. That synthetic fixture must never be applied to a live database or placed in `supabase/migrations`; a test pass is not production evidence. Migration history can differ from already-applied schema/data, so a blanket push, replay, or history repair is unsafe.
+
 This runbook releases exactly the 25-award Stage 1 cohort. It does not publish
 the legacy catalog, accept open signup, or bypass the database release gate.
 
@@ -13,28 +15,35 @@ npm run verify
 npm run launch:check -- --env .env.production.local --production
 ```
 
-All SQL migrations must parse and all migration contract tests must pass. A
-clean-database migration execution is still required before production when a
-local PostgreSQL/Docker runtime is available.
+All SQL migrations must parse and all migration contract tests must pass.
+The linked fixture-assisted result validates that specific disposable test path,
+not bare startup/reset or production readiness. Do not start desktop services or
+rerun external validation merely because these historical commands are listed.
 
 ## 2. Apply Supabase first
 
-Confirm the linked project is the AwardPing production project. Back it up,
-inspect the remote migration list, and apply every migration in filename order:
-
-```bash
-npx supabase@latest link --project-ref <production-project-ref>
-npx supabase@latest db dump --linked --schema public --file <secure-backup-path>
-npx supabase@latest migration list --linked
-npx supabase@latest db push --linked
-npx supabase@latest migration list --linked
-```
+The original blanket migration commands have been removed. Before any production
+database operation, separately review the exact target, existing schema/data,
+recorded migration ledger, intended delta, backups, verification, and recovery
+plan. Obtain authorization for that operation. A missing ledger entry does not
+prove its SQL has never been applied, and a successful synthetic test does not
+authorize applying its prerequisite to production.
 
 Do not run the broad legacy catalog seed. The Stage 1 registry migration owns
 the exact 25-member cohort, aliases, hard exclusions, publication state, and
 release identity.
 
-If the Supabase SQL Editor is used instead of `db push`, run **every** `.sql` file currently present in `supabase/migrations` in filename order. Do not stop at `0007_shared_award_catalog.sql`. The required chain includes `20260716150000_initial_official_document_events.sql`, `20260716152833_source_intake_fact_candidate_idempotency.sql`, `20260716171409_recover_rejected_initial_document_candidates.sql`, `20260716174800_fix_initial_document_publication_evidence_contract.sql`, and `20260716181500_secure_visual_candidate_publication_trigger.sql`, followed by every later Stage 1 migration. Verify the final state with `migration list --linked`.
+Do not use the SQL Editor to replay every historical migration as a substitute
+for that review. Keep all frozen SQL bytes and production guards intact; the
+test fixture is deliberately outside the migration ledger.
+
+For historical provenance, the initial-document chain includes
+`20260716150000_initial_official_document_events.sql`,
+`20260716152833_source_intake_fact_candidate_idempotency.sql`,
+`20260716171409_recover_rejected_initial_document_candidates.sql`,
+`20260716174800_fix_initial_document_publication_evidence_contract.sql`, and
+`20260716181500_secure_visual_candidate_publication_trigger.sql`.
+These are retained migration references, not instructions to replay them.
 
 The ordered chain includes
 `20260716161529_r2_baseline_recovery_quarantine.sql`; keep its exact-source,

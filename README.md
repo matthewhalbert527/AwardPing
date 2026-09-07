@@ -12,28 +12,28 @@ AwardPing is a focused nationally competitive award monitor. Advisors can create
 
 ## Local Setup
 
+For UI-only development without starting a database or worker:
+
 ```bash
-cp .env.example .env.local
-npx supabase start
-npm install
+npm ci
 npm run dev
 ```
 
-The app can render without environment variables, but auth, persistence, email, and AI discovery require Supabase, Resend, Tavily, and either Gemini or OpenAI keys.
+The app can render without environment variables; data-dependent pages show their unavailable state. Auth, persistence, email, and optional discovery need separately configured services. Do not copy production credentials into a UI-only development environment.
 
 Set `AWARDPING_ADMIN_EMAILS` to a comma-separated list of owner login emails to enable the private `/dashboard/admin` background scan page.
 
-For local development, `npx supabase start` applies the migrations and prints the local Project URL plus publishable/secret keys. Put those local values in `.env.local`, then restart `npm run dev`.
+**Fresh database bootstrap remains unresolved.** The frozen migration chain requires a historical homepage-data transition that is not created by ordinary startup. Bare database startup/reset from the normal checkout is not a working setup procedure. The [test-only migration replay](docs/stage1-fixture-migration-smoke.md) passed in an explicitly authorized disposable GitHub environment using a guarded synthetic fixture. That fixture is not production evidence and must never be applied to a live database or placed in `supabase/migrations`.
 
 ## Supabase Setup
 
-1. Create a Supabase project.
-2. Run the SQL files in `supabase/migrations` in order through the SQL editor or Supabase CLI.
-3. Add the Supabase URL, anon key, and service role key to `.env.local`.
-4. Configure the site URL and auth redirect URLs to include:
+This is configuration guidance for an already provisioned, separately approved development environment, not a database bootstrap or production upgrade procedure. Do not apply all migration files or repair migration history to make a ledger match. Existing schema/data and recorded migration history must be reviewed together before any database change.
+
+1. Use the approved development project's URL and publishable key in `.env.local`; keep its secret key server-only under the compatibility variable names in `.env.example`.
+2. Configure the site URL and auth redirect URLs to include:
    - `http://localhost:3000/auth/confirm`
    - `https://your-domain.com/auth/confirm`
-5. Configure the Supabase **Reset password** email template to send the token
+3. Configure the Supabase **Reset password** email template to send the token
    hash through AwardPing's server callback. Copy
    `supabase/templates/recovery.html` into the hosted Auth template; the default
    Supabase template does not establish the server-side recovery session used
@@ -44,7 +44,7 @@ For local development, `npx supabase start` applies the migrations and prints th
 1. Add `TAVILY_API_KEY` and either `GEMINI_API_KEY` or `OPENAI_API_KEY` to `.env.local`.
 2. Optional: set `AI_PROVIDER=gemini` to prefer Gemini, or leave `AI_PROVIDER=auto` to use Gemini when present and OpenAI otherwise.
 3. Optional: set `GEMINI_DISCOVERY_MODEL`, `GEMINI_SUMMARY_MODEL`, `OPENAI_DISCOVERY_MODEL`, or `OPENAI_SUMMARY_MODEL` to the models you want.
-4. Seed the shared award catalog with `npm run seed:shared-awards`.
+4. Do not run the legacy broad catalog seed for Stage 1. Discovery does not authorize publishing additional awards; follow the [reviewed source and candidate workflow](docs/stage1-reviewed-source-and-candidate-workflow.md).
 5. Use `/award-directory` to search the shared award database, then add specific awards to a watchlist after login.
 
 ## Shared Offices
@@ -81,20 +81,11 @@ installed app. The complete install and update runbook is in
 
 ## Stage 1 Public Launch
 
-Stage 1 (25 national award cohorts) is launching publicly. Before launch:
+Stage 1 is limited to exactly 25 national award cohorts. A website deployment, discovery result, or successful disposable test does not authorize cohort expansion or prove current source freshness.
 
-1. Run `npm run verify`.
-2. Apply every migration in `supabase/migrations`, including `0008_shared_award_history.sql`.
-3. Set hosted Supabase auth URLs to your production domain plus `http://localhost:3000/auth/confirm`, set the minimum password length to 12, and install `supabase/templates/recovery.html` as the hosted Reset password template.
-4. Configure Vercel environment variables for Supabase, Resend, Tavily, Gemini or OpenAI, `CRON_SECRET`, and `NEXT_PUBLIC_APP_URL`.
-5. Verify Resend sender/domain status before relying on invite, alert, or digest email.
-6. Run `npm run launch:check -- --env .env.production.local --production`.
-7. Run `npm run launch:smoke -- --url https://your-domain.com`.
-8. Run `npm run seed:shared-awards` against production.
-9. Run `npm run source:visual-snapshots -- --env .env.worker.local --all=true --limit 50000` from the local crawler computer.
-10. Use `/dashboard/ops` as an owner/admin to confirm local worker runs, shared-source health, downstream lane health, digest runs, and failed deliveries after launch.
+Start with local verification (`npm run verify`) and the [recorded fixture-assisted replay result](docs/stage1-fixture-migration-smoke.md). Any production database change, worker update, or subsequent website deployment needs a separately reviewed operation with the exact target, current state, approved changes, verification, and recovery plan. Never use a broad catalog seed, blanket migration push, or migration-history repair as a launch shortcut.
 
-The original pre-launch runbook is preserved in `docs/private-beta-launch.md`.
+The [historical invitation-only beta runbook](docs/private-beta-launch.md) preserves release-gate, auth, evidence, worker, and digest requirements. It is not a current production execution checklist; its historical operation examples require separate review before use. Use `/dashboard/ops` as an owner/admin to inspect worker and source health, downstream lanes, digest runs, and failed deliveries. Do not infer monitoring success from a deploy or test pass.
 
 ## Free Service Copy
 

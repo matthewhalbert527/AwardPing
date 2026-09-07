@@ -108,12 +108,12 @@ describe("private-beta initial official-document migration gate", () => {
     );
   });
 
-  it("requires every migration in filename order and explicitly names the new migration", () => {
+  it("retains critical migration provenance without prescribing a blanket production replay", () => {
     const runbook = read("docs/private-beta-launch.md");
 
-    expect(runbook).toContain("run **every** `.sql` file currently present");
-    expect(runbook).toContain("in filename order");
-    expect(runbook).toContain("Do not stop at `0007_shared_award_catalog.sql`");
+    expect(runbook).toContain("Historical reference, not a current production execution checklist");
+    expect(runbook).toContain("These are retained migration references, not instructions to replay them");
+    expect(runbook).not.toContain("run **every** `.sql` file currently present");
     expect(runbook).toContain(
       "`20260716150000_initial_official_document_events.sql`",
     );
@@ -129,7 +129,7 @@ describe("private-beta initial official-document migration gate", () => {
     expect(runbook).toContain(
       "`20260716181500_secure_visual_candidate_publication_trigger.sql`",
     );
-    expect(runbook).toContain("migration list --linked");
+    expect(runbook).toContain("recorded migration ledger, intended delta, backups, verification, and recovery");
     expect(runbook).not.toContain(
       "run `supabase/migrations/0001_initial.sql` through `0007_shared_award_catalog.sql`",
     );
