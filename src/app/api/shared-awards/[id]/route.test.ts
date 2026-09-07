@@ -8,7 +8,16 @@ const mocks = vi.hoisted(() => ({
   getOfficeContext: vi.fn(),
   createSupabaseAdminClient: vi.fn(),
   loadEligiblePublicChangeEvents: vi.fn(),
+  isPublicAwardSource: vi.fn(),
+  isStage1SourceIdentityExcluded: vi.fn(),
   order: vi.fn(),
+}));
+
+// The real trackability predicate runs by default. Only the synthetic
+// invalid-URL policy cases below override it, and they say so explicitly.
+const policy = vi.hoisted(() => ({
+  real: (() => true) as (url: string | null | undefined) => boolean,
+  isTrackable: (() => true) as (url: string | null | undefined) => boolean,
 }));
 
 vi.mock("@/lib/config", () => ({
@@ -20,11 +29,19 @@ vi.mock("@/lib/offices", () => ({ getOfficeContext: mocks.getOfficeContext }));
 vi.mock("@/lib/supabase/admin", () => ({ createSupabaseAdminClient: mocks.createSupabaseAdminClient }));
 vi.mock("@/lib/stage1-publication", () => ({
   loadStage1PublicationIndex: mocks.loadStage1PublicationIndex,
-  isStage1SourceIdentityExcluded: () => false,
+  isStage1SourceIdentityExcluded: mocks.isStage1SourceIdentityExcluded,
 }));
 vi.mock("@/lib/public-change-events", () => ({ loadEligiblePublicChangeEvents: mocks.loadEligiblePublicChangeEvents }));
-vi.mock("@/lib/source-url-policy", () => ({ filterTrackableOfficialSources: (sources: unknown[]) => sources }));
-vi.mock("@/lib/source-quality", () => ({ isPublicAwardSource: () => true }));
+vi.mock("@/lib/source-url-policy", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/source-url-policy")>();
+  policy.real = actual.isTrackableOfficialSourceUrl;
+  policy.isTrackable = actual.isTrackableOfficialSourceUrl;
+  return {
+    ...actual,
+    isTrackableOfficialSourceUrl: (url: string | null | undefined) => policy.isTrackable(url),
+  };
+});
+vi.mock("@/lib/source-quality", () => ({ isPublicAwardSource: mocks.isPublicAwardSource }));
 vi.mock("@/lib/public-award-facts", () => ({ publicAwardFactsFromAward: () => ({ overview: "Reviewed overview" }) }));
 vi.mock("@/lib/change-summary", () => ({ displayChangeSummary: (summary: string) => summary }));
 
@@ -63,6 +80,9 @@ function expectNoDetailLookups() {
 describe("shared award detail availability", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    policy.isTrackable = policy.real;
+    mocks.isPublicAwardSource.mockReturnValue(true);
+    mocks.isStage1SourceIdentityExcluded.mockReturnValue(false);
     mocks.hasSupabaseConfig.mockReturnValue(true);
     mocks.hasSupabaseAdminConfig.mockReturnValue(true);
     mocks.getCurrentUser.mockResolvedValue(null);
@@ -132,6 +152,7 @@ const documentA = "https://nspires.nasaprs.com/external/viewrepositorydocument?c
 const documentB = "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1138353";
 const sourceA = "40000000-0000-4000-8000-000000000004";
 const sourceB = "50000000-0000-4000-8000-000000000005";
+const aliasAwardId = "20000000-0000-4000-8000-000000000009";
 
 const changeDefaults = {
   id: "change-default",
@@ -150,20 +171,21 @@ const changeDefaults = {
 // The reviewed homepage source is always listed so the award stays published;
 // the documents under test are listed beside it.
 function useCatalog(
-  documents: Array<{ id: string; url: string }>,
+  documents: Array<{ id: string; url: string; shared_award_id?: string }>,
   events: Array<Partial<typeof changeDefaults>>,
 ) {
   mocks.loadStage1PublicationIndex.mockResolvedValue({
     available: true,
     entryByMemberAwardId: new Map([[awardId, {
       ...verifiedPublication(),
+      memberAwardIds: [awardId, aliasAwardId],
       allowedSourceIdSet: new Set([sourceId, ...documents.map((document) => document.id)]),
     }]]),
   });
   mocks.order.mockResolvedValue({
     data: [
-      { id: sourceId, url: homepage, title: "Official page", page_type: "homepage" },
-      ...documents.map((document) => ({ ...document, title: "Official document", page_type: "application" })),
+      { id: sourceId, shared_award_id: awardId, url: homepage, title: "Official page", page_type: "homepage" },
+      ...documents.map((document) => ({ shared_award_id: awardId, ...document, title: "Official document", page_type: "application" })),
     ],
     error: null,
   });
@@ -191,6 +213,9 @@ async function latestChangeIdsBySource() {
 describe("shared award change source identity", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    policy.isTrackable = policy.real;
+    mocks.isPublicAwardSource.mockReturnValue(true);
+    mocks.isStage1SourceIdentityExcluded.mockReturnValue(false);
     mocks.hasSupabaseConfig.mockReturnValue(true);
     mocks.hasSupabaseAdminConfig.mockReturnValue(true);
     mocks.getCurrentUser.mockResolvedValue(null);
@@ -275,10 +300,13 @@ describe("shared award change source identity", () => {
   });
 
   // Both sides unusable is the case the old key got wrong: it collapsed every
-  // unparseable address to one string, so two unrelated rows matched.
+  // unparseable address to one string, so two unrelated rows matched. A source
+  // row cannot really carry such a URL — the trackability gate drops it — so
+  // this case scopes that gate off to reach the attribution policy underneath.
   it.each(["", "   ", "not a URL", "javascript:alert(1)"])(
     "never attaches an ID-less change when both addresses are unusable (%s)",
     async (unusable) => {
+      policy.isTrackable = () => true;
       useCatalog(
         [{ id: sourceB, url: unusable }],
         [{ id: "change-legacy", shared_award_source_id: null, source_url: unusable }],
@@ -287,6 +315,27 @@ describe("shared award change source identity", () => {
       expect(await latestChangeIdsBySource()).toEqual({ [sourceId]: [], [sourceB]: [] });
     },
   );
+
+  it("lists both same-URL siblings and gives each only its own updates", async () => {
+    useCatalog(
+      [
+        { id: sourceA, url: documentA },
+        // Identical URLs are permitted across alias-member awards, not twice
+        // on one award under its source URL uniqueness constraint.
+        { id: sourceB, url: documentA, shared_award_id: aliasAwardId },
+      ],
+      [
+        { id: "change-a", shared_award_source_id: sourceA, source_url: documentA },
+        { id: "change-b", shared_award_source_id: sourceB, source_url: documentA },
+      ],
+    );
+
+    expect(await latestChangeIdsBySource()).toEqual({
+      [sourceId]: [],
+      [sourceA]: ["change-a"],
+      [sourceB]: ["change-b"],
+    });
+  });
 
   it("keeps the two-latest cap per source and the award's full change list", async () => {
     useCatalog(
@@ -307,5 +356,141 @@ describe("shared award change source identity", () => {
       .toEqual(["change-1", "change-2", "change-3"]);
     expect(body.award.changeCount).toBe(3);
     expect(body.award.sourceCount).toBe(2);
+  });
+});
+
+// Listing is by source ID; the loose canonical-URL dedupe used to discard
+// eligible rows here, taking their updates — and sometimes the reviewed
+// homepage itself — with them.
+describe("shared award source listing keeps every eligible source ID", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    policy.isTrackable = policy.real;
+    mocks.isPublicAwardSource.mockReturnValue(true);
+    mocks.isStage1SourceIdentityExcluded.mockReturnValue(false);
+    mocks.hasSupabaseConfig.mockReturnValue(true);
+    mocks.hasSupabaseAdminConfig.mockReturnValue(true);
+    mocks.getCurrentUser.mockResolvedValue(null);
+    const query = {
+      select: vi.fn().mockReturnThis(),
+      in: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      order: mocks.order,
+    };
+    mocks.createSupabaseAdminClient.mockReturnValue({ from: vi.fn().mockReturnValue(query) });
+    mocks.loadEligiblePublicChangeEvents.mockResolvedValue([]);
+  });
+
+  // Row uniqueness is per award, so a duplicate URL belongs to an alias member
+  // award; a "www." or dropped-parameter variant is reachable within one award.
+  function useRows(
+    rows: Array<{ id: string; url: string; awardId?: string }>,
+    allowed = rows.map((row) => row.id),
+  ) {
+    mocks.loadStage1PublicationIndex.mockResolvedValue({
+      available: true,
+      entryByMemberAwardId: new Map([[awardId, {
+        ...verifiedPublication(),
+        memberAwardIds: [awardId, aliasAwardId],
+        allowedSourceIdSet: new Set(allowed),
+      }]]),
+    });
+    mocks.order.mockResolvedValue({
+      data: rows.map(({ awardId: rowAwardId, ...row }) => ({
+        title: "Official page",
+        page_type: "application",
+        shared_award_id: rowAwardId ?? awardId,
+        ...row,
+      })),
+      error: null,
+    });
+  }
+
+  async function listedSourceIds() {
+    const body = await awardBody();
+    return body.award.sources.map((source: { id: string }) => source.id);
+  }
+
+  it("retains two allowed rows that share one document URL", async () => {
+    useRows([
+      { id: sourceId, url: homepage },
+      { id: sourceA, url: documentA },
+      { id: sourceB, url: documentA, awardId: aliasAwardId },
+    ]);
+
+    expect(await listedSourceIds()).toEqual([sourceId, sourceA, sourceB]);
+    expect((await awardBody()).award.sourceCount).toBe(3);
+  });
+
+  it("retains a row that differs from a sibling only by a trailing slash", async () => {
+    useRows([
+      { id: sourceId, url: homepage },
+      { id: sourceA, url: "https://example.edu/document" },
+      { id: sourceB, url: "https://example.edu/document/", awardId: aliasAwardId },
+    ]);
+
+    expect(await listedSourceIds()).toEqual([sourceId, sourceA, sourceB]);
+  });
+
+  it("keeps the reviewed homepage listed when a slash variant sorts ahead of it", async () => {
+    // The variant used to win the dedupe, leaving no listed source whose URL
+    // equalled the registry homepage, so this award answered 404.
+    useRows([
+      { id: sourceA, url: `${homepage}/`, awardId: aliasAwardId },
+      { id: sourceId, url: homepage },
+    ]);
+
+    expect(await listedSourceIds()).toEqual([sourceA, sourceId]);
+  });
+
+  it.each([
+    { label: "unallowed", allowed: [sourceId, sourceB], prepare: () => {} },
+    {
+      label: "identity-excluded",
+      allowed: [sourceId, sourceA, sourceB],
+      prepare: () => {
+        mocks.isStage1SourceIdentityExcluded.mockImplementation(
+          (_publication: unknown, source: { id: string }) => source.id === sourceA,
+        );
+      },
+    },
+    {
+      label: "public-quality-rejected",
+      allowed: [sourceId, sourceA, sourceB],
+      prepare: () => {
+        mocks.isPublicAwardSource.mockImplementation((source: { id: string }) => source.id !== sourceA);
+      },
+    },
+  ])("keeps the eligible sibling when an earlier $label duplicate is rejected", async ({ allowed, prepare }) => {
+    // The rejected duplicate is ordered first, which is what used to win.
+    useRows(
+      [
+        { id: sourceId, url: homepage },
+        { id: sourceA, url: documentA, awardId: aliasAwardId },
+        { id: sourceB, url: documentA },
+      ],
+      allowed,
+    );
+    prepare();
+
+    expect(await listedSourceIds()).toEqual([sourceId, sourceB]);
+  });
+
+  it("still drops an untrackable row without disturbing its siblings", async () => {
+    useRows([
+      { id: sourceId, url: homepage },
+      { id: sourceA, url: "https://example.edu/fellowship/login" },
+      { id: sourceB, url: documentA },
+    ]);
+
+    expect(await listedSourceIds()).toEqual([sourceId, sourceB]);
+  });
+
+  it("still answers 404 when no listed source is the exact reviewed homepage", async () => {
+    useRows([{ id: sourceA, url: `${homepage}/`, awardId: aliasAwardId }, { id: sourceB, url: documentA }]);
+
+    const response = await requestAward();
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "Shared award was not found." });
   });
 });

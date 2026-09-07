@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   loadEligiblePublicChangeEvents: vi.fn(),
   loadStage1PublicationIndex: vi.fn(),
   unreadSharedChangeIdsForUser: vi.fn(),
+  isPublicAwardSource: vi.fn(),
+  isStage1SourceIdentityExcluded: vi.fn(),
   sourceRows: [] as unknown[],
   queriedTables: [] as string[],
   sourceQueryError: null as { message: string } | null,
@@ -21,19 +23,17 @@ vi.mock("@/lib/public-change-events", async (importOriginal) => ({
 }));
 vi.mock("@/lib/stage1-publication", () => ({
   loadStage1PublicationIndex: mocks.loadStage1PublicationIndex,
-  isStage1SourceIdentityExcluded: () => false,
+  isStage1SourceIdentityExcluded: mocks.isStage1SourceIdentityExcluded,
 }));
 vi.mock("@/lib/update-read-state", () => ({
   unreadSharedChangeIdsForUser: mocks.unreadSharedChangeIdsForUser,
 }));
 vi.mock("@/lib/source-quality", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/source-quality")>()),
-  isPublicAwardSource: () => true,
+  isPublicAwardSource: mocks.isPublicAwardSource,
 }));
-vi.mock("@/lib/source-url-policy", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/source-url-policy")>()),
-  filterTrackableOfficialSources: <T>(sources: T[]) => sources,
-}));
+// @/lib/source-url-policy is deliberately NOT mocked: the real trackability
+// predicate is part of what these tests exercise at this boundary.
 vi.mock("@/lib/supabase/admin", () => ({
   createSupabaseAdminClient: () => ({
     from(table: string) {
@@ -115,10 +115,10 @@ function publicationIndex(entry = publication()): Stage1PublicationIndex {
   } as unknown as Stage1PublicationIndex;
 }
 
-function sourceRow(id: string, url: string, title: string, pageType: string) {
+function sourceRow(id: string, url: string, title: string, pageType: string, awardId = AWARD_ID) {
   return {
     id,
-    shared_award_id: AWARD_ID,
+    shared_award_id: awardId,
     url,
     title,
     display_title: title,
@@ -170,6 +170,8 @@ describe("public award page deep links", () => {
     mocks.loadEligiblePublicChangeEvents.mockReset();
     mocks.loadStage1PublicationIndex.mockReset();
     mocks.unreadSharedChangeIdsForUser.mockReset();
+    mocks.isPublicAwardSource.mockReset().mockReturnValue(true);
+    mocks.isStage1SourceIdentityExcluded.mockReset().mockReturnValue(false);
     mocks.loadStage1PublicationIndex.mockResolvedValue(publicationIndex());
     mocks.queriedTables = [];
     mocks.sourceQueryError = null;
@@ -389,5 +391,215 @@ describe("public award page deep links", () => {
     ]);
     expect(mergeRequestedPublicChangeEvents(recentEvents, [recentEvents[0]])).toHaveLength(8);
     expect(mergeRequestedPublicChangeEvents([], [])).toEqual([]);
+  });
+});
+
+// Both source-row uniqueness constraints are per award — `unique (shared_award_id, url)`
+// and the normalized-url index — so a second row for the same document is
+// reachable two ways, and only these two are used below:
+//   * on an ALIAS MEMBER award, where any identical URL is permitted; and
+//   * within one award, where a "www." or dropped-parameter variant is a
+//     distinct URL to the database but collapses under the canonical key.
+const ALIAS_AWARD_ID = "10000000-0000-4000-8000-000000000002";
+const SOURCE_ALIAS = "30000000-0000-4000-8000-000000000003";
+const SOURCE_VARIANT = "30000000-0000-4000-8000-000000000004";
+const DOCUMENT_A = "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1075626";
+const DOCUMENT_B = "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1138353";
+
+function listingPublication(allowed: string[]) {
+  return publicationIndex({
+    ...publication(),
+    memberAwardIds: [AWARD_ID, ALIAS_AWARD_ID],
+    allowedSourceIds: allowed,
+    allowedSourceIdSet: new Set(allowed),
+  } as unknown as Stage1PublicationEntry);
+}
+
+async function listedSources(): Promise<Array<{ id: string; url: string }>> {
+  const resolution = await getPublicAwardPageResolutionBySlug("example-fellowship");
+  expect(resolution.kind).toBe("published");
+  if (resolution.kind !== "published") throw new Error("expected a published award");
+  return resolution.data.sources.map((source) => ({ id: source.id, url: source.url }));
+}
+
+describe("public award source listing keeps every eligible source ID", () => {
+  beforeEach(() => {
+    mocks.loadEligiblePublicChangeEvents.mockReset().mockResolvedValue([]);
+    mocks.loadStage1PublicationIndex.mockReset();
+    mocks.unreadSharedChangeIdsForUser.mockReset();
+    mocks.isPublicAwardSource.mockReset().mockReturnValue(true);
+    mocks.isStage1SourceIdentityExcluded.mockReset().mockReturnValue(false);
+    mocks.queriedTables = [];
+    mocks.sourceQueryError = null;
+    mocks.loadStage1PublicationIndex.mockResolvedValue(
+      listingPublication([SOURCE_HOME, SOURCE_APPLY, SOURCE_ALIAS, SOURCE_VARIANT]),
+    );
+    mocks.sourceRows = [];
+  });
+
+  it("retains two allowed alias-member rows that share one document URL", async () => {
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+      sourceRow(SOURCE_ALIAS, "https://example.edu/fellowship/apply", "Application Instructions", "application", ALIAS_AWARD_ID),
+    ];
+
+    expect((await listedSources()).map((source) => source.id))
+      .toEqual([SOURCE_HOME, SOURCE_APPLY, SOURCE_ALIAS]);
+  });
+
+  it("retains an alias-member row that differs only by a trailing slash", async () => {
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+      sourceRow(SOURCE_VARIANT, "https://example.edu/fellowship/apply/", "Application Instructions", "application", ALIAS_AWARD_ID),
+    ];
+
+    expect((await listedSources()).map((source) => source.url)).toEqual([
+      "https://example.edu/fellowship",
+      "https://example.edu/fellowship/apply",
+      "https://example.edu/fellowship/apply/",
+    ]);
+  });
+
+  // Distinct URLs to the database, one canonical key: "www." is stripped and
+  // "view" is dropped when the canonical key is built.
+  it.each([
+    { label: "a www. host variant", url: "https://www.example.edu/fellowship/apply" },
+    { label: "a dropped query parameter", url: "https://example.edu/fellowship/apply?view=full" },
+  ])("retains $label of a sibling on the same award", async ({ url }) => {
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      sourceRow(SOURCE_VARIANT, url, "Application Instructions", "application"),
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+    ];
+
+    expect((await listedSources()).map((source) => source.id))
+      .toEqual([SOURCE_HOME, SOURCE_VARIANT, SOURCE_APPLY]);
+  });
+
+  it("retains two documents addressed only by query id", async () => {
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      sourceRow(SOURCE_APPLY, DOCUMENT_A, "First document", "application"),
+      sourceRow(SOURCE_ALIAS, DOCUMENT_B, "Second document", "application"),
+    ];
+
+    expect((await listedSources()).map((source) => source.url))
+      .toEqual(["https://example.edu/fellowship", DOCUMENT_A, DOCUMENT_B]);
+  });
+
+  // Each earlier duplicate below would previously have won the canonical-URL
+  // dedupe and then been dropped by its own gate, emptying the document from
+  // the list entirely. The gates must reject only the offending row.
+  it.each([
+    {
+      label: "an unallowed",
+      allowed: [SOURCE_HOME, SOURCE_APPLY],
+      prepare: () => {},
+    },
+    {
+      label: "a held (not open)",
+      allowed: [SOURCE_HOME, SOURCE_APPLY, SOURCE_ALIAS],
+      prepare: () => {
+        (mocks.sourceRows[1] as { admin_review_status: string }).admin_review_status = "review_later";
+      },
+    },
+    {
+      label: "an identity-excluded",
+      allowed: [SOURCE_HOME, SOURCE_APPLY, SOURCE_ALIAS],
+      prepare: () => {
+        mocks.isStage1SourceIdentityExcluded.mockImplementation(
+          (_publication: unknown, source: { id: string }) => source.id === SOURCE_ALIAS,
+        );
+      },
+    },
+    {
+      label: "a public-quality-rejected",
+      allowed: [SOURCE_HOME, SOURCE_APPLY, SOURCE_ALIAS],
+      prepare: () => {
+        mocks.isPublicAwardSource.mockImplementation((source: { id: string }) => source.id !== SOURCE_ALIAS);
+      },
+    },
+  ])("keeps the eligible sibling when $label earlier duplicate is rejected", async ({ allowed, prepare }) => {
+    mocks.loadStage1PublicationIndex.mockResolvedValue(listingPublication(allowed));
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      // The rejected alias-member duplicate is ordered FIRST, which is what
+      // used to win the canonical-URL dedupe.
+      sourceRow(SOURCE_ALIAS, "https://example.edu/fellowship/apply", "Application Instructions", "application", ALIAS_AWARD_ID),
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+    ];
+    prepare();
+
+    expect((await listedSources()).map((source) => source.id)).toEqual([SOURCE_HOME, SOURCE_APPLY]);
+  });
+
+  it("still lists the exact reviewed homepage when a slash variant is also eligible", async () => {
+    mocks.sourceRows = [
+      // The alias member's variant sorts first, so it previously won the
+      // dedupe and the pinned exact URL disappeared from the list.
+      sourceRow(SOURCE_VARIANT, "https://example.edu/fellowship/", "Homepage", "homepage", ALIAS_AWARD_ID),
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+    ];
+
+    expect(await listedSources()).toEqual([
+      { id: SOURCE_VARIANT, url: "https://example.edu/fellowship/" },
+      { id: SOURCE_HOME, url: "https://example.edu/fellowship" },
+    ]);
+  });
+
+  it.each([
+    { label: "held for review", prepare: (row: Record<string, unknown>) => { row.admin_review_status = "review_later"; } },
+    {
+      label: "rejected by the public-quality gate",
+      prepare: () => {
+        mocks.isPublicAwardSource.mockImplementation((source: { id: string }) => source.id !== SOURCE_HOME);
+      },
+    },
+  ])("validates the award through a pinned homepage $label without listing it", async ({ prepare }) => {
+    const homepageRow = sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage");
+    mocks.sourceRows = [
+      homepageRow,
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+    ];
+    prepare(homepageRow as unknown as Record<string, unknown>);
+
+    // The award still publishes, and the hidden homepage row is never listed.
+    expect((await listedSources()).map((source) => source.id)).toEqual([SOURCE_APPLY]);
+  });
+
+  it("keeps an untrackable row out of the list without disturbing its siblings", async () => {
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      sourceRow(SOURCE_ALIAS, "https://example.edu/fellowship/login", "Sign in", "application"),
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+    ];
+
+    expect((await listedSources()).map((source) => source.id)).toEqual([SOURCE_HOME, SOURCE_APPLY]);
+  });
+
+  it("gives same-URL siblings distinct slugs, and a source deep link opens the exact ID", async () => {
+    mocks.sourceRows = [
+      sourceRow(SOURCE_HOME, "https://example.edu/fellowship", "Homepage", "homepage"),
+      sourceRow(SOURCE_APPLY, "https://example.edu/fellowship/apply", "Application Instructions", "application"),
+      sourceRow(SOURCE_ALIAS, "https://example.edu/fellowship/apply", "Mirrored Instructions", "application", ALIAS_AWARD_ID),
+    ];
+
+    const resolution = await getPublicAwardPageResolutionBySlug("example-fellowship");
+    expect(resolution.kind).toBe("published");
+    if (resolution.kind !== "published") return;
+    const slugs = resolution.data.sources.map((source) => source.sourceSlug);
+    expect(new Set(slugs).size).toBe(slugs.length);
+    expect(resolution.data.sources.map((source) => source.id))
+      .toEqual([SOURCE_HOME, SOURCE_APPLY, SOURCE_ALIAS]);
+
+    // The deep link resolves in the workspace: the second same-URL row is
+    // reachable, and it is the one that opens.
+    const markup = renderToStaticMarkup(
+      createElement(PublicAwardWorkspace, { data: resolution.data, initialSourceId: SOURCE_ALIAS }),
+    );
+    expect(markup).toContain('<h2 id="public-award-panel-heading">Mirrored Instructions</h2>');
+    expect(markup).not.toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
   });
 });

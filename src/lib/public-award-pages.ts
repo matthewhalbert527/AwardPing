@@ -17,7 +17,7 @@ import {
   isPublicAwardSource,
 } from "@/lib/source-quality";
 import {
-  filterTrackableOfficialSources,
+  isTrackableOfficialSourceUrl,
 } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import {
@@ -248,21 +248,30 @@ async function loadPublicAwardPageData(
   }
   const sources = sourcesResult.data || [];
 
-  const officialSources = filterTrackableOfficialSources((sources || []) as SharedSourceRow[])
+  // Reviewed sources are kept by source ID, never collapsed by a loose
+  // canonical URL. Alias members can carry duplicate rows for one URL,
+  // and rows can differ only by a trailing slash or a dropped query parameter;
+  // discarding one of them hid its own updates, which attach by source ID.
+  // Trackability is still applied to every row individually.
+  const officialSources = ((sources || []) as SharedSourceRow[])
+    .filter((source) => isTrackableOfficialSourceUrl(source.url))
     .filter((source) => source.admin_review_status === "open")
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
     .filter(isPublicAwardSource);
-  // Find the reviewed homepage BEFORE the canonical-URL dedupe: alias awards
-  // routinely carry duplicate rows for the same homepage URL, and the dedupe
-  // keeps an arbitrary winner, so an id-exact match against the deduped list
-  // can miss the pinned source depending on query order.
+  // The reviewed homepage is looked up over the rows again, still under the
+  // allowlist and identity-exclusion gates but WITHOUT the open-status,
+  // trackability and public-quality gates: it stays pinned even when the
+  // nightly worker auto-holds it (review_later, so not open) or the AI
+  // public-authority gate rejects it, each of which keeps it out of the listed
+  // sources above, and neither of which may turn the award into a placeholder.
   // The pinned homepage id IS the explicit human review (the cohort's identity
   // home, bound by the reviewed chain with panel-verified facts), so the AI
   // public-authority gate is not re-applied to it: several reviewed homepages
   // carry an immutable monitoring-only baseline activation that the gate
   // rejects, which rendered verified cohorts as placeholders after launch.
-  // Every other listed source still passes isPublicAwardSource above.
+  // Validating the page here never adds that row to the listed sources, and
+  // every listed source still passes isPublicAwardSource above.
   const reviewedHomepageSource = ((sources || []) as SharedSourceRow[])
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))

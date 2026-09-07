@@ -7,7 +7,7 @@ import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { isPublicAwardSource } from "@/lib/source-quality";
 import {
-  filterTrackableOfficialSources,
+  isTrackableOfficialSourceUrl,
 } from "@/lib/source-url-policy";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import {
@@ -100,7 +100,12 @@ export async function GET(_request: Request, { params }: Props) {
       .map((source) => source.shared_award_source_id)
       .filter((sourceId): sourceId is string => Boolean(sourceId)),
   );
-  const sources = filterTrackableOfficialSources(sharedSources || [])
+  // Kept by source ID, never collapsed by a loose canonical URL: two allowed
+  // rows can share one URL or differ only by a trailing slash, and discarding
+  // one of them hid its own updates, which attach by source ID below. The
+  // query above already restricts these rows to admin_review_status 'open'.
+  const sources = (sharedSources || [])
+    .filter((source) => isTrackableOfficialSourceUrl(source.url))
     .filter((source) => publication.allowedSourceIdSet.has(source.id))
     .filter((source) => !isStage1SourceIdentityExcluded(publication, source))
     .filter(isPublicAwardSource);
