@@ -341,7 +341,7 @@ it("documents limits without changing the existing CI workflow or frozen migrati
   const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const doc = readFileSync(join(repository, "docs/stage1-fixture-migration-smoke.md"), "utf8");
   expect(doc).toContain("bare `supabase db start` or full `supabase db reset`");
-  expect(doc).toContain("not executed against PostgreSQL");
+  expect(doc).toContain("Fixture contract/parser tests are not a database integration test");
   expect(doc).toContain("--execute-disposable-local");
   expect(doc).toContain("Linux");
 });
