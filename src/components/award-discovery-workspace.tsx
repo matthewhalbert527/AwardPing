@@ -87,6 +87,20 @@ export function AwardDiscoveryWorkspace({
   const [deadlineFilter, setDeadlineFilter] = useState("all");
   const [recentFilter, setRecentFilter] = useState("all");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const hasActiveFilters = [levelFilter, disciplineFilter, citizenshipFilter, deadlineFilter, recentFilter]
+    .some((filter) => filter !== "all");
+
+  function resetFilters() {
+    // The reset button disappears when filters clear. Keep keyboard focus on
+    // a stable control, preserving the query and reopening its results.
+    searchInputRef.current?.focus();
+    setLevelFilter("all");
+    setDisciplineFilter("all");
+    setCitizenshipFilter("all");
+    setDeadlineFilter("all");
+    setRecentFilter("all");
+    setLetterPageIndex(0);
+  }
 
   const levelOptions = useMemo(
     () => uniqueOptions(sharedAwards.flatMap((award) => award.academicLevels)),
@@ -417,7 +431,15 @@ export function AwardDiscoveryWorkspace({
           </label>
         </div>
 
-        {!browseHiddenBySearch && (
+        {hasActiveFilters && (
+          <div className="mt-3 flex justify-end">
+            <button className="button-secondary" type="button" onClick={resetFilters}>
+              Reset filters
+            </button>
+          </div>
+        )}
+
+        {!browseHiddenBySearch && awards.length > 0 && (
           <div className="mt-5 flex flex-col gap-3 border-t border-[var(--border-subtle)] pt-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm font-medium text-[var(--text-tertiary)]">
               {awards.length.toLocaleString()} of {sharedAwards.length.toLocaleString()} monitored awards match.
@@ -435,7 +457,16 @@ export function AwardDiscoveryWorkspace({
         )}
       </section>
 
-      {!browseHiddenBySearch && browseOpen && (
+      {!browseHiddenBySearch && awards.length === 0 && (
+        <section className="panel p-5 text-sm text-[var(--muted)]" role="status">
+          <p className="font-bold text-[var(--foreground)]">
+            {hasActiveFilters ? "No awards match these filters." : "No awards are listed here right now."}
+          </p>
+          {hasActiveFilters && <p className="mt-2">Reset the filters to browse the full directory.</p>}
+        </section>
+      )}
+
+      {!browseHiddenBySearch && browseOpen && awards.length > 0 && (
         <section className="grid min-w-0 gap-3" aria-label="Browse all awards">
           {renderBrowseControls("top")}
 

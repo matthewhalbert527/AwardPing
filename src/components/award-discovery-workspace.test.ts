@@ -177,8 +177,8 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(handler).toMatch(
       /onClick=\{\(\) => \{[\s\S]*?searchInputRef\.current\?\.focus\(\);\s*setQuery\(""\);\s*setSearchOpen\(false\);\s*\}\}/,
     );
-    // Clear is the only place that programmatically focuses anything.
-    expect(source.match(/\.focus\(\)/g)).toHaveLength(1);
+    // Search Clear and filter reset both restore this stable field's focus.
+    expect(source.match(/searchInputRef\.current\?\.focus\(\)/g)).toHaveLength(2);
   });
 
   it("renders no secondary row action or duplicate award destination in either state", () => {
