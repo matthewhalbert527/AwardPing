@@ -103,16 +103,18 @@ describe("first-observation intake artifact wiring", () => {
       captureWorker.indexOf("async function processSourceUnlocked"),
       captureWorker.indexOf("async function processLocalizationRepairSource"),
     );
-    const captureChoice = processSource.indexOf("capturePdfSourceForBaseline(source, baseline, report)");
+    const captureChoice = processSource.indexOf("capturePdfSourceForBaseline(source, baseline, report, pdfFetchOptions)");
     const baselineWrite = processSource.indexOf("writeBaseline(source, capture");
     expect(captureChoice).toBeGreaterThan(-1);
     expect(baselineWrite).toBeGreaterThan(captureChoice);
 
     const sealedCapture = captureWorker.slice(
       captureWorker.indexOf("async function capturePdfSourceForBaseline"),
-      captureWorker.indexOf("async function capturePdfSource(source)"),
+      captureWorker.indexOf("async function capturePdfSource(source, pdfFetchOptions = null)"),
     );
-    expect(sealedCapture).toContain("async function capturePdfSourceForBaseline(source, baseline, report)");
+    expect(sealedCapture).toContain("async function capturePdfSourceForBaseline(source, baseline, report, pdfFetchOptions = null)");
+    // The sealed-artifact branch must never receive the live fetch options.
+    expect(sealedCapture).toContain("return materializeSealedFirstObservationCapture(source, report);");
     expect(sealedCapture).toContain("materializeFirstObservationCaptureFromAcquisition");
     expect(sealedCapture).toContain("!baseline");
     expect(sealedCapture).toContain("isRetainedLiveFirstCaptureAcquisition(acquisition)");

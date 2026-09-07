@@ -84,6 +84,13 @@ import {
   terminalGeminiSettlement,
 } from "./lib/gemini-spend-ledger.mjs";
 import {
+  geminiBillingBlockPath,
+  isGeminiBillingBlockedError,
+  isGeminiBillingBlockedResponse,
+  markGeminiBillingBlocked,
+  readGeminiBillingBlock,
+} from "./lib/gemini-spend-guard.mjs";
+import {
   buildEscalationRequeue,
   geminiWorkerModel,
   partitionVisualReviewCandidatesByModel,
@@ -227,6 +234,7 @@ const report = {
   started_at: new Date().toISOString(),
   finished_at: null,
   status: "running",
+  billing_block: null,
   env_path: envPath,
   report_path: reportPath,
   monitoring_policy: monitoringPolicy,
@@ -342,16 +350,33 @@ try {
     source_count: stage1Manifest.sourceIds.size,
   };
 
+  // An operator-owned billing block (written by any Gemini worker after the
+  // provider reported depleted prepaid credits) stops submission for the whole
+  // run so the lane does not hammer the provider every cycle; polling of
+  // batches that were already accepted still completes.
+  const existingBillingBlock = readGeminiBillingBlock(archiveRoot);
+  if (existingBillingBlock) {
+    recordGeminiBillingBlock({
+      message: existingBillingBlock.message || "Gemini billing block file is present.",
+      httpStatus: existingBillingBlock.http_status ?? 429,
+      providerStatus: existingBillingBlock.provider_status || null,
+      kind: existingBillingBlock.kind || null,
+      model: existingBillingBlock.model || null,
+      detectedVia: "block_file",
+      blockedAt: existingBillingBlock.blocked_at || null,
+    });
+  }
+
   if (poll && !submitOnly) {
     await pollExistingBatches();
   }
 
-  if (submit && !pollOnly) {
+  if (submit && !pollOnly && !report.billing_block) {
     await submitPendingCandidates();
   }
 
   await refreshStatusCounts();
-  report.status = "succeeded";
+  report.status = report.billing_block ? "billing_blocked" : "succeeded";
 } catch (error) {
   report.status = "failed";
   report.error = errorMessage(error);
@@ -458,6 +483,9 @@ async function pollExistingBatches() {
       await reconcileCompletedBatch(batchName, job, batchReport);
     } catch (error) {
       const message = errorMessage(error);
+      if (isGeminiBillingBlockedError(error)) {
+        recordGeminiBillingBlockFromError(error);
+      }
       const pollFailure = visualReviewBatchPollFailureDisposition({
         kind: error?.geminiRequestKind || "batch_poll",
         httpStatus: error?.geminiHttpStatus,
@@ -877,7 +905,17 @@ async function submitPendingCandidates() {
     for (const [chunkModel, modelCandidates] of byModel) {
       const chunkSize = visualReviewMaxRequestsPerBatchForModel(chunkModel, maxRequestsPerBatch);
       for (const chunk of chunks(modelCandidates, chunkSize)) {
-        await submitCandidateChunk(chunkModel, chunk, laneKey);
+        try {
+          await submitCandidateChunk(chunkModel, chunk, laneKey);
+        } catch (error) {
+          // Depleted prepaid credits are an account condition, not a code
+          // failure: the chunk's claims were already released by the
+          // safeToReleaseBatchClaim path, so record the block, stop
+          // submitting further chunks, and let the run finish with exit 0.
+          if (!isGeminiBillingBlockedError(error)) throw error;
+          recordGeminiBillingBlockFromError(error);
+          return;
+        }
       }
     }
   }
@@ -3527,7 +3565,8 @@ async function uploadGeminiJsonlRequests({ requests, displayName }) {
     },
   );
   if (!startResponse.ok) {
-    throw new Error(`Gemini file upload start failed: ${startResponse.status} ${await startResponse.text().catch(() => "")}`);
+    const startBody = await startResponse.text().catch(() => "");
+    throw geminiUploadFailure("Gemini file upload start failed", startResponse.status, startBody);
   }
   const uploadUrl = startResponse.headers.get("x-goog-upload-url");
   if (!uploadUrl) throw new Error("Gemini file upload did not return x-goog-upload-url.");
@@ -3544,12 +3583,40 @@ async function uploadGeminiJsonlRequests({ requests, displayName }) {
   });
   const uploadBody = await uploadResponse.text().catch(() => "");
   if (!uploadResponse.ok) {
-    throw new Error(`Gemini file upload finalize failed: ${uploadResponse.status} ${uploadBody}`);
+    throw geminiUploadFailure("Gemini file upload finalize failed", uploadResponse.status, uploadBody);
   }
   const parsed = parseJsonObject(uploadBody) || {};
   const fileName = parsed.file?.name || parsed.name;
   if (!fileName) throw new Error(`Gemini file upload did not return a file name: ${uploadBody.slice(0, 500)}`);
   return fileName;
+}
+
+// The JSONL upload runs before the create boundary is journaled, so its
+// failures never release against a "creating" reservation; a depleted-credit
+// 429 here is still surfaced as the same billing block so the run stops
+// submitting instead of failing the lane.
+function geminiUploadFailure(prefix, httpStatus, body) {
+  const message = `${prefix}: ${httpStatus} ${body}`;
+  const providerError = geminiProviderErrorFromBody(body);
+  if (!isGeminiBillingBlockedResponse(httpStatus, providerError.message)) return new Error(message);
+  return geminiBillingBlockedError(message, {
+    kind: "file_upload",
+    httpStatus,
+    providerStatus: providerError.status,
+    providerMessage: providerError.message,
+    safeToReleaseBatchClaim: false,
+  });
+}
+
+// The billing test must see the provider's message, not the whole JSON body:
+// every Gemini 429 carries `"status": "RESOURCE_EXHAUSTED"`, which would
+// otherwise make a plain rate-limit look like a billing block.
+function geminiProviderErrorFromBody(body) {
+  const providerError = objectValue(objectValue(parseJsonObject(body)).error);
+  return {
+    message: cleanNullable(providerError.message) || cleanText(body),
+    status: cleanNullable(providerError.status),
+  };
 }
 
 async function geminiBatchResponseMap(job, expectedKeys = []) {
@@ -3626,6 +3693,18 @@ async function fetchGeminiJson(url, { method, body, kind }) {
           httpStatus: response.status,
         });
       }
+      // Depleted prepaid credits come back as HTTP 429 but are not a rate
+      // limit: retrying only burns the attempt budget and the lane's time.
+      // Fail fast on the first response so the caller can release claims.
+      const providerError = geminiProviderErrorFromBody(responseBody);
+      if (isGeminiBillingBlockedResponse(response.status, providerError.message)) {
+        throw geminiBillingBlockedError(message, {
+          kind,
+          httpStatus: response.status,
+          providerStatus: providerError.status,
+          providerMessage: providerError.message,
+        });
+      }
       if (attempt < maxAttempts && isRetryableGeminiFailure(response.status, responseBody)) {
         const waitMs = attempt * 1500;
         console.log(`GEMINI_RETRY kind=${kind} attempt=${attempt}/${maxAttempts} wait_ms=${waitMs} message=${truncate(message, 240)}`);
@@ -3639,6 +3718,7 @@ async function fetchGeminiJson(url, { method, body, kind }) {
       throw definiteError;
     } catch (error) {
       if (error?.possibleExternalBatchCreated) throw error;
+      if (error?.geminiBillingBlocked) throw error;
       if (
         /^batch_create(?:_|$)/.test(cleanText(kind)) &&
         !error?.safeToReleaseBatchClaim
@@ -3664,6 +3744,82 @@ function possibleExternalBatchCreatedError(message, metadata = {}) {
   error.possibleExternalBatchCreated = true;
   error.batchCreateMetadata = metadata;
   return error;
+}
+
+// The provider definitively refused the request, so the batch was not
+// created and the chunk's claims and reservation can be released exactly as
+// for any other definite create failure (safeToReleaseBatchClaim).
+function geminiBillingBlockedError(message, {
+  kind,
+  httpStatus,
+  providerStatus,
+  providerMessage,
+  safeToReleaseBatchClaim = true,
+}) {
+  const error = new Error(message);
+  error.geminiBillingBlocked = true;
+  if (safeToReleaseBatchClaim) error.safeToReleaseBatchClaim = true;
+  error.geminiHttpStatus = Number(httpStatus);
+  error.geminiRequestKind = cleanText(kind);
+  error.geminiProviderStatus = cleanNullable(providerStatus);
+  error.geminiProviderMessage = cleanNullable(providerMessage) || message;
+  return error;
+}
+
+function recordGeminiBillingBlockFromError(error) {
+  recordGeminiBillingBlock({
+    message: error?.geminiProviderMessage || errorMessage(error),
+    httpStatus: error?.geminiHttpStatus ?? 429,
+    providerStatus: error?.geminiProviderStatus || null,
+    kind: error?.geminiRequestKind || null,
+    model: null,
+    detectedVia: "provider_response",
+  });
+}
+
+// Records the account-level block once per run: the report carries it, one
+// console line names it (with the file an operator deletes after topping up),
+// and a live provider refusal writes the same block file the capture worker
+// writes so every Gemini worker stops until billing is restored.
+function recordGeminiBillingBlock({
+  message,
+  httpStatus = 429,
+  providerStatus = null,
+  kind = null,
+  model = null,
+  detectedVia,
+  blockedAt = null,
+}) {
+  if (report.billing_block) return report.billing_block;
+  const at = new Date().toISOString();
+  const blockPath = geminiBillingBlockPath(archiveRoot);
+  const cleanMessage = truncate(cleanText(message) || "Gemini billing is blocked.", 1000);
+  if (detectedVia === "provider_response") {
+    markGeminiBillingBlocked({
+      archiveRoot,
+      kind,
+      model,
+      httpStatus,
+      providerStatus,
+      message: cleanMessage,
+    });
+  }
+  report.billing_block = {
+    message: cleanMessage,
+    at,
+    provider_status: 429,
+    http_status: Number(httpStatus) || 429,
+    provider_status_text: cleanNullable(providerStatus),
+    request_kind: cleanNullable(kind),
+    detected_via: detectedVia,
+    blocked_at: cleanNullable(blockedAt) || at,
+    block_file: blockPath,
+  };
+  report.stop_reason = "gemini_billing_blocked";
+  console.log(
+    `GEMINI_BILLING_BLOCKED lane=${paidLane || "all"} detected_via=${detectedVia} block_file=${blockPath} message=${truncate(cleanMessage, 240)}`,
+  );
+  return report.billing_block;
 }
 
 async function loadSourcesById(ids) {
@@ -4012,6 +4168,7 @@ function geminiHttpErrorMessage(httpStatus, body) {
 }
 
 function isRetryableGeminiFailure(httpStatus, body) {
+  if (isGeminiBillingBlockedResponse(httpStatus, geminiProviderErrorFromBody(body).message)) return false;
   if ([408, 409, 429, 500, 502, 503, 504].includes(Number(httpStatus))) return true;
   return /(temporarily unavailable|try again|rate|quota|timeout|overloaded|high demand)/i.test(String(body || ""));
 }

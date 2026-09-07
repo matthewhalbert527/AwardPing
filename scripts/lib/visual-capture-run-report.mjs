@@ -314,6 +314,7 @@ const FAILURE_POLICIES = [
       "unsupported content",
       "download content",
       "pdf download failed",
+      "pdf download returned non-pdf content",
     ],
   },
   {
@@ -397,6 +398,76 @@ export function classifyVisualCaptureFailure(error) {
     repair_code: policy.repair_code,
     solution: policy.solution,
   };
+}
+
+const PDF_MAGIC_SCAN_BYTES = 1024;
+
+export const PDF_DOWNLOAD_NON_PDF_CONTENT_MESSAGE_PREFIX =
+  "PDF download returned non-PDF content (";
+
+function mediaType(contentType) {
+  return cleanText(contentType).split(";")[0].trim().toLowerCase();
+}
+
+function startsWithPdfHeader(buffer) {
+  return Buffer.isBuffer(buffer) && buffer.length >= 4 &&
+    buffer.subarray(0, 4).toString("latin1") === "%PDF";
+}
+
+// The PDF specification tolerates a short preamble before the "%PDF" header, so
+// the magic bytes are scanned within the first kilobyte rather than only at
+// offset zero.
+export function isPdfBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length < 4) return false;
+  return buffer.subarray(0, PDF_MAGIC_SCAN_BYTES).indexOf("%PDF", 0, "latin1") !== -1;
+}
+
+export function isPdfContentType(contentType) {
+  const type = mediaType(contentType);
+  return type === "application/pdf" || type === "application/x-pdf";
+}
+
+export function isHtmlContentType(contentType) {
+  const type = mediaType(contentType);
+  return type === "text/html" || type === "application/xhtml+xml";
+}
+
+// A fetch result is accepted as PDF evidence only when the body carries the
+// PDF header. A body that starts with "%PDF" wins over a mislabeled media type
+// (a real PDF served as text/html still parses); otherwise an HTML media type
+// is refused outright so a bot-wall interstitial served with HTTP 200 never
+// reaches the PDF parser as if it were the official document, and any other
+// media type must still show the header within the tolerated preamble.
+export function isPdfPayload({ contentType = null, buffer = null } = {}) {
+  // The header is authoritative: a real PDF wins whatever the label says.
+  if (startsWithPdfHeader(buffer)) return true;
+  if (isHtmlContentType(contentType)) {
+    // An HTML label is trusted only when the body is HTML. A misconfigured
+    // server that sends a real PDF as text/html with a whitespace/binary
+    // preamble still passes; an interstitial page that merely mentions
+    // "%PDF" somewhere in its markup does not.
+    if (!Buffer.isBuffer(buffer)) return false;
+    const head = buffer.subarray(0, 1024).toString("latin1");
+    const index = head.indexOf("%PDF");
+    return index >= 0 && !head.slice(0, index).includes("<");
+  }
+  return isPdfBuffer(buffer);
+}
+
+export function pdfDownloadNonPdfContentMessage(contentType) {
+  return `${PDF_DOWNLOAD_NON_PDF_CONTENT_MESSAGE_PREFIX}${cleanText(contentType) || "unknown content-type"})`;
+}
+
+// Returns the reason a primary PDF download may be retried once through the
+// worker's proxied browser context, or null when the primary outcome must stand
+// as-is (success, non-403 HTTP failures, transport errors).
+export function pdfDownloadFallbackReason({ status, contentType = null, buffer = null } = {}) {
+  const code = Number(status);
+  if (code === 403) return "http_403";
+  if (code >= 200 && code < 300 && !isPdfPayload({ contentType, buffer })) {
+    return "non_pdf_content";
+  }
+  return null;
 }
 
 export function buildVisualRunReportSummary(report = {}) {

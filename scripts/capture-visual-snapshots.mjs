@@ -56,8 +56,11 @@ import {
   buildNightlyVisualReport,
   buildVisualRunReportSummary,
   isDailyVisualShardReport,
+  isPdfPayload,
   monitoringDateForTimestamp,
   monitoringDateForVisualReportFilename,
+  pdfDownloadFallbackReason,
+  pdfDownloadNonPdfContentMessage,
   shouldReplaceLatestNightlyReport,
   visualRunTerminalDisposition,
 } from "./lib/visual-capture-run-report.mjs";
@@ -1501,6 +1504,29 @@ async function runOnce() {
     }
   }
 
+  // The PDF lane never launches a browser up front. When the plain public
+  // fetch is blocked (HTTP 403 or an HTML interstitial served as the PDF), the
+  // nightly path may retry once through the same proxied Playwright context the
+  // web lane uses, so the request still crosses the public-network boundary.
+  async function acquirePdfBrowserFallbackContext(state) {
+    if (!state.browser) {
+      await restartBrowser(state, "pdf_browser_fallback");
+    } else if (!state.context || state.captureContextUsed) {
+      await restartCaptureContext(state, "pdf_browser_fallback");
+    }
+    // Mark the context used so the next web source gets a fresh proxy budget.
+    state.captureContextUsed = true;
+    return state.context;
+  }
+
+  function pdfFetchOptionsForWorker(state) {
+    return {
+      browserFallback: {
+        acquireContext: () => acquirePdfBrowserFallbackContext(state),
+      },
+    };
+  }
+
   async function processQueuedSource(source, workerIndex = 0) {
     const state = browserStateForWorker(workerIndex);
     const pdfSource = isPdfSource(source);
@@ -1548,6 +1574,8 @@ async function runOnce() {
             state.browserMeta,
             report,
             state.networkProxy,
+            null,
+            pdfFetchOptionsForWorker(state),
           );
         } else {
           const sourceDeadline = createSourcePhaseDeadline(
@@ -2954,6 +2982,7 @@ async function processSource(
   report,
   networkProxy = null,
   sourceDeadline = null,
+  pdfFetchOptions = null,
 ) {
   return withVisualBaselineLockAsync({
     archiveRoot,
@@ -2966,6 +2995,7 @@ async function processSource(
       report,
       networkProxy,
       sourceDeadline,
+      pdfFetchOptions,
     ),
   });
 }
@@ -3534,6 +3564,7 @@ async function processSourceUnlocked(
   report,
   networkProxy = null,
   sourceDeadline = null,
+  pdfFetchOptions = null,
 ) {
   if (stage1EvidenceSchemaUpgrade) {
     return runStage1EvidenceSchemaUpgradeSource({
@@ -3686,7 +3717,7 @@ async function processSourceUnlocked(
   let capture;
   try {
     capture = pdfSource
-      ? await capturePdfSourceForBaseline(source, baseline, report)
+      ? await capturePdfSourceForBaseline(source, baseline, report, pdfFetchOptions)
       : await captureSource(source, context, browserMeta, report, {
           baseline,
           suppressDiscovery: pendingStage1Activation,
@@ -7338,12 +7369,12 @@ async function processInitialOfficialDocumentMaterializationOnly(source, report)
   );
 }
 
-async function capturePdfSourceForBaseline(source, baseline, report) {
+async function capturePdfSourceForBaseline(source, baseline, report, pdfFetchOptions = null) {
   const acquisition = jsonObjectOrEmpty(source?.source_acquisition);
   const useSealedIntakeArtifact =
     !baseline &&
     isRetainedLiveFirstCaptureAcquisition(acquisition);
-  if (!useSealedIntakeArtifact) return capturePdfSource(source);
+  if (!useSealedIntakeArtifact) return capturePdfSource(source, pdfFetchOptions);
 
   return materializeSealedFirstObservationCapture(source, report);
 }
@@ -7466,7 +7497,7 @@ async function shouldDeferFirstCaptureBaselineRefresh(acquisition) {
   return !(data || []).length;
 }
 
-async function capturePdfSource(source) {
+async function capturePdfSource(source, pdfFetchOptions = null) {
   const capturedAt = new Date().toISOString();
   const captureStamp = timestampForPath(capturedAt);
   const sourceDir = join(archiveRoot, "sources", source.id);
@@ -7479,7 +7510,7 @@ async function capturePdfSource(source) {
   const failureMetaPath = join(captureDir, "capture-failure.json");
   const textPath = join(captureDir, "text.txt");
   const metaPath = join(captureDir, "meta.json");
-  const download = await fetchPdfSource(source.url);
+  const download = await fetchPdfSource(source.url, pdfFetchOptions);
   const fileHash = hashBuffer(download.buffer);
   // Retain the exact bounded response before invoking the in-process parser.
   // It remains explicitly non-baseline evidence until parsing and cleanup pass.
@@ -7508,6 +7539,8 @@ async function capturePdfSource(source) {
       status_code: download.status,
       status_text: download.statusText,
       content_type: download.contentType,
+      fetch_path: download.fetchPath,
+      fallback_reason: download.fallbackReason,
       file_hash: fileHash,
       file_bytes: download.buffer.length,
       failure_code: cleanText(error?.code) || "AWARDPING_PDF_PARSE_FAILED",
@@ -7567,6 +7600,8 @@ async function capturePdfSource(source) {
     status_code: download.status,
     status_text: download.statusText,
     content_type: download.contentType,
+    fetch_path: download.fetchPath,
+    fallback_reason: download.fallbackReason,
     file_hash: fileHash,
     image_hash: fileHash,
     text_hash: textHash,
@@ -7635,7 +7670,11 @@ function pruneFailedPdfCaptureEvidence(sourceDir, { keep = 3 } = {}) {
   };
 }
 
-async function fetchPdfSource(url) {
+// The pinned public HTTP fetch is always the primary PDF path. Only the nightly
+// capture lane passes `browserFallback`; sealed intake and recovery lanes keep
+// the default (no fallback) so retained artifacts are never re-fetched.
+async function fetchPdfSource(url, options = {}) {
+  const { browserFallback = null } = options ?? {};
   const download = await fetchPublicHttpBuffer(url, {
     maxBytes: maxPdfBytes,
     timeoutMs,
@@ -7648,12 +7687,93 @@ async function fetchPdfSource(url) {
       },
     },
   });
+  let primaryFailure = null;
   if (download.status < 200 || download.status >= 300) {
-    throw new Error(
+    primaryFailure = new Error(
       `PDF download failed with HTTP ${download.status} ${download.statusText}`.trim(),
     );
+  } else if (!isPdfPayload({ contentType: download.contentType, buffer: download.buffer })) {
+    // A 2xx HTML interstitial (bot wall) must not reach the PDF parser: it is
+    // a blocked/unsupported fetch, not a corrupt official document.
+    primaryFailure = new Error(pdfDownloadNonPdfContentMessage(download.contentType));
   }
-  return download;
+  if (!primaryFailure) {
+    return { ...download, fetchPath: "public_http_fetch", fallbackReason: null };
+  }
+  const fallbackReason = browserFallback
+    ? pdfDownloadFallbackReason({
+        status: download.status,
+        contentType: download.contentType,
+        buffer: download.buffer,
+      })
+    : null;
+  if (!fallbackReason) throw primaryFailure;
+  let fallback;
+  try {
+    fallback = await fetchPdfViaBrowserFallback(url, browserFallback);
+  } catch (error) {
+    console.log(
+      `PDF_BROWSER_FALLBACK_FAILED reason=${fallbackReason} url=${url} | ${errorMessage(error)}`,
+    );
+    throw new Error(
+      `${primaryFailure.message} (browser fallback: ${errorMessage(error)})`,
+      { cause: primaryFailure },
+    );
+  }
+  console.log(
+    `PDF_BROWSER_FALLBACK reason=${fallbackReason} status=${fallback.status} bytes=${fallback.buffer.length} url=${url}`,
+  );
+  return { ...fallback, fetchPath: "browser_fallback", fallbackReason };
+}
+
+// One bounded retry through the worker's proxied Playwright context. The
+// context comes from restartBrowser/restartCaptureContext, so every byte still
+// crosses the public-network proxy boundary; this never launches its own
+// browser or a standalone API request context.
+async function fetchPdfViaBrowserFallback(url, { acquireContext } = {}) {
+  if (typeof acquireContext !== "function") {
+    throw new Error("browser fallback context provider is unavailable");
+  }
+  const context = await acquireContext();
+  if (!context) throw new Error("browser fallback context is unavailable");
+  const response = await context.request.get(url, {
+    headers: {
+      Accept: "application/pdf,application/octet-stream;q=0.9,*/*;q=0.5",
+    },
+    maxRedirects: 5,
+    timeout: timeoutMs,
+  });
+  try {
+    const status = response.status();
+    const statusText = response.statusText();
+    const headers = response.headers();
+    const contentType = headers["content-type"] || null;
+    if (status < 200 || status >= 300) {
+      throw new Error(`HTTP ${status} ${statusText}`.trim());
+    }
+    const contentLength = Number(headers["content-length"] || 0);
+    if (Number.isFinite(contentLength) && contentLength > maxPdfBytes) {
+      throw new Error(`response exceeded the ${maxPdfBytes}-byte limit (${contentLength} bytes)`);
+    }
+    const buffer = await response.body();
+    if (buffer.length > maxPdfBytes) {
+      throw new Error(`response exceeded the ${maxPdfBytes}-byte limit (${buffer.length} bytes)`);
+    }
+    if (!isPdfPayload({ contentType, buffer })) {
+      throw new Error(`non-PDF content (${cleanText(contentType) || "unknown content-type"})`);
+    }
+    return {
+      buffer,
+      finalUrl: response.url(),
+      status,
+      statusText,
+      contentType,
+      // Playwright does not expose the redirect hop count.
+      redirectCount: null,
+    };
+  } finally {
+    await response.dispose().catch(() => undefined);
+  }
 }
 
 async function extractPdfText(buffer) {
