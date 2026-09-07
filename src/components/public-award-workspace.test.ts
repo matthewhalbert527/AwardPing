@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { formatCentralDateTime } from "@/lib/time-zone";
+import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import { PublicAwardWorkspace, AwardSourcesPanel, AwardFactsPanel, filterAwardSources, changeIdsToMarkRead } from "@/components/public-award-workspace";
 
 describe("PublicAwardWorkspace", () => {
@@ -785,6 +786,130 @@ describe("PublicAwardWorkspace", () => {
     );
     expect(valid).toContain('<time dateTime="2026-07-04T12:00:00.000Z"');
     expect(valid).not.toMatch(/<time(?![^>]*dateTime=)/);
+  });
+});
+
+describe("public award source identity", () => {
+  const documentA = "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1075626";
+  const documentB = "https://nspires.nasaprs.com/external/viewrepositorydocument?cmdocumentid=1138353";
+
+  function identityData(firstUrl: string, secondUrl: string): PublicAwardPageData {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.sources[0].title = "First document";
+    data.sources[0].url = firstUrl;
+    data.sources[1].title = "Second document";
+    data.sources[1].url = secondUrl;
+    data.changes = data.changes.slice(0, 2);
+    data.changes[0].sourceUrl = firstUrl;
+    data.changes[1].sourceUrl = secondUrl;
+    return data;
+  }
+
+  function selectedSourcePanel(data: PublicAwardPageData, sourceId = "source-apply") {
+    return panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data, initialSourceId: sourceId,
+    })));
+  }
+
+  it("keeps query-addressed documents' histories and unread changes separate", () => {
+    const data = identityData(documentA, documentB);
+    const panel = selectedSourcePanel(data);
+    expect(panel).toContain("The application instructions changed.");
+    expect(panel).not.toContain("The homepage changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual(["change-apply"]);
+  });
+
+  it("opens the exact source ID for a change-only link even when another source has the same URL", () => {
+    const data = identityData(documentA, documentA);
+    const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data, initialChangeId: "change-apply",
+    })));
+    expect(panel).toContain('<h2 id="public-award-panel-heading">Second document</h2>');
+    expect(panel).not.toContain("The homepage changed.");
+    expectSingleHighlightedChange(panel, "The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual(["change-apply"]);
+  });
+
+  it("does not highlight another source's change when the requested source shares its URL", () => {
+    const data = identityData(documentA, documentA);
+    const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data, initialSourceId: "source-home", initialChangeId: "change-apply",
+    })));
+    expect(panel).toContain("The homepage changed.");
+    expect(panel).not.toContain("The application instructions changed.");
+    expect(panel).not.toContain("Selected update");
+  });
+
+  it("leaves a change with a retired source ID in Updates even when a listed source shares its URL", () => {
+    const data = identityData(documentA, documentB);
+    data.changes[1].sourceId = "source-retired";
+    data.changes[1].sourceUrl = documentA;
+    const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data, initialChangeId: "change-apply",
+    })));
+    expect(panel).toContain('<h2 id="public-award-panel-heading">Updates</h2>');
+    expectSingleHighlightedChange(panel, "The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-home" }))
+      .toEqual(["change-home"]);
+  });
+
+  it.each([
+    ["query document IDs", documentA, documentB],
+    ["path case", "https://example.edu/Guide.pdf", "https://example.edu/guide.pdf"],
+    ["query value case", "https://example.edu/document?id=Guide", "https://example.edu/document?id=guide"],
+    ["query key case", "https://example.edu/document?ID=1", "https://example.edu/document?id=1"],
+    ["query order", "https://example.edu/document?id=1&view=full", "https://example.edu/document?view=full&id=1"],
+    ["trailing slashes", "https://example.edu/document/", "https://example.edu/document"],
+  ])("preserves %s when a legacy change has no source ID", (_label, firstUrl, secondUrl) => {
+    const data = identityData(firstUrl, secondUrl);
+    data.changes.forEach((change) => { change.sourceId = null; });
+    const panel = panelMarkup(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data, initialChangeId: "change-apply",
+    })));
+    expect(panel).toContain('<h2 id="public-award-panel-heading">Second document</h2>');
+    expect(panel).not.toContain("The homepage changed.");
+    expectSingleHighlightedChange(panel, "The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual(["change-apply"]);
+  });
+
+  it.each(["", "not a URL", "javascript:alert(1)"])("never associates absent IDs through an invalid URL (%s)", (url) => {
+    const data = identityData(documentA, url);
+    data.changes[1].sourceId = null;
+    const panel = selectedSourcePanel(data);
+    expect(panel).not.toContain("The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual([]);
+  });
+
+  it.each([null, ""])("supports fragment-only URL differences for an absent source ID (%s) without overriding a known ID", (sourceId) => {
+    const data = identityData(documentA, documentB);
+    data.changes[1].sourceId = sourceId;
+    data.changes[1].sourceUrl = `${documentB}#page=2`;
+    expect(selectedSourcePanel(data)).toContain("The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual(["change-apply"]);
+    data.changes[1].sourceId = "source-home";
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual([]);
+  });
+
+  it("uses the known source ID even when its recorded URL differs", () => {
+    const data = identityData(documentA, documentB);
+    data.changes[1].sourceUrl = "https://example.edu/previous-address";
+    expect(selectedSourcePanel(data)).toContain("The application instructions changed.");
+    expect(changeIdsToMarkRead(data, new Set(), { kind: "source", sourceId: "source-apply" }))
+      .toEqual(["change-apply"]);
+  });
+
+  it("does not label a query-addressed source as the homepage of another document", () => {
+    const data = identityData(documentA, documentB);
+    data.officialHomepage = documentA;
+    expect(selectedSourcePanel(data)).toContain('<h2 id="public-award-panel-heading">Second document</h2>');
+    expect(filterAwardSources([...data.sources].reverse(), "", data.officialHomepage).map((source) => source.id))
+      .toEqual(["source-home", "source-apply"]);
   });
 });
 

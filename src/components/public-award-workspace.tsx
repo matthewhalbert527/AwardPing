@@ -75,22 +75,14 @@ export function PublicAwardWorkspace({
       ? data.sources.find((source) => source.id === selected.sourceId) || null
       : null;
   const selectedSourceChanges = selectedSource
-    ? data.changes.filter(
-        (change) =>
-          change.sourceId === selectedSource.id ||
-          normalizeUrl(change.sourceUrl) === normalizeUrl(selectedSource.url),
-      )
+    ? data.changes.filter((change) => isChangeForSource(change, selectedSource))
     : [];
   const sourceChangeCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const source of data.sources) {
       counts.set(
         source.id,
-        data.changes.filter(
-          (change) =>
-            change.sourceId === source.id ||
-            normalizeUrl(change.sourceUrl) === normalizeUrl(source.url),
-        ).length,
+        data.changes.filter((change) => isChangeForSource(change, source)).length,
       );
     }
     return counts;
@@ -444,7 +436,7 @@ export function AwardFactsPanel({ facts, section, headingId, onViewSources }: {
 // Every source supplied by the loader remains reachable, with no display cap.
 export function filterAwardSources(sources: PublicAwardSource[], query: string, officialHomepage?: string | null) {
   const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
-  const isHomepage = (source: PublicAwardSource) => Boolean(officialHomepage) && normalizeUrl(source.url) === normalizeUrl(officialHomepage);
+  const isHomepage = (source: PublicAwardSource) => sourceUrlsMatch(source.url, officialHomepage);
   return sources.filter((source) => {
     const text = [source.title, source.description, source.url, pageTypeLabel(source.pageType)]
       .filter(Boolean).join(" ").toLocaleLowerCase();
@@ -790,8 +782,7 @@ function sourceTags(source: PublicAwardSource) {
 
 function sourceDisplayTitle(source: PublicAwardSource, awardName: string, officialHomepage?: string | null) {
   const cleanTitle = source.title.replace(/\s+/g, " ").trim();
-  const isOfficialHomepage =
-    Boolean(officialHomepage) && normalizeUrl(source.url) === normalizeUrl(officialHomepage);
+  const isOfficialHomepage = sourceUrlsMatch(source.url, officialHomepage);
   if (
     (source.pageType === "homepage" || isOfficialHomepage) &&
     (!cleanTitle || /^(homepage|home|source page|official homepage|official page)$/i.test(cleanTitle))
@@ -1002,7 +993,11 @@ function toDisplayTitleCase(value: string) {
 }
 
 function isChangeForSource(change: PublicAwardChange, source: PublicAwardSource) {
-  return change.sourceId === source.id || normalizeUrl(change.sourceUrl) === normalizeUrl(source.url);
+  // A retained source ID is authoritative, including when that source has
+  // retired. URL fallback is only for legacy changes without an ID, never a
+  // reason to attach an identified change to a different source.
+  if (change.sourceId) return change.sourceId === source.id;
+  return sourceUrlsMatch(change.sourceUrl, source.url);
 }
 
 function isUnreadChange(change: PublicAwardChange, readChangeIds: Set<string>) {
@@ -1019,15 +1014,22 @@ function postReadChangeIds(changeIds: string[]) {
   });
 }
 
-function normalizeUrl(value: string | null | undefined) {
+function sourceUrlsMatch(left: string | null | undefined, right: string | null | undefined) {
+  const leftKey = sourceDocumentUrlKey(left);
+  return leftKey !== null && leftKey === sourceDocumentUrlKey(right);
+}
+
+function sourceDocumentUrlKey(value: string | null | undefined) {
   try {
     const url = new URL(value || "");
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    // Unlike source-discovery deduplication, attribution must preserve the
+    // document address: paths, query names/values, and query order may matter.
+    // A fragment points within the same document, so it alone is ignored.
     url.hash = "";
-    url.search = "";
-    url.pathname = url.pathname.replace(/\/+$/g, "") || "/";
-    return url.toString().toLowerCase();
+    return url.toString();
   } catch {
-    return String(value || "").trim().toLowerCase();
+    return null;
   }
 }
 
