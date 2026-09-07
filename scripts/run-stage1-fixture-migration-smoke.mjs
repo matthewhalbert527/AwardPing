@@ -5,6 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 
 export const PREFIX_VERSION = "20260830223000";
 export const V3_MIGRATION = "20260831210000_canonical_identity_v3_truman_apply.sql";
@@ -145,9 +146,23 @@ export function localEnvironment(inherited, temporaryRoot, projectId) {
   return {
     ...env, DOCKER_HOST: "unix:///var/run/docker.sock", DOCKER_CONFIG: join(temporaryRoot, "docker"),
     XDG_CONFIG_HOME: join(temporaryRoot, "config"), XDG_DATA_HOME: join(temporaryRoot, "data"),
+    SUPABASE_HOME: join(temporaryRoot, "supabase-home"), DO_NOT_TRACK: "1",
     PGPASSWORD: "postgres", PGSSLMODE: "disable", PGCONNECT_TIMEOUT: "5", PGAPPNAME: projectId,
     PGPASSFILE: join(temporaryRoot, "empty-pgpass"), PGSERVICEFILE: join(temporaryRoot, "empty-pgservice"),
   };
+}
+
+export function failureTail(stderr, stdout) {
+  const clean = (value) => stripVTControlCharacters(String(value ?? ""))
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "").trim();
+  const diagnostic = clean(stderr) || clean(stdout);
+  if (!diagnostic) return "";
+  // Break both workflow-command sentinels: legacy ##[ is recognized anywhere,
+  // so a line prefix alone is insufficient. Never print args/env/config.
+  const inert = diagnostic.slice(-4000).replace(/:{2,}/g, (colons) => colons.split("").join(" "))
+    .replaceAll("##[", "## [");
+  return `\n${inert.split("\n").map((line) => `[replay diagnostic] ${line}`).join("\n")}`;
 }
 
 function temporaryConfig(projectId, port, shadowPort) {
@@ -186,7 +201,7 @@ function assertCopies(root, files) {
 export async function executeReplay({
   consent = false, inputs = loadReplayInputs(), platform = process.platform,
   tempRoot = tmpdir(), inheritedEnv = process.env, runProcess = spawnSync,
-  choosePorts = chooseLocalPorts, uuid = randomUUID, stdout = process.stdout,
+  choosePorts = chooseLocalPorts, uuid = randomUUID, stdout = process.stdout, stderr = process.stderr,
 } = {}) {
   if (consent !== true) throw new Error("Explicit disposable-local execution consent is required.");
   if (platform !== "linux") throw new Error("Database execution is restricted to Linux CI; --plan works on any platform.");
@@ -206,12 +221,13 @@ export async function executeReplay({
   const prefix = inputs.migrations.slice(0, inputs.split);
   const files = [...inputs.migrations, inputs.fixture, ...inputs.smokes];
   function command(executable, args, label) {
+    stderr.write(`[replay] ${label}\n`);
     const result = runProcess(executable, args, {
       cwd: directory, env, shell: false, windowsHide: true,
       encoding: "utf8", timeout: 300_000, maxBuffer: 16 * 1024 * 1024,
     });
     if (result.error || result.status !== 0) {
-      throw new Error(`${label} failed (${result.error?.message ?? result.signal ?? result.status}).`);
+      throw new Error(`${label} failed (${result.error?.code ?? result.signal ?? result.status}).${failureTail(result.stderr, result.stdout)}`);
     }
     return result.stdout ?? "";
   }
@@ -226,6 +242,7 @@ export async function executeReplay({
     mkdirSync(join(directory, "docker"));
     mkdirSync(join(directory, "config"));
     mkdirSync(join(directory, "data"));
+    mkdirSync(join(directory, "supabase-home"));
     writeFileSync(join(directory, "empty-pgpass"), "", { flag: "wx", mode: 0o600 });
     writeFileSync(join(directory, "empty-pgservice"), "", { flag: "wx", mode: 0o600 });
     writeFileSync(join(directory, "supabase/config.toml"), temporaryConfig(projectId, ...ports), { flag: "wx" });

@@ -1,0 +1,78 @@
+name: Stage 1 fixture-assisted migration replay
+
+on:
+  push:
+    branches:
+      - "claude/overnight-supervised-20260903"
+    paths:
+      - ".github/workflows/stage1-fixture-migration-smoke.yml"
+      - "package.json"
+      - "package-lock.json"
+      - "vitest.config.ts"
+      - "docs/stage1-fixture-migration-smoke.md"
+      - "scripts/run-stage1-fixture-migration-smoke*.mjs"
+      - "scripts/stage1-identity-v3-prerequisite-fixture.test.mjs"
+      - "scripts/stage1-fixture-migration-workflow.test.mjs"
+      - "src/lib/stage1-cohort-identity.ts"
+      - "supabase/config.toml"
+      - "supabase/migrations/**"
+      - "supabase/tests/**"
+  workflow_dispatch:
+    inputs:
+      fixture_replay:
+        description: "Start and destroy a disposable test-only database (not production)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  fixture-contract-tests:
+    name: Fixture and runner contract tests
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[fixture-replay]')) || (github.event_name == 'workflow_dispatch' && inputs.fixture_replay == true) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: >-
+          npx vitest run
+          scripts/run-stage1-fixture-migration-smoke.test.mjs
+          scripts/stage1-identity-v3-prerequisite-fixture.test.mjs
+          scripts/stage1-fixture-migration-workflow.test.mjs
+
+  fixture-assisted-replay:
+    name: Fixture-assisted frozen migration replay
+    needs: fixture-contract-tests
+    if: ${{ (github.event_name == 'push' && contains(github.event.head_commit.message, '[fixture-replay]')) || (github.event_name == 'workflow_dispatch' && inputs.fixture_replay == true) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: 2.109.1
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes postgresql-client
+          fi
+      - name: Inventory frozen inputs without executing
+        run: node scripts/run-stage1-fixture-migration-smoke.mjs --plan
+      - name: Replay in an owned disposable local database and clean up
+        run: node scripts/run-stage1-fixture-migration-smoke.mjs --execute-disposable-local

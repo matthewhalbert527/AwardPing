@@ -8,7 +8,7 @@ The historical migration chain creates exact identity v2. The frozen August 31 v
 
 Consequently, bare `supabase db start` or full `supabase db reset` still fails from the ordinary checkout. Passing this wrapper must never be presented as proof that bare reset works. A seed file cannot satisfy a guard that fails earlier during migration startup.
 
-The wrapper supplies a clearly synthetic prerequisite only in a brand-new disposable database. The fixture belongs under `supabase/tests/fixtures`, never `supabase/migrations`. No historical SQL file, migration version, production guard, or existing CI workflow is changed.
+The wrapper supplies a clearly synthetic prerequisite only in a brand-new disposable database. The fixture belongs under `supabase/tests/fixtures`, never `supabase/migrations`. No historical SQL file, migration version, production guard, or existing bare-chain CI workflow is changed.
 
 ## Safe default and execution boundary
 
@@ -39,10 +39,18 @@ Windows supports the plan and mocked contract tests, not database execution. Pro
 
 The child environment excludes inherited database/cloud credentials, Docker contexts, Node startup hooks, and remote connection settings. Docker is pinned to the local Unix socket. PostgreSQL connects only to literal `127.0.0.1` on the allocated port, using the disposable database's standard local password.
 
+The CLI's `SUPABASE_HOME` is a new owned temporary directory; telemetry is disabled with `DO_NOT_TRACK=1`. Stage names go to stderr, separately from the successful JSON receipt. Failed commands include only a bounded, terminal-control-stripped diagnostic tail with workflow-command sentinels broken and every line prefixed. The runner does not log inherited environment, arguments, or configuration.
+
+## Explicitly authorized GitHub validation
+
+The separate `.github/workflows/stage1-fixture-migration-smoke.yml` workflow leaves the existing bare-chain workflow unchanged. It runs only on relevant pushes to `claude/overnight-supervised-20260903` whose **HEAD commit message** contains `[fixture-replay]`. Adding that marker is an explicit opt-in to start and destroy a disposable GitHub-runner database. Its read-only-permission jobs run the offline contracts first, then install pinned Supabase CLI 2.109.1 and use the guarded runner. No production secrets or linked project are used.
+
+An optional manual `fixture_replay` boolean defaults to false. Manual dispatch will only become available if this workflow is later integrated into the default branch; this change does not do that. Branch-push opt-in is the current invocation path, so ordinary pushes without the marker do not execute databases.
+
 ## Validation status
 
 The implementation has **not executed against PostgreSQL**. Offline tests cover planning, immutable file inventories, argument/environment boundaries, exact ledger verification, mocked command order, partial failures, and cleanup. Fixture contract/parser tests are not a database integration test.
 
-Current review status: both runner and corrected fixture passed independent static review. The combined focused suite passes **53 offline tests** (45 runner tests and 8 fixture contract/parser tests); focused lint is clean. The fixture preserves the required historical seed records and acquires the shared release lock plus table locks before its guards. Exact original payload provenance comes from executing the byte-verified frozen prefix and its full-payload postconditions, followed by the fixture's key/value and unchanged-row checks; the fixture alone is not an arbitrary-database validator.
+Current review status: both runner and corrected fixture passed independent static review. The combined focused suite passes **61 offline tests** (49 runner tests, 8 fixture contract/parser tests, and 4 CI workflow contracts); focused lint is clean. The fixture preserves the required historical seed records and acquires the shared release lock plus table locks before its guards. Exact original payload provenance comes from executing the byte-verified frozen prefix and its full-payload postconditions, followed by the fixture's key/value and unchanged-row checks; the fixture alone is not an arbitrary-database validator.
 
-Runtime validation in an authorized disposable Linux environment is still required before wiring this helper into CI. In particular, a successful v3 transition may expose further assumptions in later frozen migrations; the wrapper must report those failures rather than bypassing them. This helper proves no live award fact, source freshness, monitoring success, or production release readiness.
+The owner has authorized the first disposable GitHub runtime validation; the result is pending. In particular, a successful v3 transition may expose further assumptions in later frozen migrations; the wrapper must report those failures rather than bypassing them. This helper proves no live award fact, source freshness, monitoring success, or production release readiness.

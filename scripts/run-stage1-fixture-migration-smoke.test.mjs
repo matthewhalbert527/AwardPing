@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertExactLedger, executeReplay, FIXTURE_PATH, FIXTURE_SUCCESS_ROW, loadReplayInputs, localEnvironment,
+import { assertExactLedger, executeReplay, failureTail, FIXTURE_PATH, FIXTURE_SUCCESS_ROW, loadReplayInputs, localEnvironment,
   PREFIX_VERSION, replayPlan, runReplayCli, SMOKE_PATHS, USAGE, V3_MIGRATION } from "./run-stage1-fixture-migration-smoke.mjs";
 
 const roots = [];
@@ -71,6 +71,7 @@ function harness({ failAt, afterCommand, mutateLedger, version = "2.109.1", fixt
     inheritedEnv: { PATH: "/usr/bin", HOME: "/user-home", DATABASE_URL: "remote", PGHOST: "remote",
       SUPABASE_ACCESS_TOKEN: "secret", DOCKER_HOST: "ssh://remote", DOCKER_CONTEXT: "production", NODE_OPTIONS: "--import=bad" },
     stdout: { write: vi.fn() },
+    stderr: { write: vi.fn() },
   };
   return { root, source, tempRoot, write, inputs, calls, options };
 }
@@ -189,6 +190,7 @@ describe("mocked disposable database orchestration (NO database executed)", () =
       expect(existsSync(join(call.options.cwd, "supabase/.temp/project-ref"))).toBe(false);
       expect(call.config).not.toContain("REAL-PROJECT");
       expect(call.config).toContain("enabled = false");
+      expect(existsSync(call.options.env.SUPABASE_HOME)).toBe(true);
       expect(readFileSync(join(call.options.cwd, "supabase/migrations/20260701000000_initial.sql"), "utf8"))
         .toBe("select 'raw bytes';\r\n");
     } });
@@ -218,6 +220,9 @@ describe("mocked disposable database orchestration (NO database executed)", () =
     expect(h.calls.at(-1).args).toEqual(["stop", "--project-id", project, "--no-backup", "--workdir", h.calls[0].options.cwd]);
     expect(readdirSync(h.tempRoot)).toEqual([]);
     expect(replayPlan(loadReplayInputs(h.source))).toEqual(replayPlan(h.inputs));
+    expect(h.options.stdout.write).toHaveBeenCalledExactlyOnceWith(`${JSON.stringify(result, null, 2)}\n`);
+    expect(h.options.stderr.write).toHaveBeenCalledWith("[replay] Start disposable database\n");
+    expect(h.options.stderr.write.mock.calls.flat().join("")).not.toContain(FIXTURE_SUCCESS_ROW);
   });
 
   it.each(["db start", "db reset", "stage1_identity_v3_prerequisite.sql", "migration up", ...SMOKE_PATHS.map((path) => basename(path))])(
@@ -231,7 +236,7 @@ describe("mocked disposable database orchestration (NO database executed)", () =
 
   it("preserves recovery directory and primary error when its stop fails", async () => {
     const h = harness({ failAt: ["db reset", "stop --project-id"] });
-    await expect(executeReplay(h.options)).rejects.toThrow(/Reset prefix failed.*Stop disposable database failed.*Preserved recovery workdir/);
+    await expect(executeReplay(h.options)).rejects.toThrow(/Reset prefix failed.*simulated failure.*Stop disposable database failed.*simulated failure.*Preserved recovery workdir/s);
     const [preserved] = readdirSync(h.tempRoot);
     expect(preserved).toMatch(/^awardping-fixture-replay-/);
     expect(existsSync(join(h.tempRoot, preserved, "supabase/config.toml"))).toBe(true);
@@ -300,8 +305,36 @@ describe("mocked disposable database orchestration (NO database executed)", () =
 
 it("scrubs auth/service/remote process environment rather than merely overwriting PGHOST", () => {
   const env = localEnvironment({ PATH: "/bin", PGSERVICE: "prod", PGHOSTADDR: "1.2.3.4", PGOPTIONS: "bad",
-    SUPABASE_DB_PASSWORD: "secret", AWS_SECRET_ACCESS_KEY: "secret", DOCKER_CERT_PATH: "/prod", ENV: "/startup" }, "/temporary", "test-id");
-  expect(Object.keys(env).sort()).toEqual(["DOCKER_CONFIG", "DOCKER_HOST", "PATH", "PGAPPNAME", "PGCONNECT_TIMEOUT", "PGPASSFILE", "PGPASSWORD", "PGSERVICEFILE", "PGSSLMODE", "XDG_CONFIG_HOME", "XDG_DATA_HOME"].sort());
+    SUPABASE_DB_PASSWORD: "secret", SUPABASE_HOME: "/prod", DO_NOT_TRACK: "0",
+    AWS_SECRET_ACCESS_KEY: "secret", DOCKER_CERT_PATH: "/prod", ENV: "/startup" }, "/temporary", "test-id");
+  expect(Object.keys(env).sort()).toEqual(["DOCKER_CONFIG", "DOCKER_HOST", "DO_NOT_TRACK", "PATH", "PGAPPNAME", "PGCONNECT_TIMEOUT", "PGPASSFILE", "PGPASSWORD", "PGSERVICEFILE", "PGSSLMODE", "SUPABASE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"].sort());
+  expect(env.SUPABASE_HOME).toBe(join("/temporary", "supabase-home"));
+  expect(env.DO_NOT_TRACK).toBe("1");
+});
+
+describe("bounded, inert subprocess failure diagnostics", () => {
+  it("prefers stderr and falls back to stdout only when stderr is empty", () => {
+    expect(failureTail("stderr detail", "stdout detail")).toBe("\n[replay diagnostic] stderr detail");
+    expect(failureTail("\x1b[31m\x1b[0m", "stdout detail")).toBe("\n[replay diagnostic] stdout detail");
+    expect(failureTail(undefined, null)).toBe("");
+  });
+  it("strips terminal controls and prefixes every line against workflow commands", () => {
+    expect(failureTail("\x1b[31mERROR\x1b[0m\r\n::error::untrusted\x00\x07", ""))
+      .toBe("\n[replay diagnostic] ERROR\n[replay diagnostic] : :error: :untrusted");
+  });
+  it("neutralizes legacy commands anywhere and overlapping colon sentinels", () => {
+    const diagnostic = failureTail("before ##[error]untrusted\n:::error:::untrusted\n##[add-path]/bad", "");
+    expect(diagnostic).not.toContain("##[");
+    expect(diagnostic).not.toContain("::");
+    expect(diagnostic).toContain("before ## [error]untrusted");
+    expect(diagnostic).toContain(": : :error: : :untrusted");
+  });
+  it("keeps only the last 4000 diagnostic characters", () => {
+    const diagnostic = failureTail(`dropped-prefix${"a".repeat(5000)}last-detail`, "");
+    expect(diagnostic).not.toContain("dropped-prefix");
+    expect(diagnostic.endsWith("last-detail")).toBe(true);
+    expect(diagnostic.length).toBe(4000 + "\n[replay diagnostic] ".length);
+  });
 });
 
 it("documents limits without changing the existing CI workflow or frozen migrations", () => {
