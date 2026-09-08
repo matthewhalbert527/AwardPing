@@ -39,7 +39,7 @@ describe("public award deadline descriptions", () => {
     ["2026-03-27T17:00:00-05:00", "March 27, 2026 at 5:00 p.m. (UTC-05:00)"],
     ["October 1, 2026 at 11:59PM PT", "October 1, 2026 at 11:59 p.m. (PT)"],
     ["2026-03-27", "March 27, 2026"],
-    ["Last Friday in January, 5:00 p.m. Central Time", "Last Friday in January, 5:00 p.m. Central Time"],
+    ["Last Friday in January, 5:00 p.m. Central Time", "Last Friday in January at 5:00 p.m. (Central Time)"],
     ["TBA", "TBA"],
     ["2026-02-30", "2026-02-30"],
   ])("formats %s only in the metadata sentence", (deadline, expected) => {

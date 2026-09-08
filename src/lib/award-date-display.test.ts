@@ -3,8 +3,9 @@ import { awardDateZoneSlices, formatAwardDateFact, formatAwardDateText } from "@
 
 // The exact value the reported screenshot rendered raw.
 const SCREENSHOT_DEADLINE = "2026-03-27T17:00:00-05:00";
-// The already-readable house style the fix matches.
+// Reviewed recurrence and the same house style used by exact calendar dates.
 const GOLDWATER_DEADLINE = "Last Friday in January, 5:00 p.m. Central Time";
+const GOLDWATER_DISPLAY = "Last Friday in January at 5:00 p.m. (Central Time)";
 
 describe("formatAwardDateText", () => {
   it("turns the reported raw timestamp into the house style", () => {
@@ -72,7 +73,7 @@ describe("formatAwardDateText", () => {
 
   it.each([
     // Already-readable reviewed wording is the target style, not an input.
-    GOLDWATER_DEADLINE,
+    GOLDWATER_DISPLAY,
     "January 29, 2026",
     "Rolling",
     "Rolling; check the official page",
@@ -250,7 +251,7 @@ describe("reviewed clock typography", () => {
     ["29 September 2026 at 5:00pm in the time zone of the endorsing institution", "September 29, 2026 at 5:00 p.m. in the time zone of the endorsing institution"],
     ["1 October 2026 at 5:00pm (endorsing institution time zone): Deadline for endorsing institution to submit endorsed application and recommendations", "October 1, 2026 at 5:00 p.m. (endorsing institution time zone): Deadline for endorsing institution to submit endorsed application and recommendations"],
     ["Deadline: October 1, 2026 at 11:59PM PT", "Deadline: October 1, 2026 at 11:59 p.m. (PT)"],
-    ["Second Friday in November at 11:59 pm Eastern Time", "Second Friday in November at 11:59 p.m. Eastern Time"],
+    ["Second Friday in November at 11:59 pm Eastern Time", "Second Friday in November at 11:59 p.m. (Eastern Time)"],
     ["US citizens resident in the USA round — Wednesday 14 October 2026 at 11:59 pm GMT: Application deadline", "US citizens resident in the USA round — Wednesday 14 October 2026 at 11:59 p.m. GMT: Application deadline"],
     ["All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 pm GMT (dependent on course): Application deadline", "All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 p.m. GMT (dependent on course): Application deadline"],
     ["Finalists: (5:00 PM EST); interviews: (9 AM, your time zone)", "Finalists: (5:00 p.m. EST); interviews: (9:00 a.m., your time zone)"],
@@ -276,10 +277,10 @@ describe("reviewed clock typography", () => {
     expect(formatAwardDateText(value)).toBe(value);
   });
 
-  it("keeps compound clock parentheses and already clean recurring rules intact", () => {
+  it("keeps compound clock wording intact while styling a complete recurring deadline", () => {
     const compound = "Last Friday in March (12:00 p.m. Eastern Time / 11:00 a.m. Central Time): Goldwater Scholars announced";
     expect(formatAwardDateText(compound)).toBe(compound);
-    expect(formatAwardDateText(GOLDWATER_DEADLINE)).toBe(GOLDWATER_DEADLINE);
+    expect(formatAwardDateText(GOLDWATER_DEADLINE)).toBe(GOLDWATER_DISPLAY);
     expect(formatAwardDateText("5:00 p.m. EST on the first Friday in December 2026"))
       .toBe("5:00 p.m. EST on the first Friday in December 2026");
   });
@@ -317,7 +318,7 @@ describe("formatAwardDateFact", () => {
       "Rolling",
     ])).toEqual([
       "Opens: January 5, 2026",
-      GOLDWATER_DEADLINE,
+      GOLDWATER_DISPLAY,
       "March 27, 2026 at 5:00 p.m. (UTC-05:00)",
       "Rolling",
     ]);
@@ -325,7 +326,7 @@ describe("formatAwardDateFact", () => {
 
   it("passes a single value straight through the same rules", () => {
     expect(formatAwardDateFact(SCREENSHOT_DEADLINE)).toBe("March 27, 2026 at 5:00 p.m. (UTC-05:00)");
-    expect(formatAwardDateFact(GOLDWATER_DEADLINE)).toBe(GOLDWATER_DEADLINE);
+    expect(formatAwardDateFact(GOLDWATER_DEADLINE)).toBe(GOLDWATER_DISPLAY);
   });
 
   it("produces text that can wrap, with no unbroken machine token left", () => {
@@ -449,7 +450,6 @@ describe("complete written calendar dates", () => {
   it.each([
     "29 February 1900", "31 June 2026", "0 July 2026", "1 Notamonth 2026",
     "July 2026", "1 July", "October 30", "First Tuesday in September",
-    GOLDWATER_DEADLINE,
     "1 July 2026 (tentative)", "1 July 2026 or later",
     "Before 1 July 2026", "Opening date: 1 July 2026 (tentative)",
     "1 July 2026 to 4 July 2026",

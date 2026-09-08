@@ -1077,12 +1077,27 @@ describe("focused award sections", () => {
     "February 30, 2026 at 5:00 p.m. (UTC-05:00)",
     "March 27, 2026 at 5:00 p.m. (UTC-00:00)",
     "If eligible, March 27, 2026 at 5:00 p.m. (UTC-05:00)",
-    "Last Friday in January, 5:00 p.m. (UTC-05:00)",
     "2026-02-30: March 27, 2026 at 5:00 p.m. (UTC-05:00)",
   ])("keeps unsupported date prose ungrouped: %s", (deadline) => {
     const value = factValue(datesPanel({ deadline }), "Deadline");
     expect(value.text()).toBe(deadline);
     expect(value.find(".award-date-zone").length).toBe(0);
+  });
+
+  it.each(["Overview", "Dates"] as const)("formats a recurring numeric-zone deadline and groups only its canonical UTC token in %s", (panel) => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.facts.deadline = "Last Friday in January, 5:00 p.m. (UTC-05:00)";
+    const before = structuredClone(data);
+    const html = panel === "Overview"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+      : renderToStaticMarkup(createElement(AwardFactsPanel, {
+        facts: data.facts, section: "dates", onViewSources: () => {},
+      }));
+    const value = factValue(html, "Deadline");
+    expect(value.text()).toBe("Last Friday in January at 5:00 p.m. (UTC-05:00)");
+    expect(value.find("span.award-date-zone").length).toBe(1);
+    expect(value.find("span.award-date-zone").text()).toBe("(UTC-05:00)");
+    expect(data).toEqual(before);
   });
 
   it("renders a raw machine deadline in the reviewed house style, in both panels", () => {
@@ -1115,11 +1130,33 @@ describe("focused award sections", () => {
     expect(data.facts.deadline).toBe("October 1, 2026 at 11:59PM PT");
   });
 
-  it("leaves already-readable reviewed wording exactly as approved", () => {
-    const html = datesPanel({ deadline: REVIEWED_PROSE, openingDate: "Opens each September" });
+  it.each(["Overview", "Dates"] as const)("gives Goldwater's recurring deadline and labeled timeline the shared style in %s without changing reviewed facts", (panel) => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.award.name = "Barry Goldwater Scholarship";
+    data.facts.deadline = REVIEWED_PROSE;
+    data.facts.openingDate = "Opens each September";
+    data.facts.importantDates = [
+      `Nomination deadline: ${REVIEWED_PROSE}`,
+      "Institutional deadlines vary.",
+    ];
+    const before = structuredClone(data);
+    const html = panel === "Overview"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+      : renderToStaticMarkup(createElement(AwardFactsPanel, {
+        facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
+      }));
 
-    expect(deadlineText(html)).toBe(REVIEWED_PROSE);
-    expect(html).toContain("Opens each September");
+    expect(deadlineText(html)).toBe("Last Friday in January at 5:00 p.m. (Central Time)");
+    expect(factValue(html, "Deadline").find(".award-date-zone").length).toBe(0);
+    expect(factValue(html, "Opening date").text()).toBe("Opens each September");
+    const timeline = factValue(html, "Important dates");
+    const $ = load(timeline.html() || "");
+    expect($("li").map((_index, item) => $(item).text()).get()).toEqual([
+      "Nomination deadline: Last Friday in January at 5:00 p.m. (Central Time)",
+      "Institutional deadlines vary.",
+    ]);
+    expect(data).toEqual(before);
+    expect(data.facts.deadline).toBe(REVIEWED_PROSE);
   });
 
   it.each([

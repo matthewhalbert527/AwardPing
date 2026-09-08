@@ -438,6 +438,7 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     { raw: "2026-03-27T17:00:00-05:00", text: "March 27, 2026 at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)", summaryText: "March 27, 2026 at 5:00 p.m." },
     { raw: "2026-03-27T09:30:00+05:30", text: "March 27, 2026 at 9:30 a.m. (UTC+05:30)", zone: "(UTC+05:30)", summaryText: "March 27, 2026 at 9:30 a.m." },
     { raw: "2026-03-27T17:00:00Z", text: "March 27, 2026 at 5:00 p.m. (UTC)", zone: "(UTC)", summaryText: "March 27, 2026 at 5:00 p.m." },
+    { raw: "Last Friday in January, 5:00 p.m. (UTC-05:00)", text: "Last Friday in January at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)", summaryText: "Last Friday in January at 5:00 p.m." },
   ])("groups only the directory UTC token for $raw with unchanged ASCII text", ({ raw, text, zone, summaryText }) => {
     const row = { ...gaither, deadline: raw, summary: text };
     const before = structuredClone(row);
@@ -528,19 +529,20 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(JSON.stringify(row)).toBe(before);
   });
 
-  it("renders a raw machine deadline in the house style without touching the filter", () => {
+  it("renders machine and recurring deadlines in the house style without touching raw facts or filters", () => {
     const rows = [
       { ...gaither, deadline: "2026-03-27T17:00:00-05:00" },
       { ...gates, deadline: "Last Friday in January, 5:00 p.m. Central Time" },
       { ...gilman, deadline: "2026-03-27" },
       { ...goldwaterRow, deadline: "2026-02-30" },
     ];
+    const before = structuredClone(rows);
 
     const html = renderRows(rows);
 
     expect(deadlineCells(html)).toEqual([
       "March 27, 2026 at 5:00 p.m. (UTC-05:00)",
-      "Last Friday in January, 5:00 p.m. Central Time",
+      "Last Friday in January at 5:00 p.m. (Central Time)",
       "March 27, 2026",
       // An impossible date is shown as stored, never rolled into March 2.
       "2026-02-30",
@@ -553,6 +555,7 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(matchCount(renderRows(rows, DEADLINE_LISTED_PRESETS))).toBe("4 of 4 monitored awards match");
     // None is "not listed", so the missing filter leaves nothing to browse.
     expect(browseRowHrefs(renderRows(rows, DEADLINE_MISSING_PRESETS))).toEqual([]);
+    expect(rows).toEqual(before);
   });
 
   it("labels the deadline filter by what the data establishes and keeps its behavior in both auth states", () => {

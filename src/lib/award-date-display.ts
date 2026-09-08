@@ -1,11 +1,10 @@
 /**
  * Display-only formatting for reviewed award date facts.
  *
- * Reviewed facts are stored exactly as a human approved them, and most already
- * read well ("Last Friday in January, 5:00 p.m. Central Time"). A few carry a
- * raw machine timestamp instead, which is unreadable on a public card. This
- * turns that shape, complete written dates with times, calendar-date ranges,
- * and clearly delimited timeline dates into the same house style. Standalone
+ * Reviewed facts are stored exactly as a human approved them. This turns raw
+ * machine timestamps, complete written dates and recurring rules with times,
+ * calendar-date ranges, and clearly delimited timeline dates into the same
+ * house style. A recurring rule never becomes an inferred calendar date. Standalone
  * 12-hour clocks in prose get the same typography without rewriting prose.
  *
  * Nothing here changes what a date means:
@@ -24,8 +23,9 @@
  *     number, so recorded precision is neither rounded nor truncated;
  *   * the explicit "(applicant's time zone)" qualifier stays exactly that;
  *     it is not a geographic zone and is never converted into one;
- *   * recurring rules and qualifiers keep their wording; only valid complete
- *     clock tokens can change typography. Unsupported dates and fractional
+ *   * recognized recurring rules keep their wording while the clock separator
+ *     and stated zone use the calendar-date style. Qualifiers and compound
+ *     clock prose retain their meaning. Unsupported dates and fractional
  *     minutes are never guessed at or partially salvaged.
  */
 
@@ -70,6 +70,13 @@ const CLOCK_IN_TEXT_PATTERN = new RegExp(
 );
 const WRITTEN_DATE_TIME_PATTERN =
   /^([A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})(?: at |, )(\d[^\n]*?[ap]\.?m\.?)(?: (.+))?$/i;
+// Recognize the rule, not its next occurrence: there is deliberately no year
+// calculation, weekday arithmetic, or arbitrary prose/date-prefix inference.
+const RECURRING_RULE_SOURCE = String.raw`(?:First|Second|Third|Fourth|Fifth|Last) (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) in (?:${MONTH_NAMES.join("|")})`;
+const RECURRING_DATE_TIME_PATTERN = new RegExp(
+  String.raw`^(${RECURRING_RULE_SOURCE})(?: at |, )(\d[^\n]*?[ap]\.?m\.?)(?: (.+))?$`, "i",
+);
+const RECURRING_DATE_START_PATTERN = new RegExp(String.raw`^${RECURRING_RULE_SOURCE}\b`, "i");
 const NAMED_ZONE_PATTERN = /^(?:UTC|GMT|PT|PST|PDT|ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|HST|AKST|AKDT|BST|CET|CEST|IST|JST|AEST|AEDT|NZST|NZDT|(?:Eastern|Central|Pacific|Mountain)(?: (?:Standard |Daylight )?Time)?)$/i;
 const LOCAL_ZONE_QUALIFIERS = new Set([
   "(applicant's time zone)",
@@ -163,6 +170,18 @@ function formatWrittenDateTime(value: string) {
   return `${calendarDate} at ${time}${zone ? ` ${zone}` : ""}`;
 }
 
+/** Style one complete recurring rule without resolving it into a dated event. */
+function formatRecurringDateTime(value: string) {
+  const match = RECURRING_DATE_TIME_PATTERN.exec(value);
+  if (!match) return null;
+  const [, rule, clock, qualifier] = match;
+  const time = formatTwelveHourClock(clock);
+  if (!time) return null;
+  const zone = qualifier === undefined ? "" : formatWrittenZone(qualifier);
+  if (zone === null) return null;
+  return `${rule} at ${time}${zone ? ` ${zone}` : ""}`;
+}
+
 /** The readable form of one complete ISO value, or null when it is not one. */
 function formatIsoValue(value: string) {
   const match = ISO_DATE_PATTERN.exec(value);
@@ -203,6 +222,9 @@ function formatCompleteDateValue(value: string) {
   const written = formatWrittenDateTime(value);
   if (written) return written;
 
+  const recurring = formatRecurringDateTime(value);
+  if (recurring) return recurring;
+
   const writtenDate = formatWrittenCalendarDate(value);
   if (writtenDate) return writtenDate;
 
@@ -236,7 +258,7 @@ function reviewedDateParts(value: string) {
   // A leading date-shaped head must validate whole, including dates without
   // clocks. Never salvage a valid tail from an invalid, qualified, or ranged
   // head (for example "31 June 2026: 1 July 2026").
-  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})/.test(trimmed)) {
+  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})/.test(trimmed) || RECURRING_DATE_START_PATTERN.test(trimmed)) {
     const separator = trimmed.indexOf(": ");
     if (separator > 0 && trimmed.slice(separator + 2).trim()) {
       const head = formatCompleteDateValue(trimmed.slice(0, separator));
@@ -289,13 +311,16 @@ export function formatAwardDateText(value: string) {
   const formatted = formatReviewedDateValue(value);
   // Unsupported machine statements keep the previous all-or-nothing guard.
   if (formatted === value && /\b\d{4}-\d{2}/.test(value)) return value;
-  // A whole written datetime with an invalid date/clock or an unrecognized
+  // A whole written or recurring datetime with an invalid date/clock or an unrecognized
   // suffix is not a license to salvage just the clock from that statement.
   // A reviewer's label must not bypass that same all-or-nothing boundary.
   if (formatted === value) {
     const separator = value.lastIndexOf(": ");
     const candidates = [value.trim(), ...(separator > 0 ? [value.slice(separator + 2).trim()] : [])];
-    if (candidates.some((candidate) => WRITTEN_DATE_TIME_PATTERN.test(candidate) && formatWrittenDateTime(candidate) === null)) return value;
+    if (candidates.some((candidate) =>
+      (WRITTEN_DATE_TIME_PATTERN.test(candidate) && formatWrittenDateTime(candidate) === null)
+      || (RECURRING_DATE_TIME_PATTERN.test(candidate) && formatRecurringDateTime(candidate) === null)
+    )) return value;
   }
   return formatted.replace(CLOCK_IN_TEXT_PATTERN, (clock) => formatTwelveHourClock(clock) ?? clock);
 }
