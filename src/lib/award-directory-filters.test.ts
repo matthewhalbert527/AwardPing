@@ -19,7 +19,7 @@ const labels: Record<string, string> = {
   "Social sciences & policy": "Society & policy",
   "Multiple fields (check courses)": "Multiple fields",
   "Country-specific criteria": "Country-specific",
-  "U.S. permanent residents": "U.S. permanent resident",
+  "U.S. permanent residents": "U.S. green card",
 };
 function input(field?: DirectoryFilterField, values: readonly string[] = []): DirectoryFilterInput {
   return { academicLevels: [], disciplines: [], citizenship: [], ...(field ? { [field]: values } : {}) };

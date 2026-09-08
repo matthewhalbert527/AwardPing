@@ -274,7 +274,7 @@ describe("AwardDiscoveryWorkspace", () => {
     const selectOptions = (index: number) => $(".award-directory-filter-grid select").eq(index).children("option").toArray().map(option => [$(option).attr("value"), $(option).text()]);
     expect(selectOptions(0)).toEqual([["all", "All"], ["Undergraduate", "Undergraduate"], ["Recent graduate", "Recent graduate"]]);
     expect(selectOptions(1)).toEqual([["all", "All"], ["STEM", "STEM"], ["Engineering", "Engineering"], ["Mathematics", "Mathematics"], ["Natural sciences", "Natural sciences"], ["Arts", "Arts & humanities"]]);
-    expect(selectOptions(2)).toEqual([["all", "All"], ["U.S. citizens", "U.S. citizens"], ["U.S. nationals", "U.S. nationals"], ["U.S. permanent residents", "U.S. permanent resident"]]);
+    expect(selectOptions(2)).toEqual([["all", "All"], ["U.S. citizens", "U.S. citizens"], ["U.S. nationals", "U.S. nationals"], ["U.S. permanent residents", "U.S. green card"]]);
     expect(rows).toEqual(before);
   });
 });

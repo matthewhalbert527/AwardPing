@@ -17,7 +17,7 @@ const labels = new Map([
   ["Social sciences & policy", "Society & policy"],
   ["Multiple fields (check courses)", "Multiple fields"],
   ["Country-specific criteria", "Country-specific"],
-  ["U.S. permanent residents", "U.S. permanent resident"],
+  ["U.S. permanent residents", "U.S. green card"],
 ]);
 
 function key(value: string) {
