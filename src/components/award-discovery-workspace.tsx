@@ -271,8 +271,9 @@ export function AwardDiscoveryWorkspace({
               Next
               <ChevronRight size={17} aria-hidden="true" />
             </button>}
+            <div className="flex min-w-0 max-w-full flex-wrap gap-2" role="group" aria-label="Letter navigation">
             <button
-              className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
+              className="button-secondary cursor-pointer px-3 py-3 text-sm disabled:cursor-default disabled:opacity-40"
               type="button"
               disabled={!previousLetter}
               title={!previousLetter ? "You are at the first available letter." : undefined}
@@ -287,7 +288,7 @@ export function AwardDiscoveryWorkspace({
               {previousLetter ? `Previous letter: ${previousLetter}` : "Previous letter"}
             </button>
             <button
-              className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
+              className="button-secondary cursor-pointer px-3 py-3 text-sm disabled:cursor-default disabled:opacity-40"
               type="button"
               disabled={!nextLetter}
               title={!nextLetter ? "You are at the last available letter." : undefined}
@@ -301,6 +302,7 @@ export function AwardDiscoveryWorkspace({
               {nextLetter ? `Next letter: ${nextLetter}` : "Next letter"}
               <ChevronRight size={17} aria-hidden="true" />
             </button>
+            </div>
           </div>
         </div>
       </div>
