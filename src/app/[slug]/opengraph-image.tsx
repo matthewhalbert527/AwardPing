@@ -1,6 +1,6 @@
 import { ImageResponse } from "next/og";
 import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { presentAwardDateField } from "@/lib/award-date-presentation";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
@@ -9,13 +9,6 @@ export const runtime = "nodejs";
 export const alt = "AwardPing award record";
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
-
-// Lazy, realm-independent font loads: a module-scope readFile(new URL(...))
-// rejects under the bundled runtime and the unhandled rejection at module
-// evaluation killed every request on routes sharing this chunk.
-const fontPath = (relative: string) =>
-  fileURLToPath(new URL(relative, import.meta.url).href);
-const loadFont = (relative: string) => readFile(fontPath(relative));
 
 const INK = "#17150f";
 const ACCENT = "#1c4e80";
@@ -115,22 +108,25 @@ export default async function AwardOpenGraphImage({
     ),
     {
       ...size,
+      // Literal project-root paths let Next trace the runtime assets. Keep
+      // reads inside the handler and pass strings, avoiding import-time I/O
+      // and cross-realm URL objects in the bundled runtime.
       fonts: [
         {
           name: "Source Serif 4",
-          data: await loadFont("../source-serif-4-semibold.ttf"),
+          data: await readFile(join(process.cwd(), "src/app/source-serif-4-semibold.ttf")),
           weight: 600,
           style: "normal",
         },
         {
           name: "Geist",
-          data: await loadFont("../geist-sans-600.ttf"),
+          data: await readFile(join(process.cwd(), "src/app/geist-sans-600.ttf")),
           weight: 600,
           style: "normal",
         },
         {
           name: "Geist",
-          data: await loadFont("../geist-sans-700.ttf"),
+          data: await readFile(join(process.cwd(), "src/app/geist-sans-700.ttf")),
           weight: 700,
           style: "normal",
         },

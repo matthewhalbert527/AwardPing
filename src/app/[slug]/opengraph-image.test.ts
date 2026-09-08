@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
@@ -7,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   image: vi.fn(),
   getAward: vi.fn(),
   hasConfig: vi.fn(),
+  readFile: vi.fn(async (path: string) => Buffer.from(path)),
 }));
 
 // Inspect the actual image component's JSX without reading credentials,
@@ -18,11 +21,19 @@ vi.mock("next/og", () => ({
     }
   },
 }));
-vi.mock("node:fs/promises", () => ({ readFile: vi.fn(async () => Buffer.from("test-font")) }));
+vi.mock("node:fs/promises", () => ({ readFile: mocks.readFile }));
 vi.mock("@/lib/config", () => ({ hasSupabaseAdminConfig: mocks.hasConfig }));
 vi.mock("@/lib/public-award-pages", () => ({ getPublicAwardPageBySlug: mocks.getAward }));
 
 import AwardOpenGraphImage from "./opengraph-image";
+
+// Capture before beforeEach can erase evidence of an import-time font read.
+const fontReadsAtImport = mocks.readFile.mock.calls.length;
+const FONT_FILES = [
+  "src/app/source-serif-4-semibold.ttf",
+  "src/app/geist-sans-600.ttf",
+  "src/app/geist-sans-700.ttf",
+];
 
 describe("award sharing image deadline", () => {
   beforeEach(() => {
@@ -76,5 +87,28 @@ describe("award sharing image deadline", () => {
     await AwardOpenGraphImage({ params: Promise.resolve({ slug: "example-award" }) });
     expect(mocks.getAward).not.toHaveBeenCalled();
     expect(renderToStaticMarkup(mocks.image.mock.calls[0][0])).not.toContain("Deadline");
+  });
+
+  it("reads each font lazily from a project-root string path", async () => {
+    expect(fontReadsAtImport).toBe(0);
+    expect(mocks.readFile).not.toHaveBeenCalled();
+    mocks.getAward.mockResolvedValue({
+      award: { name: "Example Award" },
+      facts: publicAwardFactsFromAward({}),
+      sources: [],
+    });
+    await AwardOpenGraphImage({ params: Promise.resolve({ slug: "example-award" }) });
+    expect(mocks.readFile.mock.calls.map(([path]) => path)).toEqual(
+      FONT_FILES.map((file) => join(process.cwd(), file)),
+    );
+  });
+
+  it("keeps every runtime font path literal and backed by an existing asset", () => {
+    const source = readFileSync(new URL("./opengraph-image.tsx", import.meta.url), "utf8");
+    expect([...source.matchAll(/"(src\/app\/[^"]+\.ttf)"/g)].map((match) => match[1])).toEqual(FONT_FILES);
+    for (const file of FONT_FILES) expect(existsSync(join(process.cwd(), file)), file).toBe(true);
+    expect(source).not.toContain("import.meta.url");
+    expect(source).not.toContain("fileURLToPath");
+    // Source contracts do not prove bundling; the built artifact must also be checked.
   });
 });
