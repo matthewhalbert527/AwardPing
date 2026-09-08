@@ -589,6 +589,7 @@ a {
 .award-alpha-letter {
   flex: 1 1 1.75rem;
   min-width: 0;
+  cursor: pointer;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
   background: var(--surface);
@@ -601,8 +602,14 @@ a {
 }
 
 .award-alpha-letter:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.award-alpha-letter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .award-alpha-letter:disabled {

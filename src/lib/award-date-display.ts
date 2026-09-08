@@ -4,8 +4,8 @@
  * Reviewed facts are stored exactly as a human approved them, and most already
  * read well ("Last Friday in January, 5:00 p.m. Central Time"). A few carry a
  * raw machine timestamp instead, which is unreadable on a public card. This
- * turns ONLY that shape into the same house style and leaves every other
- * string byte-for-byte alone.
+ * turns that shape, complete calendar-date ranges, and clearly delimited
+ * timeline dates into the same house style. Other wording stays untouched.
  *
  * Nothing here changes what a date means:
  *   * the components are read straight out of the text, never through `Date`,
@@ -21,6 +21,8 @@
  *     whole value unchanged rather than stating a zone that is not known;
  *   * a fractional second is reproduced digit for digit, never parsed into a
  *     number, so recorded precision is neither rounded nor truncated;
+ *   * the explicit "(applicant's time zone)" qualifier stays exactly that;
+ *     it is not a geographic zone and is never converted into one;
  *   * anything unrecognised — prose, recurring rules, "Rolling", "TBA",
  *     partial dates, a fractional minute — is returned unchanged rather than
  *     guessed at.
@@ -51,6 +53,12 @@ const MONTH_NAMES = [
  */
 const ISO_DATE_PATTERN =
   /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?[ ]?(Z|z|[+-]\d{2}:?\d{2})?)?$/;
+
+const ISO_DATE_RANGE_PATTERN = /^(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})$/;
+// This is reviewed wording observed on the Truman deadline, not a license to
+// interpret arbitrary parenthetical prose or to override a stated UTC offset.
+const APPLICANT_LOCAL_TIME_PATTERN =
+  /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?) (\(applicant's time zone\))$/;
 
 function daysInMonth(year: number, month: number) {
   if (month === 2) {
@@ -120,21 +128,62 @@ function formatIsoValue(value: string) {
   return `${calendarDate} at ${timeOfDay}${zone ? ` (${zone})` : ""}`;
 }
 
+/** Recognize only a complete value; never replace ISO-looking substrings. */
+function formatCompleteDateValue(value: string) {
+  const formatted = formatIsoValue(value);
+  if (formatted) return formatted;
+
+  const range = ISO_DATE_RANGE_PATTERN.exec(value);
+  if (range) {
+    const start = formatIsoValue(range[1]);
+    const end = formatIsoValue(range[2]);
+    // Both ends must be real dates in chronological order. Fixed-width ISO
+    // calendar dates compare directly, without host-zone or Date conversion.
+    if (!start || !end || range[1] > range[2]) return null;
+    return `${start} to ${end}`;
+  }
+
+  const localTime = APPLICANT_LOCAL_TIME_PATTERN.exec(value);
+  if (localTime) {
+    const timestamp = formatIsoValue(localTime[1]);
+    if (timestamp) return `${timestamp} ${localTime[2]}`;
+  }
+
+  return null;
+}
+
 /**
  * One reviewed date fact, made readable. Returns the input unchanged whenever
- * it is not a machine timestamp this helper fully understands.
+ * it is not a complete date value or labelled item this helper understands.
  */
 export function formatAwardDateText(value: string) {
   const trimmed = value.trim();
-  const formatted = formatIsoValue(trimmed);
+  const formatted = formatCompleteDateValue(trimmed);
   if (formatted) return formatted;
+
+  // Date-first timeline entries have a clear boundary before the reviewer's
+  // description. Preserve every word after it, including any embedded dates.
+  // If the leading machine value is invalid, do not try styling its label as
+  // a different date instead (for example "2027-02-30: 2027-03-01").
+  if (/^\d{4}-/.test(trimmed)) {
+    const separator = trimmed.indexOf(": ");
+    if (separator > 0 && trimmed.slice(separator + 2).trim()) {
+      const head = formatCompleteDateValue(trimmed.slice(0, separator));
+      if (head) return `${head}${trimmed.slice(separator)}`;
+    }
+    return value;
+  }
 
   // A reviewed item may label its date ("Interviews: 2026-03-27"). The label
   // is the reviewer's wording and is kept exactly; only the value is styled.
   const separator = trimmed.lastIndexOf(": ");
   if (separator > 0) {
-    const tail = formatIsoValue(trimmed.slice(separator + 2).trim());
-    if (tail) return `${trimmed.slice(0, separator)}: ${tail}`;
+    const label = trimmed.slice(0, separator);
+    // A prior machine-date fragment may belong to an invalid range or a more
+    // complex statement. Do not partially rewrite only its final valid date.
+    if (/\d{4}-\d{2}/.test(label)) return value;
+    const tail = formatCompleteDateValue(trimmed.slice(separator + 2).trim());
+    if (tail) return `${label}: ${tail}`;
   }
 
   return value;

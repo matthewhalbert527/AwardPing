@@ -558,6 +558,22 @@ function alphaButton(html: string, letter: string) {
 }
 
 describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
+  it("keeps the letter boxes with a clear hover treatment and hand cursor", () => {
+    const css = readFileSync(new URL("../app/globals.css", import.meta.url), "utf8");
+    const rule = (selector: string) => css.split(`${selector} {`)[1]?.split("}")[0] ?? "";
+
+    expect(rule(".award-alpha-letter")).toContain("cursor: pointer;");
+    expect(rule(".award-alpha-letter")).toContain("border: 1px solid var(--border);");
+    expect(rule(".award-alpha-letter:hover:not(:disabled)")).toContain("background: var(--accent);");
+    expect(rule(".award-alpha-letter:hover:not(:disabled)")).toContain("color: var(--accent-contrast);");
+    expect(rule(".award-alpha-letter:disabled")).toContain("cursor: not-allowed;");
+    expect(rule(".award-alpha-letter:focus-visible")).toContain("outline: 2px solid var(--accent);");
+
+    const html = renderRows(fictionalRows(2));
+    expect(alphaButton(html, "F")).toEqual({ active: true, disabled: false, pressed: true });
+    expect(alphaButton(html, "A")).toEqual({ active: false, disabled: true, pressed: false });
+  });
+
   it("pages 31 same-letter awards as 30 then 1 at page size 30, with exact links, counts and pager states", () => {
     const rows = fictionalRows(31);
 

@@ -142,6 +142,79 @@ describe("formatAwardDateText", () => {
       .toBe("Deadline: Last Friday in January");
   });
 
+  it.each([
+    ["2026-03-27: Deadline for receipt of all nominations", "March 27, 2026: Deadline for receipt of all nominations"],
+    ["2026-04-01: Deadline for nominee to submit Financial Aid Data Sheet (5:00 PM EST)", "April 1, 2026: Deadline for nominee to submit Financial Aid Data Sheet (5:00 PM EST)"],
+    ["2026-06-01: Deadline for announcement of awards", "June 1, 2026: Deadline for announcement of awards"],
+    ["2027-02-02: Truman Application Deadline (11:59 pm, your time zone)", "February 2, 2027: Truman Application Deadline (11:59 pm, your time zone)"],
+    ["2027-02-08: Foundation Confirms Receipt of Materials by", "February 8, 2027: Foundation Confirms Receipt of Materials by"],
+    ["2027-02-15: Finalists Notified", "February 15, 2027: Finalists Notified"],
+    ["2027-02-18: Finalist Confirmation Due by 9:00 am ET", "February 18, 2027: Finalist Confirmation Due by 9:00 am ET"],
+    ["2027-02-19: Finalist Posting", "February 19, 2027: Finalist Posting"],
+    ["2027-04-23: Scholar Posting", "April 23, 2027: Scholar Posting"],
+  ])("makes the observed date-first timeline item %s readable", (input, expected) => {
+    expect(formatAwardDateText(input)).toBe(expected);
+  });
+
+  it.each([
+    ["2027-03-01 to 2027-04-15", "March 1, 2027 to April 15, 2027"],
+    ["2027-03-01 to 2027-04-15: Regional Review Panels", "March 1, 2027 to April 15, 2027: Regional Review Panels"],
+    ["2027-05-25 to 2027-05-30: Truman Scholars Leadership Week", "May 25, 2027 to May 30, 2027: Truman Scholars Leadership Week"],
+    ["Interviews: 2026-12-31 to 2027-01-02", "Interviews: December 31, 2026 to January 2, 2027"],
+    ["2024-02-29 to 2024-03-01: Interviews", "February 29, 2024 to March 1, 2024: Interviews"],
+    ["2027-03-01 to 2027-03-01", "March 1, 2027 to March 1, 2027"],
+  ])("formats both ends of the complete date range %s", (input, expected) => {
+    expect(formatAwardDateText(input)).toBe(expected);
+  });
+
+  it.each([
+    ["2027-02-02 23:59:00 (applicant's time zone)", "February 2, 2027 at 11:59 p.m. (applicant's time zone)"],
+    ["Deadline: 2027-02-02 23:59:00 (applicant's time zone)", "Deadline: February 2, 2027 at 11:59 p.m. (applicant's time zone)"],
+    ["2027-02-02T00:01:00.250 (applicant's time zone)", "February 2, 2027 at 12:01:00.250 a.m. (applicant's time zone)"],
+  ])("preserves the explicit applicant-local qualifier of %s without inventing a zone", (input, expected) => {
+    expect(formatAwardDateText(input)).toBe(expected);
+  });
+
+  it.each([
+    "2027-02-30: Finalists Notified",
+    "2027-02-30: 2027-03-01",
+    "2027-02: Finalists Notified",
+    "2027-02-02:",
+    "2027-02-02:   ",
+    "2027-02-02:Finalists Notified",
+    "2027-02-02 (approximate): Finalists Notified",
+    "2027-02-30 to 2027-03-01",
+    "2027-03-01 to 2027-04-31: Interviews",
+    "Interviews: 2027-03-01 to 2027-04-31",
+    "2027-04-15 to 2027-03-01: Interviews",
+    "2027-03-01 to TBA: Interviews",
+    "2027-03-01 to 2027-04: Interviews",
+    "2027-03-01 to 2027-04-15 to 2027-04-30: Interviews",
+    "2027-03-01 through 2027-04-15: Interviews",
+    "2027-03-01 to 2027-04-15 (approximate): Interviews",
+    "2027-03-01T17:00:00Z to 2027-04-15T17:00:00Z: Interviews",
+    "Interviews: 2027-03-01 to unavailable: 2027-04-15",
+    "2027-02-30 23:59:00 (applicant's time zone)",
+    "2027-02-02 24:00:00 (applicant's time zone)",
+    "2027-02-02 23:59.5 (applicant's time zone)",
+    "2027-02-02 23:59:00Z (applicant's time zone)",
+    "2027-02-02 23:59:00-05:00 (applicant's time zone)",
+    "2027-02-02 (applicant's time zone)",
+    "2027-02-02 23:59:00 (approximate)",
+    "2027-02-02 23:59:00 (Central Time)",
+    "2027-02-02 23:59:00 (applicant's time zone) or later",
+    "Apply before 2027-02-02: Final deadline",
+  ])("never partially reformats the invalid or unsupported labelled value %s", (input) => {
+    expect(formatAwardDateText(input)).toBe(input);
+  });
+
+  it("retains exact label wording and does not rewrite dates embedded in it", () => {
+    expect(formatAwardDateText("Interviews: Round two: 2027-03-01"))
+      .toBe("Interviews: Round two: March 1, 2027");
+    expect(formatAwardDateText("2027-03-01: Compared with 2026-03-01: exact historical wording"))
+      .toBe("March 1, 2027: Compared with 2026-03-01: exact historical wording");
+  });
+
   it("does not depend on the host time zone", () => {
     const original = process.env.TZ;
     const rendered: string[] = [];
