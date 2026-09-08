@@ -52,7 +52,7 @@ function many(letter: string, count: number) {
   return Array.from({ length: count }, (_, index) => award(letter, index + 1));
 }
 type ElementProps = {
-  children?: ReactNode; onClick?: () => void; disabled?: boolean;
+  children?: ReactNode; onClick?: () => void; disabled?: boolean; title?: string;
   "aria-label"?: string; "aria-pressed"?: boolean; tabIndex?: number;
   ref?: { current: { focus: ReturnType<typeof vi.fn>; scrollIntoView: ReturnType<typeof vi.fn> } };
 };
@@ -76,6 +76,11 @@ function render(rows: SharedAwardCard[]) {
 function nextLetterButton(tree: ReactNode) {
   const buttons = elements(tree).filter(element => element.type === "button" && /^Next letter(?:: [A-Z])?$/.test(text(element.props.children)));
   expect(buttons, "exactly one footer letter-navigation button").toHaveLength(1);
+  return buttons[0];
+}
+function previousLetterButton(tree: ReactNode) {
+  const buttons = elements(tree).filter(element => element.type === "button" && /^Previous letter(?:: [A-Z])?$/.test(text(element.props.children)));
+  expect(buttons, "exactly one footer previous-letter button").toHaveLength(1);
   return buttons[0];
 }
 function pageButton(tree: ReactNode, label: "Next" | "Previous") {
@@ -223,5 +228,125 @@ describe("award directory footer letter navigation", () => {
     expect(html).not.toContain("under #");
     expect(pageButton(tree, "Previous")).toBeUndefined();
     expect(pageButton(tree, "Next")).toBeUndefined();
+  });
+});
+
+describe("award directory footer previous-letter navigation", () => {
+  it("returns from F to B, skipping empty letters, and focuses then scrolls the stable top alphabet", () => {
+    const rows = [award("B"), award("F"), award("Z")];
+    state.values[3] = "F";
+    const first = render(rows);
+    expect(activeLetter(first.html)).toBe("F");
+    const button = previousLetterButton(first.tree);
+    expect(text(button.props.children)).toBe("Previous letter: B");
+    expect(button.props.disabled).toBe(false);
+    expect(button.props.title).toBeUndefined();
+    const group = elements(first.tree).find(element => element.props["aria-label"] === "Alphabetical award pages")!;
+    expect(group.props.tabIndex).toBe(-1);
+    expect(group.props.ref).toBeDefined();
+    const destination = group.props.ref!.current;
+
+    button.props.onClick!();
+
+    expect(state.values[3]).toBe("B");
+    expect(destination.focus).toHaveBeenCalledExactlyOnceWith({ preventScroll: true });
+    expect(destination.scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: "start", behavior: "instant" });
+    expect(destination.focus.mock.invocationCallOrder[0]).toBeLessThan(destination.scrollIntoView.mock.invocationCallOrder[0]);
+    const second = render(rows);
+    expect(activeLetter(second.html)).toBe("B");
+    expect(hrefs(second.html)).toEqual([rows[0].publicPath]);
+    expect(second.$('#award-letter-page-status[role="status"]').text()).toBe("Showing 1-1 of 1 awards under B.");
+    expect(elements(second.tree).find(element => element.props["aria-label"] === "Alphabetical award pages")?.props.ref).toBe(group.props.ref);
+    expect(previousLetterButton(second.tree).props.disabled).toBe(true);
+    expect(text(nextLetterButton(second.tree).props.children)).toBe("Next letter: F");
+  });
+
+  it("chooses the nearest previous available letter rather than the first letter in the catalog", () => {
+    const rows = [award("B"), award("F"), award("Z")];
+    state.values[3] = "Z";
+    const button = previousLetterButton(render(rows).tree);
+    expect(text(button.props.children)).toBe("Previous letter: F");
+    button.props.onClick!();
+    expect(activeLetter(render(rows).html)).toBe("F");
+    expect(hrefs(render(rows).html)).toEqual([rows[1].publicPath]);
+  });
+
+  it.each([
+    { filter: "level", slot: 6, value: "Undergraduate", excluded: { academicLevels: ["Graduate"] } },
+    { filter: "discipline", slot: 7, value: "STEM", excluded: { disciplines: ["Arts"] } },
+    { filter: "citizenship", slot: 8, value: "U.S. citizens", excluded: { citizenship: ["Other"] } },
+    { filter: "deadline", slot: 9, value: "listed", excluded: { deadline: null } },
+    { filter: "recorded updates", slot: 10, value: "recent", excluded: { recentlyUpdated: false, changeCount: 0 } },
+  ])("skips a preceding populated C letter excluded by the $filter filter", ({ slot, value, excluded }) => {
+    const rows = [award("B"), award("C", 1, excluded), award("F")];
+    state.values[3] = "F";
+    state.values[slot] = value;
+    const first = render(rows);
+    expect(first.html).toContain("2 of 3 monitored awards match.");
+    expect(first.$('.award-alpha-letter').filter((_index, node) => first.$(node).text() === "C").is(":disabled")).toBe(true);
+    const button = previousLetterButton(first.tree);
+    expect(text(button.props.children)).toBe("Previous letter: B");
+    button.props.onClick!();
+    expect(state.values[slot]).toBe(value);
+    expect(hrefs(render(rows).html)).toEqual([rows[0].publicPath]);
+  });
+
+  it("derives the previous boundary from the active fallback rather than a stale unavailable selected letter", () => {
+    state.values[3] = "Z";
+    const first = render([award("B"), award("F")]);
+    expect(activeLetter(first.html)).toBe("B");
+    const button = previousLetterButton(first.tree);
+    expect(text(button.props.children)).toBe("Previous letter");
+    expect(button.props.disabled).toBe(true);
+    expect(button.props.title).toBe("You are at the first available letter.");
+  });
+
+  it("resets page two to page one of the previous letter while preserving query, page size, and all five filters", () => {
+    const rows = [...many("B", 31), ...many("F", 31)];
+    state.values = ["Fictional", false, true, "F", 30, 1, "Undergraduate", "STEM", "U.S. citizens", "listed", "recent"];
+    const first = render(rows);
+    expect(hrefs(first.html)).toEqual(["/fictional-f-031"]);
+    previousLetterButton(first.tree).props.onClick!();
+    expect(state.values).toEqual(["Fictional", false, true, "B", 30, 0, "Undergraduate", "STEM", "U.S. citizens", "listed", "recent"]);
+    const second = render(rows);
+    expect(hrefs(second.html)).toEqual(many("B", 30).map(row => row.publicPath));
+    expect(second.html).toContain("Showing 1-30 of 31 awards under B.");
+    expect(pageButton(second.tree, "Previous")?.props.disabled).toBe(true);
+    expect(pageButton(second.tree, "Next")?.props.disabled).toBe(false);
+  });
+
+  it("closes the search-open flag when returning with a blank query", () => {
+    // As with Next, a focused blank search leaves the real browse footer visible.
+    state.values[1] = true;
+    state.values[3] = "F";
+    const rows = [award("B"), award("F")];
+    previousLetterButton(render(rows).tree).props.onClick!();
+    expect(state.values[0]).toBe("");
+    expect(state.values[1]).toBe(false);
+    expect(activeLetter(render(rows).html)).toBe("B");
+  });
+
+  it.each(["unfiltered", "filtered"])("disables the first available Previous letter with a tooltip and no wrap or focus movement (%s)", (kind) => {
+    const rows = [award("B", 1, { academicLevels: ["Graduate"] }), award("F"), award("Z")];
+    if (kind === "filtered") state.values[6] = "Undergraduate";
+    const first = render(rows);
+    expect(activeLetter(first.html)).toBe(kind === "filtered" ? "F" : "B");
+    const button = previousLetterButton(first.tree);
+    expect(text(button.props.children)).toBe("Previous letter");
+    expect(button.props.disabled).toBe(true);
+    expect(button.props.title).toBe("You are at the first available letter.");
+    const before = [...state.values];
+    // The native disabled state and the closure guard are separate contracts.
+    button.props.onClick!();
+    expect(state.values).toEqual(before);
+    expect(state.refs.every(ref => ref.current.focus.mock.calls.length === 0 && ref.current.scrollIntoView.mock.calls.length === 0)).toBe(true);
+  });
+
+  it.each(["unfiltered", "filtered"])("renders neither footer letter button for an empty %s result", (kind) => {
+    if (kind === "filtered") state.values[6] = "Graduate";
+    const { tree, html } = render(kind === "filtered" ? [award("B")] : []);
+    expect(html).not.toContain("Previous letter");
+    expect(html).not.toContain("Next letter");
+    expect(elements(tree).filter(element => element.type === "button" && /^(Previous|Next) letter(?:: [A-Z])?$/.test(text(element.props.children)))).toHaveLength(0);
   });
 });

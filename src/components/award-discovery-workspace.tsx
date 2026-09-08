@@ -155,6 +155,7 @@ export function AwardDiscoveryWorkspace({
       ? selectedLetter
       : alphabet.find((letter) => availableLetters.has(letter)) || "#";
   const nextLetter = alphabet.find((letter) => letter > activeLetter && availableLetters.has(letter));
+  const previousLetter = alphabet.findLast((letter) => letter < activeLetter && availableLetters.has(letter));
   const letterAwards = useMemo(
     () => alphabeticalAwards.filter((award) => awardInitial(award.name) === activeLetter),
     [activeLetter, alphabeticalAwards],
@@ -270,6 +271,21 @@ export function AwardDiscoveryWorkspace({
               Next
               <ChevronRight size={17} aria-hidden="true" />
             </button>}
+            <button
+              className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
+              type="button"
+              disabled={!previousLetter}
+              title={!previousLetter ? "You are at the first available letter." : undefined}
+              onClick={() => {
+                if (!previousLetter) return;
+                selectLetter(previousLetter);
+                alphabetNavRef.current?.focus({ preventScroll: true });
+                alphabetNavRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
+              }}
+            >
+              <ChevronLeft size={17} aria-hidden="true" />
+              {previousLetter ? `Previous letter: ${previousLetter}` : "Previous letter"}
+            </button>
             <button
               className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
               type="button"
