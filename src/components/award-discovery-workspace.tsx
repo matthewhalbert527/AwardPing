@@ -68,6 +68,7 @@ export function awardDirectoryHref(award: Pick<SharedAwardCard, "publicPath">) {
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const pageSizeOptions = [30, 50, 100] as const;
 const searchResultLimit = 100;
+const allFilterLabel = "All";
 
 // `canManage` and `isAuthenticated` stay in the prop contract for the
 // directory page, but neither affects what the directory renders or where
@@ -405,7 +406,7 @@ export function AwardDiscoveryWorkspace({
                 setLetterPageIndex(0);
               }}
             >
-              <option value="all">All levels</option>
+              <option value="all">{allFilterLabel}</option>
               {levelOptions.map((option) => (
                 <option key={option} value={option}>{option}</option>
               ))}
@@ -421,7 +422,7 @@ export function AwardDiscoveryWorkspace({
                 setLetterPageIndex(0);
               }}
             >
-              <option value="all">All disciplines</option>
+              <option value="all">{allFilterLabel}</option>
               {disciplineOptions.map((option) => (
                 <option key={option} value={option}>{option}</option>
               ))}
@@ -437,7 +438,7 @@ export function AwardDiscoveryWorkspace({
                 setLetterPageIndex(0);
               }}
             >
-              <option value="all">All citizenship</option>
+              <option value="all">{allFilterLabel}</option>
               {citizenshipOptions.map((option) => (
                 <option key={option} value={option}>{option}</option>
               ))}
@@ -453,7 +454,7 @@ export function AwardDiscoveryWorkspace({
                 setLetterPageIndex(0);
               }}
             >
-              <option value="all">Any deadline</option>
+              <option value="all">{allFilterLabel}</option>
               <option value="listed">Deadline listed</option>
               <option value="missing">Deadline not listed</option>
             </select>
@@ -468,7 +469,7 @@ export function AwardDiscoveryWorkspace({
                 setLetterPageIndex(0);
               }}
             >
-              <option value="all">All awards</option>
+              <option value="all">{allFilterLabel}</option>
               {/* The predicate is "has at least one recorded public update";
                   the label states that and promises no recency. */}
               <option value="recent">Has recorded updates</option>

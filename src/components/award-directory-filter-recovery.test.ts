@@ -75,6 +75,24 @@ function expectAutomaticBrowse(html: string) {
   expect(buttonNames).not.toContain("Browse all");
   expect(buttonNames).not.toContain("Browse all awards");
 }
+function expectAllFilterDefaults(html: string) {
+  const $ = load(html);
+  const labels = $(".award-directory-filter-grid > label");
+  expect(labels.children("span").map((_index, label) => $(label).text()).get()).toEqual([
+    "Academic level", "Discipline", "Citizenship", "Deadline", "Updates",
+  ]);
+  const selects = labels.children("select");
+  expect(selects).toHaveLength(5);
+  selects.each((_index, node) => {
+    const select = $(node);
+    expect(select.attr("class")).toBe("input");
+    const selected = select.children("option[selected]");
+    expect(selected).toHaveLength(1);
+    expect(selected.get(0)).toBe(select.children("option").get(0));
+    expect(selected.attr("value")).toBe("all");
+    expect(selected.text()).toBe("All");
+  });
+}
 
 beforeEach(() => {
   state.values = [...defaults];
@@ -100,6 +118,54 @@ describe("award directory filter recovery", () => {
       state.values[index] = value;
       resetButton(render().tree);
     }
+  });
+
+  it.each([
+    { label: "Academic level", slot: 5, value: "Undergraduate", excluded: { academicLevels: ["Graduate"] } },
+    { label: "Discipline", slot: 6, value: "STEM", excluded: { disciplines: ["Arts"] } },
+    { label: "Citizenship", slot: 7, value: "U.S. citizens", excluded: { citizenship: ["Other"] } },
+    { label: "Deadline", slot: 8, value: "listed", excluded: { deadline: null } },
+    { label: "Updates", slot: 9, value: "recent", excluded: { recentlyUpdated: false, changeCount: 0 } },
+  ])("keeps $label filtering functional and resets all five selects to All", ({ label, slot, value, excluded }) => {
+    const matching = { ...award, deadline: "October 1, 2026", recentlyUpdated: true, changeCount: 1 };
+    const other = { ...matching, id: "fictional-other", name: "Fictional Other", publicPath: "/fictional-other", ...excluded };
+    const rows = [matching, other];
+    const before = structuredClone(rows);
+    state.values[3] = 50;
+    state.values[4] = 2;
+    const first = render(rows);
+    expectAllFilterDefaults(first.html);
+    expect(first.html).toContain("2 of 2 monitored awards match.");
+    const labelElements = elements(first.tree).filter(element => element.type === "label" &&
+      elements(element.props.children).some(child => child.type === "span" && child.props.children === label));
+    expect(labelElements).toHaveLength(1);
+    const selectElements = elements(labelElements[0]).filter(element => element.type === "select");
+    expect(selectElements).toHaveLength(1);
+    expect(selectElements[0].props.onChange).toBeDefined();
+
+    selectElements[0].props.onChange!({ target: { value } });
+
+    expect(state.values[slot]).toBe(value);
+    expect(state.values[4]).toBe(0);
+    const filtered = render(rows);
+    const $ = load(filtered.html);
+    expect(filtered.html).toContain("1 of 2 monitored awards match.");
+    expect($(".award-row-summary").map((_index, link) => $(link).attr("href")).get()).toEqual([matching.publicPath]);
+    expect($(".award-directory-filter-grid select").eq(slot - 5).children("option[selected]").attr("value")).toBe(value);
+    const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
+    state.focus.mockImplementation(() => input.props.onFocus!());
+
+    resetButton(filtered.tree).props.onClick!();
+
+    expect(state.focus).toHaveBeenCalledOnce();
+    expect(state.values).toEqual(["", false, "A", 50, 0, "all", "all", "all", "all", "all"]);
+    const reset = render(rows);
+    expectAllFilterDefaults(reset.html);
+    expect(reset.html).toContain("2 of 2 monitored awards match.");
+    const resetHtml = load(reset.html);
+    expect(resetHtml(".award-row-summary").map((_index, link) => resetHtml(link).attr("href")).get()).toEqual([matching.publicPath, other.publicPath]);
+    expect(reset.html).not.toContain("Reset filters");
+    expect(rows).toEqual(before);
   });
 
   it("resets all dropdowns and pagination, preserves the query, and restores its matching award", () => {

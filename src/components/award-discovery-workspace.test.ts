@@ -231,6 +231,35 @@ describe("AwardDiscoveryWorkspace", () => {
       expect(html, `authenticated=${isAuthenticated}`).toContain("2 of 2 monitored awards match.");
     }
   });
+
+  it("standardizes all five labeled native filter defaults to All without changing their values, choices, order, or input class", () => {
+    const expected = [
+      { label: "Academic level", choices: [["all", "All"], ["Undergraduate", "Undergraduate"]] },
+      { label: "Discipline", choices: [["all", "All"], ["STEM", "STEM"]] },
+      { label: "Citizenship", choices: [["all", "All"], ["U.S. citizens", "U.S. citizens"]] },
+      { label: "Deadline", choices: [["all", "All"], ["listed", "Deadline listed"], ["missing", "Deadline not listed"]] },
+      { label: "Updates", choices: [["all", "All"], ["recent", "Has recorded updates"]] },
+    ];
+    for (const isAuthenticated of [false, true]) {
+      const $ = load(render(isAuthenticated));
+      const labels = $(".award-directory-filter-grid > label");
+      expect(labels, `authenticated=${isAuthenticated}`).toHaveLength(5);
+      expect($(".award-directory-filter-grid select"), `authenticated=${isAuthenticated}`).toHaveLength(5);
+      labels.each((index, node) => {
+        const label = $(node);
+        expect(label.children("span").text()).toBe(expected[index].label);
+        const select = label.children("select");
+        expect(select).toHaveLength(1);
+        expect(select.attr("class")).toBe("input");
+        expect(select.children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(expected[index].choices);
+        const selected = select.children("option[selected]");
+        expect(selected).toHaveLength(1);
+        expect(selected.get(0)).toBe(select.children("option").get(0));
+        expect(selected.attr("value")).toBe("all");
+        expect(selected.text()).toBe("All");
+      });
+    }
+  });
 });
 
 // Production-shaped directory rows: the directory page supplies a recorded
@@ -393,14 +422,14 @@ describe("AwardDiscoveryWorkspace update status", () => {
 
     const unfiltered = renderRows(rows);
     expect(unfiltered).toContain(
-      '<option value="all" selected="">All awards</option><option value="recent">Has recorded updates</option>',
+      '<option value="all" selected="">All</option><option value="recent">Has recorded updates</option>',
     );
     expect(unfiltered).not.toContain("Recently updated");
     expect(unfiltered).toContain("3 of 3 monitored awards match.");
 
     const filtered = renderRows(rows, UPDATES_FILTER_PRESETS);
     expect(filtered).toContain(
-      '<option value="all">All awards</option><option value="recent" selected="">Has recorded updates</option>',
+      '<option value="all">All</option><option value="recent" selected="">Has recorded updates</option>',
     );
     expect(filtered).toContain("2 of 3 monitored awards match.");
     // The filter still uses recorded events, not presence of any date. Gates
@@ -609,7 +638,7 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
   it("labels the deadline filter by what the data establishes and keeps its behavior in both auth states", () => {
     const unfiltered = renderRows(deadlineRows);
     expect(unfiltered).toContain(
-      '<option value="all" selected="">Any deadline</option><option value="listed">Deadline listed</option><option value="missing">Deadline not listed</option>',
+      '<option value="all" selected="">All</option><option value="listed">Deadline listed</option><option value="missing">Deadline not listed</option>',
     );
     expect(unfiltered).toContain("5 of 5 monitored awards match.");
 
