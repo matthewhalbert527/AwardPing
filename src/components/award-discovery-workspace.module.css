@@ -1,0 +1,19 @@
+/* A common track keeps the deadline border and text aligned across cards,
+   regardless of the length of an award name or its reviewed date. Combining
+   the local and global classes makes this independent of CSS import order. */
+.rowGrid:global(.award-row-grid) {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);
+  min-width: 0;
+}
+
+.rowGrid:global(.award-row-grid) > :global(.award-row-deadline) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Retain the existing stacked mobile layout and its global border treatment. */
+@media (max-width: 640px) {
+  .rowGrid:global(.award-row-grid) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

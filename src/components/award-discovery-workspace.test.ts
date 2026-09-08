@@ -423,6 +423,37 @@ function deadlineCells(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace deadline wording", () => {
+  it("gives every desktop deadline the same local grid track and stacks it on mobile without clipping", () => {
+    const css = readFileSync(new URL("./award-discovery-workspace.module.css", import.meta.url), "utf8");
+    const desktopRule = css.split(".rowGrid:global(.award-row-grid) {")[1]?.split("}")[0] ?? "";
+    expect(desktopRule).toContain("grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);");
+    expect(desktopRule).toContain("min-width: 0;");
+    expect(css).toMatch(/@media \(max-width: 640px\)\s*\{\s*\.rowGrid:global\(\.award-row-grid\)\s*\{\s*grid-template-columns: minmax\(0, 1fr\);/);
+    expect(css).toContain(".rowGrid:global(.award-row-grid) > :global(.award-row-deadline)");
+    expect(css).toContain("overflow-wrap: anywhere;");
+    expect(css).not.toMatch(/overflow:\s*(?:hidden|clip)|white-space:\s*nowrap|font-size:/);
+
+    const html = renderRows([gaither, gates]);
+    const gridClasses = [...html.matchAll(/<div class="award-row-grid ([^"]+)">/g)].map((match) => match[1]);
+    expect(gridClasses).toHaveLength(2);
+    expect(new Set(gridClasses).size).toBe(1);
+  });
+
+  it("renders the screenshot's two time styles consistently in the shared deadline column", () => {
+    const rows = [
+      { ...gaither, deadline: "2026-03-27T17:00:00-05:00" },
+      { ...gates, deadline: "October 1, 2026 at 11:59pm PT" },
+    ];
+    const before = JSON.stringify(rows);
+    const html = renderRows(rows);
+    expect(deadlineCells(html)).toEqual([
+      "March 27, 2026 at 5:00 p.m. (UTC-05:00)",
+      "October 1, 2026 at 11:59 p.m. (PT)",
+    ]);
+    expect(JSON.stringify(rows)).toBe(before);
+    expect(browseRowHrefs(html)).toEqual([gaither.publicPath, gates.publicPath]);
+  });
+
   it("says Not listed for a missing or blank deadline and renders listed deadlines verbatim", () => {
     const html = renderRows(deadlineRows);
 

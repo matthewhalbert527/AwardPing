@@ -987,6 +987,24 @@ describe("focused award sections", () => {
     expect(deadlineText(datesPanel({ deadline: RAW_DEADLINE }))).toBe(READABLE_DEADLINE);
   });
 
+  it("gives Gilman's screenshot deadline the same time typography in Overview and Dates without changing the fact", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.award.name = "Benjamin A. Gilman International Scholarship";
+    data.facts.deadline = "October 1, 2026 at 11:59PM PT";
+    const before = structuredClone(data);
+    const overview = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }));
+    const dates = renderToStaticMarkup(createElement(AwardFactsPanel, {
+      facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
+    }));
+
+    for (const html of [overview, dates]) {
+      expect(deadlineText(html)).toBe("October 1, 2026 at 11:59 p.m. (PT)");
+      expect(html).not.toContain("11:59PM");
+    }
+    expect(data).toEqual(before);
+    expect(data.facts.deadline).toBe("October 1, 2026 at 11:59PM PT");
+  });
+
   it("leaves already-readable reviewed wording exactly as approved", () => {
     const html = datesPanel({ deadline: REVIEWED_PROSE, openingDate: "Opens each September" });
 

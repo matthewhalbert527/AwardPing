@@ -4,8 +4,9 @@
  * Reviewed facts are stored exactly as a human approved them, and most already
  * read well ("Last Friday in January, 5:00 p.m. Central Time"). A few carry a
  * raw machine timestamp instead, which is unreadable on a public card. This
- * turns that shape, complete calendar-date ranges, and clearly delimited
- * timeline dates into the same house style. Other wording stays untouched.
+ * turns that shape, complete written dates with times, calendar-date ranges,
+ * and clearly delimited timeline dates into the same house style. Standalone
+ * 12-hour clocks in prose get the same typography without rewriting prose.
  *
  * Nothing here changes what a date means:
  *   * the components are read straight out of the text, never through `Date`,
@@ -23,9 +24,9 @@
  *     number, so recorded precision is neither rounded nor truncated;
  *   * the explicit "(applicant's time zone)" qualifier stays exactly that;
  *     it is not a geographic zone and is never converted into one;
- *   * anything unrecognised — prose, recurring rules, "Rolling", "TBA",
- *     partial dates, a fractional minute — is returned unchanged rather than
- *     guessed at.
+ *   * recurring rules and qualifiers keep their wording; only valid complete
+ *     clock tokens can change typography. Unsupported dates and fractional
+ *     minutes are never guessed at or partially salvaged.
  */
 
 const MONTH_NAMES = [
@@ -59,6 +60,22 @@ const ISO_DATE_RANGE_PATTERN = /^(\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})$/;
 // interpret arbitrary parenthetical prose or to override a stated UTC offset.
 const APPLICANT_LOCAL_TIME_PATTERN =
   /^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?) (\(applicant's time zone\))$/;
+
+const CLOCK_12_SOURCE = String.raw`(\d{1,2})(?::(\d{2})(?::(\d{2})(?:\.(\d+))?)?)?[ \t]*([ap])\.?m\.?`;
+const CLOCK_12_PATTERN = new RegExp(`^${CLOCK_12_SOURCE}$`, "i");
+// Whole clock-shaped tokens only: never salvage 05pm from 17:05pm, 5pm from
+// 5:00.5pm, or an AM/PM fragment embedded in an identifier or slash expression.
+const CLOCK_IN_TEXT_PATTERN = new RegExp(
+  String.raw`(?<![\w.:/+\-])${CLOCK_12_SOURCE}(?![\w.:/+-])`, "gi",
+);
+const WRITTEN_DATE_TIME_PATTERN =
+  /^([A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})(?: at |, )(\d[^\n]*?[ap]\.?m\.?)(?: (.+))?$/i;
+const NAMED_ZONE_PATTERN = /^(?:UTC|GMT|PT|PST|PDT|ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|HST|AKST|AKDT|BST|CET|CEST|IST|JST|AEST|AEDT|NZST|NZDT|(?:Eastern|Central|Pacific|Mountain)(?: (?:Standard |Daylight )?Time)?)$/i;
+const LOCAL_ZONE_QUALIFIERS = new Set([
+  "(applicant's time zone)",
+  "(endorsing institution time zone)",
+  "in the time zone of the endorsing institution",
+]);
 
 function daysInMonth(year: number, month: number) {
   if (month === 2) {
@@ -94,6 +111,51 @@ function formatZoneDesignator(designator: string) {
   // UTC, and nothing here may imply that it is.
   if (sign === "-" && hours === 0 && minutes === 0) return null;
   return `UTC${sign}${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
+function formatTwelveHourClock(value: string) {
+  const match = CLOCK_12_PATTERN.exec(value);
+  if (!match) return null;
+  const [, rawHour, rawMinute, rawSecond, fraction, meridiem] = match;
+  const hour = Number(rawHour);
+  const minute = Number(rawMinute ?? 0);
+  const second = Number(rawSecond ?? 0);
+  if (hour < 1 || hour > 12 || minute > 59 || second > 59) return null;
+  return formatTimeOfDay(hour % 12 + (meridiem.toLowerCase() === "p" ? 12 : 0), minute, second, fraction);
+}
+
+/** Preserve zone identity; parentheses are presentation, never conversion. */
+function formatWrittenZone(value: string) {
+  if (LOCAL_ZONE_QUALIFIERS.has(value)) return value;
+  const zone = value.startsWith("(") && value.endsWith(")") ? value.slice(1, -1) : value;
+  if (NAMED_ZONE_PATTERN.test(zone)) return `(${zone})`;
+  const offset = /^(?:UTC)?([+-]\d{2}:?\d{2})$/.exec(zone);
+  if (offset) {
+    const formatted = formatZoneDesignator(offset[1]);
+    return formatted ? `(${formatted})` : null;
+  }
+  return null;
+}
+
+function formatWrittenDateTime(value: string) {
+  const match = WRITTEN_DATE_TIME_PATTERN.exec(value);
+  if (!match) return null;
+  const [, date, clock, qualifier] = match;
+  const monthFirst = /^([A-Za-z]+) (\d{1,2}), (\d{4})$/.exec(date);
+  const dayFirst = /^(\d{1,2}) ([A-Za-z]+) (\d{4})$/.exec(date);
+  const monthName = monthFirst?.[1] ?? dayFirst?.[2];
+  const rawDay = monthFirst?.[2] ?? dayFirst?.[1];
+  const year = monthFirst?.[3] ?? dayFirst?.[3];
+  if (!monthName || !rawDay || !year) return null;
+  const month = MONTH_NAMES.findIndex((name) => name.toLowerCase() === monthName.toLowerCase());
+  if (month < 0) return null;
+  // Reuse the strict calendar validator; neither Date nor a host locale is used.
+  const calendarDate = formatIsoValue(`${year}-${String(month + 1).padStart(2, "0")}-${rawDay.padStart(2, "0")}`);
+  const time = formatTwelveHourClock(clock);
+  if (!calendarDate || !time) return null;
+  const zone = qualifier === undefined ? "" : formatWrittenZone(qualifier);
+  if (zone === null) return null;
+  return `${calendarDate} at ${time}${zone ? ` ${zone}` : ""}`;
 }
 
 /** The readable form of one complete ISO value, or null when it is not one. */
@@ -133,6 +195,9 @@ function formatCompleteDateValue(value: string) {
   const formatted = formatIsoValue(value);
   if (formatted) return formatted;
 
+  const written = formatWrittenDateTime(value);
+  if (written) return written;
+
   const range = ISO_DATE_RANGE_PATTERN.exec(value);
   if (range) {
     const start = formatIsoValue(range[1]);
@@ -156,7 +221,7 @@ function formatCompleteDateValue(value: string) {
  * One reviewed date fact, made readable. Returns the input unchanged whenever
  * it is not a complete date value or labelled item this helper understands.
  */
-export function formatAwardDateText(value: string) {
+function formatReviewedDateValue(value: string) {
   const trimmed = value.trim();
   const formatted = formatCompleteDateValue(trimmed);
   if (formatted) return formatted;
@@ -165,7 +230,7 @@ export function formatAwardDateText(value: string) {
   // description. Preserve every word after it, including any embedded dates.
   // If the leading machine value is invalid, do not try styling its label as
   // a different date instead (for example "2027-02-30: 2027-03-01").
-  if (/^\d{4}-/.test(trimmed)) {
+  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})(?: at |, )/.test(trimmed)) {
     const separator = trimmed.indexOf(": ");
     if (separator > 0 && trimmed.slice(separator + 2).trim()) {
       const head = formatCompleteDateValue(trimmed.slice(0, separator));
@@ -187,6 +252,22 @@ export function formatAwardDateText(value: string) {
   }
 
   return value;
+}
+
+/** One deterministic house style for both machine and reviewed prose clocks. */
+export function formatAwardDateText(value: string) {
+  const formatted = formatReviewedDateValue(value);
+  // Unsupported machine statements keep the previous all-or-nothing guard.
+  if (formatted === value && /\b\d{4}-\d{2}/.test(value)) return value;
+  // A whole written datetime with an invalid date/clock or an unrecognized
+  // suffix is not a license to salvage just the clock from that statement.
+  // A reviewer's label must not bypass that same all-or-nothing boundary.
+  if (formatted === value) {
+    const separator = value.lastIndexOf(": ");
+    const candidates = [value.trim(), ...(separator > 0 ? [value.slice(separator + 2).trim()] : [])];
+    if (candidates.some((candidate) => WRITTEN_DATE_TIME_PATTERN.test(candidate) && formatWrittenDateTime(candidate) === null)) return value;
+  }
+  return formatted.replace(CLOCK_IN_TEXT_PATTERN, (clock) => formatTwelveHourClock(clock) ?? clock);
 }
 
 /**

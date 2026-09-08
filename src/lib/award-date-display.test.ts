@@ -144,12 +144,12 @@ describe("formatAwardDateText", () => {
 
   it.each([
     ["2026-03-27: Deadline for receipt of all nominations", "March 27, 2026: Deadline for receipt of all nominations"],
-    ["2026-04-01: Deadline for nominee to submit Financial Aid Data Sheet (5:00 PM EST)", "April 1, 2026: Deadline for nominee to submit Financial Aid Data Sheet (5:00 PM EST)"],
+    ["2026-04-01: Deadline for nominee to submit Financial Aid Data Sheet (5:00 PM EST)", "April 1, 2026: Deadline for nominee to submit Financial Aid Data Sheet (5:00 p.m. EST)"],
     ["2026-06-01: Deadline for announcement of awards", "June 1, 2026: Deadline for announcement of awards"],
-    ["2027-02-02: Truman Application Deadline (11:59 pm, your time zone)", "February 2, 2027: Truman Application Deadline (11:59 pm, your time zone)"],
+    ["2027-02-02: Truman Application Deadline (11:59 pm, your time zone)", "February 2, 2027: Truman Application Deadline (11:59 p.m., your time zone)"],
     ["2027-02-08: Foundation Confirms Receipt of Materials by", "February 8, 2027: Foundation Confirms Receipt of Materials by"],
     ["2027-02-15: Finalists Notified", "February 15, 2027: Finalists Notified"],
-    ["2027-02-18: Finalist Confirmation Due by 9:00 am ET", "February 18, 2027: Finalist Confirmation Due by 9:00 am ET"],
+    ["2027-02-18: Finalist Confirmation Due by 9:00 am ET", "February 18, 2027: Finalist Confirmation Due by 9:00 a.m. ET"],
     ["2027-02-19: Finalist Posting", "February 19, 2027: Finalist Posting"],
     ["2027-04-23: Scholar Posting", "April 23, 2027: Scholar Posting"],
   ])("makes the observed date-first timeline item %s readable", (input, expected) => {
@@ -228,6 +228,76 @@ describe("formatAwardDateText", () => {
       else process.env.TZ = original;
     }
     expect(new Set(rendered)).toEqual(new Set(["March 27, 2026 at 5:00 p.m. (UTC-05:00)", "March 27, 2026"]));
+  });
+});
+
+describe("reviewed clock typography", () => {
+  it.each([
+    ["October 1, 2026 at 11:59PM PT", "October 1, 2026 at 11:59 p.m. (PT)"],
+    ["October 6, 2026 at 1:00 PM PT", "October 6, 2026 at 1:00 p.m. (PT)"],
+    ["October 6, 2026 at 5pm Eastern Time", "October 6, 2026 at 5:00 p.m. (Eastern Time)"],
+    ["7 October 2026, 11:59 PM Eastern Time", "October 7, 2026 at 11:59 p.m. (Eastern Time)"],
+    ["March 4, 2026 at 11:59 p.m. MST", "March 4, 2026 at 11:59 p.m. (MST)"],
+    ["September 8, 2026 at 5:00 p.m. Eastern", "September 8, 2026 at 5:00 p.m. (Eastern)"],
+    ["September 9, 2026 at 3:00 PM EDT", "September 9, 2026 at 3:00 p.m. (EDT)"],
+    ["October 1, 2026 at 11:59PM", "October 1, 2026 at 11:59 p.m."],
+    ["October 1, 2026 at 12AM GMT", "October 1, 2026 at 12:00 a.m. (GMT)"],
+    ["October 1, 2026 at 12PM UTC", "October 1, 2026 at 12:00 p.m. (UTC)"],
+    ["October 1, 2026 at 05:00:30.2500PM PT", "October 1, 2026 at 5:00:30.2500 p.m. (PT)"],
+    ["October 1, 2026 at 5:00PM +0530", "October 1, 2026 at 5:00 p.m. (UTC+05:30)"],
+    ["October 1, 2026 at 5:00PM (UTC-05:00)", "October 1, 2026 at 5:00 p.m. (UTC-05:00)"],
+    ["February 2, 2027 at 11:59PM (applicant's time zone)", "February 2, 2027 at 11:59 p.m. (applicant's time zone)"],
+    ["29 September 2026 at 5:00pm in the time zone of the endorsing institution", "September 29, 2026 at 5:00 p.m. in the time zone of the endorsing institution"],
+    ["1 October 2026 at 5:00pm (endorsing institution time zone): Deadline for endorsing institution to submit endorsed application and recommendations", "October 1, 2026 at 5:00 p.m. (endorsing institution time zone): Deadline for endorsing institution to submit endorsed application and recommendations"],
+    ["Deadline: October 1, 2026 at 11:59PM PT", "Deadline: October 1, 2026 at 11:59 p.m. (PT)"],
+    ["Second Friday in November at 11:59 pm Eastern Time", "Second Friday in November at 11:59 p.m. Eastern Time"],
+    ["US citizens resident in the USA round — Wednesday 14 October 2026 at 11:59 pm GMT: Application deadline", "US citizens resident in the USA round — Wednesday 14 October 2026 at 11:59 p.m. GMT: Application deadline"],
+    ["All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 pm GMT (dependent on course): Application deadline", "All other eligible applicants round — Tuesday 8 December 2026 or Wednesday 6 January 2027 at 11:59 p.m. GMT (dependent on course): Application deadline"],
+    ["Finalists: (5:00 PM EST); interviews: (9 AM, your time zone)", "Finalists: (5:00 p.m. EST); interviews: (9:00 a.m., your time zone)"],
+  ])("standardizes %s without changing date, zone, precision or qualification", (input, expected) => {
+    expect(formatAwardDateText(input)).toBe(expected);
+    expect(formatAwardDateText(expected)).toBe(expected);
+  });
+
+  it.each([
+    "13pm", "0AM", "17:05pm", "5:60pm", "5:00:61pm", "5:00.5pm",
+    "5:00:00.pm", "5pm/6pm", "15pm", "5:00PMish", "code5pm", "5PM-6PM",
+    "October 1, 2026 at 17:05pm PT", "February 30, 2026 at 5PM PT",
+    "29 February 2025, 5PM PT", "October 1, 2026 at 5PM UTC-00:00",
+    "October 1, 2026 at 5PM UTC+99:99", "October 1, 2026 at 5PM PT (tentative)",
+    "2027-02-30: Deadline at 5PM", "Deadline: 2027-02-30 at 5PM",
+    "Deadline: February 30, 2026 at 5PM PT",
+    "Interviews: 29 February 2025, 5PM PT",
+    "Deadline: October 1, 2026 at 5PM UTC-00:00",
+    "Deadline: October 1, 2026 at 5PM UTC+99:99",
+    "Deadline: October 1, 2026 at 5PM PT (tentative)",
+    "Interviews: Round two: February 30, 2026 at 5PM PT",
+  ])("does not partially salvage malformed or unsupported statement %s", (value) => {
+    expect(formatAwardDateText(value)).toBe(value);
+  });
+
+  it("keeps compound clock parentheses and already clean recurring rules intact", () => {
+    const compound = "Last Friday in March (12:00 p.m. Eastern Time / 11:00 a.m. Central Time): Goldwater Scholars announced";
+    expect(formatAwardDateText(compound)).toBe(compound);
+    expect(formatAwardDateText(GOLDWATER_DEADLINE)).toBe(GOLDWATER_DEADLINE);
+    expect(formatAwardDateText("5:00 p.m. EST on the first Friday in December 2026"))
+      .toBe("5:00 p.m. EST on the first Friday in December 2026");
+  });
+
+  it("is equally deterministic for written and machine times in different host zones", () => {
+    const original = process.env.TZ;
+    try {
+      for (const zone of ["UTC", "America/Chicago", "Pacific/Kiritimati", "Pacific/Niue"]) {
+        process.env.TZ = zone;
+        expect(formatAwardDateText("October 1, 2026 at 11:59PM PT"))
+          .toBe("October 1, 2026 at 11:59 p.m. (PT)");
+        expect(formatAwardDateText(SCREENSHOT_DEADLINE))
+          .toBe("March 27, 2026 at 5:00 p.m. (UTC-05:00)");
+      }
+    } finally {
+      if (original === undefined) delete process.env.TZ;
+      else process.env.TZ = original;
+    }
   });
 });
 

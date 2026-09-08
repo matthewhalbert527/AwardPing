@@ -4,6 +4,34 @@ Date formatting and date meaning are separate checks. A well-formatted date
 can still have a confusing label. Public pages, directory cards, metadata and
 sharing images use one presentation helper so they cannot silently diverge.
 
+## Clock style and directory alignment
+
+Complete supported dates with times use **Month D, YYYY at h:mm a.m./p.m.
+(stated zone)**. For example, the reviewed Gilman value
+`October 1, 2026 at 11:59PM PT` becomes
+`October 1, 2026 at 11:59 p.m. (PT)`, while the machine value
+`2026-03-27T17:00:00-05:00` remains
+`March 27, 2026 at 5:00 p.m. (UTC-05:00)`.
+
+The original formatter covered machine timestamps but passed written clocks
+through unchanged. The shared formatter now also recognizes complete written
+month-first/day-first dates with valid 12-hour clocks. Named zones stay named;
+numeric offsets stay numeric. No host locale, browser timezone or guessed
+daylight-saving rule participates in display. No time is invented for date-only
+values, and nonzero seconds/fractions remain intact.
+
+In recurring rules and longer descriptions, only complete valid 12-hour clock
+tokens get typographic cleanup. The surrounding words, alternative dates,
+applicant groups and conditions remain. Existing compound parentheses, such as
+Goldwater's two-zone announcement time, are not nested or split. Invalid or
+unsupported complete datetime statements remain untouched, and malformed clocks
+cannot be partially salvaged into valid-looking times.
+
+Directory cards reserve one consistent 18rem deadline column, independently of
+the length of each date string. Scoped CSS prevents import-order conflicts;
+the existing stacked layout remains at 640px and below. Values wrap instead
+of clipping or shrinking their text.
+
 ## Program labels
 
 The September 7, 2026 Boren correction exposed this distinction:

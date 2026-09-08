@@ -15,6 +15,7 @@ import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { AwardCardGlance } from "@/components/award-card-glance";
+import styles from "./award-discovery-workspace.module.css";
 
 export type SharedAwardCard = {
   id: string;
@@ -481,7 +482,7 @@ export function AwardDiscoveryWorkspace({
                   key={award.id}
                 >
                   <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
-                    <div className="award-row-grid">
+                    <div className={`award-row-grid ${styles.rowGrid}`}>
                       <div className="min-w-0">
                         <span className="inline-flex min-w-0 items-center gap-2 font-bold">
                           <span>{award.name}</span>
