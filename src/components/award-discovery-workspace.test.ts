@@ -232,7 +232,7 @@ describe("AwardDiscoveryWorkspace", () => {
     }
   });
 
-  it("standardizes all five labeled native filter defaults to All without changing their values, choices, order, or input class", () => {
+  it("keeps All defaults and stable native controls around canonical filter options", () => {
     const expected = [
       { label: "Academic level", choices: [["all", "All"], ["Undergraduate", "Undergraduate"]] },
       { label: "Discipline", choices: [["all", "All"], ["STEM", "STEM"]] },
@@ -245,12 +245,15 @@ describe("AwardDiscoveryWorkspace", () => {
       const labels = $(".award-directory-filter-grid > label");
       expect(labels, `authenticated=${isAuthenticated}`).toHaveLength(5);
       expect($(".award-directory-filter-grid select"), `authenticated=${isAuthenticated}`).toHaveLength(5);
+      expect($("#award-filter-guidance")).toHaveLength(1);
+      expect($("#award-filter-guidance").text()).toBe("Broad categories only. Check each award for full eligibility.");
       labels.each((index, node) => {
         const label = $(node);
         expect(label.children("span").text()).toBe(expected[index].label);
         const select = label.children("select");
         expect(select).toHaveLength(1);
         expect(select.attr("class")).toBe("input");
+        expect(select.attr("aria-describedby")).toBe(index < 3 ? "award-filter-guidance" : undefined);
         expect(select.children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(expected[index].choices);
         const selected = select.children("option[selected]");
         expect(selected).toHaveLength(1);
@@ -259,6 +262,20 @@ describe("AwardDiscoveryWorkspace", () => {
         expect(selected.text()).toBe("All");
       });
     }
+  });
+
+  it("condenses reviewed aliases into logically ordered options without rewriting detailed source criteria", () => {
+    const rows = [
+      { ...goldwater, academicLevels: ["Sophomore", "Junior"], disciplines: ["Natural sciences", "Mathematics", "Engineering"], citizenship: ["U.S. citizen, U.S. national, or permanent resident of the United States."] },
+      { ...truman, academicLevels: ["Graduating seniors", "Recent graduates"], disciplines: ["Humanities", "Arts"], citizenship: ["U.S. Citizen", "US citizen"] },
+    ];
+    const before = structuredClone(rows);
+    const $ = load(renderRows(rows));
+    const selectOptions = (index: number) => $(".award-directory-filter-grid select").eq(index).children("option").toArray().map(option => [$(option).attr("value"), $(option).text()]);
+    expect(selectOptions(0)).toEqual([["all", "All"], ["Undergraduate", "Undergraduate"], ["Recent graduate", "Recent graduate"]]);
+    expect(selectOptions(1)).toEqual([["all", "All"], ["STEM", "STEM"], ["Engineering", "Engineering"], ["Mathematics", "Mathematics"], ["Natural sciences", "Natural sciences"], ["Arts", "Arts & humanities"]]);
+    expect(selectOptions(2)).toEqual([["all", "All"], ["U.S. citizens", "U.S. citizens"], ["U.S. nationals", "U.S. nationals"], ["U.S. permanent residents", "U.S. permanent resident"]]);
+    expect(rows).toEqual(before);
   });
 });
 

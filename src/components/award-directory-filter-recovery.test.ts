@@ -187,6 +187,43 @@ describe("award directory filter recovery", () => {
     expect(recovered).not.toContain("Reset filters");
   });
 
+  it("intersects reviewed categories through real filter handlers and resets without losing the query or page-size preference", () => {
+    const rows = [
+      { ...award, academicLevels: ["Junior"], disciplines: ["Engineering"], citizenship: ["US citizen"] },
+      { ...award, id: "graduate", name: "Fictional Graduate", publicPath: "/fictional-graduate", academicLevels: ["Postgraduate"] },
+      { ...award, id: "arts", name: "Fictional Arts", publicPath: "/fictional-arts", disciplines: ["Humanities"] },
+      { ...award, id: "conditional", name: "Fictional Country Criteria", publicPath: "/fictional-country-criteria", citizenship: ["United States"] },
+    ];
+    const before = structuredClone(rows);
+    state.values = ["Fictional", false, "F", 50, 2, "all", "all", "all", "all", "all"];
+    for (const [label, value, count] of [["Academic level", "Undergraduate", 3], ["Discipline", "STEM", 2], ["Citizenship", "U.S. citizens", 1]] as const) {
+      const current = render(rows);
+      const labelElements = elements(current.tree).filter(element => element.type === "label" &&
+        elements(element.props.children).some(child => child.type === "span" && child.props.children === label));
+      expect(labelElements).toHaveLength(1);
+      const select = elements(labelElements[0]).find(element => element.type === "select")!;
+      expect(select.props.onChange).toBeDefined();
+      select.props.onChange!({ target: { value } });
+      const filtered = render(rows);
+      expect(filtered.html).toContain(`${count} of 4 monitored awards match.`);
+      expect(state.values[4]).toBe(0);
+    }
+    const filtered = render(rows);
+    const $ = load(filtered.html);
+    expect($(".award-row-summary").map((_index, link) => $(link).attr("href")).get()).toEqual([award.publicPath]);
+    expect(state.values).toEqual(["Fictional", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "all", "all"]);
+    const input = elements(filtered.tree).find(element => element.props.id === "award-directory-search")!;
+    state.focus.mockImplementation(() => input.props.onFocus!());
+    resetButton(filtered.tree).props.onClick!();
+    expect(state.focus).toHaveBeenCalledOnce();
+    expect(state.values).toEqual(["Fictional", true, "F", 50, 0, "all", "all", "all", "all", "all"]);
+    const reset = render(rows);
+    expectAllFilterDefaults(reset.html);
+    expect(reset.html).toContain("4 matching awards");
+    expect(load(reset.html)(".award-search-option")).toHaveLength(4);
+    expect(rows).toEqual(before);
+  });
+
   it("restores browse results for a blank query without changing the page-size preference", () => {
     state.values = ["", false, "F", 50, 2, "Graduate", "all", "all", "all", "all"];
     resetButton(render().tree).props.onClick!();

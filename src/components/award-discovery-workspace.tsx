@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { presentAwardDateField } from "@/lib/award-date-presentation";
+import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award-directory-filters";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
@@ -107,36 +108,37 @@ export function AwardDiscoveryWorkspace({
     setLetterPageIndex(0);
   }
 
-  const levelOptions = useMemo(
-    () => uniqueOptions(sharedAwards.flatMap((award) => award.academicLevels)),
+  // Browse categories are separate from the unchanged, detailed award facts.
+  const categorizedAwards = useMemo(
+    () => sharedAwards.map((award) => ({ award, categories: getAwardDirectoryCategories(award) })),
     [sharedAwards],
   );
-  const disciplineOptions = useMemo(
-    () => uniqueOptions(sharedAwards.flatMap((award) => award.disciplines)),
-    [sharedAwards],
-  );
-  const citizenshipOptions = useMemo(
-    () => uniqueOptions(sharedAwards.flatMap((award) => award.citizenship)),
-    [sharedAwards],
-  );
+  const filterOptions = useMemo(() => {
+    const categories = categorizedAwards.map((entry) => entry.categories);
+    return {
+      levels: directoryFilterOptions("academicLevels", categories),
+      disciplines: directoryFilterOptions("disciplines", categories),
+      citizenship: directoryFilterOptions("citizenship", categories),
+    };
+  }, [categorizedAwards]);
   const awards = useMemo(
     () =>
-      sharedAwards.filter((award) => {
-        if (levelFilter !== "all" && !award.academicLevels.includes(levelFilter)) return false;
-        if (disciplineFilter !== "all" && !award.disciplines.includes(disciplineFilter)) return false;
-        if (citizenshipFilter !== "all" && !award.citizenship.includes(citizenshipFilter)) return false;
+      categorizedAwards.filter(({ award, categories }) => {
+        if (levelFilter !== "all" && !categories.academicLevels.includes(levelFilter)) return false;
+        if (disciplineFilter !== "all" && !categories.disciplines.includes(disciplineFilter)) return false;
+        if (citizenshipFilter !== "all" && !categories.citizenship.includes(citizenshipFilter)) return false;
         if (deadlineFilter === "listed" && !award.deadline) return false;
         if (deadlineFilter === "missing" && award.deadline) return false;
         if (recentFilter === "recent" && !award.recentlyUpdated) return false;
         return true;
-      }),
+      }).map(({ award }) => award),
     [
       citizenshipFilter,
       deadlineFilter,
       disciplineFilter,
       levelFilter,
       recentFilter,
-      sharedAwards,
+      categorizedAwards,
     ],
   );
 
@@ -401,14 +403,15 @@ export function AwardDiscoveryWorkspace({
             <select
               className="input"
               value={levelFilter}
+              aria-describedby="award-filter-guidance"
               onChange={(event) => {
                 setLevelFilter(event.target.value);
                 setLetterPageIndex(0);
               }}
             >
               <option value="all">{allFilterLabel}</option>
-              {levelOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
+              {filterOptions.levels.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
           </label>
@@ -417,14 +420,15 @@ export function AwardDiscoveryWorkspace({
             <select
               className="input"
               value={disciplineFilter}
+              aria-describedby="award-filter-guidance"
               onChange={(event) => {
                 setDisciplineFilter(event.target.value);
                 setLetterPageIndex(0);
               }}
             >
               <option value="all">{allFilterLabel}</option>
-              {disciplineOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
+              {filterOptions.disciplines.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
           </label>
@@ -433,14 +437,15 @@ export function AwardDiscoveryWorkspace({
             <select
               className="input"
               value={citizenshipFilter}
+              aria-describedby="award-filter-guidance"
               onChange={(event) => {
                 setCitizenshipFilter(event.target.value);
                 setLetterPageIndex(0);
               }}
             >
               <option value="all">{allFilterLabel}</option>
-              {citizenshipOptions.map((option) => (
-                <option key={option} value={option}>{option}</option>
+              {filterOptions.citizenship.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
               ))}
             </select>
           </label>
@@ -476,6 +481,10 @@ export function AwardDiscoveryWorkspace({
             </select>
           </label>
         </div>
+
+        <p id="award-filter-guidance" className="mt-3 text-sm text-[var(--muted)]">
+          Broad categories only. Check each award for full eligibility.
+        </p>
 
         {hasActiveFilters && (
           <div className="mt-3 flex justify-end">
@@ -607,10 +616,4 @@ function recordedUpdatesText(changeCount: number) {
 
 function compactAwardBlurb(summary: string | null, awardName: string) {
   return compactAwardDirectorySummary(summary, awardName);
-}
-
-function uniqueOptions(values: string[]) {
-  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((a, b) =>
-    a.localeCompare(b),
-  );
 }
