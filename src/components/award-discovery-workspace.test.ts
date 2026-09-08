@@ -134,7 +134,7 @@ describe("AwardDiscoveryWorkspace", () => {
       '<div class="award-search-results"><a class="award-search-option" href="/goldwater-scholarship">',
     );
     expectNativeSearchSemantics(anonymous);
-    // With results open, the browse disclosure is hidden, so no expanded state remains at all.
+    // Search results use ordinary links, with no disclosure state.
     expect(anonymous).not.toContain("aria-expanded");
     expect(searchOptionHrefs(anonymous)).toEqual(["/goldwater-scholarship"]);
     expect(searchOptionHrefs(signedIn)).toEqual(["/goldwater-scholarship"]);
@@ -210,7 +210,7 @@ describe("AwardDiscoveryWorkspace", () => {
     expect(source).not.toContain("dashboardAwardPath");
   });
 
-  it("keeps a plain labeled search field and the browse controls for both auth states", () => {
+  it("keeps a plain labeled search field and automatic browsing without a Hide browse/Browse all toggle in both auth states", () => {
     for (const isAuthenticated of [false, true]) {
       const html = render(isAuthenticated);
 
@@ -218,11 +218,14 @@ describe("AwardDiscoveryWorkspace", () => {
       expect(html, `authenticated=${isAuthenticated}`).toContain(
         '<input id="award-directory-search" class="input input-with-leading-icon award-search-input" type="search" placeholder="Goldwater, Fulbright, NSF GRFP..." value=""/>',
       );
-      // The only expanded/collapsed state left is the browse disclosure button.
-      expect(html.split("aria-expanded="), `authenticated=${isAuthenticated}`).toHaveLength(2);
-      expect(html, `authenticated=${isAuthenticated}`).toContain(
-        '<button class="button-secondary" type="button" aria-expanded="true">',
-      );
+      expect(html, `authenticated=${isAuthenticated}`).not.toContain("aria-expanded");
+      const $ = load(html);
+      const buttonNames = $("button").map((_index, button) => $(button).text().trim()).get();
+      expect(buttonNames, `authenticated=${isAuthenticated}`).not.toContain("Hide browse");
+      expect(buttonNames, `authenticated=${isAuthenticated}`).not.toContain("Browse all");
+      expect(buttonNames, `authenticated=${isAuthenticated}`).not.toContain("Browse all awards");
+      expect($(".award-alpha-letter"), `authenticated=${isAuthenticated}`).toHaveLength(26);
+      expect(browseRowHrefs(html), `authenticated=${isAuthenticated}`).toEqual(["/goldwater-scholarship"]);
       expect(html, `authenticated=${isAuthenticated}`).toContain('aria-label="Alphabetical award pages"');
       expect(html, `authenticated=${isAuthenticated}`).toContain('aria-label="Browse all awards"');
       expect(html, `authenticated=${isAuthenticated}`).toContain("2 of 2 monitored awards match.");
@@ -282,9 +285,9 @@ const goldwaterRow = directoryRow({
 });
 
 // The component's state slots in declaration order: query, results open,
-// browse open, letter, page size, page index, level, discipline, citizenship,
+// letter, page size, page index, level, discipline, citizenship,
 // deadline, updates. Only the last one is changed from its default here.
-const UPDATES_FILTER_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "all", "recent"];
+const UPDATES_FILTER_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "all", "recent"];
 
 function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenticated = false) {
   searchState.presets = [...presets];
@@ -449,8 +452,8 @@ const deadlineRows: SharedAwardCard[] = [
   },
 ];
 // Same state slots as above; only the deadline filter is changed from its default.
-const DEADLINE_LISTED_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "listed", "all"];
-const DEADLINE_MISSING_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "missing", "all"];
+const DEADLINE_LISTED_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "listed", "all"];
+const DEADLINE_MISSING_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "missing", "all"];
 
 function deadlineCells(html: string) {
   const $ = load(html);
@@ -656,12 +659,12 @@ function fictionalHrefs(from: number, to: number) {
   return Array.from({ length: to - from + 1 }, (_, index) => `/fictional-award-${String(from + index).padStart(3, "0")}`);
 }
 
-// Browse presets in state-slot order: query, results open, browse open,
-// letter, page size, page index, then the academic level filter. Later
+// Browse presets in state-slot order: query, results open, letter,
+// page size, page index, then the academic level filter. Later
 // filters keep their defaults. These preset the derived render only; they do
 // not exercise the click handlers themselves.
 function browsePresets({ letter = "A", pageSize = 30, pageIndex = 0, level = "all" } = {}): unknown[] {
-  return ["", false, true, letter, pageSize, pageIndex, level];
+  return ["", false, letter, pageSize, pageIndex, level];
 }
 
 // The "Showing a-b of n awards under X." line renders above and below the list.
@@ -818,10 +821,10 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
       ...row,
       academicLevels: [index === 100 ? "Undergraduate" : "Graduate"],
     }));
-    const graduate = renderRows(filteredRows, ["fictional award", true, true, "A", 30, 0, "Graduate"]);
+    const graduate = renderRows(filteredRows, ["fictional award", true, "A", 30, 0, "Graduate"]);
     expect(graduate).toContain('<p role="status">100 matching awards</p>');
     expect(searchOptionHrefs(graduate)).toEqual(fictionalHrefs(1, 100));
-    const undergraduate = renderRows(filteredRows, ["fictional award", true, true, "A", 30, 0, "Undergraduate"]);
+    const undergraduate = renderRows(filteredRows, ["fictional award", true, "A", 30, 0, "Undergraduate"]);
     expect(undergraduate).toContain('<p role="status">1 matching award</p>');
     expect(searchOptionHrefs(undergraduate)).toEqual(["/fictional-award-101"]);
   });

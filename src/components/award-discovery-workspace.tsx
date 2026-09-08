@@ -3,10 +3,8 @@
 import Link from "next/link";
 import { useMemo, useRef, useState } from "react";
 import {
-  ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   Search,
   X,
 } from "lucide-react";
@@ -83,7 +81,6 @@ export function AwardDiscoveryWorkspace({
 }) {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const [browseOpen, setBrowseOpen] = useState(true);
   const [selectedLetter, setSelectedLetter] = useState("A");
   const [pageSize, setPageSize] = useState<(typeof pageSizeOptions)[number]>(30);
   const [letterPageIndex, setLetterPageIndex] = useState(0);
@@ -488,19 +485,10 @@ export function AwardDiscoveryWorkspace({
         )}
 
         {!browseHiddenBySearch && awards.length > 0 && (
-          <div className="mt-5 flex flex-col gap-3 border-t border-[var(--border-subtle)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="mt-5 border-t border-[var(--border-subtle)] pt-4">
             <p className="text-sm font-medium text-[var(--text-tertiary)]">
               {awards.length.toLocaleString()} of {sharedAwards.length.toLocaleString()} monitored awards match.
             </p>
-            <button
-              className="button-secondary"
-              type="button"
-              onClick={() => setBrowseOpen((current) => !current)}
-              aria-expanded={browseOpen}
-            >
-              {browseOpen ? <ChevronUp size={17} aria-hidden="true" /> : <ChevronDown size={17} aria-hidden="true" />}
-              {browseOpen ? "Hide browse" : "Browse all"}
-            </button>
           </div>
         )}
       </section>
@@ -514,7 +502,7 @@ export function AwardDiscoveryWorkspace({
         </section>
       )}
 
-      {!browseHiddenBySearch && browseOpen && awards.length > 0 && (
+      {!browseHiddenBySearch && awards.length > 0 && (
         <section className="grid min-w-0 gap-3" aria-label="Browse all awards">
           {renderBrowseControls("top")}
 

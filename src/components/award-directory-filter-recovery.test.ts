@@ -1,5 +1,6 @@
 import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { load } from "cheerio";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AwardDiscoveryWorkspace, type SharedAwardCard } from "./award-discovery-workspace";
 
@@ -37,9 +38,14 @@ const award: SharedAwardCard = {
   sourceCount: null, sourceIssueCount: null, changeCount: 0, tracked: false,
   sources: [], changes: [],
 };
-const defaults = ["", false, true, "A", 30, 0, "all", "all", "all", "all", "all"];
+const defaults = ["", false, "A", 30, 0, "all", "all", "all", "all", "all"];
 
-type ElementProps = { children?: ReactNode; onClick?: () => void; onFocus?: () => void; id?: string };
+type ElementProps = {
+  children?: ReactNode; onClick?: () => void; onFocus?: () => void; id?: string;
+  className?: string;
+  onChange?: (event: { target: { value: string } }) => void;
+  onBlur?: (event: { relatedTarget: object | null; currentTarget: { contains: (target: object) => boolean } }) => void;
+};
 function elements(node: ReactNode): Array<React.ReactElement<ElementProps>> {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!isValidElement<ElementProps>(node)) return [];
@@ -57,6 +63,18 @@ function resetButton(tree: ReactNode) {
   expect(button, "one-click filter recovery must be available").toBeDefined();
   return button!;
 }
+function expectAutomaticBrowse(html: string) {
+  const $ = load(html);
+  expect($('section[aria-label="Browse all awards"]')).toHaveLength(1);
+  expect($('.award-alpha-letter')).toHaveLength(26);
+  expect($('.award-alpha-letter-active').text()).toBe("F");
+  expect($('.award-row-summary').map((_index, link) => $(link).attr("href")).get()).toEqual(["/fictional-award"]);
+  expect($('.award-search-panel')).toHaveLength(0);
+  const buttonNames = $("button").map((_index, button) => $(button).text().trim()).get();
+  expect(buttonNames).not.toContain("Hide browse");
+  expect(buttonNames).not.toContain("Browse all");
+  expect(buttonNames).not.toContain("Browse all awards");
+}
 
 beforeEach(() => {
   state.values = [...defaults];
@@ -66,7 +84,7 @@ beforeEach(() => {
 
 describe("award directory filter recovery", () => {
   it("explains a filtered empty result without a phantom letter or useless pagination", () => {
-    state.values[6] = "Graduate";
+    state.values[5] = "Graduate";
     const { tree, html } = render();
     expect(html).toContain("No awards match these filters.");
     expect(html).toContain("Reset the filters to browse the full directory.");
@@ -77,7 +95,7 @@ describe("award directory filter recovery", () => {
   });
 
   it("offers reset for each of the five dropdown filters independently", () => {
-    for (const [index, value] of [[6, "Undergraduate"], [7, "STEM"], [8, "U.S. citizens"], [9, "missing"], [10, "recent"]] as const) {
+    for (const [index, value] of [[5, "Undergraduate"], [6, "STEM"], [7, "U.S. citizens"], [8, "missing"], [9, "recent"]] as const) {
       state.values = [...defaults];
       state.values[index] = value;
       resetButton(render().tree);
@@ -85,18 +103,18 @@ describe("award directory filter recovery", () => {
   });
 
   it("resets all dropdowns and pagination, preserves the query, and restores its matching award", () => {
-    state.values = ["Fictional", true, true, "F", 100, 3, "Graduate", "Arts", "Other", "listed", "recent"];
+    state.values = ["Fictional", true, "F", 100, 3, "Graduate", "Arts", "Other", "listed", "recent"];
     const { tree, html } = render();
     expect(html).toContain("No matches");
     const input = elements(tree).find((element) => element.props.id === "award-directory-search")!;
     state.focus.mockImplementation(() => {
       // Focus happens before reset, and invokes the real input handler.
-      expect(state.values[6]).toBe("Graduate");
+      expect(state.values[5]).toBe("Graduate");
       input.props.onFocus!();
     });
     resetButton(tree).props.onClick!();
     expect(state.focus).toHaveBeenCalledOnce();
-    expect(state.values).toEqual(["Fictional", true, true, "F", 100, 0, "all", "all", "all", "all", "all"]);
+    expect(state.values).toEqual(["Fictional", true, "F", 100, 0, "all", "all", "all", "all", "all"]);
     const recovered = render().html;
     expect(recovered).toContain("1 matching award");
     expect(recovered).toContain('href="/fictional-award"');
@@ -104,9 +122,9 @@ describe("award directory filter recovery", () => {
   });
 
   it("restores browse results for a blank query without changing the page-size preference", () => {
-    state.values = ["", false, true, "F", 50, 2, "Graduate", "all", "all", "all", "all"];
+    state.values = ["", false, "F", 50, 2, "Graduate", "all", "all", "all", "all"];
     resetButton(render().tree).props.onClick!();
-    expect(state.values).toEqual(["", false, true, "F", 50, 0, "all", "all", "all", "all", "all"]);
+    expect(state.values).toEqual(["", false, "F", 50, 0, "all", "all", "all", "all", "all"]);
     const { html } = render();
     expect(html).toContain("Showing 1-1 of 1 awards under F.");
     expect(html).toContain('href="/fictional-award"');
@@ -126,5 +144,66 @@ describe("award directory filter recovery", () => {
     expect(html).not.toContain("No awards match these filters");
     expect(html).not.toContain("Reset filters");
     expect(html).not.toContain("under #");
+  });
+
+  it.each(["Fictional", "Unmatched search"])("Clear restores automatic browsing from open search %s, retaining filters and page size", (query) => {
+    state.values = [query, true, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "missing", "all"];
+    const first = render();
+    const $ = load(first.html);
+    expect($(".award-search-panel")).toHaveLength(1);
+    expect($(".award-search-option")).toHaveLength(query === "Fictional" ? 1 : 0);
+    expect($('section[aria-label="Browse all awards"]')).toHaveLength(0);
+    const input = elements(first.tree).find(element => element.props.id === "award-directory-search")!;
+    const clear = elements(first.tree).find(element => element.type === "button" && element.props.className === "award-search-clear");
+    expect(clear?.props.onClick).toBeDefined();
+    state.focus.mockImplementation(() => {
+      expect(state.values[0]).toBe(query);
+      input.props.onFocus!();
+    });
+
+    clear!.props.onClick!();
+
+    expect(state.focus).toHaveBeenCalledOnce();
+    expect(state.values).toEqual(["", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "missing", "all"]);
+    expectAutomaticBrowse(render().html);
+  });
+
+  it.each(["outside focus", "no related target"])("keeps contained search focus open, then restores automatic browsing on %s without clearing the query", (kind) => {
+    state.values = ["", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "missing", "all"];
+    const first = render();
+    expectAutomaticBrowse(first.html);
+    const input = elements(first.tree).find(element => element.props.id === "award-directory-search")!;
+    input.props.onChange!({ target: { value: "Fictional" } });
+    const open = render();
+    const $ = load(open.html);
+    expect($(".award-search-option")).toHaveLength(1);
+    expect($('section[aria-label="Browse all awards"]')).toHaveLength(0);
+    const blurOwners = elements(open.tree).filter(element => typeof element.props.onBlur === "function");
+    expect(blurOwners).toHaveLength(1);
+    const containedTarget = {};
+    const contains = vi.fn((target: object) => target === containedTarget);
+    const onBlur = blurOwners[0].props.onBlur!;
+
+    onBlur({ relatedTarget: containedTarget, currentTarget: { contains } });
+    expect(state.values[1]).toBe(true);
+    expect(load(render().html)(".award-search-option")).toHaveLength(1);
+    onBlur({ relatedTarget: kind === "outside focus" ? {} : null, currentTarget: { contains } });
+
+    expect(state.values).toEqual(["Fictional", false, "F", 50, 0, "Undergraduate", "STEM", "U.S. citizens", "missing", "all"]);
+    expectAutomaticBrowse(render().html);
+    expect(state.focus).not.toHaveBeenCalled();
+  });
+
+  it("restores automatic browsing when the input change handler receives an empty search", () => {
+    state.values = ["Fictional", true, "F", 30, 0, "all", "all", "all", "all", "all"];
+    const first = render();
+    expect(load(first.html)(".award-search-option")).toHaveLength(1);
+    const input = elements(first.tree).find(element => element.props.id === "award-directory-search")!;
+
+    input.props.onChange!({ target: { value: "" } });
+
+    expect(state.values).toEqual(["", false, "F", 30, 0, "all", "all", "all", "all", "all"]);
+    expectAutomaticBrowse(render().html);
+    expect(state.focus).not.toHaveBeenCalled();
   });
 });
