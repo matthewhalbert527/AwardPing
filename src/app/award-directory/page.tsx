@@ -4,6 +4,7 @@ import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { getCurrentUser } from "@/lib/auth";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
+import { loadFirstPublishedCaptureDates } from "@/lib/award-first-capture";
 import { canonicalAwardPath } from "@/lib/award-slugs";
 import { dedupeChangeSummaries } from "@/lib/change-summary";
 import { hasSupabaseAdminConfig, hasSupabaseConfig } from "@/lib/config";
@@ -176,11 +177,10 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       public_facts_generated_at: publication.registry.last_verified_at,
     }),
   );
-  const eligibleEvents = await loadEligiblePublicChangeEvents({
-    admin,
-    publicationIndex,
-    limit: null,
-  });
+  const [eligibleEvents, firstPublishedCaptureDates] = await Promise.all([
+    loadEligiblePublicChangeEvents({ admin, publicationIndex, limit: null }),
+    loadFirstPublishedCaptureDates({ admin, publicationIndex }),
+  ]);
   const canonicalChanges = eligibleEvents.map(({ event, publication }) => ({
     ...event,
     shared_award_id: publication.canonicalAwardId,
@@ -192,6 +192,7 @@ async function getSharedCatalog(): Promise<DirectoryCatalog> {
       sharedAwards,
       groupBySharedAwardId(canonicalChanges),
       new Set<string>(),
+      firstPublishedCaptureDates,
     ),
     canonicalAwardIdByMember,
   };
@@ -201,6 +202,7 @@ function mapSharedAwards(
   sharedAwards: SharedAwardDirectoryRow[],
   sharedChangesByAwardId: Map<string, SharedChangeDirectoryRow[]>,
   trackedSharedIds: Set<string>,
+  firstPublishedCaptureDates: Map<string, string>,
 ) {
   return sharedAwards.map((award) => {
     const facts = publicAwardFactsFromAward({
@@ -227,6 +229,9 @@ function mapSharedAwards(
       sourceCount: null,
       sourceIssueCount: null,
       changeCount: changes.length,
+      // Eligible public events are loaded newest-first before canonical deduplication.
+      latestUpdateAt: changes[0]?.detected_at ?? null,
+      firstPublishedCaptureAt: firstPublishedCaptureDates.get(award.id) ?? null,
       tracked: trackedSharedIds.has(award.id),
       detailsLoaded: false,
       sources: [],

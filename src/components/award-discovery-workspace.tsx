@@ -34,6 +34,8 @@ export type SharedAwardCard = {
   sourceCount: number | null;
   sourceIssueCount: number | null;
   changeCount: number | null;
+  latestUpdateAt?: string | null;
+  firstPublishedCaptureAt?: string | null;
   tracked: boolean;
   detailsLoaded?: boolean;
   sources: Array<{
@@ -498,6 +500,8 @@ export function AwardDiscoveryWorkspace({
                           academicLevels={award.academicLevels}
                           citizenship={award.citizenship}
                           changeCount={award.changeCount}
+                          latestUpdateAt={award.latestUpdateAt}
+                          firstPublishedCaptureAt={award.firstPublishedCaptureAt}
                         />
                       </div>
                       <div className="award-row-deadline">

@@ -14,7 +14,7 @@ export function AwardCardGlance(props: AwardCardGlanceInput) {
               data-field={item.key}
               title={item.detail}
             >
-              {item.value}
+              {item.dateTime ? <time dateTime={item.dateTime} aria-label={item.detail}>{item.value}</time> : item.value}
             </dd>
           </div>
         ))}

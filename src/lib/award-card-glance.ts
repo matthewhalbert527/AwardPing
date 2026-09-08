@@ -1,3 +1,5 @@
+import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
+
 /**
  * Compact, display-only facts for an award directory card. Exact aliases make
  * familiar wording consistent; they never infer eligibility from prose. The
@@ -7,6 +9,10 @@ export type AwardCardGlanceInput = {
   academicLevels: readonly string[];
   citizenship: readonly string[];
   changeCount: number | null;
+  /** Latest recorded public change, never the most recent source check. */
+  latestUpdateAt?: string | null;
+  /** Earliest available published capture, not a claim of the first-ever pull. */
+  firstPublishedCaptureAt?: string | null;
 };
 
 export type AwardCardGlanceItem = {
@@ -14,6 +20,7 @@ export type AwardCardGlanceItem = {
   label: string;
   value: string;
   detail?: string;
+  dateTime?: string;
   highlight?: boolean;
 };
 
@@ -130,17 +137,40 @@ function criterionItem(
   return { key, label, value, ...(value !== original ? { detail: original } : {}) };
 }
 
-export function awardCardGlance(input: AwardCardGlanceInput): AwardCardGlanceItem[] {
+/** Require an explicit instant, never a host-local clock or a rolled calendar date. */
+function glanceTimestamp(value: string | null | undefined) {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4}-\d{2}-\d{2})[T ](?:[01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d+)?)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):?[0-5]\d)$/.exec(value);
+  if (!match || /-00:?00$/.test(value)) return null;
+  const calendar = new Date(`${match[1]}T00:00:00Z`);
+  if (Number.isNaN(calendar.getTime()) || calendar.toISOString().slice(0, 10) !== match[1]) return null;
+  const timestamp = describeTimestamp(value);
+  return timestamp.dateTime ? timestamp : null;
+}
+
+function lastUpdateItem(input: AwardCardGlanceInput): AwardCardGlanceItem {
+  const unavailable: AwardCardGlanceItem = { key: "updates", label: "Last update", value: "Not available" };
   const count = input.changeCount;
   const countKnown = count !== null && Number.isFinite(count) && Number.isInteger(count) && count >= 0;
+  if (!countKnown) return unavailable;
+  // The two dates have distinct provenance. A missing required date must not
+  // borrow the other date or imply that a check or a render recorded an update.
+  const firstCapture = count === 0;
+  const timestamp = glanceTimestamp(firstCapture ? input.firstPublishedCaptureAt : input.latestUpdateAt);
+  if (!timestamp?.dateTime) return unavailable;
+  return {
+    key: "updates",
+    label: "Last update",
+    value: formatCentralDate(timestamp.dateTime, { month: "long", day: "numeric", year: "numeric" }),
+    dateTime: timestamp.dateTime,
+    detail: `${firstCapture ? "First available information capture" : "Last recorded update"}: ${timestamp.full}`,
+  };
+}
+
+export function awardCardGlance(input: AwardCardGlanceInput): AwardCardGlanceItem[] {
   return [
     criterionItem("level", "Level", input.academicLevels),
     criterionItem("citizenship", "Citizenship", input.citizenship),
-    {
-      key: "updates",
-      label: "Updates",
-      value: countKnown ? (count === 0 ? "None recorded" : `${count} recorded`) : "Not available",
-      ...(countKnown && count > 0 ? { highlight: true } : {}),
-    },
+    lastUpdateItem(input),
   ];
 }

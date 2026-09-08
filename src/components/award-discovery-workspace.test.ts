@@ -42,6 +42,8 @@ const goldwater: SharedAwardCard = {
   sourceCount: 4,
   sourceIssueCount: null,
   changeCount: 2,
+  latestUpdateAt: "2026-09-07T18:00:00.000Z",
+  firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z",
   tracked: true,
   detailsLoaded: false,
   sources: [],
@@ -229,9 +231,10 @@ describe("AwardDiscoveryWorkspace", () => {
 });
 
 // Production-shaped directory rows: the directory page supplies a recorded
-// public update count for every award and never a source count.
+// public update count and timestamp provenance, but never a source count.
 function directoryRow(
-  row: Pick<SharedAwardCard, "id" | "name" | "publicPath" | "changeCount">,
+  row: Pick<SharedAwardCard, "id" | "name" | "publicPath" | "changeCount"> &
+    Partial<Pick<SharedAwardCard, "latestUpdateAt" | "firstPublishedCaptureAt">>,
 ): SharedAwardCard {
   return {
     slug: null,
@@ -245,6 +248,8 @@ function directoryRow(
     recentlyUpdated: (row.changeCount ?? 0) > 0,
     sourceCount: null,
     sourceIssueCount: null,
+    latestUpdateAt: null,
+    firstPublishedCaptureAt: null,
     tracked: false,
     detailsLoaded: false,
     sources: [],
@@ -259,18 +264,21 @@ const gates = directoryRow({
   name: "Gates Cambridge Scholarship",
   publicPath: "/gates-cambridge-scholarship",
   changeCount: 0,
+  firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z",
 });
 const gilman = directoryRow({
   id: "0e4b6a5f-3c2d-4e9f-8a1b-2c3d4e5f6a71",
   name: "Gilman International Scholarship",
   publicPath: "/gilman-international-scholarship",
   changeCount: 1,
+  latestUpdateAt: "2026-09-03T18:00:00.000Z",
 });
 const goldwaterRow = directoryRow({
   id: goldwater.id,
   name: goldwater.name,
   publicPath: goldwater.publicPath,
   changeCount: 12,
+  latestUpdateAt: "2026-09-07T18:00:00.000Z",
 });
 
 // The component's state slots in declaration order: query, results open,
@@ -297,15 +305,17 @@ function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenti
   }
 }
 
-// The same labeled Updates field on every listed award, in listing order.
+// The same labeled Last update field on every listed award, in listing order.
 function statusChips(html: string) {
-  return [...html.matchAll(/<dd[^>]*data-field="updates"[^>]*>([^<]*)<\/dd>/g)].map(
-    (match) => match[1],
-  );
+  const $ = load(html);
+  return $('.award-row-card dd[data-field="updates"]').map((_index, field) => {
+    expect($(field).siblings("dt").text()).toBe("Last update");
+    return $(field).text();
+  }).get();
 }
 
 describe("AwardDiscoveryWorkspace update status", () => {
-  it("states each award's recorded update count without navigation or source chatter", () => {
+  it("states the last update date, using first capture only for an award with zero public changes", () => {
     const html = renderRows([gates, gilman, goldwaterRow]);
 
     expect(browseRowHrefs(html)).toEqual([
@@ -314,10 +324,11 @@ describe("AwardDiscoveryWorkspace update status", () => {
       "/goldwater-scholarship",
     ]);
     expect(statusChips(html)).toEqual([
-      "None recorded",
-      "1 recorded",
-      "12 recorded",
+      "August 20, 2026",
+      "September 3, 2026",
+      "September 7, 2026",
     ]);
+    expect(html).not.toContain("None recorded");
     // Nothing the directory does not know is claimed.
     expect(html).not.toContain("source page ·");
     expect(html).not.toContain("source pages ·");
@@ -327,13 +338,36 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(html).not.toContain("Open to view source pages");
   });
 
-  it("distinguishes an unavailable update count from none recorded", () => {
+  it("does not infer a Last update date when the recorded update count is unknown", () => {
     const html = renderRows([{ ...gates, changeCount: null }]);
 
     expect(statusChips(html)).toEqual(["Not available"]);
     // No count is stated anywhere in the listing; the filter label is the
     // only place the phrase appears.
     expect(html).not.toMatch(/\d recorded update/);
+  });
+
+  it.each([
+    { changeCount: 0, firstPublishedCaptureAt: null, latestUpdateAt: "2026-09-07T18:00:00.000Z" },
+    { changeCount: 0, firstPublishedCaptureAt: "not a date", latestUpdateAt: "2026-09-07T18:00:00.000Z" },
+    { changeCount: 1, firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z", latestUpdateAt: null },
+    { changeCount: 1, firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z", latestUpdateAt: "2026-02-30T18:00:00.000Z" },
+  ])("does not substitute a check or the other timestamp for missing/invalid required provenance: %j", (dates) => {
+    const row = { ...gates, ...dates, lastCheckedAt: "2026-09-08T18:00:00.000Z" };
+    const before = structuredClone(row);
+    const html = renderRows([row]);
+    expect(statusChips(html)).toEqual(["Not available"]);
+    expect(load(html)('dd[data-field="updates"] time').length).toBe(0);
+    expect(row).toEqual(before);
+  });
+
+  it("preserves the actual instant in time markup while showing the Central calendar date", () => {
+    const row = { ...goldwaterRow, latestUpdateAt: "2026-09-08T02:00:00.000Z", firstPublishedCaptureAt: "2026-08-20T23:53:54.992Z" };
+    const before = structuredClone(row);
+    const html = renderRows([row]);
+    expect(statusChips(html)).toEqual(["September 7, 2026"]);
+    expect(load(html)('dd[data-field="updates"] time').attr("datetime")).toBe("2026-09-08T02:00:00.000Z");
+    expect(row).toEqual(before);
   });
 
   it("uses the same glance fields regardless of whether source details have loaded", () => {
@@ -344,9 +378,9 @@ describe("AwardDiscoveryWorkspace update status", () => {
     ]);
 
     expect(statusChips(html)).toEqual([
-      "None recorded",
-      "1 recorded",
-      "2 recorded",
+      "August 20, 2026",
+      "September 3, 2026",
+      "September 7, 2026",
     ]);
     expect(html).not.toContain("Open to view source pages");
   });
@@ -366,14 +400,15 @@ describe("AwardDiscoveryWorkspace update status", () => {
       '<option value="all">All awards</option><option value="recent" selected="">Has recorded updates</option>',
     );
     expect(filtered).toContain("2 of 3 monitored awards match.");
-    // Exactly the awards whose Updates fields show a non-zero count remain.
+    // The filter still uses recorded events, not presence of any date. Gates
+    // has a first-capture date but no recorded change and must be excluded.
     expect(browseRowHrefs(filtered)).toEqual([
       "/gilman-international-scholarship",
       "/goldwater-scholarship",
     ]);
     expect(statusChips(filtered)).toEqual([
-      "1 recorded",
-      "12 recorded",
+      "September 3, 2026",
+      "September 7, 2026",
     ]);
   });
 
