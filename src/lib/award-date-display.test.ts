@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatAwardDateFact, formatAwardDateText } from "@/lib/award-date-display";
+import { awardDateZoneSlices, formatAwardDateFact, formatAwardDateText } from "@/lib/award-date-display";
 
 // The exact value the reported screenshot rendered raw.
 const SCREENSHOT_DEADLINE = "2026-03-27T17:00:00-05:00";
@@ -333,5 +333,93 @@ describe("formatAwardDateFact", () => {
     expect(formatted).not.toContain("T17:00:00");
     // Every run between spaces is short enough to wrap inside a narrow card.
     for (const word of formatted.split(" ")) expect(word.length).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("awardDateZoneSlices", () => {
+  const date = "March 27, 2026 at 5:00 p.m.";
+
+  it("exports the display-only zone slicing helper", () => {
+    expect(awardDateZoneSlices).toBeTypeOf("function");
+  });
+
+  it.each([
+    "(UTC-05:00)", // The exact UTC token in the 25-page public date audit.
+    "(UTC)",
+    "(UTC+00:00)",
+    "(UTC+05:30)",
+    "(UTC+23:59)",
+    "(UTC-11:30)",
+    "(UTC-00:01)",
+  ])("groups only the terminal canonical %s without changing ASCII text", (zone) => {
+    const value = `${date} ${zone}`;
+    const result = awardDateZoneSlices(value);
+    expect(result).toEqual({ prefix: `${date} `, zone, suffix: "" });
+    expect(result && result.prefix + result.zone + result.suffix).toBe(value);
+  });
+
+  it.each([
+    [`Notification: ${date} `, "(UTC)", ""],
+    [`Interviews: Round two: ${date} `, "(UTC+05:30)", ""],
+    [`${date} `, "(UTC-05:00)", ": Deadline for nominations"],
+    [`${date} `, "(UTC-05:00)", ": Compared with (UTC+99:99); quoted (UTC) stays literal"],
+    [`${date} `, "(UTC-05:00)", `: Previous wording: ${date} (UTC+05:30)`],
+    [`Quoted (UTC+99:99): ${date} `, "(UTC)", ""],
+    ["March 27, 2026 at 5:00:30.2500 p.m. ", "(UTC)", ""],
+    ["March 27, 2026 at 5:00:00.123456789012345678 p.m. ", "(UTC+05:30)", ""],
+    ["February 29, 2024 at 12:00 a.m. ", "(UTC)", ": Leap-day observation"],
+  ])("preserves the exact recognized segment boundary in %s%s%s", (prefix, zone, suffix) => {
+    const value = prefix + zone + suffix;
+    const result = awardDateZoneSlices(value);
+    expect(result).toEqual({ prefix, zone, suffix });
+    expect(result && result.prefix + result.zone + result.suffix).toBe(value);
+    expect(awardDateZoneSlices(value)).toEqual(result);
+  });
+
+  it.each([
+    ` \t${date} (UTC-05:00)\n `,
+    `Notification:  ${date} (UTC)`,
+  ])("leaves noncanonical whitespace ungrouped in %s", (value) => {
+    // Slicing is not a second formatter: the caller must preserve the entire
+    // original value whenever canonical descriptor reassembly would change it.
+    expect(formatAwardDateText(value)).not.toBe(value);
+    expect(awardDateZoneSlices(value)).toBeNull();
+  });
+
+  it.each([
+    "", "   ", "Not listed", "Rolling", "non-finalist decisions issued",
+    "Application outcome", "Rolling (UTC-05:00)", "Unknown (UTC)",
+    "Last Friday in January, 5:00 p.m. (UTC-05:00)",
+    GOLDWATER_DEADLINE,
+    "Last Friday in March (12:00 p.m. Eastern Time / 11:00 a.m. Central Time): Goldwater Scholars announced",
+    "5:00 p.m. EST on the first Friday in December 2026",
+    "February 2, 2027 at 11:59 p.m. (applicant's time zone)",
+    "October 1, 2026 at 5:00 p.m. (endorsing institution time zone)",
+    `${date} (Eastern Time)`, `${date} (PT)`, `${date} (GMT)`, `${date} (utc)`,
+    `${date} (UTC-00:00)`, `${date} (UTC+24:00)`, `${date} (UTC+05:60)`,
+    `${date} (UTC-0000)`, `${date} (UTC+0530)`, `${date} (UTC+5:30)`,
+    `${date} (UTC-05:00) (tentative)`, `${date} (UTC-05:00) or later`,
+    `${date} (UTC-05:00) (dependent on course)`,
+    `Apply before ${date} (UTC-05:00)`,
+    `Deadline: ${date} (UTC-05:00) (tentative)`,
+    `Deadline: ${date} (UTC-00:00)`,
+    `February 30, 2026 at 5:00 p.m. (UTC): ${date} (UTC)`,
+    `2026-02-30: ${date} (UTC)`,
+    `2026-03-27 to unavailable: ${date} (UTC)`,
+    "February 30, 2026 at 5:00 p.m. (UTC)",
+    "February 29, 2025 at 5:00 p.m. (UTC)",
+    "March 27, 2026 at 13:00 p.m. (UTC)",
+    "March 27, 2026 at 5:60 p.m. (UTC)",
+    "March 27, 2026 at 5:00:60 p.m. (UTC)",
+    "March 27, 2026 at 5:00.5 p.m. (UTC)",
+    "March 27, 2026 at 5:00 PM (UTC)",
+    "27 March 2026, 5:00 p.m. (UTC)",
+    "March 27, 2026 at 05:00 p.m. (UTC)",
+    "March 27, 2026 at 5:00:00.000 p.m. (UTC)",
+    "2026-03-27T17:00:00-05:00",
+    "March 27, 2026 (UTC-05:00)",
+    `${date} (UTC-05:00):`, `${date} (UTC-05:00):   `,
+  ])("does not grant date grouping to unsupported text %s", (value) => {
+    expect(awardDateZoneSlices(value)).toBeNull();
   });
 });

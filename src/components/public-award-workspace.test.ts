@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { load } from "cheerio";
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { formatCentralDateTime } from "@/lib/time-zone";
@@ -971,9 +972,98 @@ describe("focused award sections", () => {
     }));
   }
 
-  // The value inside the Deadline row. Either fact layout may render it, and
-  // one of them puts an icon inside the <dt>, so only the label anchors this.
-  const deadlineText = (markup: string) => markup.match(/Deadline<\/dt><dd>(?:<span>)?([^<]*)/)?.[1];
+  // Read the exact value text across inline zone spans, scoped to its own
+  // labelled row rather than accepting a matching date elsewhere on the page.
+  function factValue(markup: string, label: string) {
+    const $ = load(markup);
+    const rows = $(".public-award-key-fact, .public-award-fact-line")
+      .filter((_index, row) => $(row).children("dt").text() === label);
+    expect(rows.length, `Exactly one ${label} fact row`).toBe(1);
+    return rows.children("dd");
+  }
+  const deadlineText = (markup: string) => factValue(markup, "Deadline").text();
+
+  it.each(["Overview", "Dates"] as const)("groups only UTC tokens in %s date facts without changing ASCII text", (panel) => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.facts.deadline = RAW_DEADLINE;
+    data.facts.openingDate = "2026-01-05T09:30:00+05:30";
+    data.facts.importantDates = [
+      "Notification: 2026-04-15T17:00:00Z",
+      "2026-04-16T09:00:00+01:00: Interview note (UTC-09:00)",
+    ];
+    const before = structuredClone(data);
+    const html = panel === "Overview"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+      : renderToStaticMarkup(createElement(AwardFactsPanel, {
+        facts: data.facts, section: "dates", onViewSources: () => {},
+      }));
+
+    for (const [label, text, zone] of [
+      ["Deadline", READABLE_DEADLINE, "(UTC-05:00)"],
+      ["Opening date", "January 5, 2026 at 9:30 a.m. (UTC+05:30)", "(UTC+05:30)"],
+    ]) {
+      const value = factValue(html, label);
+      expect(value.text()).toBe(text);
+      expect(value.find("span.award-date-zone").length).toBe(1);
+      expect(value.find("span.award-date-zone").text()).toBe(zone);
+      expect(value.text()).not.toMatch(/[\u00a0\u2011]/);
+    }
+    const timeline = factValue(html, "Important dates");
+    const $ = load(timeline.html() || "");
+    expect($("li").map((_index, item) => $(item).text()).get()).toEqual([
+      "Notification: April 15, 2026 at 5:00 p.m. (UTC)",
+      "April 16, 2026 at 9:00 a.m. (UTC+01:00): Interview note (UTC-09:00)",
+    ]);
+    expect($("li > span.award-date-zone").map((_index, item) => $(item).text()).get())
+      .toEqual(["(UTC)", "(UTC+01:00)"]);
+    expect(data).toEqual(before);
+  });
+
+  it("does not group date-shaped text in non-date fact rows", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.facts.awardAmount = READABLE_DEADLINE;
+    data.facts.eligibility = [READABLE_DEADLINE, "Policy note (UTC+05:30)"];
+    data.facts.requirements = [READABLE_DEADLINE];
+    const before = structuredClone(data);
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }));
+    for (const label of ["Award amount", "Eligibility", "Requirements"]) {
+      expect(factValue(html, label).find(".award-date-zone").length).toBe(0);
+    }
+    expect(factValue(html, "Award amount").text()).toBe(READABLE_DEADLINE);
+    expect(factValue(html, "Requirements").text()).toBe(READABLE_DEADLINE);
+    expect(factValue(html, "Eligibility").find("li").map((_index, item) => load(item).root().text()).get())
+      .toEqual([READABLE_DEADLINE, "Policy note (UTC+05:30)"]);
+    expect(data).toEqual(before);
+  });
+
+  it("groups semicolon-separated Important dates itemwise while keeping the separate prose item literal", () => {
+    const importantDates = ["Interviews: 2026-03-27T09:00:00Z; Office note (UTC-05:00)"];
+    const before = [...importantDates];
+    const value = factValue(datesPanel({ importantDates }), "Important dates");
+    const $ = load(value.html() || "");
+    const items = $("ul.public-award-fact-list > li");
+    expect(items.length).toBe(2);
+    expect(items.map((_index, item) => $(item).text()).get()).toEqual([
+      "Interviews: March 27, 2026 at 9:00 a.m. (UTC)", "Office note (UTC-05:00)",
+    ]);
+    expect(items.eq(0).find("span.award-date-zone").length).toBe(1);
+    expect(items.eq(0).find("span.award-date-zone").text()).toBe("(UTC)");
+    expect(items.eq(1).find(".award-date-zone").length).toBe(0);
+    expect(importantDates).toEqual(before);
+  });
+
+  it.each([
+    "March 27, 2026 at 5:00 p.m. (UTC-05:00) (tentative)",
+    "February 30, 2026 at 5:00 p.m. (UTC-05:00)",
+    "March 27, 2026 at 5:00 p.m. (UTC-00:00)",
+    "If eligible, March 27, 2026 at 5:00 p.m. (UTC-05:00)",
+    "Last Friday in January, 5:00 p.m. (UTC-05:00)",
+    "2026-02-30: March 27, 2026 at 5:00 p.m. (UTC-05:00)",
+  ])("keeps unsupported date prose ungrouped: %s", (deadline) => {
+    const value = factValue(datesPanel({ deadline }), "Deadline");
+    expect(value.text()).toBe(deadline);
+    expect(value.find(".award-date-zone").length).toBe(0);
+  });
 
   it("renders a raw machine deadline in the reviewed house style, in both panels", () => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
@@ -1032,7 +1122,10 @@ describe("focused award sections", () => {
     });
 
     expect(html).toContain("January 5, 2026");
-    expect(html).toContain("Interviews: March 27, 2026 at 9:00 a.m. (UTC)");
+    const dates = factValue(html, "Important dates");
+    expect(dates.find("li").map((_index, item) => load(item).root().text()).get()).toEqual([
+      "Interviews: March 27, 2026 at 9:00 a.m. (UTC)", "Institutional deadlines vary.",
+    ]);
     expect(html).toContain("Institutional deadlines vary.");
     expect(html).not.toContain("2026-01-05");
     expect(html).not.toContain("T09:00:00");

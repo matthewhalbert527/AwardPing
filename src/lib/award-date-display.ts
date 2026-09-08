@@ -217,14 +217,11 @@ function formatCompleteDateValue(value: string) {
   return null;
 }
 
-/**
- * One reviewed date fact, made readable. Returns the input unchanged whenever
- * it is not a complete date value or labelled item this helper understands.
- */
-function formatReviewedDateValue(value: string) {
+/** The same recognition boundaries serve string formatting and DOM wrapping. */
+function reviewedDateParts(value: string) {
   const trimmed = value.trim();
   const formatted = formatCompleteDateValue(trimmed);
-  if (formatted) return formatted;
+  if (formatted) return { prefix: "", date: formatted, suffix: "" };
 
   // Date-first timeline entries have a clear boundary before the reviewer's
   // description. Preserve every word after it, including any embedded dates.
@@ -234,9 +231,9 @@ function formatReviewedDateValue(value: string) {
     const separator = trimmed.indexOf(": ");
     if (separator > 0 && trimmed.slice(separator + 2).trim()) {
       const head = formatCompleteDateValue(trimmed.slice(0, separator));
-      if (head) return `${head}${trimmed.slice(separator)}`;
+      if (head) return { prefix: "", date: head, suffix: trimmed.slice(separator) };
     }
-    return value;
+    return null;
   }
 
   // A reviewed item may label its date ("Interviews: 2026-03-27"). The label
@@ -246,12 +243,36 @@ function formatReviewedDateValue(value: string) {
     const label = trimmed.slice(0, separator);
     // A prior machine-date fragment may belong to an invalid range or a more
     // complex statement. Do not partially rewrite only its final valid date.
-    if (/\d{4}-\d{2}/.test(label)) return value;
+    if (/\d{4}-\d{2}/.test(label)) return null;
     const tail = formatCompleteDateValue(trimmed.slice(separator + 2).trim());
-    if (tail) return `${label}: ${tail}`;
+    if (tail) return { prefix: `${label}: `, date: tail, suffix: "" };
   }
 
-  return value;
+  return null;
+}
+
+/** Unsupported reviewed wording always keeps the original string. */
+function formatReviewedDateValue(value: string) {
+  const parts = reviewedDateParts(value);
+  return parts ? `${parts.prefix}${parts.date}${parts.suffix}` : value;
+}
+
+/**
+ * Hold only the stated UTC token of an already-formatted date together.
+ * Recognition uses the complete-date validator, not a substring search or
+ * public formatter round-trip (unrecognized prose also round-trips there).
+ * Labels and descriptions are never searched, and every input byte is kept.
+ */
+export function awardDateZoneSlices(value: string) {
+  const parts = reviewedDateParts(value);
+  if (!parts || `${parts.prefix}${parts.date}${parts.suffix}` !== value) return null;
+  const zone = /\(UTC(?:[+-]\d{2}:\d{2})?\)$/.exec(parts.date);
+  if (!zone) return null;
+  return {
+    prefix: parts.prefix + parts.date.slice(0, zone.index),
+    zone: zone[0],
+    suffix: parts.suffix,
+  };
 }
 
 /** One deterministic house style for both machine and reviewed prose clocks. */

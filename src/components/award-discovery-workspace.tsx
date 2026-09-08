@@ -15,6 +15,7 @@ import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
 import { AwardCardGlance } from "@/components/award-card-glance";
+import { AwardDateValue } from "@/components/award-date-value";
 import styles from "./award-discovery-workspace.module.css";
 
 export type SharedAwardCard = {
@@ -505,7 +506,7 @@ export function AwardDiscoveryWorkspace({
                             nothing about whether one is upcoming. A listed value
                             keeps its meaning; a recognized program scope goes
                             in the label rather than beside the date. */}
-                        <strong>{deadline.value || "Not listed"}</strong>
+                        <strong>{deadline.value ? <AwardDateValue value={deadline.value} /> : "Not listed"}</strong>
                       </div>
                     </div>
                   </Link>

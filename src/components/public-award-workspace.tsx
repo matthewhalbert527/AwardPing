@@ -31,6 +31,7 @@ import {
 } from "@/lib/public-award-panel-focus";
 import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
+import { AwardDateValue } from "@/components/award-date-value";
 import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
 type PublicAwardWorkspaceProps = {
@@ -388,6 +389,7 @@ function PanelButton({
 }
 
 const KEY_FACT_LABELS = new Set(["Deadline", "Opening date", "Award amount"]);
+const DATE_FACT_LABELS = new Set(["Deadline", "Opening date", "Important dates"]);
 
 const FACT_SECTIONS = {
   eligibility: {
@@ -529,7 +531,7 @@ function OverviewPanel({
             <div className="public-award-key-fact" key={fact.label}>
               <dt>{fact.displayLabel ?? fact.label}</dt>
               <dd>
-                <FactValueDisplay className="public-award-fact-list" value={fact.value} />
+                <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} />
               </dd>
             </div>
           ))}
@@ -705,7 +707,7 @@ function FactLine({
         {fact.displayLabel ?? fact.label}
       </dt>
       <dd>
-        <FactValueDisplay className="public-award-fact-list" value={fact.value} />
+        <FactValueDisplay className="public-award-fact-list" value={fact.value} isDate={DATE_FACT_LABELS.has(fact.label)} />
       </dd>
     </div>
   );
@@ -714,17 +716,19 @@ function FactLine({
 function FactValueDisplay({
   className,
   value,
+  isDate = false,
 }: {
   className: string;
   value: FactValue;
+  isDate?: boolean;
 }) {
   const items = Array.isArray(value) ? value.flatMap(splitFactItems) : splitFactItems(value);
-  if (items.length <= 1) return <>{items[0] || ""}</>;
+  if (items.length <= 1) return isDate ? <AwardDateValue value={items[0] || ""} /> : <>{items[0] || ""}</>;
 
   return (
     <ul className={className}>
       {items.map((item, index) => (
-        <li key={`${item}-${index}`}>{item}</li>
+        <li key={`${item}-${index}`}>{isDate ? <AwardDateValue value={item} /> : item}</li>
       ))}
     </ul>
   );

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { load } from "cheerio";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AwardDiscoveryWorkspace,
@@ -417,12 +418,43 @@ const DEADLINE_LISTED_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", 
 const DEADLINE_MISSING_PRESETS: unknown[] = ["", false, true, "A", 30, 0, "all", "all", "all", "missing", "all"];
 
 function deadlineCells(html: string) {
-  return [...html.matchAll(/<div class="award-row-deadline"><span>Deadline<\/span><strong>([^<]*)<\/strong><\/div>/g)].map(
-    (match) => match[1],
-  );
+  const $ = load(html);
+  return $(".award-row-deadline").filter((_index, row) => $(row).children("span").text() === "Deadline")
+    .map((_index, row) => $(row).children("strong").text()).get();
 }
 
 describe("AwardDiscoveryWorkspace deadline wording", () => {
+  it.each([
+    { raw: "2026-03-27T17:00:00-05:00", text: "March 27, 2026 at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)", summaryText: "March 27, 2026 at 5:00 p.m." },
+    { raw: "2026-03-27T09:30:00+05:30", text: "March 27, 2026 at 9:30 a.m. (UTC+05:30)", zone: "(UTC+05:30)", summaryText: "March 27, 2026 at 9:30 a.m." },
+    { raw: "2026-03-27T17:00:00Z", text: "March 27, 2026 at 5:00 p.m. (UTC)", zone: "(UTC)", summaryText: "March 27, 2026 at 5:00 p.m." },
+  ])("groups only the directory UTC token for $raw with unchanged ASCII text", ({ raw, text, zone, summaryText }) => {
+    const row = { ...gaither, deadline: raw, summary: text };
+    const before = structuredClone(row);
+    const html = renderRows([row]);
+    const $ = load(html);
+    const cell = $(".award-row-deadline > strong");
+    expect(cell.length).toBe(1);
+    expect(cell.text()).toBe(text);
+    expect(cell.find("span.award-date-zone").length).toBe(1);
+    expect(cell.find("span.award-date-zone").text()).toBe(zone);
+    expect(cell.text()).not.toMatch(/[\u00a0\u2011]/);
+    // The independent, pre-existing summary policy removes parentheticals;
+    // deadline token grouping must not alter that policy or add summary spans.
+    expect($(".award-row-one-line-description").text()).toBe(summaryText);
+    expect($(".award-row-one-line-description .award-date-zone").length).toBe(0);
+    expect(browseRowHrefs(html)).toEqual([gaither.publicPath]);
+    expect(row).toEqual(before);
+  });
+
+  it("does not group a UTC-looking token in an unsupported directory deadline", () => {
+    const deadline = "March 27, 2026 at 5:00 p.m. (UTC-05:00) (tentative)";
+    const $ = load(renderRows([{ ...gaither, deadline }]));
+    const cell = $(".award-row-deadline > strong");
+    expect(cell.text()).toBe(deadline);
+    expect(cell.find(".award-date-zone").length).toBe(0);
+  });
+
   it("gives every desktop deadline the same local grid track and stacks it on mobile without clipping", () => {
     const css = readFileSync(new URL("./award-discovery-workspace.module.css", import.meta.url), "utf8");
     const desktopRule = css.split(".rowGrid:global(.award-row-grid) {")[1]?.split("}")[0] ?? "";

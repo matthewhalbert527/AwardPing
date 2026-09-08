@@ -32,6 +32,15 @@ the length of each date string. Scoped CSS prevents import-order conflicts;
 the existing stacked layout remains at 640px and below. Values wrap instead
 of clipping or shrinking their text.
 
+Validated UTC tokens such as `(UTC-05:00)` stay together on a line in directory
+deadlines and the award's date rows. The full date can still wrap. This is a
+small DOM-only span: copied text, accessible text, metadata and sharing-image
+strings keep their ordinary spaces and ASCII signs. Recognition reuses the
+formatter's complete-date and reviewed-label boundaries; it never scans labels,
+descriptions or unrelated facts for UTC-looking text. Unsupported values remain
+literal, including uncertain offsets and unknown qualifiers. Existing semicolon
+list splitting is unchanged; each displayed date item is considered separately.
+
 ## Program labels
 
 The September 7, 2026 Boren correction exposed this distinction:

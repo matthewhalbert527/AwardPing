@@ -639,7 +639,7 @@ a {
   text-align: left;
 }
 
-.award-row-deadline span {
+.award-row-deadline > span {
   color: var(--text-tertiary);
   font-size: 0.66rem;
   font-weight: 600;
@@ -4091,6 +4091,11 @@ a {
   outline: 2px solid var(--accent);
   outline-offset: 6px;
   border-radius: var(--radius-panel);
+}
+
+/* Only the validated UTC token stays together; the full date still wraps. */
+.award-date-zone {
+  white-space: nowrap;
 }
 
 .public-award-key-facts {
