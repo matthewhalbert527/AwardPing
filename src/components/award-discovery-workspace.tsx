@@ -93,6 +93,7 @@ export function AwardDiscoveryWorkspace({
   const [deadlineFilter, setDeadlineFilter] = useState("all");
   const [recentFilter, setRecentFilter] = useState("all");
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const alphabetNavRef = useRef<HTMLDivElement>(null);
   const hasActiveFilters = [levelFilter, disciplineFilter, citizenshipFilter, deadlineFilter, recentFilter]
     .some((filter) => filter !== "all");
 
@@ -153,6 +154,7 @@ export function AwardDiscoveryWorkspace({
     availableLetters.has(selectedLetter)
       ? selectedLetter
       : alphabet.find((letter) => availableLetters.has(letter)) || "#";
+  const nextLetter = alphabet.find((letter) => letter > activeLetter && availableLetters.has(letter));
   const letterAwards = useMemo(
     () => alphabeticalAwards.filter((award) => awardInitial(award.name) === activeLetter),
     [activeLetter, alphabeticalAwards],
@@ -195,7 +197,7 @@ export function AwardDiscoveryWorkspace({
     if (position === "top") {
       return (
         <div className="min-w-0 max-w-full">
-          <div className="award-alpha-nav" aria-label="Alphabetical award pages">
+          <div ref={alphabetNavRef} tabIndex={-1} role="group" className="award-alpha-nav scroll-mt-40" aria-label="Alphabetical award pages" aria-describedby="award-letter-page-status">
             {alphabet.map((letter) => {
               const enabled = availableLetters.has(letter);
               return (
@@ -212,7 +214,7 @@ export function AwardDiscoveryWorkspace({
               );
             })}
           </div>
-          <p className="mt-3 text-sm font-medium text-[var(--text-tertiary)]">
+          <p id="award-letter-page-status" role="status" className="mt-3 text-sm font-medium text-[var(--text-tertiary)]">
             Showing {letterAwards.length ? visibleStart + 1 : 0}-{visibleEnd} of{" "}
             {letterAwards.length} awards under {activeLetter}.
           </p>
@@ -246,24 +248,41 @@ export function AwardDiscoveryWorkspace({
                 ))}
               </select>
             </label>
-            <button
-              className="button-secondary px-3 py-3"
+            {letterPageCount > 1 && <button
+              className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
               type="button"
+              aria-label={`Previous page of ${activeLetter} awards`}
               disabled={activeLetterPageIndex === 0}
               onClick={() => setLetterPageIndex((page) => Math.max(0, page - 1))}
             >
               <ChevronLeft size={17} aria-hidden="true" />
               Previous
-            </button>
-            <button
-              className="button-secondary px-3 py-3"
+            </button>}
+            {letterPageCount > 1 && <button
+              className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
               type="button"
+              aria-label={`Next page of ${activeLetter} awards`}
               disabled={activeLetterPageIndex >= letterPageCount - 1}
               onClick={() =>
                 setLetterPageIndex((page) => Math.min(letterPageCount - 1, page + 1))
               }
             >
               Next
+              <ChevronRight size={17} aria-hidden="true" />
+            </button>}
+            <button
+              className="button-secondary cursor-pointer px-3 py-3 disabled:cursor-default disabled:opacity-40"
+              type="button"
+              disabled={!nextLetter}
+              title={!nextLetter ? "You are at the last available letter." : undefined}
+              onClick={() => {
+                if (!nextLetter) return;
+                selectLetter(nextLetter);
+                alphabetNavRef.current?.focus({ preventScroll: true });
+                alphabetNavRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
+              }}
+            >
+              {nextLetter ? `Next letter: ${nextLetter}` : "Next letter"}
               <ChevronRight size={17} aria-hidden="true" />
             </button>
           </div>

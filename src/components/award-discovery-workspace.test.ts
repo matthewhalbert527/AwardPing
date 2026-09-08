@@ -670,12 +670,13 @@ function showingLines(html: string) {
 }
 
 function pager(html: string) {
-  const previous = html.match(
-    /<button class="button-secondary px-3 py-3" type="button"( disabled="")?><svg[^>]*>[\s\S]*?<\/svg>Previous<\/button>/,
-  );
-  const next = html.match(/<button class="button-secondary px-3 py-3" type="button"( disabled="")?>Next<svg/);
-  if (!previous || !next) throw new Error("pager buttons missing");
-  return { previousDisabled: previous[1] === ' disabled=""', nextDisabled: next[1] === ' disabled=""' };
+  const $ = load(html);
+  const previous = $('button[aria-label^="Previous page of "]');
+  const next = $('button[aria-label^="Next page of "]');
+  if (!previous.length && !next.length) return null;
+  expect(previous).toHaveLength(1);
+  expect(next).toHaveLength(1);
+  return { previousDisabled: previous.is(":disabled"), nextDisabled: next.is(":disabled") };
 }
 
 function alphaButton(html: string, letter: string) {
@@ -759,7 +760,7 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     expect(alphaButton(html, "F")).toEqual({ active: false, disabled: true, pressed: false });
     expect(alphaButton(html, "M")).toEqual({ active: true, disabled: false, pressed: true });
     expect(alphaButton(html, "Z")).toEqual({ active: false, disabled: false, pressed: false });
-    expect(pager(html)).toEqual({ previousDisabled: true, nextDisabled: true });
+    expect(pager(html)).toBeNull();
   });
 
   it("clamps a stale second page to the only remaining page when a filter shrinks the letter", () => {
@@ -778,7 +779,7 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     expect(undergraduate).toContain("1 of 35 monitored awards match.");
     expect(browseRowHrefs(undergraduate)).toEqual(["/fictional-award-035"]);
     expect(showingLines(undergraduate)).toEqual(["Showing 1-1 of 1 awards under F.", "Showing 1-1 of 1 awards under F."]);
-    expect(pager(undergraduate)).toEqual({ previousDisabled: true, nextDisabled: true });
+    expect(pager(undergraduate)).toBeNull();
   });
 
   it("lets search reach an award beyond the first page and beyond the open letter, at its canonical link", () => {
