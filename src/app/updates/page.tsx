@@ -14,7 +14,7 @@ import { centralDateKey, formatCentralDate, previousCentralDateKey } from "@/lib
 export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
-  title: "Live Fellowship Updates | AwardPing",
+  title: "Live Fellowship Updates",
   description:
     "A public, chronological feed of plain-English changes detected on nationally competitive fellowship and scholarship source pages.",
 };

@@ -21,7 +21,7 @@ vi.mock("@/components/site-header", () => ({
   SiteHeader: () => null,
 }));
 
-import UpdatesPage from "@/app/updates/page";
+import UpdatesPage, { metadata } from "@/app/updates/page";
 
 // November 1, 2026, 11:30 PM CST: the evening after the fall-back transition,
 // where subtracting 24 hours from "now" still lands on November 1 in Central.
@@ -109,6 +109,14 @@ describe("public updates page", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("exports the unbranded page title and unchanged description for the layout template", () => {
+    // This checks page metadata; framework title-template resolution is verified separately.
+    expect(metadata.title).toBe("Live Fellowship Updates");
+    expect(metadata.description).toBe(
+      "A public, chronological feed of plain-English changes detected on nationally competitive fellowship and scholarship source pages.",
+    );
   });
 
   it("links every update to its canonical award page with the exact source and change", async () => {
