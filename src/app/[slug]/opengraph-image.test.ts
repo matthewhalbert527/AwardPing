@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
@@ -82,6 +83,47 @@ describe("award sharing image deadline", () => {
     await AwardOpenGraphImage({ params: Promise.resolve({ slug: "example-award" }) });
     expect(renderToStaticMarkup(mocks.image.mock.calls[0][0])).not.toContain("Deadline");
   });
+
+  it("reserves footer space for long deadlines without pushing sources or the domain off the image", async () => {
+    const raw = "Second Friday in November at 11:59 pm Eastern Time";
+    const facts = publicAwardFactsFromAward({ publicFacts: { deadline: raw } });
+    mocks.getAward.mockResolvedValue({ award: { name: "GEM Fellowship" }, facts, sources: [{}, {}, {}] });
+    await AwardOpenGraphImage({ params: Promise.resolve({ slug: "gem-national-consortium" }) });
+    const $ = load(renderToStaticMarkup(mocks.image.mock.calls[0][0]));
+    const root = $("body > div");
+    const header = root.children().first();
+    const footer = root.children().last();
+    expect(header.text()).toContain("awardping.com");
+    expect(header.children().last().css("font-family")).toContain("Geist");
+    expect(footer.text()).not.toContain("awardping.com");
+    expect(footer.children()).toHaveLength(2);
+    const dateColumn = footer.children().first();
+    const sourcesColumn = footer.children().last();
+    expect(dateColumn.css("flex-grow")).toBe("1");
+    expect(dateColumn.css("min-width")).toBe("0");
+    expect(dateColumn.css("flex-basis")).toBe("0");
+    expect(sourcesColumn.css("width")).toBe("280px");
+    expect(sourcesColumn.css("flex-shrink")).toBe("0");
+    expect(dateColumn.text()).toContain("Second Friday in November at 11:59 p.m. (Eastern Time)");
+    expect(dateColumn.attr("style")).not.toContain("hidden");
+    expect(sourcesColumn.text()).toContain("3 official pages");
+    expect(facts.deadline).toBe(raw);
+    // CSS/JSX contracts cannot prove raster geometry; inspect actual built PNGs too.
+  });
+
+  it.each([[0, "0 official pages"], [1, "1 official page"], [3, "3 official pages"]] as const)(
+    "keeps the recorded count %i with correct source-page wording",
+    async (count, expected) => {
+      mocks.getAward.mockResolvedValue({
+        award: { name: "Example Award" }, facts: publicAwardFactsFromAward({}),
+        sources: Array.from({ length: count }, () => ({})),
+      });
+      await AwardOpenGraphImage({ params: Promise.resolve({ slug: "example-award" }) });
+      const $ = load(renderToStaticMarkup(mocks.image.mock.calls[0][0]));
+      expect($("body > div").children().last().text()).toBe(`Monitored sources${expected}`);
+      expect($("body > div").children().first().text()).toContain("awardping.com");
+    },
+  );
 
   it("keeps the unconfigured fallback free of database requests or invented dates", async () => {
     mocks.hasConfig.mockReturnValue(false);

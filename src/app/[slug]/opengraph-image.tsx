@@ -46,7 +46,7 @@ export default async function AwardOpenGraphImage({
           fontFamily: '"Source Serif 4", Georgia, serif',
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 18, width: "100%" }}>
           <svg fill="none" height="48" viewBox="0 0 28 28" width="48">
             <circle cx="14" cy="14" r="12" stroke={INK} strokeWidth="2.2" />
             <circle cx="14" cy="14" opacity="0.45" r="7" stroke={INK} strokeWidth="1.8" />
@@ -55,6 +55,9 @@ export default async function AwardOpenGraphImage({
           <div style={{ display: "flex", fontFamily: '"Geist", Arial, sans-serif', fontSize: 34, fontWeight: 700, letterSpacing: -1 }}>
             <span style={{ color: INK }}>Award</span>
             <span style={{ color: ACCENT }}>Ping</span>
+          </div>
+          <div style={{ display: "flex", marginLeft: "auto", color: MUTED, fontFamily: '"Geist", Arial, sans-serif', fontSize: 22 }}>
+            awardping.com
           </div>
         </div>
 
@@ -78,6 +81,7 @@ export default async function AwardOpenGraphImage({
           style={{
             display: "flex",
             flexDirection: "row",
+            width: "100%",
             gap: 56,
             borderTop: `2px solid ${HAIRLINE}`,
             paddingTop: 30,
@@ -85,7 +89,7 @@ export default async function AwardOpenGraphImage({
           }}
         >
           {deadline.value && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 0 }}>
               <div style={{ color: MUTED, fontSize: 18, fontWeight: 600, letterSpacing: 3, textTransform: "uppercase" }}>
                 {deadline.label}
               </div>
@@ -93,16 +97,13 @@ export default async function AwardOpenGraphImage({
             </div>
           )}
           {sourceCount !== null && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, width: 280, flexShrink: 0 }}>
               <div style={{ color: MUTED, fontSize: 18, fontWeight: 600, letterSpacing: 3, textTransform: "uppercase" }}>
                 Monitored sources
               </div>
-              <div style={{ color: INK, fontSize: 30, fontWeight: 600 }}>{`${sourceCount} official pages`}</div>
+              <div style={{ color: INK, fontSize: 30, fontWeight: 600 }}>{`${sourceCount} official ${sourceCount === 1 ? "page" : "pages"}`}</div>
             </div>
           )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, marginLeft: "auto" }}>
-            <div style={{ color: MUTED, fontSize: 22 }}>awardping.com</div>
-          </div>
         </div>
       </div>
     ),
