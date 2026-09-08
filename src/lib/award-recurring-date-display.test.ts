@@ -3,6 +3,8 @@ import { awardDateZoneSlices, formatAwardDateFact, formatAwardDateText } from "@
 
 const GOLDWATER_RAW = "Last Friday in January, 5:00 p.m. Central Time";
 const GOLDWATER_DISPLAY = "Last Friday in January at 5:00 p.m. (Central Time)";
+const SMART_RAW = "5:00 p.m. EST on the first Friday in December 2026";
+const SMART_DISPLAY = "First Friday in December 2026 at 5:00 p.m. (EST)";
 
 describe("reviewed recurring deadline presentation", () => {
   it.each([
@@ -39,6 +41,7 @@ describe("reviewed recurring deadline presentation", () => {
     "Last Friday in January",
     "Deadline: Last Friday in January",
     "Last Friday in January: Application deadline",
+    "first Friday in December 2026",
     "January 29, 2026",
     "Every January",
     "Annually in the fall",
@@ -75,7 +78,7 @@ describe("reviewed recurring deadline presentation", () => {
   it.each([
     ["Last Friday in March (12:00 p.m. Eastern Time / 11:00 a.m. Central Time): Goldwater Scholars announced", "Last Friday in March (12:00 p.m. Eastern Time / 11:00 a.m. Central Time): Goldwater Scholars announced"],
     ["Last Friday in March (12PM Eastern Time / 11AM Central Time): Goldwater Scholars announced", "Last Friday in March (12:00 p.m. Eastern Time / 11:00 a.m. Central Time): Goldwater Scholars announced"],
-    ["5PM EST on the first Friday in December 2026", "5:00 p.m. EST on the first Friday in December 2026"],
+    ["Apply by 5PM EST on the first Friday in December 2026", "Apply by 5:00 p.m. EST on the first Friday in December 2026"],
   ])("preserves compound or unrecognized prose apart from existing clock typography: %s", (raw, expected) => {
     expect(formatAwardDateText(raw)).toBe(expected);
     expect(formatAwardDateText(expected)).toBe(expected);
@@ -92,11 +95,51 @@ describe("reviewed recurring deadline presentation", () => {
   });
 });
 
+describe("clock-first recurring deadlines with explicitly stated years", () => {
+  it.each([
+    [SMART_RAW, SMART_DISPLAY],
+    ["5PM EST on the first Friday in December 2026", SMART_DISPLAY],
+    ["11:59pm on the second Friday in November", "Second Friday in November at 11:59 p.m."],
+    ["9:30AM +05:30 on the first Monday in June 2027", "First Monday in June 2027 at 9:30 a.m. (UTC+05:30)"],
+    ["12AM (EST) on the last Friday in January 2027", "Last Friday in January 2027 at 12:00 a.m. (EST)"],
+    ["5PM EST on the fIrSt friday in december 2026", "FIrSt friday in december 2026 at 5:00 p.m. (EST)"],
+    ["first Friday in December 2026 at 5PM EST", "first Friday in December 2026 at 5:00 p.m. (EST)"],
+    ["Last Friday in January 2027, 5PM CT", "Last Friday in January 2027 at 5:00 p.m. (CT)"],
+    [`Deadline: ${SMART_RAW}`, `Deadline: ${SMART_DISPLAY}`],
+    [`${SMART_RAW}: Applications close`, `${SMART_DISPLAY}: Applications close`],
+  ])("reorders only a complete statement and retains its actual rule and year: %s", (raw, expected) => {
+    expect(formatAwardDateText(raw)).toBe(expected);
+    expect(formatAwardDateText(expected)).toBe(expected);
+  });
+
+  it.each([
+    "5PM Mars Time on the first Friday in December 2026",
+    "5PM UTC-00:00 on the first Friday in December 2026",
+    "5PM UTC+24:00 on the first Friday in December 2026",
+    "0AM EST on the first Friday in December 2026",
+    "13pm EST on the first Friday in December 2026",
+    "17:05pm EST on the first Friday in December 2026",
+    "5:60pm EST on the first Friday in December 2026",
+    "5:00.5pm EST on the first Friday in December 2026",
+    "5PM EST on the first Friday in December 2026 (tentative)",
+    "5PM EST on the first Friday in December 2026 or later",
+    "Deadline: 5PM EST on the first Friday in December 2026 (dependent on course)",
+    "5PM EST on the first Friday in December 2026 (tentative): 1 July 2026",
+    "13pm EST on the first Friday in December 2026: 1 July 2026",
+    "5PM Mars Time on the first Friday in December 2026: 1 July 2026",
+    "First Friday in December 2026 at 5PM EST (tentative): 1 July 2026",
+  ])("does not salvage the clock or a valid tail from an invalid or qualified rule: %s", (raw) => {
+    expect(formatAwardDateText(raw)).toBe(raw);
+    expect(awardDateZoneSlices(raw)).toBeNull();
+  });
+});
+
 describe("recurring deadline UTC token boundaries", () => {
   it.each([
     ["Last Friday in January at 5:00 p.m. ", "(UTC-05:00)", ""],
     ["Deadline: Last Friday in January at 5:00 p.m. ", "(UTC)", ""],
     ["Second Friday in November at 11:59 p.m. ", "(UTC+05:30)", ": Application deadline (local campus dates vary)"],
+    ["First Friday in December 2026 at 5:00 p.m. ", "(UTC-05:00)", ""],
   ])("groups only the canonical stated UTC token in %s%s%s", (prefix, zone, suffix) => {
     const text = prefix + zone + suffix;
     expect(formatAwardDateText(text)).toBe(text);
@@ -116,6 +159,7 @@ describe("recurring deadline UTC token boundaries", () => {
     "Last Friday in January (UTC-05:00)",
     "Note: Last Friday in January (UTC-05:00)",
     "Apply before Last Friday in January at 5:00 p.m. (UTC-05:00)",
+    "5:00 p.m. (UTC-05:00) on the first Friday in December 2026",
   ])("does not wrap raw, qualified, or unrecognized recurrence text: %s", (raw) => {
     expect(awardDateZoneSlices(raw)).toBeNull();
   });

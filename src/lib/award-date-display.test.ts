@@ -282,7 +282,7 @@ describe("reviewed clock typography", () => {
     expect(formatAwardDateText(compound)).toBe(compound);
     expect(formatAwardDateText(GOLDWATER_DEADLINE)).toBe(GOLDWATER_DISPLAY);
     expect(formatAwardDateText("5:00 p.m. EST on the first Friday in December 2026"))
-      .toBe("5:00 p.m. EST on the first Friday in December 2026");
+      .toBe("First Friday in December 2026 at 5:00 p.m. (EST)");
   });
 
   it("is equally deterministic for written and machine times in different host zones", () => {

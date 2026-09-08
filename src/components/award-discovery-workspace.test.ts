@@ -424,6 +424,16 @@ function deadlineCells(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace deadline wording", () => {
+  it("renders SMART's clock-first recurrence without calculating a calendar day or changing the raw row", () => {
+    const row = { ...gaither, deadline: "5:00 p.m. EST on the first Friday in December 2026" };
+    const before = structuredClone(row);
+    const html = renderRows([row]);
+    expect(deadlineCells(html)).toEqual(["First Friday in December 2026 at 5:00 p.m. (EST)"]);
+    expect(load(html)(".award-row-deadline .award-date-zone").length).toBe(0);
+    expect(browseRowHrefs(html)).toEqual([gaither.publicPath]);
+    expect(row).toEqual(before);
+  });
+
   it("renders a day-first calendar deadline without changing the directory row", () => {
     const row = { ...gaither, deadline: "1 July 2026" };
     const before = structuredClone(row);

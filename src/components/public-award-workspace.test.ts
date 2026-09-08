@@ -1130,6 +1130,22 @@ describe("focused award sections", () => {
     expect(data.facts.deadline).toBe("October 1, 2026 at 11:59PM PT");
   });
 
+  it.each(["Overview", "Dates"] as const)("renders SMART's clock-first recurrence in %s while retaining its explicit year and raw fact", (panel) => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.award.name = "SMART Scholarship-for-Service Program";
+    data.facts.deadline = "5:00 p.m. EST on the first Friday in December 2026";
+    const before = structuredClone(data);
+    const html = panel === "Overview"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+      : renderToStaticMarkup(createElement(AwardFactsPanel, {
+        facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
+      }));
+
+    expect(deadlineText(html)).toBe("First Friday in December 2026 at 5:00 p.m. (EST)");
+    expect(factValue(html, "Deadline").find(".award-date-zone").length).toBe(0);
+    expect(data).toEqual(before);
+  });
+
   it.each(["Overview", "Dates"] as const)("gives Goldwater's recurring deadline and labeled timeline the shared style in %s without changing reviewed facts", (panel) => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     data.award.name = "Barry Goldwater Scholarship";

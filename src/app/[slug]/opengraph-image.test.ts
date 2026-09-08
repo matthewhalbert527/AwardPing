@@ -46,6 +46,7 @@ describe("award sharing image deadline", () => {
     ["October 1, 2026 at 11:59PM PT", "October 1, 2026 at 11:59 p.m. (PT)"],
     ["2026-03-27", "March 27, 2026"],
     ["Last Friday in January, 5:00 p.m. Central Time", "Last Friday in January at 5:00 p.m. (Central Time)"],
+    ["5:00 p.m. EST on the first Friday in December 2026", "First Friday in December 2026 at 5:00 p.m. (EST)"],
     ["TBA", "TBA"],
     ["2026-02-30", "2026-02-30"],
   ])("displays %s consistently with award pages", async (deadline, expected) => {

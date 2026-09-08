@@ -72,11 +72,17 @@ const WRITTEN_DATE_TIME_PATTERN =
   /^([A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})(?: at |, )(\d[^\n]*?[ap]\.?m\.?)(?: (.+))?$/i;
 // Recognize the rule, not its next occurrence: there is deliberately no year
 // calculation, weekday arithmetic, or arbitrary prose/date-prefix inference.
-const RECURRING_RULE_SOURCE = String.raw`(?:First|Second|Third|Fourth|Fifth|Last) (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) in (?:${MONTH_NAMES.join("|")})`;
+const RECURRING_RULE_SOURCE = String.raw`(?:First|Second|Third|Fourth|Fifth|Last) (?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday) in (?:${MONTH_NAMES.join("|")})(?: \d{4})?`;
 const RECURRING_DATE_TIME_PATTERN = new RegExp(
   String.raw`^(${RECURRING_RULE_SOURCE})(?: at |, )(\d[^\n]*?[ap]\.?m\.?)(?: (.+))?$`, "i",
 );
 const RECURRING_DATE_START_PATTERN = new RegExp(String.raw`^${RECURRING_RULE_SOURCE}\b`, "i");
+// SMART states its rule after the clock. Only this complete relation can be
+// reordered; an explicitly stated year and zone remain exactly that, not an
+// inferred occurrence or a regional conversion of a numeric offset.
+const CLOCK_FIRST_RECURRING_SOURCE = String.raw`(\d[^\n]*?[ap]\.?m\.?)(?: (.+?))? on the (${RECURRING_RULE_SOURCE})`;
+const CLOCK_FIRST_RECURRING_PATTERN = new RegExp(String.raw`^${CLOCK_FIRST_RECURRING_SOURCE}$`, "i");
+const CLOCK_FIRST_RECURRING_START_PATTERN = new RegExp(String.raw`^${CLOCK_FIRST_RECURRING_SOURCE}\b`, "i");
 const NAMED_ZONE_PATTERN = /^(?:UTC|GMT|PT|PST|PDT|ET|EST|EDT|CT|CST|CDT|MT|MST|MDT|HST|AKST|AKDT|BST|CET|CEST|IST|JST|AEST|AEDT|NZST|NZDT|(?:Eastern|Central|Pacific|Mountain)(?: (?:Standard |Daylight )?Time)?)$/i;
 const LOCAL_ZONE_QUALIFIERS = new Set([
   "(applicant's time zone)",
@@ -172,14 +178,19 @@ function formatWrittenDateTime(value: string) {
 
 /** Style one complete recurring rule without resolving it into a dated event. */
 function formatRecurringDateTime(value: string) {
-  const match = RECURRING_DATE_TIME_PATTERN.exec(value);
-  if (!match) return null;
-  const [, rule, clock, qualifier] = match;
+  const ruleFirst = RECURRING_DATE_TIME_PATTERN.exec(value);
+  const clockFirst = ruleFirst ? null : CLOCK_FIRST_RECURRING_PATTERN.exec(value);
+  if (!ruleFirst && !clockFirst) return null;
+  const rule = ruleFirst ? ruleFirst[1] : clockFirst![3];
+  const clock = ruleFirst ? ruleFirst[2] : clockFirst![1];
+  const qualifier = ruleFirst ? ruleFirst[3] : clockFirst![2];
   const time = formatTwelveHourClock(clock);
   if (!time) return null;
   const zone = qualifier === undefined ? "" : formatWrittenZone(qualifier);
   if (zone === null) return null;
-  return `${rule} at ${time}${zone ? ` ${zone}` : ""}`;
+  // The moved rule now starts the sentence. No other wording/case is changed.
+  const displayedRule = clockFirst ? rule[0].toUpperCase() + rule.slice(1) : rule;
+  return `${displayedRule} at ${time}${zone ? ` ${zone}` : ""}`;
 }
 
 /** The readable form of one complete ISO value, or null when it is not one. */
@@ -258,7 +269,7 @@ function reviewedDateParts(value: string) {
   // A leading date-shaped head must validate whole, including dates without
   // clocks. Never salvage a valid tail from an invalid, qualified, or ranged
   // head (for example "31 June 2026: 1 July 2026").
-  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})/.test(trimmed) || RECURRING_DATE_START_PATTERN.test(trimmed)) {
+  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})/.test(trimmed) || RECURRING_DATE_START_PATTERN.test(trimmed) || CLOCK_FIRST_RECURRING_START_PATTERN.test(trimmed)) {
     const separator = trimmed.indexOf(": ");
     if (separator > 0 && trimmed.slice(separator + 2).trim()) {
       const head = formatCompleteDateValue(trimmed.slice(0, separator));
@@ -320,6 +331,7 @@ export function formatAwardDateText(value: string) {
     if (candidates.some((candidate) =>
       (WRITTEN_DATE_TIME_PATTERN.test(candidate) && formatWrittenDateTime(candidate) === null)
       || (RECURRING_DATE_TIME_PATTERN.test(candidate) && formatRecurringDateTime(candidate) === null)
+      || (CLOCK_FIRST_RECURRING_START_PATTERN.test(candidate) && formatRecurringDateTime(candidate) === null)
     )) return value;
   }
   return formatted.replace(CLOCK_IN_TEXT_PATTERN, (clock) => formatTwelveHourClock(clock) ?? clock);
