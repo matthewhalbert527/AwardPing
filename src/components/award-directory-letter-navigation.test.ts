@@ -53,6 +53,7 @@ function many(letter: string, count: number) {
 }
 type ElementProps = {
   children?: ReactNode; onClick?: () => void; disabled?: boolean; title?: string;
+  onChange?: (event: { target: { value: string } }) => void;
   "aria-label"?: string; "aria-pressed"?: boolean; tabIndex?: number;
   ref?: { current: { focus: ReturnType<typeof vi.fn>; scrollIntoView: ReturnType<typeof vi.fn> } };
 };
@@ -92,6 +93,17 @@ function hrefs(html: string) {
 }
 function activeLetter(html: string) {
   return load(html)(".award-alpha-letter-active").text();
+}
+function footerCurrentLetter(html: string) {
+  const $ = load(html);
+  const group = $('[role="group"][aria-label="Letter navigation"]');
+  expect(group).toHaveLength(1);
+  const indicator = group.children('span[aria-current="true"]');
+  expect(indicator).toHaveLength(1);
+  expect(indicator.children(".sr-only").text()).toBe("Current letter: ");
+  const visible = indicator.clone();
+  visible.children(".sr-only").remove();
+  return visible.text();
 }
 beforeEach(() => {
   state.values = [...defaults];
@@ -348,5 +360,91 @@ describe("award directory footer previous-letter navigation", () => {
     expect(html).not.toContain("Previous letter");
     expect(html).not.toContain("Next letter");
     expect(elements(tree).filter(element => element.type === "button" && /^(Previous|Next) letter(?:: [A-Z])?$/.test(text(element.props.children)))).toHaveLength(0);
+  });
+});
+
+describe("award directory footer current-letter indicator", () => {
+  it("places one noninteractive current-letter span between the fully named Previous and Next buttons", () => {
+    state.values[3] = "F";
+    const { tree, html, $ } = render([award("B"), award("F"), award("Z")]);
+    expect(footerCurrentLetter(html)).toBe("F");
+    const group = $('[role="group"][aria-label="Letter navigation"]');
+    expect(group.children().map((_index, node) => node.tagName).get()).toEqual(["button", "span", "button"]);
+    expect(group.children().map((_index, node) => $(node).text()).get()).toEqual([
+      "Previous letter: B", "Current letter: F", "Next letter: Z",
+    ]);
+    const indicator = group.children('span[aria-current="true"]');
+    expect(indicator.attr("role")).toBeUndefined();
+    expect(indicator.attr("tabindex")).toBeUndefined();
+    expect(indicator.attr("contenteditable")).toBeUndefined();
+    expect(indicator.find("button, a, input, select, textarea, [tabindex], [contenteditable]")).toHaveLength(0);
+    const indicatorElements = elements(tree).filter(element => element.type === "span" && text(element.props.children) === "Current letter: F");
+    expect(indicatorElements).toHaveLength(1);
+    expect(indicatorElements[0].props.onClick).toBeUndefined();
+    expect(text(previousLetterButton(tree).props.children)).toBe("Previous letter: B");
+    expect(text(nextLetterButton(tree).props.children)).toBe("Next letter: Z");
+  });
+
+  it.each(["A", "Z"])("shows the active B fallback rather than unavailable selected letter %s", (selected) => {
+    state.values[3] = selected;
+    const first = render([award("B"), award("F")]);
+    expect(state.values[3]).toBe(selected);
+    expect(activeLetter(first.html)).toBe("B");
+    expect(footerCurrentLetter(first.html)).toBe("B");
+    expect(previousLetterButton(first.tree).props.disabled).toBe(true);
+    expect(text(nextLetterButton(first.tree).props.children)).toBe("Next letter: F");
+  });
+
+  it("updates the indicator with the displayed awards after forward and reverse letter navigation", () => {
+    const rows = [award("B"), award("F"), award("Z")];
+    const first = render(rows);
+    expect(footerCurrentLetter(first.html)).toBe("B");
+    nextLetterButton(first.tree).props.onClick!();
+    const forward = render(rows);
+    expect(footerCurrentLetter(forward.html)).toBe("F");
+    expect(activeLetter(forward.html)).toBe("F");
+    expect(hrefs(forward.html)).toEqual([rows[1].publicPath]);
+    previousLetterButton(forward.tree).props.onClick!();
+    const reverse = render(rows);
+    expect(footerCurrentLetter(reverse.html)).toBe("B");
+    expect(activeLetter(reverse.html)).toBe("B");
+    expect(hrefs(reverse.html)).toEqual([rows[0].publicPath]);
+  });
+
+  it("follows the active filter fallback while preserving a stale selected letter", () => {
+    const rows = [award("B"), award("F"), award("Z", 1, { academicLevels: ["Graduate"] })];
+    state.values[3] = "F";
+    const first = render(rows);
+    expect(footerCurrentLetter(first.html)).toBe("F");
+    const levelLabel = elements(first.tree).find(element => element.type === "label" && text(element.props.children).startsWith("Academic level"));
+    expect(levelLabel).toBeDefined();
+    const select = elements(levelLabel).find(element => element.type === "select");
+    expect(select?.props.onChange).toBeDefined();
+    select!.props.onChange!({ target: { value: "Graduate" } });
+    const filtered = render(rows);
+    expect(state.values[3]).toBe("F");
+    expect(activeLetter(filtered.html)).toBe("Z");
+    expect(footerCurrentLetter(filtered.html)).toBe("Z");
+    expect(hrefs(filtered.html)).toEqual([rows[2].publicPath]);
+    expect(previousLetterButton(filtered.tree).props.disabled).toBe(true);
+    expect(nextLetterButton(filtered.tree).props.disabled).toBe(true);
+  });
+
+  it("keeps the letter indicator separate from within-letter page navigation", () => {
+    const rows = [...many("B", 31), award("F")];
+    const first = render(rows);
+    pageButton(first.tree, "Next")!.props.onClick!();
+    const second = render(rows);
+    expect(footerCurrentLetter(second.html)).toBe("B");
+    expect(hrefs(second.html)).toEqual(["/fictional-b-031"]);
+    expect(second.$('#award-letter-page-status[role="status"]').text()).toBe("Showing 31-31 of 31 awards under B.");
+  });
+
+  it.each(["unfiltered", "filtered"])("shows no misleading current-letter indicator for empty %s results", (kind) => {
+    if (kind === "filtered") state.values[6] = "Graduate";
+    const { html, $ } = render(kind === "filtered" ? [award("B")] : []);
+    expect($('[role="group"][aria-label="Letter navigation"]')).toHaveLength(0);
+    expect($('[aria-current="true"]')).toHaveLength(0);
+    expect(html).not.toContain("Current letter:");
   });
 });

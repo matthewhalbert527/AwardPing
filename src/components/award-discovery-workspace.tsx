@@ -271,7 +271,7 @@ export function AwardDiscoveryWorkspace({
               Next
               <ChevronRight size={17} aria-hidden="true" />
             </button>}
-            <div className="flex min-w-0 max-w-full flex-wrap gap-2" role="group" aria-label="Letter navigation">
+            <div className="flex min-w-0 max-w-full items-center gap-2" role="group" aria-label="Letter navigation">
             <button
               className="button-secondary cursor-pointer px-3 py-3 text-sm disabled:cursor-default disabled:opacity-40"
               style={{ minHeight: 44 }}
@@ -286,8 +286,11 @@ export function AwardDiscoveryWorkspace({
               }}
             >
               <ChevronLeft size={17} aria-hidden="true" />
-              {previousLetter ? `Previous letter: ${previousLetter}` : "Previous letter"}
+              <span>Previous<span className="sr-only sm:not-sr-only">{previousLetter ? ` letter: ${previousLetter}` : " letter"}</span></span>
             </button>
+            <span className="min-w-8 text-center text-base font-semibold text-[var(--foreground)]" aria-current="true">
+              <span className="sr-only">Current letter: </span>{activeLetter}
+            </span>
             <button
               className="button-secondary cursor-pointer px-3 py-3 text-sm disabled:cursor-default disabled:opacity-40"
               style={{ minHeight: 44 }}
@@ -301,7 +304,7 @@ export function AwardDiscoveryWorkspace({
                 alphabetNavRef.current?.scrollIntoView({ block: "start", behavior: "instant" });
               }}
             >
-              {nextLetter ? `Next letter: ${nextLetter}` : "Next letter"}
+              <span>Next<span className="sr-only sm:not-sr-only">{nextLetter ? ` letter: ${nextLetter}` : " letter"}</span></span>
               <ChevronRight size={17} aria-hidden="true" />
             </button>
             </div>
