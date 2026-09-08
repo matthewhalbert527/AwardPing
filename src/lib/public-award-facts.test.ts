@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
+import { publicAwardFactsFromAward, publicAwardMetaDescription } from "@/lib/public-award-facts";
 
 function factSource(source: Record<string, unknown>) {
   const pageMetadata = (source.page_metadata || {}) as Record<string, unknown>;
@@ -24,6 +24,40 @@ function factSource(source: Record<string, unknown>) {
       : source.page_metadata,
   };
 }
+
+describe("public award deadline descriptions", () => {
+  it.each([
+    ["2026-03-27T17:00:00-05:00", "March 27, 2026 at 5:00 p.m. (UTC-05:00)"],
+    ["2026-03-27", "March 27, 2026"],
+    ["Last Friday in January, 5:00 p.m. Central Time", "Last Friday in January, 5:00 p.m. Central Time"],
+    ["TBA", "TBA"],
+    ["2026-02-30", "2026-02-30"],
+  ])("formats %s only in the metadata sentence", (deadline, expected) => {
+    const reviewed = {
+      overview: "Reviewed award details.",
+      deadline,
+      opening_date: "2026-01-05",
+      important_dates: ["Interviews: 2026-04-01T09:00:00Z"],
+    };
+    const original = structuredClone(reviewed);
+    const facts = publicAwardFactsFromAward({ publicFacts: reviewed });
+    const originalFacts = structuredClone(facts);
+
+    expect(publicAwardMetaDescription("Example Award", facts))
+      .toBe(`Reviewed award details. Deadline: ${expected}.`);
+    expect(reviewed).toEqual(original);
+    expect(facts).toEqual(originalFacts);
+    expect(facts.deadline).toBe(deadline);
+    expect(facts.openingDate).toBe(reviewed.opening_date);
+    expect(facts.importantDates).toEqual(reviewed.important_dates);
+  });
+
+  it("does not invent a deadline when none was reviewed", () => {
+    const facts = publicAwardFactsFromAward({ publicFacts: { overview: "Reviewed award details." } });
+    expect(publicAwardMetaDescription("Example Award", facts)).toBe("Reviewed award details.");
+    expect(facts.deadline).toBeNull();
+  });
+});
 
 describe("public award facts", () => {
   it("uses reconciled public facts for public details", () => {

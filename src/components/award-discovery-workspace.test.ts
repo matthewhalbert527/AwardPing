@@ -445,6 +445,33 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(html).not.toMatch(/upcoming|closed|past due|expired/i);
   });
 
+  it("renders a raw machine deadline in the house style without touching the filter", () => {
+    const rows = [
+      { ...gaither, deadline: "2026-03-27T17:00:00-05:00" },
+      { ...gates, deadline: "Last Friday in January, 5:00 p.m. Central Time" },
+      { ...gilman, deadline: "2026-03-27" },
+      { ...goldwaterRow, deadline: "2026-02-30" },
+    ];
+
+    const html = renderRows(rows);
+
+    expect(deadlineCells(html)).toEqual([
+      "March 27, 2026 at 5:00 p.m. (UTC-05:00)",
+      "Last Friday in January, 5:00 p.m. Central Time",
+      "March 27, 2026",
+      // An impossible date is shown as stored, never rolled into March 2.
+      "2026-02-30",
+    ]);
+    expect(html).not.toContain("T17:00:00");
+    // Formatting is display only: every row still counts as having a listed
+    // deadline, so the filter partitions them exactly as before.
+    const matchCount = (markup: string) => markup.match(/\d+ of \d+ monitored awards match/)?.[0];
+    expect(matchCount(html)).toBe("4 of 4 monitored awards match");
+    expect(matchCount(renderRows(rows, DEADLINE_LISTED_PRESETS))).toBe("4 of 4 monitored awards match");
+    // None is "not listed", so the missing filter leaves nothing to browse.
+    expect(browseRowHrefs(renderRows(rows, DEADLINE_MISSING_PRESETS))).toEqual([]);
+  });
+
   it("labels the deadline filter by what the data establishes and keeps its behavior in both auth states", () => {
     const unfiltered = renderRows(deadlineRows);
     expect(unfiltered).toContain(

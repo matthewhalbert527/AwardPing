@@ -939,6 +939,68 @@ describe("focused award sections", () => {
     expect(application).not.toContain("Graduate students");
   });
 
+  // The reported screenshot rendered this stored value verbatim on the card.
+  const RAW_DEADLINE = "2026-03-27T17:00:00-05:00";
+  const READABLE_DEADLINE = "March 27, 2026 at 5:00 p.m. (UTC-05:00)";
+  const REVIEWED_PROSE = "Last Friday in January, 5:00 p.m. Central Time";
+
+  function datesPanel(overrides: Partial<PublicAwardPageData["facts"]>) {
+    return renderToStaticMarkup(createElement(AwardFactsPanel, {
+      facts: { ...makeDeepLinkPageData().facts, ...overrides },
+      section: "dates",
+      onViewSources: () => {},
+    }));
+  }
+
+  // The value inside the Deadline row. Either fact layout may render it, and
+  // one of them puts an icon inside the <dt>, so only the label anchors this.
+  const deadlineText = (markup: string) => markup.match(/Deadline<\/dt><dd>(?:<span>)?([^<]*)/)?.[1];
+
+  it("renders a raw machine deadline in the reviewed house style, in both panels", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    const html = renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+      data: { ...data, facts: { ...data.facts, deadline: RAW_DEADLINE } },
+    }));
+
+    expect(deadlineText(html)).toBe(READABLE_DEADLINE);
+    expect(html).not.toContain(RAW_DEADLINE);
+    expect(html).not.toContain("T17:00:00");
+    expect(deadlineText(datesPanel({ deadline: RAW_DEADLINE }))).toBe(READABLE_DEADLINE);
+  });
+
+  it("leaves already-readable reviewed wording exactly as approved", () => {
+    const html = datesPanel({ deadline: REVIEWED_PROSE, openingDate: "Opens each September" });
+
+    expect(deadlineText(html)).toBe(REVIEWED_PROSE);
+    expect(html).toContain("Opens each September");
+  });
+
+  it.each([
+    // A date with no time keeps its day and gains no invented hour or zone.
+    { label: "a date-only deadline", deadline: "2026-03-27", expected: "March 27, 2026" },
+    { label: "a UTC instant", deadline: "2026-03-27T17:00:00Z", expected: "March 27, 2026 at 5:00 p.m. (UTC)" },
+    // An impossible date is never rolled forward into a plausible deadline.
+    { label: "an impossible date", deadline: "2026-02-30", expected: "2026-02-30" },
+    { label: "unknown prose", deadline: "TBA", expected: "TBA" },
+    { label: "a rolling deadline", deadline: "Rolling", expected: "Rolling" },
+  ])("renders $label as $expected", ({ deadline, expected }) => {
+    expect(deadlineText(datesPanel({ deadline }))).toBe(expected);
+  });
+
+  it("styles opening dates and important-date items the same way", () => {
+    const html = datesPanel({
+      deadline: null,
+      openingDate: "2026-01-05",
+      importantDates: ["Interviews: 2026-03-27T09:00:00Z", "Institutional deadlines vary."],
+    });
+
+    expect(html).toContain("January 5, 2026");
+    expect(html).toContain("Interviews: March 27, 2026 at 9:00 a.m. (UTC)");
+    expect(html).toContain("Institutional deadlines vary.");
+    expect(html).not.toContain("2026-01-05");
+    expect(html).not.toContain("T09:00:00");
+  });
+
   it("explains missing details and offers sources instead of inventing a value", () => {
     const html = renderToStaticMarkup(createElement(AwardFactsPanel, {
       facts: makeDeepLinkPageData().facts, section: "application", onViewSources: () => {},

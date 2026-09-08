@@ -10,6 +10,7 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { formatAwardDateFact } from "@/lib/award-date-display";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
@@ -501,9 +502,10 @@ export function AwardDiscoveryWorkspace({
                     <div className="award-row-deadline">
                       <span>Deadline</span>
                       {/* A blank value means no deadline is listed here; it says
-                          nothing about whether one is upcoming. Listed values
-                          render verbatim, however old or informal. */}
-                      <strong>{award.deadline || "Not listed"}</strong>
+                          nothing about whether one is upcoming. A listed value
+                          keeps its reviewed wording; only a raw machine
+                          timestamp is restyled, never reinterpreted. */}
+                      <strong>{formatAwardDateFact(award.deadline) || "Not listed"}</strong>
                     </div>
                   </div>
                 </Link>

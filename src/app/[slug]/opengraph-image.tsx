@@ -1,6 +1,7 @@
 import { ImageResponse } from "next/og";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { formatAwardDateFact } from "@/lib/award-date-display";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
 
@@ -34,7 +35,8 @@ export default async function AwardOpenGraphImage({
 
   const name = award?.award.name ?? "The early-warning system for nationally competitive fellowships.";
   const kicker = award ? "Nationally competitive award" : "Nationally competitive award monitoring";
-  const deadline = award?.facts.deadline ?? null;
+  // The card shows the reviewed wording; only a raw timestamp is restyled.
+  const deadline = formatAwardDateFact(award?.facts.deadline ?? null);
   const sourceCount = award ? award.sources.length : null;
 
   return new ImageResponse(

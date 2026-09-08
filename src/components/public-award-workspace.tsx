@@ -17,6 +17,7 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
+import { formatAwardDateFact } from "@/lib/award-date-display";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import {
@@ -736,8 +737,10 @@ function EmptyState({ text }: { text: string }) {
 
 function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
   const rows: MaybeFactRow[] = [
-    { label: "Deadline", value: facts.deadline, icon: "calendar" as const },
-    { label: "Opening date", value: facts.openingDate },
+    // Date facts render in the house style; every other reviewed value, and
+    // any wording this helper does not recognise, is left exactly as reviewed.
+    { label: "Deadline", value: formatAwardDateFact(facts.deadline), icon: "calendar" as const },
+    { label: "Opening date", value: formatAwardDateFact(facts.openingDate) },
     { label: "Award amount", value: facts.awardAmount },
     { label: "Academic level", value: compactList(facts.academicLevels) },
     { label: "Discipline", value: compactList(facts.disciplines) },
@@ -748,7 +751,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
     { label: "Requirements", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
     { label: "How to apply", value: compactList(facts.howToApply) },
-    { label: "Important dates", value: compactList(facts.importantDates) },
+    { label: "Important dates", value: formatAwardDateFact(compactList(facts.importantDates)) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },
   ];
