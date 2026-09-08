@@ -203,6 +203,30 @@ describe("PublicAwardWorkspace", () => {
     expect(mainHtml).not.toContain("Stable");
   });
 
+  it.each([[0, "0 source pages"], [1, "1 source page"], [4, "4 source pages"]] as const)(
+    "keeps the header and Official sources sidebar counts consistent for %i recorded sources",
+    (count, expected) => {
+      const sources = Array.from({ length: count }, (_, index) => makeSource({
+        id: `source-count-${index}`,
+        title: `Official page ${index}`,
+        url: `https://example.edu/fellowship/source-${index}`,
+      }));
+      const $ = load(renderToStaticMarkup(createElement(PublicAwardWorkspace, {
+        data: makePageData({ sources, changes: [] }),
+      })));
+      const headerCount = $("header.public-award-console-header .public-award-meta-line > span");
+      const sourcesButton = $('aside button[title="Official sources"]');
+      const sidebarCount = sourcesButton.find(".public-award-nav-text > small");
+      expect(headerCount).toHaveLength(1);
+      expect(sourcesButton).toHaveLength(1);
+      expect(sidebarCount).toHaveLength(1);
+      expect(sidebarCount.text()).toBe(expected);
+      expect(sourcesButton.attr("aria-label")).toBe(`Official sources, ${expected}`);
+      expect(headerCount.text()).toBe(expected);
+      expect(headerCount.text()).toBe(sidebarCount.text());
+    },
+  );
+
   it("keeps every source reachable in the searchable source panel", () => {
     const noisyUpdatedSource = makeSource({
       id: "source-updated-noise",

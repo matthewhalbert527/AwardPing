@@ -138,7 +138,7 @@ export function PublicAwardWorkspace({
           <p className="public-award-kicker">Nationally competitive award</p>
           <h1>{data.award.name}</h1>
           <div className="public-award-meta-line">
-            <span>{data.sources.length} source pages</span>
+            <span>{countLabel(data.sources.length, "source page")}</span>
           </div>
           {data.facts.overview && <p>{data.facts.overview}</p>}
         </div>
