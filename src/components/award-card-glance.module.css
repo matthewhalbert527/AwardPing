@@ -1,0 +1,58 @@
+.container {
+  container: award-card-glance / inline-size;
+  margin-top: 0.8rem;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.65fr) minmax(0, 0.85fr);
+  gap: 0.6rem 1rem;
+  margin: 0;
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 0.7rem;
+}
+
+.field {
+  min-width: 0;
+}
+
+.label {
+  color: var(--text-tertiary);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  text-transform: uppercase;
+}
+
+.value {
+  margin: 0.2rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.highlight {
+  color: var(--accent-text);
+  font-weight: 650;
+}
+
+@container award-card-glance (max-width: 32rem) {
+  .facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.4rem;
+  }
+
+  .field {
+    display: grid;
+    grid-template-columns: 6.1rem minmax(0, 1fr);
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+
+  .value {
+    margin: 0;
+  }
+}

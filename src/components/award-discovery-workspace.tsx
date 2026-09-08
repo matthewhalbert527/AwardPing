@@ -14,6 +14,7 @@ import { presentAwardDateField } from "@/lib/award-date-presentation";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
+import { AwardCardGlance } from "@/components/award-card-glance";
 
 export type SharedAwardCard = {
   id: string;
@@ -491,15 +492,11 @@ export function AwardDiscoveryWorkspace({
                             {compactAwardBlurb(award.summary, award.name)}
                           </p>
                         )}
-                        <div className="award-directory-row-meta">
-                          <span>{sourceStatusText(award)}</span>
-                          {award.academicLevels.slice(0, 2).map((level) => (
-                            <span key={level}>{level}</span>
-                          ))}
-                          {award.citizenship.slice(0, 1).map((citizenship) => (
-                            <span key={citizenship}>{citizenship}</span>
-                          ))}
-                        </div>
+                        <AwardCardGlance
+                          academicLevels={award.academicLevels}
+                          citizenship={award.citizenship}
+                          changeCount={award.changeCount}
+                        />
                       </div>
                       <div className="award-row-deadline">
                         <span>{deadline.label}</span>

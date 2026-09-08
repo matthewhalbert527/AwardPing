@@ -296,15 +296,15 @@ function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenti
   }
 }
 
-// The first chip of each listed award's meta row, in listing order.
+// The same labeled Updates field on every listed award, in listing order.
 function statusChips(html: string) {
-  return [...html.matchAll(/<div class="award-directory-row-meta"><span>([^<]*)<\/span>/g)].map(
+  return [...html.matchAll(/<dd[^>]*data-field="updates"[^>]*>([^<]*)<\/dd>/g)].map(
     (match) => match[1],
   );
 }
 
 describe("AwardDiscoveryWorkspace update status", () => {
-  it("states each award's recorded update count beside the source guidance when the source count is unknown", () => {
+  it("states each award's recorded update count without navigation or source chatter", () => {
     const html = renderRows([gates, gilman, goldwaterRow]);
 
     expect(browseRowHrefs(html)).toEqual([
@@ -313,9 +313,9 @@ describe("AwardDiscoveryWorkspace update status", () => {
       "/goldwater-scholarship",
     ]);
     expect(statusChips(html)).toEqual([
-      "0 recorded updates · Open to view source pages",
-      "1 recorded update · Open to view source pages",
-      "12 recorded updates · Open to view source pages",
+      "None recorded",
+      "1 recorded",
+      "12 recorded",
     ]);
     // Nothing the directory does not know is claimed.
     expect(html).not.toContain("source page ·");
@@ -323,18 +323,19 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(html).not.toContain("Source search pending");
     expect(html).not.toContain("Recently updated");
     expect(html).not.toContain("Last checked");
+    expect(html).not.toContain("Open to view source pages");
   });
 
-  it("states nothing about updates for a row that carries no recorded count", () => {
+  it("distinguishes an unavailable update count from none recorded", () => {
     const html = renderRows([{ ...gates, changeCount: null }]);
 
-    expect(statusChips(html)).toEqual(["Open to view source pages"]);
+    expect(statusChips(html)).toEqual(["Not available"]);
     // No count is stated anywhere in the listing; the filter label is the
     // only place the phrase appears.
     expect(html).not.toMatch(/\d recorded update/);
   });
 
-  it("keeps the wording for rows that do carry a source count", () => {
+  it("uses the same glance fields regardless of whether source details have loaded", () => {
     const html = renderRows([
       { ...gates, sourceCount: 0, changeCount: 0 },
       { ...gilman, sourceCount: 1, changeCount: 1 },
@@ -342,9 +343,9 @@ describe("AwardDiscoveryWorkspace update status", () => {
     ]);
 
     expect(statusChips(html)).toEqual([
-      "Source search pending · 0 recorded updates",
-      "1 source page · 1 recorded update",
-      "4 source pages · 2 recorded updates",
+      "None recorded",
+      "1 recorded",
+      "2 recorded",
     ]);
     expect(html).not.toContain("Open to view source pages");
   });
@@ -364,14 +365,14 @@ describe("AwardDiscoveryWorkspace update status", () => {
       '<option value="all">All awards</option><option value="recent" selected="">Has recorded updates</option>',
     );
     expect(filtered).toContain("2 of 3 monitored awards match.");
-    // Exactly the awards whose chips show a non-zero recorded count remain.
+    // Exactly the awards whose Updates fields show a non-zero count remain.
     expect(browseRowHrefs(filtered)).toEqual([
       "/gilman-international-scholarship",
       "/goldwater-scholarship",
     ]);
     expect(statusChips(filtered)).toEqual([
-      "1 recorded update · Open to view source pages",
-      "12 recorded updates · Open to view source pages",
+      "1 recorded",
+      "12 recorded",
     ]);
   });
 
