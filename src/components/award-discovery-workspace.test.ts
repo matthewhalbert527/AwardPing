@@ -566,7 +566,7 @@ describe("AwardDiscoveryWorkspace large catalogs (fictional rows)", () => {
     expect(rule(".award-alpha-letter")).toContain("border: 1px solid var(--border);");
     expect(rule(".award-alpha-letter:hover:not(:disabled)")).toContain("background: var(--accent);");
     expect(rule(".award-alpha-letter:hover:not(:disabled)")).toContain("color: var(--accent-contrast);");
-    expect(rule(".award-alpha-letter:disabled")).toContain("cursor: not-allowed;");
+    expect(rule(".award-alpha-letter:disabled")).toContain("cursor: default;");
     expect(rule(".award-alpha-letter:focus-visible")).toContain("outline: 2px solid var(--accent);");
 
     const html = renderRows(fictionalRows(2));

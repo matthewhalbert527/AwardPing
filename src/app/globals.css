@@ -613,7 +613,7 @@ a {
 }
 
 .award-alpha-letter:disabled {
-  cursor: not-allowed;
+  cursor: default;
   opacity: 0.35;
 }
 
