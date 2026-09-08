@@ -1,7 +1,7 @@
 import { ImageResponse } from "next/og";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { formatAwardDateFact } from "@/lib/award-date-display";
+import { presentAwardDateField } from "@/lib/award-date-presentation";
 import { hasSupabaseAdminConfig } from "@/lib/config";
 import { getPublicAwardPageBySlug } from "@/lib/public-award-pages";
 
@@ -35,8 +35,8 @@ export default async function AwardOpenGraphImage({
 
   const name = award?.award.name ?? "The early-warning system for nationally competitive fellowships.";
   const kicker = award ? "Nationally competitive award" : "Nationally competitive award monitoring";
-  // The card shows the reviewed wording; only a raw timestamp is restyled.
-  const deadline = formatAwardDateFact(award?.facts.deadline ?? null);
+  // Use the same date and program label as the public page and directory.
+  const deadline = presentAwardDateField(award?.facts.deadline, award?.award.name);
   const sourceCount = award ? award.sources.length : null;
 
   return new ImageResponse(
@@ -91,12 +91,12 @@ export default async function AwardOpenGraphImage({
             fontFamily: '"Geist", Arial, sans-serif',
           }}
         >
-          {deadline && (
+          {deadline.value && (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               <div style={{ color: MUTED, fontSize: 18, fontWeight: 600, letterSpacing: 3, textTransform: "uppercase" }}>
-                Deadline
+                {deadline.label}
               </div>
-              <div style={{ color: INK, fontSize: 30, fontWeight: 600 }}>{deadline}</div>
+              <div style={{ color: INK, fontSize: 30, fontWeight: 600 }}>{deadline.value}</div>
             </div>
           )}
           {sourceCount !== null && (

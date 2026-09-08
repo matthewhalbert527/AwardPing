@@ -445,6 +445,15 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(html).not.toMatch(/upcoming|closed|past due|expired/i);
   });
 
+  it("labels the Boren program separately from its deadline on the directory card", () => {
+    const row = { ...goldwater, name: "Boren Scholarships and Fellowships", deadline: "January 27, 2027 (Boren Scholarships)" };
+    const before = JSON.stringify(row);
+    const html = renderRows([row]);
+    expect(html).toContain('<span>Scholarships deadline</span><strong>January 27, 2027</strong>');
+    expect(html).not.toContain("(Boren Scholarships)");
+    expect(JSON.stringify(row)).toBe(before);
+  });
+
   it("renders a raw machine deadline in the house style without touching the filter", () => {
     const rows = [
       { ...gaither, deadline: "2026-03-27T17:00:00-05:00" },

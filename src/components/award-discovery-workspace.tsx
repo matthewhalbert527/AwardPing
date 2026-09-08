@@ -10,7 +10,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { formatAwardDateFact } from "@/lib/award-date-display";
+import { presentAwardDateField } from "@/lib/award-date-presentation";
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
@@ -472,45 +472,48 @@ export function AwardDiscoveryWorkspace({
           {renderBrowseControls("top")}
 
           <div className="grid gap-3">
-            {visibleLetterAwards.map((award) => (
-              <article
-                className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
-                key={award.id}
-              >
-                <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
-                  <div className="award-row-grid">
-                    <div className="min-w-0">
-                      <span className="inline-flex min-w-0 items-center gap-2 font-bold">
-                        <span>{award.name}</span>
-                        <ChevronRight size={17} aria-hidden="true" />
-                      </span>
-                      {compactAwardBlurb(award.summary, award.name) && (
-                        <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
-                          {compactAwardBlurb(award.summary, award.name)}
-                        </p>
-                      )}
-                      <div className="award-directory-row-meta">
-                        <span>{sourceStatusText(award)}</span>
-                        {award.academicLevels.slice(0, 2).map((level) => (
-                          <span key={level}>{level}</span>
-                        ))}
-                        {award.citizenship.slice(0, 1).map((citizenship) => (
-                          <span key={citizenship}>{citizenship}</span>
-                        ))}
+            {visibleLetterAwards.map((award) => {
+              const deadline = presentAwardDateField(award.deadline, award.name);
+              return (
+                <article
+                  className="award-row-card dashboard-list-item text-left transition hover:border-[var(--brand)]"
+                  key={award.id}
+                >
+                  <Link className="award-row-summary block" href={awardDirectoryHref(award)}>
+                    <div className="award-row-grid">
+                      <div className="min-w-0">
+                        <span className="inline-flex min-w-0 items-center gap-2 font-bold">
+                          <span>{award.name}</span>
+                          <ChevronRight size={17} aria-hidden="true" />
+                        </span>
+                        {compactAwardBlurb(award.summary, award.name) && (
+                          <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
+                            {compactAwardBlurb(award.summary, award.name)}
+                          </p>
+                        )}
+                        <div className="award-directory-row-meta">
+                          <span>{sourceStatusText(award)}</span>
+                          {award.academicLevels.slice(0, 2).map((level) => (
+                            <span key={level}>{level}</span>
+                          ))}
+                          {award.citizenship.slice(0, 1).map((citizenship) => (
+                            <span key={citizenship}>{citizenship}</span>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="award-row-deadline">
+                        <span>{deadline.label}</span>
+                        {/* A blank value means no deadline is listed here; it says
+                            nothing about whether one is upcoming. A listed value
+                            keeps its meaning; a recognized program scope goes
+                            in the label rather than beside the date. */}
+                        <strong>{deadline.value || "Not listed"}</strong>
                       </div>
                     </div>
-                    <div className="award-row-deadline">
-                      <span>Deadline</span>
-                      {/* A blank value means no deadline is listed here; it says
-                          nothing about whether one is upcoming. A listed value
-                          keeps its reviewed wording; only a raw machine
-                          timestamp is restyled, never reinterpreted. */}
-                      <strong>{formatAwardDateFact(award.deadline) || "Not listed"}</strong>
-                    </div>
-                  </div>
-                </Link>
-              </article>
-            ))}
+                  </Link>
+                </article>
+              );
+            })}
           </div>
 
           {renderBrowseControls("bottom")}

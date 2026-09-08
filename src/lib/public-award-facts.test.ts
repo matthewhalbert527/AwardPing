@@ -26,6 +26,15 @@ function factSource(source: Record<string, unknown>) {
 }
 
 describe("public award deadline descriptions", () => {
+  it("keeps the Boren program scope in the metadata label and preserves the reviewed fact", () => {
+    const facts = publicAwardFactsFromAward({ publicFacts: {
+      overview: "Study language abroad.", deadline: "January 27, 2027 (Boren Scholarships)",
+    } });
+    expect(publicAwardMetaDescription("Boren Scholarships and Fellowships", facts))
+      .toBe("Study language abroad. Scholarships deadline: January 27, 2027.");
+    expect(facts.deadline).toBe("January 27, 2027 (Boren Scholarships)");
+  });
+
   it.each([
     ["2026-03-27T17:00:00-05:00", "March 27, 2026 at 5:00 p.m. (UTC-05:00)"],
     ["2026-03-27", "March 27, 2026"],

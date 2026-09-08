@@ -17,7 +17,7 @@ import {
   Users,
   type LucideIcon,
 } from "lucide-react";
-import { formatAwardDateFact } from "@/lib/award-date-display";
+import { presentAwardDateField, presentAwardTimelineDate } from "@/lib/award-date-presentation";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import {
@@ -48,8 +48,10 @@ export type SelectedPanel =
 type PublicAwardSource = PublicAwardPageData["sources"][number];
 type PublicAwardChange = PublicAwardPageData["changes"][number];
 type FactValue = string | string[];
-type FactRow = { label: string; value: FactValue; icon?: "calendar" | "checklist" };
-type MaybeFactRow = { label: string; value: FactValue | null; icon?: "calendar" | "checklist" };
+// Canonical labels still control section membership; display wording must not
+// move a scoped deadline out of the Deadline slot.
+type FactRow = { label: string; displayLabel?: string; value: FactValue; icon?: "calendar" | "checklist" };
+type MaybeFactRow = { label: string; displayLabel?: string; value: FactValue | null; icon?: "calendar" | "checklist" };
 
 export function PublicAwardWorkspace({
   data,
@@ -106,7 +108,7 @@ export function PublicAwardWorkspace({
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
     [data.changes, readChangeIds],
   );
-  const factRows = awardFactRows(data.facts);
+  const factRows = awardFactRows(data.facts, data.award.name);
   const markChangesRead = (changeIds: string[]) => {
     const uniqueIds = [...new Set(changeIds)].filter(Boolean);
     if (uniqueIds.length === 0) return;
@@ -248,6 +250,7 @@ export function PublicAwardWorkspace({
         {(selected.kind === "eligibility" || selected.kind === "dates" || selected.kind === "application") && (
           <AwardFactsPanel
             facts={data.facts}
+            awardName={data.award.name}
             section={selected.kind}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
             onViewSources={() => activatePanel({ kind: "sources" }, "panel")}
@@ -404,14 +407,15 @@ const FACT_SECTIONS = {
   },
 } as const;
 
-export function AwardFactsPanel({ facts, section, headingId, onViewSources }: {
+export function AwardFactsPanel({ facts, awardName, section, headingId, onViewSources }: {
   facts: PublicAwardPageData["facts"];
+  awardName?: string;
   section: keyof typeof FACT_SECTIONS;
   headingId?: string;
   onViewSources: () => void;
 }) {
   const definition = FACT_SECTIONS[section];
-  const rows = awardFactRows(facts);
+  const rows = awardFactRows(facts, awardName);
   const sectionRows = definition.labels.flatMap((label) => rows.filter((row) => row.label === label));
   return (
     <div className="public-award-panel-stack">
@@ -523,7 +527,7 @@ function OverviewPanel({
         <dl className="public-award-key-facts">
           {keyFacts.map((fact) => (
             <div className="public-award-key-fact" key={fact.label}>
-              <dt>{fact.label}</dt>
+              <dt>{fact.displayLabel ?? fact.label}</dt>
               <dd>
                 <FactValueDisplay className="public-award-fact-list" value={fact.value} />
               </dd>
@@ -698,7 +702,7 @@ function FactLine({
       <dt>
         {fact.icon === "calendar" && <CalendarDays size={16} aria-hidden="true" />}
         {fact.icon === "checklist" && <ListChecks size={16} aria-hidden="true" />}
-        {fact.label}
+        {fact.displayLabel ?? fact.label}
       </dt>
       <dd>
         <FactValueDisplay className="public-award-fact-list" value={fact.value} />
@@ -735,12 +739,14 @@ function EmptyState({ text }: { text: string }) {
   );
 }
 
-function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
+function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string): FactRow[] {
+  const deadline = presentAwardDateField(facts.deadline, awardName);
+  const opening = presentAwardDateField(facts.openingDate, awardName, "Opening date");
   const rows: MaybeFactRow[] = [
     // Date facts render in the house style; every other reviewed value, and
     // any wording this helper does not recognise, is left exactly as reviewed.
-    { label: "Deadline", value: formatAwardDateFact(facts.deadline), icon: "calendar" as const },
-    { label: "Opening date", value: formatAwardDateFact(facts.openingDate) },
+    { label: "Deadline", displayLabel: deadline.label, value: deadline.value, icon: "calendar" as const },
+    { label: "Opening date", displayLabel: opening.label, value: opening.value },
     { label: "Award amount", value: facts.awardAmount },
     { label: "Academic level", value: compactList(facts.academicLevels) },
     { label: "Discipline", value: compactList(facts.disciplines) },
@@ -751,7 +757,7 @@ function awardFactRows(facts: PublicAwardPageData["facts"]): FactRow[] {
     { label: "Requirements", value: compactList(facts.requirements) },
     { label: "Application materials", value: compactList(facts.applicationMaterials), icon: "checklist" as const },
     { label: "How to apply", value: compactList(facts.howToApply) },
-    { label: "Important dates", value: formatAwardDateFact(compactList(facts.importantDates)) },
+    { label: "Important dates", value: compactList(facts.importantDates.flatMap(splitFactItems).map((value) => presentAwardTimelineDate(value, awardName))) },
     { label: "Documents", value: compactList(facts.documents) },
     { label: "Contact", value: compactList(facts.contacts) },
   ];

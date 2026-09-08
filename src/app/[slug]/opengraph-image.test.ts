@@ -49,6 +49,17 @@ describe("award sharing image deadline", () => {
     if (expected !== deadline) expect(html).not.toContain(deadline);
   });
 
+  it("keeps the program scope in the label rather than beside the sharing-image date", async () => {
+    const facts = publicAwardFactsFromAward({ publicFacts: { deadline: "January 27, 2027 (Boren Scholarships)" } });
+    mocks.getAward.mockResolvedValue({ award: { name: "Boren Scholarships and Fellowships" }, facts, sources: [] });
+    await AwardOpenGraphImage({ params: Promise.resolve({ slug: "boren-awards" }) });
+    const html = renderToStaticMarkup(mocks.image.mock.calls[0][0]);
+    expect(html).toContain(">Scholarships deadline</div>");
+    expect(html).toContain(">January 27, 2027</div>");
+    expect(html).not.toContain("(Boren Scholarships)");
+    expect(facts.deadline).toBe("January 27, 2027 (Boren Scholarships)");
+  });
+
   it("omits the deadline when no date was reviewed", async () => {
     mocks.getAward.mockResolvedValue({
       award: { name: "Example Award" },

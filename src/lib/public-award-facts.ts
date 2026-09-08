@@ -1,4 +1,4 @@
-import { formatAwardDateText } from "@/lib/award-date-display";
+import { presentAwardDateField } from "@/lib/award-date-presentation";
 import { awardBaselineSummaryParts, displayAwardSummary } from "@/lib/award-summary";
 import type { Json } from "@/lib/database.types";
 import { normalizeImportantDateItems } from "@/lib/important-dates";
@@ -142,7 +142,8 @@ export function publicAwardFactsFromAward(input: {
 export function publicAwardMetaDescription(name: string, facts: PublicAwardFacts) {
   const summary = facts.overview || `${name} award details, official source links, and recent updates.`;
   // Display only: the stored fact is untouched, this is the metadata sentence.
-  const deadline = facts.deadline ? ` Deadline: ${formatAwardDateText(facts.deadline)}.` : "";
+  const displayedDeadline = presentAwardDateField(facts.deadline, name);
+  const deadline = displayedDeadline.value ? ` ${displayedDeadline.label}: ${displayedDeadline.value}.` : "";
   return truncate(`${summary}${deadline}`, 155);
 }
 

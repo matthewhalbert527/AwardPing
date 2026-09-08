@@ -914,6 +914,25 @@ describe("public award source identity", () => {
 });
 
 describe("focused award sections", () => {
+  it("separates program scope from the date without losing either Boren program", () => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    data.award.name = "Boren Scholarships and Fellowships";
+    data.facts.deadline = "January 27, 2027 (Boren Scholarships)";
+    data.facts.importantDates = ["January 20, 2027 (Boren Fellowships)"];
+    const before = JSON.stringify(data);
+    const overview = renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }));
+    const dates = renderToStaticMarkup(createElement(AwardFactsPanel, {
+      facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
+    }));
+    for (const html of [overview, dates]) {
+      expect(html).toContain("Scholarships deadline</dt><dd>January 27, 2027</dd>");
+      expect(html).toContain("Fellowships: January 20, 2027");
+      expect(html).not.toContain("(Boren Scholarships)");
+      expect(html).not.toContain("(Boren Fellowships)");
+    }
+    expect(JSON.stringify(data)).toBe(before);
+  });
+
   it("organizes existing facts without inferring new eligibility or deadlines", () => {
     const facts = {
       ...makeDeepLinkPageData().facts,
@@ -999,6 +1018,12 @@ describe("focused award sections", () => {
     expect(html).toContain("Institutional deadlines vary.");
     expect(html).not.toContain("2026-01-05");
     expect(html).not.toContain("T09:00:00");
+  });
+
+  it("formats each semicolon-separated timeline item without losing an event label", () => {
+    const html = datesPanel({ importantDates: ["Interviews: 2027-03-01; Ceremony: 2027-05-01"] });
+    expect(html).toContain("<li>Interviews: March 1, 2027</li>");
+    expect(html).toContain("<li>Ceremony: May 1, 2027</li>");
   });
 
   it("explains missing details and offers sources instead of inventing a value", () => {
