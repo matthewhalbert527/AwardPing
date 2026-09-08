@@ -137,12 +137,10 @@ function formatWrittenZone(value: string) {
   return null;
 }
 
-function formatWrittenDateTime(value: string) {
-  const match = WRITTEN_DATE_TIME_PATTERN.exec(value);
-  if (!match) return null;
-  const [, date, clock, qualifier] = match;
-  const monthFirst = /^([A-Za-z]+) (\d{1,2}), (\d{4})$/.exec(date);
-  const dayFirst = /^(\d{1,2}) ([A-Za-z]+) (\d{4})$/.exec(date);
+/** One complete written calendar date, with no inferred time or year. */
+function formatWrittenCalendarDate(value: string) {
+  const monthFirst = /^([A-Za-z]+) (\d{1,2}), (\d{4})$/.exec(value);
+  const dayFirst = /^(\d{1,2}) ([A-Za-z]+) (\d{4})$/.exec(value);
   const monthName = monthFirst?.[1] ?? dayFirst?.[2];
   const rawDay = monthFirst?.[2] ?? dayFirst?.[1];
   const year = monthFirst?.[3] ?? dayFirst?.[3];
@@ -150,7 +148,14 @@ function formatWrittenDateTime(value: string) {
   const month = MONTH_NAMES.findIndex((name) => name.toLowerCase() === monthName.toLowerCase());
   if (month < 0) return null;
   // Reuse the strict calendar validator; neither Date nor a host locale is used.
-  const calendarDate = formatIsoValue(`${year}-${String(month + 1).padStart(2, "0")}-${rawDay.padStart(2, "0")}`);
+  return formatIsoValue(`${year}-${String(month + 1).padStart(2, "0")}-${rawDay.padStart(2, "0")}`);
+}
+
+function formatWrittenDateTime(value: string) {
+  const match = WRITTEN_DATE_TIME_PATTERN.exec(value);
+  if (!match) return null;
+  const [, date, clock, qualifier] = match;
+  const calendarDate = formatWrittenCalendarDate(date);
   const time = formatTwelveHourClock(clock);
   if (!calendarDate || !time) return null;
   const zone = qualifier === undefined ? "" : formatWrittenZone(qualifier);
@@ -198,6 +203,9 @@ function formatCompleteDateValue(value: string) {
   const written = formatWrittenDateTime(value);
   if (written) return written;
 
+  const writtenDate = formatWrittenCalendarDate(value);
+  if (writtenDate) return writtenDate;
+
   const range = ISO_DATE_RANGE_PATTERN.exec(value);
   if (range) {
     const start = formatIsoValue(range[1]);
@@ -225,9 +233,10 @@ function reviewedDateParts(value: string) {
 
   // Date-first timeline entries have a clear boundary before the reviewer's
   // description. Preserve every word after it, including any embedded dates.
-  // If the leading machine value is invalid, do not try styling its label as
-  // a different date instead (for example "2027-02-30: 2027-03-01").
-  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})(?: at |, )/.test(trimmed)) {
+  // A leading date-shaped head must validate whole, including dates without
+  // clocks. Never salvage a valid tail from an invalid, qualified, or ranged
+  // head (for example "31 June 2026: 1 July 2026").
+  if (/^\d{4}-/.test(trimmed) || /^(?:[A-Za-z]+ \d{1,2}, \d{4}|\d{1,2} [A-Za-z]+ \d{4})/.test(trimmed)) {
     const separator = trimmed.indexOf(": ");
     if (separator > 0 && trimmed.slice(separator + 2).trim()) {
       const head = formatCompleteDateValue(trimmed.slice(0, separator));

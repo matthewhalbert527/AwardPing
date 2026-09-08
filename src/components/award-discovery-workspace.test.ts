@@ -424,6 +424,16 @@ function deadlineCells(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace deadline wording", () => {
+  it("renders a day-first calendar deadline without changing the directory row", () => {
+    const row = { ...gaither, deadline: "1 July 2026" };
+    const before = structuredClone(row);
+    const html = renderRows([row]);
+    expect(deadlineCells(html)).toEqual(["July 1, 2026"]);
+    expect(browseRowHrefs(html)).toEqual([gaither.publicPath]);
+    expect(load(html)(".award-row-deadline .award-date-zone").length).toBe(0);
+    expect(row).toEqual(before);
+  });
+
   it.each([
     { raw: "2026-03-27T17:00:00-05:00", text: "March 27, 2026 at 5:00 p.m. (UTC-05:00)", zone: "(UTC-05:00)", summaryText: "March 27, 2026 at 5:00 p.m." },
     { raw: "2026-03-27T09:30:00+05:30", text: "March 27, 2026 at 9:30 a.m. (UTC+05:30)", zone: "(UTC+05:30)", summaryText: "March 27, 2026 at 9:30 a.m." },

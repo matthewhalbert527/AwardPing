@@ -20,6 +20,13 @@ numeric offsets stay numeric. No host locale, browser timezone or guessed
 daylight-saving rule participates in display. No time is invented for date-only
 values, and nonzero seconds/fractions remain intact.
 
+Complete written dates without a clock use the same month-first calendar style:
+`1 July 2026` becomes `July 1, 2026`. This reuses the timed-date calendar
+validator, including leap-year checks. It does not infer a year, time, or zone.
+Clear reviewed labels and date-first timeline descriptions retain their words;
+an invalid, qualified, or ranged leading date cannot fall through to styling a
+later valid date instead. Partial dates and recurring rules remain literal.
+
 In recurring rules and longer descriptions, only complete valid 12-hour clock
 tokens get typographic cleanup. The surrounding words, alternative dates,
 applicant groups and conditions remain. Existing compound parentheses, such as

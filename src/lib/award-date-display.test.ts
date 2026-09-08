@@ -423,3 +423,61 @@ describe("awardDateZoneSlices", () => {
     expect(awardDateZoneSlices(value)).toBeNull();
   });
 });
+
+describe("complete written calendar dates", () => {
+  it.each([
+    // The only residual date-only style difference in the saved public audit.
+    ["1 July 2026", "July 1, 2026"],
+    ["01 July 2026", "July 1, 2026"],
+    ["July 01, 2026", "July 1, 2026"],
+    ["April 8, 2026", "April 8, 2026"],
+    ["29 February 2000", "February 29, 2000"],
+    ["Opening date: 1 July 2026", "Opening date: July 1, 2026"],
+    ["Interviews: Round two: 1 July 2026", "Interviews: Round two: July 1, 2026"],
+    ["1 July 2026: Applications open", "July 1, 2026: Applications open"],
+    ["1 July 2026: Compared with 02 July 2026: exact historical wording", "July 1, 2026: Compared with 02 July 2026: exact historical wording"],
+    ["July 1, 2026: Compared with 02 July 2026: exact historical wording", "July 1, 2026: Compared with 02 July 2026: exact historical wording"],
+    ["1 July 2026: Quoted (UTC-05:00) remains prose", "July 1, 2026: Quoted (UTC-05:00) remains prose"],
+  ])("formats only the complete calendar segment of %s", (value, expected) => {
+    expect(formatAwardDateText(value)).toBe(expected);
+    expect(formatAwardDateText(expected)).toBe(expected);
+    // A calendar date never invents a clock, zone, or UTC wrapping target.
+    expect(awardDateZoneSlices(value)).toBeNull();
+    expect(awardDateZoneSlices(expected)).toBeNull();
+  });
+
+  it.each([
+    "29 February 1900", "31 June 2026", "0 July 2026", "1 Notamonth 2026",
+    "July 2026", "1 July", "October 30", "First Tuesday in September",
+    GOLDWATER_DEADLINE,
+    "1 July 2026 (tentative)", "1 July 2026 or later",
+    "Before 1 July 2026", "Opening date: 1 July 2026 (tentative)",
+    "1 July 2026 to 4 July 2026",
+    "March 1, 2027 to April 15, 2027: Regional Review Panels",
+    "Interviews: 1 July 2026 to 4 July 2026",
+    // Invalid, qualified, or ranged leading dates must never fall through to
+    // the label-tail branch and style only their later, valid date.
+    "31 June 2026: 1 July 2026",
+    "June 31, 2026: 1 July 2026",
+    "1 July 2026 (tentative): 2 July 2026",
+    "1 July 2026 to 4 July 2026: 2 July 2026",
+    // Written date-first descriptions follow the existing ISO-led rule:
+    // they are not a second labelled date to salvage or normalize.
+    "June 1, 2028: 2026-03-27",
+    "1 May 2026 Symposium: 2026-06-01",
+    "1 July 2026:", "1 July 2026:   ", "1 July 2026:Applications open",
+  ])("keeps unsupported or incomplete written date statement %s literal", (value) => {
+    expect(formatAwardDateText(value)).toBe(value);
+    expect(awardDateZoneSlices(value)).toBeNull();
+  });
+
+  it.each([
+    ["7 October 2026, 11:59 PM Eastern Time", "October 7, 2026 at 11:59 p.m. (Eastern Time)"],
+    ["1 October 2026 at 5:00pm (endorsing institution time zone): Endorsements due", "October 1, 2026 at 5:00 p.m. (endorsing institution time zone): Endorsements due"],
+    ["2026-03-27T17:00:00.2500-05:00", "March 27, 2026 at 5:00:00.2500 p.m. (UTC-05:00)"],
+    ["February 2, 2027 at 11:59 p.m. (applicant's time zone)", "February 2, 2027 at 11:59 p.m. (applicant's time zone)"],
+  ])("preserves the established timed-date output for %s", (value, expected) => {
+    expect(formatAwardDateText(value)).toBe(expected);
+    expect(formatAwardDateText(expected)).toBe(expected);
+  });
+});

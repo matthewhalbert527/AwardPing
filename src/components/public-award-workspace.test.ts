@@ -983,6 +983,26 @@ describe("focused award sections", () => {
   }
   const deadlineText = (markup: string) => factValue(markup, "Deadline").text();
 
+  it.each(["Overview", "Dates"] as const)("renders Rhodes' day-first opening beside its existing deadline in %s", (panel) => {
+    const data: PublicAwardPageData = makeDeepLinkPageData();
+    // The date pair is from the saved public Rhodes projection, not a live read.
+    data.award.name = "Rhodes Scholarship (United States)";
+    data.canonicalPath = "/rhodes-scholarship";
+    data.facts.openingDate = "1 July 2026";
+    data.facts.deadline = "7 October 2026, 11:59 PM Eastern Time";
+    const before = structuredClone(data);
+    const html = panel === "Overview"
+      ? renderToStaticMarkup(createElement(PublicAwardWorkspace, { data }))
+      : renderToStaticMarkup(createElement(AwardFactsPanel, {
+        facts: data.facts, awardName: data.award.name, section: "dates", onViewSources: () => {},
+      }));
+    expect(deadlineText(html)).toBe("October 7, 2026 at 11:59 p.m. (Eastern Time)");
+    const opening = factValue(html, "Opening date");
+    expect(opening.text()).toBe("July 1, 2026");
+    expect(opening.find(".award-date-zone").length).toBe(0);
+    expect(data).toEqual(before);
+  });
+
   it.each(["Overview", "Dates"] as const)("groups only UTC tokens in %s date facts without changing ASCII text", (panel) => {
     const data: PublicAwardPageData = makeDeepLinkPageData();
     data.facts.deadline = RAW_DEADLINE;
