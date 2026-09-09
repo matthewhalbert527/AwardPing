@@ -4228,6 +4228,34 @@ a {
   min-width: 0;
 }
 
+.award-directory-range-row {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+}
+
+.award-directory-range-row label {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.award-directory-range-row label span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.award-directory-range-note {
+  align-self: end;
+  color: var(--text-tertiary);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
 .award-directory-filter-grid label span {
   color: var(--muted);
   font-size: 0.74rem;
@@ -4578,6 +4606,11 @@ a {
 
   .award-directory-filter-grid {
     grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .award-directory-range-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+    align-items: end;
   }
 
   .source-snapshot-evidence-grid {

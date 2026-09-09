@@ -13,6 +13,7 @@ import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { loadEligiblePublicChangeEvents } from "@/lib/public-change-events";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { loadStage1PublicationIndex } from "@/lib/stage1-publication";
+import { centralDateKey } from "@/lib/time-zone";
 
 export const dynamic = "force-dynamic";
 
@@ -169,12 +170,25 @@ function mapSharedAwards(
       sourceCount: null,
       sourceIssueCount: null,
       changeCount: changes.length,
+      updateDays: updateDayKeys(changes),
       tracked: trackedSharedIds.has(award.id),
       detailsLoaded: false,
       sources: [],
       changes: [],
     };
   });
+}
+
+// The directory withholds the change bodies, so the date filter travels as the
+// distinct days an award was updated. Days are keyed in the timezone the site
+// displays, so an evening change stays on the day the reader saw it.
+function updateDayKeys(changes: SharedChangeDirectoryRow[]) {
+  const days = new Set<string>();
+  for (const change of changes) {
+    const day = centralDateKey(change.detected_at);
+    if (day) days.add(day);
+  }
+  return [...days].sort().reverse();
 }
 
 function withTrackedSharedAwards(

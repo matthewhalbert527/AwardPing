@@ -15,6 +15,7 @@ import { type AwardPageType } from "@/lib/award-discovery-types";
 import { dashboardAwardPath } from "@/lib/award-slugs";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
+import { formatCentralDate } from "@/lib/time-zone";
 
 export type SharedAwardCard = {
   id: string;
@@ -32,6 +33,8 @@ export type SharedAwardCard = {
   sourceCount: number | null;
   sourceIssueCount: number | null;
   changeCount: number | null;
+  /** Distinct days this award was updated, as YYYY-MM-DD in the site's timezone. */
+  updateDays: string[];
   tracked: boolean;
   detailsLoaded?: boolean;
   sources: Array<{
@@ -59,6 +62,7 @@ export type SharedAwardChange = {
 
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 const pageSizeOptions = [30, 50, 100] as const;
+const dateKeyPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 export function AwardDiscoveryWorkspace({
   sharedAwards,
@@ -79,6 +83,12 @@ export function AwardDiscoveryWorkspace({
   const [citizenshipFilter, setCitizenshipFilter] = useState("all");
   const [deadlineFilter, setDeadlineFilter] = useState("all");
   const [recentFilter, setRecentFilter] = useState("all");
+  const [updatedFrom, setUpdatedFrom] = useState("");
+  const [updatedTo, setUpdatedTo] = useState("");
+  const updatedRange = useMemo(
+    () => (recentFilter === "custom" ? normalizeRange(updatedFrom, updatedTo) : null),
+    [recentFilter, updatedFrom, updatedTo],
+  );
 
   const levelOptions = useMemo(
     () => uniqueOptions(sharedAwards.flatMap((award) => award.academicLevels)),
@@ -101,6 +111,7 @@ export function AwardDiscoveryWorkspace({
         if (deadlineFilter === "listed" && !award.deadline) return false;
         if (deadlineFilter === "missing" && award.deadline) return false;
         if (recentFilter === "recent" && !award.recentlyUpdated) return false;
+        if (updatedRange && !hasUpdateInRange(award, updatedRange)) return false;
         return true;
       }),
     [
@@ -110,6 +121,7 @@ export function AwardDiscoveryWorkspace({
       levelFilter,
       recentFilter,
       sharedAwards,
+      updatedRange,
     ],
   );
 
@@ -405,15 +417,59 @@ export function AwardDiscoveryWorkspace({
               className="input"
               value={recentFilter}
               onChange={(event) => {
-                setRecentFilter(event.target.value);
+                const next = event.target.value;
+                setRecentFilter(next);
+                // Leaving the custom range drops its dates so they cannot
+                // silently narrow the list the next time it is picked.
+                if (next !== "custom") {
+                  setUpdatedFrom("");
+                  setUpdatedTo("");
+                }
                 setLetterPageIndex(0);
               }}
             >
               <option value="all">All awards</option>
               <option value="recent">Recently updated</option>
+              <option value="custom">Updated in date range</option>
             </select>
           </label>
         </div>
+
+        {recentFilter === "custom" && (
+          <div className="award-directory-range-row">
+            <label>
+              <span>Updated from</span>
+              <input
+                className="input"
+                type="date"
+                max={updatedTo || undefined}
+                value={updatedFrom}
+                onChange={(event) => {
+                  setUpdatedFrom(event.target.value);
+                  setLetterPageIndex(0);
+                }}
+              />
+            </label>
+            <label>
+              <span>Updated to</span>
+              <input
+                className="input"
+                type="date"
+                min={updatedFrom || undefined}
+                value={updatedTo}
+                onChange={(event) => {
+                  setUpdatedTo(event.target.value);
+                  setLetterPageIndex(0);
+                }}
+              />
+            </label>
+            <p className="award-directory-range-note">
+              {updatedRange
+                ? `Showing awards with an update ${rangeSummary(updatedRange)}.`
+                : "Pick a start date, an end date, or both."}
+            </p>
+          </div>
+        )}
 
         {!browseHiddenBySearch && (
           <div className="mt-5 flex flex-col gap-3 border-t border-[var(--border-subtle)] pt-4 sm:flex-row sm:items-center sm:justify-between">
@@ -523,6 +579,44 @@ function sourceStatusText(award: SharedAwardCard) {
 
 function compactAwardBlurb(summary: string | null, awardName: string) {
   return compactAwardDirectorySummary(summary, awardName);
+}
+
+export type UpdateRange = { from: string; to: string };
+
+// A range needs at least one bound; a backwards pick is read as the range the
+// reader meant rather than matching nothing. Null means "do not filter yet",
+// so choosing the range does not blank the directory mid-entry.
+export function normalizeRange(from: string, to: string): UpdateRange | null {
+  const start = dateKeyPattern.test(from) ? from : "";
+  const end = dateKeyPattern.test(to) ? to : "";
+  if (!start && !end) return null;
+  if (start && end && start > end) return { from: end, to: start };
+  return { from: start, to: end };
+}
+
+// Both bounds are inclusive whole days.
+export function hasUpdateInRange(
+  award: Pick<SharedAwardCard, "updateDays">,
+  range: UpdateRange,
+) {
+  return (award.updateDays || []).some((day) => {
+    if (range.from && day < range.from) return false;
+    if (range.to && day > range.to) return false;
+    return true;
+  });
+}
+
+function rangeSummary(range: UpdateRange) {
+  if (range.from && range.to) {
+    return `between ${formatRangeDate(range.from)} and ${formatRangeDate(range.to)}`;
+  }
+  return range.from ? `on or after ${formatRangeDate(range.from)}` : `on or before ${formatRangeDate(range.to)}`;
+}
+
+// A day key carries no time, so anchor it at midday UTC before formatting:
+// midnight would land on the previous day once shifted into Central.
+function formatRangeDate(key: string) {
+  return formatCentralDate(`${key}T12:00:00Z`);
 }
 
 function uniqueOptions(values: string[]) {
