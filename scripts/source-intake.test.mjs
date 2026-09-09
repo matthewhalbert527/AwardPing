@@ -12,6 +12,7 @@ import {
   normalizeGeminiIntakeResult,
   persistSourceIntakeFactCandidates,
   shouldCreateNewAwardFromIntake,
+  sourceIntakeFactCandidateConflictColumns,
   sourceLikeFromIntake,
   validateIntakeAiDecision,
 } from "./lib/source-intake.mjs";
@@ -235,7 +236,7 @@ describe("source intake worker helpers", () => {
     const malformed = [
       ["accepted"],
       "accepted?",
-      "ac cepted",
+      "ac\u0000cepted",
       { status: "accepted" },
       true,
       false,
@@ -392,6 +393,113 @@ describe("source intake worker helpers", () => {
     expect(source.url).toBe("https://example.edu/research-fellowship");
     expect(source.page_type).toBe("homepage");
     expect(source.page_metadata.baseline_facts.award_relevance).toBe("primary");
+  });
+
+  it("leaves per-field evidence unavailable and keeps page quotes at page scope", () => {
+    const sourceLike = sourceLikeFromIntake({ request, capture, review: acceptedReview });
+    const rows = factCandidateRowsFromIntake({
+      awardId: "44444444-4444-4444-8444-444444444444",
+      sourceId: "55555555-5555-4555-8555-555555555555",
+      sourcePageRequestId: liveRequestId,
+      sourceLike,
+      review: acceptedReview,
+      extractedAt: "2026-07-16T15:30:00.000Z",
+    });
+
+    // Scalars, list items and the URL row alike: nothing binds a page quote to
+    // a field, so no field claims one.
+    expect(rows.length).toBeGreaterThan(1);
+    for (const row of rows) {
+      expect(row.evidence_quote, row.field_name).toBeNull();
+      expect(row.evidence_location, row.field_name).toBeNull();
+      expect(row.metadata.page_evidence_scope, row.field_name).toBe("source_page");
+      expect(row.metadata.page_evidence_quotes, row.field_name).toEqual(acceptedReview.evidence_quotes);
+    }
+    expect(rows.some((row) => row.field_name === "eligibility")).toBe(true);
+    expect(rows.some((row) => row.field_name === "official_homepage_url")).toBe(true);
+  });
+
+  it("gives every row its own quote array, aliasing neither the input nor a sibling", () => {
+    const review = { ...acceptedReview, evidence_quotes: ["First quote.", "Second quote."] };
+    const sourceLike = sourceLikeFromIntake({ request, capture, review });
+    const rows = factCandidateRowsFromIntake({
+      awardId: "44444444-4444-4444-8444-444444444444",
+      sourceId: "55555555-5555-4555-8555-555555555555",
+      sourcePageRequestId: liveRequestId,
+      sourceLike,
+      review,
+      extractedAt: "2026-07-16T15:30:00.000Z",
+    });
+
+    const arrays = rows.map((row) => row.metadata.page_evidence_quotes);
+    for (const array of arrays) {
+      expect(array).toEqual(["First quote.", "Second quote."]);
+      expect(array).not.toBe(review.evidence_quotes);
+    }
+    expect(new Set(arrays).size).toBe(arrays.length);
+
+    // Mutating one row's copy must not reach the input or any sibling row.
+    arrays[0].push("Injected.");
+    expect(review.evidence_quotes).toEqual(["First quote.", "Second quote."]);
+    for (const array of arrays.slice(1)) expect(array).toEqual(["First quote.", "Second quote."]);
+  });
+
+  it("records an empty page quote list rather than inventing one", () => {
+    const review = { ...acceptedReview, evidence_quotes: [] };
+    const sourceLike = sourceLikeFromIntake({ request, capture, review });
+    const rows = factCandidateRowsFromIntake({
+      awardId: "44444444-4444-4444-8444-444444444444",
+      sourceId: "55555555-5555-4555-8555-555555555555",
+      sourcePageRequestId: liveRequestId,
+      sourceLike,
+      review,
+      extractedAt: "2026-07-16T15:30:00.000Z",
+    });
+
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.evidence_quote).toBeNull();
+      expect(row.evidence_location).toBeNull();
+      expect(row.metadata.page_evidence_quotes).toEqual([]);
+      expect(row.metadata.page_evidence_scope).toBe("source_page");
+    }
+  });
+
+  it("keeps every value, identity and ordering the quote change must not touch", () => {
+    const sourceLike = sourceLikeFromIntake({ request, capture, review: acceptedReview });
+    const args = {
+      awardId: "44444444-4444-4444-8444-444444444444",
+      sourceId: "55555555-5555-4555-8555-555555555555",
+      sourcePageRequestId: liveRequestId,
+      sourceLike,
+      review: acceptedReview,
+      extractedAt: "2026-07-16T15:30:00.000Z",
+    };
+    const rows = factCandidateRowsFromIntake(args);
+
+    expect(rows.map((row) => row.field_name)).toEqual([
+      "description", "deadline", "award_amount", "eligibility",
+      "application_materials", "important_dates", "official_homepage_url",
+    ]);
+    const deadline = rows.find((row) => row.field_name === "deadline");
+    expect(deadline.raw_value).toBe("March 1");
+    expect(deadline.normalized_value).toBe("March 1");
+    expect(deadline.candidate_status).toBe("pending");
+    expect(deadline.confidence).toBe("high");
+    expect(deadline.source_role).toBe("primary");
+    expect(deadline.model).toBe("source-intake-gemini-batch");
+    expect(deadline.extracted_at).toBe("2026-07-16T15:30:00.000Z");
+    expect(deadline.source_page_request_id).toBe(liveRequestId);
+    expect(deadline.intake_value_sha256).toBe(createHash("sha256").update("March 1").digest("hex"));
+    expect(deadline.metadata.source_page_request_id).toBe(liveRequestId);
+    expect(deadline.shared_award_id).toBe(args.awardId);
+    expect(deadline.shared_award_source_id).toBe(args.sourceId);
+
+    // Same inputs, same rows: the value hash that keys the upsert is stable, so
+    // a replay still collides and no historical row can be rewritten.
+    const repeat = factCandidateRowsFromIntake(args);
+    expect(repeat.map((row) => row.intake_value_sha256)).toEqual(rows.map((row) => row.intake_value_sha256));
+    expect(sourceIntakeFactCandidateConflictColumns).toBe("source_page_request_id,field_name,intake_value_sha256");
   });
 
   it("does not duplicate fact candidates when a retained result replays after a downstream failure", async () => {

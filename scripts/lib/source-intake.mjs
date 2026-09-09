@@ -1014,7 +1014,6 @@ export function factCandidateRowsFromIntake({
   extractedAt = new Date().toISOString(),
 }) {
   const normalized = normalizeGeminiIntakeResult(review);
-  const evidence = normalized.evidence_quotes[0] || null;
   const requestId = cleanNullable(sourcePageRequestId);
   const rows = [];
   const add = (field, value) => {
@@ -1032,8 +1031,15 @@ export function factCandidateRowsFromIntake({
         field_name: field,
         raw_value: raw,
         normalized_value: raw,
-        evidence_quote: evidence,
-        evidence_location: "source_intake_page_text",
+        // The review returns quotes for the page, not for any one field, so
+        // there is nothing here that binds a quote to this value or, for a
+        // list, to this item. Stamping the first page quote on every row made
+        // page context read as field evidence; leaving both columns null says
+        // the honest thing, that per-field evidence is unavailable. This is
+        // not a claim that the value is wrong, and it is not verification of
+        // anything: the page-level quotes are preserved below at page scope.
+        evidence_quote: null,
+        evidence_location: null,
         extracted_at: extractedAt,
         model: "source-intake-gemini-batch",
         confidence: normalized.confidence,
@@ -1043,6 +1049,10 @@ export function factCandidateRowsFromIntake({
         metadata: {
           intake_request_id: normalized.raw?.source_page_request_id || null,
           source_page_request_id: requestId,
+          // A fresh array per row, so no row aliases the review's list or a
+          // sibling row's copy and a later edit cannot travel between them.
+          page_evidence_quotes: [...normalized.evidence_quotes],
+          page_evidence_scope: "source_page",
         },
       });
     }
