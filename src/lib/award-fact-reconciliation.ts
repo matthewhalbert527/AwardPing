@@ -482,7 +482,7 @@ export function auditPublicAwardPage(
     findings.push({
       code: "missing_amount_with_official_evidence",
       severity: "warning",
-      message: "An official award-specific source contains amount evidence, but no amount was selected. Keep any last-known-good amount and review it without blocking other verified fields.",
+      message: "An award amount was proposed but not selected. Check the source for supporting text and the applicable cycle. Keep any last-known-good amount pending review.",
       field_name: "award_amounts",
     });
     suggested_fixes.push({ field_name: "award_amounts", reason: "review_official_amount_evidence" });

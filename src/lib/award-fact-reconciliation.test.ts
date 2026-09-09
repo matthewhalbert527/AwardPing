@@ -152,7 +152,7 @@ describe("award fact reconciliation", () => {
     expect(contaminated.should_block_publication).toBe(true);
   });
 
-  it("publishes other verified fields while preserving a last-known-good amount for review", () => {
+  it("reports an unselected amount as a proposal while preserving a last-known-good amount", () => {
     const official = source({
       id: "official-amount",
       title: award.name,
@@ -166,7 +166,7 @@ describe("award fact reconciliation", () => {
           award_relevance: "primary",
           cycle_relevance: "evergreen",
           confidence: "high",
-          evidence_quotes: [award.name, "$38,000 stipend"],
+          evidence_quotes: [award.name, "Application deadline: October 29, 2026"],
           award_amounts: ["$38,000 stipend"],
           eligibility: ["Graduate students completing dissertations in American art"],
           quality_flags: [],
@@ -177,7 +177,11 @@ describe("award fact reconciliation", () => {
     const reconciliation = reconcileAwardFacts(
       award,
       sources,
-      buildFactCandidatesFromSources(award, sources),
+      buildFactCandidatesFromSources(award, sources).map((candidate) => ({
+        ...candidate,
+        evidence_quote: null,
+        evidence_location: null,
+      })),
       { now: "2026-07-13T00:00:00.000Z" },
     );
     const selectedWithoutAmount = {
@@ -197,6 +201,7 @@ describe("award fact reconciliation", () => {
     expect(audit.findings).toContainEqual(expect.objectContaining({
       code: "missing_amount_with_official_evidence",
       severity: "warning",
+      message: "An award amount was proposed but not selected. Check the source for supporting text and the applicable cycle. Keep any last-known-good amount pending review.",
     }));
     expect(publishable.award_amounts).toEqual(["$37,000 prior-cycle stipend"]);
     expect(publishable.stipend).toBe("$37,000");
