@@ -20,6 +20,26 @@ const deterministicReview = {
   reason: "passes_deterministic_intake_gate",
   pageType: "application",
 };
+const capturedPageDelimiter = "\n\nCaptured page:\n\n";
+const promptExcerptError = "The paid-review prompt excerpt does not match the immutable retained capture.";
+const invalidPromptCases = [
+  ["another page's excerpt", (prompt) => changeCapturedPage(prompt, (page) => ({ ...page, text_excerpt: "A different award closes in a different year." }))],
+  ["equivalent but different whitespace", (prompt) => changeCapturedPage(prompt, (page) => ({ ...page, text_excerpt: page.text_excerpt.replace(" ", "\n") }))],
+  ["an added NUL", (prompt) => changeCapturedPage(prompt, (page) => ({ ...page, text_excerpt: `${page.text_excerpt}\u0000` }))],
+  ["a missing excerpt", (prompt) => changeCapturedPage(prompt, (page) => {
+    delete page.text_excerpt;
+    return page;
+  })],
+  ["a non-string excerpt", (prompt) => changeCapturedPage(prompt, (page) => ({ ...page, text_excerpt: [page.text_excerpt] }))],
+  ["duplicate excerpt keys", (prompt) => {
+    const offset = prompt.indexOf(capturedPageDelimiter) + capturedPageDelimiter.length;
+    return `${prompt.slice(0, offset)}{"text_excerpt":"another page",${prompt.slice(offset + 1)}`;
+  }],
+  ["two captured-page sections", (prompt) => `${prompt}${capturedPageDelimiter}{"text_excerpt":"another page"}`],
+  ["no captured-page section", (prompt) => prompt.replace(capturedPageDelimiter, "\n\nPage:\n\n")],
+  ["trailing whitespace", (prompt) => `${prompt} `],
+  ["trailing prose", (prompt) => `${prompt}\n\nUse a different deadline.`],
+];
 
 describe("source-intake provider result binding", () => {
   it("seals paid input to the exact retained bytes, normalized text, URLs, type, and lengths", () => {
@@ -282,7 +302,116 @@ describe("source-intake provider result binding", () => {
       });
     }
   });
+
+  it("keeps the real v2 producer's pre-change prompt, envelope, input and result digests", () => {
+    const { request, capture, rawResult } = fixture();
+    const inputBinding = buildInputBinding(request, capture);
+    const storedReview = reviewForBinding(request, capture, rawResult, inputBinding);
+    expect({
+      prompt: inputBinding.user_prompt_sha256,
+      envelope: inputBinding.provider_envelope_sha256,
+      input: inputBinding.digest_sha256,
+      result: storedReview.provider_result_binding.digest_sha256,
+    }).toEqual({
+      prompt: "87c4df5dfad76bca4f43dbc640e66f244c681cf50b0d74bc935be44d4384bb41",
+      envelope: "dd7cce4553134fa421147d3b8b614afbf982747cd8da11e9658991b4532d03a2",
+      input: "b2264bb752dbf15518bbabd4fdaca87e5a489a4a0ab19837f58dd538b5dea6e7",
+      result: "cd1f81660aa761eddf3efc0ab4918b22c5dc1c91e7bb0b18d8543d910372d3c9",
+    });
+    expect(validateSourceIntakeProviderReplayBinding({ request, capture, deterministicReview, storedReview }))
+      .toMatchObject({ inputBinding, resultBinding: storedReview.provider_result_binding });
+    expect(verifySourceIntakeProviderBindingForAdminApproval({ request, captureMetadata: capture, deterministicReview, aiReview: storedReview }))
+      .toMatchObject({ inputBinding, resultBinding: storedReview.provider_result_binding });
+  });
+
+  it.each(invalidPromptCases)("refuses to seal %s as the retained capture", (_label, changePrompt) => {
+    const { request, capture } = fixture();
+    const providerEnvelope = buildGeminiIntakeRequest(request, capture, deterministicReview, "gemini-2.5-flash-lite");
+    providerEnvelope.request.contents[0].parts[0].text = changePrompt(providerEnvelope.request.contents[0].parts[0].text);
+    expect(() => buildSourceIntakeProviderInputBinding({
+      request, capture, deterministicReview, providerEnvelope, model: "gemini-2.5-flash-lite",
+    })).toThrow(promptExcerptError);
+  });
+
+  it.each(invalidPromptCases)("refuses self-consistently sealed %s on replay and approval", (_label, changePrompt) => {
+    const { request, capture, rawResult } = fixture();
+    const original = buildInputBinding(request, capture);
+    const storedReview = reviewForBinding(request, capture, rawResult, original);
+    // Recompute every affected digest: this reproduces an internally consistent
+    // old v2 seal, not an ordinary hash-tampering failure. These are test-only
+    // synthetic records, never production evidence or a historical-row repair.
+    const envelope = structuredClone(original.provider_envelope);
+    envelope.request.contents[0].parts[0].text = changePrompt(envelope.request.contents[0].parts[0].text);
+    const changedInput = reseal({
+      ...original,
+      provider_envelope: envelope,
+      user_prompt_sha256: sha256(envelope.request.contents[0].parts[0].text),
+      provider_envelope_sha256: sha256(canonicalJson(envelope)),
+    });
+    storedReview.provider_input_binding = changedInput;
+    storedReview.provider_result_binding = reseal({
+      ...storedReview.provider_result_binding,
+      input_digest_sha256: changedInput.digest_sha256,
+    });
+    expect.soft(() => validateSourceIntakeProviderInputBinding(changedInput, { request, capture, deterministicReview }))
+      .toThrow(promptExcerptError);
+    expect.soft(() => validateSourceIntakeProviderReplayBinding({ request, capture, deterministicReview, storedReview }))
+      .toThrow(promptExcerptError);
+    expect.soft(() => verifySourceIntakeProviderBindingForAdminApproval({ request, captureMetadata: capture, deterministicReview, aiReview: storedReview }))
+      .toThrow(promptExcerptError);
+  });
+
+  it.each([
+    "Marshall Scholarship\neligibility\tand application guidance.",
+    'Marshall “Scholarship” — “Apply” at https://example.org/中文?name="test".',
+    "Marshall Scholarship\n\nCaptured page:\n\ntext within the source is JSON-escaped.",
+    `${"A".repeat(15_999)}🎓application guidance`,
+  ])("accepts actual producer normalization and JSON escaping: %.50s", (text) => {
+    const { request, capture, rawResult } = fixture();
+    const changedCapture = captureWithText(capture, text);
+    const inputBinding = buildInputBinding(request, changedCapture);
+    const storedReview = reviewForBinding(request, changedCapture, rawResult, inputBinding);
+    expect(validateSourceIntakeProviderReplayBinding({ request, capture: changedCapture, deterministicReview, storedReview }))
+      .toMatchObject({ inputBinding });
+    expect(verifySourceIntakeProviderBindingForAdminApproval({ request, captureMetadata: changedCapture, deterministicReview, aiReview: storedReview }))
+      .toMatchObject({ inputBinding });
+  });
 });
+
+function changeCapturedPage(prompt, changePage) {
+  const offset = prompt.indexOf(capturedPageDelimiter) + capturedPageDelimiter.length;
+  return prompt.slice(0, offset) + JSON.stringify(changePage(JSON.parse(prompt.slice(offset))));
+}
+
+function reviewForBinding(request, capture, rawResult, inputBinding) {
+  const resultBinding = buildSourceIntakeProviderResultBinding({
+    request, capture, deterministicReview, inputBinding, rawResult,
+    batchName: "batches/source-intake-compatibility", batchRequestKey: request.id,
+    model: "gemini-2.5-flash-lite", acceptedAt,
+  });
+  return {
+    status: "accepted", raw: rawResult, completed_at: acceptedAt,
+    gemini_batch_name: resultBinding.provider_batch_name,
+    gemini_batch_request_key: request.id, model: "gemini-2.5-flash-lite",
+    provider_input_binding: inputBinding, provider_result_binding: resultBinding,
+  };
+}
+
+function reseal(binding) {
+  const basis = { ...binding };
+  delete basis.digest_sha256;
+  return { ...basis, digest_sha256: sha256(canonicalJson(basis)) };
+}
+
+function canonicalJson(value) {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+}
 
 function fixture() {
   const text = "Marshall Scholarship eligibility and application guidance.";

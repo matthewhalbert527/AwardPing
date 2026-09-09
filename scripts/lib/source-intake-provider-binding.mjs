@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { validateRetainedIntakeArtifactManifest } from "./intake-artifact-retention.mjs";
+import { readSourceIntakeProviderPromptExcerpt } from "./source-intake-provider-prompt.mjs";
 
 export const SOURCE_INTAKE_PROVIDER_INPUT_BINDING_NAMESPACE =
   "source-intake-provider-input-v2";
@@ -53,6 +54,15 @@ export function buildSourceIntakeProviderInputBinding({
   const systemInstruction = envelope.request.systemInstruction;
   const userPrompt = envelope.request.contents[0].parts[0].text;
   const generationConfig = envelope.request.generationConfig;
+  // Separate prompt/excerpt hashes do not establish that the provider received
+  // this capture. Compare the actual prompt content before sealing or replaying.
+  const promptExcerpt = readSourceIntakeProviderPromptExcerpt(userPrompt);
+  if (!promptExcerpt.ok || promptExcerpt.text !== textExcerpt) {
+    refuse(
+      "source_intake_provider_prompt_excerpt_mismatch",
+      "The paid-review prompt excerpt does not match the immutable retained capture.",
+    );
+  }
   const basis = {
     schema_version: SOURCE_INTAKE_PROVIDER_BINDING_SCHEMA_VERSION,
     namespace: SOURCE_INTAKE_PROVIDER_INPUT_BINDING_NAMESPACE,

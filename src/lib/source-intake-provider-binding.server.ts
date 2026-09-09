@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readSourceIntakeProviderPromptExcerpt } from "../../scripts/lib/source-intake-provider-prompt.mjs";
 
 const inputNamespace = "source-intake-provider-input-v2";
 const resultNamespace = "source-intake-provider-result-v2";
@@ -274,8 +275,17 @@ function buildExpectedInputBinding(
   const contents = Array.isArray(envelopeRequest.contents) ? envelopeRequest.contents : [];
   const firstContent = objectValue(contents[0]);
   const userParts = Array.isArray(firstContent.parts) ? firstContent.parts : [];
-  const userPrompt = requiredText(objectValue(userParts[0]).text, "provider user prompt");
+  const rawUserPrompt = objectValue(userParts[0]).text;
+  const userPrompt = requiredText(rawUserPrompt, "provider user prompt");
   const generationConfig = objectValue(envelopeRequest.generationConfig);
+  // Parse the raw stored prompt, not requiredText's trimmed value. Keep the
+  // existing v2 digest basis unchanged for valid producer requests.
+  const promptExcerpt = readSourceIntakeProviderPromptExcerpt(rawUserPrompt);
+  if (!promptExcerpt.ok || promptExcerpt.text !== excerpt) {
+    throw new SourceIntakeProviderBindingValidationError(
+      "The paid-review prompt excerpt does not match the immutable retained capture.",
+    );
+  }
   const basis = {
     schema_version: 2 as const,
     namespace: "source-intake-provider-input-v2" as const,
