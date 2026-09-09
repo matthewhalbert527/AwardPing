@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { presentAwardDateField, presentAwardTimelineDate } from "@/lib/award-date-presentation";
 import { pageTypeLabel } from "@/lib/award-discovery-types";
+import { readableSourceTitle } from "@/lib/display-text";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
 import {
   PUBLIC_AWARD_PANEL_HEADING_ID,
@@ -812,8 +813,17 @@ function sourceDisplayTitle(source: PublicAwardSource, awardName: string, offici
   ) {
     return "Homepage";
   }
-  if (source.pageType === "homepage" || isOfficialHomepage || cleanTitle.toLowerCase() === awardName.toLowerCase()) {
+  if (source.pageType === "homepage" || isOfficialHomepage) {
     return "Homepage";
+  }
+  // A title that is exactly the award name names the program, not the page, so
+  // it cannot tell one document from another, and a page that is neither the
+  // homepage nor typed as one must not be called the homepage. Its address is
+  // what is left to identify it, read here by the same helper the rest of the
+  // app uses, including that helper's generic label for an unusable address.
+  if (cleanTitle.toLowerCase() === awardName.toLowerCase()) {
+    const derivedTitle = readableSourceTitle(null, source.url);
+    return compactSourceDisplayTitle(derivedTitle === "Homepage" ? "Source" : derivedTitle, true);
   }
 
   const shortTitle = shortenSourceDisplayTitle(cleanTitle, awardName);
@@ -867,6 +877,7 @@ function compactSourceDisplayTitle(title: string, forceDisplayCase = false) {
   if (!value) return "Source page";
 
   value = value
+    .replace(/^admissions$/i, "Admissions")
     .replace(/^frequently asked questions$/i, "FAQ")
     .replace(/^instructions?\s+on\s+submitting\b.*$/i, "Submission Instructions")
     .replace(/^online\s+payment\s+link$/i, "Online Payment")

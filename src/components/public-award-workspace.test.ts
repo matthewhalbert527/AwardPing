@@ -1311,6 +1311,118 @@ describe("focused award sections", () => {
   });
 });
 
+describe("public award source labels", () => {
+  const AWARD_NAME = "Example Fellowship";
+  const NON_HOMEPAGE_URL = "https://example.edu/admissions.htm";
+
+  function sourceRows(sources: ReturnType<typeof makeSource>[]) {
+    const data = makePageData({ sources, changes: [] });
+    const original = structuredClone(data);
+    const $ = load(
+      renderToStaticMarkup(createElement(AwardSourcesPanel, { data, onSelectSource: () => {} })),
+    );
+    // Labelling is display work, so every loader row must come back untouched:
+    // identifier, slug, public path and the address with its query intact.
+    expect(data).toEqual(original);
+    return $(".public-award-source-choice")
+      .map((_index, node) => ({
+        label: $(node).find("strong").text(),
+        purpose: $(node).find(".public-award-source-purpose span").first().text(),
+        address: $(node).find(".public-award-source-address").text(),
+        titleAttribute: $(node).attr("title"),
+      }))
+      .get();
+  }
+
+  // A stored title that is exactly the award name names the program, not the
+  // page, so it cannot tell one document from another. Calling such a page the
+  // homepage was wrong; the address is the only thing left that identifies it.
+  it.each([
+    ["exactly", AWARD_NAME],
+    ["in lower case", "example fellowship"],
+    ["in upper case", "EXAMPLE FELLOWSHIP"],
+    ["with surrounding space", "  Example Fellowship  "],
+  ])("labels a non-homepage source from its address when the title is the award name %s", (_case, title) => {
+    const [row] = sourceRows([
+      makeSource({ id: "source-admissions", pageType: "other", title, url: NON_HOMEPAGE_URL }),
+    ]);
+
+    expect(row.label).toBe("Admissions");
+    expect(row.purpose).toBe("Other source");
+    expect(row.address).toBe(NON_HOMEPAGE_URL);
+    expect(row.titleAttribute).toBe(title);
+  });
+
+  it.each<[string, "homepage" | "other", string]>([
+    ["the homepage page type at another address", "homepage", "https://example.edu/other-page"],
+    ["the official homepage address", "other", "https://example.edu/fellowship"],
+    ["the official homepage at the homepage page type", "homepage", "https://example.edu/fellowship"],
+  ])("still labels %s as Homepage", (_case, pageType, url) => {
+    const [row] = sourceRows([makeSource({ id: "source-home", pageType, title: AWARD_NAME, url })]);
+
+    expect(row.label).toBe("Homepage");
+  });
+
+  it.each([
+    ["a shorter fragment of the award name", "Example", "Example"],
+    ["a specific document title", "Example Fellowship | Application Process", "Application Process"],
+    ["a title unrelated to the award name", "Selection Committee Charter", "Selection Committee Charter"],
+    ["a title the existing shortener already trims", "Example Fellowship Admissions", "Admissions"],
+  ])("keeps the existing label for %s", (_case, title, expected) => {
+    const [row] = sourceRows([
+      makeSource({ id: "source-other", pageType: "other", title, url: NON_HOMEPAGE_URL }),
+    ]);
+
+    expect(row.label).toBe(expected);
+  });
+
+  it.each([
+    ["a query string", "https://example.edu/admissions.htm?cycle=2027&ref=a%20b"],
+    ["a fragment", "https://example.edu/admissions.htm#deadlines"],
+    ["a path segment the address reader skips", "https://example.edu/programs/admissions.htm"],
+  ])("keeps the exact address and identifiers for %s", (_case, url) => {
+    const source = makeSource({ id: "source-admissions", pageType: "other", title: AWARD_NAME, url });
+    const [row] = sourceRows([source]);
+
+    expect(row.label).toBe("Admissions");
+    expect(row.address).toBe(url);
+    expect(source.id).toBe("source-admissions");
+    expect(source.sourceSlug).toBe("source-admissions");
+    expect(source.publicPath).toBe("/example-fellowship");
+    expect(source.url).toBe(url);
+  });
+
+  it.each([
+    ["an empty address", ""],
+    ["an address that is not a URL", "not-a-url"],
+    ["a generic programs path", "https://example.edu/programs/"],
+    ["a generic resources index", "https://example.edu/resources/index.htm"],
+    ["a root address that is not the official homepage", "https://another.example.edu/"],
+  ])("uses the existing generic label for %s", (_case, url) => {
+    const [row] = sourceRows([
+      makeSource({ id: "source-broken", pageType: "other", title: AWARD_NAME, url }),
+    ]);
+
+    expect(row.label).toBe("Source");
+    expect(row.address).toBe(url);
+  });
+
+  it("normalizes an all-capital admissions label without changing the original address or title", () => {
+    const [row] = sourceRows([
+      makeSource({
+        id: "source-shouting",
+        pageType: "other",
+        title: AWARD_NAME,
+        url: "https://example.edu/ADMISSIONS.htm",
+      }),
+    ]);
+
+    expect(row.label).toBe("Admissions");
+    expect(row.address).toBe("https://example.edu/ADMISSIONS.htm");
+    expect(row.titleAttribute).toBe(AWARD_NAME);
+  });
+});
+
 function makePageData({
   sources,
   changes,
@@ -1369,7 +1481,7 @@ function makeSource({
   url,
 }: {
   id: string;
-  pageType?: "application" | "pdf";
+  pageType?: "application" | "pdf" | "homepage" | "other";
   title: string;
   url: string;
 }) {
