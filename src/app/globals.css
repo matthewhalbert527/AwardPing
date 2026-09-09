@@ -2747,6 +2747,17 @@ a {
   gap: 0.15rem;
 }
 
+/* Keep the public header pill independent of desktop dashboard sizing. */
+.dashboard-nav.site-header-nav {
+  padding: 0.25rem;
+}
+
+.site-header-nav .dashboard-nav-link {
+  flex: 0 0 auto;
+  width: auto;
+  border-radius: 999px;
+}
+
 .site-header-nav a {
   border-radius: var(--radius-xs);
   color: var(--text-secondary);
@@ -2760,7 +2771,6 @@ a {
 .site-header-nav a[aria-current="page"] {
   background: var(--surface-sunken);
   color: var(--text);
-  font-weight: 600;
 }
 
 .site-header-menu-button {
