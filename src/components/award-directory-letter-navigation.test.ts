@@ -126,7 +126,8 @@ describe("award directory footer letter navigation", () => {
     const group = elements(tree).find(element => element.props["aria-label"] === "Alphabetical award pages")!;
     expect(group.props.tabIndex).toBe(-1);
     expect(group.props.ref).toBeDefined();
-    const destination = group.props.ref!.current;
+    // The callback ref and navigation handlers share the retained object ref.
+    const destination = state.refs[1].current;
 
     button.props.onClick!();
 
@@ -140,7 +141,7 @@ describe("award directory footer letter navigation", () => {
     expect(next.$('#award-letter-page-status[role="status"]').text()).toBe("Showing 1-1 of 1 awards under F.");
     expect(hrefs(next.html)).toEqual([rows[1].publicPath]);
     expect(text(nextLetterButton(next.tree).props.children)).toBe("Next letter: Z");
-    expect(elements(next.tree).find(element => element.props["aria-label"] === "Alphabetical award pages")?.props.ref).toBe(group.props.ref);
+    expect(state.refs[1].current).toBe(destination);
   });
 
   it.each([
@@ -259,7 +260,7 @@ describe("award directory footer previous-letter navigation", () => {
     const group = elements(first.tree).find(element => element.props["aria-label"] === "Alphabetical award pages")!;
     expect(group.props.tabIndex).toBe(-1);
     expect(group.props.ref).toBeDefined();
-    const destination = group.props.ref!.current;
+    const destination = state.refs[1].current;
 
     button.props.onClick!();
 
@@ -271,7 +272,7 @@ describe("award directory footer previous-letter navigation", () => {
     expect(activeLetter(second.html)).toBe("B");
     expect(hrefs(second.html)).toEqual([rows[0].publicPath]);
     expect(second.$('#award-letter-page-status[role="status"]').text()).toBe("Showing 1-1 of 1 awards under B.");
-    expect(elements(second.tree).find(element => element.props["aria-label"] === "Alphabetical award pages")?.props.ref).toBe(group.props.ref);
+    expect(state.refs[1].current).toBe(destination);
     expect(previousLetterButton(second.tree).props.disabled).toBe(true);
     expect(text(nextLetterButton(second.tree).props.children)).toBe("Next letter: F");
   });

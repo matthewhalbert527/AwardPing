@@ -161,6 +161,25 @@ export function AwardDiscoveryWorkspace({
       : browseBuckets.find((bucket) => availableLetters.has(bucket)) || otherBucket;
   // Ordinary A-Z catalogs retain the existing 26-button strip.
   const visibleBuckets = availableLetters.has(otherBucket) ? browseBuckets : alphabet;
+  // Reveal on a letter change or nav remount. A stable callback otherwise
+  // leaves deliberate manual scrolling alone, without moving keyboard focus.
+  const revealActiveLetter = useMemo(
+    () => (nav: HTMLDivElement | null) => {
+      alphabetNavRef.current = nav;
+      if (!nav || nav.clientWidth === 0) return;
+      const active = [...nav.children].find((child) => child.textContent === activeLetter);
+      if (!(active instanceof HTMLElement)) return;
+      const viewLeft = nav.getBoundingClientRect().left + nav.clientLeft;
+      const viewRight = viewLeft + nav.clientWidth;
+      const box = active.getBoundingClientRect();
+      if (box.left < viewLeft) {
+        nav.scrollLeft += box.left - viewLeft;
+      } else if (box.right > viewRight) {
+        nav.scrollLeft += box.right - viewRight;
+      }
+    },
+    [activeLetter],
+  );
   const activeBucketIndex = browseBuckets.indexOf(activeLetter);
   const nextLetter = browseBuckets.find(
     (bucket, index) => index > activeBucketIndex && availableLetters.has(bucket),
@@ -210,7 +229,7 @@ export function AwardDiscoveryWorkspace({
     if (position === "top") {
       return (
         <div className="min-w-0 max-w-full">
-          <div ref={alphabetNavRef} tabIndex={-1} role="group" className="award-alpha-nav scroll-mt-40" aria-label="Alphabetical award pages" aria-describedby="award-letter-page-status">
+          <div ref={revealActiveLetter} tabIndex={-1} role="group" className="award-alpha-nav scroll-mt-40" aria-label="Alphabetical award pages" aria-describedby="award-letter-page-status">
             {visibleBuckets.map((bucket) => {
               const enabled = availableLetters.has(bucket);
               const name = bucket === otherBucket ? otherBucketName : undefined;

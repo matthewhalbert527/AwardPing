@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
+import ts from "typescript";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AwardDiscoveryWorkspace,
@@ -763,6 +764,193 @@ function alphaButton(html: string, letter: string) {
     pressed: button.attr("aria-pressed") === "true",
   };
 }
+
+class AlphaGeometryElement {
+  children: AlphaGeometryElement[] = [];
+  textContent = "";
+  clientWidth = 350;
+  clientLeft = 0;
+  scrollWidth = 1244;
+  scrollLeft = 0;
+  scrollTop = 37;
+  offsetLeft = 0;
+  offsetParent: unknown = null;
+  focus = vi.fn();
+  scrollIntoView = vi.fn();
+  scrollTo = vi.fn();
+  scrollBy = vi.fn();
+  getBoundingClientRect = () => ({ left: 0, right: 0 });
+}
+
+function alphaRevealCallback(activeLetter: string) {
+  const source = readFileSync(new URL("./award-discovery-workspace.tsx", import.meta.url), "utf8");
+  const parsed = ts.createSourceFile("award-discovery-workspace.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const navs: ts.JsxOpeningElement[] = [];
+  const declarations: ts.VariableDeclaration[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isJsxOpeningElement(node) && node.attributes.properties.some((attribute) =>
+      ts.isJsxAttribute(attribute) && attribute.name.getText(parsed) === "className"
+      && attribute.initializer && ts.isStringLiteral(attribute.initializer)
+      && attribute.initializer.text.split(/\s+/).includes("award-alpha-nav"),
+    )) navs.push(node);
+    if (ts.isVariableDeclaration(node)) declarations.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  expect(navs).toHaveLength(1);
+  const ref = navs[0].attributes.properties.find((attribute) =>
+    ts.isJsxAttribute(attribute) && attribute.name.getText(parsed) === "ref",
+  );
+  const value = ref && ts.isJsxAttribute(ref) ? ref.initializer : undefined;
+  if (!value || !ts.isJsxExpression(value) || !value.expression || !ts.isIdentifier(value.expression)) {
+    throw new Error("Alphabet strip must reference its declared ref");
+  }
+  const refName = value.expression.text;
+  const matches = declarations.filter((node) => ts.isIdentifier(node.name) && node.name.text === refName);
+  expect(matches).toHaveLength(1);
+  const initializer = matches[0].initializer;
+  if (!initializer || !ts.isCallExpression(initializer)) throw new Error("Alphabet ref must use a hook");
+  const objectRef: { current: AlphaGeometryElement | null } = { current: null };
+  // The release's original object ref attaches a node but has no reveal callback.
+  if (initializer.expression.getText(parsed) === "useRef") return { callback: null, dependencies: null, objectRef };
+  expect(initializer.expression.getText(parsed)).toBe("useMemo");
+  const memoCalls: unknown[][] = [];
+  const useMemo = (factory: () => unknown, dependencies: unknown[]) => {
+    memoCalls.push(dependencies);
+    return factory();
+  };
+  const javascript = ts.transpileModule(`const callback = ${initializer.getText(parsed)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  const callback = new Function("activeLetter", "useMemo", "HTMLElement", "alphabetNavRef", `${javascript}\nreturn callback;`)(
+    activeLetter, useMemo, AlphaGeometryElement, objectRef,
+  ) as (nav: AlphaGeometryElement | null) => void;
+  expect(memoCalls).toHaveLength(1);
+  return { callback, dependencies: memoCalls[0], objectRef };
+}
+
+function alphaGeometry({
+  letter = "Z", contentLeft = 1200, scrollLeft = 0, clientLeft = 0, clientWidth = 350, navLeft = 20,
+  missing = false,
+} = {}) {
+  const nav = new AlphaGeometryElement();
+  nav.clientLeft = clientLeft;
+  nav.clientWidth = clientWidth;
+  nav.scrollWidth = Math.max(1244, contentLeft + 44);
+  nav.getBoundingClientRect = () => ({ left: navLeft, right: navLeft + clientWidth + 2 * clientLeft });
+  // Neither element is positioned against the other or the body. offsetLeft
+  // cannot be compared directly with the strip's scrollLeft.
+  nav.offsetParent = { getBoundingClientRect: () => ({ left: 7 }) };
+  nav.offsetLeft = navLeft - 7;
+  const active = new AlphaGeometryElement();
+  active.textContent = letter;
+  active.offsetParent = { getBoundingClientRect: () => ({ left: 172 }) };
+  active.offsetLeft = navLeft + clientLeft + contentLeft - 172;
+  active.getBoundingClientRect = () => {
+    const left = navLeft + clientLeft + contentLeft - nav.scrollLeft;
+    return { left, right: left + 44 };
+  };
+  const other = new AlphaGeometryElement();
+  other.textContent = letter === "A" ? "B" : "A";
+  nav.children = missing ? [other] : [other, active];
+  const writes = vi.fn();
+  let currentScroll = scrollLeft;
+  Object.defineProperty(nav, "scrollLeft", {
+    get: () => currentScroll,
+    set: (value: number) => { writes(value); currentScroll = value; },
+  });
+  function expectLocalScrollOnly() {
+    for (const element of [nav, active, other]) {
+      expect(element.focus).not.toHaveBeenCalled();
+      expect(element.scrollIntoView).not.toHaveBeenCalled();
+      expect(element.scrollTo).not.toHaveBeenCalled();
+      expect(element.scrollBy).not.toHaveBeenCalled();
+      expect(element.scrollTop).toBe(37);
+    }
+  }
+  return { nav, active, writes, expectLocalScrollOnly };
+}
+
+describe("AwardDiscoveryWorkspace active-letter reveal (callback geometry and wiring only)", () => {
+  it("memoizes the actual nav ref only on the derived active letter", () => {
+    // This captures actual hook inputs, not React's memo/ref scheduler. Native
+    // manual-scroll retention and focus timing require separate browser checks.
+    for (const letter of ["Z", "Z", "A", "#"]) {
+      const { callback, dependencies } = alphaRevealCallback(letter);
+      expect(callback).toBeTypeOf("function");
+      expect(dependencies).toEqual([letter]);
+    }
+  });
+
+  it.each([
+    { name: "far right Z", geometry: { contentLeft: 1200 }, expected: 894 },
+    { name: "appended #", geometry: { letter: "#", contentLeft: 1248 }, expected: 942 },
+    { name: "far left A", geometry: { letter: "A", contentLeft: 0, scrollLeft: 600 }, expected: 0 },
+    { name: "right clipping with a left border", geometry: { clientLeft: 3, contentLeft: 1200 }, expected: 894 },
+    { name: "left clipping with a left border", geometry: { clientLeft: 3, contentLeft: 50, scrollLeft: 100 }, expected: 50 },
+    { name: "non-body offset parents", geometry: { navLeft: 240, clientLeft: 4, contentLeft: 900, scrollLeft: 30 }, expected: 594 },
+    { name: "partial right clipping", geometry: { contentLeft: 330 }, expected: 24 },
+    { name: "partial left clipping", geometry: { contentLeft: 300, scrollLeft: 320 }, expected: 300 },
+    { name: "already visible", geometry: { contentLeft: 400, scrollLeft: 300 }, expected: 300 },
+    { name: "exact left edge", geometry: { contentLeft: 300, scrollLeft: 300 }, expected: 300 },
+    { name: "exact right edge", geometry: { contentLeft: 606, scrollLeft: 300 }, expected: 300 },
+  ])("uses only the minimum horizontal reveal for $name", ({ geometry, expected }) => {
+    const fixture = alphaGeometry(geometry);
+    const initial = fixture.nav.scrollLeft;
+    alphaRevealCallback(fixture.active.textContent).callback?.(fixture.nav);
+    expect(fixture.nav.scrollLeft).toBe(expected);
+    expect(fixture.writes.mock.calls).toEqual(expected === initial ? [] : [[expected]]);
+    const box = fixture.active.getBoundingClientRect();
+    const viewLeft = fixture.nav.getBoundingClientRect().left + fixture.nav.clientLeft;
+    expect(box.left).toBeGreaterThanOrEqual(viewLeft);
+    expect(box.right).toBeLessThanOrEqual(viewLeft + fixture.nav.clientWidth);
+    fixture.expectLocalScrollOnly();
+  });
+
+  it.each([
+    { name: "missing active button", activeLetter: "Z", geometry: { missing: true } },
+    { name: "hidden zero-width strip", activeLetter: "Z", geometry: { clientWidth: 0 } },
+    { name: "empty-catalog # fallback without a matching button", activeLetter: "#", geometry: { letter: "Z" } },
+  ])("retains the node ref without scrolling for $name", ({ activeLetter, geometry }) => {
+    const fixture = alphaGeometry({ ...geometry, scrollLeft: 200 });
+    const { callback, objectRef } = alphaRevealCallback(activeLetter);
+    callback?.(fixture.nav);
+    expect(objectRef.current).toBe(fixture.nav);
+    expect(fixture.nav.scrollLeft).toBe(200);
+    expect(fixture.writes).not.toHaveBeenCalled();
+    fixture.expectLocalScrollOnly();
+  });
+
+  it("updates the object ref on attach, null detach, and same-letter remount", () => {
+    const { callback, objectRef } = alphaRevealCallback("Z");
+    const first = alphaGeometry();
+    callback?.(first.nav);
+    expect(objectRef.current).toBe(first.nav);
+    callback?.(null);
+    expect(objectRef.current).toBeNull();
+    const remounted = alphaGeometry();
+    callback?.(remounted.nav);
+    expect(objectRef.current).toBe(remounted.nav);
+    expect([first.nav.scrollLeft, remounted.nav.scrollLeft]).toEqual([894, 894]);
+    first.expectLocalScrollOnly();
+    remounted.expectLocalScrollOnly();
+  });
+
+  it("reveals the actual rendered Z fallback when a filter excludes selected A", () => {
+    const rows = [
+      fictionalRow(1, { name: "Alpha Award", academicLevels: ["Undergraduate"] }),
+      fictionalRow(2, { name: "Zeta Award", academicLevels: ["Graduate"] }),
+    ];
+    const $ = load(renderRows(rows, browsePresets({ letter: "A", level: "Graduate" })));
+    const active = $(".award-alpha-nav [aria-pressed='true']");
+    expect(active).toHaveLength(1);
+    expect(active.text()).toBe("Z");
+    const fixture = alphaGeometry();
+    alphaRevealCallback(active.text()).callback?.(fixture.nav);
+    expect(fixture.nav.scrollLeft).toBe(894);
+    fixture.expectLocalScrollOnly();
+  });
+});
 
 describe("AwardDiscoveryWorkspace numbers and other initials", () => {
   const rows = [
