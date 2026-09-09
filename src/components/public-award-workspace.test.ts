@@ -1,10 +1,12 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { formatCentralDateTime } from "@/lib/time-zone";
+import type { Json } from "@/lib/database.types";
 import type { PublicAwardPageData } from "@/lib/public-award-pages";
+import { publicAwardFactsFromAward } from "@/lib/public-award-facts";
 import { PublicAwardWorkspace, AwardSourcesPanel, AwardFactsPanel, filterAwardSources, changeIdsToMarkRead } from "@/components/public-award-workspace";
 
 describe("PublicAwardWorkspace", () => {
@@ -27,7 +29,10 @@ describe("PublicAwardWorkspace", () => {
             openingDate: null,
             awardAmount: "$1,000; Travel stipend",
             eligibility: ["Graduate students"],
-            requirements: ["Recipients must submit a final report; Awardees may not hold another fellowship"],
+            // Two reviewed items, as the normalizer produces them. A single
+            // array item carrying a semicolon is one criterion and is no
+            // longer split by the renderer; that case is covered separately.
+            requirements: ["Recipients must submit a final report", "Awardees may not hold another fellowship"],
             applicationMaterials: [],
             howToApply: [],
             importantDates: [],
@@ -1541,5 +1546,120 @@ describe("PublicAwardWorkspace header action", () => {
     expect(source).not.toContain('"/contact"');
     expect(source).not.toContain("Get in touch");
     expect(source.match(/href="\/updates"/g)).toHaveLength(1);
+  });
+});
+
+/**
+ * Criterion boundaries on the award page.
+ *
+ * The fact normalizer already decides where one criterion ends: reviewed
+ * arrays arrive as whole items, and the legacy summary-derived fields are
+ * split by `splitFact` before they leave `publicAwardFactsFromAward`. The
+ * renderer therefore keeps the array items it is given. Re-splitting them
+ * here broke a reviewed criterion that contains a semicolon into two rules,
+ * the second starting mid-sentence.
+ *
+ * Scalar values keep the existing split, so dates and a single award amount
+ * render exactly as before.
+ */
+describe("award page criterion boundaries", () => {
+  // A reviewed criterion whose own wording contains a semicolon. This exact
+  // string is a registered whole value in the directory filter taxonomy.
+  const PROVISO = "Applicants must be non-Chinese citizens with a valid passport; former citizens of the Chinese Mainland, Hong Kong, Macao or Taiwan must present a valid passport or citizenship documents dating from before April 30, 2021, along with proof of cancellation of Chinese nationality.";
+
+  const reviewed = (publicFacts: Record<string, Json>) => publicAwardFactsFromAward({ publicFacts });
+
+  function renderSection(facts: PublicAwardPageData["facts"], section: "eligibility" | "dates" | "application") {
+    return renderToStaticMarkup(
+      createElement(AwardFactsPanel, { facts, section, onViewSources: vi.fn() }),
+    );
+  }
+
+  /** Rendered criterion texts for one labelled row, list items or the single value. */
+  function factItems(markup: string, label: string) {
+    const $ = load(markup);
+    const rows = $(".public-award-key-fact, .public-award-fact-line")
+      .filter((_index, row) => $(row).children("dt").text() === label);
+    expect(rows.length, `Exactly one ${label} fact row`).toBe(1);
+    const value = rows.children("dd");
+    const items = value.find("li");
+    return items.length
+      ? items.map((_index, item) => load(item).root().text()).get()
+      : [value.text()];
+  }
+
+  /** [row label, public_facts key, facts key, section] */
+  const LIST_FIELDS = [
+    ["Eligibility", "eligibility", "eligibility", "eligibility"],
+    ["Academic level", "academic_levels", "academicLevels", "eligibility"],
+    ["Discipline", "disciplines", "disciplines", "eligibility"],
+    ["Citizenship", "citizenship", "citizenship", "eligibility"],
+    ["How to apply", "how_to_apply", "howToApply", "application"],
+    ["Requirements", "requirements", "requirements", "application"],
+    ["Application materials", "application_materials", "applicationMaterials", "application"],
+    ["Documents", "documents", "documents", "application"],
+    ["Contact", "contacts", "contacts", "application"],
+  ] as const;
+
+  it.each(LIST_FIELDS)("keeps one reviewed %s criterion whole", (label, key, factsKey, section) => {
+    const facts = reviewed({ [key]: [PROVISO] });
+    // The normalizer hands the renderer one item; the renderer must not split it.
+    expect(facts[factsKey]).toEqual([PROVISO]);
+    expect(factItems(renderSection(facts, section), label)).toEqual([PROVISO]);
+  });
+
+  it.each(LIST_FIELDS)("renders a compound %s criterion beside another as two, not three", (label, key, _factsKey, section) => {
+    const facts = reviewed({ [key]: [PROVISO, "U.S. citizens"] });
+    const markup = renderSection(facts, section);
+    expect(factItems(markup, label)).toEqual([PROVISO, "U.S. citizens"]);
+    expect(load(markup)("ul.public-award-fact-list > li")).toHaveLength(2);
+  });
+
+  it("renders a single reviewed criterion as plain text rather than a one-item list", () => {
+    const markup = renderSection(reviewed({ citizenship: [PROVISO] }), "eligibility");
+    expect(load(markup)("ul.public-award-fact-list")).toHaveLength(0);
+    expect(factItems(markup, "Citizenship")).toEqual([PROVISO]);
+  });
+
+  it("still splits a legacy summary-derived eligibility at the normalizer", () => {
+    const facts = publicAwardFactsFromAward({ summary: "An award. Eligibility: Alpha rule; Beta rule." });
+    expect(facts.eligibility).toEqual(["Alpha rule", "Beta rule"]);
+    expect(factItems(renderSection(facts, "eligibility"), "Eligibility")).toEqual(["Alpha rule", "Beta rule"]);
+  });
+
+  it("leaves the compound award amount split where the normalizer already splits it", () => {
+    expect(publicAwardFactsFromAward({ publicFacts: { award_amounts: ["Full tuition; Living stipend"] } }).awardAmount)
+      .toEqual(["Full tuition", "Living stipend"]);
+  });
+
+  it("leaves a scalar date value splitting exactly as before", () => {
+    const one = renderSection(reviewed({ deadline: "March 1, 2027" }), "dates");
+    const two = renderSection(reviewed({ deadline: "March 1; March 15" }), "dates");
+    expect(load(one)("ul.public-award-fact-list > li")).toHaveLength(0);
+    expect(load(two)("ul.public-award-fact-list > li")).toHaveLength(2);
+  });
+
+  it("omits the row entirely for empty and whitespace-only criteria", () => {
+    for (const citizenship of [[], ["", "   "]]) {
+      const markup = renderSection(reviewed({ citizenship }), "eligibility");
+      const $ = load(markup);
+      expect($(".public-award-fact-line").filter((_index, row) => $(row).children("dt").text() === "Citizenship"))
+        .toHaveLength(0);
+      expect($("li")).toHaveLength(0);
+    }
+  });
+
+  it("drops a blank entry without dropping the criteria beside it", () => {
+    const facts = reviewed({ citizenship: ["U.S. citizens", "   ", "DACA recipients"] });
+    expect(factItems(renderSection(facts, "eligibility"), "Citizenship"))
+      .toEqual(["U.S. citizens", "DACA recipients"]);
+  });
+
+  it("escapes criterion wording rather than emitting markup", () => {
+    const value = "Students in R&D <programs> for \"applied\" work";
+    const markup = renderSection(reviewed({ citizenship: [value, "U.S. citizens"] }), "eligibility");
+    expect(markup).toContain("R&amp;D &lt;programs&gt;");
+    expect(markup).not.toContain("<programs>");
+    expect(factItems(markup, "Citizenship")).toEqual([value, "U.S. citizens"]);
   });
 });

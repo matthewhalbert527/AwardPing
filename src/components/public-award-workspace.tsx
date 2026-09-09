@@ -722,7 +722,14 @@ function FactValueDisplay({
   value: FactValue;
   isDate?: boolean;
 }) {
-  const items = Array.isArray(value) ? value.flatMap(splitFactItems) : splitFactItems(value);
+  // An array already carries one criterion per item: reviewed facts arrive
+  // whole and the legacy summary-derived fields are split before they leave
+  // the normalizer. Splitting again cut a reviewed criterion that contains a
+  // semicolon into two rules. A scalar keeps the existing split, so dates and
+  // a single award amount render exactly as before.
+  const items = Array.isArray(value)
+    ? value.map((item) => item.trim()).filter(Boolean)
+    : splitFactItems(value);
   if (items.length <= 1) return isDate ? <AwardDateValue value={items[0] || ""} /> : <>{items[0] || ""}</>;
 
   return (
@@ -770,10 +777,13 @@ function awardFactRows(facts: PublicAwardPageData["facts"], awardName?: string):
 }
 
 function compactList(values: string[]) {
-  // Every reviewed item renders; the review, not a display cap, bounds the list.
-  const clean = values.flatMap(splitFactItems);
-  if (clean.length === 0) return null;
-  return clean.length === 1 ? clean[0] : clean;
+  // Every reviewed item renders; the review, not a display cap, bounds the
+  // list. The normalizer decides where one criterion ends, so the item
+  // boundaries it produced are kept, blank entries aside. The array shape is
+  // kept even for a single item, which the display renders as plain text, so
+  // that one criterion cannot be re-split on its way through the scalar path.
+  const clean = values.map((value) => value.trim()).filter(Boolean);
+  return clean.length === 0 ? null : clean;
 }
 
 function splitFactItems(value: string) {
