@@ -4,6 +4,7 @@ import {
   buildStructuredChangeDiff,
   changeDetailsLabel,
   changeDetailsToSummary,
+  firstObservedOfficialDocumentSummary,
   isFirstObservedOfficialDocument,
   isMeaningfulChangeDetails,
   normalizeAiChangeDetails,
@@ -1120,11 +1121,14 @@ describe("structured change details", () => {
     expect(isFirstObservedOfficialDocument(details)).toBe(true);
     expect(changeDetailsLabel(details)).toBe("New official document");
     expect(changeDetailsToSummary(details, "Unsafe fallback")).toBe(
-      'AwardPing first observed this official document for the award. The document includes: "Candidates must submit two letters of recommendation."',
+      "AwardPing first recorded this official document. This does not establish when it was published.",
     );
     expect(changeDetailsToSummary(details, "Unsafe fallback")).not.toMatch(
       /publisher posted|today|changed/i,
     );
+    // The wording stays in the parsed details for the evidence panel and the
+    // original document; it is simply no longer quoted as a summary.
+    expect(parsed?.exact_after).toBe("Candidates must submit two letters of recommendation.");
   });
 
   it("states the historical limit when a first observation has no exact current wording", () => {
@@ -1153,7 +1157,103 @@ describe("structured change details", () => {
     };
 
     expect(changeDetailsToSummary(details, null)).toBe(
-      "AwardPing first observed this official document for the award. AwardPing's observation time does not establish when the publisher posted it.",
+      "AwardPing first recorded this official document. This does not establish when it was published.",
     );
+    // A stored reader_summary that overclaims never reaches a reader.
+    expect(changeDetailsToSummary(details, null)).not.toMatch(/publisher added|today/i);
+  });
+
+  it("says the same thing for every first observation, whatever wording it carries", () => {
+    const expected = "AwardPing first recorded this official document. This does not establish when it was published.";
+    const base = {
+      event_kind: "new_official_document",
+      change_type: "new_official_document",
+      // parseChangeDetails requires a reader_summary; this one overclaims, so
+      // every case below also proves the stored wording never reaches a reader.
+      reader_summary: "The publisher posted this new guidance today.",
+      before: null,
+      exact_before: null,
+      section: null,
+      advisor_impact: null,
+      is_alert_worthy: true,
+      confidence: "medium",
+      source: {},
+      quality_flags: [],
+      generated_at: "2026-07-16T18:00:00.000Z",
+      structured_diff: {
+        added_text: [],
+        removed_text: [],
+        likely_section: null,
+        page_type: "pdf",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+    };
+
+    // Several added fragments: none of them may be promoted to a summary, and
+    // in particular not the one that merely happens to sit at index 0.
+    const manyFragments = {
+      ...base,
+      after: null,
+      exact_after: null,
+      structured_diff: {
+        ...base.structured_diff,
+        added_text: ["Contents", "Personal statement: 750 words maximum.", "Two letters of recommendation."],
+      },
+    };
+    // One fragment only: still not a summary of the document.
+    const oneFragment = { ...base, after: null, exact_after: null, structured_diff: { ...base.structured_diff, added_text: ["Contents"] } };
+    const exactAfterOnly = { ...base, after: null, exact_after: "Personal statement: 750 words maximum." };
+    const afterOnly = { ...base, after: "Personal statement: 750 words maximum.", exact_after: null };
+    const noWording = { ...base, after: null, exact_after: null };
+
+    for (const details of [manyFragments, oneFragment, exactAfterOnly, afterOnly, noWording]) {
+      const summary = firstObservedOfficialDocumentSummary(details);
+      expect(summary).toBe(expected);
+      expect(summary).not.toMatch(/includes|Contents|Personal statement|letters of recommendation/);
+      expect(summary).not.toMatch(/"/);
+      expect(summary).not.toMatch(/\bPDF\b|\bdocx?\b/i);
+      // No claim of newness, same-day change, unknown date, or full review.
+      expect(summary).not.toMatch(/newly published|published today|changed today|unknown publication|all text|fully reviewed/i);
+      expect(changeDetailsToSummary(details, "Unsafe fallback")).toBe(expected);
+    }
+  });
+
+  it("leaves the caller's details object untouched and ignores other event kinds", () => {
+    const details = {
+      event_kind: "new_official_document",
+      change_type: "new_official_document",
+      reader_summary: "Stored wording.",
+      before: null,
+      exact_before: null,
+      after: "Personal statement: 750 words maximum.",
+      exact_after: "Personal statement: 750 words maximum.",
+      section: "Application requirements",
+      advisor_impact: null,
+      is_alert_worthy: true,
+      confidence: "high",
+      source: { url: "https://example.edu/guide.pdf" },
+      quality_flags: [],
+      generated_at: "2026-07-16T18:00:00.000Z",
+      structured_diff: {
+        added_text: ["Personal statement: 750 words maximum."],
+        removed_text: [],
+        likely_section: null,
+        page_type: "pdf",
+        date_changes: [],
+        amount_changes: [],
+        noise_flags: [],
+      },
+    };
+    const before = structuredClone(details);
+
+    firstObservedOfficialDocumentSummary(details);
+    expect(details).toEqual(before);
+
+    // Content changes keep their own summary path entirely.
+    expect(firstObservedOfficialDocumentSummary({ ...details, event_kind: "content_change" })).toBeNull();
+    expect(firstObservedOfficialDocumentSummary(null)).toBeNull();
+    expect(changeDetailsToSummary({ ...details, event_kind: "content_change" }, "Fallback")).toBe("Stored wording.");
   });
 });

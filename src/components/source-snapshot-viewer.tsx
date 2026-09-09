@@ -10,6 +10,7 @@ import {
   X,
 } from "lucide-react";
 import { buildChangeEvidence } from "@/lib/change-evidence";
+import { FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY } from "@/lib/change-details";
 import { formatCentralDateTime } from "@/lib/time-zone";
 
 type SnapshotObject = {
@@ -438,7 +439,7 @@ function SnapshotEvidencePanel({
         {evidence.summarySnippet ||
           summary ||
           (evidence.isFirstObservation
-            ? "AwardPing first observed this official document."
+            ? FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY
             : "AwardPing detected a meaningful source-page change.")}
       </p>
       {evidence.isFirstObservation && evidence.currentSnippets.length > 0 ? (
@@ -871,30 +872,27 @@ export function snapshotLocalizationLabel(
   focusRatio: number | null,
   evidenceScope: "change_event" | "source_current" = "source_current",
 ) {
+  const primaryObject = selectPrimarySnapshotObject(snapshot);
+  if (!primaryObject) return "Screenshot unavailable";
+  if (primaryObject.kind === "pdf") return "Saved PDF";
   if (evidenceScope === "change_event") {
-    if (snapshot?.kind === "pdf") {
-      const reason = String(snapshot.localization_reason || "").trim();
-      return reason ? `Immutable event PDF - ${reason}` : "Immutable event PDF";
-    }
-    if (snapshot?.exact_overlap && snapshot.objects.crop) return "Verified exact change area";
-    const reason = String(snapshot?.localization_reason || "").trim();
-    if (reason) return `Exact location unavailable - full event screenshot. ${reason}`;
-    return "Exact location unavailable - full event screenshot shown.";
+    if (snapshot?.exact_overlap && snapshot.objects.crop) return "Highlighted change area";
+    return "Screenshot; change location unavailable";
   }
-  if (focusRatio !== null) return "Approximate text match in this retained source snapshot";
+  if (focusRatio !== null) return "Approximate text match";
   switch (snapshot?.localization_status) {
     case "historical_layout_unavailable":
-      return "Historical screenshot has no location data";
+      return "Older screenshot; highlight unavailable";
     case "capture_layout_unavailable":
-      return "Screenshot has no usable page layout";
+      return "Screenshot highlight unavailable";
     case "evidence_not_found":
       return "Changed text not found in this screenshot";
     case "not_requested":
-      return "No exact change text available";
+      return "No change text available to highlight";
     case "not_applicable":
-      return "Screenshot location unavailable";
+      return "Screenshot without a highlighted passage";
     default:
-      return "Screenshot localization pending";
+      return "Highlight unavailable";
   }
 }
 

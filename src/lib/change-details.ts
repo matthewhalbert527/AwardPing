@@ -507,19 +507,18 @@ export function isFirstObservedOfficialDocument(changeDetails: unknown) {
   return parseChangeDetails(changeDetails)?.event_kind === "new_official_document";
 }
 
+/**
+ * An excerpt, whether selected or positional, is not a document summary.
+ * Keep that wording in the evidence, without implying it is the main point.
+ * AwardPing's observation time does not establish the publication time.
+ */
+export const FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY =
+  "AwardPing first recorded this official document. This does not establish when it was published.";
+
 export function firstObservedOfficialDocumentSummary(changeDetails: unknown) {
   const details = parseChangeDetails(changeDetails);
   if (details?.event_kind !== "new_official_document") return null;
-
-  const exactCurrentWording = nullableCleanText(
-    details.exact_after || details.after || details.structured_diff.added_text[0],
-  );
-  const observation = "AwardPing first observed this official document for the award.";
-  if (!exactCurrentWording) {
-    return `${observation} AwardPing's observation time does not establish when the publisher posted it.`;
-  }
-
-  return `${observation} The document includes: "${exactCurrentWording}"`;
+  return FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY;
 }
 
 export function changeDetailsSearchText(changeDetails: unknown) {

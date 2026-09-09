@@ -876,8 +876,11 @@ describe("change evidence", () => {
     expect(evidence.recognizedAt).toBe("2026-07-16T18:00:00.000Z");
     expect(evidence.changeTypeLabel).toBe("New official document");
     expect(evidence.summarySnippet).toBe(
-      `AwardPing first observed this official document for the award. The document includes: "${currentWording}"`,
+      "AwardPing first recorded this official document. This does not establish when it was published.",
     );
+    expect(evidence.summarySnippet).not.toContain(currentWording);
+    // The exact wording is still carried to the evidence panel and the
+    // original document; only the summary stops quoting it as significant.
     expect(evidence.currentSnippets).toContain(currentWording);
     expect(evidence.beforeSnippet).toBeNull();
     expect(evidence.previousSnippets).toEqual([]);

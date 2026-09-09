@@ -400,7 +400,7 @@ describe("change summary filtering", () => {
         changeDetails,
       ),
     ).toBe(
-      'AwardPing first observed this official document for the award. The document includes: "Personal statement: 750 words maximum."',
+      "AwardPing first recorded this official document. This does not establish when it was published.",
     );
     expect(
       changeSummaryDisplayParts(
@@ -411,7 +411,7 @@ describe("change summary filtering", () => {
       ),
     ).toMatchObject({
       label: "New official document",
-      text: 'AwardPing first observed this official document for the award. The document includes: "Personal statement: 750 words maximum."',
+      text: "AwardPing first recorded this official document. This does not establish when it was published.",
     });
   });
 
