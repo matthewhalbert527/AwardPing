@@ -282,8 +282,7 @@ describe("source intake worker helpers", () => {
     }
   });
 
-  it("leaves the other normalized fields exactly as they were", () => {
-    // Only the status reader changed; every sibling field keeps cleanChoice.
+  it("preserves ordinary formatting aliases alongside an invalid status", () => {
     const normalized = normalizeGeminiIntakeResult({
       ...acceptedReview,
       status: ["accepted"],

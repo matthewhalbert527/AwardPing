@@ -78,6 +78,36 @@ function harness({ apply = true, bindingError = false } = {}) {
 
 for (const mode of ["provider_result", "replay"]) {
   describe(`manual-review disposition in ${mode} finalization`, () => {
+    for (const [field, token, reason] of [
+      ["source_relevance", "primary", "source_relevance_unclear"],
+      ["cycle_relevance", "current_or_upcoming", "cycle_relevance_unclear"],
+      ["officialness", "official", "officialness_unclear"],
+      ["confidence", "high", "confidence_low"],
+    ]) {
+      for (const [label, malformed] of [
+        ["array", [token]],
+        ["punctuation", `${token}?`],
+        ["NUL", `${token.slice(0, 1)}\u0000${token.slice(1)}`],
+      ]) {
+        it(`keeps ${field} ${label} manual before matching or persistence`, async () => {
+          const h = harness();
+          const rawResult = { ...accepted, [field]: malformed };
+          await h.finalize(h.row, {}, {}, rawResult, { providerResultMode: mode });
+          expect(h.update).toHaveBeenCalledTimes(1);
+          expect(h.update.mock.calls[0][2]).toMatchObject({
+            status: "needs_manual_review", status_reason: reason, worker_run_id: null,
+            ai_review: { raw: rawResult, provider_input_binding: h.inputBinding, provider_result_binding: h.resultBinding },
+          });
+          expect(h.report).toEqual({ needs_manual_review: 1, ai_review_rejected: 0, rejected: 0 });
+          expect(h.resolveAward).not.toHaveBeenCalled();
+          expect(h.registerSource).not.toHaveBeenCalled();
+          expect(h.persistFacts).not.toHaveBeenCalled();
+          expect(h.reconcile).not.toHaveBeenCalled();
+          expect(mode === "replay" ? h.validateReplay : h.validateInput).toHaveBeenCalledTimes(1);
+        });
+      }
+    }
+
     for (const [label, status] of [
       ["explicit needs_review", "needs_review"],
       ["missing status", undefined],

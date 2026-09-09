@@ -614,7 +614,7 @@ export function buildGeminiIntakePrompt(
 
 export function normalizeGeminiIntakeResult(value) {
   const result = objectValue(value);
-  const sourceRelevance = cleanChoice(result.source_relevance, [
+  const sourceRelevance = intakeDecisionChoice(result.source_relevance, [
     "primary",
     "supporting",
     "generic_listing",
@@ -623,7 +623,7 @@ export function normalizeGeminiIntakeResult(value) {
     "unclear",
     "access_error",
   ], "unclear");
-  const cycleRelevance = cleanChoice(result.cycle_relevance, [
+  const cycleRelevance = intakeDecisionChoice(result.cycle_relevance, [
     "current_or_upcoming",
     "evergreen",
     "archived_or_past",
@@ -650,8 +650,8 @@ export function normalizeGeminiIntakeResult(value) {
     source_relevance: sourceRelevance,
     cycle_relevance: cycleRelevance,
     page_type: pageType,
-    officialness: cleanChoice(result.officialness, ["official", "likely_official", "third_party", "unclear"], "unclear"),
-    confidence: cleanChoice(result.confidence, ["high", "medium", "low"], "low"),
+    officialness: intakeDecisionChoice(result.officialness, ["official", "likely_official", "third_party", "unclear"], "unclear"),
+    confidence: intakeDecisionChoice(result.confidence, ["high", "medium", "low"], "low"),
     evidence_quotes: stringArray(result.evidence_quotes).map((item) => truncate(item, 240)).slice(0, 8),
     facts: normalizeFacts(result.facts),
     suggested_sources: normalizeSuggestedSources(result.suggested_sources),
@@ -1394,12 +1394,20 @@ const INTAKE_REVIEW_STATUSES = new Set(["accepted", "needs_review", "rejected"])
 /**
  * Status controls disposition, so do not coerce arrays or strip punctuation
  * as cleanChoice does. Malformed verdicts remain unresolved; valid string
- * tokens retain ordinary trim/case normalization. Other fields are unchanged.
+ * tokens retain ordinary trim/case normalization.
  */
 function intakeReviewStatus(value) {
   if (typeof value !== "string") return "needs_review";
   const token = value.trim().toLowerCase();
   return INTAKE_REVIEW_STATUSES.has(token) ? token : "needs_review";
+}
+
+// Model decision fields allow casing and separator aliases, not coercion or
+// punctuation removal: "official?" and ["official"] are not confirmations.
+function intakeDecisionChoice(value, choices, fallback) {
+  if (typeof value !== "string") return fallback;
+  const key = value.trim().toLowerCase().replace(/[\s_-]+/g, "_");
+  return choices.includes(key) ? key : fallback;
 }
 
 function cleanChoice(value, choices, fallback) {
