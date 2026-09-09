@@ -36,18 +36,28 @@ export type PublicAwardFactSource = {
   last_checked_at?: string | null;
 };
 
+/**
+ * Formats stored award facts for display.
+ *
+ * This is a formatter, not a review validator. It performs no publication,
+ * approval, evidence or freshness check, and a value appearing in its output
+ * is not a claim that anyone reviewed it or that it is currently true.
+ * Verifying that an award may be published at all, and that its facts came
+ * from an approved source, is the caller's responsibility on the public route.
+ */
 export function publicAwardFactsFromAward(input: {
   summary?: string | null;
   publicFacts?: Json | null;
   sources?: PublicAwardFactSource[];
 }): PublicAwardFacts {
   const structured = objectValue(input.publicFacts);
-  // Structured public facts are the reviewed publication (Stage 1: the
-  // human-reviewed fact ledger). They render verbatim in the field the review
-  // assigned them: no keyword inference, no regex re-categorisation, no
-  // truncation, nothing dropped. The heuristics below exist only for the
-  // legacy summary-derived path, where no reviewed facts exist.
-  const reviewed = Object.keys(structured).length > 0;
+  // Shape only: whether `publicFacts` carries any key at all. This is not a
+  // review, approval or publication signal. Structured criteria keep their
+  // assigned fields and item boundaries without the legacy truncation or
+  // item cap. String cleanup and exact-duplicate removal still apply; amounts
+  // and important dates retain their field-specific splitting below. Missing
+  // fields can still use the existing legacy-summary fallbacks.
+  const hasStructuredFacts = Object.keys(structured).length > 0;
   const summaryParts = awardBaselineSummaryParts(input.summary);
   const factMap = new Map(
     (summaryParts?.facts || []).map((fact) => [normalizeLabel(fact.label), fact.value]),
@@ -57,7 +67,7 @@ export function publicAwardFactsFromAward(input: {
   // the reconciliation worker first so sibling pages cannot contaminate facts.
   const sourceFacts: Array<Record<string, unknown>> = [];
 
-  const field = (value: unknown) => (reviewed ? reviewedArrayField(value) : arrayField(value));
+  const field = (value: unknown) => (hasStructuredFacts ? structuredArrayField(value) : arrayField(value));
   const eligibility = field(structured.eligibility).length
     ? field(structured.eligibility)
     : splitFact(factMap.get("eligibility") || null, sourceFacts.flatMap((facts) => arrayField(facts.eligibility)));
@@ -70,7 +80,7 @@ export function publicAwardFactsFromAward(input: {
         factMap.get("application materials") || null,
         sourceFacts.flatMap((facts) => arrayField(facts.application_materials)),
       );
-  const normalizedFacts = reviewed
+  const normalizedFacts = hasStructuredFacts
     ? { requirements, applicationMaterials }
     : normalizeRequirementFacts(requirements, applicationMaterials);
   const documents = field(structured.documents).length
@@ -96,10 +106,10 @@ export function publicAwardFactsFromAward(input: {
     cleanString(structured.opening_date) ||
     cleanString(factMap.get("opening date")) ||
     firstValue(sourceFacts.map((facts) => cleanString(facts.opening_date)));
-  // Reviewed important dates already carry their context (the editorial policy
-  // requires it); the legacy normaliser would drop reviewed items that lack a
-  // month or a season-plus-year and cap the list at ten.
-  const importantDates = reviewed
+  // Structured important dates skip the legacy date filter and ten-item cap;
+  // splitting and cleanup still apply. The caller is responsible for ensuring
+  // that each date includes the context required by the editorial policy.
+  const importantDates = hasStructuredFacts
     ? rawImportantDates.flatMap(splitFactItems)
     : normalizeImportantDateItems(rawImportantDates, { deadline, openingDate });
 
@@ -112,7 +122,7 @@ export function publicAwardFactsFromAward(input: {
       null,
     deadline,
     openingDate,
-    awardAmount: reviewed
+    awardAmount: hasStructuredFacts
       ? listFact(structuredAwardAmounts)
       : compactFact(structuredAwardAmounts.length ? structuredAwardAmounts : fallbackAwardAmounts),
     eligibility,
@@ -275,9 +285,10 @@ function arrayField(value: unknown) {
   return uniqueShort(value.map(cleanString).filter(Boolean));
 }
 
-// Reviewed values: exact-duplicate removal only. No 180-character truncation
-// and no ten-item cap - every reviewed item reaches the page intact.
-function reviewedArrayField(value: unknown) {
+// Normalize whitespace, omit non-string/blank items, and remove exact
+// duplicates after cleanup. No 180-character truncation or ten-item cap.
+// This helper does not inspect provenance or approval.
+function structuredArrayField(value: unknown) {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
   const result: string[] = [];

@@ -110,6 +110,29 @@ export function PublicAwardWorkspace({
     () => data.changes.filter((change) => isUnreadChange(change, readChangeIds)).length,
     [data.changes, readChangeIds],
   );
+  // Resolve names against the full roster, not the selected/filtered source.
+  // Retained IDs are authoritative; ambiguous legacy URL matches keep the
+  // recorded title instead of choosing whichever source was listed last.
+  const listedSourceNames = useMemo(() => {
+    const nameBySourceId = new Map<string, string>();
+    const idsByDocumentKey = new Map<string, string[]>();
+    for (const source of data.sources) {
+      nameBySourceId.set(source.id, sourceDisplayTitle(source, data.award.name, data.officialHomepage));
+      const documentKey = sourceDocumentUrlKey(source.url);
+      if (documentKey === null) continue;
+      const sameDocument = idsByDocumentKey.get(documentKey);
+      if (sameDocument) sameDocument.push(source.id);
+      else idsByDocumentKey.set(documentKey, [source.id]);
+    }
+
+    const names = new Map<string, string>();
+    for (const change of data.changes) {
+      const sourceId = change.sourceId || uniqueDocumentSourceId(idsByDocumentKey, change.sourceUrl);
+      const listedName = sourceId ? nameBySourceId.get(sourceId) : undefined;
+      if (listedName !== undefined) names.set(change.id, listedName);
+    }
+    return names;
+  }, [data.award.name, data.changes, data.officialHomepage, data.sources]);
   const factRows = awardFactRows(data.facts, data.award.name);
   const markChangesRead = (changeIds: string[]) => {
     const uniqueIds = [...new Set(changeIds)].filter(Boolean);
@@ -167,7 +190,7 @@ export function PublicAwardWorkspace({
         <div className="public-award-sidebar-header">
           <div className="min-w-0">
             <p>On this award</p>
-            <span>{data.lastCheckedAt ? `Last source check ${formatDate(data.lastCheckedAt)}` : "Source check unavailable"}</span>
+            <span>{data.lastCheckedAt ? `Last source check ${formatDate(data.lastCheckedAt)}` : "Source check date unavailable"}</span>
           </div>
           <button
             aria-label={sidebarOpen ? "Collapse page outline" : "Expand page outline"}
@@ -272,6 +295,7 @@ export function PublicAwardWorkspace({
             changes={data.changes}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
             highlightedChangeId={highlightedChangeId}
+            listedSourceNames={listedSourceNames}
           />
         )}
         {selected.kind === "source" && selectedSource && (
@@ -280,6 +304,7 @@ export function PublicAwardWorkspace({
             changes={selectedSourceChanges}
             headingId={PUBLIC_AWARD_PANEL_HEADING_ID}
             highlightedChangeId={highlightedChangeId}
+            listedSourceNames={listedSourceNames}
             officialHomepage={data.officialHomepage}
             onViewSources={() => activatePanel({ kind: "sources" }, "panel")}
             source={selectedSource}
@@ -563,6 +588,7 @@ function SourcePanel({
   changes,
   headingId,
   highlightedChangeId,
+  listedSourceNames,
   officialHomepage,
   onViewSources,
   source,
@@ -571,6 +597,7 @@ function SourcePanel({
   changes: PublicAwardPageData["changes"];
   headingId?: string;
   highlightedChangeId?: string | null;
+  listedSourceNames: ReadonlyMap<string, string>;
   officialHomepage?: string | null;
   onViewSources: () => void;
   source: PublicAwardPageData["sources"][number];
@@ -601,9 +628,10 @@ function SourcePanel({
         changes={changes}
         emptyText="No updates for this source are included in this view."
         highlightedChangeId={highlightedChangeId}
+        listedSourceNames={listedSourceNames}
         showSnapshotPreviews
         sourceIdFallback={source.id}
-        title="Source update history"
+        title="Updates shown for this source"
       />
     </div>
   );
@@ -614,6 +642,7 @@ function ChangesPanel({
   emptyText = "No updates are available in this view yet.",
   headingId,
   highlightedChangeId = null,
+  listedSourceNames,
   showSnapshotPreviews = false,
   sourceIdFallback,
   title = "Updates",
@@ -622,6 +651,7 @@ function ChangesPanel({
   emptyText?: string;
   headingId?: string;
   highlightedChangeId?: string | null;
+  listedSourceNames: ReadonlyMap<string, string>;
   showSnapshotPreviews?: boolean;
   sourceIdFallback?: string | null;
   title?: string;
@@ -646,7 +676,7 @@ function ChangesPanel({
               <ChangeTimestamp value={change.detectedAt} />
               <div>
                 {isHighlighted(change) && <span className="badge">Selected update</span>}
-                <h3>{change.sourceTitle}</h3>
+                <h3>{listedSourceNames.get(change.id) ?? change.sourceTitle}</h3>
                 <p>{change.summary}</p>
                 {showSnapshotPreviews && (
                   <SourceSnapshotInlinePreview
@@ -1032,6 +1062,14 @@ function isChangeForSource(change: PublicAwardChange, source: PublicAwardSource)
   // reason to attach an identified change to a different source.
   if (change.sourceId) return change.sourceId === source.id;
   return sourceUrlsMatch(change.sourceUrl, source.url);
+}
+
+// Index lookup uses exactly the existing document-address comparison. Only
+// legacy changes without a retained source ID may use this fallback.
+function uniqueDocumentSourceId(idsByDocumentKey: ReadonlyMap<string, string[]>, sourceUrl: string) {
+  const documentKey = sourceDocumentUrlKey(sourceUrl);
+  const sourceIds = documentKey === null ? undefined : idsByDocumentKey.get(documentKey);
+  return sourceIds?.length === 1 ? sourceIds[0] : null;
 }
 
 function isUnreadChange(change: PublicAwardChange, readChangeIds: Set<string>) {

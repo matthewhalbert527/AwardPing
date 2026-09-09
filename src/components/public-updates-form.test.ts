@@ -128,10 +128,31 @@ function bindHandler(
       dispatch,
       request: options.request ?? ((submission) => requestPublicUpdates(submission, fetchImpl)),
     });
-  return { inFlight, dispatched, bind, submit: bind(), state: () => state };
+  // dispatchAction stands in for a visitor's own onChange while the handler
+  // runs, so a mid-flight edit goes through the very same reducer.
+  return { inFlight, dispatched, bind, dispatchAction: dispatch, submit: bind(), state: () => state };
 }
 
 const EMAIL_INPUT_OPEN = '<input id="public-updates-email" class="input" type="email" placeholder="advisor@example.edu" required=""';
+
+// Attribute-order-independent readings of the two visitor-editable controls.
+function emailInput(html: string) {
+  const markup = html.match(/<input id="public-updates-email"[^>]*\/>/)?.[0];
+  if (!markup) throw new Error("email input missing");
+  return { markup, disabled: markup.includes(' disabled=""'), value: markup.match(/value="([^"]*)"/)?.[1] ?? "" };
+}
+
+function consentInput(html: string) {
+  const markup = html.match(/<input class="mt-1 accent-\[var\(--brand\)\]"[^>]*\/>/)?.[0];
+  if (!markup) throw new Error("consent checkbox missing");
+  return { markup, disabled: markup.includes(' disabled=""'), checked: markup.includes(' checked=""') };
+}
+
+function honeypotInput(html: string) {
+  const markup = html.match(/<input id="public-updates-website"[^>]*\/>/)?.[0];
+  if (!markup) throw new Error("honeypot input missing");
+  return { markup, disabled: markup.includes(' disabled=""'), value: markup.match(/value="([^"]*)"/)?.[1] ?? "" };
+}
 
 afterEach(() => {
   preset.state = null;
@@ -169,8 +190,12 @@ describe("PublicUpdatesForm markup", () => {
     expect(button.inner).toContain("animate-spin");
     expect(button.inner.endsWith("Subscribing…")).toBe(true);
     expect(statusRegion(html).text).toBe("");
-    expect(html).toContain(`${EMAIL_INPUT_OPEN} value="advisor@example.edu"/>`);
-    expect(html).toContain('type="checkbox" required="" checked=""/>');
+    // Both editable fields are locked for the request's lifetime, and what the
+    // visitor can see is exactly what was submitted.
+    expect(emailInput(html)).toMatchObject({ disabled: true, value: "advisor@example.edu" });
+    expect(consentInput(html)).toMatchObject({ disabled: true, checked: true });
+    // The privacy policy link is never disabled, so the terms stay readable.
+    expect(html).toContain('<a class="font-bold text-[var(--brand)] underline" href="/privacy">privacy policy</a>');
   });
 
   it("announces success in the same region beside cleared inputs", () => {
@@ -437,6 +462,110 @@ describe("the submit handler the form binds", () => {
 
     await bound.submit(fakeEvent());
     expect(requests).toBe(2);
+  });
+
+  // A visitor who keeps typing after pressing Subscribe used to change the
+  // fields under an in-flight request: the POST carried the old address, the
+  // form showed the new one, and a success then cleared the new one as though
+  // it had been submitted.
+  it("ignores an address typed while the request is in flight, and never sends it", async () => {
+    const fetch = deferredFetch();
+    const bound = bindHandler(fetch.impl);
+
+    const run = bound.submit(fakeEvent());
+    expect(fetch.calls).toHaveLength(1);
+    expect(JSON.parse(String(fetch.calls[0].init.body)).email).toBe("advisor@example.edu");
+
+    // The visitor keeps typing, and toggles consent, while the request is open.
+    bound.dispatchAction({ type: "email", value: "someone-else@example.edu" });
+    bound.dispatchAction({ type: "privacyConsent", value: false });
+    bound.dispatchAction({ type: "website", value: "https://spam.example" });
+
+    // None of it lands: the form still shows exactly what was submitted.
+    expect(bound.state()).toMatchObject({
+      email: "advisor@example.edu",
+      privacyConsent: true,
+      website: "",
+      status: "pending",
+    });
+    const pendingHtml = render(bound.state());
+    expect(emailInput(pendingHtml)).toMatchObject({ disabled: true, value: "advisor@example.edu" });
+    expect(consentInput(pendingHtml)).toMatchObject({ disabled: true, checked: true });
+    expect(pendingHtml).not.toContain("someone-else@example.edu");
+
+    fetch.resolveNext(jsonResponse(true, { ok: true, message: "Request received." }));
+    await run;
+
+    // Exactly one request, carrying only the submitted address.
+    expect(fetch.calls).toHaveLength(1);
+    expect(String(fetch.calls[0].init.body)).not.toContain("someone-else@example.edu");
+    // Success clears the submitted values, not an address that was never sent.
+    expect(bound.state()).toEqual({ ...initialPublicUpdatesFormState, status: "success", message: "Request received." });
+    const settled = render(bound.state());
+    expect(emailInput(settled)).toMatchObject({ disabled: false, value: "" });
+    expect(consentInput(settled)).toMatchObject({ disabled: false, checked: false });
+  });
+
+  it("re-enables the fields and keeps the submitted values when the request fails", async () => {
+    const fetch = deferredFetch();
+    const bound = bindHandler(fetch.impl);
+
+    const run = bound.submit(fakeEvent());
+    bound.dispatchAction({ type: "email", value: "someone-else@example.edu" });
+    fetch.rejectNext(new TypeError("Failed to fetch"));
+    await run;
+
+    expect(bound.state()).toEqual({ ...typed, status: "error", message: RETRY_MESSAGE });
+    const html = render(bound.state());
+    expect(emailInput(html)).toMatchObject({ disabled: false, value: "advisor@example.edu" });
+    expect(consentInput(html)).toMatchObject({ disabled: false, checked: true });
+    expect(html).not.toContain("someone-else@example.edu");
+  });
+
+  it("accepts edits again once the request has settled, and on a fresh form", () => {
+    for (const state of [
+      initialPublicUpdatesFormState,
+      { ...typed, status: "error" as const, message: RETRY_MESSAGE },
+      { ...initialPublicUpdatesFormState, status: "success" as const, message: "Request received." },
+    ]) {
+      const next = publicUpdatesFormReducer(state, { type: "email", value: "new@example.edu" });
+      expect(next.email, state.status).toBe("new@example.edu");
+      expect(publicUpdatesFormReducer(state, { type: "privacyConsent", value: true }).privacyConsent, state.status).toBe(true);
+      expect(publicUpdatesFormReducer(state, { type: "website", value: "bot" }).website, state.status).toBe("bot");
+
+      const html = render(state);
+      expect(emailInput(html).disabled, state.status).toBe(false);
+      expect(consentInput(html).disabled, state.status).toBe(false);
+    }
+  });
+
+  it("leaves the hidden anti-bot field enabled but frozen while pending, and still sends it", async () => {
+    // The field is unreachable to a visitor (hidden, aria-hidden, not tabbable),
+    // so nothing about it needs disabling; marking it disabled would only hand
+    // an automated filler a signal. The reducer freeze is what keeps the value
+    // it is asked to send identical to the value captured at submit.
+    const idle = render();
+    expect(honeypotInput(idle).disabled).toBe(false);
+    expect(honeypotInput(render({ ...typed, status: "pending" })).disabled).toBe(false);
+
+    const fetch = deferredFetch();
+    const bound = bindHandler(fetch.impl);
+    bound.dispatchAction({ type: "website", value: "https://spam.example" });
+    // Re-bound after that edit, exactly as a re-render rebinds onSubmit.
+    const run = bound.bind()(fakeEvent());
+
+    expect(JSON.parse(String(fetch.calls[0].init.body))).toEqual({
+      email: "advisor@example.edu",
+      privacyConsent: true,
+      website: "https://spam.example",
+    });
+    bound.dispatchAction({ type: "website", value: "changed-mid-flight" });
+    expect(bound.state().website).toBe("https://spam.example");
+
+    fetch.resolveNext(jsonResponse(true, { ok: true }));
+    await run;
+    // A success clears only the submitted address and consent, as before.
+    expect(bound.state().website).toBe("https://spam.example");
   });
 
   it("is exactly what the component binds to onSubmit", () => {

@@ -45,6 +45,20 @@ export function publicUpdatesFormReducer(
   state: PublicUpdatesFormState,
   action: PublicUpdatesFormAction,
 ): PublicUpdatesFormState {
+  // No field edit lands while a request is in flight. The payload was captured
+  // when the visitor submitted, so accepting a later edit would leave a value
+  // on screen that was never sent — and a success would then clear it as
+  // though it had been, implying an address was subscribed when it was not.
+  // The visible fields are disabled for the same window; this is the backstop
+  // that also covers the hidden anti-bot field, whose submitted value stays
+  // exactly what it was when the request left.
+  if (
+    state.status === "pending" &&
+    (action.type === "email" || action.type === "privacyConsent" || action.type === "website")
+  ) {
+    return state;
+  }
+
   switch (action.type) {
     case "email":
       return { ...state, email: action.value };
@@ -155,6 +169,7 @@ export function PublicUpdatesForm() {
             placeholder="advisor@example.edu"
             value={form.email}
             onChange={(event) => dispatch({ type: "email", value: event.target.value })}
+            disabled={pending}
             required
           />
           <button className="button-primary sm:w-44" type="submit" disabled={pending}>
@@ -174,6 +189,7 @@ export function PublicUpdatesForm() {
           type="checkbox"
           checked={form.privacyConsent}
           onChange={(event) => dispatch({ type: "privacyConsent", value: event.target.checked })}
+          disabled={pending}
           required
         />
         <span>

@@ -104,6 +104,39 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("award directory filter recovery", () => {
+  it("explains a known search match excluded by active filters and retains the existing recovery controls", () => {
+    const rows = [award, {
+      ...award, id: "other-award", name: "Other Award", publicPath: "/other-award", academicLevels: ["Graduate"],
+    }];
+    state.values[0] = "Fictional";
+    state.values[1] = true;
+    const unfiltered = load(render(rows).html);
+    expect(unfiltered(".award-search-option").attr("href")).toBe("/fictional-award");
+
+    state.values[5] = "Graduate";
+    const $ = load(render(rows).html);
+    expect($(".award-search-empty").text()).toBe("No awards match this search with these filters.");
+    expect($("#award-directory-search").attr("value")).toBe("Fictional");
+    expect($(".award-directory-filter-grid select").first().find("option[selected]").text()).toBe("Graduate");
+    expect($(".award-search-option")).toHaveLength(0);
+    expect($(".award-search-panel [role='status']").text()).toBe("No matches");
+    expect($("button").map((_, button) => $(button).text().trim()).get()).toEqual(["Clear", "Reset filters"]);
+  });
+
+  it.each([
+    { catalog: "populated", rows: [award] },
+    { catalog: "empty", rows: [] },
+  ])("describes a query-only miss in a $catalog catalog without blaming filters", ({ rows }) => {
+    state.values[0] = "Unmatched search";
+    state.values[1] = true;
+    const $ = load(render(rows).html);
+    expect($(".award-search-empty").text()).toBe("No awards match this search.");
+    expect($("#award-directory-search").attr("value")).toBe("Unmatched search");
+    expect($(".award-search-option")).toHaveLength(0);
+    expect($(".award-search-panel [role='status']").text()).toBe("No matches");
+    expect($("button").map((_, button) => $(button).text().trim()).get()).toEqual(["Clear"]);
+  });
+
   it("explains a filtered empty result without a phantom letter or useless pagination", () => {
     state.values[5] = "Graduate";
     const { tree, html } = render();

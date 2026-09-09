@@ -261,7 +261,7 @@ describe("public award page deep links", () => {
       createElement(PublicAwardWorkspace, { data, initialChangeId: NINTH_CHANGE_ID, initialSourceId: SOURCE_APPLY }),
     );
     const main = html.slice(html.indexOf("</aside>"));
-    expect(main).toContain("Source update history");
+    expect(main).toContain("Updates shown for this source");
     const rows = main.split('<article aria-current="true" class="public-award-change-line" data-highlighted="true">');
     expect(rows).toHaveLength(2);
     expect(rows[1].slice(0, rows[1].indexOf("</article>"))).toContain("Material update 9");

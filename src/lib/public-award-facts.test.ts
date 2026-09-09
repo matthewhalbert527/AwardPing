@@ -372,3 +372,70 @@ describe("public award facts", () => {
     ]);
   });
 });
+
+describe("public award facts read no source metadata and assert no review", () => {
+  // The two source tests above use rejected and archived-cycle metadata, so
+  // they would still pass if a relevance filter were doing the work. This
+  // source is clean by every signal the helper sets, and still supplies
+  // nothing, because source baseline facts are not read at this layer at all.
+  const acceptableSource = () => factSource({
+    page_metadata: {
+      baseline_facts: {
+        deadline: "December 31, 2099",
+        opening_date: "January 1, 2099",
+        eligibility: ["Applicants named in source metadata"],
+        academic_levels: ["Graduate"],
+        citizenship: ["Any nationality"],
+        award_amounts: ["$99,999"],
+        important_dates: ["Source metadata date"],
+      },
+    },
+  });
+
+  it("takes no deadline or criteria from an otherwise acceptable source", () => {
+    const facts = publicAwardFactsFromAward({ summary: null, publicFacts: {}, sources: [acceptableSource()] });
+
+    expect(facts.deadline).toBeNull();
+    expect(facts.openingDate).toBeNull();
+    expect(facts.awardAmount).toBeNull();
+    expect(facts.eligibility).toEqual([]);
+    expect(facts.academicLevels).toEqual([]);
+    expect(facts.citizenship).toEqual([]);
+    expect(facts.importantDates).toEqual([]);
+  });
+
+  it("lets no source value override a stored fact of the same field", () => {
+    const facts = publicAwardFactsFromAward({
+      summary: null,
+      publicFacts: {
+        deadline: "November 30, 2026",
+        eligibility: ["Stored criterion"],
+        academic_levels: ["Undergraduate"],
+      },
+      sources: [acceptableSource()],
+    });
+
+    expect(facts.deadline).toBe("November 30, 2026");
+    expect(facts.eligibility).toEqual(["Stored criterion"]);
+    expect(facts.academicLevels).toEqual(["Undergraduate"]);
+    // The source values appear nowhere, neither replacing nor joining them.
+    expect(JSON.stringify(facts)).not.toContain("2099");
+    expect(JSON.stringify(facts)).not.toContain("Applicants named in source metadata");
+  });
+
+  it("adds no review, approval or provenance field for either input shape", () => {
+    // A non-empty structured object changes how items are shaped, never what
+    // the result claims. This function formats; the public route is what
+    // decides whether an award may be published at all.
+    const expected = [
+      "academicLevels", "applicationMaterials", "awardAmount", "citizenship", "confidence",
+      "contacts", "deadline", "disciplines", "documents", "eligibility", "howToApply",
+      "importantDates", "openingDate", "overview", "requirements",
+    ];
+    for (const [label, publicFacts] of [["empty", {}], ["populated", { deadline: "November 30, 2026" }]] as const) {
+      const keys = Object.keys(publicAwardFactsFromAward({ publicFacts })).sort();
+      expect(keys, label).toEqual(expected);
+      expect(keys.filter((key) => /review|verif|approv|publish|provenance|attest/i.test(key)), label).toEqual([]);
+    }
+  });
+});

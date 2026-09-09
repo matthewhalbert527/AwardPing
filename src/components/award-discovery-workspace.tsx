@@ -71,8 +71,15 @@ const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 /** The bucket `awardInitial` already assigns to every name not starting A-Z. */
 const otherBucket = "#";
 const otherBucketName = "Numbers and other characters";
-// Keep # after Z in the strip and traversal; character-code ordering puts it
-// before A and would make next/previous skip the bucket at the displayed end.
+/**
+ * Every browse bucket in display order, and the single list the active
+ * fallback, the strip, and next/previous all walk.
+ *
+ * `#` sits after Z so the A-Z strip keeps its existing buttons and horizontal
+ * geometry. Traversal therefore walks this list by index: `#` is code point
+ * 0x23 and sorts before `A`, so comparing letters with `<` and `>` would place
+ * it at the wrong end and skip it entirely.
+ */
 const browseBuckets = [...alphabet, otherBucket];
 const pageSizeOptions = [30, 50, 100] as const;
 const searchResultLimit = 100;
@@ -159,13 +166,22 @@ export function AwardDiscoveryWorkspace({
     availableLetters.has(selectedLetter)
       ? selectedLetter
       : browseBuckets.find((bucket) => availableLetters.has(bucket)) || otherBucket;
-  // Ordinary A-Z catalogs retain the existing 26-button strip.
+  // `#` is offered only when an award actually falls into it, so a catalog of
+  // ordinary names renders exactly the A-Z strip it renders today.
   const visibleBuckets = availableLetters.has(otherBucket) ? browseBuckets : alphabet;
-  // Reveal on a letter change or nav remount. A stable callback otherwise
-  // leaves deliberate manual scrolling alone, without moving keyboard focus.
+  // The strip scrolls horizontally, so the letter this component chooses for
+  // the visitor, when a filter removes the selected one, can sit outside the
+  // strip's own viewport while its list and count are already correct.
+  // Memoising the callback ref on activeLetter is what bounds the work: React
+  // re-runs it only when that letter changes or the strip is remounted, so an
+  // unrelated re-render keeps the same function and leaves a deliberate manual
+  // scroll exactly where the visitor left it.
   const revealActiveLetter = useMemo(
     () => (nav: HTMLDivElement | null) => {
       alphabetNavRef.current = nav;
+      // Commit phase only. The strip is not a positioned ancestor, so the
+      // comparison uses bounding rectangles, and the only write is the
+      // smallest scrollLeft change that brings the active box inside.
       if (!nav || nav.clientWidth === 0) return;
       const active = [...nav.children].find((child) => child.textContent === activeLetter);
       if (!(active instanceof HTMLElement)) return;
@@ -180,6 +196,7 @@ export function AwardDiscoveryWorkspace({
     },
     [activeLetter],
   );
+  // Position in `browseBuckets`, never a lexical comparison: see the list.
   const activeBucketIndex = browseBuckets.indexOf(activeLetter);
   const nextLetter = browseBuckets.find(
     (bucket, index) => index > activeBucketIndex && availableLetters.has(bucket),
@@ -229,9 +246,20 @@ export function AwardDiscoveryWorkspace({
     if (position === "top") {
       return (
         <div className="min-w-0 max-w-full">
-          <div ref={revealActiveLetter} tabIndex={-1} role="group" className="award-alpha-nav scroll-mt-40" aria-label="Alphabetical award pages" aria-describedby="award-letter-page-status">
+          <div
+            tabIndex={-1}
+            role="group"
+            className="award-alpha-nav scroll-mt-40"
+            aria-label="Alphabetical award pages"
+            aria-describedby="award-letter-page-status"
+            ref={revealActiveLetter}
+          >
             {visibleBuckets.map((bucket) => {
               const enabled = availableLetters.has(bucket);
+              // The name is carried on attributes, never as extra text: the
+              // reveal callback finds the active box by its textContent, so the
+              // visible glyph has to stay exactly the bucket it stands for.
+              // A-Z buckets pass undefined here and render as they do today.
               const name = bucket === otherBucket ? otherBucketName : undefined;
               return (
                 <button
@@ -311,6 +339,8 @@ export function AwardDiscoveryWorkspace({
               style={{ minHeight: 44 }}
               type="button"
               disabled={!previousLetter}
+              // Only the `#` target is renamed for assistive technology; every
+              // A-Z target keeps the visible "Previous letter: X" wording.
               aria-label={previousLetter === otherBucket ? `Previous letter: #, ${otherBucketName}` : undefined}
               title={!previousLetter ? "You are at the first available letter." : undefined}
               onClick={() => {
@@ -361,15 +391,17 @@ export function AwardDiscoveryWorkspace({
 
   return (
     <div className="grid gap-5">
-      <section className="award-directory-controls">
-        <div
-          className="relative"
-          onBlur={(event) => {
-            if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) {
-              setSearchOpen(false);
-            }
-          }}
-        >
+      <section
+        className="award-directory-controls"
+        onBlur={(event) => {
+          // Keep results open within the controls so focus changes cannot
+          // move a filter or Reset out from under an unfinished click.
+          if (!event.relatedTarget || !event.currentTarget.contains(event.relatedTarget as Node)) {
+            setSearchOpen(false);
+          }
+        }}
+      >
+        <div className="relative">
           <label className="sr-only" htmlFor="award-directory-search">
             Search awards
           </label>
@@ -424,7 +456,7 @@ export function AwardDiscoveryWorkspace({
                     className="award-search-option"
                     href={awardDirectoryHref(award)}
                     key={award.id}
-                    onClick={() => setSearchOpen(false)}
+                    onNavigate={() => setSearchOpen(false)}
                   >
                     <span className="award-search-option-title">{award.name}</span>
                     {searchResultMetaText(award) && (
@@ -434,7 +466,9 @@ export function AwardDiscoveryWorkspace({
                 ))}
                 {matches.length === 0 && (
                   <p className="award-search-empty">
-                    No matching award yet.
+                    {hasActiveFilters
+                      ? "No awards match this search with these filters."
+                      : "No awards match this search."}
                   </p>
                 )}
               </div>

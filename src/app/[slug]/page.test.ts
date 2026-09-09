@@ -148,7 +148,7 @@ function mainMarkup(html: string) {
 function expectSelectedApplyChange(html: string) {
   const main = mainMarkup(html);
   expect(html).toContain("<h1>Example Fellowship</h1>");
-  expect(main).toContain("Source update history");
+  expect(main).toContain("Updates shown for this source");
   expect(main).toContain('<h2 id="public-award-panel-heading">Application Instructions</h2>');
   expect(main).not.toContain('<h2 id="public-award-panel-heading">Overview</h2>');
   expect(main).not.toContain("The homepage changed.");

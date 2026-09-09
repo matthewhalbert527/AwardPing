@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { createElement } from "react";
+import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
 import ts from "typescript";
@@ -15,12 +15,36 @@ import { dashboardAwardPath } from "@/lib/award-slugs";
 // first two state slots (the search query, then whether the results panel is
 // open) can be preset for one render. The real search path then runs:
 // matching, ordering and the search-option links exactly as in the browser.
-const searchState = vi.hoisted(() => ({ presets: [] as unknown[] }));
+type CapturedLinkProps = ComponentProps<typeof import("next/link").default>;
+const searchState = vi.hoisted(() => ({
+  presets: [] as unknown[],
+  captureWiring: false,
+  links: [] as CapturedLinkProps[],
+  states: [] as { initial: unknown; value: unknown; writes: unknown[] }[],
+}));
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
-  const useState = ((initial: unknown) =>
-    actual.useState(searchState.presets.length ? searchState.presets.shift() : initial)) as typeof actual.useState;
+  const useState = ((initial: unknown) => {
+    const result = actual.useState(searchState.presets.length ? searchState.presets.shift() : initial);
+    if (!searchState.captureWiring) return result;
+    const state = { initial, value: result[0], writes: [] as unknown[] };
+    searchState.states.push(state);
+    return [result[0], (value: unknown) => { state.writes.push(value); }];
+  }) as typeof actual.useState;
   return { ...actual, useState };
+});
+vi.mock("next/link", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/link")>();
+  return {
+    ...actual,
+    default: (props: CapturedLinkProps) => {
+      if (searchState.captureWiring && props.className === "award-search-option") searchState.links.push(props);
+      // Vitest resolves the installed Pages Router Link; Next's app build aliases
+      // the App Router version. With no router context this render cannot reach
+      // onNavigate through a click: we assert only the app's callback wiring.
+      return createElement(actual.default, props);
+    },
+  };
 });
 
 // The catalog row carries no slug of its own, so the dashboard path helper
@@ -109,10 +133,133 @@ function expectNativeSearchSemantics(html: string) {
   }
 }
 
+function directoryControlsJsx() {
+  const source = readFileSync(new URL("./award-discovery-workspace.tsx", import.meta.url), "utf8");
+  const parsed = ts.createSourceFile("award-discovery-workspace.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const elements: ts.JsxElement[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isJsxElement(node)) elements.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  function attribute(element: ts.JsxElement, name: string) {
+    return element.openingElement.attributes.properties.find(
+      (item): item is ts.JsxAttribute => ts.isJsxAttribute(item) && item.name.getText(parsed) === name,
+    );
+  }
+  function hasClass(element: ts.JsxElement, name: string) {
+    const value = attribute(element, "className")?.initializer;
+    return Boolean(value && ts.isStringLiteral(value) && value.text.split(/\s+/).includes(name));
+  }
+  const boundaries = elements.filter((element) =>
+    element.openingElement.tagName.getText(parsed) === "section" && hasClass(element, "award-directory-controls"),
+  );
+  expect(boundaries).toHaveLength(1);
+  return { parsed, elements, boundary: boundaries[0], attribute, hasClass };
+}
+
+class AlphaGeometryElement {
+  children: AlphaGeometryElement[] = [];
+  textContent = "";
+  clientWidth = 350;
+  clientLeft = 0;
+  scrollWidth = 1244;
+  scrollLeft = 0;
+  scrollTop = 37;
+  offsetLeft = 0;
+  offsetParent: unknown = null;
+  focus = vi.fn();
+  scrollIntoView = vi.fn();
+  scrollTo = vi.fn();
+  scrollBy = vi.fn();
+  getBoundingClientRect = () => ({ left: 0, right: 0 });
+}
+
+function alphaRevealCallback(activeLetter: string) {
+  const { parsed, elements, attribute, hasClass } = directoryControlsJsx();
+  const navs = elements.filter((element) => hasClass(element, "award-alpha-nav"));
+  expect(navs).toHaveLength(1);
+  const ref = attribute(navs[0], "ref")?.initializer;
+  // The unfixed source has no ref and therefore performs no reveal at mount.
+  if (!ref) return { callback: null, dependencies: null };
+  if (!ts.isJsxExpression(ref) || !ref.expression || !ts.isIdentifier(ref.expression)) {
+    throw new Error("Alphabet strip must reference its memoized callback");
+  }
+  const refName = ref.expression.text;
+  const declarations: ts.VariableDeclaration[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === refName) declarations.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(parsed);
+  expect(declarations).toHaveLength(1);
+  const initializer = declarations[0].initializer;
+  if (!initializer || !ts.isCallExpression(initializer) || initializer.expression.getText(parsed) !== "useMemo") {
+    throw new Error("Alphabet strip callback must be memoized");
+  }
+  const memoCalls: unknown[][] = [];
+  const useMemo = (factory: () => unknown, dependencies: unknown[]) => {
+    memoCalls.push(dependencies);
+    return factory();
+  };
+  const javascript = ts.transpileModule(`const callback = ${initializer.getText(parsed)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText;
+  const callback = new Function("activeLetter", "useMemo", "HTMLElement", "alphabetNavRef", `${javascript}\nreturn callback;`)(
+    activeLetter, useMemo, AlphaGeometryElement, { current: null },
+  ) as (nav: AlphaGeometryElement | null) => void;
+  expect(memoCalls).toHaveLength(1);
+  return { callback, dependencies: memoCalls[0] };
+}
+
+function alphaGeometry({
+  letter = "Z", contentLeft = 1200, scrollLeft = 0, clientLeft = 0, clientWidth = 350, navLeft = 20,
+  missing = false,
+} = {}) {
+  const nav = new AlphaGeometryElement();
+  nav.clientLeft = clientLeft;
+  nav.clientWidth = clientWidth;
+  nav.getBoundingClientRect = () => ({ left: navLeft, right: navLeft + clientWidth + 2 * clientLeft });
+  // Neither element is positioned against the other or the body. offsetLeft
+  // therefore cannot be compared directly with the strip's scrollLeft.
+  nav.offsetParent = { getBoundingClientRect: () => ({ left: 7 }) };
+  nav.offsetLeft = navLeft - 7;
+  const active = new AlphaGeometryElement();
+  active.textContent = letter;
+  active.offsetParent = { getBoundingClientRect: () => ({ left: 172 }) };
+  active.offsetLeft = navLeft + clientLeft + contentLeft - 172;
+  active.getBoundingClientRect = () => {
+    const left = navLeft + clientLeft + contentLeft - nav.scrollLeft;
+    return { left, right: left + 44 };
+  };
+  const other = new AlphaGeometryElement();
+  other.textContent = letter === "A" ? "B" : "A";
+  nav.children = missing ? [other] : [other, active];
+  const writes = vi.fn();
+  let currentScroll = scrollLeft;
+  Object.defineProperty(nav, "scrollLeft", {
+    get: () => currentScroll,
+    set: (value: number) => { writes(value); currentScroll = value; },
+  });
+  function expectLocalScrollOnly() {
+    for (const element of [nav, active, other]) {
+      expect(element.focus).not.toHaveBeenCalled();
+      expect(element.scrollIntoView).not.toHaveBeenCalled();
+      expect(element.scrollTo).not.toHaveBeenCalled();
+      expect(element.scrollBy).not.toHaveBeenCalled();
+      expect(element.scrollTop).toBe(37);
+    }
+  }
+  return { nav, active, writes, expectLocalScrollOnly };
+}
+
 beforeEach(() => vi.setSystemTime(NOW_MS));
 afterEach(() => {
   vi.useRealTimers();
   searchState.presets = [];
+  searchState.captureWiring = false;
+  searchState.links = [];
+  searchState.states = [];
 });
 
 describe("AwardDiscoveryWorkspace", () => {
@@ -155,13 +302,36 @@ describe("AwardDiscoveryWorkspace", () => {
     expectNativeSearchSemantics(broader);
   });
 
+  it("wires search-result closure to onNavigate, not onClick (app wiring only)", () => {
+    searchState.captureWiring = true;
+    const html = render(false, { search: "Goldwater" });
+
+    expect(searchOptionHrefs(html)).toEqual(["/goldwater-scholarship"]);
+    expect(searchState.links).toHaveLength(1);
+    const link = searchState.links[0];
+    expect(link.href).toBe("/goldwater-scholarship");
+    expect(link.onNavigate).toBeTypeOf("function");
+    expect(link.onClick).toBeUndefined();
+    expect(searchState.states[0]).toEqual({ initial: "", value: "Goldwater", writes: [] });
+    expect(searchState.states[1]).toEqual({ initial: false, value: true, writes: [] });
+
+    // Invoke only the app callback. SSR does not prove Next's modifier handling
+    // or browser focus behavior; those require the separate real-browser check.
+    const preventDefault = vi.fn();
+    link.onNavigate?.({ preventDefault });
+    expect(searchState.states.flatMap((state, slot) => state.writes.map((value) => ({ slot, value })))).toEqual([
+      { slot: 1, value: false },
+    ]);
+    expect(preventDefault).not.toHaveBeenCalled();
+  });
+
   it("reports no matches as plain text, keeps the typed query, and claims no selection", () => {
     const anonymous = render(false, { search: "Zebra" });
     const signedIn = render(true, { search: "Zebra" });
 
     expect(signedIn).toBe(anonymous);
     expect(anonymous).toContain('<p role="status">No matches</p>');
-    expect(anonymous).toContain('<p class="award-search-empty">No matching award yet.</p>');
+    expect(anonymous).toContain('<p class="award-search-empty">No awards match this search.</p>');
     expect(anonymous).toContain('placeholder="Goldwater, Fulbright, NSF GRFP..." value="Zebra"/>');
     expect(anonymous).toContain('<button class="award-search-clear" type="button">');
     expect(searchOptionHrefs(anonymous)).toEqual([]);
@@ -169,6 +339,75 @@ describe("AwardDiscoveryWorkspace", () => {
     expectNativeSearchSemantics(anonymous);
     expect(anonymous).not.toContain("aria-expanded");
     expect(browseRowHrefs(anonymous)).toEqual([]);
+  });
+
+  it("keeps search and filter controls in one focus-dismissal boundary (structure only)", () => {
+    // JSX ownership and rendered containment are the contract here. Pointer,
+    // touch, and keyboard event ordering are verified separately in a browser.
+    const { boundary, attribute, hasClass } = directoryControlsJsx();
+    expect(attribute(boundary, "onBlur")?.initializer).toBeDefined();
+    const searchWrappers = boundary.children.filter(ts.isJsxElement).filter((element) => hasClass(element, "relative"));
+    expect(searchWrappers).toHaveLength(1);
+    expect(attribute(searchWrappers[0], "onBlur")).toBeUndefined();
+
+    const $ = load(renderRows([goldwater, truman], ["Goldwater", true, "A", 30, 0, "Undergraduate"]));
+    const controls = $("section.award-directory-controls");
+    expect(controls).toHaveLength(1);
+    expect(controls.find("#award-directory-search")).toHaveLength(1);
+    expect(controls.find(".award-search-panel")).toHaveLength(1);
+    expect(controls.find(".award-directory-filter-grid label").map((_, label) => $(label).children("span").text()).get()).toEqual([
+      "Academic level", "Discipline", "Citizenship", "Updates",
+    ]);
+    expect(controls.find(".award-directory-filter-grid select")).toHaveLength(4);
+    const reset = $("button").filter((_, button) => $(button).text().trim() === "Reset filters");
+    expect(reset).toHaveLength(1);
+    expect(reset.closest("section.award-directory-controls").get(0)).toBe(controls.get(0));
+    const unfiltered = load(render(false, { search: "Goldwater" }));
+    expect(unfiltered("button").filter((_, button) => unfiltered(button).text().trim() === "Reset filters")).toHaveLength(0);
+  });
+
+  it("dismisses only for outside or absent targets (actual section callback only)", () => {
+    const { parsed, boundary, attribute } = directoryControlsJsx();
+    const initializer = attribute(boundary, "onBlur")?.initializer;
+    const handler = initializer && ts.isJsxExpression(initializer) ? initializer.expression : undefined;
+    if (!handler || !ts.isArrowFunction(handler)) throw new Error("Section onBlur must have an arrow callback");
+
+    function verifyCallback(expression: ts.ArrowFunction) {
+      // Execute the source expression, not a copied handler. Containment is an
+      // injected stub: this proves callback logic, not native DOM/focus timing.
+      const callbackSource = ts.createPrinter().printNode(ts.EmitHint.Expression, expression, parsed);
+      const javascript = ts.transpileModule(`const onBlur = ${callbackSource};`, {
+        compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+      }).outputText;
+      const setSearchOpen = vi.fn();
+      const onBlur = new Function("setSearchOpen", `${javascript}\nreturn onBlur;`)(setSearchOpen) as (event: {
+        relatedTarget: object | null;
+        currentTarget: { contains: (target: object) => boolean };
+      }) => void;
+      const inside = {};
+      const outside = {};
+      const contains = vi.fn((target: object) => target === inside);
+      for (const [name, relatedTarget, writes] of [
+        ["inside", inside, []],
+        ["outside", outside, [[false]]],
+        ["null", null, [[false]]],
+      ] as const) {
+        setSearchOpen.mockClear();
+        contains.mockClear();
+        onBlur({ relatedTarget, currentTarget: { contains } });
+        expect(setSearchOpen.mock.calls, `${name} dismissal`).toEqual(writes);
+        if (relatedTarget === null) expect(contains, "null target short-circuits containment").not.toHaveBeenCalled();
+      }
+    }
+
+    verifyCallback(handler);
+    // Mutation control is entirely in memory; an empty actual-handler body
+    // must fail the same outside-dismissal oracle. No source is swapped.
+    const emptyHandler = ts.factory.updateArrowFunction(
+      handler, handler.modifiers, handler.typeParameters, handler.parameters,
+      handler.type, handler.equalsGreaterThanToken, ts.factory.createBlock([]),
+    );
+    expect(() => verifyCallback(emptyHandler)).toThrow(/outside dismissal/);
   });
 
   it("returns focus to the search field before clearing, so Clear never drops focus to the document", () => {
@@ -778,193 +1017,6 @@ function alphaButton(html: string, letter: string) {
   };
 }
 
-class AlphaGeometryElement {
-  children: AlphaGeometryElement[] = [];
-  textContent = "";
-  clientWidth = 350;
-  clientLeft = 0;
-  scrollWidth = 1244;
-  scrollLeft = 0;
-  scrollTop = 37;
-  offsetLeft = 0;
-  offsetParent: unknown = null;
-  focus = vi.fn();
-  scrollIntoView = vi.fn();
-  scrollTo = vi.fn();
-  scrollBy = vi.fn();
-  getBoundingClientRect = () => ({ left: 0, right: 0 });
-}
-
-function alphaRevealCallback(activeLetter: string) {
-  const source = readFileSync(new URL("./award-discovery-workspace.tsx", import.meta.url), "utf8");
-  const parsed = ts.createSourceFile("award-discovery-workspace.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const navs: ts.JsxOpeningElement[] = [];
-  const declarations: ts.VariableDeclaration[] = [];
-  function visit(node: ts.Node) {
-    if (ts.isJsxOpeningElement(node) && node.attributes.properties.some((attribute) =>
-      ts.isJsxAttribute(attribute) && attribute.name.getText(parsed) === "className"
-      && attribute.initializer && ts.isStringLiteral(attribute.initializer)
-      && attribute.initializer.text.split(/\s+/).includes("award-alpha-nav"),
-    )) navs.push(node);
-    if (ts.isVariableDeclaration(node)) declarations.push(node);
-    ts.forEachChild(node, visit);
-  }
-  visit(parsed);
-  expect(navs).toHaveLength(1);
-  const ref = navs[0].attributes.properties.find((attribute) =>
-    ts.isJsxAttribute(attribute) && attribute.name.getText(parsed) === "ref",
-  );
-  const value = ref && ts.isJsxAttribute(ref) ? ref.initializer : undefined;
-  if (!value || !ts.isJsxExpression(value) || !value.expression || !ts.isIdentifier(value.expression)) {
-    throw new Error("Alphabet strip must reference its declared ref");
-  }
-  const refName = value.expression.text;
-  const matches = declarations.filter((node) => ts.isIdentifier(node.name) && node.name.text === refName);
-  expect(matches).toHaveLength(1);
-  const initializer = matches[0].initializer;
-  if (!initializer || !ts.isCallExpression(initializer)) throw new Error("Alphabet ref must use a hook");
-  const objectRef: { current: AlphaGeometryElement | null } = { current: null };
-  // The release's original object ref attaches a node but has no reveal callback.
-  if (initializer.expression.getText(parsed) === "useRef") return { callback: null, dependencies: null, objectRef };
-  expect(initializer.expression.getText(parsed)).toBe("useMemo");
-  const memoCalls: unknown[][] = [];
-  const useMemo = (factory: () => unknown, dependencies: unknown[]) => {
-    memoCalls.push(dependencies);
-    return factory();
-  };
-  const javascript = ts.transpileModule(`const callback = ${initializer.getText(parsed)};`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  }).outputText;
-  const callback = new Function("activeLetter", "useMemo", "HTMLElement", "alphabetNavRef", `${javascript}\nreturn callback;`)(
-    activeLetter, useMemo, AlphaGeometryElement, objectRef,
-  ) as (nav: AlphaGeometryElement | null) => void;
-  expect(memoCalls).toHaveLength(1);
-  return { callback, dependencies: memoCalls[0], objectRef };
-}
-
-function alphaGeometry({
-  letter = "Z", contentLeft = 1200, scrollLeft = 0, clientLeft = 0, clientWidth = 350, navLeft = 20,
-  missing = false,
-} = {}) {
-  const nav = new AlphaGeometryElement();
-  nav.clientLeft = clientLeft;
-  nav.clientWidth = clientWidth;
-  nav.scrollWidth = Math.max(1244, contentLeft + 44);
-  nav.getBoundingClientRect = () => ({ left: navLeft, right: navLeft + clientWidth + 2 * clientLeft });
-  // Neither element is positioned against the other or the body. offsetLeft
-  // cannot be compared directly with the strip's scrollLeft.
-  nav.offsetParent = { getBoundingClientRect: () => ({ left: 7 }) };
-  nav.offsetLeft = navLeft - 7;
-  const active = new AlphaGeometryElement();
-  active.textContent = letter;
-  active.offsetParent = { getBoundingClientRect: () => ({ left: 172 }) };
-  active.offsetLeft = navLeft + clientLeft + contentLeft - 172;
-  active.getBoundingClientRect = () => {
-    const left = navLeft + clientLeft + contentLeft - nav.scrollLeft;
-    return { left, right: left + 44 };
-  };
-  const other = new AlphaGeometryElement();
-  other.textContent = letter === "A" ? "B" : "A";
-  nav.children = missing ? [other] : [other, active];
-  const writes = vi.fn();
-  let currentScroll = scrollLeft;
-  Object.defineProperty(nav, "scrollLeft", {
-    get: () => currentScroll,
-    set: (value: number) => { writes(value); currentScroll = value; },
-  });
-  function expectLocalScrollOnly() {
-    for (const element of [nav, active, other]) {
-      expect(element.focus).not.toHaveBeenCalled();
-      expect(element.scrollIntoView).not.toHaveBeenCalled();
-      expect(element.scrollTo).not.toHaveBeenCalled();
-      expect(element.scrollBy).not.toHaveBeenCalled();
-      expect(element.scrollTop).toBe(37);
-    }
-  }
-  return { nav, active, writes, expectLocalScrollOnly };
-}
-
-describe("AwardDiscoveryWorkspace active-letter reveal (callback geometry and wiring only)", () => {
-  it("memoizes the actual nav ref only on the derived active letter", () => {
-    // This captures actual hook inputs, not React's memo/ref scheduler. Native
-    // manual-scroll retention and focus timing require separate browser checks.
-    for (const letter of ["Z", "Z", "A", "#"]) {
-      const { callback, dependencies } = alphaRevealCallback(letter);
-      expect(callback).toBeTypeOf("function");
-      expect(dependencies).toEqual([letter]);
-    }
-  });
-
-  it.each([
-    { name: "far right Z", geometry: { contentLeft: 1200 }, expected: 894 },
-    { name: "appended #", geometry: { letter: "#", contentLeft: 1248 }, expected: 942 },
-    { name: "far left A", geometry: { letter: "A", contentLeft: 0, scrollLeft: 600 }, expected: 0 },
-    { name: "right clipping with a left border", geometry: { clientLeft: 3, contentLeft: 1200 }, expected: 894 },
-    { name: "left clipping with a left border", geometry: { clientLeft: 3, contentLeft: 50, scrollLeft: 100 }, expected: 50 },
-    { name: "non-body offset parents", geometry: { navLeft: 240, clientLeft: 4, contentLeft: 900, scrollLeft: 30 }, expected: 594 },
-    { name: "partial right clipping", geometry: { contentLeft: 330 }, expected: 24 },
-    { name: "partial left clipping", geometry: { contentLeft: 300, scrollLeft: 320 }, expected: 300 },
-    { name: "already visible", geometry: { contentLeft: 400, scrollLeft: 300 }, expected: 300 },
-    { name: "exact left edge", geometry: { contentLeft: 300, scrollLeft: 300 }, expected: 300 },
-    { name: "exact right edge", geometry: { contentLeft: 606, scrollLeft: 300 }, expected: 300 },
-  ])("uses only the minimum horizontal reveal for $name", ({ geometry, expected }) => {
-    const fixture = alphaGeometry(geometry);
-    const initial = fixture.nav.scrollLeft;
-    alphaRevealCallback(fixture.active.textContent).callback?.(fixture.nav);
-    expect(fixture.nav.scrollLeft).toBe(expected);
-    expect(fixture.writes.mock.calls).toEqual(expected === initial ? [] : [[expected]]);
-    const box = fixture.active.getBoundingClientRect();
-    const viewLeft = fixture.nav.getBoundingClientRect().left + fixture.nav.clientLeft;
-    expect(box.left).toBeGreaterThanOrEqual(viewLeft);
-    expect(box.right).toBeLessThanOrEqual(viewLeft + fixture.nav.clientWidth);
-    fixture.expectLocalScrollOnly();
-  });
-
-  it.each([
-    { name: "missing active button", activeLetter: "Z", geometry: { missing: true } },
-    { name: "hidden zero-width strip", activeLetter: "Z", geometry: { clientWidth: 0 } },
-    { name: "empty-catalog # fallback without a matching button", activeLetter: "#", geometry: { letter: "Z" } },
-  ])("retains the node ref without scrolling for $name", ({ activeLetter, geometry }) => {
-    const fixture = alphaGeometry({ ...geometry, scrollLeft: 200 });
-    const { callback, objectRef } = alphaRevealCallback(activeLetter);
-    callback?.(fixture.nav);
-    expect(objectRef.current).toBe(fixture.nav);
-    expect(fixture.nav.scrollLeft).toBe(200);
-    expect(fixture.writes).not.toHaveBeenCalled();
-    fixture.expectLocalScrollOnly();
-  });
-
-  it("updates the object ref on attach, null detach, and same-letter remount", () => {
-    const { callback, objectRef } = alphaRevealCallback("Z");
-    const first = alphaGeometry();
-    callback?.(first.nav);
-    expect(objectRef.current).toBe(first.nav);
-    callback?.(null);
-    expect(objectRef.current).toBeNull();
-    const remounted = alphaGeometry();
-    callback?.(remounted.nav);
-    expect(objectRef.current).toBe(remounted.nav);
-    expect([first.nav.scrollLeft, remounted.nav.scrollLeft]).toEqual([894, 894]);
-    first.expectLocalScrollOnly();
-    remounted.expectLocalScrollOnly();
-  });
-
-  it("reveals the actual rendered Z fallback when a filter excludes selected A", () => {
-    const rows = [
-      fictionalRow(1, { name: "Alpha Award", academicLevels: ["Undergraduate"] }),
-      fictionalRow(2, { name: "Zeta Award", academicLevels: ["Graduate"] }),
-    ];
-    const $ = load(renderRows(rows, browsePresets({ letter: "A", level: "Graduate" })));
-    const active = $(".award-alpha-nav [aria-pressed='true']");
-    expect(active).toHaveLength(1);
-    expect(active.text()).toBe("Z");
-    const fixture = alphaGeometry();
-    alphaRevealCallback(active.text()).callback?.(fixture.nav);
-    expect(fixture.nav.scrollLeft).toBe(894);
-    fixture.expectLocalScrollOnly();
-  });
-});
-
 describe("AwardDiscoveryWorkspace numbers and other initials", () => {
   const rows = [
     fictionalRow(1, { name: "Alpha Award", academicLevels: ["Undergraduate"] }),
@@ -1059,6 +1111,83 @@ describe("AwardDiscoveryWorkspace numbers and other initials", () => {
     const $ = load(renderRows(rows.slice(0, 2)));
     expect($(".award-alpha-nav button").map((_index, element) => $(element).text()).get()).toEqual("ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""));
     expect(load(renderRows([]))(".award-alpha-nav button")).toHaveLength(0);
+  });
+});
+
+describe("AwardDiscoveryWorkspace active-letter reveal (callback geometry and wiring only)", () => {
+  it("memoizes the actual nav ref only on the derived active letter, not unrelated render state", () => {
+    // Capturing real useMemo inputs pins the app wiring; it does not emulate
+    // React's memo/ref scheduler or prove native manual-scroll retention.
+    for (const letter of ["Z", "Z", "A"]) {
+      const { callback, dependencies } = alphaRevealCallback(letter);
+      expect(callback).toBeTypeOf("function");
+      expect(dependencies).toEqual([letter]);
+    }
+  });
+
+  it.each([
+    { name: "far right Z", geometry: { contentLeft: 1200 }, expected: 894 },
+    { name: "appended #", geometry: { letter: "#", contentLeft: 1248 }, expected: 942 },
+    { name: "far left A", geometry: { letter: "A", contentLeft: 0, scrollLeft: 600 }, expected: 0 },
+    { name: "right clipping with a left border", geometry: { clientLeft: 3, contentLeft: 1200 }, expected: 894 },
+    { name: "left clipping with a left border", geometry: { clientLeft: 3, contentLeft: 50, scrollLeft: 100 }, expected: 50 },
+    { name: "non-body offset parents", geometry: { navLeft: 240, clientLeft: 4, contentLeft: 900, scrollLeft: 30 }, expected: 594 },
+    { name: "partial right clipping", geometry: { contentLeft: 330 }, expected: 24 },
+    { name: "partial left clipping", geometry: { contentLeft: 300, scrollLeft: 320 }, expected: 300 },
+    { name: "already visible", geometry: { contentLeft: 400, scrollLeft: 300 }, expected: 300 },
+    { name: "exact left edge", geometry: { contentLeft: 300, scrollLeft: 300 }, expected: 300 },
+    { name: "exact right edge", geometry: { contentLeft: 606, scrollLeft: 300 }, expected: 300 },
+  ])("uses only the minimum horizontal reveal for $name", ({ geometry, expected }) => {
+    const fixture = alphaGeometry(geometry);
+    const initial = fixture.nav.scrollLeft;
+    const { callback } = alphaRevealCallback(fixture.active.textContent);
+    callback?.(fixture.nav);
+    expect(fixture.nav.scrollLeft).toBe(expected);
+    expect(fixture.writes.mock.calls).toEqual(expected === initial ? [] : [[expected]]);
+    const box = fixture.active.getBoundingClientRect();
+    const viewLeft = fixture.nav.getBoundingClientRect().left + fixture.nav.clientLeft;
+    expect(box.left).toBeGreaterThanOrEqual(viewLeft);
+    expect(box.right).toBeLessThanOrEqual(viewLeft + fixture.nav.clientWidth);
+    fixture.expectLocalScrollOnly();
+  });
+
+  it.each([
+    { name: "missing active button", activeLetter: "Z", geometry: { missing: true } },
+    { name: "hidden zero-width strip", activeLetter: "Z", geometry: { clientWidth: 0 } },
+    { name: "empty-catalog # fallback without a matching button", activeLetter: "#", geometry: { letter: "Z" } },
+  ])("does no work for $name", ({ activeLetter, geometry }) => {
+    const fixture = alphaGeometry({ ...geometry, scrollLeft: 200 });
+    alphaRevealCallback(activeLetter).callback?.(fixture.nav);
+    expect(fixture.nav.scrollLeft).toBe(200);
+    expect(fixture.writes).not.toHaveBeenCalled();
+    fixture.expectLocalScrollOnly();
+  });
+
+  it("handles ref detachment and reveals the same letter in a fresh remounted nav", () => {
+    const { callback } = alphaRevealCallback("Z");
+    const first = alphaGeometry();
+    callback?.(first.nav);
+    callback?.(null);
+    const remounted = alphaGeometry();
+    callback?.(remounted.nav);
+    expect([first.nav.scrollLeft, remounted.nav.scrollLeft]).toEqual([894, 894]);
+    first.expectLocalScrollOnly();
+    remounted.expectLocalScrollOnly();
+  });
+
+  it("reveals the actual rendered Z fallback when a filter excludes selected A", () => {
+    const rows = [
+      fictionalRow(1, { name: "Alpha Award", academicLevels: ["Undergraduate"] }),
+      fictionalRow(2, { name: "Zeta Award", academicLevels: ["Graduate"] }),
+    ];
+    const $ = load(renderRows(rows, browsePresets({ letter: "A", level: "Graduate" })));
+    const active = $(".award-alpha-nav [aria-pressed='true']");
+    expect(active).toHaveLength(1);
+    expect(active.text()).toBe("Z");
+    const fixture = alphaGeometry();
+    alphaRevealCallback(active.text()).callback?.(fixture.nav);
+    expect(fixture.nav.scrollLeft).toBe(894);
+    fixture.expectLocalScrollOnly();
   });
 });
 

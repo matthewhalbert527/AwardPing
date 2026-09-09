@@ -14,7 +14,7 @@ describe("source snapshot dialog keyboard contract", () => {
     expect(source).toContain("last.focus()");
     expect(source).toContain("first.focus()");
     expect(source).toContain('event.key === "Escape"');
-    expect(source).toContain("focusReturnTarget?.focus()");
+    expect(source).toContain("if (focusReturnTarget?.isConnected) focusReturnTarget.focus()");
     expect(source).toContain("ref={triggerRef}");
     expect(source).toContain("ref={dialogRef}");
     expect(source).toContain("ref={closeButtonRef}");

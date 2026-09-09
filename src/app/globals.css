@@ -4008,14 +4008,22 @@ a {
 
 .public-award-console-header {
   grid-area: header;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  /* Let the actions wrap before their content width squeezes the title. */
+  display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   gap: 1.5rem;
   align-items: start;
   border-bottom: 1px solid var(--border);
   padding-top: 0.4rem;
   padding-bottom: 1.6rem;
+}
+
+/* A readable preferred width, not a floor: once alone on its row, the title
+   can still shrink with the viewport without causing horizontal overflow. */
+.public-award-console-header > :not(.public-award-console-actions) {
+  flex: 1 1 28rem;
+  min-width: 0;
 }
 
 .page-kicker {
@@ -4731,10 +4739,6 @@ a {
     font-size: clamp(1.6rem, 7vw, 2rem);
   }
 
-  .public-award-console-header {
-    grid-template-columns: 1fr;
-  }
-
   .public-award-console-header h1 {
     font-size: clamp(1.28rem, 6.4vw, 1.62rem);
   }
@@ -4745,6 +4749,12 @@ a {
 
   .public-award-console-actions {
     justify-content: stretch;
+  }
+
+  /* Only header actions need a full row; source-detail actions also use the
+     shared class and retain their existing layout. */
+  .public-award-console-header > .public-award-console-actions {
+    flex: 1 1 100%;
   }
 
   .public-award-console-actions .button-primary,

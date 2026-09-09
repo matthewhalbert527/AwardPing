@@ -1,6 +1,6 @@
 "use client";
 
-import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Clock3,
   ExternalLink,
@@ -60,6 +60,11 @@ type SourceSnapshotResponse = {
 
 type SnapshotVersion = "latest" | "previous";
 
+type SnapshotLoadOutcome =
+  | { kind: "snapshot"; snapshot: SourceSnapshotResponse }
+  | { kind: "unavailable" }
+  | { kind: "failed" };
+
 const dialogFocusableSelector = [
   "a[href]",
   "button:not([disabled])",
@@ -94,6 +99,52 @@ export function SourceSnapshotViewerButton({
   changeDetails?: unknown;
   changeDetectedAt?: string | null;
 }) {
+  const evidence = useMemo(
+    () =>
+      buildChangeEvidence({
+        sourceUrl,
+        sourceTitle,
+        summary: changeSummary,
+        changeDetails,
+      }),
+    [changeDetails, changeSummary, sourceTitle, sourceUrl],
+  );
+  const requestPath = snapshotRequestPath(sourceId, evidence, changeEventId);
+  if (!requestPath) return null;
+
+  // The selected-detail panel can reuse this button for another event/source.
+  // A different request must start a fresh, closed modal session.
+  return (
+    <SnapshotViewerSession
+      key={requestPath}
+      changeDetectedAt={changeDetectedAt}
+      changeSummary={changeSummary}
+      evidence={evidence}
+      requestPath={requestPath}
+      sourcePageTypeLabel={sourcePageTypeLabel}
+      sourceTitle={sourceTitle}
+      sourceUrl={sourceUrl}
+    />
+  );
+}
+
+function SnapshotViewerSession({
+  changeDetectedAt,
+  changeSummary,
+  evidence,
+  requestPath,
+  sourcePageTypeLabel,
+  sourceTitle,
+  sourceUrl,
+}: {
+  changeDetectedAt?: string | null;
+  changeSummary?: string | null;
+  evidence: ReturnType<typeof buildChangeEvidence>;
+  requestPath: string;
+  sourcePageTypeLabel?: string | null;
+  sourceTitle: string;
+  sourceUrl: string;
+}) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -102,6 +153,21 @@ export function SourceSnapshotViewerButton({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const dialogRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const requestRef = useRef<AbortController | null>(null);
+
+  const closeViewer = useCallback(() => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+    setOpen(false);
+    setLoading(false);
+  }, []);
+
+  // Separate from focus cleanup: a rapid close/reopen may already own a new
+  // request by the time the old focus effect is cleaned up.
+  useEffect(() => () => {
+    requestRef.current?.abort();
+    requestRef.current = null;
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -114,7 +180,7 @@ export function SourceSnapshotViewerButton({
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
         event.preventDefault();
-        setOpen(false);
+        closeViewer();
         return;
       }
       if (event.key !== "Tab") return;
@@ -143,22 +209,12 @@ export function SourceSnapshotViewerButton({
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
-      focusReturnTarget?.focus();
+      if (focusReturnTarget?.isConnected) focusReturnTarget.focus();
     };
-  }, [open]);
+  }, [closeViewer, open]);
 
   const activeSnapshot = snapshot?.[activeVersion] || null;
   const canShowPrevious = Boolean(snapshot && hasSnapshotObjects(snapshot.previous));
-  const evidence = useMemo(
-    () =>
-      buildChangeEvidence({
-        sourceUrl,
-        sourceTitle,
-        summary: changeSummary,
-        changeDetails,
-      }),
-    [changeDetails, changeSummary, sourceTitle, sourceUrl],
-  );
   const hasEvidencePanel = Boolean(
     changeSummary ||
       changeDetectedAt ||
@@ -168,30 +224,44 @@ export function SourceSnapshotViewerButton({
   );
 
   async function openViewer() {
-    const requestPath = snapshotRequestPath(sourceId, evidence, changeEventId);
-    if (!requestPath) return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
 
     setOpen(true);
     setLoading(true);
     setError(null);
     setActiveVersion("latest");
+    setSnapshot(null);
 
+    let settled: SnapshotLoadOutcome;
     try {
       const response = await fetch(requestPath, {
         cache: "no-store",
+        signal: controller.signal,
       });
-      const body = (await response.json().catch(() => null)) as
-        | { error?: string }
-        | SourceSnapshotResponse
-        | null;
-
       if (!response.ok) {
-        setSnapshot(null);
-        setError(body && "error" in body && body.error ? body.error : "Snapshot unavailable.");
-        return;
+        // These statuses can conceal access/identity failures, not absence.
+        // Never show the routes' internal diagnostic messages.
+        settled = [401, 403, 404].includes(response.status)
+          ? { kind: "unavailable" }
+          : { kind: "failed" };
+      } else {
+        const body: unknown = await response.json();
+        settled = isSourceSnapshotResponse(body)
+          ? { kind: "snapshot", snapshot: body }
+          : { kind: "failed" };
       }
+    } catch {
+      settled = { kind: "failed" };
+    }
 
-      const loaded = body as SourceSnapshotResponse;
+    // Reopening the same URL still creates a new owner. Ignore late fetch/JSON
+    // completions after close, unmount or supersession, even if abort is ignored.
+    if (requestRef.current !== controller || controller.signal.aborted) return;
+
+    if (settled.kind === "snapshot") {
+      const loaded = settled.snapshot;
       setSnapshot(loaded);
       if (
         (snapshotInitialVersion(loaded.localization_direction) === "previous" ||
@@ -200,15 +270,14 @@ export function SourceSnapshotViewerButton({
       ) {
         setActiveVersion("previous");
       }
-    } catch {
+    } else {
       setSnapshot(null);
-      setError("Snapshot unavailable.");
-    } finally {
-      setLoading(false);
+      setError(settled.kind === "unavailable"
+        ? "This screenshot evidence is not available."
+        : "Screenshot evidence could not be loaded right now.");
     }
+    setLoading(false);
   }
-
-  if (!sourceId && !changeEventId) return null;
 
   return (
     <>
@@ -226,7 +295,10 @@ export function SourceSnapshotViewerButton({
         <div
           className="source-snapshot-backdrop"
           role="presentation"
-          onMouseDown={() => setOpen(false)}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            closeViewer();
+          }}
         >
           <section
             aria-label={`${sourceTitle} snapshot`}
@@ -265,7 +337,7 @@ export function SourceSnapshotViewerButton({
                 className="source-snapshot-close"
                 ref={closeButtonRef}
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={closeViewer}
               >
                 <X size={18} aria-hidden="true" />
               </button>
@@ -314,8 +386,8 @@ export function SourceSnapshotInlinePreview({
   changeDetails?: unknown;
 }) {
   const [snapshotState, setSnapshotState] = useState<{
-    requestPath: string;
-    snapshot: SourceSnapshotResponse | null;
+    request: { path: string };
+    outcome: SnapshotLoadOutcome;
   } | null>(null);
   const evidence = useMemo(
     () =>
@@ -331,45 +403,58 @@ export function SourceSnapshotInlinePreview({
     () => snapshotRequestPath(sourceId, evidence, changeEventId),
     [changeEventId, evidence, sourceId],
   );
-  const snapshot = snapshotState?.requestPath === requestPath
-    ? snapshotState.snapshot
+  // Returning to the same URL starts a new request, not a reuse of an older
+  // result. The identity changes only when the requested path changes.
+  const request = useMemo(() => requestPath ? { path: requestPath } : null, [requestPath]);
+  const outcome = snapshotState?.request === request
+    ? snapshotState.outcome
     : null;
-  const requestFinished = snapshotState?.requestPath === requestPath;
+  const snapshot = outcome?.kind === "snapshot" ? outcome.snapshot : null;
 
   useEffect(() => {
-    if (!requestPath) return;
+    if (!request) return;
+    const activeRequest = request;
 
     const controller = new AbortController();
 
-    fetch(requestPath, {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const body = (await response.json().catch(() => null)) as
-          | SourceSnapshotResponse
-          | { error?: string }
-          | null;
-
-        if (!response.ok || !isSourceSnapshotResponse(body)) {
-          setSnapshotState({ requestPath, snapshot: null });
-          return;
+    async function loadSnapshot() {
+      let settled: SnapshotLoadOutcome;
+      try {
+        const response = await fetch(activeRequest.path, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          // Both endpoints also use 404 to conceal access/identity failures.
+          // These statuses say nothing about whether an archive exists.
+          settled = [401, 403, 404].includes(response.status)
+            ? { kind: "unavailable" }
+            : { kind: "failed" };
+        } else {
+          const body: unknown = await response.json();
+          settled = isSourceSnapshotResponse(body)
+            ? { kind: "snapshot", snapshot: body }
+            : { kind: "failed" };
         }
+      } catch {
+        settled = { kind: "failed" };
+      }
 
-        setSnapshotState({ requestPath, snapshot: body });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setSnapshotState({ requestPath, snapshot: null });
-        }
-      });
+      // Fetch/JSON can settle after cleanup, including non-OK responses and
+      // promises whose mocks or underlying transport do not honor abort.
+      if (!controller.signal.aborted) {
+        setSnapshotState({ request: activeRequest, outcome: settled });
+      }
+    }
+
+    void loadSnapshot();
 
     return () => controller.abort();
-  }, [requestPath]);
+  }, [request]);
 
   if ((!sourceId && !changeEventId) || !requestPath) return null;
 
-  if (!requestFinished) {
+  if (!outcome) {
     return (
       <div className="source-snapshot-inline source-snapshot-inline-state">
         <LoaderCircle className="animate-spin" size={16} aria-hidden="true" />
@@ -385,7 +470,11 @@ export function SourceSnapshotInlinePreview({
     return (
       <div className="source-snapshot-inline source-snapshot-inline-state">
         <ImageIcon size={16} aria-hidden="true" />
-        {changeEventId
+        {outcome.kind === "failed"
+          ? "Screenshot evidence could not be loaded right now."
+          : outcome.kind === "unavailable"
+          ? "This screenshot evidence is not available."
+          : changeEventId
           ? snapshotUnavailableMessage(snapshot)
           : "Screenshot preview not captured yet."}
       </div>
@@ -854,13 +943,65 @@ function hasSnapshotObjects(snapshot: SnapshotSide) {
 }
 
 function isSourceSnapshotResponse(value: unknown): value is SourceSnapshotResponse {
-  return Boolean(
-    value &&
-      typeof value === "object" &&
-      "latest" in value &&
-      "previous" in value &&
-      "source_url" in value,
-  );
+  return isSnapshotRecord(value)
+    && typeof value.source_url === "string"
+    && isNullableSnapshotString(value.source_title)
+    && isNullableSnapshotString(value.source_page_type)
+    && typeof value.expires_in_seconds === "number"
+    && Number.isFinite(value.expires_in_seconds)
+    && (value.change_event_id === undefined || isNullableSnapshotString(value.change_event_id))
+    && (value.evidence_scope === undefined || value.evidence_scope === "change_event" || value.evidence_scope === "source_current")
+    && (value.evidence_status === undefined || isNullableSnapshotString(value.evidence_status))
+    && (value.localization_direction === undefined || (typeof value.localization_direction === "string" && ["added", "removed", "changed", "mixed", "previous", "current", "both", "none"].includes(value.localization_direction)))
+    && isSnapshotSide(value.latest)
+    && isSnapshotSide(value.previous);
+}
+
+function isSnapshotRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNullableSnapshotString(value: unknown) {
+  return value === null || typeof value === "string";
+}
+
+function isOptionalSnapshotNumber(value: unknown) {
+  return value == null || (typeof value === "number" && Number.isFinite(value));
+}
+
+function isSnapshotSide(value: unknown): value is SnapshotSide {
+  return isSnapshotRecord(value)
+    && isNullableSnapshotString(value.captured_at)
+    && (value.kind === undefined || typeof value.kind === "string")
+    && (value.exact_overlap === undefined || typeof value.exact_overlap === "boolean")
+    && isOptionalSnapshotNumber(value.focus_ratio)
+    && (value.localization_status === undefined || isNullableSnapshotString(value.localization_status))
+    && (value.localization_reason === undefined || isNullableSnapshotString(value.localization_reason))
+    && isSnapshotRecord(value.objects)
+    && Object.values(value.objects).every(isSnapshotObject);
+}
+
+function isSnapshotObject(value: unknown): value is SnapshotObject {
+  return isSnapshotRecord(value)
+    && typeof value.key === "string" && value.key.trim().length > 0
+    && isSnapshotAssetUrl(value.url)
+    && (value.content_type === undefined || isNullableSnapshotString(value.content_type))
+    && isOptionalSnapshotNumber(value.width)
+    && isOptionalSnapshotNumber(value.height)
+    && (value.clip == null || (isSnapshotRecord(value.clip)
+      && [value.clip.x, value.clip.y, value.clip.width, value.clip.height].every(
+        (dimension) => typeof dimension === "number" && Number.isFinite(dimension),
+      )));
+}
+
+function isSnapshotAssetUrl(value: unknown): value is string {
+  if (typeof value !== "string" || value !== value.trim() || !value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
 }
 
 function formatSnapshotDate(value: string) {

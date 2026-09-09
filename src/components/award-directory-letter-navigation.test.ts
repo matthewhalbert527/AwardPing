@@ -126,7 +126,7 @@ describe("award directory footer letter navigation", () => {
     const group = elements(tree).find(element => element.props["aria-label"] === "Alphabetical award pages")!;
     expect(group.props.tabIndex).toBe(-1);
     expect(group.props.ref).toBeDefined();
-    // The callback ref and navigation handlers share the retained object ref.
+    // The parent also composes this object ref with its existing letter-reveal callback.
     const destination = state.refs[1].current;
 
     button.props.onClick!();
