@@ -4111,6 +4111,7 @@ a {
 }
 
 .public-award-key-facts {
+  container: award-key-facts / inline-size;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   overflow: hidden;
@@ -4119,6 +4120,17 @@ a {
   border-radius: var(--radius-sm);
   background: var(--surface);
   box-shadow: var(--shadow-xs);
+}
+
+/* Use the space for the facts we actually have. Zero-specificity count
+   checks keep the later mobile stack in control; three facts retain the
+   base grid and narrow containers still stack every direct child below. */
+.public-award-key-facts:where(:has(> .public-award-key-fact:only-child)) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.public-award-key-facts:where(:has(> .public-award-key-fact:nth-child(2):last-child)) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .public-award-key-fact {
@@ -4158,6 +4170,20 @@ a {
 
 .public-award-key-fact dd .public-award-fact-list li {
   font-size: 0.98rem;
+}
+
+/* Stack by the facts' available width, including beside an expanded outline,
+   so full dates and award amounts are not squeezed into narrow columns. */
+@container award-key-facts (max-width: 48rem) {
+  .public-award-key-facts > .public-award-key-fact {
+    grid-column: 1 / -1;
+    border-left: 0;
+    border-top: 1px solid var(--border-subtle);
+  }
+
+  .public-award-key-facts > .public-award-key-fact:first-child {
+    border-top: 0;
+  }
 }
 
 .public-award-panel-stack {
