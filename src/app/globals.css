@@ -4550,6 +4550,14 @@ a {
   padding: 0.9rem 1rem;
 }
 
+/* Long retained excerpts must not push the saved-page controls offscreen. */
+.source-snapshot-dialog > .source-snapshot-evidence {
+  min-height: 0;
+  max-height: min(32vh, 20rem);
+  flex-shrink: 0;
+  overflow-y: auto;
+}
+
 .source-snapshot-evidence-heading {
   display: flex;
   flex-wrap: wrap;
