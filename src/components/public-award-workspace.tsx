@@ -32,6 +32,7 @@ import {
 } from "@/lib/public-award-panel-focus";
 import { describeTimestamp, formatCentralDate } from "@/lib/time-zone";
 import { ChangeEvidencePanel } from "@/components/change-evidence-panel";
+import { ChangeSummaryDisplay } from "@/components/change-summary-display";
 import { AwardDateValue } from "@/components/award-date-value";
 import { SourceSnapshotInlinePreview } from "@/components/source-snapshot-viewer";
 
@@ -677,7 +678,13 @@ function ChangesPanel({
               <div>
                 {isHighlighted(change) && <span className="badge">Selected update</span>}
                 <h3>{listedSourceNames.get(change.id) ?? change.sourceTitle}</h3>
-                <p>{change.summary}</p>
+                <ChangeSummaryDisplay
+                  summary={change.summary}
+                  changeDetails={change.changeDetails}
+                  sourceTitle={change.sourceTitle}
+                  sourceUrl={change.sourceUrl}
+                  compact
+                />
                 {showSnapshotPreviews && (
                   <SourceSnapshotInlinePreview
                     changeEventId={change.id}

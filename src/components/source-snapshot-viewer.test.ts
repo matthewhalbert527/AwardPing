@@ -3,6 +3,7 @@ import {
   selectPrimarySnapshotObject,
   snapshotInitialVersion,
   snapshotLocalizationLabel,
+  snapshotLocalizationNote,
   snapshotRequestPath,
   snapshotUnavailableMessage,
 } from "@/components/source-snapshot-viewer";
@@ -84,10 +85,12 @@ describe("source snapshot viewer evidence selection", () => {
     };
 
     expect(snapshotLocalizationLabel(eventSide, null, "change_event")).toBe(
-      "Screenshot; change location unavailable",
+      "Saved page",
     );
+    expect(snapshotLocalizationNote(eventSide, null, "change_event")).toBe("Highlight unavailable for this saved page.");
     const genericLabel = snapshotLocalizationLabel(genericSide, 0.4, "source_current");
-    expect(genericLabel).toBe("Approximate text match");
+    expect(genericLabel).toBe("Saved page");
+    expect(snapshotLocalizationNote(genericSide, 0.4, "source_current")).toBe("Approximate text match.");
     expect(genericLabel).not.toMatch(/changed section/i);
   });
 
@@ -127,6 +130,7 @@ describe("source snapshot viewer evidence selection", () => {
         const snapshot = { ...side, localization_reason: "PDF evidence is retained but does not use webpage crop localization." };
         const before = structuredClone(snapshot);
         expect(snapshotLocalizationLabel(snapshot, 0.5, scope)).toBe("Saved PDF");
+        expect(snapshotLocalizationNote(snapshot, 0.5, scope)).toBeNull();
         expect(snapshot).toEqual(before);
       }
     },
@@ -142,7 +146,8 @@ describe("source snapshot viewer evidence selection", () => {
         full: { key: "document.pdf", url: "https://signed.test/document.pdf", content_type: "application/pdf" },
       },
     };
-    expect(snapshotLocalizationLabel(snapshot, null, "change_event")).toBe("Highlighted change area");
+    expect(snapshotLocalizationLabel(snapshot, null, "change_event")).toBe("Changed area");
+    expect(snapshotLocalizationNote(snapshot, null, "change_event")).toBeNull();
   });
 
   it("does not claim an exact highlight without both exact overlap and a crop", () => {
@@ -155,18 +160,15 @@ describe("source snapshot viewer evidence selection", () => {
     ];
     for (const side of sides) {
       const snapshot = { ...side, localization_reason: "Internal crop localization diagnostic." };
-      expect(snapshotLocalizationLabel(snapshot, null, "change_event")).toBe("Screenshot; change location unavailable");
+      expect(snapshotLocalizationLabel(snapshot, null, "change_event")).toBe("Saved page");
+      expect(snapshotLocalizationNote(snapshot, null, "change_event")).toBe("Highlight unavailable for this saved page.");
     }
   });
 
   it.each([
-    ["historical_layout_unavailable", "Older screenshot; highlight unavailable"],
-    ["capture_layout_unavailable", "Screenshot highlight unavailable"],
-    ["evidence_not_found", "Changed text not found in this screenshot"],
-    ["not_requested", "No change text available to highlight"],
-    ["not_applicable", "Screenshot without a highlighted passage"],
-    ["unknown_status", "Highlight unavailable"],
-  ])("uses plain, bounded wording for source screenshot status %s", (status, expected) => {
+    "historical_layout_unavailable", "capture_layout_unavailable", "evidence_not_found",
+    "not_requested", "not_applicable", "unknown_status",
+  ])("uses a quiet, bounded note for source screenshot status %s", (status) => {
     const snapshot = {
       captured_at: null,
       localization_status: status,
@@ -174,13 +176,15 @@ describe("source snapshot viewer evidence selection", () => {
       objects: { page: { key: "page.jpg", url: "https://signed.test/page.jpg" } },
     };
     const before = structuredClone(snapshot);
-    expect(snapshotLocalizationLabel(snapshot, null, "source_current")).toBe(expected);
+    expect(snapshotLocalizationLabel(snapshot, null, "source_current")).toBe("Saved page");
+    expect(snapshotLocalizationNote(snapshot, null, "source_current")).toBe("Highlight unavailable for this saved page.");
     expect(snapshot).toEqual(before);
   });
 
   it("does not label a missing asset as an available screenshot or PDF", () => {
     for (const scope of ["change_event", "source_current"] as const) {
       expect(snapshotLocalizationLabel(null, null, scope)).toBe("Screenshot unavailable");
+      expect(snapshotLocalizationNote(null, null, scope)).toBeNull();
       expect(snapshotLocalizationLabel({ captured_at: null, kind: "pdf", objects: {} }, null, scope)).toBe("Screenshot unavailable");
     }
   });

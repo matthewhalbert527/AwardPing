@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import { buildChangeEvidence, buildTextFragmentUrl } from "@/lib/change-evidence";
 
 describe("change evidence", () => {
+  it("preserves the complete reader description including late qualifications", () => {
+    const summary = "Application requirements changed. " + "The official guidance provides application details. ".repeat(12) + "Institutional nominees are exempt from this requirement.";
+    const evidence = buildChangeEvidence({ summary });
+    expect(evidence.summarySnippet).toBe(summary);
+    expect(evidence.summarySnippet).toContain("Institutional nominees are exempt");
+  });
   it("extracts added and removed sentences from snapshot text", () => {
     const evidence = buildChangeEvidence({
       sourceUrl: "https://example.edu/award",

@@ -1085,7 +1085,7 @@ describe("public award update source display titles", () => {
     const data = namingData([listedSources()[1]]);
     data.changes[0].changeDetails = {
       before: "Applications close April 1.", after: "Applications close April 15.",
-      reader_summary: "The deadline moved later.", confidence: "high", change_type: "deadline_change",
+      reader_summary: targetSummary, confidence: "high", change_type: "deadline_change",
       structured_diff: { added_text: ["Applications close April 15."], removed_text: ["Applications close April 1."] },
     };
     const original = structuredClone(data);
@@ -1107,7 +1107,10 @@ describe("public award update source display titles", () => {
       expect(previewProps?.changeDetails).toBe(data.changes[0].changeDetails);
       expect(evidenceProps?.changeDetails).toBe(data.changes[0].changeDetails);
       expect(targetRow(panel)).toContain("Loading screenshot preview...");
-      expect(targetRow(panel)).toContain("View change explanation");
+      expect(targetRow(panel)).toContain(">Snapshot</button>");
+      expect(targetRow(panel)).toContain("Open source");
+      expect(targetRow(panel)).not.toContain("View change explanation");
+      expect(load(targetRow(panel))(".change-summary p").text()).toBe(targetSummary);
       expect(data).toEqual(original);
     } finally {
       preview.mockRestore();

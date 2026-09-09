@@ -82,13 +82,11 @@ function dialogFocusableElements(dialog: HTMLElement) {
 
 export function SourceSnapshotViewerButton({
   changeEventId,
-  changeDetectedAt,
   changeDetails,
   changeSummary,
   sourceId,
   sourceTitle,
   sourceUrl,
-  sourcePageTypeLabel,
 }: {
   changeEventId?: string | null;
   sourceId: string | null | undefined;
@@ -117,11 +115,8 @@ export function SourceSnapshotViewerButton({
   return (
     <SnapshotViewerSession
       key={requestPath}
-      changeDetectedAt={changeDetectedAt}
-      changeSummary={changeSummary}
       evidence={evidence}
       requestPath={requestPath}
-      sourcePageTypeLabel={sourcePageTypeLabel}
       sourceTitle={sourceTitle}
       sourceUrl={sourceUrl}
     />
@@ -129,19 +124,13 @@ export function SourceSnapshotViewerButton({
 }
 
 function SnapshotViewerSession({
-  changeDetectedAt,
-  changeSummary,
   evidence,
   requestPath,
-  sourcePageTypeLabel,
   sourceTitle,
   sourceUrl,
 }: {
-  changeDetectedAt?: string | null;
-  changeSummary?: string | null;
   evidence: ReturnType<typeof buildChangeEvidence>;
   requestPath: string;
-  sourcePageTypeLabel?: string | null;
   sourceTitle: string;
   sourceUrl: string;
 }) {
@@ -215,13 +204,7 @@ function SnapshotViewerSession({
 
   const activeSnapshot = snapshot?.[activeVersion] || null;
   const canShowPrevious = Boolean(snapshot && hasSnapshotObjects(snapshot.previous));
-  const hasEvidencePanel = Boolean(
-    changeSummary ||
-      changeDetectedAt ||
-      evidence.currentSnippets.length ||
-      evidence.previousSnippets.length ||
-      evidence.confidenceLabel,
-  );
+  const hasEvidencePanel = Boolean(evidence.summarySnippet || evidence.isFirstObservation);
 
   async function openViewer() {
     requestRef.current?.abort();
@@ -312,11 +295,12 @@ function SnapshotViewerSession({
             <div className="source-snapshot-header">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
-                  {sourcePageTypeLabel && <span className="badge">{sourcePageTypeLabel}</span>}
                   {activeSnapshot?.captured_at && (
                     <span className="source-snapshot-captured">
                       <Clock3 size={13} aria-hidden="true" />
-                      {formatSnapshotDate(activeSnapshot.captured_at)}
+                      <time dateTime={activeSnapshot.captured_at}>
+                        Captured {formatSnapshotDate(activeSnapshot.captured_at)}
+                      </time>
                     </span>
                   )}
                 </div>
@@ -328,7 +312,7 @@ function SnapshotViewerSession({
                   target="_blank"
                 >
                   <ExternalLink size={13} aria-hidden="true" />
-                  {snapshot?.source_url || sourceUrl}
+                  <span>{snapshot?.source_url || sourceUrl}</span>
                 </a>
               </div>
 
@@ -344,11 +328,7 @@ function SnapshotViewerSession({
             </div>
 
             {hasEvidencePanel && (
-              <SnapshotEvidencePanel
-                detectedAt={changeDetectedAt}
-                evidence={evidence}
-                summary={changeSummary}
-              />
+              <SnapshotEvidencePanel evidence={evidence} />
             )}
 
             <SnapshotBody
@@ -492,69 +472,19 @@ export function SourceSnapshotInlinePreview({
 }
 
 function SnapshotEvidencePanel({
-  detectedAt,
   evidence,
-  summary,
 }: {
-  detectedAt?: string | null;
   evidence: ReturnType<typeof buildChangeEvidence>;
-  summary?: string | null;
 }) {
   return (
     <aside
       className="source-snapshot-evidence"
-      aria-label={
-        evidence.isFirstObservation
-          ? "Selected first-observation evidence"
-          : "Selected change evidence"
-      }
+      aria-label={evidence.isFirstObservation ? "First observation" : "Change description"}
+      tabIndex={0}
     >
-      <div className="source-snapshot-evidence-heading">
-        <div>
-          <p>{evidence.isFirstObservation ? "Selected first observation" : "Selected change"}</p>
-          <h3>{evidence.changeTypeLabel || "Source update"}</h3>
-        </div>
-        <div className="source-snapshot-evidence-badges">
-          {evidence.confidenceLabel && <span>{evidence.confidenceLabel}</span>}
-          {detectedAt && (
-            <span>
-              {evidence.isFirstObservation ? "Update recognized " : ""}
-              {formatSnapshotDate(detectedAt)}
-            </span>
-          )}
-        </div>
-      </div>
       <p className="source-snapshot-evidence-summary">
-        {evidence.summarySnippet ||
-          summary ||
-          (evidence.isFirstObservation
-            ? FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY
-            : "AwardPing detected a meaningful source-page change.")}
+        {evidence.summarySnippet || FIRST_OBSERVED_OFFICIAL_DOCUMENT_SUMMARY}
       </p>
-      {evidence.isFirstObservation && evidence.currentSnippets.length > 0 ? (
-        <div className="source-snapshot-evidence-grid">
-          <div>
-            <strong>Wording in the document</strong>
-            <p>{evidence.currentSnippets[0] || evidence.afterSnippet}</p>
-          </div>
-        </div>
-      ) : (evidence.previousSnippets.length > 0 || evidence.currentSnippets.length > 0) && (
-        <div className="source-snapshot-evidence-grid">
-          <div>
-            <strong>Previous</strong>
-            <p>{evidence.previousSnippets[0] || evidence.beforeSnippet || "No previous wording stored."}</p>
-          </div>
-          <div>
-            <strong>Current</strong>
-            <p>{evidence.currentSnippets[0] || evidence.afterSnippet || "No current wording stored."}</p>
-          </div>
-        </div>
-      )}
-      {evidence.isFirstObservation && (
-        <p className="source-snapshot-evidence-summary">
-          No prior version is asserted; this is AwardPing&apos;s first retained observation.
-        </p>
-      )}
     </aside>
   );
 }
@@ -665,6 +595,7 @@ function SnapshotBody({
           }
           firstObservation={firstObservation}
           localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio, evidenceScope)}
+          localizationNote={snapshotLocalizationNote(activeSnapshot, focusRatio, evidenceScope)}
           openLabel="Open PDF"
           openUrl={primaryObject.url}
           onVersionChange={onVersionChange}
@@ -673,7 +604,7 @@ function SnapshotBody({
           <FileText size={34} aria-hidden="true" />
           <div>
             <p className="source-snapshot-pdf-title">
-              {firstObservation ? "First-observed PDF" : "PDF snapshot"}
+              Open the saved PDF to view this document.
             </p>
           </div>
         </div>
@@ -691,6 +622,7 @@ function SnapshotBody({
         }
         firstObservation={firstObservation}
         localizationLabel={snapshotLocalizationLabel(activeSnapshot, focusRatio, evidenceScope)}
+        localizationNote={snapshotLocalizationNote(activeSnapshot, focusRatio, evidenceScope)}
         openLabel="Open image"
         openUrl={primaryObject.url}
         onVersionChange={onVersionChange}
@@ -745,6 +677,11 @@ function SnapshotInlineBody({
   if (!primaryObject) return null;
 
   const openLabel = primaryObject.kind === "pdf" ? "Open PDF" : "Open image";
+  const localizationNote = snapshotLocalizationNote(
+    activeSnapshot,
+    focusRatio,
+    snapshot.evidence_scope || "source_current",
+  );
 
   return (
     <div className="source-snapshot-inline">
@@ -784,12 +721,13 @@ function SnapshotInlineBody({
           <ExternalLink size={13} aria-hidden="true" />
           {openLabel}
         </a>
+        {localizationNote && <p className="source-snapshot-localization-note">{localizationNote}</p>}
       </div>
 
       {primaryObject.kind === "pdf" ? (
         <div className="source-snapshot-inline-pdf">
           <FileText size={22} aria-hidden="true" />
-          {firstObservation ? "First-observed PDF available" : "PDF snapshot available"}
+          Open the saved PDF to view this document.
         </div>
       ) : (
         <div className="source-snapshot-inline-frame" ref={frameRef}>
@@ -813,6 +751,7 @@ function SnapshotFrameActions({
   currentLabel,
   firstObservation,
   localizationLabel,
+  localizationNote,
   openLabel,
   openUrl,
   onVersionChange,
@@ -822,6 +761,7 @@ function SnapshotFrameActions({
   currentLabel: string;
   firstObservation: boolean;
   localizationLabel: string;
+  localizationNote: string | null;
   openLabel: string;
   openUrl: string;
   onVersionChange: (version: SnapshotVersion) => void;
@@ -850,6 +790,7 @@ function SnapshotFrameActions({
         <ExternalLink size={14} aria-hidden="true" />
         {openLabel}
       </a>
+      {localizationNote && <p className="source-snapshot-localization-note">{localizationNote}</p>}
     </div>
   );
 }
@@ -1010,31 +951,28 @@ function formatSnapshotDate(value: string) {
 
 export function snapshotLocalizationLabel(
   snapshot: SnapshotSide | null,
-  focusRatio: number | null,
+  _focusRatio: number | null,
   evidenceScope: "change_event" | "source_current" = "source_current",
 ) {
   const primaryObject = selectPrimarySnapshotObject(snapshot);
   if (!primaryObject) return "Screenshot unavailable";
   if (primaryObject.kind === "pdf") return "Saved PDF";
-  if (evidenceScope === "change_event") {
-    if (snapshot?.exact_overlap && snapshot.objects.crop) return "Highlighted change area";
-    return "Screenshot; change location unavailable";
-  }
-  if (focusRatio !== null) return "Approximate text match";
-  switch (snapshot?.localization_status) {
-    case "historical_layout_unavailable":
-      return "Older screenshot; highlight unavailable";
-    case "capture_layout_unavailable":
-      return "Screenshot highlight unavailable";
-    case "evidence_not_found":
-      return "Changed text not found in this screenshot";
-    case "not_requested":
-      return "No change text available to highlight";
-    case "not_applicable":
-      return "Screenshot without a highlighted passage";
-    default:
-      return "Highlight unavailable";
-  }
+  return evidenceScope === "change_event" && snapshot?.exact_overlap && snapshot.objects.crop
+    ? "Changed area"
+    : "Saved page";
+}
+
+export function snapshotLocalizationNote(
+  snapshot: SnapshotSide | null,
+  focusRatio: number | null,
+  evidenceScope: "change_event" | "source_current" = "source_current",
+) {
+  const primaryObject = selectPrimarySnapshotObject(snapshot);
+  if (!primaryObject || primaryObject.kind === "pdf") return null;
+  if (evidenceScope === "change_event" && snapshot?.exact_overlap && snapshot.objects.crop) return null;
+  return evidenceScope === "source_current" && focusRatio !== null
+    ? "Approximate text match."
+    : "Highlight unavailable for this saved page.";
 }
 
 export function snapshotUnavailableMessage(

@@ -1,7 +1,6 @@
 import { ExternalLink } from "lucide-react";
 import { buildChangeEvidence } from "@/lib/change-evidence";
 import { readableSourceTitle } from "@/lib/display-text";
-import { formatCentralDateTime } from "@/lib/time-zone";
 import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 
 export function ChangeEvidencePanel({
@@ -34,175 +33,33 @@ export function ChangeEvidencePanel({
   const snapshotTitle = readableSourceTitle(sourceTitle, sourceUrl);
 
   return (
-    <details className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
-      <summary>
-        {evidence.isFirstObservation
-          ? "View first-observation explanation"
-          : "View change explanation"}
-      </summary>
-      <div className="change-evidence-body">
+    <div className={compact ? "change-evidence change-evidence-compact" : "change-evidence"}>
+      <div className="change-evidence-actions">
         {(changeEventId || sourceId) && sourceUrl ? (
-          <div className="change-evidence-highlight-link">
-            <SourceSnapshotViewerButton
-              changeEventId={changeEventId}
-              changeDetectedAt={detectedAt}
-              changeDetails={changeDetails}
-              changeSummary={summary}
-              sourceId={sourceId}
-              sourcePageTypeLabel={sourcePageTypeLabel}
-              sourceTitle={snapshotTitle}
-              sourceUrl={sourceUrl}
-            />
-          </div>
+          <SourceSnapshotViewerButton
+            changeEventId={changeEventId}
+            changeDetectedAt={detectedAt}
+            changeDetails={changeDetails}
+            changeSummary={summary}
+            sourceId={sourceId}
+            sourcePageTypeLabel={sourcePageTypeLabel}
+            sourceTitle={snapshotTitle}
+            sourceUrl={sourceUrl}
+          />
         ) : null}
-
-        <section className="change-evidence-section">
-          <h4>{evidence.isFirstObservation ? "What AwardPing first observed" : "What changed"}</h4>
-          {evidence.hasSummaryEvidence && (
-            <div className="change-evidence-summary-only">
-              {evidence.summaryLabel && (
-                <span className="change-summary-label">{evidence.summaryLabel}</span>
-              )}
-              <p>{evidence.summarySnippet}</p>
-            </div>
-          )}
-
-          {(evidence.descriptionSourceLabel ||
-            evidence.changeTypeLabel ||
-            evidence.sectionLabel ||
-            evidence.confidenceLabel) && (
-            <div className="change-evidence-meta">
-              {evidence.descriptionSourceLabel && <span>{evidence.descriptionSourceLabel}</span>}
-              {evidence.changeTypeLabel && <span>{evidence.changeTypeLabel}</span>}
-              {evidence.sectionLabel && <span>{evidence.sectionLabel}</span>}
-              {evidence.confidenceLabel && <span>{evidence.confidenceLabel}</span>}
-            </div>
-          )}
-
-          {evidence.relationshipNote && (
-            <p className="change-evidence-note">{evidence.relationshipNote}</p>
-          )}
-
-          {evidence.isFirstObservation ? (
-            <>
-              <div className="change-evidence-grid">
-                <section>
-                  <h5>Wording in the document</h5>
-                  {evidence.currentSnippets.length > 0 ? (
-                    evidence.currentSnippets.map((snippet) => (
-                      <mark className="change-evidence-added" key={snippet}>
-                        {snippet}
-                      </mark>
-                    ))
-                  ) : (
-                    <mark className="change-evidence-added">
-                      {evidence.afterSnippet || "No exact current wording was retained."}
-                    </mark>
-                  )}
-                </section>
-              </div>
-              <p className="change-evidence-note">
-                No prior version is shown because this is AwardPing&apos;s first retained
-                observation. This does not establish when the publisher posted the document.
-              </p>
-            </>
-          ) : evidence.hasStructuredEvidence || evidence.hasSnapshotEvidence ? (
-            <div className="change-evidence-grid">
-              <section>
-                <h5>Current wording</h5>
-                {evidence.currentSnippets.length > 0 ? (
-                  evidence.currentSnippets.map((snippet) => (
-                    <mark className="change-evidence-added" key={snippet}>
-                      {snippet}
-                    </mark>
-                  ))
-                ) : (
-                  <mark className="change-evidence-added">
-                    {evidence.afterSnippet || "No new text was isolated in the stored excerpt."}
-                  </mark>
-                )}
-              </section>
-              <section>
-                <h5>Previous wording</h5>
-                {evidence.previousSnippets.length > 0 ? (
-                  evidence.previousSnippets.map((snippet) => (
-                    <mark className="change-evidence-removed" key={snippet}>
-                      {snippet}
-                    </mark>
-                  ))
-                ) : evidence.beforeSnippet ? (
-                  <mark className="change-evidence-removed">{evidence.beforeSnippet}</mark>
-                ) : (
-                  <p>No reliable previous wording was isolated for this exact item.</p>
-                )}
-              </section>
-            </div>
-          ) : evidence.hasSummaryEvidence ? (
-            <p className="change-evidence-note">
-              AwardPing is showing the stored screenshot-based change summary for this update.
-            </p>
-          ) : (
-            <p className="change-evidence-note">
-              AwardPing does not have enough structured screenshot evidence to show before/after
-              wording for this update.
-            </p>
-          )}
-        </section>
-
-        {evidence.advisorImpact && (
-          <section className="change-evidence-section">
-            <h4>Advisor impact</h4>
-            <p className="change-evidence-note">{evidence.advisorImpact}</p>
-          </section>
-        )}
-
-        {(sourceUrl || sourceTitle || sourcePageTypeLabel || detectedAt || evidence.firstObservedAt) && (
-          <section className="change-evidence-section">
-            <h4>Source</h4>
-            <dl className="change-source-details">
-              {sourceTitle && (
-                <div>
-                  <dt>Page</dt>
-                  <dd>{snapshotTitle}</dd>
-                </div>
-              )}
-              {sourceUrl && (
-                <div>
-                  <dt>URL</dt>
-                  <dd>
-                    <a href={sourceUrl} target="_blank" rel="noreferrer">
-                      <ExternalLink size={13} aria-hidden="true" />
-                      <span>{sourceUrl}</span>
-                    </a>
-                  </dd>
-                </div>
-              )}
-              {sourcePageTypeLabel && (
-                <div>
-                  <dt>Type</dt>
-                  <dd>{sourcePageTypeLabel}</dd>
-                </div>
-              )}
-              {evidence.isFirstObservation && evidence.firstObservedAt && (
-                <div>
-                  <dt>First retained capture</dt>
-                  <dd>{formatDate(evidence.firstObservedAt)}</dd>
-                </div>
-              )}
-              {(evidence.recognizedAt || detectedAt) && (
-                <div>
-                  <dt>{evidence.isFirstObservation ? "Recognized as an update" : "Detected"}</dt>
-                  <dd>{formatDate(evidence.recognizedAt || detectedAt || "")}</dd>
-                </div>
-              )}
-            </dl>
-          </section>
+        {sourceUrl && (
+          <a className="change-evidence-source-link" href={sourceUrl} rel="noreferrer" target="_blank">
+            <ExternalLink size={14} aria-hidden="true" />
+            Open source
+          </a>
         )}
       </div>
-    </details>
+      {evidence.relationshipNote && <p className="change-evidence-note">{evidence.relationshipNote}</p>}
+      {evidence.isFirstObservation && (
+        <p className="change-evidence-note">
+          First retained observation; publication date not established.
+        </p>
+      )}
+    </div>
   );
-}
-
-function formatDate(value: string) {
-  return formatCentralDateTime(value);
 }

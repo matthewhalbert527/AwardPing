@@ -344,10 +344,9 @@ function buildSummaryEvidence(
   if (!clean) return null;
 
   const parts = changeSummaryDisplayParts(clean, sourceUrl, sourceTitle, changeDetails);
-  const text = truncateEvidence(
-    (parts.paragraphs.length > 0 ? parts.paragraphs.join(" ") : parts.text) || clean,
-    520,
-  );
+  // Use the same complete description as the timeline. The scrollable modal
+  // handles long legacy copy; clipping here can remove a factual qualification.
+  const text = (parts.paragraphs.length > 0 ? parts.paragraphs.join(" ") : parts.text) || clean;
   if (!text) return null;
 
   return {

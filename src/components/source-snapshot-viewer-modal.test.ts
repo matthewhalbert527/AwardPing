@@ -10,6 +10,7 @@ import {
   type SetStateAction,
 } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
+import { load } from "cheerio";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SourceSnapshotViewerButton } from "@/components/source-snapshot-viewer";
 
@@ -388,13 +389,63 @@ describe("expanded screenshot shape validation and compatibility", () => {
     expect(html).toMatch(/role="tab"[^>]*>Current<\/button>/);
   });
 
+  it("shows one description and one capture timestamp without repeat quotes or metadata", async () => {
+    const summary = "Applications now close on April 15 instead of April 1.";
+    const capturedAt = "2026-09-09T14:10:00.000Z";
+    const body = {
+      ...imageSnapshot(),
+      latest: {
+        ...imageSnapshot().latest, captured_at: capturedAt,
+        localization_reason: "PRIVATE crop localization diagnostic",
+      },
+      previous: { captured_at: "2026-09-08T14:10:00.000Z", objects: { full: asset("previous.jpg") } },
+    };
+    const props: Props = {
+      ...eventProps,
+      sourcePageTypeLabel: "Application requirements",
+      changeDetectedAt: "2026-09-09T14:25:00.000Z",
+      changeSummary: summary,
+      changeDetails: {
+        reader_summary: summary, change_type: "deadline", confidence: "high",
+        before: "Applications close April 1.", after: "Applications close April 15.",
+        exact_before: "Applications close April 1.", exact_after: "Applications close April 15.",
+        section: "Deadline", advisor_impact: "Update advising calendars.",
+        is_alert_worthy: true, source: {}, quality_flags: [],
+        structured_diff: {
+          removed_text: ["Applications close April 1."], added_text: ["Applications close April 15."],
+          date_changes: [], amount_changes: [], noise_flags: [],
+        },
+      },
+    };
+    const before = structuredClone({ body, props });
+    const $ = load(await loaded(body, props));
+
+    expect($(".source-snapshot-evidence p")).toHaveLength(1);
+    expect($(".source-snapshot-evidence").text().trim()).toBe(summary);
+    expect($(".source-snapshot-evidence").attr("tabindex")).toBe("0");
+    expect($("[role='dialog']").text().split(summary)).toHaveLength(2);
+    expect($(".source-snapshot-evidence-grid, .source-snapshot-evidence-badges, .source-snapshot-header .badge")).toHaveLength(0);
+    expect($(".source-snapshot-header h2").text()).toBe(eventProps.sourceTitle);
+    expect($(".source-snapshot-source-link").attr("href")).toBe(eventProps.sourceUrl);
+    expect($("time")).toHaveLength(1);
+    expect($("time").attr("datetime")).toBe(capturedAt);
+    expect($("time").text()).toMatch(/^Captured /);
+    expect($(".source-snapshot-version-control > span").text()).toBe("Saved page");
+    expect($(".source-snapshot-localization-note").text()).toBe("Highlight unavailable for this saved page.");
+    expect($("[role='tab']").map((_index, tab) => $(tab).text()).get()).toEqual(["Current", "Previous"]);
+    expect($("img").attr("src")).toBe("https://signed.test/current.jpg");
+    expect($("[role='dialog']").text()).not.toMatch(/Applications close April|Application requirements|High confidence|Update advising calendars|PRIVATE|Detected/);
+    expect({ body, props }).toEqual(before);
+  });
+
   it("renders a PDF link rather than an image", async () => {
     const html = await loaded({ ...emptySnapshot(), latest: {
       captured_at: null, kind: "pdf", objects: { full: asset("document.pdf", "application/pdf") },
     } });
     expect(html).toContain('href="https://signed.test/document.pdf"');
     expect(html).toContain("Open PDF");
-    expect(html).toContain("PDF snapshot");
+    expect(html).toContain("Saved PDF");
+    expect(html).toContain("Open the saved PDF to view this document.");
     expect(html).not.toContain("<img");
   });
 
@@ -457,15 +508,20 @@ describe("expanded screenshot shape validation and compatibility", () => {
         page_type: "pdf", date_changes: [], amount_changes: [], noise_flags: [] },
       first_observed_at: "2026-06-21T14:00:00.000Z",
     } });
-    expect(html).toContain("First-observed PDF");
+    expect(html).toContain("Open the saved PDF to view this document.");
     expect(html).toContain("Saved PDF");
     expect(html).toContain("AwardPing first recorded this official document. This does not establish when it was published.");
-    expect(html).toContain(wording);
+    expect(html).not.toContain(wording);
     expect(html).toContain('href="https://signed.test/document.pdf"');
     expect(html).not.toMatch(/Immutable|crop localization/);
     expect(html).toMatch(/role="tab"[^>]*>First observed<\/button>/);
     expect(html).not.toMatch(/role="tab"[^>]*>Previous<\/button>/);
-    expect(html).toContain("No prior version is asserted");
+    const $ = load(html);
+    expect($(".source-snapshot-evidence p")).toHaveLength(1);
+    expect($(".source-snapshot-evidence").text().trim()).toBe(
+      "AwardPing first recorded this official document. This does not establish when it was published.",
+    );
+    expect($(".source-snapshot-evidence-grid, .source-snapshot-evidence-badges")).toHaveLength(0);
   });
 });
 

@@ -309,7 +309,8 @@ describe("inline screenshot response validation and existing rendering", () => {
     } });
     expect(html).toContain('href="https://signed.test/document.pdf"');
     expect(html).toContain("Open PDF");
-    expect(html).toContain("PDF snapshot available");
+    expect(html).toContain("Saved PDF");
+    expect(html).toContain("Open the saved PDF to view this document.");
     expect(html).not.toContain("<img");
   });
 
@@ -339,7 +340,8 @@ describe("inline screenshot response validation and existing rendering", () => {
     expect(html).toContain("First observed");
     expect(html).toContain("Saved PDF");
     expect(html).toContain('href="https://signed.test/document.pdf"');
-    expect(html).toContain("First-observed PDF available");
+    expect(html).toContain("Saved PDF");
+    expect(html).toContain("Open the saved PDF to view this document.");
     expect(html).not.toMatch(/Previous|<img|Immutable|crop localization/);
   });
 

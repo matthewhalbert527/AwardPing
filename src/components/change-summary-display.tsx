@@ -6,18 +6,20 @@ export function ChangeSummaryDisplay({
   sourceTitle,
   changeDetails,
   compact = false,
+  showLabel = false,
 }: {
   summary: string | null | undefined;
   sourceUrl?: string | null;
   sourceTitle?: string | null;
   changeDetails?: unknown;
   compact?: boolean;
+  showLabel?: boolean;
 }) {
   const parts = changeSummaryDisplayParts(summary, sourceUrl, sourceTitle, changeDetails);
 
   return (
     <div className={compact ? "change-summary change-summary-compact" : "change-summary"}>
-      <span className="change-summary-label">{parts.label}</span>
+      {showLabel && <span className="change-summary-label">{parts.label}</span>}
       {parts.paragraphs.length > 0 ? (
         parts.paragraphs.map((paragraph, index) => <p key={`${parts.label}-${index}`}>{paragraph}</p>)
       ) : (
