@@ -168,7 +168,9 @@ function glanceTimestamp(value: string | null | undefined) {
   return timestamp.dateTime ? timestamp : null;
 }
 
-function lastUpdateItem(input: AwardCardGlanceInput): AwardCardGlanceItem {
+export function awardCardLastUpdate(
+  input: Pick<AwardCardGlanceInput, "changeCount" | "latestUpdateAt" | "firstPublishedCaptureAt">,
+): AwardCardGlanceItem {
   const unavailable: AwardCardGlanceItem = { key: "updates", label: "Last update", value: "Not available" };
   const count = input.changeCount;
   const countKnown = count !== null && Number.isFinite(count) && Number.isInteger(count) && count >= 0;
@@ -191,6 +193,6 @@ export function awardCardGlance(input: AwardCardGlanceInput): AwardCardGlanceIte
   return [
     criterionItem("level", "Level", input.academicLevels),
     criterionItem("citizenship", "Citizenship", input.citizenship),
-    lastUpdateItem(input),
+    awardCardLastUpdate(input),
   ];
 }

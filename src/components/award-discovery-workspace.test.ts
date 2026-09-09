@@ -368,6 +368,19 @@ function statusChips(html: string) {
 }
 
 describe("AwardDiscoveryWorkspace update status", () => {
+  it("places one update stamp directly after the award name, before the description, without eligibility fields", () => {
+    const $ = load(renderRows([{ ...goldwaterRow, summary: "Supports undergraduate STEM researchers." }]));
+    const card = $(".award-row-card");
+    const stamp = card.find('dl[aria-label="Award last update"]');
+    expect(stamp).toHaveLength(1);
+    expect(stamp.parent().prev().text()).toBe("Goldwater Scholarship");
+    expect(stamp.parent().next().is("p.award-row-one-line-description")).toBe(true);
+    expect(card.find("dt").map((_index, element) => $(element).text()).get()).toEqual(["Last update"]);
+    expect(card.find('[data-field="level"], [data-field="citizenship"]')).toHaveLength(0);
+    expect(card.find(".award-row-deadline").text()).toContain("Deadline");
+    expect(card.find("a.award-row-summary").attr("href")).toBe("/goldwater-scholarship");
+  });
+
   it("states the last update date, using first capture only for an award with zero public changes", () => {
     const html = renderRows([gates, gilman, goldwaterRow]);
 

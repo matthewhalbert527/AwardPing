@@ -561,18 +561,16 @@ export function AwardDiscoveryWorkspace({
                           <span>{award.name}</span>
                           <ChevronRight size={17} aria-hidden="true" />
                         </span>
+                        <AwardCardGlance
+                          changeCount={award.changeCount}
+                          latestUpdateAt={award.latestUpdateAt}
+                          firstPublishedCaptureAt={award.firstPublishedCaptureAt}
+                        />
                         {compactAwardBlurb(award.summary, award.name) && (
                           <p className="award-row-one-line-description mt-2 text-sm leading-6 text-[var(--muted)]">
                             {compactAwardBlurb(award.summary, award.name)}
                           </p>
                         )}
-                        <AwardCardGlance
-                          academicLevels={award.academicLevels}
-                          citizenship={award.citizenship}
-                          changeCount={award.changeCount}
-                          latestUpdateAt={award.latestUpdateAt}
-                          firstPublishedCaptureAt={award.firstPublishedCaptureAt}
-                        />
                       </div>
                       <div className="award-row-deadline">
                         <span>{deadline.label}</span>

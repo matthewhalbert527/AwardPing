@@ -1,23 +1,27 @@
 .container {
-  container: award-card-glance / inline-size;
-  margin-top: 0.8rem;
+  margin-top: 0.5rem;
 }
 
-.facts {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.65fr) minmax(0, 0.85fr);
-  gap: 0.6rem 1rem;
+.stamp {
+  display: inline-flex;
+  max-width: 100%;
   margin: 0;
-  border-top: 1px solid var(--border-subtle);
-  padding-top: 0.7rem;
+  border: 1px solid var(--accent-border);
+  border-radius: 0.4rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--accent-quiet);
 }
 
 .field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.5rem;
   min-width: 0;
 }
 
 .label {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: 0.65rem;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -26,33 +30,10 @@
 }
 
 .value {
-  margin: 0.2rem 0 0;
-  color: var(--text-secondary);
+  margin: 0;
+  color: var(--accent-text);
   font-size: 0.76rem;
-  font-weight: 500;
+  font-weight: 650;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.highlight {
-  color: var(--accent-text);
-  font-weight: 650;
-}
-
-@container award-card-glance (max-width: 32rem) {
-  .facts {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 0.4rem;
-  }
-
-  .field {
-    display: grid;
-    grid-template-columns: 6.1rem minmax(0, 1fr);
-    align-items: baseline;
-    gap: 0.5rem;
-  }
-
-  .value {
-    margin: 0;
-  }
 }

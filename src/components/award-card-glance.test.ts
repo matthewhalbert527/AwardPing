@@ -10,44 +10,42 @@ function render(input: AwardCardGlanceInput) {
 }
 
 describe("AwardCardGlance", () => {
-  it("renders exactly three labeled, ordered facts with concise Goldwater eligibility", () => {
+  it("renders only a last-update stamp, without eligibility details or extra controls", () => {
     const html = render({
       academicLevels: ["Sophomore", "Junior"],
       citizenship: ["U.S. citizen, U.S. national, or permanent resident of the United States."],
       changeCount: 0,
       firstPublishedCaptureAt: "2026-09-01T12:00:00Z",
     });
-    expect(html).toContain('aria-label="Award at a glance"');
+    expect(html).toContain('aria-label="Award last update"');
     expect([...html.matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((match) => match[1]))
-      .toEqual(["Level", "Citizenship", "Last update"]);
-    expect(html).toContain("Sophomores; Juniors</dd>");
-    expect(html).toContain("U.S. citizens, nationals or permanent residents</dd>");
+      .toEqual(["Last update"]);
+    expect(html).not.toMatch(/Sophomore|Junior|citizen|data-field="(?:level|citizenship)"/);
     const date = load(html)('dd[data-field="updates"] time');
     expect(date.attr("datetime")).toBe("2026-09-01T12:00:00.000Z");
     expect(date.text()).toBe("September 1, 2026");
     expect(html).not.toMatch(/source pages|<button|<a\s|tabindex|role="button"/);
   });
 
-  it("never hides later array entries or infers broader citizenship", () => {
+  it("keeps eligibility off the card even when several levels and countries are listed", () => {
     const html = render({
       academicLevels: ["High school senior", "Undergraduate", "Master's", "Doctoral"],
       citizenship: ["United States", "Australia", "Canada", "New Zealand", "United Kingdom"],
       changeCount: 1,
       latestUpdateAt: "2026-09-08T03:00:00Z",
     });
-    expect(html).toContain("High school senior; Undergraduate; Master&#x27;s; Doctoral</dd>");
-    expect(html).toContain("U.S.; Australia; Canada; New Zealand; U.K.</dd>");
+    expect(html).not.toMatch(/High school|Undergraduate|Doctoral|Australia|Canada|New Zealand/);
     const date = load(html)('dd[data-field="updates"] time');
     expect(date.attr("datetime")).toBe("2026-09-08T03:00:00.000Z");
     expect(date.text()).toBe("September 7, 2026");
   });
 
-  it("defers the entire complex field to the award page and preserves the original detail", () => {
+  it("does not leak complex eligibility into the stamp or its tooltip", () => {
     const rule = "U.S. citizenship is not required for applicants attending a U.S. institution if eligible to work in the U.S. for 10–12 months.";
     const html = render({ academicLevels: [], citizenship: [rule], changeCount: null });
-    expect(html).toContain("Not listed</dd>");
-    expect(html).toContain(`title="${rule}"`);
-    expect(html).toContain("See full criteria</dd>");
+    expect(html).not.toContain(rule);
+    expect(html).not.toContain("See full criteria");
+    expect(html).not.toContain("Not listed");
     expect(html).toContain("Not available</dd>");
     expect(html).not.toContain("International</dd>");
     expect(html).not.toContain("None recorded</dd>");
