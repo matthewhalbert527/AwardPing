@@ -13,6 +13,7 @@ import { directoryFilterOptions, getAwardDirectoryCategories } from "@/lib/award
 import { type AwardPageType } from "@/lib/award-discovery-types";
 import { sortAwardsForSearch } from "@/lib/award-search";
 import { compactAwardDirectorySummary } from "@/lib/award-summary";
+import { awardMatchesUpdateWindow, UPDATE_WINDOW_OPTIONS } from "@/lib/award-update-window";
 import { AwardCardGlance } from "@/components/award-card-glance";
 import { AwardDateValue } from "@/components/award-date-value";
 import styles from "./award-discovery-workspace.module.css";
@@ -89,11 +90,12 @@ export function AwardDiscoveryWorkspace({
   const [levelFilter, setLevelFilter] = useState("all");
   const [disciplineFilter, setDisciplineFilter] = useState("all");
   const [citizenshipFilter, setCitizenshipFilter] = useState("all");
-  const [deadlineFilter, setDeadlineFilter] = useState("all");
   const [recentFilter, setRecentFilter] = useState("all");
+  // Capture the clock in the interaction, not during server/client rendering.
+  const [updateFilterNow, setUpdateFilterNow] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const alphabetNavRef = useRef<HTMLDivElement>(null);
-  const hasActiveFilters = [levelFilter, disciplineFilter, citizenshipFilter, deadlineFilter, recentFilter]
+  const hasActiveFilters = [levelFilter, disciplineFilter, citizenshipFilter, recentFilter]
     .some((filter) => filter !== "all");
 
   function resetFilters() {
@@ -103,7 +105,6 @@ export function AwardDiscoveryWorkspace({
     setLevelFilter("all");
     setDisciplineFilter("all");
     setCitizenshipFilter("all");
-    setDeadlineFilter("all");
     setRecentFilter("all");
     setLetterPageIndex(0);
   }
@@ -127,17 +128,15 @@ export function AwardDiscoveryWorkspace({
         if (levelFilter !== "all" && !categories.academicLevels.includes(levelFilter)) return false;
         if (disciplineFilter !== "all" && !categories.disciplines.includes(disciplineFilter)) return false;
         if (citizenshipFilter !== "all" && !categories.citizenship.includes(citizenshipFilter)) return false;
-        if (deadlineFilter === "listed" && !award.deadline) return false;
-        if (deadlineFilter === "missing" && award.deadline) return false;
-        if (recentFilter === "recent" && !award.recentlyUpdated) return false;
+        if (!awardMatchesUpdateWindow(award, recentFilter, updateFilterNow)) return false;
         return true;
       }).map(({ award }) => award),
     [
       citizenshipFilter,
-      deadlineFilter,
       disciplineFilter,
       levelFilter,
       recentFilter,
+      updateFilterNow,
       categorizedAwards,
     ],
   );
@@ -450,34 +449,19 @@ export function AwardDiscoveryWorkspace({
             </select>
           </label>
           <label>
-            <span>Deadline</span>
-            <select
-              className="input"
-              value={deadlineFilter}
-              onChange={(event) => {
-                setDeadlineFilter(event.target.value);
-                setLetterPageIndex(0);
-              }}
-            >
-              <option value="all">{allFilterLabel}</option>
-              <option value="listed">Deadline listed</option>
-              <option value="missing">Deadline not listed</option>
-            </select>
-          </label>
-          <label>
             <span>Updates</span>
             <select
               className="input"
               value={recentFilter}
               onChange={(event) => {
+                setUpdateFilterNow(Date.now());
                 setRecentFilter(event.target.value);
                 setLetterPageIndex(0);
               }}
             >
-              <option value="all">{allFilterLabel}</option>
-              {/* The predicate is "has at least one recorded public update";
-                  the label states that and promises no recency. */}
-              <option value="recent">Has recorded updates</option>
+              {UPDATE_WINDOW_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
             </select>
           </label>
         </div>

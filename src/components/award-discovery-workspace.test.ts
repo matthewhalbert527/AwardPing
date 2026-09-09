@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { load } from "cheerio";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AwardDiscoveryWorkspace,
   awardDirectoryHref,
@@ -62,6 +62,8 @@ const truman: SharedAwardCard = {
 };
 
 const dashboardPath = dashboardAwardPath(goldwater.slug, goldwater.name, goldwater.id);
+const NOW_MS = Date.parse("2026-09-08T18:00:00.000Z");
+const updateChoices = [["all", "All"], ["day", "Last day"], ["week", "Last week"], ["month", "Last month"], ["3months", "Last 3 months"], ["6months", "Last 6 months"], ["year", "Last year"]];
 
 function render(isAuthenticated: boolean, options: { search?: string } = {}) {
   searchState.presets = options.search ? [options.search, true] : [];
@@ -106,7 +108,9 @@ function expectNativeSearchSemantics(html: string) {
   }
 }
 
+beforeEach(() => vi.setSystemTime(NOW_MS));
 afterEach(() => {
+  vi.useRealTimers();
   searchState.presets = [];
 });
 
@@ -237,14 +241,13 @@ describe("AwardDiscoveryWorkspace", () => {
       { label: "Academic level", choices: [["all", "All"], ["Undergraduate", "Undergraduate"]] },
       { label: "Discipline", choices: [["all", "All"], ["STEM", "STEM"]] },
       { label: "Citizenship", choices: [["all", "All"], ["U.S. citizens", "U.S. citizens"]] },
-      { label: "Deadline", choices: [["all", "All"], ["listed", "Deadline listed"], ["missing", "Deadline not listed"]] },
-      { label: "Updates", choices: [["all", "All"], ["recent", "Has recorded updates"]] },
+      { label: "Updates", choices: updateChoices },
     ];
     for (const isAuthenticated of [false, true]) {
       const $ = load(render(isAuthenticated));
       const labels = $(".award-directory-filter-grid > label");
-      expect(labels, `authenticated=${isAuthenticated}`).toHaveLength(5);
-      expect($(".award-directory-filter-grid select"), `authenticated=${isAuthenticated}`).toHaveLength(5);
+      expect(labels, `authenticated=${isAuthenticated}`).toHaveLength(4);
+      expect($(".award-directory-filter-grid select"), `authenticated=${isAuthenticated}`).toHaveLength(4);
       expect($("#award-filter-guidance")).toHaveLength(1);
       expect($("#award-filter-guidance").text()).toBe("Broad categories only. Check each award for full eligibility.");
       labels.each((index, node) => {
@@ -332,8 +335,8 @@ const goldwaterRow = directoryRow({
 
 // The component's state slots in declaration order: query, results open,
 // letter, page size, page index, level, discipline, citizenship,
-// deadline, updates. Only the last one is changed from its default here.
-const UPDATES_FILTER_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "all", "recent"];
+// update window, and its selection-time clock anchor.
+const UPDATES_FILTER_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "week", NOW_MS];
 
 function renderRows(rows: SharedAwardCard[], presets: unknown[] = [], isAuthenticated = false) {
   searchState.presets = [...presets];
@@ -391,8 +394,7 @@ describe("AwardDiscoveryWorkspace update status", () => {
     const html = renderRows([{ ...gates, changeCount: null }]);
 
     expect(statusChips(html)).toEqual(["Not available"]);
-    // No count is stated anywhere in the listing; the filter label is the
-    // only place the phrase appears.
+    // No recorded-update count is stated anywhere in the listing.
     expect(html).not.toMatch(/\d recorded update/);
   });
 
@@ -434,20 +436,17 @@ describe("AwardDiscoveryWorkspace update status", () => {
     expect(html).not.toContain("Open to view source pages");
   });
 
-  it("labels the Updates filter by what it does and keeps what it does", () => {
+  it("offers all six update-age windows and applies Last week to eligible event dates", () => {
     const rows = [gates, gilman, goldwaterRow];
 
     const unfiltered = renderRows(rows);
-    expect(unfiltered).toContain(
-      '<option value="all" selected="">All</option><option value="recent">Has recorded updates</option>',
-    );
+    const $ = load(unfiltered);
+    expect($(".award-directory-filter-grid select").eq(3).children("option").toArray().map(option => [$(option).attr("value"), $(option).text()])).toEqual(updateChoices);
     expect(unfiltered).not.toContain("Recently updated");
     expect(unfiltered).toContain("3 of 3 monitored awards match.");
 
     const filtered = renderRows(rows, UPDATES_FILTER_PRESETS);
-    expect(filtered).toContain(
-      '<option value="all">All</option><option value="recent" selected="">Has recorded updates</option>',
-    );
+    expect(load(filtered)(".award-directory-filter-grid select").eq(3).children("option[selected]").text()).toBe("Last week");
     expect(filtered).toContain("2 of 3 monitored awards match.");
     // The filter still uses recorded events, not presence of any date. Gates
     // has a first-capture date but no recorded change and must be excluded.
@@ -459,6 +458,46 @@ describe("AwardDiscoveryWorkspace update status", () => {
       "September 3, 2026",
       "September 7, 2026",
     ]);
+  });
+
+  it.each([
+    { window: "day", days: 1 }, { window: "week", days: 7 },
+    { window: "month", days: 30 }, { window: "3months", days: 90 },
+    { window: "6months", days: 180 }, { window: "year", days: 365 },
+  ])("uses the exact rolling $days-day boundary for $window, including the cutoff and excluding future events", ({ window, days }) => {
+    const cutoff = NOW_MS - days * 86_400_000;
+    const timestamps = [cutoff, NOW_MS, cutoff + 1, cutoff - 1, NOW_MS + 1];
+    const rows = timestamps.map((timestamp, index) => ({
+      ...goldwaterRow, id: `window-${index}`, name: `G Window ${index}`, publicPath: `/window-${index}`,
+      latestUpdateAt: new Date(timestamp).toISOString(), recentlyUpdated: false,
+    }));
+    const before = structuredClone(rows);
+    const html = renderRows(rows, ["", false, "G", 30, 0, "all", "all", "all", window, NOW_MS]);
+    expect(html).toContain("3 of 5 monitored awards match.");
+    expect(browseRowHrefs(html)).toEqual(["/window-0", "/window-1", "/window-2"]);
+    expect(load(html)(".award-directory-filter-grid select").eq(3).children("option[selected]").attr("value")).toBe(window);
+    expect(browseRowHrefs(renderRows(rows))).toEqual(rows.map(row => row.publicPath));
+    expect(rows).toEqual(before);
+  });
+
+  it.each([
+    { reason: "zero public changes", changeCount: 0, latestUpdateAt: "2026-09-08T18:00:00.000Z" },
+    { reason: "unknown count", changeCount: null, latestUpdateAt: "2026-09-08T18:00:00.000Z" },
+    { reason: "missing event date", changeCount: 1, latestUpdateAt: null },
+    { reason: "invalid event date", changeCount: 1, latestUpdateAt: "2026-02-30T18:00:00.000Z" },
+    { reason: "event older than one year", changeCount: 1, latestUpdateAt: "2025-09-07T18:00:00.000Z" },
+    { reason: "future event", changeCount: 1, latestUpdateAt: "2026-09-09T18:00:00.000Z" },
+  ])("does not let boolean, first-capture, or source-check freshness override $reason", ({ reason, ...provenance }) => {
+    const excluded = {
+      ...gates, ...provenance, id: `excluded-${reason}`, name: "G Excluded", publicPath: "/excluded-update",
+      recentlyUpdated: true, firstPublishedCaptureAt: "2026-09-08T18:00:00.000Z", lastCheckedAt: "2026-09-08T18:00:00.000Z",
+    };
+    const rows = [excluded, { ...goldwaterRow, recentlyUpdated: false }];
+    const before = structuredClone(rows);
+    const html = renderRows(rows, ["", false, "G", 30, 0, "all", "all", "all", "year", NOW_MS]);
+    expect(html).toContain("1 of 2 monitored awards match.");
+    expect(browseRowHrefs(html)).toEqual([goldwaterRow.publicPath]);
+    expect(rows).toEqual(before);
   });
 
   it("leaves search results without a status line while the source count is unknown", () => {
@@ -497,10 +536,6 @@ const deadlineRows: SharedAwardCard[] = [
     deadline: "Rolling; check the official page",
   },
 ];
-// Same state slots as above; only the deadline filter is changed from its default.
-const DEADLINE_LISTED_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "listed", "all"];
-const DEADLINE_MISSING_PRESETS: unknown[] = ["", false, "A", 30, 0, "all", "all", "all", "missing", "all"];
-
 function deadlineCells(html: string) {
   const $ = load(html);
   return $(".award-row-deadline").filter((_index, row) => $(row).children("span").text() === "Deadline")
@@ -623,7 +658,7 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
     expect(JSON.stringify(row)).toBe(before);
   });
 
-  it("renders machine and recurring deadlines in the house style without touching raw facts or filters", () => {
+  it("renders machine and recurring deadlines in the house style without touching raw facts or removing rows", () => {
     const rows = [
       { ...gaither, deadline: "2026-03-27T17:00:00-05:00" },
       { ...gates, deadline: "Last Friday in January, 5:00 p.m. Central Time" },
@@ -642,42 +677,32 @@ describe("AwardDiscoveryWorkspace deadline wording", () => {
       "2026-02-30",
     ]);
     expect(html).not.toContain("T17:00:00");
-    // Formatting is display only: every row still counts as having a listed
-    // deadline, so the filter partitions them exactly as before.
+    // Formatting remains display-only; deadline text never removes a row.
     const matchCount = (markup: string) => markup.match(/\d+ of \d+ monitored awards match/)?.[0];
     expect(matchCount(html)).toBe("4 of 4 monitored awards match");
-    expect(matchCount(renderRows(rows, DEADLINE_LISTED_PRESETS))).toBe("4 of 4 monitored awards match");
-    // None is "not listed", so the missing filter leaves nothing to browse.
-    expect(browseRowHrefs(renderRows(rows, DEADLINE_MISSING_PRESETS))).toEqual([]);
+    expect(browseRowHrefs(html)).toEqual(rows.map(row => row.publicPath));
     expect(rows).toEqual(before);
   });
 
-  it("labels the deadline filter by what the data establishes and keeps its behavior in both auth states", () => {
-    const unfiltered = renderRows(deadlineRows);
-    expect(unfiltered).toContain(
-      '<option value="all" selected="">All</option><option value="listed">Deadline listed</option><option value="missing">Deadline not listed</option>',
-    );
-    expect(unfiltered).toContain("5 of 5 monitored awards match.");
-
-    const listed = renderRows(deadlineRows, DEADLINE_LISTED_PRESETS);
-    expect(listed).toContain('<option value="listed" selected="">Deadline listed</option>');
-    expect(listed).toContain("3 of 5 monitored awards match.");
-    expect(browseRowHrefs(listed)).toEqual([
-      "/james-c-gaither-junior-fellows-program",
-      "/goldwater-scholarship",
-      "/graduate-rolling-award",
-    ]);
-    expect(deadlineCells(listed)).not.toContain("Not listed");
-
-    const missing = renderRows(deadlineRows, DEADLINE_MISSING_PRESETS);
-    expect(missing).toContain('<option value="missing" selected="">Deadline not listed</option>');
-    expect(missing).toContain("2 of 5 monitored awards match.");
-    expect(browseRowHrefs(missing)).toEqual(["/gates-cambridge-scholarship", "/gilman-international-scholarship"]);
-    expect(deadlineCells(missing)).toEqual(["Not listed", "Not listed"]);
-
-    // Sign-in state changes neither the wording nor the filtering.
-    expect(renderRows(deadlineRows, DEADLINE_MISSING_PRESETS, true)).toBe(missing);
-    expect(renderRows(deadlineRows, DEADLINE_LISTED_PRESETS, true)).toBe(listed);
+  it("has no Deadline dropdown while retaining cards with present, missing, blank, and free-text deadlines in both auth states", () => {
+    const before = structuredClone(deadlineRows);
+    const anonymous = renderRows(deadlineRows);
+    for (const authenticated of [false, true]) {
+      const html = renderRows(deadlineRows, [], authenticated);
+      const $ = load(html);
+      expect($(".award-directory-filter-grid > label > span").map((_index, label) => $(label).text()).get()).toEqual([
+        "Academic level", "Discipline", "Citizenship", "Updates",
+      ]);
+      expect($(".award-directory-filter-grid select")).toHaveLength(4);
+      expect($("select option[value='listed'], select option[value='missing']")).toHaveLength(0);
+      expect(html).not.toContain("Deadline listed");
+      expect(html).not.toContain("Deadline not listed");
+      expect(html).toContain("5 of 5 monitored awards match.");
+      expect(browseRowHrefs(html)).toEqual(deadlineRows.map(row => row.publicPath));
+      expect(deadlineCells(html)).toEqual(["January 15, 2019", "Not listed", "Not listed", "January 29, 2026", "Rolling; check the official page"]);
+      expect(html).toBe(anonymous);
+    }
+    expect(deadlineRows).toEqual(before);
   });
 });
 
