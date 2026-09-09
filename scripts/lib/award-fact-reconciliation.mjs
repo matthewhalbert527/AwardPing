@@ -281,7 +281,10 @@ export function buildFactCandidatesFromSources(award, sources) {
   const candidates = [];
   for (const source of sources) {
     const facts = sourceBaselineFacts(source);
-    const evidence = cleanEvidence(facts.evidence_quotes);
+    // Page context is not evidence for every individual fact on the page.
+    // Keep the complete wording separately, without assigning field binding.
+    const pageEvidenceQuotes = pageScopedQuotes(facts.evidence_quotes);
+    const pageEvidenceLocation = pageScopedLocation(facts.evidence_location);
     const add = (field, value) => {
       const normalizedField = canonicalFieldName(field);
       if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return;
@@ -298,8 +301,8 @@ export function buildFactCandidatesFromSources(award, sources) {
         field_name: normalizedField,
         raw_value: value,
         normalized_value: normalizeFieldValue(value),
-        evidence_quote: evidence || firstEvidenceForValue(value, facts),
-        evidence_location: cleanString(facts.evidence_location) || null,
+        evidence_quote: null,
+        evidence_location: null,
         extracted_at: source.page_metadata_generated_at || null,
         model: source.page_metadata_model || null,
         confidence: cleanKey(facts.confidence) || null,
@@ -307,6 +310,9 @@ export function buildFactCandidatesFromSources(award, sources) {
         metadata: {
           source_page_type: source.page_type || null,
           source_quality_decision: sourceQualityDecision(source, { purpose: "facts" }),
+          page_evidence_quotes: [...pageEvidenceQuotes],
+          page_evidence_location: pageEvidenceLocation,
+          page_evidence_scope: "source_page",
         },
       });
     };
@@ -351,10 +357,24 @@ export function planMissingFactCandidateMaterialization(
     if (!ownerMatches) sourceOwnerMismatches.push(candidate);
     return ownerMatches;
   });
-  const currentSourceCandidates = buildFactCandidatesFromSources(award, sources);
-  const currentSourceCandidateKeys = new Set(
-    currentSourceCandidates.map(factCandidateMaterializationKey),
-  );
+  const currentSourceCandidates = [];
+  const compatibleKeysByCandidate = new Map();
+  const currentSourceCandidateKeys = new Set();
+  for (const source of sources) {
+    for (const candidate of buildFactCandidatesFromSources(award, [source])) {
+      // Older source-generated rows stamped page context into the field
+      // evidence columns. Recognize the exact identity the prior builder
+      // would produce from THIS source/value, without rewriting that row or
+      // weakening the global evidence-sensitive materialization key.
+      const keys = [
+        factCandidateMaterializationKey(candidate),
+        legacySourceCandidateMaterializationKey(candidate, source),
+      ];
+      currentSourceCandidates.push(candidate);
+      compatibleKeysByCandidate.set(candidate, keys);
+      for (const key of keys) currentSourceCandidateKeys.add(key);
+    }
+  }
   const usableLoadedCandidates = ownerMatchedCandidates.filter(
     // Rejection is a terminal evidence-quality decision. Superseded is only
     // the neutral result of losing the current deterministic field ranking,
@@ -374,8 +394,8 @@ export function planMissingFactCandidateMaterialization(
     ownerMatchedCandidates.map(factCandidateMaterializationKey),
   );
   const generatedCandidates = currentSourceCandidates
-    .filter((candidate) => !loadedCandidateKeys.has(
-      factCandidateMaterializationKey(candidate),
+    .filter((candidate) => !compatibleKeysByCandidate.get(candidate).some(
+      (key) => loadedCandidateKeys.has(key),
     ));
 
   return {
@@ -789,6 +809,25 @@ function factCandidateMaterializationKey(candidate) {
   }));
 }
 
+function legacySourceCandidateMaterializationKey(candidate, source) {
+  const facts = sourceBaselineFacts(source);
+  // Compatibility only: never persist these legacy columns or award their
+  // evidence bonus to a new candidate. Reproduce prior extraction exactly so
+  // the page-scope transition cannot rematerialize a terminal rejection or
+  // discard a current superseded row. Changed source evidence still matters.
+  try {
+    return factCandidateMaterializationKey({
+      ...candidate,
+      evidence_quote: cleanEvidence(facts.evidence_quotes) || firstEvidenceForValue(candidate.raw_value, facts),
+      evidence_location: cleanString(facts.evidence_location) || null,
+    });
+  } catch {
+    // Do not silently omit a legacy key and permit regeneration when old
+    // evidence cannot be interpreted. The worker must leave the award held.
+    throw new Error("Legacy candidate evidence identity is unavailable; review the source before reconciliation.");
+  }
+}
+
 function stableJsonValue(value) {
   if (Array.isArray(value)) return value.map(stableJsonValue);
   if (!value || typeof value !== "object") return value;
@@ -1101,10 +1140,27 @@ function splitFactItems(value) {
   return normalizeText(value).split(/\s*;\s*/).map((item) => item.trim()).filter(Boolean);
 }
 
+/** Legacy identity compatibility only; not used to assert new fact evidence. */
 function firstEvidenceForValue(value, facts) {
   const raw = arrayField(value)[0];
   const evidence = arrayField(facts.evidence_quotes).find((quote) => raw && quote.toLowerCase().includes(raw.toLowerCase().slice(0, 32)));
   return evidence || cleanEvidence(facts.evidence_quotes);
+}
+
+function pageScopedQuotes(value) {
+  const entries = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const quotes = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string") continue;
+    const clean = normalizeText(entry);
+    // Keep qualifications at the end; this is context, not a display excerpt.
+    if (clean) quotes.push(clean);
+  }
+  return quotes;
+}
+
+function pageScopedLocation(value) {
+  return typeof value === "string" ? normalizeText(value) || null : null;
 }
 
 function cleanEvidence(value) {

@@ -529,7 +529,14 @@ export function buildFactCandidatesFromSources(award: ReconciliationAward, sourc
   const candidates: FactCandidate[] = [];
   for (const source of sources) {
     const facts = sourceBaselineFacts(source);
-    const evidence = cleanEvidence(facts.evidence_quotes);
+    // A page-level quote describes the page, not any one fact. Copying the
+    // first one into evidence_quote made page context read as field evidence,
+    // and earned the per-candidate evidence bonus on that basis. Both columns
+    // stay null for a candidate materialized here, because nothing binds a
+    // quote to the value. The page context is kept below at page scope, the
+    // way factCandidateRowsFromIntake keeps it.
+    const pageEvidenceQuotes = pageScopedQuotes(facts.evidence_quotes);
+    const pageEvidenceLocation = pageScopedLocation(facts.evidence_location);
     const add = (field: string, value: unknown) => {
       const normalizedField = canonicalFieldName(field);
       if (value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0)) return;
@@ -545,8 +552,8 @@ export function buildFactCandidatesFromSources(award: ReconciliationAward, sourc
         field_name: normalizedField,
         raw_value: value,
         normalized_value: normalizeFieldValue(value),
-        evidence_quote: evidence || firstEvidenceForValue(value, facts),
-        evidence_location: cleanString(facts.evidence_location) || null,
+        evidence_quote: null,
+        evidence_location: null,
         extracted_at: source.page_metadata_generated_at || null,
         model: source.page_metadata_model || null,
         confidence: cleanKey(facts.confidence) || null,
@@ -554,6 +561,12 @@ export function buildFactCandidatesFromSources(award: ReconciliationAward, sourc
         metadata: {
           source_page_type: source.page_type || null,
           source_quality_decision: sourceQualityDecision(source, { purpose: "facts" }),
+          // A fresh array per candidate, so no candidate aliases the source's
+          // list or a sibling's copy and a later edit cannot travel between
+          // them.
+          page_evidence_quotes: [...pageEvidenceQuotes],
+          page_evidence_location: pageEvidenceLocation,
+          page_evidence_scope: "source_page",
         },
       });
     };
@@ -1016,10 +1029,29 @@ function splitFactItems(value: unknown) {
     .filter(Boolean);
 }
 
-function firstEvidenceForValue(value: unknown, facts: Record<string, unknown>) {
-  const raw = arrayField(value)[0];
-  const evidence = arrayField(facts.evidence_quotes).find((quote) => raw && quote.toLowerCase().includes(raw.toLowerCase().slice(0, 32)));
-  return evidence || cleanEvidence(facts.evidence_quotes);
+/**
+ * Page-level quotes, kept as strings only. A non-string entry is dropped
+ * rather than coerced, because an object rendered as text is not something
+ * the page said.
+ */
+function pageScopedQuotes(value: unknown): string[] {
+  const entries = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  const quotes: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string") continue;
+    const clean = normalizeText(entry);
+    // This is retained page context, not a display excerpt. Truncating it can
+    // remove an eligibility exception or other qualification at the end.
+    if (clean) quotes.push(clean);
+  }
+  return quotes;
+}
+
+/** The page's own location note, or null. Never a stringified object. */
+function pageScopedLocation(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const clean = normalizeText(value);
+  return clean || null;
 }
 
 function cleanEvidence(value: unknown) {
