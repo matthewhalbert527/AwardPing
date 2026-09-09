@@ -47,6 +47,28 @@ export const QUOTE_CONTAINER_PATHS = [
   ["page_metadata", "evidence_quotes"],
 ];
 
+/**
+ * The reconciliation lifecycle values the candidate table allows, in the order
+ * the schema lists them. Recognition is by exact string equality: a padded or
+ * differently-cased value is reported as unknown with its literal text kept,
+ * because quietly normalizing it would invent a lifecycle the export did not
+ * state.
+ */
+export const KNOWN_CANDIDATE_STATUSES = Object.freeze([
+  "pending",
+  "selected",
+  "rejected",
+  "conflicted",
+  "superseded",
+]);
+const knownCandidateStatusSet = new Set(KNOWN_CANDIDATE_STATUSES);
+
+export const CANDIDATE_STATUS_NOTE = [
+  "candidate_status is the reconciliation lifecycle of a proposed fact.",
+  "It is not a publication state: selected does not mean a fact is published or live.",
+  "Publication is controlled by the separate reviewed publication ledger and its gates.",
+].join(" ");
+
 /** The truncation cap the reconciler applies to a stored quote. */
 const QUOTE_TRUNCATION_LENGTH = 240;
 
@@ -187,6 +209,24 @@ function resolveSource(candidate, sources) {
   return { resolution: "resolved", source: matches[0], matches: 1 };
 }
 
+/**
+ * The candidate's lifecycle exactly as the export stated it.
+ *
+ * `raw` is the literal input, never rewritten. `recognition` separates a value
+ * the schema allows from one that is absent, unrecognized, or the wrong shape,
+ * and `known` is populated only for an exact match, so no unrecognized value
+ * can be read as if it were selected or rejected.
+ */
+function describeCandidateStatus(candidate) {
+  const raw = isPlainObject(candidate) && Object.prototype.hasOwnProperty.call(candidate, "candidate_status")
+    ? candidate.candidate_status
+    : null;
+  if (raw === null || raw === undefined) return { raw: null, recognition: "missing", known: null };
+  if (typeof raw !== "string" || raw.trim().length === 0) return { raw, recognition: "invalid", known: null };
+  if (knownCandidateStatusSet.has(raw)) return { raw, recognition: "known", known: raw };
+  return { raw, recognition: "unknown", known: null };
+}
+
 function looksTruncated(quote) {
   if (typeof quote !== "string" || !quote) return false;
   return quote.length >= QUOTE_TRUNCATION_LENGTH || /(?:\.\.\.|…)$/.test(quote.trimEnd());
@@ -206,6 +246,7 @@ function invalidCandidateRow(candidateIndex, candidate, reason) {
     candidateIndex,
     candidateId: null,
     candidateValid: false,
+    candidateStatus: describeCandidateStatus(candidate),
     fieldName: null,
     sourceIdRef: isPlainObject(candidate) ? candidate.shared_award_source_id ?? null : null,
     sourceResolution: "unassessed",
@@ -275,6 +316,7 @@ export function auditCandidateEvidence(candidates, sources) {
       return;
     }
     const fieldNameValid = typeof candidate.field_name === "string" && candidate.field_name.trim().length > 0;
+    const statusContext = describeCandidateStatus(candidate);
     const binding = resolveSource(candidate, sourceList);
     const availability = describeQuoteAvailability(binding);
     const { quote: assignedQuote, blank: assignedQuoteBlank } = assignedQuoteOf(candidate);
@@ -300,6 +342,7 @@ export function auditCandidateEvidence(candidates, sources) {
         candidateIndex,
         candidateId: isUsableId(candidate.id) ? candidate.id : null,
         candidateValid: fieldNameValid,
+        candidateStatus: statusContext,
         fieldName: fieldNameValid ? candidate.field_name : null,
         sourceIdRef: candidate.shared_award_source_id ?? null,
         sourceResolution: binding.resolution,
@@ -332,7 +375,7 @@ export function auditCandidateEvidence(candidates, sources) {
     });
   });
 
-  return { schemaVersion: AUDIT_SCHEMA_VERSION, caveat: REVIEW_CAVEAT, rows };
+  return { schemaVersion: AUDIT_SCHEMA_VERSION, caveat: REVIEW_CAVEAT, candidateStatusNote: CANDIDATE_STATUS_NOTE, rows };
 }
 
 const FLAG_NAMES = [
@@ -374,9 +417,48 @@ export function summarizeEvidenceAudit(rows) {
 
   const candidateIndexes = new Set(rowList.map((row) => row?.candidateIndex));
   const valueItemsAssessed = rowList.filter((row) => row?.valueItemComparable === true && !row?.unassessedReason).length;
+
+  // Lifecycle is a property of the candidate, so a list that expands into
+  // several value-item rows must still be counted once. Rows are collapsed on
+  // candidateIndex before any status is tallied.
+  const statusByCandidate = new Map();
+  for (const row of rowList) {
+    // Summaries can receive saved or externally assembled rows. Reclassify the
+    // literal status instead of trusting their derived recognition/known labels.
+    const status = describeCandidateStatus({ candidate_status: row?.candidateStatus?.raw });
+    const existing = statusByCandidate.get(row?.candidateIndex);
+    if (!existing) {
+      statusByCandidate.set(row?.candidateIndex, { status, conflicted: false });
+    } else if (existing.status.recognition !== status.recognition
+      || existing.status.known !== status.known
+      || (status.recognition === "unknown" && existing.status.raw !== status.raw)) {
+      // A contradiction cannot be resolved by taking the first or last row.
+      // Invalid object values remain invalid regardless of reference identity.
+      existing.conflicted = true;
+    }
+  }
+  const candidateStatusCounts = {};
+  const candidateStatusRecognitionCounts = { known: 0, missing: 0, unknown: 0, invalid: 0 };
+  let candidateStatusConflictCount = 0;
+  for (const { status, conflicted } of statusByCandidate.values()) {
+    if (conflicted) {
+      candidateStatusConflictCount += 1;
+      candidateStatusRecognitionCounts.invalid += 1;
+      continue;
+    }
+    candidateStatusRecognitionCounts[status.recognition] += 1;
+    if (status.recognition === "known") {
+      candidateStatusCounts[status.known] = (candidateStatusCounts[status.known] || 0) + 1;
+    }
+  }
+
   return {
     schemaVersion: AUDIT_SCHEMA_VERSION,
     caveat: REVIEW_CAVEAT,
+    candidateStatusNote: CANDIDATE_STATUS_NOTE,
+    candidateStatusCounts,
+    candidateStatusRecognitionCounts,
+    candidateStatusConflictCount,
     rowsProduced: rowList.length,
     candidatesSeen: candidateIndexes.size,
     valueItemsAssessed,

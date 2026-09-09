@@ -11,6 +11,8 @@ import { readFile } from "node:fs/promises";
 import process from "node:process";
 
 import {
+  CANDIDATE_STATUS_NOTE,
+  KNOWN_CANDIDATE_STATUSES,
   QUOTE_CONTAINER_PATHS,
   REVIEW_CAVEAT,
   auditAwards,
@@ -68,6 +70,18 @@ container present), invalid (a container in an unusable shape), ambiguous (two
 containers disagree), or unresolved_source. A missing container is never
 reported as a count of zero.
 
+Candidate lifecycle:
+  Each row carries the candidate_status the export stated, verbatim. Known
+  values are ${[...KNOWN_CANDIDATE_STATUSES].join(", ")}.
+  A status that is absent, unrecognized or the wrong shape is reported as
+  missing, unknown or invalid with its literal text kept, never mapped onto a
+  known value. Status counts are per candidate, so a list that expands into
+  several value-item rows is still counted once.
+  Conflicting lifecycle values across rows for one candidate are counted once
+  as invalid, reported as a conflict, and not assigned a known lifecycle.
+
+  ${CANDIDATE_STATUS_NOTE}
+
 What the report does NOT do:
   ${REVIEW_CAVEAT}
   No row is a verdict. There is no verified, pass, or publication-ready field,
@@ -107,13 +121,21 @@ function flagLabels(flags) {
     .join(",") || "-";
 }
 
+function describeStatus(row) {
+  const status = row.candidateStatus;
+  if (!status) return "missing";
+  if (status.recognition === "known") return status.known;
+  if (status.recognition === "unknown") return `unknown(${JSON.stringify(status.raw)})`;
+  return status.recognition;
+}
+
 function describeValue(row) {
   if (row.valueItemKind === "text") return JSON.stringify(row.valueItemText);
   return `<${row.valueItemKind}>`;
 }
 
 function renderTable(reports) {
-  const lines = [REVIEW_CAVEAT, ""];
+  const lines = [REVIEW_CAVEAT, "", CANDIDATE_STATUS_NOTE, ""];
   let candidatesSeen = 0;
   for (const report of reports) {
     candidatesSeen += report.summary.candidatesSeen;
@@ -121,6 +143,10 @@ function renderTable(reports) {
     lines.push(`  candidates seen: ${report.summary.candidatesSeen}`);
     lines.push(`  value items assessed: ${report.summary.valueItemsAssessed}`);
     lines.push(`  value items unassessed: ${report.summary.valueItemsUnassessed}`);
+    const statusCounts = Object.entries(report.summary.candidateStatusCounts);
+    lines.push(`  candidate_status (per candidate): ${statusCounts.length ? statusCounts.map(([name, count]) => `${name}=${count}`).join(" ") : "none"}`);
+    lines.push(`  candidate_status recognition: ${Object.entries(report.summary.candidateStatusRecognitionCounts).map(([name, count]) => `${name}=${count}`).join(" ")}`);
+    lines.push(`  candidate_status conflicts: ${report.summary.candidateStatusConflictCount}`);
     for (const [name, count] of Object.entries(report.summary.flagCounts)) lines.push(`  ${name}: ${count}`);
     for (const [reason, count] of Object.entries(report.summary.reasonCounts)) lines.push(`  reason ${reason}: ${count}`);
     for (const row of report.rows) {
@@ -129,6 +155,7 @@ function renderTable(reports) {
         : `quotes=${row.quoteAvailability.status}`;
       lines.push(
         `  [${row.candidateIndex}.${row.valueIndex}] ${row.fieldName ?? "<invalid field>"}`
+        + ` | status=${describeStatus(row)}`
         + ` | source=${row.sourceIdRef === null ? "none" : JSON.stringify(row.sourceIdRef)}(${row.sourceResolution})`
         + ` | ${availability}`
         + ` | value=${describeValue(row)}`
@@ -167,6 +194,8 @@ async function main() {
   }
   process.stdout.write(`${JSON.stringify({
     caveat: REVIEW_CAVEAT,
+    candidateStatusNote: CANDIDATE_STATUS_NOTE,
+    knownCandidateStatuses: [...KNOWN_CANDIDATE_STATUSES],
     quoteContainerPaths: QUOTE_CONTAINER_PATHS.map((path) => path.join(".")),
     noCandidatesProvided,
     reports,

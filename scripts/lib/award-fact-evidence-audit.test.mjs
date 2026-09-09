@@ -5,6 +5,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   AUDIT_SCHEMA_VERSION,
+  CANDIDATE_STATUS_NOTE,
+  KNOWN_CANDIDATE_STATUSES,
   QUOTE_CONTAINER_PATHS,
   REVIEW_CAVEAT,
   auditAwards,
@@ -665,5 +667,274 @@ describe("award fact evidence report CLI", () => {
     expect(result.stdout).toContain("reported as a count of zero");
     expect(result.stdout).toContain(REVIEW_CAVEAT);
     expect(result.stdout).toContain("not success");
+  });
+});
+
+describe("award fact evidence candidate lifecycle context", () => {
+  const source = productionSource("s", ["Q."]);
+  const candidateWith = (overrides) => ({
+    field_name: "deadline",
+    raw_value: "x",
+    evidence_quote: "Q.",
+    shared_award_source_id: "s",
+    ...overrides,
+  });
+
+  it("names every lifecycle status the candidate table allows", () => {
+    expect([...KNOWN_CANDIDATE_STATUSES]).toEqual([
+      "pending", "selected", "rejected", "conflicted", "superseded",
+    ]);
+  });
+
+  it("exports an immutable catalogue that cannot change lifecycle recognition", () => {
+    const candidates = [candidateWith({ candidate_status: "published" }), candidateWith({ candidate_status: "selected" })];
+    const before = auditCandidateEvidence(candidates, [source]).rows.map((row) => row.candidateStatus);
+    expect(Array.isArray(KNOWN_CANDIDATE_STATUSES)).toBe(true);
+    expect(Object.isFrozen(KNOWN_CANDIDATE_STATUSES)).toBe(true);
+    expect(() => KNOWN_CANDIDATE_STATUSES.push("published")).toThrow(TypeError);
+    expect(() => KNOWN_CANDIDATE_STATUSES.splice(0, 1)).toThrow(TypeError);
+    expect(Reflect.set(KNOWN_CANDIDATE_STATUSES, "0", "published")).toBe(false);
+    expect(Reflect.deleteProperty(KNOWN_CANDIDATE_STATUSES, "1")).toBe(false);
+    expect([...KNOWN_CANDIDATE_STATUSES]).toEqual(["pending", "selected", "rejected", "conflicted", "superseded"]);
+    expect(auditCandidateEvidence(candidates, [source]).rows.map((row) => row.candidateStatus)).toEqual(before);
+    expect(before).toEqual([
+      { raw: "published", recognition: "unknown", known: null },
+      { raw: "selected", recognition: "known", known: "selected" },
+    ]);
+  });
+
+  it("recognizes each known status and keeps the literal input", () => {
+    for (const status of KNOWN_CANDIDATE_STATUSES) {
+      const rows = auditCandidateEvidence([candidateWith({ candidate_status: status })], [source]).rows;
+      expect(rows[0].candidateStatus).toEqual({ raw: status, recognition: "known", known: status });
+    }
+  });
+
+  it("separates missing, unknown and malformed statuses without mapping them to a known one", () => {
+    const cases = [
+      { given: {}, raw: null, recognition: "missing" },
+      { given: { candidate_status: null }, raw: null, recognition: "missing" },
+      { given: { candidate_status: "archived" }, raw: "archived", recognition: "unknown" },
+      // Trimming would be a silent normalization, so a padded value stays unknown.
+      { given: { candidate_status: " selected " }, raw: " selected ", recognition: "unknown" },
+      { given: { candidate_status: "SELECTED" }, raw: "SELECTED", recognition: "unknown" },
+      { given: { candidate_status: "" }, raw: "", recognition: "invalid" },
+      { given: { candidate_status: "   " }, raw: "   ", recognition: "invalid" },
+      { given: { candidate_status: 3 }, raw: 3, recognition: "invalid" },
+      { given: { candidate_status: { state: "selected" } }, raw: { state: "selected" }, recognition: "invalid" },
+      { given: { candidate_status: ["selected"] }, raw: ["selected"], recognition: "invalid" },
+    ];
+    for (const { given, raw, recognition } of cases) {
+      const rows = auditCandidateEvidence([candidateWith(given)], [source]).rows;
+      expect(rows[0].candidateStatus, JSON.stringify(given)).toEqual({ raw, recognition, known: null });
+    }
+  });
+
+  it("counts a multi-item list candidate once, not once per value item", () => {
+    const rows = auditCandidateEvidence(
+      [candidateWith({ candidate_status: "selected", raw_value: ["a", "b", "c"] })],
+      [source],
+    ).rows;
+
+    expect(rows).toHaveLength(3);
+    expect(rows.every((row) => row.candidateStatus.known === "selected")).toBe(true);
+
+    const summary = summarizeEvidenceAudit(rows);
+    expect(summary.candidateStatusCounts).toEqual({ selected: 1 });
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 1, missing: 0, unknown: 0, invalid: 0 });
+    expect(summary.candidateStatusConflictCount).toBe(0);
+    // The row-level totals stay per value item, as they were.
+    expect(summary.rowsProduced).toBe(3);
+    expect(summary.candidatesSeen).toBe(1);
+  });
+
+  it.each([
+    { label: "forged known name", status: { raw: "selected", recognition: "known", known: "published" }, recognition: "known", counts: { selected: 1 } },
+    { label: "unknown raw promoted to selected", status: { raw: "archived", recognition: "known", known: "selected" }, recognition: "unknown", counts: {} },
+    { label: "prototype-like derived labels", status: { raw: "selected", recognition: "toString", known: "constructor" }, recognition: "known", counts: { selected: 1 } },
+    { label: "prototype-like raw text", status: { raw: "constructor", recognition: "known", known: "constructor" }, recognition: "unknown", counts: {} },
+    { label: "padded raw text", status: { raw: " selected ", recognition: "known", known: "selected" }, recognition: "unknown", counts: {} },
+    { label: "non-string raw value", status: { raw: { state: "selected" }, recognition: "known", known: "selected" }, recognition: "invalid", counts: {} },
+    { label: "missing raw value", status: { recognition: "known", known: "selected" }, recognition: "missing", counts: {} },
+  ])("recomputes summary lifecycle from raw for $label", ({ status, recognition, counts }) => {
+    const rows = auditCandidateEvidence([candidateWith({ raw_value: ["a", "b"] })], [source]).rows
+      .map((row) => ({ ...row, candidateStatus: structuredClone(status) }));
+    const before = structuredClone(rows);
+    const summary = summarizeEvidenceAudit(rows);
+    expect(summary.candidateStatusCounts).toEqual(counts);
+    expect(summary.candidateStatusRecognitionCounts).toEqual({
+      known: 0, missing: 0, unknown: 0, invalid: 0, [recognition]: 1,
+    });
+    expect(summary.candidatesSeen).toBe(1);
+    expect(summary.rowsProduced).toBe(2);
+    expect(Object.values(summary.candidateStatusRecognitionCounts).every(Number.isInteger)).toBe(true);
+    expect(rows).toEqual(before);
+  });
+
+  it("counts legacy rows without lifecycle metadata as missing once per candidate", () => {
+    const rows = auditCandidateEvidence([candidateWith({ raw_value: ["a", "b"] })], [source]).rows
+      .map(({ candidateStatus, ...row }) => {
+        expect(candidateStatus).toBeDefined();
+        return row;
+      });
+    const summary = summarizeEvidenceAudit(rows);
+    expect(summary.candidateStatusCounts).toEqual({});
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 0, missing: 1, unknown: 0, invalid: 0 });
+  });
+
+  it.each([
+    { label: "different known lifecycles", statuses: ["selected", "rejected", "selected"] },
+    { label: "different unknown literal lifecycles", statuses: ["archived", "held", "archived"] },
+    { label: "known versus missing lifecycle", statuses: ["selected", null, "selected"] },
+  ])("keeps a per-candidate conflict sticky for $label", ({ statuses }) => {
+    const rows = statuses.map((status) => auditCandidateEvidence(
+      [candidateWith({ candidate_status: status })], [source],
+    ).rows[0]);
+    // Each row describes candidateIndex 0. Returning to its first status does
+    // not erase the contradiction introduced by the middle row.
+    const before = structuredClone(rows);
+    const summary = summarizeEvidenceAudit(rows);
+    expect(summary.candidatesSeen).toBe(1);
+    expect(summary.candidateStatusCounts).toEqual({});
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 0, missing: 0, unknown: 0, invalid: 1 });
+    expect(summary.candidateStatusConflictCount).toBe(1);
+    expect(rows).toEqual(before);
+  });
+
+  it("does not invent a conflict from distinct malformed raw object identities", () => {
+    const rows = [{ state: "selected" }, { other: "rejected" }].map((status) => auditCandidateEvidence(
+      [candidateWith({ candidate_status: status })], [source],
+    ).rows[0]);
+    const before = structuredClone(rows);
+    const summary = summarizeEvidenceAudit(rows);
+    expect(summary.candidatesSeen).toBe(1);
+    expect(summary.candidateStatusCounts).toEqual({});
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 0, missing: 0, unknown: 0, invalid: 1 });
+    expect(summary.candidateStatusConflictCount).toBe(0);
+    expect(rows).toEqual(before);
+  });
+
+  it("gives a malformed candidate an explicit unassessed lifecycle rather than a guess", () => {
+    const rows = auditCandidateEvidence([null, "candidate", candidateWith({ candidate_status: "rejected" })], [source]).rows;
+
+    expect(rows[0].candidateStatus).toEqual({ raw: null, recognition: "missing", known: null });
+    expect(rows[1].candidateStatus).toEqual({ raw: null, recognition: "missing", known: null });
+    expect(rows[2].candidateStatus.known).toBe("rejected");
+
+    const summary = summarizeEvidenceAudit(rows);
+    expect(summary.candidateStatusCounts).toEqual({ rejected: 1 });
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 1, missing: 2, unknown: 0, invalid: 0 });
+  });
+
+  it("states that a selected candidate is not a published fact", () => {
+    expect(CANDIDATE_STATUS_NOTE).toMatch(/not a publication state/i);
+    expect(CANDIDATE_STATUS_NOTE).toMatch(/selected/i);
+    expect(summarizeEvidenceAudit([]).candidateStatusNote).toBe(CANDIDATE_STATUS_NOTE);
+    expect(auditCandidateEvidence([], []).candidateStatusNote).toBe(CANDIDATE_STATUS_NOTE);
+    // Still no verdict of any kind.
+    for (const key of ["readiness", "approval", "score", "verified", "publishable"]) {
+      expect(Object.keys(summarizeEvidenceAudit([]))).not.toContain(key);
+    }
+  });
+
+  it("never mutates the candidate while reading its lifecycle", () => {
+    const candidates = [candidateWith({ candidate_status: "conflicted", raw_value: ["a", "b"] })];
+    const sources = [productionSource("s", ["Q."])];
+    const before = structuredClone(candidates);
+
+    auditCandidateEvidence(candidates, sources);
+    summarizeEvidenceAudit(auditCandidateEvidence(candidates, sources).rows);
+
+    expect(candidates).toEqual(before);
+  });
+
+  it("counts a synthetic 19-candidate, 9-list, 56-item fixture once per candidate", () => {
+    // Deliberately fictional, deterministic data: this is portable unit-test
+    // coverage of aggregation, not evidence about any retained/live export.
+    const statuses = [
+      ...Array(4).fill("selected"), ...Array(9).fill("rejected"),
+      ...Array(4).fill("superseded"), ...Array(2).fill("conflicted"),
+    ];
+    const candidates = statuses.map((status, index) => candidateWith({
+      id: `fictional-candidate-${index}`,
+      field_name: `fictional_field_${index}`,
+      candidate_status: status,
+      raw_value: index < 9
+        ? Array.from({ length: index === 8 ? 6 : 5 }, (_, item) => `Fictional value ${index}.${item}`)
+        : `Fictional value ${index}`,
+    }));
+    expect(candidates).toHaveLength(19);
+    expect(candidates.filter((candidate) => Array.isArray(candidate.raw_value))).toHaveLength(9);
+    const before = structuredClone(candidates);
+    const rows = auditCandidateEvidence(candidates, [source]).rows;
+    const summary = summarizeEvidenceAudit(rows);
+
+    expect(summary.candidatesSeen).toBe(19);
+    expect(summary.candidateStatusCounts).toEqual({ selected: 4, rejected: 9, superseded: 4, conflicted: 2 });
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 19, missing: 0, unknown: 0, invalid: 0 });
+    // Rows outnumber candidates because lists expand; statuses must not.
+    expect(summary.rowsProduced).toBe(56);
+    expect(Object.values(summary.candidateStatusCounts).reduce((total, count) => total + count, 0)).toBe(19);
+    expect(candidates).toEqual(before);
+  });
+});
+
+describe("award fact evidence report CLI lifecycle output", () => {
+  const document = {
+    schemaVersion: 1,
+    awards: [{
+      id: "award-a",
+      name: "Example Award",
+      candidates: [
+        { field_name: "eligibility", raw_value: ["a", "b"], evidence_quote: "Q.", shared_award_source_id: "s1", candidate_status: "selected" },
+        { field_name: "deadline", raw_value: "x", evidence_quote: "Q.", shared_award_source_id: "s1", candidate_status: "archived" },
+        { field_name: "overview", raw_value: "y", evidence_quote: "Q.", shared_award_source_id: "s1" },
+      ],
+      sources: [productionSource("s1", ["Q."])],
+    }],
+  };
+
+  it("carries the lifecycle note and known statuses in JSON", () => {
+    const result = runCli(["--input", "-"], JSON.stringify(document));
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.candidateStatusNote).toBe(CANDIDATE_STATUS_NOTE);
+    expect(payload.knownCandidateStatuses).toEqual([...KNOWN_CANDIDATE_STATUSES]);
+
+    const summary = payload.reports[0].summary;
+    // The two-item list is one candidate, so selected counts once.
+    expect(summary.candidateStatusCounts).toEqual({ selected: 1 });
+    expect(summary.candidateStatusRecognitionCounts).toEqual({ known: 1, missing: 1, unknown: 1, invalid: 0 });
+    expect(summary.rowsProduced).toBe(4);
+
+    const rows = payload.reports[0].rows;
+    expect(rows[0].candidateStatus).toEqual({ raw: "selected", recognition: "known", known: "selected" });
+    expect(rows[2].candidateStatus).toEqual({ raw: "archived", recognition: "unknown", known: null });
+    expect(rows[3].candidateStatus).toEqual({ raw: null, recognition: "missing", known: null });
+  });
+
+  it("shows a compact lifecycle column and per-candidate counts in the table", () => {
+    const result = runCli(["--input", "-", "--format", "table"], JSON.stringify(document));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(CANDIDATE_STATUS_NOTE);
+    expect(result.stdout).toContain("candidate_status (per candidate): selected=1");
+    expect(result.stdout).toContain("candidate_status recognition: known=1 missing=1 unknown=1 invalid=0");
+    expect(result.stdout).toContain("candidate_status conflicts: 0");
+    expect(result.stdout).toContain("| status=selected |");
+    expect(result.stdout).toContain('| status=unknown("archived") |');
+    expect(result.stdout).toContain("| status=missing |");
+    // Existing evidence output is untouched.
+    expect(result.stdout).toContain(REVIEW_CAVEAT);
+    expect(result.stdout).toContain("assignedQuoteSharedAcrossFields");
+    expect(result.stdout).not.toMatch(/\bverified\b|\bpublication-ready\b|\breadiness\b/i);
+  });
+
+  it("explains the lifecycle and its publication limit in --help", () => {
+    const result = runCli(["--help"], "");
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("Candidate lifecycle:");
+    expect(result.stdout).toContain([...KNOWN_CANDIDATE_STATUSES].join(", "));
+    expect(result.stdout).toContain("never mapped onto a");
+    expect(result.stdout).toContain(CANDIDATE_STATUS_NOTE);
   });
 });
