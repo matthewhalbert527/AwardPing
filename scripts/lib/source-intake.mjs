@@ -13,6 +13,7 @@ import {
   validateSourceIntakeProviderInputBinding,
 } from "./source-intake-provider-binding.mjs";
 import { sourceQualityDecision } from "./source-quality.mjs";
+import { readSourceIntakeScalarFactIssue } from "./source-intake-scalar-facts.mjs";
 
 export const intakeStatuses = new Set([
   "pending",
@@ -692,6 +693,7 @@ export function baselineFactsFromIntakeReview(review) {
   };
 }
 
+// Pass the original provider result: normalization can erase invalid fact types.
 export function validateIntakeAiDecision(review) {
   const facts = normalizeGeminiIntakeResult(review);
   const evidenceOk = facts.evidence_quotes.length > 0;
@@ -704,6 +706,8 @@ export function validateIntakeAiDecision(review) {
   // Strong supporting signals cannot override a request for human review.
   // Keep earlier specific failure reasons and use a stable status fallback.
   if (facts.status !== "accepted") return { accepted: false, manual: true, reason: `ai_status_${facts.status}` };
+  const scalarIssue = readSourceIntakeScalarFactIssue(review);
+  if (scalarIssue) return { accepted: false, manual: true, reason: scalarIssue.reason };
   return { accepted: true, manual: false, reason: "accepted" };
 }
 
@@ -1137,9 +1141,9 @@ function review(allowed, status, reason, pageType, qualityFlags, normalizedUrl, 
 function normalizeFacts(value) {
   const facts = objectValue(value);
   return {
-    description: cleanNullable(facts.description),
-    deadline: cleanNullable(facts.deadline),
-    amount: cleanNullable(facts.amount || facts.award_amount),
+    description: intakeScalarText(facts.description),
+    deadline: intakeScalarText(facts.deadline),
+    amount: intakeScalarText(facts.amount || facts.award_amount),
     eligibility: stringArray(facts.eligibility).slice(0, 12),
     application_materials: stringArray(facts.application_materials).slice(0, 12),
     important_dates: stringArray(facts.important_dates).slice(0, 12),
@@ -1418,6 +1422,12 @@ function cleanChoice(value, choices, fallback) {
 function cleanNullable(value) {
   const text = cleanText(value);
   return text || null;
+}
+
+// Do not invoke object conversion while preparing the review display. The
+// raw-result validator records wrong-type facts for manual review separately.
+function intakeScalarText(value) {
+  return typeof value === "string" ? cleanNullable(value) : null;
 }
 
 function cleanKey(value) {

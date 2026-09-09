@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readSourceIntakeProviderPromptExcerpt } from "../../scripts/lib/source-intake-provider-prompt.mjs";
+import { readSourceIntakeScalarFactIssue } from "../../scripts/lib/source-intake-scalar-facts.mjs";
 
 const inputNamespace = "source-intake-provider-input-v2";
 const resultNamespace = "source-intake-provider-result-v2";
@@ -135,6 +136,14 @@ export function verifySourceIntakeProviderBindingForAdminApproval({
   if (canonicalJson(storedResult) !== canonicalJson(expectedResult)) {
     throw new SourceIntakeProviderBindingValidationError(
       "The stored provider result is not sealed to the exact retained capture and Batch request.",
+    );
+  }
+  // A valid seal proves which response was retained, not that its fact types
+  // can be safely used. Apply the same raw-result check as worker finalization.
+  const scalarIssue = readSourceIntakeScalarFactIssue(raw);
+  if (scalarIssue) {
+    throw new SourceIntakeProviderBindingValidationError(
+      `Invalid scalar facts require manual review before source approval (${scalarIssue.field}).`,
     );
   }
   return {

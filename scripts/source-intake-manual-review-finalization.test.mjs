@@ -78,6 +78,69 @@ function harness({ apply = true, bindingError = false } = {}) {
 
 for (const mode of ["provider_result", "replay"]) {
   describe(`manual-review disposition in ${mode} finalization`, () => {
+    for (const [label, facts, field] of [
+      ["object description", { description: { text: "Example award" } }, "description"],
+      ["unstringifiable description", { description: { toString: "not callable" } }, "description"],
+      ["array description", { description: ["Example award"] }, "description"],
+      ["object deadline", { deadline: { date: "2027-03-01" } }, "deadline"],
+      ["unstringifiable deadline", { deadline: { toString: null } }, "deadline"],
+      ["array deadline", { deadline: ["March 1", "March 15"] }, "deadline"],
+      ["numeric amount", { amount: 5000 }, "amount"],
+      ["unstringifiable amount", { amount: { toString: 5 } }, "amount"],
+      ["false amount before valid alias", { amount: false, award_amount: "$5,000" }, "amount"],
+      ["zero amount before valid alias", { amount: 0, award_amount: "$5,000" }, "amount"],
+      ["empty array amount", { amount: [], award_amount: "$5,000" }, "amount"],
+      ["object alias", { amount: null, award_amount: { amount: 5000 } }, "award_amount"],
+      ["array alias", { amount: "", award_amount: ["$5,000"] }, "award_amount"],
+      ["array facts container", [], "facts"],
+      ["string facts container", "March 1", "facts"],
+    ]) {
+      it(`holds ${label} without replacing existing source or fact data`, async () => {
+        const h = harness();
+        // A provider-supplied raw field cannot hide the actual malformed facts.
+        const rawResult = { ...accepted, facts, raw: { ...accepted } };
+        await h.finalize(h.row, {}, {}, rawResult, { providerResultMode: mode });
+        expect(h.update).toHaveBeenCalledTimes(1);
+        expect(h.update.mock.calls[0][2]).toMatchObject({
+          status: "needs_manual_review", status_reason: `invalid_fact_type_${field}`, worker_run_id: null,
+          ai_review: { raw: rawResult, provider_input_binding: h.inputBinding, provider_result_binding: h.resultBinding },
+        });
+        expect(h.report).toEqual({ needs_manual_review: 1, ai_review_rejected: 0, rejected: 0 });
+        expect(h.resolveAward).not.toHaveBeenCalled();
+        expect(h.registerSource).not.toHaveBeenCalled();
+        expect(h.persistFacts).not.toHaveBeenCalled();
+        expect(h.reconcile).not.toHaveBeenCalled();
+      });
+    }
+
+    it("keeps valid scalar precedence and strings unchanged", async () => {
+      const h = harness();
+      const rawResult = {
+        ...accepted,
+        facts: { description: null, deadline: "March 1; March 15", amount: "$5,000", award_amount: { unused: true } },
+      };
+      await h.finalize(h.row, {}, {}, rawResult, { providerResultMode: mode });
+      expect(h.resolveAward).toHaveBeenCalledTimes(1);
+      expect(h.update.mock.calls[0][2]).toMatchObject({ status: "matching", ai_review: { raw: rawResult } });
+    });
+
+    it.each([
+      ["explicit rejection", { status: "rejected", rejection_reason: "Not this award" }, "rejected", "Not this award"],
+      ["missing evidence", { evidence_quotes: [] }, "needs_manual_review", "missing_evidence_quotes"],
+      ["low confidence", { confidence: "low" }, "needs_manual_review", "confidence_low"],
+      ["unresolved status", { status: "needs_review" }, "needs_manual_review", "ai_status_needs_review"],
+    ])("preserves %s precedence over a malformed scalar", async (_label, fields, status, reason) => {
+      const h = harness();
+      const rawResult = { ...accepted, ...fields, facts: { deadline: { date: "2027-03-01" } } };
+      await h.finalize(h.row, {}, {}, rawResult, { providerResultMode: mode });
+      expect(h.update).toHaveBeenCalledTimes(1);
+      expect(h.update.mock.calls[0][2]).toMatchObject({ status, status_reason: reason, ai_review: { raw: rawResult } });
+      expect(h.resolveAward).not.toHaveBeenCalled();
+      expect(h.registerSource).not.toHaveBeenCalled();
+      expect(h.persistFacts).not.toHaveBeenCalled();
+      expect(h.reconcile).not.toHaveBeenCalled();
+    });
+
     for (const [field, token, reason] of [
       ["source_relevance", "primary", "source_relevance_unclear"],
       ["cycle_relevance", "current_or_upcoming", "cycle_relevance_unclear"],
@@ -183,4 +246,22 @@ it("does not permit an unspecified provider-result mode", async () => {
     .rejects.toThrow("explicit provider-result binding mode");
   expect(h.update).not.toHaveBeenCalled();
   expect(h.resolveAward).not.toHaveBeenCalled();
+});
+
+describe.each(["description", "deadline", "amount", "award_amount"])("wrong-type %s display preparation", (field) => {
+  it.each([
+    ["object", { text: "a proposed fact" }],
+    ["array", ["March 1", "March 15"]],
+    ["own toString property", { toString: null }],
+    ["number", 5000],
+    ["boolean", true],
+  ])("does not stringify a %s and retains the original typed response", (_label, value) => {
+    const raw = { ...accepted, facts: { [field]: value } };
+    const normalized = normalizeGeminiIntakeResult(raw);
+    expect(normalized.facts[field === "award_amount" ? "amount" : field]).toBeNull();
+    expect(JSON.parse(JSON.stringify(normalized.raw))).toEqual(raw);
+    expect(validateIntakeAiDecision(raw)).toEqual({
+      accepted: false, manual: true, reason: `invalid_fact_type_${field}`,
+    });
+  });
 });

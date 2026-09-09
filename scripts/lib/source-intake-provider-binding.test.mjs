@@ -324,6 +324,43 @@ describe("source-intake provider result binding", () => {
       .toMatchObject({ inputBinding, resultBinding: storedReview.provider_result_binding });
   });
 
+  it.each([
+    ["description", { description: { text: "Example award" } }],
+    ["deadline", { deadline: ["March 1", "March 15"] }],
+    ["amount", { amount: 5000 }],
+    ["amount", { amount: false, award_amount: "$5,000" }],
+    ["amount", { amount: 0, award_amount: "$5,000" }],
+    ["amount", { amount: [], award_amount: "$5,000" }],
+    ["award_amount", { amount: null, award_amount: { amount: 5000 } }],
+    ["facts", []],
+    ["facts", "March 1"],
+  ])("refuses admin approval of a correctly sealed wrong-type %s", (field, facts) => {
+    const { request, capture, rawResult } = fixture();
+    const inputBinding = buildInputBinding(request, capture);
+    const invalidRaw = { ...rawResult, facts, raw: { ...rawResult, facts: {} } };
+    const storedReview = reviewForBinding(request, capture, invalidRaw, inputBinding);
+    // Raw-result seals remain valid and retained; semantic/type validity is a
+    // separate prerequisite for approval, not a reason to rewrite the evidence.
+    expect(validateSourceIntakeProviderReplayBinding({ request, capture, deterministicReview, storedReview }))
+      .toMatchObject({ inputBinding });
+    expect(() => verifySourceIntakeProviderBindingForAdminApproval({ request, captureMetadata: capture, deterministicReview, aiReview: storedReview }))
+      .toThrow(`Invalid scalar facts require manual review before source approval (${field}).`);
+    expect(storedReview.raw).toEqual(invalidRaw);
+  });
+
+  it.each([
+    undefined, null, {},
+    { description: null, deadline: "", amount: null, award_amount: "$5,000" },
+    { deadline: "March 1; March 15", amount: "$5,000", award_amount: { unused: true } },
+    { amount: "   ", award_amount: { unused: true } },
+  ])("keeps valid optional scalar shapes approvable", (facts) => {
+    const { request, capture, rawResult } = fixture();
+    const inputBinding = buildInputBinding(request, capture);
+    const storedReview = reviewForBinding(request, capture, { ...rawResult, facts }, inputBinding);
+    expect(verifySourceIntakeProviderBindingForAdminApproval({ request, captureMetadata: capture, deterministicReview, aiReview: storedReview }))
+      .toMatchObject({ inputBinding });
+  });
+
   it.each(invalidPromptCases)("refuses to seal %s as the retained capture", (_label, changePrompt) => {
     const { request, capture } = fixture();
     const providerEnvelope = buildGeminiIntakeRequest(request, capture, deterministicReview, "gemini-2.5-flash-lite");
