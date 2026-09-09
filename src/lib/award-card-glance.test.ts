@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { awardCardGlance, type AwardCardGlanceInput } from "@/lib/award-card-glance";
+import { getAwardDirectoryCategories } from "@/lib/award-directory-filters";
 
 const EMPTY: AwardCardGlanceInput = { academicLevels: [], citizenship: [], changeCount: null };
 const level = (academicLevels: readonly string[]) => awardCardGlance({ ...EMPTY, academicLevels })[0];
@@ -216,5 +217,163 @@ describe("awardCardGlance", () => {
     first[0].value = "caller-owned projection";
     expect(JSON.stringify(input)).toBe(before);
     expect(awardCardGlance(input)[0].value).toBe("Juniors; Sophomores");
+  });
+});
+
+/**
+ * Display-only collapse of a redundant level entry.
+ *
+ * Ordinary singular/plural aliases are exact and whole-value. The institution
+ * phrase can consolidate only beside an explicitly supplied bare broad level;
+ * alone, its wording stays visible within the existing length budget. Nothing is
+ * inferred from the browse taxonomy: `Sophomore` sits in the Undergraduate
+ * filter bucket while being narrower than `Undergraduate`, so a category
+ * match can never justify dropping a level.
+ *
+ * The complete original wording stays in `detail`, and the raw arrays that
+ * feed filtering are untouched.
+ */
+describe("awardCardGlance redundant level wording", () => {
+  /** [description, raw levels, card value, filter categories] */
+  const CASES: Array<[string, string[], string, string[]]> = [
+    [
+      "collapses a whole-institution phrase repeated as the bare level",
+      ["Undergraduate student (two-year and four-year institutions)", "Undergraduate"],
+      "Undergraduate",
+      ["Undergraduate"],
+    ],
+    [
+      "collapses a singular and plural recent graduate pair",
+      ["Recent graduates", "Recent graduate"],
+      "Recent graduates",
+      ["Recent graduate"],
+    ],
+    ["keeps the existing sophomore and junior aliases", ["Sophomore", "Junior"], "Sophomores; Juniors", ["Undergraduate"]],
+    [
+      "keeps a broader third level beside narrower ones",
+      ["Sophomore", "Junior", "Undergraduate"],
+      "Sophomores; Juniors; Undergraduate",
+      ["Undergraduate"],
+    ],
+    ["keeps a degree stage beside its umbrella", ["Master's", "Graduate"], "Master's; Graduate", ["Graduate", "Master's"]],
+    ["keeps two degree stages", ["Master's", "Doctoral"], "Master's; Doctoral", ["Graduate", "Master's", "Doctoral"]],
+    [
+      "keeps a year restriction beside the bare level",
+      ["Third-year undergraduate in a five-year program", "Undergraduate"],
+      "Third-year undergraduate in a five-year program; Undergraduate",
+      ["Undergraduate"],
+    ],
+    [
+      "leaves unrecognized wording exactly as written",
+      ["Rising second-year scholars in good standing"],
+      "Rising second-year scholars in good standing",
+      ["Other / not listed"],
+    ],
+  ];
+
+  it.each(CASES)("%s", (_label, levels, value) => {
+    expect(level(levels).value).toBe(value);
+  });
+
+  it.each(CASES)("leaves the browse categories unchanged: %s", (_label, levels, _value, categories) => {
+    // The workspace derives filter buckets from these raw arrays, never from
+    // the card projection, so a display alias cannot move an award.
+    expect(getAwardDirectoryCategories({ academicLevels: levels, disciplines: [], citizenship: [] }).academicLevels)
+      .toEqual(categories);
+  });
+
+  it("keeps the complete original wording in the detail", () => {
+    const values = ["Undergraduate student (two-year and four-year institutions)", "Undergraduate"];
+    expect(level(values)).toEqual({
+      key: "level",
+      label: "Level",
+      value: "Undergraduate",
+      detail: values.join("; "),
+    });
+    expect(level(["Recent graduates", "Recent graduate"]).detail).toBe("Recent graduates; Recent graduate");
+  });
+
+  it("matches the new aliases on case, whitespace and a final period only", () => {
+    expect(level(["  UNDERGRADUATES. ", "Undergraduate"]).value).toBe("Undergraduate");
+    expect(level(["Recent Graduate.", "recent graduates"]).value).toBe("Recent graduates");
+  });
+
+  it.each([
+    "Undergraduate student (two-year institutions)",
+    "Undergraduate students",
+    "Undergraduate (associate, bachelor's)",
+    "Recent graduates (within 12 months prior to the deadline)",
+    "Individuals who have graduated during the previous academic year",
+  ])("does not alias a similar but differently qualified phrase: %s", (value) => {
+    expect(level([value]).value).toBe(value);
+    expect(level([value, "Undergraduate"]).value).toBe(`${value}; Undergraduate`);
+  });
+
+  it("does not mutate the caller's level array", () => {
+    const levels = Object.freeze([
+      "Undergraduate student (two-year and four-year institutions)",
+      "Undergraduate",
+    ]);
+    const before = JSON.stringify(levels);
+    expect(level(levels).value).toBe("Undergraduate");
+    expect(JSON.stringify(levels)).toBe(before);
+  });
+});
+
+describe("awardCardGlance conditional institution wording", () => {
+  const phrase = "Undergraduate student (two-year and four-year institutions)";
+
+  it.each([
+    { name: "alone", values: [phrase], expected: phrase },
+    { name: "with only Sophomore", values: [phrase, "Sophomore"], expected: `${phrase}; Sophomores` },
+    { name: "with only Junior", values: [phrase, "Junior"], expected: `${phrase}; Juniors` },
+    { name: "with both narrow levels", values: [phrase, "Sophomore", "Junior"], expected: `${phrase}; Sophomores; Juniors` },
+    { name: "with original case and spacing", values: [`  ${phrase.toUpperCase()}.  `], expected: `  ${phrase.toUpperCase()}.  ` },
+  ])("preserves the institution phrase $name", ({ values, expected }) => {
+    const item = level(values);
+    expect(item.value).toBe(expected);
+    expect(item.detail ?? item.value).toBe(values.join("; "));
+  });
+
+  it.each([
+    [phrase, "Undergraduate"],
+    ["Undergraduate", phrase],
+    [phrase, "Undergraduates"],
+    ["Undergraduates", phrase],
+    [`  ${phrase.toUpperCase()}.  `, "  UNDERGRADUATES.  "],
+    ["  UNDERGRADUATES.  ", `  ${phrase.replace(/ /g, "  ")}.  `],
+    [phrase, "  UNDERGRADUATE.  "],
+  ])("consolidates only with an explicitly supplied broad label: %j, %j", (first, second) => {
+    const values = Object.freeze([first, second]);
+    const original = JSON.stringify(values);
+    const input = Object.freeze({ academicLevels: values, disciplines: Object.freeze([]), citizenship: Object.freeze([]) });
+    const categories = getAwardDirectoryCategories(input);
+    expect(level(values)).toEqual({ key: "level", label: "Level", value: "Undergraduate", detail: values.join("; ") });
+    expect(JSON.stringify(values)).toBe(original);
+    expect(getAwardDirectoryCategories(input)).toEqual(categories);
+    expect(categories.academicLevels).toEqual(["Undergraduate"]);
+  });
+
+  it("preserves existing bare-label presentation when that entry comes first", () => {
+    const values = ["  UNDERGRADUATE.  ", phrase];
+    expect(level(values)).toEqual({ key: "level", label: "Level", value: values[0], detail: values.join("; ") });
+  });
+
+  it.each([
+    "Undergraduate (third year)",
+    "Undergraduate?",
+    "Undergraduate\u0000",
+    "Not Undergraduate",
+  ])("does not treat %j as an explicit bare broad label", (other) => {
+    const values = [phrase, other];
+    const full = values.join("; ");
+    expect(level(values)).toEqual(full.length > 80
+      ? { key: "level", label: "Level", value: "See full criteria", detail: full }
+      : { key: "level", label: "Level", value: full });
+  });
+
+  it("retains the whole-field budget without removing a narrow level", () => {
+    const values = [phrase, "Sophomore", "Junior", "Master's"];
+    expect(level(values)).toEqual({ key: "level", label: "Level", value: "See full criteria", detail: values.join("; ") });
   });
 });

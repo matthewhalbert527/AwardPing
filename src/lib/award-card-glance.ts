@@ -41,6 +41,10 @@ const LEVEL_ALIASES = new Map([
   ["college seniors", "College seniors"],
   ["graduating senior", "Graduating seniors"],
   ["graduating seniors", "Graduating seniors"],
+  // Ordinary singular/plural aliases do not discard institution qualifiers.
+  ["undergraduates", "Undergraduate"],
+  ["recent graduate", "Recent graduates"],
+  ["recent graduates", "Recent graduates"],
 ]);
 
 type UsStatus = "citizens" | "nationals" | "permanent residents" | "dual citizens";
@@ -97,6 +101,22 @@ function uniqueValues(values: readonly string[]) {
   });
 }
 
+function levelValues(values: readonly string[]) {
+  const hasExplicitUndergraduate = values.some((value) => {
+    const key = aliasKey(value);
+    return key === "undergraduate" || key === "undergraduates";
+  });
+  return uniqueValues(values.map((value) => {
+    const key = aliasKey(value);
+    // Consolidate only when the broad label is already explicitly present.
+    // This does not infer eligibility or the relationship between raw entries.
+    if (hasExplicitUndergraduate && key === "undergraduate student (two-year and four-year institutions)") {
+      return "Undergraduate";
+    }
+    return LEVEL_ALIASES.get(key) ?? value;
+  })).join("; ");
+}
+
 function presentUsStatuses(statuses: readonly UsStatus[]) {
   const unique = [...new Set(statuses)];
   const text = unique.length > 1
@@ -131,7 +151,7 @@ function criterionItem(
 
   const displayed = key === "citizenship"
     ? citizenshipValues(present)
-    : uniqueValues(present.map((value) => LEVEL_ALIASES.get(aliasKey(value)) ?? value)).join("; ");
+    : levelValues(present);
   const value = displayed.length > MAX_COMPACT_FIELD_LENGTH ? "See full criteria" : displayed;
   const original = rawValues.join("; ");
   return { key, label, value, ...(value !== original ? { detail: original } : {}) };
